@@ -119,7 +119,7 @@ class KnowledgeBaseServer {
       for (const file of files) {
         const filePath = path.join(knowledgeBasePath, file);
         const content = await fs.readFile(filePath, 'utf-8');
-        allContent += content + '\n';
+        allContent += `#### File: ${file}\n${content}\n`;
       }
 
       return {

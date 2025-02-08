@@ -60,6 +60,10 @@ These instructions assume you have Node.js and npm installed on your system.
     *   Create subdirectories within the `KNOWLEDGE_BASES_ROOT_DIR` for each knowledge base (e.g., `company`, `it_support`, `onboarding`).
     *   Place text files (e.g., `.txt`, `.md`) containing the knowledge base content within these subdirectories.
 
+*   The server reads all text files within the specified knowledge base subdirectory.
+*   The content of each file is then concatenated into a single string, with a separator added between each file's content.
+*   The separator used is `#### File: <filename>`, where `<filename>` is the name of the file.
+
 ## Usage
 
 The server exposes two tools:
