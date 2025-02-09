@@ -10,8 +10,8 @@
     "dev": "nodemon src/index.ts"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "jean.ibarz",
+  "license": "UNLICENSED",
   "dependencies": {
     "@huggingface/inference": "^2.8.1",
     "@langchain/community": "^0.3.29",
