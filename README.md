@@ -26,9 +26,7 @@ These instructions assume you have Node.js and npm installed on your system.
     *   The server also supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`.
     *   The server requires the `HUGGINGFACE_API_KEY` environment variable to be set. This is the API key for the Hugging Face Inference API.
     *   The server supports the `HUGGINGFACE_MODEL_NAME` environment variable to specify the Hugging Face model to use. If not set, it will default to `sentence-transformers/all-MiniLM-L6-v2`.
-
     *   You can set the environment variable in your `.bashrc` or `.zshrc` file, or directly in the MCP settings.
-    *   The server now uses a custom Hugging Face model instead of the GCP embedding service directly.
 
 4.  **Build the server:**
 
@@ -68,8 +66,6 @@ These instructions assume you have Node.js and npm installed on your system.
 *   The server reads all text files within the specified knowledge base subdirectory.
 *   The content of each file is then concatenated into a single string, with a separator added between each file's content.
 *   The separator used is `#### File: <filename>`, where `<filename>` is the name of the file.
-
-The server now uses a custom Hugging Face model instead of the GCP embedding service directly.
 
 ## Usage
 
