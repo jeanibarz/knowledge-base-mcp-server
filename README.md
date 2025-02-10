@@ -28,10 +28,10 @@ These instructions assume you have Node.js and npm installed on your system.
 3.  **Configure environment variables:**
 
     *   The server requires the `HUGGINGFACE_API_KEY` environment variable to be set. This is the API key for the Hugging Face Inference API, which is used to generate embeddings for the knowledge base content. You can obtain a free API key from the Hugging Face website ([https://huggingface.co/](https://huggingface.co/)).
-*   The server requires the `KNOWLEDGE_BASES_ROOT_DIR` environment variable to be set. This variable specifies the directory where the knowledge base subdirectories are located. If you don't set this variable, it will default to `$HOME/knowledge_bases`, where `$HOME` is the current user's home directory.
-*   The server supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`.
-*   The server supports the `HUGGINGFACE_MODEL_NAME` environment variable to specify the Hugging Face model to use for generating embeddings. If not set, it will default to `sentence-transformers/all-MiniLM-L6-v2`.
-*   You can set these environment variables in your `.bashrc` or `.zshrc` file, or directly in the MCP settings.
+    *   The server requires the `KNOWLEDGE_BASES_ROOT_DIR` environment variable to be set. This variable specifies the directory where the knowledge base subdirectories are located. If you don't set this variable, it will default to `$HOME/knowledge_bases`, where `$HOME` is the current user's home directory.
+    *   The server supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`.
+    *   The server supports the `HUGGINGFACE_MODEL_NAME` environment variable to specify the Hugging Face model to use for generating embeddings. If not set, it will default to `sentence-transformers/all-MiniLM-L6-v2`.
+    *   You can set these environment variables in your `.bashrc` or `.zshrc` file, or directly in the MCP settings.
 
 4.  **Build the server:**
 
