@@ -88,7 +88,7 @@ The `retrieve_knowledge` tool performs a semantic search using a FAISS index. Th
 
 The output of the `retrieve_knowledge` tool is a markdown formatted string with the following structure:
 
-```markdown
+````markdown
 ## Semantic Search Results
 
 **Result 1:**
@@ -116,6 +116,6 @@ The output of the `retrieve_knowledge` tool is a markdown formatted string with 
 ```
 
 > **Disclaimer:** The provided results might not all be relevant. Please cross-check the relevance of the information.
-```
+````
 
 Each result includes the content of the most similar chunk, the source file, and a similarity score.
