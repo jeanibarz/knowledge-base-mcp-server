@@ -80,7 +80,7 @@ These instructions assume you have Node.js and npm installed on your system.
 The server exposes two tools:
 
 *   `list_knowledge_bases`: Lists the available knowledge bases.
-*   `retrieve_knowledge`: Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided using the `threshold` parameter.
+*   `retrieve_knowledge`: Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 document chunks are returned with a score below a threshold of 2. A different threshold can optionally be provided using the `threshold` parameter.
 
 You can use these tools through the MCP interface.
 
