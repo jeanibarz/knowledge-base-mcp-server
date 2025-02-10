@@ -71,8 +71,8 @@ These instructions assume you have Node.js and npm installed on your system.
 *   The server recursively reads all text files (e.g., `.txt`, `.md`) within the specified knowledge base subdirectories.
 *   The server skips hidden files and directories (those starting with a `.`).
 *   For each file, the server calculates the SHA256 hash and stores it in a file with the same name in a hidden `.index` subdirectory. This hash is used to determine if the file has been modified since the last indexing.
-*   If the file is a Markdown file, it is split into chunks using the `MarkdownTextSplitter` from `langchain/text_splitter`.
-*   The content of each file (or chunk, in the case of Markdown files) is then added to a FAISS index, which is used for similarity search.
+*   The file content is splitted into chunks using the `MarkdownTextSplitter` from `langchain/text_splitter`.
+*   The content of each chunk is then added to a FAISS index, which is used for similarity search.
 *   The FAISS index is automatically initialized when the server starts. It checks for changes in the knowledge base files and updates the index accordingly.
 
 ## Usage
