@@ -2,6 +2,10 @@
 
 This MCP server provides tools for listing and retrieving content from different knowledge bases.
 
+<a href="https://glama.ai/mcp/servers/n0p6v0o0a4">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/n0p6v0o0a4/badge" alt="Knowledge Base Server MCP server" />
+</a>
+
 ## Setup Instructions
 
 These instructions assume you have Node.js and npm installed on your system.
@@ -10,7 +14,6 @@ These instructions assume you have Node.js and npm installed on your system.
 
 *   [Node.js](https://nodejs.org/) (version 16 or higher)
 *   [npm](https://www.npmjs.com/) (Node Package Manager)
-
 
 1.  **Clone the repository:**
 
