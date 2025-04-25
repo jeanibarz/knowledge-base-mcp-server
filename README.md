@@ -1,5 +1,6 @@
 # Knowledge Base MCP Server
 
+[![smithery badge](https://smithery.ai/badge/@jeanibarz/knowledge-base-mcp-server)](https://smithery.ai/server/@jeanibarz/knowledge-base-mcp-server)
 This MCP server provides tools for listing and retrieving content from different knowledge bases.
 
 <a href="https://glama.ai/mcp/servers/n0p6v0o0a4">
@@ -10,6 +11,15 @@ This MCP server provides tools for listing and retrieving content from different
 
 These instructions assume you have Node.js and npm installed on your system.
 
+### Installing via Smithery
+
+To install Knowledge Base Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@jeanibarz/knowledge-base-mcp-server):
+
+```bash
+npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claude
+```
+
+### Manual Installation
 **Prerequisites**
 
 *   [Node.js](https://nodejs.org/) (version 16 or higher)

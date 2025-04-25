@@ -1,0 +1,44 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    type: object
+    required:
+      - huggingfaceApiKey
+    properties:
+      huggingfaceApiKey:
+        type: string
+        description: Hugging Face API key for inference
+      knowledgeBasesRootDir:
+        type: string
+        default: /root/knowledge_bases
+        description: Root directory for knowledge bases
+      faissIndexPath:
+        type: string
+        default: /root/knowledge_bases/.faiss
+        description: Path to FAISS index file
+      huggingfaceModelName:
+        type: string
+        default: sentence-transformers/all-MiniLM-L6-v2
+        description: Hugging Face model for embeddings
+    default: {}
+  commandFunction:
+    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
+    |-
+    (config) => ({
+      command: 'node',
+      args: ['build/index.js'],
+      env: {
+        HUGGINGFACE_API_KEY: config.huggingfaceApiKey,
+        KNOWLEDGE_BASES_ROOT_DIR: config.knowledgeBasesRootDir,
+        FAISS_INDEX_PATH: config.faissIndexPath,
+        HUGGINGFACE_MODEL_NAME: config.huggingfaceModelName
+      }
+    })
+  exampleConfig:
+    huggingfaceApiKey: hf_example_key_123
+    knowledgeBasesRootDir: /data/knowledge_bases
+    faissIndexPath: /data/knowledge_bases/.faiss
+    huggingfaceModelName: sentence-transformers/all-MiniLM-L6-v2
