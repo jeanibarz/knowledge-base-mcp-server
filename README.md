@@ -40,10 +40,35 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
 
 3.  **Configure environment variables:**
 
-    *   The server requires the `HUGGINGFACE_API_KEY` environment variable to be set. This is the API key for the Hugging Face Inference API, which is used to generate embeddings for the knowledge base content. You can obtain a free API key from the Hugging Face website ([https://huggingface.co/](https://huggingface.co/)).
-    *   The server requires the `KNOWLEDGE_BASES_ROOT_DIR` environment variable to be set. This variable specifies the directory where the knowledge base subdirectories are located. If you don't set this variable, it will default to `$HOME/knowledge_bases`, where `$HOME` is the current user's home directory.
+    This server supports two embedding providers: **Ollama** (recommended for reliability) and **HuggingFace** (fallback option).
+
+    ### Option 1: Ollama Configuration (Recommended)
+    
+    *   Set `EMBEDDING_PROVIDER=ollama` to use local Ollama embeddings
+    *   Install [Ollama](https://ollama.ai/) and pull an embedding model: `ollama pull nomic-embed-text`
+    *   Configure the following environment variables:
+        ```bash
+        EMBEDDING_PROVIDER=ollama
+        OLLAMA_BASE_URL=http://localhost:11434  # Default Ollama URL
+        OLLAMA_MODEL=nomic-embed-text           # Default embedding model
+        KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
+        ```
+
+    ### Option 2: HuggingFace Configuration (Fallback)
+    
+    *   Set `EMBEDDING_PROVIDER=huggingface` or leave unset (default)
+    *   Obtain a free API key from [HuggingFace](https://huggingface.co/)
+    *   Configure the following environment variables:
+        ```bash
+        EMBEDDING_PROVIDER=huggingface          # Optional, this is the default
+        HUGGINGFACE_API_KEY=your_api_key_here
+        HUGGINGFACE_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+        KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
+        ```
+
+    ### Additional Configuration
+    
     *   The server supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`.
-    *   The server supports the `HUGGINGFACE_MODEL_NAME` environment variable to specify the Hugging Face model to use for generating embeddings. If not set, it will default to `sentence-transformers/all-MiniLM-L6-v2`.
     *   You can set these environment variables in your `.bashrc` or `.zshrc` file, or directly in the MCP settings.
 
 4.  **Build the server:**
