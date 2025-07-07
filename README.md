@@ -82,8 +82,10 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
     *   Edit the `cline_mcp_settings.json` file located at `/home/jean/.vscode-server/data/User/globalStorage/saoudrizwan.claude-dev/settings/`.
     *   Add the following configuration to the `mcpServers` object:
 
+    *   **Option 1: Ollama Configuration**
+
     ```json
-    "knowledge-base-mcp": {
+    "knowledge-base-mcp-ollama": {
       "command": "node",
       "args": [
         "/path/to/knowledge-base-mcp-server/build/index.js"
@@ -92,10 +94,35 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
       "autoApprove": [],
       "env": {
         "KNOWLEDGE_BASES_ROOT_DIR": "/path/to/knowledge_bases",
-        "HUGGINGFACE_API_KEY": "YOUR_HUGGINGFACE_API_KEY",
+        "EMBEDDING_PROVIDER": "ollama",
+        "OLLAMA_BASE_URL": "http://localhost:11434",
+        "OLLAMA_MODEL": "dengcao/Qwen3-Embedding-0.6B:Q8_0"
       },
-      "description": "Retrieves similar chunks from the knowledge base based on a query."
+      "description": "Retrieves similar chunks from the knowledge base based on a query using Ollama."
     },
+    ```
+
+    *   **Option 2: HuggingFace Configuration**
+
+    ```json
+    "knowledge-base-mcp-huggingface": {
+      "command": "node",
+      "args": [
+        "/path/to/knowledge-base-mcp-server/build/index.js"
+      ],
+      "disabled": false,
+      "autoApprove": [],
+      "env": {
+        "KNOWLEDGE_BASES_ROOT_DIR": "/path/to/knowledge_bases",
+        "EMBEDDING_PROVIDER": "huggingface",
+        "HUGGINGFACE_API_KEY": "YOUR_HUGGINGFACE_API_KEY",
+        "HUGGINGFACE_MODEL_NAME": "sentence-transformers/all-MiniLM-L6-v2"
+      },
+      "description": "Retrieves similar chunks from the knowledge base based on a query using HuggingFace."
+    },
+    ```
+
+    *   **Note:** You only need to add one of the above configurations (either Ollama or HuggingFace) to your `cline_mcp_settings.json` file, depending on your preferred embedding provider.
     ```
 
     *   Replace `/path/to/knowledge-base-mcp-server` with the actual path to the server directory.
