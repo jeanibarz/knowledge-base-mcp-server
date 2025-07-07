@@ -45,12 +45,12 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
     ### Option 1: Ollama Configuration (Recommended)
     
     *   Set `EMBEDDING_PROVIDER=ollama` to use local Ollama embeddings
-    *   Install [Ollama](https://ollama.ai/) and pull an embedding model: `ollama pull nomic-embed-text`
+    *   Install [Ollama](https://ollama.ai/) and pull an embedding model: `ollama pull dengcao/Qwen3-Embedding-0.6B:Q8_0`
     *   Configure the following environment variables:
         ```bash
         EMBEDDING_PROVIDER=ollama
         OLLAMA_BASE_URL=http://localhost:11434  # Default Ollama URL
-        OLLAMA_MODEL=nomic-embed-text           # Default embedding model
+        OLLAMA_MODEL=dengcao/Qwen3-Embedding-0.6B:Q8_0          # Default embedding model
         KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
         ```
 
