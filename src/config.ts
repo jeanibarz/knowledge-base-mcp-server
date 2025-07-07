@@ -16,4 +16,4 @@ export const HUGGINGFACE_MODEL_NAME = process.env.HUGGINGFACE_MODEL_NAME || DEFA
 
 // Ollama configuration
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
-export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'nomic-embed-text';
+export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'dengcao/Qwen3-Embedding-0.6B:Q8_0';
