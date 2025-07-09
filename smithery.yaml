@@ -5,8 +5,6 @@ startCommand:
   configSchema:
     # JSON Schema defining the configuration options for the MCP.
     type: object
-    required:
-      - huggingfaceApiKey
     properties:
       huggingfaceApiKey:
         type: string
@@ -23,6 +21,36 @@ startCommand:
         type: string
         default: sentence-transformers/all-MiniLM-L6-v2
         description: Hugging Face model for embeddings
+      embeddingProvider:
+        type: string
+        enum: ["huggingface", "ollama"]
+        default: huggingface
+        description: Embedding provider to use (huggingface or ollama)
+      ollamaBaseUrl:
+        type: string
+        default: http://localhost:11434
+        description: Base URL for the Ollama API
+      ollamaModel:
+        type: string
+        default: dengcao/Qwen3-Embedding-0.6B:Q8_0
+        description: Ollama model to use for embeddings
+    required:
+      - knowledgeBasesRootDir
+      - faissIndexPath
+      - embeddingProvider
+    oneOf:
+      - properties:
+          embeddingProvider:
+            const: huggingface
+        required:
+          - huggingfaceApiKey
+          - huggingfaceModelName
+      - properties:
+          embeddingProvider:
+            const: ollama
+        required:
+          - ollamaBaseUrl
+          - ollamaModel
     default: {}
   commandFunction:
     # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
@@ -34,7 +62,10 @@ startCommand:
         HUGGINGFACE_API_KEY: config.huggingfaceApiKey,
         KNOWLEDGE_BASES_ROOT_DIR: config.knowledgeBasesRootDir,
         FAISS_INDEX_PATH: config.faissIndexPath,
-        HUGGINGFACE_MODEL_NAME: config.huggingfaceModelName
+        HUGGINGFACE_MODEL_NAME: config.huggingfaceModelName,
+        EMBEDDING_PROVIDER: config.embeddingProvider,
+        OLLAMA_BASE_URL: config.ollamaBaseUrl,
+        OLLAMA_MODEL: config.ollamaModel
       }
     })
   exampleConfig:
@@ -42,3 +73,6 @@ startCommand:
     knowledgeBasesRootDir: /data/knowledge_bases
     faissIndexPath: /data/knowledge_bases/.faiss
     huggingfaceModelName: sentence-transformers/all-MiniLM-L6-v2
+    embeddingProvider: huggingface
+    ollamaBaseUrl: http://localhost:11434
+    ollamaModel: dengcao/Qwen3-Embedding-0.6B:Q8_0

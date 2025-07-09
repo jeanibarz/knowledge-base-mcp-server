@@ -3,32 +3,53 @@ import * as fsp from 'fs/promises';
 import * as fs from 'fs';
 import * as path from 'path';
 import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
+import { OllamaEmbeddings } from "@langchain/ollama";
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter } from "langchain/text_splitter";
 import { calculateSHA256 } from './utils.js';
-import { KNOWLEDGE_BASES_ROOT_DIR, FAISS_INDEX_PATH, HUGGINGFACE_MODEL_NAME } from './config.js';
+import { 
+  KNOWLEDGE_BASES_ROOT_DIR, 
+  FAISS_INDEX_PATH, 
+  EMBEDDING_PROVIDER,
+  HUGGINGFACE_MODEL_NAME,
+  OLLAMA_BASE_URL,
+  OLLAMA_MODEL 
+} from './config.js';
 
 const MODEL_NAME_FILE = path.join(FAISS_INDEX_PATH, 'model_name.txt');
 
 export class FaissIndexManager {
   private faissIndex: FaissStore | null = null;
-  private embeddings: HuggingFaceInferenceEmbeddings;
+  private embeddings: HuggingFaceInferenceEmbeddings | OllamaEmbeddings;
   private modelName: string;
+  private embeddingProvider: string;
 
   constructor() {
-    const huggingFaceApiKey = process.env.HUGGINGFACE_API_KEY;
-    if (!huggingFaceApiKey) {
-      throw new Error('HUGGINGFACE_API_KEY environment variable is required');
+    this.embeddingProvider = EMBEDDING_PROVIDER;
+
+    if (this.embeddingProvider === 'ollama') {
+      console.log("Initializing FaissIndexManager with Ollama embeddings");
+      this.modelName = OLLAMA_MODEL;
+      this.embeddings = new OllamaEmbeddings({
+        baseUrl: OLLAMA_BASE_URL,
+        model: this.modelName,
+      });
+    } else {
+      console.log("Initializing FaissIndexManager with HuggingFace embeddings");
+      const huggingFaceApiKey = process.env.HUGGINGFACE_API_KEY;
+      if (!huggingFaceApiKey) {
+        throw new Error('HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider');
+      }
+
+      this.modelName = HUGGINGFACE_MODEL_NAME;
+      this.embeddings = new HuggingFaceInferenceEmbeddings({
+        apiKey: huggingFaceApiKey,
+        model: this.modelName,
+      });
     }
-
-    this.modelName = HUGGINGFACE_MODEL_NAME;
-
-    this.embeddings = new HuggingFaceInferenceEmbeddings({
-      apiKey: huggingFaceApiKey,
-      model: this.modelName,
-    });
-    console.log("Initializing FaissIndexManager");
+    
+    console.log(`Using embedding provider: ${this.embeddingProvider}, model: ${this.modelName}`);
   }
 
   async initialize(): Promise<void> {
