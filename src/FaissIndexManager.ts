@@ -7,7 +7,7 @@ import { OllamaEmbeddings } from "@langchain/ollama";
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter } from "langchain/text_splitter";
-import { calculateSHA256 } from './utils.js';
+import { calculateSHA256, getFilesRecursively } from './utils.js';
 import { 
   KNOWLEDGE_BASES_ROOT_DIR, 
   FAISS_INDEX_PATH, 
@@ -119,32 +119,15 @@ export class FaissIndexManager {
           continue;
         }
         const knowledgeBasePath = path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
-        const files = await fsp.readdir(knowledgeBasePath);
+        const filePaths = await getFilesRecursively(knowledgeBasePath);
 
-        for (const file of files) {
-          // Skip hidden files (starting with '.') and dot-folders.
-          if (file.startsWith('.')) {
-            console.log(`Skipping dot file/folder: ${file}`);
-            continue;
-          }
-
-          const filePath = path.join(knowledgeBasePath, file);
-          let stats;
-          try {
-            stats = await fsp.stat(filePath);
-          } catch (error) {
-            console.error(`Error getting stats for ${filePath}: ${error}`);
-            continue;
-          }
-          if (!stats.isFile()) {
-            console.log(`Skipping non-file: ${filePath}`);
-            continue;
-          }
+        for (const filePath of filePaths) {
           anyFileProcessed = true;
 
           const fileHash = await calculateSHA256(filePath);
-          const indexDirPath = path.join(knowledgeBasePath, ".index");
-          const indexFilePath = path.join(indexDirPath, file);
+          const relativePath = path.relative(knowledgeBasePath, filePath);
+          const indexDirPath = path.join(knowledgeBasePath, ".index", path.dirname(relativePath));
+          const indexFilePath = path.join(indexDirPath, path.basename(filePath));
 
           if (!fs.existsSync(indexDirPath)) {
             await fsp.mkdir(indexDirPath, { recursive: true });
@@ -170,7 +153,7 @@ export class FaissIndexManager {
             }
 
             let documentsToAdd: Document[] = [];
-            if (path.extname(file).toLowerCase() === '.md') {
+            if (path.extname(filePath).toLowerCase() === '.md') {
               const splitter = new MarkdownTextSplitter({
                 chunkSize: 1000,
                 chunkOverlap: 200,
@@ -226,19 +209,10 @@ export class FaissIndexManager {
         console.log("No updates detected but FAISS index is not initialized. Building index from all available documents...");
         let allDocuments: Document[] = [];
         for (const knowledgeBaseName of knowledgeBases) {
+          if (knowledgeBaseName.startsWith('.')) continue;
           const knowledgeBasePath = path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
-          const files = await fsp.readdir(knowledgeBasePath);
-          for (const file of files) {
-            if (file.startsWith('.')) continue;
-            const filePath = path.join(knowledgeBasePath, file);
-            let stats;
-            try {
-              stats = await fsp.stat(filePath);
-            } catch (error) {
-              console.error(`Error getting stats for ${filePath}: ${error}`);
-              continue;
-            }
-            if (!stats.isFile()) continue;
+          const filePaths = await getFilesRecursively(knowledgeBasePath);
+          for (const filePath of filePaths) {
             let content = "";
             try {
               content = await fsp.readFile(filePath, 'utf-8');
@@ -247,7 +221,7 @@ export class FaissIndexManager {
               continue;
             }
             let documents: Document[];
-            if (path.extname(file).toLowerCase() === '.md') {
+            if (path.extname(filePath).toLowerCase() === '.md') {
               const splitter = new MarkdownTextSplitter({
                 chunkSize: 1000,
                 chunkOverlap: 200,
