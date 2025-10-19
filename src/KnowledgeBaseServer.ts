@@ -1,131 +1,80 @@
 // KnowledgeBaseServer.ts
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
+import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
 import * as fsp from 'fs/promises';
-import * as path from 'path';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { logger } from './logger.js';
 
 export class KnowledgeBaseServer {
-  private server: Server;
+  private mcp: McpServer;
   private faissManager: FaissIndexManager;
 
   constructor() {
     this.faissManager = new FaissIndexManager();
     logger.info('Initializing KnowledgeBaseServer');
 
-    this.server = new Server(
-      {
-        name: 'knowledge-base-server',
-        version: '0.1.0',
-      },
-      {
-        capabilities: {
-          resources: {},
-          tools: {},
-        },
-      }
-    );
+    this.mcp = new McpServer({
+      name: 'knowledge-base-server',
+      version: '0.1.0',
+    });
 
-    this.setupToolHandlers();
+    this.setupTools();
 
-    this.server.onerror = (error) => logger.error('[MCP Error]', error);
+    this.mcp.server.onerror = (error) => logger.error('[MCP Error]', error);
     process.on('SIGINT', async () => {
-      await this.server.close();
+      await this.mcp.close();
       process.exit(0);
     });
   }
 
-  private setupToolHandlers() {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
-        {
-          name: 'list_knowledge_bases',
-          description: 'Lists the available knowledge bases.',
-          inputSchema: {
-            type: 'object',
-            properties: {},
-            required: [],
-          },
-        },
-        {
-          name: 'retrieve_knowledge',
-          description:
-            'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              query: {
-                type: 'string',
-                description: 'The query text to use for semantic search.',
-              },
-              knowledge_base_name: {
-                type: 'string',
-                description:
-                  "Optional. Name of the knowledge base to query (e.g., 'company', 'it_support', 'onboarding'). If omitted, the search is performed across all available knowledge bases.",
-              },
-              threshold: {
-                type: 'number',
-                description: 'Optional. The maximum similarity score to return.',
-              },
-            },
-            required: ['query'],
-          },
-        },
-      ],
-    }));
+  private setupTools() {
+    this.mcp.tool(
+      'list_knowledge_bases',
+      'Lists the available knowledge bases.',
+      async () => this.handleListKnowledgeBases()
+    );
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      if (request.params.name === 'list_knowledge_bases') {
-        return this.handleListKnowledgeBases();
-      } else if (request.params.name === 'retrieve_knowledge') {
-        return this.handleRetrieveKnowledge(request.params.arguments);
-      } else {
-        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
-      }
-    });
+    this.mcp.tool(
+      'retrieve_knowledge',
+      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.',
+      {
+        query: z.string(),
+        knowledge_base_name: z.string().optional(),
+        threshold: z.number().optional(),
+      },
+      async (args) => this.handleRetrieveKnowledge(args)
+    );
   }
 
-  private async handleListKnowledgeBases() {
+  private async handleListKnowledgeBases(): Promise<CallToolResult> {
     try {
       const entries = await fsp.readdir(KNOWLEDGE_BASES_ROOT_DIR);
       const knowledgeBases = entries.filter((entry) => !entry.startsWith('.'));
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(knowledgeBases, null, 2),
-          },
-        ],
+      const content: TextContent = {
+        type: 'text',
+        text: JSON.stringify(knowledgeBases, null, 2),
       };
+      return { content: [content] };
     } catch (error: any) {
       logger.error('Error listing knowledge bases:', error);
       if (error?.stack) {
         logger.error(error.stack);
       }
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error listing knowledge bases: ${error.message}`,
-          },
-        ],
-        isError: true,
+      const content: TextContent = {
+        type: 'text',
+        text: `Error listing knowledge bases: ${error.message}`,
       };
+      return { content: [content], isError: true };
     }
   }
 
-  private async handleRetrieveKnowledge(args: any) {
-    if (!args || typeof args.query !== 'string') {
-      throw new McpError(ErrorCode.InvalidParams, 'Invalid arguments for retrieve_knowledge: missing query');
-    }
+  private async handleRetrieveKnowledge(args: { query: string; knowledge_base_name?: string; threshold?: number; }): Promise<CallToolResult> {
     const query: string = args.query;
-    const knowledgeBaseName: string | undefined =
-      typeof args.knowledge_base_name === 'string' ? args.knowledge_base_name : undefined;
-    const threshold: number | undefined =
-      typeof args.threshold === 'number' ? args.threshold : undefined;
+    const knowledgeBaseName: string | undefined = args.knowledge_base_name;
+    const threshold: number | undefined = args.threshold;
 
     try {
       const startTime = Date.now();
@@ -160,35 +109,22 @@ export class KnowledgeBaseServer {
       const endTime = Date.now();
       logger.debug(`[${endTime}] handleRetrieveKnowledge completed in ${endTime - startTime}ms`);
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: responseText,
-          },
-        ],
-      };
+      const content: TextContent = { type: 'text', text: responseText };
+      return { content: [content] };
     } catch (error: any) {
       logger.error('Error retrieving knowledge:', error);
       if (error?.stack) {
         logger.error(error.stack);
       }
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error retrieving knowledge: ${error.message}`,
-          },
-        ],
-        isError: true,
-      };
+      const content: TextContent = { type: 'text', text: `Error retrieving knowledge: ${error.message}` };
+      return { content: [content], isError: true };
     }
   }
 
   async run() {
     try {
       const transport = new StdioServerTransport();
-      await this.server.connect(transport);
+      await this.mcp.connect(transport);
       logger.info('Knowledge Base MCP server running on stdio');
       await this.faissManager.initialize();
     } catch (error: any) {

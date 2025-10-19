@@ -22,7 +22,8 @@
     "axios": "^1.6.7",
     "faiss-node": "latest",
     "langchain": "^0.3.15",
-    "pickleparser": "^0.2.1"
+    "pickleparser": "^0.2.1",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
