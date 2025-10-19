@@ -14,10 +14,51 @@ import {
   EMBEDDING_PROVIDER,
   HUGGINGFACE_MODEL_NAME,
   OLLAMA_BASE_URL,
-  OLLAMA_MODEL
+  OLLAMA_MODEL,
 } from './config.js';
+import { logger } from './logger.js';
 
 const MODEL_NAME_FILE = path.join(FAISS_INDEX_PATH, 'model_name.txt');
+
+type FsError = NodeJS.ErrnoException & { code?: string };
+
+function isPermissionError(error: unknown): error is FsError {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const code = (error as FsError).code;
+  return code === 'EACCES' || code === 'EPERM' || code === 'EROFS';
+}
+
+function handleFsOperationError(action: string, targetPath: string, error: unknown): never {
+  const pathDescription = path.resolve(targetPath);
+  const stack = (error as Error)?.stack;
+  if (isPermissionError(error)) {
+    const message = `Permission denied while attempting to ${action} ${pathDescription}. Grant write access and retry.`;
+    logger.error(message);
+    if (stack) {
+      logger.error(stack);
+    }
+    const loggedError = new Error(message, { cause: error instanceof Error ? error : undefined }) as Error & {
+      __alreadyLogged?: boolean;
+    };
+    loggedError.__alreadyLogged = true;
+    throw loggedError;
+  }
+  logger.error(`Failed to ${action} ${pathDescription}:`, error);
+  if (stack) {
+    logger.error(stack);
+  }
+  if (error instanceof Error) {
+    (error as Error & { __alreadyLogged?: boolean }).__alreadyLogged = true;
+    throw error;
+  }
+  const newError = new Error(`Failed to ${action} ${pathDescription}: ${String(error)}`) as Error & {
+    __alreadyLogged?: boolean;
+  };
+  newError.__alreadyLogged = true;
+  throw newError;
+}
 
 export class FaissIndexManager {
   private faissIndex: FaissStore | null = null;
@@ -29,14 +70,14 @@ export class FaissIndexManager {
     this.embeddingProvider = EMBEDDING_PROVIDER;
 
     if (this.embeddingProvider === 'ollama') {
-      console.error("Initializing FaissIndexManager with Ollama embeddings");
+      logger.info('Initializing FaissIndexManager with Ollama embeddings');
       this.modelName = OLLAMA_MODEL;
       this.embeddings = new OllamaEmbeddings({
         baseUrl: OLLAMA_BASE_URL,
         model: this.modelName,
       });
     } else {
-      console.error("Initializing FaissIndexManager with HuggingFace embeddings");
+      logger.info('Initializing FaissIndexManager with HuggingFace embeddings');
       const huggingFaceApiKey = process.env.HUGGINGFACE_API_KEY;
       if (!huggingFaceApiKey) {
         throw new Error('HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider');
@@ -49,47 +90,66 @@ export class FaissIndexManager {
       });
     }
 
-    console.error(`Using embedding provider: ${this.embeddingProvider}, model: ${this.modelName}`);
+    logger.info(`Using embedding provider: ${this.embeddingProvider}, model: ${this.modelName}`);
   }
 
   async initialize(): Promise<void> {
     try {
       if (!fs.existsSync(FAISS_INDEX_PATH)) {
-        await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
+        try {
+          await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
+        } catch (error) {
+          handleFsOperationError('create FAISS index directory', FAISS_INDEX_PATH, error);
+        }
       }
-      const indexFilePath = path.join(FAISS_INDEX_PATH, "faiss.index");
+      const indexFilePath = path.join(FAISS_INDEX_PATH, 'faiss.index');
       let storedModelName: string | null = null;
 
       try {
         storedModelName = fs.existsSync(MODEL_NAME_FILE) ? (await fsp.readFile(MODEL_NAME_FILE, 'utf-8')) : null;
       } catch (error) {
-        console.error("Error reading stored model name:", error);
+        logger.warn('Error reading stored model name:', error);
       }
 
       if (storedModelName && storedModelName !== this.modelName) {
-        console.error(`Model name has changed from ${storedModelName} to ${this.modelName}. Recreating index.`);
+        logger.warn(`Model name has changed from ${storedModelName} to ${this.modelName}. Recreating index.`);
         if (fs.existsSync(indexFilePath)) {
-          await fsp.unlink(indexFilePath);
-          console.error("Existing FAISS index deleted.");
+          try {
+            await fsp.unlink(indexFilePath);
+            logger.info('Existing FAISS index deleted.');
+          } catch (error) {
+            handleFsOperationError('delete stale FAISS index', indexFilePath, error);
+          }
         }
         this.faissIndex = null; // Ensure index is recreated
       }
 
       if (fs.existsSync(indexFilePath)) {
-        console.error("Loading existing FAISS index from:", indexFilePath);
-        this.faissIndex = await FaissStore.load(indexFilePath, this.embeddings);
-        console.error("FAISS index loaded.");
+        logger.info('Loading existing FAISS index from:', indexFilePath);
+        try {
+          this.faissIndex = await FaissStore.load(indexFilePath, this.embeddings);
+        } catch (error) {
+          handleFsOperationError('load FAISS index from', indexFilePath, error);
+        }
+        logger.info('FAISS index loaded.');
       } else {
-        console.error("FAISS index file not found at", indexFilePath, ". It will be created if documents are available.");
+        logger.info('FAISS index file not found at', indexFilePath, '. It will be created if documents are available.');
         this.faissIndex = null;
       }
 
       // Save the current model name for future checks
-      await fsp.writeFile(MODEL_NAME_FILE, this.modelName, 'utf-8');
-
+      try {
+        await fsp.writeFile(MODEL_NAME_FILE, this.modelName, 'utf-8');
+      } catch (error) {
+        handleFsOperationError('persist embedding model metadata in', MODEL_NAME_FILE, error);
+      }
     } catch (error: any) {
-      console.error("Error initializing FAISS index:", error);
-      console.error(error.stack);
+      if (!error?.__alreadyLogged) {
+        logger.error('Error initializing FAISS index:', error);
+        if (error?.stack) {
+          logger.error(error.stack);
+        }
+      }
       throw error;
     }
   }
@@ -101,7 +161,7 @@ export class FaissIndexManager {
    * then the index is built from all available files.
    */
   async updateIndex(specificKnowledgeBase?: string): Promise<void> {
-    console.error("Updating FAISS index...");
+    logger.debug('Updating FAISS index...');
     try {
       let knowledgeBases: string[] = [];
       if (specificKnowledgeBase) {
@@ -115,7 +175,7 @@ export class FaissIndexManager {
       // Process each knowledge base directory.
       for (const knowledgeBaseName of knowledgeBases) {
         if (knowledgeBaseName.startsWith('.')) {
-          console.error(`Skipping dot folder: ${knowledgeBaseName}`);
+          logger.debug(`Skipping dot folder: ${knowledgeBaseName}`);
           continue;
         }
         const knowledgeBasePath = path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
@@ -126,11 +186,15 @@ export class FaissIndexManager {
 
           const fileHash = await calculateSHA256(filePath);
           const relativePath = path.relative(knowledgeBasePath, filePath);
-          const indexDirPath = path.join(knowledgeBasePath, ".index", path.dirname(relativePath));
+          const indexDirPath = path.join(knowledgeBasePath, '.index', path.dirname(relativePath));
           const indexFilePath = path.join(indexDirPath, path.basename(filePath));
 
           if (!fs.existsSync(indexDirPath)) {
-            await fsp.mkdir(indexDirPath, { recursive: true });
+            try {
+              await fsp.mkdir(indexDirPath, { recursive: true });
+            } catch (error) {
+              handleFsOperationError('create index metadata directory', indexDirPath, error);
+            }
           }
 
           let storedHash: string | null = null;
@@ -143,12 +207,12 @@ export class FaissIndexManager {
 
           // If the file is new or has changed, process it.
           if (fileHash !== storedHash) {
-            console.error(`File ${filePath} has changed. Updating index...`);
-            let content = "";
+            logger.info(`File ${filePath} has changed. Updating index...`);
+            let content = '';
             try {
               content = await fsp.readFile(filePath, 'utf-8');
             } catch (error: any) {
-              console.error(`Error reading file ${filePath}:`, error);
+              logger.error(`Error reading file ${filePath}:`, error);
               continue;
             }
 
@@ -171,34 +235,33 @@ export class FaissIndexManager {
 
             if (documentsToAdd.length > 0) {
               if (this.faissIndex === null) {
-                console.error("Creating new FAISS index from texts...");
+                logger.info('Creating new FAISS index from texts...');
                 this.faissIndex = await FaissStore.fromTexts(
-                  documentsToAdd.map(doc => doc.pageContent),
-                  documentsToAdd.map(doc => doc.metadata),
+                  documentsToAdd.map((doc) => doc.pageContent),
+                  documentsToAdd.map((doc) => doc.metadata),
                   this.embeddings
                 );
               } else {
                 await this.faissIndex.addDocuments(documentsToAdd);
               }
-              const indexFileSavePath = path.join(FAISS_INDEX_PATH, "faiss.index");
+              const indexFileSavePath = path.join(FAISS_INDEX_PATH, 'faiss.index');
               try {
                 await this.faissIndex.save(indexFileSavePath);
-                console.error("FAISS index saved successfully to", indexFileSavePath);
+                logger.info('FAISS index saved successfully to', indexFileSavePath);
               } catch (saveError: any) {
-                if (saveError.code === 'EISDIR') {
-                  console.error(`Error: Attempted to save FAISS index to a directory (${FAISS_INDEX_PATH}) instead of a file.`);
-                } else {
-                  console.error("Error saving FAISS index:", saveError);
-                }
-                throw saveError;
+                handleFsOperationError('save FAISS index at', indexFileSavePath, saveError);
               }
-              await fsp.writeFile(indexFilePath, fileHash, { encoding: 'utf-8' });
-              console.error(`Index updated for ${filePath}.`);
+              try {
+                await fsp.writeFile(indexFilePath, fileHash, { encoding: 'utf-8' });
+              } catch (error) {
+                handleFsOperationError('write file hash metadata to', indexFilePath, error);
+              }
+              logger.info(`Index updated for ${filePath}.`);
             } else {
-              console.error(`No documents generated from ${filePath}. Skipping index update.`);
+              logger.debug(`No documents generated from ${filePath}. Skipping index update.`);
             }
           } else {
-            console.error(`File ${filePath} unchanged, skipping.`);
+            logger.debug(`File ${filePath} unchanged, skipping.`);
           }
         }
       }
@@ -206,18 +269,18 @@ export class FaissIndexManager {
       // If at least one file was processed but no changes triggered index creation,
       // then attempt to build the FAISS index from all available documents.
       if (this.faissIndex === null && anyFileProcessed) {
-        console.error("No updates detected but FAISS index is not initialized. Building index from all available documents...");
+        logger.info('No updates detected but FAISS index is not initialized. Building index from all available documents...');
         let allDocuments: Document[] = [];
         for (const knowledgeBaseName of knowledgeBases) {
           if (knowledgeBaseName.startsWith('.')) continue;
           const knowledgeBasePath = path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
           const filePaths = await getFilesRecursively(knowledgeBasePath);
           for (const filePath of filePaths) {
-            let content = "";
+            let content = '';
             try {
               content = await fsp.readFile(filePath, 'utf-8');
             } catch (error) {
-              console.error(`Error reading file ${filePath}:`, error);
+              logger.error(`Error reading file ${filePath}:`, error);
               continue;
             }
             let documents: Document[];
@@ -243,24 +306,27 @@ export class FaissIndexManager {
         }
         if (allDocuments.length > 0) {
           this.faissIndex = await FaissStore.fromTexts(
-            allDocuments.map(doc => doc.pageContent),
-            allDocuments.map(doc => doc.metadata),
+            allDocuments.map((doc) => doc.pageContent),
+            allDocuments.map((doc) => doc.metadata),
             this.embeddings
           );
-          const indexFileSavePath = path.join(FAISS_INDEX_PATH, "faiss.index");
+          const indexFileSavePath = path.join(FAISS_INDEX_PATH, 'faiss.index');
           try {
             await this.faissIndex.save(indexFileSavePath);
-            console.error("FAISS index saved successfully to", indexFileSavePath);
+            logger.info('FAISS index saved successfully to', indexFileSavePath);
           } catch (saveError: any) {
-            console.error("Error saving FAISS index:", saveError);
-            throw saveError;
+            handleFsOperationError('save FAISS index at', indexFileSavePath, saveError);
           }
         }
       }
-      console.error("FAISS index update process completed.");
+      logger.debug('FAISS index update process completed.');
     } catch (error: any) {
-      console.error("Error updating FAISS index:", error);
-      console.error(error.stack);
+      if (!error?.__alreadyLogged) {
+        logger.error('Error updating FAISS index:', error);
+        if (error?.stack) {
+          logger.error(error.stack);
+        }
+      }
       throw error;
     }
   }
@@ -270,7 +336,7 @@ export class FaissIndexManager {
    */
   async similaritySearch(query: string, k: number, threshold: number = 2) {
     if (!this.faissIndex) {
-      throw new Error("FAISS index is not initialized");
+      throw new Error('FAISS index is not initialized');
     }
 
     const filter = { score: { $lte: threshold } };

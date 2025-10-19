@@ -6,6 +6,7 @@
   "main": "build/index.js",
   "scripts": {
     "build": "tsc && chmod +x build/index.js",
+    "test": "jest --runInBand",
     "start": "node build/index.js",
     "dev": "nodemon src/index.ts"
   },

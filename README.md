@@ -69,6 +69,7 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
     ### Additional Configuration
     
     *   The server supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`.
+    *   Logging can be routed to a file by setting `LOG_FILE=/path/to/logs/knowledge-base.log`. Log verbosity defaults to `info` and can be adjusted with `LOG_LEVEL=debug|info|warn|error`.
     *   You can set these environment variables in your `.bashrc` or `.zshrc` file, or directly in the MCP settings.
 
 4.  **Build the server:**
@@ -184,3 +185,9 @@ The output of the `retrieve_knowledge` tool is a markdown formatted string with 
 ````
 
 Each result includes the content of the most similar chunk, the source file, and a similarity score.
+
+## Troubleshooting & Logging
+
+- Set `LOG_FILE` to capture structured logs (JSON-RPC traffic continues to use stdout). This is especially helpful when diagnosing MCP handshake errors because all diagnostic messages are written to stderr and the optional log file.
+- Permission errors when creating or updating the FAISS index are surfaced with explicit messages in both the console and the log file. Verify that the process can write to `FAISS_INDEX_PATH` and the `.index` directories inside each knowledge base.
+- Run `npm test` to execute the Jest suite (serialised with `--runInBand`) that covers logger fallback behaviour and FAISS permission handling.

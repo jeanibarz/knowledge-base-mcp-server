@@ -6,6 +6,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { logger } from './logger.js';
 
 export class KnowledgeBaseServer {
   private server: Server;
@@ -13,7 +14,7 @@ export class KnowledgeBaseServer {
 
   constructor() {
     this.faissManager = new FaissIndexManager();
-    console.error("Initializing KnowledgeBaseServer");
+    logger.info('Initializing KnowledgeBaseServer');
 
     this.server = new Server(
       {
@@ -30,7 +31,7 @@ export class KnowledgeBaseServer {
 
     this.setupToolHandlers();
 
-    this.server.onerror = (error) => console.error('[MCP Error]', error);
+    this.server.onerror = (error) => logger.error('[MCP Error]', error);
     process.on('SIGINT', async () => {
       await this.server.close();
       process.exit(0);
@@ -46,7 +47,7 @@ export class KnowledgeBaseServer {
           inputSchema: {
             type: 'object',
             properties: {},
-            required: []
+            required: [],
           },
         },
         {
@@ -100,8 +101,10 @@ export class KnowledgeBaseServer {
         ],
       };
     } catch (error: any) {
-      console.error('Error listing knowledge bases:', error);
-      console.error(error.stack);
+      logger.error('Error listing knowledge bases:', error);
+      if (error?.stack) {
+        logger.error(error.stack);
+      }
       return {
         content: [
           {
@@ -126,15 +129,15 @@ export class KnowledgeBaseServer {
 
     try {
       const startTime = Date.now();
-      console.error(`[${startTime}] handleRetrieveKnowledge started`);
+      logger.debug(`[${startTime}] handleRetrieveKnowledge started`);
 
       // Update FAISS index: if a specific knowledge base is provided, update only that one; otherwise update all.
       await this.faissManager.updateIndex(knowledgeBaseName);
-      console.error(`[${Date.now()}] FAISS index update completed`);
+      logger.debug(`[${Date.now()}] FAISS index update completed`);
 
       // Perform similarity search using the provided query.
-      let similaritySearchResults = await this.faissManager.similaritySearch(query, 10, threshold);
-      console.error(`[${Date.now()}] Similarity search completed`);
+      const similaritySearchResults = await this.faissManager.similaritySearch(query, 10, threshold);
+      logger.debug(`[${Date.now()}] Similarity search completed`);
 
       // Build a nicely formatted markdown response including the similarity score.
       let formattedResults = '';
@@ -147,15 +150,15 @@ export class KnowledgeBaseServer {
             const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
             return `${resultHeader}\n\n${scoreText}${content}\n\n**Source:**\n\`\`\`json\n${metadata}\n\`\`\``;
           })
-          .join("\n\n---\n\n");
+          .join('\n\n---\n\n');
       } else {
         formattedResults = '_No similar results found._';
       }
-      const disclaimer = "\n\n> **Disclaimer:** The provided results might not all be relevant. Please cross-check the relevance of the information.";
+      const disclaimer = '\n\n> **Disclaimer:** The provided results might not all be relevant. Please cross-check the relevance of the information.';
       const responseText = `## Semantic Search Results\n\n${formattedResults}${disclaimer}`;
 
       const endTime = Date.now();
-      console.error(`[${endTime}] handleRetrieveKnowledge completed in ${endTime - startTime}ms`);
+      logger.debug(`[${endTime}] handleRetrieveKnowledge completed in ${endTime - startTime}ms`);
 
       return {
         content: [
@@ -166,8 +169,10 @@ export class KnowledgeBaseServer {
         ],
       };
     } catch (error: any) {
-      console.error('Error retrieving knowledge:', error);
-      console.error(error.stack);
+      logger.error('Error retrieving knowledge:', error);
+      if (error?.stack) {
+        logger.error(error.stack);
+      }
       return {
         content: [
           {
@@ -184,11 +189,13 @@ export class KnowledgeBaseServer {
     try {
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
-      console.error('Knowledge Base MCP server running on stdio');
+      logger.info('Knowledge Base MCP server running on stdio');
       await this.faissManager.initialize();
     } catch (error: any) {
-      console.error('Error during server startup:', error);
-      console.error(error.stack);
+      logger.error('Error during server startup:', error);
+      if (error?.stack) {
+        logger.error(error.stack);
+      }
     }
   }
 }
