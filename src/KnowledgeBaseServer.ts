@@ -34,6 +34,7 @@ export class KnowledgeBaseServer {
     this.mcp.tool(
       'list_knowledge_bases',
       'Lists the available knowledge bases.',
+      z.object({}),
       async () => this.handleListKnowledgeBases()
     );
 
