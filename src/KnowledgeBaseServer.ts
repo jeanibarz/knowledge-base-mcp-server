@@ -42,9 +42,9 @@ export class KnowledgeBaseServer {
       'retrieve_knowledge',
       'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.',
       {
-        query: z.string(),
-        knowledge_base_name: z.string().optional(),
-        threshold: z.number().optional(),
+        query: z.string().describe('The search query to use for retrieving similar chunks from the knowledge base.'),
+        knowledge_base_name: z.string().optional().describe('The name of the knowledge base to search. If omitted, all available knowledge bases are considered.'),
+        threshold: z.number().optional().describe('The maximum similarity score threshold for returned documents. Defaults to 2 if not specified.'),
       },
       async (args) => this.handleRetrieveKnowledge(args)
     );
