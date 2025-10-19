@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { logger } from './logger.js';
 
 export async function calculateSHA256(filePath: string): Promise<string> {
   const fileBuffer = await fsp.readFile(filePath);
@@ -36,7 +37,7 @@ export async function getFilesRecursively(dirPath: string): Promise<string[]> {
         }
       }
     } catch (error) {
-      console.error(`Error traversing directory ${currentPath}:`, error);
+      logger.error(`Error traversing directory ${currentPath}:`, error);
     }
   }
   
