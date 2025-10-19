@@ -13,7 +13,7 @@ export class KnowledgeBaseServer {
 
   constructor() {
     this.faissManager = new FaissIndexManager();
-    console.log("Initializing KnowledgeBaseServer");
+    console.error("Initializing KnowledgeBaseServer");
 
     this.server = new Server(
       {
@@ -126,15 +126,15 @@ export class KnowledgeBaseServer {
 
     try {
       const startTime = Date.now();
-      console.log(`[${startTime}] handleRetrieveKnowledge started`);
+      console.error(`[${startTime}] handleRetrieveKnowledge started`);
 
       // Update FAISS index: if a specific knowledge base is provided, update only that one; otherwise update all.
       await this.faissManager.updateIndex(knowledgeBaseName);
-      console.log(`[${Date.now()}] FAISS index update completed`);
+      console.error(`[${Date.now()}] FAISS index update completed`);
 
       // Perform similarity search using the provided query.
       let similaritySearchResults = await this.faissManager.similaritySearch(query, 10, threshold);
-      console.log(`[${Date.now()}] Similarity search completed`);
+      console.error(`[${Date.now()}] Similarity search completed`);
 
       // Build a nicely formatted markdown response including the similarity score.
       let formattedResults = '';
@@ -155,7 +155,7 @@ export class KnowledgeBaseServer {
       const responseText = `## Semantic Search Results\n\n${formattedResults}${disclaimer}`;
 
       const endTime = Date.now();
-      console.log(`[${endTime}] handleRetrieveKnowledge completed in ${endTime - startTime}ms`);
+      console.error(`[${endTime}] handleRetrieveKnowledge completed in ${endTime - startTime}ms`);
 
       return {
         content: [
