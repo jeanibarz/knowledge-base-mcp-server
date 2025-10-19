@@ -8,13 +8,13 @@ import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter } from "langchain/text_splitter";
 import { calculateSHA256, getFilesRecursively } from './utils.js';
-import { 
-  KNOWLEDGE_BASES_ROOT_DIR, 
-  FAISS_INDEX_PATH, 
+import {
+  KNOWLEDGE_BASES_ROOT_DIR,
+  FAISS_INDEX_PATH,
   EMBEDDING_PROVIDER,
   HUGGINGFACE_MODEL_NAME,
   OLLAMA_BASE_URL,
-  OLLAMA_MODEL 
+  OLLAMA_MODEL
 } from './config.js';
 
 const MODEL_NAME_FILE = path.join(FAISS_INDEX_PATH, 'model_name.txt');
@@ -29,14 +29,14 @@ export class FaissIndexManager {
     this.embeddingProvider = EMBEDDING_PROVIDER;
 
     if (this.embeddingProvider === 'ollama') {
-      console.log("Initializing FaissIndexManager with Ollama embeddings");
+      console.error("Initializing FaissIndexManager with Ollama embeddings");
       this.modelName = OLLAMA_MODEL;
       this.embeddings = new OllamaEmbeddings({
         baseUrl: OLLAMA_BASE_URL,
         model: this.modelName,
       });
     } else {
-      console.log("Initializing FaissIndexManager with HuggingFace embeddings");
+      console.error("Initializing FaissIndexManager with HuggingFace embeddings");
       const huggingFaceApiKey = process.env.HUGGINGFACE_API_KEY;
       if (!huggingFaceApiKey) {
         throw new Error('HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider');
@@ -48,8 +48,8 @@ export class FaissIndexManager {
         model: this.modelName,
       });
     }
-    
-    console.log(`Using embedding provider: ${this.embeddingProvider}, model: ${this.modelName}`);
+
+    console.error(`Using embedding provider: ${this.embeddingProvider}, model: ${this.modelName}`);
   }
 
   async initialize(): Promise<void> {
@@ -63,24 +63,24 @@ export class FaissIndexManager {
       try {
         storedModelName = fs.existsSync(MODEL_NAME_FILE) ? (await fsp.readFile(MODEL_NAME_FILE, 'utf-8')) : null;
       } catch (error) {
-        console.warn("Error reading stored model name:", error);
+        console.error("Error reading stored model name:", error);
       }
 
       if (storedModelName && storedModelName !== this.modelName) {
-        console.warn(`Model name has changed from ${storedModelName} to ${this.modelName}. Recreating index.`);
+        console.error(`Model name has changed from ${storedModelName} to ${this.modelName}. Recreating index.`);
         if (fs.existsSync(indexFilePath)) {
           await fsp.unlink(indexFilePath);
-          console.log("Existing FAISS index deleted.");
+          console.error("Existing FAISS index deleted.");
         }
         this.faissIndex = null; // Ensure index is recreated
       }
 
       if (fs.existsSync(indexFilePath)) {
-        console.log("Loading existing FAISS index from:", indexFilePath);
+        console.error("Loading existing FAISS index from:", indexFilePath);
         this.faissIndex = await FaissStore.load(indexFilePath, this.embeddings);
-        console.log("FAISS index loaded.");
+        console.error("FAISS index loaded.");
       } else {
-        console.log("FAISS index file not found at", indexFilePath, ". It will be created if documents are available.");
+        console.error("FAISS index file not found at", indexFilePath, ". It will be created if documents are available.");
         this.faissIndex = null;
       }
 
@@ -101,7 +101,7 @@ export class FaissIndexManager {
    * then the index is built from all available files.
    */
   async updateIndex(specificKnowledgeBase?: string): Promise<void> {
-    console.log("Updating FAISS index...");
+    console.error("Updating FAISS index...");
     try {
       let knowledgeBases: string[] = [];
       if (specificKnowledgeBase) {
@@ -109,13 +109,13 @@ export class FaissIndexManager {
       } else {
         knowledgeBases = await fsp.readdir(KNOWLEDGE_BASES_ROOT_DIR);
       }
-      
+
       let anyFileProcessed = false;
 
       // Process each knowledge base directory.
       for (const knowledgeBaseName of knowledgeBases) {
         if (knowledgeBaseName.startsWith('.')) {
-          console.log(`Skipping dot folder: ${knowledgeBaseName}`);
+          console.error(`Skipping dot folder: ${knowledgeBaseName}`);
           continue;
         }
         const knowledgeBasePath = path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
@@ -143,7 +143,7 @@ export class FaissIndexManager {
 
           // If the file is new or has changed, process it.
           if (fileHash !== storedHash) {
-            console.log(`File ${filePath} has changed. Updating index...`);
+            console.error(`File ${filePath} has changed. Updating index...`);
             let content = "";
             try {
               content = await fsp.readFile(filePath, 'utf-8');
@@ -168,10 +168,10 @@ export class FaissIndexManager {
                 }),
               ];
             }
-            
+
             if (documentsToAdd.length > 0) {
               if (this.faissIndex === null) {
-                console.log("Creating new FAISS index from texts...");
+                console.error("Creating new FAISS index from texts...");
                 this.faissIndex = await FaissStore.fromTexts(
                   documentsToAdd.map(doc => doc.pageContent),
                   documentsToAdd.map(doc => doc.metadata),
@@ -183,7 +183,7 @@ export class FaissIndexManager {
               const indexFileSavePath = path.join(FAISS_INDEX_PATH, "faiss.index");
               try {
                 await this.faissIndex.save(indexFileSavePath);
-                console.log("FAISS index saved successfully to", indexFileSavePath);
+                console.error("FAISS index saved successfully to", indexFileSavePath);
               } catch (saveError: any) {
                 if (saveError.code === 'EISDIR') {
                   console.error(`Error: Attempted to save FAISS index to a directory (${FAISS_INDEX_PATH}) instead of a file.`);
@@ -193,12 +193,12 @@ export class FaissIndexManager {
                 throw saveError;
               }
               await fsp.writeFile(indexFilePath, fileHash, { encoding: 'utf-8' });
-              console.log(`Index updated for ${filePath}.`);
+              console.error(`Index updated for ${filePath}.`);
             } else {
-              console.log(`No documents generated from ${filePath}. Skipping index update.`);
+              console.error(`No documents generated from ${filePath}. Skipping index update.`);
             }
           } else {
-            console.log(`File ${filePath} unchanged, skipping.`);
+            console.error(`File ${filePath} unchanged, skipping.`);
           }
         }
       }
@@ -206,7 +206,7 @@ export class FaissIndexManager {
       // If at least one file was processed but no changes triggered index creation,
       // then attempt to build the FAISS index from all available documents.
       if (this.faissIndex === null && anyFileProcessed) {
-        console.log("No updates detected but FAISS index is not initialized. Building index from all available documents...");
+        console.error("No updates detected but FAISS index is not initialized. Building index from all available documents...");
         let allDocuments: Document[] = [];
         for (const knowledgeBaseName of knowledgeBases) {
           if (knowledgeBaseName.startsWith('.')) continue;
@@ -250,14 +250,14 @@ export class FaissIndexManager {
           const indexFileSavePath = path.join(FAISS_INDEX_PATH, "faiss.index");
           try {
             await this.faissIndex.save(indexFileSavePath);
-            console.log("FAISS index saved successfully to", indexFileSavePath);
+            console.error("FAISS index saved successfully to", indexFileSavePath);
           } catch (saveError: any) {
             console.error("Error saving FAISS index:", saveError);
             throw saveError;
           }
         }
       }
-      console.log("FAISS index update process completed.");
+      console.error("FAISS index update process completed.");
     } catch (error: any) {
       console.error("Error updating FAISS index:", error);
       console.error(error.stack);
