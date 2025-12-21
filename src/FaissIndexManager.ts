@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
 import { OllamaEmbeddings } from "@langchain/ollama";
+import { OpenAIEmbeddings } from "@langchain/openai";
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter } from "langchain/text_splitter";
@@ -15,6 +16,7 @@ import {
   HUGGINGFACE_MODEL_NAME,
   OLLAMA_BASE_URL,
   OLLAMA_MODEL,
+  OPENAI_MODEL_NAME,
 } from './config.js';
 import { logger } from './logger.js';
 
@@ -62,7 +64,7 @@ function handleFsOperationError(action: string, targetPath: string, error: unkno
 
 export class FaissIndexManager {
   private faissIndex: FaissStore | null = null;
-  private embeddings: HuggingFaceInferenceEmbeddings | OllamaEmbeddings;
+  private embeddings: HuggingFaceInferenceEmbeddings | OllamaEmbeddings | OpenAIEmbeddings;
   private modelName: string;
   private embeddingProvider: string;
 
@@ -74,6 +76,18 @@ export class FaissIndexManager {
       this.modelName = OLLAMA_MODEL;
       this.embeddings = new OllamaEmbeddings({
         baseUrl: OLLAMA_BASE_URL,
+        model: this.modelName,
+      });
+    } else if (this.embeddingProvider === 'openai') {
+      logger.info('Initializing FaissIndexManager with OpenAI embeddings');
+      const openaiApiKey = process.env.OPENAI_API_KEY;
+      if (!openaiApiKey) {
+        throw new Error('OPENAI_API_KEY environment variable is required when using OpenAI provider');
+      }
+
+      this.modelName = OPENAI_MODEL_NAME;
+      this.embeddings = new OpenAIEmbeddings({
+        apiKey: openaiApiKey,
         model: this.modelName,
       });
     } else {

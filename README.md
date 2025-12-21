@@ -40,7 +40,7 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
 
 3.  **Configure environment variables:**
 
-    This server supports two embedding providers: **Ollama** (recommended for reliability) and **HuggingFace** (fallback option).
+    This server supports three embedding providers: **Ollama** (recommended for reliability), **OpenAI** and **HuggingFace** (fallback option).
 
     ### Option 1: Ollama Configuration (Recommended)
     
@@ -54,7 +54,18 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
         KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
         ```
 
-    ### Option 2: HuggingFace Configuration (Fallback)
+    ### Option 2: OpenAI Configuration
+
+    *   Set `EMBEDDING_PROVIDER=openai` to use OpenAI API for embeddings
+    *   Configure the following environment variables:
+        ```bash
+        EMBEDDING_PROVIDER=openai
+        OPENAI_API_KEY=your_api_key_here
+        OPENAI_MODEL_NAME=text-embedding-ada-002
+        KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
+        ```
+
+    ### Option 3: HuggingFace Configuration (Fallback)
     
     *   Set `EMBEDDING_PROVIDER=huggingface` or leave unset (default)
     *   Obtain a free API key from [HuggingFace](https://huggingface.co/)
@@ -103,7 +114,27 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
     },
     ```
 
-    *   **Option 2: HuggingFace Configuration**
+    *   **Option 2: OpenAI Configuration**
+
+    ```json
+    "knowledge-base-mcp-openai": {
+      "command": "node",
+      "args": [
+        "/path/to/knowledge-base-mcp-server/build/index.js"
+      ],
+      "disabled": false,
+      "autoApprove": [],
+      "env": {
+        "KNOWLEDGE_BASES_ROOT_DIR": "/path/to/knowledge_bases",
+        "EMBEDDING_PROVIDER": "openai",
+        "OPENAI_API_KEY": "YOUR_OPENAI_API_KEY",
+        "OPENAI_MODEL_NAME": "text-embedding-ada-002"
+      },
+      "description": "Retrieves similar chunks from the knowledge base based on a query using OpenAI."
+    },
+    ```
+
+    *   **Option 3: HuggingFace Configuration**
 
     ```json
     "knowledge-base-mcp-huggingface": {
@@ -123,7 +154,7 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
     },
     ```
 
-    *   **Note:** You only need to add one of the above configurations (either Ollama or HuggingFace) to your `cline_mcp_settings.json` file, depending on your preferred embedding provider.
+    *   **Note:** You only need to add one of the above configurations (either Ollama, OpenAI or HuggingFace) to your `cline_mcp_settings.json` file, depending on your preferred embedding provider.
     ```
 
     *   Replace `/path/to/knowledge-base-mcp-server` with the actual path to the server directory.
