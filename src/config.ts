@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as os from 'os';
+import type { InferenceProviderOrPolicy } from '@huggingface/inference';
 
 export const KNOWLEDGE_BASES_ROOT_DIR = process.env.KNOWLEDGE_BASES_ROOT_DIR ||
   path.join(os.homedir(), 'knowledge_bases');
@@ -13,6 +14,12 @@ export const EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER || 'huggingface
 // HuggingFace configuration
 export const DEFAULT_HUGGINGFACE_MODEL_NAME = 'sentence-transformers/all-MiniLM-L6-v2';
 export const HUGGINGFACE_MODEL_NAME = process.env.HUGGINGFACE_MODEL_NAME || DEFAULT_HUGGINGFACE_MODEL_NAME;
+export const DEFAULT_HUGGINGFACE_PROVIDER = 'hf-inference';
+export const HUGGINGFACE_PROVIDER = (
+  process.env.HUGGINGFACE_PROVIDER || DEFAULT_HUGGINGFACE_PROVIDER
+) as InferenceProviderOrPolicy;
+const HUGGINGFACE_ENDPOINT_URL_OVERRIDE = process.env.HUGGINGFACE_ENDPOINT_URL?.trim();
+export const HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN = Boolean(HUGGINGFACE_ENDPOINT_URL_OVERRIDE);
 
 // The legacy api-inference.huggingface.co endpoint that older versions of
 // @huggingface/inference target has been retired in favour of the
@@ -23,7 +30,7 @@ export function huggingFaceRouterUrl(model: string): string {
   return `https://router.huggingface.co/hf-inference/models/${model}/pipeline/feature-extraction`;
 }
 
-export const HUGGINGFACE_ENDPOINT_URL = process.env.HUGGINGFACE_ENDPOINT_URL
+export const HUGGINGFACE_ENDPOINT_URL = HUGGINGFACE_ENDPOINT_URL_OVERRIDE
   || huggingFaceRouterUrl(HUGGINGFACE_MODEL_NAME);
 
 // Ollama configuration

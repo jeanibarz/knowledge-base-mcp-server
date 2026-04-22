@@ -74,14 +74,21 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
         EMBEDDING_PROVIDER=huggingface          # Optional, this is the default
         HUGGINGFACE_API_KEY=your_api_key_here
         HUGGINGFACE_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+        HUGGINGFACE_PROVIDER=hf-inference       # Optional, router provider for serverless inference
         KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
         ```
     *   HuggingFace retired the legacy `api-inference.huggingface.co/models/...`
         endpoint in 2025. Feature-extraction calls are now routed through the
         Inference Providers router at
         `https://router.huggingface.co/hf-inference/models/<model>/pipeline/feature-extraction`
-        by default. To target a self-hosted or dedicated Inference Endpoint,
-        set `HUGGINGFACE_ENDPOINT_URL` to the full POST URL.
+        by default. Set `HUGGINGFACE_PROVIDER` to choose a different supported
+        Inference Provider such as `together`, `replicate`, `fireworks-ai`,
+        `sambanova`, `nebius`, or `novita`. The existing
+        `HUGGINGFACE_API_KEY` value can be either a Hugging Face token or a
+        compatible provider key, depending on how the request is authenticated
+        upstream. To target a self-hosted or dedicated Inference Endpoint, set
+        `HUGGINGFACE_ENDPOINT_URL` to the full POST URL; explicit endpoint URLs
+        bypass router provider selection.
 
     ### Additional Configuration
     
@@ -154,7 +161,8 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
         "KNOWLEDGE_BASES_ROOT_DIR": "/path/to/knowledge_bases",
         "EMBEDDING_PROVIDER": "huggingface",
         "HUGGINGFACE_API_KEY": "YOUR_HUGGINGFACE_API_KEY",
-        "HUGGINGFACE_MODEL_NAME": "sentence-transformers/all-MiniLM-L6-v2"
+        "HUGGINGFACE_MODEL_NAME": "sentence-transformers/all-MiniLM-L6-v2",
+        "HUGGINGFACE_PROVIDER": "hf-inference"
       },
       "description": "Retrieves similar chunks from the knowledge base based on a query using HuggingFace."
     },
