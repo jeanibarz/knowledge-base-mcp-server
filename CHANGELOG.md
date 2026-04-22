@@ -17,6 +17,12 @@
 ### Fixed
 
 - Addressed reliability issues (timeouts, hanging) with HuggingFace API by providing a local fallback.
+- HuggingFace embedding provider was broken by HuggingFace retiring the legacy
+  `api-inference.huggingface.co/models/...` serverless endpoint. Feature-extraction
+  calls are now routed through the Inference Providers router at
+  `router.huggingface.co/hf-inference/models/<model>/pipeline/feature-extraction`.
+  A new `HUGGINGFACE_ENDPOINT_URL` env var lets users override the endpoint
+  (e.g. for self-hosted or dedicated HuggingFace Inference Endpoints).
 
 ---
 

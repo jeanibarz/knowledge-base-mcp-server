@@ -14,6 +14,18 @@ export const EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER || 'huggingface
 export const DEFAULT_HUGGINGFACE_MODEL_NAME = 'sentence-transformers/all-MiniLM-L6-v2';
 export const HUGGINGFACE_MODEL_NAME = process.env.HUGGINGFACE_MODEL_NAME || DEFAULT_HUGGINGFACE_MODEL_NAME;
 
+// The legacy api-inference.huggingface.co endpoint that older versions of
+// @huggingface/inference target has been retired in favour of the
+// Inference Providers router. Route feature-extraction calls through the
+// router by default; allow a full override via HUGGINGFACE_ENDPOINT_URL
+// for self-hosted or Inference Endpoints deployments.
+export function huggingFaceRouterUrl(model: string): string {
+  return `https://router.huggingface.co/hf-inference/models/${model}/pipeline/feature-extraction`;
+}
+
+export const HUGGINGFACE_ENDPOINT_URL = process.env.HUGGINGFACE_ENDPOINT_URL
+  || huggingFaceRouterUrl(HUGGINGFACE_MODEL_NAME);
+
 // Ollama configuration
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'dengcao/Qwen3-Embedding-0.6B:Q8_0';
