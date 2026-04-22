@@ -14,6 +14,7 @@ import {
   FAISS_INDEX_PATH,
   EMBEDDING_PROVIDER,
   HUGGINGFACE_MODEL_NAME,
+  HUGGINGFACE_ENDPOINT_URL,
   OLLAMA_BASE_URL,
   OLLAMA_MODEL,
   OPENAI_MODEL_NAME,
@@ -101,6 +102,7 @@ export class FaissIndexManager {
       this.embeddings = new HuggingFaceInferenceEmbeddings({
         apiKey: huggingFaceApiKey,
         model: this.modelName,
+        endpointUrl: HUGGINGFACE_ENDPOINT_URL,
       });
     }
 

@@ -76,6 +76,12 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
         HUGGINGFACE_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
         KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
         ```
+    *   HuggingFace retired the legacy `api-inference.huggingface.co/models/...`
+        endpoint in 2025. Feature-extraction calls are now routed through the
+        Inference Providers router at
+        `https://router.huggingface.co/hf-inference/models/<model>/pipeline/feature-extraction`
+        by default. To target a self-hosted or dedicated Inference Endpoint,
+        set `HUGGINGFACE_ENDPOINT_URL` to the full POST URL.
 
     ### Additional Configuration
     
