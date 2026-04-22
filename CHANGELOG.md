@@ -8,6 +8,7 @@
 - Environment variable configuration for embedding provider selection (`EMBEDDING_PROVIDER`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`).
 - End-to-end test evidence file: `ollama-embedding-e2e-results.md`.
 - Documentation updates for setup and usage of both embedding providers.
+- Benchmark harness under `benchmarks/` with deterministic stub fixtures, JSON output, and a non-blocking CI benchmark job.
 
 ### Changed
 

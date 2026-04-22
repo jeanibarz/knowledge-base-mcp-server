@@ -1,0 +1,103 @@
+{
+  "arch": "x64",
+  "git_sha": "84c410d",
+  "node_version": "v24.11.1",
+  "os": "linux",
+  "provider": "stub",
+  "scenarios": {
+    "cold_index": {
+      "add_documents_calls": 99,
+      "chunks": 600,
+      "files": 100,
+      "from_texts_calls": 1,
+      "ms": 12607.597,
+      "save_calls": 100
+    },
+    "cold_start": {
+      "fixture_documents": 120,
+      "ms": 28.531,
+      "rss_bytes": 123572224
+    },
+    "memory_peak": {
+      "chunk_count": 600,
+      "files": 100,
+      "heap_used_bytes": 24768360,
+      "rss_bytes": 129589248
+    },
+    "retrieval_quality": {
+      "default_fanout_factor": 3,
+      "default_loaded_kbs": 5,
+      "default_recall_at_10": 1,
+      "query_count": 50,
+      "sweep": [
+        {
+          "expected_hit_rate_at_10": 0.5,
+          "fanout_factor": 1,
+          "loaded_kbs": 3,
+          "recall_at_10": 0.604
+        },
+        {
+          "expected_hit_rate_at_10": 0.68,
+          "fanout_factor": 1,
+          "loaded_kbs": 5,
+          "recall_at_10": 1
+        },
+        {
+          "expected_hit_rate_at_10": 0.5,
+          "fanout_factor": 2,
+          "loaded_kbs": 3,
+          "recall_at_10": 0.604
+        },
+        {
+          "expected_hit_rate_at_10": 0.68,
+          "fanout_factor": 2,
+          "loaded_kbs": 5,
+          "recall_at_10": 1
+        },
+        {
+          "expected_hit_rate_at_10": 0.5,
+          "fanout_factor": 3,
+          "loaded_kbs": 3,
+          "recall_at_10": 0.604
+        },
+        {
+          "expected_hit_rate_at_10": 0.68,
+          "fanout_factor": 3,
+          "loaded_kbs": 5,
+          "recall_at_10": 1
+        },
+        {
+          "expected_hit_rate_at_10": 0.5,
+          "fanout_factor": 5,
+          "loaded_kbs": 3,
+          "recall_at_10": 0.604
+        },
+        {
+          "expected_hit_rate_at_10": 0.68,
+          "fanout_factor": 5,
+          "loaded_kbs": 5,
+          "recall_at_10": 1
+        },
+        {
+          "expected_hit_rate_at_10": 0.5,
+          "fanout_factor": 10,
+          "loaded_kbs": 3,
+          "recall_at_10": 0.604
+        },
+        {
+          "expected_hit_rate_at_10": 0.68,
+          "fanout_factor": 10,
+          "loaded_kbs": 5,
+          "recall_at_10": 1
+        }
+      ]
+    },
+    "warm_query": {
+      "p50_ms": 70.476,
+      "p95_ms": 83.467,
+      "p99_ms": 86.18,
+      "repetitions": 30
+    }
+  },
+  "version": 1
+}
