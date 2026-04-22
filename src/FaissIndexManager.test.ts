@@ -7,6 +7,7 @@ const addDocumentsMock = jest.fn();
 const fromTextsMock = jest.fn();
 const loadMock = jest.fn();
 const similaritySearchMock = jest.fn();
+const embeddingConstructorMock = jest.fn();
 
 class MockFaissStore {
   async addDocuments(...args: unknown[]) {
@@ -35,7 +36,9 @@ class MockFaissStore {
 jest.mock('@langchain/community/embeddings/hf', () => ({
   __esModule: true,
   HuggingFaceInferenceEmbeddings: class MockEmbedding {
-    constructor(public _config: unknown) {}
+    constructor(public _config: unknown) {
+      embeddingConstructorMock(_config);
+    }
   },
 }));
 
@@ -56,6 +59,8 @@ describe('FaissIndexManager permission handling', () => {
     FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
     EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
     HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+    HUGGINGFACE_ENDPOINT_URL: process.env.HUGGINGFACE_ENDPOINT_URL,
+    HUGGINGFACE_PROVIDER: process.env.HUGGINGFACE_PROVIDER,
     LOG_FILE: process.env.LOG_FILE,
   };
 
@@ -66,6 +71,7 @@ describe('FaissIndexManager permission handling', () => {
     fromTextsMock.mockReset();
     loadMock.mockReset();
     similaritySearchMock.mockReset();
+    embeddingConstructorMock.mockReset();
   });
 
   afterEach(() => {
@@ -104,6 +110,45 @@ describe('FaissIndexManager permission handling', () => {
     } finally {
       await fsp.chmod(lockedDir, 0o700);
     }
+  });
+
+  it('passes the configured Hugging Face provider to the embeddings wrapper', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-hf-provider-'));
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.HUGGINGFACE_PROVIDER = 'replicate';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    new FaissIndexManager();
+
+    expect(embeddingConstructorMock).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: 'test-key',
+      model: 'sentence-transformers/all-MiniLM-L6-v2',
+      provider: 'replicate',
+    }));
+  });
+
+  it('does not pass a Hugging Face provider when a custom endpoint URL is set', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-hf-endpoint-'));
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.HUGGINGFACE_PROVIDER = 'replicate';
+    process.env.HUGGINGFACE_ENDPOINT_URL = 'http://127.0.0.1:9999/custom/embed';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    new FaissIndexManager();
+
+    expect(embeddingConstructorMock).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: 'test-key',
+      endpointUrl: 'http://127.0.0.1:9999/custom/embed',
+      provider: undefined,
+    }));
   });
 
   it('logs permission errors to file when saving FAISS index fails', async () => {

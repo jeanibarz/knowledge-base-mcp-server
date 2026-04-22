@@ -13,6 +13,7 @@
 
 - Refactored embedding logic to support provider abstraction and selection.
 - Improved error handling and logging for embedding operations.
+- Upgraded `@huggingface/inference` to the v4 client path through a compatible `@langchain/community` release.
 
 ### Fixed
 
@@ -23,6 +24,7 @@
   `router.huggingface.co/hf-inference/models/<model>/pipeline/feature-extraction`.
   A new `HUGGINGFACE_ENDPOINT_URL` env var lets users override the endpoint
   (e.g. for self-hosted or dedicated HuggingFace Inference Endpoints).
+- Added `HUGGINGFACE_PROVIDER` so non-default Inference Providers can be selected without custom glue while preserving `hf-inference` as the default.
 
 ---
 

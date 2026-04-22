@@ -14,9 +14,9 @@
   "author": "jean.ibarz",
   "license": "UNLICENSED",
   "dependencies": {
-    "@huggingface/inference": "^2.8.1",
-    "@langchain/community": "^0.3.29",
-    "@langchain/core": "^0.3.39",
+    "@huggingface/inference": "^4.13.15",
+    "@langchain/community": "^0.3.59",
+    "@langchain/core": "^0.3.62",
     "@langchain/ollama": "^0.2.3",
     "@langchain/openai": "^0.4.3",
     "@modelcontextprotocol/sdk": "^1.17.2",

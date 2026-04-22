@@ -21,6 +21,10 @@ startCommand:
         type: string
         default: sentence-transformers/all-MiniLM-L6-v2
         description: Hugging Face model for embeddings
+      huggingfaceProvider:
+        type: string
+        default: hf-inference
+        description: Hugging Face Inference Provider to use when routing through the HF router (examples: hf-inference, together, replicate, fireworks-ai, sambanova)
       embeddingProvider:
         type: string
         enum: ["huggingface", "ollama"]
@@ -63,6 +67,7 @@ startCommand:
         KNOWLEDGE_BASES_ROOT_DIR: config.knowledgeBasesRootDir,
         FAISS_INDEX_PATH: config.faissIndexPath,
         HUGGINGFACE_MODEL_NAME: config.huggingfaceModelName,
+        HUGGINGFACE_PROVIDER: config.huggingfaceProvider,
         EMBEDDING_PROVIDER: config.embeddingProvider,
         OLLAMA_BASE_URL: config.ollamaBaseUrl,
         OLLAMA_MODEL: config.ollamaModel
@@ -73,6 +78,7 @@ startCommand:
     knowledgeBasesRootDir: /data/knowledge_bases
     faissIndexPath: /data/knowledge_bases/.faiss
     huggingfaceModelName: sentence-transformers/all-MiniLM-L6-v2
+    huggingfaceProvider: hf-inference
     embeddingProvider: huggingface
     ollamaBaseUrl: http://localhost:11434
     ollamaModel: dengcao/Qwen3-Embedding-0.6B:Q8_0

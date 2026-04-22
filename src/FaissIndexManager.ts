@@ -14,7 +14,9 @@ import {
   FAISS_INDEX_PATH,
   EMBEDDING_PROVIDER,
   HUGGINGFACE_MODEL_NAME,
+  HUGGINGFACE_PROVIDER,
   HUGGINGFACE_ENDPOINT_URL,
+  HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
   OLLAMA_BASE_URL,
   OLLAMA_MODEL,
   OPENAI_MODEL_NAME,
@@ -103,10 +105,17 @@ export class FaissIndexManager {
         apiKey: huggingFaceApiKey,
         model: this.modelName,
         endpointUrl: HUGGINGFACE_ENDPOINT_URL,
+        provider: HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN ? undefined : HUGGINGFACE_PROVIDER,
       });
     }
 
-    logger.info(`Using embedding provider: ${this.embeddingProvider}, model: ${this.modelName}`);
+    if (this.embeddingProvider === 'huggingface') {
+      logger.info(
+        `Using embedding provider: ${this.embeddingProvider}, model: ${this.modelName}, huggingface provider: ${HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN ? 'endpoint override' : HUGGINGFACE_PROVIDER}`
+      );
+    } else {
+      logger.info(`Using embedding provider: ${this.embeddingProvider}, model: ${this.modelName}`);
+    }
   }
 
   async initialize(): Promise<void> {
