@@ -1,0 +1,37 @@
+name: Benchmarks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  benchmark-harness:
+    continue-on-error: true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run stub benchmark harness
+        env:
+          BENCH_PROVIDER: stub
+          BENCH_RESULTS_PREFIX: ci
+        run: npm run bench
+
+      - name: Upload benchmark artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: warn
+          name: benchmark-results
+          path: benchmarks/results/ci-*.json
