@@ -181,4 +181,67 @@ describe('FaissIndexManager permission handling', () => {
     const logContents = await fsp.readFile(logFile, 'utf-8');
     expect(logContents).toContain('Permission denied while attempting to save FAISS index at');
   });
+
+  it('saves the FAISS index exactly once per updateIndex call when multiple files change', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-save-once-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const fileCount = 3;
+    const docPaths: string[] = [];
+    for (let i = 0; i < fileCount; i += 1) {
+      const docPath = path.join(defaultKb, `doc-${i}.md`);
+      await fsp.writeFile(docPath, `# Doc ${i}\n\nContents for document number ${i}.`);
+      docPaths.push(docPath);
+    }
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).toHaveBeenCalledWith(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'));
+
+    for (const docPath of docPaths) {
+      const relativePath = path.relative(defaultKb, docPath);
+      const sidecarPath = path.join(defaultKb, '.index', path.dirname(relativePath), path.basename(docPath));
+      const sidecarContent = await fsp.readFile(sidecarPath, 'utf-8');
+      expect(sidecarContent).toMatch(/^[0-9a-f]{64}$/);
+      await expect(fsp.stat(`${sidecarPath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+  });
+
+  it('does not write hash sidecars when the FAISS save fails', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-save-fail-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'doc.md');
+    await fsp.writeFile(docPath, '# Title\n\nContent for the failing-save case.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    saveMock.mockRejectedValue(createPermissionError('cannot write index'));
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    await expect(manager.updateIndex()).rejects.toThrow(/Permission denied/);
+
+    const sidecarPath = path.join(defaultKb, '.index', 'doc.md');
+    await expect(fsp.stat(sidecarPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(`${sidecarPath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });
