@@ -240,10 +240,12 @@ describe('FaissIndexManager permission handling', () => {
 
     // First pass: let a fresh manager populate sidecars and the in-memory index.
     jest.resetModules();
-    const firstImport = await import('./FaissIndexManager.js');
-    const firstManager = new firstImport.FaissIndexManager();
-    await firstManager.initialize();
-    await firstManager.updateIndex();
+    {
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const firstManager = new FaissIndexManager();
+      await firstManager.initialize();
+      await firstManager.updateIndex();
+    }
 
     // Capture sidecar state so we can confirm the fallback branch leaves them untouched.
     const sidecarSnapshots: { path: string; content: string }[] = [];
@@ -269,8 +271,8 @@ describe('FaissIndexManager permission handling', () => {
 
     // Second pass: a new manager with faiss.index missing and sidecars intact.
     jest.resetModules();
-    const secondImport = await import('./FaissIndexManager.js');
-    const secondManager = new secondImport.FaissIndexManager();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const secondManager = new FaissIndexManager();
     await secondManager.initialize();
     expect(loadMock).not.toHaveBeenCalled();
 
@@ -282,10 +284,14 @@ describe('FaissIndexManager permission handling', () => {
     expect(saveMock).toHaveBeenCalledTimes(1);
     expect(saveMock).toHaveBeenCalledWith(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'));
 
-    // fromTexts must receive documents from every file at once.
+    // fromTexts must receive documents from every file at once. With content
+    // well under the 1000-char chunkSize, each file produces exactly one chunk,
+    // so the count is deterministic and a regression that double-collects docs
+    // or skips one would be caught immediately.
     const [texts, metadatas] = fromTextsMock.mock.calls[0] as [string[], Array<{ source: string }>];
     expect(Array.isArray(texts)).toBe(true);
-    expect(texts.length).toBeGreaterThanOrEqual(fileCount);
+    expect(texts).toHaveLength(fileCount);
+    expect(metadatas).toHaveLength(fileCount);
     const sources = new Set(metadatas.map((m) => m.source));
     for (const docPath of docPaths) {
       expect(sources.has(docPath)).toBe(true);
