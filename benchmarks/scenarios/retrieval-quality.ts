@@ -8,6 +8,15 @@ import {
 const DEFAULT_FANOUT_FACTOR = 3;
 const DEFAULT_LOADED_KBS = 5;
 
+// Per-KB search-noise magnitude. Simulates the approximate-nearest-neighbor
+// (ANN) behavior that real per-KB FAISS/HNSW indexes exhibit: local rankings
+// deviate from the true global ordering by a bounded amount. This is the
+// class of error RFC 007 §6.4.1's `fanout_factor` is designed to compensate
+// for, so the synthetic benchmark must reproduce it — otherwise exact local
+// search always surfaces every globally-top-k chunk and the sweep collapses
+// to a single value (issue #26).
+const ANN_NOISE_MAGNITUDE = 0.025;
+
 interface RankedChunk {
   id: string;
   score: number;
@@ -75,7 +84,7 @@ function averageRecallAtTen(
   for (const query of queries) {
     const globalTopTen = search(query.text, allChunks, vectors, 10).map((chunk) => chunk.id);
     const fanoutTopTen = [...kbGroups.values()]
-      .flatMap((group) => search(query.text, group, vectors, 10 * fanoutFactor))
+      .flatMap((group) => approximateSearch(query.text, group, vectors, 10 * fanoutFactor))
       .sort((left, right) => left.score - right.score)
       .slice(0, 10)
       .map((chunk) => chunk.id);
@@ -98,7 +107,7 @@ function averageExpectedHitRateAtTen(
 
   for (const query of queries) {
     const fanoutTopTen = [...kbGroups.values()]
-      .flatMap((group) => search(query.text, group, vectors, 10 * fanoutFactor))
+      .flatMap((group) => approximateSearch(query.text, group, vectors, 10 * fanoutFactor))
       .sort((left, right) => left.score - right.score)
       .slice(0, 10)
       .map((chunk) => chunk.id);
@@ -121,6 +130,8 @@ function groupByKnowledgeBase(chunks: RetrievalChunk[]): Map<string, RetrievalCh
   return grouped;
 }
 
+// Exact top-k by Euclidean distance. Used as the ground-truth baseline the
+// fan-out merge is evaluated against.
 function search(
   query: string,
   chunks: RetrievalChunk[],
@@ -143,6 +154,43 @@ function search(
     })
     .sort((left, right) => left.score - right.score)
     .slice(0, topK);
+}
+
+// Simulated per-KB approximate search. Candidates are ranked by a noisy
+// distance that is deterministic per (query, chunk) pair, but each returned
+// candidate carries its EXACT distance so the downstream global merge can
+// re-sort correctly. Higher `fanout_factor` compensates for the added
+// ranking error by widening the per-KB candidate window — exactly the
+// trade-off RFC 007 §6.4.1 asks the scenario to measure.
+function approximateSearch(
+  query: string,
+  chunks: RetrievalChunk[],
+  vectors: Map<string, number[]>,
+  topK: number,
+): RankedChunk[] {
+  const queryVector = vectorize(query);
+  return chunks
+    .map((chunk) => {
+      const id = retrievalChunkId(chunk);
+      const vector = vectors.get(id);
+      if (!vector) {
+        throw new Error(`Missing vector for ${id}`);
+      }
+      const exactScore = euclideanDistance(queryVector, vector);
+      return {
+        exactScore,
+        id,
+        noisyScore: exactScore + annNoise(query, id),
+      };
+    })
+    .sort((left, right) => left.noisyScore - right.noisyScore)
+    .slice(0, topK)
+    .map(({ exactScore, id }) => ({ id, score: exactScore }));
+}
+
+function annNoise(query: string, chunkId: string): number {
+  const hash = fnv1a(`${query} ${chunkId}`);
+  return (hash / 0x1_0000_0000) * ANN_NOISE_MAGNITUDE;
 }
 
 function vectorize(text: string): number[] {
