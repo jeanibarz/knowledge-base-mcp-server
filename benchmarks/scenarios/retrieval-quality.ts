@@ -15,6 +15,11 @@ const DEFAULT_LOADED_KBS = 5;
 // for, so the synthetic benchmark must reproduce it — otherwise exact local
 // search always surfaces every globally-top-k chunk and the sweep collapses
 // to a single value (issue #26).
+//
+// Tuned against the `generateRetrievalQualityFixture(42)` corpus so the
+// default `f=3, loaded_kbs=5` row clears RFC 007 §6.4.1's `recall@10 ≥ 0.95`
+// blocking gate with a ~0.04 margin while `f=1` shows meaningful
+// degradation. If the fixture seed or corpus shape changes, re-tune.
 const ANN_NOISE_MAGNITUDE = 0.025;
 
 interface RankedChunk {
@@ -62,6 +67,8 @@ export async function runRetrievalQualityScenario(): Promise<RetrievalQualitySce
     throw new Error('Missing default retrieval quality sweep result');
   }
 
+  assertFanoutSensitive(sweep);
+
   return {
     default_fanout_factor: DEFAULT_FANOUT_FACTOR,
     default_loaded_kbs: DEFAULT_LOADED_KBS,
@@ -69,6 +76,37 @@ export async function runRetrievalQualityScenario(): Promise<RetrievalQualitySce
     query_count: fixture.queries.length,
     sweep,
   };
+}
+
+// Regression guard for issue #26: if per-KB search ever reverts to exact
+// ranking (or ANN_NOISE_MAGNITUDE drops to zero), `recall_at_10` will be
+// identical at f=1 and f=5 for the same `loaded_kbs`, collapsing the sweep
+// back to a single value. Fail the bench loudly rather than silently ship a
+// uninformative baseline.
+function assertFanoutSensitive(
+  sweep: Array<{ fanout_factor: number; loaded_kbs: number; recall_at_10: number }>,
+): void {
+  const loadedKbsValues = [...new Set(sweep.map((row) => row.loaded_kbs))];
+  for (const loadedKbs of loadedKbsValues) {
+    const recallAtOne = sweep.find(
+      (row) => row.loaded_kbs === loadedKbs && row.fanout_factor === 1,
+    )?.recall_at_10;
+    const recallAtFive = sweep.find(
+      (row) => row.loaded_kbs === loadedKbs && row.fanout_factor === 5,
+    )?.recall_at_10;
+    if (recallAtOne === undefined || recallAtFive === undefined) {
+      throw new Error(
+        `retrieval_quality sweep missing f=1 or f=5 row at loaded_kbs=${loadedKbs}`,
+      );
+    }
+    if (recallAtFive <= recallAtOne) {
+      throw new Error(
+        `retrieval_quality sweep is not sensitive to fanout_factor at loaded_kbs=${loadedKbs}: ` +
+          `recall@10 at f=5 (${recallAtFive}) ≤ recall@10 at f=1 (${recallAtOne}). ` +
+          'Per-KB ANN simulation may be regressing — see issue #26.',
+      );
+    }
+  }
 }
 
 function averageRecallAtTen(
