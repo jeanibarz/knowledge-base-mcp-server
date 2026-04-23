@@ -220,6 +220,91 @@ describe('FaissIndexManager permission handling', () => {
     }
   });
 
+  it('rebuilds via fromTexts once when the FAISS index is missing but sidecars are up to date', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-fallback-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const fileCount = 2;
+    const docPaths: string[] = [];
+    for (let i = 0; i < fileCount; i += 1) {
+      const docPath = path.join(defaultKb, `doc-${i}.md`);
+      await fsp.writeFile(docPath, `# Doc ${i}\n\nFallback rebuild coverage content ${i}.`);
+      docPaths.push(docPath);
+    }
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    // First pass: let a fresh manager populate sidecars and the in-memory index.
+    jest.resetModules();
+    {
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const firstManager = new FaissIndexManager();
+      await firstManager.initialize();
+      await firstManager.updateIndex();
+    }
+
+    // Capture sidecar state so we can confirm the fallback branch leaves them untouched.
+    const sidecarSnapshots: { path: string; content: string }[] = [];
+    for (const docPath of docPaths) {
+      const relativePath = path.relative(defaultKb, docPath);
+      const sidecarPath = path.join(defaultKb, '.index', path.dirname(relativePath), path.basename(docPath));
+      const content = await fsp.readFile(sidecarPath, 'utf-8');
+      sidecarSnapshots.push({ path: sidecarPath, content });
+    }
+
+    // The mocked FaissStore.save never writes faiss.index, so a fresh manager
+    // will see it missing on disk — exactly the state the fallback branch is
+    // meant to recover from. Assert that precondition explicitly.
+    await expect(
+      fsp.stat(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // Reset mocks so the fallback-branch call counts are isolated.
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+
+    // Second pass: a new manager with faiss.index missing and sidecars intact.
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const secondManager = new FaissIndexManager();
+    await secondManager.initialize();
+    expect(loadMock).not.toHaveBeenCalled();
+
+    await secondManager.updateIndex();
+
+    // Fallback branch: one rebuild, zero per-file additions, one save.
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(addDocumentsMock).not.toHaveBeenCalled();
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).toHaveBeenCalledWith(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'));
+
+    // fromTexts must receive documents from every file at once. With content
+    // well under the 1000-char chunkSize, each file produces exactly one chunk,
+    // so the count is deterministic and a regression that double-collects docs
+    // or skips one would be caught immediately.
+    const [texts, metadatas] = fromTextsMock.mock.calls[0] as [string[], Array<{ source: string }>];
+    expect(Array.isArray(texts)).toBe(true);
+    expect(texts).toHaveLength(fileCount);
+    expect(metadatas).toHaveLength(fileCount);
+    const sources = new Set(metadatas.map((m) => m.source));
+    for (const docPath of docPaths) {
+      expect(sources.has(docPath)).toBe(true);
+    }
+
+    // Sidecars must remain byte-for-byte identical and no .tmp files left behind.
+    for (const snapshot of sidecarSnapshots) {
+      const content = await fsp.readFile(snapshot.path, 'utf-8');
+      expect(content).toBe(snapshot.content);
+      await expect(fsp.stat(`${snapshot.path}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+  });
+
   it('does not write hash sidecars when the FAISS save fails', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-save-fail-'));
     const kbDir = path.join(tempDir, 'kb');
