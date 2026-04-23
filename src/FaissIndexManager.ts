@@ -1,6 +1,5 @@
 // FaissIndexManager.ts
 import * as fsp from 'fs/promises';
-import * as fs from 'fs';
 import * as path from 'path';
 import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
 import { OllamaEmbeddings } from "@langchain/ollama";
@@ -26,6 +25,19 @@ import { logger } from './logger.js';
 const MODEL_NAME_FILE = path.join(FAISS_INDEX_PATH, 'model_name.txt');
 
 type FsError = NodeJS.ErrnoException & { code?: string };
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fsp.stat(target);
+    return true;
+  } catch (error) {
+    const code = (error as FsError | undefined)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return false;
+    }
+    throw error;
+  }
+}
 
 function isPermissionError(error: unknown): error is FsError {
   if (!error || typeof error !== 'object') {
@@ -120,7 +132,7 @@ export class FaissIndexManager {
 
   async initialize(): Promise<void> {
     try {
-      if (!fs.existsSync(FAISS_INDEX_PATH)) {
+      if (!(await pathExists(FAISS_INDEX_PATH))) {
         try {
           await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
         } catch (error) {
@@ -131,14 +143,16 @@ export class FaissIndexManager {
       let storedModelName: string | null = null;
 
       try {
-        storedModelName = fs.existsSync(MODEL_NAME_FILE) ? (await fsp.readFile(MODEL_NAME_FILE, 'utf-8')) : null;
+        storedModelName = (await pathExists(MODEL_NAME_FILE))
+          ? (await fsp.readFile(MODEL_NAME_FILE, 'utf-8'))
+          : null;
       } catch (error) {
         logger.warn('Error reading stored model name:', error);
       }
 
       if (storedModelName && storedModelName !== this.modelName) {
         logger.warn(`Model name has changed from ${storedModelName} to ${this.modelName}. Recreating index.`);
-        if (fs.existsSync(indexFilePath)) {
+        if (await pathExists(indexFilePath)) {
           try {
             await fsp.unlink(indexFilePath);
             logger.info('Existing FAISS index deleted.');
@@ -149,7 +163,7 @@ export class FaissIndexManager {
         this.faissIndex = null; // Ensure index is recreated
       }
 
-      if (fs.existsSync(indexFilePath)) {
+      if (await pathExists(indexFilePath)) {
         logger.info('Loading existing FAISS index from:', indexFilePath);
         try {
           this.faissIndex = await FaissStore.load(indexFilePath, this.embeddings);
@@ -196,6 +210,8 @@ export class FaissIndexManager {
       }
 
       let anyFileProcessed = false;
+      let indexMutated = false;
+      const pendingHashWrites: { path: string; hash: string }[] = [];
 
       // Process each knowledge base directory.
       for (const knowledgeBaseName of knowledgeBases) {
@@ -214,7 +230,7 @@ export class FaissIndexManager {
           const indexDirPath = path.join(knowledgeBasePath, '.index', path.dirname(relativePath));
           const indexFilePath = path.join(indexDirPath, path.basename(filePath));
 
-          if (!fs.existsSync(indexDirPath)) {
+          if (!(await pathExists(indexDirPath))) {
             try {
               await fsp.mkdir(indexDirPath, { recursive: true });
             } catch (error) {
@@ -269,19 +285,9 @@ export class FaissIndexManager {
               } else {
                 await this.faissIndex.addDocuments(documentsToAdd);
               }
-              const indexFileSavePath = path.join(FAISS_INDEX_PATH, 'faiss.index');
-              try {
-                await this.faissIndex.save(indexFileSavePath);
-                logger.info('FAISS index saved successfully to', indexFileSavePath);
-              } catch (saveError: any) {
-                handleFsOperationError('save FAISS index at', indexFileSavePath, saveError);
-              }
-              try {
-                await fsp.writeFile(indexFilePath, fileHash, { encoding: 'utf-8' });
-              } catch (error) {
-                handleFsOperationError('write file hash metadata to', indexFilePath, error);
-              }
-              logger.info(`Index updated for ${filePath}.`);
+              indexMutated = true;
+              pendingHashWrites.push({ path: indexFilePath, hash: fileHash });
+              logger.debug(`Index updated in-memory for ${filePath}.`);
             } else {
               logger.debug(`No documents generated from ${filePath}. Skipping index update.`);
             }
@@ -335,14 +341,40 @@ export class FaissIndexManager {
             allDocuments.map((doc) => doc.metadata),
             this.embeddings
           );
-          const indexFileSavePath = path.join(FAISS_INDEX_PATH, 'faiss.index');
-          try {
-            await this.faissIndex.save(indexFileSavePath);
-            logger.info('FAISS index saved successfully to', indexFileSavePath);
-          } catch (saveError: any) {
-            handleFsOperationError('save FAISS index at', indexFileSavePath, saveError);
-          }
+          indexMutated = true;
         }
+      }
+
+      if (indexMutated && this.faissIndex !== null) {
+        const indexFileSavePath = path.join(FAISS_INDEX_PATH, 'faiss.index');
+        try {
+          await this.faissIndex.save(indexFileSavePath);
+          logger.info('FAISS index saved successfully to', indexFileSavePath);
+        } catch (saveError: any) {
+          handleFsOperationError('save FAISS index at', indexFileSavePath, saveError);
+        }
+        // Sidecar hashes are written only after the index has persisted so we
+        // never claim a hash for vectors that never landed on disk. tmp+rename
+        // keeps each sidecar atomic. A crash after save() but before every
+        // rename completes will re-embed the unhashed files on next start,
+        // duplicating their vectors until RFC 007 PR 2.1 lands the pending
+        // manifest protocol.
+        await Promise.all(
+          pendingHashWrites.map(async ({ path: target, hash }) => {
+            const tmpPath = `${target}.tmp`;
+            try {
+              await fsp.writeFile(tmpPath, hash, { encoding: 'utf-8' });
+              await fsp.rename(tmpPath, target);
+            } catch (error) {
+              try {
+                await fsp.unlink(tmpPath);
+              } catch {
+                // best-effort cleanup; original error is what matters
+              }
+              handleFsOperationError('write file hash metadata to', target, error);
+            }
+          })
+        );
       }
       logger.debug('FAISS index update process completed.');
     } catch (error: any) {
