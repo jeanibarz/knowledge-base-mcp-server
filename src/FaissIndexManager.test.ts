@@ -208,6 +208,8 @@ describe('FaissIndexManager permission handling', () => {
 
     expect(saveMock).toHaveBeenCalledTimes(1);
     expect(saveMock).toHaveBeenCalledWith(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'));
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(addDocumentsMock).toHaveBeenCalledTimes(fileCount - 1);
 
     for (const docPath of docPaths) {
       const relativePath = path.relative(defaultKb, docPath);
