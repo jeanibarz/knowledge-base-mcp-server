@@ -20,6 +20,7 @@
 
 ### Fixed
 
+- Retrieval-quality benchmark now simulates approximate-nearest-neighbor behavior per KB so the `fanout_factor` sweep is actually sensitive across `f ∈ {1, 2, 3, 5, 10}` — exact per-KB search made the sweep collapse to a single value. Baseline regenerated. (RFC 007 PR 0.1, #26)
 - Addressed reliability issues (timeouts, hanging) with HuggingFace API by providing a local fallback.
 - HuggingFace embedding provider was broken by HuggingFace retiring the legacy
   `api-inference.huggingface.co/models/...` serverless endpoint. Feature-extraction
