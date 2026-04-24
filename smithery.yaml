@@ -45,6 +45,27 @@ startCommand:
         type: string
         default: text-embedding-ada-002
         description: OpenAI model to use for embeddings
+      mcpTransport:
+        type: string
+        enum: ["stdio", "sse"]
+        default: stdio
+        description: MCP transport — "stdio" (default) or "sse" (RFC 008 stage 1, opt-in HTTP/SSE endpoint).
+      mcpPort:
+        type: integer
+        minimum: 1
+        maximum: 65535
+        default: 8765
+        description: TCP port for the SSE listener. Ignored when mcpTransport=stdio.
+      mcpBindAddr:
+        type: string
+        default: 127.0.0.1
+        description: Bind address for the SSE listener. Defaults to loopback. Ignored when mcpTransport=stdio.
+      mcpAuthToken:
+        type: string
+        description: Bearer token required by the SSE transport. REQUIRED when mcpTransport=sse. Ignored when mcpTransport=stdio. Generate with "openssl rand -base64 32".
+      mcpAllowedOrigins:
+        type: string
+        description: Comma-separated list of allowed CORS origins for the SSE transport. Default empty = no browser origins allowed. Wildcard "*" is rejected.
     required:
       - knowledgeBasesRootDir
       - faissIndexPath
@@ -84,7 +105,12 @@ startCommand:
         OLLAMA_BASE_URL: config.ollamaBaseUrl,
         OLLAMA_MODEL: config.ollamaModel,
         OPENAI_API_KEY: config.openaiApiKey,
-        OPENAI_MODEL_NAME: config.openaiModelName
+        OPENAI_MODEL_NAME: config.openaiModelName,
+        MCP_TRANSPORT: config.mcpTransport,
+        MCP_PORT: config.mcpPort != null ? String(config.mcpPort) : undefined,
+        MCP_BIND_ADDR: config.mcpBindAddr,
+        MCP_AUTH_TOKEN: config.mcpAuthToken,
+        MCP_ALLOWED_ORIGINS: config.mcpAllowedOrigins
       }
     })
   exampleConfig:

@@ -5,39 +5,54 @@ import { z } from 'zod';
 import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
 import * as fsp from 'fs/promises';
 import { FaissIndexManager } from './FaissIndexManager.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import {
+  KNOWLEDGE_BASES_ROOT_DIR,
+  loadTransportConfig,
+  TransportConfigError,
+  type TransportConfig,
+} from './config.js';
 import { logger } from './logger.js';
+import { SseHost } from './transport/sse.js';
+
+const SERVER_NAME = 'knowledge-base-server';
+const SERVER_VERSION = '0.1.0';
 
 export class KnowledgeBaseServer {
   private mcp: McpServer;
   private faissManager: FaissIndexManager;
+  private sseHost?: SseHost;
+  private shutdownInstalled = false;
 
   constructor() {
     this.faissManager = new FaissIndexManager();
     logger.info('Initializing KnowledgeBaseServer');
 
-    this.mcp = new McpServer({
-      name: 'knowledge-base-server',
-      version: '0.1.0',
-    });
+    this.mcp = this.buildMcpServer();
 
-    this.setupTools();
-
-    this.mcp.server.onerror = (error) => logger.error('[MCP Error]', error);
     process.on('SIGINT', async () => {
-      await this.mcp.close();
+      await this.shutdown();
       process.exit(0);
     });
   }
 
-  private setupTools() {
-    this.mcp.tool(
+  private buildMcpServer(): McpServer {
+    const mcp = new McpServer({
+      name: SERVER_NAME,
+      version: SERVER_VERSION,
+    });
+    mcp.server.onerror = (error) => logger.error('[MCP Error]', error);
+    this.registerTools(mcp);
+    return mcp;
+  }
+
+  private registerTools(mcp: McpServer) {
+    mcp.tool(
       'list_knowledge_bases',
       'Lists the available knowledge bases.',
       async () => this.handleListKnowledgeBases()
     );
 
-    this.mcp.tool(
+    mcp.tool(
       'retrieve_knowledge',
       'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.',
       {
@@ -122,16 +137,77 @@ export class KnowledgeBaseServer {
   }
 
   async run() {
+    let transportConfig: TransportConfig;
     try {
-      const transport = new StdioServerTransport();
-      await this.mcp.connect(transport);
-      logger.info('Knowledge Base MCP server running on stdio');
-      await this.faissManager.initialize();
+      transportConfig = loadTransportConfig();
+    } catch (err) {
+      if (err instanceof TransportConfigError) {
+        // Fail fast on bad transport config — no partial startup state.
+        logger.error(`Invalid transport configuration: ${err.message}`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+
+    try {
+      if (transportConfig.transport === 'stdio') {
+        await this.runStdio();
+        return;
+      }
+      await this.runSse(transportConfig);
     } catch (error: any) {
       logger.error('Error during server startup:', error);
       if (error?.stack) {
         logger.error(error.stack);
       }
+      process.exitCode = 1;
+    }
+  }
+
+  private async runStdio(): Promise<void> {
+    const transport = new StdioServerTransport();
+    await this.mcp.connect(transport);
+    logger.info('Knowledge Base MCP server running on stdio');
+    await this.faissManager.initialize();
+  }
+
+  private async runSse(config: TransportConfig): Promise<void> {
+    // Block HTTP bind on a ready index so a fast first client cannot race
+    // updateIndex (RFC 008 §6.2: "client races init" footgun under HTTP).
+    await this.faissManager.initialize();
+
+    const host = new SseHost({
+      config,
+      createMcpServer: () => this.buildMcpServer(),
+    });
+    this.sseHost = host;
+    this.installHttpShutdown();
+    await host.start();
+  }
+
+  private installHttpShutdown(): void {
+    if (this.shutdownInstalled) return;
+    this.shutdownInstalled = true;
+    process.on('SIGTERM', () => {
+      logger.info('Received SIGTERM, draining...');
+      void this.shutdown().then(() => process.exit(0));
+    });
+  }
+
+  private async shutdown(): Promise<void> {
+    if (this.sseHost) {
+      try {
+        await this.sseHost.stop();
+      } catch (err) {
+        logger.warn(`Error during SSE host shutdown: ${(err as Error).message}`);
+      }
+      this.sseHost = undefined;
+    }
+    try {
+      await this.mcp.close();
+    } catch (err) {
+      logger.warn(`Error closing root mcp: ${(err as Error).message}`);
     }
   }
 }

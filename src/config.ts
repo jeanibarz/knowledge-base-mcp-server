@@ -39,3 +39,97 @@ export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'dengcao/Qwen3-Embedding
 
 // OpenAI configuration
 export const OPENAI_MODEL_NAME = process.env.OPENAI_MODEL_NAME || 'text-embedding-ada-002';
+
+// ---------------------------------------------------------------------------
+// Transport configuration (RFC 008 stage 1: stdio + SSE).
+// ---------------------------------------------------------------------------
+
+export type McpTransport = 'stdio' | 'sse';
+
+const VALID_TRANSPORTS: readonly McpTransport[] = ['stdio', 'sse'];
+
+export const DEFAULT_MCP_PORT = 8765;
+export const DEFAULT_MCP_BIND_ADDR = '127.0.0.1';
+
+export interface TransportConfig {
+  transport: McpTransport;
+  port: number;
+  bindAddr: string;
+  authToken?: string;
+  allowedOrigins: string[];
+}
+
+export class TransportConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TransportConfigError';
+  }
+}
+
+function parseTransport(raw: string | undefined): McpTransport {
+  if (raw === undefined || raw === '') {
+    return 'stdio';
+  }
+  if ((VALID_TRANSPORTS as readonly string[]).includes(raw)) {
+    return raw as McpTransport;
+  }
+  throw new TransportConfigError(
+    `Invalid MCP_TRANSPORT='${raw}'; expected one of ${VALID_TRANSPORTS.join('|')}`,
+  );
+}
+
+function parsePort(raw: string | undefined): number {
+  if (raw === undefined || raw === '') {
+    return DEFAULT_MCP_PORT;
+  }
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new TransportConfigError(
+      `Invalid MCP_PORT='${raw}'; expected integer in [1, 65535]`,
+    );
+  }
+  return port;
+}
+
+function parseAllowedOrigins(raw: string | undefined): string[] {
+  if (raw === undefined || raw.trim() === '') {
+    return [];
+  }
+  if (raw.trim() === '*') {
+    throw new TransportConfigError(
+      "MCP_ALLOWED_ORIGINS='*' is rejected; list explicit origins (see RFC 008 §6.4 / §7.6)",
+    );
+  }
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): TransportConfig {
+  const transport = parseTransport(env.MCP_TRANSPORT);
+  const port = parsePort(env.MCP_PORT);
+  const bindAddr = env.MCP_BIND_ADDR && env.MCP_BIND_ADDR.length > 0
+    ? env.MCP_BIND_ADDR
+    : DEFAULT_MCP_BIND_ADDR;
+  const authToken = env.MCP_AUTH_TOKEN;
+  const allowedOrigins = parseAllowedOrigins(env.MCP_ALLOWED_ORIGINS);
+
+  if (transport === 'sse') {
+    if (!authToken || authToken.length === 0) {
+      throw new TransportConfigError(
+        'MCP_TRANSPORT=sse requires MCP_AUTH_TOKEN to be set (generate with: openssl rand -base64 32)',
+      );
+    }
+    // RFC 008 §6.1 / §8.1 R3: tokens shorter than 32 chars are rejected at
+    // startup so operators cannot unintentionally deploy a brute-forceable
+    // secret even if generation tooling truncates.
+    if (authToken.length < 32) {
+      throw new TransportConfigError(
+        'MCP_AUTH_TOKEN must be at least 32 characters (generate with: openssl rand -base64 32)',
+      );
+    }
+  }
+
+  return { transport, port, bindAddr, authToken, allowedOrigins };
+}
