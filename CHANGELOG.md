@@ -11,6 +11,7 @@
 - Benchmark harness under `benchmarks/` with deterministic stub fixtures, JSON output, and a non-blocking CI benchmark job.
 - Smithery config now exposes `openai` as a selectable `embeddingProvider`, with `openaiApiKey` / `openaiModelName` config props plumbed through `commandFunction` so Smithery deployments can pick the OpenAI provider the code already supports. (#34)
 - Root `.dockerignore` so `docker build` stops copying `node_modules/`, `.git/`, `build/`, `benchmarks/results/`, `.claude/`, `*.log`, and `ollama-embedding-e2e-results.md` into the builder context — faster builds, tighter layer cache. (#36)
+- `.github/workflows/test.yml` runs `npm ci && npm run build && npm test` on Node 20 and 24 for every pull request and every push to `main`, so regressions in the Jest suite or `tsc` block merge. (#37)
 
 ### Changed
 
