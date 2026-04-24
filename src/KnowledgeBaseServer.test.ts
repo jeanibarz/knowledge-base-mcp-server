@@ -203,7 +203,7 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(result2.content[0].text).toContain('search boom');
   });
 
-  it('threshold argument flows through to similaritySearch(query, 10, threshold)', async () => {
+  it('threshold argument flows through to similaritySearch(query, 10, threshold, kb)', async () => {
     await setRetrieveEnv();
     updateIndexMock.mockResolvedValue(undefined);
     similaritySearchMock.mockResolvedValue([]);
@@ -211,11 +211,64 @@ describe('KnowledgeBaseServer handlers', () => {
     const server = await freshServer();
 
     await server['handleRetrieveKnowledge']({ query: 'q', threshold: 0.5 });
-    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.5);
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.5, undefined);
 
     await server['handleRetrieveKnowledge']({ query: 'q' });
-    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined);
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, undefined);
 
     expect(similaritySearchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('handleRetrieveKnowledge forwards knowledge_base_name to similaritySearch (#71)', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([]);
+
+    const server = await freshServer();
+
+    await server['handleRetrieveKnowledge']({ query: 'q', knowledge_base_name: 'alpha' });
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, 'alpha');
+
+    await server['handleRetrieveKnowledge']({
+      query: 'q',
+      knowledge_base_name: 'alpha',
+      threshold: 0.25,
+    });
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.25, 'alpha');
+  });
+
+  it('handleRetrieveKnowledge scopes returned sources to knowledge_base_name (#71)', async () => {
+    const tempDir = await setRetrieveEnv();
+    const alphaSource = path.join(tempDir, 'alpha', 'one.md');
+    const betaSource = path.join(tempDir, 'beta', 'two.md');
+
+    // The mock stands in for the post-fix similaritySearch contract: when a
+    // knowledge_base_name is passed as the 4th arg, only that KB's documents
+    // come back. On main the handler never passes the KB name, so kb is
+    // undefined, both KBs leak through, and the "no beta source" assertion
+    // below fails — demonstrating the bug.
+    similaritySearchMock.mockImplementation(async (_query: string, _k: number, _threshold: number | undefined, kb?: string) => {
+      const all = [
+        { pageContent: 'Alpha body', metadata: { source: alphaSource }, score: 0.1 },
+        { pageContent: 'Beta body', metadata: { source: betaSource }, score: 0.2 },
+      ];
+      if (!kb) return all;
+      const prefix = path.join(tempDir, kb) + path.sep;
+      return all.filter((d) => d.metadata.source.startsWith(prefix));
+    });
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'q',
+      knowledge_base_name: 'alpha',
+    });
+
+    expect(result.isError).toBeUndefined();
+    const text: string = result.content[0].text;
+    expect(text).toContain(`"source": ${JSON.stringify(alphaSource)}`);
+    // The bug: before the fix, beta's source also leaks into the scoped
+    // result. Asserting it does NOT appear is what proves the fix works.
+    expect(text).not.toContain(`"source": ${JSON.stringify(betaSource)}`);
   });
 });

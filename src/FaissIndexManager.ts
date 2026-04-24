@@ -398,18 +398,42 @@ export class FaissIndexManager {
 
   /**
    * Performs a similarity search and returns the results with their similarity scores.
+   * When `knowledgeBaseName` is provided, results are scoped to documents whose `source`
+   * metadata lives under that KB directory; otherwise all KBs are searched.
    */
-  async similaritySearch(query: string, k: number, threshold: number = 2) {
+  async similaritySearch(query: string, k: number, threshold: number = 2, knowledgeBaseName?: string) {
     if (!this.faissIndex) {
       throw new Error('FAISS index is not initialized');
     }
 
+    // NOTE: @langchain/community's FaissStore ignores the filter argument in
+    // similaritySearchWithScore (its similaritySearchVectorWithScore override
+    // drops it), so this object is inert. Kept as-is pending a separate fix
+    // for the dead-code score threshold (tracked as a follow-up issue).
     const filter = { score: { $lte: threshold } };
 
-    // Use the vector store's method that returns [DocumentInterface, number] tuples.
-    const resultsWithScore = await this.faissIndex.similaritySearchWithScore(query, k, filter);
-    // Map the tuple into an object that includes the score.
-    return resultsWithScore.map(([doc, score]) => ({
+    const scoped = typeof knowledgeBaseName === 'string' && knowledgeBaseName.length > 0;
+    // When scoping to a KB, over-fetch up to the whole index so we can still
+    // surface up to `k` same-KB hits when other KBs dominate the top of the
+    // unfiltered ranking.
+    const fetchK = scoped
+      ? Math.max(k, this.faissIndex.index.ntotal())
+      : k;
+
+    const resultsWithScore = await this.faissIndex.similaritySearchWithScore(query, fetchK, filter);
+
+    const kbPrefix = scoped
+      ? path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName as string) + path.sep
+      : undefined;
+
+    const filtered = kbPrefix
+      ? resultsWithScore.filter(([doc]) => {
+          const source = (doc.metadata as { source?: unknown })?.source;
+          return typeof source === 'string' && source.startsWith(kbPrefix);
+        })
+      : resultsWithScore;
+
+    return filtered.slice(0, k).map(([doc, score]) => ({
       ...doc,
       score,
     }));

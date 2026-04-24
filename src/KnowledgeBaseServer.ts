@@ -85,7 +85,7 @@ export class KnowledgeBaseServer {
       logger.debug(`[${Date.now()}] FAISS index update completed`);
 
       // Perform similarity search using the provided query.
-      const similaritySearchResults = await this.faissManager.similaritySearch(query, 10, threshold);
+      const similaritySearchResults = await this.faissManager.similaritySearch(query, 10, threshold, knowledgeBaseName);
       logger.debug(`[${Date.now()}] Similarity search completed`);
 
       // Build a nicely formatted markdown response including the similarity score.
