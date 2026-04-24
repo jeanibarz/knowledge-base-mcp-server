@@ -25,6 +25,7 @@
 - Replaced blocking `fs.existsSync` calls in `FaissIndexManager` with non-blocking `fsp.stat`-based checks. (RFC 007 PR 1.1)
 - `package.json` license field changed from `UNLICENSED` (SPDX: proprietary) to `Unlicense` (SPDX: public-domain), matching the `UNLICENSE` file already in the repo. Fixes false-positive "proprietary" flags from license scanners. (#32)
 - Declared `engines.node >=20` in `package.json` so installs on unsupported Node versions fail fast. README prerequisite bumped from Node 16+ to Node 20+ to match — both 16 and 18 are EOL. (#35)
+- Default embedding models upgraded: HuggingFace default is now `BAAI/bge-small-en-v1.5` (was `sentence-transformers/all-MiniLM-L6-v2` from 2021); OpenAI default is now `text-embedding-3-small` (was `text-embedding-ada-002`). Vector dimensions are unchanged (384 for HF, 1536 for OpenAI), so callers downstream of the FAISS store keep working. **Migration impact:** the model-name change trips the auto-rebuild guard in `FaissIndexManager.initialize` (`src/FaissIndexManager.ts:153-164`), so existing indexes will be rebuilt once on the next `retrieve_knowledge` call — expect a one-time delay while every file is re-embedded. No user action required; pin the previous defaults via `HUGGINGFACE_MODEL_NAME` / `OPENAI_MODEL_NAME` if you want to skip the rebuild. (#47)
 
 ### Removed
 

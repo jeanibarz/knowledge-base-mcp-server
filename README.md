@@ -70,9 +70,10 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
         ```bash
         EMBEDDING_PROVIDER=openai
         OPENAI_API_KEY=your_api_key_here
-        OPENAI_MODEL_NAME=text-embedding-ada-002
+        OPENAI_MODEL_NAME=text-embedding-3-small
         KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
         ```
+    *   As of this release, the OpenAI default is `text-embedding-3-small` (up from `text-embedding-ada-002`). Both produce 1536-dim vectors, but the model name change will trigger a one-time FAISS index rebuild on the next query. Override with `OPENAI_MODEL_NAME=...` if you prefer the old default. See the [CHANGELOG](./CHANGELOG.md) for details.
 
     ### Option 3: HuggingFace Configuration (Fallback)
     
@@ -82,10 +83,11 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
         ```bash
         EMBEDDING_PROVIDER=huggingface          # Optional, this is the default
         HUGGINGFACE_API_KEY=your_api_key_here
-        HUGGINGFACE_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+        HUGGINGFACE_MODEL_NAME=BAAI/bge-small-en-v1.5
         HUGGINGFACE_PROVIDER=hf-inference       # Optional, router provider for serverless inference
         KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
         ```
+    *   As of this release, the HuggingFace default is `BAAI/bge-small-en-v1.5` (up from `sentence-transformers/all-MiniLM-L6-v2`). Both produce 384-dim vectors, but the model name change will trigger a one-time FAISS index rebuild on the next query. Override with `HUGGINGFACE_MODEL_NAME=...` if you prefer the old default. See the [CHANGELOG](./CHANGELOG.md) for details.
     *   HuggingFace retired the legacy `api-inference.huggingface.co/models/...`
         endpoint in 2025. Feature-extraction calls are now routed through the
         Inference Providers router at
