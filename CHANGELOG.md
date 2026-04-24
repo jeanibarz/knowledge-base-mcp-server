@@ -15,6 +15,7 @@
 
 ### Changed
 
+- README now links to a dedicated `docs/clients.md` with setup snippets for Claude Desktop, Codex CLI, Cursor, Continue, and Cline. Closes #38. References #40 (badges only — demo recording pending).
 - Refactored embedding logic to support provider abstraction and selection.
 - Improved error handling and logging for embedding operations.
 - Upgraded `@huggingface/inference` to the v4 client path through a compatible `@langchain/community` release.
