@@ -440,12 +440,6 @@ export class FaissIndexManager {
       throw new Error('FAISS index is not initialized');
     }
 
-    // NOTE: @langchain/community's FaissStore ignores the filter argument in
-    // similaritySearchWithScore (its similaritySearchVectorWithScore override
-    // drops it), so this object is inert. Kept as-is pending a separate fix
-    // for the dead-code score threshold (tracked as a follow-up issue).
-    const filter = { score: { $lte: threshold } };
-
     const scoped = typeof knowledgeBaseName === 'string' && knowledgeBaseName.length > 0;
     // When scoping to a KB, over-fetch up to the whole index so we can still
     // surface up to `k` same-KB hits when other KBs dominate the top of the
@@ -454,18 +448,25 @@ export class FaissIndexManager {
       ? Math.max(k, this.faissIndex.index.ntotal())
       : k;
 
-    const resultsWithScore = await this.faissIndex.similaritySearchWithScore(query, fetchK, filter);
+    // FaissStore.similaritySearchVectorWithScore accepts only (query, k) and
+    // silently drops any filter argument, so threshold and KB scoping are both
+    // applied as post-filters on the returned [doc, score] tuples.
+    const resultsWithScore = await this.faissIndex.similaritySearchWithScore(query, fetchK);
 
     const kbPrefix = scoped
       ? path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName as string) + path.sep
       : undefined;
 
-    const filtered = kbPrefix
-      ? resultsWithScore.filter(([doc]) => {
-          const source = (doc.metadata as { source?: unknown })?.source;
-          return typeof source === 'string' && source.startsWith(kbPrefix);
-        })
-      : resultsWithScore;
+    const filtered = resultsWithScore.filter(([doc, score]) => {
+      if (score > threshold) {
+        return false;
+      }
+      if (kbPrefix) {
+        const source = (doc.metadata as { source?: unknown })?.source;
+        return typeof source === 'string' && source.startsWith(kbPrefix);
+      }
+      return true;
+    });
 
     return filtered.slice(0, k).map(([doc, score]) => ({
       ...doc,

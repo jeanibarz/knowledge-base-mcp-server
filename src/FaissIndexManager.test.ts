@@ -692,3 +692,104 @@ describe('FaissIndexManager chunk metadata (RFC 010 M1)', () => {
     }
   });
 });
+
+describe('FaissIndexManager similaritySearch threshold filter', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+  };
+
+  beforeEach(() => {
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+    similaritySearchMock.mockReset();
+    embeddingConstructorMock.mockReset();
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(originalEnv) as Array<keyof typeof originalEnv>;
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    jest.restoreAllMocks();
+  });
+
+  async function setupReadyManager() {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-threshold-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'doc.md'), '# Title\n\nContent for threshold tests.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+    return manager;
+  }
+
+  it('drops tuples whose score is above the caller-supplied threshold', async () => {
+    const manager = await setupReadyManager();
+    const docA = { pageContent: 'a', metadata: { source: 'a' } };
+    const docB = { pageContent: 'b', metadata: { source: 'b' } };
+    similaritySearchMock.mockResolvedValueOnce([
+      [docA, 0.5],
+      [docB, 1.5],
+    ]);
+
+    const results = await manager.similaritySearch('query', 10, 1.0);
+
+    expect(results).toHaveLength(1);
+    expect(results[0].pageContent).toBe('a');
+    expect(results[0].score).toBe(0.5);
+  });
+
+  it('keeps results at or below the default threshold of 2 and drops the rest', async () => {
+    const manager = await setupReadyManager();
+    const docs = [
+      { pageContent: 'a', metadata: { source: 'a' } },
+      { pageContent: 'b', metadata: { source: 'b' } },
+      { pageContent: 'c', metadata: { source: 'c' } },
+    ];
+    similaritySearchMock.mockResolvedValueOnce([
+      [docs[0], 0.1],
+      [docs[1], 1.9],
+      [docs[2], 2.5],
+    ]);
+
+    const results = await manager.similaritySearch('query', 10);
+
+    expect(results.map((r) => r.score)).toEqual([0.1, 1.9]);
+  });
+
+  it('returns every result when the threshold is generous', async () => {
+    const manager = await setupReadyManager();
+    const docs = [
+      { pageContent: 'a', metadata: { source: 'a' } },
+      { pageContent: 'b', metadata: { source: 'b' } },
+    ];
+    similaritySearchMock.mockResolvedValueOnce([
+      [docs[0], 0.1],
+      [docs[1], 0.5],
+    ]);
+
+    const results = await manager.similaritySearch('query', 10, 10);
+
+    expect(results.map((r) => r.score)).toEqual([0.1, 0.5]);
+  });
+});
