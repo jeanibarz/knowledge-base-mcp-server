@@ -246,10 +246,10 @@ describe('resolveKbPath', () => {
 });
 
 describe('parseFrontmatter', () => {
-  it('returns `{ tags: [], body: content }` when there is no frontmatter', () => {
+  it('returns `{ tags: [], body: content, frontmatter: {} }` when there is no frontmatter', () => {
     const content = '# Just a heading\n\nSome text.\n';
     const result = parseFrontmatter(content);
-    expect(result).toEqual({ tags: [], body: content });
+    expect(result).toEqual({ tags: [], body: content, frontmatter: {} });
   });
 
   it('extracts `tags` given as an array', () => {
@@ -424,5 +424,54 @@ describe('filterIngestablePaths (RFC 011 §5.2)', () => {
     const input = [abs('ingest.log'), abs('notes/paper.md')];
     const output = filterIngestablePaths(input, kbRoot);
     expect(output).toEqual([abs('notes/paper.md')]);
+  });
+});
+
+describe('parseFrontmatter (RFC 011 M2 frontmatter lift)', () => {
+  it('returns the full parsed object under `frontmatter` when YAML is a map', () => {
+    const content =
+      '---\n' +
+      'arxiv_id: 2604.21221\n' +
+      'title: "Sparse Forcing"\n' +
+      'relevance_score: 7\n' +
+      'tags: [kv-cache]\n' +
+      '---\n' +
+      '# Body\n';
+    const result = parseFrontmatter(content);
+    // FAILSAFE: scalars arrive as strings, so 7 stays "7" here. Coercion
+    // is the callsite's job in liftFrontmatter.
+    expect(result.frontmatter).toEqual({
+      arxiv_id: '2604.21221',
+      title: 'Sparse Forcing',
+      relevance_score: '7',
+      tags: ['kv-cache'],
+    });
+    expect(result.tags).toEqual(['kv-cache']);
+  });
+
+  it('returns `frontmatter: {}` on no-frontmatter files', () => {
+    const result = parseFrontmatter('# Plain\n\nBody only.\n');
+    expect(result.frontmatter).toEqual({});
+  });
+
+  it('returns `frontmatter: {}` on malformed YAML', () => {
+    const result = parseFrontmatter('---\ntags: [unterminated\n---\nBody\n');
+    expect(result.frontmatter).toEqual({});
+  });
+
+  it('returns `frontmatter: {}` when the YAML document is a scalar (not an object)', () => {
+    // A YAML document that parses to a plain string (not a map) must not
+    // leak a string-shaped frontmatter into downstream consumers.
+    const result = parseFrontmatter('---\njust a scalar\n---\nBody\n');
+    expect(result.frontmatter).toEqual({});
+  });
+
+  it('preserves non-whitelisted keys so liftFrontmatter can route them to extras', () => {
+    const content = '---\narxiv_id: 2604.1\ncustom_field: value\n---\nBody\n';
+    const result = parseFrontmatter(content);
+    expect(result.frontmatter).toEqual({
+      arxiv_id: '2604.1',
+      custom_field: 'value',
+    });
   });
 });
