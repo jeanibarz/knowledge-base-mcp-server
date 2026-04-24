@@ -5,6 +5,7 @@
 ### Added
 
 - RFC 010 M1 foundations: path-traversal guard (`resolveKbPath`), KB-name validator (`isValidKbName` / `assertValidKbName`), frontmatter parser (`parseFrontmatter`), and richer chunk metadata (`tags`, `relativePath`, `chunkIndex`, `extension`, `knowledgeBase`). No user-visible API change. Partial work toward #49, #51, #53, #54.
+- Optional SSE transport behind `MCP_TRANSPORT=sse`. Stdio remains the default; setting `MCP_TRANSPORT=sse` plus `MCP_AUTH_TOKEN` exposes the same two tools over an HTTP/SSE endpoint with bearer-token auth, an origin allow-list, and an unauthenticated `GET /health` probe. See the new "Remote transport (optional)" section in the README and [`docs/rfcs/008-remote-transport.md`](./docs/rfcs/008-remote-transport.md) for the full design. Partial closure of #48 — streamable-http follows.
 - Ollama embedding provider support as a local alternative to HuggingFace API for embeddings.
 - Environment variable configuration for embedding provider selection (`EMBEDDING_PROVIDER`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`).
 - End-to-end test evidence file: `ollama-embedding-e2e-results.md`.
