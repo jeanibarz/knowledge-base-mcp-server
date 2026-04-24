@@ -178,7 +178,7 @@ By default the server speaks MCP over stdio — every supported client (Claude D
 
 ```bash
 export MCP_TRANSPORT=sse
-export MCP_AUTH_TOKEN="$(openssl rand -base64 32)"
+export MCP_AUTH_TOKEN="$(openssl rand -base64 32)"   # must be ≥32 characters; shorter tokens abort startup
 export MCP_ALLOWED_ORIGINS="http://localhost:5173"   # comma-separated; leave unset to deny all browser origins
 export MCP_PORT=8765                                  # default
 export MCP_BIND_ADDR=127.0.0.1                        # default — loopback only
@@ -187,7 +187,7 @@ node build/index.js
 
 Endpoints exposed in this mode:
 
-- `GET /health` — JSON liveness probe (`status`, `version`, `uptime_ms`, `index_path`). No auth required.
+- `GET /health` — unauthenticated liveness probe; returns `200 {"status":"ok"}` only. Per RFC 008 §6.8 it intentionally exposes no version, uptime, or filesystem fingerprint to anonymous callers.
 - `GET /sse` — long-lived SSE stream. Requires `Authorization: Bearer <MCP_AUTH_TOKEN>`.
 - `POST /messages?sessionId=<uuid>` — JSON-RPC POST per session. Same bearer requirement.
 

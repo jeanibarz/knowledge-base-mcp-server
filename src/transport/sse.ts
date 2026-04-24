@@ -29,15 +29,9 @@ const HEALTH_ENDPOINT = '/health';
 const SHUTDOWN_DRAIN_DEADLINE_MS = 10_000;
 const SHUTDOWN_POLL_INTERVAL_MS = 50;
 
-export interface HealthInfo {
-  version: string;
-  indexPath: string;
-}
-
 export interface SseHostOptions {
   config: TransportConfig;
   createMcpServer: () => McpServer;
-  health: HealthInfo;
 }
 
 interface SessionEntry {
@@ -60,7 +54,6 @@ export class SseHost {
   private readonly sessions = new Map<string, SessionEntry>();
   private readonly originAllowList: ReadonlySet<string>;
   private readonly authTokenBuf: Buffer;
-  private readonly startedAtMs: number = Date.now();
   private server?: http.Server;
   private inFlight = 0;
   private shuttingDown = false;

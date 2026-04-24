@@ -41,7 +41,6 @@ async function startHost(opts: {
       allowedOrigins: opts.allowedOrigins ?? [],
     },
     createMcpServer: freshFactory(),
-    health: { version: '9.9.9-test', indexPath: '/tmp/test-index' },
   });
   const server = await host.start();
   const addr = server.address() as AddressInfo;

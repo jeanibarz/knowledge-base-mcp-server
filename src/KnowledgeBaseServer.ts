@@ -6,7 +6,6 @@ import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/type
 import * as fsp from 'fs/promises';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
-  FAISS_INDEX_PATH,
   KNOWLEDGE_BASES_ROOT_DIR,
   loadTransportConfig,
   TransportConfigError,
@@ -181,7 +180,6 @@ export class KnowledgeBaseServer {
     const host = new SseHost({
       config,
       createMcpServer: () => this.buildMcpServer(),
-      health: { version: SERVER_VERSION, indexPath: FAISS_INDEX_PATH },
     });
     this.sseHost = host;
     this.installHttpShutdown();
