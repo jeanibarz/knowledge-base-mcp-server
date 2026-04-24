@@ -182,7 +182,7 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
 *   The server recursively reads all text files (e.g., `.txt`, `.md`) within the specified knowledge base subdirectories.
 *   The server skips hidden files and directories (those starting with a `.`).
 *   For each file, the server calculates the SHA256 hash and stores it in a file with the same name in a hidden `.index` subdirectory. This hash is used to determine if the file has been modified since the last indexing.
-*   The file content is splitted into chunks using the `MarkdownTextSplitter` from `langchain/text_splitter`.
+*   File content is split into chunks before indexing: `.md` files use `MarkdownTextSplitter` (heading-aware), and every other text file uses `RecursiveCharacterTextSplitter`. Both splitters share the same `chunkSize: 1000, chunkOverlap: 200` defaults, so a large `.txt`, `.rst`, or source file produces many chunks rather than a single embedding.
 *   The content of each chunk is then added to a FAISS index, which is used for similarity search.
 *   The FAISS index is automatically initialized when the server starts. It checks for changes in the knowledge base files and updates the index accordingly.
 

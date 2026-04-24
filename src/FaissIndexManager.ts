@@ -6,7 +6,7 @@ import { OllamaEmbeddings } from "@langchain/ollama";
 import { OpenAIEmbeddings } from "@langchain/openai";
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
-import { MarkdownTextSplitter } from "langchain/text_splitter";
+import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import { calculateSHA256, getFilesRecursively } from './utils.js';
 import {
   KNOWLEDGE_BASES_ROOT_DIR,
@@ -258,21 +258,18 @@ export class FaissIndexManager {
             }
 
             let documentsToAdd: Document[] = [];
-            if (path.extname(filePath).toLowerCase() === '.md') {
-              const splitter = new MarkdownTextSplitter({
-                chunkSize: 1000,
-                chunkOverlap: 200,
-                keepSeparator: false,
-              });
-              documentsToAdd = await splitter.createDocuments([content], [{ source: filePath }]);
-            } else {
-              documentsToAdd = [
-                new Document({
-                  pageContent: content,
-                  metadata: { source: filePath },
-                }),
-              ];
-            }
+            const ext = path.extname(filePath).toLowerCase();
+            const splitter = ext === '.md'
+              ? new MarkdownTextSplitter({
+                  chunkSize: 1000,
+                  chunkOverlap: 200,
+                  keepSeparator: false,
+                })
+              : new RecursiveCharacterTextSplitter({
+                  chunkSize: 1000,
+                  chunkOverlap: 200,
+                });
+            documentsToAdd = await splitter.createDocuments([content], [{ source: filePath }]);
 
             if (documentsToAdd.length > 0) {
               if (this.faissIndex === null) {
@@ -314,22 +311,18 @@ export class FaissIndexManager {
               logger.error(`Error reading file ${filePath}:`, error);
               continue;
             }
-            let documents: Document[];
-            if (path.extname(filePath).toLowerCase() === '.md') {
-              const splitter = new MarkdownTextSplitter({
-                chunkSize: 1000,
-                chunkOverlap: 200,
-                keepSeparator: false,
-              });
-              documents = await splitter.createDocuments([content], [{ source: filePath }]);
-            } else {
-              documents = [
-                new Document({
-                  pageContent: content,
-                  metadata: { source: filePath },
-                }),
-              ];
-            }
+            const ext = path.extname(filePath).toLowerCase();
+            const splitter = ext === '.md'
+              ? new MarkdownTextSplitter({
+                  chunkSize: 1000,
+                  chunkOverlap: 200,
+                  keepSeparator: false,
+                })
+              : new RecursiveCharacterTextSplitter({
+                  chunkSize: 1000,
+                  chunkOverlap: 200,
+                });
+            const documents = await splitter.createDocuments([content], [{ source: filePath }]);
             if (documents.length > 0) {
               allDocuments.push(...documents);
             }
