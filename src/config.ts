@@ -92,6 +92,29 @@ function parsePort(raw: string | undefined): number {
   return port;
 }
 
+/**
+ * Normalize an origin string to the RFC 6454 form browsers actually send:
+ * lowercased scheme + host, no path, no trailing slash. Non-default ports
+ * are preserved (`:8080`); the WHATWG URL parser strips scheme-default ports
+ * (`:443` on https, `:80` on http), matching browser behavior.
+ * Accepts operator-friendly input like "HTTPS://App.EXAMPLE.com:8080/".
+ *
+ * Falls back to a plain `toLowerCase()` on strings the WHATWG URL parser
+ * rejects (e.g. missing scheme). A malformed stored entry will then never
+ * match a browser-sent Origin and silently behave as "deny" — which is the
+ * safe direction for an allow-list. Tightening this into a hard reject is
+ * tracked separately in #77's issue body.
+ */
+export function normalizeOrigin(origin: string): string {
+  const trimmed = origin.endsWith('/') ? origin.slice(0, -1) : origin;
+  try {
+    const url = new URL(trimmed);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return trimmed.toLowerCase();
+  }
+}
+
 function parseAllowedOrigins(raw: string | undefined): string[] {
   if (raw === undefined || raw.trim() === '') {
     return [];
@@ -104,7 +127,8 @@ function parseAllowedOrigins(raw: string | undefined): string[] {
   return raw
     .split(',')
     .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
+    .filter((entry) => entry.length > 0)
+    .map((entry) => normalizeOrigin(entry));
 }
 
 export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): TransportConfig {
