@@ -121,6 +121,14 @@ Use this path if you want to develop against the repo or pin an unreleased commi
         RETRIEVE_KNOWLEDGE_DESCRIPTION="Search engineering runbooks, RFCs, and postmortems."
         LIST_KNOWLEDGE_BASES_DESCRIPTION="List available engineering knowledge bases."
         ```
+    *   **Ingest filter overrides (RFC 011 M1).** The server embeds only files whose extension is in `{.md, .markdown, .txt, .rst}` and excludes workflow sidecars (`_seen.jsonl`, `_index.jsonl`), log / staging subtrees (`logs/`, `tmp/`, `_tmp/`), and OS turds (`.DS_Store`, `Thumbs.db`, `desktop.ini`). To extend the allowlist or add more exclusions:
+        ```bash
+        # Comma-separated extensions (case-insensitive; leading dot optional).
+        INGEST_EXTRA_EXTENSIONS=".json,.yaml"
+        # Comma-separated minimatch globs relative to the KB root.
+        INGEST_EXCLUDE_PATHS="drafts/**,scratch.md"
+        ```
+        Extensionless files (e.g. `README`, `LICENSE`, `Makefile`) are **not** embedded by the default allowlist; rename them with a `.md` or `.txt` suffix if you want them indexed. The base exclusions are authoritative: operators can add more but cannot remove the built-ins.
     *   You can set these environment variables in your `.bashrc` or `.zshrc` file, or directly in the MCP settings.
 
 4.  **Build the server:**

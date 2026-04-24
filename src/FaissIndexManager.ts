@@ -7,7 +7,12 @@ import { OpenAIEmbeddings } from "@langchain/openai";
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from "langchain/text_splitter";
-import { calculateSHA256, getFilesRecursively, parseFrontmatter } from './utils.js';
+import {
+  calculateSHA256,
+  filterIngestablePaths,
+  getFilesRecursively,
+  parseFrontmatter,
+} from './utils.js';
 import {
   KNOWLEDGE_BASES_ROOT_DIR,
   FAISS_INDEX_PATH,
@@ -16,6 +21,8 @@ import {
   HUGGINGFACE_PROVIDER,
   HUGGINGFACE_ENDPOINT_URL,
   HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
+  INGEST_EXCLUDE_PATHS,
+  INGEST_EXTRA_EXTENSIONS,
   OLLAMA_BASE_URL,
   OLLAMA_MODEL,
   OPENAI_MODEL_NAME,
@@ -284,7 +291,14 @@ export class FaissIndexManager {
           continue;
         }
         const knowledgeBasePath = path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
-        const filePaths = await getFilesRecursively(knowledgeBasePath);
+        const filePaths = filterIngestablePaths(
+          await getFilesRecursively(knowledgeBasePath),
+          knowledgeBasePath,
+          {
+            extraExtensions: INGEST_EXTRA_EXTENSIONS,
+            excludePaths: INGEST_EXCLUDE_PATHS,
+          },
+        );
 
         for (const filePath of filePaths) {
           anyFileProcessed = true;
@@ -358,7 +372,14 @@ export class FaissIndexManager {
         for (const knowledgeBaseName of knowledgeBases) {
           if (knowledgeBaseName.startsWith('.')) continue;
           const knowledgeBasePath = path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
-          const filePaths = await getFilesRecursively(knowledgeBasePath);
+          const filePaths = filterIngestablePaths(
+            await getFilesRecursively(knowledgeBasePath),
+            knowledgeBasePath,
+            {
+              extraExtensions: INGEST_EXTRA_EXTENSIONS,
+              excludePaths: INGEST_EXCLUDE_PATHS,
+            },
+          );
           for (const filePath of filePaths) {
             let content = '';
             try {

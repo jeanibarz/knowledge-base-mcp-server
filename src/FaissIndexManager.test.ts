@@ -793,3 +793,287 @@ describe('FaissIndexManager similaritySearch threshold filter', () => {
     expect(results.map((r) => r.score)).toEqual([0.1, 0.5]);
   });
 });
+
+describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+    INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
+    INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
+  };
+
+  beforeEach(() => {
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+    similaritySearchMock.mockReset();
+    embeddingConstructorMock.mockReset();
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(originalEnv) as Array<keyof typeof originalEnv>;
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    jest.restoreAllMocks();
+  });
+
+  async function seedArxivKb(kbRoot: string) {
+    // Mirror the real arxiv workflow layout so the fixture exercises the
+    // exact filter rules the RFC's Motivation §2.2 calls out.
+    const notesDir = path.join(kbRoot, 'notes');
+    const pdfsDir = path.join(kbRoot, 'pdfs');
+    const logsDir = path.join(kbRoot, 'logs');
+    await fsp.mkdir(notesDir, { recursive: true });
+    await fsp.mkdir(pdfsDir, { recursive: true });
+    await fsp.mkdir(logsDir, { recursive: true });
+
+    // Two notes with frontmatter matching the real arxiv schema.
+    await fsp.writeFile(
+      path.join(notesDir, '2604.21215.md'),
+      '---\narxiv_id: 2604.21215\ntags: [kv-cache, quantization]\n---\n# Paper A\n\nBody A.\n',
+    );
+    await fsp.writeFile(
+      path.join(notesDir, '2604.21221.md'),
+      '---\narxiv_id: 2604.21221\ntags: [sparse-attention]\n---\n# Paper B\n\nBody B.\n',
+    );
+
+    // Binary PDFs as `%PDF-` headed garbage — UTF-8-decoding these would
+    // corrupt to U+FFFD noise if the filter failed to exclude them.
+    await fsp.writeFile(
+      path.join(pdfsDir, '2604.21215.pdf'),
+      Buffer.from('%PDF-1.7\n' + 'binary\x00bytes\xff'.repeat(50)),
+    );
+    await fsp.writeFile(
+      path.join(pdfsDir, '2604.21221.pdf'),
+      Buffer.from('%PDF-1.7\n' + 'more\x00binary\xff'.repeat(50)),
+    );
+
+    // Workflow sidecar + daily log — both non-dotfile and thus walked today.
+    await fsp.writeFile(
+      path.join(kbRoot, '_seen.jsonl'),
+      '{"id":"2604.21215","seen_at":"2026-04-24T22:37:01.985Z","status":"ingested"}\n' +
+        '{"id":"2604.21221","seen_at":"2026-04-24T22:42:27.567Z","status":"ingested"}\n',
+    );
+    await fsp.writeFile(
+      path.join(logsDir, '2026-04-24.log'),
+      '2026-04-24T22:37 ingested 2604.21215\n2026-04-24T22:42 ingested 2604.21221\n',
+    );
+  }
+
+  function collectIngestedDocs(): {
+    texts: string[];
+    metadatas: Record<string, unknown>[];
+  } {
+    // updateIndex bootstraps the store via fromTexts on the first file and
+    // appends subsequent files via addDocuments — aggregate both so the
+    // per-file assertions are order-independent.
+    const texts: string[] = [];
+    const metadatas: Record<string, unknown>[] = [];
+    for (const call of fromTextsMock.mock.calls) {
+      const [callTexts, callMetadatas] = call as [
+        string[],
+        Record<string, unknown>[],
+      ];
+      texts.push(...callTexts);
+      metadatas.push(...callMetadatas);
+    }
+    for (const call of addDocumentsMock.mock.calls) {
+      const [docs] = call as [
+        Array<{ pageContent: string; metadata: Record<string, unknown> }>,
+      ];
+      for (const doc of docs) {
+        texts.push(doc.pageContent);
+        metadatas.push(doc.metadata);
+      }
+    }
+    return { texts, metadatas };
+  }
+
+  it('embeds only notes/*.md on an arxiv-shaped KB (PDFs, _seen.jsonl, logs/** excluded)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ingest-arxiv-'));
+    const kbRoot = path.join(tempDir, 'kb');
+    const arxivKb = path.join(kbRoot, 'arxiv-llm-inference');
+    await seedArxivKb(arxivKb);
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    delete process.env.INGEST_EXTRA_EXTENSIONS;
+    delete process.env.INGEST_EXCLUDE_PATHS;
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    const { texts, metadatas } = collectIngestedDocs();
+
+    // Every emitted chunk must originate from a .md file under notes/.
+    const sources = new Set(metadatas.map((m) => String(m.source)));
+    for (const src of sources) {
+      expect(src.endsWith('.md')).toBe(true);
+      expect(src).toContain(`${path.sep}notes${path.sep}`);
+    }
+    // Concretely: the two note files are ingested; nothing else.
+    expect(sources.size).toBe(2);
+    expect(sources.has(path.join(arxivKb, 'notes', '2604.21215.md'))).toBe(true);
+    expect(sources.has(path.join(arxivKb, 'notes', '2604.21221.md'))).toBe(true);
+
+    // Defensive content assertion: no chunk text carries the %PDF- header
+    // or _seen.jsonl ledger shape.
+    for (const text of texts) {
+      expect(text).not.toContain('%PDF-');
+      expect(text).not.toContain('"status":"ingested"');
+    }
+
+    // The PDFs, _seen.jsonl, and logs/*.log must not have sidecar hash files —
+    // they were never ingested.
+    await expect(
+      fsp.stat(path.join(arxivKb, '.index', 'pdfs', '2604.21215.pdf')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(
+      fsp.stat(path.join(arxivKb, '.index', '_seen.jsonl')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(
+      fsp.stat(path.join(arxivKb, '.index', 'logs', '2026-04-24.log')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('INGEST_EXTRA_EXTENSIONS=".json" admits a notes/config.json while Rule A still excludes _seen.jsonl', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ingest-extra-ext-'));
+    const kbRoot = path.join(tempDir, 'kb');
+    const arxivKb = path.join(kbRoot, 'arxiv-llm-inference');
+    await seedArxivKb(arxivKb);
+
+    // Add a JSON config the operator wants embedded.
+    await fsp.writeFile(
+      path.join(arxivKb, 'notes', 'config.json'),
+      '{"schema_version": 1, "topic": "llm-inference"}',
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.INGEST_EXTRA_EXTENSIONS = '.json';
+    delete process.env.INGEST_EXCLUDE_PATHS;
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    const { metadatas } = collectIngestedDocs();
+    const sources = new Set(metadatas.map((m) => String(m.source)));
+    expect(sources.has(path.join(arxivKb, 'notes', 'config.json'))).toBe(true);
+    // _seen.jsonl is still excluded by Rule A (segment-literal), even with
+    // .json added to the allowlist — Rule A runs before Rule B.
+    expect(sources.has(path.join(arxivKb, '_seen.jsonl'))).toBe(false);
+  });
+
+  it('applies the filter on the fallback rebuild branch too (not only the per-KB update loop)', async () => {
+    // The per-KB update loop (line 294) and the fallback rebuild branch
+    // (line 375) are independent `getFilesRecursively` call sites; both
+    // must wrap with filterIngestablePaths. This test drives the fallback
+    // branch by seeding sidecars on a first pass, then creating a fresh
+    // manager whose faiss.index is absent on disk — the same pattern the
+    // existing "rebuilds via fromTexts once" test uses.
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ingest-fallback-'));
+    const kbRoot = path.join(tempDir, 'kb');
+    const arxivKb = path.join(kbRoot, 'arxiv-llm-inference');
+    await seedArxivKb(arxivKb);
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    delete process.env.INGEST_EXTRA_EXTENSIONS;
+    delete process.env.INGEST_EXCLUDE_PATHS;
+
+    // First pass: seed sidecars via the per-KB update loop.
+    jest.resetModules();
+    {
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const first = new FaissIndexManager();
+      await first.initialize();
+      await first.updateIndex();
+    }
+
+    // Precondition: faiss.index is not on disk (mocked save never writes),
+    // so a fresh manager takes the fallback rebuild branch (line 375).
+    await expect(
+      fsp.stat(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+
+    // Second pass: fresh manager hits the fallback branch. The filter
+    // must still exclude the PDFs, _seen.jsonl, and logs/**/*.log here.
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const second = new FaissIndexManager();
+    await second.initialize();
+    await second.updateIndex();
+
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(addDocumentsMock).not.toHaveBeenCalled();
+    const [texts, metadatas] = fromTextsMock.mock.calls[0] as [
+      string[],
+      Record<string, unknown>[],
+    ];
+    const sources = new Set(metadatas.map((m) => String(m.source)));
+    for (const src of sources) {
+      expect(src.endsWith('.md')).toBe(true);
+      expect(src).toContain(`${path.sep}notes${path.sep}`);
+    }
+    expect(sources.size).toBe(2); // only the two notes
+    for (const text of texts) {
+      expect(text).not.toContain('%PDF-');
+      expect(text).not.toContain('"status":"ingested"');
+    }
+  });
+
+  it('INGEST_EXCLUDE_PATHS="drafts/**" suppresses a drafts/ subtree without touching notes/', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ingest-exclude-'));
+    const kbRoot = path.join(tempDir, 'kb');
+    const arxivKb = path.join(kbRoot, 'arxiv-llm-inference');
+    await seedArxivKb(arxivKb);
+
+    const draftsDir = path.join(arxivKb, 'drafts');
+    await fsp.mkdir(draftsDir, { recursive: true });
+    await fsp.writeFile(path.join(draftsDir, 'scratch.md'), '# WIP\n\nNot yet.\n');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    delete process.env.INGEST_EXTRA_EXTENSIONS;
+    process.env.INGEST_EXCLUDE_PATHS = 'drafts/**';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    const { metadatas } = collectIngestedDocs();
+    const sources = new Set(metadatas.map((m) => String(m.source)));
+    expect(sources.has(path.join(arxivKb, 'drafts', 'scratch.md'))).toBe(false);
+    expect(sources.has(path.join(arxivKb, 'notes', '2604.21215.md'))).toBe(true);
+  });
+});
