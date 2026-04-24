@@ -230,6 +230,18 @@ describe('resolveKbPath', () => {
       /null byte/
     );
   });
+
+  it('rejects an invalid kbName before touching the filesystem', async () => {
+    // Without the internal assertValidKbName guard, kbName === '..' would make
+    // kbRoot === tempRoot's parent and the prefix check would cover every
+    // absolute path on disk. Lock that defence in.
+    await expect(resolveKbPath('..', 'anything.md', tempRoot)).rejects.toThrow(
+      /invalid KB name/
+    );
+    await expect(resolveKbPath('foo/bar', 'anything.md', tempRoot)).rejects.toThrow(
+      /invalid KB name/
+    );
+  });
 });
 
 describe('parseFrontmatter', () => {

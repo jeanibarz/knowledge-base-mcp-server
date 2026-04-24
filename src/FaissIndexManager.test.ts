@@ -608,6 +608,30 @@ describe('FaissIndexManager chunk metadata (RFC 010 M1)', () => {
     }
   });
 
+  it('also strips YAML frontmatter from non-markdown files (universal-strip contract)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-meta-txt-fm-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'note.txt');
+    await fsp.writeFile(
+      docPath,
+      '---\ntags: [nontext]\n---\nPlain-text body after frontmatter.\n'
+    );
+
+    const [texts, metadatas] = await runHappyPath(kbDir);
+
+    expect(texts.length).toBeGreaterThan(0);
+    for (const text of texts) {
+      expect(text).not.toContain('---');
+      expect(text).not.toContain('tags:');
+    }
+    for (const md of metadatas) {
+      expect(md.tags).toEqual(['nontext']);
+      expect(md.extension).toBe('.txt');
+    }
+  });
+
   it('applies the same metadata shape in the fallback rebuild branch', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-meta-fallback-'));
     const kbDir = path.join(tempDir, 'kb');

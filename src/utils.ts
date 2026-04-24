@@ -82,6 +82,11 @@ export async function resolveKbPath(
   relativePath: string,
   kbRootDir: string,
 ): Promise<string> {
+  // Reject `kbName === '..'` and friends before path.join can walk out of
+  // kbRootDir. Without this, a `..` kbName would make kbRoot === kbRootDir's
+  // parent and `prefix` would cover every path on disk.
+  assertValidKbName(kbName);
+
   if (typeof relativePath !== 'string') {
     throw new Error('relativePath must be a string');
   }
