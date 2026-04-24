@@ -13,7 +13,7 @@
   },
   "keywords": [],
   "author": "jean.ibarz",
-  "license": "UNLICENSED",
+  "license": "Unlicense",
   "dependencies": {
     "@huggingface/inference": "^4.13.15",
     "@langchain/community": "^0.3.59",
