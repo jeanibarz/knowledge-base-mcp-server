@@ -1,7 +1,16 @@
 # Knowledge Base MCP Server
 
-[![smithery badge](https://smithery.ai/badge/@jeanibarz/knowledge-base-mcp-server)](https://smithery.ai/server/@jeanibarz/knowledge-base-mcp-server)
+[![Tests](https://github.com/jeanibarz/knowledge-base-mcp-server/actions/workflows/test.yml/badge.svg)](https://github.com/jeanibarz/knowledge-base-mcp-server/actions/workflows/test.yml)
+[![License](https://img.shields.io/github/license/jeanibarz/knowledge-base-mcp-server)](./UNLICENSE)
+[![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](./package.json)
+
 This MCP server provides tools for listing and retrieving content from different knowledge bases.
+
+### Demo
+
+Live demo recording coming soon ([tracking #40](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/40)).
+
+[![smithery badge](https://smithery.ai/badge/@jeanibarz/knowledge-base-mcp-server)](https://smithery.ai/server/@jeanibarz/knowledge-base-mcp-server)
 
 <a href="https://glama.ai/mcp/servers/n0p6v0o0a4">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/n0p6v0o0a4/badge" alt="Knowledge Base Server MCP server" />
@@ -102,77 +111,9 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
     npm run build
     ```
 
-5.  **Add the server to the MCP settings:**
+5.  **Add the server to your MCP client:**
 
-    *   Edit the `cline_mcp_settings.json` file located at `/home/jean/.vscode-server/data/User/globalStorage/saoudrizwan.claude-dev/settings/`.
-    *   Add the following configuration to the `mcpServers` object:
-
-    *   **Option 1: Ollama Configuration**
-
-    ```json
-    "knowledge-base-mcp-ollama": {
-      "command": "node",
-      "args": [
-        "/path/to/knowledge-base-mcp-server/build/index.js"
-      ],
-      "disabled": false,
-      "autoApprove": [],
-      "env": {
-        "KNOWLEDGE_BASES_ROOT_DIR": "/path/to/knowledge_bases",
-        "EMBEDDING_PROVIDER": "ollama",
-        "OLLAMA_BASE_URL": "http://localhost:11434",
-        "OLLAMA_MODEL": "dengcao/Qwen3-Embedding-0.6B:Q8_0"
-      },
-      "description": "Retrieves similar chunks from the knowledge base based on a query using Ollama."
-    },
-    ```
-
-    *   **Option 2: OpenAI Configuration**
-
-    ```json
-    "knowledge-base-mcp-openai": {
-      "command": "node",
-      "args": [
-        "/path/to/knowledge-base-mcp-server/build/index.js"
-      ],
-      "disabled": false,
-      "autoApprove": [],
-      "env": {
-        "KNOWLEDGE_BASES_ROOT_DIR": "/path/to/knowledge_bases",
-        "EMBEDDING_PROVIDER": "openai",
-        "OPENAI_API_KEY": "YOUR_OPENAI_API_KEY",
-        "OPENAI_MODEL_NAME": "text-embedding-ada-002"
-      },
-      "description": "Retrieves similar chunks from the knowledge base based on a query using OpenAI."
-    },
-    ```
-
-    *   **Option 3: HuggingFace Configuration**
-
-    ```json
-    "knowledge-base-mcp-huggingface": {
-      "command": "node",
-      "args": [
-        "/path/to/knowledge-base-mcp-server/build/index.js"
-      ],
-      "disabled": false,
-      "autoApprove": [],
-      "env": {
-        "KNOWLEDGE_BASES_ROOT_DIR": "/path/to/knowledge_bases",
-        "EMBEDDING_PROVIDER": "huggingface",
-        "HUGGINGFACE_API_KEY": "YOUR_HUGGINGFACE_API_KEY",
-        "HUGGINGFACE_MODEL_NAME": "sentence-transformers/all-MiniLM-L6-v2",
-        "HUGGINGFACE_PROVIDER": "hf-inference"
-      },
-      "description": "Retrieves similar chunks from the knowledge base based on a query using HuggingFace."
-    },
-    ```
-
-    *   **Note:** You only need to add one of the above configurations (either Ollama, OpenAI or HuggingFace) to your `cline_mcp_settings.json` file, depending on your preferred embedding provider.
-    ```
-
-    *   Replace `/path/to/knowledge-base-mcp-server` with the actual path to the server directory.
-    *   Replace `/path/to/knowledge_bases` with the actual path to the knowledge bases directory.
+    See [docs/clients.md](docs/clients.md) for copy-pasteable configuration snippets for Claude Desktop, Codex CLI, Cursor, Continue, and Cline.
 
 6.  **Create knowledge base directories:**
 
