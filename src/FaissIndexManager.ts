@@ -7,7 +7,7 @@ import { OpenAIEmbeddings } from "@langchain/openai";
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from "langchain/text_splitter";
-import { calculateSHA256, getFilesRecursively } from './utils.js';
+import { calculateSHA256, getFilesRecursively, parseFrontmatter } from './utils.js';
 import {
   KNOWLEDGE_BASES_ROOT_DIR,
   FAISS_INDEX_PATH,
@@ -209,6 +209,55 @@ export class FaissIndexManager {
   }
 
   /**
+   * Splits `content` into chunks and tags each chunk with the RFC 010 M1
+   * metadata shape. Frontmatter (if any) is stripped before splitting so
+   * the `---` fence does not leak into the embedding text.
+   *
+   * Both the incremental update loop and the fallback rebuild loop call
+   * this helper so the metadata shape stays identical across paths.
+   */
+  private async buildChunkDocuments(
+    filePath: string,
+    content: string,
+    knowledgeBaseName: string
+  ): Promise<Document[]> {
+    const ext = path.extname(filePath).toLowerCase();
+    const splitter = ext === '.md'
+      ? new MarkdownTextSplitter({
+          chunkSize: 1000,
+          chunkOverlap: 200,
+          keepSeparator: false,
+        })
+      : new RecursiveCharacterTextSplitter({
+          chunkSize: 1000,
+          chunkOverlap: 200,
+        });
+
+    const { tags, body } = parseFrontmatter(content);
+    const relativePath = path
+      .relative(KNOWLEDGE_BASES_ROOT_DIR, filePath)
+      .split(path.sep)
+      .join('/');
+
+    const documents = await splitter.createDocuments(
+      [body],
+      [{ source: filePath }]
+    );
+    for (let i = 0; i < documents.length; i += 1) {
+      documents[i].metadata = {
+        ...documents[i].metadata,
+        source: filePath,
+        relativePath,
+        knowledgeBase: knowledgeBaseName,
+        extension: ext,
+        chunkIndex: i,
+        tags,
+      };
+    }
+    return documents;
+  }
+
+  /**
    * Updates the FAISS index.
    * If `specificKnowledgeBase` is provided, only files from that knowledge base will be checked and updated.
    * If no update occurs (and the FAISS index remains uninitialized) but there are documents,
@@ -272,19 +321,11 @@ export class FaissIndexManager {
               continue;
             }
 
-            let documentsToAdd: Document[] = [];
-            const ext = path.extname(filePath).toLowerCase();
-            const splitter = ext === '.md'
-              ? new MarkdownTextSplitter({
-                  chunkSize: 1000,
-                  chunkOverlap: 200,
-                  keepSeparator: false,
-                })
-              : new RecursiveCharacterTextSplitter({
-                  chunkSize: 1000,
-                  chunkOverlap: 200,
-                });
-            documentsToAdd = await splitter.createDocuments([content], [{ source: filePath }]);
+            const documentsToAdd: Document[] = await this.buildChunkDocuments(
+              filePath,
+              content,
+              knowledgeBaseName
+            );
 
             if (documentsToAdd.length > 0) {
               if (this.faissIndex === null) {
@@ -326,18 +367,11 @@ export class FaissIndexManager {
               logger.error(`Error reading file ${filePath}:`, error);
               continue;
             }
-            const ext = path.extname(filePath).toLowerCase();
-            const splitter = ext === '.md'
-              ? new MarkdownTextSplitter({
-                  chunkSize: 1000,
-                  chunkOverlap: 200,
-                  keepSeparator: false,
-                })
-              : new RecursiveCharacterTextSplitter({
-                  chunkSize: 1000,
-                  chunkOverlap: 200,
-                });
-            const documents = await splitter.createDocuments([content], [{ source: filePath }]);
+            const documents = await this.buildChunkDocuments(
+              filePath,
+              content,
+              knowledgeBaseName
+            );
             if (documents.length > 0) {
               allDocuments.push(...documents);
             }

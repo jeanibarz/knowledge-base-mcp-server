@@ -23,12 +23,14 @@
     "@modelcontextprotocol/sdk": "^1.17.2",
     "axios": "^1.6.7",
     "faiss-node": "latest",
+    "js-yaml": "^4.1.1",
     "langchain": "^0.3.15",
     "pickleparser": "^0.2.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.11.5",
     "jest": "^29.7.0",
     "nodemon": "^3.0.3",

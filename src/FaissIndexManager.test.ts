@@ -478,3 +478,217 @@ describe('FaissIndexManager permission handling', () => {
     await expect(fsp.stat(`${sidecarPath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
+
+describe('FaissIndexManager chunk metadata (RFC 010 M1)', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+  };
+
+  beforeEach(() => {
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+    similaritySearchMock.mockReset();
+    embeddingConstructorMock.mockReset();
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(originalEnv) as Array<keyof typeof originalEnv>;
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    jest.restoreAllMocks();
+  });
+
+  async function runHappyPath(kbRoot: string) {
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(kbRoot, '..', '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+    return fromTextsMock.mock.calls[0] as [string[], Record<string, unknown>[]];
+  }
+
+  it('extracts frontmatter tags and strips the fence from the embedded body', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-meta-tags-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'doc.md');
+    await fsp.writeFile(
+      docPath,
+      '---\ntags: [foo, bar]\n---\n# Heading\n\nReal content that should embed.\n'
+    );
+
+    const [texts, metadatas] = await runHappyPath(kbDir);
+
+    expect(texts.length).toBeGreaterThan(0);
+    for (const text of texts) {
+      expect(text).not.toContain('---');
+      expect(text).not.toContain('tags:');
+    }
+    expect(metadatas.length).toBe(texts.length);
+    for (const md of metadatas) {
+      expect(md.tags).toEqual(['foo', 'bar']);
+      expect(md.source).toBe(docPath);
+      expect(md.knowledgeBase).toBe('default');
+      expect(md.extension).toBe('.md');
+      expect(md.relativePath).toBe('default/doc.md');
+      expect(typeof md.chunkIndex).toBe('number');
+    }
+  });
+
+  it('produces `tags: []` when the file has no frontmatter', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-meta-notags-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'plain.md'), '# Plain\n\nNo frontmatter.\n');
+
+    const [, metadatas] = await runHappyPath(kbDir);
+    for (const md of metadatas) {
+      expect(md.tags).toEqual([]);
+    }
+  });
+
+  it('assigns deterministic 0-based chunkIndex within a single source file', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-meta-chunkidx-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+
+    // Payload large enough to force the splitter to produce >1 chunk.
+    const paragraphs = Array.from(
+      { length: 20 },
+      (_, i) => `Paragraph ${i}: ${'lorem ipsum dolor sit amet '.repeat(10)}`
+    );
+    const content = paragraphs.join('\n\n');
+    const filePath = path.join(defaultKb, 'long.txt');
+    await fsp.writeFile(filePath, content);
+
+    const [texts, metadatas] = await runHappyPath(kbDir);
+    expect(texts.length).toBeGreaterThan(1);
+    // All metadatas are for the same source, so chunkIndex should be [0, 1, …, N-1].
+    const perFile = metadatas.filter((m) => m.source === filePath);
+    expect(perFile.length).toBe(texts.length);
+    for (let i = 0; i < perFile.length; i += 1) {
+      expect(perFile[i].chunkIndex).toBe(i);
+    }
+  });
+
+  it('derives `knowledgeBase` from the first path segment under the KB root', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-meta-kbname-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const teamKb = path.join(kbDir, 'team-notes');
+    await fsp.mkdir(path.join(teamKb, 'company'), { recursive: true });
+    await fsp.writeFile(
+      path.join(teamKb, 'company', 'onboarding.md'),
+      '# Onboarding\n\nHello.\n'
+    );
+
+    const [, metadatas] = await runHappyPath(kbDir);
+    expect(metadatas.length).toBeGreaterThan(0);
+    for (const md of metadatas) {
+      expect(md.knowledgeBase).toBe('team-notes');
+      expect(md.relativePath).toBe('team-notes/company/onboarding.md');
+    }
+  });
+
+  it('also strips YAML frontmatter from non-markdown files (universal-strip contract)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-meta-txt-fm-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'note.txt');
+    await fsp.writeFile(
+      docPath,
+      '---\ntags: [nontext]\n---\nPlain-text body after frontmatter.\n'
+    );
+
+    const [texts, metadatas] = await runHappyPath(kbDir);
+
+    expect(texts.length).toBeGreaterThan(0);
+    for (const text of texts) {
+      expect(text).not.toContain('---');
+      expect(text).not.toContain('tags:');
+    }
+    for (const md of metadatas) {
+      expect(md.tags).toEqual(['nontext']);
+      expect(md.extension).toBe('.txt');
+    }
+  });
+
+  it('applies the same metadata shape in the fallback rebuild branch', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-meta-fallback-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'doc.md');
+    await fsp.writeFile(
+      docPath,
+      '---\ntags: [fallback]\n---\n# Title\n\nFallback branch content.\n'
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    // First pass: seed sidecars so the second run sees hashes match.
+    jest.resetModules();
+    {
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const first = new FaissIndexManager();
+      await first.initialize();
+      await first.updateIndex();
+    }
+
+    // Precondition: faiss.index is not on disk (the mocked save never writes
+    // it), so a fresh manager will take the fallback rebuild branch.
+    await expect(
+      fsp.stat(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const second = new FaissIndexManager();
+    await second.initialize();
+    await second.updateIndex();
+
+    // The fallback branch must have fired and must produce the same enriched shape.
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(addDocumentsMock).not.toHaveBeenCalled();
+    const [texts, metadatas] = fromTextsMock.mock.calls[0] as [string[], Record<string, unknown>[]];
+    expect(texts.length).toBeGreaterThan(0);
+    for (const text of texts) {
+      expect(text).not.toContain('---');
+    }
+    for (const md of metadatas) {
+      expect(md.source).toBe(docPath);
+      expect(md.knowledgeBase).toBe('default');
+      expect(md.extension).toBe('.md');
+      expect(md.relativePath).toBe('default/doc.md');
+      expect(md.tags).toEqual(['fallback']);
+      expect(typeof md.chunkIndex).toBe('number');
+    }
+  });
+});

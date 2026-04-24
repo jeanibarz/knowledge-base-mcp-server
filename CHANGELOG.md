@@ -4,6 +4,7 @@
 
 ### Added
 
+- RFC 010 M1 foundations: path-traversal guard (`resolveKbPath`), KB-name validator (`isValidKbName` / `assertValidKbName`), frontmatter parser (`parseFrontmatter`), and richer chunk metadata (`tags`, `relativePath`, `chunkIndex`, `extension`, `knowledgeBase`). No user-visible API change. Partial work toward #49, #51, #53, #54.
 - Ollama embedding provider support as a local alternative to HuggingFace API for embeddings.
 - Environment variable configuration for embedding provider selection (`EMBEDDING_PROVIDER`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`).
 - End-to-end test evidence file: `ollama-embedding-e2e-results.md`.
