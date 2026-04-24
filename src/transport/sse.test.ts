@@ -210,18 +210,19 @@ describe('SseHost — endpoints', () => {
     }
   });
 
-  it('(e) GET /health returns 200 JSON without auth', async () => {
+  it('(e) GET /health returns 200 JSON {"status":"ok"} without auth (RFC 008 §6.8: no fingerprinting)', async () => {
     const started = await startHost({});
     stop = started.stop;
     const res = await request(started.port, { path: '/health' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toMatch(/application\/json/);
     const body = JSON.parse(res.body);
-    expect(body.status).toBe('ok');
-    expect(body.version).toBe('9.9.9-test');
-    expect(body.index_path).toBe('/tmp/test-index');
-    expect(typeof body.uptime_ms).toBe('number');
-    expect(body.uptime_ms).toBeGreaterThanOrEqual(0);
+    expect(body).toEqual({ status: 'ok' });
+    // Explicitly ensure the endpoint does not leak version / uptime / index
+    // path to unauthenticated callers (RFC 008 §6.8).
+    expect(body.version).toBeUndefined();
+    expect(body.uptime_ms).toBeUndefined();
+    expect(body.index_path).toBeUndefined();
   });
 
   it('HEAD /health returns 200 with no body', async () => {

@@ -70,8 +70,12 @@ export class SseHost {
     this.originAllowList = new Set(options.config.allowedOrigins);
     // The auth token presence is enforced at config load time when transport
     // is sse, so this branch should not fire — defensive fallback only.
+    // RFC 008 §6.3: compare as latin1 (1 byte == 1 codeunit) so an
+    // attacker-supplied `Authorization` header is not silently re-encoded via
+    // UTF-8 substitution (U+FFFD is 3 bytes and mutates length) before the
+    // constant-time compare.
     const token = options.config.authToken ?? '';
-    this.authTokenBuf = Buffer.from(token, 'utf8');
+    this.authTokenBuf = Buffer.from(token, 'latin1');
   }
 
   async start(): Promise<http.Server> {
@@ -297,12 +301,11 @@ export class SseHost {
       respond(res, 405, 'Method Not Allowed');
       return 405;
     }
-    const body = JSON.stringify({
-      status: 'ok',
-      version: this.options.health.version,
-      uptime_ms: Date.now() - this.startedAtMs,
-      index_path: this.options.health.indexPath,
-    });
+    // RFC 008 §6.8: /health is unauthenticated and origin-unchecked; it
+    // therefore must not leak any fingerprintable operator state (version,
+    // uptime, or file-system paths). Detailed status is available through
+    // the authenticated MCP channel.
+    const body = JSON.stringify({ status: 'ok' });
     const buf = Buffer.from(body, 'utf8');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Length', String(buf.length));
@@ -381,7 +384,7 @@ export class SseHost {
     if (this.authTokenBuf.length === 0) {
       return false;
     }
-    const provided = Buffer.from(authHeader.slice('Bearer '.length), 'utf8');
+    const provided = Buffer.from(authHeader.slice('Bearer '.length), 'latin1');
     if (provided.length !== this.authTokenBuf.length) {
       return false;
     }

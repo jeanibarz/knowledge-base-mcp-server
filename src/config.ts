@@ -121,6 +121,14 @@ export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): Trans
         'MCP_TRANSPORT=sse requires MCP_AUTH_TOKEN to be set (generate with: openssl rand -base64 32)',
       );
     }
+    // RFC 008 §6.1 / §8.1 R3: tokens shorter than 32 chars are rejected at
+    // startup so operators cannot unintentionally deploy a brute-forceable
+    // secret even if generation tooling truncates.
+    if (authToken.length < 32) {
+      throw new TransportConfigError(
+        'MCP_AUTH_TOKEN must be at least 32 characters (generate with: openssl rand -base64 32)',
+      );
+    }
   }
 
   return { transport, port, bindAddr, authToken, allowedOrigins };
