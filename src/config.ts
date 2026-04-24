@@ -12,7 +12,7 @@ export const FAISS_INDEX_PATH = process.env.FAISS_INDEX_PATH || DEFAULT_FAISS_IN
 export const EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER || 'huggingface';
 
 // HuggingFace configuration
-export const DEFAULT_HUGGINGFACE_MODEL_NAME = 'sentence-transformers/all-MiniLM-L6-v2';
+export const DEFAULT_HUGGINGFACE_MODEL_NAME = 'BAAI/bge-small-en-v1.5';
 export const HUGGINGFACE_MODEL_NAME = process.env.HUGGINGFACE_MODEL_NAME || DEFAULT_HUGGINGFACE_MODEL_NAME;
 export const DEFAULT_HUGGINGFACE_PROVIDER = 'hf-inference';
 export const HUGGINGFACE_PROVIDER = (
@@ -38,7 +38,8 @@ export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:
 export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'dengcao/Qwen3-Embedding-0.6B:Q8_0';
 
 // OpenAI configuration
-export const OPENAI_MODEL_NAME = process.env.OPENAI_MODEL_NAME || 'text-embedding-ada-002';
+export const DEFAULT_OPENAI_MODEL_NAME = 'text-embedding-3-small';
+export const OPENAI_MODEL_NAME = process.env.OPENAI_MODEL_NAME || DEFAULT_OPENAI_MODEL_NAME;
 
 // ---------------------------------------------------------------------------
 // Transport configuration (RFC 008 stage 1: stdio + SSE).

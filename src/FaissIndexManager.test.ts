@@ -126,7 +126,7 @@ describe('FaissIndexManager permission handling', () => {
 
     expect(embeddingConstructorMock).toHaveBeenCalledWith(expect.objectContaining({
       apiKey: 'test-key',
-      model: 'sentence-transformers/all-MiniLM-L6-v2',
+      model: 'BAAI/bge-small-en-v1.5',
       provider: 'replicate',
     }));
   });

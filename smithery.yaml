@@ -19,7 +19,7 @@ startCommand:
         description: Path to FAISS index file
       huggingfaceModelName:
         type: string
-        default: sentence-transformers/all-MiniLM-L6-v2
+        default: BAAI/bge-small-en-v1.5
         description: Hugging Face model for embeddings
       huggingfaceProvider:
         type: string
@@ -43,7 +43,7 @@ startCommand:
         description: OpenAI API key for embeddings
       openaiModelName:
         type: string
-        default: text-embedding-ada-002
+        default: text-embedding-3-small
         description: OpenAI model to use for embeddings
       mcpTransport:
         type: string
@@ -117,10 +117,10 @@ startCommand:
     huggingfaceApiKey: hf_example_key_123
     knowledgeBasesRootDir: /data/knowledge_bases
     faissIndexPath: /data/knowledge_bases/.faiss
-    huggingfaceModelName: sentence-transformers/all-MiniLM-L6-v2
+    huggingfaceModelName: BAAI/bge-small-en-v1.5
     huggingfaceProvider: hf-inference
     embeddingProvider: huggingface
     ollamaBaseUrl: http://localhost:11434
     ollamaModel: dengcao/Qwen3-Embedding-0.6B:Q8_0
     openaiApiKey: sk-example_key_123
-    openaiModelName: text-embedding-ada-002
+    openaiModelName: text-embedding-3-small
