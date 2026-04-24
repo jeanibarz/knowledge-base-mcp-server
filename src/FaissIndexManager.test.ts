@@ -347,6 +347,110 @@ describe('FaissIndexManager permission handling', () => {
     }
   });
 
+  it('recovers from a corrupt FAISS index by unlinking it and falling back to rebuild', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-corrupt-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'doc.md');
+    await fsp.writeFile(docPath, '# Title\n\nContent for the corrupt-recovery case.');
+
+    const faissDir = path.join(tempDir, '.faiss');
+    await fsp.mkdir(faissDir, { recursive: true });
+    const indexFilePath = path.join(faissDir, 'faiss.index');
+    const indexJsonPath = `${indexFilePath}.json`;
+    await fsp.writeFile(indexFilePath, 'corrupt-bytes');
+    await fsp.writeFile(indexJsonPath, '{"docstore":"corrupt"}');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    loadMock.mockImplementationOnce(() => {
+      throw new Error('invalid faiss index header');
+    });
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+
+    await expect(manager.initialize()).resolves.toBeUndefined();
+
+    expect(loadMock).toHaveBeenCalledWith(indexFilePath, expect.anything());
+    await expect(fsp.stat(indexFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(indexJsonPath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // End-to-end: the next updateIndex must actually rebuild via fromTexts,
+    // not just observe a null faissIndex. This proves the corrupt-recovery
+    // path hands off correctly to the existing rebuild branch.
+    await manager.updateIndex();
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).toHaveBeenCalledWith(indexFilePath);
+  });
+
+  it('surfaces a permission error when the corrupt FAISS index cannot be unlinked', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-corrupt-eacces-'));
+    const kbDir = path.join(tempDir, 'kb');
+    await fsp.mkdir(kbDir, { recursive: true });
+
+    const faissDir = path.join(tempDir, '.faiss');
+    await fsp.mkdir(faissDir, { recursive: true });
+    const indexFilePath = path.join(faissDir, 'faiss.index');
+    await fsp.writeFile(indexFilePath, 'corrupt-bytes');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    loadMock.mockImplementationOnce(() => {
+      throw new Error('invalid faiss index header');
+    });
+
+    // 0o500 on the containing directory keeps stat/read permitted (so the
+    // load branch fires) but denies unlink, forcing the handleFsOperationError
+    // rethrow path in the corrupt-recovery catch.
+    await fsp.chmod(faissDir, 0o500);
+
+    try {
+      jest.resetModules();
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const manager = new FaissIndexManager();
+
+      await expect(manager.initialize()).rejects.toThrow(/Permission denied/);
+    } finally {
+      await fsp.chmod(faissDir, 0o700);
+    }
+  });
+
+  it('does not fail when the corrupt FAISS index has no .json sibling', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-corrupt-nojson-'));
+    const kbDir = path.join(tempDir, 'kb');
+    await fsp.mkdir(kbDir, { recursive: true });
+
+    const faissDir = path.join(tempDir, '.faiss');
+    await fsp.mkdir(faissDir, { recursive: true });
+    const indexFilePath = path.join(faissDir, 'faiss.index');
+    await fsp.writeFile(indexFilePath, 'corrupt-bytes');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    loadMock.mockImplementationOnce(() => {
+      throw new Error('invalid faiss index header');
+    });
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+
+    await expect(manager.initialize()).resolves.toBeUndefined();
+    await expect(fsp.stat(indexFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('does not write hash sidecars when the FAISS save fails', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-save-fail-'));
     const kbDir = path.join(tempDir, 'kb');

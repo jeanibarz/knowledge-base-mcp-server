@@ -167,10 +167,25 @@ export class FaissIndexManager {
         logger.info('Loading existing FAISS index from:', indexFilePath);
         try {
           this.faissIndex = await FaissStore.load(indexFilePath, this.embeddings);
+          logger.info('FAISS index loaded.');
         } catch (error) {
-          handleFsOperationError('load FAISS index from', indexFilePath, error);
+          logger.warn(
+            'Existing FAISS index at',
+            indexFilePath,
+            'is corrupt or unreadable - rebuilding from source. Error:',
+            error
+          );
+          try {
+            await fsp.unlink(indexFilePath);
+          } catch (unlinkErr) {
+            handleFsOperationError('delete corrupt FAISS index', indexFilePath, unlinkErr);
+          }
+          // Best-effort: the .json docstore sibling may not exist (older index layouts
+          // wrote only faiss.index) and any failure here is non-fatal - the rebuild
+          // path will overwrite it on the next save.
+          await fsp.unlink(`${indexFilePath}.json`).catch(() => {});
+          this.faissIndex = null;
         }
-        logger.info('FAISS index loaded.');
       } else {
         logger.info('FAISS index file not found at', indexFilePath, '. It will be created if documents are available.');
         this.faissIndex = null;
