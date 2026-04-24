@@ -9,6 +9,7 @@
 - End-to-end test evidence file: `ollama-embedding-e2e-results.md`.
 - Documentation updates for setup and usage of both embedding providers.
 - Benchmark harness under `benchmarks/` with deterministic stub fixtures, JSON output, and a non-blocking CI benchmark job.
+- Smithery config now exposes `openai` as a selectable `embeddingProvider`, with `openaiApiKey` / `openaiModelName` config props plumbed through `commandFunction` so Smithery deployments can pick the OpenAI provider the code already supports. (#34)
 
 ### Changed
 
