@@ -94,11 +94,34 @@ export async function resolveKbPath(
     throw new Error('path contains null byte');
   }
 
+  // RFC 010 §5.1.1 steps 3+4: normalize backslashes, then lexical traversal
+  // check (defence-in-depth before realpath). Catches Windows-style payloads
+  // on POSIX hosts and absolute/`..` injections even when intermediate
+  // realpath chains would resolve back inside the KB.
+  const normalizedRelative = relativePath.replace(/\\/g, '/');
+  if (path.posix.isAbsolute(normalizedRelative)) {
+    throw new Error(`path escapes KB root: ${JSON.stringify(relativePath)}`);
+  }
+  const posixNormalized = path.posix.normalize(normalizedRelative);
+  const segments = posixNormalized.split('/');
+  if (segments.some((s) => s === '..')) {
+    throw new Error(`path escapes KB root: ${JSON.stringify(relativePath)}`);
+  }
+
   const kbRoot = path.join(kbRootDir, kbName);
-  const kbRootReal = await fsp.realpath(kbRoot);
+  let kbRootReal: string;
+  try {
+    kbRootReal = await fsp.realpath(kbRoot);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw new Error(`knowledge base not found: ${JSON.stringify(kbName)}`);
+    }
+    throw error;
+  }
   const prefix = kbRootReal.endsWith(path.sep) ? kbRootReal : kbRootReal + path.sep;
 
-  const candidate = path.join(kbRoot, relativePath);
+  const candidate = path.join(kbRoot, normalizedRelative);
   let resolved: string;
   try {
     resolved = await fsp.realpath(candidate);
@@ -111,15 +134,16 @@ export async function resolveKbPath(
       // candidate is missing.
       const lexical = path.resolve(candidate);
       if (lexical !== kbRootReal && !lexical.startsWith(prefix)) {
-        throw new Error('path escapes KB root');
+        throw new Error(`path escapes KB root: ${JSON.stringify(relativePath)}`);
       }
-      throw error;
+      // RFC 010 §5.1.1: error messages MUST NOT leak absolute paths.
+      throw new Error(`path not found: ${JSON.stringify(relativePath)}`);
     }
     throw error;
   }
 
   if (resolved !== kbRootReal && !resolved.startsWith(prefix)) {
-    throw new Error('path escapes KB root');
+    throw new Error(`path escapes KB root: ${JSON.stringify(relativePath)}`);
   }
   return resolved;
 }
