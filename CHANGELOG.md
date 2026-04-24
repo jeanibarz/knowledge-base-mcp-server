@@ -30,6 +30,7 @@
 ### Fixed
 
 - Non-markdown text files (`.txt`, `.rst`, source code, logs, …) are now split with `RecursiveCharacterTextSplitter` (same `chunkSize: 1000, chunkOverlap: 200` defaults as the markdown path) instead of being wrapped in a single `Document`. Previously, a large non-markdown file produced one embedding and one retrieval result, collapsing recall to near-zero on any content other than `.md`. (#45)
+- A corrupt or unreadable FAISS index file no longer wedges startup. `FaissIndexManager.initialize` now logs a warning, deletes the corrupt `faiss.index` (and its `.json` sidecar, best-effort), and falls through to the existing rebuild path so the next `retrieve_knowledge` call re-embeds from source instead of failing. Previously the only recovery was a manual `rm -rf $FAISS_INDEX_PATH`. (#57)
 - Retrieval-quality benchmark now simulates approximate-nearest-neighbor behavior per KB so the `fanout_factor` sweep is actually sensitive across `f ∈ {1, 2, 3, 5, 10}` — exact per-KB search made the sweep collapse to a single value. Baseline regenerated. (RFC 007 PR 0.1, #26)
 - Addressed reliability issues (timeouts, hanging) with HuggingFace API by providing a local fallback.
 - HuggingFace embedding provider was broken by HuggingFace retiring the legacy
