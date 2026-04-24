@@ -26,6 +26,8 @@ describe('KnowledgeBaseServer handlers', () => {
     EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
     HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
     LOG_FILE: process.env.LOG_FILE,
+    RETRIEVE_KNOWLEDGE_DESCRIPTION: process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION,
+    LIST_KNOWLEDGE_BASES_DESCRIPTION: process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION,
   };
 
   beforeEach(() => {
@@ -270,5 +272,80 @@ describe('KnowledgeBaseServer handlers', () => {
     // The bug: before the fix, beta's source also leaks into the scoped
     // result. Asserting it does NOT appear is what proves the fix works.
     expect(text).not.toContain(`"source": ${JSON.stringify(betaSource)}`);
+  });
+
+  // --- tool description overrides (#52, RFC 010 M2) -------------------------
+  //
+  // These tests assert behaviour visible at the MCP wire surface: the
+  // `description` field the agent reads when picking which tool to call.
+  // Inspecting `mcp.server._registeredTools` is the only path to that field
+  // without spinning up a real client/transport — the SDK exposes neither a
+  // public getter nor a `tools/list` shortcut on the server instance. The
+  // shape is internal, so if a future SDK upgrade renames it these tests
+  // fail loudly rather than silently passing on an empty map.
+
+  function describeOf(server: any, toolName: string): string {
+    const registered = server['mcp']._registeredTools as Record<string, { description?: string }>;
+    expect(registered).toBeDefined();
+    expect(registered[toolName]).toBeDefined();
+    return registered[toolName].description ?? '';
+  }
+
+  it('with neither override env set, tool descriptions match the legacy hard-coded strings', async () => {
+    delete process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION;
+    delete process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION;
+    await setRetrieveEnv();
+
+    const server = await freshServer();
+
+    expect(describeOf(server, 'list_knowledge_bases')).toBe(
+      'Lists the available knowledge bases.'
+    );
+    expect(describeOf(server, 'retrieve_knowledge')).toBe(
+      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
+    );
+  });
+
+  it('RETRIEVE_KNOWLEDGE_DESCRIPTION overrides only the retrieve_knowledge description', async () => {
+    await setRetrieveEnv();
+    process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION = 'custom retrieve desc';
+    delete process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION;
+
+    const server = await freshServer();
+
+    expect(describeOf(server, 'retrieve_knowledge')).toBe('custom retrieve desc');
+    // list_knowledge_bases must not be affected by the retrieve override.
+    expect(describeOf(server, 'list_knowledge_bases')).toBe(
+      'Lists the available knowledge bases.'
+    );
+  });
+
+  it('LIST_KNOWLEDGE_BASES_DESCRIPTION overrides only the list_knowledge_bases description', async () => {
+    await setRetrieveEnv();
+    process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION = 'custom list desc';
+    delete process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION;
+
+    const server = await freshServer();
+
+    expect(describeOf(server, 'list_knowledge_bases')).toBe('custom list desc');
+    // retrieve_knowledge must not be affected by the list override.
+    expect(describeOf(server, 'retrieve_knowledge')).toBe(
+      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
+    );
+  });
+
+  it('empty-string override env vars fall back to the defaults, not the empty string', async () => {
+    await setRetrieveEnv();
+    process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION = '';
+    process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION = '';
+
+    const server = await freshServer();
+
+    expect(describeOf(server, 'retrieve_knowledge')).toBe(
+      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
+    );
+    expect(describeOf(server, 'list_knowledge_bases')).toBe(
+      'Lists the available knowledge bases.'
+    );
   });
 });
