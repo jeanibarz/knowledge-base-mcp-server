@@ -220,6 +220,48 @@ describe('FaissIndexManager permission handling', () => {
     }
   });
 
+  it('splits non-markdown text files into multiple chunks when content exceeds chunkSize', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-nonmd-chunks-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+
+    // Build a .txt payload well above the 1000-char chunkSize, with natural
+    // paragraph breaks so RecursiveCharacterTextSplitter's default separators
+    // (\n\n, \n, " ", "") produce multiple chunks rather than one.
+    const paragraphs = Array.from(
+      { length: 20 },
+      (_, i) => `Paragraph ${i}: ${'lorem ipsum dolor sit amet '.repeat(10)}`
+    );
+    const txtContent = paragraphs.join('\n\n');
+    expect(txtContent.length).toBeGreaterThan(1000);
+    const txtPath = path.join(defaultKb, 'large.txt');
+    await fsp.writeFile(txtPath, txtContent);
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    // Pre-fix behaviour: the whole file was wrapped in a single Document, so
+    // fromTexts received a one-element array. Post-fix: RecursiveCharacterTextSplitter
+    // splits by \n\n and produces multiple chunks for this payload.
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    const [texts, metadatas] = fromTextsMock.mock.calls[0] as [string[], Array<{ source: string }>];
+    expect(Array.isArray(texts)).toBe(true);
+    expect(texts.length).toBeGreaterThan(1);
+    expect(metadatas).toHaveLength(texts.length);
+    for (const metadata of metadatas) {
+      expect(metadata.source).toBe(txtPath);
+    }
+  });
+
   it('rebuilds via fromTexts once when the FAISS index is missing but sidecars are up to date', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-fallback-'));
     const kbDir = path.join(tempDir, 'kb');
