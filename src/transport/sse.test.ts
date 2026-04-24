@@ -197,6 +197,22 @@ describe('loadTransportConfig validation', () => {
     process.env.MCP_PORT = '70000';
     expect(() => loadTransportConfig()).toThrow(/MCP_PORT/);
   });
+
+  // Regression for #77: operators routinely type trailing slashes and mixed-
+  // case hostnames into env config, but browsers send the RFC 6454 form
+  // (lowercased scheme+host, no trailing slash). Normalize at parse time so
+  // the stored set matches what any real browser will send.
+  it('normalizes allowed origins (case + single trailing slash) at parse time', () => {
+    process.env.MCP_TRANSPORT = 'sse';
+    process.env.MCP_AUTH_TOKEN = VALID_TOKEN;
+    process.env.MCP_ALLOWED_ORIGINS =
+      'HTTPS://App.Example.com/,  http://localhost:8080';
+    const cfg = loadTransportConfig();
+    expect(cfg.allowedOrigins).toEqual([
+      'https://app.example.com',
+      'http://localhost:8080',
+    ]);
+  });
 });
 
 describe('SseHost — endpoints', () => {
@@ -319,6 +335,63 @@ describe('SseHost — endpoints', () => {
     );
     expect(res.headers['access-control-allow-methods']).toMatch(/GET/);
     expect(res.headers['vary']).toBe('Origin');
+  });
+
+  // Regression for #77: the allow-list lookup now normalizes the incoming
+  // Origin header (lowercase scheme+host, single trailing slash stripped)
+  // before compare, so operator config that is case- or slash-divergent from
+  // what a browser sends still matches.
+  it('(#77) OPTIONS from mixed-case Origin matches a lowercase allow-list entry', async () => {
+    const started = await startHost({
+      allowedOrigins: ['http://localhost'],
+    });
+    stop = started.stop;
+    const res = await request(started.port, {
+      method: 'OPTIONS',
+      path: '/sse',
+      headers: {
+        Origin: 'HTTP://LOCALHOST',
+        'Access-Control-Request-Method': 'GET',
+      },
+    });
+    expect(res.statusCode).toBe(204);
+    // The echo reflects the raw header the browser sent — that is what the
+    // browser byte-compares against its own Origin for CORS validation.
+    expect(res.headers['access-control-allow-origin']).toBe('HTTP://LOCALHOST');
+  });
+
+  it('(#77) OPTIONS from Origin with trailing slash matches a no-slash allow-list entry', async () => {
+    const started = await startHost({
+      allowedOrigins: ['https://app.example.com'],
+    });
+    stop = started.stop;
+    const res = await request(started.port, {
+      method: 'OPTIONS',
+      path: '/sse',
+      headers: {
+        // Real browsers never send a trailing slash, but embedded/non-browser
+        // callers sometimes do — accept it so the allow-list is the single
+        // source of truth for what's permitted.
+        Origin: 'https://app.example.com/',
+        'Access-Control-Request-Method': 'GET',
+      },
+    });
+    expect(res.statusCode).toBe(204);
+  });
+
+  it('(#77) normalization does NOT widen the allow-list — unrelated origin still 403', async () => {
+    const started = await startHost({
+      allowedOrigins: ['https://app.example.com'],
+    });
+    stop = started.stop;
+    const res = await request(started.port, {
+      path: '/sse',
+      headers: {
+        Origin: 'https://other.example.com',
+        Authorization: `Bearer ${VALID_TOKEN}`,
+      },
+    });
+    expect(res.statusCode).toBe(403);
   });
 
   it('unknown route returns 404 (after auth)', async () => {

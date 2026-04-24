@@ -20,7 +20,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 
 import { logger } from '../logger.js';
-import type { TransportConfig } from '../config.js';
+import { normalizeOrigin, type TransportConfig } from '../config.js';
 
 const SSE_ENDPOINT = '/sse';
 const MESSAGES_ENDPOINT = '/messages';
@@ -168,6 +168,15 @@ export class SseHost {
     const url = new URL(req.url ?? '/', 'http://placeholder');
     const path = url.pathname;
     const originHeader = headerValue(req.headers.origin);
+    // The stored allow-list is already normalized at config-parse time (see
+    // parseAllowedOrigins). Apply the same normalization to the incoming
+    // Origin before lookup so operator-friendly input like a trailing slash
+    // or mixed-case scheme still matches the browser-sent form. The raw
+    // header is kept for the access log and the CORS echo, because browsers
+    // compare Access-Control-Allow-Origin against their sent Origin byte-
+    // exactly.
+    const normalizedOrigin =
+      originHeader !== null ? normalizeOrigin(originHeader) : null;
     const authPresent = Boolean(req.headers.authorization);
 
     const finalize = (status: number) => {
@@ -184,7 +193,7 @@ export class SseHost {
 
     // 1. CORS preflight short-circuits before auth.
     if (method === 'OPTIONS') {
-      const status = this.handlePreflight(req, res, originHeader);
+      const status = this.handlePreflight(req, res, originHeader, normalizedOrigin);
       finalize(status);
       return;
     }
@@ -197,8 +206,9 @@ export class SseHost {
     }
 
     // 3. Origin allow-list. Missing Origin is treated as a non-browser caller
-    //    and accepted; if Origin is present it must be in the allow-list.
-    if (originHeader !== null && !this.originAllowList.has(originHeader)) {
+    //    and accepted; if Origin is present it must be in the allow-list
+    //    (after normalization).
+    if (normalizedOrigin !== null && !this.originAllowList.has(normalizedOrigin)) {
       respond(res, 403, 'Origin not allowed');
       finalize(403);
       return;
@@ -272,8 +282,13 @@ export class SseHost {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     originHeader: string | null,
+    normalizedOrigin: string | null,
   ): number {
-    if (originHeader === null || !this.originAllowList.has(originHeader)) {
+    // originHeader and normalizedOrigin are null together (see dispatch); this
+    // guard short-circuits both cases — including a preflight with no Origin
+    // header, which gets a 403.
+    if (originHeader === null || normalizedOrigin === null ||
+        !this.originAllowList.has(normalizedOrigin)) {
       respond(res, 403, 'Origin not allowed');
       return 403;
     }
