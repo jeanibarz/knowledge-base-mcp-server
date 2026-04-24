@@ -22,7 +22,7 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
 ### Manual Installation
 **Prerequisites**
 
-*   [Node.js](https://nodejs.org/) (version 16 or higher)
+*   [Node.js](https://nodejs.org/) (version 20 or higher)
 *   [npm](https://www.npmjs.com/) (Node Package Manager)
 
 1.  **Clone the repository:**

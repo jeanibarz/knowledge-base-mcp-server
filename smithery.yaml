@@ -27,9 +27,9 @@ startCommand:
         description: Hugging Face Inference Provider to use when routing through the HF router (examples: hf-inference, together, replicate, fireworks-ai, sambanova)
       embeddingProvider:
         type: string
-        enum: ["huggingface", "ollama"]
+        enum: ["huggingface", "ollama", "openai"]
         default: huggingface
-        description: Embedding provider to use (huggingface or ollama)
+        description: Embedding provider to use (huggingface, ollama, or openai)
       ollamaBaseUrl:
         type: string
         default: http://localhost:11434
@@ -38,6 +38,13 @@ startCommand:
         type: string
         default: dengcao/Qwen3-Embedding-0.6B:Q8_0
         description: Ollama model to use for embeddings
+      openaiApiKey:
+        type: string
+        description: OpenAI API key for embeddings
+      openaiModelName:
+        type: string
+        default: text-embedding-ada-002
+        description: OpenAI model to use for embeddings
     required:
       - knowledgeBasesRootDir
       - faissIndexPath
@@ -55,6 +62,11 @@ startCommand:
         required:
           - ollamaBaseUrl
           - ollamaModel
+      - properties:
+          embeddingProvider:
+            const: openai
+        required:
+          - openaiApiKey
     default: {}
   commandFunction:
     # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
@@ -70,7 +82,9 @@ startCommand:
         HUGGINGFACE_PROVIDER: config.huggingfaceProvider,
         EMBEDDING_PROVIDER: config.embeddingProvider,
         OLLAMA_BASE_URL: config.ollamaBaseUrl,
-        OLLAMA_MODEL: config.ollamaModel
+        OLLAMA_MODEL: config.ollamaModel,
+        OPENAI_API_KEY: config.openaiApiKey,
+        OPENAI_MODEL_NAME: config.openaiModelName
       }
     })
   exampleConfig:
@@ -82,3 +96,5 @@ startCommand:
     embeddingProvider: huggingface
     ollamaBaseUrl: http://localhost:11434
     ollamaModel: dengcao/Qwen3-Embedding-0.6B:Q8_0
+    openaiApiKey: sk-example_key_123
+    openaiModelName: text-embedding-ada-002
