@@ -42,6 +42,28 @@ export const DEFAULT_OPENAI_MODEL_NAME = 'text-embedding-3-small';
 export const OPENAI_MODEL_NAME = process.env.OPENAI_MODEL_NAME || DEFAULT_OPENAI_MODEL_NAME;
 
 // ---------------------------------------------------------------------------
+// Tool description overrides (RFC 010 M2 / #52).
+// Operators can repurpose the same binary for different deployments (eng
+// docs vs. personal notes vs. postmortems) by overriding the model-facing
+// description the agent sees during tool selection. Read once at module
+// load; set the env vars BEFORE the server process starts.
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_RETRIEVE_KNOWLEDGE_DESCRIPTION =
+  'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.';
+export const RETRIEVE_KNOWLEDGE_DESCRIPTION =
+  process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION && process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION.length > 0
+    ? process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION
+    : DEFAULT_RETRIEVE_KNOWLEDGE_DESCRIPTION;
+
+export const DEFAULT_LIST_KNOWLEDGE_BASES_DESCRIPTION =
+  'Lists the available knowledge bases.';
+export const LIST_KNOWLEDGE_BASES_DESCRIPTION =
+  process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION && process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION.length > 0
+    ? process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION
+    : DEFAULT_LIST_KNOWLEDGE_BASES_DESCRIPTION;
+
+// ---------------------------------------------------------------------------
 // Transport configuration (RFC 008 stage 1: stdio + SSE).
 // ---------------------------------------------------------------------------
 

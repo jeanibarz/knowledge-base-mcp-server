@@ -105,6 +105,11 @@ npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claud
     
     *   The server supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`.
     *   Logging can be routed to a file by setting `LOG_FILE=/path/to/logs/knowledge-base.log`. Log verbosity defaults to `info` and can be adjusted with `LOG_LEVEL=debug|info|warn|error`.
+    *   **Tailor tool descriptions per deployment.** The `retrieve_knowledge` and `list_knowledge_bases` descriptions the agent reads when picking tools can be overridden via `RETRIEVE_KNOWLEDGE_DESCRIPTION` and `LIST_KNOWLEDGE_BASES_DESCRIPTION`. Unset or empty falls back to the built-in defaults. Example:
+        ```bash
+        RETRIEVE_KNOWLEDGE_DESCRIPTION="Search engineering runbooks, RFCs, and postmortems."
+        LIST_KNOWLEDGE_BASES_DESCRIPTION="List available engineering knowledge bases."
+        ```
     *   You can set these environment variables in your `.bashrc` or `.zshrc` file, or directly in the MCP settings.
 
 4.  **Build the server:**

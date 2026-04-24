@@ -7,7 +7,9 @@ import * as fsp from 'fs/promises';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   KNOWLEDGE_BASES_ROOT_DIR,
+  LIST_KNOWLEDGE_BASES_DESCRIPTION,
   loadTransportConfig,
+  RETRIEVE_KNOWLEDGE_DESCRIPTION,
   TransportConfigError,
   type TransportConfig,
 } from './config.js';
@@ -48,13 +50,13 @@ export class KnowledgeBaseServer {
   private registerTools(mcp: McpServer) {
     mcp.tool(
       'list_knowledge_bases',
-      'Lists the available knowledge bases.',
+      LIST_KNOWLEDGE_BASES_DESCRIPTION,
       async () => this.handleListKnowledgeBases()
     );
 
     mcp.tool(
       'retrieve_knowledge',
-      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.',
+      RETRIEVE_KNOWLEDGE_DESCRIPTION,
       {
         query: z.string().describe('The search query to use for retrieving similar chunks from the knowledge base.'),
         knowledge_base_name: z.string().optional().describe('The name of the knowledge base to search. If omitted, all available knowledge bases are considered.'),
