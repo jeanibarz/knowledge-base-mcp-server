@@ -1,15 +1,27 @@
 {
-  "name": "knowledge-base-mcp-server",
+  "name": "@jeanibarz/knowledge-base-mcp-server",
   "version": "0.1.0",
   "description": "MCP server for retrieving data from different knowledge bases",
   "type": "module",
   "main": "build/index.js",
+  "bin": {
+    "knowledge-base-mcp-server": "build/index.js"
+  },
+  "files": [
+    "build/",
+    "CHANGELOG.md",
+    "UNLICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x build/index.js",
     "bench": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/run.js",
     "test": "jest --runInBand",
     "start": "node build/index.js",
     "dev": "nodemon src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jeanibarz/knowledge-base-mcp-server.git"
   },
   "keywords": [],
   "author": "jean.ibarz",

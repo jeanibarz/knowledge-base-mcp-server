@@ -18,9 +18,17 @@ Live demo recording coming soon ([tracking #40](https://github.com/jeanibarz/kno
 
 ## Setup Instructions
 
-These instructions assume you have Node.js and npm installed on your system.
+These instructions assume you have Node.js (version 20 or higher) and npm installed on your system.
 
-### Installing via Smithery
+### Install (one command)
+
+```bash
+npx -y @jeanibarz/knowledge-base-mcp-server
+```
+
+`npx` fetches the package from npm and launches the stdio server. Point your MCP client at `npx -y @jeanibarz/knowledge-base-mcp-server` and configure the environment variables documented below. See [docs/clients.md](docs/clients.md) for copy-pasteable snippets (Claude Desktop, Codex CLI, Cursor, Continue, Cline).
+
+### Install via Smithery
 
 To install Knowledge Base Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@jeanibarz/knowledge-base-mcp-server):
 
@@ -28,7 +36,10 @@ To install Knowledge Base Server for Claude Desktop automatically via [Smithery]
 npx -y @smithery/cli install @jeanibarz/knowledge-base-mcp-server --client claude
 ```
 
-### Manual Installation
+### Install from source
+
+Use this path if you want to develop against the repo or pin an unreleased commit.
+
 **Prerequisites**
 
 *   [Node.js](https://nodejs.org/) (version 20 or higher)
