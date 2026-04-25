@@ -28,7 +28,7 @@ import { listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './lock.js';
 import { logger } from './logger.js';
 import { filterIngestablePaths, getFilesRecursively } from './utils.js';
-import { readFileSync } from 'fs';
+import { readFileSync, realpathSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -435,8 +435,28 @@ function getPackageVersion(): string {
 }
 
 // ----- driver ---------------------------------------------------------------
+//
+// Detect whether this module is being run as a script or imported. Naive
+// string comparison of `import.meta.url` against `process.argv[1]` fails
+// when invoked through the npm-install-g symlink: argv[1] is the symlink
+// path (e.g. `~/.nvm/.../bin/kb`) while import.meta.url resolves to the
+// canonical `build/cli.js`. realpathSync collapses the symlink so the
+// comparison works in all four cases:
+//   - `node build/cli.js`              (direct, dev)
+//   - `./build/cli.js`                 (direct via shebang)
+//   - `kb` (npm install -g symlink)    (the production case)
+//   - `import { main } from './cli.js'` (test imports — driver does NOT run)
+function isMainModule(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    const resolved = realpathSync(process.argv[1]);
+    return resolved === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
 
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('/cli.js')) {
+if (isMainModule()) {
   void main(process.argv).then((code) => {
     process.exit(code);
   }).catch((err) => {

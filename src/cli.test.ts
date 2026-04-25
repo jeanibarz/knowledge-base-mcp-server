@@ -58,6 +58,25 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
   });
 
+  // Regression: 0.2.0 had a driver guard `argv[1].endsWith('/cli.js')` that
+  // failed under the npm-install-g symlink (argv[1] is `.../bin/kb`, not
+  // `.../cli.js`), causing `kb` to silently exit 0 without running anything.
+  // Reproduce by invoking through a symlink.
+  it('runs main() when invoked through a symlink (regression for 0.2.0 npm-i-g bug)', async () => {
+    const linkPath = path.join(os.tmpdir(), `kb-symlink-${process.pid}-${Date.now()}`);
+    await fsp.symlink(cliPath, linkPath);
+    try {
+      const r = spawnSync('node', [linkPath, '--version'], {
+        env: { PATH: process.env.PATH ?? '' },
+        encoding: 'utf-8',
+      });
+      expect(r.status).toBe(0);
+      expect((r.stdout ?? '').trim()).toMatch(/^\d+\.\d+\.\d+/);
+    } finally {
+      await fsp.unlink(linkPath).catch(() => {});
+    }
+  });
+
   it('unknown subcommand exits 2 with help', () => {
     const r = runCli(['notacommand']);
     expect(r.code).toBe(2);
