@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.0] — 2026-04-25
+
+### Added
+
+- **`kb` CLI bin (RFC 012 M1).** A new bin alongside `knowledge-base-mcp-server`, invoked from PATH so updates via `npm install -g @jeanibarz/knowledge-base-mcp-server@latest` are picked up on every invocation — no AI-client (Claude Code, Codex CLI, Cursor, Continue, Cline) restart needed for the operator's fix-and-test loop. Two subcommands: `kb list` and `kb search <query>`. The `search` path defaults to **read-only** (loads the existing FAISS index, runs similarity search, no writes); pass `--refresh` to also re-scan KB files under the write lock. `--stdin` reads the query from stdin (multi-line safe — no shell escaping bugs for AI-agent-generated queries with newlines/quotes). `--format=md` (default) reproduces MCP `retrieve_knowledge`'s wire output plus a single-line freshness footer; `--format=json` returns a structured object with `results`, `index_mtime`, `stale`, `modified_files`, `new_files`. See [`docs/rfcs/012-cli-distribution.md`](./docs/rfcs/012-cli-distribution.md).
+
+- **CLI freshness footer.** Default `kb search` runs a cheap stat-only walk of every KB and emits one of two footers per call: `> _Index up-to-date as of <iso8601>._` or `> _Index may be stale: N modified, M new file(s) since <iso8601>. Run \`kb search --refresh\` to update._`. Mtime source is the inner FAISS binary file (`${FAISS_INDEX_PATH}/faiss.index/faiss.index`), not the directory — directory mtime doesn't update on file overwrites. ~50–100 ms cost added; `--refresh` mode emits "Index refreshed at …" instead.
+
+- **CLI model-mismatch check.** `kb search` reads `model_name.txt` and exits `2` with a clear stderr message if the on-disk index was built with a different embedding model than the CLI's env points at. Closes the silent vector-space-mismatch failure mode that arose from MCP-server `mcp.json` env diverging from shell `~/.bashrc` env. `--refresh` emits a warning instead and proceeds (the existing model-switch path triggers a full re-embed).
+
+- **`FaissIndexManager.initialize({ readOnly?: boolean })`.** Method-level flag. When `true`, suppresses the previously unconditional `model_name.txt` write. `FaissStore.load` is itself read-only, so this is the single seam needed to make the entire init path safe to run alongside a separate writer (e.g. the MCP server) without write-lock contention. The CLI default uses this; MCP and `kb search --refresh` use the unchanged write-path.
+
+- **Atomic `model_name.txt` write.** `FaissIndexManager.initialize` (write path) now writes `model_name.txt` via tmp + atomic rename instead of `fsp.writeFile`. The previous truncate-then-write pattern caused false-positive CLI mismatch errors when a CLI invocation landed in the truncate window of an MCP server's `initialize`.
+
+- **Split-lock coordination via `proper-lockfile` (new dep).** Two distinct mechanisms in `src/lock.ts`:
+  - **PID advisory** at `${FAISS_INDEX_PATH}/.kb-mcp.pid`. Acquired atomically with `O_CREAT | O_EXCL` (mode 0o600) by `KnowledgeBaseServer.run()` on startup; released on graceful shutdown. Two concurrent MCP servers against the same `FAISS_INDEX_PATH` are now refused — the second fails-fast with a clear "another instance running (PID N)" message. Stale PID files (recorded PID is dead) are silently overwritten.
+  - **Write lock** at `${FAISS_INDEX_PATH}/.kb-write.lock`. Acquired only around `updateIndex` calls inside `KnowledgeBaseServer`, `ReindexTriggerWatcher`, and `kb search --refresh`. Released immediately after. Default `kb search` (read-only) does NOT acquire it. Heartbeat enabled (5 s) so long-running re-embeds aren't false-stale.
+
+- New extracted modules `src/formatter.ts` (markdown/JSON formatters + `sanitizeMetadataForWire`) and `src/kb-fs.ts` (`listKnowledgeBases`). Both surfaces (MCP + CLI) import from them; the CLI no longer drags in MCP-SDK transitive imports just to format output.
+
+### Changed
+
+- **Single MCP-server-per-`FAISS_INDEX_PATH` is now enforced (technically breaking).** The constraint was previously documented in the README and `docs/architecture/threat-model.md` but not enforced. Users who (against documented guidance) ran two MCP servers against the same `FAISS_INDEX_PATH` will now see the second one fail-fast with `InstanceAlreadyRunningError`. No change for users who follow the documented guidance. If you genuinely need two servers, give them separate `FAISS_INDEX_PATH` values.
+
+- `KnowledgeBaseServer.handleRetrieveKnowledge`, the `ReindexTriggerWatcher` callback, and `kb search --refresh` all wrap `updateIndex()` in the new write lock. Behavior is unchanged in the steady state; concurrent writers serialize instead of racing.
+
+- The markdown formatter and `sanitizeMetadataForWire` move from `KnowledgeBaseServer.ts` to `src/formatter.ts`. The old export path is preserved as a re-export for backward compat with existing code that imported from `KnowledgeBaseServer`. MCP wire output is byte-equal to before.
+
+- `package.json` `bin` adds `kb` → `build/cli.js`. The existing `knowledge-base-mcp-server` → `build/index.js` is unchanged. Build script chmods both bins.
+
 ## [0.1.2] — 2026-04-25
 
 ### Fixed

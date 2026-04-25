@@ -32,6 +32,40 @@ import { logger } from './logger.js';
 
 const MODEL_NAME_FILE = path.join(FAISS_INDEX_PATH, 'model_name.txt');
 
+/**
+ * RFC 012 §4.7 — atomic write for `model_name.txt`. Prior implementation used
+ * `fsp.writeFile` which truncates the file to 0 bytes before writing; a CLI
+ * invocation that reads the file in the truncate window saw an empty string
+ * and produced a false-positive embedding-model mismatch error. tmp+rename
+ * is atomic on POSIX — readers see either the old contents or the new
+ * contents, never a partial state.
+ */
+async function writeModelNameAtomic(modelName: string): Promise<void> {
+  const tmp = `${MODEL_NAME_FILE}.${process.pid}.tmp`;
+  await fsp.writeFile(tmp, modelName, 'utf-8');
+  await fsp.rename(tmp, MODEL_NAME_FILE);
+}
+
+/** Test/CLI helper: read the recorded model name. Returns null when the file
+ * is absent (fresh index never written). Read errors propagate so callers
+ * can distinguish "no file" from "permission denied". */
+export async function readStoredModelName(): Promise<string | null> {
+  try {
+    return (await fsp.readFile(MODEL_NAME_FILE, 'utf-8')).trim();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** Test/CLI helper: the absolute path to the FAISS binary file inside
+ * `${FAISS_INDEX_PATH}/faiss.index/`. Round-3 fix: callers reading mtime
+ * for staleness signals must target this inner file, NOT the directory
+ * itself (directory mtime doesn't update on file overwrites). */
+export function faissIndexBinaryPath(): string {
+  return path.join(FAISS_INDEX_PATH, 'faiss.index', 'faiss.index');
+}
+
 // -----------------------------------------------------------------------------
 // RFC 011 §5.4 — whitelisted frontmatter lift + sibling PDF detection.
 //
@@ -290,7 +324,16 @@ export class FaissIndexManager {
     }
   }
 
-  async initialize(): Promise<void> {
+  /**
+   * RFC 012 §4.5 — `readOnly: true` skips the unconditional
+   * `model_name.txt` write at the bottom of this method. `FaissStore.load`
+   * is itself read-only (verified in node_modules/@langchain/community/dist/vectorstores/faiss.js
+   * lines 219-230 — readFile + InMemoryDocstore, no writes), so suppressing
+   * that one write makes the entire init path safe to run alongside a
+   * separate writer (e.g. the MCP server) without lockfile contention.
+   * Default behavior (read-write) is unchanged.
+   */
+  async initialize(opts: { readOnly?: boolean } = {}): Promise<void> {
     try {
       if (!(await pathExists(FAISS_INDEX_PATH))) {
         try {
@@ -360,11 +403,15 @@ export class FaissIndexManager {
         this.faissIndex = null;
       }
 
-      // Save the current model name for future checks
-      try {
-        await fsp.writeFile(MODEL_NAME_FILE, this.modelName, 'utf-8');
-      } catch (error) {
-        handleFsOperationError('persist embedding model metadata in', MODEL_NAME_FILE, error);
+      // Save the current model name for future checks. Skipped under
+      // readOnly:true (RFC 012 §4.5) so a CLI invocation can load the
+      // index without contending with a running MCP server.
+      if (!opts.readOnly) {
+        try {
+          await writeModelNameAtomic(this.modelName);
+        } catch (error) {
+          handleFsOperationError('persist embedding model metadata in', MODEL_NAME_FILE, error);
+        }
       }
     } catch (error: any) {
       if (!error?.__alreadyLogged) {

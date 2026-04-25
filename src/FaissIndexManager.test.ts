@@ -558,6 +558,55 @@ describe('FaissIndexManager permission handling', () => {
     await expect(fsp.stat(sidecarPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fsp.stat(`${sidecarPath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  // RFC 012 §4.5 — readOnly seam
+  it('initialize({ readOnly: true }) does not write model_name.txt', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-readonly-'));
+    const kbDir = path.join(tempDir, 'kb');
+    await fsp.mkdir(kbDir, { recursive: true });
+    const faissDir = path.join(tempDir, '.faiss');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+
+    await manager.initialize({ readOnly: true });
+
+    // model_name.txt must NOT exist after a read-only init.
+    const modelNameFile = path.join(faissDir, 'model_name.txt');
+    await expect(fsp.stat(modelNameFile)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('initialize() (default) writes model_name.txt atomically', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-atomic-'));
+    const kbDir = path.join(tempDir, 'kb');
+    await fsp.mkdir(kbDir, { recursive: true });
+    const faissDir = path.join(tempDir, '.faiss');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    // model_name.txt exists with the configured model.
+    const modelNameFile = path.join(faissDir, 'model_name.txt');
+    expect(await fsp.readFile(modelNameFile, 'utf-8')).toBe('BAAI/bge-small-en-v1.5');
+
+    // No leftover .tmp file from the atomic rename.
+    const entries = await fsp.readdir(faissDir);
+    const tmpEntries = entries.filter((e) => e.startsWith('model_name.txt.') && e.endsWith('.tmp'));
+    expect(tmpEntries).toEqual([]);
+  });
 });
 
 describe('FaissIndexManager chunk metadata (RFC 010 M1)', () => {

@@ -3,7 +3,6 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
-import * as fsp from 'fs/promises';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
@@ -16,6 +15,14 @@ import {
   TransportConfigError,
   type TransportConfig,
 } from './config.js';
+import { formatRetrievalAsMarkdown, sanitizeMetadataForWire } from './formatter.js';
+import { listKnowledgeBases } from './kb-fs.js';
+import {
+  acquireInstanceAdvisory,
+  InstanceAlreadyRunningError,
+  releaseInstanceAdvisory,
+  withWriteLock,
+} from './lock.js';
 import { logger } from './logger.js';
 import { SseHost } from './transport/sse.js';
 import { ReindexTriggerWatcher } from './triggerWatcher.js';
@@ -23,31 +30,10 @@ import { ReindexTriggerWatcher } from './triggerWatcher.js';
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
 
-/**
- * Strips `frontmatter.extras` from a chunk's metadata before wire
- * serialization unless the operator has opted back in via
- * `FRONTMATTER_EXTRAS_WIRE_VISIBLE=true`. RFC 011 §7.1 R1 — extras are a
- * leak surface the operator owns; the default posture is to suppress.
- *
- * Shallow-clones only the branches it mutates to avoid touching the
- * original `Document.metadata` (which is cached in the FAISS store).
- */
-export function sanitizeMetadataForWire(
-  metadata: Record<string, unknown>,
-  extrasVisible: boolean,
-): Record<string, unknown> {
-  if (extrasVisible) return metadata;
-  const fm = metadata.frontmatter;
-  if (!fm || typeof fm !== 'object') return metadata;
-  const fmObj = fm as Record<string, unknown>;
-  if (!('extras' in fmObj)) return metadata;
-  const { extras, ...fmWithoutExtras } = fmObj;
-  void extras;
-  return {
-    ...metadata,
-    frontmatter: fmWithoutExtras,
-  };
-}
+// Re-export for backward compatibility: existing tests import
+// `sanitizeMetadataForWire` from this module. The canonical home is now
+// `src/formatter.ts` (RFC 012 §4.9 boundary fix).
+export { sanitizeMetadataForWire };
 
 export class KnowledgeBaseServer {
   private mcp: McpServer;
@@ -99,8 +85,7 @@ export class KnowledgeBaseServer {
 
   private async handleListKnowledgeBases(): Promise<CallToolResult> {
     try {
-      const entries = await fsp.readdir(KNOWLEDGE_BASES_ROOT_DIR);
-      const knowledgeBases = entries.filter((entry) => !entry.startsWith('.'));
+      const knowledgeBases = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
       const content: TextContent = {
         type: 'text',
         text: JSON.stringify(knowledgeBases, null, 2),
@@ -128,8 +113,10 @@ export class KnowledgeBaseServer {
       const startTime = Date.now();
       logger.debug(`[${startTime}] handleRetrieveKnowledge started`);
 
-      // Update FAISS index: if a specific knowledge base is provided, update only that one; otherwise update all.
-      await this.faissManager.updateIndex(knowledgeBaseName);
+      // RFC 012 §4.8.2 — wrap the write-path updateIndex in the short-lived
+      // write lock. The MCP server, the trigger watcher, and `kb search
+      // --refresh` all serialize through this single primitive.
+      await withWriteLock(() => this.faissManager.updateIndex(knowledgeBaseName));
       logger.debug(`[${Date.now()}] FAISS index update completed`);
 
       // Perform similarity search using the provided query.
@@ -137,26 +124,10 @@ export class KnowledgeBaseServer {
       logger.debug(`[${Date.now()}] Similarity search completed`);
 
       // Build a nicely formatted markdown response including the similarity score.
-      let formattedResults = '';
-      if (similaritySearchResults && similaritySearchResults.length > 0) {
-        formattedResults = similaritySearchResults
-          .map((doc, idx) => {
-            const resultHeader = `**Result ${idx + 1}:**`;
-            const content = doc.pageContent.trim();
-            const sanitizedMetadata = sanitizeMetadataForWire(
-              doc.metadata as Record<string, unknown>,
-              FRONTMATTER_EXTRAS_WIRE_VISIBLE,
-            );
-            const metadata = JSON.stringify(sanitizedMetadata, null, 2);
-            const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
-            return `${resultHeader}\n\n${scoreText}${content}\n\n**Source:**\n\`\`\`json\n${metadata}\n\`\`\``;
-          })
-          .join('\n\n---\n\n');
-      } else {
-        formattedResults = '_No similar results found._';
-      }
-      const disclaimer = '\n\n> **Disclaimer:** The provided results might not all be relevant. Please cross-check the relevance of the information.';
-      const responseText = `## Semantic Search Results\n\n${formattedResults}${disclaimer}`;
+      const responseText = formatRetrievalAsMarkdown(
+        similaritySearchResults,
+        FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+      );
 
       const endTime = Date.now();
       logger.debug(`[${endTime}] handleRetrieveKnowledge completed in ${endTime - startTime}ms`);
@@ -187,6 +158,21 @@ export class KnowledgeBaseServer {
       throw err;
     }
 
+    // RFC 012 §4.8.1 — claim the single-instance advisory before any
+    // index work. Two concurrent MCP servers against the same
+    // FAISS_INDEX_PATH would corrupt the index; the PID file makes that
+    // impossible (one process wins atomically via O_EXCL).
+    try {
+      await acquireInstanceAdvisory();
+    } catch (err) {
+      if (err instanceof InstanceAlreadyRunningError) {
+        logger.error(err.message);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+
     try {
       if (transportConfig.transport === 'stdio') {
         await this.runStdio();
@@ -198,6 +184,10 @@ export class KnowledgeBaseServer {
       if (error?.stack) {
         logger.error(error.stack);
       }
+      // Best-effort release on startup failure so a crashed start doesn't
+      // strand the PID file and block the next run for a stale-detection
+      // cycle.
+      await releaseInstanceAdvisory();
       process.exitCode = 1;
     }
   }
@@ -235,7 +225,9 @@ export class KnowledgeBaseServer {
     }
     this.triggerWatcher = new ReindexTriggerWatcher(
       REINDEX_TRIGGER_PATH,
-      () => this.faissManager.updateIndex(undefined),
+      // RFC 012 §4.8.2 — trigger-driven updateIndex also serializes through
+      // the write lock so a CLI `--refresh` doesn't race a watcher cycle.
+      () => withWriteLock(() => this.faissManager.updateIndex(undefined)),
       REINDEX_TRIGGER_POLL_MS,
     );
     this.triggerWatcher.start();
@@ -272,5 +264,8 @@ export class KnowledgeBaseServer {
     } catch (err) {
       logger.warn(`Error closing root mcp: ${(err as Error).message}`);
     }
+    // RFC 012 §4.8.1 — release advisory last so a slow MCP shutdown
+    // doesn't cause a fast restart to false-fire "another instance".
+    await releaseInstanceAdvisory();
   }
 }
