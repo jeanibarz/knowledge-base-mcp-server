@@ -2,6 +2,19 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
+// RFC 013 M1+M2: per-model layout. Default test config (huggingface +
+// BAAI/bge-small-en-v1.5) maps to this model_id slug.
+const DEFAULT_MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
+function modelDirIn(faissPath: string): string {
+  return path.join(faissPath, 'models', DEFAULT_MODEL_ID);
+}
+function modelIndexPathIn(faissPath: string): string {
+  return path.join(modelDirIn(faissPath), 'faiss.index');
+}
+function modelNameFileIn(faissPath: string): string {
+  return path.join(modelDirIn(faissPath), 'model_name.txt');
+}
+
 const saveMock = jest.fn();
 const addDocumentsMock = jest.fn();
 const fromTextsMock = jest.fn();
@@ -175,7 +188,7 @@ describe('FaissIndexManager permission handling', () => {
     await manager.initialize();
 
     await expect(manager.updateIndex()).rejects.toThrow(/Permission denied/);
-    expect(saveMock).toHaveBeenCalledWith(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'));
+    expect(saveMock).toHaveBeenCalledWith(modelIndexPathIn(process.env.FAISS_INDEX_PATH!));
 
     await new Promise((resolve) => setImmediate(resolve));
     const logContents = await fsp.readFile(logFile, 'utf-8');
@@ -207,7 +220,7 @@ describe('FaissIndexManager permission handling', () => {
     await manager.updateIndex();
 
     expect(saveMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).toHaveBeenCalledWith(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'));
+    expect(saveMock).toHaveBeenCalledWith(modelIndexPathIn(process.env.FAISS_INDEX_PATH!));
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
     expect(addDocumentsMock).toHaveBeenCalledTimes(fileCount - 1);
 
@@ -302,7 +315,7 @@ describe('FaissIndexManager permission handling', () => {
     // will see it missing on disk — exactly the state the fallback branch is
     // meant to recover from. Assert that precondition explicitly.
     await expect(
-      fsp.stat(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'))
+      fsp.stat(modelIndexPathIn(process.env.FAISS_INDEX_PATH!))
     ).rejects.toMatchObject({ code: 'ENOENT' });
 
     // Reset mocks so the fallback-branch call counts are isolated.
@@ -324,7 +337,7 @@ describe('FaissIndexManager permission handling', () => {
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
     expect(addDocumentsMock).not.toHaveBeenCalled();
     expect(saveMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).toHaveBeenCalledWith(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'));
+    expect(saveMock).toHaveBeenCalledWith(modelIndexPathIn(process.env.FAISS_INDEX_PATH!));
 
     // fromTexts must receive documents from every file at once. With content
     // well under the 1000-char chunkSize, each file produces exactly one chunk,
@@ -357,10 +370,9 @@ describe('FaissIndexManager permission handling', () => {
 
     const faissDir = path.join(tempDir, '.faiss');
     await fsp.mkdir(faissDir, { recursive: true });
-    const indexFilePath = path.join(faissDir, 'faiss.index');
-    const indexJsonPath = `${indexFilePath}.json`;
+    await fsp.mkdir(modelDirIn(faissDir), { recursive: true });
+    const indexFilePath = modelIndexPathIn(faissDir);
     await fsp.writeFile(indexFilePath, 'corrupt-bytes');
-    await fsp.writeFile(indexJsonPath, '{"docstore":"corrupt"}');
 
     process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
     process.env.FAISS_INDEX_PATH = faissDir;
@@ -379,7 +391,6 @@ describe('FaissIndexManager permission handling', () => {
 
     expect(loadMock).toHaveBeenCalledWith(indexFilePath, expect.anything());
     await expect(fsp.stat(indexFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(fsp.stat(indexJsonPath)).rejects.toMatchObject({ code: 'ENOENT' });
 
     // End-to-end: the next updateIndex must actually rebuild via fromTexts,
     // not just observe a null faissIndex. This proves the corrupt-recovery
@@ -396,7 +407,8 @@ describe('FaissIndexManager permission handling', () => {
 
     const faissDir = path.join(tempDir, '.faiss');
     await fsp.mkdir(faissDir, { recursive: true });
-    const indexFilePath = path.join(faissDir, 'faiss.index');
+    await fsp.mkdir(modelDirIn(faissDir), { recursive: true });
+    const indexFilePath = modelIndexPathIn(faissDir);
     await fsp.writeFile(indexFilePath, 'corrupt-bytes');
 
     process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
@@ -408,10 +420,12 @@ describe('FaissIndexManager permission handling', () => {
       throw new Error('invalid faiss index header');
     });
 
-    // 0o500 on the containing directory keeps stat/read permitted (so the
-    // load branch fires) but denies unlink, forcing the handleFsOperationError
-    // rethrow path in the corrupt-recovery catch.
-    await fsp.chmod(faissDir, 0o500);
+    // 0o500 on the model dir (containing indexFilePath) keeps stat/read
+    // permitted (so the load branch fires) but denies unlink, forcing the
+    // handleFsOperationError rethrow path in the corrupt-recovery catch.
+    // RFC 013 M1+M2: indexFilePath now sits under models/<id>/, so the chmod
+    // targets that subtree.
+    await fsp.chmod(modelDirIn(faissDir), 0o500);
 
     try {
       jest.resetModules();
@@ -420,7 +434,7 @@ describe('FaissIndexManager permission handling', () => {
 
       await expect(manager.initialize()).rejects.toThrow(/Permission denied/);
     } finally {
-      await fsp.chmod(faissDir, 0o700);
+      await fsp.chmod(modelDirIn(faissDir), 0o700);
     }
   });
 
@@ -437,7 +451,8 @@ describe('FaissIndexManager permission handling', () => {
 
     const faissDir = path.join(tempDir, '.faiss');
     await fsp.mkdir(faissDir, { recursive: true });
-    const indexFilePath = path.join(faissDir, 'faiss.index');
+    await fsp.mkdir(modelDirIn(faissDir), { recursive: true });
+    const indexFilePath = modelIndexPathIn(faissDir);
     // Modern langchain layout: indexFilePath is a directory.
     await fsp.mkdir(indexFilePath, { recursive: true });
     await fsp.writeFile(path.join(indexFilePath, 'faiss.index'), 'corrupt-bytes');
@@ -468,8 +483,8 @@ describe('FaissIndexManager permission handling', () => {
     expect(saveMock).toHaveBeenCalledWith(indexFilePath);
   });
 
-  it('recreates the index on model switch when indexFilePath is a directory (modern layout)', async () => {
-    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-modelswitch-dir-'));
+  it('migrates 0.2.x layout into models/<id>/ on bootstrapLayout (RFC 013 §4.8)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-migrate-'));
     const kbDir = path.join(tempDir, 'kb');
     const defaultKb = path.join(kbDir, 'default');
     await fsp.mkdir(defaultKb, { recursive: true });
@@ -477,32 +492,62 @@ describe('FaissIndexManager permission handling', () => {
 
     const faissDir = path.join(tempDir, '.faiss');
     await fsp.mkdir(faissDir, { recursive: true });
-    const indexFilePath = path.join(faissDir, 'faiss.index');
-    await fsp.mkdir(indexFilePath, { recursive: true });
-    await fsp.writeFile(path.join(indexFilePath, 'faiss.index'), 'old-model-bytes');
-    await fsp.writeFile(path.join(indexFilePath, 'docstore.json'), '{"old":"docstore"}');
-    // Stored model name differs from configured model → triggers recreate path.
+    // Seed 0.2.x layout: ${faissDir}/faiss.index/{...} + ${faissDir}/model_name.txt.
+    const oldIndexDir = path.join(faissDir, 'faiss.index');
+    await fsp.mkdir(oldIndexDir, { recursive: true });
+    await fsp.writeFile(path.join(oldIndexDir, 'faiss.index'), 'old-model-bytes');
+    await fsp.writeFile(path.join(oldIndexDir, 'docstore.json'), '{"old":"docstore"}');
     await fsp.writeFile(path.join(faissDir, 'model_name.txt'), 'sentence-transformers/all-MiniLM-L6-v2');
 
     process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
     process.env.FAISS_INDEX_PATH = faissDir;
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_API_KEY = 'test-key';
-    // Default huggingface model is bge-small-en-v1.5 — different from stored.
 
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
-    const manager = new FaissIndexManager();
 
-    // Pre-fix this throws EISDIR from the model-switch fsp.unlink branch.
-    await expect(manager.initialize()).resolves.toBeUndefined();
+    // bootstrapLayout migrates the old layout into models/<id>/.
+    await FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: true });
 
-    // Old directory wiped.
-    await expect(fsp.stat(indexFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    // Old paths gone; data preserved under the migrated model_id (derived
+    // from old model_name.txt = sentence-transformers/all-MiniLM-L6-v2).
+    const migratedId = 'huggingface__sentence-transformers-all-MiniLM-L6-v2';
+    const migratedIndexDir = path.join(faissDir, 'models', migratedId, 'faiss.index');
+    await expect(fsp.stat(oldIndexDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(migratedIndexDir)).resolves.toBeDefined();
+    expect(await fsp.readFile(path.join(migratedIndexDir, 'faiss.index'), 'utf-8')).toBe('old-model-bytes');
 
-    // model_name.txt rewritten with the new model.
-    const newName = await fsp.readFile(path.join(faissDir, 'model_name.txt'), 'utf-8');
-    expect(newName).toBe('BAAI/bge-small-en-v1.5');
+    // model_name.txt moved into models/<id>/.
+    expect(await fsp.readFile(path.join(faissDir, 'models', migratedId, 'model_name.txt'), 'utf-8'))
+      .toBe('sentence-transformers/all-MiniLM-L6-v2');
+
+    // active.txt written with the migrated id.
+    expect((await fsp.readFile(path.join(faissDir, 'active.txt'), 'utf-8')).trim()).toBe(migratedId);
+  });
+
+  it('refuses migration when 0.2.x layout has no model_name.txt (round-1 failure F5)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-migrate-refuse-'));
+    const faissDir = path.join(tempDir, '.faiss');
+    await fsp.mkdir(faissDir, { recursive: true });
+    // 0.2.x layout WITHOUT model_name.txt — pre-RFC-012.
+    await fsp.mkdir(path.join(faissDir, 'faiss.index'), { recursive: true });
+    await fsp.writeFile(path.join(faissDir, 'faiss.index', 'faiss.index'), 'mystery-bytes');
+
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager, MigrationRefusedError } = await import('./FaissIndexManager.js');
+
+    await expect(
+      FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: true })
+    ).rejects.toBeInstanceOf(MigrationRefusedError);
+
+    // Old layout untouched.
+    await expect(fsp.stat(path.join(faissDir, 'faiss.index'))).resolves.toBeDefined();
+    await expect(fsp.stat(path.join(faissDir, 'models'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('does not fail when the corrupt FAISS index has no .json sibling', async () => {
@@ -512,7 +557,8 @@ describe('FaissIndexManager permission handling', () => {
 
     const faissDir = path.join(tempDir, '.faiss');
     await fsp.mkdir(faissDir, { recursive: true });
-    const indexFilePath = path.join(faissDir, 'faiss.index');
+    await fsp.mkdir(modelDirIn(faissDir), { recursive: true });
+    const indexFilePath = modelIndexPathIn(faissDir);
     await fsp.writeFile(indexFilePath, 'corrupt-bytes');
 
     process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
@@ -578,7 +624,7 @@ describe('FaissIndexManager permission handling', () => {
     await manager.initialize({ readOnly: true });
 
     // model_name.txt must NOT exist after a read-only init.
-    const modelNameFile = path.join(faissDir, 'model_name.txt');
+    const modelNameFile = modelNameFileIn(faissDir);
     await expect(fsp.stat(modelNameFile)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
@@ -599,7 +645,7 @@ describe('FaissIndexManager permission handling', () => {
     await manager.initialize();
 
     // model_name.txt exists with the configured model.
-    const modelNameFile = path.join(faissDir, 'model_name.txt');
+    const modelNameFile = modelNameFileIn(faissDir);
     expect(await fsp.readFile(modelNameFile, 'utf-8')).toBe('BAAI/bge-small-en-v1.5');
 
     // No leftover .tmp file from the atomic rename.
@@ -790,7 +836,7 @@ describe('FaissIndexManager chunk metadata (RFC 010 M1)', () => {
     // Precondition: faiss.index is not on disk (the mocked save never writes
     // it), so a fresh manager will take the fallback rebuild branch.
     await expect(
-      fsp.stat(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index'))
+      fsp.stat(modelIndexPathIn(process.env.FAISS_INDEX_PATH!))
     ).rejects.toMatchObject({ code: 'ENOENT' });
 
     saveMock.mockReset();
@@ -1144,7 +1190,7 @@ describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
     // Precondition: faiss.index is not on disk (mocked save never writes),
     // so a fresh manager takes the fallback rebuild branch (line 375).
     await expect(
-      fsp.stat(path.join(process.env.FAISS_INDEX_PATH!, 'faiss.index')),
+      fsp.stat(modelIndexPathIn(process.env.FAISS_INDEX_PATH!)),
     ).rejects.toMatchObject({ code: 'ENOENT' });
 
     saveMock.mockReset();

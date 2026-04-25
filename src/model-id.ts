@@ -30,7 +30,7 @@ export class InvalidModelIdError extends Error {
   }
 }
 
-const MODEL_ID_REGEX = /^[a-z]+__[A-Za-z0-9._-]+$/;
+const MODEL_ID_REGEX = /^([a-z]+)__([A-Za-z0-9._-]+)$/;
 
 /**
  * Compute the on-disk model_id from (provider, modelName). Filesystem-safe:

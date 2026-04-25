@@ -24,9 +24,13 @@
 - **`FaissIndexManager` constructor** preferred form is `new FaissIndexManager({provider, modelName})`. Legacy zero-arg form `new FaissIndexManager()` is preserved for backward compatibility (env-fallback) but new multi-model code paths use the explicit form.
 - **`KnowledgeBaseServer.handleRetrieveKnowledge`** resolves the active model per call and uses a per-`modelId` manager cache. Future M3 PR will surface `model_name` as a `retrieve_knowledge` arg.
 
+### Added (cont.)
+
+- **`kb compare <query> <model_a> <model_b>`** (G11) — unified rank/score table over both models' top-k. Hard-fails if either model is unresolvable (round-2 failure N5 — never renders a half-table). Header notes scores are not directly comparable across models with different dim/distance metrics.
+
 ### Status
 
-Build clean (`npm run build`). 166 / 185 existing tests pass; 19 layout-shape failures in `FaissIndexManager.test.ts`, `KnowledgeBaseServer.test.ts`, `cli.test.ts` need rebasing for the new `models/<id>/` paths (mechanical update — same test logic, new path prefix). New tests for migration / active-model / model-id are NOT yet written. **Draft PR for design review; test work follows in a focused commit.**
+Build clean. **231 / 231 tests pass across 15 suites.** Existing tests rebased for the new `models/<id>/` layout. New module tests added: `model-id.test.ts` (15 tests), `active-model.test.ts` (18 tests including writer single-writer invariant, robust BOM/CRLF reader with hard-fail on regex-fail, full precedence matrix). New CLI tests cover `kb models list/add/set-active/remove`, `kb compare`, and the migration smoke path.
 
 ## [0.2.2] — 2026-04-25
 

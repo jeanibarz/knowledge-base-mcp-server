@@ -6,13 +6,31 @@ const initializeMock = jest.fn();
 const updateIndexMock = jest.fn();
 const similaritySearchMock = jest.fn();
 
-jest.mock('./FaissIndexManager.js', () => ({
-  __esModule: true,
-  FaissIndexManager: jest.fn().mockImplementation(() => ({
+const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provider?: string; modelName?: string }) => {
+  // RFC 013 M1+M2: the manager exposes modelDir / modelId / modelName for
+  // callers (KnowledgeBaseServer's per-call lock acquisition + cache key).
+  // Mock these so handleRetrieveKnowledge can do withWriteLock(manager.modelDir, ...).
+  const provider = opts?.provider ?? 'huggingface';
+  const modelName = opts?.modelName ?? 'BAAI/bge-small-en-v1.5';
+  const modelId = `${provider}__${modelName.replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-')}`;
+  const faissPath = process.env.FAISS_INDEX_PATH ?? '/tmp/kb-server-mock';
+  const modelDir = path.join(faissPath, 'models', modelId);
+  return {
     initialize: initializeMock,
     updateIndex: updateIndexMock,
     similaritySearch: similaritySearchMock,
-  })),
+    modelDir,
+    modelId,
+    modelName,
+    embeddingProvider: provider,
+  };
+});
+// bootstrapLayout is a static method; the mock returns a no-op promise.
+FaissIndexManagerMock.bootstrapLayout = jest.fn().mockResolvedValue(undefined);
+
+jest.mock('./FaissIndexManager.js', () => ({
+  __esModule: true,
+  FaissIndexManager: FaissIndexManagerMock,
 }));
 
 // Each KnowledgeBaseServer constructor registers a SIGINT listener; the
@@ -53,10 +71,19 @@ describe('KnowledgeBaseServer handlers', () => {
 
   async function setRetrieveEnv() {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-retrieve-'));
+    const faissDir = path.join(tempDir, '.faiss');
     process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
-    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.FAISS_INDEX_PATH = faissDir;
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    // RFC 013 M1+M2: seed a registered model so resolveActiveModel() succeeds.
+    // Default huggingface + BAAI/bge-small-en-v1.5 → this model_id.
+    const modelId = 'huggingface__BAAI-bge-small-en-v1.5';
+    const modelDir = path.join(faissDir, 'models', modelId);
+    await fsp.mkdir(modelDir, { recursive: true });
+    await fsp.writeFile(path.join(modelDir, 'model_name.txt'), 'BAAI/bge-small-en-v1.5');
+    await fsp.writeFile(path.join(faissDir, 'active.txt'), modelId);
     return tempDir;
   }
 
