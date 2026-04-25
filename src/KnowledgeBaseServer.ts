@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
+  FAISS_INDEX_PATH,
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KNOWLEDGE_BASES_ROOT_DIR,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
@@ -21,8 +22,8 @@ import {
   acquireInstanceAdvisory,
   InstanceAlreadyRunningError,
   releaseInstanceAdvisory,
-  withWriteLock,
-} from './lock.js';
+} from './instance-lock.js';
+import { withWriteLock } from './write-lock.js';
 import { logger } from './logger.js';
 import { SseHost } from './transport/sse.js';
 import { ReindexTriggerWatcher } from './triggerWatcher.js';
@@ -116,7 +117,9 @@ export class KnowledgeBaseServer {
       // RFC 012 §4.8.2 — wrap the write-path updateIndex in the short-lived
       // write lock. The MCP server, the trigger watcher, and `kb search
       // --refresh` all serialize through this single primitive.
-      await withWriteLock(() => this.faissManager.updateIndex(knowledgeBaseName));
+      // RFC 013 M0: lock resource is FAISS_INDEX_PATH (single-model);
+      // M1+M2 narrows to ${PATH}/models/<id>/ for per-model isolation.
+      await withWriteLock(FAISS_INDEX_PATH, () => this.faissManager.updateIndex(knowledgeBaseName));
       logger.debug(`[${Date.now()}] FAISS index update completed`);
 
       // Perform similarity search using the provided query.
@@ -227,7 +230,7 @@ export class KnowledgeBaseServer {
       REINDEX_TRIGGER_PATH,
       // RFC 012 §4.8.2 — trigger-driven updateIndex also serializes through
       // the write lock so a CLI `--refresh` doesn't race a watcher cycle.
-      () => withWriteLock(() => this.faissManager.updateIndex(undefined)),
+      () => withWriteLock(FAISS_INDEX_PATH, () => this.faissManager.updateIndex(undefined)),
       REINDEX_TRIGGER_POLL_MS,
     );
     this.triggerWatcher.start();
