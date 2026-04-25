@@ -146,6 +146,14 @@ export const LIST_KNOWLEDGE_BASES_DESCRIPTION =
     ? process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION
     : DEFAULT_LIST_KNOWLEDGE_BASES_DESCRIPTION;
 
+// RFC 013 M3 §4.5 — list_models tool description.
+export const DEFAULT_LIST_MODELS_DESCRIPTION =
+  'Lists the embedding models registered for retrieval. Returns an array of {model_id, provider, model_name, active}. Use the model_id as the optional `model_name` argument to retrieve_knowledge to query a specific model instead of the active default.';
+export const LIST_MODELS_DESCRIPTION =
+  process.env.LIST_MODELS_DESCRIPTION && process.env.LIST_MODELS_DESCRIPTION.length > 0
+    ? process.env.LIST_MODELS_DESCRIPTION
+    : DEFAULT_LIST_MODELS_DESCRIPTION;
+
 // ---------------------------------------------------------------------------
 // Transport configuration (RFC 008 stage 1: stdio + SSE).
 // ---------------------------------------------------------------------------

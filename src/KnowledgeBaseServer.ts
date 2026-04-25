@@ -6,6 +6,7 @@ import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/type
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,
+  listRegisteredModels,
   modelDir,
   parseModelId,
   readStoredModelName,
@@ -16,6 +17,7 @@ import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KNOWLEDGE_BASES_ROOT_DIR,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
+  LIST_MODELS_DESCRIPTION,
   loadTransportConfig,
   REINDEX_TRIGGER_PATH,
   REINDEX_TRIGGER_POLL_MS,
@@ -110,9 +112,55 @@ export class KnowledgeBaseServer {
         query: z.string().describe('The search query to use for retrieving similar chunks from the knowledge base.'),
         knowledge_base_name: z.string().optional().describe('The name of the knowledge base to search. If omitted, all available knowledge bases are considered.'),
         threshold: z.number().optional().describe('The maximum similarity score threshold for returned documents. Defaults to 2 if not specified.'),
+        // RFC 013 M3 §4.5 — optional override of the active embedding model.
+        // When omitted, the server uses the model recorded in active.txt.
+        // When passed, must be a registered model_id (see list_models).
+        model_name: z.string().optional().describe('The model_id of an alternate embedding model to query (e.g. "openai__text-embedding-3-small"). If omitted, the active model is used. Run list_models for available ids.'),
       },
       async (args) => this.handleRetrieveKnowledge(args)
     );
+
+    // RFC 013 M3 §4.5 — list_models surfaces what's registered so an agent
+    // can pre-flight a model_name override before invoking retrieve_knowledge.
+    mcp.tool(
+      'list_models',
+      LIST_MODELS_DESCRIPTION,
+      async () => this.handleListModels()
+    );
+  }
+
+  /**
+   * RFC 013 M3 §4.5 — list registered embedding models. Returns a JSON array
+   * of `{ model_id, provider, model_name, active }` objects. `.adding`
+   * sentinels are skipped (round-1 failure F6 — half-built models are not
+   * surfaced to the agent).
+   */
+  private async handleListModels(): Promise<CallToolResult> {
+    try {
+      const models = await listRegisteredModels();
+      let activeId: string | null = null;
+      try {
+        activeId = await resolveActiveModel();
+      } catch {
+        // No active resolvable; return all models with active: false.
+      }
+      const enriched = models.map((m) => ({
+        model_id: m.model_id,
+        provider: m.provider,
+        model_name: m.model_name,
+        active: m.model_id === activeId,
+      }));
+      return {
+        content: [{ type: 'text', text: JSON.stringify(enriched, null, 2) }],
+      };
+    } catch (error: any) {
+      logger.error('Error listing models:', error);
+      const content: TextContent = {
+        type: 'text',
+        text: `Error listing models: ${error.message}`,
+      };
+      return { content: [content], isError: true };
+    }
   }
 
   private async handleListKnowledgeBases(): Promise<CallToolResult> {
@@ -136,19 +184,31 @@ export class KnowledgeBaseServer {
     }
   }
 
-  private async handleRetrieveKnowledge(args: { query: string; knowledge_base_name?: string; threshold?: number; }): Promise<CallToolResult> {
+  private async handleRetrieveKnowledge(args: { query: string; knowledge_base_name?: string; threshold?: number; model_name?: string; }): Promise<CallToolResult> {
     const query: string = args.query;
     const knowledgeBaseName: string | undefined = args.knowledge_base_name;
     const threshold: number | undefined = args.threshold;
+    const modelNameOverride: string | undefined = args.model_name;
 
     try {
       const startTime = Date.now();
       logger.debug(`[${startTime}] handleRetrieveKnowledge started`);
 
-      // RFC 013 §4.7 — resolve active model per call. Future M3 will accept
-      // `args.model_name` as an explicit override here; for now the active
-      // model is always used.
-      const activeModelId = await resolveActiveModel();
+      // RFC 013 §4.7 — resolve active model per call. M3 honors args.model_name
+      // as the explicit per-call override (resolveActiveModel validates it +
+      // hard-fails with a registered-list hint if not on disk).
+      let activeModelId: string;
+      try {
+        activeModelId = await resolveActiveModel({ explicitOverride: modelNameOverride });
+      } catch (err) {
+        if (err instanceof ActiveModelResolutionError) {
+          return {
+            content: [{ type: 'text', text: err.message }],
+            isError: true,
+          };
+        }
+        throw err;
+      }
       const manager = await this.getManagerFor(activeModelId);
 
       // RFC 013 §4.6 — write lock is per-model (resource = `models/<id>/`).
@@ -161,10 +221,19 @@ export class KnowledgeBaseServer {
       logger.debug(`[${Date.now()}] Similarity search completed`);
 
       // Build a nicely formatted markdown response including the similarity score.
-      const responseText = formatRetrievalAsMarkdown(
+      let responseText = formatRetrievalAsMarkdown(
         similaritySearchResults,
         FRONTMATTER_EXTRAS_WIRE_VISIBLE,
       );
+
+      // RFC 013 M3 §4.5 + round-1 minimalist F5 — emit `model_id` on the
+      // response envelope (NOT per-chunk) so an agent comparing two models
+      // can attribute results when explicit model_name was passed. When
+      // model_name was NOT passed, the wire format is byte-equal to 0.2.x
+      // (no envelope field, no per-chunk metadata change) for back-compat.
+      if (modelNameOverride !== undefined) {
+        responseText = `> _Model: ${activeModelId}_\n\n${responseText}`;
+      }
 
       const endTime = Date.now();
       logger.debug(`[${endTime}] handleRetrieveKnowledge completed in ${endTime - startTime}ms`);
