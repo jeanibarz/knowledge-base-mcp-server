@@ -11,6 +11,7 @@ This server speaks stdio MCP and works with any stdio MCP client. Pick the block
 | `<FAISS_INDEX_PATH>` | Optional. Absolute path for the FAISS index. Defaults to `$HOME/knowledge_bases/.faiss` if omitted. |
 | `<HF_API_KEY>` | HuggingFace API token (or a compatible Inference Provider key). |
 | `<OPENAI_API_KEY>` | OpenAI API key. |
+| `<MODEL_ID>` | Optional (RFC 013, 0.3.0+). The `<provider>__<slug>` id of a registered model — used in `KB_ACTIVE_MODEL` to pin a per-MCP-process active model. Run `kb models list` to see what's registered. |
 
 The blocks below alternate embedding providers so you can see all three configured at least once. Any client can use any provider — see the [README](../README.md) "Configure environment variables" step for the full env-var matrix.
 
@@ -23,6 +24,27 @@ Alternatively, install once globally (`npm install -g @jeanibarz/knowledge-base-
 ## See also: `kb` CLI
 
 For shell-driven workflows (REPL queries, scripted ingest checks, agent Bash-tool calls), the same package ships a `kb` bin that doesn't require an MCP client at all. Each `kb` invocation is a fresh process, so global upgrades are picked up immediately. See the README "Install (CLI alongside the MCP server)" section.
+
+## Multi-model setups (RFC 013, 0.3.0+)
+
+The default config in the snippets below resolves to a single embedding model via the legacy env vars (`EMBEDDING_PROVIDER` + `OLLAMA_MODEL`/`OPENAI_MODEL_NAME`/`HUGGINGFACE_MODEL_NAME`). On 0.3.0+, you can keep multiple models registered side-by-side and have the MCP server use any of them per-call.
+
+Two ways to control which model the MCP server uses:
+
+1. **Set `KB_ACTIVE_MODEL`** in the env block of your client config to pin a specific model for that MCP-child's lifetime (highest precedence after a per-call `model_name` arg). Useful when you want one client to consistently use one model regardless of `active.txt`.
+
+   ```json
+   "env": {
+     "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
+     "FAISS_INDEX_PATH": "<FAISS_INDEX_PATH>",
+     "KB_ACTIVE_MODEL": "openai__text-embedding-3-small",
+     "OPENAI_API_KEY": "<OPENAI_API_KEY>"
+   }
+   ```
+
+2. **Let the agent choose per-call** by passing `model_name` on each `retrieve_knowledge` invocation. The agent can call `list_models` first to discover registered ids. The active model (from `${FAISS_INDEX_PATH}/active.txt`) is the default when `model_name` is omitted. Manage the active model from the shell with `kb models set-active <id>`.
+
+> **Smithery deployments are single-model only** in 0.3.0 — the hosted runner doesn't expose a CLI, so `kb models add` cannot register additional models. The `kbActiveModel` Smithery config maps to `KB_ACTIVE_MODEL` and selects which (single, env-derived) model is active. Multi-model side-by-side on hosted MCP requires a follow-up RFC.
 
 ## Claude Desktop
 
