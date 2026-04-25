@@ -348,4 +348,99 @@ describe('KnowledgeBaseServer handlers', () => {
       'Lists the available knowledge bases.'
     );
   });
+
+  // --- sanitizeMetadataForWire + FRONTMATTER_EXTRAS_WIRE_VISIBLE (RFC 011 §7.1 R1) ---
+
+  it('handleRetrieveKnowledge strips frontmatter.extras from the wire by default (§9 S8 leak test)', async () => {
+    await setRetrieveEnv();
+    delete process.env.FRONTMATTER_EXTRAS_WIRE_VISIBLE;
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      {
+        pageContent: 'chunk',
+        metadata: {
+          source: '/kb/paper.md',
+          frontmatter: {
+            arxiv_id: '2604.1',
+            extras: { sentinel_key: 'SECRET_VALUE_XYZ' },
+          },
+        },
+        score: 0.1,
+      },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+    const text: string = result.content[0].text;
+
+    // The sentinel value MUST NOT appear anywhere in the response body.
+    expect(text).not.toContain('SECRET_VALUE_XYZ');
+    expect(text).not.toContain('sentinel_key');
+    expect(text).not.toContain('"extras"');
+    // Other whitelisted fields are preserved.
+    expect(text).toContain('"arxiv_id": "2604.1"');
+  });
+
+  it('handleRetrieveKnowledge surfaces frontmatter.extras when FRONTMATTER_EXTRAS_WIRE_VISIBLE=true', async () => {
+    await setRetrieveEnv();
+    process.env.FRONTMATTER_EXTRAS_WIRE_VISIBLE = 'true';
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      {
+        pageContent: 'chunk',
+        metadata: {
+          source: '/kb/paper.md',
+          frontmatter: {
+            arxiv_id: '2604.1',
+            extras: { sentinel_key: 'SECRET_VALUE_XYZ' },
+          },
+        },
+        score: 0.1,
+      },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+    const text: string = result.content[0].text;
+
+    expect(text).toContain('SECRET_VALUE_XYZ');
+    expect(text).toContain('"extras"');
+  });
+
+  it('sanitizeMetadataForWire passes through metadata with no frontmatter unchanged', async () => {
+    const { sanitizeMetadataForWire } = await import('./KnowledgeBaseServer.js');
+    const md = { source: '/kb/a.md', relativePath: 'a.md', tags: ['x'] };
+    expect(sanitizeMetadataForWire(md, false)).toBe(md);
+    expect(sanitizeMetadataForWire(md, true)).toBe(md);
+  });
+
+  it('sanitizeMetadataForWire passes through metadata whose frontmatter has no extras', async () => {
+    const { sanitizeMetadataForWire } = await import('./KnowledgeBaseServer.js');
+    const md = {
+      source: '/kb/a.md',
+      frontmatter: { arxiv_id: '2604.1', title: 'X' },
+    };
+    // No extras present → identity (no clone needed).
+    expect(sanitizeMetadataForWire(md, false)).toBe(md);
+  });
+
+  it('sanitizeMetadataForWire does not mutate the input object', async () => {
+    const { sanitizeMetadataForWire } = await import('./KnowledgeBaseServer.js');
+    const md = {
+      source: '/kb/a.md',
+      frontmatter: {
+        arxiv_id: '2604.1',
+        extras: { leak: 'bad' },
+      },
+    };
+    const originalExtras = (md.frontmatter as any).extras;
+    const result = sanitizeMetadataForWire(md, false);
+    // Input preserved — critical: the same metadata object sits on the
+    // Document cached inside FaissStore, so a mutating sanitizer would
+    // corrupt it for subsequent queries.
+    expect((md.frontmatter as any).extras).toBe(originalExtras);
+    // Output diverges — extras removed from the returned clone.
+    expect((result as any).frontmatter.extras).toBeUndefined();
+    expect((result as any).frontmatter.arxiv_id).toBe('2604.1');
+  });
 });

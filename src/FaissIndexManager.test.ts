@@ -1077,3 +1077,408 @@ describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
     expect(sources.has(path.join(arxivKb, 'notes', '2604.21215.md'))).toBe(true);
   });
 });
+
+describe('liftFrontmatter (RFC 011 §5.4.2)', () => {
+  it('lifts whitelisted keys verbatim and coerces relevance_score via parseInt', async () => {
+    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const result = liftFrontmatter(
+      {
+        arxiv_id: '2604.21221',
+        title: 'Sparse Forcing',
+        authors: 'A, B, C',
+        published: '2026-04-23',
+        relevance_score: '7',
+        ingested_at: '2026-04-24T22:42:27.567Z',
+      },
+      '/kb/notes/2604.21221.md',
+    );
+    expect(result).toEqual({
+      arxiv_id: '2604.21221',
+      title: 'Sparse Forcing',
+      authors: 'A, B, C',
+      published: '2026-04-23',
+      relevance_score: 7,
+      ingested_at: '2026-04-24T22:42:27.567Z',
+    });
+  });
+
+  it('lifts the llm-as-judge whitelist keys', async () => {
+    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const result = liftFrontmatter(
+      {
+        judge_method: 'single-LLM ref-free',
+        metrics_used: 'sycophancy_rate',
+        bias_handling: 'three-persona mix',
+      },
+      '/kb/notes/judge.md',
+    );
+    expect(result).toEqual({
+      judge_method: 'single-LLM ref-free',
+      metrics_used: 'sycophancy_rate',
+      bias_handling: 'three-persona mix',
+    });
+  });
+
+  it('routes non-whitelisted string keys into extras', async () => {
+    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const result = liftFrontmatter(
+      {
+        arxiv_id: '2604.1',
+        custom_field: 'value',
+        another: 'x',
+      },
+      '/kb/notes/paper.md',
+    );
+    expect(result).toEqual({
+      arxiv_id: '2604.1',
+      extras: { custom_field: 'value', another: 'x' },
+    });
+  });
+
+  it('drops relevance_score when non-numeric and logs at debug level', async () => {
+    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const loggerModule = await import('./logger.js');
+    const debugSpy = jest.spyOn(loggerModule.logger, 'debug').mockImplementation(() => {});
+
+    const result = liftFrontmatter(
+      { arxiv_id: '2604.1', relevance_score: 'high' },
+      '/kb/notes/paper.md',
+    );
+    expect(result).toEqual({ arxiv_id: '2604.1' });
+    const calls = debugSpy.mock.calls.flat().map((c) => String(c));
+    expect(calls.some((m) => m.includes('non-numeric relevance_score'))).toBe(true);
+    // Log must NOT echo the raw value — §5.4.2 leak rule. "high" is the
+    // sentinel from the input above; assert it never appears in any log.
+    for (const m of calls) expect(m).not.toContain('high');
+    debugSpy.mockRestore();
+  });
+
+  it('drops non-string values and logs at debug level (YAML arrays, nested maps)', async () => {
+    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const loggerModule = await import('./logger.js');
+    const debugSpy = jest.spyOn(loggerModule.logger, 'debug').mockImplementation(() => {});
+
+    const result = liftFrontmatter(
+      {
+        arxiv_id: '2604.1',
+        // FAILSAFE preserves arrays and maps; neither is a whitelist target.
+        metrics_list: ['a', 'b'],
+        nested: { foo: 'bar' },
+      },
+      '/kb/notes/paper.md',
+    );
+    expect(result).toEqual({ arxiv_id: '2604.1' });
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('non-string frontmatter key "metrics_list"'));
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('non-string frontmatter key "nested"'));
+    debugSpy.mockRestore();
+  });
+
+  it('ignores `tags` — it is handled by the sibling metadata.tags field', async () => {
+    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const result = liftFrontmatter(
+      { arxiv_id: '2604.1', tags: ['kv-cache'] },
+      '/kb/notes/paper.md',
+    );
+    expect(result).toEqual({ arxiv_id: '2604.1' });
+    // A result object with `tags` in it would be a duplicate-tags regression.
+    expect(result && 'tags' in result).toBe(false);
+  });
+
+  it('returns undefined when the parsed frontmatter contains no liftable fields', async () => {
+    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    expect(liftFrontmatter({}, '/kb/notes/paper.md')).toBeUndefined();
+    // Non-string-only input: everything dropped → undefined.
+    expect(liftFrontmatter({ some_array: ['a'] }, '/kb/notes/paper.md')).toBeUndefined();
+  });
+});
+
+describe('detectSiblingPdfPath (RFC 011 §5.3.4)', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+  };
+
+  afterEach(() => {
+    if (originalEnv.KNOWLEDGE_BASES_ROOT_DIR === undefined) {
+      delete process.env.KNOWLEDGE_BASES_ROOT_DIR;
+    } else {
+      process.env.KNOWLEDGE_BASES_ROOT_DIR = originalEnv.KNOWLEDGE_BASES_ROOT_DIR;
+    }
+  });
+
+  it('finds a sibling PDF in the arxiv notes/ + pdfs/ layout', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-pdf-arxiv-'));
+    const kbName = 'arxiv-llm-inference';
+    const kbRoot = path.join(tempDir, kbName);
+    await fsp.mkdir(path.join(kbRoot, 'notes'), { recursive: true });
+    await fsp.mkdir(path.join(kbRoot, 'pdfs'), { recursive: true });
+    await fsp.writeFile(path.join(kbRoot, 'notes', '2604.21221.md'), '# note');
+    await fsp.writeFile(path.join(kbRoot, 'pdfs', '2604.21221.pdf'), Buffer.from('%PDF-'));
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    jest.resetModules();
+    const { detectSiblingPdfPath } = await import('./FaissIndexManager.js');
+    const result = detectSiblingPdfPath(
+      path.join(kbRoot, 'notes', '2604.21221.md'),
+      kbName,
+    );
+    expect(result).toBe('pdfs/2604.21221.pdf');
+  });
+
+  it('falls back to a same-directory sibling PDF', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-pdf-samedir-'));
+    const kbName = 'colocated';
+    const kbRoot = path.join(tempDir, kbName);
+    await fsp.mkdir(kbRoot, { recursive: true });
+    await fsp.writeFile(path.join(kbRoot, 'paper.md'), '# note');
+    await fsp.writeFile(path.join(kbRoot, 'paper.pdf'), Buffer.from('%PDF-'));
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    jest.resetModules();
+    const { detectSiblingPdfPath } = await import('./FaissIndexManager.js');
+    const result = detectSiblingPdfPath(path.join(kbRoot, 'paper.md'), kbName);
+    expect(result).toBe('paper.pdf');
+  });
+
+  it('returns undefined when no sibling PDF exists at either location', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-pdf-none-'));
+    const kbName = 'no-pdfs';
+    const kbRoot = path.join(tempDir, kbName);
+    await fsp.mkdir(path.join(kbRoot, 'notes'), { recursive: true });
+    await fsp.writeFile(path.join(kbRoot, 'notes', 'paper.md'), '# note');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    jest.resetModules();
+    const { detectSiblingPdfPath } = await import('./FaissIndexManager.js');
+    const result = detectSiblingPdfPath(
+      path.join(kbRoot, 'notes', 'paper.md'),
+      kbName,
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it('prefers the arxiv layout when both arxiv and same-dir siblings exist', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-pdf-prefer-'));
+    const kbName = 'preferred';
+    const kbRoot = path.join(tempDir, kbName);
+    await fsp.mkdir(path.join(kbRoot, 'notes'), { recursive: true });
+    await fsp.mkdir(path.join(kbRoot, 'pdfs'), { recursive: true });
+    await fsp.writeFile(path.join(kbRoot, 'notes', 'paper.md'), '# note');
+    // Both candidates exist; the arxiv-layout one wins.
+    await fsp.writeFile(
+      path.join(kbRoot, 'pdfs', 'paper.pdf'),
+      Buffer.from('%PDF-arxiv'),
+    );
+    await fsp.writeFile(
+      path.join(kbRoot, 'notes', 'paper.pdf'),
+      Buffer.from('%PDF-samedir'),
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    jest.resetModules();
+    const { detectSiblingPdfPath } = await import('./FaissIndexManager.js');
+    const result = detectSiblingPdfPath(
+      path.join(kbRoot, 'notes', 'paper.md'),
+      kbName,
+    );
+    expect(result).toBe('pdfs/paper.pdf');
+  });
+
+  it('returns undefined when the `.md` is at the KB root and only a sibling-KB `pdfs/` directory exists (no cross-KB bleed)', async () => {
+    // A note at the KB root (no `notes/` subdir) would resolve the arxiv
+    // probe `<dir>/../pdfs/<stem>.pdf` to `<KNOWLEDGE_BASES_ROOT_DIR>/pdfs/<stem>.pdf`
+    // — a directory SIBLING to this KB, potentially a different KB entirely.
+    // `pdf_path` on chunks must not reference cross-KB files; the helper
+    // must reject any path that escapes the KB directory.
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-pdf-cross-kb-'));
+    const kbName = 'my-kb';
+    const kbRoot = path.join(tempDir, kbName);
+    await fsp.mkdir(kbRoot, { recursive: true });
+    // Place the .md at the KB root (not under notes/).
+    await fsp.writeFile(path.join(kbRoot, 'paper.md'), '# note');
+
+    // Plant a `pdfs/` SIBLING to the KB — this would be picked up by a
+    // naive arxiv probe that walks `../pdfs/` from the .md's directory.
+    const siblingPdfsDir = path.join(tempDir, 'pdfs');
+    await fsp.mkdir(siblingPdfsDir, { recursive: true });
+    await fsp.writeFile(path.join(siblingPdfsDir, 'paper.pdf'), Buffer.from('%PDF-cross'));
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    jest.resetModules();
+    const { detectSiblingPdfPath } = await import('./FaissIndexManager.js');
+    const result = detectSiblingPdfPath(
+      path.join(kbRoot, 'paper.md'),
+      kbName,
+    );
+    // Arxiv probe points outside the KB → rejected. Same-dir fallback
+    // finds no in-KB `paper.pdf` → returns undefined.
+    expect(result).toBeUndefined();
+  });
+});
+
+describe('FaissIndexManager integration — frontmatter + pdf_path (RFC 011 M2)', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+    INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
+    INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
+  };
+
+  beforeEach(() => {
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+    similaritySearchMock.mockReset();
+    embeddingConstructorMock.mockReset();
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(originalEnv) as Array<keyof typeof originalEnv>;
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    jest.restoreAllMocks();
+  });
+
+  function collectChunks(): {
+    texts: string[];
+    metadatas: Record<string, unknown>[];
+  } {
+    const texts: string[] = [];
+    const metadatas: Record<string, unknown>[] = [];
+    for (const call of fromTextsMock.mock.calls) {
+      const [t, m] = call as [string[], Record<string, unknown>[]];
+      texts.push(...t);
+      metadatas.push(...m);
+    }
+    for (const call of addDocumentsMock.mock.calls) {
+      const [docs] = call as [
+        Array<{ pageContent: string; metadata: Record<string, unknown> }>,
+      ];
+      for (const doc of docs) {
+        texts.push(doc.pageContent);
+        metadatas.push(doc.metadata);
+      }
+    }
+    return { texts, metadatas };
+  }
+
+  it('attaches lifted frontmatter + pdf_path on an arxiv-shaped KB', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-m2-arxiv-'));
+    const kbRoot = path.join(tempDir, 'kb');
+    const arxivKb = path.join(kbRoot, 'arxiv-llm-inference');
+    await fsp.mkdir(path.join(arxivKb, 'notes'), { recursive: true });
+    await fsp.mkdir(path.join(arxivKb, 'pdfs'), { recursive: true });
+    await fsp.writeFile(
+      path.join(arxivKb, 'notes', '2604.21221.md'),
+      '---\n' +
+        'arxiv_id: 2604.21221\n' +
+        'title: "Sparse Forcing"\n' +
+        'authors: "A, B"\n' +
+        'published: 2026-04-23\n' +
+        'relevance_score: 7\n' +
+        'tags: [kv-cache, quantization]\n' +
+        'ingested_at: 2026-04-24T22:42:27.567Z\n' +
+        '---\n' +
+        '# Body\n\nReal paper content.\n',
+    );
+    await fsp.writeFile(
+      path.join(arxivKb, 'pdfs', '2604.21221.pdf'),
+      Buffer.from('%PDF-binary'),
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    delete process.env.INGEST_EXTRA_EXTENSIONS;
+    delete process.env.INGEST_EXCLUDE_PATHS;
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    const { metadatas } = collectChunks();
+    expect(metadatas.length).toBeGreaterThan(0);
+    for (const md of metadatas) {
+      expect(md.tags).toEqual(['kv-cache', 'quantization']);
+      expect(md.frontmatter).toEqual({
+        arxiv_id: '2604.21221',
+        title: 'Sparse Forcing',
+        authors: 'A, B',
+        published: '2026-04-23',
+        relevance_score: 7, // coerced from "7"
+        ingested_at: '2026-04-24T22:42:27.567Z',
+      });
+      expect(md.pdf_path).toBe('pdfs/2604.21221.pdf');
+    }
+  });
+
+  it('omits pdf_path when no sibling PDF exists', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-m2-nopdf-'));
+    const kbRoot = path.join(tempDir, 'kb');
+    const kb = path.join(kbRoot, 'no-pdf-kb');
+    await fsp.mkdir(path.join(kb, 'notes'), { recursive: true });
+    await fsp.writeFile(
+      path.join(kb, 'notes', 'paper.md'),
+      '---\narxiv_id: 2604.99\n---\n# Body\n',
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    const { metadatas } = collectChunks();
+    for (const md of metadatas) {
+      expect(md.pdf_path).toBeUndefined();
+      expect(md.frontmatter).toEqual({ arxiv_id: '2604.99' });
+    }
+  });
+
+  it('routes non-whitelisted frontmatter into frontmatter.extras', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-m2-extras-'));
+    const kbRoot = path.join(tempDir, 'kb');
+    const kb = path.join(kbRoot, 'kb');
+    await fsp.mkdir(kb, { recursive: true });
+    await fsp.writeFile(
+      path.join(kb, 'paper.md'),
+      '---\narxiv_id: 2604.1\nsentinel_key: SECRET_VALUE_XYZ\n---\n# Body\n',
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    const { metadatas } = collectChunks();
+    expect(metadatas.length).toBeGreaterThan(0);
+    for (const md of metadatas) {
+      expect(md.frontmatter).toEqual({
+        arxiv_id: '2604.1',
+        extras: { sentinel_key: 'SECRET_VALUE_XYZ' },
+      });
+    }
+  });
+});

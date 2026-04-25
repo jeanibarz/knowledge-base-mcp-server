@@ -6,6 +6,7 @@ import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/type
 import * as fsp from 'fs/promises';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
+  FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KNOWLEDGE_BASES_ROOT_DIR,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   loadTransportConfig,
@@ -18,6 +19,32 @@ import { SseHost } from './transport/sse.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
+
+/**
+ * Strips `frontmatter.extras` from a chunk's metadata before wire
+ * serialization unless the operator has opted back in via
+ * `FRONTMATTER_EXTRAS_WIRE_VISIBLE=true`. RFC 011 §7.1 R1 — extras are a
+ * leak surface the operator owns; the default posture is to suppress.
+ *
+ * Shallow-clones only the branches it mutates to avoid touching the
+ * original `Document.metadata` (which is cached in the FAISS store).
+ */
+export function sanitizeMetadataForWire(
+  metadata: Record<string, unknown>,
+  extrasVisible: boolean,
+): Record<string, unknown> {
+  if (extrasVisible) return metadata;
+  const fm = metadata.frontmatter;
+  if (!fm || typeof fm !== 'object') return metadata;
+  const fmObj = fm as Record<string, unknown>;
+  if (!('extras' in fmObj)) return metadata;
+  const { extras, ...fmWithoutExtras } = fmObj;
+  void extras;
+  return {
+    ...metadata,
+    frontmatter: fmWithoutExtras,
+  };
+}
 
 export class KnowledgeBaseServer {
   private mcp: McpServer;
@@ -112,7 +139,11 @@ export class KnowledgeBaseServer {
           .map((doc, idx) => {
             const resultHeader = `**Result ${idx + 1}:**`;
             const content = doc.pageContent.trim();
-            const metadata = JSON.stringify(doc.metadata, null, 2);
+            const sanitizedMetadata = sanitizeMetadataForWire(
+              doc.metadata as Record<string, unknown>,
+              FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+            );
+            const metadata = JSON.stringify(sanitizedMetadata, null, 2);
             const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
             return `${resultHeader}\n\n${scoreText}${content}\n\n**Source:**\n\`\`\`json\n${metadata}\n\`\`\``;
           })

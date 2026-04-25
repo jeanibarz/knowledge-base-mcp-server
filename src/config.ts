@@ -63,6 +63,17 @@ export const INGEST_EXCLUDE_PATHS: readonly string[] = parseCommaSeparatedList(
   process.env.INGEST_EXCLUDE_PATHS,
 );
 
+/**
+ * When false (default), `frontmatter.extras` is stripped from every
+ * `retrieve_knowledge` response before JSON serialization. Extras hold
+ * non-whitelisted frontmatter keys; defaulting to stripped prevents a
+ * workflow-author typo (e.g. `api_key: sk-…` in a note's frontmatter)
+ * from leaking onto the wire. The raw value remains on the server-side
+ * `Document.metadata` object for local logging. RFC 011 §7.1 R1.
+ */
+export const FRONTMATTER_EXTRAS_WIRE_VISIBLE: boolean =
+  process.env.FRONTMATTER_EXTRAS_WIRE_VISIBLE === 'true';
+
 // ---------------------------------------------------------------------------
 // Tool description overrides (RFC 010 M2 / #52).
 // Operators can repurpose the same binary for different deployments (eng
