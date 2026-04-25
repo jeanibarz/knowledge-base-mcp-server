@@ -13,15 +13,23 @@
 // can't silently return wrong-vector-space results.
 
 import * as fsp from 'fs/promises';
-import { FaissIndexManager, faissIndexBinaryPath, readStoredModelName } from './FaissIndexManager.js';
+import { FaissIndexManager } from './FaissIndexManager.js';
 import {
-  EMBEDDING_PROVIDER,
-  FAISS_INDEX_PATH,
+  ActiveModelResolutionError,
+  faissIndexBinaryPath,
+  isRegisteredModel,
+  listRegisteredModels,
+  modelDir,
+  parseModelId,
+  readStoredModelName,
+  resolveActiveModel,
+  writeActiveModelAtomic,
+} from './active-model.js';
+import { deriveModelId, EmbeddingProvider } from './model-id.js';
+import { addingSentinelPath } from './active-model.js';
+import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
-  HUGGINGFACE_MODEL_NAME,
   KNOWLEDGE_BASES_ROOT_DIR,
-  OLLAMA_MODEL,
-  OPENAI_MODEL_NAME,
 } from './config.js';
 import { formatRetrievalAsJson, formatRetrievalAsMarkdown } from './formatter.js';
 import { listKnowledgeBases } from './kb-fs.js';
@@ -37,6 +45,7 @@ import { fileURLToPath } from 'url';
 interface SearchArgs {
   query: string | null; // null when --stdin and stdin not yet read
   kb?: string;
+  model?: string; // RFC 013 §4.4 — per-call active-model override
   threshold?: number;
   k: number;
   format: 'md' | 'json';
@@ -46,31 +55,40 @@ interface SearchArgs {
 
 // ----- Entry point -----------------------------------------------------------
 
-const HELP = `kb — knowledge-base CLI (RFC 012)
+const HELP = `kb — knowledge-base CLI (RFC 012 + RFC 013)
 
 Usage:
-  kb list                         List available knowledge bases.
-  kb search <query> [opts]        Semantic search (read-only).
-  kb search <query> --refresh     Also re-scan KB files (write path).
-  kb search --stdin               Read query from stdin.
+  kb list                                 List available knowledge bases.
+  kb search <query> [opts]                Semantic search (read-only).
+  kb search <query> --refresh             Also re-scan KB files (write path).
+  kb search --stdin                       Read query from stdin.
+  kb models list                          List registered embedding models.
+  kb models add <provider> <model>        Register a new model + ingest.
+  kb models set-active <id>               Change the default model.
+  kb models remove <id>                   Delete a model's index.
   kb --version
   kb --help
 
 Search options:
   --kb=<name>           Scope to one knowledge base.
+  --model=<id>          Override active model for this call (RFC 013).
   --threshold=<float>   Max similarity score (default 2).
   --k=<int>             Top-K results (default 10).
   --format=md|json      Output format (default md).
-  --refresh             Re-scan KB files; acquires write lock briefly.
+  --refresh             Re-scan KB files; acquires per-model write lock.
   --stdin               Read query from stdin (multi-line safe).
 
-Env vars (same as MCP server): KNOWLEDGE_BASES_ROOT_DIR, FAISS_INDEX_PATH,
-EMBEDDING_PROVIDER, OLLAMA_*, OPENAI_*, HUGGINGFACE_*.
+Models add options:
+  --yes                 Skip the cost-estimate confirmation prompt.
+  --dry-run             Print the estimate; don't embed.
+
+Env vars: KNOWLEDGE_BASES_ROOT_DIR, FAISS_INDEX_PATH, EMBEDDING_PROVIDER,
+KB_ACTIVE_MODEL (RFC 013 §4.7), OLLAMA_*, OPENAI_*, HUGGINGFACE_*.
 
 Exit codes:
   0  success (results found or empty)
   1  runtime / index error
-  2  argv / env / model-mismatch error
+  2  argv / env / model-resolution error
 `;
 
 export async function main(argv: string[]): Promise<number> {
@@ -95,9 +113,330 @@ export async function main(argv: string[]): Promise<number> {
   if (sub === 'search') {
     return runSearch(rest);
   }
+  if (sub === 'models') {
+    return runModels(rest);
+  }
 
   process.stderr.write(`kb: unknown subcommand '${sub}'\n${HELP}`);
   return 2;
+}
+
+// ----- models (RFC 013 §4.4) -------------------------------------------------
+
+async function runModels(rest: string[]): Promise<number> {
+  const verb = rest[0];
+  if (!verb) {
+    process.stderr.write('kb models: missing subcommand (list, add, set-active, remove)\n');
+    return 2;
+  }
+  // Bootstrap layout for any models subcommand.
+  try {
+    await FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: false });
+  } catch (err) {
+    process.stderr.write(`kb models: layout bootstrap failed: ${(err as Error).message}\n`);
+    return 1;
+  }
+
+  if (verb === 'list') return runModelsList();
+  if (verb === 'add') return runModelsAdd(rest.slice(1));
+  if (verb === 'set-active') return runModelsSetActive(rest.slice(1));
+  if (verb === 'remove') return runModelsRemove(rest.slice(1));
+
+  process.stderr.write(`kb models: unknown verb '${verb}'\n`);
+  return 2;
+}
+
+async function runModelsList(): Promise<number> {
+  const models = await listRegisteredModels();
+  let activeId: string | null = null;
+  try {
+    activeId = await resolveActiveModel();
+  } catch {
+    // No active resolvable; just don't mark any.
+  }
+  if (models.length === 0) {
+    process.stdout.write('(no models registered — run `kb models add <provider> <model>`)\n');
+    return 0;
+  }
+  // Compute padding from data.
+  const idWidth = Math.max(8, ...models.map((m) => m.model_id.length));
+  for (const m of models) {
+    const marker = m.model_id === activeId ? '*' : ' ';
+    process.stdout.write(
+      `${marker} ${m.model_id.padEnd(idWidth)}  ${m.provider.padEnd(11)}  ${m.model_name}\n`,
+    );
+  }
+  return 0;
+}
+
+async function runModelsAdd(rest: string[]): Promise<number> {
+  // Parse args: <provider> <model> [--yes] [--dry-run]
+  const positionals: string[] = [];
+  let yes = false;
+  let dryRun = false;
+  for (const raw of rest) {
+    if (raw === '--yes') { yes = true; continue; }
+    if (raw === '--dry-run') { dryRun = true; continue; }
+    if (raw.startsWith('--')) {
+      process.stderr.write(`kb models add: unknown flag: ${raw}\n`);
+      return 2;
+    }
+    positionals.push(raw);
+  }
+  if (positionals.length !== 2) {
+    process.stderr.write('kb models add: expected <provider> <model>\n');
+    return 2;
+  }
+  const [provider, modelName] = positionals;
+  if (provider !== 'ollama' && provider !== 'openai' && provider !== 'huggingface') {
+    process.stderr.write(`kb models add: invalid provider "${provider}" (expected ollama|openai|huggingface)\n`);
+    return 2;
+  }
+  let modelId: string;
+  try {
+    modelId = deriveModelId(provider as EmbeddingProvider, modelName);
+  } catch (err) {
+    process.stderr.write(`kb models add: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  // Already registered (or .adding present)?
+  if (await isRegisteredModel(modelId)) {
+    process.stderr.write(
+      `kb models add: model "${modelId}" is already registered. ` +
+      `Use \`kb search --model=${modelId} --refresh\` to re-embed, or ` +
+      `\`kb models remove ${modelId}\` first.\n`,
+    );
+    return 2;
+  }
+  const sentinelExists = await fsp.access(addingSentinelPath(modelId)).then(() => true).catch(() => false);
+  if (sentinelExists) {
+    process.stderr.write(
+      `kb models add: previous \`kb models add ${modelId}\` was interrupted (.adding sentinel present). ` +
+      `Run \`kb models remove ${modelId} --force-incomplete\` to clean up, then retry.\n`,
+    );
+    return 2;
+  }
+
+  // Cost estimate (RFC 013 §4.10) — simple bytes/4 token rule.
+  let totalBytes = 0;
+  let fileCount = 0;
+  try {
+    const kbs = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+    for (const kbName of kbs) {
+      const kbDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
+      const all = await getFilesRecursively(kbDir);
+      const ingestable = await filterIngestablePaths(all, kbDir);
+      for (const f of ingestable) {
+        try {
+          const st = await fsp.stat(f);
+          totalBytes += st.size;
+          fileCount += 1;
+        } catch { /* file vanished; skip */ }
+      }
+    }
+  } catch (err) {
+    process.stderr.write(`kb models add: failed to walk KBs: ${(err as Error).message}\n`);
+    return 1;
+  }
+  const estChunks = Math.ceil(totalBytes / 800);
+  const estTokens = Math.ceil(totalBytes / 4);
+  let costLine = '';
+  if (provider === 'openai') {
+    const usdPerMTok = modelName.includes('large') ? 0.13 : 0.02;
+    const estUsd = (estTokens / 1_000_000) * usdPerMTok;
+    costLine = `Estimated cost: ~$${estUsd.toFixed(4)} (OpenAI ${modelName} at $${usdPerMTok}/1M tokens)\n` +
+               `See provider pricing: https://openai.com/api/pricing\n`;
+  } else if (provider === 'huggingface') {
+    costLine = 'Cost: free tier (rate-limited). See https://huggingface.co/docs/inference-providers/pricing\n';
+  } else {
+    costLine = 'Cost: free (Ollama is local).\n';
+  }
+  const wallSec = provider === 'ollama' ? estChunks * 0.05
+                : provider === 'openai' ? estChunks * 0.2
+                : estChunks * 0.3;
+  process.stderr.write(
+    `Adding model: ${modelId} (provider=${provider}, model=${modelName})\n` +
+    `Will embed: ${fileCount} files (~${estChunks} chunks, ~${(totalBytes / 1024).toFixed(0)} KB of text, ~${(estTokens / 1000).toFixed(0)}k tokens)\n` +
+    costLine +
+    `Estimated wall time: ~${wallSec < 60 ? wallSec.toFixed(0) + ' s' : (wallSec / 60).toFixed(1) + ' min'} (HTTP latency dominated)\n`,
+  );
+  if (dryRun) {
+    process.stderr.write('(--dry-run; no embedding work done)\n');
+    return 0;
+  }
+
+  // TTY check (round-1 failure F9) — never block on stdin.
+  if (!yes) {
+    if (!process.stdin.isTTY) {
+      process.stderr.write('kb models add: not a TTY; pass --yes for non-interactive use, or --dry-run to preview.\n');
+      return 2;
+    }
+    process.stderr.write('Continue? [y/N]: ');
+    const answer = await new Promise<string>((resolve) => {
+      let buf = '';
+      process.stdin.setEncoding('utf-8');
+      const onData = (chunk: string) => {
+        buf += chunk;
+        if (buf.includes('\n')) {
+          process.stdin.removeListener('data', onData);
+          process.stdin.pause();
+          resolve(buf.trim().toLowerCase());
+        }
+      };
+      process.stdin.resume();
+      process.stdin.on('data', onData);
+    });
+    if (answer !== 'y' && answer !== 'yes') {
+      process.stderr.write('Aborted.\n');
+      return 0;
+    }
+  }
+
+  // Mkdir + sentinel + lock + embed.
+  await fsp.mkdir(modelDir(modelId), { recursive: true });
+  const sentinel = addingSentinelPath(modelId);
+  await fsp.writeFile(sentinel, `${process.pid}\n`, 'utf-8');
+  let interrupted = false;
+  try {
+    await withWriteLock(modelDir(modelId), async () => {
+      const manager = new FaissIndexManager({
+        provider: provider as EmbeddingProvider,
+        modelName,
+      });
+      await manager.initialize();
+      await manager.updateIndex();
+    });
+  } catch (err) {
+    interrupted = true;
+    process.stderr.write(`kb models add: embedding failed: ${(err as Error).message}\n`);
+    process.stderr.write(`Run \`kb models remove ${modelId} --force-incomplete\` to clean up, then retry.\n`);
+    return 1;
+  } finally {
+    if (!interrupted) {
+      await fsp.unlink(sentinel).catch(() => {});
+    }
+  }
+
+  // Auto-promote to active if no active.txt yet (round-2 failure N2).
+  try {
+    await resolveActiveModel();
+  } catch (err) {
+    if (err instanceof ActiveModelResolutionError) {
+      // No active resolvable → write this one.
+      await writeActiveModelAtomic(modelId);
+      process.stderr.write(`Marked ${modelId} as active (first registered model).\n`);
+    } else {
+      throw err;
+    }
+  }
+
+  process.stderr.write(`Successfully added ${modelId}.\n`);
+  return 0;
+}
+
+async function runModelsSetActive(rest: string[]): Promise<number> {
+  if (rest.length !== 1) {
+    process.stderr.write('kb models set-active: expected exactly one model_id\n');
+    return 2;
+  }
+  const id = rest[0];
+  if (!(await isRegisteredModel(id))) {
+    const available = (await listRegisteredModels()).map((m) => m.model_id).join(', ') || '<none>';
+    process.stderr.write(`kb models set-active: "${id}" is not registered. Registered: ${available}\n`);
+    return 2;
+  }
+  await writeActiveModelAtomic(id);
+  process.stderr.write(`Active model set to ${id}.\n`);
+  if (process.env.KB_ACTIVE_MODEL && process.env.KB_ACTIVE_MODEL !== '') {
+    process.stderr.write(
+      `Note: KB_ACTIVE_MODEL=${process.env.KB_ACTIVE_MODEL} is set in your environment; this will continue to override active.txt for processes inheriting it. Unset KB_ACTIVE_MODEL to use the new active model.\n`,
+    );
+  }
+  return 0;
+}
+
+async function runModelsRemove(rest: string[]): Promise<number> {
+  // Parse: <id> [--yes] [--force-incomplete]
+  const positionals: string[] = [];
+  let yes = false;
+  let forceIncomplete = false;
+  for (const raw of rest) {
+    if (raw === '--yes') { yes = true; continue; }
+    if (raw === '--force-incomplete') { forceIncomplete = true; continue; }
+    if (raw.startsWith('--')) {
+      process.stderr.write(`kb models remove: unknown flag: ${raw}\n`);
+      return 2;
+    }
+    positionals.push(raw);
+  }
+  if (positionals.length !== 1) {
+    process.stderr.write('kb models remove: expected exactly one model_id\n');
+    return 2;
+  }
+  const id = positionals[0];
+  // Validate id format before touching paths.
+  try {
+    parseModelId(id);
+  } catch (err) {
+    process.stderr.write(`kb models remove: ${(err as Error).message}\n`);
+    return 2;
+  }
+  const dir = modelDir(id);
+  const exists = await fsp.access(dir).then(() => true).catch(() => false);
+  if (!exists) {
+    process.stderr.write(`kb models remove: "${id}" does not exist on disk.\n`);
+    return 2;
+  }
+  // Refuse if active.
+  let activeId: string | null = null;
+  try {
+    activeId = await resolveActiveModel();
+  } catch { /* no active; remove freely */ }
+  if (activeId === id) {
+    const others = (await listRegisteredModels()).filter((m) => m.model_id !== id).map((m) => m.model_id).join(', ') || '<none>';
+    process.stderr.write(
+      `kb models remove: refusing to remove the active model. ` +
+      `Run \`kb models set-active <other>\` first. Other registered: ${others}\n`,
+    );
+    return 2;
+  }
+  // Refuse if .adding present (unless --force-incomplete).
+  const sentinelExists = await fsp.access(addingSentinelPath(id)).then(() => true).catch(() => false);
+  if (sentinelExists && !forceIncomplete) {
+    process.stderr.write(
+      `kb models remove: ".adding" sentinel present (interrupted add). Pass --force-incomplete to confirm.\n`,
+    );
+    return 2;
+  }
+  if (!yes) {
+    if (!process.stdin.isTTY) {
+      process.stderr.write('kb models remove: not a TTY; pass --yes for non-interactive use.\n');
+      return 2;
+    }
+    process.stderr.write(`Remove ${id} (delete ${dir})? [y/N]: `);
+    const answer = await new Promise<string>((resolve) => {
+      let buf = '';
+      process.stdin.setEncoding('utf-8');
+      const onData = (chunk: string) => {
+        buf += chunk;
+        if (buf.includes('\n')) {
+          process.stdin.removeListener('data', onData);
+          process.stdin.pause();
+          resolve(buf.trim().toLowerCase());
+        }
+      };
+      process.stdin.resume();
+      process.stdin.on('data', onData);
+    });
+    if (answer !== 'y' && answer !== 'yes') {
+      process.stderr.write('Aborted.\n');
+      return 0;
+    }
+  }
+  await fsp.rm(dir, { recursive: true, force: true });
+  process.stderr.write(`Removed ${id}.\n`);
+  return 0;
 }
 
 // ----- list ------------------------------------------------------------------
@@ -138,25 +477,30 @@ async function runSearch(rest: string[]): Promise<number> {
     return 2;
   }
 
-  // Model-mismatch check (RFC §4.7). Both default and --refresh paths.
-  // --refresh handles the recreate; default exits with a clear error.
-  const mismatch = await checkModelMismatch();
-  if (mismatch) {
-    if (!parsed.refresh) {
-      process.stderr.write(mismatch.errorMessage);
-      return 2;
-    }
-    // --refresh: emit warning, let updateIndex trigger the recreate path.
-    process.stderr.write(mismatch.warningMessage);
+  // RFC 013 §4.8 — bootstrap layout (one-shot migration from 0.2.x).
+  try {
+    await FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: false });
+  } catch (err) {
+    process.stderr.write(`kb search: layout bootstrap failed: ${(err as Error).message}\n`);
+    return 1;
   }
 
-  // Suppress logger noise on stdout; everything goes to stderr but the
-  // existing logger already only writes to stderr. Reading the env-driven
-  // LOG_LEVEL is the operator's control.
+  // RFC 013 §4.7 — resolve active model (precedence: --model > KB_ACTIVE_MODEL > active.txt > legacy env).
+  let activeModelId: string;
+  try {
+    activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
+  } catch (err) {
+    if (err instanceof ActiveModelResolutionError) {
+      process.stderr.write(`kb search: ${err.message}\n`);
+      return 2;
+    }
+    process.stderr.write(`kb search: ${(err as Error).message}\n`);
+    return 1;
+  }
 
   let manager: FaissIndexManager;
   try {
-    manager = new FaissIndexManager();
+    manager = await loadManagerForModel(activeModelId);
   } catch (err) {
     process.stderr.write(`kb search: ${(err as Error).message}\n`);
     return 2;
@@ -164,9 +508,8 @@ async function runSearch(rest: string[]): Promise<number> {
 
   try {
     if (parsed.refresh) {
-      // RFC 013 M0: lock resource is FAISS_INDEX_PATH; M1+M2 narrows to
-      // ${PATH}/models/<id>/ for per-model isolation.
-      await withWriteLock(FAISS_INDEX_PATH, async () => {
+      // RFC 013 §4.6 — write lock is per-model directory.
+      await withWriteLock(manager.modelDir, async () => {
         await manager.initialize();
         await manager.updateIndex(parsed.kb);
       });
@@ -193,7 +536,7 @@ async function runSearch(rest: string[]): Promise<number> {
 
   // Staleness pre-check (RFC §4.10). Cheap stat-only walk; computes
   // modified + new file counts vs. the inner FAISS binary's mtime.
-  const staleness = await computeStaleness();
+  const staleness = await computeStaleness(activeModelId);
 
   if (parsed.format === 'json') {
     const body = formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
@@ -230,6 +573,7 @@ function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--refresh') { out.refresh = true; continue; }
     if (raw === '--stdin')   { out.stdin = true; continue; }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
+    if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
     if (raw.startsWith('--threshold=')) {
       const n = Number(raw.slice('--threshold='.length));
       if (!Number.isFinite(n)) throw new Error(`invalid --threshold: ${raw}`);
@@ -253,40 +597,25 @@ function parseSearchArgs(rest: string[]): SearchArgs {
   return out;
 }
 
-// ----- model-mismatch check (RFC §4.7) --------------------------------------
+// ----- manager construction --------------------------------------------------
 
-interface ModelMismatch {
-  errorMessage: string;
-  warningMessage: string;
-}
-
-function configuredModelName(): string {
-  switch (EMBEDDING_PROVIDER) {
-    case 'openai': return OPENAI_MODEL_NAME;
-    case 'ollama': return OLLAMA_MODEL;
-    default: return HUGGINGFACE_MODEL_NAME;
+/**
+ * RFC 013: load a FaissIndexManager for the given model_id. Resolves the
+ * (provider, modelName) pair from the model's `model_name.txt` so the
+ * manager can instantiate the right embeddings client. The 0.2.x model-
+ * mismatch check is obsolete under multi-model — each model has its own
+ * dir, and the active resolver fails-fast on missing/malformed state.
+ */
+async function loadManagerForModel(modelId: string): Promise<FaissIndexManager> {
+  const { provider } = parseModelId(modelId);
+  const modelName = await readStoredModelName(modelId);
+  if (modelName === null) {
+    throw new Error(`model_name.txt missing for "${modelId}" — corrupt model directory`);
   }
-}
-
-async function checkModelMismatch(): Promise<ModelMismatch | null> {
-  const stored = await readStoredModelName().catch(() => null);
-  if (stored === null) return null; // fresh index — no mismatch possible
-  const configured = configuredModelName();
-  if (stored === configured) return null;
-
-  const errorMessage =
-    `Error: Embedding model mismatch.\n` +
-    `  Index built with: ${stored}\n` +
-    `  Current config:   ${configured}\n` +
-    `These produce different vector spaces; query results would be meaningless.\n` +
-    `Options:\n` +
-    `  1. Set EMBEDDING_PROVIDER / model env vars to match the index, or\n` +
-    `  2. Run \`kb search --refresh\` to rebuild the index with the current model\n` +
-    `     (multi-minute on first call).\n`;
-  const warningMessage =
-    `Warning: Embedding model mismatch (index: ${stored}, configured: ${configured}). ` +
-    `--refresh will trigger a full re-embed.\n`;
-  return { errorMessage, warningMessage };
+  return new FaissIndexManager({
+    provider: provider as EmbeddingProvider,
+    modelName,
+  });
 }
 
 // ----- staleness pre-check (RFC §4.10) --------------------------------------
@@ -297,10 +626,10 @@ interface Staleness {
   newFiles: number;
 }
 
-async function computeStaleness(): Promise<Staleness> {
+async function computeStaleness(modelId: string): Promise<Staleness> {
   // Index mtime — target the inner binary file (NOT the directory; round-3
   // mtime correction).
-  const binaryPath = faissIndexBinaryPath();
+  const binaryPath = faissIndexBinaryPath(modelId);
   let indexStat;
   try {
     indexStat = await fsp.stat(binaryPath);

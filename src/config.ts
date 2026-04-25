@@ -11,6 +11,13 @@ export const FAISS_INDEX_PATH = process.env.FAISS_INDEX_PATH || DEFAULT_FAISS_IN
 // Embedding provider configuration
 export const EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER || 'huggingface';
 
+// RFC 013 §4.7 — per-process override for the active model. When set, takes
+// precedence over `${FAISS_INDEX_PATH}/active.txt` for the lifetime of this
+// process. Empty/unset = fall through to active.txt then to legacy env-var
+// derivation. Slug validation (^[a-z]+__[A-Za-z0-9._-]+$) is enforced by
+// active-model.ts before any path-join.
+export const KB_ACTIVE_MODEL = process.env.KB_ACTIVE_MODEL || '';
+
 // HuggingFace configuration
 export const DEFAULT_HUGGINGFACE_MODEL_NAME = 'BAAI/bge-small-en-v1.5';
 export const HUGGINGFACE_MODEL_NAME = process.env.HUGGINGFACE_MODEL_NAME || DEFAULT_HUGGINGFACE_MODEL_NAME;
