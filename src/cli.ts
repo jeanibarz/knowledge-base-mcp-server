@@ -35,6 +35,7 @@ import { formatRetrievalAsJson, formatRetrievalAsMarkdown } from './formatter.js
 import { listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { logger } from './logger.js';
+import { estimateCostUsd } from './cost-estimates.js';
 import { filterIngestablePaths, getFilesRecursively } from './utils.js';
 import { readFileSync, realpathSync } from 'fs';
 import * as path from 'path';
@@ -377,9 +378,8 @@ async function runModelsAdd(rest: string[]): Promise<number> {
   const estTokens = Math.ceil(totalBytes / 4);
   let costLine = '';
   if (provider === 'openai') {
-    const usdPerMTok = modelName.includes('large') ? 0.13 : 0.02;
-    const estUsd = (estTokens / 1_000_000) * usdPerMTok;
-    costLine = `Estimated cost: ~$${estUsd.toFixed(4)} (OpenAI ${modelName} at $${usdPerMTok}/1M tokens)\n` +
+    const breakdown = estimateCostUsd('openai', modelName, estTokens);
+    costLine = `Estimated cost: ~$${breakdown.usd.toFixed(4)} (OpenAI ${modelName} at $${breakdown.per_million_tokens_usd}/1M tokens)\n` +
                `See provider pricing: https://openai.com/api/pricing\n`;
   } else if (provider === 'huggingface') {
     costLine = 'Cost: free tier (rate-limited). See https://huggingface.co/docs/inference-providers/pricing\n';
