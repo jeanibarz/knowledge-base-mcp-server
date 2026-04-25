@@ -75,6 +75,49 @@ export const FRONTMATTER_EXTRAS_WIRE_VISIBLE: boolean =
   process.env.FRONTMATTER_EXTRAS_WIRE_VISIBLE === 'true';
 
 // ---------------------------------------------------------------------------
+// Reindex-trigger watcher (RFC 011 §5.5).
+// External workflows (e.g. the arxiv-ingestion n8n flow) signal the server
+// that new content has landed by `touch`ing a dotfile at the KB root. The
+// watcher polls its mtime, so a running MCP server picks up writes without
+// an explicit `refresh_knowledge_base` call.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_REINDEX_TRIGGER_POLL_MS = 5000;
+const MIN_REINDEX_TRIGGER_POLL_MS = 1000;
+const MAX_REINDEX_TRIGGER_POLL_MS = 60000;
+
+export function parseReindexTriggerPollMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') {
+    return DEFAULT_REINDEX_TRIGGER_POLL_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_REINDEX_TRIGGER_POLL_MS;
+  }
+  // `0` is the documented "disabled" sentinel — accepted unchanged.
+  if (parsed === 0) return 0;
+  // Otherwise clamp into [MIN, MAX] so operators can't set a 50ms spin-poll
+  // or a multi-hour interval that defeats the point of the watcher.
+  return Math.max(
+    MIN_REINDEX_TRIGGER_POLL_MS,
+    Math.min(MAX_REINDEX_TRIGGER_POLL_MS, Math.round(parsed)),
+  );
+}
+
+export const REINDEX_TRIGGER_POLL_MS: number = parseReindexTriggerPollMs(
+  process.env.REINDEX_TRIGGER_POLL_MS,
+);
+
+/**
+ * Path the reindex-trigger watcher polls. Defaults to a dotfile at the
+ * KB root so it is NOT picked up by `getFilesRecursively` (which skips
+ * dot-prefixed entries at `src/utils.ts:28`).
+ */
+export const REINDEX_TRIGGER_PATH: string =
+  process.env.REINDEX_TRIGGER_PATH
+  || path.join(KNOWLEDGE_BASES_ROOT_DIR, '.reindex-trigger');
+
+// ---------------------------------------------------------------------------
 // Tool description overrides (RFC 010 M2 / #52).
 // Operators can repurpose the same binary for different deployments (eng
 // docs vs. personal notes vs. postmortems) by overriding the model-facing
