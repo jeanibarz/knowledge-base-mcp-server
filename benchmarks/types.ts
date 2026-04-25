@@ -44,9 +44,33 @@ export interface RetrievalQualityScenarioResult {
   sweep: RetrievalQualitySweepResult[];
 }
 
+export interface BatchQueryRunResult {
+  concurrency: number;
+  qps_p50: number;
+  qps_p95: number;
+  latency_p50_ms: number;
+  latency_p95_ms: number;
+  latency_p99_ms: number;
+  total_queries: number;
+}
+
+export interface BatchQueryScenarioResult {
+  runs: BatchQueryRunResult[];
+}
+
+export interface IndexStorageScenarioResult {
+  vector_binary_bytes: number;
+  docstore_bytes: number;
+  total_bytes: number;
+  bytes_per_vector: number;
+  vectors: number;
+}
+
 export interface BenchmarkReport {
   arch: string;
   git_sha: string;
+  model_id?: string;
+  model_name?: string;
   node_version: string;
   os: string;
   provider: BenchProvider;
@@ -56,6 +80,8 @@ export interface BenchmarkReport {
     memory_peak: MemoryScenarioResult;
     retrieval_quality: RetrievalQualityScenarioResult;
     warm_query: WarmQueryScenarioResult;
+    batch_query?: BatchQueryScenarioResult;
+    index_storage?: IndexStorageScenarioResult;
   };
   version: 1;
 }

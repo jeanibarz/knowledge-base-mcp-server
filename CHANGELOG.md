@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased] — RFC 013 M5 (bench:compare)
+
+### Added (benchmark harness extensions)
+
+- **`npm run bench:compare`** orchestrator — drives two back-to-back per-model bench runs against a shared corpus and renders a self-contained HTML report (inline CSS + SVG; zero deps; reviewer-portable). Six sections: summary table with per-axis winner, latency-distribution charts (single + batch), throughput-vs-concurrency line, on-disk storage stacked bar, query-level top-5 with overlap highlighting, rule-based recommendation panel (RFC 013 §4.13.5).
+- **New scenarios** in `benchmarks/scenarios/`:
+  - `batch-query.ts` — concurrency sweep (default 1/4/16); reports throughput (qps p50/p95) + tail latency p50/p95/p99 per concurrency.
+  - `index-storage.ts` — on-disk byte sizes of `models/<id>/faiss.index/{faiss.index, docstore.json}` after cold-index; computes bytes/vector.
+- **`benchmarks/compare/`** new package: `run.ts` (orchestrator), `render.ts` (HTML hydrator), `chart.ts` (inline-SVG primitives — bar / line / stacked-bar; zero deps), `report-template.html` (skeleton), `queries-default.txt` (50 prose queries for arxiv-like corpora; synthetic fixtures fall back to fixture-derived queries).
+- **`src/cost-estimates.ts`** — extracted from `src/cli.ts` so the orchestrator and the `kb models add` cost prompt share a single rule-of-thumb table. Includes `LAST_VERIFIED` so a stale cost number is visible in the report.
+- **`BENCH_MODEL_NAME`** + **`BENCH_FAISS_INDEX_PATH`** + **`BENCH_KNOWLEDGE_BASES_ROOT_DIR`** + **`BENCH_BATCH_CONCURRENCIES`** + **`BENCH_QUERIES`** + **`BENCH_INCLUDE_BATCH_QUERY`** + **`BENCH_INCLUDE_INDEX_STORAGE`** env vars on `benchmarks/run.ts`. The orchestrator drives two legs by setting these per leg; ad-hoc users can also set them directly.
+- **`benchmarks/.cache/.gitignore`** — placeholder for the future arxiv corpus cache (RFC 013 §4.13.4 follow-up).
+- **`.claude/skills/compare-embedding-models/SKILL.md`** — operator skill describing when to run `bench:compare`, prerequisites, steps, verification, failure modes.
+
+### Deferred to a follow-up (M5.1)
+
+- `--fixture=large` with the ~3000-chunk arxiv (`cs.IR + cs.CL`) corpus and sha256-keyed cache. M5 v1 ships the orchestrator + scenarios + renderer; the synthetic small/medium fixtures already give meaningful latency/throughput/storage/cost signal. Arxiv adds retrieval-quality signal on prose corpora (RFC §4.13.4).
+- `--golden=<path>` recall@k integration into the report (the JSON carries the per-query top-k for both models, ready for an external scorer; the report render step is the missing piece).
+- `.github/workflows/bench-compare-dispatch.yml` (`workflow_dispatch`-only — maintainer manual runs against real providers).
+
 ## [Unreleased] — RFC 013 M1+M2 (draft)
 
 ### Added (technically breaking — on-disk layout migrates)

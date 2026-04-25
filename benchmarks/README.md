@@ -110,6 +110,56 @@ Real-provider modes (`ollama`, `huggingface`, `openai`) keep the repository logi
 
 The benchmark fixtures are generated at bench start from a seeded `mulberry32` PRNG. This keeps the corpus stable across runs while avoiding checked-in FAISS binaries that can break across platforms. The generator lives in `benchmarks/fixtures/generator.ts`.
 
+## Comparing two embedding models — `bench:compare` (RFC 013 M5)
+
+The `bench:compare` orchestrator drives two back-to-back per-model bench runs against a shared corpus and emits a self-contained HTML comparison report (inline CSS + SVG; no CDN, no JS framework). Use it to pick between two embedding models on **your hardware** without wiring up MTEB.
+
+```bash
+# Real providers (the only meaningful mode for selection):
+npm run bench:compare -- \
+  --models=ollama__nomic-embed-text-latest,huggingface__BAAI-bge-small-en-v1.5 \
+  --concurrency=1,4,16
+
+# Stub provider, smoke-test only (jaccard will be 1.0 — same vectors):
+BENCH_PROVIDER=stub npm run bench:compare -- \
+  --models=stub:bench-stub-A,stub:bench-stub-B \
+  --fixture=small --concurrency=1,4
+```
+
+Flags (all post `--`):
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--models=<id_a>,<id_b>` | required | Two `<provider>__<slug>` ids (or `<provider>:<modelName>`). |
+| `--fixture=small\|medium\|external` | `medium` | Synthetic profile; `external` honors `KNOWLEDGE_BASES_ROOT_DIR`. (`large`/arxiv corpus is a follow-up.) |
+| `--queries=<path>` | bundled `queries-default.txt` for prose corpora; fixture-derived for synthetic | One query per line; `#`-comments allowed. |
+| `--concurrency=1,4,16` | `1,4,16` | Concurrency sweep for the batch-query phase. |
+| `--golden=<path>` | none | Reserved — JSON `{query: [doc_paths]}` for recall@k. (Not yet wired into the report; follow-up.) |
+| `--output-dir=<path>` | `benchmarks/results` | Where the HTML + JSON pair lands. |
+| `--skip-add` | off | Reuse already-registered models (no re-embed). |
+| `--yes` | off | Non-interactive; skips paid-provider cost prompt. |
+
+Output:
+
+```
+benchmarks/results/compare-<id_a>-vs-<id_b>-<utc-stamp>.html  ← open in any browser
+benchmarks/results/compare-<id_a>-vs-<id_b>-<utc-stamp>.json  ← merged input + crossModel + cost
+```
+
+The HTML has six sections: summary table (with per-axis winner column), latency-distribution charts (single-query + batch p99 by concurrency), throughput-vs-concurrency line chart, on-disk storage stacked bar, query-level detail (collapsible top-5 per model with overlap highlighting), and a rule-based recommendation panel (fixed thresholds documented inline so a skeptical reader can disagree explicitly). Disclaimers section makes the "your-KB selection guidance, NOT MTEB" framing explicit.
+
+Concurrency invariants (RFC 013 §4.13.9):
+
+- Both per-model bench legs run **back-to-back, never in parallel** — avoids CPU/network confounding.
+- Cross-model phase mutates `process.env` per leg to load the right manager; safe because the orchestrator never starts the MCP server (no single-instance contention with a user's running MCP).
+- Per-model write-locks (RFC 013 §4.6) keep concurrent `kb` invocations on the same `FAISS_INDEX_PATH` safe.
+
+Follow-ups not in M5 v1:
+
+- `--fixture=large` with the ~3000-chunk arxiv (`cs.IR + cs.CL`) corpus and sha256-keyed cache (`benchmarks/.cache/`) — RFC 013 §4.13.4. Today the orchestrator runs against the existing seeded synthetic generator at the bench's hardcoded sizes (~600 chunks for cold-index).
+- `--golden` recall@k integration into the report.
+- `workflow_dispatch` GitHub workflow for maintainer-triggered real-provider runs (RFC 013 §4.13.7).
+
 ## Jest mocking strategy note
 
 The repository's unit tests should keep using the existing Jest ESM mock pattern from [`src/FaissIndexManager.test.ts`](../src/FaissIndexManager.test.ts):

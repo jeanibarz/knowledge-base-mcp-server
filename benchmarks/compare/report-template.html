@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>{{TITLE}}</title>
+<style>
+  :root {
+    --color-a: #1f77b4;
+    --color-b: #ff7f0e;
+    --bg: #fafafa;
+    --fg: #222;
+    --muted: #666;
+    --rule: #ddd;
+    --winner-bg: #e9f4ff;
+    --tie-bg: #f0f0f0;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    margin: 0;
+    padding: 24px;
+    max-width: 1080px;
+    margin-left: auto;
+    margin-right: auto;
+    line-height: 1.5;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px 0; }
+  h2 { font-size: 16px; margin: 32px 0 8px 0; padding-bottom: 4px; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 14px; margin: 16px 0 4px 0; color: var(--muted); }
+  .meta { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .meta code { background: #eef; padding: 1px 4px; border-radius: 3px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--rule); padding: 6px 10px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: #f2f2f2; font-weight: 600; }
+  td.winner { background: var(--winner-bg); font-weight: 600; }
+  td.tie { background: var(--tie-bg); color: var(--muted); }
+
+  .legend { display: flex; gap: 16px; margin: 8px 0 16px; font-size: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+  .chart { display: block; max-width: 100%; height: auto; }
+  .chart-title { font-size: 12px; font-weight: 600; fill: var(--fg); }
+  .axis-tick { font-size: 10px; fill: var(--muted); }
+  .axis-label { font-size: 11px; fill: var(--muted); }
+  .grid-line { stroke: var(--rule); stroke-width: 0.5; }
+
+  .recommendation { background: #fffaf0; border: 1px solid #f0d090; padding: 12px 16px; border-radius: 4px; margin-top: 12px; font-size: 13px; }
+  .recommendation table { font-size: 12px; }
+  .recommendation td.pick { font-weight: 600; }
+  .recommendation .none { color: var(--muted); font-style: italic; }
+
+  details { margin: 8px 0; }
+  details summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  details[open] summary { color: var(--fg); }
+  .query-detail { font-size: 12px; padding: 8px 16px; background: #f6f6f6; border-radius: 3px; margin: 4px 0; }
+  .query-detail .q { font-weight: 600; margin-bottom: 4px; }
+  .query-detail .results { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .query-detail .results > div { background: white; padding: 4px 8px; border-radius: 3px; }
+  .query-detail .doc { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; }
+  .query-detail .overlap { background: #e9f4ff !important; }
+
+  .disclaimers { font-size: 11px; color: var(--muted); margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--rule); }
+  .disclaimers ul { margin: 4px 0 0 20px; padding: 0; }
+</style>
+</head>
+<body>
+<h1>{{TITLE}}</h1>
+<div class="meta">{{META}}</div>
+
+{{LEGEND}}
+
+<h2>Summary</h2>
+<table>
+  <thead>
+    <tr><th>Metric</th><th>Model A</th><th>Model B</th><th>Winner</th></tr>
+  </thead>
+  <tbody>
+    {{SUMMARY_ROWS}}
+  </tbody>
+</table>
+
+<h2>Latency distribution (single + batch)</h2>
+<div class="charts">
+  <div>
+    <h3>Single-query (warm) p50 / p95 / p99 (ms)</h3>
+    {{CHART_WARM}}
+  </div>
+  <div>
+    <h3>Batch latency p50 / p95 / p99 by concurrency (ms)</h3>
+    {{CHART_BATCH_LATENCY}}
+  </div>
+</div>
+
+<h2>Throughput vs concurrency</h2>
+{{CHART_THROUGHPUT}}
+
+<h2>Storage</h2>
+{{CHART_STORAGE}}
+
+<h2>Query-level detail</h2>
+<details>
+<summary>Show top-5 results per model side-by-side ({{QUERY_COUNT}} queries; click a query to expand)</summary>
+{{QUERY_DETAILS}}
+</details>
+
+<h2>Recommendation</h2>
+<div class="recommendation">
+  <p>The picker below uses fixed thresholds (no machine-learned scorer). Each axis has an independent winner; the global "no clear winner" verdict means axes disagree. <strong>Pick the model that wins your highest-weighted axis.</strong></p>
+  {{RECOMMENDATION_TABLE}}
+</div>
+
+<div class="disclaimers">
+  <strong>Disclaimers</strong>
+  <ul>
+    <li>This report is your-KB selection guidance, NOT an MTEB leaderboard (RFC 013 §3.2 N10).</li>
+    <li>Latency depends on hardware; rerun on the deployment target.</li>
+    <li>Recall@10 requires golden labels; absent them, only Jaccard / Spearman are shown.</li>
+    <li>Cost numbers reflect <code>src/cost-estimates.ts</code> <code>LAST_VERIFIED={{COST_LAST_VERIFIED}}</code>; verify if stale.</li>
+    <li>One machine, one moment. Comparing across hardware = run the orchestrator on each and diff manually.</li>
+  </ul>
+</div>
+</body>
+</html>
