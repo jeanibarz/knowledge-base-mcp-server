@@ -25,7 +25,7 @@ import {
 } from './config.js';
 import { formatRetrievalAsJson, formatRetrievalAsMarkdown } from './formatter.js';
 import { listKnowledgeBases } from './kb-fs.js';
-import { withWriteLock } from './lock.js';
+import { withWriteLock } from './write-lock.js';
 import { logger } from './logger.js';
 import { filterIngestablePaths, getFilesRecursively } from './utils.js';
 import { readFileSync, realpathSync } from 'fs';
@@ -164,7 +164,9 @@ async function runSearch(rest: string[]): Promise<number> {
 
   try {
     if (parsed.refresh) {
-      await withWriteLock(async () => {
+      // RFC 013 M0: lock resource is FAISS_INDEX_PATH; M1+M2 narrows to
+      // ${PATH}/models/<id>/ for per-model isolation.
+      await withWriteLock(FAISS_INDEX_PATH, async () => {
         await manager.initialize();
         await manager.updateIndex(parsed.kb);
       });

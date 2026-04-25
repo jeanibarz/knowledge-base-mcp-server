@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.2] — 2026-04-25
+
+### Changed (internal — no surface change)
+
+- **Lock module split (RFC 013 M0).** `src/lock.ts` is split into `src/instance-lock.ts` (PID advisory — `acquireInstanceAdvisory`, `releaseInstanceAdvisory`, `InstanceAlreadyRunningError`, `PID_FILE_PATH_FOR_TESTS`) and `src/write-lock.ts` (`withWriteLock`). The two mechanisms had different lifecycles (long-lived single-instance advisory vs. short-lived per-write coordination) and were conceptually mixed; round-3 of RFC 012 review flagged the boundary nit and deferred it. RFC 013 M0 acts on it now because RFC 013 M1+M2 will narrow the write lock from `FAISS_INDEX_PATH` to `${PATH}/models/<id>/` for per-model isolation, which is cleaner against a single-purpose `write-lock.ts` than a mixed module. **No external API change** — the previous `withWriteLock(fn)` signature changes to `withWriteLock(resource, fn)` with all in-tree callers (KnowledgeBaseServer, ReindexTriggerWatcher path, CLI `--refresh`) passing `FAISS_INDEX_PATH` as the resource for behavior parity. See [`docs/rfcs/013-multimodel-support.md`](./docs/rfcs/013-multimodel-support.md) §4.6.
+
 ## [0.2.1] — 2026-04-25
 
 ### Fixed
