@@ -28,9 +28,16 @@
 
 - **`kb compare <query> <model_a> <model_b>`** (G11) — unified rank/score table over both models' top-k. Hard-fails if either model is unresolvable (round-2 failure N5 — never renders a half-table). Header notes scores are not directly comparable across models with different dim/distance metrics.
 
+### Added (RFC 013 M3 — MCP surface)
+
+- **`list_models` MCP tool.** Surfaces registered embedding models so an agent can pre-flight a `model_name` override before invoking `retrieve_knowledge`. Returns `[{model_id, provider, model_name, active}]`. Skips models with `.adding` sentinel (round-1 failure F6 — half-built models are not exposed to the agent).
+- **`retrieve_knowledge` gains optional `model_name` argument.** When passed, queries the named registered model instead of the active default. Validates against the slug regex before any path-join (round-1 failure F12 — path-traversal protection). Unknown / `.adding` model returns `isError: true` with the registered list (RFC §4.5).
+- **Response envelope `model_id` footer** when `model_name` is passed (round-1 minimalist F5 — envelope, not per-chunk). When `model_name` is omitted, the wire format is byte-equal to 0.2.x for back-compat.
+- `LIST_MODELS_DESCRIPTION` env var override for the `list_models` tool description (matches RFC 010 M2 / #52 pattern).
+
 ### Status
 
-Build clean. **231 / 231 tests pass across 15 suites.** Existing tests rebased for the new `models/<id>/` layout. New module tests added: `model-id.test.ts` (15 tests), `active-model.test.ts` (18 tests including writer single-writer invariant, robust BOM/CRLF reader with hard-fail on regex-fail, full precedence matrix). New CLI tests cover `kb models list/add/set-active/remove`, `kb compare`, and the migration smoke path.
+Build clean. **237 / 237 tests pass across 15 suites.** Existing tests rebased for the new `models/<id>/` layout. New module tests added: `model-id.test.ts` (15 tests), `active-model.test.ts` (18 tests including writer single-writer invariant, robust BOM/CRLF reader with hard-fail on regex-fail, full precedence matrix). New CLI tests cover `kb models list/add/set-active/remove`, `kb compare`, and the migration smoke path. M3 MCP tests cover `list_models` happy path + `.adding` skip + empty registry, plus `retrieve_knowledge` `model_name` override (unregistered → isError, valid → envelope footer, omitted → byte-equal back-compat).
 
 ## [0.2.2] — 2026-04-25
 

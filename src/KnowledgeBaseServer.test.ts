@@ -121,6 +121,115 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(parsed).not.toContain('.config');
   });
 
+  // --- handleListModels (RFC 013 M3 §4.5) ----------------------------------
+
+  it('handleListModels returns registered models with active marker', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-listmodels-'));
+    const faissDir = path.join(tempDir, '.faiss');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const idA = 'huggingface__BAAI-bge-small-en-v1.5';
+    const idB = 'ollama__nomic-embed-text-latest';
+    for (const [id, name] of [[idA, 'BAAI/bge-small-en-v1.5'], [idB, 'nomic-embed-text:latest']] as const) {
+      await fsp.mkdir(path.join(faissDir, 'models', id), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', id, 'model_name.txt'), name);
+    }
+    await fsp.writeFile(path.join(faissDir, 'active.txt'), idA);
+
+    const server = await freshServer();
+    const result = await server['handleListModels']();
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toHaveLength(1);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed).toHaveLength(2);
+    const a = parsed.find((m: any) => m.model_id === idA);
+    const b = parsed.find((m: any) => m.model_id === idB);
+    expect(a).toMatchObject({ provider: 'huggingface', model_name: 'BAAI/bge-small-en-v1.5', active: true });
+    expect(b).toMatchObject({ provider: 'ollama', model_name: 'nomic-embed-text:latest', active: false });
+  });
+
+  it('handleListModels skips models with .adding sentinel', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-listmodels-skip-'));
+    const faissDir = path.join(tempDir, '.faiss');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const idA = 'huggingface__BAAI-bge-small-en-v1.5';
+    const idB = 'ollama__nomic-embed-text-latest';
+    for (const [id, name] of [[idA, 'BAAI/bge-small-en-v1.5'], [idB, 'nomic-embed-text:latest']] as const) {
+      await fsp.mkdir(path.join(faissDir, 'models', id), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', id, 'model_name.txt'), name);
+    }
+    await fsp.writeFile(path.join(faissDir, 'models', idB, '.adding'), `${process.pid}\n`);
+    await fsp.writeFile(path.join(faissDir, 'active.txt'), idA);
+
+    const server = await freshServer();
+    const result = await server['handleListModels']();
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.map((m: any) => m.model_id)).toEqual([idA]);
+  });
+
+  it('handleListModels returns empty array when no models registered', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-listmodels-empty-'));
+    const faissDir = path.join(tempDir, '.faiss');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const result = await server['handleListModels']();
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed).toEqual([]);
+  });
+
+  // --- handleRetrieveKnowledge model_name override (RFC 013 M3) -------------
+
+  it('handleRetrieveKnowledge with model_name=<unregistered> returns isError: true with hint', async () => {
+    await setRetrieveEnv();
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({ query: 'q', model_name: 'ollama__not-here' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not registered');
+  });
+
+  it('handleRetrieveKnowledge with valid model_name override prepends model_id footer', async () => {
+    await setRetrieveEnv();
+    const faissDir = process.env.FAISS_INDEX_PATH!;
+    const idB = 'ollama__nomic-embed-text-latest';
+    await fsp.mkdir(path.join(faissDir, 'models', idB), { recursive: true });
+    await fsp.writeFile(path.join(faissDir, 'models', idB, 'model_name.txt'), 'nomic-embed-text:latest');
+
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'hello', metadata: { source: '/tmp/x.md' }, score: 0.5 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({ query: 'q', model_name: idB });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain(`Model: ${idB}`);
+  });
+
+  it('handleRetrieveKnowledge without model_name does NOT prepend model_id footer (back-compat)', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'hello', metadata: { source: '/tmp/x.md' }, score: 0.5 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+    expect(result.content[0].text).not.toContain('Model:');
+  });
+
   it('handleListKnowledgeBases surfaces readdir errors as { isError: true } naming the failure', async () => {
     const missingDir = path.join(os.tmpdir(), `kb-server-missing-${Date.now()}-${Math.random()}`);
     process.env.KNOWLEDGE_BASES_ROOT_DIR = missingDir;
