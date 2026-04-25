@@ -606,11 +606,13 @@ Operator output: a single `compare-…-{datetime}.html` plus the two source `.js
 The user asked for "a fixture database large enough to make the report insightful." Concretely:
 
 - **Size target.** ~3000 chunks at the `--fixture=large` profile. Empirical-spike (M5 PR): on the operator's nomic-embed-text baseline (E1 reference), 1294 chunks already produces measurable p99 separation; 3000 chunks provides ~2× signal margin without pushing maintainer-local cold-start past ~5 min on Ollama (50 ms/chunk × 3000 = 150 s + I/O).
-- **Source — the hard call (OQ9 below).** Three options, ranked by author preference:
-  1. **arxiv abstracts subset** (preferred). RFC 011 already added arxiv ingestion scaffolding; ~3000 abstracts from a CC-BY-licensed snapshot (e.g. `cs.IR` + `cs.CL` 2020-2024) is ~6 MB markdown, technical English, well-suited to an embedding-discrimination test, and license-compatible with this repo's MIT.
-  2. **Wikipedia subset (`wiki40b/en` 3000-article sample).** General-purpose, well-known to ML reviewers, but heavier (~30 MB) and more topically diffuse — can mask model differences that arxiv would surface.
-  3. **The repo's own `docs/` + `CHANGELOG.md` + `README.md` + RFCs** (~15k lines today, growing). Self-referential, no licensing concerns, but tiny by 2030 standards and embarrasses comparative measurement.
-- **Vendoring strategy.** Do **not** commit the corpus binary. Ship `benchmarks/fixtures/generator.ts` (already exists for the small CI fixture) extended with a `--profile=large` flag that fetches arxiv abstracts via their public API (rate-limited; cached under `benchmarks/.cache/` with sha256-keyed filenames, gitignored). First run takes ~2 min over network; subsequent runs read from cache. Deterministic seed; same arxiv ID list across runs and machines. README documents an offline fallback (manual tarball drop into `benchmarks/.cache/`).
+- **Source — arxiv abstracts (decision locked 2026-04-26 per operator delegation).** ~3000 abstracts from `cs.IR` + `cs.CL` 2020-2024, CC-BY licensed, ~6 MB markdown after extraction. Technical English aligns with the typical KB-MCP corpus shape (code/docs/research notes), embedding-discrimination signal is sharper than general-domain, and RFC 011's arxiv ingestion scaffolding doubles the dogfooding (M5 exercises both M2 multi-model and RFC 011 ingest). Wikipedia (`wiki40b/en` 3000-doc sample) and the repo's own `docs/`+RFCs were considered and rejected: Wikipedia is heavier (~30 MB) and topically diffuse enough to mask model differences; the repo's own docs are too small to be insightful (~15k lines) and self-referential.
+- **Vendoring strategy.** Do **not** commit the corpus binary. Ship `benchmarks/fixtures/generator.ts` (already exists for the small CI fixture) extended with a `--profile=large` flag that fetches arxiv abstracts via the public arxiv API (rate-limited, ~3 req/s with delay; ~2 min first run over network). Cached under `benchmarks/.cache/` with sha256-keyed filenames (gitignored). Deterministic arxiv ID list across runs and machines (committed at `benchmarks/fixtures/arxiv-corpus-v1.ids.txt`, ~3000 lines).
+- **arxiv API risk mitigations** (locking arxiv = accepting these):
+  1. **Aggressive sha256 cache** — one fetch ever per machine; subsequent runs are network-free.
+  2. **Maintainer-uploaded fallback tarball** as a GitHub release artefact (`benchmarks-fixture-arxiv-v1.tar.gz`, ~6 MB, deterministic checksum). Operator with no network drops the tarball into `benchmarks/.cache/` and the generator skips the fetch. README documents this path.
+  3. **CI posture unchanged** — `bench:compare` is `workflow_dispatch`-only (maintainer-local), never on every PR push; arxiv rate limits don't compound across CI events.
+  4. **Generator emits a clear error on rate-limit** — "arxiv returned 429 after retry; drop the fallback tarball into benchmarks/.cache/ or wait 60 min and retry"; no silent partial corpus.
 - **Golden labels (optional).** If `--golden=<path>` is supplied, recall@k + MRR appear in the report. The bundled `queries-default.txt` does **not** ship golden labels (they're operator-corpus-specific); the report still emits cross-model Jaccard/Spearman, which doesn't need labels.
 
 #### 4.13.5 HTML report layout
@@ -1052,7 +1054,7 @@ These do NOT block 013. They form the M5+ roadmap.
 - **OQ2.** `list_models` MCP tool surface storage size and last-refreshed timestamp? Probably yes; format (machine-readable in the JSON, human-readable in tool description) defer to M3 review.
 - **OQ7.** What concrete fields does `list_models`'s reserved `quality?: object` slot contain when the future eval RFC lands? Defer.
 - **OQ8.** Once MCP elicitation API is broadly supported across clients, ship `add_model` / `set_active_model` as elicitation-gated tools? Defer to a separate RFC.
-- **OQ9 (M5 — operator-decision required before M5 implementation).** Bundled large-fixture corpus source: (a) arxiv `cs.IR + cs.CL` 2020-2024 abstracts (~3000 docs, ~6 MB, CC-BY, technical English, leverages RFC 011 ingestion) — author's pick; (b) Wikipedia `wiki40b/en` 3000-article sample (~30 MB, general, well-known to ML reviewers, more topically diffuse — may mask model differences); (c) the repo's own `docs/` + RFCs (~15k lines, no licensing concerns, but tiny by 2030). All three are sha256-cached under `benchmarks/.cache/` (gitignored), generated deterministically. **Author proposal: arxiv (option a).** Operator confirmation needed before M5 PR opens; fallback acceptable if arxiv API rate limits prove painful in practice.
+- **OQ9 (M5) — RESOLVED 2026-04-26.** Operator delegated the call; chose **arxiv `cs.IR + cs.CL` 2020-2024 abstracts** (~3000 docs, ~6 MB, CC-BY). Rationale + risk mitigations live in §4.13.4. The fallback tarball is the escape hatch if the arxiv API path proves painful in CI dispatch or maintainer iteration; the generator hard-fails on rate-limit rather than producing a silent partial corpus.
 
 ## 10. Empirical work — measured between rounds 1 and 2
 
@@ -1197,7 +1199,7 @@ The §6.2 `prepublish-full.yml` gate is the next signal — if it catches a defe
 1. Approve M0 (lock-module split as 0.2.2 patch precursor) or fold back into M1+M2.
 2. OQ1, OQ2, OQ7, OQ8 — defer to M2/M3 PR review unless operator wants positions taken now.
 3. The `KB_PREPUBLISH_KNOWN_FLAKY` flake-exit lane — confirm the discipline (every use opens an issue) is acceptable, or veto it for stricter "no-flake-zero-tolerance".
-4. **(v4 addition)** OQ9 — bundled large-fixture source (arxiv abstracts vs Wikipedia subset vs repo's own docs).
+4. ~~**(v4 addition)** OQ9 — bundled large-fixture source (arxiv abstracts vs Wikipedia subset vs repo's own docs).~~ **RESOLVED 2026-04-26 — arxiv chosen by operator delegation.** See §9 OQ9 + §4.13.4.
 
 ### v4 amendment — 2026-04-26 (operator scope addition)
 
