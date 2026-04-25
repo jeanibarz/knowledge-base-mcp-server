@@ -23,10 +23,28 @@ These instructions assume you have Node.js (version 20 or higher) and npm instal
 ### Install (one command)
 
 ```bash
-npx -y @jeanibarz/knowledge-base-mcp-server
+npx -y @jeanibarz/knowledge-base-mcp-server@latest
 ```
 
-`npx` fetches the package from npm and launches the stdio server. Point your MCP client at `npx -y @jeanibarz/knowledge-base-mcp-server` and configure the environment variables documented below. See [docs/clients.md](docs/clients.md) for copy-pasteable snippets (Claude Desktop, Codex CLI, Cursor, Continue, Cline).
+`npx` fetches the package from npm and launches the stdio server. Point your MCP client at `npx -y @jeanibarz/knowledge-base-mcp-server@latest` and configure the environment variables documented below. See [docs/clients.md](docs/clients.md) for copy-pasteable snippets (Claude Desktop, Codex CLI, Cursor, Continue, Cline).
+
+> **Pin `@latest`, not the unversioned spec.** `npx -y @jeanibarz/knowledge-base-mcp-server` (no version) caches the resolved version in `~/.npm/_npx/` indefinitely — subsequent client launches reuse that cached version even after a new release ships. The `@latest` form hashes to a different cache key and re-resolves on every launch, so new fixes arrive on the next client restart instead of requiring a manual `~/.npm/_npx/` clear. See RFC 012 §2.4.
+
+### Install (CLI alongside the MCP server, RFC 012)
+
+For an interactive shell or AI-agent shell-tool flow, install globally and use the `kb` bin directly. The OS resolves the binary on every invocation, so `npm i -g …@latest` is picked up without restarting any AI client that has the MCP server loaded:
+
+```bash
+npm install -g @jeanibarz/knowledge-base-mcp-server@latest
+kb list                       # list available knowledge bases
+kb search "your query"        # read-only search; cheap, fast (~0.6 s)
+kb search "query" --refresh   # also re-scan KB files (write path)
+kb --help
+```
+
+The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). `kb search` defaults to read-only — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
+
+The MCP server (`knowledge-base-mcp-server` bin) is unchanged and still works with all the configurations in [docs/clients.md](docs/clients.md). The CLI is additive.
 
 ### Install via Smithery
 
