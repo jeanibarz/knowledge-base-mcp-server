@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import yaml from 'js-yaml';
+import { minimatch } from 'minimatch';
 import { logger } from './logger.js';
 
 export async function calculateSHA256(filePath: string): Promise<string> {
@@ -44,6 +45,152 @@ export async function getFilesRecursively(dirPath: string): Promise<string[]> {
 
   await traverse(dirPath);
   return files;
+}
+
+// -----------------------------------------------------------------------------
+// Ingest filter (RFC 011 §5.2).
+//
+// getFilesRecursively already skips dotfiles (`.index/`, `.reindex-trigger`,
+// `.DS_Store`-when-dot-prefixed). The ingest filter runs on top of that walker
+// output to refuse content that is not retrieval-worthy: workflow sidecars
+// (`_seen.jsonl`), log directories (`logs/`, `tmp/`), and non-text extensions
+// (`.pdf`, `.jsonl`, `.log`, images). Both the arxiv ingestion workflow's
+// ledger and its PDFs must NOT reach the splitter — the walker today would
+// chunk `_seen.jsonl` as JSON lines and UTF-8-decode PDF bytes into U+FFFD
+// noise (RFC 011 §2.2).
+// -----------------------------------------------------------------------------
+
+/**
+ * Base extension allowlist for the ingest filter (Rule B). Extensions are
+ * lowercased and include the leading dot. `INGEST_EXTRA_EXTENSIONS` merges
+ * into this set; operators cannot remove base entries.
+ */
+export const INGEST_BASE_EXTENSIONS: readonly string[] = [
+  '.md',
+  '.markdown',
+  '.txt',
+  '.rst',
+] as const;
+
+/**
+ * Segment names that exclude a file when they appear anywhere in the
+ * KB-relative path. Covers workflow-owned sidecars that are never corpus.
+ */
+const EXCLUDED_SEGMENT_LITERALS: ReadonlySet<string> = new Set([
+  '_seen.jsonl',
+  '_seen.json',
+  '_index.jsonl',
+]);
+
+/**
+ * First-segment names that exclude an entire subtree. The arxiv workflow
+ * writes into `logs/`; `tmp/` and `_tmp/` cover common staging-dir names
+ * across adjacent workflows. A flat-file named `logs.md` at KB root is NOT
+ * excluded (this is a first-segment check, not a basename check).
+ */
+const EXCLUDED_FIRST_SEGMENTS: ReadonlySet<string> = new Set([
+  'logs',
+  'tmp',
+  '_tmp',
+]);
+
+/**
+ * Basenames that exclude the file regardless of location. Covers OS-owned
+ * turds that are not dot-prefixed and therefore slip past the walker's
+ * dotfile skip on case-preserving filesystems.
+ */
+const EXCLUDED_BASENAME_LITERALS: ReadonlySet<string> = new Set([
+  '.DS_Store',
+  'Thumbs.db',
+  'desktop.ini',
+]);
+
+export interface IngestFilterOptions {
+  /** Extra extensions to allow, merged with the base list. Leading dot and case insensitive. */
+  extraExtensions?: readonly string[];
+  /** Extra path-relative-to-KB-root glob patterns (minimatch) to exclude. */
+  excludePaths?: readonly string[];
+}
+
+function normalizeExtensionEntry(raw: string): string {
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed.length === 0) return '';
+  return trimmed.startsWith('.') ? trimmed : `.${trimmed}`;
+}
+
+/**
+ * Applies RFC 011 §5.2 filters on top of a `getFilesRecursively` result.
+ *
+ * Rule A — path exclusions (always applied, operator cannot override):
+ *   - any path segment in `EXCLUDED_SEGMENT_LITERALS` → excluded
+ *   - first path segment in `EXCLUDED_FIRST_SEGMENTS` → excluded
+ *   - basename in `EXCLUDED_BASENAME_LITERALS` → excluded
+ *   - any `options.excludePaths` minimatch pattern matches → excluded
+ *
+ * Rule B — extension allowlist (base list + `options.extraExtensions`):
+ *   - lowercased extension must be in the merged allowlist
+ *
+ * Paths are interpreted relative to `kbRoot`; comparisons use forward slashes
+ * so patterns match identically on POSIX and Windows. The function is pure —
+ * no I/O, no globals other than the constants above.
+ */
+export function filterIngestablePaths(
+  paths: readonly string[],
+  kbRoot: string,
+  options: IngestFilterOptions = {},
+): string[] {
+  const allowedExtensions = new Set<string>(INGEST_BASE_EXTENSIONS);
+  for (const raw of options.extraExtensions ?? []) {
+    const normalized = normalizeExtensionEntry(raw);
+    if (normalized.length > 0) {
+      allowedExtensions.add(normalized);
+    }
+  }
+
+  const excludePatterns = (options.excludePaths ?? [])
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+
+  const result: string[] = [];
+  for (const absPath of paths) {
+    const relative = path
+      .relative(kbRoot, absPath)
+      .split(path.sep)
+      .join('/');
+
+    // Rule A.1 — basename in exclusion list.
+    const basename = path.posix.basename(relative);
+    if (EXCLUDED_BASENAME_LITERALS.has(basename)) continue;
+
+    // Rule A.2 — any segment in the sidecar-literal set.
+    const segments = relative.split('/').filter((s) => s.length > 0);
+    if (segments.some((s) => EXCLUDED_SEGMENT_LITERALS.has(s))) continue;
+
+    // Rule A.3 — first segment names an excluded subtree (only when the
+    // path has depth > 1; a top-level file literally named `logs` is not
+    // excluded by this branch).
+    if (segments.length > 1 && EXCLUDED_FIRST_SEGMENTS.has(segments[0])) continue;
+
+    // Rule A.4 — operator-supplied glob excludes. `nonegate: true` disables
+    // minimatch's leading-`!` negation syntax so `INGEST_EXCLUDE_PATHS="!notes/*"`
+    // reads as a literal pattern rather than inverting to "exclude everything
+    // except notes/*" — the opposite of the operator's obvious intent.
+    if (
+      excludePatterns.some((pattern) =>
+        minimatch(relative, pattern, { dot: true, nonegate: true }),
+      )
+    ) {
+      continue;
+    }
+
+    // Rule B — extension allowlist (case-insensitive).
+    const ext = path.posix.extname(basename).toLowerCase();
+    if (!allowedExtensions.has(ext)) continue;
+
+    result.push(absPath);
+  }
+
+  return result;
 }
 
 /**

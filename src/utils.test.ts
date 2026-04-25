@@ -1,5 +1,6 @@
 import {
   assertValidKbName,
+  filterIngestablePaths,
   getFilesRecursively,
   isValidKbName,
   parseFrontmatter,
@@ -304,5 +305,124 @@ describe('parseFrontmatter', () => {
     const result = parseFrontmatter(content);
     expect(result.tags).toEqual([]);
     expect(result.body).toBe('Body\n');
+  });
+});
+
+describe('filterIngestablePaths (RFC 011 §5.2)', () => {
+  // All fixtures are path-only — filterIngestablePaths is pure and never
+  // touches the filesystem. Using POSIX separators in the fixtures keeps
+  // the tests host-OS-agnostic; the helper normalizes separators internally.
+  const kbRoot = '/kbs/arxiv';
+  const abs = (rel: string): string => `${kbRoot}/${rel}`;
+
+  it('(a) arxiv KB: only notes/*.md pass; PDFs, _seen.jsonl, logs/** excluded', () => {
+    const input = [
+      abs('notes/2604.21215.md'),
+      abs('notes/2604.21221.md'),
+      abs('pdfs/2604.21215.pdf'),
+      abs('pdfs/2604.21221.pdf'),
+      abs('_seen.jsonl'),
+      abs('logs/2026-04-24.log'),
+    ];
+    const output = filterIngestablePaths(input, kbRoot);
+    expect(output).toEqual([
+      abs('notes/2604.21215.md'),
+      abs('notes/2604.21221.md'),
+    ]);
+  });
+
+  it('(b) all-markdown KB: filter is a no-op', () => {
+    const kb = '/kbs/claude-code-notes';
+    const input = [
+      `${kb}/claude-code-setup.md`,
+      `${kb}/knowledge-base-mcp-server.md`,
+    ];
+    const output = filterIngestablePaths(input, kb);
+    expect(output).toEqual(input);
+  });
+
+  it('(c) INGEST_EXTRA_EXTENSIONS=".json" includes a notes/config.json but Rule A still excludes _seen.jsonl', () => {
+    const input = [
+      abs('notes/config.json'),
+      abs('notes/paper.md'),
+      abs('_seen.jsonl'),
+    ];
+    const output = filterIngestablePaths(input, kbRoot, {
+      extraExtensions: ['.json'],
+    });
+    expect(output).toEqual([
+      abs('notes/config.json'),
+      abs('notes/paper.md'),
+    ]);
+  });
+
+  it('(c.1) INGEST_EXTRA_EXTENSIONS accepts entries without a leading dot', () => {
+    const input = [abs('notes/data.csv'), abs('notes/paper.md')];
+    const output = filterIngestablePaths(input, kbRoot, {
+      extraExtensions: ['csv'],
+    });
+    expect(output).toEqual([abs('notes/data.csv'), abs('notes/paper.md')]);
+  });
+
+  it('(d) INGEST_EXCLUDE_PATHS excludes a glob; notes/ stays included', () => {
+    const input = [
+      abs('drafts/scratch.md'),
+      abs('drafts/nested/old.md'),
+      abs('notes/paper.md'),
+    ];
+    const output = filterIngestablePaths(input, kbRoot, {
+      excludePaths: ['drafts/**'],
+    });
+    expect(output).toEqual([abs('notes/paper.md')]);
+  });
+
+  it('(e) case sensitivity: .PDF is excluded regardless of host case', () => {
+    const input = [abs('pdfs/Paper.PDF'), abs('NOTES/PAPER.MD')];
+    const output = filterIngestablePaths(input, kbRoot);
+    // Upper-case .MD normalizes to .md and is allowed; .PDF stays excluded.
+    expect(output).toEqual([abs('NOTES/PAPER.MD')]);
+  });
+
+  it('(f) basename _seen.jsonl is excluded even if placed under notes/', () => {
+    // A workflow-bug fixture: the ledger file lands inside `notes/`.
+    // Rule A.2 (segment-literal) matches regardless of depth.
+    const input = [abs('notes/_seen.jsonl'), abs('notes/paper.md')];
+    const output = filterIngestablePaths(input, kbRoot);
+    expect(output).toEqual([abs('notes/paper.md')]);
+  });
+
+  it('excludes common OS turds by basename', () => {
+    const input = [
+      abs('.DS_Store'),
+      abs('notes/.DS_Store'),
+      abs('notes/Thumbs.db'),
+      abs('notes/desktop.ini'),
+      abs('notes/paper.md'),
+    ];
+    const output = filterIngestablePaths(input, kbRoot);
+    expect(output).toEqual([abs('notes/paper.md')]);
+  });
+
+  it('first-segment `logs` excludes a subtree but a flat-file named logs.md stays', () => {
+    const input = [
+      abs('logs/2026-04-24.log'),
+      abs('logs/2026-04-25.log'),
+      abs('logs.md'), // depth-1 file literally named `logs.md` — allowed
+    ];
+    const output = filterIngestablePaths(input, kbRoot);
+    expect(output).toEqual([abs('logs.md')]);
+  });
+
+  it('empty options are equivalent to default base allowlist', () => {
+    const input = [abs('notes/paper.md'), abs('notes/data.json')];
+    const output = filterIngestablePaths(input, kbRoot, {});
+    expect(output).toEqual([abs('notes/paper.md')]);
+  });
+
+  it('rejects .log files even without Rule A triggering', () => {
+    // A .log at depth 1 (not inside logs/) is still excluded by Rule B.
+    const input = [abs('ingest.log'), abs('notes/paper.md')];
+    const output = filterIngestablePaths(input, kbRoot);
+    expect(output).toEqual([abs('notes/paper.md')]);
   });
 });

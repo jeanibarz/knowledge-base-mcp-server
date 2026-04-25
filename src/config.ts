@@ -42,6 +42,28 @@ export const DEFAULT_OPENAI_MODEL_NAME = 'text-embedding-3-small';
 export const OPENAI_MODEL_NAME = process.env.OPENAI_MODEL_NAME || DEFAULT_OPENAI_MODEL_NAME;
 
 // ---------------------------------------------------------------------------
+// Ingest filter configuration (RFC 011 §5.2.3).
+// Operator-extensible extras; the base allowlist and exclusion rules in
+// `src/utils.ts` are authoritative and cannot be removed through env.
+// ---------------------------------------------------------------------------
+
+function parseCommaSeparatedList(raw: string | undefined): string[] {
+  if (raw === undefined || raw.trim() === '') return [];
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+export const INGEST_EXTRA_EXTENSIONS: readonly string[] = parseCommaSeparatedList(
+  process.env.INGEST_EXTRA_EXTENSIONS,
+);
+
+export const INGEST_EXCLUDE_PATHS: readonly string[] = parseCommaSeparatedList(
+  process.env.INGEST_EXCLUDE_PATHS,
+);
+
+// ---------------------------------------------------------------------------
 // Tool description overrides (RFC 010 M2 / #52).
 // Operators can repurpose the same binary for different deployments (eng
 // docs vs. personal notes vs. postmortems) by overriding the model-facing
