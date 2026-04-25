@@ -46,6 +46,39 @@ The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_D
 
 The MCP server (`knowledge-base-mcp-server` bin) is unchanged and still works with all the configurations in [docs/clients.md](docs/clients.md). The CLI is additive.
 
+### Comparing embedding models (RFC 013)
+
+Once on 0.3.0, you can keep multiple embedding models side-by-side and query each by id. Useful for retrieval-quality A/B without losing the previous model:
+
+```bash
+# List registered models. The * marks the active one.
+kb models list
+
+# Add a second model — embeds your KB once under the new model.
+# For paid providers, prints an estimated cost and prompts before any HTTP traffic.
+kb models add ollama nomic-embed-text          # local, free
+kb models add openai text-embedding-3-small    # paid; estimate first
+kb models add huggingface BAAI/bge-small-en-v1.5
+
+# Query a specific model without changing the default.
+kb search "your query" --model=openai__text-embedding-3-small
+
+# Side-by-side comparison: unified rank/score table over both models' top-k.
+kb compare "your query" ollama__nomic-embed-text-latest openai__text-embedding-3-small
+
+# Switch the default model.
+kb models set-active openai__text-embedding-3-small
+
+# Remove a model (refuses to remove the active one).
+kb models remove huggingface__BAAI-bge-small-en-v1.5
+```
+
+`<model_id>` is `<provider>__<filesystem-safe-slug>`, derived deterministically from `(provider, model_name)` as typed (e.g. `OLLAMA_MODEL=nomic-embed-text:latest` → `ollama__nomic-embed-text-latest`). On-disk layout: each model lives at `${FAISS_INDEX_PATH}/models/<id>/`. The active model is recorded in `${FAISS_INDEX_PATH}/active.txt` and overridable per-process via `KB_ACTIVE_MODEL`. See [`docs/rfcs/013-multimodel-support.md`](docs/rfcs/013-multimodel-support.md) for the full design.
+
+**Migration from 0.2.x → 0.3.0** is automatic on first server (or `kb`) start: the existing single-model index is moved into `${FAISS_INDEX_PATH}/models/<derived_id>/` and `active.txt` is written. Atomic, ~12 ms measured. **Before upgrading**, fully exit any AI client (Claude Code, Cursor, Continue, Cline) that has the MCP server loaded — the migration acquires the single-instance PID advisory before any rename, so it cannot run while a 0.2.x MCP child is still using the directory. See [CHANGELOG](CHANGELOG.md) for rollback recipes.
+
+**MCP surface** — `retrieve_knowledge` gains an optional `model_name` argument; a new `list_models` tool returns the registered models. Tools that don't pass `model_name` keep working unchanged (wire format is byte-equal to 0.2.x).
+
 ### Install via Smithery
 
 To install Knowledge Base Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@jeanibarz/knowledge-base-mcp-server):

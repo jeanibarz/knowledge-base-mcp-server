@@ -35,6 +35,12 @@
 - **Response envelope `model_id` footer** when `model_name` is passed (round-1 minimalist F5 — envelope, not per-chunk). When `model_name` is omitted, the wire format is byte-equal to 0.2.x for back-compat.
 - `LIST_MODELS_DESCRIPTION` env var override for the `list_models` tool description (matches RFC 010 M2 / #52 pattern).
 
+### Documentation (RFC 013 M4)
+
+- README: new "Comparing embedding models (RFC 013)" section walking through `kb models {list, add, set-active, remove}`, `kb search --model=<id>`, `kb compare`, with a paragraph on the auto-migration from 0.2.x and the upgrade-window operator action ("fully exit any AI client before upgrading").
+- `docs/clients.md`: new "Multi-model setups" section explaining `KB_ACTIVE_MODEL` env-var pinning per MCP client vs. per-call `model_name` override. Notes the Smithery single-model limitation.
+- `docs/architecture/threat-model.md`: §1 trust boundary extended to every `models/<id>/` subdirectory + `active.txt`. §4 Concurrency rewritten for RFC 012 single-instance enforcement + RFC 013 per-model write locks + migration coordination via `.kb-migration.lock`.
+
 ### Status
 
 Build clean. **237 / 237 tests pass across 15 suites.** Existing tests rebased for the new `models/<id>/` layout. New module tests added: `model-id.test.ts` (15 tests), `active-model.test.ts` (18 tests including writer single-writer invariant, robust BOM/CRLF reader with hard-fail on regex-fail, full precedence matrix). New CLI tests cover `kb models list/add/set-active/remove`, `kb compare`, and the migration smoke path. M3 MCP tests cover `list_models` happy path + `.adding` skip + empty registry, plus `retrieve_knowledge` `model_name` override (unregistered → isError, valid → envelope footer, omitted → byte-equal back-compat).

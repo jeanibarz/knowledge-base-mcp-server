@@ -17,14 +17,16 @@ Sections below go one level deeper on each.
 
 ## 1. `$FAISS_INDEX_PATH` is a code-execution boundary (#43)
 
-`FaissStore.load()` at `src/FaissIndexManager.ts:169` deserializes the docstore that lives alongside `faiss.index`. The deserialization path inside `@langchain/community` uses `pickleparser@0.2.1` (`package.json:27`) to stay wire-compatible with Python LangChain. **Loading an attacker-controlled docstore is arbitrary-code-execution-shaped** on the platforms where pickle-style streams deserialize to native objects.
+`FaissStore.load()` deserializes the docstore that lives alongside `faiss.index`. The deserialization path inside `@langchain/community` uses `pickleparser@0.2.1` (`package.json:27`) to stay wire-compatible with Python LangChain. **Loading an attacker-controlled docstore is arbitrary-code-execution-shaped** on the platforms where pickle-style streams deserialize to native objects.
 
-**Requirement.** Every file inside `$FAISS_INDEX_PATH` must have been written by this server running against this user's configured embedding model. Specifically:
+**RFC 013 multi-model layout** (0.3.0+): the trust boundary now extends to every `${FAISS_INDEX_PATH}/models/<model_id>/` subdirectory. Each model has its own `faiss.index/` + `model_name.txt`, and the same code-execution risk applies to each model's docstore independently. `${FAISS_INDEX_PATH}/active.txt` is also operator-trusted state — tampering with it can redirect agent retrievals to a wrong model (the slug regex hard-fails on malformed content, so the failure mode is "exit 2" rather than "silent vector-space mismatch", but the file should still be treated as security-sensitive).
 
-- Do **not** restore `$FAISS_INDEX_PATH` from an untrusted backup, container image, or package.
+**Requirement.** Every file inside `$FAISS_INDEX_PATH` (including every `models/<id>/` subtree and `active.txt`) must have been written by this server running against this user's configured embedding model. Specifically:
+
+- Do **not** restore `$FAISS_INDEX_PATH` (or any `models/<id>/`) from an untrusted backup, container image, or package.
 - Do **not** mount `$FAISS_INDEX_PATH` on a shared filesystem with write access for untrusted peers.
 - Do **not** point `$FAISS_INDEX_PATH` at a directory another tool writes to.
-- **Do** treat deletion as safe: removing `$FAISS_INDEX_PATH/faiss.index` forces a rebuild from source on the next `retrieve_knowledge` call (see [`sequence-reindex.md`](./sequence-reindex.md) and [`state-index.md`](./state-index.md)).
+- **Do** treat deletion as safe: `kb models remove <id>` (or `rm -rf ${FAISS_INDEX_PATH}/models/<id>/`) forces a rebuild on the next `kb models add`. The in-memory FaissStore in a running MCP server keeps working until process exit — verified empirically (RFC 013 §10 E6), `faiss-node` reads the index into memory at `.load()` time and does not mmap.
 
 The surface is permanent until upstream swaps the docstore format away from pickle. ADR [`0001-faiss-over-qdrant.md`](./adr/0001-faiss-over-qdrant.md) explains why we stay with FAISS despite this cost; a future RFC may migrate the docstore to a JSON-only format.
 
@@ -50,19 +52,17 @@ Three env vars are read at construction time (`src/FaissIndexManager.ts:98-121`,
 
 Query text and knowledge-base chunks leave the machine over TLS to the configured provider. The provider sees everything the server sees. Choose Ollama (local) if that matters.
 
-## 4. Concurrency — single process per `$FAISS_INDEX_PATH` (#44)
+## 4. Concurrency — single MCP per `$FAISS_INDEX_PATH`, per-model write locks (#44)
 
-`FaissIndexManager.updateIndex` at `src/FaissIndexManager.ts:202-389` has **no file-level locking**. Two server processes pointing at the same `$FAISS_INDEX_PATH` will race on:
+**Single-MCP-instance enforcement** (RFC 012 M1 — landed in 0.2.0). `acquireInstanceAdvisory` at `src/instance-lock.ts` writes a PID file at `${FAISS_INDEX_PATH}/.kb-mcp.pid` atomically (`O_CREAT | O_EXCL`, mode `0o600`) on `KnowledgeBaseServer.run()`. Two concurrent MCP servers against the same `$FAISS_INDEX_PATH` are refused — the second exits with `InstanceAlreadyRunningError`. Stale PID files (recorded PID is dead) are silently overwritten.
 
-- `FaissStore.save` at `src/FaissIndexManager.ts:351` — there is no `.tmp` + rename for the index itself; a partial write from one process can be read by the other.
-- Hash-sidecar tmp+rename at `src/FaissIndexManager.ts:362-377` — safe per-file, not safe across interleaved writers.
-- The upcoming pending-manifest protocol (RFC 007 §6.2.1) — single-writer assumption is load-bearing there.
+**Per-model write coordination** (RFC 013 M0 + M1+M2 — landed in 0.2.2 + 0.3.0). Short-lived `proper-lockfile` write locks at `${FAISS_INDEX_PATH}/models/<id>/.kb-write.lock`. Acquired around each `updateIndex` call (MCP `handleRetrieveKnowledge`, `ReindexTriggerWatcher`, `kb search --refresh`, `kb models add`); released immediately after. **Per-model granularity** means a long-running `kb models add B` (multi-minute embedding pass) does NOT block `kb search` against model A. Default `kb search` (read-only) does not acquire any lock.
 
-**Current requirement.** One server process per `$FAISS_INDEX_PATH`. Running two against the same path **will corrupt the index**.
+**Migration coordination** (RFC 013 §4.8). `FaissIndexManager.bootstrapLayout` runs the 0.2.x→0.3.0 migration at most once per Node process (module-level Promise cache). Cross-process: piggybacks on the instance advisory if held, else acquires a short-lived `${FAISS_INDEX_PATH}/.kb-migration.lock` for CLI invocations to coordinate with peers.
 
-This is a documented constraint, not an enforced one. Users deploying under systemd with `Restart=on-failure`, pm2, Kubernetes with `replicas > 1`, or containerized with a shared volume, need to configure their orchestrator to keep the process count at 1 (or give each replica its own `FAISS_INDEX_PATH`).
+**Current requirement.** Still **one MCP server** per `$FAISS_INDEX_PATH`. Multiple `kb` CLI invocations against the same path are safe — they coordinate via the per-model write lock. Users deploying under systemd / pm2 / Kubernetes still need to keep MCP-server replicas at 1 per `FAISS_INDEX_PATH` or give each replica its own.
 
-**Planned fix.** An `O_EXCL` lockfile at `$FAISS_INDEX_PATH/.lock` containing the PID, written in `initialize()` and removed in the SIGINT handler (`src/KnowledgeBaseServer.ts:27-30`). On startup, if `.lock` exists and its PID is alive, refuse to start with a clear error; if the PID is dead, warn and reclaim. Tracked in issue #44 for a follow-up RFC.
+**Known limitation.** `FaissStore.save()` from `@langchain/community` is non-atomic (`mkdir -p + Promise.all([index.write, writeFile(docstore.json)])`, no rename). A read concurrent with a save can see partial `docstore.json`; the CLI's `loadWithJsonRetry` handles this with a 100 ms retry. Documented in RFC 012 §7 N4. Per-model isolation in 0.3.0 narrows the blast radius (only that one model's reads can race).
 
 ## 5. Path-traversal (forward-looking)
 
