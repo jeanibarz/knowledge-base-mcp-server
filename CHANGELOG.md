@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] — 2026-04-25
+
+### Fixed
+
+- **EISDIR on FAISS index recovery (RFC 012 M0).** `FaissIndexManager.initialize()` called `fsp.unlink(indexFilePath)` on the model-switch and corrupt-index recovery branches. Modern `@langchain/community` `FaissStore.save()` writes a *directory* at `indexFilePath` (containing `faiss.index` + `docstore.json`), not a file, so `unlink` threw `EISDIR` and the recovery never ran. Replaced with `fsp.rm(indexFilePath, { recursive: true, force: true })` which handles both the modern directory layout and the legacy single-file layout. Latent bug: only triggered on embedding-model switch or on a corrupt index. Two new tests cover the directory-layout case for both branches; existing tests for the legacy file layout continue to pass. Pre-requisite for RFC 012 M1 (CLI). See [`docs/rfcs/012-cli-distribution.md`](./docs/rfcs/012-cli-distribution.md) §5.1.
+
 ## [Unreleased]
 
 ### Added

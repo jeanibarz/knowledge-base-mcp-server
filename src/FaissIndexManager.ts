@@ -314,7 +314,11 @@ export class FaissIndexManager {
         logger.warn(`Model name has changed from ${storedModelName} to ${this.modelName}. Recreating index.`);
         if (await pathExists(indexFilePath)) {
           try {
-            await fsp.unlink(indexFilePath);
+            // Modern @langchain/community emits a *directory* at indexFilePath
+            // (containing faiss.index + docstore.json); older versions wrote a
+            // single file. fsp.rm(recursive, force) handles both shapes and is
+            // also ENOENT-tolerant in case of races with another writer.
+            await fsp.rm(indexFilePath, { recursive: true, force: true });
             logger.info('Existing FAISS index deleted.');
           } catch (error) {
             handleFsOperationError('delete stale FAISS index', indexFilePath, error);
@@ -336,13 +340,18 @@ export class FaissIndexManager {
             error
           );
           try {
-            await fsp.unlink(indexFilePath);
+            // See model-switch branch above for why fsp.rm(recursive, force) is
+            // required: the modern langchain layout makes indexFilePath a
+            // directory, on which fsp.unlink throws EISDIR.
+            await fsp.rm(indexFilePath, { recursive: true, force: true });
           } catch (unlinkErr) {
             handleFsOperationError('delete corrupt FAISS index', indexFilePath, unlinkErr);
           }
-          // Best-effort: the .json docstore sibling may not exist (older index layouts
-          // wrote only faiss.index) and any failure here is non-fatal - the rebuild
-          // path will overwrite it on the next save.
+          // Legacy cleanup: very old index layouts wrote a sibling
+          // `<indexFilePath>.json` docstore file. The modern directory layout
+          // keeps docstore.json inside indexFilePath (already removed by the rm
+          // above). This best-effort unlink is a no-op for modern layouts and
+          // only matters when migrating from a pre-RFC-010 install.
           await fsp.unlink(`${indexFilePath}.json`).catch(() => {});
           this.faissIndex = null;
         }

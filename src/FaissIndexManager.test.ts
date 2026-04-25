@@ -424,6 +424,87 @@ describe('FaissIndexManager permission handling', () => {
     }
   });
 
+  // RFC 012 M0 — pre-existing EISDIR bug surfaces under modern FAISS layouts
+  // where indexFilePath is a *directory* (containing faiss.index +
+  // docstore.json), not a file. fsp.unlink throws EISDIR on directories;
+  // fsp.rm({recursive,force}) handles both shapes.
+  it('recovers from a corrupt FAISS index when indexFilePath is a directory (modern layout)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-corrupt-dir-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'doc.md'), '# Title\n\nContent.');
+
+    const faissDir = path.join(tempDir, '.faiss');
+    await fsp.mkdir(faissDir, { recursive: true });
+    const indexFilePath = path.join(faissDir, 'faiss.index');
+    // Modern langchain layout: indexFilePath is a directory.
+    await fsp.mkdir(indexFilePath, { recursive: true });
+    await fsp.writeFile(path.join(indexFilePath, 'faiss.index'), 'corrupt-bytes');
+    await fsp.writeFile(path.join(indexFilePath, 'docstore.json'), '{"docstore":"corrupt"}');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    loadMock.mockImplementationOnce(() => {
+      throw new Error('invalid faiss index header');
+    });
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+
+    // Pre-fix this throws EISDIR from the fsp.unlink call on a directory.
+    await expect(manager.initialize()).resolves.toBeUndefined();
+
+    // Whole directory removed, including inner files.
+    await expect(fsp.stat(indexFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // End-to-end: rebuild branch hands off correctly.
+    await manager.updateIndex();
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).toHaveBeenCalledWith(indexFilePath);
+  });
+
+  it('recreates the index on model switch when indexFilePath is a directory (modern layout)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-modelswitch-dir-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'doc.md'), '# Title\n\nContent.');
+
+    const faissDir = path.join(tempDir, '.faiss');
+    await fsp.mkdir(faissDir, { recursive: true });
+    const indexFilePath = path.join(faissDir, 'faiss.index');
+    await fsp.mkdir(indexFilePath, { recursive: true });
+    await fsp.writeFile(path.join(indexFilePath, 'faiss.index'), 'old-model-bytes');
+    await fsp.writeFile(path.join(indexFilePath, 'docstore.json'), '{"old":"docstore"}');
+    // Stored model name differs from configured model → triggers recreate path.
+    await fsp.writeFile(path.join(faissDir, 'model_name.txt'), 'sentence-transformers/all-MiniLM-L6-v2');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    // Default huggingface model is bge-small-en-v1.5 — different from stored.
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+
+    // Pre-fix this throws EISDIR from the model-switch fsp.unlink branch.
+    await expect(manager.initialize()).resolves.toBeUndefined();
+
+    // Old directory wiped.
+    await expect(fsp.stat(indexFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // model_name.txt rewritten with the new model.
+    const newName = await fsp.readFile(path.join(faissDir, 'model_name.txt'), 'utf-8');
+    expect(newName).toBe('BAAI/bge-small-en-v1.5');
+  });
+
   it('does not fail when the corrupt FAISS index has no .json sibling', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-corrupt-nojson-'));
     const kbDir = path.join(tempDir, 'kb');
