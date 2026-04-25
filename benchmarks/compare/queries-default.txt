@@ -1,0 +1,56 @@
+# RFC 013 §4.13.2 — default queries for `npm run bench:compare`.
+# 50 queries; one per line; comments start with `#` and are skipped.
+# These queries assume an English technical-text corpus (e.g., the large arxiv
+# fixture or an operator's own KB). For the synthetic small/medium fixtures
+# the orchestrator falls back to fixture-derived queries instead.
+
+what is attention in transformer models
+how does retrieval-augmented generation differ from fine-tuning
+what is reciprocal rank fusion
+embedding model evaluation methodology
+sparse versus dense retrieval comparison
+contrastive learning for sentence embeddings
+how do bi-encoders differ from cross-encoders
+hard negative mining for retrieval training
+matryoshka representation learning
+quantization aware training for embedding models
+binary embedding hashing techniques
+distillation of cross encoders into bi encoders
+training data deduplication for retrieval
+out of distribution evaluation of embeddings
+cross lingual retrieval transfer
+embedding dimension reduction without loss
+rotary positional encoding behaviour
+information retrieval test collections
+query augmentation strategies
+pseudo relevance feedback methods
+domain adaptation for retrieval models
+benchmarking faiss versus hnsw libraries
+approximate nearest neighbour graph construction
+product quantization for vector search
+inverted file index in faiss
+recall accuracy tradeoff in ann search
+reranking with monoT5 versus colbert
+sliding window context for long documents
+chunk size impact on retrieval quality
+markdown structure preservation in chunking
+sentence boundary detection for splitting
+overlap selection in fixed window chunking
+metadata filtering for hybrid search
+boolean filters in dense retrieval systems
+faceted search over embedding indexes
+streaming ingest for vector databases
+incremental indexing without rebuild
+write amplification in faiss saves
+mtime versus content hash for change detection
+file watcher fanout in node js
+retry semantics for embedding APIs
+rate limit backoff for huggingface inference
+ollama local inference performance
+openai embedding model pricing tiers
+cost per million tokens at scale
+energy footprint of cpu inference
+batched embedding throughput on cpu
+quantization for cpu inference
+speculative decoding for embedding models
+tail latency p99 in vector search

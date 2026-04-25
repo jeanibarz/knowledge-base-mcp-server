@@ -1,9 +1,12 @@
 import * as os from 'os';
 import * as path from 'path';
+import { readFileSync } from 'fs';
 import type { BenchmarkReport, BenchProvider, ScenarioContext } from './types.js';
 import { installStubProvider } from './stub.js';
+import { runBatchQueryScenario } from './scenarios/batch-query.js';
 import { runColdIndexScenario } from './scenarios/cold-index.js';
 import { runColdStartScenario } from './scenarios/cold-start.js';
+import { runIndexStorageScenario } from './scenarios/index-storage.js';
 import { runMemoryScenario } from './scenarios/memory.js';
 import { runRetrievalQualityScenario } from './scenarios/retrieval-quality.js';
 import { runWarmQueryScenario } from './scenarios/warm-query.js';
@@ -13,11 +16,19 @@ const provider = parseProvider(process.env.BENCH_PROVIDER);
 const repoRoot = process.cwd();
 const buildRoot = path.join(repoRoot, 'build');
 const resultsPrefix = process.env.BENCH_RESULTS_PREFIX ?? 'run';
-const resultsDir = path.join(repoRoot, 'benchmarks', 'results');
+// BENCH_RESULTS_DIR override lets the compare orchestrator redirect per-leg
+// JSONs to its tmpdir so they don't pile up in the committed results folder.
+const resultsDir = process.env.BENCH_RESULTS_DIR ?? path.join(repoRoot, 'benchmarks', 'results');
 const outputPath = path.join(resultsDir, resultFileName(resultsPrefix, provider));
-const workspaceRoot = path.join(os.tmpdir(), `knowledge-base-mcp-server-bench-${process.pid}-${Date.now()}`);
-const knowledgeBasesRootDir = path.join(workspaceRoot, 'knowledge-bases');
-const faissIndexPath = path.join(workspaceRoot, '.faiss');
+// Path overrides let an external orchestrator (e.g. `bench:compare`) point two
+// successive runs at distinct, known locations so it can post-process both
+// indexes after the fact. Without overrides, defaults to a per-pid tmpdir.
+const workspaceRoot = process.env.BENCH_WORKSPACE_ROOT
+  ?? path.join(os.tmpdir(), `knowledge-base-mcp-server-bench-${process.pid}-${Date.now()}`);
+const knowledgeBasesRootDir = process.env.BENCH_KNOWLEDGE_BASES_ROOT_DIR
+  ?? path.join(workspaceRoot, 'knowledge-bases');
+const faissIndexPath = process.env.BENCH_FAISS_INDEX_PATH
+  ?? path.join(workspaceRoot, '.faiss');
 
 async function main(): Promise<void> {
   await ensureDirectory(resultsDir);
@@ -39,24 +50,70 @@ async function main(): Promise<void> {
     workspaceRoot,
   };
 
+  const includeBatchQuery = parseBoolEnv(process.env.BENCH_INCLUDE_BATCH_QUERY, true);
+  const includeIndexStorage = parseBoolEnv(process.env.BENCH_INCLUDE_INDEX_STORAGE, true);
+
+  const concurrencies = parseConcurrencies(process.env.BENCH_BATCH_CONCURRENCIES);
+  const queries = parseQueriesEnv(process.env.BENCH_QUERIES);
+
+  const cold_index = await runColdIndexScenario(context);
+  const cold_start = await runColdStartScenario(context);
+  const memory_peak = await runMemoryScenario(context);
+  const retrieval_quality = await runRetrievalQualityScenario();
+  const warm_query = await runWarmQueryScenario(context);
+  const batch_query = includeBatchQuery
+    ? await runBatchQueryScenario(context, { concurrencies, queries })
+    : undefined;
+  const index_storage = includeIndexStorage
+    ? await runIndexStorageScenario(context)
+    : undefined;
+
   const report: BenchmarkReport = {
     arch: os.arch(),
     git_sha: await gitSha(repoRoot),
+    model_id: process.env.BENCH_MODEL_ID,
+    model_name: process.env.BENCH_MODEL_NAME,
     node_version: process.version,
     os: os.platform(),
     provider,
     scenarios: {
-      cold_index: await runColdIndexScenario(context),
-      cold_start: await runColdStartScenario(context),
-      memory_peak: await runMemoryScenario(context),
-      retrieval_quality: await runRetrievalQualityScenario(),
-      warm_query: await runWarmQueryScenario(context),
+      cold_index,
+      cold_start,
+      memory_peak,
+      retrieval_quality,
+      warm_query,
+      ...(batch_query ? { batch_query } : {}),
+      ...(index_storage ? { index_storage } : {}),
     },
     version: 1,
   };
 
   await writeJsonFile(outputPath, report);
   process.stdout.write(`${outputPath}\n`);
+}
+
+function parseBoolEnv(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) return defaultValue;
+  if (value === '0' || value.toLowerCase() === 'false') return false;
+  return true;
+}
+
+function parseConcurrencies(value: string | undefined): number[] | undefined {
+  if (!value) return undefined;
+  const parsed = value.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function parseQueriesEnv(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  // BENCH_QUERIES is a path to a file with one query per line.
+  try {
+    const raw = readFileSync(value, 'utf-8');
+    const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+    return lines.length > 0 ? lines : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function silenceServerLogger(): Promise<void> {
@@ -81,12 +138,21 @@ function configureEnvironment(
   if (selectedProvider === 'stub' || selectedProvider === 'huggingface') {
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY ?? 'bench-hf-key';
+    if (process.env.BENCH_MODEL_NAME) {
+      process.env.HUGGINGFACE_MODEL_NAME = process.env.BENCH_MODEL_NAME;
+    }
   } else if (selectedProvider === 'ollama') {
     process.env.EMBEDDING_PROVIDER = 'ollama';
+    if (process.env.BENCH_MODEL_NAME) {
+      process.env.OLLAMA_MODEL = process.env.BENCH_MODEL_NAME;
+    }
   } else {
     process.env.EMBEDDING_PROVIDER = 'openai';
     if (!process.env.OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY is required when BENCH_PROVIDER=openai');
+    }
+    if (process.env.BENCH_MODEL_NAME) {
+      process.env.OPENAI_MODEL_NAME = process.env.BENCH_MODEL_NAME;
     }
   }
 }
