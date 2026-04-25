@@ -5,7 +5,14 @@ import { z } from 'zod';
 import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
-  FAISS_INDEX_PATH,
+  ActiveModelResolutionError,
+  modelDir,
+  parseModelId,
+  readStoredModelName,
+  resolveActiveModel,
+} from './active-model.js';
+import type { EmbeddingProvider } from './model-id.js';
+import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KNOWLEDGE_BASES_ROOT_DIR,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
@@ -38,13 +45,15 @@ export { sanitizeMetadataForWire };
 
 export class KnowledgeBaseServer {
   private mcp: McpServer;
-  private faissManager: FaissIndexManager;
+  // RFC 013 M1: per-model manager cache. Lazily populated on first use of
+  // each model_id. The active model is resolved per `handleRetrieveKnowledge`
+  // call (allows future M3 `model_name` arg without redesign).
+  private managerCache: Map<string, FaissIndexManager> = new Map();
   private sseHost?: SseHost;
   private triggerWatcher?: ReindexTriggerWatcher;
   private shutdownInstalled = false;
 
   constructor() {
-    this.faissManager = new FaissIndexManager();
     logger.info('Initializing KnowledgeBaseServer');
 
     this.mcp = this.buildMcpServer();
@@ -53,6 +62,28 @@ export class KnowledgeBaseServer {
       await this.shutdown();
       process.exit(0);
     });
+  }
+
+  /**
+   * Resolve a model_id to a (cached) FaissIndexManager instance.
+   * RFC 013 M1: takes the explicit model_id (resolved by the caller via
+   * `resolveActiveModel`); constructs the manager on first use, caches it.
+   */
+  private async getManagerFor(modelId: string): Promise<FaissIndexManager> {
+    const cached = this.managerCache.get(modelId);
+    if (cached) return cached;
+    const { provider } = parseModelId(modelId);
+    const modelName = await readStoredModelName(modelId);
+    if (modelName === null) {
+      throw new Error(`model_name.txt missing for registered model "${modelId}"`);
+    }
+    const manager = new FaissIndexManager({
+      provider: provider as EmbeddingProvider,
+      modelName,
+    });
+    await manager.initialize();
+    this.managerCache.set(modelId, manager);
+    return manager;
   }
 
   private buildMcpServer(): McpServer {
@@ -114,16 +145,19 @@ export class KnowledgeBaseServer {
       const startTime = Date.now();
       logger.debug(`[${startTime}] handleRetrieveKnowledge started`);
 
-      // RFC 012 §4.8.2 — wrap the write-path updateIndex in the short-lived
-      // write lock. The MCP server, the trigger watcher, and `kb search
-      // --refresh` all serialize through this single primitive.
-      // RFC 013 M0: lock resource is FAISS_INDEX_PATH (single-model);
-      // M1+M2 narrows to ${PATH}/models/<id>/ for per-model isolation.
-      await withWriteLock(FAISS_INDEX_PATH, () => this.faissManager.updateIndex(knowledgeBaseName));
+      // RFC 013 §4.7 — resolve active model per call. Future M3 will accept
+      // `args.model_name` as an explicit override here; for now the active
+      // model is always used.
+      const activeModelId = await resolveActiveModel();
+      const manager = await this.getManagerFor(activeModelId);
+
+      // RFC 013 §4.6 — write lock is per-model (resource = `models/<id>/`).
+      // A `kb models add B` against another model never blocks retrievals on A.
+      await withWriteLock(manager.modelDir, () => manager.updateIndex(knowledgeBaseName));
       logger.debug(`[${Date.now()}] FAISS index update completed`);
 
       // Perform similarity search using the provided query.
-      const similaritySearchResults = await this.faissManager.similaritySearch(query, 10, threshold, knowledgeBaseName);
+      const similaritySearchResults = await manager.similaritySearch(query, 10, threshold, knowledgeBaseName);
       logger.debug(`[${Date.now()}] Similarity search completed`);
 
       // Build a nicely formatted markdown response including the similarity score.
@@ -176,6 +210,18 @@ export class KnowledgeBaseServer {
       throw err;
     }
 
+    // RFC 013 §4.8 — bootstrap the layout (one-shot migration from 0.2.x)
+    // AFTER acquiring the instance advisory so concurrent migrations are
+    // serialized. Round-1 failure F4 + delivery F6.
+    try {
+      await FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: true });
+    } catch (err) {
+      logger.error(`Layout bootstrap failed: ${(err as Error).message}`);
+      await releaseInstanceAdvisory();
+      process.exitCode = 1;
+      return;
+    }
+
     try {
       if (transportConfig.transport === 'stdio') {
         await this.runStdio();
@@ -199,14 +245,16 @@ export class KnowledgeBaseServer {
     const transport = new StdioServerTransport();
     await this.mcp.connect(transport);
     logger.info('Knowledge Base MCP server running on stdio');
-    await this.faissManager.initialize();
+    // RFC 013: warm up the active model's manager so the first agent call
+    // doesn't pay construction cost.
+    await this.warmActiveManager();
     this.startTriggerWatcher();
   }
 
   private async runSse(config: TransportConfig): Promise<void> {
     // Block HTTP bind on a ready index so a fast first client cannot race
     // updateIndex (RFC 008 §6.2: "client races init" footgun under HTTP).
-    await this.faissManager.initialize();
+    await this.warmActiveManager();
 
     const host = new SseHost({
       config,
@@ -220,6 +268,25 @@ export class KnowledgeBaseServer {
     this.startTriggerWatcher();
   }
 
+  /**
+   * Warm the manager cache for the active model. Best-effort: a missing
+   * active model is logged but doesn't crash the server (the first
+   * `handleRetrieveKnowledge` call surfaces the error to the agent via
+   * `isError: true` instead of dying at startup).
+   */
+  private async warmActiveManager(): Promise<void> {
+    try {
+      const activeId = await resolveActiveModel();
+      await this.getManagerFor(activeId);
+    } catch (err) {
+      if (err instanceof ActiveModelResolutionError) {
+        logger.warn(`No active model on startup: ${err.message}`);
+        return;
+      }
+      throw err;
+    }
+  }
+
   private startTriggerWatcher(): void {
     if (this.triggerWatcher) return;
     if (REINDEX_TRIGGER_POLL_MS <= 0) {
@@ -228,9 +295,18 @@ export class KnowledgeBaseServer {
     }
     this.triggerWatcher = new ReindexTriggerWatcher(
       REINDEX_TRIGGER_PATH,
-      // RFC 012 §4.8.2 — trigger-driven updateIndex also serializes through
-      // the write lock so a CLI `--refresh` doesn't race a watcher cycle.
-      () => withWriteLock(FAISS_INDEX_PATH, () => this.faissManager.updateIndex(undefined)),
+      // RFC 013 §4.6 — trigger-driven updateIndex resolves the active model
+      // per fire (long-lived watcher; picks up `set-active` changes on next
+      // tick) and serializes through the per-model write lock.
+      async () => {
+        try {
+          const activeId = await resolveActiveModel();
+          const manager = await this.getManagerFor(activeId);
+          await withWriteLock(manager.modelDir, () => manager.updateIndex(undefined));
+        } catch (err) {
+          logger.warn(`Trigger watcher updateIndex failed: ${(err as Error).message}`);
+        }
+      },
       REINDEX_TRIGGER_POLL_MS,
     );
     this.triggerWatcher.start();

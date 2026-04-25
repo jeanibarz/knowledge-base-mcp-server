@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased] — RFC 013 M1+M2 (draft)
+
+### Added (technically breaking — on-disk layout migrates)
+
+- **Multi-model embedding support (RFC 013).** Side-by-side per-model FAISS indexes under `${FAISS_INDEX_PATH}/models/<model_id>/`. Each model is fully isolated; deleting one leaves the others intact. Adding model B does not destroy model A's vectors.
+- **Auto-migration from 0.2.x layout.** First 0.3.0 start (or first `kb` invocation) migrates `${PATH}/{faiss.index, model_name.txt}` → `${PATH}/models/<derived_id>/{...}` and writes `active.txt`. Atomic per-`fsp.rename`; ~12 ms measured (RFC §10 E2). Idempotent; crash-safe across renames. Refused if pre-RFC-012 indexes lack `model_name.txt` (clear recovery message — RFC §4.8 + round-1 failure F5).
+- **`active.txt`** at the root of `FAISS_INDEX_PATH` (one line, the active `<model_id>`). Resolution precedence: per-call `--model=<id>` / `args.model_name` > `KB_ACTIVE_MODEL` env > `active.txt` > legacy env-var derivation. Single-writer invariant: only `bootstrapLayout`, `kb models set-active`, and `kb models add` (when absent) write it (RFC §4.7 + round-1 failure F7). Robust reader handles BOM + CRLF; hard-fails on regex-fail (round-2 failure N3).
+- **`KB_ACTIVE_MODEL` env var.** Process-lifetime override of `active.txt`.
+- **`kb models list`** — table of registered models with active marker.
+- **`kb models add <provider> <model> [--yes] [--dry-run]`** — TTY-checked cost-estimate prompt for paid providers (round-1 failure F9 — non-TTY without `--yes` exits 2 instantly, never blocks). `.adding` sentinel during the embedding pass; `--force-incomplete` on `kb models remove` recovers from interrupts. First-registered-model auto-promotes to active (round-2 failure N2).
+- **`kb models set-active <id>`** — explicit operator command. Warns if `KB_ACTIVE_MODEL` is also set.
+- **`kb models remove <id> [--yes] [--force-incomplete]`** — hard delete; refuses to remove the active model. Safe while MCP is running (RFC §10 E6 — `faiss-node` is in-memory after `.load()`).
+- **`kb search --model=<id>`** — per-call active-model override.
+- **Per-model write locks** at `${PATH}/models/<id>/.kb-write.lock` (RFC §4.6). A long-running `kb models add B` does not block `kb search` against model A.
+- **`bootstrapLayout()`** static method on `FaissIndexManager` — module-level Promise cache prevents same-process double-call (round-2 failure N1). Acquires `${PATH}/.kb-migration.lock` for CLI invocations to coordinate with peer migrations.
+- New modules: `src/model-id.ts` (deterministic slug derivation), `src/active-model.ts` (sole owner of `models/<id>/` schema + active resolution + atomic `active.txt` writer + `isRegisteredModel` / `listRegisteredModels` predicates).
+
+### Changed (technically breaking)
+
+- **On-disk layout migrated.** Tooling outside this repo that reads `${PATH}/faiss.index/` directly must update for `models/<id>/`. Auto-migration handles the data move; external tooling needs a one-time path update.
+- **`MODEL_NAME_FILE` is now per-model** at `${PATH}/models/<id>/model_name.txt`. External tooling reading the root file must update.
+- **`FaissIndexManager` constructor** preferred form is `new FaissIndexManager({provider, modelName})`. Legacy zero-arg form `new FaissIndexManager()` is preserved for backward compatibility (env-fallback) but new multi-model code paths use the explicit form.
+- **`KnowledgeBaseServer.handleRetrieveKnowledge`** resolves the active model per call and uses a per-`modelId` manager cache. Future M3 PR will surface `model_name` as a `retrieve_knowledge` arg.
+
+### Added (cont.)
+
+- **`kb compare <query> <model_a> <model_b>`** (G11) — unified rank/score table over both models' top-k. Hard-fails if either model is unresolvable (round-2 failure N5 — never renders a half-table). Header notes scores are not directly comparable across models with different dim/distance metrics.
+
+### Status
+
+Build clean. **231 / 231 tests pass across 15 suites.** Existing tests rebased for the new `models/<id>/` layout. New module tests added: `model-id.test.ts` (15 tests), `active-model.test.ts` (18 tests including writer single-writer invariant, robust BOM/CRLF reader with hard-fail on regex-fail, full precedence matrix). New CLI tests cover `kb models list/add/set-active/remove`, `kb compare`, and the migration smoke path.
+
 ## [0.2.2] — 2026-04-25
 
 ### Changed (internal — no surface change)

@@ -1,7 +1,8 @@
-// FaissIndexManager.ts
+// FaissIndexManager.ts — RFC 013 M1+M2 (multi-model layout).
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import * as properLockfile from 'proper-lockfile';
 import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
 import { OllamaEmbeddings } from "@langchain/ollama";
 import { OpenAIEmbeddings } from "@langchain/openai";
@@ -15,9 +16,9 @@ import {
   parseFrontmatter,
 } from './utils.js';
 import {
+  EMBEDDING_PROVIDER,
   KNOWLEDGE_BASES_ROOT_DIR,
   FAISS_INDEX_PATH,
-  EMBEDDING_PROVIDER,
   HUGGINGFACE_MODEL_NAME,
   HUGGINGFACE_PROVIDER,
   HUGGINGFACE_ENDPOINT_URL,
@@ -28,42 +29,24 @@ import {
   OLLAMA_MODEL,
   OPENAI_MODEL_NAME,
 } from './config.js';
+import {
+  activeFileExists,
+  computeLegacyEnvDerivedId,
+  modelDir,
+  modelNameFilePath,
+  writeActiveModelAtomic,
+} from './active-model.js';
+import { deriveModelId, EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
 
-const MODEL_NAME_FILE = path.join(FAISS_INDEX_PATH, 'model_name.txt');
-
 /**
- * RFC 012 §4.7 — atomic write for `model_name.txt`. Prior implementation used
- * `fsp.writeFile` which truncates the file to 0 bytes before writing; a CLI
- * invocation that reads the file in the truncate window saw an empty string
- * and produced a false-positive embedding-model mismatch error. tmp+rename
- * is atomic on POSIX — readers see either the old contents or the new
- * contents, never a partial state.
+ * RFC 013 §4.7 — atomic write for `model_name.txt`. Per-model file:
+ * `${PATH}/models/<id>/model_name.txt`. Tmp+rename is atomic on POSIX.
  */
-async function writeModelNameAtomic(modelName: string): Promise<void> {
-  const tmp = `${MODEL_NAME_FILE}.${process.pid}.tmp`;
+async function writeModelNameAtomic(modelNameFile: string, modelName: string): Promise<void> {
+  const tmp = `${modelNameFile}.${process.pid}.tmp`;
   await fsp.writeFile(tmp, modelName, 'utf-8');
-  await fsp.rename(tmp, MODEL_NAME_FILE);
-}
-
-/** Test/CLI helper: read the recorded model name. Returns null when the file
- * is absent (fresh index never written). Read errors propagate so callers
- * can distinguish "no file" from "permission denied". */
-export async function readStoredModelName(): Promise<string | null> {
-  try {
-    return (await fsp.readFile(MODEL_NAME_FILE, 'utf-8')).trim();
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw err;
-  }
-}
-
-/** Test/CLI helper: the absolute path to the FAISS binary file inside
- * `${FAISS_INDEX_PATH}/faiss.index/`. Round-3 fix: callers reading mtime
- * for staleness signals must target this inner file, NOT the directory
- * itself (directory mtime doesn't update on file overwrites). */
-export function faissIndexBinaryPath(): string {
-  return path.join(FAISS_INDEX_PATH, 'faiss.index', 'faiss.index');
+  await fsp.rename(tmp, modelNameFile);
 }
 
 // -----------------------------------------------------------------------------
@@ -271,146 +254,294 @@ function handleFsOperationError(action: string, targetPath: string, error: unkno
   throw newError;
 }
 
+/**
+ * RFC 013 §4.8 — module-level cache for `bootstrapLayout()`. Ensures migration
+ * runs at most once per Node process even when multiple FaissIndexManager
+ * instances exist (tests, `kb models add` after `KnowledgeBaseServer` already
+ * constructed one). Round-2 failure N1.
+ */
+let bootstrapPromise: Promise<void> | null = null;
+
+const MIGRATION_LOCK_PATH = path.join(FAISS_INDEX_PATH, '.kb-migration.lock');
+
+export class MigrationRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MigrationRefusedError';
+  }
+}
+
+/**
+ * RFC 013 §4.8 — auto-migrate 0.2.x single-model layout to 0.3.0 per-model
+ * subtree. Idempotent: early-returns if `models/` already exists or no old
+ * layout is present. Atomic per `fsp.rename`. ENOENT-tolerant for peer-races.
+ *
+ * Migration policy (was OQ3, promoted to RFC-level decision in v3 round-2
+ * boundary F7): when `model_name.txt` is present but env is unset, trust the
+ * file + `huggingface` default (config.ts:12). When `model_name.txt` is
+ * MISSING (pre-RFC-012 indexes), refuse — round-1 failure F5: silently
+ * deriving an id under the wrong provider creates permanent on-disk-shape bugs.
+ */
+async function maybeMigrateLayout(): Promise<void> {
+  const oldIndexDir = path.join(FAISS_INDEX_PATH, 'faiss.index');
+  const oldModelFile = path.join(FAISS_INDEX_PATH, 'model_name.txt');
+  const newModelsDir = path.join(FAISS_INDEX_PATH, 'models');
+
+  const hasOldIndex = await pathExists(oldIndexDir);
+  const hasNewModels = await pathExists(newModelsDir);
+  if (!hasOldIndex || hasNewModels) {
+    // Cleanup: stray model_name.txt at root after a previous migration's
+    // crash recovery (pseudo-code in §4.8).
+    if (hasNewModels && (await pathExists(oldModelFile))) {
+      logger.info(`Removing straggler ${oldModelFile} from a previous migration`);
+      await fsp.unlink(oldModelFile).catch(() => {});
+    }
+    return;
+  }
+
+  // Pre-RFC-012 indexes — round-1 failure F5: refuse, don't silently mis-id.
+  let oldModelName: string | null = null;
+  try {
+    oldModelName = (await fsp.readFile(oldModelFile, 'utf-8')).trim();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  if (oldModelName === null || oldModelName === '') {
+    throw new MigrationRefusedError(
+      `Cannot determine which model built ${oldIndexDir} — model_name.txt is missing. ` +
+      `Set EMBEDDING_PROVIDER + the model env vars to the values used when the index was built ` +
+      `and re-run, OR delete ${oldIndexDir} and let 0.3.0 re-embed under the current env.`,
+    );
+  }
+
+  const provider = (process.env.EMBEDDING_PROVIDER ?? 'huggingface') as EmbeddingProvider;
+  const newModelId = deriveModelId(provider, oldModelName);
+  const targetDir = path.join(newModelsDir, newModelId);
+  await fsp.mkdir(targetDir, { recursive: true });
+
+  // Two atomic renames. ENOENT-tolerant: peer process may have already moved.
+  await renameIfPresent(oldIndexDir, path.join(targetDir, 'faiss.index'));
+  await renameIfPresent(oldModelFile, path.join(targetDir, 'model_name.txt'));
+
+  // Single-writer for active.txt (RFC §4.7 — bootstrap is permitted writer #1).
+  await writeActiveModelAtomic(newModelId);
+
+  logger.info(`Migrated single-model layout from ${oldIndexDir} to models/${newModelId}/`);
+}
+
+async function renameIfPresent(src: string, dst: string): Promise<void> {
+  try {
+    await fsp.rename(src, dst);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+}
+
+/**
+ * Legacy constructor fallback — derive (provider, modelName) from env when no
+ * args passed. Preserves 0.2.x tests + 0.2.x single-model callers that don't
+ * yet thread an explicit model through. Multi-model code paths (`kb models *`,
+ * `kb search --model=<id>`, MCP per-call selection) MUST use the explicit form.
+ */
+function resolveLegacyConstructorArgs(): FaissIndexManagerOptions {
+  const provider = (EMBEDDING_PROVIDER || 'huggingface') as EmbeddingProvider;
+  let modelName: string;
+  switch (provider) {
+    case 'ollama':
+      modelName = OLLAMA_MODEL;
+      break;
+    case 'openai':
+      modelName = OPENAI_MODEL_NAME;
+      break;
+    default:
+      modelName = HUGGINGFACE_MODEL_NAME;
+      break;
+  }
+  return { provider, modelName };
+}
+
+export interface FaissIndexManagerOptions {
+  provider: EmbeddingProvider;
+  modelName: string;
+}
+
 export class FaissIndexManager {
   private faissIndex: FaissStore | null = null;
   private embeddings: HuggingFaceInferenceEmbeddings | OllamaEmbeddings | OpenAIEmbeddings;
-  private modelName: string;
-  private embeddingProvider: string;
+  readonly modelName: string;
+  readonly embeddingProvider: EmbeddingProvider;
+  readonly modelId: string;
+  readonly modelDir: string;
+  readonly modelNameFile: string;
 
-  constructor() {
-    this.embeddingProvider = EMBEDDING_PROVIDER;
+  /**
+   * RFC 013 §4.9 file table — preferred form: `new FaissIndexManager({provider, modelName})`
+   * (round-1 boundary F2 — explicit construction lets the manager instantiate
+   * the right embeddings client for any model). Path is derived inside the
+   * manager, scoped to `${PATH}/models/<id>/`.
+   *
+   * Legacy form: `new FaissIndexManager()` resolves provider+model from env
+   * (`EMBEDDING_PROVIDER` + `OLLAMA_MODEL`/`OPENAI_MODEL_NAME`/`HUGGINGFACE_MODEL_NAME`).
+   * Preserved for backward compatibility with 0.2.x callers and existing tests
+   * that pre-set env. New multi-model code paths (`kb models add`, MCP per-call
+   * model selection) use the explicit form.
+   */
+  constructor(opts?: FaissIndexManagerOptions) {
+    const resolved = opts ?? resolveLegacyConstructorArgs();
+    this.embeddingProvider = resolved.provider;
+    this.modelName = resolved.modelName;
+    this.modelId = deriveModelId(resolved.provider, resolved.modelName);
+    this.modelDir = modelDir(this.modelId);
+    this.modelNameFile = modelNameFilePath(this.modelId);
 
     if (this.embeddingProvider === 'ollama') {
-      logger.info('Initializing FaissIndexManager with Ollama embeddings');
-      this.modelName = OLLAMA_MODEL;
+      logger.info(`Initializing FaissIndexManager with Ollama embeddings (model: ${this.modelName})`);
       this.embeddings = new OllamaEmbeddings({
         baseUrl: OLLAMA_BASE_URL,
         model: this.modelName,
       });
     } else if (this.embeddingProvider === 'openai') {
-      logger.info('Initializing FaissIndexManager with OpenAI embeddings');
+      logger.info(`Initializing FaissIndexManager with OpenAI embeddings (model: ${this.modelName})`);
       const openaiApiKey = process.env.OPENAI_API_KEY;
       if (!openaiApiKey) {
         throw new Error('OPENAI_API_KEY environment variable is required when using OpenAI provider');
       }
 
-      this.modelName = OPENAI_MODEL_NAME;
       this.embeddings = new OpenAIEmbeddings({
         apiKey: openaiApiKey,
         model: this.modelName,
       });
     } else {
-      logger.info('Initializing FaissIndexManager with HuggingFace embeddings');
+      logger.info(`Initializing FaissIndexManager with HuggingFace embeddings (model: ${this.modelName})`);
       const huggingFaceApiKey = process.env.HUGGINGFACE_API_KEY;
       if (!huggingFaceApiKey) {
         throw new Error('HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider');
       }
 
-      this.modelName = HUGGINGFACE_MODEL_NAME;
+      // HuggingFace endpoint URL is computed from HUGGINGFACE_MODEL_NAME at
+      // module load (config.ts). In the multi-model world the endpoint is
+      // per-(provider+model), so for non-default models we recompute the URL
+      // here. The router URL pattern is `router.huggingface.co/hf-inference/models/<model>/pipeline/feature-extraction`.
+      const endpointUrl = HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN
+        ? HUGGINGFACE_ENDPOINT_URL
+        : `https://router.huggingface.co/hf-inference/models/${this.modelName}/pipeline/feature-extraction`;
+
       this.embeddings = new HuggingFaceInferenceEmbeddings({
         apiKey: huggingFaceApiKey,
         model: this.modelName,
-        endpointUrl: HUGGINGFACE_ENDPOINT_URL,
+        endpointUrl,
         provider: HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN ? undefined : HUGGINGFACE_PROVIDER,
       });
     }
 
-    if (this.embeddingProvider === 'huggingface') {
-      logger.info(
-        `Using embedding provider: ${this.embeddingProvider}, model: ${this.modelName}, huggingface provider: ${HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN ? 'endpoint override' : HUGGINGFACE_PROVIDER}`
-      );
-    } else {
-      logger.info(`Using embedding provider: ${this.embeddingProvider}, model: ${this.modelName}`);
-    }
+    logger.info(`FaissIndexManager bound to ${this.modelDir} (provider=${this.embeddingProvider}, model=${this.modelName}, id=${this.modelId})`);
   }
 
   /**
-   * RFC 012 §4.5 — `readOnly: true` skips the unconditional
-   * `model_name.txt` write at the bottom of this method. `FaissStore.load`
-   * is itself read-only (verified in node_modules/@langchain/community/dist/vectorstores/faiss.js
-   * lines 219-230 — readFile + InMemoryDocstore, no writes), so suppressing
-   * that one write makes the entire init path safe to run alongside a
-   * separate writer (e.g. the MCP server) without lockfile contention.
-   * Default behavior (read-write) is unchanged.
+   * RFC 013 §4.8 — process-global, idempotent layout bootstrap. Runs migration
+   * from 0.2.x layout to 0.3.0 per-model subtree at MOST ONCE per Node process
+   * (module-level Promise cache, round-2 failure N1).
+   *
+   * MUST be called by `KnowledgeBaseServer.run()` AFTER `acquireInstanceAdvisory()`
+   * (round-1 failure F4 + delivery F6 — concurrent migrations need a lock).
+   * For CLI invocations (no MCP server holds the advisory), this acquires
+   * `.kb-migration.lock` (proper-lockfile, brief retry) to coordinate with
+   * a peer CLI that started the migration first.
+   */
+  static async bootstrapLayout(opts?: { hasInstanceAdvisory?: boolean }): Promise<void> {
+    if (bootstrapPromise) return bootstrapPromise;
+    bootstrapPromise = (async () => {
+      // Cross-process serializer: held by self if MCP, else short-lived migration lock.
+      let release: (() => Promise<void>) | null = null;
+      if (!opts?.hasInstanceAdvisory) {
+        await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
+        try {
+          release = await properLockfile.lock(FAISS_INDEX_PATH, {
+            lockfilePath: MIGRATION_LOCK_PATH,
+            stale: 30_000,
+            retries: { retries: 5, factor: 1.5, minTimeout: 100, maxTimeout: 1000 },
+          });
+        } catch (err) {
+          // If we can't get the migration lock, a peer is migrating; wait for
+          // them and re-check the layout. Falling through is safe — the
+          // pathExists guards in maybeMigrateLayout will early-return.
+          logger.warn(`Could not acquire migration lock; assuming peer migration: ${(err as Error).message}`);
+        }
+      }
+      try {
+        await maybeMigrateLayout();
+      } finally {
+        if (release) {
+          try { await release(); } catch { /* best-effort */ }
+        }
+      }
+    })();
+    return bootstrapPromise;
+  }
+
+  /** Test-only: reset the bootstrap cache between tests. */
+  static __resetBootstrapForTests(): void {
+    bootstrapPromise = null;
+  }
+
+  /**
+   * RFC 013 §4.8 — per-instance, load-only. NO migration (that's bootstrapLayout).
+   * NO cross-process advisory. Cheap, called per `kb search` and per MCP
+   * `handleRetrieveKnowledge`.
+   *
+   * RFC 012 §4.5 — `readOnly: true` skips the `model_name.txt` write so a CLI
+   * can load the index without contending with a running MCP server.
    */
   async initialize(opts: { readOnly?: boolean } = {}): Promise<void> {
     try {
-      if (!(await pathExists(FAISS_INDEX_PATH))) {
+      // Ensure this model's directory exists. mkdir-p is cheap; first-run
+      // for a fresh install creates `${PATH}/models/<id>/`.
+      if (!(await pathExists(this.modelDir))) {
         try {
-          await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
+          await fsp.mkdir(this.modelDir, { recursive: true });
         } catch (error) {
-          handleFsOperationError('create FAISS index directory', FAISS_INDEX_PATH, error);
+          handleFsOperationError('create FAISS model directory', this.modelDir, error);
         }
       }
-      const indexFilePath = path.join(FAISS_INDEX_PATH, 'faiss.index');
-      let storedModelName: string | null = null;
+      const indexFilePath = path.join(this.modelDir, 'faiss.index');
 
-      try {
-        storedModelName = (await pathExists(MODEL_NAME_FILE))
-          ? (await fsp.readFile(MODEL_NAME_FILE, 'utf-8'))
-          : null;
-      } catch (error) {
-        logger.warn('Error reading stored model name:', error);
-      }
-
-      if (storedModelName && storedModelName !== this.modelName) {
-        logger.warn(`Model name has changed from ${storedModelName} to ${this.modelName}. Recreating index.`);
-        if (await pathExists(indexFilePath)) {
-          try {
-            // Modern @langchain/community emits a *directory* at indexFilePath
-            // (containing faiss.index + docstore.json); older versions wrote a
-            // single file. fsp.rm(recursive, force) handles both shapes and is
-            // also ENOENT-tolerant in case of races with another writer.
-            await fsp.rm(indexFilePath, { recursive: true, force: true });
-            logger.info('Existing FAISS index deleted.');
-          } catch (error) {
-            handleFsOperationError('delete stale FAISS index', indexFilePath, error);
-          }
-        }
-        this.faissIndex = null; // Ensure index is recreated
-      }
+      // RFC 013: no model-switch wipe at initialize time. Each model has its
+      // own dir; a different provider+model goes to a different `models/<id>/`.
+      // The single-model wipe at lines 356-371 of the 0.2.x file was a
+      // single-model artifact; multi-model dispenses with it.
 
       if (await pathExists(indexFilePath)) {
         logger.info('Loading existing FAISS index from:', indexFilePath);
         try {
           this.faissIndex = await FaissStore.load(indexFilePath, this.embeddings);
-          logger.info('FAISS index loaded.');
+          logger.info(`FAISS index loaded for model ${this.modelId}.`);
         } catch (error) {
           logger.warn(
             'Existing FAISS index at',
             indexFilePath,
             'is corrupt or unreadable - rebuilding from source. Error:',
-            error
+            error,
           );
           try {
-            // See model-switch branch above for why fsp.rm(recursive, force) is
-            // required: the modern langchain layout makes indexFilePath a
-            // directory, on which fsp.unlink throws EISDIR.
             await fsp.rm(indexFilePath, { recursive: true, force: true });
           } catch (unlinkErr) {
             handleFsOperationError('delete corrupt FAISS index', indexFilePath, unlinkErr);
           }
-          // Legacy cleanup: very old index layouts wrote a sibling
-          // `<indexFilePath>.json` docstore file. The modern directory layout
-          // keeps docstore.json inside indexFilePath (already removed by the rm
-          // above). This best-effort unlink is a no-op for modern layouts and
-          // only matters when migrating from a pre-RFC-010 install.
-          await fsp.unlink(`${indexFilePath}.json`).catch(() => {});
           this.faissIndex = null;
         }
       } else {
-        logger.info('FAISS index file not found at', indexFilePath, '. It will be created if documents are available.');
+        logger.info('FAISS index file not found at', indexFilePath, '. It will be created on the next updateIndex.');
         this.faissIndex = null;
       }
 
-      // Save the current model name for future checks. Skipped under
-      // readOnly:true (RFC 012 §4.5) so a CLI invocation can load the
-      // index without contending with a running MCP server.
+      // Save the current model name for this model's dir. Skipped under
+      // readOnly:true (RFC 012 §4.5).
       if (!opts.readOnly) {
         try {
-          await writeModelNameAtomic(this.modelName);
+          await writeModelNameAtomic(this.modelNameFile, this.modelName);
         } catch (error) {
-          handleFsOperationError('persist embedding model metadata in', MODEL_NAME_FILE, error);
+          handleFsOperationError('persist embedding model metadata in', this.modelNameFile, error);
         }
       }
     } catch (error: any) {
@@ -634,7 +765,7 @@ export class FaissIndexManager {
       }
 
       if (indexMutated && this.faissIndex !== null) {
-        const indexFileSavePath = path.join(FAISS_INDEX_PATH, 'faiss.index');
+        const indexFileSavePath = path.join(this.modelDir, 'faiss.index');
         try {
           await this.faissIndex.save(indexFileSavePath);
           logger.info('FAISS index saved successfully to', indexFileSavePath);

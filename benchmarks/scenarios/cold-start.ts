@@ -23,6 +23,18 @@ interface VectorStoreModule {
   };
 }
 
+interface ManagerLike {
+  initialize(): Promise<void>;
+  updateIndex(knowledgeBaseName?: string): Promise<void>;
+  readonly modelDir: string;
+  readonly modelNameFile: string;
+  readonly modelName: string;
+}
+
+interface ManagerModule {
+  FaissIndexManager: new () => ManagerLike;
+}
+
 export async function runColdStartScenario(context: ScenarioContext): Promise<ColdStartScenarioResult> {
   await resetDirectory(context.knowledgeBasesRootDir);
   await resetDirectory(context.faissIndexPath);
@@ -38,13 +50,9 @@ export async function runColdStartScenario(context: ScenarioContext): Promise<Co
   await createPersistedFixture(context);
 
   const start = process.hrtime.bigint();
-  const modulePath = path.join(context.buildRoot, 'KnowledgeBaseServer.js');
-  const moduleUrl = new URL(`file://${modulePath}?scenario=cold-start-${Date.now()}`);
-  const imported = await import(moduleUrl.href) as {
-    KnowledgeBaseServer: new () => object;
-  };
-  const server = new imported.KnowledgeBaseServer();
-  const manager = Reflect.get(server, 'faissManager') as { initialize(): Promise<void> };
+  const moduleUrl = new URL(`file://${path.join(context.buildRoot, 'FaissIndexManager.js')}?scenario=cold-start-${Date.now()}`);
+  const imported = await import(moduleUrl.href) as ManagerModule;
+  const manager = new imported.FaissIndexManager();
   await manager.initialize();
   const end = process.hrtime.bigint();
 
@@ -56,8 +64,15 @@ export async function runColdStartScenario(context: ScenarioContext): Promise<Co
 }
 
 async function createPersistedFixture(context: ScenarioContext): Promise<void> {
-  const filePath = path.join(context.faissIndexPath, 'faiss.index');
-  const modelNamePath = path.join(context.faissIndexPath, 'model_name.txt');
+  // RFC 013 layout: persist into ${FAISS_INDEX_PATH}/models/<id>/{faiss.index/, model_name.txt}.
+  // Probe a manager once to discover the env-derived modelDir/modelNameFile so the
+  // persisted fixture lands at the exact path the cold-start loader will read.
+  const probeUrl = new URL(`file://${path.join(context.buildRoot, 'FaissIndexManager.js')}?scenario=cold-start-probe-${Date.now()}`);
+  const probeModule = await import(probeUrl.href) as ManagerModule;
+  const probe = new probeModule.FaissIndexManager();
+  await fsp.mkdir(probe.modelDir, { recursive: true });
+  const indexDir = path.join(probe.modelDir, 'faiss.index');
+
   const kbPath = path.join(context.knowledgeBasesRootDir, context.knowledgeBaseName);
   const filePaths = (await fsp.readdir(kbPath)).map((entry) => path.join(kbPath, entry));
   const splitter = new MarkdownTextSplitter({
@@ -87,25 +102,14 @@ async function createPersistedFixture(context: ScenarioContext): Promise<void> {
       chunks.map((document) => document.metadata as Record<string, unknown>),
       embeddings,
     );
-    await vectorStore.save(filePath);
+    await vectorStore.save(indexDir);
   } else {
-    const { FaissIndexManager } = await import(new URL(`file://${path.join(context.buildRoot, 'FaissIndexManager.js')}?fixture=${Date.now()}`).href) as {
-      FaissIndexManager: new () => { initialize(): Promise<void>; updateIndex(kb?: string): Promise<void> };
-    };
-    const manager = new FaissIndexManager();
+    const realUrl = new URL(`file://${path.join(context.buildRoot, 'FaissIndexManager.js')}?fixture=${Date.now()}`);
+    const realModule = await import(realUrl.href) as ManagerModule;
+    const manager = new realModule.FaissIndexManager();
     await manager.initialize();
     await manager.updateIndex(context.knowledgeBaseName);
   }
 
-  await fsp.writeFile(modelNamePath, activeModelName(context.provider), 'utf-8');
-}
-
-function activeModelName(provider: ScenarioContext['provider']): string {
-  if (provider === 'ollama') {
-    return process.env.OLLAMA_MODEL ?? 'dengcao/Qwen3-Embedding-0.6B:Q8_0';
-  }
-  if (provider === 'openai') {
-    return process.env.OPENAI_MODEL_NAME ?? 'text-embedding-ada-002';
-  }
-  return process.env.HUGGINGFACE_MODEL_NAME ?? 'sentence-transformers/all-MiniLM-L6-v2';
+  await fsp.writeFile(probe.modelNameFile, probe.modelName, 'utf-8');
 }
