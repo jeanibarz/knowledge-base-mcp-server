@@ -14,6 +14,16 @@ This server speaks stdio MCP and works with any stdio MCP client. Pick the block
 
 The blocks below alternate embedding providers so you can see all three configured at least once. Any client can use any provider — see the [README](../README.md) "Configure environment variables" step for the full env-var matrix.
 
+## Upgrade model — pin `@latest` if you wire via `npx`
+
+The snippets below use `command: "node"` + an absolute path, so upgrades happen when *you* rebuild from source. If instead you wire the server via `command: "npx"` + `args: ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"]` (a common shorthand for users on the README "Install (one command)" path), **always include `@latest` explicitly**. The bare unversioned spec `@jeanibarz/knowledge-base-mcp-server` caches the resolved version in `~/.npm/_npx/` indefinitely — your client keeps using the old version after a new release ships. The `@latest` form hashes to a different cache key and re-resolves on every spawn. See RFC 012 §2.4.
+
+Alternatively, install once globally (`npm install -g @jeanibarz/knowledge-base-mcp-server@latest`) and use the resulting absolute bin path: `which knowledge-base-mcp-server`.
+
+## See also: `kb` CLI
+
+For shell-driven workflows (REPL queries, scripted ingest checks, agent Bash-tool calls), the same package ships a `kb` bin that doesn't require an MCP client at all. Each `kb` invocation is a fresh process, so global upgrades are picked up immediately. See the README "Install (CLI alongside the MCP server)" section.
+
 ## Claude Desktop
 
 Config file:
