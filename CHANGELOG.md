@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.1] — 2026-04-25
+
+### Fixed
+
+- **`kb` CLI silently exits 0 when invoked via the `npm install -g` symlink.** The 0.2.0 driver guard (`process.argv[1]?.endsWith('/cli.js')`) was correct for direct invocations (`node build/cli.js`, `./build/cli.js`) but failed for the production install path: when invoked through the symlink at `~/.nvm/.../bin/kb`, `process.argv[1]` is the symlink path (ends in `/kb`), not the canonical `cli.js`, so the driver block never ran. Replaced with `realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)` which collapses the symlink and matches in all four cases (direct, shebang, install-g symlink, test import). New regression test exercises the symlink case via `fs.symlink`. RFC 012 §6.2 specified a `npm pack && npm install -g` smoke gate that would have caught this; wiring that into CI is tracked separately.
+
 ## [0.2.0] — 2026-04-25
 
 ### Added
