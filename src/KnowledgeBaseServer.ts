@@ -10,12 +10,15 @@ import {
   KNOWLEDGE_BASES_ROOT_DIR,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   loadTransportConfig,
+  REINDEX_TRIGGER_PATH,
+  REINDEX_TRIGGER_POLL_MS,
   RETRIEVE_KNOWLEDGE_DESCRIPTION,
   TransportConfigError,
   type TransportConfig,
 } from './config.js';
 import { logger } from './logger.js';
 import { SseHost } from './transport/sse.js';
+import { ReindexTriggerWatcher } from './triggerWatcher.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
@@ -50,6 +53,7 @@ export class KnowledgeBaseServer {
   private mcp: McpServer;
   private faissManager: FaissIndexManager;
   private sseHost?: SseHost;
+  private triggerWatcher?: ReindexTriggerWatcher;
   private shutdownInstalled = false;
 
   constructor() {
@@ -203,6 +207,7 @@ export class KnowledgeBaseServer {
     await this.mcp.connect(transport);
     logger.info('Knowledge Base MCP server running on stdio');
     await this.faissManager.initialize();
+    this.startTriggerWatcher();
   }
 
   private async runSse(config: TransportConfig): Promise<void> {
@@ -216,7 +221,24 @@ export class KnowledgeBaseServer {
     });
     this.sseHost = host;
     this.installHttpShutdown();
+    // Start watcher only after the HTTP bind succeeds; a throw from
+    // host.start() unwinds without leaving a dangling polling timer.
     await host.start();
+    this.startTriggerWatcher();
+  }
+
+  private startTriggerWatcher(): void {
+    if (this.triggerWatcher) return;
+    if (REINDEX_TRIGGER_POLL_MS <= 0) {
+      logger.info('Reindex trigger watcher disabled (REINDEX_TRIGGER_POLL_MS=0)');
+      return;
+    }
+    this.triggerWatcher = new ReindexTriggerWatcher(
+      REINDEX_TRIGGER_PATH,
+      () => this.faissManager.updateIndex(undefined),
+      REINDEX_TRIGGER_POLL_MS,
+    );
+    this.triggerWatcher.start();
   }
 
   private installHttpShutdown(): void {
@@ -229,6 +251,14 @@ export class KnowledgeBaseServer {
   }
 
   private async shutdown(): Promise<void> {
+    if (this.triggerWatcher) {
+      try {
+        await this.triggerWatcher.stop();
+      } catch (err) {
+        logger.warn(`Error stopping reindex trigger watcher: ${(err as Error).message}`);
+      }
+      this.triggerWatcher = undefined;
+    }
     if (this.sseHost) {
       try {
         await this.sseHost.stop();
