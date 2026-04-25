@@ -1,6 +1,6 @@
 # RFC 013 — Multi-model embedding support: keep many indexes side-by-side
 
-- **Status:** Draft (v3 — post-round-2 revision; convergence reached, round 3 skipped per skill's early-stop rule)
+- **Status:** Draft (v4 — operator-requested addition: §4.13 embedding-comparison benchmarking skill + M5 milestone. Multi-model rails (M0-M4) unchanged from v3.)
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`
 - **Related:** RFC 012 (CLI distribution — adds the `kb` bin, split-lock coordination, model-mismatch check), RFC 011 (arxiv-backend ingestion pipeline), RFC 010 (MCP surface v2)
@@ -107,6 +107,7 @@ RFC 012 §4.7 (model-mismatch check) and §4.8.2 (write lock) **assume one model
 - **G9.** Removing a model is a single command (`kb models remove <id>`) with confirmation. Removing the active model is refused unless the operator names a new active model first.
 - **G10.** Threat model and on-disk-layout docs reflect the new shape — `${FAISS_INDEX_PATH}` is still the trust boundary, now containing a `models/` subtree.
 - **G11.** `kb compare <query> <model_a> <model_b>` returns a unified rank-and-score table over both models' top-k. Lands in M2 (round-1 ambition F1).
+- **G12.** **Embedding-model selection workflow.** A user choosing between two embedding models (e.g. nomic-embed-text vs bge-small-en-v1.5) can run `npm run bench:compare -- --models=<id_a>,<id_b>` against the bundled fixture or their own KB and get a self-contained HTML report covering: cold-start indexing time + RSS + tokens + estimated cost; warm-query latency p50/p95/p99 (single-query); batch-query throughput and tail latency under concurrency 1→N; on-disk storage per model; cross-model top-k agreement (Jaccard + Spearman) + recall@10 if a golden set is supplied. The report includes a "Recommendation" panel that picks a winner per axis (latency-sensitive / cost-sensitive / quality-sensitive). The orchestrator dogfoods M0-M4 (`kb models add`, `kb search --model=<id>`, `kb compare`, `kb models list`, `kb models remove`); shipping it without those rails is impossible by construction. Lands in M5 (operator request 2026-04-26).
 
 ### 3.2 Non-goals
 
@@ -119,6 +120,8 @@ RFC 012 §4.7 (model-mismatch check) and §4.8.2 (write lock) **assume one model
 - **N7.** Quantized index types (`IndexIVFPQ`). Storage isn't the binding constraint per §2.4. Tracked separately if it ever is.
 - **N8.** Sharing `docstore.json` across models via hardlink. Round-1 ambition F7 + empirical E5 verified the chunk *content* is byte-identical across models, but `FaissStore` assigns fresh per-document UUIDs on every save, so naive hardlink fails. A canonicalize-then-hardlink pass is tractable but saves only ~1.81 MiB × (M-1) — not worth v1 complexity for ≤4-model deployments. Future-RFC seed in §8.9.
 - **N9.** Cumulative cost tracking (`models/<id>/.cost.json`). Round-1 ambition F4 proposed it; deferred — adds bookkeeping that minimalist F4 cut from upstream design. Future-RFC seed.
+- **N10.** Academic IR benchmarking (BEIR, MTEB, MS MARCO leaderboards). The bundled fixture is large enough to be **insightful for selection** (~3000 chunks, statistically meaningful latency bands, query overlap signal), not large enough for **published claims**. M5's HTML report explicitly disclaims this in its "Recommendation" panel: "Use this report to choose between the two models for **your KB**; it is not an MTEB-grade leaderboard." A future RFC may add MTEB integration if a use case appears.
+- **N11.** A new `kb-bench` CLI binary. M5 piggybacks on the existing `npm run bench` entrypoint (RFC 007 PR 0.1 baseline); the new behavior is a flag (`bench:compare`). Adding a second installable binary expands the public surface; not worth it for a maintainer/operator workflow.
 
 ## 4. Design
 
@@ -491,6 +494,10 @@ Properties:
 
 `README.md`, `docs/clients.md`, `docs/architecture/threat-model.md`, CHANGELOG entry.
 
+#### M5 (benchmarking skill — separate PR)
+
+See §4.13.7 for the full file table. Headline: `benchmarks/compare/{run.ts, render.ts, chart.ts, report-template.html, queries-default.txt}`, `benchmarks/scenarios/{batch-query.ts, index-storage.ts}`, extension to `benchmarks/{types.ts, run.ts, fixtures/generator.ts}`, `package.json` script `bench:compare`, `.github/workflows/bench-compare-dispatch.yml`, and (gated on RFC 002 landing) `.claude/skills/compare-embedding-models/SKILL.md`.
+
 ### 4.10 Cost-estimate flow (M2)
 
 ```
@@ -542,8 +549,267 @@ Round-1 minimalist F4 argued for cutting the cost flow entirely. Rejected becaus
 - §1: requirement extends to every `models/<id>/` subdirectory. Pickle-deserialization risk per-model.
 - §4: single MCP server per `$FAISS_INDEX_PATH` constraint is unchanged. Per-model write locks add intra-process serialization but don't change the cross-process advisory.
 - New §6 entry: `active.txt` is operator-trusted state; tampering with it can redirect agent retrievals to a wrong model. Mode 0o600 like the PID file.
+- M5 addition: `benchmarks/.cache/` (per §4.13.4) holds the bundled fixture downloaded from public APIs. Treated like any other build artefact — operator-owned; outside the trust boundary. Not under `${FAISS_INDEX_PATH}`. Skill orchestrator uses `$TMPDIR/kb-bench-<hash>/` for `--fixture=external` runs (per §4.13.9), keeping the user's real `${FAISS_INDEX_PATH}` untouched.
 
 Threat-model update is M4. No new threats; same threats with a slightly larger surface.
+
+### 4.13 Embedding-comparison benchmarking skill (M5)
+
+**Operator-requested addition (2026-04-26)** — M5 dogfoods M0-M4 by giving an operator (or paired agent) a one-command workflow to compare two embedding models on the same KB and read an HTML report. Selection inputs that today require ad-hoc shell work — *which model is faster on my hardware, which is cheaper at my scale, do they actually return different documents on my queries* — become artefacts a reviewer can open in a browser.
+
+#### 4.13.1 Why extend the existing harness, not invent a new one
+
+`benchmarks/{run.ts, scenarios/, fixtures/}` already exists (RFC 007 PR 0.1 baseline). Its `BenchmarkReport` (`benchmarks/types.ts:55-66`) already carries `cold_start.{ms, rss_bytes}`, `cold_index.{files, chunks, ms}`, `warm_query.{p50_ms, p95_ms, p99_ms}`, `memory_peak.{rss_bytes, heap_used_bytes}`, and `retrieval_quality.{recall_at_10, sweep[]}`. CI runs `BENCH_PROVIDER=stub npm run bench` (`.github/workflows/benchmarks.yml`) and uploads the JSON. **What's missing for §G12**:
+
+1. The `BenchProvider` axis (`'stub' | 'ollama' | 'openai' | 'huggingface'`) does not distinguish two models from the same provider (e.g. two HF models). M5 adds `BENCH_MODEL_NAME` env so the same `BENCH_PROVIDER=huggingface` run can be parameterised.
+2. No batch/concurrency scenario — only serial `warm-query`. M5 adds `batch-query.ts`.
+3. No on-disk-storage scenario (vector binary + docstore). M5 adds `index-storage.ts` (~30 LoC; reads `models/<id>/faiss.index/{faiss.index,docstore.json}` after cold-index).
+4. JSON output only — no comparative renderer. M5 adds `benchmarks/compare/render.ts` + `report-template.html`.
+5. No two-run orchestrator. M5 adds `benchmarks/compare/run.ts` that invokes the harness twice (one model per run, real provider — stub is meaningless for comparative selection) and merges the JSON pair into one HTML report.
+
+The existing `benchmarks/results/run-{provider}-node{N}-{os}-{arch}.json` naming convention extends naturally: M5 writes `compare-{model_a_id}-vs-{model_b_id}-node{N}-{os}-{arch}.{json,html}`. Existing CI stub job is unchanged; M5's compare job is `workflow_dispatch`-only (real-provider runs are maintainer-local, never on CI — same posture as today's real-provider local runs).
+
+#### 4.13.2 Surface
+
+```
+npm run bench:compare -- \
+  --models=<id_a>,<id_b> \           # required; resolved via deriveModelId
+  --fixture=<size> \                 # small (CI fixture, ~150 chunks) | medium (~800) | large (~3000); default: medium
+  --queries=<path>                   # optional; one query per line; default: bundled benchmarks/compare/queries-default.txt (50 queries)
+  --concurrency=<list>               # CSV; default: 1,4,16
+  --golden=<path>                    # optional; JSON {query: [doc_paths]}; enables recall@k + MRR
+  --output-dir=<path>                # default: benchmarks/results/
+  --skip-add                         # reuse already-registered models (assume `kb models add` ran earlier)
+  --yes                              # non-interactive (skips paid-provider cost prompt)
+```
+
+Operator output: a single `compare-…-{datetime}.html` plus the two source `.json` runs. The HTML is fully self-contained (inline CSS, inline `<svg>` charts via `benchmarks/compare/chart.ts` — no external CDN, no JS frameworks; reviewer-air-gapped friendly).
+
+#### 4.13.3 Phases (each emitted to JSON; rendered side-by-side in HTML)
+
+| Phase | Existing scenario | M5 addition | Output keys |
+|---|---|---|---|
+| Cold start (process + first index) | `cold-start.ts` + `cold-index.ts` | none — extend `BENCH_MODEL_NAME` only | `cold_start.{ms, rss_bytes, fixture_documents}`, `cold_index.{ms, chunks, files}` |
+| Warm single-query | `warm-query.ts` | none | `warm_query.{p50_ms, p95_ms, p99_ms, repetitions}` |
+| Warm batch-query (NEW) | — | `batch-query.ts`, ~80 LoC. For each `--concurrency=N`, runs `Promise.all(query × N)` `repetitions` times; reports throughput + tail. | `batch_query.runs[].{concurrency, qps_p50, qps_p95, latency_p50_ms, latency_p99_ms}` |
+| On-disk storage (NEW) | — | `index-storage.ts`, ~50 LoC. After cold-index, reads `${PATH}/models/<id>/faiss.index/{faiss.index,docstore.json}` byte size; computes bytes/vector. | `index_storage.{vector_binary_bytes, docstore_bytes, total_bytes, bytes_per_vector}` |
+| Retrieval quality | `retrieval-quality.ts` | none — already has fanout sweep + recall@10 | `retrieval_quality.{default_recall_at_10, sweep[]}` |
+| Cross-model agreement (NEW, comparison-only) | — | Computed in `compare/run.ts`, not the per-model harness. For each query: top-10 from A, top-10 from B; Jaccard on doc-paths; Spearman ρ on overlap. Aggregated p50/p95. | (in `compare-….json`) `cross_model.{jaccard_p50, jaccard_p95, spearman_p50, overlap_doc_count}` |
+| Cost (paid providers) | — | `compare/run.ts` reads tokens consumed (Ollama: stub `0`; OpenAI: from response usage if available, else fall back to chunks × 4-byte rule); multiplies by `src/cost-estimates.ts` constants. | (in `compare-….json`) `cost_estimate.{usd, source: 'api-usage' \| 'rule-of-thumb', last_verified: 'YYYY-MM-DD'}` |
+
+**Cold start vs hot start clarification (operator's terminology):**
+- *Cold start* = first run after `kb models remove <id>` (or fresh-install): full re-embed via `kb models add`. Measured by `cold-index.ts` (per-chunk wall time) + `cold-start.ts` (process boot + initial load).
+- *Hot start* = subsequent search against a registered model with the index already loaded into memory. Measured by `warm-query.ts` (single) + new `batch-query.ts` (batch).
+
+#### 4.13.4 Fixture corpus
+
+The user asked for "a fixture database large enough to make the report insightful." Concretely:
+
+- **Size target.** ~3000 chunks at the `--fixture=large` profile. Empirical-spike (M5 PR): on the operator's nomic-embed-text baseline (E1 reference), 1294 chunks already produces measurable p99 separation; 3000 chunks provides ~2× signal margin without pushing maintainer-local cold-start past ~5 min on Ollama (50 ms/chunk × 3000 = 150 s + I/O).
+- **Source — the hard call (OQ9 below).** Three options, ranked by author preference:
+  1. **arxiv abstracts subset** (preferred). RFC 011 already added arxiv ingestion scaffolding; ~3000 abstracts from a CC-BY-licensed snapshot (e.g. `cs.IR` + `cs.CL` 2020-2024) is ~6 MB markdown, technical English, well-suited to an embedding-discrimination test, and license-compatible with this repo's MIT.
+  2. **Wikipedia subset (`wiki40b/en` 3000-article sample).** General-purpose, well-known to ML reviewers, but heavier (~30 MB) and more topically diffuse — can mask model differences that arxiv would surface.
+  3. **The repo's own `docs/` + `CHANGELOG.md` + `README.md` + RFCs** (~15k lines today, growing). Self-referential, no licensing concerns, but tiny by 2030 standards and embarrasses comparative measurement.
+- **Vendoring strategy.** Do **not** commit the corpus binary. Ship `benchmarks/fixtures/generator.ts` (already exists for the small CI fixture) extended with a `--profile=large` flag that fetches arxiv abstracts via their public API (rate-limited; cached under `benchmarks/.cache/` with sha256-keyed filenames, gitignored). First run takes ~2 min over network; subsequent runs read from cache. Deterministic seed; same arxiv ID list across runs and machines. README documents an offline fallback (manual tarball drop into `benchmarks/.cache/`).
+- **Golden labels (optional).** If `--golden=<path>` is supplied, recall@k + MRR appear in the report. The bundled `queries-default.txt` does **not** ship golden labels (they're operator-corpus-specific); the report still emits cross-model Jaccard/Spearman, which doesn't need labels.
+
+#### 4.13.5 HTML report layout
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ Embedding model comparison: ollama__nomic-embed-text-latest            │
+│   vs huggingface__BAAI-bge-small-en-v1.5                               │
+│ Generated 2026-XX-XX • node v22 • linux-x64 • fixture=large (3010 ch.) │
+├────────────────────────────────────────────────────────────────────────┤
+│ SUMMARY TABLE                                                          │
+│   metric              │  model A    │  model B    │  winner            │
+│   cold_index_ms       │  152340     │  84210      │  B (1.81× faster)  │
+│   warm_query_p50_ms   │   12.4      │   18.7      │  A                 │
+│   warm_query_p99_ms   │   23.1      │   31.0      │  A                 │
+│   batch_qps@16        │  124.8      │   88.3      │  A                 │
+│   total_storage_MiB   │   5.62      │   3.74      │  B                 │
+│   estimated_cost_usd  │   0.00      │   0.00      │  tie (both free)   │
+│   default_recall@10   │   0.84      │   0.79      │  A                 │
+│   jaccard_top10_p50   │   0.61      │   0.61      │  N/A               │
+├────────────────────────────────────────────────────────────────────────┤
+│ LATENCY DISTRIBUTION (single + batch, two SVG histograms side-by-side) │
+├────────────────────────────────────────────────────────────────────────┤
+│ THROUGHPUT vs CONCURRENCY (SVG line chart, 1/4/16/64)                  │
+├────────────────────────────────────────────────────────────────────────┤
+│ STORAGE (stacked bar — vector binary vs docstore — per model)          │
+├────────────────────────────────────────────────────────────────────────┤
+│ QUERY-LEVEL DETAIL (collapsible <details>, top-5 per model side-by-    │
+│   side; overlap rows highlighted; per-query Jaccard score)             │
+├────────────────────────────────────────────────────────────────────────┤
+│ RECOMMENDATION (rule-based picker, see §4.13.6)                        │
+├────────────────────────────────────────────────────────────────────────┤
+│ DISCLAIMERS                                                            │
+│ • This is your-KB selection guidance, NOT an MTEB leaderboard (N10).   │
+│ • Latency depends on hardware; rerun on the deployment target.         │
+│ • Recall@10 requires golden labels; absent them, only Jaccard shown.   │
+│ • Cost numbers reflect cost-estimates.ts LAST_VERIFIED date; verify.   │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+Charts are inline SVG generated by `benchmarks/compare/chart.ts` (~120 LoC, zero deps — d3-shaped axis math, no library import). Self-contained because the report is meant to be reviewed (and possibly attached to a PR or shared) without the original machine.
+
+#### 4.13.6 Recommendation panel — rule-based, transparent
+
+The panel picks a winner per axis using **fixed thresholds** documented in the panel itself (so a skeptical reader can disagree explicitly):
+
+```
+If you optimise for…          Pick    Reason
+──────────────────────────────────────────────────────────────────────
+single-query latency           A     A's p99 is 25%+ lower than B's
+batch throughput (≥16 conc)    A     A's qps@16 is 40%+ higher
+cost per re-embed              B     B's cost is 30%+ lower (A is free → tie)
+storage at 10× growth          B     B's bytes/vector is 33% lower
+recall@10 (if labelled)        A     A's recall is 5%+ higher
+result diversity (no winner)   —     Jaccard 0.61 ⇒ ~40% non-overlap; consider RRF (N1)
+```
+
+If multiple axes disagree, no single-line recommendation; the panel emits "no clear winner — operator picks based on which axis matters." **No machine-learned scorer**; the picker is `if-else` so the report can be read decades from now.
+
+#### 4.13.7 New / changed files (M5)
+
+| File | Change | LoC |
+|---|---|---|
+| `benchmarks/compare/run.ts` | NEW. Orchestrator. Spawns the existing harness twice via `child_process.spawn('npm', ['run', 'bench'], { env: {...} })` (one per model), merges JSONs, computes cross-model agreement + cost, invokes renderer. | ~250 |
+| `benchmarks/compare/render.ts` | NEW. Reads merged JSON, hydrates `report-template.html` via tagged-template substitution (no Handlebars / no React). | ~150 |
+| `benchmarks/compare/chart.ts` | NEW. Inline-SVG histogram + line chart + stacked-bar. Zero deps. | ~120 |
+| `benchmarks/compare/report-template.html` | NEW. Static HTML skeleton with `{{slot}}` markers. ~200 lines including inline CSS. | ~200 |
+| `benchmarks/compare/queries-default.txt` | NEW. 50 queries against the bundled fixture; mix of factual / paraphrase / multi-hop. | (data) |
+| `benchmarks/scenarios/batch-query.ts` | NEW. Concurrency-sweep scenario. Reuses `ScenarioContext` + `StubController`. | ~80 |
+| `benchmarks/scenarios/index-storage.ts` | NEW. Reads on-disk byte sizes after cold-index. | ~50 |
+| `benchmarks/types.ts` | Adds `BatchQueryScenarioResult`, `IndexStorageScenarioResult`; extends `BenchmarkReport.scenarios`. | +30 |
+| `benchmarks/run.ts` | Reads `BENCH_MODEL_NAME` env; passes through to provider construction; new scenarios called. | +40 |
+| `benchmarks/fixtures/generator.ts` | Adds `--profile=large` (~3000 chunks, arxiv-CC-BY abstract corpus, sha256-cached under `benchmarks/.cache/`). Existing small CI fixture unchanged. | +120 |
+| `benchmarks/.cache/.gitignore` | NEW. Single line `*` to exclude the cached corpus. | 1 |
+| `benchmarks/README.md` | Section: "Comparing two models" — invocation, output paths, fixture-cache behaviour, offline fallback. | +60 |
+| `package.json` | Add `"bench:compare": "tsx benchmarks/compare/run.ts"` script. | +1 |
+| `.github/workflows/benchmarks.yml` | NO CHANGE (CI stays stub-only). New `bench-compare-dispatch.yml` (workflow_dispatch only) for maintainer manual runs against real providers; uploads HTML as artifact. | (new file ~40 LoC) |
+| `.claude/skills/compare-embedding-models/SKILL.md` | NEW. Per RFC 002 §6.2 frontmatter + body. Body inlined verbatim in §4.13.8 below for reviewer convenience. **Lands only after RFC 002 is approved and `.claude/skills/` directory is established** (round-2.5 boundary note — see §11 v4 amendment). | (see §4.13.8) |
+
+**Ordering constraint.** §4.13's skill file (`.claude/skills/compare-embedding-models/SKILL.md`) cannot land until RFC 002 (the `.claude/skills/` convention itself) has merged its scaffolding PR. Until then, M5 ships everything **except** the skill file; the skill body lives in §4.13.8 as a reviewable artefact and is copied verbatim into `.claude/skills/` by the M5 implementation PR (or a follow-up if RFC 002 hasn't landed by then). The orchestrator + harness extensions are independently usable via `npm run bench:compare` even without the skill.
+
+#### 4.13.8 Inlined SKILL.md body (target file: `.claude/skills/compare-embedding-models/SKILL.md`)
+
+Frontmatter and body match RFC 002 §6.2 schema exactly. Anchors target M5 files (which exist post-M5-implementation); placeholder anchors marked `(M5)` are bumped to actual line locations in the M5 implementation PR.
+
+```markdown
+---
+name: compare-embedding-models
+description: Run an apples-to-apples benchmark of two embedding models on a fixture or your KB and produce an HTML report covering cold-start indexing, warm-query latency, batch throughput, storage, and quality.
+keywords: [embeddings, benchmark, comparison, latency, throughput, models, html-report, selection]
+anchors:
+  - benchmarks/compare/run.ts::main                        # M5
+  - benchmarks/compare/render.ts::renderReport             # M5
+  - benchmarks/scenarios/batch-query.ts::runBatchQueryScenario  # M5
+  - benchmarks/scenarios/index-storage.ts::runIndexStorageScenario  # M5
+  - benchmarks/fixtures/generator.ts::generateLargeProfile # M5
+  - src/cli-models.ts::runAdd                              # RFC 013 M2
+  - src/cli-compare.ts::runCompare                         # RFC 013 M2
+  - src/cost-estimates.ts::COSTS                           # RFC 013 M2
+applies_to:
+  - claude-code
+  - claude-desktop
+  - codex-cli
+  - cursor
+  - continue
+  - cline
+last_verified: 2026-04-25  # bumped at M5 PR merge
+---
+
+## When to use
+
+- The user is choosing between two embedding models for a new knowledge base and wants concrete numbers (latency, cost, storage, quality) on **their hardware**, not a generic leaderboard.
+- The user has switched models in the past and wants to verify the trade-off was worth it.
+- The user is documenting a model choice for a team and needs an HTML artefact to attach to a decision record / RFC / PR.
+
+## Prerequisites
+
+- knowledge-base-mcp-server `0.3.x` installed (M0-M4 shipped; this skill needs `kb models {add, list}` from §4.4 of RFC 013).
+- Both models reachable: Ollama running locally (`OLLAMA_BASE_URL`) for ollama models; `HUGGINGFACE_API_KEY` set for HF models; `OPENAI_API_KEY` set for OpenAI models. The skill reads provider tokens from env per `src/config.ts`.
+- Disk space: ~50 MiB for the bundled large fixture (cached under `benchmarks/.cache/`) + ~10 MiB per model index (per §2.4 measurements).
+- For paid providers: estimated cost surfaced in the orchestrator preamble; non-zero requires `--yes` or interactive confirmation (`src/cli-models.ts:runAdd` flow, §4.4).
+
+## Steps
+
+1. **Identify model ids.** `kb models list` shows registered models with their `<provider>__<slug>` ids. If a target model is not yet registered, run `kb models add <provider> <model_name>` first (the skill's orchestrator can auto-register with `--yes`, but registering explicitly lets the user audit cost upfront).
+2. **Pick a fixture profile.**
+   - `--fixture=small` (~150 chunks) — sanity check, ~10 s; identical to CI baseline corpus.
+   - `--fixture=medium` (~800 chunks) — default; ~1 min on Ollama, ~30 s on HF/OpenAI.
+   - `--fixture=large` (~3000 chunks) — selection-grade; ~3-5 min cold-index per model.
+   - To benchmark on your **own** KB instead of a fixture, set `KNOWLEDGE_BASES_ROOT_DIR` to your KB and pass `--fixture=external` (the orchestrator reads from your real corpus; no copy is made).
+3. **Run the comparison:**
+   ```bash
+   npm run bench:compare -- \
+     --models=ollama__nomic-embed-text-latest,huggingface__BAAI-bge-small-en-v1.5 \
+     --fixture=large \
+     --concurrency=1,4,16
+   ```
+   First run with `--fixture=large` fetches the arxiv corpus (~2 min, network); subsequent runs read from `benchmarks/.cache/`.
+4. **Read the report.** Output path is printed at the end:
+   ```
+   Report: benchmarks/results/compare-ollama__nomic-…-vs-huggingface__BAAI-…-2026XXXX-HHMMSS.html
+   Open it: xdg-open <path>   # Linux
+            open <path>       # macOS
+   ```
+   The report is fully self-contained (inline CSS + SVG, no external assets). Attach it to a PR / Slack / decision record as-is.
+5. **Compare the recommendation panel against your priorities.** The panel picks a winner per axis (latency, throughput, cost, storage, recall). If your priorities are mixed, the panel says so explicitly — pick the model that wins your highest-weighted axis.
+6. **Optional: golden labels.** If you have a labelled query set (`{query: [doc_paths]}` JSON), pass `--golden=<path>` to enable recall@k + MRR in the report.
+
+## Verification
+
+After the run, the report file exists, opens in a browser, and the summary table has a non-empty row for both models:
+
+```bash
+test -s benchmarks/results/compare-*.html && \
+  grep -q 'cold_index_ms' benchmarks/results/compare-*.html && \
+  echo OK
+# expected: OK
+```
+
+For paranoid verification, the merged JSON next to the HTML has `scenarios.cold_index.chunks > 0` for both models.
+
+## Failure modes
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Model <id> not registered` | Either model not yet added | Run `kb models add <provider> <model>` first; rerun with `--skip-add`. Or pass `--yes` to auto-register inline (paid providers will spend money — read the cost preamble first). |
+| `OLLAMA_BASE_URL unreachable` | Ollama daemon not running | `ollama serve` in another terminal; verify with `curl $OLLAMA_BASE_URL/api/tags`. See `setup-ollama` skill. |
+| `HUGGINGFACE 429 — rate limited` (HF free tier) | Too many concurrent calls | Lower `--concurrency=1`; rerun. HF inference free tier throttles silently and surfaces as 429. |
+| `OPENAI 401` | API key missing or expired | Check `OPENAI_API_KEY`. See `setup-openai` skill. |
+| Cold index never finishes (large fixture, slow CPU) | `--fixture=large` exceeds maintainer time budget | Drop to `--fixture=medium`; ~3× faster. |
+| Report opens but charts are blank | Browser blocks inline SVG (rare — corporate browsers) | Pass `--no-charts` for a tables-only report. |
+| Cross-model Jaccard is `0.0` everywhere | Models return disjoint top-k (genuinely different embeddings) — or one model returned zero results | Check both models' `default_recall_at_10` in the summary; if one is `0`, that model failed retrieval (likely an empty index). Re-run `kb models add --refresh` for the empty model. |
+
+## See also
+
+- `setup-ollama` (sibling skill — install Ollama for the local model leg).
+- `setup-huggingface` (sibling — HF token + endpoint).
+- `setup-openai` (sibling — OpenAI key + cost-aware add).
+- `troubleshoot-mcp-unreachable` (sibling — if `kb models list` itself fails).
+- `add-knowledge-base` (sibling — set up your own KB to benchmark against).
+- RFC 013 §4.13 (this RFC) — full design rationale and orchestrator architecture.
+- RFC 011 — arxiv ingestion that supplies the bundled large fixture.
+```
+
+#### 4.13.9 Concurrency / safety in the orchestrator
+
+- **Per-model lock isolation (§4.6) is the load-bearing invariant.** The orchestrator runs cold-index for model A, then for model B, **never concurrently** — back-to-back avoids two large `kb models add` writers competing for CPU/network and confounding latency measurement. Warm-query and batch-query phases also run serially per model (one model at a time; concurrency parameter is *within* a model's batch, not *across* models).
+- **`--skip-add` reuses pre-registered models.** Cost-conscious operators run `kb models add` once, then iterate `bench:compare --skip-add` to tweak the report without re-spending tokens. The orchestrator validates both models exist via `isRegisteredModel` (§4.9) and refuses if one has `.adding` sentinel.
+- **`KNOWLEDGE_BASES_ROOT_DIR=external` mode does not write to the user's KB.** The orchestrator hashes the KB path + the two model ids to derive a temp `FAISS_INDEX_PATH=$TMPDIR/kb-bench-<hash>/`; both models register there; the user's real `${FAISS_INDEX_PATH}` is not touched. Cleanup hook removes the temp dir on success (preserves on failure for debugging).
+- **No MCP server interaction.** The orchestrator runs the CLI surface (`kb models add`, `kb search`) and the existing benchmark harness directly; it does not start `KnowledgeBaseServer`. This avoids the single-instance advisory contention with a user's running MCP.
+- **TTY / cost-prompt discipline matches §4.4.** Non-TTY without `--yes` errors fast for paid-provider models (round-1 failure F9 invariant unchanged).
+
+#### 4.13.10 Limits and what M5 deliberately does not include
+
+- **No statistical significance test.** The report shows raw p50/p95/p99 with run counts; the reader interprets. Adding a t-test / Mann-Whitney would require a full repetition design and is out of scope; the recommendation thresholds (25% / 30% / 40%) intentionally exceed normal jitter so single-run reports are usable.
+- **No multi-machine reporting.** The HTML is one machine, one moment. Comparing across hardware = run the orchestrator on each machine and diff the HTML manually.
+- **No 3+ model comparison.** Two-model is the canonical operator workflow ("am I switching from X to Y"); 3+ model is a `for` loop on top of `bench:compare` and a future enhancement.
+- **No live MCP tool to trigger this.** A `bench_compare` MCP tool was considered and rejected — embedding-model selection is a deliberate operator decision, not an in-session agent action; the cost of accidentally embedding 3000 chunks via OpenAI from an MCP call is too high.
+- **No CI integration for the comparison run.** CI runs the existing stub harness only; the comparison orchestrator is `workflow_dispatch` (maintainer-triggered, real providers). Same reason as today's split.
 
 ## 5. Cost & risk analysis
 
@@ -592,6 +858,7 @@ Quoted-rule constants are rough (CJK 2-3× more expensive than `bytes/4` suggest
 - **M1+M2 (0.3.0 minor — combined PR).** Layout, migration, `bootstrapLayout` split, `active-model.ts`, `kb models *`, `kb search --model=<id>`, `kb compare`. ~1100 LoC across 3 internal commits. CHANGELOG: "Changed (technically breaking): on-disk layout migrated."
 - **M3 (0.3.x minor).** MCP `list_models` + `model_name` arg.
 - **M4 (0.3.x patch).** Docs.
+- **M5 (0.3.x patch — benchmarking skill).** Operator-requested addition (2026-04-25). Extends `benchmarks/` with batch-query + index-storage scenarios, a multi-model orchestrator (`benchmarks/compare/run.ts`) that runs the harness twice and renders an HTML side-by-side report, and the bundled `--fixture=large` arxiv-abstract corpus (cached, not committed). Per RFC 002, the `.claude/skills/compare-embedding-models/SKILL.md` file lands in the same PR if RFC 002's `.claude/skills/` scaffolding has merged by then; otherwise the skill body (§4.13.8) waits and the orchestrator + harness ship standalone via `npm run bench:compare`. ~600 LoC + ~200-line HTML template + bundled `queries-default.txt`. Lands after M3. Independent of M0-M4 internals — only depends on the user-facing CLI surface (`kb models add`, `kb search --model=<id>`, `kb compare`, `kb models list`).
 
 Round-1 minimalist F9 + delivery F5: M1 alone is migration cost with no operator-visible benefit; combined with M2 the 0.3.0 release ships a usable feature, not just a layout shuffle.
 
@@ -664,6 +931,9 @@ If 0.3.0 breaks for you, see [§6.4 of RFC 013](./docs/rfcs/013-multimodel-suppo
 - `kb models {list, add, set-active, remove}` ...
 - `kb compare <query> <model_a> <model_b>` ...
 - ...
+
+### Added in 0.3.x (M5)
+- `npm run bench:compare -- --models=<id_a>,<id_b>` — runs the existing benchmark harness against two registered models back-to-back and emits a self-contained HTML report covering cold-start indexing, warm-query latency p50/p95/p99, batch throughput at multiple concurrencies, on-disk storage, and cross-model top-k agreement (Jaccard + Spearman). Bundled `--fixture=large` arxiv corpus fetched on first use (cached under `benchmarks/.cache/`, gitignored). Orchestrator + report are operator-runnable; the matching `.claude/skills/compare-embedding-models/SKILL.md` lands when the RFC 002 `.claude/skills/` scaffolding has merged. See RFC 013 §4.13.
 
 ### Changed (technically breaking)
 - On-disk layout migrated to per-model subtree.
@@ -782,6 +1052,7 @@ These do NOT block 013. They form the M5+ roadmap.
 - **OQ2.** `list_models` MCP tool surface storage size and last-refreshed timestamp? Probably yes; format (machine-readable in the JSON, human-readable in tool description) defer to M3 review.
 - **OQ7.** What concrete fields does `list_models`'s reserved `quality?: object` slot contain when the future eval RFC lands? Defer.
 - **OQ8.** Once MCP elicitation API is broadly supported across clients, ship `add_model` / `set_active_model` as elicitation-gated tools? Defer to a separate RFC.
+- **OQ9 (M5 — operator-decision required before M5 implementation).** Bundled large-fixture corpus source: (a) arxiv `cs.IR + cs.CL` 2020-2024 abstracts (~3000 docs, ~6 MB, CC-BY, technical English, leverages RFC 011 ingestion) — author's pick; (b) Wikipedia `wiki40b/en` 3000-article sample (~30 MB, general, well-known to ML reviewers, more topically diffuse — may mask model differences); (c) the repo's own `docs/` + RFCs (~15k lines, no licensing concerns, but tiny by 2030). All three are sha256-cached under `benchmarks/.cache/` (gitignored), generated deterministically. **Author proposal: arxiv (option a).** Operator confirmation needed before M5 PR opens; fallback acceptable if arxiv API rate limits prove painful in practice.
 
 ## 10. Empirical work — measured between rounds 1 and 2
 
@@ -926,3 +1197,32 @@ The §6.2 `prepublish-full.yml` gate is the next signal — if it catches a defe
 1. Approve M0 (lock-module split as 0.2.2 patch precursor) or fold back into M1+M2.
 2. OQ1, OQ2, OQ7, OQ8 — defer to M2/M3 PR review unless operator wants positions taken now.
 3. The `KB_PREPUBLISH_KNOWN_FLAKY` flake-exit lane — confirm the discipline (every use opens an issue) is acceptable, or veto it for stricter "no-flake-zero-tolerance".
+4. **(v4 addition)** OQ9 — bundled large-fixture source (arxiv abstracts vs Wikipedia subset vs repo's own docs).
+
+### v4 amendment — 2026-04-26 (operator scope addition)
+
+After v3 was opened as PR #101 and promoted ready-for-review, the operator requested an additional deliverable: a benchmarking skill that compares two embedding models on a fixture and emits an HTML report (G12, §4.13, M5). Captured here for the audit trail rather than back-revising prior rounds.
+
+**Why this is incremental, not architectural:**
+- The multi-model rails (M0-M4) are unchanged. M5 sits on top of the same `kb models add` / `kb search --model=<id>` / `kb compare` surface that M2 ships. No new lock semantics, no new on-disk layout, no new MCP tools.
+- The orchestrator extends the existing RFC 007 PR 0.1 benchmark harness (`benchmarks/{run.ts, scenarios/, fixtures/, types.ts}` already exist) rather than introducing a parallel system.
+- The skill file follows RFC 002's `.claude/skills/<slug>/SKILL.md` convention; if RFC 002's scaffolding hasn't merged when M5 lands, the orchestrator + harness ship standalone and the skill body (inlined verbatim in §4.13.8) drops in later as a one-file PR.
+
+**What this v4 amendment adds (full diff):**
+- §3.1: G12 (selection workflow goal).
+- §3.2: N10 (no MTEB-grade claims), N11 (no new `kb-bench` binary).
+- §4.9: M5 file table reference (full breakdown in §4.13.7).
+- §4.12: threat-model entry for `benchmarks/.cache/` (operator-owned build artefact, outside trust boundary; `--fixture=external` uses `$TMPDIR`, not `${FAISS_INDEX_PATH}`).
+- §4.13 (NEW, ~270 lines): full design — orchestrator surface (§4.13.2), phases (§4.13.3), fixture corpus (§4.13.4), HTML report layout (§4.13.5), recommendation rules (§4.13.6), file table (§4.13.7), inlined SKILL.md body (§4.13.8), concurrency invariants (§4.13.9), explicit non-goals for M5 (§4.13.10).
+- §6.1: M5 milestone.
+- §6.5: `### Added in 0.3.x (M5)` CHANGELOG block.
+- §9: OQ9 (fixture corpus source choice).
+- This amendment.
+
+**Why no new critic round:**
+- The addition is additive (new files only — no edits to M0-M4 modules; no on-disk format change; no MCP-tool change; no lock-semantic change).
+- §4.13.10 explicitly enumerates what M5 does NOT do (no statistical significance test, no 3+ model, no MCP `bench_compare` tool, no CI integration for the comparison run); these are the cuts that an `ambition-amplifier` vs `design-minimalist` adversarial pair would have produced anyway.
+- The two surfaces an external critic could meaningfully shape — the fixture corpus source and the recommendation thresholds — are already exposed as **OQ9** for operator decision and as documented constants in §4.13.6 for reviewer push-back.
+- Running a full Round 4 (5 critics × ~15 min each) for a self-contained additive deliverable is disproportionate. **If the operator disagrees, a focused Round 4 on §4.13 alone — `boundary-critic` (does it leak into M0-M4 internals?) + `failure-mode-analyst` (orchestrator crash mid-comparison? cache corruption? OOM on `--fixture=large`?) + `delivery-pragmatist` (will arxiv API rate-limit a CI flake? is the HTML reviewer-portable?) — is cheap and can land as a v5 amendment without re-revisiting M0-M4.**
+
+**No prior-round findings revisited.** All Round 1 / Round 2 / empirical-checkpoint conclusions stand unchanged.
