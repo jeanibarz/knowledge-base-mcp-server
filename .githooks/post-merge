@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Auto-rebuild after `git pull` / `git merge` so the linked global `kb` /
+# `knowledge-base-mcp-server` bins reflect the latest checkout.
+#
+# Enable once with:  npm run dev:setup
+# Manual enable:     git config core.hooksPath .githooks
+#
+# A symlink at .githooks/post-rewrite delegates here so `git pull --rebase`
+# (which fires post-rewrite, not post-merge) is also covered.
+
+set -uo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+# Don't fail the pull if the rebuild fails — git ignores post-merge exit codes
+# but the user sees the stderr and may think the pull broke. Turn an early
+# `set -e` exit into a clean warning instead.
+trap 'echo "[post-merge] WARNING: auto-rebuild failed (exit $?). Run \`npm install && npm run build\` manually." >&2; exit 0' ERR
+
+# ORIG_HEAD is unset on the first merge in a fresh clone, after `git gc`
+# pruning, or when invoked via post-rewrite without an ORIG_HEAD. Without this
+# guard, `git diff ORIG_HEAD HEAD` exits 128 with a noisy "fatal: bad
+# revision" message and we'd treat that as "files changed" and reinstall every
+# time. When we have no comparison point, just rebuild unconditionally — it's
+# the safe default.
+if ! git rev-parse --verify --quiet ORIG_HEAD >/dev/null; then
+  echo "[post-merge] no ORIG_HEAD — rebuilding unconditionally"
+  npm install
+  npm run build
+  echo "[post-merge] done — global bins now reflect $(git rev-parse --short HEAD)"
+  exit 0
+fi
+
+# Scope the install trigger to package.json only. Lockfile-only changes
+# (transitive bumps) get picked up by `npm install` during a future
+# package.json change or manual run; meanwhile we avoid regenerating the
+# lockfile and creating local drift on every dep-pin pull.
+if ! git diff --quiet ORIG_HEAD HEAD -- package.json; then
+  echo "[post-merge] package.json changed — running npm install"
+  npm install
+fi
+
+if git diff --quiet ORIG_HEAD HEAD -- src/ tsconfig.json package.json; then
+  echo "[post-merge] no source changes — skipping rebuild"
+  exit 0
+fi
+
+echo "[post-merge] rebuilding (kb / knowledge-base-mcp-server will pick up automatically)"
+npm run build
+echo "[post-merge] done — global bins now reflect $(git rev-parse --short HEAD)"
