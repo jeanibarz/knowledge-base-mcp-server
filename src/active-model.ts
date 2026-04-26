@@ -148,8 +148,9 @@ export interface RegisteredModel {
    * (`index → index.vN/`) AND the legacy `faiss.index/` directory present.
    * Downgrading the npm package would silently ignore embeddings added
    * since the upgrade. Surfaced by `kb models list` and the `list_models`
-   * MCP tool. Cleared automatically on next load when only one layout
-   * remains.
+   * MCP tool. Derived directly from filesystem state on every call (no
+   * marker file): operator interventions like `rm -rf faiss.index/` are
+   * reflected immediately on the next `kb models list`.
    */
   downgrade_hazard?: boolean;
 }
@@ -167,13 +168,7 @@ export async function listRegisteredModels(): Promise<RegisteredModel[]> {
     if (!(await isRegisteredModel(entry))) continue;
     const modelName = (await readStoredModelName(entry)) ?? entry;
     const { provider } = parseModelId(entry);
-    let downgradeHazard = false;
-    try {
-      await fsp.access(path.join(modelDir(entry), '.downgrade-hazard'));
-      downgradeHazard = true;
-    } catch {
-      // marker absent — no hazard
-    }
+    const downgradeHazard = await detectDowngradeHazard(modelDir(entry));
     models.push({
       model_id: entry,
       provider,
@@ -182,6 +177,29 @@ export async function listRegisteredModels(): Promise<RegisteredModel[]> {
     });
   }
   return models.sort((a, b) => a.model_id.localeCompare(b.model_id));
+}
+
+/**
+ * RFC 014 — derive the downgrade-hazard signal directly from on-disk
+ * layout: hazard exists iff the model has BOTH the versioned `index`
+ * symlink AND the legacy `faiss.index/` directory. No marker file: the
+ * filesystem is the single source of truth, and stale state can't drift.
+ */
+async function detectDowngradeHazard(dir: string): Promise<boolean> {
+  let hasVersioned = false;
+  try {
+    const st = await fsp.lstat(path.join(dir, 'index'));
+    hasVersioned = st.isSymbolicLink();
+  } catch {
+    // index symlink absent — versioned layout not present yet
+  }
+  if (!hasVersioned) return false;
+  try {
+    await fsp.access(path.join(dir, 'faiss.index'));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

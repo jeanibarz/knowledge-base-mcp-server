@@ -402,7 +402,7 @@ describe('RFC 014 atomic save — lazy migration (legacy load + first save creat
   });
 });
 
-describe('RFC 014 atomic save — downgrade-hazard surfacing', () => {
+describe('RFC 014 atomic save — downgrade-hazard surfacing (filesystem-derived)', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
@@ -414,40 +414,70 @@ describe('RFC 014 atomic save — downgrade-hazard surfacing', () => {
     await fsp.rm(tmpDir, { recursive: true, force: true });
   });
 
-  test('marker file is written when both versioned + legacy coexist, cleared when legacy removed', async () => {
+  test('listRegisteredModels reports downgrade_hazard iff both versioned and legacy layouts coexist', async () => {
     const modelDir = modelDirIn(tmpDir);
     await fsp.mkdir(modelDir, { recursive: true });
+    // model_name.txt is required for isRegisteredModel to return true.
+    await fsp.writeFile(path.join(modelDir, 'model_name.txt'), 'BAAI/bge-small-en-v1.5');
 
-    // Build both layouts.
-    const legacyDir = path.join(modelDir, 'faiss.index');
-    await fsp.mkdir(legacyDir);
-    await fsp.writeFile(path.join(legacyDir, 'faiss.index'), 'gen=99\n');
-    await fsp.writeFile(path.join(legacyDir, 'docstore.json'), 'gen=99\n');
+    process.env.NODE_ENV = 'test';
+    process.env.FAISS_INDEX_PATH = tmpDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_MODEL_NAME = 'BAAI/bge-small-en-v1.5';
+    process.env.HUGGINGFACE_API_KEY = 'test-stub';
+    jest.resetModules();
+    const { listRegisteredModels } = await import('./active-model.js');
 
+    // 1. Versioned-only — no hazard.
     const v0 = path.join(modelDir, 'index.v0');
     await fsp.mkdir(v0);
     await fsp.writeFile(path.join(v0, 'faiss.index'), 'gen=1\n');
     await fsp.writeFile(path.join(v0, 'docstore.json'), 'gen=1\n');
     await fsp.symlink('index.v0', path.join(modelDir, 'index'));
 
-    const mgr = await makeManager(tmpDir);
-    await (mgr as any).loadAtomic();
+    let models = await listRegisteredModels();
+    expect(models).toHaveLength(1);
+    expect(models[0].downgrade_hazard).toBeUndefined();
 
-    // Marker file written.
-    const marker = path.join(modelDir, '.downgrade-hazard');
-    expect(await fsp.access(marker).then(() => true)).toBe(true);
+    // 2. Add legacy → hazard appears immediately, no marker file required.
+    const legacyDir = path.join(modelDir, 'faiss.index');
+    await fsp.mkdir(legacyDir);
+    await fsp.writeFile(path.join(legacyDir, 'faiss.index'), 'gen=99\n');
+    await fsp.writeFile(path.join(legacyDir, 'docstore.json'), 'gen=99\n');
 
-    // Now remove legacy and re-load — marker should be cleared.
+    models = await listRegisteredModels();
+    expect(models[0].downgrade_hazard).toBe(true);
+
+    // 3. Remove legacy → hazard clears immediately on next call.
     await fsp.rm(legacyDir, { recursive: true, force: true });
-    await (mgr as any).loadAtomic();
+    models = await listRegisteredModels();
+    expect(models[0].downgrade_hazard).toBeUndefined();
 
-    let stillThere = false;
-    try {
-      await fsp.access(marker);
-      stillThere = true;
-    } catch {
-      // expected — marker cleared
-    }
-    expect(stillThere).toBe(false);
+    // 4. No marker file is created at any step — fs is the only source of truth.
+    await expect(
+      fsp.access(path.join(modelDir, '.downgrade-hazard')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('legacy-only layout is NOT a hazard (no versioned layout means no hidden data)', async () => {
+    const modelDir = modelDirIn(tmpDir);
+    await fsp.mkdir(modelDir, { recursive: true });
+    await fsp.writeFile(path.join(modelDir, 'model_name.txt'), 'BAAI/bge-small-en-v1.5');
+    const legacyDir = path.join(modelDir, 'faiss.index');
+    await fsp.mkdir(legacyDir);
+    await fsp.writeFile(path.join(legacyDir, 'faiss.index'), 'gen=42\n');
+    await fsp.writeFile(path.join(legacyDir, 'docstore.json'), 'gen=42\n');
+
+    process.env.NODE_ENV = 'test';
+    process.env.FAISS_INDEX_PATH = tmpDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_MODEL_NAME = 'BAAI/bge-small-en-v1.5';
+    process.env.HUGGINGFACE_API_KEY = 'test-stub';
+    jest.resetModules();
+    const { listRegisteredModels } = await import('./active-model.js');
+
+    const models = await listRegisteredModels();
+    expect(models).toHaveLength(1);
+    expect(models[0].downgrade_hazard).toBeUndefined();
   });
 });

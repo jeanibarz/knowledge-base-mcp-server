@@ -73,7 +73,6 @@ async function writeModelNameAtomic(modelNameFile: string, modelName: string): P
 const VERSION_DIR_PATTERN = /^index\.v(\d+)$/;
 const SYMLINK_NAME = 'index';
 const LEGACY_INDEX_NAME = 'faiss.index';
-const DOWNGRADE_HAZARD_MARKER = '.downgrade-hazard';
 
 /** Read the symlink target if `p` is a symlink; otherwise null. */
 async function readSymlinkOrNull(p: string): Promise<string | null> {
@@ -660,14 +659,15 @@ export class FaissIndexManager {
    * against an absolute path with no symlink in it — both opens hit the same
    * pinned version even if a writer atomically swaps the symlink in between.
    *
-   * Side effect: writes / clears `${modelDir}/.downgrade-hazard` based on
-   * coexistence of versioned + legacy layouts, and emits a one-time warn
-   * when the hazard is present.
+   * Side effect: emits a one-time `logger.warn` when both versioned and
+   * legacy layouts coexist (the downgrade hazard). The hazard signal is
+   * derived directly from on-disk state by `kb models list` and
+   * `list_models` (active-model.ts:detectDowngradeHazard), so no marker
+   * file is required — the filesystem is the single source of truth.
    */
   private async loadAtomic(): Promise<FaissStore | null> {
     const symlinkPath = path.join(this.modelDir, SYMLINK_NAME);
     const legacyPath = path.join(this.modelDir, LEGACY_INDEX_NAME);
-    const hazardMarker = path.join(this.modelDir, DOWNGRADE_HAZARD_MARKER);
 
     // lstat (NOT stat) — detects symlink presence without following it.
     const symStat = await fsp.lstat(symlinkPath).catch((err) => {
@@ -717,21 +717,13 @@ export class FaissIndexManager {
         } catch (unlinkErr) {
           handleFsOperationError('delete corrupt index symlink', symlinkPath, unlinkErr);
         }
-        // Best-effort clear marker — versioned layout is gone, hazard no
-        // longer applies in its prior form.
-        await fsp.rm(hazardMarker, { force: true }).catch(() => undefined);
         return null;
       }
 
-      // Hazard surface: both layouts coexist → write marker + warn once.
+      // Hazard signal: both layouts coexist → warn the operator once.
+      // `kb models list` independently re-derives this from filesystem
+      // state, so live `kb` invocations always reflect the truth.
       if (await pathExists(legacyPath)) {
-        await fsp
-          .writeFile(
-            hazardMarker,
-            `${new Date().toISOString()}\nlegacy faiss.index/ coexists with versioned ${path.basename(resolved)}\n`,
-            'utf-8',
-          )
-          .catch(() => undefined);
         logger.warn(
           `model ${this.modelId} has both versioned (${path.basename(resolved)}) and legacy ` +
             `(faiss.index/) layouts present. Downgrading the npm package will silently ignore ` +
@@ -739,18 +731,11 @@ export class FaissIndexManager {
             `layout. To reclaim disk and remove the hazard once you're confident in the new ` +
             `layout: \`rm -rf "${legacyPath}"\`.`,
         );
-      } else {
-        // Hazard cleared (legacy was removed by operator). Best-effort clean.
-        await fsp.rm(hazardMarker, { force: true }).catch(() => undefined);
       }
 
       return store;
     }
 
-    // No versioned layout — clear any stale hazard marker before any
-    // legacy fallback or null return. The marker only makes sense when
-    // both layouts coexist, which requires the symlink branch above.
-    await fsp.rm(hazardMarker, { force: true }).catch(() => undefined);
 
     // Legacy path — pre-RFC-014 layout. Read directly. The torn-read hazard
     // described in the threat model still applies HERE until the first
