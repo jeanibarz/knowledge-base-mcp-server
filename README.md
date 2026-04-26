@@ -204,6 +204,47 @@ Use this path if you want to develop against the repo or pin an unreleased commi
 *   The content of each chunk is then added to a FAISS index, which is used for similarity search.
 *   The FAISS index is automatically initialized when the server starts. It checks for changes in the knowledge base files and updates the index accordingly.
 
+### Install (local development, live `kb` from your checkout)
+
+Use this when you're actively developing on the repo and want your global `kb` and `knowledge-base-mcp-server` bins to always reflect the current state of `main` (or your feature branch) — without `npm publish` and without manual reinstalls after each `git pull`.
+
+```bash
+git clone https://github.com/jeanibarz/knowledge-base-mcp-server.git
+cd knowledge-base-mcp-server
+npm run dev:setup
+```
+
+`dev:setup` does three things, all idempotent:
+
+1.  **`npm install` + `npm run build`** — first build, so the bins exist before linking.
+2.  **`npm link`** — symlinks `kb` and `knowledge-base-mcp-server` into the global node prefix (printed during setup so you can verify it lands where you expect). From then on, every `npm run build` overwrites `build/` in place and the global bins pick up the new code on the next invocation. **No re-link needed** after rebuilds.
+3.  **`git config core.hooksPath .githooks`** — points git at the tracked [`.githooks/`](./.githooks) directory so the `post-merge` and `post-rewrite` hooks fire after every `git pull` (merge or rebase) and `git merge`. The hook re-runs `npm install` if `package.json` changed and `npm run build` if any source changed. Skips quietly when nothing relevant moved. The hook order puts this **last**, so a failed install/build leaves the repo in its original state.
+
+After setup, the daily loop is just:
+
+```bash
+git pull            # hook rebuilds automatically (merge or rebase)
+kb search "..."     # uses the freshly-built bin from this checkout
+```
+
+Or, when editing locally:
+
+```bash
+# edit src/...
+npm run build       # global `kb` immediately reflects your change
+```
+
+**Switching back to the published npm release** (e.g. to compare behaviour):
+
+```bash
+npm unlink -g @jeanibarz/knowledge-base-mcp-server
+npm install -g @jeanibarz/knowledge-base-mcp-server@latest
+```
+
+**Why `npm link` instead of `npm install -g .`?** `npm link` is a symlink, so `npm run build` is reflected without reinstalling. `npm install -g .` copies the build snapshot, so every change requires a re-install.
+
+**Hook scope.** The hooks trigger on `git pull` / `git merge` / `git pull --rebase`, not on `git checkout` between branches. Run `npm run build` manually after a branch switch if needed. If a rebuild fails, the hook prints a warning and exits 0 so the pull itself isn't reported as failed — fix the build, then run `npm run build` manually.
+
 ## Usage
 
 The server exposes two tools:

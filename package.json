@@ -19,7 +19,8 @@
     "bench:compare": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/compare/run.js",
     "test": "jest --runInBand",
     "start": "node build/index.js",
-    "dev": "nodemon src/index.ts"
+    "dev": "nodemon src/index.ts",
+    "dev:setup": "bash scripts/dev-setup.sh"
   },
   "repository": {
     "type": "git",
