@@ -114,7 +114,7 @@ RFC 012 §4.7 (model-mismatch check) and §4.8.2 (write lock) **assume one model
 - **N1.** Cross-model retrieval fusion (RRF, ensemble re-ranking). The user can query each model and `kb compare` externally; fusion is its own design space.
 - **N2.** Re-embedding optimisation (incremental, batch-resumable). `kb models add` reuses the existing per-file SHA256 sidecar logic at `src/FaissIndexManager.ts:528-589`; if it crashes, the next call resumes.
 - **N3.** Per-KB model selection. Out of scope here; would require a per-KB config file. Round-1 ambition F2 pushed back; deferred to **a future RFC seed in §8.9** rather than buried.
-- **N4.** Atomic `FaissStore.save()`. RFC 012 N7 already deferred this; per-model isolation narrows the blast radius (a save mid-write only affects readers of that one model). Tracked separately.
+- **N4.** ~~Atomic `FaissStore.save()`. RFC 012 N7 already deferred this; per-model isolation narrows the blast radius (a save mid-write only affects readers of that one model). Tracked separately.~~ **Lifted by [RFC 014](./014-atomic-faiss-save.md)** — versioned-dir layout with symlink swap and reader-side pre-resolution makes save+load directory-atomic for the versioned layout.
 - **N5.** Removing the existing `EMBEDDING_PROVIDER`/`OLLAMA_MODEL`/etc. env vars. They keep their meaning ("default model when nothing else is specified"). `KB_ACTIVE_MODEL` overrides; `active.txt` is the persisted default.
 - **N6.** GUI / dashboard. Pure CLI + MCP surface.
 - **N7.** Quantized index types (`IndexIVFPQ`). Storage isn't the binding constraint per §2.4. Tracked separately if it ever is.

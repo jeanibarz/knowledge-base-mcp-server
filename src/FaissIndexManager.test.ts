@@ -11,6 +11,11 @@ function modelDirIn(faissPath: string): string {
 function modelIndexPathIn(faissPath: string): string {
   return path.join(modelDirIn(faissPath), 'faiss.index');
 }
+// RFC 014 — atomic save writes to versioned dirs (index.vN/) and swaps a
+// symlink. First save under v014 always lands at index.v0.
+function versionedIndexPathIn(faissPath: string, version = 'v0'): string {
+  return path.join(modelDirIn(faissPath), `index.${version}`);
+}
 function modelNameFileIn(faissPath: string): string {
   return path.join(modelDirIn(faissPath), 'model_name.txt');
 }
@@ -241,11 +246,12 @@ describe('FaissIndexManager permission handling', () => {
     await manager.initialize();
 
     await expect(manager.updateIndex()).rejects.toThrow(/Permission denied/);
-    expect(saveMock).toHaveBeenCalledWith(modelIndexPathIn(process.env.FAISS_INDEX_PATH!));
+    // RFC 014 — first save under v014 writes to index.v0/ via atomicSave.
+    expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!));
 
     await new Promise((resolve) => setImmediate(resolve));
     const logContents = await fsp.readFile(logFile, 'utf-8');
-    expect(logContents).toContain('Permission denied while attempting to save FAISS index at');
+    expect(logContents).toContain('Permission denied while attempting to save FAISS index for model');
   });
 
   it('saves the FAISS index exactly once per updateIndex call when multiple files change', async () => {
@@ -273,7 +279,8 @@ describe('FaissIndexManager permission handling', () => {
     await manager.updateIndex();
 
     expect(saveMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).toHaveBeenCalledWith(modelIndexPathIn(process.env.FAISS_INDEX_PATH!));
+    // RFC 014 — first save under v014 writes to index.v0/ via atomicSave.
+    expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!));
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
     expect(addDocumentsMock).toHaveBeenCalledTimes(fileCount - 1);
 
@@ -364,11 +371,23 @@ describe('FaissIndexManager permission handling', () => {
       sidecarSnapshots.push({ path: sidecarPath, content });
     }
 
-    // The mocked FaissStore.save never writes faiss.index, so a fresh manager
-    // will see it missing on disk — exactly the state the fallback branch is
-    // meant to recover from. Assert that precondition explicitly.
+    // The mocked FaissStore.save never writes any data files, but RFC 014's
+    // atomicSave creates a real `index` symlink + versioned dir during the
+    // first pass — even with a mocked store. Wipe both layouts now to
+    // recreate the "no on-disk index" condition the rebuild branch is
+    // meant to recover from. (Pre-RFC-014 the mock save was a complete
+    // no-op so this cleanup wasn't needed; post-RFC-014 the symlink
+    // creation is real.)
+    const modelDirPath = modelDirIn(process.env.FAISS_INDEX_PATH!);
+    for (const entry of await fsp.readdir(modelDirPath)) {
+      if (entry === 'model_name.txt') continue;
+      await fsp.rm(path.join(modelDirPath, entry), { recursive: true, force: true });
+    }
     await expect(
       fsp.stat(modelIndexPathIn(process.env.FAISS_INDEX_PATH!))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(
+      fsp.lstat(path.join(modelDirIn(process.env.FAISS_INDEX_PATH!), 'index'))
     ).rejects.toMatchObject({ code: 'ENOENT' });
 
     // Reset mocks so the fallback-branch call counts are isolated.
@@ -390,7 +409,8 @@ describe('FaissIndexManager permission handling', () => {
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
     expect(addDocumentsMock).not.toHaveBeenCalled();
     expect(saveMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).toHaveBeenCalledWith(modelIndexPathIn(process.env.FAISS_INDEX_PATH!));
+    // RFC 014 — first save under v014 writes to index.v0/ via atomicSave.
+    expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!));
 
     // fromTexts must receive documents from every file at once. With content
     // well under the 1000-char chunkSize, each file produces exactly one chunk,
@@ -448,9 +468,10 @@ describe('FaissIndexManager permission handling', () => {
     // End-to-end: the next updateIndex must actually rebuild via fromTexts,
     // not just observe a null faissIndex. This proves the corrupt-recovery
     // path hands off correctly to the existing rebuild branch.
+    // RFC 014 — rebuild now saves to index.v0/, not the legacy faiss.index/.
     await manager.updateIndex();
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).toHaveBeenCalledWith(indexFilePath);
+    expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(faissDir));
   });
 
   it('surfaces a permission error when the corrupt FAISS index cannot be unlinked', async () => {
@@ -531,9 +552,10 @@ describe('FaissIndexManager permission handling', () => {
     await expect(fsp.stat(indexFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
 
     // End-to-end: rebuild branch hands off correctly.
+    // RFC 014 — rebuild now saves to index.v0/, not the legacy faiss.index/.
     await manager.updateIndex();
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).toHaveBeenCalledWith(indexFilePath);
+    expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(faissDir));
   });
 
   it('migrates 0.2.x layout into models/<id>/ on bootstrapLayout (RFC 013 §4.8)', async () => {
@@ -886,8 +908,15 @@ describe('FaissIndexManager chunk metadata (RFC 010 M1)', () => {
       await first.updateIndex();
     }
 
-    // Precondition: faiss.index is not on disk (the mocked save never writes
-    // it), so a fresh manager will take the fallback rebuild branch.
+    // Precondition: no on-disk index, so a fresh manager will take the
+    // fallback rebuild branch. RFC 014 — the mocked save never writes the
+    // staging dir, but atomicSave creates a real `index` symlink anyway.
+    // Wipe both layouts to recreate the "no on-disk index" condition.
+    const _modelDirA = modelDirIn(process.env.FAISS_INDEX_PATH!);
+    for (const entry of await fsp.readdir(_modelDirA)) {
+      if (entry === 'model_name.txt') continue;
+      await fsp.rm(path.join(_modelDirA, entry), { recursive: true, force: true });
+    }
     await expect(
       fsp.stat(modelIndexPathIn(process.env.FAISS_INDEX_PATH!))
     ).rejects.toMatchObject({ code: 'ENOENT' });
@@ -1240,8 +1269,15 @@ describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
       await first.updateIndex();
     }
 
-    // Precondition: faiss.index is not on disk (mocked save never writes),
-    // so a fresh manager takes the fallback rebuild branch (line 375).
+    // Precondition: no on-disk index, so a fresh manager takes the fallback
+    // rebuild branch. RFC 014 — the mocked save never writes the staging
+    // dir, but atomicSave creates a real `index` symlink anyway. Wipe both
+    // layouts to recreate the "no on-disk index" condition.
+    const _modelDirB = modelDirIn(process.env.FAISS_INDEX_PATH!);
+    for (const entry of await fsp.readdir(_modelDirB)) {
+      if (entry === 'model_name.txt') continue;
+      await fsp.rm(path.join(_modelDirB, entry), { recursive: true, force: true });
+    }
     await expect(
       fsp.stat(modelIndexPathIn(process.env.FAISS_INDEX_PATH!)),
     ).rejects.toMatchObject({ code: 'ENOENT' });

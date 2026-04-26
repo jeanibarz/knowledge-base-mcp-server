@@ -42,10 +42,48 @@ export function modelDir(modelId: string): string {
 }
 
 export function faissIndexBinaryPath(modelId: string): string {
-  // The inner binary file inside `${PATH}/models/<id>/faiss.index/` — used
-  // for staleness mtime detection (round-3 of RFC 012 §4.10 — directory
-  // mtime doesn't update on file overwrites).
+  // The inner binary file inside `${PATH}/models/<id>/faiss.index/` — legacy
+  // pre-RFC-014 layout. Used for staleness mtime detection on models that
+  // have not yet been written under v014. New consumers should prefer
+  // `resolveFaissIndexBinaryPath` which handles both layouts.
   return path.join(modelDir(modelId), 'faiss.index', 'faiss.index');
+}
+
+/**
+ * RFC 014 — return the path to the FAISS binary file for staleness checks,
+ * preferring the versioned layout (`index → index.vN/faiss.index`) when
+ * present and falling back to the legacy path. Returns null if neither
+ * layout has data.
+ *
+ * Async because we follow the symlink with `realpath` to get a stable path
+ * (the returned string is what `fs.stat` should target). A concurrent symlink
+ * swap after this call returns is harmless — the caller stat's a path that
+ * was valid at resolve time.
+ */
+export async function resolveFaissIndexBinaryPath(modelId: string): Promise<string | null> {
+  const dir = modelDir(modelId);
+  const symlinkPath = path.join(dir, 'index');
+  // lstat-guard before realpath: if `index` exists as something OTHER than a
+  // symlink (operator surgery — replaced symlink with a regular file or
+  // directory), realpath would still return its absolute path but the
+  // returned faiss.index inside it likely doesn't exist. Fall back to
+  // legacy in that case rather than returning a doomed path.
+  try {
+    const st = await fsp.lstat(symlinkPath);
+    if (st.isSymbolicLink()) {
+      const resolved = await fsp.realpath(symlinkPath);
+      return path.join(resolved, 'faiss.index');
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  const legacy = path.join(dir, 'faiss.index', 'faiss.index');
+  try {
+    await fsp.access(legacy);
+    return legacy;
+  } catch {
+    return null;
+  }
 }
 
 export function modelNameFilePath(modelId: string): string {
@@ -105,6 +143,15 @@ export interface RegisteredModel {
   model_id: string;
   provider: string;
   model_name: string;
+  /**
+   * RFC 014 — true when this model has both the new versioned layout
+   * (`index → index.vN/`) AND the legacy `faiss.index/` directory present.
+   * Downgrading the npm package would silently ignore embeddings added
+   * since the upgrade. Surfaced by `kb models list` and the `list_models`
+   * MCP tool. Cleared automatically on next load when only one layout
+   * remains.
+   */
+  downgrade_hazard?: boolean;
 }
 
 export async function listRegisteredModels(): Promise<RegisteredModel[]> {
@@ -120,7 +167,19 @@ export async function listRegisteredModels(): Promise<RegisteredModel[]> {
     if (!(await isRegisteredModel(entry))) continue;
     const modelName = (await readStoredModelName(entry)) ?? entry;
     const { provider } = parseModelId(entry);
-    models.push({ model_id: entry, provider, model_name: modelName });
+    let downgradeHazard = false;
+    try {
+      await fsp.access(path.join(modelDir(entry), '.downgrade-hazard'));
+      downgradeHazard = true;
+    } catch {
+      // marker absent — no hazard
+    }
+    models.push({
+      model_id: entry,
+      provider,
+      model_name: modelName,
+      ...(downgradeHazard ? { downgrade_hazard: true } : {}),
+    });
   }
   return models.sort((a, b) => a.model_id.localeCompare(b.model_id));
 }

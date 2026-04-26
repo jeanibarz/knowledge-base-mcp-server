@@ -17,6 +17,7 @@ import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,
   faissIndexBinaryPath,
+  resolveFaissIndexBinaryPath,
   isRegisteredModel,
   listRegisteredModels,
   modelDir,
@@ -297,8 +298,17 @@ async function runModelsList(): Promise<number> {
   const idWidth = Math.max(8, ...models.map((m) => m.model_id.length));
   for (const m of models) {
     const marker = m.model_id === activeId ? '*' : ' ';
+    const hazard = m.downgrade_hazard ? '  [downgrade-hazard]' : '';
     process.stdout.write(
-      `${marker} ${m.model_id.padEnd(idWidth)}  ${m.provider.padEnd(11)}  ${m.model_name}\n`,
+      `${marker} ${m.model_id.padEnd(idWidth)}  ${m.provider.padEnd(11)}  ${m.model_name}${hazard}\n`,
+    );
+  }
+  if (models.some((m) => m.downgrade_hazard)) {
+    process.stdout.write(
+      `\n[downgrade-hazard] models have BOTH the RFC-014 versioned layout and the legacy\n` +
+        `faiss.index/ directory. Downgrading will silently ignore any embeddings added\n` +
+        `since the upgrade. Run \`rm -rf \${FAISS_INDEX_PATH}/models/<id>/faiss.index\` to\n` +
+        `reclaim disk and clear the hazard once you're confident in the new layout.\n`,
     );
   }
   return 0;
@@ -762,8 +772,12 @@ interface Staleness {
 
 async function computeStaleness(modelId: string): Promise<Staleness> {
   // Index mtime — target the inner binary file (NOT the directory; round-3
-  // mtime correction).
-  const binaryPath = faissIndexBinaryPath(modelId);
+  // mtime correction). RFC 014: prefer the versioned layout if present,
+  // fall back to the legacy faiss.index/.
+  const binaryPath = await resolveFaissIndexBinaryPath(modelId);
+  if (binaryPath === null) {
+    return { indexMtime: null, modifiedFiles: 0, newFiles: 0 };
+  }
   let indexStat;
   try {
     indexStat = await fsp.stat(binaryPath);
@@ -839,13 +853,21 @@ function formatFreshnessFooter(s: Staleness, refreshed: boolean): string {
   );
 }
 
-// ----- JSON-parse retry (RFC §7 N4 mitigation) -------------------------------
+// ----- JSON-parse retry (pre-RFC-014 defensive belt) -------------------------
 
 async function loadWithJsonRetry(manager: FaissIndexManager): Promise<void> {
-  // FaissStore.save is non-atomic (mkdir-p + parallel writes of faiss.index +
-  // docstore.json, no rename). A concurrent CLI read can land mid-write and
-  // see partial JSON. Retry once after 100 ms; if the second attempt also
-  // fails with a SyntaxError, surface the documented "index appears mid-write"
+  // Pre-RFC-014 defensive belt for the LEGACY `faiss.index/` load path only.
+  // The versioned `index → index.vN/` layout (RFC 014) pre-resolves the
+  // symlink before any file open, so torn JSON is structurally impossible
+  // there. Legacy reads still go through `FaissStore.load(legacyPath)`
+  // directly and CAN race with a concurrent legacy writer (extremely rare
+  // since v014 code never writes to the legacy path). Slated for removal
+  // in the same follow-up PR that drops the single-instance advisory,
+  // after the legacy-cleanup task confirms no remaining users on legacy
+  // layout.
+  //
+  // Retry once after 100 ms; if the second attempt also fails with a
+  // SyntaxError, surface the documented "index appears mid-write"
   // message so the operator knows to retry.
   const isJsonParseError = (err: unknown): boolean =>
     err instanceof SyntaxError ||

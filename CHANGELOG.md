@@ -1,6 +1,29 @@
 # Changelog
 
-## [Unreleased] — RFC 013 M5 (bench:compare)
+## [Unreleased] — RFC 014 (atomic FAISS save)
+
+### Added
+
+- **Atomic FAISS save** (RFC 014). New per-model on-disk layout: `${FAISS_INDEX_PATH}/models/<id>/index → index.vN/` symlink swapped atomically via POSIX `rename(2)`. Save+load are now directory-atomic for the versioned layout: a reader and writer running concurrently against the same model can never observe a torn `(faiss.index, docstore.json)` pair or a docid mismatch. Implements RFC 013 §11 N4 (lifted).
+- **Reader-side pre-resolve.** `loadAtomic` calls `realpath` ONCE on the symlink before delegating to `FaissStore.load(resolvedAbsolutePath)`, which prevents the docid-mismatch race introduced by `@langchain/community`'s internal `Promise.all([open(faiss.index), open(docstore.json)])` (each open would otherwise re-resolve the symlink independently).
+- **Downgrade-hazard surfacing.** When both the new versioned layout AND the legacy `faiss.index/` directory coexist for a model, a `.downgrade-hazard` marker file is written, a `logger.warn` is emitted at `initialize`, and `kb models list` prints `[downgrade-hazard]` next to the model id with an explainer footer. Bounds the silent-data-loss blast radius if a user downgrades after embedding new content under v014.
+- **`resolveFaissIndexBinaryPath(modelId)`** in `src/active-model.ts` — resolves the FAISS binary path through the new versioned layout when present, falls back to the legacy path. Used by `kb search`'s staleness/freshness footer (`computeStaleness`).
+
+### Changed
+
+- **No migration step.** The new layout is purely additive — existing installs keep `faiss.index/` untouched. The first save under v014 creates `index.v0/` and the `index` symlink. Downgrading the npm package falls back to the legacy directory (with any post-upgrade embeddings unreachable until re-saved under the older version, surfaced via the downgrade-hazard signal).
+- **Disk usage temporarily ~2x per model** (legacy + new versioned dirs) until you remove `faiss.index/` manually. A future `kb models migrate` CLI (planned) will wrap this. Today: `rm -rf "${FAISS_INDEX_PATH}/models/<id>/faiss.index"` after confirming the new layout works.
+- **GC retention is N=3 versions.** Saves keep `index.vN/`, `index.vN-1/`, `index.vN-2/`; older versioned dirs are removed best-effort during the same write-lock that performs the save.
+- **`loadWithJsonRetry` (CLI)** is retained as a defensive belt for legacy-layout reads only — its inline comment is updated to name which path it still defends. Will be removed in a follow-up release once the legacy load path is dropped.
+- **`docs/architecture/threat-model.md §4`** — updated to describe the post-RFC-014 invariant. The single-MCP-instance enforcement (`src/instance-lock.ts`) is now an operational preference rather than a data-integrity requirement; its removal is the immediate follow-up release.
+
+### Compatibility
+
+- **Power-cut durability is unchanged from prior releases** — atomicity is guaranteed by `rename(2)`, durability is best-effort across the codebase (no fsync on hash sidecars or anywhere else; matches existing repo policy). A power-cut may lose the most recent save (the symlink reverts to the prior version, the staging dir is cleaned up by the next save's EEXIST recovery); no half-written state is ever observed by readers.
+- **Linux + macOS only** — symlinks on Windows require admin/dev mode and are not in the existing CI matrix.
+- **Backup tools may double-count** `faiss.index/` and `index.vN/` until the legacy directory is removed.
+
+## [Unreleased — earlier] — RFC 013 M5 (bench:compare)
 
 ### Fixed
 

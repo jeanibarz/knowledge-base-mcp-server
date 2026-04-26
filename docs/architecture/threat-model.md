@@ -60,9 +60,9 @@ Query text and knowledge-base chunks leave the machine over TLS to the configure
 
 **Migration coordination** (RFC 013 §4.8). `FaissIndexManager.bootstrapLayout` runs the 0.2.x→0.3.0 migration at most once per Node process (module-level Promise cache). Cross-process: piggybacks on the instance advisory if held, else acquires a short-lived `${FAISS_INDEX_PATH}/.kb-migration.lock` for CLI invocations to coordinate with peers.
 
-**Current requirement.** Still **one MCP server** per `$FAISS_INDEX_PATH`. Multiple `kb` CLI invocations against the same path are safe — they coordinate via the per-model write lock. Users deploying under systemd / pm2 / Kubernetes still need to keep MCP-server replicas at 1 per `FAISS_INDEX_PATH` or give each replica its own.
+**Atomic save** (RFC 014, landed in 0.x.y). New per-model layout `index → index.vN/` makes save+load directory-atomic via symlink-swap with reader-side pre-resolution. Torn reads are eliminated for the versioned layout. The legacy `faiss.index/` load path retains the prior hazard until and unless a write under v014 (`updateIndex`, `kb search --refresh`, or `kb models add`) creates the versioned layout for that model. Single-instance advisory is now an operational preference (not a safety requirement) and will be removed in the next release. `loadWithJsonRetry` (CLI) is retained for one release as a defensive belt for legacy-layout reads only.
 
-**Known limitation.** `FaissStore.save()` from `@langchain/community` is non-atomic (`mkdir -p + Promise.all([index.write, writeFile(docstore.json)])`, no rename). A read concurrent with a save can see partial `docstore.json`; the CLI's `loadWithJsonRetry` handles this with a 100 ms retry. Documented in RFC 012 §7 N4. Per-model isolation in 0.3.0 narrows the blast radius (only that one model's reads can race).
+**Current operational guideline (post-RFC-014).** With atomic save in place, multiple MCP servers per `$FAISS_INDEX_PATH` are now safe at the data-integrity layer for the versioned layout — they serialize writes via the per-model lock and never produce torn reads. The `src/instance-lock.ts` advisory still rejects a second concurrent MCP, pending its removal in the next release. Multiple `kb` CLI invocations have always been safe.
 
 ## 5. Path-traversal (forward-looking)
 
