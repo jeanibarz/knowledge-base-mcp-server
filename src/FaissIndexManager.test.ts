@@ -26,6 +26,8 @@ const fromTextsMock = jest.fn();
 const loadMock = jest.fn();
 const similaritySearchMock = jest.fn();
 const embeddingConstructorMock = jest.fn();
+const ollamaEmbeddingConstructorMock = jest.fn();
+const openAIEmbeddingConstructorMock = jest.fn();
 
 class MockFaissStore {
   async addDocuments(...args: unknown[]) {
@@ -56,6 +58,24 @@ jest.mock('@langchain/community/embeddings/hf', () => ({
   HuggingFaceInferenceEmbeddings: class MockEmbedding {
     constructor(public _config: unknown) {
       embeddingConstructorMock(_config);
+    }
+  },
+}));
+
+jest.mock('@langchain/ollama', () => ({
+  __esModule: true,
+  OllamaEmbeddings: class MockOllamaEmbeddings {
+    constructor(public _config: unknown) {
+      ollamaEmbeddingConstructorMock(_config);
+    }
+  },
+}));
+
+jest.mock('@langchain/openai', () => ({
+  __esModule: true,
+  OpenAIEmbeddings: class MockOpenAIEmbeddings {
+    constructor(public _config: unknown) {
+      openAIEmbeddingConstructorMock(_config);
     }
   },
 }));
@@ -121,6 +141,93 @@ describe('resolveChunkSize (#107 follow-up — KB_CHUNK_SIZE / KB_CHUNK_OVERLAP 
     process.env.KB_CHUNK_SIZE = '500';
     process.env.KB_CHUNK_OVERLAP = '0';
     expect(resolveChunkSize()).toEqual({ chunkSize: 500, chunkOverlap: 0 });
+  });
+});
+
+describe('provider construction', () => {
+  const originalEnv = {
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL,
+    OLLAMA_MODEL: process.env.OLLAMA_MODEL,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    OPENAI_MODEL_NAME: process.env.OPENAI_MODEL_NAME,
+    HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+    HUGGINGFACE_MODEL_NAME: process.env.HUGGINGFACE_MODEL_NAME,
+    HUGGINGFACE_PROVIDER: process.env.HUGGINGFACE_PROVIDER,
+    HUGGINGFACE_ENDPOINT_URL: process.env.HUGGINGFACE_ENDPOINT_URL,
+  };
+
+  beforeEach(() => {
+    jest.resetModules();
+    embeddingConstructorMock.mockReset();
+    ollamaEmbeddingConstructorMock.mockReset();
+    openAIEmbeddingConstructorMock.mockReset();
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(originalEnv) as Array<keyof typeof originalEnv>;
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+
+  it('constructs Ollama embeddings with the configured base URL and model', async () => {
+    process.env.EMBEDDING_PROVIDER = 'ollama';
+    process.env.OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
+    process.env.OLLAMA_MODEL = 'mxbai-embed-large';
+
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    new FaissIndexManager();
+
+    expect(ollamaEmbeddingConstructorMock).toHaveBeenCalledWith({
+      baseUrl: 'http://127.0.0.1:11434',
+      model: 'mxbai-embed-large',
+    });
+  });
+
+  it('throws when OPENAI_API_KEY is unset for the OpenAI provider', async () => {
+    process.env.EMBEDDING_PROVIDER = 'openai';
+    process.env.OPENAI_MODEL_NAME = 'text-embedding-3-large';
+    delete process.env.OPENAI_API_KEY;
+
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+
+    expect(() => new FaissIndexManager()).toThrow(
+      'OPENAI_API_KEY environment variable is required when using OpenAI provider',
+    );
+    expect(openAIEmbeddingConstructorMock).not.toHaveBeenCalled();
+  });
+
+  it('constructs OpenAI embeddings with the configured model name', async () => {
+    process.env.EMBEDDING_PROVIDER = 'openai';
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    process.env.OPENAI_MODEL_NAME = 'text-embedding-3-large';
+
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    new FaissIndexManager();
+
+    expect(openAIEmbeddingConstructorMock).toHaveBeenCalledWith({
+      apiKey: 'test-openai-key',
+      model: 'text-embedding-3-large',
+    });
+  });
+
+  it('throws when HUGGINGFACE_API_KEY is unset for the HuggingFace provider', async () => {
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_MODEL_NAME = 'BAAI/bge-base-en-v1.5';
+    delete process.env.HUGGINGFACE_API_KEY;
+
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+
+    expect(() => new FaissIndexManager()).toThrow(
+      'HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider',
+    );
+    expect(embeddingConstructorMock).not.toHaveBeenCalled();
   });
 });
 
