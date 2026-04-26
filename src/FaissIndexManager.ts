@@ -14,6 +14,7 @@ import {
   filterIngestablePaths,
   getFilesRecursively,
   parseFrontmatter,
+  toError,
 } from './utils.js';
 import {
   EMBEDDING_PROVIDER,
@@ -635,14 +636,15 @@ export class FaissIndexManager {
           handleFsOperationError('persist embedding model metadata in', this.modelNameFile, error);
         }
       }
-    } catch (error: any) {
-      if (!error?.__alreadyLogged) {
-        logger.error('Error initializing FAISS index:', error);
-        if (error?.stack) {
-          logger.error(error.stack);
+    } catch (error: unknown) {
+      const err = toError(error) as Error & { __alreadyLogged?: boolean };
+      if (!err.__alreadyLogged) {
+        logger.error('Error initializing FAISS index:', err);
+        if (err.stack) {
+          logger.error(err.stack);
         }
       }
-      throw error;
+      throw err;
     }
   }
 
@@ -959,8 +961,8 @@ export class FaissIndexManager {
             let content = '';
             try {
               content = await fsp.readFile(filePath, 'utf-8');
-            } catch (error: any) {
-              logger.error(`Error reading file ${filePath}:`, error);
+            } catch (error: unknown) {
+              logger.error(`Error reading file ${filePath}:`, toError(error));
               continue;
             }
 
@@ -1045,7 +1047,7 @@ export class FaissIndexManager {
         // versioned layout.
         try {
           await this.atomicSave();
-        } catch (saveError: any) {
+        } catch (saveError: unknown) {
           handleFsOperationError(
             'save FAISS index for model',
             this.modelId,
@@ -1076,14 +1078,15 @@ export class FaissIndexManager {
         );
       }
       logger.debug('FAISS index update process completed.');
-    } catch (error: any) {
-      if (!error?.__alreadyLogged) {
-        logger.error('Error updating FAISS index:', error);
-        if (error?.stack) {
-          logger.error(error.stack);
+    } catch (error: unknown) {
+      const err = toError(error) as Error & { __alreadyLogged?: boolean };
+      if (!err.__alreadyLogged) {
+        logger.error('Error updating FAISS index:', err);
+        if (err.stack) {
+          logger.error(err.stack);
         }
       }
-      throw error;
+      throw err;
     }
   }
 
