@@ -1,6 +1,22 @@
 # Changelog
 
-## [Unreleased] — RFC 014 (atomic FAISS save)
+## [Unreleased] — drop single-instance MCP advisory
+
+### Removed
+
+- **Single-instance MCP advisory** (`src/instance-lock.ts`, `acquireInstanceAdvisory` / `releaseInstanceAdvisory` / `InstanceAlreadyRunningError`). The advisory existed because pre-RFC-014 `FaissStore.save()` was non-atomic and two concurrent MCP writers would corrupt the index. With RFC 014 atomic save in place (per-model write lock + symlink-swap with reader-side pre-resolve), data integrity no longer requires single-MCP-instance enforcement. **Multiple MCP servers per `$FAISS_INDEX_PATH` are now supported** — concurrent Claude sessions sharing a knowledge-base path no longer queue.
+- The `hasInstanceAdvisory` option on `FaissIndexManager.bootstrapLayout` (no longer needed; every caller now uses the same migration-lock path).
+
+### Migration / cleanup
+
+- Any leftover `${FAISS_INDEX_PATH}/.kb-mcp.pid` file from a prior install is an orphan — no code reads it. Safe to `rm -f` after the upgrade. (It would also be silently overwritten if the old code ever runs again, so leaving it is harmless.)
+- No on-disk format change. No behaviour change for users running a single MCP server.
+
+### Doc updates
+
+- `docs/architecture/threat-model.md §4` — removed the "Single-MCP-instance enforcement" paragraph; rewrote the "Migration coordination" paragraph to drop the advisory-piggyback fallback; replaced the operational guideline with "multiple MCP servers per path are now supported."
+
+## [Unreleased — earlier] — RFC 014 (atomic FAISS save)
 
 ### Added
 

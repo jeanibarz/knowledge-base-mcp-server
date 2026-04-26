@@ -27,11 +27,6 @@ import {
 } from './config.js';
 import { formatRetrievalAsMarkdown, sanitizeMetadataForWire } from './formatter.js';
 import { listKnowledgeBases } from './kb-fs.js';
-import {
-  acquireInstanceAdvisory,
-  InstanceAlreadyRunningError,
-  releaseInstanceAdvisory,
-} from './instance-lock.js';
 import { withWriteLock } from './write-lock.js';
 import { logger } from './logger.js';
 import { SseHost } from './transport/sse.js';
@@ -264,29 +259,17 @@ export class KnowledgeBaseServer {
       throw err;
     }
 
-    // RFC 012 §4.8.1 — claim the single-instance advisory before any
-    // index work. Two concurrent MCP servers against the same
-    // FAISS_INDEX_PATH would corrupt the index; the PID file makes that
-    // impossible (one process wins atomically via O_EXCL).
+    // RFC 013 §4.8 — bootstrap the layout (one-shot migration from 0.2.x).
+    // The migration coordinator (proper-lockfile at
+    // ${FAISS_INDEX_PATH}/.kb-migration.lock) serializes concurrent
+    // migrations across processes. Pre-RFC-014 a single-instance MCP
+    // advisory at .kb-mcp.pid was held during the server lifetime and
+    // bootstrapLayout piggybacked on it; that advisory was removed once
+    // RFC 014 made save+load directory-atomic.
     try {
-      await acquireInstanceAdvisory();
-    } catch (err) {
-      if (err instanceof InstanceAlreadyRunningError) {
-        logger.error(err.message);
-        process.exitCode = 1;
-        return;
-      }
-      throw err;
-    }
-
-    // RFC 013 §4.8 — bootstrap the layout (one-shot migration from 0.2.x)
-    // AFTER acquiring the instance advisory so concurrent migrations are
-    // serialized. Round-1 failure F4 + delivery F6.
-    try {
-      await FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: true });
+      await FaissIndexManager.bootstrapLayout();
     } catch (err) {
       logger.error(`Layout bootstrap failed: ${(err as Error).message}`);
-      await releaseInstanceAdvisory();
       process.exitCode = 1;
       return;
     }
@@ -302,10 +285,6 @@ export class KnowledgeBaseServer {
       if (error?.stack) {
         logger.error(error.stack);
       }
-      // Best-effort release on startup failure so a crashed start doesn't
-      // strand the PID file and block the next run for a stale-detection
-      // cycle.
-      await releaseInstanceAdvisory();
       process.exitCode = 1;
     }
   }
@@ -412,8 +391,5 @@ export class KnowledgeBaseServer {
     } catch (err) {
       logger.warn(`Error closing root mcp: ${(err as Error).message}`);
     }
-    // RFC 012 §4.8.1 — release advisory last so a slow MCP shutdown
-    // doesn't cause a fast restart to false-fire "another instance".
-    await releaseInstanceAdvisory();
   }
 }
