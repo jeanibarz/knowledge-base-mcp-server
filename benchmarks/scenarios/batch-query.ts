@@ -24,6 +24,7 @@ export interface BatchQueryScenarioOptions {
   repetitions?: number;
   files?: number;
   targetChunksPerFile?: number;
+  chunkSize?: number;
   queries?: string[];
 }
 
@@ -54,6 +55,7 @@ export async function runBatchQueryScenario(
     rootDir: context.knowledgeBasesRootDir,
     seed: context.fixtureSeed + 5,
     targetChunksPerFile,
+    chunkSize: options.chunkSize,
   });
 
   const queries = options.queries && options.queries.length > 0

@@ -1,5 +1,5 @@
 import * as path from 'path';
-import type { MemoryScenarioResult, ScenarioContext } from '../types.js';
+import type { FixtureOverrides, MemoryScenarioResult, ScenarioContext } from '../types.js';
 import { generateKnowledgeBaseFixture } from '../fixtures/generator.js';
 import { resetDirectory } from '../utils.js';
 
@@ -8,17 +8,21 @@ interface ManagerLike {
   updateIndex(knowledgeBaseName?: string): Promise<void>;
 }
 
-export async function runMemoryScenario(context: ScenarioContext): Promise<MemoryScenarioResult> {
+export async function runMemoryScenario(
+  context: ScenarioContext,
+  fixtureOverrides: FixtureOverrides = {},
+): Promise<MemoryScenarioResult> {
   await resetDirectory(context.knowledgeBasesRootDir);
   await resetDirectory(context.faissIndexPath);
   context.stubController?.resetCounters();
 
   const fixture = await generateKnowledgeBaseFixture({
-    files: 100,
+    files: fixtureOverrides.files ?? 100,
     knowledgeBaseName: context.knowledgeBaseName,
     rootDir: context.knowledgeBasesRootDir,
     seed: context.fixtureSeed + 4,
-    targetChunksPerFile: 5,
+    targetChunksPerFile: fixtureOverrides.targetChunksPerFile ?? 5,
+    chunkSize: fixtureOverrides.chunkSize,
   });
 
   const { FaissIndexManager } = await import(

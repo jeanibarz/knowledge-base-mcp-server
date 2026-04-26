@@ -56,16 +56,35 @@ async function main(): Promise<void> {
   const concurrencies = parseConcurrencies(process.env.BENCH_BATCH_CONCURRENCIES);
   const queries = parseQueriesEnv(process.env.BENCH_QUERIES);
 
-  const cold_index = await runColdIndexScenario(context);
-  const cold_start = await runColdStartScenario(context);
-  const memory_peak = await runMemoryScenario(context);
+  // Issue #107: env-derived fixture overrides. bench:compare sets
+  // BENCH_FIXTURE_CHUNK_CHARS to fit the smallest-context model under
+  // comparison; FILES / CHUNKS_PER_FILE are operator-facing scope knobs.
+  const fixtureOverrides = {
+    files: parsePositiveIntEnv(process.env.BENCH_FIXTURE_FILES),
+    targetChunksPerFile: parsePositiveIntEnv(process.env.BENCH_FIXTURE_CHUNKS_PER_FILE),
+    chunkSize: parsePositiveIntEnv(process.env.BENCH_FIXTURE_CHUNK_CHARS),
+  };
+
+  const cold_index = await runColdIndexScenario(context, fixtureOverrides);
+  const cold_start = await runColdStartScenario(context, fixtureOverrides);
+  const memory_peak = await runMemoryScenario(context, fixtureOverrides);
   const retrieval_quality = await runRetrievalQualityScenario();
-  const warm_query = await runWarmQueryScenario(context);
+  const warm_query = await runWarmQueryScenario(context, fixtureOverrides);
   const batch_query = includeBatchQuery
-    ? await runBatchQueryScenario(context, { concurrencies, queries })
+    ? await runBatchQueryScenario(context, {
+        concurrencies,
+        queries,
+        files: fixtureOverrides.files,
+        targetChunksPerFile: fixtureOverrides.targetChunksPerFile,
+        chunkSize: fixtureOverrides.chunkSize,
+      })
     : undefined;
   const index_storage = includeIndexStorage
-    ? await runIndexStorageScenario(context)
+    ? await runIndexStorageScenario(context, {
+        files: fixtureOverrides.files,
+        targetChunksPerFile: fixtureOverrides.targetChunksPerFile,
+        chunkSize: fixtureOverrides.chunkSize,
+      })
     : undefined;
 
   const report: BenchmarkReport = {
@@ -102,6 +121,13 @@ function parseConcurrencies(value: string | undefined): number[] | undefined {
   if (!value) return undefined;
   const parsed = value.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
   return parsed.length > 0 ? parsed : undefined;
+}
+
+function parsePositiveIntEnv(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.floor(parsed);
 }
 
 function parseQueriesEnv(value: string | undefined): string[] | undefined {

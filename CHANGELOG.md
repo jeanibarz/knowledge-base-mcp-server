@@ -2,6 +2,10 @@
 
 ## [Unreleased] — RFC 013 M5 (bench:compare)
 
+### Fixed
+
+- **`bench:compare` now auto-clamps fixture chunk size to fit the smallest-context model under comparison** (#107). Probes each Ollama model's `num_ctx` via `/api/show` and computes a safe chunk size with a 30% safety margin. Lookup table covers common HF + OpenAI models; unknown models fall back to 512 ctx. Operators can override via `BENCH_FIXTURE_CHUNK_CHARS=N`. Fixes a crash when comparing models like `nomic-embed-text` (ctx=8192) against `all-minilm` (ctx=256) — the all-minilm leg used to fail with `400 the input length exceeds the context length` after seven retries.
+
 ### Added (benchmark harness extensions)
 
 - **`npm run bench:compare`** orchestrator — drives two back-to-back per-model bench runs against a shared corpus and renders a self-contained HTML report (inline CSS + SVG; zero deps; reviewer-portable). Six sections: summary table with per-axis winner, latency-distribution charts (single + batch), throughput-vs-concurrency line, on-disk storage stacked bar, query-level top-5 with overlap highlighting, rule-based recommendation panel (RFC 013 §4.13.5).

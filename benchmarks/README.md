@@ -148,6 +148,42 @@ benchmarks/results/compare-<id_a>-vs-<id_b>-<utc-stamp>.json  ← merged input +
 
 The HTML has six sections: summary table (with per-axis winner column), latency-distribution charts (single-query + batch p99 by concurrency), throughput-vs-concurrency line chart, on-disk storage stacked bar, query-level detail (collapsible top-5 per model with overlap highlighting), and a rule-based recommendation panel (fixed thresholds documented inline so a skeptical reader can disagree explicitly). Disclaimers section makes the "your-KB selection guidance, NOT MTEB" framing explicit.
 
+### Auto-clamping fixture chunk size to fit short-context models (#107)
+
+Before driving the bench legs, the orchestrator probes each model's `num_ctx`
+and computes a fixture chunk size that fits the smaller of the two, with a
+30% safety margin. For Ollama models the probe queries `POST /api/show`
+(reading `model_info.<arch>.context_length`); for HuggingFace + OpenAI it
+consults a small lookup table covering common defaults — unknown HF/OpenAI
+models fall back to a 512-token assumption. Probe failures (Ollama daemon
+unreachable, unknown HF model, etc.) log a warning to stderr and fall back to
+the same 512-token assumption rather than blocking the run. The chosen value
+is propagated to each bench leg via `BENCH_FIXTURE_CHUNK_CHARS`, and the
+shared corpus is regenerated with `MarkdownTextSplitter({ chunkSize, chunkOverlap: chunkSize/5 })`.
+
+The orchestrator prints the resolved values on startup so operators can see
+why their chunk size shrank between runs:
+
+```
+[bench:compare] model A num_ctx=8192, model B num_ctx=256 → chunk_chars=537 (safe for both)
+```
+
+This makes `nomic-embed-text` (ctx=8192) vs. `all-minilm` (ctx=256) — and
+similar long-vs-short comparisons (`bge-small-en` 512, `mxbai-embed-large`
+512, `granite-embedding:30m` 512, `snowflake-arctic-embed:33m` 512) — work
+out of the box. Pre-#107 the second leg crashed seven retries deep with
+`400 the input length exceeds the context length`.
+
+To override (e.g. for `--fixture=external` against your own KB whose chunks
+are already small enough):
+
+```bash
+BENCH_FIXTURE_CHUNK_CHARS=1000 npm run bench:compare -- --models=…
+```
+
+`BENCH_FIXTURE_FILES=N` and `BENCH_FIXTURE_CHUNKS_PER_FILE=N` are also
+honored as scope knobs that override each scenario's hardcoded defaults.
+
 Concurrency invariants (RFC 013 §4.13.9):
 
 - Both per-model bench legs run **back-to-back, never in parallel** — avoids CPU/network confounding.

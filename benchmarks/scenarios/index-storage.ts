@@ -4,6 +4,12 @@ import type { IndexStorageScenarioResult, ScenarioContext } from '../types.js';
 import { generateKnowledgeBaseFixture } from '../fixtures/generator.js';
 import { resetDirectory } from '../utils.js';
 
+interface IndexStorageScenarioOptions {
+  files?: number;
+  targetChunksPerFile?: number;
+  chunkSize?: number;
+}
+
 interface ManagerLike {
   initialize(): Promise<void>;
   updateIndex(knowledgeBaseName?: string): Promise<void>;
@@ -17,7 +23,7 @@ interface ManagerLike {
  */
 export async function runIndexStorageScenario(
   context: ScenarioContext,
-  options: { files?: number; targetChunksPerFile?: number } = {},
+  options: IndexStorageScenarioOptions = {},
 ): Promise<IndexStorageScenarioResult> {
   const files = options.files ?? 100;
   const targetChunksPerFile = options.targetChunksPerFile ?? 5;
@@ -32,6 +38,7 @@ export async function runIndexStorageScenario(
     rootDir: context.knowledgeBasesRootDir,
     seed: context.fixtureSeed + 6,
     targetChunksPerFile,
+    chunkSize: options.chunkSize,
   });
 
   const { FaissIndexManager } = await import(

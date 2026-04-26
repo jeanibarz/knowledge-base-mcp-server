@@ -1,7 +1,7 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { MarkdownTextSplitter } from 'langchain/text_splitter';
-import type { ColdStartScenarioResult, ScenarioContext } from '../types.js';
+import type { ColdStartScenarioResult, FixtureOverrides, ScenarioContext } from '../types.js';
 import { generateKnowledgeBaseFixture } from '../fixtures/generator.js';
 import { durationMs, resetDirectory } from '../utils.js';
 
@@ -35,19 +35,25 @@ interface ManagerModule {
   FaissIndexManager: new () => ManagerLike;
 }
 
-export async function runColdStartScenario(context: ScenarioContext): Promise<ColdStartScenarioResult> {
+export async function runColdStartScenario(
+  context: ScenarioContext,
+  fixtureOverrides: FixtureOverrides = {},
+): Promise<ColdStartScenarioResult> {
   await resetDirectory(context.knowledgeBasesRootDir);
   await resetDirectory(context.faissIndexPath);
 
   const fixture = await generateKnowledgeBaseFixture({
-    files: 20,
+    // cold-start traditionally uses fewer files (20) than other scenarios (100).
+    // Honor BENCH_FIXTURE_FILES if explicitly set, else keep the smaller default.
+    files: fixtureOverrides.files ?? 20,
     knowledgeBaseName: context.knowledgeBaseName,
     rootDir: context.knowledgeBasesRootDir,
     seed: context.fixtureSeed + 1,
-    targetChunksPerFile: 5,
+    targetChunksPerFile: fixtureOverrides.targetChunksPerFile ?? 5,
+    chunkSize: fixtureOverrides.chunkSize,
   });
 
-  await createPersistedFixture(context);
+  await createPersistedFixture(context, fixtureOverrides);
 
   const start = process.hrtime.bigint();
   const moduleUrl = new URL(`file://${path.join(context.buildRoot, 'FaissIndexManager.js')}?scenario=cold-start-${Date.now()}`);
@@ -63,7 +69,10 @@ export async function runColdStartScenario(context: ScenarioContext): Promise<Co
   };
 }
 
-async function createPersistedFixture(context: ScenarioContext): Promise<void> {
+async function createPersistedFixture(
+  context: ScenarioContext,
+  fixtureOverrides: FixtureOverrides,
+): Promise<void> {
   // RFC 013 layout: persist into ${FAISS_INDEX_PATH}/models/<id>/{faiss.index/, model_name.txt}.
   // Probe a manager once to discover the env-derived modelDir/modelNameFile so the
   // persisted fixture lands at the exact path the cold-start loader will read.
@@ -75,9 +84,10 @@ async function createPersistedFixture(context: ScenarioContext): Promise<void> {
 
   const kbPath = path.join(context.knowledgeBasesRootDir, context.knowledgeBaseName);
   const filePaths = (await fsp.readdir(kbPath)).map((entry) => path.join(kbPath, entry));
+  const chunkSize = fixtureOverrides.chunkSize && fixtureOverrides.chunkSize > 0 ? fixtureOverrides.chunkSize : 1000;
   const splitter = new MarkdownTextSplitter({
-    chunkOverlap: 200,
-    chunkSize: 1000,
+    chunkOverlap: Math.floor(chunkSize / 5),
+    chunkSize,
     keepSeparator: false,
   });
 
