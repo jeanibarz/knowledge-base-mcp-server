@@ -9,8 +9,8 @@ import * as fsp from 'fs/promises';
 /**
  * Returns the names of available knowledge bases under `rootDir` (one per
  * subdirectory). Hidden entries (dot-prefixed) are filtered — they include
- * the `.faiss` index, the `.reindex-trigger`, the `.kb-mcp.pid`, and any
- * user-created `.drafts/` etc. that the embedding walker also skips.
+ * the `.faiss` index, the `.reindex-trigger`, and any user-created
+ * `.drafts/` etc. that the embedding walker also skips.
  *
  * Throws on filesystem errors (caller decides how to surface them — MCP
  * wraps in `CallToolResult.isError`; CLI exits non-zero).

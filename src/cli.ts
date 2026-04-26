@@ -159,7 +159,7 @@ async function runCompare(rest: string[]): Promise<number> {
 
   // Bootstrap layout once for both models.
   try {
-    await FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: false });
+    await FaissIndexManager.bootstrapLayout();
   } catch (err) {
     process.stderr.write(`kb compare: layout bootstrap failed: ${(err as Error).message}\n`);
     return 1;
@@ -267,7 +267,7 @@ async function runModels(rest: string[]): Promise<number> {
   }
   // Bootstrap layout for any models subcommand.
   try {
-    await FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: false });
+    await FaissIndexManager.bootstrapLayout();
   } catch (err) {
     process.stderr.write(`kb models: layout bootstrap failed: ${(err as Error).message}\n`);
     return 1;
@@ -623,7 +623,7 @@ async function runSearch(rest: string[]): Promise<number> {
 
   // RFC 013 §4.8 — bootstrap layout (one-shot migration from 0.2.x).
   try {
-    await FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: false });
+    await FaissIndexManager.bootstrapLayout();
   } catch (err) {
     process.stderr.write(`kb search: layout bootstrap failed: ${(err as Error).message}\n`);
     return 1;

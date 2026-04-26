@@ -548,31 +548,40 @@ export class FaissIndexManager {
    * from 0.2.x layout to 0.3.0 per-model subtree at MOST ONCE per Node process
    * (module-level Promise cache, round-2 failure N1).
    *
-   * MUST be called by `KnowledgeBaseServer.run()` AFTER `acquireInstanceAdvisory()`
-   * (round-1 failure F4 + delivery F6 — concurrent migrations need a lock).
-   * For CLI invocations (no MCP server holds the advisory), this acquires
-   * `.kb-migration.lock` (proper-lockfile, brief retry) to coordinate with
-   * a peer CLI that started the migration first.
+   * Cross-process coordination: every caller acquires the brief
+   * `.kb-migration.lock` (proper-lockfile, short retry budget) for the
+   * duration of `maybeMigrateLayout`. Pre-RFC-014 the MCP server
+   * piggybacked on its single-instance PID advisory; that advisory was
+   * removed once atomic save (RFC 014) made it unnecessary for data
+   * integrity, so MCP and CLI start paths now use the same migration-lock
+   * primitive.
    */
-  static async bootstrapLayout(opts?: { hasInstanceAdvisory?: boolean }): Promise<void> {
+  static async bootstrapLayout(): Promise<void> {
     if (bootstrapPromise) return bootstrapPromise;
     bootstrapPromise = (async () => {
-      // Cross-process serializer: held by self if MCP, else short-lived migration lock.
+      // Cross-process serializer: short-lived migration lock at
+      // ${FAISS_INDEX_PATH}/.kb-migration.lock. Pre-RFC-014 the MCP server
+      // would piggyback on the single-instance advisory it held for its
+      // lifetime; after the advisory was removed (post-RFC-014, atomic save
+      // is sufficient for data integrity), every caller acquires the
+      // migration lock for the brief duration of maybeMigrateLayout.
+      await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
       let release: (() => Promise<void>) | null = null;
-      if (!opts?.hasInstanceAdvisory) {
-        await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
-        try {
-          release = await properLockfile.lock(FAISS_INDEX_PATH, {
-            lockfilePath: MIGRATION_LOCK_PATH,
-            stale: 30_000,
-            retries: { retries: 5, factor: 1.5, minTimeout: 100, maxTimeout: 1000 },
-          });
-        } catch (err) {
-          // If we can't get the migration lock, a peer is migrating; wait for
-          // them and re-check the layout. Falling through is safe — the
-          // pathExists guards in maybeMigrateLayout will early-return.
-          logger.warn(`Could not acquire migration lock; assuming peer migration: ${(err as Error).message}`);
-        }
+      try {
+        release = await properLockfile.lock(FAISS_INDEX_PATH, {
+          lockfilePath: MIGRATION_LOCK_PATH,
+          stale: 30_000,
+          retries: { retries: 5, factor: 1.5, minTimeout: 100, maxTimeout: 1000 },
+        });
+      } catch (err) {
+        // If we can't get the migration lock, a peer is migrating; wait for
+        // them and re-check the layout. Falling through is safe because
+        // `maybeMigrateLayout` is idempotent: it creates `models/<id>/` via
+        // `mkdir({recursive:true})` BEFORE the renames, so a loser arriving
+        // mid-migration sees `pathExists(models/)` and early-returns; the
+        // winner's renames complete unaffected. The renames also use
+        // `renameIfPresent` which swallows ENOENT.
+        logger.warn(`Could not acquire migration lock; assuming peer migration: ${(err as Error).message}`);
       }
       try {
         await maybeMigrateLayout();

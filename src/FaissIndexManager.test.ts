@@ -583,7 +583,7 @@ describe('FaissIndexManager permission handling', () => {
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
 
     // bootstrapLayout migrates the old layout into models/<id>/.
-    await FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: true });
+    await FaissIndexManager.bootstrapLayout();
 
     // Old paths gone; data preserved under the migrated model_id (derived
     // from old model_name.txt = sentence-transformers/all-MiniLM-L6-v2).
@@ -617,7 +617,7 @@ describe('FaissIndexManager permission handling', () => {
     const { FaissIndexManager, MigrationRefusedError } = await import('./FaissIndexManager.js');
 
     await expect(
-      FaissIndexManager.bootstrapLayout({ hasInstanceAdvisory: true })
+      FaissIndexManager.bootstrapLayout()
     ).rejects.toBeInstanceOf(MigrationRefusedError);
 
     // Old layout untouched.
