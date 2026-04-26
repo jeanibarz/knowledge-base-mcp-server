@@ -8,7 +8,13 @@
 //
 // Math: chunk_chars = floor(min_ctx * 0.7 * chars_per_token)
 //   - 0.7 = safety margin (BPE drift, prompts, special tokens)
-//   - chars_per_token = 3 (conservative for English; real BPE is closer to 4)
+//   - chars_per_token = 2: this is conservative on purpose. English prose
+//     averages ~4 chars/token for embedding BPE, but the bench's synthetic
+//     fixture tokens (`token-0042` style) and identifier-heavy real-world
+//     corpora tokenize closer to 2 chars/token. Using 2 here keeps the
+//     fixture safe across both; operators with prose-only KBs who hit the
+//     resulting chunk size as a constraint can override via
+//     BENCH_FIXTURE_CHUNK_CHARS=N.
 //
 // Result is also capped at DEFAULT_CHUNK_CHARS so the auto-clamp can only
 // shrink chunks vs. the pre-#107 default; an operator who wants larger chunks
@@ -20,7 +26,7 @@ export const DEFAULT_CHUNK_CHARS = 1000;
 export const DEFAULT_FALLBACK_CTX = 512;
 
 const SAFETY_MARGIN = 0.7;
-const CHARS_PER_TOKEN = 3;
+const CHARS_PER_TOKEN = 2;
 
 // Lookup table for non-Ollama providers. Ollama models are probed live via
 // /api/show; HF + OpenAI ctx values come from this table. Unknown models fall
@@ -94,12 +100,24 @@ function defaultOllamaBaseUrl(): string {
 }
 
 /**
- * POST /api/show against a local Ollama daemon and extract num_ctx. Ollama
- * stores it under model_info as `<architecture>.context_length` — we walk
- * model_info keys to find any `.context_length` value rather than hardcoding
- * an architecture prefix.
+ * POST /api/show against a local Ollama daemon and extract num_ctx.
+ *
+ * Ollama exposes two context-related values per model and they can disagree:
+ *   - `parameters` (text blob, e.g. "num_ctx                        256") —
+ *     the *runtime* context window the daemon enforces at embed time.
+ *   - `model_info.<arch>.context_length` (number, e.g. 512) — the architecture's
+ *     trained max, which can be larger than the modelfile's runtime cap.
+ *
+ * The runtime `num_ctx` is what `/api/embed` actually checks, so we read that
+ * first. If `parameters` is missing or doesn't carry `num_ctx`, fall back to
+ * `model_info.<arch>.context_length` (still better than nothing). If both are
+ * absent, the caller's fallback (DEFAULT_FALLBACK_CTX) kicks in.
+ *
+ * Concretely: pre-fix, all-minilm reported 512 via model_info despite a
+ * runtime cap of 256, and the chunk-size clamp produced chunks that still
+ * busted the embed path. Reading parameters first fixes that. (#107 follow-up.)
  */
-async function probeOllamaCtx(modelName: string, baseUrl: string): Promise<number> {
+export async function probeOllamaCtx(modelName: string, baseUrl: string): Promise<number> {
   const url = `${baseUrl.replace(/\/$/, '')}/api/show`;
   try {
     const response = await fetch(url, {
@@ -111,17 +129,36 @@ async function probeOllamaCtx(modelName: string, baseUrl: string): Promise<numbe
       warnOllamaProbeFail(modelName, `HTTP ${response.status}`);
       return DEFAULT_FALLBACK_CTX;
     }
-    const body = await response.json() as { model_info?: Record<string, unknown> };
-    const ctx = extractContextLength(body.model_info);
-    if (ctx === null) {
-      warnOllamaProbeFail(modelName, 'no context_length in model_info');
-      return DEFAULT_FALLBACK_CTX;
-    }
-    return ctx;
+    const body = await response.json() as {
+      model_info?: Record<string, unknown>;
+      parameters?: string;
+    };
+    const runtime = parseRuntimeNumCtx(body.parameters);
+    if (runtime !== null) return runtime;
+    const arch = extractContextLength(body.model_info);
+    if (arch !== null) return arch;
+    warnOllamaProbeFail(modelName, 'no num_ctx in parameters or context_length in model_info');
+    return DEFAULT_FALLBACK_CTX;
   } catch (err) {
     warnOllamaProbeFail(modelName, err instanceof Error ? err.message : String(err));
     return DEFAULT_FALLBACK_CTX;
   }
+}
+
+/**
+ * Parse Ollama's `parameters` text blob for `num_ctx`. Each line is a
+ * whitespace-separated key/value: `num_ctx                        256`.
+ * Returns null if the field is missing or unparseable.
+ */
+export function parseRuntimeNumCtx(parameters: string | undefined): number | null {
+  if (!parameters) return null;
+  // ^\s* anchors at line start; the value is the first whitespace-separated
+  // token after `num_ctx`. /m so ^ matches each line.
+  const match = parameters.match(/^\s*num_ctx\s+(\d+)/m);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value;
 }
 
 function extractContextLength(modelInfo: Record<string, unknown> | undefined): number | null {

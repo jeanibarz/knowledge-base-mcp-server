@@ -66,6 +66,59 @@ function createPermissionError(message: string): NodeJS.ErrnoException {
   return error;
 }
 
+describe('resolveChunkSize (#107 follow-up — KB_CHUNK_SIZE / KB_CHUNK_OVERLAP env vars)', () => {
+  const savedSize = process.env.KB_CHUNK_SIZE;
+  const savedOverlap = process.env.KB_CHUNK_OVERLAP;
+  let resolveChunkSize: () => { chunkSize: number; chunkOverlap: number };
+
+  beforeAll(async () => {
+    // Late import to ensure env-driven module-state isn't captured at top-level.
+    const mod = await import('./FaissIndexManager.js');
+    resolveChunkSize = mod.resolveChunkSize;
+  });
+
+  afterEach(() => {
+    if (savedSize === undefined) delete process.env.KB_CHUNK_SIZE; else process.env.KB_CHUNK_SIZE = savedSize;
+    if (savedOverlap === undefined) delete process.env.KB_CHUNK_OVERLAP; else process.env.KB_CHUNK_OVERLAP = savedOverlap;
+  });
+
+  it('returns historical defaults (1000 / 200) when no env vars are set', () => {
+    delete process.env.KB_CHUNK_SIZE;
+    delete process.env.KB_CHUNK_OVERLAP;
+    expect(resolveChunkSize()).toEqual({ chunkSize: 1000, chunkOverlap: 200 });
+  });
+
+  it('honors KB_CHUNK_SIZE; overlap scales as floor(chunkSize/5)', () => {
+    process.env.KB_CHUNK_SIZE = '358';
+    delete process.env.KB_CHUNK_OVERLAP;
+    expect(resolveChunkSize()).toEqual({ chunkSize: 358, chunkOverlap: 71 });
+  });
+
+  it('honors an independent KB_CHUNK_OVERLAP', () => {
+    process.env.KB_CHUNK_SIZE = '500';
+    process.env.KB_CHUNK_OVERLAP = '50';
+    expect(resolveChunkSize()).toEqual({ chunkSize: 500, chunkOverlap: 50 });
+  });
+
+  it('falls back to default 200 overlap when KB_CHUNK_SIZE is the default 1000 and overlap unset', () => {
+    process.env.KB_CHUNK_SIZE = '1000';
+    delete process.env.KB_CHUNK_OVERLAP;
+    expect(resolveChunkSize()).toEqual({ chunkSize: 1000, chunkOverlap: 200 });
+  });
+
+  it('treats invalid / non-positive values as unset (preserves defaults)', () => {
+    process.env.KB_CHUNK_SIZE = 'not-a-number';
+    process.env.KB_CHUNK_OVERLAP = '-1';
+    expect(resolveChunkSize()).toEqual({ chunkSize: 1000, chunkOverlap: 200 });
+  });
+
+  it('accepts zero overlap explicitly', () => {
+    process.env.KB_CHUNK_SIZE = '500';
+    process.env.KB_CHUNK_OVERLAP = '0';
+    expect(resolveChunkSize()).toEqual({ chunkSize: 500, chunkOverlap: 0 });
+  });
+});
+
 describe('FaissIndexManager permission handling', () => {
   const originalEnv = {
     KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,

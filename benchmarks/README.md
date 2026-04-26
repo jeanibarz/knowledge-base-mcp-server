@@ -152,20 +152,27 @@ The HTML has six sections: summary table (with per-axis winner column), latency-
 
 Before driving the bench legs, the orchestrator probes each model's `num_ctx`
 and computes a fixture chunk size that fits the smaller of the two, with a
-30% safety margin. For Ollama models the probe queries `POST /api/show`
-(reading `model_info.<arch>.context_length`); for HuggingFace + OpenAI it
-consults a small lookup table covering common defaults — unknown HF/OpenAI
-models fall back to a 512-token assumption. Probe failures (Ollama daemon
+30% safety margin. For Ollama models the probe queries `POST /api/show` and
+reads the runtime `num_ctx` out of the `parameters` blob (the value the
+daemon enforces at embed time); falling back to
+`model_info.<arch>.context_length` only when `parameters` doesn't carry it.
+For HuggingFace + OpenAI it consults a small lookup table covering common
+defaults — unknown HF/OpenAI models fall back to a 512-token assumption. Probe failures (Ollama daemon
 unreachable, unknown HF model, etc.) log a warning to stderr and fall back to
 the same 512-token assumption rather than blocking the run. The chosen value
-is propagated to each bench leg via `BENCH_FIXTURE_CHUNK_CHARS`, and the
-shared corpus is regenerated with `MarkdownTextSplitter({ chunkSize, chunkOverlap: chunkSize/5 })`.
+is propagated to each bench leg via two env vars: `BENCH_FIXTURE_CHUNK_CHARS`
+controls the size of the synthetic fixture's markdown files, and
+`KB_CHUNK_SIZE` controls the production `FaissIndexManager` splitter that
+re-chunks those files at embed time. Both must agree, otherwise the
+production splitter re-emits 1000-char chunks regardless of fixture file
+size and the auto-clamp is moot. The shared corpus is regenerated with
+`MarkdownTextSplitter({ chunkSize, chunkOverlap: chunkSize/5 })`.
 
 The orchestrator prints the resolved values on startup so operators can see
 why their chunk size shrank between runs:
 
 ```
-[bench:compare] model A num_ctx=8192, model B num_ctx=256 → chunk_chars=537 (safe for both)
+[bench:compare] model A num_ctx=8192, model B num_ctx=256 → chunk_chars=358 (safe for both)
 ```
 
 This makes `nomic-embed-text` (ctx=8192) vs. `all-minilm` (ctx=256) — and
