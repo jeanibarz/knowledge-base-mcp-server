@@ -5,6 +5,7 @@ import {
   isValidKbName,
   parseFrontmatter,
   resolveKbPath,
+  toError,
 } from './utils.js';
 import * as fsp from 'fs/promises';
 import * as fs from 'fs'; // Import fs for PathLike and Dirent
@@ -473,5 +474,49 @@ describe('parseFrontmatter (RFC 011 M2 frontmatter lift)', () => {
       arxiv_id: '2604.1',
       custom_field: 'value',
     });
+  });
+});
+
+describe('toError', () => {
+  it('returns the same Error reference when given an Error', () => {
+    // Identity matters: callers in FaissIndexManager attach an
+    // `__alreadyLogged` marker to the thrown Error, and the migration helper
+    // must not break that pattern by wrapping the Error in a new instance.
+    const original = new Error('boom') as Error & { __alreadyLogged?: boolean };
+    original.__alreadyLogged = true;
+    const result = toError(original);
+    expect(result).toBe(original);
+    expect((result as Error & { __alreadyLogged?: boolean }).__alreadyLogged).toBe(true);
+  });
+
+  it('preserves Error subclass instances by reference (TypeError, custom)', () => {
+    const typeErr = new TypeError('bad type');
+    expect(toError(typeErr)).toBe(typeErr);
+
+    class CustomError extends Error {}
+    const custom = new CustomError('custom');
+    expect(toError(custom)).toBe(custom);
+  });
+
+  it('wraps a string into a new Error whose message is the string', () => {
+    const result = toError('something failed');
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe('something failed');
+  });
+
+  it('JSON-stringifies plain objects into the Error message', () => {
+    const result = toError({ code: 'EACCES', path: '/tmp/x' });
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe('{"code":"EACCES","path":"/tmp/x"}');
+  });
+
+  it('handles values JSON.stringify cannot serialize (cycles) without throwing', () => {
+    type Cyclic = { self?: Cyclic };
+    const cyclic: Cyclic = {};
+    cyclic.self = cyclic;
+    const result = toError(cyclic);
+    expect(result).toBeInstanceOf(Error);
+    expect(typeof result.message).toBe('string');
+    expect(result.message.length).toBeGreaterThan(0);
   });
 });

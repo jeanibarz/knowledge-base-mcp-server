@@ -29,6 +29,7 @@ import { formatRetrievalAsMarkdown, sanitizeMetadataForWire } from './formatter.
 import { listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { logger } from './logger.js';
+import { toError } from './utils.js';
 import { SseHost } from './transport/sse.js';
 import { ReindexTriggerWatcher } from './triggerWatcher.js';
 
@@ -148,11 +149,12 @@ export class KnowledgeBaseServer {
       return {
         content: [{ type: 'text', text: JSON.stringify(enriched, null, 2) }],
       };
-    } catch (error: any) {
-      logger.error('Error listing models:', error);
+    } catch (error: unknown) {
+      const err = toError(error);
+      logger.error('Error listing models:', err);
       const content: TextContent = {
         type: 'text',
-        text: `Error listing models: ${error.message}`,
+        text: `Error listing models: ${err.message}`,
       };
       return { content: [content], isError: true };
     }
@@ -166,14 +168,15 @@ export class KnowledgeBaseServer {
         text: JSON.stringify(knowledgeBases, null, 2),
       };
       return { content: [content] };
-    } catch (error: any) {
-      logger.error('Error listing knowledge bases:', error);
-      if (error?.stack) {
-        logger.error(error.stack);
+    } catch (error: unknown) {
+      const err = toError(error);
+      logger.error('Error listing knowledge bases:', err);
+      if (err.stack) {
+        logger.error(err.stack);
       }
       const content: TextContent = {
         type: 'text',
-        text: `Error listing knowledge bases: ${error.message}`,
+        text: `Error listing knowledge bases: ${err.message}`,
       };
       return { content: [content], isError: true };
     }
@@ -235,12 +238,13 @@ export class KnowledgeBaseServer {
 
       const content: TextContent = { type: 'text', text: responseText };
       return { content: [content] };
-    } catch (error: any) {
-      logger.error('Error retrieving knowledge:', error);
-      if (error?.stack) {
-        logger.error(error.stack);
+    } catch (error: unknown) {
+      const err = toError(error);
+      logger.error('Error retrieving knowledge:', err);
+      if (err.stack) {
+        logger.error(err.stack);
       }
-      const content: TextContent = { type: 'text', text: `Error retrieving knowledge: ${error.message}` };
+      const content: TextContent = { type: 'text', text: `Error retrieving knowledge: ${err.message}` };
       return { content: [content], isError: true };
     }
   }
@@ -280,10 +284,11 @@ export class KnowledgeBaseServer {
         return;
       }
       await this.runSse(transportConfig);
-    } catch (error: any) {
-      logger.error('Error during server startup:', error);
-      if (error?.stack) {
-        logger.error(error.stack);
+    } catch (error: unknown) {
+      const err = toError(error);
+      logger.error('Error during server startup:', err);
+      if (err.stack) {
+        logger.error(err.stack);
       }
       process.exitCode = 1;
     }

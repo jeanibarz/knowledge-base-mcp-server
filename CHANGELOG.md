@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased] — strict catch blocks (`error: unknown` + `toError` helper)
+
+### Changed
+
+- **`catch (error: any)` → `catch (error: unknown)`** at every site in `src/KnowledgeBaseServer.ts` and `src/FaissIndexManager.ts`. Strict-mode (`"strict": true` in `tsconfig.json`) treats `catch` variables as `unknown` semantically, but `: any` was bypassing that. With `: unknown` the type checker will now flag any future unchecked `error.message` / `error.stack` access. Closes #60.
+- **New helper: `toError(x: unknown): Error`** in `src/utils.ts`. Narrows a thrown value to an `Error` once at the catch boundary: returns the same reference when given an `Error` (preserves the `__alreadyLogged` marker pattern in `FaissIndexManager`), wraps strings into `new Error(x)`, and JSON-stringifies other shapes. Falls back to `String(x)` if `JSON.stringify` throws (cycles, BigInt) so the helper itself never throws inside a catch.
+
+### Why
+
+Pre-fix, a non-`Error` rejection (e.g. a thrown string from a third-party lib) silently produced `error.message === undefined` in user-facing tool responses. Post-fix, every catch coerces through `toError` so `error.message` and `error.stack` are always defined.
+
 ## [Unreleased] — derive downgrade-hazard flag from filesystem state
 
 ### Fixed
