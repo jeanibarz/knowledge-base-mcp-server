@@ -246,7 +246,15 @@ async function runOnce(args: RunOnceArgs): Promise<BenchmarkReport> {
     BENCH_BATCH_CONCURRENCIES: args.flags.concurrencies.join(','),
     ...(args.flags.queriesPath ? { BENCH_QUERIES: path.resolve(args.flags.queriesPath) } : {}),
     ...(args.fixtureChunkChars !== undefined
-      ? { BENCH_FIXTURE_CHUNK_CHARS: String(args.fixtureChunkChars) }
+      ? {
+          BENCH_FIXTURE_CHUNK_CHARS: String(args.fixtureChunkChars),
+          // Production FaissIndexManager re-splits the on-disk markdown with
+          // its own splitter (default chunkSize=1000). Without this, the
+          // bench-side fixture clamp is moot — the production splitter would
+          // re-emit 1000-char chunks that bust short-context embed models.
+          // KB_CHUNK_SIZE wires the same clamp into the production code path.
+          KB_CHUNK_SIZE: String(args.fixtureChunkChars),
+        }
       : {}),
   };
 
