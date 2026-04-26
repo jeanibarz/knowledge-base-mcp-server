@@ -3,12 +3,18 @@ import * as path from 'path';
 import { MarkdownTextSplitter } from 'langchain/text_splitter';
 
 interface KnowledgeBaseFixtureOptions {
+  // Optional override for MarkdownTextSplitter chunkSize. Default 1000 chars.
+  // chunkOverlap is derived as floor(chunkSize / 5). Issue #107: bench:compare
+  // auto-clamps this to fit the smallest-context model under comparison.
+  chunkSize?: number;
   files: number;
   knowledgeBaseName: string;
   rootDir: string;
   seed: number;
   targetChunksPerFile: number;
 }
+
+const DEFAULT_CHUNK_SIZE = 1000;
 
 interface GeneratedFile {
   content: string;
@@ -45,9 +51,11 @@ export async function generateKnowledgeBaseFixture(
   const knowledgeBasePath = path.join(options.rootDir, options.knowledgeBaseName);
   await fsp.mkdir(knowledgeBasePath, { recursive: true });
 
+  const chunkSize = options.chunkSize && options.chunkSize > 0 ? options.chunkSize : DEFAULT_CHUNK_SIZE;
+  const chunkOverlap = Math.floor(chunkSize / 5);
   const splitter = new MarkdownTextSplitter({
-    chunkOverlap: 200,
-    chunkSize: 1000,
+    chunkOverlap,
+    chunkSize,
     keepSeparator: false,
   });
   const random = mulberry32(options.seed);

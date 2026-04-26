@@ -18,6 +18,7 @@ import { fileURLToPath } from 'url';
 import type { BenchmarkReport } from '../types.js';
 import { installStubProvider } from '../stub.js';
 import { renderReport, type CrossModelAggregate, type CrossModelQueryResult } from './render.js';
+import { resolveModelCtx, safeChunkChars } from './model-ctx.js';
 // Type duplicated locally rather than imported from src/ — tsconfig.bench.json's
 // rootDir scopes types to the benchmarks/ tree (src/ files are out of scope even
 // for type-only imports). All src-side runtime values are loaded via dynamic
@@ -116,6 +117,11 @@ async function main(): Promise<void> {
   process.stderr.write(`[bench:compare] model B: ${modelB.id}\n`);
   process.stderr.write(`[bench:compare] fixture profile: ${flags.fixture}\n`);
 
+  // Issue #107: probe each model's num_ctx and clamp the shared corpus's
+  // chunk size to fit the smaller of the two. Operator override:
+  // BENCH_FIXTURE_CHUNK_CHARS=N short-circuits the probe.
+  const fixtureChunkChars = await resolveFixtureChunkChars(modelA, modelB);
+
   // Concurrency invariant (§4.13.9): back-to-back, never parallel.
   process.stderr.write(`[bench:compare] running model A bench…\n`);
   const reportA = await runOnce({
@@ -126,6 +132,7 @@ async function main(): Promise<void> {
     repoRoot,
     buildRoot,
     isFirst: true,
+    fixtureChunkChars,
   });
 
   process.stderr.write(`[bench:compare] running model B bench…\n`);
@@ -137,6 +144,7 @@ async function main(): Promise<void> {
     repoRoot,
     buildRoot,
     isFirst: false,
+    fixtureChunkChars,
   });
 
   process.stderr.write(`[bench:compare] cross-model agreement…\n`);
@@ -213,6 +221,10 @@ interface RunOnceArgs {
   repoRoot: string;
   buildRoot: string;
   isFirst: boolean;
+  // Issue #107: clamped chunk size (chars) for the shared corpus, propagated
+  // to the bench leg via BENCH_FIXTURE_CHUNK_CHARS. undefined = leg uses its
+  // default (1000).
+  fixtureChunkChars?: number;
 }
 
 async function runOnce(args: RunOnceArgs): Promise<BenchmarkReport> {
@@ -233,6 +245,9 @@ async function runOnce(args: RunOnceArgs): Promise<BenchmarkReport> {
     BENCH_RESULTS_DIR: args.workspace,
     BENCH_BATCH_CONCURRENCIES: args.flags.concurrencies.join(','),
     ...(args.flags.queriesPath ? { BENCH_QUERIES: path.resolve(args.flags.queriesPath) } : {}),
+    ...(args.fixtureChunkChars !== undefined
+      ? { BENCH_FIXTURE_CHUNK_CHARS: String(args.fixtureChunkChars) }
+      : {}),
   };
 
   const benchScript = path.join(args.buildRoot, 'benchmarks', 'run.js');
@@ -579,6 +594,42 @@ Optional:
   --skip-add                               Reuse already-registered models (no re-embed).
   --yes                                    Non-interactive (skips paid-provider cost prompt).
 `);
+}
+
+/**
+ * Issue #107: probe each model's num_ctx and clamp the shared corpus's
+ * MarkdownTextSplitter chunkSize to fit the smaller of the two. Both bench
+ * legs share the same corpus, so the clamp is applied across both rather
+ * than per-model — otherwise Jaccard / Spearman cross-model agreement would
+ * be measuring chunking-policy drift instead of embedding-quality drift.
+ *
+ * Operator override: setting BENCH_FIXTURE_CHUNK_CHARS=N upstream of the
+ * orchestrator short-circuits the probe entirely.
+ */
+async function resolveFixtureChunkChars(
+  modelA: ResolvedModel,
+  modelB: ResolvedModel,
+): Promise<number | undefined> {
+  // Operator override — respect their value and skip the probe.
+  if (process.env.BENCH_FIXTURE_CHUNK_CHARS) {
+    const overridden = Number(process.env.BENCH_FIXTURE_CHUNK_CHARS);
+    if (Number.isFinite(overridden) && overridden > 0) {
+      process.stderr.write(
+        `[bench:compare] BENCH_FIXTURE_CHUNK_CHARS=${overridden} override; skipping num_ctx probe.\n`,
+      );
+      return Math.floor(overridden);
+    }
+  }
+
+  const [ctxA, ctxB] = await Promise.all([
+    resolveModelCtx(modelA.provider, modelA.name),
+    resolveModelCtx(modelB.provider, modelB.name),
+  ]);
+  const chunkChars = safeChunkChars(ctxA, ctxB);
+  process.stderr.write(
+    `[bench:compare] model A num_ctx=${ctxA}, model B num_ctx=${ctxB} → chunk_chars=${chunkChars} (safe for both)\n`,
+  );
+  return chunkChars;
 }
 
 function fatal(msg: string): never {

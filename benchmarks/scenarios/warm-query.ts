@@ -1,5 +1,5 @@
 import * as path from 'path';
-import type { ScenarioContext, WarmQueryScenarioResult } from '../types.js';
+import type { FixtureOverrides, ScenarioContext, WarmQueryScenarioResult } from '../types.js';
 import { generateKnowledgeBaseFixture } from '../fixtures/generator.js';
 import { durationMs, percentile, resetDirectory } from '../utils.js';
 
@@ -15,17 +15,21 @@ interface ManagerLike {
   updateIndex(knowledgeBaseName?: string): Promise<void>;
 }
 
-export async function runWarmQueryScenario(context: ScenarioContext): Promise<WarmQueryScenarioResult> {
+export async function runWarmQueryScenario(
+  context: ScenarioContext,
+  fixtureOverrides: FixtureOverrides = {},
+): Promise<WarmQueryScenarioResult> {
   await resetDirectory(context.knowledgeBasesRootDir);
   await resetDirectory(context.faissIndexPath);
   context.stubController?.resetCounters();
 
   const fixture = await generateKnowledgeBaseFixture({
-    files: 100,
+    files: fixtureOverrides.files ?? 100,
     knowledgeBaseName: context.knowledgeBaseName,
     rootDir: context.knowledgeBasesRootDir,
     seed: context.fixtureSeed + 3,
-    targetChunksPerFile: 5,
+    targetChunksPerFile: fixtureOverrides.targetChunksPerFile ?? 5,
+    chunkSize: fixtureOverrides.chunkSize,
   });
 
   const { FaissIndexManager } = await import(

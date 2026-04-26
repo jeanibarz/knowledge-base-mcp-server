@@ -111,3 +111,11 @@ export interface ScenarioContext {
   stubController?: StubController;
   workspaceRoot: string;
 }
+
+// Issue #107: env-derived fixture overrides threaded from run.ts into each
+// scenario. `chunkSize` is the bench:compare auto-clamp's primary lever.
+export interface FixtureOverrides {
+  files?: number;
+  targetChunksPerFile?: number;
+  chunkSize?: number;
+}
