@@ -1,6 +1,17 @@
 # Changelog
 
-## [Unreleased] — drop single-instance MCP advisory
+## [Unreleased] — derive downgrade-hazard flag from filesystem state
+
+### Fixed
+
+- **`kb models list` now reflects the real downgrade-hazard state.** Pre-fix it read a `.downgrade-hazard` marker file written by `loadAtomic`. The marker only updated when the FaissIndexManager was instantiated; `kb models list` doesn't instantiate one (it only reads the directory listing). So an operator who removed the legacy `faiss.index/` directory still saw `[downgrade-hazard]` in `kb models list` until the next time `kb search` (or the MCP server) ran. Now the listing derives the flag directly from filesystem state via `lstat(symlink) && pathExists(legacy)` on every call — operator interventions are reflected immediately.
+
+### Removed
+
+- **`.downgrade-hazard` marker file.** No code writes or reads it post-fix. The runtime `logger.warn` in `loadAtomic` is preserved (still useful when the manager runs live), but the *signal* surfaced to operators (`kb models list`'s `[downgrade-hazard]` flag) is now derived purely from on-disk layout. The filesystem is the single source of truth — no derived state to drift.
+- Any leftover `${FAISS_INDEX_PATH}/models/<id>/.downgrade-hazard` files from prior installs are orphans (no code reads them). Safe to `rm -f`.
+
+## [Unreleased — earlier] — drop single-instance MCP advisory
 
 ### Removed
 
