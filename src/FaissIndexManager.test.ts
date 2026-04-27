@@ -145,7 +145,14 @@ describe('resolveChunkSize (#107 follow-up — KB_CHUNK_SIZE / KB_CHUNK_OVERLAP 
 });
 
 describe('provider construction', () => {
+  // Issue #59 — embeddings are now built lazily inside initialize() via
+  // dynamic import of the active provider's @langchain module. The
+  // assertions below moved from `new FaissIndexManager()` to
+  // `manager.initialize()`; the API-key-throw shape and the constructor-arg
+  // shape are unchanged.
   const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
     EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
     OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL,
     OLLAMA_MODEL: process.env.OLLAMA_MODEL,
@@ -156,6 +163,13 @@ describe('provider construction', () => {
     HUGGINGFACE_PROVIDER: process.env.HUGGINGFACE_PROVIDER,
     HUGGINGFACE_ENDPOINT_URL: process.env.HUGGINGFACE_ENDPOINT_URL,
   };
+
+  async function seedTempEnv(): Promise<string> {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-provider-ctor-'));
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    return tempDir;
+  }
 
   beforeEach(() => {
     jest.resetModules();
@@ -176,13 +190,16 @@ describe('provider construction', () => {
     }
   });
 
-  it('constructs Ollama embeddings with the configured base URL and model', async () => {
+  it('constructs Ollama embeddings with the configured base URL and model on initialize()', async () => {
+    await seedTempEnv();
     process.env.EMBEDDING_PROVIDER = 'ollama';
     process.env.OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
     process.env.OLLAMA_MODEL = 'mxbai-embed-large';
 
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
-    new FaissIndexManager();
+    const manager = new FaissIndexManager();
+    expect(ollamaEmbeddingConstructorMock).not.toHaveBeenCalled();
+    await manager.initialize();
 
     expect(ollamaEmbeddingConstructorMock).toHaveBeenCalledWith({
       baseUrl: 'http://127.0.0.1:11434',
@@ -191,33 +208,45 @@ describe('provider construction', () => {
   });
 
   it('throws when OPENAI_API_KEY is unset for the OpenAI provider', async () => {
+    await seedTempEnv();
     process.env.EMBEDDING_PROVIDER = 'openai';
     process.env.OPENAI_MODEL_NAME = 'text-embedding-3-large';
     delete process.env.OPENAI_API_KEY;
 
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
     const { KBError } = await import('./errors.js');
+    const manager = new FaissIndexManager();
 
-    expect(() => new FaissIndexManager()).toThrow(
-      'OPENAI_API_KEY environment variable is required when using OpenAI provider',
-    );
+    // Issue #59 — embeddings are constructed lazily inside initialize(), so
+    // the API-key check fires there (not in the ctor). #116 — the throw is a
+    // typed KBError with code PROVIDER_AUTH so MCP clients can branch on the
+    // code rather than substring-matching the message.
+    let caught: unknown;
     try {
-      new FaissIndexManager();
-      throw new Error('expected constructor to throw');
-    } catch (error) {
-      expect(error).toBeInstanceOf(KBError);
-      expect(error).toMatchObject({ code: 'PROVIDER_AUTH' });
+      await manager.initialize();
+    } catch (err) {
+      caught = err;
     }
+    expect(caught).toBeInstanceOf(KBError);
+    expect(caught).toMatchObject({
+      code: 'PROVIDER_AUTH',
+      message: expect.stringContaining(
+        'OPENAI_API_KEY environment variable is required when using OpenAI provider',
+      ),
+    });
     expect(openAIEmbeddingConstructorMock).not.toHaveBeenCalled();
   });
 
-  it('constructs OpenAI embeddings with the configured model name', async () => {
+  it('constructs OpenAI embeddings with the configured model name on initialize()', async () => {
+    await seedTempEnv();
     process.env.EMBEDDING_PROVIDER = 'openai';
     process.env.OPENAI_API_KEY = 'test-openai-key';
     process.env.OPENAI_MODEL_NAME = 'text-embedding-3-large';
 
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
-    new FaissIndexManager();
+    const manager = new FaissIndexManager();
+    expect(openAIEmbeddingConstructorMock).not.toHaveBeenCalled();
+    await manager.initialize();
 
     expect(openAIEmbeddingConstructorMock).toHaveBeenCalledWith({
       apiKey: 'test-openai-key',
@@ -226,23 +255,30 @@ describe('provider construction', () => {
   });
 
   it('throws when HUGGINGFACE_API_KEY is unset for the HuggingFace provider', async () => {
+    await seedTempEnv();
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_MODEL_NAME = 'BAAI/bge-base-en-v1.5';
     delete process.env.HUGGINGFACE_API_KEY;
 
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
     const { KBError } = await import('./errors.js');
+    const manager = new FaissIndexManager();
 
-    expect(() => new FaissIndexManager()).toThrow(
-      'HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider',
-    );
+    // Issue #59 — embeddings are constructed lazily inside initialize().
+    // #116 — the throw is a typed KBError with code PROVIDER_AUTH.
+    let caught: unknown;
     try {
-      new FaissIndexManager();
-      throw new Error('expected constructor to throw');
-    } catch (error) {
-      expect(error).toBeInstanceOf(KBError);
-      expect(error).toMatchObject({ code: 'PROVIDER_AUTH' });
+      await manager.initialize();
+    } catch (err) {
+      caught = err;
     }
+    expect(caught).toBeInstanceOf(KBError);
+    expect(caught).toMatchObject({
+      code: 'PROVIDER_AUTH',
+      message: expect.stringContaining(
+        'HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider',
+      ),
+    });
     expect(embeddingConstructorMock).not.toHaveBeenCalled();
   });
 });
@@ -316,7 +352,9 @@ describe('FaissIndexManager permission handling', () => {
 
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
-    new FaissIndexManager();
+    const manager = new FaissIndexManager();
+    // Issue #59 — embeddings are constructed lazily inside initialize().
+    await manager.initialize();
 
     expect(embeddingConstructorMock).toHaveBeenCalledWith(expect.objectContaining({
       apiKey: 'test-key',
@@ -336,7 +374,9 @@ describe('FaissIndexManager permission handling', () => {
 
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
-    new FaissIndexManager();
+    const manager = new FaissIndexManager();
+    // Issue #59 — embeddings are constructed lazily inside initialize().
+    await manager.initialize();
 
     expect(embeddingConstructorMock).toHaveBeenCalledWith(expect.objectContaining({
       apiKey: 'test-key',

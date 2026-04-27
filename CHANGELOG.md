@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased] — lazy-import unused embedding providers
+
+### Changed
+
+- **`FaissIndexManager` now constructs the active provider's embedding client inside `initialize()`, not in the constructor.** The three `@langchain/*` provider modules (`@langchain/community/embeddings/hf`, `@langchain/ollama`, `@langchain/openai`) and their transitive SDKs (`@huggingface/inference`, `ollama`, `openai`) are loaded via dynamic `await import()` so a process running with `EMBEDDING_PROVIDER=ollama` no longer pays the import cost of HuggingFace + OpenAI (and vice versa). Closes #59.
+- API-key validation moves with the instantiation: `OPENAI_API_KEY` / `HUGGINGFACE_API_KEY` are now checked when `initialize()` runs (still synchronous-feeling — the throw fires before any disk work). The thrown `KBError` and its `PROVIDER_AUTH` code (added in the structured-errors entry below) are unchanged.
+
+### Why
+
+RFC 007 §5.1 measured the constructor at ~170 ms / 81 MB peak RSS, dominated by `@langchain/*` module loading. Cold start matters for serverless / ephemeral MCP deployments and for the SSE/HTTP transport (RFC 008) where reconnects cold-start frequently. Verified empirically with `node scripts/verify-lazy-imports.mjs` — for each provider, the trace contains the active module subtree (HF: 301 URLs, Ollama: 17, OpenAI: 333) and zero URLs from the other two providers' subtrees.
+
 ## [Unreleased] — structured MCP error codes
 
 ### Added

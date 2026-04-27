@@ -3,9 +3,15 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
-import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
-import { OllamaEmbeddings } from "@langchain/ollama";
-import { OpenAIEmbeddings } from "@langchain/openai";
+// Issue #59 — provider modules are loaded lazily inside initialize(). Each
+// `@langchain/*` provider drags its full dep graph (e.g. @huggingface/inference,
+// openai, ollama) at import time; eager-loading all three for a process that
+// only ever uses one was ~170 ms / 81 MB peak RSS in RFC 007 §5.1.
+// `import type` is erased by tsc, so the union type is preserved without any
+// runtime require/resolve of the unused provider's tree.
+import type { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
+import type { OllamaEmbeddings } from "@langchain/ollama";
+import type { OpenAIEmbeddings } from "@langchain/openai";
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from "langchain/text_splitter";
@@ -469,7 +475,12 @@ export interface FaissIndexManagerOptions {
 
 export class FaissIndexManager {
   private faissIndex: FaissStore | null = null;
-  private embeddings: HuggingFaceInferenceEmbeddings | OllamaEmbeddings | OpenAIEmbeddings;
+  // Issue #59 — populated by initialize() via dynamic import of the active
+  // provider's @langchain module. Definite-assignment-asserted because the
+  // class invariant is "every method that touches embeddings runs after
+  // initialize()", which holds for every call site (KnowledgeBaseServer,
+  // cli.ts, every test that exercises retrieval).
+  private embeddings!: HuggingFaceInferenceEmbeddings | OllamaEmbeddings | OpenAIEmbeddings;
   // RFC 014 — monotonic counter for unique tmp-symlink names within this
   // process. Incremented on every atomicSave; combined with PID it guarantees
   // no collision between concurrent saves on the same modelDir (which the
@@ -501,47 +512,63 @@ export class FaissIndexManager {
     this.modelDir = modelDir(this.modelId);
     this.modelNameFile = modelNameFilePath(this.modelId);
 
+    // Issue #59 — embeddings are constructed lazily inside initialize() so
+    // the unused providers' @langchain modules never load. API-key validation
+    // moves with them; the throw still fires before any disk work.
+
+    logger.info(`FaissIndexManager bound to ${this.modelDir} (provider=${this.embeddingProvider}, model=${this.modelName}, id=${this.modelId})`);
+  }
+
+  /**
+   * Issue #59 — dynamically imports the active provider's `@langchain/*`
+   * module so cold start only pays for one provider's dep graph. Validates
+   * the relevant API key first; the throw shape and message match the
+   * pre-#59 constructor exactly so caller error handling is unchanged.
+   */
+  private async createEmbeddings(): Promise<
+    HuggingFaceInferenceEmbeddings | OllamaEmbeddings | OpenAIEmbeddings
+  > {
     if (this.embeddingProvider === 'ollama') {
       logger.info(`Initializing FaissIndexManager with Ollama embeddings (model: ${this.modelName})`);
-      this.embeddings = new OllamaEmbeddings({
+      const { OllamaEmbeddings } = await import('@langchain/ollama');
+      return new OllamaEmbeddings({
         baseUrl: OLLAMA_BASE_URL,
         model: this.modelName,
       });
-    } else if (this.embeddingProvider === 'openai') {
+    }
+    if (this.embeddingProvider === 'openai') {
       logger.info(`Initializing FaissIndexManager with OpenAI embeddings (model: ${this.modelName})`);
       const openaiApiKey = process.env.OPENAI_API_KEY;
       if (!openaiApiKey) {
         throw new KBError('PROVIDER_AUTH', 'OPENAI_API_KEY environment variable is required when using OpenAI provider');
       }
-
-      this.embeddings = new OpenAIEmbeddings({
+      const { OpenAIEmbeddings } = await import('@langchain/openai');
+      return new OpenAIEmbeddings({
         apiKey: openaiApiKey,
         model: this.modelName,
       });
-    } else {
-      logger.info(`Initializing FaissIndexManager with HuggingFace embeddings (model: ${this.modelName})`);
-      const huggingFaceApiKey = process.env.HUGGINGFACE_API_KEY;
-      if (!huggingFaceApiKey) {
-        throw new KBError('PROVIDER_AUTH', 'HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider');
-      }
-
-      // HuggingFace endpoint URL is computed from HUGGINGFACE_MODEL_NAME at
-      // module load (config.ts). In the multi-model world the endpoint is
-      // per-(provider+model), so for non-default models we recompute the URL
-      // here. The router URL pattern is `router.huggingface.co/hf-inference/models/<model>/pipeline/feature-extraction`.
-      const endpointUrl = HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN
-        ? HUGGINGFACE_ENDPOINT_URL
-        : `https://router.huggingface.co/hf-inference/models/${this.modelName}/pipeline/feature-extraction`;
-
-      this.embeddings = new HuggingFaceInferenceEmbeddings({
-        apiKey: huggingFaceApiKey,
-        model: this.modelName,
-        endpointUrl,
-        provider: HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN ? undefined : HUGGINGFACE_PROVIDER,
-      });
     }
+    logger.info(`Initializing FaissIndexManager with HuggingFace embeddings (model: ${this.modelName})`);
+    const huggingFaceApiKey = process.env.HUGGINGFACE_API_KEY;
+    if (!huggingFaceApiKey) {
+      throw new KBError('PROVIDER_AUTH', 'HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider');
+    }
+    const { HuggingFaceInferenceEmbeddings } = await import('@langchain/community/embeddings/hf');
 
-    logger.info(`FaissIndexManager bound to ${this.modelDir} (provider=${this.embeddingProvider}, model=${this.modelName}, id=${this.modelId})`);
+    // HuggingFace endpoint URL is computed from HUGGINGFACE_MODEL_NAME at
+    // module load (config.ts). In the multi-model world the endpoint is
+    // per-(provider+model), so for non-default models we recompute the URL
+    // here. The router URL pattern is `router.huggingface.co/hf-inference/models/<model>/pipeline/feature-extraction`.
+    const endpointUrl = HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN
+      ? HUGGINGFACE_ENDPOINT_URL
+      : `https://router.huggingface.co/hf-inference/models/${this.modelName}/pipeline/feature-extraction`;
+
+    return new HuggingFaceInferenceEmbeddings({
+      apiKey: huggingFaceApiKey,
+      model: this.modelName,
+      endpointUrl,
+      provider: HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN ? undefined : HUGGINGFACE_PROVIDER,
+    });
   }
 
   /**
@@ -610,6 +637,13 @@ export class FaissIndexManager {
    */
   async initialize(opts: { readOnly?: boolean } = {}): Promise<void> {
     try {
+      // Issue #59 — lazy provider import. Idempotent: a second initialize()
+      // (e.g. tests that re-call after corrupt-recovery) reuses the existing
+      // embeddings client. Throws here on missing API keys, matching the
+      // pre-#59 constructor's error shape.
+      if (!this.embeddings) {
+        this.embeddings = await this.createEmbeddings();
+      }
       // Ensure this model's directory exists. mkdir-p is cheap; first-run
       // for a fresh install creates `${PATH}/models/<id>/`.
       if (!(await pathExists(this.modelDir))) {
