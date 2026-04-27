@@ -79,6 +79,31 @@ kb models remove huggingface__BAAI-bge-small-en-v1.5
 
 **MCP surface** — `retrieve_knowledge` gains an optional `model_name` argument; a new `list_models` tool returns the registered models. Tools that don't pass `model_name` keep working unchanged (wire format is byte-equal to 0.2.x).
 
+### MCP error codes
+
+Tool errors are returned with `isError: true` and a JSON text payload so MCP clients can branch without substring matching:
+
+```json
+{
+  "error": {
+    "code": "PROVIDER_AUTH",
+    "message": "OPENAI_API_KEY environment variable is required when using OpenAI provider"
+  }
+}
+```
+
+| Code | Meaning | Typical client action |
+| --- | --- | --- |
+| `INDEX_NOT_INITIALIZED` | A search ran before a FAISS index was available. | Retry after initialization or trigger a refresh. |
+| `PROVIDER_UNAVAILABLE` | The embedding provider is temporarily unavailable. | Retry with backoff. |
+| `PROVIDER_TIMEOUT` | The embedding provider timed out. | Retry with backoff. |
+| `PROVIDER_AUTH` | Provider credentials are missing or invalid. | Ask the user to configure a valid API key. |
+| `KB_NOT_FOUND` | The requested knowledge base does not exist. | Prompt for one of the listed knowledge bases. |
+| `PERMISSION_DENIED` | The server cannot read or write a required local path. | Surface to the operator/admin. |
+| `CORRUPT_INDEX` | The persisted FAISS index is corrupt or unreadable. | Rebuild or recover the index. |
+| `VALIDATION` | A caller-supplied argument failed validation. | Fix the request before retrying. |
+| `INTERNAL` | An unclassified server error occurred. | Surface the message and logs for investigation. |
+
 ### Install via Smithery
 
 To install Knowledge Base Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@jeanibarz/knowledge-base-mcp-server):

@@ -39,6 +39,7 @@ import {
 } from './active-model.js';
 import { deriveModelId, EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
+import { KBError } from './errors.js';
 
 /**
  * RFC 013 §4.7 — atomic write for `model_name.txt`. Per-model file:
@@ -308,7 +309,7 @@ function handleFsOperationError(action: string, targetPath: string, error: unkno
     if (stack) {
       logger.error(stack);
     }
-    const loggedError = new Error(message, { cause: error instanceof Error ? error : undefined }) as Error & {
+    const loggedError = new KBError('PERMISSION_DENIED', message, error) as KBError & {
       __alreadyLogged?: boolean;
     };
     loggedError.__alreadyLogged = true;
@@ -510,7 +511,7 @@ export class FaissIndexManager {
       logger.info(`Initializing FaissIndexManager with OpenAI embeddings (model: ${this.modelName})`);
       const openaiApiKey = process.env.OPENAI_API_KEY;
       if (!openaiApiKey) {
-        throw new Error('OPENAI_API_KEY environment variable is required when using OpenAI provider');
+        throw new KBError('PROVIDER_AUTH', 'OPENAI_API_KEY environment variable is required when using OpenAI provider');
       }
 
       this.embeddings = new OpenAIEmbeddings({
@@ -521,7 +522,7 @@ export class FaissIndexManager {
       logger.info(`Initializing FaissIndexManager with HuggingFace embeddings (model: ${this.modelName})`);
       const huggingFaceApiKey = process.env.HUGGINGFACE_API_KEY;
       if (!huggingFaceApiKey) {
-        throw new Error('HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider');
+        throw new KBError('PROVIDER_AUTH', 'HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider');
       }
 
       // HuggingFace endpoint URL is computed from HUGGINGFACE_MODEL_NAME at
@@ -1097,7 +1098,7 @@ export class FaissIndexManager {
    */
   async similaritySearch(query: string, k: number, threshold: number = 2, knowledgeBaseName?: string) {
     if (!this.faissIndex) {
-      throw new Error('FAISS index is not initialized');
+      throw new KBError('INDEX_NOT_INITIALIZED', 'FAISS index is not initialized');
     }
 
     const scoped = typeof knowledgeBaseName === 'string' && knowledgeBaseName.length > 0;

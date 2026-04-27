@@ -32,9 +32,23 @@ import { logger } from './logger.js';
 import { toError } from './utils.js';
 import { SseHost } from './transport/sse.js';
 import { ReindexTriggerWatcher } from './triggerWatcher.js';
+import { KBError, type KBErrorCode } from './errors.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
+
+function mcpErrorContent(error: Error): TextContent {
+  const code: KBErrorCode = error instanceof KBError ? error.code : 'INTERNAL';
+  return {
+    type: 'text',
+    text: JSON.stringify({
+      error: {
+        code,
+        message: error.message,
+      },
+    }),
+  };
+}
 
 // Re-export for backward compatibility: existing tests import
 // `sanitizeMetadataForWire` from this module. The canonical home is now
@@ -152,11 +166,7 @@ export class KnowledgeBaseServer {
     } catch (error: unknown) {
       const err = toError(error);
       logger.error('Error listing models:', err);
-      const content: TextContent = {
-        type: 'text',
-        text: `Error listing models: ${err.message}`,
-      };
-      return { content: [content], isError: true };
+      return { content: [mcpErrorContent(err)], isError: true };
     }
   }
 
@@ -174,11 +184,7 @@ export class KnowledgeBaseServer {
       if (err.stack) {
         logger.error(err.stack);
       }
-      const content: TextContent = {
-        type: 'text',
-        text: `Error listing knowledge bases: ${err.message}`,
-      };
-      return { content: [content], isError: true };
+      return { content: [mcpErrorContent(err)], isError: true };
     }
   }
 
@@ -244,8 +250,7 @@ export class KnowledgeBaseServer {
       if (err.stack) {
         logger.error(err.stack);
       }
-      const content: TextContent = { type: 'text', text: `Error retrieving knowledge: ${err.message}` };
-      return { content: [content], isError: true };
+      return { content: [mcpErrorContent(err)], isError: true };
     }
   }
 
