@@ -196,10 +196,18 @@ describe('provider construction', () => {
     delete process.env.OPENAI_API_KEY;
 
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { KBError } = await import('./errors.js');
 
     expect(() => new FaissIndexManager()).toThrow(
       'OPENAI_API_KEY environment variable is required when using OpenAI provider',
     );
+    try {
+      new FaissIndexManager();
+      throw new Error('expected constructor to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(KBError);
+      expect(error).toMatchObject({ code: 'PROVIDER_AUTH' });
+    }
     expect(openAIEmbeddingConstructorMock).not.toHaveBeenCalled();
   });
 
@@ -223,10 +231,18 @@ describe('provider construction', () => {
     delete process.env.HUGGINGFACE_API_KEY;
 
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { KBError } = await import('./errors.js');
 
     expect(() => new FaissIndexManager()).toThrow(
       'HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider',
     );
+    try {
+      new FaissIndexManager();
+      throw new Error('expected constructor to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(KBError);
+      expect(error).toMatchObject({ code: 'PROVIDER_AUTH' });
+    }
     expect(embeddingConstructorMock).not.toHaveBeenCalled();
   });
 });
@@ -1122,6 +1138,25 @@ describe('FaissIndexManager similaritySearch threshold filter', () => {
     expect(results).toHaveLength(1);
     expect(results[0].pageContent).toBe('a');
     expect(results[0].score).toBe(0.5);
+  });
+
+  it('throws INDEX_NOT_INITIALIZED when similaritySearch runs before initialize/updateIndex', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-uninitialized-'));
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { KBError } = await import('./errors.js');
+    const manager = new FaissIndexManager();
+
+    await expect(manager.similaritySearch('query', 10)).rejects.toBeInstanceOf(KBError);
+    await expect(manager.similaritySearch('query', 10)).rejects.toMatchObject({
+      code: 'INDEX_NOT_INITIALIZED',
+      message: 'FAISS index is not initialized',
+    });
   });
 
   it('keeps results at or below the default threshold of 2 and drops the rest', async () => {

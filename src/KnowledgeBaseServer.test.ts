@@ -243,10 +243,11 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(result.isError).toBe(true);
     expect(result.content).toHaveLength(1);
     expect(result.content[0].type).toBe('text');
-    expect(result.content[0].text).toMatch(/^Error listing knowledge bases:/);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error.code).toBe('INTERNAL');
     // readdir on a non-existent path emits ENOENT; the handler must surface
     // enough of the underlying failure to be actionable by the caller.
-    expect(result.content[0].text).toMatch(/ENOENT|no such file/i);
+    expect(payload.error.message).toMatch(/ENOENT|no such file/i);
   });
 
   // --- handleRetrieveKnowledge ----------------------------------------------
@@ -331,14 +332,43 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(result.isError).toBe(true);
     expect(result.content).toHaveLength(1);
     expect(result.content[0].type).toBe('text');
-    expect(result.content[0].text).toMatch(/^Error retrieving knowledge:/);
-    expect(result.content[0].text).toContain('index boom');
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      error: {
+        code: 'INTERNAL',
+        message: 'index boom',
+      },
+    });
     // If similaritySearch itself throws, the same error-path must apply.
     similaritySearchMock.mockRejectedValueOnce(new Error('search boom'));
     updateIndexMock.mockResolvedValueOnce(undefined);
     const result2 = await server['handleRetrieveKnowledge']({ query: 'q' });
     expect(result2.isError).toBe(true);
-    expect(result2.content[0].text).toContain('search boom');
+    expect(JSON.parse(result2.content[0].text)).toEqual({
+      error: {
+        code: 'INTERNAL',
+        message: 'search boom',
+      },
+    });
+  });
+
+  it('handleRetrieveKnowledge preserves KBError codes in the MCP error payload', async () => {
+    await setRetrieveEnv();
+
+    const server = await freshServer();
+    const { KBError } = await import('./errors.js');
+    updateIndexMock.mockRejectedValue(new KBError('PROVIDER_AUTH', 'provider credentials are invalid'));
+
+    const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe('text');
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      error: {
+        code: 'PROVIDER_AUTH',
+        message: 'provider credentials are invalid',
+      },
+    });
   });
 
   it('threshold argument flows through to similaritySearch(query, 10, threshold, kb)', async () => {

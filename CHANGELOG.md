@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased] — structured MCP error codes
+
+### Added
+
+- **Structured MCP error payloads.** Tool-handler failures now return `isError: true` with a JSON text payload shaped as `{ "error": { "code": "...", "message": "..." } }`, allowing clients to branch on stable error codes instead of substring matching. Closes #58.
+- **`KBError` taxonomy.** New `src/errors.ts` defines the MCP-facing error codes and `KBError` class; provider auth failures, permission failures, and uninitialized-index searches now throw classified errors.
+
 ## [Unreleased] — strict catch blocks (`error: unknown` + `toError` helper)
 
 ### Changed
