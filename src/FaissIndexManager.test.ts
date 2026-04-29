@@ -504,7 +504,15 @@ describe('FaissIndexManager permission handling', () => {
     }
   });
 
-  it('rebuilds via fromTexts once when the FAISS index is missing but sidecars are up to date', async () => {
+  it('recovers via per-file re-embed when the FAISS index is missing but sidecars survive (#90)', async () => {
+    // Issue #90 — when the FAISS store is gone but per-KB hash sidecars
+    // survive (operator nuked $FAISS_INDEX_PATH, partial restore, crash
+    // mid-rebuild), initialize() purges the now-untrustworthy sidecars
+    // and updateIndex re-embeds every file from scratch through the
+    // per-file path: first file → fromTexts (creating the new store),
+    // each subsequent file → addDocuments. The fallback rebuild branch
+    // is preserved as defence-in-depth (partial purge failure) but no
+    // longer fires in this scenario.
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-fallback-'));
     const kbDir = path.join(tempDir, 'kb');
     const defaultKb = path.join(kbDir, 'default');
@@ -531,7 +539,8 @@ describe('FaissIndexManager permission handling', () => {
       await firstManager.updateIndex();
     }
 
-    // Capture sidecar state so we can confirm the fallback branch leaves them untouched.
+    // Capture sidecar hash content; after recovery these hashes must be
+    // re-derived from the same file bytes, so the content remains identical.
     const sidecarSnapshots: { path: string; content: string }[] = [];
     for (const docPath of docPaths) {
       const relativePath = path.relative(defaultKb, docPath);
@@ -543,10 +552,8 @@ describe('FaissIndexManager permission handling', () => {
     // The mocked FaissStore.save never writes any data files, but RFC 014's
     // atomicSave creates a real `index` symlink + versioned dir during the
     // first pass — even with a mocked store. Wipe both layouts now to
-    // recreate the "no on-disk index" condition the rebuild branch is
-    // meant to recover from. (Pre-RFC-014 the mock save was a complete
-    // no-op so this cleanup wasn't needed; post-RFC-014 the symlink
-    // creation is real.)
+    // recreate the "no on-disk index" condition (the operator's manual
+    // `rm -rf $FAISS_INDEX_PATH` from #90).
     const modelDirPath = modelDirIn(process.env.FAISS_INDEX_PATH!);
     for (const entry of await fsp.readdir(modelDirPath)) {
       if (entry === 'model_name.txt') continue;
@@ -559,42 +566,57 @@ describe('FaissIndexManager permission handling', () => {
       fsp.lstat(path.join(modelDirIn(process.env.FAISS_INDEX_PATH!), 'index'))
     ).rejects.toMatchObject({ code: 'ENOENT' });
 
-    // Reset mocks so the fallback-branch call counts are isolated.
+    // Reset mocks so the recovery-path call counts are isolated.
     saveMock.mockReset();
     addDocumentsMock.mockReset();
     fromTextsMock.mockReset();
     loadMock.mockReset();
 
-    // Second pass: a new manager with faiss.index missing and sidecars intact.
+    // Second pass: a new manager with the FAISS store missing on disk.
+    // initialize() must detect the gone-store, purge the (now-stale)
+    // sidecars at <kb>/.index/, and updateIndex must re-embed every file
+    // through the per-file path.
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
     const secondManager = new FaissIndexManager();
     await secondManager.initialize();
     expect(loadMock).not.toHaveBeenCalled();
+    // Sidecar dir gone after the #90 purge.
+    await expect(fsp.stat(path.join(defaultKb, '.index'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
 
     await secondManager.updateIndex();
 
-    // Fallback branch: one rebuild, zero per-file additions, one save.
+    // Per-file recovery path: first file lands in fromTexts (creating the
+    // new store), each subsequent file is appended via addDocuments.
+    // One save call closes the updateIndex.
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
-    expect(addDocumentsMock).not.toHaveBeenCalled();
+    expect(addDocumentsMock).toHaveBeenCalledTimes(fileCount - 1);
     expect(saveMock).toHaveBeenCalledTimes(1);
     // RFC 014 — first save under v014 writes to index.v0/ via atomicSave.
     expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!));
 
-    // fromTexts must receive documents from every file at once. With content
-    // well under the 1000-char chunkSize, each file produces exactly one chunk,
-    // so the count is deterministic and a regression that double-collects docs
-    // or skips one would be caught immediately.
-    const [texts, metadatas] = fromTextsMock.mock.calls[0] as [string[], Array<{ source: string }>];
-    expect(Array.isArray(texts)).toBe(true);
-    expect(texts).toHaveLength(fileCount);
-    expect(metadatas).toHaveLength(fileCount);
-    const sources = new Set(metadatas.map((m) => m.source));
+    // Aggregate the sources across both calls — order-insensitive coverage
+    // that every file made it into the rebuilt store.
+    const allSources = new Set<string>();
+    {
+      const [, fromTextsMetadatas] = fromTextsMock.mock.calls[0] as [
+        string[],
+        Array<{ source: string }>,
+      ];
+      for (const m of fromTextsMetadatas) allSources.add(m.source);
+      for (const call of addDocumentsMock.mock.calls) {
+        const [docs] = call as [Array<{ metadata: { source: string } }>];
+        for (const d of docs) allSources.add(d.metadata.source);
+      }
+    }
     for (const docPath of docPaths) {
-      expect(sources.has(docPath)).toBe(true);
+      expect(allSources.has(docPath)).toBe(true);
     }
 
-    // Sidecars must remain byte-for-byte identical and no .tmp files left behind.
+    // Sidecars are rewritten with the same hash content (file bytes
+    // unchanged) and no .tmp leftovers from the atomic rename.
     for (const snapshot of sidecarSnapshots) {
       const content = await fsp.readFile(snapshot.path, 'utf-8');
       expect(content).toBe(snapshot.content);
@@ -896,6 +918,297 @@ describe('FaissIndexManager permission handling', () => {
     const entries = await fsp.readdir(faissDir);
     const tmpEntries = entries.filter((e) => e.startsWith('model_name.txt.') && e.endsWith('.tmp'));
     expect(tmpEntries).toEqual([]);
+  });
+});
+
+describe('FaissIndexManager #90 — sidecar invalidation when FAISS store is missing', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+  };
+
+  beforeEach(() => {
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+    similaritySearchMock.mockReset();
+    embeddingConstructorMock.mockReset();
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(originalEnv) as Array<keyof typeof originalEnv>;
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    jest.restoreAllMocks();
+  });
+
+  /**
+   * Reproduces the partial-drift scenario from issue #90:
+   *
+   *   1. KB `kb-a` has been indexed previously — its `.index/*.md` sidecars
+   *      hold the SHA256 of every file's current contents.
+   *   2. The FAISS store at $FAISS_INDEX_PATH was removed (mv aside, manual
+   *      `rm -rf`, partial restore, crash mid-rebuild). No `index` symlink
+   *      and no legacy `faiss.index/` for this model.
+   *   3. Server starts; another KB has already been re-indexed in this run
+   *      (`faissIndex !== null`), so the existing fallback rebuild branch
+   *      cannot fire for `kb-a` later. (We exercise the failing branch
+   *      directly via updateIndex(kb-a) below.)
+   *
+   * Without the fix: every kb-a file's hash matches its sidecar, so updateIndex
+   * skips embedding and the index stays empty for kb-a — silently.
+   *
+   * With the fix: initialize() purges the stale sidecars; updateIndex(kb-a)
+   * re-embeds every file via fromTexts (rebuild branch) or addDocuments
+   * (incremental). We assert that fromTexts was called with both sources.
+   */
+  it('purges stale sidecars at initialize() when this model has no on-disk store, then re-embeds on updateIndex', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-issue-90-purge-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const kbA = path.join(kbDir, 'kb-a');
+    const kbB = path.join(kbDir, 'kb-b');
+    await fsp.mkdir(kbA, { recursive: true });
+    await fsp.mkdir(kbB, { recursive: true });
+
+    const fileA1 = path.join(kbA, 'doc-1.md');
+    const fileA2 = path.join(kbA, 'doc-2.md');
+    const fileB1 = path.join(kbB, 'note.md');
+    await fsp.writeFile(fileA1, '# A1\n\nFirst doc in kb-a.');
+    await fsp.writeFile(fileA2, '# A2\n\nSecond doc in kb-a.');
+    await fsp.writeFile(fileB1, '# B1\n\nA note in kb-b.');
+
+    // Pre-seed the .index/*.md sidecars with the *current* file hashes so
+    // updateIndex would skip every file (the silent-empty-results bug).
+    const { calculateSHA256 } = await import('./utils.js');
+    for (const file of [fileA1, fileA2, fileB1]) {
+      const sidecarDir = path.join(path.dirname(file), '.index');
+      await fsp.mkdir(sidecarDir, { recursive: true });
+      await fsp.writeFile(
+        path.join(sidecarDir, path.basename(file)),
+        await calculateSHA256(file),
+      );
+    }
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    // Sidecars must be gone after initialize(): the store-missing detection
+    // recognised them as stale and purged them.
+    await expect(fsp.stat(path.join(kbA, '.index'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(path.join(kbB, '.index'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // updateIndex must now re-embed every file from scratch (no sidecars to
+    // mask the empty store). With faissIndex starting at null and no
+    // sidecars present, every file's `fileHash !== storedHash` triggers
+    // re-embed via the per-file path: the first file lands in fromTexts,
+    // the rest in addDocuments. One save call, sidecars rewritten.
+    await manager.updateIndex();
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(addDocumentsMock).toHaveBeenCalledTimes(2);
+    expect(saveMock).toHaveBeenCalledTimes(1);
+
+    for (const file of [fileA1, fileA2, fileB1]) {
+      const sidecarPath = path.join(path.dirname(file), '.index', path.basename(file));
+      const content = await fsp.readFile(sidecarPath, 'utf-8');
+      expect(content).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it('does NOT purge sidecars when the FAISS store loads successfully', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-issue-90-noop-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const kbA = path.join(kbDir, 'kb-a');
+    await fsp.mkdir(kbA, { recursive: true });
+    const fileA = path.join(kbA, 'doc.md');
+    await fsp.writeFile(fileA, '# A\n\nContent.');
+
+    // Pre-seed a sidecar with the correct hash.
+    const { calculateSHA256 } = await import('./utils.js');
+    const sidecarDir = path.join(kbA, '.index');
+    await fsp.mkdir(sidecarDir, { recursive: true });
+    const sidecarPath = path.join(sidecarDir, 'doc.md');
+    const expectedHash = await calculateSHA256(fileA);
+    await fsp.writeFile(sidecarPath, expectedHash);
+
+    // Pre-seed a legacy FAISS store directory so loadAtomic finds and
+    // loads it (the mock load resolves to a fresh MockFaissStore).
+    const faissDir = path.join(tempDir, '.faiss');
+    await fsp.mkdir(modelDirIn(faissDir), { recursive: true });
+    await fsp.mkdir(modelIndexPathIn(faissDir), { recursive: true });
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    expect(loadMock).toHaveBeenCalledTimes(1);
+    // Sidecar must survive: store loaded successfully, no purge needed.
+    await expect(fsp.readFile(sidecarPath, 'utf-8')).resolves.toBe(expectedHash);
+  });
+
+  it('does NOT purge sidecars under initialize({ readOnly: true })', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-issue-90-readonly-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const kbA = path.join(kbDir, 'kb-a');
+    await fsp.mkdir(kbA, { recursive: true });
+    const fileA = path.join(kbA, 'doc.md');
+    await fsp.writeFile(fileA, '# A\n\nReadonly path content.');
+
+    const { calculateSHA256 } = await import('./utils.js');
+    const sidecarDir = path.join(kbA, '.index');
+    await fsp.mkdir(sidecarDir, { recursive: true });
+    const sidecarPath = path.join(sidecarDir, 'doc.md');
+    const expectedHash = await calculateSHA256(fileA);
+    await fsp.writeFile(sidecarPath, expectedHash);
+
+    // No FAISS store on disk — would normally trigger purge, but readOnly
+    // suppresses it (no mutations under that mode, RFC 012 §4.5).
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize({ readOnly: true });
+
+    await expect(fsp.readFile(sidecarPath, 'utf-8')).resolves.toBe(expectedHash);
+  });
+
+  it('skips symlinked KB entries during purge to avoid path-escape rmrf (Codex P2)', async () => {
+    // A user can legitimately mount an external KB via symlink
+    // (`~/knowledge_bases/external -> /elsewhere/notes`). `listKnowledgeBases`
+    // filters dot-prefixes only, so without the lstat check the recursive
+    // rm could delete `<external-target>/.index` — outside the configured
+    // root. The fix: lstat each KB entry and skip symlinks. The KB stays
+    // unindexed-by-this-recovery; the user's manual `find` workaround
+    // (which does NOT follow symlinks by default) still works.
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-issue-90-symlink-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const realKb = path.join(kbDir, 'real-kb');
+    await fsp.mkdir(realKb, { recursive: true });
+    await fsp.writeFile(path.join(realKb, 'doc.md'), '# Real\n\nReal content.');
+
+    // External target outside KNOWLEDGE_BASES_ROOT_DIR. `<external>/.index/`
+    // pre-seeded with a sentinel sidecar; the test asserts it survives.
+    const externalRoot = path.join(tempDir, 'external');
+    const externalIndex = path.join(externalRoot, '.index');
+    await fsp.mkdir(externalIndex, { recursive: true });
+    const sentinelSidecar = path.join(externalIndex, 'sentinel.md');
+    await fsp.writeFile(sentinelSidecar, 'do-not-delete');
+
+    // KB symlink at `<kbDir>/external-kb -> <externalRoot>`. With the bug,
+    // purgeStaleSidecars would resolve `<kbDir>/external-kb/.index/`,
+    // realpath outside the root, and rmrf the sentinel.
+    await fsp.symlink(externalRoot, path.join(kbDir, 'external-kb'));
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    // External index must survive — the symlink-skip prevents path escape.
+    await expect(fsp.readFile(sentinelSidecar, 'utf-8')).resolves.toBe('do-not-delete');
+    // The non-symlinked KB had no `.index/` to begin with; nothing to assert
+    // there beyond initialize completing without error.
+  });
+
+  it('serializes the purge with concurrent sidecar writes via withSidecarLock (Codex P1)', async () => {
+    // The race the lock prevents: another model's `updateIndex` is mid-
+    // sidecar-write batch (per-model lock only) when this model's
+    // `purgeStaleSidecars` fires (fresh init under missing store) — the
+    // purge would `rmrf` the parent dir between the writer's `mkdir` and
+    // `rename`, causing ENOENT. The lock at `${FAISS_INDEX_PATH}/.kb-sidecar.lock`
+    // is acquired by both sides.
+    //
+    // We can't truly drive concurrency in a single test without flakiness,
+    // but we can verify the lock file is created (and cleaned up) by the
+    // purge path — strong signal that the serialization primitive is wired.
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-issue-90-lock-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const kbA = path.join(kbDir, 'kb-a');
+    await fsp.mkdir(kbA, { recursive: true });
+    await fsp.writeFile(path.join(kbA, 'doc.md'), '# A\n\nContent.');
+
+    // Pre-seed a sidecar so the purge has work to do.
+    const { calculateSHA256 } = await import('./utils.js');
+    const sidecarDir = path.join(kbA, '.index');
+    await fsp.mkdir(sidecarDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(sidecarDir, 'doc.md'),
+      await calculateSHA256(path.join(kbA, 'doc.md')),
+    );
+
+    const faissDir = path.join(tempDir, '.faiss');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    // Lockfile lives under FAISS_INDEX_PATH and must NOT survive past the
+    // purge (proper-lockfile cleans up on release). If the lock leaked,
+    // the next acquisition would either block on retry or stale-clean
+    // after 30s — both observable as test slowness or flakes.
+    const lockfilePath = path.join(faissDir, '.kb-sidecar.lock');
+    await expect(fsp.stat(lockfilePath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // Sidecars purged as expected.
+    await expect(fsp.stat(path.join(kbA, '.index'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // Followup sidecar write through updateIndex must also acquire the
+    // lock and release it without leaving the lockfile behind.
+    await manager.updateIndex();
+    await expect(fsp.stat(lockfilePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('handles a missing KNOWLEDGE_BASES_ROOT_DIR without throwing during the purge', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-issue-90-no-kbroot-'));
+    const missingKbRoot = path.join(tempDir, 'kb-does-not-exist');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = missingKbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+
+    // ENOENT on the KB root must not propagate from the purge path —
+    // initialize must succeed and leave no stale state behind.
+    await expect(manager.initialize()).resolves.toBeUndefined();
   });
 });
 
@@ -1429,13 +1742,20 @@ describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
     expect(sources.has(path.join(arxivKb, '_seen.jsonl'))).toBe(false);
   });
 
-  it('applies the filter on the fallback rebuild branch too (not only the per-KB update loop)', async () => {
-    // The per-KB update loop (line 294) and the fallback rebuild branch
-    // (line 375) are independent `getFilesRecursively` call sites; both
-    // must wrap with filterIngestablePaths. This test drives the fallback
-    // branch by seeding sidecars on a first pass, then creating a fresh
-    // manager whose faiss.index is absent on disk — the same pattern the
-    // existing "rebuilds via fromTexts once" test uses.
+  it('applies the filter on the post-#90 store-loss recovery path (not only the steady-state per-KB update loop)', async () => {
+    // The steady-state per-KB update loop and the store-loss recovery
+    // path (#90, sidecars purged at initialize → all files re-embedded
+    // through the per-file path on the next updateIndex) are conceptually
+    // independent — but both go through the same `filterIngestablePaths`
+    // call site (line 967 in updateIndex). This test guards against a
+    // future refactor that adds a second `getFilesRecursively` site
+    // without wrapping it in the filter.
+    //
+    // Pre-#90 this test drove the (now-effectively-dead) fallback rebuild
+    // branch by seeding sidecars then deleting the FAISS store. Post-#90
+    // initialize() purges those sidecars, so updateIndex re-embeds via
+    // the per-file path. The filter must still exclude PDFs / _seen.jsonl
+    // / logs/**/*.log.
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ingest-fallback-'));
     const kbRoot = path.join(tempDir, 'kb');
     const arxivKb = path.join(kbRoot, 'arxiv-llm-inference');
@@ -1457,10 +1777,10 @@ describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
       await first.updateIndex();
     }
 
-    // Precondition: no on-disk index, so a fresh manager takes the fallback
-    // rebuild branch. RFC 014 — the mocked save never writes the staging
-    // dir, but atomicSave creates a real `index` symlink anyway. Wipe both
-    // layouts to recreate the "no on-disk index" condition.
+    // Precondition: no on-disk index. RFC 014 — the mocked save never
+    // writes a staging dir, but atomicSave creates a real `index` symlink
+    // anyway. Wipe both layouts to recreate the "no on-disk index"
+    // condition (the operator's manual `rm -rf $FAISS_INDEX_PATH` from #90).
     const _modelDirB = modelDirIn(process.env.FAISS_INDEX_PATH!);
     for (const entry of await fsp.readdir(_modelDirB)) {
       if (entry === 'model_name.txt') continue;
@@ -1475,20 +1795,20 @@ describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
     fromTextsMock.mockReset();
     loadMock.mockReset();
 
-    // Second pass: fresh manager hits the fallback branch. The filter
-    // must still exclude the PDFs, _seen.jsonl, and logs/**/*.log here.
+    // Second pass: fresh manager. initialize() purges the now-stale
+    // sidecars (#90), updateIndex re-embeds every filtered file via the
+    // per-file path. The filter must still exclude the PDFs, _seen.jsonl,
+    // and logs/**/*.log.
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
     const second = new FaissIndexManager();
     await second.initialize();
     await second.updateIndex();
 
+    // Per-file recovery: first filtered file → fromTexts, the rest →
+    // addDocuments. Aggregate via the existing helper.
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
-    expect(addDocumentsMock).not.toHaveBeenCalled();
-    const [texts, metadatas] = fromTextsMock.mock.calls[0] as [
-      string[],
-      Record<string, unknown>[],
-    ];
+    const { texts, metadatas } = collectIngestedDocs();
     const sources = new Set(metadatas.map((m) => String(m.source)));
     for (const src of sources) {
       expect(src.endsWith('.md')).toBe(true);

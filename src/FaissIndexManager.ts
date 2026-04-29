@@ -46,6 +46,7 @@ import {
 import { deriveModelId, EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
 import { KBError } from './errors.js';
+import { listKnowledgeBases } from './kb-fs.js';
 import { makeOllamaOnFailedAttempt } from './ollama-error.js';
 
 /**
@@ -346,6 +347,52 @@ function handleFsOperationError(action: string, targetPath: string, error: unkno
 let bootstrapPromise: Promise<void> | null = null;
 
 const MIGRATION_LOCK_PATH = path.join(FAISS_INDEX_PATH, '.kb-migration.lock');
+
+// Issue #90 follow-up — cross-model serialization for per-KB hash sidecar
+// state at `<kb>/.index/`. Sidecars are SHARED across models (the on-disk
+// shape is per-KB, not per-model), but `updateIndex` historically protected
+// them with a PER-MODEL write lock. That left two concurrent windows racy:
+//   1. Two models updating different KBs simultaneously: harmless overwrite
+//      with the same hash bytes.
+//   2. One model's `purgeStaleSidecars` (init under missing store) firing
+//      while another model's `updateIndex` is mid-`Promise.all` of sidecar
+//      writes: the writer's `fsp.rename(tmp, target)` ENOENTs because the
+//      parent `.index/` dir was just rmrf'd by the purger.
+//
+// The shared lock at `${FAISS_INDEX_PATH}/.kb-sidecar.lock` serializes
+// every cross-model sidecar mutation: both the purge and the post-save
+// sidecar write batch acquire it briefly. The lock is held only across
+// filesystem syscalls (no embedding work), so cross-model contention adds
+// at most milliseconds per `updateIndex`.
+const SIDECAR_LOCK_PATH = path.join(FAISS_INDEX_PATH, '.kb-sidecar.lock');
+
+async function withSidecarLock<T>(action: () => Promise<T>): Promise<T> {
+  await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
+  let release: (() => Promise<void>) | null = null;
+  try {
+    release = await properLockfile.lock(FAISS_INDEX_PATH, {
+      lockfilePath: SIDECAR_LOCK_PATH,
+      stale: 30_000,
+      retries: { retries: 10, factor: 1.5, minTimeout: 50, maxTimeout: 500 },
+    });
+  } catch (err) {
+    // Lock acquisition exhausted retries: a peer is holding it for an
+    // unusually long time, or we're on a filesystem where proper-lockfile
+    // can't operate. Either way, falling through is safer than aborting:
+    // the worst case (rename ENOENT from a concurrent rmrf) is recoverable
+    // on the next updateIndex pass, while a hard abort poisons the caller.
+    logger.warn(
+      `Issue #90 sidecar lock: could not acquire ${SIDECAR_LOCK_PATH}, proceeding without serialization: ${(err as Error).message}`,
+    );
+  }
+  try {
+    return await action();
+  } finally {
+    if (release) {
+      try { await release(); } catch { /* best-effort */ }
+    }
+  }
+}
 
 const DEFAULT_CHUNK_SIZE = 1000;
 const DEFAULT_CHUNK_OVERLAP = 200;
@@ -669,6 +716,41 @@ export class FaissIndexManager {
       // versioned layout is corrupt, and vice versa).
       this.faissIndex = await this.loadAtomic();
 
+      // Issue #90 — sidecar invalidation when this model's FAISS store is gone.
+      //
+      // Per-KB hash sidecars at `<kb>/.index/<file>` cache the SHA256 of the
+      // last embedded version. updateIndex skips re-embedding when the
+      // current file hash matches the sidecar hash. If the FAISS store for
+      // this model has been removed but sidecars survive (manual rm of
+      // $FAISS_INDEX_PATH, the workaround for #85, partial backup restore,
+      // or a crash mid-rebuild), every file with a matching sidecar is
+      // skipped silently — vectors are gone but the cache says "indexed".
+      // retrieve_knowledge then returns nothing.
+      //
+      // The existing fallback rebuild branch in updateIndex only fires when
+      // `this.faissIndex === null` AT THAT MOMENT. Once one KB has been
+      // re-indexed (faissIndex !== null) every later updateIndex(otherKb)
+      // trusts its sidecars and skips silently — exactly the partial-drift
+      // case the reporter hit.
+      //
+      // Fix: at initialize, if this model's store is missing, treat any
+      // pre-existing sidecars as untrustworthy and purge them. The next
+      // updateIndex sees no sidecars and re-embeds every file from scratch.
+      //
+      // Multi-model trade-off: when a second model is registered and its
+      // store doesn't exist yet, this purges sidecars that were valid for
+      // the existing model. The other model's vectors stay intact (its
+      // store isn't touched), so `retrieve_knowledge` against it still
+      // returns results; the next `updateIndex` against it re-embeds every
+      // file once. A single source of truth (RFC 013 option 3 — hash
+      // inside docstore.json metadata) eliminates the trade-off; the
+      // lighter purge is preferable to silent empty results until then.
+      //
+      // Skipped under readOnly:true (no mutation allowed in that mode).
+      if (this.faissIndex === null && !opts.readOnly) {
+        await this.purgeStaleSidecars();
+      }
+
       // Save the current model name for this model's dir. Skipped under
       // readOnly:true (RFC 012 §4.5).
       if (!opts.readOnly) {
@@ -687,6 +769,103 @@ export class FaissIndexManager {
         }
       }
       throw err;
+    }
+  }
+
+  /**
+   * Issue #90 — purge per-KB hash sidecars at every KB under
+   * KNOWLEDGE_BASES_ROOT_DIR. Called from initialize when this model's
+   * FAISS store is missing on disk; the sidecars would otherwise mask the
+   * gone-vectors and cause silently-empty retrievals.
+   *
+   * Best-effort per KB: a single KB's permission error is logged and
+   * skipped, never propagated — the alternative (failing startup over a
+   * stale-cache cleanup) is worse than carrying one stale KB into the
+   * next updateIndex, which will at worst log a similar error itself.
+   *
+   * Concurrency: holds `withSidecarLock` so a concurrent `updateIndex`
+   * sidecar write batch (per-model lock only) can't race the rmrf and
+   * see ENOENT mid-rename. (Codex review P1.)
+   *
+   * Symlink containment: each KB entry is `lstat`-checked; symlinked KB
+   * entries are skipped with a WARN. `listKnowledgeBases` filters
+   * dot-prefixes only, so an unfiltered symlink could resolve outside
+   * `KNOWLEDGE_BASES_ROOT_DIR` and a recursive rm would then delete an
+   * external `.index/` directory. (Codex review P2.) The user-visible
+   * cost is that a symlinked KB doesn't get auto-recovery from the #90
+   * silent-empty-results bug; the documented manual workaround
+   * (`find ~/knowledge_bases -type d -name .index -exec rm -rf {} +`)
+   * still works for those KBs since `find` does not follow symlinks
+   * by default.
+   */
+  private async purgeStaleSidecars(): Promise<void> {
+    await withSidecarLock(() => this.purgeStaleSidecarsLocked());
+  }
+
+  private async purgeStaleSidecarsLocked(): Promise<void> {
+    let kbs: string[];
+    try {
+      kbs = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return;
+      logger.warn(
+        `Issue #90 sidecar purge: could not list KBs at ${KNOWLEDGE_BASES_ROOT_DIR}: ${(err as Error).message}`,
+      );
+      return;
+    }
+
+    const purged: string[] = [];
+    const skippedSymlinks: string[] = [];
+    for (const kb of kbs) {
+      const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb);
+
+      // Codex review P2 — reject symlinked KB entries before recursive rm.
+      // lstat (NOT stat) so we observe the symlink itself, not its target.
+      let kbStat: Awaited<ReturnType<typeof fsp.lstat>>;
+      try {
+        kbStat = await fsp.lstat(kbPath);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') continue;
+        logger.warn(
+          `Issue #90 sidecar purge: lstat failed for ${kbPath}: ${(err as Error).message}`,
+        );
+        continue;
+      }
+      if (kbStat.isSymbolicLink()) {
+        skippedSymlinks.push(kb);
+        continue;
+      }
+      if (!kbStat.isDirectory()) continue;
+
+      const indexDir = path.join(kbPath, '.index');
+      if (!(await pathExists(indexDir))) continue;
+      try {
+        await fsp.rm(indexDir, { recursive: true, force: true });
+        purged.push(kb);
+      } catch (err) {
+        logger.warn(
+          `Issue #90 sidecar purge: failed to remove ${indexDir}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    if (purged.length > 0) {
+      logger.warn(
+        `Issue #90: FAISS store for model ${this.modelId} not found on disk but ` +
+          `per-KB hash sidecars existed. Purged stale sidecars for ${purged.length} ` +
+          `knowledge base(s) [${purged.join(', ')}] so the next updateIndex re-embeds. ` +
+          `Common causes: manual removal of $FAISS_INDEX_PATH, partial backup restore, ` +
+          `crash mid-rebuild, or model switch with the prior model's store moved aside.`,
+      );
+    }
+    if (skippedSymlinks.length > 0) {
+      logger.warn(
+        `Issue #90 sidecar purge: skipped ${skippedSymlinks.length} symlinked KB entry(ies) ` +
+          `[${skippedSymlinks.join(', ')}] to avoid path-escape rmrf via $KNOWLEDGE_BASES_ROOT_DIR. ` +
+          `If those KBs need their sidecars cleared, run \`find <kb-target> -type d -name .index -exec rm -rf {} +\` manually.`,
+      );
     }
   }
 
@@ -1102,22 +1281,35 @@ export class FaissIndexManager {
         // rename completes will re-embed the unhashed files on next start,
         // duplicating their vectors until RFC 007 PR 2.1 lands the pending
         // manifest protocol.
-        await Promise.all(
-          pendingHashWrites.map(async ({ path: target, hash }) => {
-            const tmpPath = `${target}.tmp`;
-            try {
-              await fsp.writeFile(tmpPath, hash, { encoding: 'utf-8' });
-              await fsp.rename(tmpPath, target);
-            } catch (error) {
+        //
+        // Issue #90 follow-up (Codex P1) — the sidecar write batch is wrapped
+        // in `withSidecarLock` so a concurrent model's `purgeStaleSidecars`
+        // can't rmrf `<kb>/.index/` between our `mkdir` and `rename` and
+        // ENOENT this writer. The lock is held only across the syscall
+        // batch, no embedding work — cross-model contention is bounded to
+        // milliseconds.
+        await withSidecarLock(async () => {
+          await Promise.all(
+            pendingHashWrites.map(async ({ path: target, hash }) => {
+              const tmpPath = `${target}.tmp`;
               try {
-                await fsp.unlink(tmpPath);
-              } catch {
-                // best-effort cleanup; original error is what matters
+                // Recreate the parent if a peer purged it between the
+                // pre-loop mkdir and now. mkdir({recursive:true}) is a
+                // no-op when the dir already exists.
+                await fsp.mkdir(path.dirname(target), { recursive: true });
+                await fsp.writeFile(tmpPath, hash, { encoding: 'utf-8' });
+                await fsp.rename(tmpPath, target);
+              } catch (error) {
+                try {
+                  await fsp.unlink(tmpPath);
+                } catch {
+                  // best-effort cleanup; original error is what matters
+                }
+                handleFsOperationError('write file hash metadata to', target, error);
               }
-              handleFsOperationError('write file hash metadata to', target, error);
-            }
-          })
-        );
+            })
+          );
+        });
       }
       logger.debug('FAISS index update process completed.');
     } catch (error: unknown) {
