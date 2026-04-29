@@ -2,6 +2,7 @@
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { minimatch } from 'minimatch';
 import * as properLockfile from 'proper-lockfile';
 // Issue #59 — provider modules are loaded lazily inside initialize(). Each
 // `@langchain/*` provider drags its full dep graph (e.g. @huggingface/inference,
@@ -1399,17 +1400,50 @@ export class FaissIndexManager {
    * Performs a similarity search and returns the results with their similarity scores.
    * When `knowledgeBaseName` is provided, results are scoped to documents whose `source`
    * metadata lives under that KB directory; otherwise all KBs are searched.
+   *
+   * Issue #53 — `filters` adds three optional metadata POST-filters on top of
+   * the score + KB filter that already runs here. Each filter is applied to
+   * `doc.metadata` after FAISS returns; the FAISS index itself is never
+   * pre-filtered (langchain's FaissStore silently drops filter args). When
+   * any filter is active we over-fetch up to `ntotal` so a small `k` doesn't
+   * starve once the post-filter drops the top-ranked unfiltered hits.
+   *
+   *   `extensions`  AND-with-existing — exact match on `metadata.extension`
+   *                 (already lowercased + dotted at ingest, so ".md" works
+   *                 directly; we lowercase the filter value and add a leading
+   *                 dot defensively).
+   *   `pathGlob`    AND-with-existing — minimatch against the KB-internal
+   *                 relative path (i.e. `metadata.relativePath` with the KB
+   *                 name segment stripped). This lets `"runbooks/**"` match
+   *                 `<any-kb>/runbooks/onboarding.md` without forcing the
+   *                 caller to know the KB name. `dot: true, nonegate: true`
+   *                 mirror the ingest filter's pattern semantics.
+   *   `tags`        AND semantics: every entry in the filter must be present
+   *                 on `metadata.tags`. Empty filter array short-circuits.
    */
-  async similaritySearch(query: string, k: number, threshold: number = 2, knowledgeBaseName?: string) {
+  async similaritySearch(
+    query: string,
+    k: number,
+    threshold: number = 2,
+    knowledgeBaseName?: string,
+    filters?: { extensions?: readonly string[]; pathGlob?: string; tags?: readonly string[] },
+  ) {
     if (!this.faissIndex) {
       throw new KBError('INDEX_NOT_INITIALIZED', 'FAISS index is not initialized');
     }
 
     const scoped = typeof knowledgeBaseName === 'string' && knowledgeBaseName.length > 0;
-    // When scoping to a KB, over-fetch up to the whole index so we can still
-    // surface up to `k` same-KB hits when other KBs dominate the top of the
-    // unfiltered ranking.
-    const fetchK = scoped
+
+    const normalizedExtensions = normalizeExtensionFilter(filters?.extensions);
+    const pathGlob = filters?.pathGlob && filters.pathGlob.length > 0 ? filters.pathGlob : undefined;
+    const requiredTags = filters?.tags?.filter((t): t is string => typeof t === 'string' && t.length > 0) ?? [];
+    const hasMetadataFilter =
+      normalizedExtensions !== undefined || pathGlob !== undefined || requiredTags.length > 0;
+
+    // Over-fetch when scoping or when any metadata post-filter is active so
+    // the post-filter doesn't starve `k` when other docs dominate the
+    // unfiltered top-K. The cost (linear in ntotal) is bounded by KB size.
+    const fetchK = scoped || hasMetadataFilter
       ? Math.max(k, this.faissIndex.index.ntotal())
       : k;
 
@@ -1426,9 +1460,32 @@ export class FaissIndexManager {
       if (score > threshold) {
         return false;
       }
+      const metadata = doc.metadata as Record<string, unknown> | undefined;
       if (kbPrefix) {
-        const source = (doc.metadata as { source?: unknown })?.source;
-        return typeof source === 'string' && source.startsWith(kbPrefix);
+        const source = metadata?.source;
+        if (typeof source !== 'string' || !source.startsWith(kbPrefix)) {
+          return false;
+        }
+      }
+      if (normalizedExtensions !== undefined) {
+        const ext = metadata?.extension;
+        if (typeof ext !== 'string' || !normalizedExtensions.has(ext.toLowerCase())) {
+          return false;
+        }
+      }
+      if (pathGlob !== undefined) {
+        const rel = metadata?.relativePath;
+        if (typeof rel !== 'string' || !matchesPathGlob(rel, pathGlob)) {
+          return false;
+        }
+      }
+      if (requiredTags.length > 0) {
+        const tags = metadata?.tags;
+        if (!Array.isArray(tags)) return false;
+        const tagSet = new Set(tags.filter((x): x is string => typeof x === 'string'));
+        for (const required of requiredTags) {
+          if (!tagSet.has(required)) return false;
+        }
       }
       return true;
     });
@@ -1438,4 +1495,43 @@ export class FaissIndexManager {
       score,
     }));
   }
+}
+
+/**
+ * Issue #53 — normalize the extensions filter into a lower-cased, dot-prefixed
+ * Set for O(1) lookup. Returns `undefined` when the filter is absent or empty
+ * (so the caller can skip the filter entirely instead of rejecting every doc).
+ * Empty/whitespace entries are dropped silently — a trailing `,` or stray
+ * empty string in the user's array shouldn't cause a no-results.
+ */
+function normalizeExtensionFilter(raw: readonly string[] | undefined): Set<string> | undefined {
+  if (!raw || raw.length === 0) return undefined;
+  const out = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim().toLowerCase();
+    if (trimmed.length === 0) continue;
+    out.add(trimmed.startsWith('.') ? trimmed : `.${trimmed}`);
+  }
+  return out.size > 0 ? out : undefined;
+}
+
+/**
+ * Issue #53 — match `pathGlob` against the KB-internal relative path.
+ * `metadata.relativePath` is KNOWLEDGE_BASES_ROOT_DIR-relative (i.e.
+ * `<kb-name>/path/to/file.md`). The user's glob is meant to read against the
+ * in-KB path — `"runbooks/**"` should match any KB's `runbooks/foo.md` —
+ * so we strip the KB-name segment and match against the rest. The full
+ * KB-prefixed form is also tried as a fallback so an explicit prefix in the
+ * pattern (e.g. `"my-kb/notes/**"`) still works.
+ */
+function matchesPathGlob(relativePath: string, pattern: string): boolean {
+  const opts = { dot: true, nonegate: true } as const;
+  if (minimatch(relativePath, pattern, opts)) return true;
+  const firstSep = relativePath.indexOf('/');
+  if (firstSep > 0) {
+    const inKb = relativePath.slice(firstSep + 1);
+    if (minimatch(inKb, pattern, opts)) return true;
+  }
+  return false;
 }

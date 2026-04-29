@@ -2255,3 +2255,321 @@ describe('FaissIndexManager integration — frontmatter + pdf_path (RFC 011 M2)'
     }
   });
 });
+
+describe('FaissIndexManager similaritySearch metadata filters (#53)', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+  };
+
+  beforeEach(() => {
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+    similaritySearchMock.mockReset();
+    embeddingConstructorMock.mockReset();
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(originalEnv) as Array<keyof typeof originalEnv>;
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    jest.restoreAllMocks();
+  });
+
+  // The mock FaissStore exposes ntotal() unconditionally — the real one is set
+  // up by FaissStore.fromTexts. Patch it on the instance after updateIndex.
+  async function setupReadyManager() {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-filters-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'doc.md'), '# Title\n\nContent for filter tests.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+    // Provide ntotal() so the over-fetch branch (scoped or filtered) doesn't
+    // crash on undefined.index. The real FaissStore exposes this; the mock
+    // does not, so wire the minimum surface the implementation reads.
+    interface IndexHandle { index: { ntotal: () => number } }
+    (manager as unknown as IndexHandle).index = { ntotal: () => 100 };
+    const internal = manager as unknown as { faissIndex: { index: { ntotal: () => number } } };
+    internal.faissIndex.index = { ntotal: () => 100 };
+    return manager;
+  }
+
+  it('returns only chunks whose extension is in the extensions filter', async () => {
+    const manager = await setupReadyManager();
+    const md = { pageContent: 'm', metadata: { source: '/abs/a.md', extension: '.md', relativePath: 'kb/a.md' } };
+    const pdf = { pageContent: 'p', metadata: { source: '/abs/a.pdf', extension: '.pdf', relativePath: 'kb/a.pdf' } };
+    similaritySearchMock.mockResolvedValueOnce([
+      [md, 0.1],
+      [pdf, 0.2],
+    ]);
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      extensions: ['.md'],
+    });
+
+    expect(results.map((r) => r.pageContent)).toEqual(['m']);
+  });
+
+  it('extensions filter is case-insensitive and tolerates missing leading dot', async () => {
+    const manager = await setupReadyManager();
+    const md = { pageContent: 'm', metadata: { extension: '.md', relativePath: 'kb/a.md' } };
+    const txt = { pageContent: 't', metadata: { extension: '.txt', relativePath: 'kb/a.txt' } };
+    similaritySearchMock.mockResolvedValueOnce([
+      [md, 0.1],
+      [txt, 0.2],
+    ]);
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      extensions: ['MD'],
+    });
+
+    expect(results.map((r) => r.pageContent)).toEqual(['m']);
+  });
+
+  it('drops every result when no chunk matches the extensions filter', async () => {
+    const manager = await setupReadyManager();
+    const md = { pageContent: 'm', metadata: { extension: '.md', relativePath: 'kb/a.md' } };
+    similaritySearchMock.mockResolvedValueOnce([[md, 0.1]]);
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      extensions: ['.pdf'],
+    });
+
+    expect(results).toEqual([]);
+  });
+
+  it('path_glob matches the in-KB relative path (KB-name segment stripped)', async () => {
+    const manager = await setupReadyManager();
+    const runbook = {
+      pageContent: 'on',
+      metadata: { extension: '.md', relativePath: 'ops/runbooks/oncall.md' },
+    };
+    const meeting = {
+      pageContent: 'mt',
+      metadata: { extension: '.md', relativePath: 'ops/meetings/standup.md' },
+    };
+    similaritySearchMock.mockResolvedValueOnce([
+      [runbook, 0.1],
+      [meeting, 0.2],
+    ]);
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      pathGlob: 'runbooks/**',
+    });
+
+    expect(results.map((r) => r.pageContent)).toEqual(['on']);
+  });
+
+  it('path_glob also matches against the full KB-prefixed relativePath', async () => {
+    const manager = await setupReadyManager();
+    const a = { pageContent: 'a', metadata: { relativePath: 'alpha/notes/x.md', extension: '.md' } };
+    const b = { pageContent: 'b', metadata: { relativePath: 'beta/notes/y.md', extension: '.md' } };
+    similaritySearchMock.mockResolvedValueOnce([
+      [a, 0.1],
+      [b, 0.2],
+    ]);
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      pathGlob: 'alpha/**',
+    });
+
+    expect(results.map((r) => r.pageContent)).toEqual(['a']);
+  });
+
+  it('tags filter requires every tag (AND semantics)', async () => {
+    const manager = await setupReadyManager();
+    const both = {
+      pageContent: 'both',
+      metadata: { tags: ['ops', 'oncall'], extension: '.md', relativePath: 'kb/a.md' },
+    };
+    const opsOnly = {
+      pageContent: 'opsOnly',
+      metadata: { tags: ['ops'], extension: '.md', relativePath: 'kb/b.md' },
+    };
+    const noTags = {
+      pageContent: 'noTags',
+      metadata: { tags: [], extension: '.md', relativePath: 'kb/c.md' },
+    };
+    similaritySearchMock.mockResolvedValueOnce([
+      [both, 0.1],
+      [opsOnly, 0.2],
+      [noTags, 0.3],
+    ]);
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      tags: ['ops', 'oncall'],
+    });
+
+    expect(results.map((r) => r.pageContent)).toEqual(['both']);
+  });
+
+  it('tags filter rejects chunks with no tags array on metadata', async () => {
+    const manager = await setupReadyManager();
+    const noTagField = {
+      pageContent: 'x',
+      metadata: { extension: '.md', relativePath: 'kb/a.md' },
+    };
+    similaritySearchMock.mockResolvedValueOnce([[noTagField, 0.1]]);
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      tags: ['ops'],
+    });
+
+    expect(results).toEqual([]);
+  });
+
+  it('combined filters AND together: extension + path_glob + tags', async () => {
+    const manager = await setupReadyManager();
+    const match = {
+      pageContent: 'match',
+      metadata: {
+        extension: '.md',
+        relativePath: 'kb/runbooks/oncall.md',
+        tags: ['ops', 'oncall'],
+      },
+    };
+    const wrongExt = {
+      pageContent: 'wrongExt',
+      metadata: {
+        extension: '.txt',
+        relativePath: 'kb/runbooks/oncall.txt',
+        tags: ['ops', 'oncall'],
+      },
+    };
+    const wrongPath = {
+      pageContent: 'wrongPath',
+      metadata: {
+        extension: '.md',
+        relativePath: 'kb/meetings/standup.md',
+        tags: ['ops', 'oncall'],
+      },
+    };
+    const missingTag = {
+      pageContent: 'missingTag',
+      metadata: {
+        extension: '.md',
+        relativePath: 'kb/runbooks/oncall.md',
+        tags: ['ops'],
+      },
+    };
+    similaritySearchMock.mockResolvedValueOnce([
+      [match, 0.1],
+      [wrongExt, 0.15],
+      [wrongPath, 0.2],
+      [missingTag, 0.25],
+    ]);
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      extensions: ['.md'],
+      pathGlob: 'runbooks/**',
+      tags: ['ops', 'oncall'],
+    });
+
+    expect(results.map((r) => r.pageContent)).toEqual(['match']);
+  });
+
+  it('empty filter arrays are treated as absent and do not exclude every chunk', async () => {
+    const manager = await setupReadyManager();
+    const a = { pageContent: 'a', metadata: { extension: '.md', relativePath: 'kb/a.md', tags: [] } };
+    similaritySearchMock.mockResolvedValueOnce([[a, 0.1]]);
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      extensions: [],
+      tags: [],
+    });
+
+    expect(results.map((r) => r.pageContent)).toEqual(['a']);
+  });
+
+  it('end-to-end: ingest reads YAML frontmatter tags, then tags filter selects chunks at search time', async () => {
+    // Real ingest path through buildChunkDocuments: frontmatter is parsed,
+    // tags land on every chunk's metadata, the post-filter then selects.
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-filters-e2e-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const kb = path.join(kbDir, 'mixed');
+    await fsp.mkdir(kb, { recursive: true });
+    await fsp.writeFile(
+      path.join(kb, 'tagged.md'),
+      '---\ntags: [ops, oncall]\n---\n# Title\n\nOncall runbook content.\n',
+    );
+    await fsp.writeFile(
+      path.join(kb, 'untagged.md'),
+      '# Untagged\n\nGeneric notes without frontmatter.\n',
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+    const internal = manager as unknown as { faissIndex: { index: { ntotal: () => number } } };
+    internal.faissIndex.index = { ntotal: () => 100 };
+
+    // Capture the metadata that ingest stamped on the chunks for both files;
+    // feed those exact objects back via the FAISS mock so the post-filter
+    // sees the real shape produced by buildChunkDocuments.
+    const taggedChunks: Array<{ pageContent: string; metadata: Record<string, unknown> }> = [];
+    const untaggedChunks: Array<{ pageContent: string; metadata: Record<string, unknown> }> = [];
+    for (const call of fromTextsMock.mock.calls) {
+      const [texts, metadatas] = call as [string[], Record<string, unknown>[]];
+      for (let i = 0; i < texts.length; i += 1) {
+        const target = (metadatas[i].source as string).endsWith('/tagged.md') ? taggedChunks : untaggedChunks;
+        target.push({ pageContent: texts[i], metadata: metadatas[i] });
+      }
+    }
+    for (const call of addDocumentsMock.mock.calls) {
+      const [docs] = call as [Array<{ pageContent: string; metadata: Record<string, unknown> }>];
+      for (const d of docs) {
+        const target = (d.metadata.source as string).endsWith('/tagged.md') ? taggedChunks : untaggedChunks;
+        target.push(d);
+      }
+    }
+    expect(taggedChunks.length).toBeGreaterThan(0);
+    expect(untaggedChunks.length).toBeGreaterThan(0);
+    expect(taggedChunks[0].metadata.tags).toEqual(['ops', 'oncall']);
+    expect(untaggedChunks[0].metadata.tags).toEqual([]);
+
+    similaritySearchMock.mockResolvedValueOnce([
+      [taggedChunks[0], 0.1],
+      [untaggedChunks[0], 0.2],
+    ]);
+    const tagged = await manager.similaritySearch('q', 10, undefined, undefined, { tags: ['ops'] });
+    expect(tagged).toHaveLength(1);
+    expect((tagged[0].metadata as { source: string }).source).toMatch(/\/tagged\.md$/);
+
+    similaritySearchMock.mockResolvedValueOnce([
+      [taggedChunks[0], 0.1],
+      [untaggedChunks[0], 0.2],
+    ]);
+    const md = await manager.similaritySearch('q', 10, undefined, undefined, { extensions: ['.md'] });
+    expect(md.map((r) => (r.metadata as { source: string }).source).sort()).toEqual(
+      [taggedChunks[0].metadata.source, untaggedChunks[0].metadata.source].sort(),
+    );
+  });
+});

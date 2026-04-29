@@ -377,7 +377,7 @@ describe('KnowledgeBaseServer handlers', () => {
     });
   });
 
-  it('threshold argument flows through to similaritySearch(query, 10, threshold, kb)', async () => {
+  it('threshold argument flows through to similaritySearch(query, 10, threshold, kb, filters)', async () => {
     await setRetrieveEnv();
     updateIndexMock.mockResolvedValue(undefined);
     similaritySearchMock.mockResolvedValue([]);
@@ -385,10 +385,10 @@ describe('KnowledgeBaseServer handlers', () => {
     const server = await freshServer();
 
     await server['handleRetrieveKnowledge']({ query: 'q', threshold: 0.5 });
-    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.5, undefined);
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.5, undefined, undefined);
 
     await server['handleRetrieveKnowledge']({ query: 'q' });
-    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, undefined);
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, undefined, undefined);
 
     expect(similaritySearchMock).toHaveBeenCalledTimes(2);
   });
@@ -401,14 +401,45 @@ describe('KnowledgeBaseServer handlers', () => {
     const server = await freshServer();
 
     await server['handleRetrieveKnowledge']({ query: 'q', knowledge_base_name: 'alpha' });
-    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, 'alpha');
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, 'alpha', undefined);
 
     await server['handleRetrieveKnowledge']({
       query: 'q',
       knowledge_base_name: 'alpha',
       threshold: 0.25,
     });
-    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.25, 'alpha');
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.25, 'alpha', undefined);
+  });
+
+  it('handleRetrieveKnowledge forwards extensions / path_glob / tags filters (#53)', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([]);
+
+    const server = await freshServer();
+
+    await server['handleRetrieveKnowledge']({
+      query: 'q',
+      extensions: ['.md'],
+      path_glob: 'runbooks/**',
+      tags: ['ops', 'oncall'],
+    });
+    expect(similaritySearchMock).toHaveBeenLastCalledWith(
+      'q',
+      10,
+      undefined,
+      undefined,
+      { extensions: ['.md'], pathGlob: 'runbooks/**', tags: ['ops', 'oncall'] },
+    );
+
+    await server['handleRetrieveKnowledge']({ query: 'q', extensions: ['.pdf'] });
+    expect(similaritySearchMock).toHaveBeenLastCalledWith(
+      'q',
+      10,
+      undefined,
+      undefined,
+      { extensions: ['.pdf'], pathGlob: undefined, tags: undefined },
+    );
   });
 
   it('handleRetrieveKnowledge scopes returned sources to knowledge_base_name (#71)', async () => {
