@@ -46,6 +46,7 @@ import {
 import { deriveModelId, EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
 import { KBError } from './errors.js';
+import { listKnowledgeBases } from './kb-fs.js';
 import { makeOllamaOnFailedAttempt } from './ollama-error.js';
 
 /**
@@ -669,6 +670,41 @@ export class FaissIndexManager {
       // versioned layout is corrupt, and vice versa).
       this.faissIndex = await this.loadAtomic();
 
+      // Issue #90 — sidecar invalidation when this model's FAISS store is gone.
+      //
+      // Per-KB hash sidecars at `<kb>/.index/<file>` cache the SHA256 of the
+      // last embedded version. updateIndex skips re-embedding when the
+      // current file hash matches the sidecar hash. If the FAISS store for
+      // this model has been removed but sidecars survive (manual rm of
+      // $FAISS_INDEX_PATH, the workaround for #85, partial backup restore,
+      // or a crash mid-rebuild), every file with a matching sidecar is
+      // skipped silently — vectors are gone but the cache says "indexed".
+      // retrieve_knowledge then returns nothing.
+      //
+      // The existing fallback rebuild branch in updateIndex only fires when
+      // `this.faissIndex === null` AT THAT MOMENT. Once one KB has been
+      // re-indexed (faissIndex !== null) every later updateIndex(otherKb)
+      // trusts its sidecars and skips silently — exactly the partial-drift
+      // case the reporter hit.
+      //
+      // Fix: at initialize, if this model's store is missing, treat any
+      // pre-existing sidecars as untrustworthy and purge them. The next
+      // updateIndex sees no sidecars and re-embeds every file from scratch.
+      //
+      // Multi-model trade-off: when a second model is registered and its
+      // store doesn't exist yet, this purges sidecars that were valid for
+      // the existing model. The other model's vectors stay intact (its
+      // store isn't touched), so `retrieve_knowledge` against it still
+      // returns results; the next `updateIndex` against it re-embeds every
+      // file once. A single source of truth (RFC 013 option 3 — hash
+      // inside docstore.json metadata) eliminates the trade-off; the
+      // lighter purge is preferable to silent empty results until then.
+      //
+      // Skipped under readOnly:true (no mutation allowed in that mode).
+      if (this.faissIndex === null && !opts.readOnly) {
+        await this.purgeStaleSidecars();
+      }
+
       // Save the current model name for this model's dir. Skipped under
       // readOnly:true (RFC 012 §4.5).
       if (!opts.readOnly) {
@@ -687,6 +723,55 @@ export class FaissIndexManager {
         }
       }
       throw err;
+    }
+  }
+
+  /**
+   * Issue #90 — purge per-KB hash sidecars at every KB under
+   * KNOWLEDGE_BASES_ROOT_DIR. Called from initialize when this model's
+   * FAISS store is missing on disk; the sidecars would otherwise mask the
+   * gone-vectors and cause silently-empty retrievals.
+   *
+   * Best-effort per KB: a single KB's permission error is logged and
+   * skipped, never propagated — the alternative (failing startup over a
+   * stale-cache cleanup) is worse than carrying one stale KB into the
+   * next updateIndex, which will at worst log a similar error itself.
+   */
+  private async purgeStaleSidecars(): Promise<void> {
+    let kbs: string[];
+    try {
+      kbs = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return;
+      logger.warn(
+        `Issue #90 sidecar purge: could not list KBs at ${KNOWLEDGE_BASES_ROOT_DIR}: ${(err as Error).message}`,
+      );
+      return;
+    }
+
+    const purged: string[] = [];
+    for (const kb of kbs) {
+      const indexDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, '.index');
+      if (!(await pathExists(indexDir))) continue;
+      try {
+        await fsp.rm(indexDir, { recursive: true, force: true });
+        purged.push(kb);
+      } catch (err) {
+        logger.warn(
+          `Issue #90 sidecar purge: failed to remove ${indexDir}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    if (purged.length > 0) {
+      logger.warn(
+        `Issue #90: FAISS store for model ${this.modelId} not found on disk but ` +
+          `per-KB hash sidecars existed. Purged stale sidecars for ${purged.length} ` +
+          `knowledge base(s) [${purged.join(', ')}] so the next updateIndex re-embeds. ` +
+          `Common causes: manual removal of $FAISS_INDEX_PATH, partial backup restore, ` +
+          `crash mid-rebuild, or model switch with the prior model's store moved aside.`,
+      );
     }
   }
 

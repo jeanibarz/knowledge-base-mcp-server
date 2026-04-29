@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased] — invalidate hash sidecars when this model's FAISS store is missing
+
+### Fixed
+
+- **`retrieve_knowledge` no longer returns silent empty results when the FAISS store has been deleted but per-KB hash sidecars survive.** `FaissIndexManager.initialize()` now detects "FAISS store gone for this model + per-KB `.index/*.md` sidecars present" and purges the stale sidecars across every KB under `KNOWLEDGE_BASES_ROOT_DIR` before any `updateIndex` call can read them. The next `updateIndex` then re-embeds every file from scratch through the per-file path. A single `WARN` log identifies the affected KBs so an operator can investigate why `$FAISS_INDEX_PATH` was removed (manual `rm -rf`, partial backup restore, crash mid-rebuild, model switch with the prior store moved aside). Closes #90.
+
+### Why
+
+The two state stores (per-KB hash sidecars + the FAISS store) are independent on disk and can drift in real-world failure modes the test matrix didn't cover: the documented `rm -rf $FAISS_INDEX_PATH` recovery, a disk-full mid-rebuild, a SIGKILL between `save()` and the sidecar `rename()`, a cross-machine restore that brings back one tree but not the other. The original fallback rebuild branch in `updateIndex` only fires when `faissIndex === null` AT THAT MOMENT, so once any single KB has been re-indexed in the current process the partial-drift case was unreachable — every later `updateIndex(otherKb)` saw matching sidecars, skipped re-embedding, and `similaritySearch` returned nothing for vectors that were never persisted. Invalidating sidecars at `initialize()` is the lightest of the three fix shapes the reporter sketched (option 1) and addresses the failing repro without the larger surgery option 3 would require (storing the SHA256 inside `docstore.json` metadata).
+
+The trade-off, which the warning log calls out: when a second model is registered (`kb models add B`) and its store is empty, this purges sidecars that were valid for an existing model A — A's vectors are untouched (its store isn't), so retrieve still works, but the next `updateIndex` against A re-embeds every file once. Single source of truth for hashes (RFC 013 option 3) is the structural fix; the purge is the right pragmatic step until that lands.
+
 ## [Unreleased] — actionable Ollama context-overflow error
 
 ### Fixed
