@@ -439,18 +439,36 @@ describe('filterIngestablePaths — SKIPPED_FILENAME_PATTERNS (issue #89)', () =
     __resetSkippedFilenameLogForTests();
   });
 
-  it('skips NTFS ADS Zone.Identifier sidecars (colon in basename)', () => {
+  it('skips NTFS ADS Zone.Identifier sidecars (anchored colon-suffix)', () => {
     // The bug: rsync from a Windows NTFS volume through WSL surfaces
-    // `<file>.md:Zone.Identifier` zero-byte siblings. Without the colon
-    // pattern the scanner would re-attempt embedding on every retrieve call.
+    // `<file>.md:Zone.Identifier` zero-byte siblings. Without the
+    // Zone.Identifier-anchored pattern the scanner would re-attempt
+    // embedding on every retrieve call.
     const input = [
       abs('api-adv/assemblies.md'),
       abs('api-adv/assemblies.md:Zone.Identifier'),
       abs('api-adv/billing.md:Zone.Identifier'),
-      abs('api-adv/foo:bar'),
+      abs('api-adv/CASED.md:zone.identifier'), // case-insensitive
     ];
     const output = filterIngestablePaths(input, kbRoot);
     expect(output).toEqual([abs('api-adv/assemblies.md')]);
+  });
+
+  it('preserves legitimate POSIX filenames that contain a colon', () => {
+    // Regression guard against the over-broad `/:/` pattern: colons are
+    // valid in POSIX filenames and appear in real-world markdown documents
+    // (titles like "Design:Tradeoffs", date-prefix conventions, etc.). The
+    // skip pattern must anchor on the actual NTFS ADS suffix, not just the
+    // colon character — otherwise these files vanish silently with no
+    // recoverable override (Rule A.0 runs before extension/options checks).
+    const input = [
+      abs('Design:Tradeoffs.md'),
+      abs('notes/2024-01-15: meeting.md'),
+      abs('Topic: Subtopic.md'),
+      abs('14:30 standup.md'),
+    ];
+    const output = filterIngestablePaths(input, kbRoot);
+    expect(output).toEqual(input);
   });
 
   it('skips macOS AppleDouble sidecars (`._` prefix) even when the suffix matches the allowlist', () => {
@@ -489,7 +507,7 @@ describe('filterIngestablePaths — SKIPPED_FILENAME_PATTERNS (issue #89)', () =
       const skipCalls = infoSpy.mock.calls
         .map((args) => String(args[0]))
         .filter((m) => m.startsWith('Skipping filesystem-metadata sidecar'));
-      // One log for the colon pattern (3 hits), one log for `^\._` (2 hits).
+      // One log for the Zone.Identifier pattern (3 hits), one log for `^\._` (2 hits).
       expect(skipCalls).toHaveLength(2);
       expect(skipCalls.some((m) => m.includes('a.md:Zone.Identifier'))).toBe(true);
       expect(skipCalls.some((m) => m.includes('._d.md'))).toBe(true);
@@ -505,8 +523,10 @@ describe('filterIngestablePaths — SKIPPED_FILENAME_PATTERNS (issue #89)', () =
     expect(SKIPPED_FILENAME_PATTERNS.some((re) => re.test('._foo.md'))).toBe(true);
     expect(SKIPPED_FILENAME_PATTERNS.some((re) => re.test('Thumbs.db'))).toBe(true);
     expect(SKIPPED_FILENAME_PATTERNS.some((re) => re.test('.DS_Store'))).toBe(true);
-    // Sanity: a normal markdown file does not match any skip pattern.
+    // Sanity: normal markdown files (incl. POSIX-legal colons) do not match.
     expect(SKIPPED_FILENAME_PATTERNS.every((re) => !re.test('paper.md'))).toBe(true);
+    expect(SKIPPED_FILENAME_PATTERNS.every((re) => !re.test('Design:Tradeoffs.md'))).toBe(true);
+    expect(SKIPPED_FILENAME_PATTERNS.every((re) => !re.test('2024-01-15: meeting.md'))).toBe(true);
   });
 });
 

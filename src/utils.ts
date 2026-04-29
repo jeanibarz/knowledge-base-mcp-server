@@ -135,15 +135,17 @@ const EXCLUDED_BASENAME_LITERALS: ReadonlySet<string> = new Set([
  * so future loaders (PDF/HTML per #46, anything that widens the extension
  * allowlist) inherit the same skip list without re-deriving it.
  *
- *   `/:/`           — NTFS Alternate Data Stream leakage through WSL/wslfs:
- *                     a `foo.md` on a Windows-mounted volume surfaces a
- *                     zero-byte sibling `foo.md:Zone.Identifier`. Today the
- *                     extension allowlist filters these out coincidentally
- *                     (extname is `.Identifier`, not `.md`); making it explicit
- *                     means a future `.identifier` allowlist entry, or a sidecar
- *                     whose suffix happens to match an allowed extension,
- *                     still gets dropped. A `:` in a Unix filename is never
- *                     a legitimate corpus convention.
+ *   `/:Zone\.Identifier$/i` — NTFS Alternate Data Stream leakage through
+ *                     WSL/wslfs. A `foo.md` on a Windows-mounted volume
+ *                     surfaces a zero-byte sibling `foo.md:Zone.Identifier`.
+ *                     The previous draft of this list used the broader `/:/`
+ *                     regex, but colons are valid in POSIX filenames (e.g.
+ *                     `Design:Tradeoffs.md`, `2024-01-15: meeting.md`) and
+ *                     `/:/` would silently drop those legitimate documents
+ *                     with no recoverable override. We anchor on the
+ *                     specific Zone.Identifier suffix because that is the
+ *                     stream WSL/wslfs actually surfaces; other ADS streams
+ *                     can be added here by name as they're observed.
  *
  *   `/^\._/`        — macOS AppleDouble resource-fork sidecars. The walker's
  *                     dotfile skip already catches these, but listing the
@@ -156,7 +158,7 @@ const EXCLUDED_BASENAME_LITERALS: ReadonlySet<string> = new Set([
  *                     surface alone documents the full skip set.
  */
 export const SKIPPED_FILENAME_PATTERNS: readonly RegExp[] = [
-  /:/,
+  /:Zone\.Identifier$/i,
   /^\._/,
   /^Thumbs\.db$/i,
   /^\.DS_Store$/,

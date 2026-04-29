@@ -5,7 +5,7 @@
 ### Fixed
 
 - **Scanner no longer re-attempts embedding on `:Zone.Identifier`, `._foo`, and friends every retrieve call.** A new basename-regex layer (`SKIPPED_FILENAME_PATTERNS` in `src/utils.ts`) runs as Rule A.0 inside `filterIngestablePaths` and rejects:
-  - filenames containing `:` — NTFS Alternate Data Stream leakage when an NTFS volume is mounted through WSL/wslfs (`foo.md:Zone.Identifier`).
+  - filenames ending in `:Zone.Identifier` (case-insensitive) — NTFS Alternate Data Stream leakage when an NTFS volume is mounted through WSL/wslfs (`foo.md:Zone.Identifier`). The pattern is anchored on the specific ADS suffix rather than on the bare `:` character, because colons are valid in POSIX filenames (`Design:Tradeoffs.md`, `2024-01-15: meeting.md`) and a bare `/:/` skip would silently drop those legitimate documents with no recoverable override.
   - filenames matching `^\._` — macOS AppleDouble resource-fork sidecars.
   - `Thumbs.db` (case-insensitive) and `.DS_Store` — listed at the regex layer too so the full skip set is documented in one place (still also in `EXCLUDED_BASENAME_LITERALS`).
   Closes #89.
