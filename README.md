@@ -149,6 +149,7 @@ Use this path if you want to develop against the repo or pin an unreleased commi
         OLLAMA_MODEL=dengcao/Qwen3-Embedding-0.6B:Q8_0          # Default embedding model
         KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
         ```
+    *   **Minimum context window:** the embedding model must accept at least ~500 tokens of input. The default chunker emits ~1000-character chunks which commonly tokenize past 256 tokens, so models like `all-minilm` (256 ctx) will reject every request. Use `nomic-embed-text` (8192 ctx), `dengcao/Qwen3-Embedding-0.6B:Q8_0` (32K ctx), or any model with ≥512 ctx instead.
 
     ### Option 2: OpenAI Configuration
 

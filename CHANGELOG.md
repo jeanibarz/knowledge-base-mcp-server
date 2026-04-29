@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] — actionable Ollama context-overflow error
+
+### Fixed
+
+- **Ollama embedding requests no longer retry deterministic context-overflow errors 7 times.** When a configured `OLLAMA_MODEL` rejects an input as too long for its context window (e.g. `all-minilm:latest`'s 256-token ceiling against the default ~1000-character chunker), the server now short-circuits the `@langchain/core` `AsyncCaller` retry loop on the first attempt and surfaces a translated, actionable message that names the offending model and points at larger-context alternatives (`nomic-embed-text` 8192 ctx, `dengcao/Qwen3-Embedding-0.6B:Q8_0` 32K ctx). Closes #86.
+
+### Why
+
+`@langchain/core`'s default failed-attempt handler short-circuits HTTP 4xx via `error.status` / `error.response.status`, but `ollama`'s `ResponseError` exposes the status as `status_code` (snake_case), so the handler never sees it and the call retried 6 more times before bubbling up a raw stack trace. The new `src/ollama-error.ts` recognises the snake_case shape plus the well-known overflow phrasings and rethrows a `KBError('VALIDATION', ...)` from inside `onFailedAttempt`, which p-retry treats as terminal.
+
 ## [Unreleased] — skip filesystem-metadata sidecars in the ingest filter
 
 ### Fixed

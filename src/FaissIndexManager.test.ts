@@ -201,10 +201,16 @@ describe('provider construction', () => {
     expect(ollamaEmbeddingConstructorMock).not.toHaveBeenCalled();
     await manager.initialize();
 
-    expect(ollamaEmbeddingConstructorMock).toHaveBeenCalledWith({
-      baseUrl: 'http://127.0.0.1:11434',
-      model: 'mxbai-embed-large',
-    });
+    // Issue #86 — we now also pass an `onFailedAttempt` so deterministic
+    // Ollama 4xx errors (e.g. "input length exceeds the context length")
+    // short-circuit the AsyncCaller's 7-attempt retry loop.
+    expect(ollamaEmbeddingConstructorMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseUrl: 'http://127.0.0.1:11434',
+        model: 'mxbai-embed-large',
+        onFailedAttempt: expect.any(Function),
+      }),
+    );
   });
 
   it('throws when OPENAI_API_KEY is unset for the OpenAI provider', async () => {

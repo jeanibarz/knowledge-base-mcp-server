@@ -46,6 +46,7 @@ import {
 import { deriveModelId, EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
 import { KBError } from './errors.js';
+import { makeOllamaOnFailedAttempt } from './ollama-error.js';
 
 /**
  * RFC 013 §4.7 — atomic write for `model_name.txt`. Per-model file:
@@ -531,9 +532,15 @@ export class FaissIndexManager {
     if (this.embeddingProvider === 'ollama') {
       logger.info(`Initializing FaissIndexManager with Ollama embeddings (model: ${this.modelName})`);
       const { OllamaEmbeddings } = await import('@langchain/ollama');
+      // Issue #86 — Ollama's ResponseError uses snake_case `status_code`,
+      // which langchain's default failed-attempt handler doesn't recognise,
+      // so deterministic 400s (e.g. "input length exceeds the context length")
+      // burn 7 retries. We pass our own onFailedAttempt that short-circuits
+      // those errors and rethrows them as a translated KBError.
       return new OllamaEmbeddings({
         baseUrl: OLLAMA_BASE_URL,
         model: this.modelName,
+        onFailedAttempt: makeOllamaOnFailedAttempt(this.modelName),
       });
     }
     if (this.embeddingProvider === 'openai') {
@@ -1116,9 +1123,16 @@ export class FaissIndexManager {
     } catch (error: unknown) {
       const err = toError(error) as Error & { __alreadyLogged?: boolean };
       if (!err.__alreadyLogged) {
-        logger.error('Error updating FAISS index:', err);
-        if (err.stack) {
-          logger.error(err.stack);
+        // Issue #86 — for KBError we already crafted an operator-facing
+        // message; suppress the stack to keep the log readable. Unknown
+        // errors still get the full stack for debugging.
+        if (err instanceof KBError) {
+          logger.error(`Error updating FAISS index: ${err.message}`);
+        } else {
+          logger.error('Error updating FAISS index:', err);
+          if (err.stack) {
+            logger.error(err.stack);
+          }
         }
       }
       throw err;
