@@ -1,12 +1,15 @@
 import {
+  __resetSkippedFilenameLogForTests,
   assertValidKbName,
   filterIngestablePaths,
   getFilesRecursively,
   isValidKbName,
   parseFrontmatter,
   resolveKbPath,
+  SKIPPED_FILENAME_PATTERNS,
   toError,
 } from './utils.js';
+import { logger } from './logger.js';
 import * as fsp from 'fs/promises';
 import * as fs from 'fs'; // Import fs for PathLike and Dirent
 import * as os from 'os';
@@ -425,6 +428,85 @@ describe('filterIngestablePaths (RFC 011 §5.2)', () => {
     const input = [abs('ingest.log'), abs('notes/paper.md')];
     const output = filterIngestablePaths(input, kbRoot);
     expect(output).toEqual([abs('notes/paper.md')]);
+  });
+});
+
+describe('filterIngestablePaths — SKIPPED_FILENAME_PATTERNS (issue #89)', () => {
+  const kbRoot = '/kbs/onshape';
+  const abs = (rel: string): string => `${kbRoot}/${rel}`;
+
+  beforeEach(() => {
+    __resetSkippedFilenameLogForTests();
+  });
+
+  it('skips NTFS ADS Zone.Identifier sidecars (colon in basename)', () => {
+    // The bug: rsync from a Windows NTFS volume through WSL surfaces
+    // `<file>.md:Zone.Identifier` zero-byte siblings. Without the colon
+    // pattern the scanner would re-attempt embedding on every retrieve call.
+    const input = [
+      abs('api-adv/assemblies.md'),
+      abs('api-adv/assemblies.md:Zone.Identifier'),
+      abs('api-adv/billing.md:Zone.Identifier'),
+      abs('api-adv/foo:bar'),
+    ];
+    const output = filterIngestablePaths(input, kbRoot);
+    expect(output).toEqual([abs('api-adv/assemblies.md')]);
+  });
+
+  it('skips macOS AppleDouble sidecars (`._` prefix) even when the suffix matches the allowlist', () => {
+    // `._foo.md` ends in `.md` so Rule B (extension) accepts it, but it is a
+    // metadata sidecar, not a markdown file. The walker's dotfile skip is
+    // upstream; this test guards bypass paths (manual ingest, glob expansion).
+    const input = [abs('notes/paper.md'), abs('notes/._paper.md')];
+    const output = filterIngestablePaths(input, kbRoot);
+    expect(output).toEqual([abs('notes/paper.md')]);
+  });
+
+  it('skips Thumbs.db case-insensitively', () => {
+    const input = [abs('notes/Thumbs.db'), abs('notes/THUMBS.DB'), abs('notes/paper.md')];
+    const output = filterIngestablePaths(input, kbRoot);
+    expect(output).toEqual([abs('notes/paper.md')]);
+  });
+
+  it('skips .DS_Store via the regex layer (in addition to the literal set)', () => {
+    const input = [abs('.DS_Store'), abs('notes/.DS_Store'), abs('notes/paper.md')];
+    const output = filterIngestablePaths(input, kbRoot);
+    expect(output).toEqual([abs('notes/paper.md')]);
+  });
+
+  it('logs each skip pattern at most once per process', () => {
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    try {
+      const input = [
+        abs('a.md:Zone.Identifier'),
+        abs('b.md:Zone.Identifier'),
+        abs('c.md:Zone.Identifier'),
+        abs('notes/._d.md'),
+        abs('notes/._e.md'),
+      ];
+      filterIngestablePaths(input, kbRoot);
+
+      const skipCalls = infoSpy.mock.calls
+        .map((args) => String(args[0]))
+        .filter((m) => m.startsWith('Skipping filesystem-metadata sidecar'));
+      // One log for the colon pattern (3 hits), one log for `^\._` (2 hits).
+      expect(skipCalls).toHaveLength(2);
+      expect(skipCalls.some((m) => m.includes('a.md:Zone.Identifier'))).toBe(true);
+      expect(skipCalls.some((m) => m.includes('._d.md'))).toBe(true);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('exposes the pattern list so future loaders can reuse it', () => {
+    // Issue #89 keeps the regex list public so loaders added by #46
+    // (PDF/HTML) inherit the same skip list rather than re-deriving it.
+    expect(SKIPPED_FILENAME_PATTERNS.some((re) => re.test('foo.md:Zone.Identifier'))).toBe(true);
+    expect(SKIPPED_FILENAME_PATTERNS.some((re) => re.test('._foo.md'))).toBe(true);
+    expect(SKIPPED_FILENAME_PATTERNS.some((re) => re.test('Thumbs.db'))).toBe(true);
+    expect(SKIPPED_FILENAME_PATTERNS.some((re) => re.test('.DS_Store'))).toBe(true);
+    // Sanity: a normal markdown file does not match any skip pattern.
+    expect(SKIPPED_FILENAME_PATTERNS.every((re) => !re.test('paper.md'))).toBe(true);
   });
 });
 
