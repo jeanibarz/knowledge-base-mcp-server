@@ -129,6 +129,65 @@ const EXCLUDED_BASENAME_LITERALS: ReadonlySet<string> = new Set([
   'desktop.ini',
 ]);
 
+/**
+ * Issue #89 — basename regex patterns for filesystem-metadata sidecars that
+ * slip past the dotfile walker but are never corpus content. Centralised here
+ * so future loaders (PDF/HTML per #46, anything that widens the extension
+ * allowlist) inherit the same skip list without re-deriving it.
+ *
+ *   `/:Zone\.Identifier$/i` — NTFS Alternate Data Stream leakage through
+ *                     WSL/wslfs. A `foo.md` on a Windows-mounted volume
+ *                     surfaces a zero-byte sibling `foo.md:Zone.Identifier`.
+ *                     The previous draft of this list used the broader `/:/`
+ *                     regex, but colons are valid in POSIX filenames (e.g.
+ *                     `Design:Tradeoffs.md`, `2024-01-15: meeting.md`) and
+ *                     `/:/` would silently drop those legitimate documents
+ *                     with no recoverable override. We anchor on the
+ *                     specific Zone.Identifier suffix because that is the
+ *                     stream WSL/wslfs actually surfaces; other ADS streams
+ *                     can be added here by name as they're observed.
+ *
+ *   `/^\._/`        — macOS AppleDouble resource-fork sidecars. The walker's
+ *                     dotfile skip already catches these, but listing the
+ *                     pattern here means future code paths that bypass the
+ *                     walker (manual ingest, glob expansion in tests) still
+ *                     drop them.
+ *
+ *   `/^Thumbs\.db$/i` and `/^\.DS_Store$/` — redundant with
+ *                     EXCLUDED_BASENAME_LITERALS but listed here so the regex
+ *                     surface alone documents the full skip set.
+ */
+export const SKIPPED_FILENAME_PATTERNS: readonly RegExp[] = [
+  /:Zone\.Identifier$/i,
+  /^\._/,
+  /^Thumbs\.db$/i,
+  /^\.DS_Store$/,
+] as const;
+
+/**
+ * Module-level set of regex sources we've already logged a skip for. Each
+ * pattern logs at most once per Node process so a surprised user can see
+ * "oh, my Zone.Identifier files are being skipped" exactly once instead of
+ * having a quiet bug or N-per-file log spam.
+ */
+const SKIPPED_PATTERNS_LOGGED: Set<string> = new Set();
+
+/** Returns the matching regex (so the logger can name it), or null. */
+function matchSkippedFilenamePattern(basename: string): RegExp | null {
+  for (const re of SKIPPED_FILENAME_PATTERNS) {
+    if (re.test(basename)) return re;
+  }
+  return null;
+}
+
+/**
+ * Test-only: forget which patterns have been logged so a test can assert
+ * the one-shot log fires.
+ */
+export function __resetSkippedFilenameLogForTests(): void {
+  SKIPPED_PATTERNS_LOGGED.clear();
+}
+
 export interface IngestFilterOptions {
   /** Extra extensions to allow, merged with the base list. Leading dot and case insensitive. */
   extraExtensions?: readonly string[];
@@ -146,6 +205,7 @@ function normalizeExtensionEntry(raw: string): string {
  * Applies RFC 011 §5.2 filters on top of a `getFilesRecursively` result.
  *
  * Rule A — path exclusions (always applied, operator cannot override):
+ *   - basename matches a `SKIPPED_FILENAME_PATTERNS` regex (issue #89) → excluded
  *   - any path segment in `EXCLUDED_SEGMENT_LITERALS` → excluded
  *   - first path segment in `EXCLUDED_FIRST_SEGMENTS` → excluded
  *   - basename in `EXCLUDED_BASENAME_LITERALS` → excluded
@@ -182,8 +242,25 @@ export function filterIngestablePaths(
       .split(path.sep)
       .join('/');
 
-    // Rule A.1 — basename in exclusion list.
+    // Rule A.0 — issue #89: filesystem-metadata sidecar basenames (NTFS ADS
+    // leakage like `foo.md:Zone.Identifier`, macOS AppleDouble `._foo`, etc.).
+    // Logged at most once per pattern per process so a surprised user can see
+    // "oh, that's why my Zone.Identifier files don't show up" without log spam.
     const basename = path.posix.basename(relative);
+    const skippedBy = matchSkippedFilenamePattern(basename);
+    if (skippedBy !== null) {
+      const key = skippedBy.source;
+      if (!SKIPPED_PATTERNS_LOGGED.has(key)) {
+        SKIPPED_PATTERNS_LOGGED.add(key);
+        logger.info(
+          `Skipping filesystem-metadata sidecar ${absPath} (matches ${skippedBy}); ` +
+            `further matches in this session will not be logged.`,
+        );
+      }
+      continue;
+    }
+
+    // Rule A.1 — basename in exclusion list.
     if (EXCLUDED_BASENAME_LITERALS.has(basename)) continue;
 
     // Rule A.2 — any segment in the sidecar-literal set.

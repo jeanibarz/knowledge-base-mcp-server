@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased] — skip filesystem-metadata sidecars in the ingest filter
+
+### Fixed
+
+- **Scanner no longer re-attempts embedding on `:Zone.Identifier`, `._foo`, and friends every retrieve call.** A new basename-regex layer (`SKIPPED_FILENAME_PATTERNS` in `src/utils.ts`) runs as Rule A.0 inside `filterIngestablePaths` and rejects:
+  - filenames ending in `:Zone.Identifier` (case-insensitive) — NTFS Alternate Data Stream leakage when an NTFS volume is mounted through WSL/wslfs (`foo.md:Zone.Identifier`). The pattern is anchored on the specific ADS suffix rather than on the bare `:` character, because colons are valid in POSIX filenames (`Design:Tradeoffs.md`, `2024-01-15: meeting.md`) and a bare `/:/` skip would silently drop those legitimate documents with no recoverable override.
+  - filenames matching `^\._` — macOS AppleDouble resource-fork sidecars.
+  - `Thumbs.db` (case-insensitive) and `.DS_Store` — listed at the regex layer too so the full skip set is documented in one place (still also in `EXCLUDED_BASENAME_LITERALS`).
+  Closes #89.
+- **One-time INFO log per pattern per session** so a surprised user can see *why* their `Zone.Identifier` files don't show up, without N-per-file log spam.
+
+### Why
+
+Before this fix, a KB rsync'd from an NTFS volume produced a zero-byte sibling `<file>:Zone.Identifier` for every markdown file. The ingest filter happened to drop them via the extension allowlist (`extname(...)` returned `.Identifier`, not `.md`), but that was coincidence — making the skip explicit means a future loader (#46 PDF/HTML) that widens the extension allowlist still drops these sidecars instead of attempting to embed zero-byte payloads on every retrieve call.
+
 ## [Unreleased] — fail stdio startup before exposing poisoned indexes
 
 ### Fixed
