@@ -71,6 +71,19 @@ export class SseHost {
     this.authTokenBuf = Buffer.from(token, 'latin1');
   }
 
+  /**
+   * Snapshot of `McpServer` instances that are currently connected to an SSE
+   * session. Returns an array (not the live map values) so callers can iterate
+   * without seeing concurrent mutations from `transport.onclose` or
+   * `handleSseOpen`. Used by `KnowledgeBaseServer` to fan warm-up logging
+   * notifications across every live SSE client (the root `this.mcp` is never
+   * connected in SSE mode, so calling `sendLoggingMessage` on it would drop
+   * the notification).
+   */
+  getConnectedMcpServers(): McpServer[] {
+    return [...this.sessions.values()].map((entry) => entry.mcp);
+  }
+
   async start(): Promise<http.Server> {
     if (this.server) {
       throw new Error('SseHost already started');

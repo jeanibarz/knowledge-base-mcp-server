@@ -396,6 +396,13 @@ async function withSidecarLock<T>(action: () => Promise<T>): Promise<T> {
 
 const DEFAULT_CHUNK_SIZE = 1000;
 const DEFAULT_CHUNK_OVERLAP = 200;
+export const DEFAULT_REBUILD_PROGRESS_INTERVAL_FILES = 10;
+
+function totalFileCount(
+  entries: ReadonlyArray<{ filePaths: readonly string[] }>,
+): number {
+  return entries.reduce((sum, entry) => sum + entry.filePaths.length, 0);
+}
 
 /**
  * Resolve the splitter chunk size and overlap from env vars, with the
@@ -521,6 +528,18 @@ export interface FaissIndexManagerOptions {
   modelName: string;
 }
 
+export interface IndexUpdateProgress {
+  processedFiles: number;
+  totalFiles: number;
+  currentFile: string;
+  modelId: string;
+}
+
+export interface UpdateIndexOptions {
+  onProgress?: (progress: IndexUpdateProgress) => void | Promise<void>;
+  progressIntervalFiles?: number;
+}
+
 export class FaissIndexManager {
   private faissIndex: FaissStore | null = null;
   // Issue #59 — populated by initialize() via dynamic import of the active
@@ -565,6 +584,10 @@ export class FaissIndexManager {
     // moves with them; the throw still fires before any disk work.
 
     logger.info(`FaissIndexManager bound to ${this.modelDir} (provider=${this.embeddingProvider}, model=${this.modelName}, id=${this.modelId})`);
+  }
+
+  get hasLoadedIndex(): boolean {
+    return this.faissIndex !== null;
   }
 
   /**
@@ -1116,13 +1139,34 @@ export class FaissIndexManager {
     return documents;
   }
 
+  private async addDocumentsToIndex(documentsToAdd: Document[]): Promise<boolean> {
+    if (documentsToAdd.length === 0) {
+      return false;
+    }
+
+    if (this.faissIndex === null) {
+      logger.info('Creating new FAISS index from texts...');
+      this.faissIndex = await FaissStore.fromTexts(
+        documentsToAdd.map((doc) => doc.pageContent),
+        documentsToAdd.map((doc) => doc.metadata),
+        this.embeddings
+      );
+    } else {
+      await this.faissIndex.addDocuments(documentsToAdd);
+    }
+    return true;
+  }
+
   /**
    * Updates the FAISS index.
    * If `specificKnowledgeBase` is provided, only files from that knowledge base will be checked and updated.
    * If no update occurs (and the FAISS index remains uninitialized) but there are documents,
    * then the index is built from all available files.
    */
-  async updateIndex(specificKnowledgeBase?: string): Promise<void> {
+  async updateIndex(
+    specificKnowledgeBase?: string,
+    opts: UpdateIndexOptions = {},
+  ): Promise<void> {
     logger.debug('Updating FAISS index...');
     try {
       let knowledgeBases: string[] = [];
@@ -1134,9 +1178,23 @@ export class FaissIndexManager {
 
       let anyFileProcessed = false;
       let indexMutated = false;
+      let processedFiles = 0;
+      let lastProgressFileCount = 0;
+      const rebuildFromEmptyIndex = this.faissIndex === null;
+      const progressIntervalFiles = Math.max(
+        1,
+        Math.floor(opts.progressIntervalFiles ?? DEFAULT_REBUILD_PROGRESS_INTERVAL_FILES),
+      );
       const pendingHashWrites: { path: string; hash: string }[] = [];
 
-      // Process each knowledge base directory.
+      const knowledgeBaseFiles: {
+        knowledgeBaseName: string;
+        knowledgeBasePath: string;
+        filePaths: string[];
+      }[] = [];
+
+      // First enumerate every candidate path so progress notifications can
+      // report a stable denominator before embedding begins.
       for (const knowledgeBaseName of knowledgeBases) {
         if (knowledgeBaseName.startsWith('.')) {
           logger.debug(`Skipping dot folder: ${knowledgeBaseName}`);
@@ -1151,7 +1209,31 @@ export class FaissIndexManager {
             excludePaths: INGEST_EXCLUDE_PATHS,
           },
         );
+        knowledgeBaseFiles.push({ knowledgeBaseName, knowledgeBasePath, filePaths });
+      }
 
+      const totalFiles = totalFileCount(knowledgeBaseFiles);
+      const reportProgress = async (currentFile: string): Promise<void> => {
+        if (!opts.onProgress || processedFiles === lastProgressFileCount) {
+          return;
+        }
+        if (
+          processedFiles % progressIntervalFiles !== 0 &&
+          processedFiles !== totalFiles
+        ) {
+          return;
+        }
+        lastProgressFileCount = processedFiles;
+        await opts.onProgress({
+          processedFiles,
+          totalFiles,
+          currentFile,
+          modelId: this.modelId,
+        });
+      };
+
+      // Process each knowledge base directory.
+      for (const { knowledgeBaseName, knowledgeBasePath, filePaths } of knowledgeBaseFiles) {
         for (const filePath of filePaths) {
           anyFileProcessed = true;
 
@@ -1176,9 +1258,16 @@ export class FaissIndexManager {
             // The hash file may not exist yet; that's fine.
           }
 
-          // If the file is new or has changed, process it.
-          if (fileHash !== storedHash) {
-            logger.info(`File ${filePath} has changed. Updating index...`);
+          // If the file is new/changed, or the index itself is absent,
+          // process it. The missing-index case must ignore matching sidecars:
+          // otherwise a rebuild can silently omit files whose hashes were
+          // already current.
+          if (rebuildFromEmptyIndex || fileHash !== storedHash) {
+            logger.info(
+              rebuildFromEmptyIndex
+                ? `FAISS index is empty. Rebuilding from ${filePath}...`
+                : `File ${filePath} has changed. Updating index...`,
+            );
             let content = '';
             try {
               content = await fsp.readFile(filePath, 'utf-8');
@@ -1193,20 +1282,12 @@ export class FaissIndexManager {
               knowledgeBaseName
             );
 
-            if (documentsToAdd.length > 0) {
-              if (this.faissIndex === null) {
-                logger.info('Creating new FAISS index from texts...');
-                this.faissIndex = await FaissStore.fromTexts(
-                  documentsToAdd.map((doc) => doc.pageContent),
-                  documentsToAdd.map((doc) => doc.metadata),
-                  this.embeddings
-                );
-              } else {
-                await this.faissIndex.addDocuments(documentsToAdd);
-              }
+            if (await this.addDocumentsToIndex(documentsToAdd)) {
               indexMutated = true;
               pendingHashWrites.push({ path: indexFilePath, hash: fileHash });
               logger.debug(`Index updated in-memory for ${filePath}.`);
+              processedFiles += 1;
+              await reportProgress(filePath);
             } else {
               logger.debug(`No documents generated from ${filePath}. Skipping index update.`);
             }
@@ -1220,18 +1301,7 @@ export class FaissIndexManager {
       // then attempt to build the FAISS index from all available documents.
       if (this.faissIndex === null && anyFileProcessed) {
         logger.info('No updates detected but FAISS index is not initialized. Building index from all available documents...');
-        let allDocuments: Document[] = [];
-        for (const knowledgeBaseName of knowledgeBases) {
-          if (knowledgeBaseName.startsWith('.')) continue;
-          const knowledgeBasePath = path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
-          const filePaths = filterIngestablePaths(
-            await getFilesRecursively(knowledgeBasePath),
-            knowledgeBasePath,
-            {
-              extraExtensions: INGEST_EXTRA_EXTENSIONS,
-              excludePaths: INGEST_EXCLUDE_PATHS,
-            },
-          );
+        for (const { knowledgeBaseName, filePaths } of knowledgeBaseFiles) {
           for (const filePath of filePaths) {
             let content = '';
             try {
@@ -1245,18 +1315,12 @@ export class FaissIndexManager {
               content,
               knowledgeBaseName
             );
-            if (documents.length > 0) {
-              allDocuments.push(...documents);
+            if (await this.addDocumentsToIndex(documents)) {
+              indexMutated = true;
+              processedFiles += 1;
+              await reportProgress(filePath);
             }
           }
-        }
-        if (allDocuments.length > 0) {
-          this.faissIndex = await FaissStore.fromTexts(
-            allDocuments.map((doc) => doc.pageContent),
-            allDocuments.map((doc) => doc.metadata),
-            this.embeddings
-          );
-          indexMutated = true;
         }
       }
 

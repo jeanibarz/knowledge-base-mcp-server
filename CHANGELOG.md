@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased] — eager startup rebuild with MCP progress logs
+
+### Added
+
+- **Startup now begins rebuilding a missing or corrupt active FAISS index in the background.** The MCP transport is exposed first so `tools/list` and `list_knowledge_bases` can respond while the one-time embedding rebuild runs.
+- **Rebuild progress is emitted as MCP `notifications/message` logs.** The server reports embedded-file progress every 10 files and at completion so clients can surface activity during long startup rebuilds. In SSE mode, progress is fanned out across every connected session so each client gets the warm-up notifications; in stdio mode, progress is emitted on the single connected `McpServer`. Closes #87.
+
 ## [Unreleased] — invalidate hash sidecars when this model's FAISS store is missing
 
 ### Fixed
@@ -39,11 +46,12 @@ The trade-off, which the warning log calls out: when a second model is registere
 
 Before this fix, a KB rsync'd from an NTFS volume produced a zero-byte sibling `<file>:Zone.Identifier` for every markdown file. The ingest filter happened to drop them via the extension allowlist (`extname(...)` returned `.Identifier`, not `.md`), but that was coincidence — making the skip explicit means a future loader (#46 PDF/HTML) that widens the extension allowlist still drops these sidecars instead of attempting to embed zero-byte payloads on every retrieve call.
 
-## [Unreleased] — fail stdio startup before exposing poisoned indexes
+## [Unreleased] — active-index startup warm-up
 
 ### Fixed
 
-- **Stdio startup now warms the active FAISS manager before connecting MCP tools.** If index invalidation or corrupt-index cleanup fails, startup aborts before clients can call `tools/list` or `list_knowledge_bases` against a process that already knows its active index is unsafe. Closes #85.
+- **Stdio startup now starts active FAISS manager warm-up automatically** instead of leaving the first retrieval call to discover stale or corrupt indexes. Closes #85.
+- **Superseded by the eager startup rebuild entry above:** stdio now connects before background warm-up so safe tools stay available while the active index rebuilds. Warm-up failures are logged and retrieval calls still surface the underlying error.
 
 ## [Unreleased] — lazy-import unused embedding providers
 
