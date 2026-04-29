@@ -300,12 +300,13 @@ export class KnowledgeBaseServer {
   }
 
   private async runStdio(): Promise<void> {
+    // Fail before exposing tools over stdio. If FAISS initialization knows the
+    // active index is bad but cannot clean it up, serving even "safe" tools
+    // leaves clients attached to a poisoned process (#85).
+    await this.warmActiveManager();
     const transport = new StdioServerTransport();
     await this.mcp.connect(transport);
     logger.info('Knowledge Base MCP server running on stdio');
-    // RFC 013: warm up the active model's manager so the first agent call
-    // doesn't pay construction cost.
-    await this.warmActiveManager();
     this.startTriggerWatcher();
   }
 

@@ -440,6 +440,18 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(text).not.toContain(`"source": ${JSON.stringify(betaSource)}`);
   });
 
+  it('runStdio aborts before MCP connect when active model initialization fails (#85)', async () => {
+    await setRetrieveEnv();
+    initializeMock.mockRejectedValueOnce(new Error('stale FAISS cleanup failed'));
+
+    const server = await freshServer();
+    const connectMock = jest.fn().mockResolvedValue(undefined);
+    server['mcp'].connect = connectMock;
+
+    await expect(server['runStdio']()).rejects.toThrow('stale FAISS cleanup failed');
+    expect(connectMock).not.toHaveBeenCalled();
+  });
+
   // --- tool description overrides (#52, RFC 010 M2) -------------------------
   //
   // These tests assert behaviour visible at the MCP wire surface: the
