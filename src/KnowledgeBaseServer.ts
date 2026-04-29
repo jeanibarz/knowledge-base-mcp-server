@@ -65,6 +65,7 @@ export class KnowledgeBaseServer {
   private managerInitCache: Map<string, Promise<FaissIndexManager>> = new Map();
   private activeWarmupPromise: Promise<void> | null = null;
   private sseHost?: SseHost;
+  private transportMode: 'stdio' | 'sse' | null = null;
   private triggerWatcher?: ReindexTriggerWatcher;
   private shutdownInstalled = false;
 
@@ -315,6 +316,7 @@ export class KnowledgeBaseServer {
   private async runStdio(): Promise<void> {
     const transport = new StdioServerTransport();
     await this.mcp.connect(transport);
+    this.transportMode = 'stdio';
     logger.info('Knowledge Base MCP server running on stdio');
     this.startActiveManagerWarmup();
     this.startTriggerWatcher();
@@ -330,6 +332,7 @@ export class KnowledgeBaseServer {
     // Start watcher only after the HTTP bind succeeds; a throw from
     // host.start() unwinds without leaving a dangling polling timer.
     await host.start();
+    this.transportMode = 'sse';
     this.startActiveManagerWarmup();
     this.startTriggerWatcher();
   }
@@ -391,11 +394,30 @@ export class KnowledgeBaseServer {
     level: 'info' | 'warning' | 'error',
     data: string,
   ): Promise<void> {
-    try {
-      await this.mcp.sendLoggingMessage({ level, logger: SERVER_NAME, data });
-    } catch (err) {
-      logger.debug(`Unable to emit MCP warm-up log: ${toError(err).message}`);
+    // In stdio mode, `this.mcp` is the connected server. In SSE mode, every
+    // session has its own connected `McpServer` (built via `createMcpServer`)
+    // and `this.mcp` is unconnected — calling `sendLoggingMessage` on it
+    // would silently drop the notification. Fan out across the live sessions
+    // so each connected client sees the warm-up progress.
+    const targets =
+      this.transportMode === 'sse'
+        ? (this.sseHost?.getConnectedMcpServers() ?? [])
+        : [this.mcp];
+    if (targets.length === 0) {
+      logger.debug(
+        `MCP warm-up log skipped (no connected ${this.transportMode ?? 'transport'} clients): ${data}`,
+      );
+      return;
     }
+    await Promise.all(
+      targets.map(async (target) => {
+        try {
+          await target.sendLoggingMessage({ level, logger: SERVER_NAME, data });
+        } catch (err) {
+          logger.debug(`Unable to emit MCP warm-up log: ${toError(err).message}`);
+        }
+      }),
+    );
   }
 
   private startTriggerWatcher(): void {
