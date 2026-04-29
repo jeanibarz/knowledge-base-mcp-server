@@ -5,6 +5,7 @@ import * as path from 'path';
 const initializeMock = jest.fn();
 const updateIndexMock = jest.fn();
 const similaritySearchMock = jest.fn();
+const hasLoadedIndexMock = jest.fn(() => true);
 
 const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provider?: string; modelName?: string }) => {
   // RFC 013 M1+M2: the manager exposes modelDir / modelId / modelName for
@@ -23,6 +24,9 @@ const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provid
     modelId,
     modelName,
     embeddingProvider: provider,
+    get hasLoadedIndex() {
+      return hasLoadedIndexMock();
+    },
   };
 });
 // bootstrapLayout is a static method; the mock returns a no-op promise.
@@ -52,6 +56,8 @@ describe('KnowledgeBaseServer handlers', () => {
     initializeMock.mockReset();
     updateIndexMock.mockReset();
     similaritySearchMock.mockReset();
+    hasLoadedIndexMock.mockReset();
+    hasLoadedIndexMock.mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -440,16 +446,100 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(text).not.toContain(`"source": ${JSON.stringify(betaSource)}`);
   });
 
-  it('runStdio aborts before MCP connect when active model initialization fails (#85)', async () => {
+  it('runStdio connects before active model warm-up completes so list tools are available (#87)', async () => {
     await setRetrieveEnv();
-    initializeMock.mockRejectedValueOnce(new Error('stale FAISS cleanup failed'));
+    let resolveUpdate!: () => void;
+    const updateStarted = new Promise<void>((resolve) => {
+      updateIndexMock.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((finish) => {
+          resolveUpdate = finish;
+        });
+      });
+    });
+    hasLoadedIndexMock.mockReturnValue(false);
 
     const server = await freshServer();
     const connectMock = jest.fn().mockResolvedValue(undefined);
     server['mcp'].connect = connectMock;
 
-    await expect(server['runStdio']()).rejects.toThrow('stale FAISS cleanup failed');
-    expect(connectMock).not.toHaveBeenCalled();
+    await expect(server['runStdio']()).resolves.toBeUndefined();
+    expect(connectMock).toHaveBeenCalledTimes(1);
+
+    await updateStarted;
+    expect(updateIndexMock).toHaveBeenCalledTimes(1);
+    resolveUpdate();
+    await server['activeWarmupPromise'];
+  });
+
+  it('startup warm-up rebuilds the active model when initialize finds no loaded index (#87)', async () => {
+    await setRetrieveEnv();
+    hasLoadedIndexMock.mockReturnValue(false);
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    server['mcp'].connect = jest.fn().mockResolvedValue(undefined);
+    server['mcp'].sendLoggingMessage = jest.fn().mockResolvedValue(undefined);
+
+    await server['runStdio']();
+    await server['activeWarmupPromise'];
+
+    expect(updateIndexMock).toHaveBeenCalledTimes(1);
+    expect(updateIndexMock.mock.calls[0][0]).toBeUndefined();
+    expect(updateIndexMock.mock.calls[0][1]).toEqual({
+      onProgress: expect.any(Function),
+    });
+  });
+
+  it('startup warm-up does not rebuild when initialize loads a fresh index (#87)', async () => {
+    await setRetrieveEnv();
+    hasLoadedIndexMock.mockReturnValue(true);
+
+    const server = await freshServer();
+    server['mcp'].connect = jest.fn().mockResolvedValue(undefined);
+
+    await server['runStdio']();
+    await server['activeWarmupPromise'];
+
+    expect(initializeMock).toHaveBeenCalledTimes(1);
+    expect(updateIndexMock).not.toHaveBeenCalled();
+  });
+
+  it('startup warm-up emits MCP logging messages for rebuild progress (#87)', async () => {
+    await setRetrieveEnv();
+    hasLoadedIndexMock.mockReturnValue(false);
+    updateIndexMock.mockImplementationOnce(async (
+      _kb: string | undefined,
+      opts: {
+        onProgress: (progress: {
+          processedFiles: number;
+          totalFiles: number;
+          currentFile: string;
+          modelId: string;
+        }) => Promise<void>;
+      },
+    ) => {
+      await opts.onProgress({
+        processedFiles: 10,
+        totalFiles: 25,
+        currentFile: '/tmp/kb/doc-10.md',
+        modelId: 'huggingface__BAAI-bge-small-en-v1.5',
+      });
+    });
+
+    const server = await freshServer();
+    const sendLoggingMessageMock = jest.fn().mockResolvedValue(undefined);
+    server['mcp'].connect = jest.fn().mockResolvedValue(undefined);
+    server['mcp'].sendLoggingMessage = sendLoggingMessageMock;
+
+    await server['runStdio']();
+    await server['activeWarmupPromise'];
+
+    expect(sendLoggingMessageMock).toHaveBeenCalledWith({
+      level: 'info',
+      logger: 'knowledge-base-server',
+      data: 'Embedded 10/25 files for huggingface__BAAI-bge-small-en-v1.5',
+    });
   });
 
   // --- tool description overrides (#52, RFC 010 M2) -------------------------

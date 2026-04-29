@@ -4,6 +4,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
+import type { IndexUpdateProgress } from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,
   listRegisteredModels,
@@ -61,6 +62,8 @@ export class KnowledgeBaseServer {
   // each model_id. The active model is resolved per `handleRetrieveKnowledge`
   // call (allows future M3 `model_name` arg without redesign).
   private managerCache: Map<string, FaissIndexManager> = new Map();
+  private managerInitCache: Map<string, Promise<FaissIndexManager>> = new Map();
+  private activeWarmupPromise: Promise<void> | null = null;
   private sseHost?: SseHost;
   private triggerWatcher?: ReindexTriggerWatcher;
   private shutdownInstalled = false;
@@ -84,18 +87,28 @@ export class KnowledgeBaseServer {
   private async getManagerFor(modelId: string): Promise<FaissIndexManager> {
     const cached = this.managerCache.get(modelId);
     if (cached) return cached;
-    const { provider } = parseModelId(modelId);
-    const modelName = await readStoredModelName(modelId);
-    if (modelName === null) {
-      throw new Error(`model_name.txt missing for registered model "${modelId}"`);
+    const initializing = this.managerInitCache.get(modelId);
+    if (initializing) return initializing;
+    const initPromise = (async () => {
+      const { provider } = parseModelId(modelId);
+      const modelName = await readStoredModelName(modelId);
+      if (modelName === null) {
+        throw new Error(`model_name.txt missing for registered model "${modelId}"`);
+      }
+      const manager = new FaissIndexManager({
+        provider: provider as EmbeddingProvider,
+        modelName,
+      });
+      await manager.initialize();
+      this.managerCache.set(modelId, manager);
+      return manager;
+    })();
+    this.managerInitCache.set(modelId, initPromise);
+    try {
+      return await initPromise;
+    } finally {
+      this.managerInitCache.delete(modelId);
     }
-    const manager = new FaissIndexManager({
-      provider: provider as EmbeddingProvider,
-      modelName,
-    });
-    await manager.initialize();
-    this.managerCache.set(modelId, manager);
-    return manager;
   }
 
   private buildMcpServer(): McpServer {
@@ -300,21 +313,14 @@ export class KnowledgeBaseServer {
   }
 
   private async runStdio(): Promise<void> {
-    // Fail before exposing tools over stdio. If FAISS initialization knows the
-    // active index is bad but cannot clean it up, serving even "safe" tools
-    // leaves clients attached to a poisoned process (#85).
-    await this.warmActiveManager();
     const transport = new StdioServerTransport();
     await this.mcp.connect(transport);
     logger.info('Knowledge Base MCP server running on stdio');
+    this.startActiveManagerWarmup();
     this.startTriggerWatcher();
   }
 
   private async runSse(config: TransportConfig): Promise<void> {
-    // Block HTTP bind on a ready index so a fast first client cannot race
-    // updateIndex (RFC 008 §6.2: "client races init" footgun under HTTP).
-    await this.warmActiveManager();
-
     const host = new SseHost({
       config,
       createMcpServer: () => this.buildMcpServer(),
@@ -324,6 +330,7 @@ export class KnowledgeBaseServer {
     // Start watcher only after the HTTP bind succeeds; a throw from
     // host.start() unwinds without leaving a dangling polling timer.
     await host.start();
+    this.startActiveManagerWarmup();
     this.startTriggerWatcher();
   }
 
@@ -333,16 +340,61 @@ export class KnowledgeBaseServer {
    * `handleRetrieveKnowledge` call surfaces the error to the agent via
    * `isError: true` instead of dying at startup).
    */
+  private startActiveManagerWarmup(): void {
+    if (this.activeWarmupPromise) return;
+    this.activeWarmupPromise = this.warmActiveManager();
+  }
+
   private async warmActiveManager(): Promise<void> {
     try {
       const activeId = await resolveActiveModel();
-      await this.getManagerFor(activeId);
+      const manager = await this.getManagerFor(activeId);
+      if (manager.hasLoadedIndex) {
+        logger.info(`Active FAISS index ${activeId} loaded; startup rebuild not needed`);
+        return;
+      }
+
+      await this.sendWarmupLoggingMessage(
+        'info',
+        `Rebuilding FAISS index for active model ${activeId}`,
+      );
+      await withWriteLock(manager.modelDir, () =>
+        manager.updateIndex(undefined, {
+          onProgress: (progress) => this.sendRebuildProgress(progress),
+        }),
+      );
+      await this.sendWarmupLoggingMessage(
+        'info',
+        `Finished rebuilding FAISS index for active model ${activeId}`,
+      );
     } catch (err) {
       if (err instanceof ActiveModelResolutionError) {
         logger.warn(`No active model on startup: ${err.message}`);
         return;
       }
-      throw err;
+      const error = toError(err);
+      logger.error(`Startup FAISS warm-up failed: ${error.message}`);
+      if (error.stack) {
+        logger.error(error.stack);
+      }
+    }
+  }
+
+  private async sendRebuildProgress(progress: IndexUpdateProgress): Promise<void> {
+    await this.sendWarmupLoggingMessage(
+      'info',
+      `Embedded ${progress.processedFiles}/${progress.totalFiles} files for ${progress.modelId}`,
+    );
+  }
+
+  private async sendWarmupLoggingMessage(
+    level: 'info' | 'warning' | 'error',
+    data: string,
+  ): Promise<void> {
+    try {
+      await this.mcp.sendLoggingMessage({ level, logger: SERVER_NAME, data });
+    } catch (err) {
+      logger.debug(`Unable to emit MCP warm-up log: ${toError(err).message}`);
     }
   }
 
