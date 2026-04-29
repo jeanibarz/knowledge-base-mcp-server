@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — fail stdio startup before exposing poisoned indexes
+
+### Fixed
+
+- **Stdio startup now warms the active FAISS manager before connecting MCP tools.** If index invalidation or corrupt-index cleanup fails, startup aborts before clients can call `tools/list` or `list_knowledge_bases` against a process that already knows its active index is unsafe. Closes #85.
+
 ## [Unreleased] — lazy-import unused embedding providers
 
 ### Changed
