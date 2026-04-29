@@ -5,6 +5,8 @@
 ### Fixed
 
 - **`retrieve_knowledge` no longer returns silent empty results when the FAISS store has been deleted but per-KB hash sidecars survive.** `FaissIndexManager.initialize()` now detects "FAISS store gone for this model + per-KB `.index/*.md` sidecars present" and purges the stale sidecars across every KB under `KNOWLEDGE_BASES_ROOT_DIR` before any `updateIndex` call can read them. The next `updateIndex` then re-embeds every file from scratch through the per-file path. A single `WARN` log identifies the affected KBs so an operator can investigate why `$FAISS_INDEX_PATH` was removed (manual `rm -rf`, partial backup restore, crash mid-rebuild, model switch with the prior store moved aside). Closes #90.
+- **Cross-model sidecar serialization.** Sidecar mutations are now bracketed by a shared lock at `${FAISS_INDEX_PATH}/.kb-sidecar.lock` (proper-lockfile, 30s stale, 10 retries). The sidecar tree under `<kb>/.index/` is shared across models but `updateIndex` historically protected it with a per-model write lock only; that left a window where one model's `purgeStaleSidecars` could `rmrf` a parent directory between another model's `mkdir` and `rename`. The shared lock closes that race. Sidecar writers also re-`mkdir` the parent inside the lock as a belt-and-braces guard.
+- **Symlinked KB entries are skipped during the purge** (`lstat` check before `fsp.rm`) so a symlink at `<root>/external-kb -> /elsewhere` cannot cause the recursive rm to delete an external `.index/` directory. The symlinked KB stays unindexed-by-this-recovery; the documented manual workaround (`find ~/knowledge_bases -type d -name .index -exec rm -rf {} +`) does not follow symlinks by default and remains the escape hatch for those KBs.
 
 ### Why
 
