@@ -23,6 +23,7 @@ import {
   parseFrontmatter,
   toError,
 } from './utils.js';
+import { loadFile } from './loaders.js';
 import {
   EMBEDDING_PROVIDER,
   KNOWLEDGE_BASES_ROOT_DIR,
@@ -1269,11 +1270,15 @@ export class FaissIndexManager {
                 ? `FAISS index is empty. Rebuilding from ${filePath}...`
                 : `File ${filePath} has changed. Updating index...`,
             );
+            // Issue #46 — extension-routed loader. `.pdf` runs through
+            // pdf-parse, `.html`/`.htm` through html-to-text, anything else
+            // (including operator-supplied INGEST_EXTRA_EXTENSIONS like
+            // `.json` or `.csv`) reads as UTF-8.
             let content = '';
             try {
-              content = await fsp.readFile(filePath, 'utf-8');
+              content = await loadFile(filePath);
             } catch (error: unknown) {
-              logger.error(`Error reading file ${filePath}:`, toError(error));
+              logger.error(`Error loading file ${filePath}:`, toError(error));
               continue;
             }
 
@@ -1304,11 +1309,12 @@ export class FaissIndexManager {
         logger.info('No updates detected but FAISS index is not initialized. Building index from all available documents...');
         for (const { knowledgeBaseName, filePaths } of knowledgeBaseFiles) {
           for (const filePath of filePaths) {
+            // Issue #46 — same extension-routed loader as the per-file path.
             let content = '';
             try {
-              content = await fsp.readFile(filePath, 'utf-8');
-            } catch (error) {
-              logger.error(`Error reading file ${filePath}:`, error);
+              content = await loadFile(filePath);
+            } catch (error: unknown) {
+              logger.error(`Error loading file ${filePath}:`, toError(error));
               continue;
             }
             const documents = await this.buildChunkDocuments(

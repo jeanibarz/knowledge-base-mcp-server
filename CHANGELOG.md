@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased] — PDF and HTML loaders behind extension-based routing
+
+### Added
+
+- **`.pdf` and `.html` / `.htm` files in any KB are now ingested.** A new loader-per-extension layer in `src/loaders.ts` routes each file to a format-aware reader: `.pdf` through `pdf-parse@^2` (which drives `pdfjs-dist` under the hood), `.html` / `.htm` through `html-to-text` (preserves paragraph and list breaks, strips `<script>` / `<style>`, and drops `<a href>` URLs while keeping link text). Plain-text formats (`.md`, `.markdown`, `.txt`, `.rst`, plus anything an operator opts in via `INGEST_EXTRA_EXTENSIONS`) continue to read as UTF-8 — the registry only overrides when a binary or structured format would otherwise decode to noise. The ingest filter's base allowlist (`INGEST_BASE_EXTENSIONS` in `src/utils.ts`) gains `.pdf`, `.html`, and `.htm`. Closes #46.
+
+### Why
+
+PDF papers and HTML doc dumps are the two most common knowledge-base content types after markdown. Previously the scanner walked them like text — `fs.readFile(path, 'utf-8')` on PDF bytes produced U+FFFD noise, and HTML chunks carried raw `<p>` / `<div>` tags into the embedder — so most `kb_stats`-counted "files" were unsearchable garbage. The loader registry is the small surface that fixes both: extension-routed dispatch, lazy `import()` of the heavy parser only when the relevant file type is actually present, and no change to the FAISS index format or sidecar layout.
+
+### Migration note for arxiv-shaped KBs
+
+If your KB pairs a markdown note with a sibling PDF (e.g. `notes/<id>.md` next to `pdfs/<id>.pdf` — the layout the existing arxiv ingestion workflow uses), the PDF is now embedded too, so by default both copies of the same paper land in the index. Add `INGEST_EXCLUDE_PATHS=pdfs/**` to keep the previous "markdown is the source of truth" behavior:
+
+```bash
+INGEST_EXCLUDE_PATHS=pdfs/** node build/index.js
+```
+
+### Library choices
+
+- **`pdf-parse@^1.1.1`** is pinned to the version `@langchain/community@^0.3.59` declares as `peerOptional pdf-parse@1.1.1`, so `npm ci` (CI uses strict peer resolution) installs cleanly. The runtime API is the v1 `pdfParse(buffer): Promise<{text, ...}>` shape; we import `pdf-parse/lib/pdf-parse.js` directly to dodge v1's debug-mode branch which fires on `require('pdf-parse')` when `module.parent` is null.
+- **`html-to-text`** is pure-JS, no DOM emulation, and produces readable plain text without pulling in cheerio's full parser stack.
+
 ## [Unreleased] — kb_stats observability tool
 
 ### Added
