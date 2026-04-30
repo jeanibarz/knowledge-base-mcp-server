@@ -154,6 +154,14 @@ export const LIST_MODELS_DESCRIPTION =
     ? process.env.LIST_MODELS_DESCRIPTION
     : DEFAULT_LIST_MODELS_DESCRIPTION;
 
+// Issue #54 — kb_stats tool description.
+export const DEFAULT_KB_STATS_DESCRIPTION =
+  'Reports observability stats for the knowledge base index: per-KB file_count, chunk_count, total_bytes_indexed and last_updated_at; the active embedding provider/model/dim; the on-disk index_path; and server version/uptime. Pass `knowledge_base_name` to scope to a single KB; omit it to get an entry per registered KB.';
+export const KB_STATS_DESCRIPTION =
+  process.env.KB_STATS_DESCRIPTION && process.env.KB_STATS_DESCRIPTION.length > 0
+    ? process.env.KB_STATS_DESCRIPTION
+    : DEFAULT_KB_STATS_DESCRIPTION;
+
 // ---------------------------------------------------------------------------
 // Transport configuration (RFC 008 stage 1: stdio + SSE).
 // ---------------------------------------------------------------------------

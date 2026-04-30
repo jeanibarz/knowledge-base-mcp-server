@@ -1495,6 +1495,74 @@ export class FaissIndexManager {
       score,
     }));
   }
+
+  /**
+   * Issue #54 — observability snapshot for the kb_stats MCP tool.
+   *
+   * Returns a lightweight, read-only view of the loaded FAISS store: total
+   * chunk count (= `index.ntotal()`), vector dimension (= `index.getDimension()`),
+   * and per-KB chunk counts grouped by `metadata.knowledgeBase`.
+   *
+   * Per-KB counts are derived from the in-memory docstore at call time rather
+   * than tracked as the index mutates. Reasons: the docstore is the single
+   * source of truth post-load, so counts can't drift after a fallback rebuild
+   * or a restart; the cost is O(n) over the docstore and `kb_stats` is rare.
+   *
+   * Pre-load (faissIndex === null): returns zeros and dim=null. The caller
+   * still has useful data via per-KB file walks + sidecar mtimes.
+   */
+  getStats(): {
+    totalChunks: number;
+    chunkCountsByKb: Record<string, number>;
+    dim: number | null;
+  } {
+    if (!this.faissIndex) {
+      return { totalChunks: 0, chunkCountsByKb: {}, dim: null };
+    }
+    const totalChunks = this.faissIndex.index.ntotal();
+    const dim = this.faissIndex.index.getDimension();
+    const chunkCountsByKb: Record<string, number> = {};
+    // SynchronousInMemoryDocstore exposes `_docs: Map<string, Document>`
+    // (langchain 0.3 internal — verified against the bundled
+    // node_modules/langchain/dist/stores/doc/in_memory.js). The cast
+    // surfaces only the fields we touch.
+    const docs = (
+      this.faissIndex.docstore as unknown as {
+        _docs: Map<string, { metadata?: { knowledgeBase?: unknown } }>;
+      }
+    )._docs;
+    for (const doc of docs.values()) {
+      const kb = doc.metadata?.knowledgeBase;
+      if (typeof kb === 'string') {
+        chunkCountsByKb[kb] = (chunkCountsByKb[kb] ?? 0) + 1;
+      }
+    }
+    return { totalChunks, chunkCountsByKb, dim };
+  }
+
+  /**
+   * Issue #54 — resolve the path of the active `faiss.index` file used for
+   * `last_updated_at`. Handles both the RFC 014 versioned layout
+   * (`${modelDir}/index.vN/faiss.index` via the `index` symlink) and the
+   * legacy directory (`${modelDir}/faiss.index/faiss.index`). Returns null
+   * if no index has been persisted yet for this model.
+   */
+  async resolveActiveIndexFilePath(): Promise<string | null> {
+    const symlinkPath = path.join(this.modelDir, SYMLINK_NAME);
+    try {
+      const symStat = await fsp.lstat(symlinkPath);
+      if (symStat.isSymbolicLink()) {
+        const resolved = await fsp.realpath(symlinkPath);
+        const candidate = path.join(resolved, LEGACY_INDEX_NAME);
+        if (await pathExists(candidate)) return candidate;
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    const legacyFile = path.join(this.modelDir, LEGACY_INDEX_NAME, LEGACY_INDEX_NAME);
+    if (await pathExists(legacyFile)) return legacyFile;
+    return null;
+  }
 }
 
 /**

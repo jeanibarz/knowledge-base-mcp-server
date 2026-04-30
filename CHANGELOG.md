@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] — kb_stats observability tool
+
+### Added
+
+- **New `kb_stats` MCP tool surfaces index observability** — counts, last-index timestamp, and the active model — so agents and humans can introspect the KB instead of guessing. Per-KB it returns `file_count` (post-ingest-filter), `chunk_count` (per `metadata.knowledgeBase` in the loaded FAISS docstore), `total_bytes_indexed` (sum of stat sizes), and `last_updated_at` (max mtime under `<kb>/.index/`, ISO 8601, `null` if the KB has never been embedded). The envelope adds `embedding.{provider,model,dim}` (dim from `IndexFlatL2.getDimension()`, `null` pre-load), the absolute `index_path`, and `server.{version,uptime_ms}`. Pass the optional `knowledge_base_name` arg to scope to one KB; an unknown name returns a `KB_NOT_FOUND` MCP error. The tool is read-only — it does NOT acquire the write lock or trigger `updateIndex`. `KB_STATS_DESCRIPTION` overrides the model-facing description like the other tools. Closes #54.
+
+### Why
+
+Without an introspection surface, an agent has no way to ask "how many files/chunks are in this KB, when did the index last update, what model built it?" — so debugging "empty results" comes down to grepping logs. `pinecone-mcp`'s `describe-index-stats` is the precedent. Per-KB chunk counts are derived by walking the in-memory docstore at call time rather than tracked alongside ingest writes: the docstore is the single post-load source of truth, so counts can't drift after a fallback rebuild or restart, and the cost is O(n) for a tool that's expected to fire rarely. Per-KB `last_updated_at` from the sidecar tree (rather than the global `faiss.index` mtime) gives a tighter signal — the most recent embedding event for that KB specifically.
+
 ## [Unreleased] — retrieve_knowledge metadata filters
 
 ### Added
