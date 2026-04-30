@@ -319,7 +319,7 @@ describe('filterIngestablePaths (RFC 011 §5.2)', () => {
   const kbRoot = '/kbs/arxiv';
   const abs = (rel: string): string => `${kbRoot}/${rel}`;
 
-  it('(a) arxiv KB: only notes/*.md pass; PDFs, _seen.jsonl, logs/** excluded', () => {
+  it('(a) arxiv KB: notes/*.md and PDFs pass (issue #46); _seen.jsonl and logs/** excluded', () => {
     const input = [
       abs('notes/2604.21215.md'),
       abs('notes/2604.21221.md'),
@@ -329,10 +329,30 @@ describe('filterIngestablePaths (RFC 011 §5.2)', () => {
       abs('logs/2026-04-24.log'),
     ];
     const output = filterIngestablePaths(input, kbRoot);
+    // Issue #46 — `.pdf` is now part of the base allowlist; arxiv-shaped KBs
+    // that want to keep their `pdfs/` directory out of the embedding (because
+    // a markdown sibling already covers it) opt in via
+    // `INGEST_EXCLUDE_PATHS=pdfs/**` (see test (a.1) below).
     expect(output).toEqual([
       abs('notes/2604.21215.md'),
       abs('notes/2604.21221.md'),
+      abs('pdfs/2604.21215.pdf'),
+      abs('pdfs/2604.21221.pdf'),
     ]);
+  });
+
+  it('(a.1) arxiv KB with INGEST_EXCLUDE_PATHS="pdfs/**" suppresses the PDF subtree', () => {
+    // The natural arxiv migration after issue #46: notes/ stay embedded,
+    // pdfs/ stays out so the same paper isn't double-indexed.
+    const input = [
+      abs('notes/2604.21215.md'),
+      abs('pdfs/2604.21215.pdf'),
+      abs('_seen.jsonl'),
+    ];
+    const output = filterIngestablePaths(input, kbRoot, {
+      excludePaths: ['pdfs/**'],
+    });
+    expect(output).toEqual([abs('notes/2604.21215.md')]);
   });
 
   it('(b) all-markdown KB: filter is a no-op', () => {
@@ -380,11 +400,11 @@ describe('filterIngestablePaths (RFC 011 §5.2)', () => {
     expect(output).toEqual([abs('notes/paper.md')]);
   });
 
-  it('(e) case sensitivity: .PDF is excluded regardless of host case', () => {
-    const input = [abs('pdfs/Paper.PDF'), abs('NOTES/PAPER.MD')];
+  it('(e) case sensitivity: .MD and .PDF normalize to lowercase and pass; .EXE stays excluded', () => {
+    const input = [abs('pdfs/Paper.PDF'), abs('NOTES/PAPER.MD'), abs('bin/tool.EXE')];
     const output = filterIngestablePaths(input, kbRoot);
-    // Upper-case .MD normalizes to .md and is allowed; .PDF stays excluded.
-    expect(output).toEqual([abs('NOTES/PAPER.MD')]);
+    // Issue #46 — `.pdf` is base-allowed; .EXE is not.
+    expect(output).toEqual([abs('pdfs/Paper.PDF'), abs('NOTES/PAPER.MD')]);
   });
 
   it('(f) basename _seen.jsonl is excluded even if placed under notes/', () => {
