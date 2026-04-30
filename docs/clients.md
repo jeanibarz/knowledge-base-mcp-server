@@ -6,7 +6,6 @@ This server speaks stdio MCP and works with any stdio MCP client. Pick the block
 
 | Placeholder | What to substitute |
 | --- | --- |
-| `<PATH_TO_BUILD_INDEX>` | Absolute path to `build/index.js` after `npm run build` (e.g. `/Users/you/code/knowledge-base-mcp-server/build/index.js`). |
 | `<KB_ROOT>` | Absolute path to the directory that holds your knowledge-base subfolders. |
 | `<FAISS_INDEX_PATH>` | Optional. Absolute path for the FAISS index. Defaults to `$HOME/knowledge_bases/.faiss` if omitted. |
 | `<HF_API_KEY>` | HuggingFace API token (or a compatible Inference Provider key). |
@@ -15,9 +14,9 @@ This server speaks stdio MCP and works with any stdio MCP client. Pick the block
 
 The blocks below alternate embedding providers so you can see all three configured at least once. Any client can use any provider — see the [README](../README.md) "Configure environment variables" step for the full env-var matrix.
 
-## Upgrade model — pin `@latest` if you wire via `npx`
+## Package form and upgrades
 
-The snippets below use `command: "node"` + an absolute path, so upgrades happen when *you* rebuild from source. If instead you wire the server via `command: "npx"` + `args: ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"]` (a common shorthand for users on the README "Install (one command)" path), **always include `@latest` explicitly**. The bare unversioned spec `@jeanibarz/knowledge-base-mcp-server` caches the resolved version in `~/.npm/_npx/` indefinitely — your client keeps using the old version after a new release ships. The `@latest` form hashes to a different cache key and re-resolves on every spawn. See RFC 012 §2.4.
+The snippets below launch the published package with `command: "npx"` + `args: ["-y", "@jeanibarz/knowledge-base-mcp-server"]`, which matches the README "Install (one command)" path. If you want each client spawn to re-resolve the newest release, use `@jeanibarz/knowledge-base-mcp-server@latest` instead. The bare unversioned spec can stay pinned in `~/.npm/_npx/` until that cache entry is removed. See RFC 012 §2.4.
 
 Alternatively, install once globally (`npm install -g @jeanibarz/knowledge-base-mcp-server@latest`) and use the resulting absolute bin path: `which knowledge-base-mcp-server`.
 
@@ -59,8 +58,8 @@ Add to the `mcpServers` object (Ollama provider shown):
 {
   "mcpServers": {
     "knowledge-base": {
-      "command": "node",
-      "args": ["<PATH_TO_BUILD_INDEX>"],
+      "command": "npx",
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
       "env": {
         "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
         "EMBEDDING_PROVIDER": "ollama",
@@ -74,6 +73,57 @@ Add to the `mcpServers` object (Ollama provider shown):
 
 Restart Claude Desktop after editing the file. The server appears in the tools menu once the handshake succeeds.
 
+## Claude Code
+
+Config file:
+
+- User scope — `~/.claude/.mcp.json`
+- Project scope — `$REPO/.mcp.json`
+
+Use user scope when the same knowledge base should be available across projects. Use project scope when the config belongs to one repository and should travel with that project.
+
+```jsonc
+// ~/.claude/.mcp.json  (user-scope)
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "command": "npx",
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+      "env": {
+        "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
+        "EMBEDDING_PROVIDER": "ollama",
+        "OLLAMA_BASE_URL": "http://localhost:11434",
+        "OLLAMA_MODEL": "dengcao/Qwen3-Embedding-0.6B:Q8_0"
+      }
+    }
+  }
+}
+```
+
+Equivalent CLI shortcut:
+
+```bash
+claude mcp add knowledge-base \
+  -s user \
+  -e KNOWLEDGE_BASES_ROOT_DIR="$HOME/knowledge_bases" \
+  -e EMBEDDING_PROVIDER=ollama \
+  -e OLLAMA_MODEL=dengcao/Qwen3-Embedding-0.6B:Q8_0 \
+  -- npx -y @jeanibarz/knowledge-base-mcp-server
+```
+
+### Skill wrapper
+
+For automatic discovery in Claude Code, add a minimal wrapper at `~/.claude/skills/knowledge-base/SKILL.md`:
+
+```markdown
+---
+name: knowledge-base
+description: Retrieve local markdown knowledge through the knowledge-base MCP server.
+---
+
+Use the `knowledge-base` MCP server to list knowledge bases and retrieve relevant notes before answering questions about my local knowledge base.
+```
+
 ## Codex CLI
 
 Config file: `~/.codex/config.toml`
@@ -82,8 +132,8 @@ Add an `[mcp_servers.<name>]` table (OpenAI provider shown):
 
 ```toml
 [mcp_servers.knowledge-base]
-command = "node"
-args = ["<PATH_TO_BUILD_INDEX>"]
+command = "npx"
+args = ["-y", "@jeanibarz/knowledge-base-mcp-server"]
 
 [mcp_servers.knowledge-base.env]
 KNOWLEDGE_BASES_ROOT_DIR = "<KB_ROOT>"
@@ -107,8 +157,8 @@ Add to the `mcpServers` object (HuggingFace provider shown):
 {
   "mcpServers": {
     "knowledge-base": {
-      "command": "node",
-      "args": ["<PATH_TO_BUILD_INDEX>"],
+      "command": "npx",
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
       "env": {
         "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
         "EMBEDDING_PROVIDER": "huggingface",
@@ -136,8 +186,8 @@ Add the server under `experimental.modelContextProtocolServers` (Ollama provider
       {
         "transport": {
           "type": "stdio",
-          "command": "node",
-          "args": ["<PATH_TO_BUILD_INDEX>"],
+          "command": "npx",
+          "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
           "env": {
             "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
             "EMBEDDING_PROVIDER": "ollama",
@@ -163,8 +213,8 @@ Add to the `mcpServers` object. Three provider variants are shown — use only o
 
 ```json
 "knowledge-base-mcp-ollama": {
-  "command": "node",
-  "args": ["<PATH_TO_BUILD_INDEX>"],
+  "command": "npx",
+  "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
   "disabled": false,
   "autoApprove": [],
   "env": {
@@ -181,8 +231,8 @@ Add to the `mcpServers` object. Three provider variants are shown — use only o
 
 ```json
 "knowledge-base-mcp-openai": {
-  "command": "node",
-  "args": ["<PATH_TO_BUILD_INDEX>"],
+  "command": "npx",
+  "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
   "disabled": false,
   "autoApprove": [],
   "env": {
@@ -199,8 +249,8 @@ Add to the `mcpServers` object. Three provider variants are shown — use only o
 
 ```json
 "knowledge-base-mcp-huggingface": {
-  "command": "node",
-  "args": ["<PATH_TO_BUILD_INDEX>"],
+  "command": "npx",
+  "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
   "disabled": false,
   "autoApprove": [],
   "env": {
@@ -214,6 +264,29 @@ Add to the `mcpServers` object. Three provider variants are shown — use only o
 }
 ```
 
+## Install from source
+
+Contributors who want to pin an unreleased commit can build locally and point a client at `build/index.js` instead of using the published package.
+
+```json
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "command": "node",
+      "args": ["/absolute/path/to/knowledge-base-mcp-server/build/index.js"],
+      "env": {
+        "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
+        "EMBEDDING_PROVIDER": "ollama",
+        "OLLAMA_BASE_URL": "http://localhost:11434",
+        "OLLAMA_MODEL": "dengcao/Qwen3-Embedding-0.6B:Q8_0"
+      }
+    }
+  }
+}
+```
+
+Run `npm install && npm run build` in that checkout before launching the client.
+
 ## Verifying the connection
 
 Once the client launches the server, run a quick smoke test from the client UI:
@@ -222,4 +295,4 @@ Once the client launches the server, run a quick smoke test from the client UI:
 2. Call `list_knowledge_bases`. Each subdirectory of `<KB_ROOT>` (excluding dotfiles) is one knowledge base.
 3. Call `retrieve_knowledge` with a query that should hit your seeded content.
 
-If no tools show up, the most common causes are: a wrong absolute path in `args`, the `node` binary not on the client's `PATH`, or a missing `npm run build` on the server. Logs go to stderr and to `LOG_FILE` if set — see the [Troubleshooting](../README.md#troubleshooting--logging) section.
+If no tools show up, the most common causes are: `npx` not being on the client's `PATH`, a package install failure, or missing provider credentials. Source installs can also fail because of a wrong absolute path in `args` or a missing `npm run build`. Logs go to stderr and to `LOG_FILE` if set — see the [Troubleshooting](../README.md#troubleshooting--logging) section.
