@@ -6,6 +6,13 @@ const initializeMock = jest.fn();
 const updateIndexMock = jest.fn();
 const similaritySearchMock = jest.fn();
 const hasLoadedIndexMock = jest.fn(() => true);
+// Issue #54 — kb_stats reads chunk_count + dim from the manager. Default to
+// an empty store so tests that don't care about stats still see a sane shape.
+const getStatsMock = jest.fn(() => ({
+  totalChunks: 0,
+  chunkCountsByKb: {} as Record<string, number>,
+  dim: null as number | null,
+}));
 
 const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provider?: string; modelName?: string }) => {
   // RFC 013 M1+M2: the manager exposes modelDir / modelId / modelName for
@@ -20,6 +27,7 @@ const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provid
     initialize: initializeMock,
     updateIndex: updateIndexMock,
     similaritySearch: similaritySearchMock,
+    getStats: getStatsMock,
     modelDir,
     modelId,
     modelName,
@@ -58,6 +66,8 @@ describe('KnowledgeBaseServer handlers', () => {
     similaritySearchMock.mockReset();
     hasLoadedIndexMock.mockReset();
     hasLoadedIndexMock.mockReturnValue(true);
+    getStatsMock.mockReset();
+    getStatsMock.mockReturnValue({ totalChunks: 0, chunkCountsByKb: {}, dim: null });
   });
 
   afterEach(() => {
@@ -234,6 +244,129 @@ describe('KnowledgeBaseServer handlers', () => {
     const server = await freshServer();
     const result = await server['handleRetrieveKnowledge']({ query: 'q' });
     expect(result.content[0].text).not.toContain('Model:');
+  });
+
+  // --- handleKbStats (#54) -------------------------------------------------
+
+  it('handleKbStats with no args returns one entry per registered KB', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.mkdir(path.join(tempDir, 'beta'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'one.md'), 'hello world');
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'two.md'), '12345');
+    await fsp.writeFile(path.join(tempDir, 'beta', 'long.md'), 'x'.repeat(100));
+
+    getStatsMock.mockReturnValue({
+      totalChunks: 7,
+      chunkCountsByKb: { alpha: 4, beta: 3 },
+      dim: 384,
+    });
+
+    const server = await freshServer();
+    const result = await server['handleKbStats']({});
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe('text');
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(Object.keys(payload.knowledge_bases).sort()).toEqual(['alpha', 'beta']);
+    expect(payload.knowledge_bases.alpha.file_count).toBe(2);
+    expect(payload.knowledge_bases.alpha.total_bytes_indexed).toBe(11 + 5);
+    expect(payload.knowledge_bases.alpha.chunk_count).toBe(4);
+    expect(payload.knowledge_bases.beta.file_count).toBe(1);
+    expect(payload.knowledge_bases.beta.total_bytes_indexed).toBe(100);
+    expect(payload.knowledge_bases.beta.chunk_count).toBe(3);
+
+    expect(payload.embedding).toEqual({
+      provider: 'huggingface',
+      model: 'BAAI/bge-small-en-v1.5',
+      dim: 384,
+    });
+    expect(payload.index_path).toBe(process.env.FAISS_INDEX_PATH);
+    expect(typeof payload.server.version).toBe('string');
+    expect(payload.server.version.length).toBeGreaterThan(0);
+    expect(typeof payload.server.uptime_ms).toBe('number');
+    expect(payload.server.uptime_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it('handleKbStats with knowledge_base_name returns only that KB and asserts chunk_count', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.mkdir(path.join(tempDir, 'beta'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'aaa');
+    await fsp.writeFile(path.join(tempDir, 'beta', 'b.md'), 'bbbb');
+
+    getStatsMock.mockReturnValue({
+      totalChunks: 9,
+      // chunk_count for `alpha` must come straight from this map even though
+      // there is also a `beta` entry — kb_stats with a name MUST scope.
+      chunkCountsByKb: { alpha: 5, beta: 4 },
+      dim: 768,
+    });
+
+    const server = await freshServer();
+    const result = await server['handleKbStats']({ knowledge_base_name: 'alpha' });
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(Object.keys(payload.knowledge_bases)).toEqual(['alpha']);
+    expect(payload.knowledge_bases.alpha.chunk_count).toBe(5);
+    expect(payload.knowledge_bases.alpha.file_count).toBe(1);
+    expect(payload.knowledge_bases.alpha.total_bytes_indexed).toBe(3);
+    expect(payload.embedding.dim).toBe(768);
+  });
+
+  it('handleKbStats returns 0 chunk_count for a KB with no docs in the index', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'newkb'));
+    await fsp.writeFile(path.join(tempDir, 'newkb', 'untouched.md'), 'data');
+
+    getStatsMock.mockReturnValue({
+      totalChunks: 0,
+      chunkCountsByKb: {},
+      dim: null,
+    });
+
+    const server = await freshServer();
+    const result = await server['handleKbStats']({});
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.knowledge_bases.newkb.chunk_count).toBe(0);
+    expect(payload.knowledge_bases.newkb.last_updated_at).toBeNull();
+    expect(payload.embedding.dim).toBeNull();
+  });
+
+  it('handleKbStats with unknown knowledge_base_name returns KB_NOT_FOUND error', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+
+    const server = await freshServer();
+    const result = await server['handleKbStats']({ knowledge_base_name: 'doesnotexist' });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error.code).toBe('KB_NOT_FOUND');
+    expect(payload.error.message).toContain('doesnotexist');
+  });
+
+  it('handleKbStats derives last_updated_at from the most recent file mtime under <kb>/.index/', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'x');
+    const sidecarDir = path.join(tempDir, 'alpha', '.index');
+    await fsp.mkdir(sidecarDir, { recursive: true });
+    const sidecar = path.join(sidecarDir, 'a.md');
+    await fsp.writeFile(sidecar, 'somehash');
+    // Pin a known mtime so the assertion is exact.
+    const fixedMs = 1_700_000_000_000;
+    await fsp.utimes(sidecar, fixedMs / 1000, fixedMs / 1000);
+
+    const server = await freshServer();
+    const result = await server['handleKbStats']({ knowledge_base_name: 'alpha' });
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.knowledge_bases.alpha.last_updated_at).toBe(
+      new Date(fixedMs).toISOString(),
+    );
   });
 
   it('handleListKnowledgeBases surfaces readdir errors as { isError: true } naming the failure', async () => {
