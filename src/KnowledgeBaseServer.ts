@@ -140,6 +140,11 @@ export class KnowledgeBaseServer {
         // When omitted, the server uses the model recorded in active.txt.
         // When passed, must be a registered model_id (see list_models).
         model_name: z.string().optional().describe('The model_id of an alternate embedding model to query (e.g. "openai__text-embedding-3-small"). If omitted, the active model is used. Run list_models for available ids.'),
+        // Issue #53 — metadata POST-filters. Applied after FAISS returns,
+        // ANDed with each other and with knowledge_base_name + threshold.
+        extensions: z.array(z.string()).optional().describe('Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional.'),
+        path_glob: z.string().optional().describe('Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching.'),
+        tags: z.array(z.string()).optional().describe('Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter.'),
       },
       async (args) => this.handleRetrieveKnowledge(args)
     );
@@ -202,11 +207,22 @@ export class KnowledgeBaseServer {
     }
   }
 
-  private async handleRetrieveKnowledge(args: { query: string; knowledge_base_name?: string; threshold?: number; model_name?: string; }): Promise<CallToolResult> {
+  private async handleRetrieveKnowledge(args: {
+    query: string;
+    knowledge_base_name?: string;
+    threshold?: number;
+    model_name?: string;
+    extensions?: string[];
+    path_glob?: string;
+    tags?: string[];
+  }): Promise<CallToolResult> {
     const query: string = args.query;
     const knowledgeBaseName: string | undefined = args.knowledge_base_name;
     const threshold: number | undefined = args.threshold;
     const modelNameOverride: string | undefined = args.model_name;
+    const filters = (args.extensions || args.path_glob || args.tags)
+      ? { extensions: args.extensions, pathGlob: args.path_glob, tags: args.tags }
+      : undefined;
 
     try {
       const startTime = Date.now();
@@ -235,7 +251,13 @@ export class KnowledgeBaseServer {
       logger.debug(`[${Date.now()}] FAISS index update completed`);
 
       // Perform similarity search using the provided query.
-      const similaritySearchResults = await manager.similaritySearch(query, 10, threshold, knowledgeBaseName);
+      const similaritySearchResults = await manager.similaritySearch(
+        query,
+        10,
+        threshold,
+        knowledgeBaseName,
+        filters,
+      );
       logger.debug(`[${Date.now()}] Similarity search completed`);
 
       // Build a nicely formatted markdown response including the similarity score.

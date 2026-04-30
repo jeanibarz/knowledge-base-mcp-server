@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] — retrieve_knowledge metadata filters
+
+### Added
+
+- **`retrieve_knowledge` accepts three optional metadata filters** that constrain which chunks are returned without changing the FAISS query: `extensions` (array of file extensions, e.g. `[".md", ".pdf"]`, case-insensitive, leading dot optional), `path_glob` (single minimatch pattern matched against the chunk's KB-internal relative path — the KB-name segment is stripped first so `"runbooks/**"` matches any KB's `runbooks/foo.md`; the full KB-prefixed form is also tried so explicit prefixes still work), and `tags` (array of strings, AND semantics — every tag must be present on the chunk's `metadata.tags`, which is populated from YAML frontmatter at ingest by `parseFrontmatter`). Filters are applied as POST-filters on `[doc, score]` tuples after `FaissStore.similaritySearchWithScore` returns; the FAISS index itself is never pre-filtered (langchain's `FaissStore` silently drops filter args). When any filter is active the search over-fetches up to `ntotal` so a small `k` doesn't starve once the post-filter drops top-ranked unfiltered hits. Closes #53.
+
+### Why
+
+For mixed-content KBs (code + docs + notes + future PDF/HTML loaders per #46), an unfiltered `retrieve_knowledge` query for "onboarding" returns hits from every KB regardless of intent. Competitor MCP servers expose this as a metadata filter (`chroma-mcp` `where`, `pinecone-mcp` `filter`); this lands the equivalent surface for the three filter axes most likely to be useful on a local KB without adding a new tool. Implementation reuses `minimatch` (already a dependency for `INGEST_EXCLUDE_PATHS`) and the existing `metadata.tags` field that ingest has been writing since RFC 010 M1 — no new dependency, no ingest schema change.
+
 ## [Unreleased] — eager startup rebuild with MCP progress logs
 
 ### Added
