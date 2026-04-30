@@ -192,6 +192,7 @@ Use this path if you want to develop against the repo or pin an unreleased commi
     ### Additional Configuration
     
     *   The server supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`.
+    *   **Single process per `FAISS_INDEX_PATH`.** Only one server process may write to a given `FAISS_INDEX_PATH` at a time. Running multiple processes (e.g. systemd `Restart=on-failure` racing the dying instance, pm2 with multiple replicas, Kubernetes pods sharing a PV, or a stray `kb search --refresh` overlapping the MCP server) against the same index directory can corrupt the FAISS store, hash sidecars, and pending-manifest. A process-level lockfile is the planned long-term fix — see [#44](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/44) for tracking and [`docs/architecture/threat-model.md`](docs/architecture/threat-model.md) for the current concurrency posture.
     *   Logging can be routed to a file by setting `LOG_FILE=/path/to/logs/knowledge-base.log`. Log verbosity defaults to `info` and can be adjusted with `LOG_LEVEL=debug|info|warn|error`.
     *   **Tailor tool descriptions per deployment.** The `retrieve_knowledge` and `list_knowledge_bases` descriptions the agent reads when picking tools can be overridden via `RETRIEVE_KNOWLEDGE_DESCRIPTION` and `LIST_KNOWLEDGE_BASES_DESCRIPTION`. Unset or empty falls back to the built-in defaults. Example:
         ```bash
