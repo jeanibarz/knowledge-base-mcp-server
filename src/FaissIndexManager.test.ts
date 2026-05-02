@@ -423,6 +423,59 @@ describe('FaissIndexManager permission handling', () => {
     expect(logContents).toContain('Permission denied while attempting to save FAISS index for model');
   });
 
+  it('upgrades a scoped force-reindex to a global rebuild so deletions are honored without duplicates (#51 P1)', async () => {
+    // Setup: two KBs (alpha, beta), each with one file. Initial updateIndex
+    // builds the global FAISS index; both files land in the store.
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-scoped-force-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const alphaDir = path.join(kbDir, 'alpha');
+    const betaDir = path.join(kbDir, 'beta');
+    await fsp.mkdir(alphaDir, { recursive: true });
+    await fsp.mkdir(betaDir, { recursive: true });
+    await fsp.writeFile(path.join(alphaDir, 'a.md'), '# alpha doc\n\nAlpha content.');
+    await fsp.writeFile(path.join(betaDir, 'b.md'), '# beta doc\n\nBeta content.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    // Initial build: one fromTexts() seeds the store with alpha's file,
+    // beta's file goes through addDocuments(). Total ingested = 2 files.
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    const initialAdds = addDocumentsMock.mock.calls.length;
+    fromTextsMock.mockClear();
+    addDocumentsMock.mockClear();
+
+    // Action: caller scopes a forced reindex to "alpha". The bug we are
+    // fixing: this would keep the existing store and only re-embed alpha,
+    // appending duplicates while leaving any orphaned vectors alive. The
+    // fix nulls the in-memory store and walks ALL KBs.
+    await manager.updateIndex('alpha', { force: true });
+
+    // After fix: the in-memory store was nulled, so the rebuild starts
+    // with fromTexts() again, and BOTH KBs' files are re-ingested.
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    // Both alpha (1 file) and beta (1 file) re-embedded — minus the seed
+    // file that fromTexts consumes. So addDocuments runs once for the
+    // remaining file.
+    const rebuildAdds = addDocumentsMock.mock.calls.length;
+    expect(rebuildAdds).toBe(initialAdds);
+
+    // The KB hash sidecars must reflect the rebuild — both files have
+    // up-to-date sidecars now.
+    const alphaSidecar = path.join(alphaDir, '.index', 'a.md');
+    const betaSidecar = path.join(betaDir, '.index', 'b.md');
+    await expect(fsp.readFile(alphaSidecar, 'utf-8')).resolves.toMatch(/^[0-9a-f]{64}$/);
+    await expect(fsp.readFile(betaSidecar, 'utf-8')).resolves.toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it('saves the FAISS index exactly once per updateIndex call when multiple files change', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-save-once-'));
     const kbDir = path.join(tempDir, 'kb');

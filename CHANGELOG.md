@@ -1,10 +1,10 @@
 # Changelog
 
-## [Unreleased] — MCP Resources for KB documents
+## [Unreleased] — MCP ingest tools
 
 ### Added
 
-- **Knowledge-base files are now exposed as MCP Resources.** Clients that browse resources can list documents as `kb://<kb-name>/<relative-path>` and read the selected file directly. Markdown, text, HTML, and unknown text-like files return text content; PDFs return base64 blobs with `application/pdf`. Resource listing uses the same recursive dot-prefix skip behavior as indexing, so `.faiss`, `.index`, `.reindex-trigger`, and other hidden paths stay off the wire. Path resolution is guarded against `../`, absolute paths, encoded separator payloads, and symlinks that leave the KB root. Closes #49.
+- **New MCP ingest tools:** `add_document`, `delete_document`, and `reindex_knowledge_base`. Agents can now write UTF-8 content into a KB, delete KB files plus their hash sidecars, and force re-indexing through the MCP surface without shell access. All writes resolve KB-relative paths defensively, reject traversal, and run under the active model's write lock. `add_document` updates the index synchronously so newly written content is queryable immediately. `delete_document` documents the FAISS limitation: orphan vectors can remain until a full rebuild, so run `reindex_knowledge_base` after deletes when vector hygiene matters. `reindex_knowledge_base` always rebuilds the FAISS store globally — passing `knowledge_base_name` is accepted (and echoed in the response) but does not narrow the rebuild scope, because FAISS lacks per-vector deletion in this server; the response advertises `scope: "global"` so callers know what happened. Closes #51.
 
 ## [Unreleased] — PDF and HTML loaders behind extension-based routing
 

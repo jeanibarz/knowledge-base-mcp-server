@@ -540,6 +540,7 @@ export interface IndexUpdateProgress {
 export interface UpdateIndexOptions {
   onProgress?: (progress: IndexUpdateProgress) => void | Promise<void>;
   progressIntervalFiles?: number;
+  force?: boolean;
 }
 
 export class FaissIndexManager {
@@ -1171,9 +1172,34 @@ export class FaissIndexManager {
   ): Promise<void> {
     logger.debug('Updating FAISS index...');
     try {
+      const forceReindex = opts.force === true;
+      // FAISS has no per-vector delete API and we keep one global store
+      // across all KBs. So a forced rebuild MUST null the in-memory index
+      // AND walk every KB. A scoped force ("rebuild just KB alpha") would
+      // either:
+      //   (a) keep the existing store and append fresh embeddings, leaving
+      //       orphaned vectors from deleted files alive AND duplicating
+      //       every still-present file, or
+      //   (b) build a fresh store containing only the scoped KB's vectors,
+      //       silently dropping every other KB.
+      // Both are wrong. Treat scope as advisory under force: log the
+      // upgrade and rebuild globally.
+      let scopedKnowledgeBase = specificKnowledgeBase;
+      if (forceReindex) {
+        this.faissIndex = null;
+        if (scopedKnowledgeBase !== undefined) {
+          logger.info(
+            `Forced reindex of "${scopedKnowledgeBase}" upgraded to a global rebuild ` +
+              `(FAISS deletion is unsupported; scoped rebuild would either duplicate ` +
+              `vectors or drop other KBs).`,
+          );
+          scopedKnowledgeBase = undefined;
+        }
+      }
+
       let knowledgeBases: string[] = [];
-      if (specificKnowledgeBase) {
-        knowledgeBases.push(specificKnowledgeBase);
+      if (scopedKnowledgeBase) {
+        knowledgeBases.push(scopedKnowledgeBase);
       } else {
         knowledgeBases = await fsp.readdir(KNOWLEDGE_BASES_ROOT_DIR);
       }
@@ -1264,10 +1290,12 @@ export class FaissIndexManager {
           // process it. The missing-index case must ignore matching sidecars:
           // otherwise a rebuild can silently omit files whose hashes were
           // already current.
-          if (rebuildFromEmptyIndex || fileHash !== storedHash) {
+          if (rebuildFromEmptyIndex || forceReindex || fileHash !== storedHash) {
             logger.info(
               rebuildFromEmptyIndex
                 ? `FAISS index is empty. Rebuilding from ${filePath}...`
+                : forceReindex
+                  ? `Force re-indexing ${filePath}...`
                 : `File ${filePath} has changed. Updating index...`,
             );
             // Issue #46 — extension-routed loader. `.pdf` runs through

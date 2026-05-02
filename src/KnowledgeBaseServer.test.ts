@@ -109,6 +109,19 @@ describe('KnowledgeBaseServer handlers', () => {
     return new KnowledgeBaseServer();
   }
 
+  async function exists(target: string): Promise<boolean> {
+    try {
+      await fsp.stat(target);
+      return true;
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   // --- handleListKnowledgeBases ---------------------------------------------
 
   it('handleListKnowledgeBases returns filtered (dot-free) entries', async () => {
@@ -367,6 +380,192 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(payload.knowledge_bases.alpha.last_updated_at).toBe(
       new Date(fixedMs).toISOString(),
     );
+  });
+
+  // --- ingest tools (#51) ---------------------------------------------------
+
+  it('handleAddDocument writes content and updates that KB immediately', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const result = await server['handleAddDocument']({
+      knowledge_base_name: 'alpha',
+      path: 'notes/new.md',
+      content: '# New note\n\nHello ingest.',
+    });
+
+    expect(result.isError).toBeUndefined();
+    const documentPath = path.join(tempDir, 'alpha', 'notes', 'new.md');
+    await expect(fsp.readFile(documentPath, 'utf-8')).resolves.toBe('# New note\n\nHello ingest.');
+    expect(updateIndexMock).toHaveBeenCalledWith('alpha');
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload).toMatchObject({
+      knowledge_base_name: 'alpha',
+      path: 'notes/new.md',
+      absolute_path: documentPath,
+      indexed: true,
+    });
+  });
+
+  it('handleAddDocument rejects path traversal and does not update the index', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+
+    const server = await freshServer();
+    const result = await server['handleAddDocument']({
+      knowledge_base_name: 'alpha',
+      path: '../escape.md',
+      content: 'nope',
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error.code).toBe('VALIDATION');
+    expect(payload.error.message).toContain('escapes KB root');
+    await expect(exists(path.join(tempDir, 'escape.md'))).resolves.toBe(false);
+    expect(updateIndexMock).not.toHaveBeenCalled();
+  });
+
+  it('handleAddDocument returns KB_NOT_FOUND for a missing KB', async () => {
+    await setRetrieveEnv();
+
+    const server = await freshServer();
+    const result = await server['handleAddDocument']({
+      knowledge_base_name: 'missing',
+      path: 'doc.md',
+      content: 'nope',
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error.code).toBe('KB_NOT_FOUND');
+    expect(updateIndexMock).not.toHaveBeenCalled();
+  });
+
+  it('handleDeleteDocument removes the file and hash sidecar without re-indexing', async () => {
+    const tempDir = await setRetrieveEnv();
+    const documentPath = path.join(tempDir, 'alpha', 'notes', 'old.md');
+    const sidecarPath = path.join(tempDir, 'alpha', '.index', 'notes', 'old.md');
+    await fsp.mkdir(path.dirname(documentPath), { recursive: true });
+    await fsp.mkdir(path.dirname(sidecarPath), { recursive: true });
+    await fsp.writeFile(documentPath, 'old');
+    await fsp.writeFile(sidecarPath, 'hash');
+
+    const server = await freshServer();
+    const result = await server['handleDeleteDocument']({
+      knowledge_base_name: 'alpha',
+      path: 'notes/old.md',
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(exists(documentPath)).resolves.toBe(false);
+    await expect(exists(sidecarPath)).resolves.toBe(false);
+    expect(updateIndexMock).not.toHaveBeenCalled();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload).toMatchObject({
+      knowledge_base_name: 'alpha',
+      path: 'notes/old.md',
+      absolute_path: documentPath,
+      sidecar_path: sidecarPath,
+      deleted: true,
+    });
+  });
+
+  it('handleDeleteDocument rejects path traversal and leaves files intact', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    const siblingPath = path.join(tempDir, 'escape.md');
+    await fsp.writeFile(siblingPath, 'keep');
+
+    const server = await freshServer();
+    const result = await server['handleDeleteDocument']({
+      knowledge_base_name: 'alpha',
+      path: '../escape.md',
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error.code).toBe('VALIDATION');
+    expect(payload.error.message).toContain('escapes KB root');
+    await expect(fsp.readFile(siblingPath, 'utf-8')).resolves.toBe('keep');
+    expect(updateIndexMock).not.toHaveBeenCalled();
+  });
+
+  it('handleDeleteDocument returns KB_NOT_FOUND for a missing KB', async () => {
+    await setRetrieveEnv();
+
+    const server = await freshServer();
+    const result = await server['handleDeleteDocument']({
+      knowledge_base_name: 'missing',
+      path: 'doc.md',
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error.code).toBe('KB_NOT_FOUND');
+    expect(updateIndexMock).not.toHaveBeenCalled();
+  });
+
+  it('handleReindexKnowledgeBase forces a scoped KB update', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const result = await server['handleReindexKnowledgeBase']({
+      knowledge_base_name: 'alpha',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(updateIndexMock).toHaveBeenCalledWith('alpha', { force: true });
+    const payload = JSON.parse(result.content[0].text);
+    // The rebuild always covers every KB (FAISS has no per-vector delete),
+    // so the response advertises scope: 'global' even when a KB name was
+    // passed. The KB name is preserved as a caller-provided echo.
+    expect(payload).toEqual({ knowledge_base_name: 'alpha', reindexed: true, scope: 'global' });
+  });
+
+  it('handleReindexKnowledgeBase forces a global update when no KB is named', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const result = await server['handleReindexKnowledgeBase']({});
+
+    expect(result.isError).toBeUndefined();
+    expect(updateIndexMock).toHaveBeenCalledWith(undefined, { force: true });
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload).toEqual({ knowledge_base_name: null, reindexed: true, scope: 'global' });
+  });
+
+  it('handleReindexKnowledgeBase rejects path-like KB names', async () => {
+    await setRetrieveEnv();
+
+    const server = await freshServer();
+    const result = await server['handleReindexKnowledgeBase']({
+      knowledge_base_name: '../alpha',
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error.code).toBe('KB_NOT_FOUND');
+    expect(updateIndexMock).not.toHaveBeenCalled();
+  });
+
+  it('handleReindexKnowledgeBase returns KB_NOT_FOUND for a missing KB', async () => {
+    await setRetrieveEnv();
+
+    const server = await freshServer();
+    const result = await server['handleReindexKnowledgeBase']({
+      knowledge_base_name: 'missing',
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error.code).toBe('KB_NOT_FOUND');
+    expect(updateIndexMock).not.toHaveBeenCalled();
   });
 
   it('handleListKnowledgeBases surfaces readdir errors as { isError: true } naming the failure', async () => {
@@ -988,6 +1187,8 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(describeOf(server, 'retrieve_knowledge')).toBe(
       'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
     );
+    expect(describeOf(server, 'delete_document')).toContain('FAISS does not support vector deletion');
+    expect(describeOf(server, 'delete_document')).toContain('orphan vectors');
   });
 
   it('RETRIEVE_KNOWLEDGE_DESCRIPTION overrides only the retrieve_knowledge description', async () => {

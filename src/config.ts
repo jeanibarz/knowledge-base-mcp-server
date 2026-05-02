@@ -162,6 +162,16 @@ export const KB_STATS_DESCRIPTION =
     ? process.env.KB_STATS_DESCRIPTION
     : DEFAULT_KB_STATS_DESCRIPTION;
 
+// Issue #51 — MCP ingest tools.
+export const ADD_DOCUMENT_DESCRIPTION =
+  'Adds or overwrites a UTF-8 document in a knowledge base, creating parent directories as needed, then updates the active model index so the new content is queryable immediately.';
+
+export const DELETE_DOCUMENT_DESCRIPTION =
+  'DESTRUCTIVE: Deletes a document from a knowledge base and removes its hash sidecar. FAISS does not support vector deletion in this server, so orphan vectors for the removed file persist until a full rebuild; run reindex_knowledge_base after deletes if vector hygiene matters.';
+
+export const REINDEX_KNOWLEDGE_BASE_DESCRIPTION =
+  'Forces the active model to fully rebuild its FAISS index from on-disk files, replacing the in-memory store and clearing orphan vectors left behind by prior delete_document calls. The rebuild always covers every KB because FAISS lacks per-vector deletion; passing knowledge_base_name is accepted (and recorded in the response) but does not narrow the rebuild scope.';
+
 // ---------------------------------------------------------------------------
 // Transport configuration (RFC 008 stage 1: stdio + SSE).
 // ---------------------------------------------------------------------------
