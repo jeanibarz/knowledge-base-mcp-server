@@ -50,6 +50,14 @@ import { logger } from './logger.js';
 import { KBError } from './errors.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { makeOllamaOnFailedAttempt } from './ollama-error.js';
+import {
+  loadFaissStoreAtomic,
+  pathExists,
+  resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
+  saveFaissStoreAtomic,
+} from './faiss-store-layout.js';
+
+export { nextVersionAfter } from './faiss-store-layout.js';
 
 /**
  * RFC 013 §4.7 — atomic write for `model_name.txt`. Per-model file:
@@ -81,59 +89,6 @@ async function writeModelNameAtomic(modelNameFile: string, modelName: string): P
 // independent open(2) calls — each would re-resolve a symlink given the
 // path, but an absolute resolved path has no symlink to re-resolve.
 // ---------------------------------------------------------------------------
-
-const VERSION_DIR_PATTERN = /^index\.v(\d+)$/;
-const SYMLINK_NAME = 'index';
-const LEGACY_INDEX_NAME = 'faiss.index';
-
-/** Read the symlink target if `p` is a symlink; otherwise null. */
-async function readSymlinkOrNull(p: string): Promise<string | null> {
-  try {
-    return await fsp.readlink(p);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'EINVAL') return null;
-    throw err;
-  }
-}
-
-/** Pure: derive the next versioned directory name from the current target. */
-export function nextVersionAfter(currentTarget: string | null): string {
-  if (!currentTarget) return 'index.v0';
-  const m = currentTarget.match(VERSION_DIR_PATTERN);
-  if (!m) throw new Error(`atomicSave: unrecognized symlink target "${currentTarget}"`);
-  return `index.v${parseInt(m[1], 10) + 1}`;
-}
-
-/**
- * Best-effort GC: keep the `keep` newest `index.vN` dirs (current included);
- * remove older ones. Never deletes the directory the symlink currently
- * points at, even if that violates the keep budget (defensive).
- */
-async function gcOldVersions(
-  modelDirPath: string,
-  opts: { keep: number; current: string },
-): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await fsp.readdir(modelDirPath);
-  } catch {
-    return;
-  }
-  const versions = entries
-    .map((e) => ({ name: e, n: parseInt(e.match(VERSION_DIR_PATTERN)?.[1] ?? '', 10) }))
-    .filter((v) => Number.isFinite(v.n))
-    .sort((a, b) => b.n - a.n);
-
-  for (const v of versions.slice(opts.keep)) {
-    if (v.name === opts.current) continue;
-    await fsp
-      .rm(path.join(modelDirPath, v.name), { recursive: true, force: true })
-      .catch((err) =>
-        logger.warn(`gc: failed to remove ${v.name} in ${modelDirPath}: ${(err as Error).message}`),
-      );
-  }
-}
 
 // -----------------------------------------------------------------------------
 // RFC 011 §5.4 — whitelisted frontmatter lift + sibling PDF detection.
@@ -288,19 +243,6 @@ export function detectSiblingPdfPath(
 }
 
 type FsError = NodeJS.ErrnoException & { code?: string };
-
-async function pathExists(target: string): Promise<boolean> {
-  try {
-    await fsp.stat(target);
-    return true;
-  } catch (error) {
-    const code = (error as FsError | undefined)?.code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      return false;
-    }
-    throw error;
-  }
-}
 
 function isPermissionError(error: unknown): error is FsError {
   if (!error || typeof error !== 'object') {
@@ -915,109 +857,12 @@ export class FaissIndexManager {
    * file is required — the filesystem is the single source of truth.
    */
   private async loadAtomic(): Promise<FaissStore | null> {
-    const symlinkPath = path.join(this.modelDir, SYMLINK_NAME);
-    const legacyPath = path.join(this.modelDir, LEGACY_INDEX_NAME);
-
-    // lstat (NOT stat) — detects symlink presence without following it.
-    const symStat = await fsp.lstat(symlinkPath).catch((err) => {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw err;
+    return loadFaissStoreAtomic({
+      modelDir: this.modelDir,
+      modelId: this.modelId,
+      embeddings: this.embeddings,
+      handleFsOperationError,
     });
-
-    if (symStat?.isSymbolicLink()) {
-      let resolved: string;
-      try {
-        resolved = await fsp.realpath(symlinkPath);
-      } catch (err) {
-        // realpath ENOENT after lstat confirmed a symlink means the target
-        // was removed between syscalls — N=3 retention contract violated.
-        // Surface loudly per RFC 014 §"Load algorithm".
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-          throw new Error(
-            `loadAtomic: symlink ${symlinkPath} target vanished between lstat and realpath — ` +
-              `N=3 retention contract violated. Check for concurrent gc, manual filesystem ` +
-              `surgery, or unexpected rmrf.`,
-          );
-        }
-        throw err;
-      }
-
-      let store: FaissStore;
-      try {
-        logger.info(
-          `Loading FAISS index for model ${this.modelId} from ${path.basename(resolved)}`,
-        );
-        store = await FaissStore.load(resolved, this.embeddings);
-      } catch (err) {
-        // Versioned layout corrupt. Remove ONLY the symlink (which makes
-        // the current versioned layout unreachable) — do NOT touch the
-        // legacy `faiss.index/` directory, which is the operator's
-        // rollback safety net and is independently valid. Orphan
-        // index.vN/ dirs are left in place; the next save's EEXIST
-        // recovery clears them.
-        logger.warn(
-          `Versioned FAISS index ${resolved} is corrupt or unreadable — ` +
-            `removing symlink and falling back to rebuild. Legacy faiss.index/ ` +
-            `(if present) is preserved. Error:`,
-          err,
-        );
-        try {
-          await fsp.rm(symlinkPath, { force: true });
-        } catch (unlinkErr) {
-          handleFsOperationError('delete corrupt index symlink', symlinkPath, unlinkErr);
-        }
-        return null;
-      }
-
-      // Hazard signal: both layouts coexist → warn the operator once.
-      // `kb models list` independently re-derives this from filesystem
-      // state, so live `kb` invocations always reflect the truth.
-      if (await pathExists(legacyPath)) {
-        logger.warn(
-          `model ${this.modelId} has both versioned (${path.basename(resolved)}) and legacy ` +
-            `(faiss.index/) layouts present. Downgrading the npm package will silently ignore ` +
-            `any embeddings added since the RFC 014 upgrade — they exist only in the versioned ` +
-            `layout. To reclaim disk and remove the hazard once you're confident in the new ` +
-            `layout: \`rm -rf "${legacyPath}"\`.`,
-        );
-      }
-
-      return store;
-    }
-
-
-    // Legacy path — pre-RFC-014 layout. Read directly. The torn-read hazard
-    // described in the threat model still applies HERE until the first
-    // updateIndex writes the versioned layout for this model.
-    if (await pathExists(legacyPath)) {
-      try {
-        logger.info(
-          `Loading legacy FAISS index for model ${this.modelId} from faiss.index/. ` +
-            `First save will create versioned layout (${SYMLINK_NAME} → index.v0).`,
-        );
-        return await FaissStore.load(legacyPath, this.embeddings);
-      } catch (err) {
-        // Legacy corrupt. Remove ONLY the legacy directory — there's no
-        // versioned layout to preserve, and the next updateIndex will
-        // rebuild from source into index.v0/.
-        logger.warn(
-          `Legacy FAISS index at ${legacyPath} is corrupt or unreadable — ` +
-            `removing and falling back to rebuild. Error:`,
-          err,
-        );
-        try {
-          await fsp.rm(legacyPath, { recursive: true, force: true });
-        } catch (unlinkErr) {
-          handleFsOperationError('delete corrupt legacy FAISS index', legacyPath, unlinkErr);
-        }
-        return null;
-      }
-    }
-
-    logger.info(
-      `FAISS index not found for model ${this.modelId}. It will be created on the next updateIndex.`,
-    );
-    return null;
   }
 
   /**
@@ -1040,40 +885,13 @@ export class FaissIndexManager {
     // safer enforcement; future violations are caught by reviewers, not by
     // runtime assertion that itself misfires.
 
-    const symlinkPath = path.join(this.modelDir, SYMLINK_NAME);
-    const currentTarget = await readSymlinkOrNull(symlinkPath);
-    const nextVersion = nextVersionAfter(currentTarget);
-    const stagingDir = path.join(this.modelDir, nextVersion);
-
-    // 1. Active orphan cleanup BEFORE save. langchain's FaissStore.save calls
-    //    `mkdir({recursive: true})` which silently no-ops on existing dirs —
-    //    so an orphan from a prior crash would NOT EEXIST, it would be merged
-    //    with the new write (stale docstore + fresh faiss.index → torn dir
-    //    written under the new symlink target). Rmrf the staging dir
-    //    upfront; safe because per-model write lock is held and version
-    //    number monotonically advances, so no other writer is using it.
-    if (await pathExists(stagingDir)) {
-      logger.warn(`atomicSave: clearing orphan staging dir ${stagingDir} from prior crash`);
-      await fsp.rm(stagingDir, { recursive: true, force: true });
-    }
-    await this.faissIndex.save(stagingDir);
-
-    // 2. Atomic symlink swap. POSIX rename(2) replaces the existing symlink
-    //    atomically. Tmp name is unique within this process; per-model write
-    //    lock prevents concurrent same-modelDir saves anyway.
-    const tmpLink = path.join(
-      this.modelDir,
-      `.${SYMLINK_NAME}.tmp.${process.pid}.${++this.swapCounter}`,
-    );
-    await fsp.symlink(nextVersion, tmpLink);
-    await fsp.rename(tmpLink, symlinkPath);
-    logger.info(
-      `atomicSave: ${this.modelId} ${currentTarget ?? '(none)'} → ${nextVersion}`,
-    );
-
-    // 3. Synchronous GC inside the write lock — caller contract is "lock
-    //    release = no orphans (kept N=3) and no half-state".
-    await gcOldVersions(this.modelDir, { keep: 3, current: nextVersion });
+    this.swapCounter += 1;
+    await saveFaissStoreAtomic({
+      store: this.faissIndex,
+      modelDir: this.modelDir,
+      modelId: this.modelId,
+      swapCounter: this.swapCounter,
+    });
   }
 
   /**
@@ -1582,20 +1400,7 @@ export class FaissIndexManager {
    * if no index has been persisted yet for this model.
    */
   async resolveActiveIndexFilePath(): Promise<string | null> {
-    const symlinkPath = path.join(this.modelDir, SYMLINK_NAME);
-    try {
-      const symStat = await fsp.lstat(symlinkPath);
-      if (symStat.isSymbolicLink()) {
-        const resolved = await fsp.realpath(symlinkPath);
-        const candidate = path.join(resolved, LEGACY_INDEX_NAME);
-        if (await pathExists(candidate)) return candidate;
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    }
-    const legacyFile = path.join(this.modelDir, LEGACY_INDEX_NAME, LEGACY_INDEX_NAME);
-    if (await pathExists(legacyFile)) return legacyFile;
-    return null;
+    return resolveActiveIndexFilePathFromLayout(this.modelDir);
   }
 }
 
