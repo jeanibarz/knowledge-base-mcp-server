@@ -13,7 +13,8 @@ import {
 import { formatRetrievalAsJson, formatRetrievalAsMarkdown } from './formatter.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
-import { filterIngestablePaths, getFilesRecursively } from './utils.js';
+import { getFilesRecursively } from './file-utils.js';
+import { filterIngestablePaths } from './ingest-filter.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 
 interface SearchArgs {

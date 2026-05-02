@@ -51,7 +51,10 @@ import {
 } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { logger } from './logger.js';
-import { filterIngestablePaths, getFilesRecursively, isValidKbName, toError } from './utils.js';
+import { toError } from './error-utils.js';
+import { getFilesRecursively } from './file-utils.js';
+import { filterIngestablePaths } from './ingest-filter.js';
+import { isValidKbName } from './kb-paths.js';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { StreamableHttpHost } from './transport/http.js';

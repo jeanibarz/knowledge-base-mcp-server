@@ -22,7 +22,7 @@ sequenceDiagram
   Server->>FIM: updateIndex(knowledge_base_name?)<br/>:202-389
   FIM->>FS: readdir + getFilesRecursively<br/>:209, :223
   loop for each file
-    FIM->>FS: readFile + sha256<br/>utils.ts:6-11
+    FIM->>FS: readFile + sha256<br/>file-utils.ts:6-11
     FIM->>FS: read sidecar hash<br/>:242-247
     Note over FIM: hashes match → skip branch<br/>:294-296
   end

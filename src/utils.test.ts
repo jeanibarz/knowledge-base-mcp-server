@@ -1,14 +1,18 @@
 import {
-  __resetSkippedFilenameLogForTests,
-  assertValidKbName,
-  filterIngestablePaths,
   getFilesRecursively,
+} from './file-utils.js';
+import {
+  assertValidKbName,
   isValidKbName,
-  parseFrontmatter,
   resolveKbPath,
+} from './kb-paths.js';
+import {
+  __resetSkippedFilenameLogForTests,
+  filterIngestablePaths,
   SKIPPED_FILENAME_PATTERNS,
-  toError,
-} from './utils.js';
+} from './ingest-filter.js';
+import { parseFrontmatter } from './frontmatter.js';
+import { toError } from './error-utils.js';
 import { logger } from './logger.js';
 import * as fsp from 'fs/promises';
 import * as fs from 'fs'; // Import fs for PathLike and Dirent

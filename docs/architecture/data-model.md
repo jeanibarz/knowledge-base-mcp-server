@@ -36,7 +36,7 @@ Written by `src/FaissIndexManager.ts:362-377`. One text file per indexed source 
 | Field   | Type                     | Source                                      |
 | ------- | ------------------------ | ------------------------------------------- |
 | path    | `<kb>/.index/<rel_dir>/<basename>` | derived at `src/FaissIndexManager.ts:230-231` |
-| content | sha256 hex string (64 chars) | `calculateSHA256` at `src/utils.ts:6-11`     |
+| content | sha256 hex string (64 chars) | `calculateSHA256` at `src/file-utils.ts:6-11` |
 | atomicity | tmp+rename              | `src/FaissIndexManager.ts:363-374`          |
 
 The path structure mirrors the source tree under `<kb>/` — so a file at `<kb>/a/b/c.md` gets a sidecar at `<kb>/.index/a/b/c.md`. ADR [`0002-per-file-hash-sidecars.md`](./adr/0002-per-file-hash-sidecars.md) covers why this layout was chosen over a single `hashes.json` manifest.

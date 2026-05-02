@@ -16,13 +16,10 @@ import type { OpenAIEmbeddings } from "@langchain/openai";
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from "langchain/text_splitter";
-import {
-  calculateSHA256,
-  filterIngestablePaths,
-  getFilesRecursively,
-  parseFrontmatter,
-  toError,
-} from './utils.js';
+import { toError } from './error-utils.js';
+import { calculateSHA256, getFilesRecursively } from './file-utils.js';
+import { parseFrontmatter } from './frontmatter.js';
+import { filterIngestablePaths } from './ingest-filter.js';
 import { loadFile } from './loaders.js';
 import {
   EMBEDDING_PROVIDER,

@@ -16,7 +16,8 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { estimateCostUsd } from './cost-estimates.js';
-import { filterIngestablePaths, getFilesRecursively } from './utils.js';
+import { getFilesRecursively } from './file-utils.js';
+import { filterIngestablePaths } from './ingest-filter.js';
 
 export async function runModels(rest: string[]): Promise<number> {
   const verb = rest[0];
