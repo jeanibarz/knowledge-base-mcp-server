@@ -389,6 +389,155 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(payload.error.message).toMatch(/ENOENT|no such file/i);
   });
 
+  // --- MCP Resources (#49) --------------------------------------------------
+
+  it('resources/list returns kb:// URIs across multiple KBs', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-list-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha', 'docs'), { recursive: true });
+    await fsp.mkdir(path.join(tempDir, 'beta'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'docs', 'guide.md'), '# Guide\n');
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'notes.txt'), 'notes\n');
+    await fsp.writeFile(path.join(tempDir, 'beta', 'paper.pdf'), Buffer.from('%PDF-1.4\n'));
+    await fsp.writeFile(path.join(tempDir, 'beta', 'page.html'), '<h1>Page</h1>');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const result = await server['handleListResources']();
+
+    expect(result.resources.map((resource: { uri: string }) => resource.uri).sort()).toEqual([
+      'kb://alpha/docs/guide.md',
+      'kb://alpha/notes.txt',
+      'kb://beta/page.html',
+      'kb://beta/paper.pdf',
+    ]);
+    expect(result.resources.find((resource: { uri: string }) => resource.uri === 'kb://alpha/docs/guide.md')).toMatchObject({
+      name: 'docs/guide.md',
+      mimeType: 'text/markdown',
+    });
+    expect(result.resources.find((resource: { uri: string }) => resource.uri === 'kb://beta/paper.pdf')).toMatchObject({
+      mimeType: 'application/pdf',
+    });
+    expect(result.resources.find((resource: { uri: string }) => resource.uri === 'kb://beta/page.html')).toMatchObject({
+      mimeType: 'text/html',
+    });
+  });
+
+  it('resources/read returns markdown text for an existing file', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-read-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha', 'docs'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'docs', 'onboarding.md'), '# Onboarding\n\nWelcome.\n');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const result = await server['handleReadResource']('kb://alpha/docs/onboarding.md');
+
+    expect(result.contents).toEqual([
+      {
+        uri: 'kb://alpha/docs/onboarding.md',
+        mimeType: 'text/markdown',
+        text: '# Onboarding\n\nWelcome.\n',
+      },
+    ]);
+  });
+
+  it('resources/read returns PDF bytes as a base64 blob', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-pdf-'));
+    const pdfBytes = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x0a, 0xff]);
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'paper.pdf'), pdfBytes);
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const result = await server['handleReadResource']('kb://alpha/paper.pdf');
+
+    expect(result.contents).toHaveLength(1);
+    const content = result.contents[0];
+    expect(content.uri).toBe('kb://alpha/paper.pdf');
+    expect(content.mimeType).toBe('application/pdf');
+    expect('blob' in content ? content.blob : undefined).toBe(pdfBytes.toString('base64'));
+    expect('text' in content ? content.text : undefined).toBeUndefined();
+  });
+
+  it('resources/read rejects a non-existent file with a clean error', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-missing-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    await expect(server['handleReadResource']('kb://alpha/missing.md')).rejects.toThrow(
+      /path not found: "missing\.md"/,
+    );
+  });
+
+  it.each([
+    ['plain parent traversal', 'kb://alpha/../secret.md'],
+    ['absolute path payload', 'kb://alpha//etc/passwd'],
+    ['encoded parent traversal', 'kb://alpha/%2E%2E/secret.md'],
+    ['encoded slash traversal', 'kb://alpha/..%2Fsecret.md'],
+    ['encoded absolute path', 'kb://alpha/%2Fetc%2Fpasswd'],
+  ])('resources/read rejects %s', async (_label, uri) => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-traversal-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'safe.md'), 'safe');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    await expect(server['handleReadResource'](uri)).rejects.toThrow(/path escapes KB root/);
+  });
+
+  it('resources/list excludes dot-prefixed files and directories', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-dot-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha', '.faiss'), { recursive: true });
+    await fsp.mkdir(path.join(tempDir, 'alpha', '.index'), { recursive: true });
+    await fsp.mkdir(path.join(tempDir, 'alpha', 'docs'), { recursive: true });
+    await fsp.mkdir(path.join(tempDir, '.hidden-root'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'visible.md'), 'visible');
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'docs', 'guide.md'), 'guide');
+    await fsp.writeFile(path.join(tempDir, 'alpha', '.reindex-trigger'), '');
+    await fsp.writeFile(path.join(tempDir, 'alpha', '.faiss', 'hidden.md'), 'hidden');
+    await fsp.writeFile(path.join(tempDir, 'alpha', '.index', 'hidden.md'), 'hidden');
+    await fsp.writeFile(path.join(tempDir, 'alpha', '.hidden.md'), 'hidden');
+    await fsp.writeFile(path.join(tempDir, '.hidden-root', 'hidden.md'), 'hidden');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const result = await server['handleListResources']();
+    const uris = result.resources.map((resource: { uri: string }) => resource.uri).sort();
+
+    expect(uris).toEqual([
+      'kb://alpha/docs/guide.md',
+      'kb://alpha/visible.md',
+    ]);
+    expect(uris.join('\n')).not.toContain('.faiss');
+    expect(uris.join('\n')).not.toContain('.index');
+    expect(uris.join('\n')).not.toContain('.reindex-trigger');
+    expect(uris.join('\n')).not.toContain('.hidden');
+  });
+
   // --- handleRetrieveKnowledge ----------------------------------------------
 
   it('handleRetrieveKnowledge formats multi-result responses with Result N, score, and source blocks', async () => {

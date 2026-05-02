@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — MCP Resources for KB documents
+
+### Added
+
+- **Knowledge-base files are now exposed as MCP Resources.** Clients that browse resources can list documents as `kb://<kb-name>/<relative-path>` and read the selected file directly. Markdown, text, HTML, and unknown text-like files return text content; PDFs return base64 blobs with `application/pdf`. Resource listing uses the same recursive dot-prefix skip behavior as indexing, so `.faiss`, `.index`, `.reindex-trigger`, and other hidden paths stay off the wire. Path resolution is guarded against `../`, absolute paths, encoded separator payloads, and symlinks that leave the KB root. Closes #49.
+
 ## [Unreleased] — PDF and HTML loaders behind extension-based routing
 
 ### Added
