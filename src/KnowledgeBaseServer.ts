@@ -54,6 +54,7 @@ import { logger } from './logger.js';
 import { filterIngestablePaths, getFilesRecursively, isValidKbName, toError } from './utils.js';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { StreamableHttpHost } from './transport/http.js';
 import { SseHost } from './transport/sse.js';
 import { ReindexTriggerWatcher } from './triggerWatcher.js';
 import { KBError, type KBErrorCode } from './errors.js';
@@ -215,8 +216,9 @@ export class KnowledgeBaseServer {
   private managerCache: Map<string, FaissIndexManager> = new Map();
   private managerInitCache: Map<string, Promise<FaissIndexManager>> = new Map();
   private activeWarmupPromise: Promise<void> | null = null;
+  private httpHost?: StreamableHttpHost;
   private sseHost?: SseHost;
-  private transportMode: 'stdio' | 'sse' | null = null;
+  private transportMode: 'stdio' | 'sse' | 'http' | null = null;
   private triggerWatcher?: ReindexTriggerWatcher;
   private shutdownInstalled = false;
   // Issue #54 — uptime baseline for kb_stats.server.uptime_ms.
@@ -842,7 +844,11 @@ export class KnowledgeBaseServer {
         await this.runStdio();
         return;
       }
-      await this.runSse(transportConfig);
+      if (transportConfig.transport === 'sse') {
+        await this.runSse(transportConfig);
+        return;
+      }
+      await this.runHttp(transportConfig);
     } catch (error: unknown) {
       const err = toError(error);
       logger.error('Error during server startup:', err);
@@ -873,6 +879,19 @@ export class KnowledgeBaseServer {
     // host.start() unwinds without leaving a dangling polling timer.
     await host.start();
     this.transportMode = 'sse';
+    this.startActiveManagerWarmup();
+    this.startTriggerWatcher();
+  }
+
+  private async runHttp(config: TransportConfig): Promise<void> {
+    const host = new StreamableHttpHost({
+      config,
+      createMcpServer: () => this.buildMcpServer(),
+    });
+    this.httpHost = host;
+    this.installHttpShutdown();
+    await host.start();
+    this.transportMode = 'http';
     this.startActiveManagerWarmup();
     this.startTriggerWatcher();
   }
@@ -942,6 +961,8 @@ export class KnowledgeBaseServer {
     const targets =
       this.transportMode === 'sse'
         ? (this.sseHost?.getConnectedMcpServers() ?? [])
+        : this.transportMode === 'http'
+          ? (this.httpHost?.getConnectedMcpServers() ?? [])
         : [this.mcp];
     if (targets.length === 0) {
       logger.debug(
@@ -1010,6 +1031,14 @@ export class KnowledgeBaseServer {
         logger.warn(`Error during SSE host shutdown: ${(err as Error).message}`);
       }
       this.sseHost = undefined;
+    }
+    if (this.httpHost) {
+      try {
+        await this.httpHost.stop();
+      } catch (err) {
+        logger.warn(`Error during HTTP host shutdown: ${(err as Error).message}`);
+      }
+      this.httpHost = undefined;
     }
     try {
       await this.mcp.close();

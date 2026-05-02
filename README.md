@@ -319,10 +319,10 @@ Each result includes the content of the most similar chunk, the source file, and
 
 ## Remote transport (optional)
 
-By default the server speaks MCP over stdio — every supported client (Claude Desktop, Codex, Cursor, Continue, Cline) launches it as a child process. Stage 1 of [RFC 008](./docs/rfcs/008-remote-transport.md) adds an opt-in **SSE** transport for browser-based clients, Smithery remote mode, and shared deployments. Stdio is unchanged unless you set `MCP_TRANSPORT`.
+By default the server speaks MCP over stdio — every supported client (Claude Desktop, Codex, Cursor, Continue, Cline) launches it as a child process. [RFC 008](./docs/rfcs/008-remote-transport.md) adds opt-in **SSE** and **streamable HTTP** transports for browser-based clients, Smithery remote mode, and shared deployments. Stdio is unchanged unless you set `MCP_TRANSPORT`.
 
 ```bash
-export MCP_TRANSPORT=sse
+export MCP_TRANSPORT=http                         # stdio (default), sse, or http
 export MCP_AUTH_TOKEN="$(openssl rand -base64 32)"   # must be ≥32 characters; shorter tokens abort startup
 export MCP_ALLOWED_ORIGINS="http://localhost:5173"   # comma-separated; leave unset to deny all browser origins
 export MCP_PORT=8765                                  # default
@@ -333,12 +333,12 @@ node build/index.js
 Endpoints exposed in this mode:
 
 - `GET /health` — unauthenticated liveness probe; returns `200 {"status":"ok"}` only. Per RFC 008 §6.8 it intentionally exposes no version, uptime, or filesystem fingerprint to anonymous callers.
-- `GET /sse` — long-lived SSE stream. Requires `Authorization: Bearer <MCP_AUTH_TOKEN>`.
-- `POST /messages?sessionId=<uuid>` — JSON-RPC POST per session. Same bearer requirement.
+- `MCP_TRANSPORT=sse`: `GET /sse` opens the long-lived SSE stream and `POST /messages?sessionId=<uuid>` sends JSON-RPC messages for that session.
+- `MCP_TRANSPORT=http`: `POST /mcp` initializes and sends JSON-RPC messages using streamable HTTP. The server returns `Mcp-Session-Id` during initialization; clients must send it on subsequent `GET`, `POST`, and `DELETE /mcp` requests.
 
-Streamable-HTTP is **not** wired up in stage 1 — `MCP_TRANSPORT=http` is rejected at startup. See RFC 008 §9 for the full rollout plan.
+All non-health transport endpoints require `Authorization: Bearer <MCP_AUTH_TOKEN>`.
 
-**Security defaults:** the server refuses to start in SSE mode without `MCP_AUTH_TOKEN`, binds only to loopback, and uses a constant-time bearer comparison. Operators exposing the endpoint off-host should set `MCP_BIND_ADDR=0.0.0.0` *and* terminate TLS in a reverse proxy — TLS is out of scope for this server. Only one process per `FAISS_INDEX_PATH` is supported (see [`docs/architecture/threat-model.md`](./docs/architecture/threat-model.md)).
+**Security defaults:** the server refuses to start in SSE or streamable HTTP mode without `MCP_AUTH_TOKEN`, binds only to loopback, and uses a constant-time bearer comparison. Operators exposing the endpoint off-host should set `MCP_BIND_ADDR=0.0.0.0` *and* terminate TLS in a reverse proxy — TLS is out of scope for this server. Only one process per `FAISS_INDEX_PATH` is supported (see [`docs/architecture/threat-model.md`](./docs/architecture/threat-model.md)).
 
 ## Troubleshooting & Logging
 

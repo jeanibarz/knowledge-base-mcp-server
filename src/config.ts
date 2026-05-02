@@ -173,12 +173,12 @@ export const REINDEX_KNOWLEDGE_BASE_DESCRIPTION =
   'Forces the active model to fully rebuild its FAISS index from on-disk files, replacing the in-memory store and clearing orphan vectors left behind by prior delete_document calls. The rebuild always covers every KB because FAISS lacks per-vector deletion; passing knowledge_base_name is accepted (and recorded in the response) but does not narrow the rebuild scope.';
 
 // ---------------------------------------------------------------------------
-// Transport configuration (RFC 008 stage 1: stdio + SSE).
+// Transport configuration (RFC 008: stdio + SSE + streamable HTTP).
 // ---------------------------------------------------------------------------
 
-export type McpTransport = 'stdio' | 'sse';
+export type McpTransport = 'stdio' | 'sse' | 'http';
 
-const VALID_TRANSPORTS: readonly McpTransport[] = ['stdio', 'sse'];
+const VALID_TRANSPORTS: readonly McpTransport[] = ['stdio', 'sse', 'http'];
 
 export const DEFAULT_MCP_PORT = 8765;
 export const DEFAULT_MCP_BIND_ADDR = '127.0.0.1';
@@ -271,10 +271,10 @@ export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): Trans
   const authToken = env.MCP_AUTH_TOKEN;
   const allowedOrigins = parseAllowedOrigins(env.MCP_ALLOWED_ORIGINS);
 
-  if (transport === 'sse') {
+  if (transport === 'sse' || transport === 'http') {
     if (!authToken || authToken.length === 0) {
       throw new TransportConfigError(
-        'MCP_TRANSPORT=sse requires MCP_AUTH_TOKEN to be set (generate with: openssl rand -base64 32)',
+        `MCP_TRANSPORT=${transport} requires MCP_AUTH_TOKEN to be set (generate with: openssl rand -base64 32)`,
       );
     }
     // RFC 008 §6.1 / §8.1 R3: tokens shorter than 32 chars are rejected at
