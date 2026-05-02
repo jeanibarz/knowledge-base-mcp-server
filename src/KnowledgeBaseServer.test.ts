@@ -470,6 +470,40 @@ describe('KnowledgeBaseServer handlers', () => {
     expect('text' in content ? content.text : undefined).toBeUndefined();
   });
 
+  it('resources/list and resources/read round-trip filenames with reserved URI characters', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-reserved-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha', 'issues'), { recursive: true });
+    // Filenames covering reserved chars `decodeURI` would leave literal:
+    //   `#` (%23), `?` (%3F), `&` (%26), `+` (%2B), `=` (%3D), space (%20)
+    const filename = 'bug#42 &v=2+rev?.md';
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'issues', filename), '# Reserved\n');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const listResult = await server['handleListResources']();
+    const entry = listResult.resources.find((resource: { uri: string }) =>
+      resource.uri.includes('issues/'),
+    );
+    expect(entry).toBeDefined();
+    // The list URI must be percent-encoded so MCP clients can use it as-is.
+    expect(entry!.uri).toBe(
+      `kb://alpha/issues/${encodeURIComponent(filename)}`,
+    );
+
+    const readResult = await server['handleReadResource'](entry!.uri);
+    expect(readResult.contents).toEqual([
+      {
+        uri: entry!.uri,
+        mimeType: 'text/markdown',
+        text: '# Reserved\n',
+      },
+    ]);
+  });
+
   it('resources/read rejects a non-existent file with a clean error', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-missing-'));
     await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
