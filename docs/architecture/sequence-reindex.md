@@ -70,7 +70,7 @@ sequenceDiagram
 
 ## Why the fallback runs
 
-The sha256 sidecars are hashes of the **source file content**, not of the embedding — so changing the embedding model does **not** invalidate them (`src/utils.ts:6-11`). On the first call after a model change:
+The sha256 sidecars are hashes of the **source file content**, not of the embedding — so changing the embedding model does **not** invalidate them (`src/file-utils.ts:6-11`). On the first call after a model change:
 
 - Every file's hash matches its sidecar, so the changed-file branch at `src/FaissIndexManager.ts:250-293` is skipped.
 - But `this.faissIndex` is still `null` (cleared by the model-change block at `:163`, not replaced by the `FaissStore.load` branch at `:166-177` because `faiss.index` no longer exists).

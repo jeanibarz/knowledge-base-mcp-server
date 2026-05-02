@@ -6,7 +6,7 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { assertValidKbName } from './utils.js';
+import { assertValidKbName } from './kb-paths.js';
 import { KBError } from './errors.js';
 
 /**

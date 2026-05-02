@@ -51,7 +51,7 @@ export const OPENAI_MODEL_NAME = process.env.OPENAI_MODEL_NAME || DEFAULT_OPENAI
 // ---------------------------------------------------------------------------
 // Ingest filter configuration (RFC 011 §5.2.3).
 // Operator-extensible extras; the base allowlist and exclusion rules in
-// `src/utils.ts` are authoritative and cannot be removed through env.
+// `src/ingest-filter.ts` are authoritative and cannot be removed through env.
 // ---------------------------------------------------------------------------
 
 function parseCommaSeparatedList(raw: string | undefined): string[] {
@@ -118,7 +118,7 @@ export const REINDEX_TRIGGER_POLL_MS: number = parseReindexTriggerPollMs(
 /**
  * Path the reindex-trigger watcher polls. Defaults to a dotfile at the
  * KB root so it is NOT picked up by `getFilesRecursively` (which skips
- * dot-prefixed entries at `src/utils.ts:28`).
+ * dot-prefixed entries at `src/file-utils.ts:25-29`).
  */
 export const REINDEX_TRIGGER_PATH: string =
   process.env.REINDEX_TRIGGER_PATH

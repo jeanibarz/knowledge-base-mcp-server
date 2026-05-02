@@ -42,6 +42,6 @@ On every `retrieve_knowledge` call the server must decide which files (if any) h
 
 ## More Information
 
-- `calculateSHA256` at `src/utils.ts:6-11` (read once, hash once — no streaming chunk reader).
+- `calculateSHA256` at `src/file-utils.ts:6-11` (read once, hash once — no streaming chunk reader).
 - Option 2 (single manifest) was rejected because contention on the manifest file makes batched writers trickier than per-file writers, and a corrupt manifest invalidates the whole KB where one corrupt sidecar invalidates one file.
 - Option 4 (mtime+size) trades correctness for speed; the RFC 007 §7.5 proposal keeps it as a **short-circuit** on top of sha, not a replacement.

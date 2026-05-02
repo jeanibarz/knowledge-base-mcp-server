@@ -1041,7 +1041,7 @@ describe('FaissIndexManager #90 — sidecar invalidation when FAISS store is mis
 
     // Pre-seed the .index/*.md sidecars with the *current* file hashes so
     // updateIndex would skip every file (the silent-empty-results bug).
-    const { calculateSHA256 } = await import('./utils.js');
+    const { calculateSHA256 } = await import('./file-utils.js');
     for (const file of [fileA1, fileA2, fileB1]) {
       const sidecarDir = path.join(path.dirname(file), '.index');
       await fsp.mkdir(sidecarDir, { recursive: true });
@@ -1092,7 +1092,7 @@ describe('FaissIndexManager #90 — sidecar invalidation when FAISS store is mis
     await fsp.writeFile(fileA, '# A\n\nContent.');
 
     // Pre-seed a sidecar with the correct hash.
-    const { calculateSHA256 } = await import('./utils.js');
+    const { calculateSHA256 } = await import('./file-utils.js');
     const sidecarDir = path.join(kbA, '.index');
     await fsp.mkdir(sidecarDir, { recursive: true });
     const sidecarPath = path.join(sidecarDir, 'doc.md');
@@ -1128,7 +1128,7 @@ describe('FaissIndexManager #90 — sidecar invalidation when FAISS store is mis
     const fileA = path.join(kbA, 'doc.md');
     await fsp.writeFile(fileA, '# A\n\nReadonly path content.');
 
-    const { calculateSHA256 } = await import('./utils.js');
+    const { calculateSHA256 } = await import('./file-utils.js');
     const sidecarDir = path.join(kbA, '.index');
     await fsp.mkdir(sidecarDir, { recursive: true });
     const sidecarPath = path.join(sidecarDir, 'doc.md');
@@ -1211,7 +1211,7 @@ describe('FaissIndexManager #90 — sidecar invalidation when FAISS store is mis
     await fsp.writeFile(path.join(kbA, 'doc.md'), '# A\n\nContent.');
 
     // Pre-seed a sidecar so the purge has work to do.
-    const { calculateSHA256 } = await import('./utils.js');
+    const { calculateSHA256 } = await import('./file-utils.js');
     const sidecarDir = path.join(kbA, '.index');
     await fsp.mkdir(sidecarDir, { recursive: true });
     await fsp.writeFile(
