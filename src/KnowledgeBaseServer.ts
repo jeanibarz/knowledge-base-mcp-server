@@ -2,7 +2,16 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  ReadResourceRequestSchema,
+  type CallToolResult,
+  type ListResourcesResult,
+  type ReadResourceResult,
+  type Resource,
+  type TextContent,
+} from '@modelcontextprotocol/sdk/types.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import type { IndexUpdateProgress } from './FaissIndexManager.js';
 import {
@@ -31,10 +40,10 @@ import {
   type TransportConfig,
 } from './config.js';
 import { formatRetrievalAsMarkdown, sanitizeMetadataForWire } from './formatter.js';
-import { listKnowledgeBases } from './kb-fs.js';
+import { listKnowledgeBases, resolveKnowledgeBaseDocumentPath } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { logger } from './logger.js';
-import { filterIngestablePaths, getFilesRecursively, toError } from './utils.js';
+import { filterIngestablePaths, getFilesRecursively, isValidKbName, toError } from './utils.js';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { SseHost } from './transport/sse.js';
@@ -95,6 +104,83 @@ function mcpErrorContent(error: Error): TextContent {
       },
     }),
   };
+}
+
+function mimeTypeForResource(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.md':
+    case '.markdown':
+      return 'text/markdown';
+    case '.pdf':
+      return 'application/pdf';
+    case '.html':
+    case '.htm':
+      return 'text/html';
+    case '.txt':
+    default:
+      return 'text/plain';
+  }
+}
+
+function resourceUri(kbName: string, relativePath: string): string {
+  const encodedPath = relativePath
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  return `kb://${kbName}/${encodedPath}`;
+}
+
+function parseKnowledgeBaseResourceUri(uri: string): { kbName: string; relativePath: string } {
+  const rawMatch = /^kb:\/\/([^/?#]*)([^?#]*)/i.exec(uri);
+  if (!rawMatch) {
+    throw new Error('resource URI must use the kb:// scheme');
+  }
+
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch (error: unknown) {
+    throw new Error(`invalid kb:// URI: ${toError(error).message}`);
+  }
+
+  if (url.protocol !== 'kb:') {
+    throw new Error(`unsupported resource URI scheme: ${url.protocol}`);
+  }
+
+  const kbName = url.hostname;
+  if (kbName.length === 0) {
+    throw new Error('kb:// URI requires a non-empty KB authority');
+  }
+  if (!isValidKbName(kbName)) {
+    throw new Error('invalid KB name in kb:// URI');
+  }
+
+  const rawPath = rawMatch[2] ?? '';
+  if (!rawPath.startsWith('/')) {
+    throw new Error('kb:// URI requires a non-empty resource path');
+  }
+
+  const rawRelativePath = rawPath.slice(1);
+  if (rawRelativePath.length === 0) {
+    throw new Error('kb:// URI requires a non-empty resource path');
+  }
+  if (/%(?:2f|5c)/i.test(rawRelativePath)) {
+    throw new Error(`path escapes KB root: ${JSON.stringify(rawRelativePath)}`);
+  }
+
+  let relativePath: string;
+  try {
+    relativePath = decodeURI(rawRelativePath);
+  } catch (error: unknown) {
+    throw new Error(`invalid kb:// URI path encoding: ${toError(error).message}`);
+  }
+
+  if (relativePath.split('/').some((segment) => segment === '..')) {
+    throw new Error(`path escapes KB root: ${JSON.stringify(relativePath)}`);
+  }
+
+  return { kbName, relativePath };
 }
 
 // Re-export for backward compatibility: existing tests import
@@ -167,6 +253,7 @@ export class KnowledgeBaseServer {
     });
     mcp.server.onerror = (error) => logger.error('[MCP Error]', error);
     this.registerTools(mcp);
+    this.registerResources(mcp);
     return mcp;
   }
 
@@ -218,6 +305,72 @@ export class KnowledgeBaseServer {
       },
       async (args) => this.handleKbStats(args)
     );
+  }
+
+  private registerResources(mcp: McpServer): void {
+    mcp.server.registerCapabilities({
+      resources: {
+        listChanged: true,
+      },
+    });
+
+    mcp.server.setRequestHandler(ListResourcesRequestSchema, async () =>
+      this.handleListResources()
+    );
+    mcp.server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+      resourceTemplates: [],
+    }));
+    mcp.server.setRequestHandler(ReadResourceRequestSchema, async (request) =>
+      this.handleReadResource(request.params.uri)
+    );
+  }
+
+  private async handleListResources(): Promise<ListResourcesResult> {
+    const resources: Resource[] = [];
+    const knowledgeBases = (await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR)).sort();
+
+    for (const kbName of knowledgeBases) {
+      if (!isValidKbName(kbName)) continue;
+      const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
+      const filePaths = (await getFilesRecursively(kbPath)).sort();
+      for (const filePath of filePaths) {
+        const relativePath = path
+          .relative(kbPath, filePath)
+          .split(path.sep)
+          .join('/');
+
+        resources.push({
+          uri: resourceUri(kbName, relativePath),
+          name: relativePath,
+          description: `Document in knowledge base "${kbName}"`,
+          mimeType: mimeTypeForResource(filePath),
+        });
+      }
+    }
+
+    return { resources };
+  }
+
+  private async handleReadResource(uri: string): Promise<ReadResourceResult> {
+    const { kbName, relativePath } = parseKnowledgeBaseResourceUri(uri);
+    const filePath = await resolveKnowledgeBaseDocumentPath(
+      KNOWLEDGE_BASES_ROOT_DIR,
+      kbName,
+      relativePath,
+    );
+    const mimeType = mimeTypeForResource(filePath);
+
+    if (mimeType === 'application/pdf') {
+      const blob = (await fsp.readFile(filePath)).toString('base64');
+      return {
+        contents: [{ uri, mimeType, blob }],
+      };
+    }
+
+    const text = await fsp.readFile(filePath, 'utf-8');
+    return {
+      contents: [{ uri, mimeType, text }],
+    };
   }
 
   /**
