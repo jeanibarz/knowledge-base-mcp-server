@@ -11,7 +11,7 @@ This folder documents the **knowledge-base-mcp-server as it is today**. Every cl
 | `docs/rfcs/`       | Forward-looking   | Anyone deciding what to build next |
 | `docs/architecture/` | Snapshot of `main` | New contributors; external users reasoning about cost / privacy / scale; reviewers checking that a PR doesn't silently contradict the model |
 
-C4 + ADR + sequence/state/data views are the pragmatic minimum for a 6-file codebase. All diagrams are mermaid (renders in GitHub).
+C4 + ADR + sequence/state/data views are the pragmatic minimum for this small MCP server. All diagrams are mermaid (renders in GitHub).
 
 ## Reading order
 
@@ -19,7 +19,7 @@ If you've never seen this repo before, read top-to-bottom:
 
 1. [`c4-context.md`](./c4-context.md) — one page. Who talks to the server, what it touches on disk, where the trust boundaries are.
 2. [`c4-container.md`](./c4-container.md) — the process and its two on-disk stores (`FAISS_INDEX_PATH`, `KNOWLEDGE_BASES_ROOT_DIR`) as independent containers with different lifecycles.
-3. [`c4-component.md`](./c4-component.md) — the five TypeScript modules inside the server process and how they depend on each other.
+3. [`c4-component.md`](./c4-component.md) — the TypeScript modules inside the server process and CLI, plus how they depend on each other.
 4. [`sequence-retrieve.md`](./sequence-retrieve.md) — `retrieve_knowledge` end-to-end, cold and warm.
 5. [`sequence-reindex.md`](./sequence-reindex.md) — what happens when `EMBEDDING_PROVIDER` or the model env var changes under an existing index.
 6. [`state-index.md`](./state-index.md) — the FAISS-index lifecycle (None → Loading → Loaded → Rebuilding → Recovering).
@@ -38,5 +38,5 @@ If you've never seen this repo before, read top-to-bottom:
 ## What this folder does NOT contain
 
 - **Proposals** — they go in `docs/rfcs/`.
-- **API reference** — the MCP tool surface is registered in `src/KnowledgeBaseServer.ts:33-50` and described one level up, in the repo root `README.md`.
+- **API reference** — the MCP tool surface is registered in `src/KnowledgeBaseServer.ts:260-307` and described one level up, in the repo root `README.md`.
 - **Runbooks or agent skills** — designed in `docs/rfcs/002-ai-skills-setup.md`; until that lands, agent-facing guidance lives in the repo root `CLAUDE.md`.
