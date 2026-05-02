@@ -540,6 +540,7 @@ export interface IndexUpdateProgress {
 export interface UpdateIndexOptions {
   onProgress?: (progress: IndexUpdateProgress) => void | Promise<void>;
   progressIntervalFiles?: number;
+  force?: boolean;
 }
 
 export class FaissIndexManager {
@@ -1171,6 +1172,13 @@ export class FaissIndexManager {
   ): Promise<void> {
     logger.debug('Updating FAISS index...');
     try {
+      const forceReindex = opts.force === true;
+      if (forceReindex && specificKnowledgeBase === undefined) {
+        // A global forced reindex is the only shape that can clean orphaned
+        // vectors from deleted files in the single global FAISS store.
+        this.faissIndex = null;
+      }
+
       let knowledgeBases: string[] = [];
       if (specificKnowledgeBase) {
         knowledgeBases.push(specificKnowledgeBase);
@@ -1264,10 +1272,12 @@ export class FaissIndexManager {
           // process it. The missing-index case must ignore matching sidecars:
           // otherwise a rebuild can silently omit files whose hashes were
           // already current.
-          if (rebuildFromEmptyIndex || fileHash !== storedHash) {
+          if (rebuildFromEmptyIndex || forceReindex || fileHash !== storedHash) {
             logger.info(
               rebuildFromEmptyIndex
                 ? `FAISS index is empty. Rebuilding from ${filePath}...`
+                : forceReindex
+                  ? `Force re-indexing ${filePath}...`
                 : `File ${filePath} has changed. Updating index...`,
             );
             // Issue #46 — extension-routed loader. `.pdf` runs through

@@ -24,6 +24,8 @@ import {
 } from './active-model.js';
 import type { EmbeddingProvider } from './model-id.js';
 import {
+  ADD_DOCUMENT_DESCRIPTION,
+  DELETE_DOCUMENT_DESCRIPTION,
   FAISS_INDEX_PATH,
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   INGEST_EXCLUDE_PATHS,
@@ -33,6 +35,7 @@ import {
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   LIST_MODELS_DESCRIPTION,
   loadTransportConfig,
+  REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
   REINDEX_TRIGGER_PATH,
   REINDEX_TRIGGER_POLL_MS,
   RETRIEVE_KNOWLEDGE_DESCRIPTION,
@@ -40,7 +43,12 @@ import {
   type TransportConfig,
 } from './config.js';
 import { formatRetrievalAsMarkdown, sanitizeMetadataForWire } from './formatter.js';
-import { listKnowledgeBases, resolveKnowledgeBaseDocumentPath } from './kb-fs.js';
+import {
+  listKnowledgeBases,
+  resolveKbRelativePath,
+  resolveKnowledgeBaseDir,
+  resolveKnowledgeBaseDocumentPath,
+} from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { logger } from './logger.js';
 import { filterIngestablePaths, getFilesRecursively, isValidKbName, toError } from './utils.js';
@@ -305,6 +313,39 @@ export class KnowledgeBaseServer {
       },
       async (args) => this.handleKbStats(args)
     );
+
+    mcp.tool(
+      'add_document',
+      ADD_DOCUMENT_DESCRIPTION,
+      {
+        knowledge_base_name: z.string().describe('The name of the knowledge base to write into.'),
+        path: z.string().describe('KB-relative document path to create or overwrite. Parent directories are created as needed.'),
+        content: z.string().describe('UTF-8 text content to write.'),
+      },
+      async (args) => this.handleAddDocument(args)
+    );
+
+    mcp.tool(
+      'delete_document',
+      DELETE_DOCUMENT_DESCRIPTION,
+      {
+        knowledge_base_name: z.string().describe('The name of the knowledge base to delete from.'),
+        path: z.string().describe('KB-relative document path to delete.'),
+      },
+      async (args) => this.handleDeleteDocument(args)
+    );
+
+    mcp.tool(
+      'reindex_knowledge_base',
+      REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
+      {
+        knowledge_base_name: z
+          .string()
+          .optional()
+          .describe('Name of a single KB to force re-index. If omitted, every registered KB is re-indexed.'),
+      },
+      async (args) => this.handleReindexKnowledgeBase(args)
+    );
   }
 
   private registerResources(mcp: McpServer): void {
@@ -526,6 +567,143 @@ export class KnowledgeBaseServer {
     } catch (error: unknown) {
       const err = toError(error);
       logger.error('Error computing kb_stats:', err);
+      if (err.stack) {
+        logger.error(err.stack);
+      }
+      return { content: [mcpErrorContent(err)], isError: true };
+    }
+  }
+
+  private async getActiveManagerForMutation(): Promise<FaissIndexManager> {
+    const activeModelId = await resolveActiveModel();
+    return this.getManagerFor(activeModelId);
+  }
+
+  private async handleAddDocument(args: {
+    knowledge_base_name: string;
+    path: string;
+    content: string;
+  }): Promise<CallToolResult> {
+    try {
+      const manager = await this.getActiveManagerForMutation();
+      let documentPath = '';
+      await withWriteLock(manager.modelDir, async () => {
+        documentPath = await resolveKbRelativePath(
+          KNOWLEDGE_BASES_ROOT_DIR,
+          args.knowledge_base_name,
+          args.path,
+        );
+        await fsp.mkdir(path.dirname(documentPath), { recursive: true });
+        await fsp.writeFile(documentPath, args.content, 'utf-8');
+        await manager.updateIndex(args.knowledge_base_name);
+      });
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            knowledge_base_name: args.knowledge_base_name,
+            path: args.path,
+            absolute_path: documentPath,
+            indexed: true,
+          }, null, 2),
+        }],
+      };
+    } catch (error: unknown) {
+      if (error instanceof ActiveModelResolutionError) {
+        return { content: [{ type: 'text', text: error.message }], isError: true };
+      }
+      const err = toError(error);
+      logger.error('Error adding document:', err);
+      if (err.stack) {
+        logger.error(err.stack);
+      }
+      return { content: [mcpErrorContent(err)], isError: true };
+    }
+  }
+
+  private async handleDeleteDocument(args: {
+    knowledge_base_name: string;
+    path: string;
+  }): Promise<CallToolResult> {
+    try {
+      const manager = await this.getActiveManagerForMutation();
+      let documentPath = '';
+      let sidecarPath = '';
+      await withWriteLock(manager.modelDir, async () => {
+        const kbDir = await resolveKnowledgeBaseDir(
+          KNOWLEDGE_BASES_ROOT_DIR,
+          args.knowledge_base_name,
+        );
+        documentPath = await resolveKbRelativePath(
+          KNOWLEDGE_BASES_ROOT_DIR,
+          args.knowledge_base_name,
+          args.path,
+        );
+        const relativePath = path.relative(kbDir, documentPath);
+        sidecarPath = path.join(
+          kbDir,
+          '.index',
+          path.dirname(relativePath),
+          path.basename(relativePath),
+        );
+        await fsp.rm(documentPath);
+        await fsp.rm(sidecarPath, { force: true });
+      });
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            knowledge_base_name: args.knowledge_base_name,
+            path: args.path,
+            absolute_path: documentPath,
+            sidecar_path: sidecarPath,
+            deleted: true,
+            faiss_orphan_vectors: 'Orphan vectors may persist until a full reindex_knowledge_base rebuild.',
+          }, null, 2),
+        }],
+      };
+    } catch (error: unknown) {
+      if (error instanceof ActiveModelResolutionError) {
+        return { content: [{ type: 'text', text: error.message }], isError: true };
+      }
+      const err = toError(error);
+      logger.error('Error deleting document:', err);
+      if (err.stack) {
+        logger.error(err.stack);
+      }
+      return { content: [mcpErrorContent(err)], isError: true };
+    }
+  }
+
+  private async handleReindexKnowledgeBase(args: {
+    knowledge_base_name?: string;
+  }): Promise<CallToolResult> {
+    try {
+      const manager = await this.getActiveManagerForMutation();
+      await withWriteLock(manager.modelDir, async () => {
+        if (args.knowledge_base_name !== undefined) {
+          await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, args.knowledge_base_name);
+        }
+        await manager.updateIndex(args.knowledge_base_name, { force: true });
+      });
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            knowledge_base_name: args.knowledge_base_name ?? null,
+            reindexed: true,
+          }, null, 2),
+        }],
+      };
+    } catch (error: unknown) {
+      if (error instanceof ActiveModelResolutionError) {
+        return { content: [{ type: 'text', text: error.message }], isError: true };
+      }
+      const err = toError(error);
+      logger.error('Error re-indexing knowledge base:', err);
       if (err.stack) {
         logger.error(err.stack);
       }
