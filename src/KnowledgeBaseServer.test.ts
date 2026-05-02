@@ -521,7 +521,10 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(result.isError).toBeUndefined();
     expect(updateIndexMock).toHaveBeenCalledWith('alpha', { force: true });
     const payload = JSON.parse(result.content[0].text);
-    expect(payload).toEqual({ knowledge_base_name: 'alpha', reindexed: true });
+    // The rebuild always covers every KB (FAISS has no per-vector delete),
+    // so the response advertises scope: 'global' even when a KB name was
+    // passed. The KB name is preserved as a caller-provided echo.
+    expect(payload).toEqual({ knowledge_base_name: 'alpha', reindexed: true, scope: 'global' });
   });
 
   it('handleReindexKnowledgeBase forces a global update when no KB is named', async () => {
@@ -534,7 +537,7 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(result.isError).toBeUndefined();
     expect(updateIndexMock).toHaveBeenCalledWith(undefined, { force: true });
     const payload = JSON.parse(result.content[0].text);
-    expect(payload).toEqual({ knowledge_base_name: null, reindexed: true });
+    expect(payload).toEqual({ knowledge_base_name: null, reindexed: true, scope: 'global' });
   });
 
   it('handleReindexKnowledgeBase rejects path-like KB names', async () => {

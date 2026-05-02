@@ -695,6 +695,9 @@ export class KnowledgeBaseServer {
           text: JSON.stringify({
             knowledge_base_name: args.knowledge_base_name ?? null,
             reindexed: true,
+            // FAISS has no per-vector deletion in this server, so every
+            // forced rebuild covers all KBs (see FaissIndexManager.updateIndex).
+            scope: 'global',
           }, null, 2),
         }],
       };

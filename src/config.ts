@@ -170,7 +170,7 @@ export const DELETE_DOCUMENT_DESCRIPTION =
   'DESTRUCTIVE: Deletes a document from a knowledge base and removes its hash sidecar. FAISS does not support vector deletion in this server, so orphan vectors for the removed file persist until a full rebuild; run reindex_knowledge_base after deletes if vector hygiene matters.';
 
 export const REINDEX_KNOWLEDGE_BASE_DESCRIPTION =
-  'Forces the active model to re-index a knowledge base. Pass knowledge_base_name to reindex one KB, or omit it to reindex all KBs.';
+  'Forces the active model to fully rebuild its FAISS index from on-disk files, replacing the in-memory store and clearing orphan vectors left behind by prior delete_document calls. The rebuild always covers every KB because FAISS lacks per-vector deletion; passing knowledge_base_name is accepted (and recorded in the response) but does not narrow the rebuild scope.';
 
 // ---------------------------------------------------------------------------
 // Transport configuration (RFC 008 stage 1: stdio + SSE).
