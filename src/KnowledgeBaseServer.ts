@@ -169,9 +169,20 @@ function parseKnowledgeBaseResourceUri(uri: string): { kbName: string; relativeP
     throw new Error(`path escapes KB root: ${JSON.stringify(rawRelativePath)}`);
   }
 
+  // Decode each path segment with `decodeURIComponent` to round-trip
+  // `resourceUri()`, which percent-encodes per-segment with the matching
+  // function. `decodeURI` leaves reserved characters (`#`, `?`, `&`, `+`,
+  // `=`, …) literal, so a filename like `bug#123.md` would round-trip to a
+  // literal `%23` and `resources/read` would fail with "path not found".
+  // The earlier `%2f|%5c` guard already rejects encoded path separators
+  // before this point, so per-segment decoding cannot reintroduce a `/` or
+  // `\` boundary.
   let relativePath: string;
   try {
-    relativePath = decodeURI(rawRelativePath);
+    relativePath = rawRelativePath
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+      .join('/');
   } catch (error: unknown) {
     throw new Error(`invalid kb:// URI path encoding: ${toError(error).message}`);
   }
