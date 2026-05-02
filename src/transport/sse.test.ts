@@ -178,10 +178,17 @@ describe('loadTransportConfig validation', () => {
     expect(() => loadTransportConfig()).toThrow(/MCP_AUTH_TOKEN/);
   });
 
-  it('rejects MCP_TRANSPORT=http (stage 2 not yet implemented)', () => {
+  it('accepts MCP_TRANSPORT=http when MCP_AUTH_TOKEN is set', () => {
     process.env.MCP_TRANSPORT = 'http';
     process.env.MCP_AUTH_TOKEN = VALID_TOKEN;
-    expect(() => loadTransportConfig()).toThrow(/Invalid MCP_TRANSPORT/);
+    expect(loadTransportConfig().transport).toBe('http');
+  });
+
+  it('refuses startup when MCP_TRANSPORT=http but MCP_AUTH_TOKEN is unset', () => {
+    process.env.MCP_TRANSPORT = 'http';
+    delete process.env.MCP_AUTH_TOKEN;
+    expect(() => loadTransportConfig()).toThrow(TransportConfigError);
+    expect(() => loadTransportConfig()).toThrow(/MCP_AUTH_TOKEN/);
   });
 
   it('rejects MCP_ALLOWED_ORIGINS=*', () => {
