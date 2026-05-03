@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — CLI `kb remember`
+
+### Added
+
+- **`kb remember` CLI command.** `--suggest --kb=<name> --title=<title>` is read-only and lists likely existing targets from note filenames/headings. Writes require `--stdin --yes`: create mode writes a slugified `.md` file and refuses overwrites, while append mode accepts only existing KB-relative paths and rejects traversal/absolute paths. `--refresh` re-indexes the affected KB after a successful write. Closes #137.
+
 ## [Unreleased] — MCP ingest tools
 
 ### Added
