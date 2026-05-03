@@ -24,10 +24,11 @@ interface RunResult {
   stderr: string;
 }
 
-function runCli(args: string[], env: Record<string, string> = {}): RunResult {
+function runCli(args: string[], env: Record<string, string> = {}, input?: string): RunResult {
   const result = spawnSync('node', [cliPath, ...args], {
     env: { PATH: process.env.PATH ?? '', ...env },
     encoding: 'utf-8',
+    input,
   });
   if (result.error) throw result.error;
   return {
@@ -44,6 +45,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.stdout).toContain('kb — knowledge-base CLI');
     expect(r.stdout).toContain('kb list');
     expect(r.stdout).toContain('kb search');
+    expect(r.stdout).toContain('kb remember');
   });
 
   it('no args exits 0 with usage text', () => {
@@ -99,6 +101,159 @@ describe('kb CLI — argv parsing and dispatch', () => {
     const r = runCli(['search', 'q', '--threshold=notanumber']);
     expect(r.code).toBe(2);
     expect(r.stderr).toContain('invalid --threshold');
+  });
+});
+
+describe('kb remember', () => {
+  it('creates a new markdown note from stdin with a slugified title', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-create-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(path.join(rootDir, 'project'), { recursive: true });
+
+      const r = runCli(
+        ['remember', '--kb=project', '--title=Daily Meeting Notes', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        '# Daily Meeting Notes\n\nDecision log.\n',
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('"action": "create"');
+      expect(r.stdout).toContain('"path": "daily-meeting-notes.md"');
+      await expect(fsp.readFile(path.join(rootDir, 'project', 'daily-meeting-notes.md'), 'utf-8'))
+        .resolves.toBe('# Daily Meeting Notes\n\nDecision log.\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to overwrite an existing slug on create', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-overwrite-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(path.join(rootDir, 'project'), { recursive: true });
+      const notePath = path.join(rootDir, 'project', 'daily-meeting-notes.md');
+      await fsp.writeFile(notePath, 'original', 'utf-8');
+
+      const r = runCli(
+        ['remember', '--kb=project', '--title=Daily Meeting Notes', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'replacement',
+      );
+
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('refusing to overwrite');
+      await expect(fsp.readFile(notePath, 'utf-8')).resolves.toBe('original');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('appends stdin to an existing KB-relative note', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-append-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const notePath = path.join(rootDir, 'project', 'notes', 'status.md');
+      await fsp.mkdir(path.dirname(notePath), { recursive: true });
+      await fsp.writeFile(notePath, '# Status\n\nExisting.\n', 'utf-8');
+
+      const r = runCli(
+        ['remember', '--kb=project', '--append=notes/status.md', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        '\nAppended.\n',
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('"action": "append"');
+      await expect(fsp.readFile(notePath, 'utf-8')).resolves.toBe('# Status\n\nExisting.\n\nAppended.\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('suggests likely targets without reading stdin or writing files', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-suggest-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(rootDir, 'project');
+      await fsp.mkdir(kbDir, { recursive: true });
+      await fsp.writeFile(path.join(kbDir, 'research-plan.md'), '# Research Plan\n\nExisting note.\n', 'utf-8');
+
+      const r = runCli(
+        ['remember', '--suggest', '--kb=project', '--title=Research Plan'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('Likely existing targets');
+      expect(r.stdout).toContain('research-plan.md');
+      await expect(fsp.access(path.join(kbDir, 'research-plan.md.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects traversal and absolute append paths before writing', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-path-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const notePath = path.join(rootDir, 'project', 'safe.md');
+      await fsp.mkdir(path.dirname(notePath), { recursive: true });
+      await fsp.writeFile(notePath, 'safe', 'utf-8');
+
+      const traversal = runCli(
+        ['remember', '--kb=project', '--append=../outside.md', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'bad',
+      );
+      expect(traversal.code).toBe(1);
+      expect(traversal.stderr).toContain('escapes KB root');
+
+      const absolute = runCli(
+        ['remember', '--kb=project', `--append=${path.join(tempDir, 'outside.md')}`, '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'bad',
+      );
+      expect(absolute.code).toBe(1);
+      expect(absolute.stderr).toContain('escapes KB root');
+      await expect(fsp.readFile(notePath, 'utf-8')).resolves.toBe('safe');
+      await expect(fsp.access(path.join(tempDir, 'outside.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects write argv errors without touching stdin content', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-argv-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(path.join(rootDir, 'project'), { recursive: true });
+
+      const noYes = runCli(
+        ['remember', '--kb=project', '--title=Draft', '--stdin'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'draft',
+      );
+      expect(noYes.code).toBe(2);
+      expect(noYes.stderr).toContain('writes require --yes');
+
+      const unknown = runCli(
+        ['remember', '--kb=project', '--title=Draft', '--stdin', '--yes', '--bogus'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'draft',
+      );
+      expect(unknown.code).toBe(2);
+      expect(unknown.stderr).toContain('unknown flag');
+      await expect(fsp.access(path.join(rootDir, 'project', 'draft.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

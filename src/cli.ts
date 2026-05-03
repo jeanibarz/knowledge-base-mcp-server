@@ -6,6 +6,7 @@
 //   - `kb search <query>`     → similarity search; default read-only
 //                               (skips updateIndex, no write lock)
 //   - `kb search --refresh`   → also runs updateIndex under the write lock
+//   - `kb remember ...`       → conservative CLI write/suggest surface
 //
 // Both subcommands check `model_name.txt` against the configured embedding
 // model on every invocation and exit non-zero on mismatch (RFC §4.7) so a
@@ -18,6 +19,7 @@ import { fileURLToPath } from 'url';
 import { runCompare } from './cli-compare.js';
 import { runList } from './cli-list.js';
 import { runModels } from './cli-models.js';
+import { runRemember } from './cli-remember.js';
 import { runSearch } from './cli-search.js';
 
 // ----- Entry point -----------------------------------------------------------
@@ -29,6 +31,12 @@ Usage:
   kb search <query> [opts]                Semantic search (read-only).
   kb search <query> --refresh             Also re-scan KB files (write path).
   kb search --stdin                       Read query from stdin.
+  kb remember --suggest --kb=<name> --title=<title>
+                                           Suggest likely existing note targets.
+  kb remember --kb=<name> --title=<title> --stdin --yes
+                                           Create a new markdown note.
+  kb remember --kb=<name> --append=<path> --stdin --yes
+                                           Append to an existing KB-relative note.
   kb compare <query> <a> <b>              Side-by-side rank/score table.
   kb models list                          List registered embedding models.
   kb models add <provider> <model>        Register a new model + ingest.
@@ -45,6 +53,15 @@ Search options:
   --format=md|json      Output format (default md).
   --refresh             Re-scan KB files; acquires per-model write lock.
   --stdin               Read query from stdin (multi-line safe).
+
+Remember options:
+  --kb=<name>           Target knowledge base.
+  --title=<title>       Note title; create uses a slugified .md filename.
+  --append=<path>       Existing KB-relative note path; rejects traversal.
+  --suggest             Read-only suggestions; does not read stdin.
+  --stdin               Read note content from stdin.
+  --yes                 Required for non-interactive writes.
+  --refresh             Re-index the affected KB after a successful write.
 
 Models add options:
   --yes                 Skip the cost-estimate confirmation prompt.
@@ -80,6 +97,9 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (sub === 'search') {
     return runSearch(rest);
+  }
+  if (sub === 'remember') {
+    return runRemember(rest);
   }
   if (sub === 'models') {
     return runModels(rest);
