@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — CLI `kb capture`
+
+### Added
+
+- **`kb capture` CLI command.** Runs a command via `child_process.spawn` (`shell: false`, argv after `--`) and appends its stdout to a KB note as a fenced, provenance-tagged code block. The block opens with an optional `### <note>` header (`--note=<text>`), records the literal command on a `$ <cmd>` line (POSIX-shell-quoted for round-trip safety), then a fenced code block with the captured stdout. The fence widens beyond three backticks when the output contains `` ``` `` runs, so embedded fences round-trip without breaking the host markdown. `--max-bytes=<N>` truncates oversize stdout (default 64 KiB) and appends `... (truncated, N bytes elided)` inside the fence. `--language=<hint>` overrides the fence language; otherwise it auto-detects `json`/`yaml` from a `.json` / `.yml` / `.yaml` argv tail. Captures refuse to write when stdout is empty or when the command exits non-zero (override with `--allow-fail`). `--refresh` re-indexes the affected KB after the write. The `--append=<path>` target uses the same KB-relative resolver as `kb remember --append` — traversal/absolute paths are rejected before the command spawns. Composes with `kb remember --append-section` (#139) once that lands; without it the captured block lands at EOF. Closes #143.
+
 ## [Unreleased] — `kb search --threshold=auto`
 
 ### Added
