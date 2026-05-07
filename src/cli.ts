@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // RFC 012 — `kb` CLI alongside the MCP server.
 //
-// Two subcommands:
+// Subcommands:
 //   - `kb list`               → list ingested knowledge bases (one per line)
 //   - `kb search <query>`     → similarity search; default read-only
 //                               (skips updateIndex, no write lock)
 //   - `kb search --refresh`   → also runs updateIndex under the write lock
 //   - `kb remember ...`       → conservative CLI write/suggest surface
+//   - `kb capture -- <cmd>`   → run a command and append its stdout to a
+//                               KB note as a fenced, provenance-tagged block
 //
 // Both subcommands check `model_name.txt` against the configured embedding
 // model on every invocation and exit non-zero on mismatch (RFC §4.7) so a
@@ -16,6 +18,7 @@
 import { readFileSync, realpathSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { runCapture } from './cli-capture.js';
 import { runCompare } from './cli-compare.js';
 import { runList } from './cli-list.js';
 import { runModels } from './cli-models.js';
@@ -37,6 +40,10 @@ Usage:
                                            Create a new markdown note.
   kb remember --kb=<name> --append=<path> --stdin --yes
                                            Append to an existing KB-relative note.
+  kb capture --kb=<name> --append=<path> [--note=<text>] [--language=<hint>]
+             [--max-bytes=<N>] [--allow-fail] [--refresh] -- <cmd> [args...]
+                                           Run a command and append its stdout
+                                           to a KB note as a fenced block.
   kb compare <query> <a> <b>              Side-by-side rank/score table.
   kb models list                          List registered embedding models.
   kb models add <provider> <model>        Register a new model + ingest.
@@ -62,6 +69,18 @@ Remember options:
   --stdin               Read note content from stdin.
   --yes                 Required for non-interactive writes.
   --refresh             Re-index the affected KB after a successful write.
+
+Capture options:
+  --kb=<name>           Target knowledge base.
+  --append=<path>       Existing KB-relative note path; rejects traversal.
+  --note=<text>         Optional "### <text>" header above the captured block.
+  --language=<hint>     Code-fence language hint; auto-detected from .json /
+                        .yml / .yaml args if absent.
+  --max-bytes=<N>       Truncate captured stdout at N bytes (default 65536).
+  --allow-fail          Capture even when the command exits non-zero.
+  --refresh             Re-index the affected KB after a successful write.
+  --                    End of options; remaining argv is the command + args
+                        passed verbatim to spawn(..., { shell: false }).
 
 Models add options:
   --yes                 Skip the cost-estimate confirmation prompt.
@@ -100,6 +119,9 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (sub === 'remember') {
     return runRemember(rest);
+  }
+  if (sub === 'capture') {
+    return runCapture(rest);
   }
   if (sub === 'models') {
     return runModels(rest);

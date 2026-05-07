@@ -46,6 +46,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.stdout).toContain('kb list');
     expect(r.stdout).toContain('kb search');
     expect(r.stdout).toContain('kb remember');
+    expect(r.stdout).toContain('kb capture');
   });
 
   it('no args exits 0 with usage text', () => {
@@ -262,6 +263,173 @@ describe('kb remember', () => {
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('kb capture', () => {
+  async function makeKb(prefix: string): Promise<{ tempDir: string; rootDir: string; faissDir: string; notePath: string }> {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+    const rootDir = path.join(tempDir, 'kbs');
+    const faissDir = path.join(tempDir, '.faiss');
+    const notePath = path.join(rootDir, 'project', 'snapshots.md');
+    await fsp.mkdir(path.dirname(notePath), { recursive: true });
+    await fsp.writeFile(notePath, '# Snapshots\n', 'utf-8');
+    return { tempDir, rootDir, faissDir, notePath };
+  }
+
+  it('appends a fenced block with $ command line and note header', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-basic-');
+    try {
+      const r = runCli(
+        ['capture', '--kb=project', '--append=snapshots.md', '--note=Snapshot 1', '--', 'echo', 'hello'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('"action": "capture"');
+      expect(r.stdout).toContain('"truncated": false');
+      expect(r.stdout).toContain('"path": "snapshots.md"');
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toBe(
+        '# Snapshots\n' +
+        '\n' +
+        '### Snapshot 1\n' +
+        '\n' +
+        '$ echo hello\n' +
+        '```\n' +
+        'hello\n' +
+        '```\n',
+      );
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-detects json language hint from a .json positional arg', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-lang-');
+    try {
+      const dataPath = path.join(tempDir, 'data.json');
+      await fsp.writeFile(dataPath, '{"k":1}\n', 'utf-8');
+
+      const r = runCli(
+        ['capture', '--kb=project', '--append=snapshots.md', '--', 'cat', dataPath],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('```json\n');
+      expect(after).toContain('{"k":1}');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('escapes backticks in stdout by widening the fence', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-fence-');
+    try {
+      const r = runCli(
+        ['capture', '--kb=project', '--append=snapshots.md', '--', 'printf', '```inner```\n'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('\n````\n```inner```\n````\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('truncates at --max-bytes and records the elision count', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-trunc-');
+    try {
+      const r = runCli(
+        [
+          'capture', '--kb=project', '--append=snapshots.md', '--max-bytes=4',
+          '--', 'printf', 'abcdefghij',
+        ],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('"truncated": true');
+      expect(r.stdout).toContain('"bytes_elided": 6');
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('abcd\n... (truncated, 6 bytes elided)\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses non-zero exit unless --allow-fail is passed', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-fail-');
+    try {
+      const before = await fsp.readFile(notePath, 'utf-8');
+      const fail = runCli(
+        ['capture', '--kb=project', '--append=snapshots.md', '--', 'sh', '-c', 'echo hi; exit 3'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+      expect(fail.code).toBe(1);
+      expect(fail.stderr).toContain('command exited 3');
+      await expect(fsp.readFile(notePath, 'utf-8')).resolves.toBe(before);
+
+      const allow = runCli(
+        ['capture', '--kb=project', '--append=snapshots.md', '--allow-fail', '--', 'sh', '-c', 'echo hi; exit 3'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+      expect(allow.code).toBe(0);
+      expect(allow.stdout).toContain('"exit_code": 3');
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('hi');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to write an empty fence when stdout is empty', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-empty-');
+    try {
+      const before = await fsp.readFile(notePath, 'utf-8');
+      const r = runCli(
+        ['capture', '--kb=project', '--append=snapshots.md', '--', 'true'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('produced no stdout');
+      await expect(fsp.readFile(notePath, 'utf-8')).resolves.toBe(before);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects traversal in --append before spawning the command', async () => {
+    const { tempDir, rootDir, faissDir } = await makeKb('kb-cli-capture-path-');
+    try {
+      const r = runCli(
+        ['capture', '--kb=project', '--append=../outside.md', '--', 'printf', 'x'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('escapes KB root');
+      await expect(fsp.access(path.join(tempDir, 'outside.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects argv errors (missing --kb / missing command after --)', async () => {
+    const noKb = runCli(['capture', '--append=snapshots.md', '--', 'printf', 'x']);
+    expect(noKb.code).toBe(2);
+    expect(noKb.stderr).toContain('missing --kb');
+
+    const noCmd = runCli(['capture', '--kb=project', '--append=snapshots.md']);
+    expect(noCmd.code).toBe(2);
+    expect(noCmd.stderr).toContain('missing command after "--"');
+
+    const badMax = runCli(['capture', '--kb=project', '--append=snapshots.md', '--max-bytes=abc', '--', 'printf', 'x']);
+    expect(badMax.code).toBe(2);
+    expect(badMax.stderr).toContain('invalid --max-bytes');
   });
 });
 
