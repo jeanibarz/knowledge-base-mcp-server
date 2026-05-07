@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — CLI `kb where`
+
+### Added
+
+- **`kb where --topic=<query>` CLI command.** One-shot recommendation for "which KB and which file should I update?" — runs a similarity search across every KB (no `--kb=` filter), groups hits by `metadata.knowledgeBase`, picks the KB whose top hit has the lowest FAISS distance, then picks the lowest-scoring file within that KB as the suggested append target. When the best in-KB file score is below `--threshold` (default `1.0`, lower distance = closer match) the output recommends an `--append=<existing-file>` invocation; otherwise it suggests `--title=<title>` to create a new note. `--format=md` (default) prints a four-line block (`Recommended KB`, `Existing target`, `Confidence`, `Suggested invocation`); `--format=json` emits `{recommended_kb, existing_target, confidence, suggested_invocation}`. Strictly read-only — same posture as `kb search` without `--refresh`. Closes #141.
+
 ## [Unreleased] — CLI `kb stale-check`
 
 ### Added
