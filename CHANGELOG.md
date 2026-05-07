@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — `kb search --threshold=auto`
+
+### Added
+
+- **`kb search --threshold=auto`** picks a per-query distance cutoff from the score distribution of the current top-K instead of relying on the static `--threshold=2` default. After FAISS returns the top-K (sorted ascending; lower distance = closer), the largest first-difference between adjacent scores marks the "knee" where relevance falls off — results up to and including the elbow are kept and the score at the elbow becomes the threshold. When the largest gap is within 10% of the mean gap the distribution is treated as uniform and all results are kept (no clear knee). The chosen cutoff is reported in the result header (`> _Auto-threshold: 0.71 (knee at result 5; kept 5)._`); JSON output adds an `auto_threshold` object with `threshold`, `knee_index`, and `kept` fields. The static numeric form (`--threshold=2.0`) and its default behavior are unchanged. Closes #144.
+
 ## [Unreleased] — `kb search` freshness banner
 
 ### Changed
