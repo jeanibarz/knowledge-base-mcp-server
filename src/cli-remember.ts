@@ -8,11 +8,14 @@ import { filterIngestablePaths } from './ingest-filter.js';
 import { resolveKbRelativePath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel } from './cli-shared.js';
+import { appendSectionInDocument, parseHeadingSpec } from './markdown-section.js';
 
 interface RememberArgs {
   kb?: string;
   title?: string;
   append?: string;
+  appendSection?: string;
+  occurrence?: number;
   suggest: boolean;
   stdin: boolean;
   yes: boolean;
@@ -53,11 +56,23 @@ export async function runRemember(rest: string[]): Promise<number> {
   }
 
   let relativePath: string;
+  let action: 'create' | 'append' | 'append-section';
   try {
-    if (parsed.append !== undefined) {
+    if (parsed.appendSection !== undefined) {
+      relativePath = await appendSectionInExistingNote(
+        parsed.kb!,
+        parsed.append!,
+        parsed.appendSection,
+        content,
+        parsed.occurrence,
+      );
+      action = 'append-section';
+    } else if (parsed.append !== undefined) {
       relativePath = await appendExistingNote(parsed.kb!, parsed.append, content);
+      action = 'append';
     } else {
       relativePath = await createNewNote(parsed.kb!, parsed.title!, content);
+      action = 'create';
     }
   } catch (err) {
     process.stderr.write(`kb remember: ${(err as Error).message}\n`);
@@ -80,7 +95,7 @@ export async function runRemember(rest: string[]): Promise<number> {
   process.stdout.write(`${JSON.stringify({
     knowledge_base_name: parsed.kb,
     path: relativePath,
-    action: parsed.append !== undefined ? 'append' : 'create',
+    action,
     refreshed: parsed.refresh,
   }, null, 2)}\n`);
   return 0;
@@ -101,6 +116,19 @@ function parseRememberArgs(rest: string[]): RememberArgs {
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--title=')) { out.title = raw.slice('--title='.length); continue; }
     if (raw.startsWith('--append=')) { out.append = raw.slice('--append='.length); continue; }
+    if (raw.startsWith('--append-section=')) {
+      out.appendSection = raw.slice('--append-section='.length);
+      continue;
+    }
+    if (raw.startsWith('--occurrence=')) {
+      const value = raw.slice('--occurrence='.length);
+      const parsedNum = Number(value);
+      if (!Number.isInteger(parsedNum) || parsedNum < 1) {
+        throw new Error(`--occurrence must be a positive integer; got ${JSON.stringify(value)}`);
+      }
+      out.occurrence = parsedNum;
+      continue;
+    }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     throw new Error(`unexpected argument: ${raw}`);
   }
@@ -135,6 +163,24 @@ function validateRememberArgs(args: RememberArgs): void {
   }
   if (!args.yes) {
     throw new Error('writes require --yes');
+  }
+  if (args.appendSection !== undefined) {
+    if (args.appendSection.trim() === '') {
+      throw new Error('--append-section must not be empty');
+    }
+    if (args.append === undefined) {
+      throw new Error('--append-section requires --append=<path>');
+    }
+    if (args.title !== undefined) {
+      throw new Error('--append-section cannot be combined with --title');
+    }
+    if (args.append.trim() === '') {
+      throw new Error('--append must not be empty');
+    }
+    return;
+  }
+  if (args.occurrence !== undefined) {
+    throw new Error('--occurrence requires --append-section');
   }
   if (args.append !== undefined) {
     if (args.append.trim() === '') {
@@ -253,6 +299,66 @@ async function appendExistingNote(kbName: string, relativePath: string, content:
   return path.relative(await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName), documentPath)
     .split(path.sep)
     .join('/');
+}
+
+async function appendSectionInExistingNote(
+  kbName: string,
+  relativePath: string,
+  headingSpec: string,
+  content: string,
+  occurrence: number | undefined,
+): Promise<string> {
+  if (content.trim() === '') {
+    // The point of --append-section is to prevent foot-guns; silently writing
+    // empty content is the original error mode this feature exists to remove.
+    throw new Error('--append-section refuses to write empty content (stdin was empty or whitespace-only)');
+  }
+  rejectAbsoluteOrTraversal(relativePath);
+  const documentPath = await resolveKbRelativePath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath);
+  let stat;
+  try {
+    stat = await fsp.stat(documentPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        `--append-section target does not exist: ${JSON.stringify(relativePath)} (use --title to create a new note)`,
+      );
+    }
+    throw err;
+  }
+  if (!stat.isFile()) {
+    throw new Error(`append target is not a file: ${JSON.stringify(relativePath)}`);
+  }
+
+  const spec = parseHeadingSpec(headingSpec);
+  const original = await fsp.readFile(documentPath, 'utf-8');
+  const { content: rewritten } = appendSectionInDocument(original, spec, content, { occurrence });
+  await atomicWriteFile(documentPath, rewritten, stat.mode);
+
+  return path.relative(await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName), documentPath)
+    .split(path.sep)
+    .join('/');
+}
+
+async function atomicWriteFile(targetPath: string, data: string, mode?: number): Promise<void> {
+  const tmpPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}`;
+  const permissions = mode === undefined ? undefined : mode & 0o7777;
+  const handle = await fsp.open(tmpPath, 'w', permissions);
+  try {
+    if (permissions !== undefined) {
+      await handle.chmod(permissions);
+    }
+    await handle.writeFile(data, 'utf-8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await fsp.rename(tmpPath, targetPath);
+  } catch (err) {
+    await fsp.unlink(tmpPath).catch(() => {});
+    throw err;
+  }
 }
 
 function rejectAbsoluteOrTraversal(relativePath: string): void {

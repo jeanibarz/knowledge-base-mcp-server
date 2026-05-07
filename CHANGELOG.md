@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — CLI `kb remember --append-section`
+
+### Added
+
+- **`kb remember --append=<path> --append-section="<#level> <text>" [--occurrence=<N>] --stdin --yes`.** Heading-aware append into an existing markdown note. The new content lands at the END of the named section — after every nested subsection — instead of at EOF, so logical document structure stays intact across repeated edits. The heading is located with a real markdown parser (`mdast-util-from-markdown`) so matches inside fenced code blocks, indented code blocks, HTML comments, and YAML frontmatter never trigger; the spec must include the level prefix (`## Foo` does NOT match `### Foo`). Failure modes are loud, never silent: missing heading errors with the list of available headings; duplicate matches error with line numbers and require `--occurrence=<N>` to disambiguate; missing target file errors and points the user at `--title` (create) instead of falling back to EOF; empty / whitespace-only stdin is refused (the foot-gun this feature exists to remove). Writes are atomic — the rewritten content lands in `<path>.kb-tmp.<pid>.<ts>` with `fsync()`, then `rename()` over the original — and adjacent blank lines around the insertion point are collapsed so repeated appends don't accumulate vertical whitespace. Frontmatter is preserved byte-identical above the body. JSON output reports `"action": "append-section"`. Closes #139.
+
 ## [Unreleased] — `kb search` help clarifies cross-KB default
 
 ### Changed
