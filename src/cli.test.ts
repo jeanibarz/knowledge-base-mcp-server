@@ -102,6 +102,14 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain('invalid --threshold');
   });
+
+  it('search with --threshold=auto is accepted by the parser', () => {
+    // Parser must accept the literal "auto"; the call still fails downstream
+    // (no model registered in this test env) but never with an "invalid
+    // --threshold" parse error.
+    const r = runCli(['search', 'q', '--threshold=auto']);
+    expect(r.stderr).not.toContain('invalid --threshold');
+  });
 });
 
 describe('kb remember', () => {

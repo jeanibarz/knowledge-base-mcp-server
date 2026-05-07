@@ -22,6 +22,7 @@ interface SearchArgs {
   kb?: string;
   model?: string;
   threshold?: number;
+  thresholdAuto: boolean;
   k: number;
   format: 'md' | 'json';
   refresh: boolean;
@@ -32,6 +33,12 @@ export interface Staleness {
   indexMtime: string | null;
   modifiedFiles: number;
   newFiles: number;
+}
+
+export interface AutoThresholdDecision {
+  threshold: number;
+  kneeIndex: number | null;
+  kept: number;
 }
 
 export async function runSearch(rest: string[]): Promise<number> {
@@ -96,13 +103,25 @@ export async function runSearch(rest: string[]): Promise<number> {
   }
 
   let results;
+  let autoDecision: AutoThresholdDecision | null = null;
   try {
-    results = await manager.similaritySearch(
-      parsed.query,
-      parsed.k,
-      parsed.threshold,
-      parsed.kb,
-    );
+    if (parsed.thresholdAuto) {
+      const rawResults = await manager.similaritySearch(
+        parsed.query,
+        parsed.k,
+        Number.POSITIVE_INFINITY,
+        parsed.kb,
+      );
+      autoDecision = computeAutoThreshold(rawResults.map((r) => r.score));
+      results = rawResults.slice(0, autoDecision.kept);
+    } else {
+      results = await manager.similaritySearch(
+        parsed.query,
+        parsed.k,
+        parsed.threshold,
+        parsed.kb,
+      );
+    }
   } catch (err) {
     process.stderr.write(`kb search: ${(err as Error).message}\n`);
     return 1;
@@ -118,9 +137,22 @@ export async function runSearch(rest: string[]): Promise<number> {
       stale: parsed.refresh ? false : staleness.modifiedFiles + staleness.newFiles > 0,
       modified_files: parsed.refresh ? 0 : staleness.modifiedFiles,
       new_files: parsed.refresh ? 0 : staleness.newFiles,
+      ...(autoDecision !== null
+        ? {
+            auto_threshold: {
+              threshold: autoDecision.threshold,
+              knee_index: autoDecision.kneeIndex,
+              kept: autoDecision.kept,
+            },
+          }
+        : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else {
+    if (autoDecision !== null) {
+      process.stdout.write(formatAutoThresholdHeader(autoDecision));
+      process.stdout.write('\n\n');
+    }
     const md = formatRetrievalAsMarkdown(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
     process.stdout.write(md);
     process.stdout.write('\n\n');
@@ -138,6 +170,7 @@ function parseSearchArgs(rest: string[]): SearchArgs {
     format: 'md',
     refresh: false,
     stdin: false,
+    thresholdAuto: false,
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
@@ -145,7 +178,9 @@ function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
     if (raw.startsWith('--threshold=')) {
-      const n = Number(raw.slice('--threshold='.length));
+      const v = raw.slice('--threshold='.length);
+      if (v === 'auto') { out.thresholdAuto = true; continue; }
+      const n = Number(v);
       if (!Number.isFinite(n)) throw new Error(`invalid --threshold: ${raw}`);
       out.threshold = n; continue;
     }
@@ -253,4 +288,63 @@ async function readAllStdin(): Promise<string> {
     process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
     process.stdin.on('error', reject);
   });
+}
+
+/**
+ * Pick a knee-based distance cutoff from FAISS top-K scores (lower = closer).
+ *
+ * Scores must already be sorted ascending — FAISS returns them this way.
+ * The largest first-difference is the "knee" where relevance falls off; the
+ * cutoff is the score at the elbow (the last result kept). When the largest
+ * gap is within 10% of the mean gap the distribution is uniform and we keep
+ * everything (no clear knee).
+ */
+export function computeAutoThreshold(scores: readonly number[]): AutoThresholdDecision {
+  if (scores.length === 0) {
+    return { threshold: 0, kneeIndex: null, kept: 0 };
+  }
+  if (scores.length === 1) {
+    return { threshold: scores[0], kneeIndex: null, kept: 1 };
+  }
+
+  let sumDiff = 0;
+  let maxDiff = -Infinity;
+  let maxIdx = 0;
+  for (let i = 0; i < scores.length - 1; i += 1) {
+    const d = scores[i + 1] - scores[i];
+    sumDiff += d;
+    if (d > maxDiff) {
+      maxDiff = d;
+      maxIdx = i;
+    }
+  }
+  const meanDiff = sumDiff / (scores.length - 1);
+
+  if (maxDiff <= meanDiff * 1.1) {
+    return {
+      threshold: scores[scores.length - 1],
+      kneeIndex: null,
+      kept: scores.length,
+    };
+  }
+
+  return {
+    threshold: scores[maxIdx],
+    kneeIndex: maxIdx,
+    kept: maxIdx + 1,
+  };
+}
+
+export function formatAutoThresholdHeader(d: AutoThresholdDecision): string {
+  if (d.kept === 0) {
+    return '> _Auto-threshold: no results to score._';
+  }
+  const t = d.threshold.toFixed(2);
+  if (d.kneeIndex === null) {
+    if (d.kept === 1) {
+      return `> _Auto-threshold: ${t} (1 result; no knee detection)._`;
+    }
+    return `> _Auto-threshold: ${t} (no clear knee; kept all ${d.kept} results)._`;
+  }
+  return `> _Auto-threshold: ${t} (knee at result ${d.kneeIndex + 1}; kept ${d.kept})._`;
 }
