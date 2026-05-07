@@ -512,6 +512,111 @@ describe('kb remember', () => {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('rejects malformed similarity flags before reading stdin (exit 2)', () => {
+    const cases: Array<{ flag: string; pattern: RegExp }> = [
+      { flag: '--similar-threshold=0', pattern: /--similar-threshold must be a positive number/ },
+      { flag: '--similar-threshold=abc', pattern: /--similar-threshold must be a positive number/ },
+      { flag: '--similar-k=0', pattern: /--similar-k must be a positive integer/ },
+      { flag: '--similar-k=2.5', pattern: /--similar-k must be a positive integer/ },
+      { flag: '--format=yaml', pattern: /--format must be md or json/ },
+    ];
+    for (const { flag, pattern } of cases) {
+      const r = runCli(
+        ['remember', '--kb=project', '--title=Draft', '--stdin', '--yes', flag],
+        {},
+        'draft',
+      );
+      expect(r.code).toBe(2);
+      expect(r.stderr).toMatch(pattern);
+    }
+  });
+
+  it('--force together with --no-check-similar is rejected (force has no guard to override)', () => {
+    // The guard is on by default, so a bare --force is meaningful. Only the
+    // explicit "guard off + force on" combo is incoherent — it would mask
+    // an agent typo where the user thought --force enabled the guard.
+    const r = runCli(
+      ['remember', '--kb=project', '--title=Draft', '--stdin', '--yes', '--no-check-similar', '--force'],
+      {},
+      'draft',
+    );
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('--force has no effect without --check-similar');
+  });
+
+  it('--check-similar (explicit) with no model registered exits 2 with an actionable hint', async () => {
+    // Strict mode: the user asked for the guard by name, so an unconfigured
+    // index must surface as a hard error (NFR-004). The write must NOT
+    // happen — the preflight runs before the create branch.
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-checksim-nomodel-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(path.join(rootDir, 'project'), { recursive: true });
+
+      const r = runCli(
+        ['remember', '--kb=project', '--title=Draft', '--stdin', '--yes', '--check-similar'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'this content should never reach the filesystem',
+      );
+
+      expect(r.code).toBe(2);
+      await expect(fsp.access(path.join(rootDir, 'project', 'draft.md')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('default-on guard with no model registered degrades to a warning and writes anyway', async () => {
+    // Implicit guard fires by default but a fresh install has no model
+    // registered. We must NOT block writes for a config issue the user
+    // didn't gate on the guard — emit a one-line stderr warning and
+    // proceed. NFR-004 strict path is preserved under explicit --check-similar.
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-default-degrade-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(path.join(rootDir, 'project'), { recursive: true });
+
+      const r = runCli(
+        ['remember', '--kb=project', '--title=Draft', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'fresh install body',
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stderr).toContain('similarity guard skipped');
+      expect(r.stderr).toContain('--no-check-similar');
+      expect(r.stdout).toContain('"action": "create"');
+      await expect(fsp.readFile(path.join(rootDir, 'project', 'draft.md'), 'utf-8'))
+        .resolves.toBe('fresh install body');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--no-check-similar bypasses the guard silently with no warning', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-no-check-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(path.join(rootDir, 'project'), { recursive: true });
+
+      const r = runCli(
+        ['remember', '--kb=project', '--title=Draft', '--stdin', '--yes', '--no-check-similar'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'silent path',
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stderr).toBe('');
+      expect(r.stdout).toContain('"action": "create"');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('kb capture', () => {

@@ -52,6 +52,14 @@ Usage:
                                            section (after all subsections), not
                                            at EOF. Heading spec must include the
                                            level prefix (e.g. "## OSS gate flow").
+  kb remember ... [--similar-threshold=<float>] [--similar-k=<int>]
+                  [--force] [--format=md|json] [--no-check-similar]
+                                           Writes run a semantic preflight
+                                           against the active index by default
+                                           and refuse (exit 3) when similar
+                                           chunks already exist. Bypass with
+                                           --force; disable with
+                                           --no-check-similar.
   kb capture --kb=<name> --append=<path> [--note=<text>] [--language=<hint>]
              [--max-bytes=<N>] [--allow-fail] [--refresh] -- <cmd> [args...]
                                            Run a command and append its stdout
@@ -97,6 +105,22 @@ Remember options:
   --stdin               Read note content from stdin.
   --yes                 Required for non-interactive writes.
   --refresh             Re-index the affected KB after a successful write.
+  --check-similar       Force the semantic preflight ON (default). Surface
+                        index-load failures as exit-1/2 errors; without this
+                        flag a missing index degrades to a stderr warning
+                        and the write proceeds without the guard.
+  --no-check-similar    Disable the semantic preflight for this write.
+  --similar-threshold=<float>
+                        Max FAISS distance treated as related (default 1.0;
+                        lower distance = closer match).
+  --similar-k=<int>     Top-K candidate chunks to surface (default 5).
+  --force               Override the similarity guard and write anyway; the
+                        success response reports that the guard was
+                        overridden so the action stays auditable.
+  --format=md|json      Output format for similarity-guard reports (default
+                        json — agent-friendly machine-readable shape).
+  --model=<id>          Override active model for the preflight similarity
+                        search (RFC 013).
 
 Capture options:
   --kb=<name>           Target knowledge base.
@@ -121,6 +145,7 @@ Exit codes:
   0  success (results found or empty)
   1  runtime / index error
   2  argv / env / model-resolution error
+  3  kb remember --check-similar found similar chunks and refused to write
 `;
 
 export async function main(argv: string[]): Promise<number> {
