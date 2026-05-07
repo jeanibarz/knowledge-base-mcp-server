@@ -46,6 +46,12 @@ Usage:
                                            Create a new markdown note.
   kb remember --kb=<name> --append=<path> --stdin --yes
                                            Append to an existing KB-relative note.
+  kb remember --kb=<name> --append=<path> --append-section="<#level> <text>"
+             [--occurrence=<N>] --stdin --yes
+                                           Append at the END of a named heading
+                                           section (after all subsections), not
+                                           at EOF. Heading spec must include the
+                                           level prefix (e.g. "## OSS gate flow").
   kb capture --kb=<name> --append=<path> [--note=<text>] [--language=<hint>]
              [--max-bytes=<N>] [--allow-fail] [--refresh] -- <cmd> [args...]
                                            Run a command and append its stdout
@@ -79,6 +85,14 @@ Remember options:
   --kb=<name>           Target knowledge base.
   --title=<title>       Note title; create uses a slugified .md filename.
   --append=<path>       Existing KB-relative note path; rejects traversal.
+  --append-section=<spec>
+                        Heading-aware append target. Spec is "<#level> <text>"
+                        (e.g. "## OSS gate flow"). Requires --append=<path>.
+                        Inserts at the end of the named section (after every
+                        subsection), atomically rewrites the file, and refuses
+                        to fall back to EOF if the heading is missing.
+  --occurrence=<N>      1-indexed disambiguation when the heading appears
+                        multiple times. Requires --append-section.
   --suggest             Read-only suggestions; does not read stdin.
   --stdin               Read note content from stdin.
   --yes                 Required for non-interactive writes.

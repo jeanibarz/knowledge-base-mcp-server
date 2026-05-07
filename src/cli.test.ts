@@ -238,6 +238,228 @@ describe('kb remember', () => {
     }
   });
 
+  it('appends at the end of a named section, not at EOF', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-section-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const notePath = path.join(rootDir, 'project', 'notes', 'flows.md');
+      await fsp.mkdir(path.dirname(notePath), { recursive: true });
+      await fsp.writeFile(
+        notePath,
+        '# Top\n\n## OSS gate flow\n\nFirst note.\n\n### Sub\n\nSub note.\n\n## Cross-references\n\nLinks.\n',
+        'utf-8',
+      );
+
+      const r = runCli(
+        [
+          'remember',
+          '--kb=project',
+          '--append=notes/flows.md',
+          '--append-section=## OSS gate flow',
+          '--stdin',
+          '--yes',
+        ],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'Newer note.\n',
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('"action": "append-section"');
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toBe(
+        '# Top\n\n## OSS gate flow\n\nFirst note.\n\n### Sub\n\nSub note.\n\nNewer note.\n\n## Cross-references\n\nLinks.\n',
+      );
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('errors when the named heading is missing without falling back to EOF', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-section-missing-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const notePath = path.join(rootDir, 'project', 'notes.md');
+      await fsp.mkdir(path.dirname(notePath), { recursive: true });
+      const original = '# Top\n\nbody\n';
+      await fsp.writeFile(notePath, original, 'utf-8');
+
+      const r = runCli(
+        [
+          'remember',
+          '--kb=project',
+          '--append=notes.md',
+          '--append-section=## Nope',
+          '--stdin',
+          '--yes',
+        ],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'should not land\n',
+      );
+
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('heading not found');
+      expect(r.stderr).toContain('Available headings');
+      // The file must be byte-identical when the heading is missing.
+      await expect(fsp.readFile(notePath, 'utf-8')).resolves.toBe(original);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not match a heading hidden inside a fenced code block', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-section-fence-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const notePath = path.join(rootDir, 'project', 'fenced.md');
+      await fsp.mkdir(path.dirname(notePath), { recursive: true });
+      const original = '# Real\n\n```\n## Trick\n```\n';
+      await fsp.writeFile(notePath, original, 'utf-8');
+
+      const r = runCli(
+        ['remember', '--kb=project', '--append=fenced.md', '--append-section=## Trick', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'X',
+      );
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('heading not found');
+      await expect(fsp.readFile(notePath, 'utf-8')).resolves.toBe(original);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not accumulate blank lines on repeated --append-section writes', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-section-rep-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const notePath = path.join(rootDir, 'project', 'rep.md');
+      await fsp.mkdir(path.dirname(notePath), { recursive: true });
+      await fsp.writeFile(notePath, '## Foo\n\nbody\n\n## Bar\n\nbar\n', 'utf-8');
+
+      for (const text of ['first', 'second', 'third']) {
+        const r = runCli(
+          ['remember', '--kb=project', '--append=rep.md', '--append-section=## Foo', '--stdin', '--yes'],
+          { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+          text,
+        );
+        expect(r.code).toBe(0);
+      }
+      const after = await fsp.readFile(notePath, 'utf-8');
+      // Single blank line separates each appended block — never two.
+      expect(after).toBe(
+        '## Foo\n\nbody\n\nfirst\n\nsecond\n\nthird\n\n## Bar\n\nbar\n',
+      );
+      expect(/\n\n\n/.test(after)).toBe(false);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects --append-section without --append', async () => {
+    const r = runCli(
+      ['remember', '--kb=project', '--append-section=## Foo', '--stdin', '--yes'],
+      {},
+      'x',
+    );
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('--append-section requires --append');
+  });
+
+  it('errors on duplicate headings without --occurrence and disambiguates with it', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-section-dup-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const notePath = path.join(rootDir, 'project', 'dup.md');
+      await fsp.mkdir(path.dirname(notePath), { recursive: true });
+      await fsp.writeFile(
+        notePath,
+        '## Foo\n\nfirst\n\n## Foo\n\nsecond\n',
+        'utf-8',
+      );
+
+      const ambiguous = runCli(
+        ['remember', '--kb=project', '--append=dup.md', '--append-section=## Foo', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'X',
+      );
+      expect(ambiguous.code).toBe(1);
+      expect(ambiguous.stderr).toContain('appears 2 times');
+
+      const second = runCli(
+        [
+          'remember',
+          '--kb=project',
+          '--append=dup.md',
+          '--append-section=## Foo',
+          '--occurrence=2',
+          '--stdin',
+          '--yes',
+        ],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'Picked.\n',
+      );
+      expect(second.code).toBe(0);
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toBe('## Foo\n\nfirst\n\n## Foo\n\nsecond\n\nPicked.\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses empty stdin under --append-section', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-section-empty-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const notePath = path.join(rootDir, 'project', 'a.md');
+      await fsp.mkdir(path.dirname(notePath), { recursive: true });
+      const original = '## Foo\n\nbody\n';
+      await fsp.writeFile(notePath, original, 'utf-8');
+
+      const r = runCli(
+        ['remember', '--kb=project', '--append=a.md', '--append-section=## Foo', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        '   \n',
+      );
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('empty content');
+      await expect(fsp.readFile(notePath, 'utf-8')).resolves.toBe(original);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves frontmatter byte-identical when appending into a section', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-section-fm-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const notePath = path.join(rootDir, 'project', 'fm.md');
+      await fsp.mkdir(path.dirname(notePath), { recursive: true });
+      await fsp.writeFile(
+        notePath,
+        '---\ntitle: Notes\ntags: [a, b]\n---\n## Foo\n\nbody\n',
+        'utf-8',
+      );
+
+      const r = runCli(
+        ['remember', '--kb=project', '--append=fm.md', '--append-section=## Foo', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        'Added.',
+      );
+      expect(r.code).toBe(0);
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toBe('---\ntitle: Notes\ntags: [a, b]\n---\n## Foo\n\nbody\n\nAdded.\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects write argv errors without touching stdin content', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-argv-'));
     try {

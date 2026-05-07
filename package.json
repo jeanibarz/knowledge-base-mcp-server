@@ -41,6 +41,7 @@
     "html-to-text": "^9.0.5",
     "js-yaml": "^4.1.1",
     "langchain": "^0.3.15",
+    "mdast-util-from-markdown": "^2.0.3",
     "minimatch": "^10.2.5",
     "pdf-parse": "^1.1.1",
     "pickleparser": "^0.2.1",
