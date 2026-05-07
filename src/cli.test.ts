@@ -47,6 +47,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.stdout).toContain('kb search');
     expect(r.stdout).toContain('kb remember');
     expect(r.stdout).toContain('kb capture');
+    expect(r.stdout).toContain('kb stale-check');
   });
 
   it('no args exits 0 with usage text', () => {
