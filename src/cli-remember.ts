@@ -333,17 +333,21 @@ async function appendSectionInExistingNote(
   const spec = parseHeadingSpec(headingSpec);
   const original = await fsp.readFile(documentPath, 'utf-8');
   const { content: rewritten } = appendSectionInDocument(original, spec, content, { occurrence });
-  await atomicWriteFile(documentPath, rewritten);
+  await atomicWriteFile(documentPath, rewritten, stat.mode);
 
   return path.relative(await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName), documentPath)
     .split(path.sep)
     .join('/');
 }
 
-async function atomicWriteFile(targetPath: string, data: string): Promise<void> {
+async function atomicWriteFile(targetPath: string, data: string, mode?: number): Promise<void> {
   const tmpPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}`;
-  const handle = await fsp.open(tmpPath, 'w');
+  const permissions = mode === undefined ? undefined : mode & 0o7777;
+  const handle = await fsp.open(tmpPath, 'w', permissions);
   try {
+    if (permissions !== undefined) {
+      await handle.chmod(permissions);
+    }
     await handle.writeFile(data, 'utf-8');
     await handle.sync();
   } finally {
