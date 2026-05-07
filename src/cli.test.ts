@@ -463,6 +463,135 @@ describe('kb list', () => {
   });
 });
 
+describe('kb list --describe (#140)', () => {
+  it('prints two-column name + heading description from README.md', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-list-describe-'));
+    try {
+      const eng = path.join(tempDir, 'engineering');
+      const personal = path.join(tempDir, 'personal');
+      await fsp.mkdir(eng);
+      await fsp.mkdir(personal);
+      await fsp.writeFile(
+        path.join(eng, 'README.md'),
+        '# Engineering notes\n\nlonger details below\n',
+      );
+      // personal: no README — should print the bare name with no trailing space.
+
+      const r = runCli(['list', '--describe'], {
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+
+      expect(r.code).toBe(0);
+      const lines = r.stdout.trimEnd().split('\n').sort();
+      expect(lines).toHaveLength(2);
+      const engLine = lines.find((l) => l.startsWith('engineering'));
+      const personalLine = lines.find((l) => l.startsWith('personal'));
+      expect(engLine).toMatch(/^engineering\s{3,}Engineering notes$/);
+      expect(personalLine).toBe('personal');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('-v is an alias for --describe', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-list-v-'));
+    try {
+      const kb = path.join(tempDir, 'k');
+      await fsp.mkdir(kb);
+      await fsp.writeFile(path.join(kb, 'README.md'), '# only-kb\n');
+
+      const r = runCli(['list', '-v'], {
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('only-kb');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--format=json --describe emits an array of {name, description}', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-list-json-'));
+    try {
+      const eng = path.join(tempDir, 'engineering');
+      const personal = path.join(tempDir, 'personal');
+      await fsp.mkdir(eng);
+      await fsp.mkdir(personal);
+      await fsp.writeFile(path.join(eng, 'README.md'), '# Engineering notes\n');
+
+      const r = runCli(['list', '--describe', '--format=json'], {
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+
+      expect(r.code).toBe(0);
+      const parsed = JSON.parse(r.stdout) as Array<{ name: string; description: string }>;
+      const byName = new Map(parsed.map((item) => [item.name, item.description]));
+      expect(byName.get('engineering')).toBe('Engineering notes');
+      expect(byName.get('personal')).toBe('');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--format=json without --describe emits {name}-only objects', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-list-json-namesonly-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'a'));
+
+      const r = runCli(['list', '--format=json'], {
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+
+      expect(r.code).toBe(0);
+      const parsed = JSON.parse(r.stdout) as Array<Record<string, unknown>>;
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0]).toEqual({ name: 'a' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unknown options with exit code 2', () => {
+    const r = runCli(['list', '--bogus'], {
+      KNOWLEDGE_BASES_ROOT_DIR: '/tmp',
+    });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("unknown option '--bogus'");
+  });
+
+  it('rejects invalid --format values with exit code 2', () => {
+    const r = runCli(['list', '--format=xml'], {
+      KNOWLEDGE_BASES_ROOT_DIR: '/tmp',
+    });
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('invalid --format');
+  });
+
+  it('plain `kb list` is unchanged (one bare name per line, no description)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-list-plain-'));
+    try {
+      const eng = path.join(tempDir, 'engineering');
+      await fsp.mkdir(eng);
+      await fsp.writeFile(path.join(eng, 'README.md'), '# would-be-description\n');
+
+      const r = runCli(['list'], {
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+
+      expect(r.code).toBe(0);
+      expect(r.stdout.trimEnd().split('\n')).toEqual(['engineering']);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('kb search — active-model resolution (RFC 013 §4.7)', () => {
   // RFC 013 supersedes the RFC-012 §4.7 model-mismatch check: each model lives
   // in its own ${PATH}/models/<id>/ subdir, so env-vs-active divergence no
