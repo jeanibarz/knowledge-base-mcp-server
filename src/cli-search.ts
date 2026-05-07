@@ -28,7 +28,7 @@ interface SearchArgs {
   stdin: boolean;
 }
 
-interface Staleness {
+export interface Staleness {
   indexMtime: string | null;
   modifiedFiles: number;
   newFiles: number;
@@ -224,7 +224,7 @@ async function computeStaleness(modelId: string): Promise<Staleness> {
   return { indexMtime, modifiedFiles: modified, newFiles: added };
 }
 
-function formatFreshnessFooter(s: Staleness, refreshed: boolean): string {
+export function formatFreshnessFooter(s: Staleness, refreshed: boolean): string {
   if (s.indexMtime === null) {
     return `> _Index not yet built. Run \`kb search --refresh\` to create it._`;
   }
@@ -233,6 +233,12 @@ function formatFreshnessFooter(s: Staleness, refreshed: boolean): string {
   }
   if (s.modifiedFiles === 0 && s.newFiles === 0) {
     return `> _Index up-to-date as of ${s.indexMtime}._`;
+  }
+  if (s.modifiedFiles === 0) {
+    return (
+      `> _${s.newFiles} new file(s) since ${s.indexMtime}; ` +
+      `run \`kb search --refresh\` to include them._`
+    );
   }
   return (
     `> _Index may be stale: ${s.modifiedFiles} modified, ${s.newFiles} new ` +

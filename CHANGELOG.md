@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — `kb search` freshness banner
+
+### Changed
+
+- **`kb search` no longer leads with "Index may be stale" when zero files have been modified.** When only new files have appeared since the last refresh (`modifiedFiles == 0 && newFiles > 0`), the banner now reads `_<N> new file(s) since <indexMtime>; run \`kb search --refresh\` to include them._` instead of `_Index may be stale: 0 modified, N new file(s)…_`. Existing indexed content hasn't shifted in that case, so leading with "may be stale" overstated the problem and trained agents to ignore the banner. The original "may be stale" wording is preserved unchanged when `modifiedFiles > 0`, since edited content can produce stale chunks. Closes #145.
+
 ## [Unreleased] — CLI `kb remember`
 
 ### Added
