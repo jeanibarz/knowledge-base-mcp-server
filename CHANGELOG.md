@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — `kb search` help clarifies cross-KB default
+
+### Changed
+
+- **`kb --help` now states that `--kb=<name>` is optional and defaults to searching every KB.** The previous text (`--kb=<name>           Scope to one knowledge base.`) read like the flag was required, leading agents to either skip `kb search` entirely (when they couldn't decide which KB to scope to) or burn an extra `kb list` call before searching. The new text — `Scope to one knowledge base. Omit to search ALL KBs (default).` — surfaces the affordance that already existed in `cli-search.ts` (omitting `--kb=` passes `undefined` to `similaritySearch`, which routes to the unscoped path).
+
 ## [Unreleased] — CLI `kb list --describe`
 
 ### Added

@@ -67,7 +67,7 @@ Usage:
   kb --help
 
 Search options:
-  --kb=<name>           Scope to one knowledge base.
+  --kb=<name>           Scope to one knowledge base. Omit to search ALL KBs (default).
   --model=<id>          Override active model for this call (RFC 013).
   --threshold=<float>   Max similarity score (default 2).
   --k=<int>             Top-K results (default 10).
