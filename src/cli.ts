@@ -32,7 +32,11 @@ import { runWhere } from './cli-where.js';
 const HELP = `kb — knowledge-base CLI (RFC 012 + RFC 013)
 
 Usage:
-  kb list                                 List available knowledge bases.
+  kb list [--describe|-v] [--format=md|json]
+                                           List available knowledge bases. With
+                                           --describe (alias -v) include a
+                                           one-line description sourced from
+                                           each KB's README.md.
   kb search <query> [opts]                Semantic search (read-only).
   kb search <query> --refresh             Also re-scan KB files (write path).
   kb search --stdin                       Read query from stdin.
@@ -122,7 +126,7 @@ export async function main(argv: string[]): Promise<number> {
   const rest = args.slice(1);
 
   if (sub === 'list') {
-    return runList();
+    return runList(rest);
   }
   if (sub === 'search') {
     return runSearch(rest);

@@ -23,6 +23,70 @@ export async function listKnowledgeBases(rootDir: string): Promise<string[]> {
   return entries.filter((entry) => !entry.startsWith('.'));
 }
 
+const KB_DESCRIPTION_MAX_LEN = 80;
+
+/**
+ * Extract a one-line description from a `README.md` body.
+ *
+ * Used by `kb list --describe` (#140) so the listing is self-documenting:
+ * each KB's own README — not a hand-edited side table — is the source of
+ * truth. The first `#`-style heading wins (any level, leading hashes
+ * stripped); if none exists, the first non-blank line is returned,
+ * truncated at 80 characters so a stray long paragraph cannot break
+ * column alignment.
+ *
+ * Returns the empty string for an empty file or content with no
+ * non-blank lines, so callers can treat "no description" uniformly.
+ */
+export function extractKbDescription(content: string): string {
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    const heading = /^\s*#+\s+(.+?)\s*$/.exec(line);
+    if (heading) {
+      return heading[1].trim();
+    }
+  }
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) {
+      return trimmed.length > KB_DESCRIPTION_MAX_LEN
+        ? trimmed.slice(0, KB_DESCRIPTION_MAX_LEN)
+        : trimmed;
+    }
+  }
+  return '';
+}
+
+/**
+ * Read `<rootDir>/<name>/README.md` and return a one-line description
+ * (`extractKbDescription`). Missing or unreadable READMEs surface as the
+ * empty string — `kb list --describe` is a read-only listing surface and
+ * a partial filesystem must not turn it into an error.
+ *
+ * Hidden / dot-prefixed names are rejected on the same grounds as
+ * `listKnowledgeBases` to keep the addressable surface aligned.
+ */
+export async function describeKnowledgeBase(
+  rootDir: string,
+  name: string,
+): Promise<string> {
+  if (name.length === 0 || name.startsWith('.') || hasPathSeparator(name)) {
+    return '';
+  }
+  const readmePath = path.join(rootDir, name, 'README.md');
+  let content: string;
+  try {
+    content = await fsp.readFile(readmePath, 'utf-8');
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR') {
+      return '';
+    }
+    throw error;
+  }
+  return extractKbDescription(content);
+}
+
 function hasPathSeparator(value: string): boolean {
   return value.includes('/') || value.includes('\\');
 }

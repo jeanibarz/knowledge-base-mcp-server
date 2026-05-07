@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — CLI `kb list --describe`
+
+### Added
+
+- **`kb list --describe` (alias `-v`).** Prints a one-line description per knowledge base alongside its name, sourced from each KB's own `README.md`. The first `#`-style heading wins (any level, leading hashes stripped); when no heading exists the first non-blank line is used, truncated at 80 characters so a stray long paragraph cannot break column alignment. Missing or unreadable READMEs surface as the empty string and the bare KB name is printed without trailing whitespace, so a partial filesystem cannot turn a listing into an error. Default md output is two-column padded (longest KB name + three spaces + description); `--format=json` emits `[{name, description}]` (or `[{name}]` without `--describe`). The bare `kb list` still prints one name per line so existing scripts that grep the listing keep working. Closes #140.
+
 ## [Unreleased] — CLI `kb where`
 
 ### Added
