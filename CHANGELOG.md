@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — CLI `kb stale-check`
+
+### Added
+
+- **`kb stale-check [--kb=<name>] [--no-cache] [--verbose]` CLI command.** Read-only drift detector that walks every `.md` / `.markdown` note across one or all knowledge bases and reports embedded references that no longer resolve. Extracts tilde-rooted absolute paths (`~/foo/bar`), bare http(s) URLs, and markdown-link targets (`[label](url-or-relative-path.md)`); dotfile entries and the `.faiss/` index dir are skipped to match the embedding walker. Path checks use `fs.lstat` then `fs.stat` so broken symlinks surface as `MISSING` instead of silently passing. URL checks issue `HEAD` first and fall back to `GET` (with `Range: bytes=0-0`) on 405/501 from servers that reject `HEAD`; results are cached for 24 h under `<KNOWLEDGE_BASES_ROOT_DIR>/.stale-check-cache.json` so consecutive runs don't replay the network. Output groups stale references per file with line numbers and ends with `Summary: <N> stale reference(s) in <M> file(s) across <K> KB(s).`. Closes #142.
+
 ## [Unreleased] — CLI `kb capture`
 
 ### Added

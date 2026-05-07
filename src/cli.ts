@@ -24,6 +24,7 @@ import { runList } from './cli-list.js';
 import { runModels } from './cli-models.js';
 import { runRemember } from './cli-remember.js';
 import { runSearch } from './cli-search.js';
+import { runStaleCheck } from './cli-stale-check.js';
 
 // ----- Entry point -----------------------------------------------------------
 
@@ -45,6 +46,10 @@ Usage:
                                            Run a command and append its stdout
                                            to a KB note as a fenced block.
   kb compare <query> <a> <b>              Side-by-side rank/score table.
+  kb stale-check [--kb=<name>] [--no-cache] [--verbose]
+                                           Scan markdown notes for path / URL
+                                           references that no longer resolve.
+                                           Strictly read-only.
   kb models list                          List registered embedding models.
   kb models add <provider> <model>        Register a new model + ingest.
   kb models set-active <id>               Change the default model.
@@ -128,6 +133,9 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (sub === 'compare') {
     return runCompare(rest);
+  }
+  if (sub === 'stale-check') {
+    return runStaleCheck(rest);
   }
 
   process.stderr.write(`kb: unknown subcommand '${sub}'\n${HELP}`);
