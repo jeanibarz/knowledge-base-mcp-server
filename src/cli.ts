@@ -25,6 +25,7 @@ import { runModels } from './cli-models.js';
 import { runRemember } from './cli-remember.js';
 import { runSearch } from './cli-search.js';
 import { runStaleCheck } from './cli-stale-check.js';
+import { runWhere } from './cli-where.js';
 
 // ----- Entry point -----------------------------------------------------------
 
@@ -50,6 +51,10 @@ Usage:
                                            Scan markdown notes for path / URL
                                            references that no longer resolve.
                                            Strictly read-only.
+  kb where --topic=<query> [--threshold=<float>] [--k=<int>] [--format=md|json]
+                                           One-shot recommendation: which KB
+                                           and which file should I update for
+                                           the given topic? Strictly read-only.
   kb models list                          List registered embedding models.
   kb models add <provider> <model>        Register a new model + ingest.
   kb models set-active <id>               Change the default model.
@@ -136,6 +141,9 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (sub === 'stale-check') {
     return runStaleCheck(rest);
+  }
+  if (sub === 'where') {
+    return runWhere(rest);
   }
 
   process.stderr.write(`kb: unknown subcommand '${sub}'\n${HELP}`);
