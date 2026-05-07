@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — CLI `kb remember` semantic preflight (default ON)
+
+### Added
+
+- **Semantic preflight guard for `kb remember` writes — default ON.** Before any `--title` / `--append` / `--append-section` write, the proposed stdin content is run through `FaissIndexManager.similaritySearch` (read-only, no index mutation) against the target KB. When chunks under `--similar-threshold=<float>` (default `1.0`; lower FAISS distance = closer match — same convention as `kb where`) exist, the write is refused and the CLI exits `3` (a new "blocked by similarity guard" code, distinct from `1` runtime / `2` argv). JSON output (default, `--format=json`) emits `{action: "similarity-check", write_performed: false, decision_hint: {summary, recommended_agent_actions}, candidates: [{knowledge_base, relative_path, score, chunk, suggested_invocation}]}` so an agent can decide among "give up", "refine the existing note", or "rerun with `--force`". Markdown output (`--format=md`) prints a human-readable variant with the same fields. `--similar-k=<int>` (default `5`) bounds candidate count. `--force` overrides the guard and writes anyway; the success JSON then includes `similarity_check: {performed: true, candidates_found: N, overridden_with_force: true, candidates: [...]}` so the override stays auditable. `--no-check-similar` disables the guard for one call; `--check-similar` (now redundant by default) explicitly opts in to strict mode where index-load failures surface as exit-1/2 errors instead of degrading to a stderr warning. The default-on path tolerates fresh installs: when no model is registered or the index hasn't been built, the CLI prints a one-line warning to stderr ("similarity guard skipped (...); run `kb search --refresh` or `kb models add ...` to enable preflight, or pass --no-check-similar to silence this notice.") and proceeds with the write. Closes #154.
+
 ## [Unreleased] — CLI `kb remember --append-section`
 
 ### Added

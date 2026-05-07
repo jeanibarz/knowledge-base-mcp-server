@@ -7,8 +7,28 @@ import { getFilesRecursively } from './file-utils.js';
 import { filterIngestablePaths } from './ingest-filter.js';
 import { resolveKbRelativePath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
-import { loadManagerForModel } from './cli-shared.js';
+import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { appendSectionInDocument, parseHeadingSpec } from './markdown-section.js';
+import {
+  DEFAULT_SIMILAR_K,
+  DEFAULT_SIMILAR_THRESHOLD,
+  EXIT_BLOCKED_BY_SIMILARITY_GUARD,
+  buildBlockedJson,
+  candidatesFromResults,
+  formatBlockedMarkdown,
+  type SimilarCandidate,
+} from './cli-remember-similarity.js';
+
+export {
+  EXIT_BLOCKED_BY_SIMILARITY_GUARD,
+  buildBlockedJson,
+  candidatesFromResults,
+  formatBlockedMarkdown,
+} from './cli-remember-similarity.js';
+export type {
+  SimilarCandidate,
+  PreflightDecisionHint,
+} from './cli-remember-similarity.js';
 
 interface RememberArgs {
   kb?: string;
@@ -20,6 +40,24 @@ interface RememberArgs {
   stdin: boolean;
   yes: boolean;
   refresh: boolean;
+  /**
+   * Whether the preflight semantic-similarity guard runs. Default ON
+   * (issue #154 default-on decision). `--no-check-similar` opts out.
+   */
+  checkSimilar: boolean;
+  /**
+   * True iff the user explicitly passed `--check-similar` or
+   * `--no-check-similar`. Distinguishes "I rely on this guard" from "the
+   * default fired" so that an index-load failure can degrade to a stderr
+   * warning in the implicit case (don't block fresh-install writes) but
+   * exits non-zero when the user asked for the guard by name.
+   */
+  checkSimilarExplicit: boolean;
+  similarThreshold: number;
+  similarK: number;
+  force: boolean;
+  format: 'md' | 'json';
+  model?: string;
 }
 
 interface Suggestion {
@@ -53,6 +91,39 @@ export async function runRemember(rest: string[]): Promise<number> {
   } catch (err) {
     process.stderr.write(`kb remember: failed to read stdin: ${(err as Error).message}\n`);
     return 1;
+  }
+
+  let preflight: PreflightOutcome | null = null;
+  if (parsed.checkSimilar) {
+    try {
+      preflight = await runPreflight(content, parsed);
+    } catch (err) {
+      if (parsed.checkSimilarExplicit) {
+        // User asked for the guard by name; surface the failure clearly.
+        if (err instanceof ActiveModelResolutionError) {
+          process.stderr.write(`kb remember: ${err.message}\n`);
+          return 2;
+        }
+        process.stderr.write(
+          `kb remember: similarity preflight failed: ${(err as Error).message}\n` +
+          `Hint: run \`kb search --refresh\` to rebuild the index, or \`kb models add ...\` if no model is registered.\n`,
+        );
+        return 1;
+      }
+      // Default-on path: an unconfigured / stale / missing index must not
+      // block a write the user did not gate on the guard. Warn and proceed.
+      process.stderr.write(
+        `kb remember: similarity guard skipped (${(err as Error).message}). ` +
+        `Run \`kb search --refresh\` or \`kb models add ...\` to enable preflight, ` +
+        `or pass --no-check-similar to silence this notice.\n`,
+      );
+      preflight = null;
+    }
+
+    if (preflight !== null && preflight.candidates.length > 0 && !parsed.force) {
+      writeBlockedOutput(parsed, preflight);
+      return EXIT_BLOCKED_BY_SIMILARITY_GUARD;
+    }
   }
 
   let relativePath: string;
@@ -92,27 +163,97 @@ export async function runRemember(rest: string[]): Promise<number> {
     }
   }
 
-  process.stdout.write(`${JSON.stringify({
+  const summary: Record<string, unknown> = {
     knowledge_base_name: parsed.kb,
     path: relativePath,
     action,
     refreshed: parsed.refresh,
-  }, null, 2)}\n`);
+  };
+  if (preflight !== null) {
+    summary.similarity_check = {
+      performed: true,
+      candidates_found: preflight.candidates.length,
+      ...(preflight.candidates.length > 0
+        ? { overridden_with_force: true, candidates: preflight.candidates }
+        : {}),
+    };
+  }
+  process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return 0;
 }
 
-function parseRememberArgs(rest: string[]): RememberArgs {
+interface PreflightOutcome {
+  candidates: SimilarCandidate[];
+  threshold: number;
+  k: number;
+}
+
+async function runPreflight(content: string, args: RememberArgs): Promise<PreflightOutcome> {
+  if (content.trim() === '') {
+    // Empty proposed content cannot be meaningfully embedded; do not block,
+    // but downstream write paths may still refuse it (e.g. --append-section).
+    return { candidates: [], threshold: args.similarThreshold, k: args.similarK };
+  }
+
+  await FaissIndexManager.bootstrapLayout();
+  const activeModelId = await resolveActiveModel({ explicitOverride: args.model });
+  const manager = await loadManagerForModel(activeModelId);
+  await loadWithJsonRetry(manager);
+
+  const results = await manager.similaritySearch(
+    content,
+    args.similarK,
+    args.similarThreshold,
+    args.kb,
+  );
+
+  return {
+    candidates: candidatesFromResults(results, args.kb!),
+    threshold: args.similarThreshold,
+    k: args.similarK,
+  };
+}
+
+function writeBlockedOutput(args: RememberArgs, preflight: PreflightOutcome): void {
+  if (args.format === 'md') {
+    process.stdout.write(formatBlockedMarkdown(preflight.candidates));
+    process.stdout.write('\n');
+    return;
+  }
+  process.stdout.write(`${JSON.stringify(buildBlockedJson(preflight.candidates), null, 2)}\n`);
+}
+
+export function parseRememberArgs(rest: string[]): RememberArgs {
   const out: RememberArgs = {
     suggest: false,
     stdin: false,
     yes: false,
     refresh: false,
+    // Default ON (issue #154): writes run the guard unless the caller
+    // explicitly opts out with --no-check-similar.
+    checkSimilar: true,
+    checkSimilarExplicit: false,
+    similarThreshold: DEFAULT_SIMILAR_THRESHOLD,
+    similarK: DEFAULT_SIMILAR_K,
+    force: false,
+    format: 'json',
   };
   for (const raw of rest) {
     if (raw === '--suggest') { out.suggest = true; continue; }
     if (raw === '--stdin') { out.stdin = true; continue; }
     if (raw === '--yes') { out.yes = true; continue; }
     if (raw === '--refresh') { out.refresh = true; continue; }
+    if (raw === '--check-similar') {
+      out.checkSimilar = true;
+      out.checkSimilarExplicit = true;
+      continue;
+    }
+    if (raw === '--no-check-similar') {
+      out.checkSimilar = false;
+      out.checkSimilarExplicit = true;
+      continue;
+    }
+    if (raw === '--force') { out.force = true; continue; }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--title=')) { out.title = raw.slice('--title='.length); continue; }
     if (raw.startsWith('--append=')) { out.append = raw.slice('--append='.length); continue; }
@@ -127,6 +268,36 @@ function parseRememberArgs(rest: string[]): RememberArgs {
         throw new Error(`--occurrence must be a positive integer; got ${JSON.stringify(value)}`);
       }
       out.occurrence = parsedNum;
+      continue;
+    }
+    if (raw.startsWith('--similar-threshold=')) {
+      const value = raw.slice('--similar-threshold='.length);
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new Error(`--similar-threshold must be a positive number; got ${JSON.stringify(value)}`);
+      }
+      out.similarThreshold = n;
+      continue;
+    }
+    if (raw.startsWith('--similar-k=')) {
+      const value = raw.slice('--similar-k='.length);
+      const n = Number(value);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`--similar-k must be a positive integer; got ${JSON.stringify(value)}`);
+      }
+      out.similarK = n;
+      continue;
+    }
+    if (raw.startsWith('--format=')) {
+      const value = raw.slice('--format='.length);
+      if (value !== 'md' && value !== 'json') {
+        throw new Error(`--format must be md or json; got ${JSON.stringify(value)}`);
+      }
+      out.format = value;
+      continue;
+    }
+    if (raw.startsWith('--model=')) {
+      out.model = raw.slice('--model='.length);
       continue;
     }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
@@ -155,6 +326,12 @@ function validateRememberArgs(args: RememberArgs): void {
     if (args.refresh) {
       throw new Error('--suggest cannot be combined with --refresh');
     }
+    if (args.checkSimilarExplicit && args.checkSimilar) {
+      throw new Error('--suggest cannot be combined with --check-similar');
+    }
+    if (args.force) {
+      throw new Error('--suggest cannot be combined with --force');
+    }
     return;
   }
 
@@ -163,6 +340,9 @@ function validateRememberArgs(args: RememberArgs): void {
   }
   if (!args.yes) {
     throw new Error('writes require --yes');
+  }
+  if (args.force && !args.checkSimilar) {
+    throw new Error('--force has no effect without --check-similar');
   }
   if (args.appendSection !== undefined) {
     if (args.appendSection.trim() === '') {
