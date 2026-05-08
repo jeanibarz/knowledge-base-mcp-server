@@ -2123,7 +2123,7 @@ describe('FaissIndexManager ingest — PDF + HTML loaders (issue #46)', () => {
 
 describe('liftFrontmatter (RFC 011 §5.4.2)', () => {
   it('lifts whitelisted keys verbatim and coerces relevance_score via parseInt', async () => {
-    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const { liftFrontmatter } = await import('./frontmatter-lift.js');
     const result = liftFrontmatter(
       {
         arxiv_id: '2604.21221',
@@ -2146,7 +2146,7 @@ describe('liftFrontmatter (RFC 011 §5.4.2)', () => {
   });
 
   it('lifts the llm-as-judge whitelist keys', async () => {
-    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const { liftFrontmatter } = await import('./frontmatter-lift.js');
     const result = liftFrontmatter(
       {
         judge_method: 'single-LLM ref-free',
@@ -2163,7 +2163,7 @@ describe('liftFrontmatter (RFC 011 §5.4.2)', () => {
   });
 
   it('routes non-whitelisted string keys into extras', async () => {
-    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const { liftFrontmatter } = await import('./frontmatter-lift.js');
     const result = liftFrontmatter(
       {
         arxiv_id: '2604.1',
@@ -2179,7 +2179,7 @@ describe('liftFrontmatter (RFC 011 §5.4.2)', () => {
   });
 
   it('drops relevance_score when non-numeric and logs at debug level', async () => {
-    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const { liftFrontmatter } = await import('./frontmatter-lift.js');
     const loggerModule = await import('./logger.js');
     const debugSpy = jest.spyOn(loggerModule.logger, 'debug').mockImplementation(() => {});
 
@@ -2197,7 +2197,7 @@ describe('liftFrontmatter (RFC 011 §5.4.2)', () => {
   });
 
   it('drops non-string values and logs at debug level (YAML arrays, nested maps)', async () => {
-    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const { liftFrontmatter } = await import('./frontmatter-lift.js');
     const loggerModule = await import('./logger.js');
     const debugSpy = jest.spyOn(loggerModule.logger, 'debug').mockImplementation(() => {});
 
@@ -2217,7 +2217,7 @@ describe('liftFrontmatter (RFC 011 §5.4.2)', () => {
   });
 
   it('ignores `tags` — it is handled by the sibling metadata.tags field', async () => {
-    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const { liftFrontmatter } = await import('./frontmatter-lift.js');
     const result = liftFrontmatter(
       { arxiv_id: '2604.1', tags: ['kv-cache'] },
       '/kb/notes/paper.md',
@@ -2228,7 +2228,7 @@ describe('liftFrontmatter (RFC 011 §5.4.2)', () => {
   });
 
   it('returns undefined when the parsed frontmatter contains no liftable fields', async () => {
-    const { liftFrontmatter } = await import('./FaissIndexManager.js');
+    const { liftFrontmatter } = await import('./frontmatter-lift.js');
     expect(liftFrontmatter({}, '/kb/notes/paper.md')).toBeUndefined();
     // Non-string-only input: everything dropped → undefined.
     expect(liftFrontmatter({ some_array: ['a'] }, '/kb/notes/paper.md')).toBeUndefined();
@@ -2259,7 +2259,7 @@ describe('detectSiblingPdfPath (RFC 011 §5.3.4)', () => {
 
     process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
     jest.resetModules();
-    const { detectSiblingPdfPath } = await import('./FaissIndexManager.js');
+    const { detectSiblingPdfPath } = await import('./frontmatter-lift.js');
     const result = detectSiblingPdfPath(
       path.join(kbRoot, 'notes', '2604.21221.md'),
       kbName,
@@ -2277,7 +2277,7 @@ describe('detectSiblingPdfPath (RFC 011 §5.3.4)', () => {
 
     process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
     jest.resetModules();
-    const { detectSiblingPdfPath } = await import('./FaissIndexManager.js');
+    const { detectSiblingPdfPath } = await import('./frontmatter-lift.js');
     const result = detectSiblingPdfPath(path.join(kbRoot, 'paper.md'), kbName);
     expect(result).toBe('paper.pdf');
   });
@@ -2291,7 +2291,7 @@ describe('detectSiblingPdfPath (RFC 011 §5.3.4)', () => {
 
     process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
     jest.resetModules();
-    const { detectSiblingPdfPath } = await import('./FaissIndexManager.js');
+    const { detectSiblingPdfPath } = await import('./frontmatter-lift.js');
     const result = detectSiblingPdfPath(
       path.join(kbRoot, 'notes', 'paper.md'),
       kbName,
@@ -2318,7 +2318,7 @@ describe('detectSiblingPdfPath (RFC 011 §5.3.4)', () => {
 
     process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
     jest.resetModules();
-    const { detectSiblingPdfPath } = await import('./FaissIndexManager.js');
+    const { detectSiblingPdfPath } = await import('./frontmatter-lift.js');
     const result = detectSiblingPdfPath(
       path.join(kbRoot, 'notes', 'paper.md'),
       kbName,
@@ -2347,7 +2347,7 @@ describe('detectSiblingPdfPath (RFC 011 §5.3.4)', () => {
 
     process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
     jest.resetModules();
-    const { detectSiblingPdfPath } = await import('./FaissIndexManager.js');
+    const { detectSiblingPdfPath } = await import('./frontmatter-lift.js');
     const result = detectSiblingPdfPath(
       path.join(kbRoot, 'paper.md'),
       kbName,
