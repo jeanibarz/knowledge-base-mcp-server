@@ -2,10 +2,13 @@ import { describe, expect, it } from '@jest/globals';
 import {
   AutoThresholdDecision,
   computeAutoThreshold,
+  formatLockContentionJson,
+  formatLockContentionStderr,
   formatAutoThresholdHeader,
   formatFreshnessFooter,
   Staleness,
 } from './cli-search.js';
+import { WriteLockContentionError } from './write-lock.js';
 
 const MTIME = '2026-05-03T15:33:56.964Z';
 
@@ -48,6 +51,77 @@ describe('formatFreshnessFooter', () => {
     expect(formatFreshnessFooter(s, false)).toBe(
       `> _Index may be stale: 2 modified, 5 new file(s) since ${MTIME}. Run \`kb search --refresh\` to update._`,
     );
+  });
+
+  it('reports scoped stale counts separately from global counts', () => {
+    const s: Staleness = {
+      indexMtime: MTIME,
+      modifiedFiles: 0,
+      newFiles: 0,
+      scope: { kb: 'agent-task-lessons', modifiedFiles: 0, newFiles: 0 },
+      global: { modifiedFiles: 2, newFiles: 2016 },
+    };
+    expect(formatFreshnessFooter(s, false)).toBe(
+      `> _Index up-to-date for KB "agent-task-lessons" as of ${MTIME}. Global index drift outside this scope: 2 modified, 2016 new file(s)._`,
+    );
+  });
+
+  it('keeps scoped stale guidance scoped to the selected KB', () => {
+    const s: Staleness = {
+      indexMtime: MTIME,
+      modifiedFiles: 1,
+      newFiles: 3,
+      scope: { kb: 'agent-task-lessons', modifiedFiles: 1, newFiles: 3 },
+      global: { modifiedFiles: 7, newFiles: 11 },
+    };
+    expect(formatFreshnessFooter(s, false)).toBe(
+      `> _Index may be stale for KB "agent-task-lessons": 1 modified, 3 new file(s) since ${MTIME}. Run \`kb search --kb=agent-task-lessons --refresh\` to update this scope. Global index drift: 7 modified, 11 new file(s)._`,
+    );
+  });
+
+  it('reports scoped refreshes without hiding global drift', () => {
+    const s: Staleness = {
+      indexMtime: MTIME,
+      modifiedFiles: 0,
+      newFiles: 0,
+      scope: { kb: 'agent-task-lessons', modifiedFiles: 0, newFiles: 0 },
+      global: { modifiedFiles: 0, newFiles: 2016 },
+    };
+    expect(formatFreshnessFooter(s, true)).toBe(
+      `> _Index refreshed for KB "agent-task-lessons" at ${MTIME}. Global index drift outside this scope: 0 modified, 2016 new file(s)._`,
+    );
+  });
+});
+
+describe('lock contention output', () => {
+  it('emits parseable JSON for --format=json callers', () => {
+    const err = new WriteLockContentionError({
+      resource: '/tmp/model',
+      lockPath: '/tmp/model/.kb-write.lock',
+      causeMessage: 'Lock file is already being held',
+    });
+    const parsed = JSON.parse(formatLockContentionJson(err));
+    expect(parsed).toEqual({
+      error: {
+        code: 'REFRESH_LOCK_BUSY',
+        message: 'Refresh lock is already held for this model. Retry after the current refresh finishes.',
+        lock_path: '/tmp/model/.kb-write.lock',
+        resource: '/tmp/model',
+        retry_hint: 'Retry in a few seconds; only one kb search --refresh writer may run per model at a time.',
+      },
+    });
+  });
+
+  it('prints retry guidance for human-mode stderr', () => {
+    const err = new WriteLockContentionError({
+      resource: '/tmp/model',
+      lockPath: '/tmp/model/.kb-write.lock',
+      causeMessage: 'Lock file is already being held',
+    });
+    const out = formatLockContentionStderr(err);
+    expect(out).toContain('refresh lock is busy');
+    expect(out).toContain('Retry in a few seconds');
+    expect(out).toContain('/tmp/model/.kb-write.lock');
   });
 });
 

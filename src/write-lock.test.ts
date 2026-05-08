@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import * as properLockfile from 'proper-lockfile';
 
 // All env state is read at module load by config.ts → so each test resets
 // modules and re-imports write-lock.ts after setting env. Pattern matches
@@ -77,6 +78,25 @@ describe('withWriteLock', () => {
 
     // No stranded lock.
     await expect(fsp.stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('surfaces exhausted contention as a structured error', async () => {
+    jest.resetModules();
+    const { withWriteLock, WriteLockContentionError } = await import('./write-lock.js');
+
+    const release = await properLockfile.lock(tempDir, { lockfilePath: lockPath });
+    try {
+      await expect(withWriteLock(tempDir, async () => undefined))
+        .rejects.toMatchObject({
+          code: 'REFRESH_LOCK_BUSY',
+          lockPath,
+          resource: tempDir,
+        });
+      await expect(withWriteLock(tempDir, async () => undefined))
+        .rejects.toBeInstanceOf(WriteLockContentionError);
+    } finally {
+      await release();
+    }
   });
 
   it('isolates per-resource: two different resources do not contend (RFC 013 M1+M2 prep)', async () => {

@@ -12,7 +12,7 @@ import {
 } from './config.js';
 import { formatRetrievalAsJson, formatRetrievalAsMarkdown } from './formatter.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
-import { withWriteLock } from './write-lock.js';
+import { withWriteLock, WriteLockContentionError } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 
 interface SearchArgs {
@@ -31,6 +31,17 @@ export interface Staleness {
   indexMtime: string | null;
   modifiedFiles: number;
   newFiles: number;
+  scope?: StalenessScope;
+  global?: StalenessCounts;
+}
+
+export interface StalenessCounts {
+  modifiedFiles: number;
+  newFiles: number;
+}
+
+export interface StalenessScope extends StalenessCounts {
+  kb: string;
 }
 
 export interface AutoThresholdDecision {
@@ -96,6 +107,14 @@ export async function runSearch(rest: string[]): Promise<number> {
       await loadWithJsonRetry(manager);
     }
   } catch (err) {
+    if (err instanceof WriteLockContentionError) {
+      if (parsed.format === 'json') {
+        process.stdout.write(formatLockContentionJson(err));
+      } else {
+        process.stderr.write(formatLockContentionStderr(err));
+      }
+      return 1;
+    }
     process.stderr.write(`kb search: ${(err as Error).message}\n`);
     return 1;
   }
@@ -125,16 +144,45 @@ export async function runSearch(rest: string[]): Promise<number> {
     return 1;
   }
 
-  const staleness = await computeStaleness(activeModelId);
+  const staleness = await computeStaleness(activeModelId, parsed.kb);
 
   if (parsed.format === 'json') {
     const body = formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
+    const effectiveCounts = parsed.refresh
+      ? { modifiedFiles: 0, newFiles: 0 }
+      : { modifiedFiles: staleness.modifiedFiles, newFiles: staleness.newFiles };
+    const globalCounts = staleness.global ?? {
+      modifiedFiles: staleness.modifiedFiles,
+      newFiles: staleness.newFiles,
+    };
+    const scopedCounts = staleness.scope
+      ? {
+          modifiedFiles: parsed.refresh ? 0 : staleness.scope.modifiedFiles,
+          newFiles: parsed.refresh ? 0 : staleness.scope.newFiles,
+        }
+      : null;
+    const globalCountsForPayload = parsed.refresh && !parsed.kb
+      ? { modifiedFiles: 0, newFiles: 0 }
+      : globalCounts;
     const payload = {
       results: body,
       index_mtime: staleness.indexMtime,
-      stale: parsed.refresh ? false : staleness.modifiedFiles + staleness.newFiles > 0,
-      modified_files: parsed.refresh ? 0 : staleness.modifiedFiles,
-      new_files: parsed.refresh ? 0 : staleness.newFiles,
+      stale: hasStaleCounts(effectiveCounts),
+      modified_files: effectiveCounts.modifiedFiles,
+      new_files: effectiveCounts.newFiles,
+      global_stale: hasStaleCounts(globalCountsForPayload),
+      global_modified_files: globalCountsForPayload.modifiedFiles,
+      global_new_files: globalCountsForPayload.newFiles,
+      ...(staleness.scope && scopedCounts
+        ? {
+            scope: {
+              kb: staleness.scope.kb,
+              stale: hasStaleCounts(scopedCounts),
+              modified_files: scopedCounts.modifiedFiles,
+              new_files: scopedCounts.newFiles,
+            },
+          }
+        : {}),
       ...(autoDecision !== null
         ? {
             auto_threshold: {
@@ -199,60 +247,104 @@ function parseSearchArgs(rest: string[]): SearchArgs {
   return out;
 }
 
-async function computeStaleness(modelId: string): Promise<Staleness> {
+export async function computeStaleness(modelId: string, scopedKb?: string): Promise<Staleness> {
   const binaryPath = await resolveFaissIndexBinaryPath(modelId);
   if (binaryPath === null) {
-    return { indexMtime: null, modifiedFiles: 0, newFiles: 0 };
+    return emptyStaleness(null, scopedKb);
   }
   let indexStat;
   try {
     indexStat = await fsp.stat(binaryPath);
   } catch {
-    return { indexMtime: null, modifiedFiles: 0, newFiles: 0 };
+    return emptyStaleness(null, scopedKb);
   }
   const indexMtimeMs = indexStat.mtimeMs;
   const indexMtime = new Date(indexMtimeMs).toISOString();
 
-  let modified = 0;
-  let added = 0;
   let kbs: string[];
   try {
     kbs = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
   } catch {
-    return { indexMtime, modifiedFiles: 0, newFiles: 0 };
+    return emptyStaleness(indexMtime, scopedKb);
   }
 
   const enumerations = await enumerateIngestableKbFiles(KNOWLEDGE_BASES_ROOT_DIR, kbs);
+  const global = await countStaleness(enumerations, indexMtimeMs);
+  if (!scopedKb) {
+    return { indexMtime, modifiedFiles: global.modifiedFiles, newFiles: global.newFiles };
+  }
 
+  const scopedEnumeration = enumerations.filter((entry) => entry.kbName === scopedKb);
+  const scopeCounts = await countStaleness(scopedEnumeration, indexMtimeMs);
+  return {
+    indexMtime,
+    modifiedFiles: scopeCounts.modifiedFiles,
+    newFiles: scopeCounts.newFiles,
+    scope: { kb: scopedKb, ...scopeCounts },
+    global,
+  };
+}
+
+async function countStaleness(
+  enumerations: Awaited<ReturnType<typeof enumerateIngestableKbFiles>>,
+  indexMtimeMs: number,
+): Promise<StalenessCounts> {
+  let modifiedFiles = 0;
+  let newFiles = 0;
   for (const { kbPath, filePaths } of enumerations) {
-    for (const f of filePaths) {
+    for (const filePath of filePaths) {
       try {
-        const st = await fsp.stat(f);
-        if (st.mtimeMs > indexMtimeMs) modified += 1;
+        const st = await fsp.stat(filePath);
+        if (st.mtimeMs > indexMtimeMs) modifiedFiles += 1;
       } catch {
         // file vanished between the walker and stat; ignore it
       }
     }
 
-    const sidecarDir = path.join(kbPath, '.index');
-    let sidecarCount = 0;
-    try {
-      const sidecars = await fsp.readdir(sidecarDir);
-      sidecarCount = sidecars.length;
-    } catch {
-      // .index missing; count difference below covers this case
-    }
+    const sidecarCount = await countSidecarFiles(path.join(kbPath, '.index'));
     if (filePaths.length > sidecarCount) {
-      added += filePaths.length - sidecarCount;
+      newFiles += filePaths.length - sidecarCount;
     }
   }
+  return { modifiedFiles, newFiles };
+}
 
-  return { indexMtime, modifiedFiles: modified, newFiles: added };
+async function countSidecarFiles(dir: string): Promise<number> {
+  let entries;
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let count = 0;
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      count += await countSidecarFiles(entryPath);
+    } else if (entry.isFile()) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function emptyStaleness(indexMtime: string | null, scopedKb?: string): Staleness {
+  if (!scopedKb) return { indexMtime, modifiedFiles: 0, newFiles: 0 };
+  return {
+    indexMtime,
+    modifiedFiles: 0,
+    newFiles: 0,
+    scope: { kb: scopedKb, modifiedFiles: 0, newFiles: 0 },
+    global: { modifiedFiles: 0, newFiles: 0 },
+  };
 }
 
 export function formatFreshnessFooter(s: Staleness, refreshed: boolean): string {
   if (s.indexMtime === null) {
     return `> _Index not yet built. Run \`kb search --refresh\` to create it._`;
+  }
+  if (s.scope) {
+    return formatScopedFreshnessFooter(s, refreshed);
   }
   if (refreshed) {
     return `> _Index refreshed at ${s.indexMtime}._`;
@@ -269,6 +361,53 @@ export function formatFreshnessFooter(s: Staleness, refreshed: boolean): string 
   return (
     `> _Index may be stale: ${s.modifiedFiles} modified, ${s.newFiles} new ` +
     `file(s) since ${s.indexMtime}. Run \`kb search --refresh\` to update._`
+  );
+}
+
+function formatScopedFreshnessFooter(s: Staleness, refreshed: boolean): string {
+  const scope = s.scope!;
+  const global = s.global ?? { modifiedFiles: s.modifiedFiles, newFiles: s.newFiles };
+  const globalText = `${global.modifiedFiles} modified, ${global.newFiles} new file(s)`;
+  if (refreshed) {
+    if (global.modifiedFiles === 0 && global.newFiles === 0) {
+      return `> _Index refreshed for KB "${scope.kb}" at ${s.indexMtime}; global index drift is also 0 modified, 0 new file(s)._`;
+    }
+    return `> _Index refreshed for KB "${scope.kb}" at ${s.indexMtime}. Global index drift outside this scope: ${globalText}._`;
+  }
+  if (scope.modifiedFiles === 0 && scope.newFiles === 0) {
+    if (global.modifiedFiles === 0 && global.newFiles === 0) {
+      return `> _Index up-to-date for KB "${scope.kb}" as of ${s.indexMtime}; global index drift is also 0 modified, 0 new file(s)._`;
+    }
+    return `> _Index up-to-date for KB "${scope.kb}" as of ${s.indexMtime}. Global index drift outside this scope: ${globalText}._`;
+  }
+  return (
+    `> _Index may be stale for KB "${scope.kb}": ${scope.modifiedFiles} modified, ${scope.newFiles} new ` +
+    `file(s) since ${s.indexMtime}. Run \`kb search --kb=${scope.kb} --refresh\` to update this scope. ` +
+    `Global index drift: ${globalText}._`
+  );
+}
+
+function hasStaleCounts(counts: StalenessCounts): boolean {
+  return counts.modifiedFiles + counts.newFiles > 0;
+}
+
+export function formatLockContentionJson(err: WriteLockContentionError): string {
+  return `${JSON.stringify({
+    error: {
+      code: err.code,
+      message: err.message,
+      lock_path: err.lockPath,
+      resource: err.resource,
+      retry_hint: 'Retry in a few seconds; only one kb search --refresh writer may run per model at a time.',
+    },
+  }, null, 2)}\n`;
+}
+
+export function formatLockContentionStderr(err: WriteLockContentionError): string {
+  return (
+    `kb search: refresh lock is busy for this model. Retry in a few seconds; ` +
+    `only one \`kb search --refresh\` writer may run per model at a time. ` +
+    `Lock: ${err.lockPath}\n`
   );
 }
 
