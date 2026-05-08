@@ -207,6 +207,19 @@ describe('provider construction', () => {
     });
   });
 
+  it('keeps exact slash-containing HuggingFace model names in no-arg construction', async () => {
+    await seedTempEnv();
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_MODEL_NAME = 'BAAI/bge-base-en-v1.5';
+
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+
+    expect(manager.embeddingProvider).toBe('huggingface');
+    expect(manager.modelName).toBe('BAAI/bge-base-en-v1.5');
+    expect(manager.modelId).toBe('huggingface__BAAI-bge-base-en-v1.5');
+  });
+
   it('throws when HUGGINGFACE_API_KEY is unset for the HuggingFace provider', async () => {
     await seedTempEnv();
     process.env.EMBEDDING_PROVIDER = 'huggingface';

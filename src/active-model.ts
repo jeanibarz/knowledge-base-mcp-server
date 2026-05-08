@@ -359,8 +359,20 @@ export async function resolveActiveModel(opts: ResolveOptions = {}): Promise<str
   return envId;
 }
 
-/** Resolve the env-var-derived candidate id without registration check. */
-export function computeLegacyEnvDerivedId(): string {
+export interface LegacyEnvModelSpec {
+  provider: EmbeddingProvider;
+  modelName: string;
+  modelId: string;
+}
+
+/**
+ * Resolve the env-var-derived legacy model without registration check.
+ *
+ * This is the sole owner for the legacy env fallback mapping. Keep it here so
+ * `computeLegacyEnvDerivedId()` and backwards-compatible no-arg manager
+ * construction cannot drift.
+ */
+export function computeLegacyEnvModelSpec(): LegacyEnvModelSpec {
   const provider = (EMBEDDING_PROVIDER as EmbeddingProvider) ?? 'huggingface';
   let modelName: string;
   switch (provider) {
@@ -374,7 +386,18 @@ export function computeLegacyEnvDerivedId(): string {
       modelName = HUGGINGFACE_MODEL_NAME;
       break;
   }
-  return deriveModelId(provider, modelName);
+  const modelId = deriveModelId(provider, modelName);
+  const parsed = parseModelId(modelId);
+  return {
+    provider: parsed.provider as EmbeddingProvider,
+    modelName,
+    modelId,
+  };
+}
+
+/** Resolve the env-var-derived candidate id without registration check. */
+export function computeLegacyEnvDerivedId(): string {
+  return computeLegacyEnvModelSpec().modelId;
 }
 
 // Re-export for callers that need it from one place.

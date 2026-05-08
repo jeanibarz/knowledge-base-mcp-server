@@ -7,6 +7,8 @@ const originalEnv = {
   FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
   EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
   HUGGINGFACE_MODEL_NAME: process.env.HUGGINGFACE_MODEL_NAME,
+  OLLAMA_MODEL: process.env.OLLAMA_MODEL,
+  OPENAI_MODEL_NAME: process.env.OPENAI_MODEL_NAME,
   KB_ACTIVE_MODEL: process.env.KB_ACTIVE_MODEL,
 };
 
@@ -25,6 +27,37 @@ async function seedRegistered(faissDir: string, modelId = REGISTERED_ID, modelNa
   await fsp.mkdir(dir, { recursive: true });
   await fsp.writeFile(path.join(dir, 'model_name.txt'), modelName);
 }
+
+describe('active-model: legacy env-derived model spec', () => {
+  it('keeps the exact configured model name while deriving the safe id', async () => {
+    jest.resetModules();
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_MODEL_NAME = 'BAAI/bge-base-en-v1.5';
+
+    const { computeLegacyEnvDerivedId, computeLegacyEnvModelSpec } = await import('./active-model.js');
+
+    expect(computeLegacyEnvModelSpec()).toEqual({
+      provider: 'huggingface',
+      modelName: 'BAAI/bge-base-en-v1.5',
+      modelId: 'huggingface__BAAI-bge-base-en-v1.5',
+    });
+    expect(computeLegacyEnvDerivedId()).toBe('huggingface__BAAI-bge-base-en-v1.5');
+  });
+
+  it('preserves slash and tag characters in the Ollama model name', async () => {
+    jest.resetModules();
+    process.env.EMBEDDING_PROVIDER = 'ollama';
+    process.env.OLLAMA_MODEL = 'dengcao/Qwen3-Embedding-0.6B:Q8_0';
+
+    const { computeLegacyEnvModelSpec } = await import('./active-model.js');
+
+    expect(computeLegacyEnvModelSpec()).toEqual({
+      provider: 'ollama',
+      modelName: 'dengcao/Qwen3-Embedding-0.6B:Q8_0',
+      modelId: 'ollama__dengcao-Qwen3-Embedding-0.6B-Q8_0',
+    });
+  });
+});
 
 describe('active-model: writeActiveModelAtomic / robust reader', () => {
   let faissDir: string;
