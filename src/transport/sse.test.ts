@@ -533,4 +533,62 @@ describe('SseHost — endpoints', () => {
     // partial-encoding or quoting either.
     expect(captured).not.toMatch(/sentinel-token/);
   });
+
+  // ---------------------------------------------------------------------
+  // Issue #157 step 4 — host-owned warm-up fanout. The server no longer
+  // pulls the session list out; it asks the host to "notify everyone" and
+  // the host iterates its own session map. Tests directly populate the
+  // private sessions map so the assertions don't need a real connected
+  // MCP client; the live connect/disconnect path is already covered by
+  // the existing endpoint tests above.
+  // ---------------------------------------------------------------------
+
+  it('notify is a no-op when no SSE sessions are connected', async () => {
+    const started = await startHost({});
+    stop = started.stop;
+    expect(started.host.sessionCount).toBe(0);
+    await expect(started.host.notify('info', 'kb-test', 'hello')).resolves.toBeUndefined();
+  });
+
+  it('notify fans out sendLoggingMessage to every live session McpServer', async () => {
+    const started = await startHost({});
+    stop = started.stop;
+    const sessionA = { sendLoggingMessage: jest.fn().mockResolvedValue(undefined) };
+    const sessionB = { sendLoggingMessage: jest.fn().mockResolvedValue(undefined) };
+    const sessions: Map<string, { transport: unknown; mcp: unknown }> =
+      (started.host as unknown as { sessions: Map<string, { transport: unknown; mcp: unknown }> }).sessions;
+    sessions.set('a', { transport: {}, mcp: sessionA });
+    sessions.set('b', { transport: {}, mcp: sessionB });
+    expect(started.host.sessionCount).toBe(2);
+
+    await started.host.notify('info', 'kb-test', 'embedded 5/10 files');
+    const expected = { level: 'info', logger: 'kb-test', data: 'embedded 5/10 files' };
+    expect(sessionA.sendLoggingMessage).toHaveBeenCalledWith(expected);
+    expect(sessionB.sendLoggingMessage).toHaveBeenCalledWith(expected);
+
+    // Cleanup so stop() doesn't try to close fake sessions and crash on the
+    // missing real transport methods.
+    sessions.clear();
+  });
+
+  it('notify swallows per-session errors so one bad client cannot poison the rest', async () => {
+    const started = await startHost({});
+    stop = started.stop;
+    const happy = { sendLoggingMessage: jest.fn().mockResolvedValue(undefined) };
+    const sad = {
+      sendLoggingMessage: jest.fn().mockRejectedValue(new Error('client gone')),
+    };
+    const sessions: Map<string, { transport: unknown; mcp: unknown }> =
+      (started.host as unknown as { sessions: Map<string, { transport: unknown; mcp: unknown }> }).sessions;
+    sessions.set('happy', { transport: {}, mcp: happy });
+    sessions.set('sad', { transport: {}, mcp: sad });
+
+    await expect(
+      started.host.notify('warning', 'kb-test', 'partial failure ok'),
+    ).resolves.toBeUndefined();
+    expect(happy.sendLoggingMessage).toHaveBeenCalled();
+    expect(sad.sendLoggingMessage).toHaveBeenCalled();
+
+    sessions.clear();
+  });
 });

@@ -66,8 +66,37 @@ export class StreamableHttpHost {
     this.authTokenBuf = Buffer.from(token, 'latin1');
   }
 
-  getConnectedMcpServers(): McpServer[] {
-    return [...this.sessions.values()].map((entry) => entry.mcp);
+  /**
+   * Number of live HTTP sessions. Read-only — narrower than a full
+   * session-list export so callers cannot reach in to fan notifications
+   * out by hand. Use `notify(...)` for that.
+   */
+  get sessionCount(): number {
+    return this.sessions.size;
+  }
+
+  /**
+   * Issue #157 step 4 — fan a warm-up logging notification out across every
+   * live session. Same shape and semantics as `SseHost.notify`: the host
+   * owns the fanout, swallows per-session errors at debug level, and
+   * iterates a snapshot to defend against concurrent `onclose` deletes.
+   */
+  async notify(
+    level: 'info' | 'warning' | 'error',
+    logger_: string,
+    data: string,
+  ): Promise<void> {
+    const targets = [...this.sessions.values()].map((entry) => entry.mcp);
+    if (targets.length === 0) return;
+    await Promise.all(
+      targets.map(async (target) => {
+        try {
+          await target.sendLoggingMessage({ level, logger: logger_, data });
+        } catch (err) {
+          logger.debug(`[http] notify error: ${(err as Error).message}`);
+        }
+      }),
+    );
   }
 
   async start(): Promise<http.Server> {
