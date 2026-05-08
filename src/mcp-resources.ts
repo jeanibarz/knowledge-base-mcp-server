@@ -22,7 +22,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { toError } from './error-utils.js';
 import { getFilesRecursively } from './file-utils.js';
-import { listKnowledgeBases, resolveKnowledgeBaseDocumentPath } from './kb-fs.js';
+import { listKnowledgeBases, resolveKbPath } from './kb-fs.js';
 import { isValidKbName } from './kb-paths.js';
 
 export function mimeTypeForResource(filePath: string): string {
@@ -158,10 +158,11 @@ export async function listResources(): Promise<ListResourcesResult> {
  */
 export async function readResource(uri: string): Promise<ReadResourceResult> {
   const { kbName, relativePath } = parseKnowledgeBaseResourceUri(uri);
-  const filePath = await resolveKnowledgeBaseDocumentPath(
+  const filePath = await resolveKbPath(
     KNOWLEDGE_BASES_ROOT_DIR,
     kbName,
     relativePath,
+    { mustExist: true },
   );
   const mimeType = mimeTypeForResource(filePath);
 

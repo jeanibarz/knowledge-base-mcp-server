@@ -12,7 +12,7 @@ import * as path from 'path';
 import { ActiveModelResolutionError, resolveActiveModel } from './active-model.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
-import { assertNoTraversal, resolveKbRelativePath, resolveKnowledgeBaseDir } from './kb-fs.js';
+import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel } from './cli-shared.js';
 
@@ -279,7 +279,7 @@ function detectLanguageFromCommand(argv: string[]): string | null {
 
 async function appendToNote(kbName: string, relativePath: string, content: string): Promise<string> {
   assertNoTraversal(relativePath);
-  const documentPath = await resolveKbRelativePath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath);
+  const documentPath = await resolveKbPath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath, { mustExist: false });
   const stat = await fsp.stat(documentPath);
   if (!stat.isFile()) {
     throw new Error(`append target is not a file: ${JSON.stringify(relativePath)}`);
