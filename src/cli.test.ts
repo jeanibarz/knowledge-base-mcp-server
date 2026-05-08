@@ -112,6 +112,11 @@ describe('kb CLI — argv parsing and dispatch', () => {
     const r = runCli(['search', 'q', '--threshold=auto']);
     expect(r.stderr).not.toContain('invalid --threshold');
   });
+
+  it('search with --group-by-source is accepted by the parser', () => {
+    const r = runCli(['search', 'q', '--group-by-source']);
+    expect(r.stderr).not.toContain('unknown flag');
+  });
 });
 
 describe('kb remember', () => {

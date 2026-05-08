@@ -1,7 +1,9 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   formatRetrievalAsJson,
+  formatRetrievalGroupedBySourceAsMarkdown,
   formatRetrievalAsMarkdown,
+  groupRetrievalBySource,
   sanitizeMetadataForWire,
   ScoredDocument,
 } from './formatter.js';
@@ -124,5 +126,95 @@ describe('formatRetrievalAsJson', () => {
     } as unknown as ScoredDocument;
     const out = formatRetrievalAsJson([doc], false);
     expect(out[0].metadata).toEqual({ frontmatter: { title: 'T' } });
+  });
+});
+
+describe('groupRetrievalBySource', () => {
+  it('collapses repeated chunks from the same source and keeps best score plus locations', () => {
+    const docs: ScoredDocument[] = [
+      {
+        pageContent: 'first chunk',
+        metadata: {
+          source: 'kb/repeated.md',
+          loc: { lines: { from: 1, to: 5 } },
+        },
+        score: 0.7,
+      } as unknown as ScoredDocument,
+      {
+        pageContent: 'second chunk',
+        metadata: {
+          source: 'kb/repeated.md',
+          loc: { lines: { from: 20, to: 25 } },
+        },
+        score: 0.3,
+      } as unknown as ScoredDocument,
+      {
+        pageContent: 'other file',
+        metadata: {
+          source: 'kb/other.md',
+          loc: { lines: { from: 3, to: 8 } },
+        },
+        score: 0.5,
+      } as unknown as ScoredDocument,
+    ];
+
+    const grouped = groupRetrievalBySource(docs, false);
+
+    expect(grouped).toHaveLength(2);
+    expect(grouped[0].source).toBe('kb/repeated.md');
+    expect(grouped[0].best_score).toBe(0.3);
+    expect(grouped[0].chunks).toHaveLength(2);
+    expect(grouped[0].locations).toEqual([
+      { score: 0.7, location: { lines: { from: 1, to: 5 } } },
+      { score: 0.3, location: { lines: { from: 20, to: 25 } } },
+    ]);
+    expect(grouped[1].source).toBe('kb/other.md');
+  });
+
+  it('keeps raw chunk metadata sanitized in grouped JSON-ready output', () => {
+    const docs: ScoredDocument[] = [
+      {
+        pageContent: 'frontmatter',
+        metadata: {
+          source: 'kb/doc.md',
+          frontmatter: { title: 'Visible', extras: { hidden: true } },
+        },
+        score: 0.2,
+      } as unknown as ScoredDocument,
+    ];
+
+    const grouped = groupRetrievalBySource(docs, false);
+
+    expect(grouped[0].chunks[0].metadata).toEqual({
+      source: 'kb/doc.md',
+      frontmatter: { title: 'Visible' },
+    });
+  });
+});
+
+describe('formatRetrievalGroupedBySourceAsMarkdown', () => {
+  it('renders one source section for repeated chunks with chunk locations', () => {
+    const docs: ScoredDocument[] = [
+      {
+        pageContent: 'first chunk',
+        metadata: { source: 'kb/repeated.md', loc: { lines: { from: 1, to: 5 } } },
+        score: 0.7,
+      } as unknown as ScoredDocument,
+      {
+        pageContent: 'second chunk',
+        metadata: { source: 'kb/repeated.md', loc: { lines: { from: 20, to: 25 } } },
+        score: 0.3,
+      } as unknown as ScoredDocument,
+    ];
+
+    const out = formatRetrievalGroupedBySourceAsMarkdown(docs, false);
+
+    expect(out).toContain('**Source 1:** `kb/repeated.md`');
+    expect(out).not.toContain('**Source 2:**');
+    expect(out).toContain('**Best score:** 0.30');
+    expect(out).toContain('"from":1');
+    expect(out).toContain('"from":20');
+    expect(out).toContain('first chunk');
+    expect(out).toContain('second chunk');
   });
 });

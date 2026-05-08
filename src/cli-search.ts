@@ -10,7 +10,12 @@ import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config.js';
-import { formatRetrievalAsJson, formatRetrievalAsMarkdown } from './formatter.js';
+import {
+  formatRetrievalAsJson,
+  formatRetrievalAsMarkdown,
+  formatRetrievalGroupedBySourceAsMarkdown,
+  groupRetrievalBySource,
+} from './formatter.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock, WriteLockContentionError } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
@@ -25,6 +30,7 @@ interface SearchArgs {
   format: 'md' | 'json';
   refresh: boolean;
   stdin: boolean;
+  groupBySource: boolean;
 }
 
 export interface Staleness {
@@ -166,6 +172,9 @@ export async function runSearch(rest: string[]): Promise<number> {
       : globalCounts;
     const payload = {
       results: body,
+      ...(parsed.groupBySource
+        ? { grouped_results: groupRetrievalBySource(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE) }
+        : {}),
       index_mtime: staleness.indexMtime,
       stale: hasStaleCounts(effectiveCounts),
       modified_files: effectiveCounts.modifiedFiles,
@@ -199,7 +208,9 @@ export async function runSearch(rest: string[]): Promise<number> {
       process.stdout.write(formatAutoThresholdHeader(autoDecision));
       process.stdout.write('\n\n');
     }
-    const md = formatRetrievalAsMarkdown(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
+    const md = parsed.groupBySource
+      ? formatRetrievalGroupedBySourceAsMarkdown(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE)
+      : formatRetrievalAsMarkdown(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
     process.stdout.write(md);
     process.stdout.write('\n\n');
     process.stdout.write(formatFreshnessFooter(staleness, parsed.refresh));
@@ -217,10 +228,12 @@ function parseSearchArgs(rest: string[]): SearchArgs {
     refresh: false,
     stdin: false,
     thresholdAuto: false,
+    groupBySource: false,
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
     if (raw === '--stdin')   { out.stdin = true; continue; }
+    if (raw === '--group-by-source') { out.groupBySource = true; continue; }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
     if (raw.startsWith('--threshold=')) {
