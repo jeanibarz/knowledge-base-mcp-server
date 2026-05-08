@@ -105,3 +105,45 @@ describe('withWriteLock', () => {
     expect(bStart).toBeLessThan(aEnd);
   });
 });
+
+describe('withSidecarLock', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-sidecar-lock-'));
+    process.env.FAISS_INDEX_PATH = tempDir;
+  });
+
+  it('acquires the shared sidecar lock, runs fn, releases', async () => {
+    jest.resetModules();
+    const { sidecarLockPathFor, withSidecarLock } = await import('./write-lock.js');
+    const lockPath = sidecarLockPathFor();
+
+    let lockedDuringFn = false;
+    const result = await withSidecarLock(async () => {
+      lockedDuringFn = await fsp
+        .stat(lockPath)
+        .then(() => true)
+        .catch(() => false);
+      return 'value';
+    });
+
+    expect(result).toBe('value');
+    expect(lockedDuringFn).toBe(true);
+    await expect(fsp.stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('releases the shared sidecar lock even if fn throws', async () => {
+    jest.resetModules();
+    const { sidecarLockPathFor, withSidecarLock } = await import('./write-lock.js');
+    const lockPath = sidecarLockPathFor();
+
+    await expect(
+      withSidecarLock(async () => {
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+
+    await expect(fsp.stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});

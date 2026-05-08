@@ -2,7 +2,6 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
-import * as properLockfile from 'proper-lockfile';
 // Issue #59 — provider modules are loaded lazily inside initialize(). Each
 // `@langchain/*` provider drags its full dep graph (e.g. @huggingface/inference,
 // openai, ollama) at import time; eager-loading all three for a process that
@@ -23,7 +22,6 @@ import { loadFile } from './loaders.js';
 import {
   EMBEDDING_PROVIDER,
   KNOWLEDGE_BASES_ROOT_DIR,
-  FAISS_INDEX_PATH,
   HUGGINGFACE_MODEL_NAME,
   HUGGINGFACE_PROVIDER,
   HUGGINGFACE_ENDPOINT_URL,
@@ -55,6 +53,7 @@ import {
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
   saveFaissStoreAtomic,
 } from './faiss-store-layout.js';
+import { withSidecarLock } from './write-lock.js';
 
 export { nextVersionAfter } from './faiss-store-layout.js';
 export { MigrationRefusedError } from './layout-bootstrap.js';
@@ -89,52 +88,6 @@ async function writeModelNameAtomic(modelNameFile: string, modelName: string): P
 // independent open(2) calls — each would re-resolve a symlink given the
 // path, but an absolute resolved path has no symlink to re-resolve.
 // ---------------------------------------------------------------------------
-
-// Issue #90 follow-up — cross-model serialization for per-KB hash sidecar
-// state at `<kb>/.index/`. Sidecars are SHARED across models (the on-disk
-// shape is per-KB, not per-model), but `updateIndex` historically protected
-// them with a PER-MODEL write lock. That left two concurrent windows racy:
-//   1. Two models updating different KBs simultaneously: harmless overwrite
-//      with the same hash bytes.
-//   2. One model's `purgeStaleSidecars` (init under missing store) firing
-//      while another model's `updateIndex` is mid-`Promise.all` of sidecar
-//      writes: the writer's `fsp.rename(tmp, target)` ENOENTs because the
-//      parent `.index/` dir was just rmrf'd by the purger.
-//
-// The shared lock at `${FAISS_INDEX_PATH}/.kb-sidecar.lock` serializes
-// every cross-model sidecar mutation: both the purge and the post-save
-// sidecar write batch acquire it briefly. The lock is held only across
-// filesystem syscalls (no embedding work), so cross-model contention adds
-// at most milliseconds per `updateIndex`.
-const SIDECAR_LOCK_PATH = path.join(FAISS_INDEX_PATH, '.kb-sidecar.lock');
-
-async function withSidecarLock<T>(action: () => Promise<T>): Promise<T> {
-  await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
-  let release: (() => Promise<void>) | null = null;
-  try {
-    release = await properLockfile.lock(FAISS_INDEX_PATH, {
-      lockfilePath: SIDECAR_LOCK_PATH,
-      stale: 30_000,
-      retries: { retries: 10, factor: 1.5, minTimeout: 50, maxTimeout: 500 },
-    });
-  } catch (err) {
-    // Lock acquisition exhausted retries: a peer is holding it for an
-    // unusually long time, or we're on a filesystem where proper-lockfile
-    // can't operate. Either way, falling through is safer than aborting:
-    // the worst case (rename ENOENT from a concurrent rmrf) is recoverable
-    // on the next updateIndex pass, while a hard abort poisons the caller.
-    logger.warn(
-      `Issue #90 sidecar lock: could not acquire ${SIDECAR_LOCK_PATH}, proceeding without serialization: ${(err as Error).message}`,
-    );
-  }
-  try {
-    return await action();
-  } finally {
-    if (release) {
-      try { await release(); } catch { /* best-effort */ }
-    }
-  }
-}
 
 const DEFAULT_CHUNK_SIZE = 1000;
 const DEFAULT_CHUNK_OVERLAP = 200;
