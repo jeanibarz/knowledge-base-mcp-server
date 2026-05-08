@@ -72,16 +72,43 @@ export class SseHost {
   }
 
   /**
-   * Snapshot of `McpServer` instances that are currently connected to an SSE
-   * session. Returns an array (not the live map values) so callers can iterate
-   * without seeing concurrent mutations from `transport.onclose` or
-   * `handleSseOpen`. Used by `KnowledgeBaseServer` to fan warm-up logging
-   * notifications across every live SSE client (the root `this.mcp` is never
-   * connected in SSE mode, so calling `sendLoggingMessage` on it would drop
-   * the notification).
+   * Number of live SSE sessions. Read-only — the snapshot is intentionally
+   * narrower than a session-list export so callers cannot reach in to fan
+   * notifications out by hand. Use `notify(...)` for that.
    */
-  getConnectedMcpServers(): McpServer[] {
-    return [...this.sessions.values()].map((entry) => entry.mcp);
+  get sessionCount(): number {
+    return this.sessions.size;
+  }
+
+  /**
+   * Issue #157 step 4 — fan a warm-up logging notification out across every
+   * live session. The root `this.mcp` on `KnowledgeBaseServer` is never
+   * connected in SSE mode (every session has its own `McpServer` built via
+   * `createMcpServer`), so calling `sendLoggingMessage` on the root would
+   * silently drop the notification. The host owns the fanout: callers say
+   * "tell every session" and never see the session list.
+   *
+   * Per-session errors are swallowed at debug level so a single misbehaving
+   * client cannot poison the broadcast for the rest. Operating against a
+   * snapshot of the values map defends against `transport.onclose` deletes
+   * mid-iteration.
+   */
+  async notify(
+    level: 'info' | 'warning' | 'error',
+    logger_: string,
+    data: string,
+  ): Promise<void> {
+    const targets = [...this.sessions.values()].map((entry) => entry.mcp);
+    if (targets.length === 0) return;
+    await Promise.all(
+      targets.map(async (target) => {
+        try {
+          await target.sendLoggingMessage({ level, logger: logger_, data });
+        } catch (err) {
+          logger.debug(`[sse] notify error: ${(err as Error).message}`);
+        }
+      }),
+    );
   }
 
   async start(): Promise<http.Server> {

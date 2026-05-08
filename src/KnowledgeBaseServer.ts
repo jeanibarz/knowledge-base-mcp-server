@@ -660,32 +660,26 @@ export class KnowledgeBaseServer {
     level: 'info' | 'warning' | 'error',
     data: string,
   ): Promise<void> {
-    // In stdio mode, `this.mcp` is the connected server. In SSE mode, every
-    // session has its own connected `McpServer` (built via `createMcpServer`)
-    // and `this.mcp` is unconnected — calling `sendLoggingMessage` on it
-    // would silently drop the notification. Fan out across the live sessions
-    // so each connected client sees the warm-up progress.
-    const targets =
-      this.transportMode === 'sse'
-        ? (this.sseHost?.getConnectedMcpServers() ?? [])
-        : this.transportMode === 'http'
-          ? (this.httpHost?.getConnectedMcpServers() ?? [])
-        : [this.mcp];
-    if (targets.length === 0) {
-      logger.debug(
-        `MCP warm-up log skipped (no connected ${this.transportMode ?? 'transport'} clients): ${data}`,
-      );
+    // Issue #157 step 4 — hosts own the per-session fanout. In stdio mode
+    // the root `this.mcp` is the live transport target; in SSE/HTTP mode
+    // the host iterates its own session map. The server no longer pulls
+    // the session list out (see `SseHost.notify` / `StreamableHttpHost.
+    // notify`). The root `this.mcp` is unconnected in SSE/HTTP mode, so
+    // routing through it would silently drop notifications — keeping the
+    // dispatch tied to `transportMode` is what prevents that.
+    if (this.transportMode === 'sse') {
+      if (this.sseHost) await this.sseHost.notify(level, SERVER_NAME, data);
       return;
     }
-    await Promise.all(
-      targets.map(async (target) => {
-        try {
-          await target.sendLoggingMessage({ level, logger: SERVER_NAME, data });
-        } catch (err) {
-          logger.debug(`Unable to emit MCP warm-up log: ${toError(err).message}`);
-        }
-      }),
-    );
+    if (this.transportMode === 'http') {
+      if (this.httpHost) await this.httpHost.notify(level, SERVER_NAME, data);
+      return;
+    }
+    try {
+      await this.mcp.sendLoggingMessage({ level, logger: SERVER_NAME, data });
+    } catch (err) {
+      logger.debug(`Unable to emit MCP warm-up log: ${toError(err).message}`);
+    }
   }
 
   private startTriggerWatcher(): void {

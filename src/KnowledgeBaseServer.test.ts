@@ -1091,9 +1091,13 @@ describe('KnowledgeBaseServer handlers', () => {
   // Codex review on PR #121 caught that in SSE mode the root `this.mcp` is
   // never connected — every SSE session has its own `McpServer` (built via
   // `createMcpServer`). Calling `sendLoggingMessage` on the unconnected root
-  // would silently drop the warm-up notifications. The fan-out across live
-  // session servers is the user-visible fix.
-  it('SSE warm-up logging fans out to every connected session McpServer (#87 / Codex review)', async () => {
+  // would silently drop the warm-up notifications. Issue #157 step 4
+  // pushed the fan-out into the host (`SseHost.notify` / `StreamableHttp-
+  // Host.notify`); the test now pins the server's contract with the host
+  // — "delegate to notify, never touch the root mcp" — and the per-session
+  // iteration is covered in `transport/sse.test.ts` + `transport/http.
+  // test.ts`.
+  it('SSE warm-up logging delegates to sseHost.notify; never reaches the unconnected root mcp (#87, #157 step 4)', async () => {
     await setRetrieveEnv();
     hasLoadedIndexMock.mockReturnValue(false);
     updateIndexMock.mockImplementationOnce(async (
@@ -1120,25 +1124,20 @@ describe('KnowledgeBaseServer handlers', () => {
     const rootSendLoggingMessageMock = jest.fn().mockResolvedValue(undefined);
     server['mcp'].sendLoggingMessage = rootSendLoggingMessageMock;
 
-    const sessionA = { sendLoggingMessage: jest.fn().mockResolvedValue(undefined) };
-    const sessionB = { sendLoggingMessage: jest.fn().mockResolvedValue(undefined) };
-    server['sseHost'] = {
-      getConnectedMcpServers: () => [sessionA, sessionB],
-    };
+    const notifyMock = jest.fn().mockResolvedValue(undefined);
+    server['sseHost'] = { notify: notifyMock };
 
     await server['warmActiveManager']();
 
     expect(rootSendLoggingMessageMock).not.toHaveBeenCalled();
-    const expectedProgressArgs = {
-      level: 'info',
-      logger: 'knowledge-base-server',
-      data: 'Embedded 10/25 files for huggingface__BAAI-bge-small-en-v1.5',
-    };
-    expect(sessionA.sendLoggingMessage).toHaveBeenCalledWith(expectedProgressArgs);
-    expect(sessionB.sendLoggingMessage).toHaveBeenCalledWith(expectedProgressArgs);
+    expect(notifyMock).toHaveBeenCalledWith(
+      'info',
+      'knowledge-base-server',
+      'Embedded 10/25 files for huggingface__BAAI-bge-small-en-v1.5',
+    );
   });
 
-  it('SSE warm-up logging skips the broadcast when no clients are connected (#87 / Codex review)', async () => {
+  it('warm-up logging in SSE mode does not crash when sseHost is unset (graceful no-op, #157 step 4)', async () => {
     await setRetrieveEnv();
     hasLoadedIndexMock.mockReturnValue(false);
     updateIndexMock.mockResolvedValue(undefined);
@@ -1147,13 +1146,10 @@ describe('KnowledgeBaseServer handlers', () => {
     server['transportMode'] = 'sse';
     const rootSendLoggingMessageMock = jest.fn().mockResolvedValue(undefined);
     server['mcp'].sendLoggingMessage = rootSendLoggingMessageMock;
-    server['sseHost'] = {
-      getConnectedMcpServers: () => [],
-    };
+    // sseHost intentionally undefined — the dispatcher must not fall back
+    // to the unconnected root mcp, which is the bug this guards against.
 
     await expect(server['warmActiveManager']()).resolves.toBeUndefined();
-    // The unconnected root must not be used as a fallback target; the bug
-    // we're guarding against is exactly that silent drop.
     expect(rootSendLoggingMessageMock).not.toHaveBeenCalled();
   });
 
