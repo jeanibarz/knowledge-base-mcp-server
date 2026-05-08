@@ -2,26 +2,12 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import { FaissStore } from '@langchain/community/vectorstores/faiss';
+import { pathExists } from './file-utils.js';
 import { logger } from './logger.js';
 
 const VERSION_DIR_PATTERN = /^index\.v(\d+)$/;
 const SYMLINK_NAME = 'index';
 const LEGACY_INDEX_NAME = 'faiss.index';
-
-type FsError = NodeJS.ErrnoException & { code?: string };
-
-export async function pathExists(target: string): Promise<boolean> {
-  try {
-    await fsp.stat(target);
-    return true;
-  } catch (error) {
-    const code = (error as FsError | undefined)?.code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      return false;
-    }
-    throw error;
-  }
-}
 
 async function readSymlinkOrNull(p: string): Promise<string | null> {
   try {

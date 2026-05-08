@@ -15,7 +15,7 @@ import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import { handleFsOperationError, toError } from './error-utils.js';
-import { calculateSHA256 } from './file-utils.js';
+import { calculateSHA256, pathExists } from './file-utils.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
 import { loadFile } from './loaders.js';
@@ -50,7 +50,6 @@ import {
 import { makeOllamaOnFailedAttempt } from './ollama-error.js';
 import {
   loadFaissStoreAtomic,
-  pathExists,
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
   saveFaissStoreAtomic,
 } from './faiss-store-layout.js';

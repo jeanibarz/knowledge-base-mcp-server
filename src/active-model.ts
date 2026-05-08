@@ -19,6 +19,7 @@ import {
   OLLAMA_MODEL,
   OPENAI_MODEL_NAME,
 } from './config.js';
+import { pathExists } from './file-utils.js';
 import { deriveModelId, EmbeddingProvider, isValidModelId, parseModelId } from './model-id.js';
 import { logger } from './logger.js';
 
@@ -78,12 +79,7 @@ export async function resolveFaissIndexBinaryPath(modelId: string): Promise<stri
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
   const legacy = path.join(dir, 'faiss.index', 'faiss.index');
-  try {
-    await fsp.access(legacy);
-    return legacy;
-  } catch {
-    return null;
-  }
+  return (await pathExists(legacy)) ? legacy : null;
 }
 
 export function modelNameFilePath(modelId: string): string {
@@ -125,18 +121,9 @@ export async function isRegisteredModel(modelId: string): Promise<boolean> {
     return false;
   }
   // Has model_name.txt?
-  try {
-    await fsp.access(modelNameFilePath(modelId));
-  } catch {
-    return false;
-  }
-  // No .adding sentinel?
-  try {
-    await fsp.access(addingSentinelPath(modelId));
-    return false; // exists → mid-add → not registered
-  } catch {
-    return true;
-  }
+  if (!(await pathExists(modelNameFilePath(modelId)))) return false;
+  // No .adding sentinel? (exists → mid-add → not registered)
+  return !(await pathExists(addingSentinelPath(modelId)));
 }
 
 export interface RegisteredModel {
@@ -194,12 +181,7 @@ async function detectDowngradeHazard(dir: string): Promise<boolean> {
     // index symlink absent — versioned layout not present yet
   }
   if (!hasVersioned) return false;
-  try {
-    await fsp.access(path.join(dir, 'faiss.index'));
-    return true;
-  } catch {
-    return false;
-  }
+  return pathExists(path.join(dir, 'faiss.index'));
 }
 
 // ---------------------------------------------------------------------------
@@ -226,12 +208,7 @@ export async function writeActiveModelAtomic(modelId: string): Promise<void> {
 }
 
 export async function activeFileExists(): Promise<boolean> {
-  try {
-    await fsp.access(ACTIVE_FILE);
-    return true;
-  } catch {
-    return false;
-  }
+  return pathExists(ACTIVE_FILE);
 }
 
 interface ActiveReadResult {

@@ -15,6 +15,7 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { estimateCostUsd } from './cost-estimates.js';
+import { pathExists } from './file-utils.js';
 
 export async function runModels(rest: string[]): Promise<number> {
   const verb = rest[0];
@@ -108,8 +109,7 @@ async function runModelsAdd(rest: string[]): Promise<number> {
     );
     return 2;
   }
-  const sentinelExists = await fsp.access(addingSentinelPath(modelId)).then(() => true).catch(() => false);
-  if (sentinelExists) {
+  if (await pathExists(addingSentinelPath(modelId))) {
     process.stderr.write(
       `kb models add: previous \`kb models add ${modelId}\` was interrupted (.adding sentinel present). ` +
       `Run \`kb models remove ${modelId} --force-incomplete\` to clean up, then retry.\n`,
@@ -261,8 +261,7 @@ async function runModelsRemove(rest: string[]): Promise<number> {
   }
 
   const dir = modelDir(id);
-  const exists = await fsp.access(dir).then(() => true).catch(() => false);
-  if (!exists) {
+  if (!(await pathExists(dir))) {
     process.stderr.write(`kb models remove: "${id}" does not exist on disk.\n`);
     return 2;
   }
@@ -280,8 +279,7 @@ async function runModelsRemove(rest: string[]): Promise<number> {
     return 2;
   }
 
-  const sentinelExists = await fsp.access(addingSentinelPath(id)).then(() => true).catch(() => false);
-  if (sentinelExists && !forceIncomplete) {
+  if ((await pathExists(addingSentinelPath(id))) && !forceIncomplete) {
     process.stderr.write(
       'kb models remove: ".adding" sentinel present (interrupted add). Pass --force-incomplete to confirm.\n',
     );
