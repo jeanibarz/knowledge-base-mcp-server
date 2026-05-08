@@ -36,7 +36,7 @@ import {
 import { formatRetrievalAsMarkdown } from './formatter.js';
 import {
   listKnowledgeBases,
-  resolveKbRelativePath,
+  resolveKbPath,
   resolveKnowledgeBaseDir,
 } from './kb-fs.js';
 import { computeKbStats } from './kb-stats.js';
@@ -308,10 +308,11 @@ export class KnowledgeBaseServer {
       const manager = await this.getActiveManagerForMutation();
       let documentPath = '';
       await withWriteLock(manager.modelDir, async () => {
-        documentPath = await resolveKbRelativePath(
+        documentPath = await resolveKbPath(
           KNOWLEDGE_BASES_ROOT_DIR,
           args.knowledge_base_name,
           args.path,
+          { mustExist: false },
         );
         await fsp.mkdir(path.dirname(documentPath), { recursive: true });
         await fsp.writeFile(documentPath, args.content, 'utf-8');
@@ -355,10 +356,11 @@ export class KnowledgeBaseServer {
           KNOWLEDGE_BASES_ROOT_DIR,
           args.knowledge_base_name,
         );
-        documentPath = await resolveKbRelativePath(
+        documentPath = await resolveKbPath(
           KNOWLEDGE_BASES_ROOT_DIR,
           args.knowledge_base_name,
           args.path,
+          { mustExist: false },
         );
         const relativePath = path.relative(kbDir, documentPath);
         sidecarPath = path.join(

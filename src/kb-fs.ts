@@ -6,7 +6,6 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { assertValidKbName } from './kb-paths.js';
 import { KBError } from './errors.js';
 import { getFilesRecursively } from './file-utils.js';
 import { filterIngestablePaths } from './ingest-filter.js';
@@ -182,53 +181,104 @@ async function realpathIfExists(target: string): Promise<string | null> {
   }
 }
 
-/**
- * Resolves a KB-relative document path under `<rootDir>/<kbName>/` and
- * verifies the final filesystem target remains inside that KB directory.
- *
- * The guard is both lexical (before touching the candidate) and realpath
- * based (after following symlinks), so `../`, absolute-path payloads, and
- * symlinks that point outside the KB are refused.
- *
- * Used by the MCP `resources/read` handler (kb:// URIs). Requires the
- * resolved file to exist — throws "path not found" otherwise. For ingest
- * tools that may target a not-yet-created file, see `resolveKbRelativePath`.
- */
-export async function resolveKnowledgeBaseDocumentPath(
-  rootDir: string,
-  kbName: string,
-  relativePath: string,
-): Promise<string> {
-  assertValidKbName(kbName);
+export interface ResolveKbPathOptions {
+  /**
+   * When true (resources/read), the resolved file MUST exist on disk;
+   * a missing target throws `path not found: "<relativePath>"`. The
+   * returned path is realpath-resolved.
+   *
+   * When false (add_document, kb remember/capture writes), the lexical
+   * target may not exist yet, but every existing ancestor in the path
+   * prefix MUST resolve inside the KB root. The returned path is
+   * lexical (the user-requested location, not a symlink target).
+   */
+  mustExist: boolean;
+}
 
+/**
+ * Issue #160 step 2 — single home for "validate user-supplied
+ * KB-relative path and return its absolute fs path under the KB root".
+ *
+ * Replaces the prior pair of `resolveKnowledgeBaseDocumentPath` (must-exist)
+ * and `resolveKbRelativePath` (may-not-exist). The defence-in-depth chain
+ * is the same in both modes:
+ *   1. Lexical guards: empty / null-byte / traversal (`assertNoTraversal`).
+ *   2. KB-name + KB-dir validation (`resolveKnowledgeBaseDir`).
+ *   3. Lexical inside-or-equal check on `<kbDir>/<relativePath>`.
+ *   4. realpath check on the existing target (or its nearest existing
+ *      ancestor when `mustExist === false`).
+ *
+ * Failures throw `KBError('VALIDATION', ...)` for input/escape problems
+ * and propagate `KBError('KB_NOT_FOUND', ...)` from the KB-dir resolver.
+ * `path not found` is a plain `Error` to match the prior public wording
+ * of `resolves/read` test assertions; the message format is preserved.
+ */
+export async function resolveKbPath(
+  rootDir: string,
+  knowledgeBaseName: string,
+  relativePath: string,
+  options: ResolveKbPathOptions,
+): Promise<string> {
   if (relativePath.length === 0) {
-    throw new Error('kb:// URI requires a non-empty resource path');
+    throw new KBError('VALIDATION', 'path must not be empty');
   }
   if (relativePath.includes('\0')) {
-    throw new Error('path contains null byte');
+    throw new KBError('VALIDATION', 'path contains null byte');
   }
-  assertNoTraversal(relativePath);
+  try {
+    assertNoTraversal(relativePath);
+  } catch (err) {
+    // Promote the plain Error to a typed KBError so callers (add_document,
+    // delete_document) keep their `error.code === 'VALIDATION'` contract.
+    throw new KBError('VALIDATION', (err as Error).message);
+  }
 
+  const kbDir = await resolveKnowledgeBaseDir(rootDir, knowledgeBaseName);
+  const kbReal = await fsp.realpath(kbDir);
   const normalizedRelative = relativePath.replace(/\\/g, '/');
-  const kbRoot = path.resolve(rootDir, kbName);
-  const kbRootReal = await realpathIfExists(kbRoot);
-  if (kbRootReal === null) {
-    throw new Error(`knowledge base not found: ${JSON.stringify(kbName)}`);
-  }
-
-  const lexicalCandidate = path.resolve(kbRootReal, normalizedRelative);
-  if (!isInsideOrEqual(kbRootReal, lexicalCandidate)) {
-    throw new Error(`path escapes KB root: ${JSON.stringify(relativePath)}`);
+  const lexicalCandidate = path.resolve(kbDir, normalizedRelative);
+  const escapesError = (): KBError =>
+    new KBError(
+      'VALIDATION',
+      `path escapes KB root: ${JSON.stringify(relativePath)}`,
+    );
+  if (!isInsideOrEqual(path.resolve(kbDir), lexicalCandidate)) {
+    throw escapesError();
   }
 
   const realCandidate = await realpathIfExists(lexicalCandidate);
-  if (realCandidate === null) {
+  if (realCandidate !== null) {
+    if (!isInsideOrEqual(kbReal, realCandidate)) {
+      throw escapesError();
+    }
+    return options.mustExist ? realCandidate : lexicalCandidate;
+  }
+
+  if (options.mustExist) {
+    // Plain Error (not KBError) — `mcpErrorContent` would otherwise stamp
+    // this as `INTERNAL` for `resources/read`; the SDK serializes the
+    // raw `error.message` directly, and the existing test pin
+    // (KnowledgeBaseServer.test.ts:717) expects exactly this wording.
     throw new Error(`path not found: ${JSON.stringify(relativePath)}`);
   }
-  if (!isInsideOrEqual(kbRootReal, realCandidate)) {
-    throw new Error(`path escapes KB root: ${JSON.stringify(relativePath)}`);
+
+  // mustExist === false: walk up to the nearest existing ancestor and
+  // confirm it resolves inside the KB. This is what lets add_document
+  // create new files at not-yet-existing paths while still rejecting
+  // ones whose realpath chain points outside the KB.
+  let existingAncestor = path.dirname(lexicalCandidate);
+  while (!(await realpathIfExists(existingAncestor))) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) {
+      throw escapesError();
+    }
+    existingAncestor = parent;
   }
-  return realCandidate;
+  const ancestorReal = await fsp.realpath(existingAncestor);
+  if (!isInsideOrEqual(kbReal, ancestorReal)) {
+    throw escapesError();
+  }
+  return lexicalCandidate;
 }
 
 /**
@@ -292,84 +342,3 @@ export async function resolveKnowledgeBaseDir(
   return kbDir;
 }
 
-/**
- * Resolve a user-supplied KB-relative document path to an absolute path under
- * `<rootDir>/<knowledgeBaseName>`.
- *
- * The final path may not exist yet (needed by add_document), but any existing
- * ancestor, existing file, or existing symlink target must resolve under the
- * KB root. `..` components are rejected lexically, even if normalization
- * would bring the path back inside the KB.
- */
-export async function resolveKbRelativePath(
-  rootDir: string,
-  knowledgeBaseName: string,
-  relativePath: string,
-): Promise<string> {
-  if (relativePath.length === 0) {
-    throw new KBError('VALIDATION', 'Document path must not be empty.');
-  }
-  if (relativePath.includes('\0')) {
-    throw new KBError('VALIDATION', 'Document path contains a null byte.');
-  }
-
-  const normalizedRelative = relativePath.replace(/\\/g, '/');
-  if (path.posix.isAbsolute(normalizedRelative)) {
-    throw new KBError(
-      'VALIDATION',
-      `Document path escapes KB root: ${JSON.stringify(relativePath)}.`,
-    );
-  }
-
-  const rawSegments = normalizedRelative.split('/').filter((segment) => segment.length > 0);
-  if (rawSegments.length === 0 || rawSegments.some((segment) => segment === '..')) {
-    throw new KBError(
-      'VALIDATION',
-      `Document path escapes KB root: ${JSON.stringify(relativePath)}.`,
-    );
-  }
-
-  const kbDir = await resolveKnowledgeBaseDir(rootDir, knowledgeBaseName);
-  const kbReal = await fsp.realpath(kbDir);
-  const normalizedSegments = path.posix.normalize(rawSegments.join('/')).split('/');
-  const candidate = path.resolve(kbDir, ...normalizedSegments);
-  if (!isInsideOrEqual(path.resolve(kbDir), candidate)) {
-    throw new KBError(
-      'VALIDATION',
-      `Document path escapes KB root: ${JSON.stringify(relativePath)}.`,
-    );
-  }
-
-  const existingTarget = await realpathIfExists(candidate);
-  if (existingTarget !== null) {
-    if (!isInsideOrEqual(kbReal, existingTarget)) {
-      throw new KBError(
-        'VALIDATION',
-        `Document path escapes KB root: ${JSON.stringify(relativePath)}.`,
-      );
-    }
-    return candidate;
-  }
-
-  let existingAncestor = path.dirname(candidate);
-  while (!(await realpathIfExists(existingAncestor))) {
-    const parent = path.dirname(existingAncestor);
-    if (parent === existingAncestor) {
-      throw new KBError(
-        'VALIDATION',
-        `Document path escapes KB root: ${JSON.stringify(relativePath)}.`,
-      );
-    }
-    existingAncestor = parent;
-  }
-
-  const ancestorReal = await fsp.realpath(existingAncestor);
-  if (!isInsideOrEqual(kbReal, ancestorReal)) {
-    throw new KBError(
-      'VALIDATION',
-      `Document path escapes KB root: ${JSON.stringify(relativePath)}.`,
-    );
-  }
-
-  return candidate;
-}

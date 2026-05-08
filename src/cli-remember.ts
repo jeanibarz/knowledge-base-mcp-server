@@ -5,7 +5,7 @@ import { FaissIndexManager } from './FaissIndexManager.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { getFilesRecursively } from './file-utils.js';
 import { filterIngestablePaths } from './ingest-filter.js';
-import { assertNoTraversal, resolveKbRelativePath, resolveKnowledgeBaseDir } from './kb-fs.js';
+import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { appendSectionInDocument, parseHeadingSpec } from './markdown-section.js';
@@ -450,7 +450,7 @@ function tokenize(value: string): Set<string> {
 
 async function createNewNote(kbName: string, title: string, content: string): Promise<string> {
   const relativePath = `${slugifyTitle(title)}.md`;
-  const documentPath = await resolveKbRelativePath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath);
+  const documentPath = await resolveKbPath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath, { mustExist: false });
   await fsp.mkdir(path.dirname(documentPath), { recursive: true });
   try {
     const handle = await fsp.open(documentPath, 'wx');
@@ -470,7 +470,7 @@ async function createNewNote(kbName: string, title: string, content: string): Pr
 
 async function appendExistingNote(kbName: string, relativePath: string, content: string): Promise<string> {
   assertNoTraversal(relativePath);
-  const documentPath = await resolveKbRelativePath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath);
+  const documentPath = await resolveKbPath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath, { mustExist: false });
   const stat = await fsp.stat(documentPath);
   if (!stat.isFile()) {
     throw new Error(`append target is not a file: ${JSON.stringify(relativePath)}`);
@@ -494,7 +494,7 @@ async function appendSectionInExistingNote(
     throw new Error('--append-section refuses to write empty content (stdin was empty or whitespace-only)');
   }
   assertNoTraversal(relativePath);
-  const documentPath = await resolveKbRelativePath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath);
+  const documentPath = await resolveKbPath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath, { mustExist: false });
   let stat;
   try {
     stat = await fsp.stat(documentPath);
