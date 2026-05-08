@@ -4,7 +4,6 @@ import {
 import {
   assertValidKbName,
   isValidKbName,
-  resolveKbPath,
 } from './kb-paths.js';
 import {
   __resetSkippedFilenameLogForTests,
@@ -20,9 +19,8 @@ import * as fs from 'fs'; // Import fs for PathLike and Dirent
 import * as os from 'os';
 import * as path from 'path';
 
-// Mock fs/promises readdir for getFilesRecursively tests only. The
-// resolveKbPath tests need the real fs, so we import and retain actual
-// behavior for every other method.
+// Mock fs/promises readdir for getFilesRecursively tests only; retain
+// actual behaviour for every other method.
 jest.mock('fs/promises', () => ({
   ...jest.requireActual('fs/promises'), // Import and retain default behavior
   readdir: jest.fn(), // Mock readdir specifically
@@ -164,93 +162,6 @@ describe('isValidKbName / assertValidKbName', () => {
   it('rejects uppercase (case-folding filesystems) and leading hyphen', () => {
     expect(isValidKbName('Foo')).toBe(false);
     expect(isValidKbName('-foo')).toBe(false);
-  });
-});
-
-describe('resolveKbPath', () => {
-  let tempRoot: string;
-  let kbName: string;
-  let kbRoot: string;
-
-  beforeEach(async () => {
-    tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-resolve-'));
-    kbName = 'default';
-    kbRoot = path.join(tempRoot, kbName);
-    await fsp.mkdir(kbRoot, { recursive: true });
-  });
-
-  afterEach(async () => {
-    await fsp.rm(tempRoot, { recursive: true, force: true });
-  });
-
-  it('resolves a legal inner path to its realpath under the KB root', async () => {
-    const filePath = path.join(kbRoot, 'docs', 'hello.md');
-    await fsp.mkdir(path.dirname(filePath), { recursive: true });
-    await fsp.writeFile(filePath, 'hi');
-
-    const resolved = await resolveKbPath(kbName, 'docs/hello.md', tempRoot);
-    expect(resolved).toBe(await fsp.realpath(filePath));
-  });
-
-  it('resolves the KB root itself when given an empty relative path', async () => {
-    const resolved = await resolveKbPath(kbName, '', tempRoot);
-    expect(resolved).toBe(await fsp.realpath(kbRoot));
-  });
-
-  it('throws on `..` escape that resolves outside the KB', async () => {
-    // Create a sibling file next to the KB root so realpath succeeds,
-    // guaranteeing the prefix check (not ENOENT) is what fails.
-    const sibling = path.join(tempRoot, 'secret.txt');
-    await fsp.writeFile(sibling, 'nope');
-
-    await expect(resolveKbPath(kbName, '../secret.txt', tempRoot)).rejects.toThrow(
-      /path escapes KB root/
-    );
-  });
-
-  it('throws on a symlink pointing outside the KB', async () => {
-    const outside = path.join(tempRoot, 'outside.txt');
-    await fsp.writeFile(outside, 'nope');
-    const linkPath = path.join(kbRoot, 'escape.txt');
-    await fsp.symlink(outside, linkPath);
-
-    await expect(resolveKbPath(kbName, 'escape.txt', tempRoot)).rejects.toThrow(
-      /path escapes KB root/
-    );
-  });
-
-  it('throws when an intermediate directory in the walked chain is a symlink to outside', async () => {
-    const outsideDir = path.join(tempRoot, 'elsewhere');
-    await fsp.mkdir(outsideDir);
-    await fsp.writeFile(path.join(outsideDir, 'target.md'), 'nope');
-    const linkDir = path.join(kbRoot, 'shortcut');
-    await fsp.symlink(outsideDir, linkDir, 'dir');
-
-    await expect(resolveKbPath(kbName, 'shortcut/target.md', tempRoot)).rejects.toThrow(
-      /path escapes KB root/
-    );
-  });
-
-  it('throws when the KB directory is missing', async () => {
-    await expect(resolveKbPath('does-not-exist', 'any.md', tempRoot)).rejects.toThrow();
-  });
-
-  it('throws on a null byte in the relative path', async () => {
-    await expect(resolveKbPath(kbName, 'foo\0bar', tempRoot)).rejects.toThrow(
-      /null byte/
-    );
-  });
-
-  it('rejects an invalid kbName before touching the filesystem', async () => {
-    // Without the internal assertValidKbName guard, kbName === '..' would make
-    // kbRoot === tempRoot's parent and the prefix check would cover every
-    // absolute path on disk. Lock that defence in.
-    await expect(resolveKbPath('..', 'anything.md', tempRoot)).rejects.toThrow(
-      /invalid KB name/
-    );
-    await expect(resolveKbPath('foo/bar', 'anything.md', tempRoot)).rejects.toThrow(
-      /invalid KB name/
-    );
   });
 });
 

@@ -5,7 +5,7 @@ import { FaissIndexManager } from './FaissIndexManager.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { getFilesRecursively } from './file-utils.js';
 import { filterIngestablePaths } from './ingest-filter.js';
-import { resolveKbRelativePath, resolveKnowledgeBaseDir } from './kb-fs.js';
+import { assertNoTraversal, resolveKbRelativePath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { appendSectionInDocument, parseHeadingSpec } from './markdown-section.js';
@@ -469,7 +469,7 @@ async function createNewNote(kbName: string, title: string, content: string): Pr
 }
 
 async function appendExistingNote(kbName: string, relativePath: string, content: string): Promise<string> {
-  rejectAbsoluteOrTraversal(relativePath);
+  assertNoTraversal(relativePath);
   const documentPath = await resolveKbRelativePath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath);
   const stat = await fsp.stat(documentPath);
   if (!stat.isFile()) {
@@ -493,7 +493,7 @@ async function appendSectionInExistingNote(
     // empty content is the original error mode this feature exists to remove.
     throw new Error('--append-section refuses to write empty content (stdin was empty or whitespace-only)');
   }
-  rejectAbsoluteOrTraversal(relativePath);
+  assertNoTraversal(relativePath);
   const documentPath = await resolveKbRelativePath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath);
   let stat;
   try {
@@ -541,16 +541,6 @@ async function atomicWriteFile(targetPath: string, data: string, mode?: number):
   }
 }
 
-function rejectAbsoluteOrTraversal(relativePath: string): void {
-  const normalized = relativePath.replace(/\\/g, '/');
-  if (
-    path.posix.isAbsolute(normalized) ||
-    path.win32.isAbsolute(relativePath) ||
-    normalized.split('/').some((segment) => segment === '..')
-  ) {
-    throw new Error(`append path escapes KB root: ${JSON.stringify(relativePath)}`);
-  }
-}
 
 function slugifyTitle(title: string): string {
   const slug = title

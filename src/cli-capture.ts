@@ -12,7 +12,7 @@ import * as path from 'path';
 import { ActiveModelResolutionError, resolveActiveModel } from './active-model.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
-import { resolveKbRelativePath, resolveKnowledgeBaseDir } from './kb-fs.js';
+import { assertNoTraversal, resolveKbRelativePath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel } from './cli-shared.js';
 
@@ -55,7 +55,7 @@ export async function runCapture(rest: string[]): Promise<number> {
   // Reject traversal/absolute --append paths before spawning the command —
   // an obviously bogus target shouldn't have side effects.
   try {
-    rejectAbsoluteOrTraversal(parsed.append!);
+    assertNoTraversal(parsed.append!);
   } catch (err) {
     process.stderr.write(`kb capture: ${(err as Error).message}\n`);
     return 1;
@@ -278,7 +278,7 @@ function detectLanguageFromCommand(argv: string[]): string | null {
 }
 
 async function appendToNote(kbName: string, relativePath: string, content: string): Promise<string> {
-  rejectAbsoluteOrTraversal(relativePath);
+  assertNoTraversal(relativePath);
   const documentPath = await resolveKbRelativePath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath);
   const stat = await fsp.stat(documentPath);
   if (!stat.isFile()) {
@@ -289,16 +289,6 @@ async function appendToNote(kbName: string, relativePath: string, content: strin
   return path.relative(kbDir, documentPath).split(path.sep).join('/');
 }
 
-function rejectAbsoluteOrTraversal(relativePath: string): void {
-  const normalized = relativePath.replace(/\\/g, '/');
-  if (
-    path.posix.isAbsolute(normalized) ||
-    path.win32.isAbsolute(relativePath) ||
-    normalized.split('/').some((segment) => segment === '..')
-  ) {
-    throw new Error(`append path escapes KB root: ${JSON.stringify(relativePath)}`);
-  }
-}
 
 async function refreshKnowledgeBase(kbName: string): Promise<void> {
   await FaissIndexManager.bootstrapLayout();

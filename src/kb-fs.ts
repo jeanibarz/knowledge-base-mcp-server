@@ -12,6 +12,36 @@ import { getFilesRecursively } from './file-utils.js';
 import { filterIngestablePaths } from './ingest-filter.js';
 
 /**
+ * Issue #160 step 3 — single home for "is this rel path safe to join
+ * under a KB root?". Pure lexical check (no I/O, no realpath):
+ *
+ *   1. Reject POSIX-absolute paths (after normalizing `\\` → `/`).
+ *   2. Reject Win32-absolute paths (drive-letter and `\\?\` shapes).
+ *   3. Reject any path segment equal to `..`.
+ *
+ * Throws plain `Error` with the canonical
+ * `path escapes KB root: <relativePath>` message. Call sites that
+ * need a typed error (e.g. `KBError`) wrap their own check on top —
+ * the goal of the helper is to dedupe the byte-identical implementations
+ * in `cli-capture.ts` and `cli-remember.ts`, plus the inline mirror in
+ * `resolveKnowledgeBaseDocumentPath`.
+ *
+ * Empty strings and null bytes are NOT checked here because the
+ * appropriate response varies per call site (different message wording,
+ * sometimes a different error type). Callers handle those separately.
+ */
+export function assertNoTraversal(relativePath: string): void {
+  const normalized = relativePath.replace(/\\/g, '/');
+  if (
+    path.posix.isAbsolute(normalized) ||
+    path.win32.isAbsolute(relativePath) ||
+    normalized.split('/').some((segment) => segment === '..')
+  ) {
+    throw new Error(`path escapes KB root: ${JSON.stringify(relativePath)}`);
+  }
+}
+
+/**
  * Returns the names of available knowledge bases under `rootDir` (one per
  * subdirectory). Hidden entries (dot-prefixed) are filtered — they include
  * the `.faiss` index, the `.reindex-trigger`, and any user-created
@@ -177,17 +207,9 @@ export async function resolveKnowledgeBaseDocumentPath(
   if (relativePath.includes('\0')) {
     throw new Error('path contains null byte');
   }
+  assertNoTraversal(relativePath);
 
   const normalizedRelative = relativePath.replace(/\\/g, '/');
-  if (path.posix.isAbsolute(normalizedRelative)) {
-    throw new Error(`path escapes KB root: ${JSON.stringify(relativePath)}`);
-  }
-
-  const posixNormalized = path.posix.normalize(normalizedRelative);
-  if (posixNormalized.split('/').some((segment) => segment === '..')) {
-    throw new Error(`path escapes KB root: ${JSON.stringify(relativePath)}`);
-  }
-
   const kbRoot = path.resolve(rootDir, kbName);
   const kbRootReal = await realpathIfExists(kbRoot);
   if (kbRootReal === null) {
