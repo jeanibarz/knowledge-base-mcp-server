@@ -6,6 +6,7 @@
 // `import type` is erased by tsc, so the union type is preserved without any
 // runtime require/resolve of the unused provider's tree.
 import type { HuggingFaceInferenceEmbeddings } from '@langchain/community/embeddings/hf';
+import type { InferenceProviderOrPolicy } from '@huggingface/inference';
 import type { OllamaEmbeddings } from '@langchain/ollama';
 import type { OpenAIEmbeddings } from '@langchain/openai';
 import {
@@ -87,6 +88,12 @@ export async function createEmbeddingsClient(
     apiKey: huggingFaceApiKey,
     model: modelName,
     endpointUrl,
-    provider: HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN ? undefined : HUGGINGFACE_PROVIDER,
+    // Issue #159 — HUGGINGFACE_PROVIDER is typed as plain `string` so
+    // `config.ts` doesn't leak `@huggingface/inference`'s
+    // `InferenceProviderOrPolicy` to other modules. Cast at this boundary
+    // — the SDK is the right home for its own type knowledge.
+    provider: HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN
+      ? undefined
+      : (HUGGINGFACE_PROVIDER as InferenceProviderOrPolicy),
   });
 }

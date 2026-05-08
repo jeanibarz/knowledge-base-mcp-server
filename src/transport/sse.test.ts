@@ -18,7 +18,7 @@ import {
   loadTransportConfig,
   TransportConfigError,
   DEFAULT_MCP_PORT,
-} from '../config.js';
+} from '../transport-config.js';
 import { SseHost } from './sse.js';
 
 const VALID_TOKEN = 'a-very-secret-token-for-test-use-only';

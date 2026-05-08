@@ -25,14 +25,16 @@ import {
   KNOWLEDGE_BASES_ROOT_DIR,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   LIST_MODELS_DESCRIPTION,
-  loadTransportConfig,
   REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
   REINDEX_TRIGGER_PATH,
   REINDEX_TRIGGER_POLL_MS,
   RETRIEVE_KNOWLEDGE_DESCRIPTION,
+} from './config.js';
+import {
+  loadTransportConfig,
   TransportConfigError,
   type TransportConfig,
-} from './config.js';
+} from './transport-config.js';
 import { formatRetrievalAsMarkdown } from './formatter.js';
 import {
   listKnowledgeBases,

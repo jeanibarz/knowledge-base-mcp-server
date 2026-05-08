@@ -1,6 +1,5 @@
 import * as path from 'path';
 import * as os from 'os';
-import type { InferenceProviderOrPolicy } from '@huggingface/inference';
 
 export const KNOWLEDGE_BASES_ROOT_DIR = process.env.KNOWLEDGE_BASES_ROOT_DIR ||
   path.join(os.homedir(), 'knowledge_bases');
@@ -22,9 +21,11 @@ export const KB_ACTIVE_MODEL = process.env.KB_ACTIVE_MODEL || '';
 export const DEFAULT_HUGGINGFACE_MODEL_NAME = 'BAAI/bge-small-en-v1.5';
 export const HUGGINGFACE_MODEL_NAME = process.env.HUGGINGFACE_MODEL_NAME || DEFAULT_HUGGINGFACE_MODEL_NAME;
 export const DEFAULT_HUGGINGFACE_PROVIDER = 'hf-inference';
-export const HUGGINGFACE_PROVIDER = (
-  process.env.HUGGINGFACE_PROVIDER || DEFAULT_HUGGINGFACE_PROVIDER
-) as InferenceProviderOrPolicy;
+// Issue #159 — typed as plain `string` so consumers do not transitively
+// couple to `@huggingface/inference`'s `InferenceProviderOrPolicy`. The
+// SDK call site in `embedding-provider.ts` casts at the boundary.
+export const HUGGINGFACE_PROVIDER: string =
+  process.env.HUGGINGFACE_PROVIDER || DEFAULT_HUGGINGFACE_PROVIDER;
 const HUGGINGFACE_ENDPOINT_URL_OVERRIDE = process.env.HUGGINGFACE_ENDPOINT_URL?.trim();
 export const HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN = Boolean(HUGGINGFACE_ENDPOINT_URL_OVERRIDE);
 
@@ -33,7 +34,7 @@ export const HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN = Boolean(HUGGINGFACE_ENDPOINT_
 // Inference Providers router. Route feature-extraction calls through the
 // router by default; allow a full override via HUGGINGFACE_ENDPOINT_URL
 // for self-hosted or Inference Endpoints deployments.
-export function huggingFaceRouterUrl(model: string): string {
+function huggingFaceRouterUrl(model: string): string {
   return `https://router.huggingface.co/hf-inference/models/${model}/pipeline/feature-extraction`;
 }
 
@@ -124,6 +125,15 @@ const DEFAULT_REINDEX_TRIGGER_POLL_MS = 5000;
 const MIN_REINDEX_TRIGGER_POLL_MS = 1000;
 const MAX_REINDEX_TRIGGER_POLL_MS = 60000;
 
+/**
+ * @internal
+ *
+ * Exported only so `config.test.ts` can pin the parser semantics
+ * (default, sentinel, MIN/MAX clamp, scientific-notation acceptance)
+ * directly. Production code uses the resolved `REINDEX_TRIGGER_POLL_MS`
+ * constant below — no consumer outside the test file should import this
+ * function.
+ */
 export function parseReindexTriggerPollMs(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') {
     return DEFAULT_REINDEX_TRIGGER_POLL_MS;
@@ -203,120 +213,7 @@ export const DELETE_DOCUMENT_DESCRIPTION =
 export const REINDEX_KNOWLEDGE_BASE_DESCRIPTION =
   'Forces the active model to fully rebuild its FAISS index from on-disk files, replacing the in-memory store and clearing orphan vectors left behind by prior delete_document calls. The rebuild always covers every KB because FAISS lacks per-vector deletion; passing knowledge_base_name is accepted (and recorded in the response) but does not narrow the rebuild scope.';
 
-// ---------------------------------------------------------------------------
-// Transport configuration (RFC 008: stdio + SSE + streamable HTTP).
-// ---------------------------------------------------------------------------
-
-export type McpTransport = 'stdio' | 'sse' | 'http';
-
-const VALID_TRANSPORTS: readonly McpTransport[] = ['stdio', 'sse', 'http'];
-
-export const DEFAULT_MCP_PORT = 8765;
-export const DEFAULT_MCP_BIND_ADDR = '127.0.0.1';
-
-export interface TransportConfig {
-  transport: McpTransport;
-  port: number;
-  bindAddr: string;
-  authToken?: string;
-  allowedOrigins: string[];
-}
-
-export class TransportConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'TransportConfigError';
-  }
-}
-
-function parseTransport(raw: string | undefined): McpTransport {
-  if (raw === undefined || raw === '') {
-    return 'stdio';
-  }
-  if ((VALID_TRANSPORTS as readonly string[]).includes(raw)) {
-    return raw as McpTransport;
-  }
-  throw new TransportConfigError(
-    `Invalid MCP_TRANSPORT='${raw}'; expected one of ${VALID_TRANSPORTS.join('|')}`,
-  );
-}
-
-function parsePort(raw: string | undefined): number {
-  if (raw === undefined || raw === '') {
-    return DEFAULT_MCP_PORT;
-  }
-  const port = Number(raw);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new TransportConfigError(
-      `Invalid MCP_PORT='${raw}'; expected integer in [1, 65535]`,
-    );
-  }
-  return port;
-}
-
-/**
- * Normalize an origin string to the RFC 6454 form browsers actually send:
- * lowercased scheme + host, no path, no trailing slash. Non-default ports
- * are preserved (`:8080`); the WHATWG URL parser strips scheme-default ports
- * (`:443` on https, `:80` on http), matching browser behavior.
- * Accepts operator-friendly input like "HTTPS://App.EXAMPLE.com:8080/".
- *
- * Falls back to a plain `toLowerCase()` on strings the WHATWG URL parser
- * rejects (e.g. missing scheme). A malformed stored entry will then never
- * match a browser-sent Origin and silently behave as "deny" — which is the
- * safe direction for an allow-list. Tightening this into a hard reject is
- * tracked separately in #77's issue body.
- */
-export function normalizeOrigin(origin: string): string {
-  const trimmed = origin.endsWith('/') ? origin.slice(0, -1) : origin;
-  try {
-    const url = new URL(trimmed);
-    return `${url.protocol}//${url.host}`;
-  } catch {
-    return trimmed.toLowerCase();
-  }
-}
-
-function parseAllowedOrigins(raw: string | undefined): string[] {
-  if (raw === undefined || raw.trim() === '') {
-    return [];
-  }
-  if (raw.trim() === '*') {
-    throw new TransportConfigError(
-      "MCP_ALLOWED_ORIGINS='*' is rejected; list explicit origins (see RFC 008 §6.4 / §7.6)",
-    );
-  }
-  return raw
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-    .map((entry) => normalizeOrigin(entry));
-}
-
-export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): TransportConfig {
-  const transport = parseTransport(env.MCP_TRANSPORT);
-  const port = parsePort(env.MCP_PORT);
-  const bindAddr = env.MCP_BIND_ADDR && env.MCP_BIND_ADDR.length > 0
-    ? env.MCP_BIND_ADDR
-    : DEFAULT_MCP_BIND_ADDR;
-  const authToken = env.MCP_AUTH_TOKEN;
-  const allowedOrigins = parseAllowedOrigins(env.MCP_ALLOWED_ORIGINS);
-
-  if (transport === 'sse' || transport === 'http') {
-    if (!authToken || authToken.length === 0) {
-      throw new TransportConfigError(
-        `MCP_TRANSPORT=${transport} requires MCP_AUTH_TOKEN to be set (generate with: openssl rand -base64 32)`,
-      );
-    }
-    // RFC 008 §6.1 / §8.1 R3: tokens shorter than 32 chars are rejected at
-    // startup so operators cannot unintentionally deploy a brute-forceable
-    // secret even if generation tooling truncates.
-    if (authToken.length < 32) {
-      throw new TransportConfigError(
-        'MCP_AUTH_TOKEN must be at least 32 characters (generate with: openssl rand -base64 32)',
-      );
-    }
-  }
-
-  return { transport, port, bindAddr, authToken, allowedOrigins };
-}
+// Transport configuration (RFC 008) moved to `src/transport-config.ts`
+// in issue #159 — `KnowledgeBaseServer.run`, `transport/sse.ts`,
+// `transport/http.ts`, and `transport/base-http-host.ts` import it
+// directly.
