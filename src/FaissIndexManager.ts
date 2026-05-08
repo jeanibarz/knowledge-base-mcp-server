@@ -57,6 +57,7 @@ import {
 } from './faiss-store-layout.js';
 
 export { nextVersionAfter } from './faiss-store-layout.js';
+export { MigrationRefusedError } from './layout-bootstrap.js';
 
 /**
  * RFC 013 §4.7 — atomic write for `model_name.txt`. Per-model file:
