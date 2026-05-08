@@ -3,18 +3,15 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
-import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import { createEmbeddingsClient, type EmbeddingsClient } from './embedding-provider.js';
 import { handleFsOperationError, toError } from './error-utils.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
-import { parseFrontmatter } from './frontmatter.js';
-import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
+import { buildChunkDocuments, writeSidecarHashes } from './file-ingest.js';
 import { loadFile } from './loaders.js';
 import {
   KNOWLEDGE_BASES_ROOT_DIR,
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
-  resolveChunkSize,
 } from './config.js';
 import {
   activeFileExists,
@@ -412,72 +409,6 @@ export class FaissIndexManager {
     });
   }
 
-  /**
-   * Splits `content` into chunks and tags each chunk with the RFC 010 M1
-   * metadata shape plus RFC 011 M2 additions (`frontmatter` whitelist,
-   * `pdf_path` sibling detection). Frontmatter (if any) is stripped before
-   * splitting so the `---` fence does not leak into the embedding text.
-   *
-   * Both the incremental update loop and the fallback rebuild loop call
-   * this helper so the metadata shape stays identical across paths.
-   */
-  private async buildChunkDocuments(
-    filePath: string,
-    content: string,
-    knowledgeBaseName: string
-  ): Promise<Document[]> {
-    const ext = path.extname(filePath).toLowerCase();
-    const { chunkSize, chunkOverlap } = resolveChunkSize();
-    const splitter = ext === '.md'
-      ? new MarkdownTextSplitter({
-          chunkSize,
-          chunkOverlap,
-          keepSeparator: false,
-        })
-      : new RecursiveCharacterTextSplitter({
-          chunkSize,
-          chunkOverlap,
-        });
-
-    const { tags, body, frontmatter } = parseFrontmatter(content);
-    const relativePath = path
-      .relative(KNOWLEDGE_BASES_ROOT_DIR, filePath)
-      .split(path.sep)
-      .join('/');
-
-    // RFC 011 §5.4.2: whitelist the known frontmatter keys and divert any
-    // other string-valued keys into `extras`. Non-string-valued keys are
-    // dropped (FAILSAFE YAML produces strings, arrays, or maps — the last
-    // two are not whitelisted and have no safe scalar representation here).
-    const liftedFrontmatter = liftFrontmatter(frontmatter, filePath);
-
-    // RFC 011 §5.3.4: detect a sibling PDF for `.md` files. Once per file,
-    // before the splitter loop; attached to every chunk via the metadata
-    // spread below.
-    const pdfPath = ext === '.md'
-      ? detectSiblingPdfPath(filePath, knowledgeBaseName)
-      : undefined;
-
-    const documents = await splitter.createDocuments(
-      [body],
-      [{ source: filePath }]
-    );
-    for (let i = 0; i < documents.length; i += 1) {
-      documents[i].metadata = {
-        ...documents[i].metadata,
-        source: filePath,
-        relativePath,
-        knowledgeBase: knowledgeBaseName,
-        extension: ext,
-        chunkIndex: i,
-        tags,
-        ...(liftedFrontmatter !== undefined ? { frontmatter: liftedFrontmatter } : {}),
-        ...(pdfPath !== undefined ? { pdf_path: pdfPath } : {}),
-      };
-    }
-    return documents;
-  }
-
   private async addDocumentsToIndex(documentsToAdd: Document[]): Promise<boolean> {
     if (documentsToAdd.length === 0) {
       return false;
@@ -646,10 +577,10 @@ export class FaissIndexManager {
               continue;
             }
 
-            const documentsToAdd: Document[] = await this.buildChunkDocuments(
+            const documentsToAdd: Document[] = await buildChunkDocuments(
               filePath,
               content,
-              knowledgeBaseName
+              knowledgeBaseName,
             );
 
             if (await this.addDocumentsToIndex(documentsToAdd)) {
@@ -681,10 +612,10 @@ export class FaissIndexManager {
               logger.error(`Error loading file ${filePath}:`, toError(error));
               continue;
             }
-            const documents = await this.buildChunkDocuments(
+            const documents = await buildChunkDocuments(
               filePath,
               content,
-              knowledgeBaseName
+              knowledgeBaseName,
             );
             if (await this.addDocumentsToIndex(documents)) {
               indexMutated = true;
@@ -710,41 +641,16 @@ export class FaissIndexManager {
             saveError,
           );
         }
-        // Sidecar hashes are written only after the index has persisted so we
-        // never claim a hash for vectors that never landed on disk. tmp+rename
-        // keeps each sidecar atomic. A crash after save() but before every
-        // rename completes will re-embed the unhashed files on next start,
-        // duplicating their vectors until RFC 007 PR 2.1 lands the pending
-        // manifest protocol.
-        //
-        // Issue #90 follow-up (Codex P1) — the sidecar write batch is wrapped
-        // in `withSidecarLock` so a concurrent model's `purgeStaleSidecars`
-        // can't rmrf `<kb>/.index/` between our `mkdir` and `rename` and
-        // ENOENT this writer. The lock is held only across the syscall
-        // batch, no embedding work — cross-model contention is bounded to
-        // milliseconds.
-        await withSidecarLock(async () => {
-          await Promise.all(
-            pendingHashWrites.map(async ({ path: target, hash }) => {
-              const tmpPath = `${target}.tmp`;
-              try {
-                // Recreate the parent if a peer purged it between the
-                // pre-loop mkdir and now. mkdir({recursive:true}) is a
-                // no-op when the dir already exists.
-                await fsp.mkdir(path.dirname(target), { recursive: true });
-                await fsp.writeFile(tmpPath, hash, { encoding: 'utf-8' });
-                await fsp.rename(tmpPath, target);
-              } catch (error) {
-                try {
-                  await fsp.unlink(tmpPath);
-                } catch {
-                  // best-effort cleanup; original error is what matters
-                }
-                handleFsOperationError('write file hash metadata to', target, error);
-              }
-            })
-          );
-        });
+        // Sidecar hashes are written only after the index has persisted so
+        // we never claim a hash for vectors that never landed on disk.
+        // `writeSidecarHashes` runs the batch under `withSidecarLock` so a
+        // concurrent model's `purgeStaleSidecars` cannot rmrf
+        // `<kb>/.index/` between our pre-loop `mkdir` and `rename` (issue
+        // #90 follow-up). A crash between save() and every rename
+        // completing will re-embed the unhashed files on next start,
+        // duplicating their vectors until RFC 007 PR 2.1 lands the
+        // pending-manifest protocol.
+        await writeSidecarHashes(pendingHashWrites);
       }
       logger.debug('FAISS index update process completed.');
     } catch (error: unknown) {
