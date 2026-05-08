@@ -858,7 +858,8 @@ describe('FaissIndexManager permission handling', () => {
     process.env.HUGGINGFACE_API_KEY = 'test-key';
 
     jest.resetModules();
-    const { FaissIndexManager, MigrationRefusedError } = await import('./FaissIndexManager.js');
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { MigrationRefusedError } = await import('./layout-bootstrap.js');
 
     await expect(
       FaissIndexManager.bootstrapLayout()
