@@ -5,291 +5,92 @@
 // only loaded when MCP_TRANSPORT=http.
 //
 // Surface:
-//   GET  /health            unauthenticated JSON liveness probe
-//   POST /mcp               initialize or per-session JSON-RPC POST
-//   GET  /mcp               optional per-session SSE stream
-//   DELETE /mcp             terminate a session
-//   OPTIONS *               CORS preflight against MCP_ALLOWED_ORIGINS
+//   GET    /health     unauthenticated JSON liveness probe
+//   POST   /mcp        initialize or per-session JSON-RPC POST
+//   GET    /mcp        optional per-session SSE stream
+//   DELETE /mcp        terminate a session
+//   OPTIONS *          CORS preflight against MCP_ALLOWED_ORIGINS
+//
+// Issue #158 — most of the host (lifecycle, dispatch gates, auth, CORS,
+// notify fanout, access log) lives in `BaseHttpHost`; this file owns the
+// per-method routing on `/mcp`, the streamable-HTTP session bookkeeping
+// (Mcp-Session-Id header), and the JSON-RPC error envelope.
 
 import * as http from 'node:http';
 import { Buffer } from 'node:buffer';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 
-import { normalizeOrigin, type TransportConfig } from '../config.js';
 import { logger } from '../logger.js';
+import {
+  BaseHttpHost,
+  type BaseHttpHostOptions,
+  respond,
+} from './base-http-host.js';
 
 const MCP_ENDPOINT = '/mcp';
-const HEALTH_ENDPOINT = '/health';
-
 const MAXIMUM_MESSAGE_SIZE_BYTES = 4 * 1024 * 1024;
-const SHUTDOWN_DRAIN_DEADLINE_MS = 10_000;
-const SHUTDOWN_POLL_INTERVAL_MS = 50;
 const UUID_SHAPE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-export interface StreamableHttpHostOptions {
-  config: TransportConfig;
-  createMcpServer: () => McpServer;
-}
+export type StreamableHttpHostOptions = BaseHttpHostOptions;
 
-interface SessionEntry {
-  transport: StreamableHTTPServerTransport;
-  mcp: McpServer;
-}
-
-type AccessLog = {
-  ts: string;
-  method: string;
-  path: string;
-  status: number;
-  duration_ms: number;
-  origin: string | null;
-  auth_present: boolean;
-};
-
-export class StreamableHttpHost {
-  private readonly options: StreamableHttpHostOptions;
-  private readonly sessions = new Map<string, SessionEntry>();
-  private readonly originAllowList: ReadonlySet<string>;
-  private readonly authTokenBuf: Buffer;
-  private server?: http.Server;
-  private inFlight = 0;
-  private shuttingDown = false;
-
-  constructor(options: StreamableHttpHostOptions) {
-    this.options = options;
-    this.originAllowList = new Set(options.config.allowedOrigins);
-    const token = options.config.authToken ?? '';
-    this.authTokenBuf = Buffer.from(token, 'latin1');
+export class StreamableHttpHost extends BaseHttpHost<StreamableHTTPServerTransport> {
+  protected get logPrefix(): string {
+    return 'http';
   }
 
-  /**
-   * Number of live HTTP sessions. Read-only — narrower than a full
-   * session-list export so callers cannot reach in to fan notifications
-   * out by hand. Use `notify(...)` for that.
-   */
-  get sessionCount(): number {
-    return this.sessions.size;
+  protected get bannerLabel(): string {
+    return 'streamable HTTP';
   }
 
-  /**
-   * Issue #157 step 4 — fan a warm-up logging notification out across every
-   * live session. Same shape and semantics as `SseHost.notify`: the host
-   * owns the fanout, swallows per-session errors at debug level, and
-   * iterates a snapshot to defend against concurrent `onclose` deletes.
-   */
-  async notify(
-    level: 'info' | 'warning' | 'error',
-    logger_: string,
-    data: string,
-  ): Promise<void> {
-    const targets = [...this.sessions.values()].map((entry) => entry.mcp);
-    if (targets.length === 0) return;
-    await Promise.all(
-      targets.map(async (target) => {
-        try {
-          await target.sendLoggingMessage({ level, logger: logger_, data });
-        } catch (err) {
-          logger.debug(`[http] notify error: ${(err as Error).message}`);
-        }
-      }),
-    );
+  protected corsAllowedMethods(): string {
+    return 'GET, POST, DELETE, OPTIONS';
   }
 
-  async start(): Promise<http.Server> {
-    if (this.server) {
-      throw new Error('StreamableHttpHost already started');
-    }
-    const server = http.createServer((req, res) => {
-      void this.dispatch(req, res);
-    });
-    server.on('clientError', (err, socket) => {
-      try {
-        socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
-      } catch {
-        // best-effort
-      }
-      logger.warn(`[http] clientError: ${err.message}`);
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      const onError = (err: Error) => {
-        server.removeListener('listening', onListening);
-        reject(err);
-      };
-      const onListening = () => {
-        server.removeListener('error', onError);
-        resolve();
-      };
-      server.once('error', onError);
-      server.once('listening', onListening);
-      server.listen(this.options.config.port, this.options.config.bindAddr);
-    });
-
-    this.server = server;
-    logger.info(
-      `Knowledge Base MCP server running on streamable HTTP at http://${this.options.config.bindAddr}:${this.options.config.port} ` +
-        `(allowed_origins=${this.options.config.allowedOrigins.length})`,
-    );
-    return server;
+  protected corsAllowedHeaders(): string {
+    return 'Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID';
   }
 
-  async stop(): Promise<void> {
-    if (!this.server) return;
-    this.shuttingDown = true;
-
-    const server = this.server;
-    const closePromise = new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
-
-    const deadline = Date.now() + SHUTDOWN_DRAIN_DEADLINE_MS;
-    while (this.inFlight > 0 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, SHUTDOWN_POLL_INTERVAL_MS));
-    }
-    if (this.inFlight > 0) {
-      logger.warn(
-        `[http] shutdown drain exceeded ${SHUTDOWN_DRAIN_DEADLINE_MS}ms with ${this.inFlight} in-flight; forcing close`,
-      );
-    }
-
-    const live = [...this.sessions.entries()];
-    for (const [sessionId, entry] of live) {
-      await this.closeEntry(sessionId, entry);
-    }
-    await closePromise;
-    this.server = undefined;
+  protected setExtraCorsResponseHeaders(res: http.ServerResponse): void {
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
   }
 
-  private async dispatch(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const startedAt = Date.now();
+  protected async handleAuthenticatedRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+  ): Promise<number> {
     const method = req.method ?? 'GET';
-    const url = new URL(req.url ?? '/', 'http://placeholder');
-    const path = url.pathname;
-    const originHeader = headerValue(req.headers.origin);
-    const normalizedOrigin =
-      originHeader !== null ? normalizeOrigin(originHeader) : null;
-    const authPresent = Boolean(req.headers.authorization);
 
-    const finalize = (status: number) => {
-      this.writeAccessLog({
-        ts: new Date(startedAt).toISOString(),
-        method,
-        path,
-        status,
-        duration_ms: Date.now() - startedAt,
-        origin: originHeader,
-        auth_present: authPresent,
-      });
-    };
-
-    if (method === 'OPTIONS') {
-      const status = this.handlePreflight(req, res, originHeader, normalizedOrigin);
-      finalize(status);
-      return;
-    }
-
-    if (path === HEALTH_ENDPOINT) {
-      const status = this.handleHealth(method, res);
-      finalize(status);
-      return;
-    }
-
-    if (normalizedOrigin !== null && !this.originAllowList.has(normalizedOrigin)) {
-      respond(res, 403, 'Origin not allowed');
-      finalize(403);
-      return;
-    }
-
-    if (!this.verifyBearer(req.headers.authorization)) {
-      res.setHeader('WWW-Authenticate', 'Bearer realm="knowledge-base-mcp"');
-      respond(res, 401, 'Unauthorized');
-      finalize(401);
-      return;
-    }
-
-    if (this.shuttingDown) {
-      res.setHeader('Retry-After', '0');
-      respond(res, 503, 'Shutting down');
-      finalize(503);
-      return;
-    }
-
-    if (originHeader !== null) {
-      this.setCorsResponseHeaders(res, originHeader);
-    }
-
-    if (path !== MCP_ENDPOINT) {
+    if (url.pathname !== MCP_ENDPOINT) {
+      // Only /mcp is routed past the auth gate; everything else 404s as
+      // plain text (matches pre-#158 behaviour). The /health gate ran
+      // earlier in BaseHttpHost.dispatch.
       respond(res, 404, 'Not Found');
-      finalize(404);
-      return;
+      return 404;
     }
 
     this.inFlight += 1;
     try {
-      const status = await this.handleMcpRequest(req, res);
-      finalize(status);
+      return await this.handleMcpRequest(req, res, method);
     } catch (err) {
       logger.error(`[http] error handling ${method} /mcp: ${(err as Error).message}`);
       if (!res.headersSent) {
         respondJsonRpcError(res, 500, -32603, 'Internal Server Error');
       }
-      finalize(res.statusCode || 500);
+      return res.statusCode || 500;
     } finally {
       this.inFlight -= 1;
     }
   }
 
-  private handlePreflight(
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-    originHeader: string | null,
-    normalizedOrigin: string | null,
-  ): number {
-    if (originHeader === null || normalizedOrigin === null ||
-        !this.originAllowList.has(normalizedOrigin)) {
-      respond(res, 403, 'Origin not allowed');
-      return 403;
-    }
-    this.setCorsResponseHeaders(res, originHeader);
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader(
-      'Access-Control-Allow-Headers',
-      'Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID',
-    );
-    res.setHeader('Access-Control-Max-Age', '600');
-    res.writeHead(204).end();
-    return 204;
-  }
-
-  private handleHealth(method: string, res: http.ServerResponse): number {
-    if (method !== 'GET' && method !== 'HEAD') {
-      res.setHeader('Allow', 'GET, HEAD');
-      respond(res, 405, 'Method Not Allowed');
-      return 405;
-    }
-    const body = JSON.stringify({ status: 'ok' });
-    const buf = Buffer.from(body, 'utf8');
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Content-Length', String(buf.length));
-    res.setHeader('Cache-Control', 'no-store');
-    res.writeHead(200);
-    if (method === 'GET') {
-      res.end(buf);
-    } else {
-      res.end();
-    }
-    return 200;
-  }
-
   private async handleMcpRequest(
     req: http.IncomingMessage,
     res: http.ServerResponse,
+    method: string,
   ): Promise<number> {
-    const method = req.method ?? 'GET';
     if (method !== 'POST' && method !== 'GET' && method !== 'DELETE') {
       res.setHeader('Allow', 'GET, POST, DELETE');
       respondJsonRpcError(res, 405, -32000, 'Method not allowed.');
@@ -416,50 +217,12 @@ export class StreamableHttpHost {
     if (!entry) return;
     await this.closeEntry(sessionId, entry);
   }
-
-  private async closeEntry(sessionId: string, entry: SessionEntry): Promise<void> {
-    this.sessions.delete(sessionId);
-    try {
-      await entry.transport.close();
-    } catch (err) {
-      logger.warn(`[http] error closing transport: ${(err as Error).message}`);
-    }
-    try {
-      await entry.mcp.close();
-    } catch (err) {
-      logger.warn(`[http] error closing mcp: ${(err as Error).message}`);
-    }
-  }
-
-  private setCorsResponseHeaders(res: http.ServerResponse, origin: string): void {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
-    res.setHeader('Vary', 'Origin');
-  }
-
-  private verifyBearer(authHeader: string | undefined): boolean {
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return false;
-    }
-    if (this.authTokenBuf.length === 0) {
-      return false;
-    }
-    const provided = Buffer.from(authHeader.slice('Bearer '.length), 'latin1');
-    if (provided.length !== this.authTokenBuf.length) {
-      return false;
-    }
-    try {
-      return timingSafeEqual(provided, this.authTokenBuf);
-    } catch {
-      return false;
-    }
-  }
-
-  private writeAccessLog(entry: AccessLog): void {
-    const payload = JSON.stringify({ event: 'http_access', ...entry });
-    logger.info(payload);
-  }
 }
+
+// ---------------------------------------------------------------------------
+// HTTP-only helpers — JSON-RPC error envelope, session-id header parsing,
+// JSON body reader.
+// ---------------------------------------------------------------------------
 
 type SessionIdResult =
   | { kind: 'ok'; sessionId: string | null }
@@ -495,24 +258,6 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
     throw new Error('request body is empty');
   }
   return JSON.parse(raw);
-}
-
-function headerValue(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) return value[0] ?? null;
-  return value ?? null;
-}
-
-function respond(res: http.ServerResponse, status: number, message: string): void {
-  if (res.headersSent) {
-    try {
-      res.end();
-    } catch {
-      // ignore
-    }
-    return;
-  }
-  res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end(message);
 }
 
 function respondJsonRpcError(
