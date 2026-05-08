@@ -11,10 +11,8 @@ import {
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config.js';
 import { formatRetrievalAsJson, formatRetrievalAsMarkdown } from './formatter.js';
-import { listKnowledgeBases } from './kb-fs.js';
+import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
-import { getFilesRecursively } from './file-utils.js';
-import { filterIngestablePaths } from './ingest-filter.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 
 interface SearchArgs {
@@ -224,26 +222,19 @@ async function computeStaleness(modelId: string): Promise<Staleness> {
     return { indexMtime, modifiedFiles: 0, newFiles: 0 };
   }
 
-  for (const kbName of kbs) {
-    const kbDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
-    let allFiles: string[];
-    try {
-      allFiles = await getFilesRecursively(kbDir);
-    } catch {
-      continue;
-    }
-    const ingestable = await filterIngestablePaths(allFiles, kbDir);
+  const enumerations = await enumerateIngestableKbFiles(KNOWLEDGE_BASES_ROOT_DIR, kbs);
 
-    for (const f of ingestable) {
+  for (const { kbPath, filePaths } of enumerations) {
+    for (const f of filePaths) {
       try {
         const st = await fsp.stat(f);
         if (st.mtimeMs > indexMtimeMs) modified += 1;
       } catch {
-        // file vanished between getFilesRecursively and stat; ignore it
+        // file vanished between the walker and stat; ignore it
       }
     }
 
-    const sidecarDir = path.join(kbDir, '.index');
+    const sidecarDir = path.join(kbPath, '.index');
     let sidecarCount = 0;
     try {
       const sidecars = await fsp.readdir(sidecarDir);
@@ -251,8 +242,8 @@ async function computeStaleness(modelId: string): Promise<Staleness> {
     } catch {
       // .index missing; count difference below covers this case
     }
-    if (ingestable.length > sidecarCount) {
-      added += ingestable.length - sidecarCount;
+    if (filePaths.length > sidecarCount) {
+      added += filePaths.length - sidecarCount;
     }
   }
 

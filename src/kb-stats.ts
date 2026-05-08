@@ -1,0 +1,167 @@
+// kb-stats.ts — read-only observability surface for the kb_stats MCP tool
+// (#54) and a future `kb stats` CLI (#157).
+//
+// Pure data computation: takes a `FaissIndexManager` and the on-disk KB
+// layout, returns a structured payload. Knows nothing about MCP wire
+// shape — the caller wraps the result. The MCP handler in
+// `KnowledgeBaseServer.handleKbStats` and a future CLI subcommand both
+// consume `computeKbStats`.
+
+import * as fsp from 'fs/promises';
+import * as path from 'path';
+import type { FaissIndexManager } from './FaissIndexManager.js';
+import {
+  FAISS_INDEX_PATH,
+  INGEST_EXCLUDE_PATHS,
+  INGEST_EXTRA_EXTENSIONS,
+  KNOWLEDGE_BASES_ROOT_DIR,
+} from './config.js';
+import { KBError } from './errors.js';
+import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
+import { logger } from './logger.js';
+
+export interface KbStatsRow {
+  file_count: number;
+  chunk_count: number;
+  total_bytes_indexed: number;
+  last_updated_at: string | null;
+}
+
+export interface KbStatsPayload {
+  knowledge_bases: Record<string, KbStatsRow>;
+  embedding: { provider: string; model: string; dim: number | null };
+  index_path: string;
+  server: { version: string; uptime_ms: number };
+}
+
+export interface ComputeKbStatsOptions {
+  /** Restrict to a single KB. Throws `KBError('KB_NOT_FOUND')` if unregistered. */
+  knowledgeBaseName?: string;
+  /** Server version string surfaced under `server.version`. */
+  serverVersion: string;
+  /** `Date.now()` baseline used to derive `server.uptime_ms`. */
+  startedAt: number;
+}
+
+/**
+ * Issue #54 + #157 — compute the kb_stats payload from a manager + the
+ * registered KB list on disk. Returns plain data; the MCP handler wraps
+ * it as `CallToolResult` and a future `kb stats` CLI prints it directly.
+ *
+ * Counts reflect whatever is on disk + in the loaded FAISS docstore RIGHT
+ * NOW. Read-only — does not acquire the write lock and does not trigger
+ * an `updateIndex`.
+ *
+ * Throws `KBError('KB_NOT_FOUND')` when `options.knowledgeBaseName` is
+ * set but the KB is not registered under `KNOWLEDGE_BASES_ROOT_DIR`.
+ */
+export async function computeKbStats(
+  manager: FaissIndexManager,
+  options: ComputeKbStatsOptions,
+): Promise<KbStatsPayload> {
+  const allKbs = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+  let kbsToReport: string[];
+  if (options.knowledgeBaseName !== undefined) {
+    if (!allKbs.includes(options.knowledgeBaseName)) {
+      throw new KBError(
+        'KB_NOT_FOUND',
+        `Knowledge base "${options.knowledgeBaseName}" not found under ${KNOWLEDGE_BASES_ROOT_DIR}.`,
+      );
+    }
+    kbsToReport = [options.knowledgeBaseName];
+  } else {
+    kbsToReport = allKbs;
+  }
+
+  const indexStats = manager.getStats();
+
+  // Apply the SAME ingest filter the indexer uses, so file_count and
+  // total_bytes_indexed reflect what would actually be embedded — not the
+  // raw file walk (which still includes excluded extensions and excluded
+  // subtrees).
+  const enumerations = await enumerateIngestableKbFiles(
+    KNOWLEDGE_BASES_ROOT_DIR,
+    kbsToReport,
+    {
+      extraExtensions: INGEST_EXTRA_EXTENSIONS,
+      excludePaths: INGEST_EXCLUDE_PATHS,
+    },
+  );
+
+  const knowledge_bases: Record<string, KbStatsRow> = {};
+  for (const { kbName, kbPath, filePaths } of enumerations) {
+    let totalBytes = 0;
+    for (const filePath of filePaths) {
+      try {
+        const st = await fsp.stat(filePath);
+        totalBytes += st.size;
+      } catch (err) {
+        // Best-effort: a TOCTOU between the walker and stat (e.g. concurrent
+        // edit) shouldn't fail the whole stats call.
+        logger.debug(`kb_stats: could not stat ${filePath}: ${(err as Error).message}`);
+      }
+    }
+    const lastUpdatedAt = await maxMtimeIso(path.join(kbPath, '.index'));
+    knowledge_bases[kbName] = {
+      file_count: filePaths.length,
+      chunk_count: indexStats.chunkCountsByKb[kbName] ?? 0,
+      total_bytes_indexed: totalBytes,
+      last_updated_at: lastUpdatedAt,
+    };
+  }
+
+  return {
+    knowledge_bases,
+    embedding: {
+      provider: manager.embeddingProvider,
+      model: manager.modelName,
+      dim: indexStats.dim,
+    },
+    index_path: FAISS_INDEX_PATH,
+    server: {
+      version: options.serverVersion,
+      uptime_ms: Date.now() - options.startedAt,
+    },
+  };
+}
+
+/**
+ * Issue #54 — recursively walk `dir` for the latest mtime of any file
+ * under it. Used by `computeKbStats` to derive `last_updated_at` per KB
+ * from sidecar hash files at `<kb>/.index/`: the most recent sidecar
+ * mtime is the last time any file in this KB was (re)embedded by the
+ * active model. Returns an ISO string with millisecond precision, or
+ * null when the directory is missing (KB never indexed) or contains no
+ * files.
+ */
+export async function maxMtimeIso(dir: string): Promise<string | null> {
+  let latest = 0;
+  async function walk(target: string): Promise<void> {
+    let entries: Array<import('fs').Dirent>;
+    try {
+      entries = await fsp.readdir(target, { withFileTypes: true });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return;
+      throw err;
+    }
+    for (const entry of entries) {
+      const child = path.join(target, entry.name);
+      if (entry.isDirectory()) {
+        await walk(child);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        const st = await fsp.stat(child);
+        if (st.mtimeMs > latest) latest = st.mtimeMs;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') continue;
+        throw err;
+      }
+    }
+  }
+  await walk(dir);
+  return latest === 0 ? null : new Date(latest).toISOString();
+}
