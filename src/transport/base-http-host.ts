@@ -22,7 +22,7 @@ import { Buffer } from 'node:buffer';
 import { timingSafeEqual } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import { normalizeOrigin, type TransportConfig } from '../config.js';
+import { normalizeOrigin, type TransportConfig } from '../transport-config.js';
 import { logger } from '../logger.js';
 
 const HEALTH_ENDPOINT = '/health';
