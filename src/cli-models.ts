@@ -1,5 +1,4 @@
 import * as fsp from 'fs/promises';
-import * as path from 'path';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,
@@ -13,11 +12,9 @@ import {
 } from './active-model.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
-import { listKnowledgeBases } from './kb-fs.js';
+import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { estimateCostUsd } from './cost-estimates.js';
-import { getFilesRecursively } from './file-utils.js';
-import { filterIngestablePaths } from './ingest-filter.js';
 
 export async function runModels(rest: string[]): Promise<number> {
   const verb = rest[0];
@@ -124,11 +121,9 @@ async function runModelsAdd(rest: string[]): Promise<number> {
   let fileCount = 0;
   try {
     const kbs = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
-    for (const kbName of kbs) {
-      const kbDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
-      const all = await getFilesRecursively(kbDir);
-      const ingestable = await filterIngestablePaths(all, kbDir);
-      for (const f of ingestable) {
+    const enumerations = await enumerateIngestableKbFiles(KNOWLEDGE_BASES_ROOT_DIR, kbs);
+    for (const { filePaths } of enumerations) {
+      for (const f of filePaths) {
         try {
           const st = await fsp.stat(f);
           totalBytes += st.size;

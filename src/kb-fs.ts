@@ -8,6 +8,8 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { assertValidKbName } from './kb-paths.js';
 import { KBError } from './errors.js';
+import { getFilesRecursively } from './file-utils.js';
+import { filterIngestablePaths } from './ingest-filter.js';
 
 /**
  * Returns the names of available knowledge bases under `rootDir` (one per
@@ -21,6 +23,48 @@ import { KBError } from './errors.js';
 export async function listKnowledgeBases(rootDir: string): Promise<string[]> {
   const entries = await fsp.readdir(rootDir);
   return entries.filter((entry) => !entry.startsWith('.'));
+}
+
+export interface KbFileEnumeration {
+  kbName: string;
+  kbPath: string;
+  filePaths: string[];
+}
+
+export interface EnumerateIngestableKbFilesOptions {
+  extraExtensions?: readonly string[];
+  excludePaths?: readonly string[];
+}
+
+/**
+ * Issue #157 — single home for the per-KB walk + ingest-filter shape that
+ * `kb_stats`, the indexer, `kb models add` cost preview, and `kb search`
+ * staleness preview all share.
+ *
+ * For each name in `kbNames`, walks `<rootDir>/<kbName>` with
+ * `getFilesRecursively` (which already skips dot-prefixed entries) and
+ * applies `filterIngestablePaths` (with caller-supplied extras/excludes).
+ * Result preserves input order so callers can stream progress against a
+ * stable denominator.
+ *
+ * Caller is responsible for filtering dot-prefixed names out of `kbNames`
+ * if its source admits them (e.g. raw `fsp.readdir`); `listKnowledgeBases`
+ * already does this.
+ */
+export async function enumerateIngestableKbFiles(
+  rootDir: string,
+  kbNames: readonly string[],
+  options?: EnumerateIngestableKbFilesOptions,
+): Promise<KbFileEnumeration[]> {
+  const filterOpts = options ?? {};
+  const result: KbFileEnumeration[] = [];
+  for (const kbName of kbNames) {
+    const kbPath = path.join(rootDir, kbName);
+    const candidates = await getFilesRecursively(kbPath);
+    const filePaths = filterIngestablePaths(candidates, kbPath, filterOpts);
+    result.push({ kbName, kbPath, filePaths });
+  }
+  return result;
 }
 
 const KB_DESCRIPTION_MAX_LEN = 80;

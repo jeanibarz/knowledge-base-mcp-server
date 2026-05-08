@@ -16,10 +16,9 @@ import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import { handleFsOperationError, toError } from './error-utils.js';
-import { calculateSHA256, getFilesRecursively } from './file-utils.js';
+import { calculateSHA256 } from './file-utils.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
-import { filterIngestablePaths } from './ingest-filter.js';
 import { loadFile } from './loaders.js';
 import {
   EMBEDDING_PROVIDER,
@@ -45,7 +44,7 @@ import {
 import { deriveModelId, EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
 import { KBError } from './errors.js';
-import { listKnowledgeBases } from './kb-fs.js';
+import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { makeOllamaOnFailedAttempt } from './ollama-error.js';
 import {
   loadFaissStoreAtomic,
@@ -838,30 +837,30 @@ export class FaissIndexManager {
       );
       const pendingHashWrites: { path: string; hash: string }[] = [];
 
-      const knowledgeBaseFiles: {
-        knowledgeBaseName: string;
-        knowledgeBasePath: string;
-        filePaths: string[];
-      }[] = [];
-
       // First enumerate every candidate path so progress notifications can
-      // report a stable denominator before embedding begins.
-      for (const knowledgeBaseName of knowledgeBases) {
+      // report a stable denominator before embedding begins. `knowledgeBases`
+      // can come from a raw `fsp.readdir` above and may include dot folders
+      // (`.faiss`, `.reindex-trigger`); filter them here since the shared
+      // helper does not.
+      const ingestableKbNames = knowledgeBases.filter((knowledgeBaseName) => {
         if (knowledgeBaseName.startsWith('.')) {
           logger.debug(`Skipping dot folder: ${knowledgeBaseName}`);
-          continue;
+          return false;
         }
-        const knowledgeBasePath = path.join(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
-        const filePaths = filterIngestablePaths(
-          await getFilesRecursively(knowledgeBasePath),
-          knowledgeBasePath,
-          {
-            extraExtensions: INGEST_EXTRA_EXTENSIONS,
-            excludePaths: INGEST_EXCLUDE_PATHS,
-          },
-        );
-        knowledgeBaseFiles.push({ knowledgeBaseName, knowledgeBasePath, filePaths });
-      }
+        return true;
+      });
+      const knowledgeBaseFiles = (await enumerateIngestableKbFiles(
+        KNOWLEDGE_BASES_ROOT_DIR,
+        ingestableKbNames,
+        {
+          extraExtensions: INGEST_EXTRA_EXTENSIONS,
+          excludePaths: INGEST_EXCLUDE_PATHS,
+        },
+      )).map((entry) => ({
+        knowledgeBaseName: entry.kbName,
+        knowledgeBasePath: entry.kbPath,
+        filePaths: entry.filePaths,
+      }));
 
       const totalFiles = totalFileCount(knowledgeBaseFiles);
       const reportProgress = async (currentFile: string): Promise<void> => {

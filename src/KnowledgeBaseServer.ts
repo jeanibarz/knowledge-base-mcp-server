@@ -26,10 +26,7 @@ import type { EmbeddingProvider } from './model-id.js';
 import {
   ADD_DOCUMENT_DESCRIPTION,
   DELETE_DOCUMENT_DESCRIPTION,
-  FAISS_INDEX_PATH,
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
-  INGEST_EXCLUDE_PATHS,
-  INGEST_EXTRA_EXTENSIONS,
   KB_STATS_DESCRIPTION,
   KNOWLEDGE_BASES_ROOT_DIR,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
@@ -49,11 +46,11 @@ import {
   resolveKnowledgeBaseDir,
   resolveKnowledgeBaseDocumentPath,
 } from './kb-fs.js';
+import { computeKbStats } from './kb-stats.js';
 import { withWriteLock } from './write-lock.js';
 import { logger } from './logger.js';
 import { toError } from './error-utils.js';
 import { getFilesRecursively } from './file-utils.js';
-import { filterIngestablePaths } from './ingest-filter.js';
 import { isValidKbName } from './kb-paths.js';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
@@ -64,46 +61,6 @@ import { KBError, type KBErrorCode } from './errors.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
-
-/**
- * Issue #54 — recursively walk `dir` for the latest mtime of any file under
- * it. Used by kb_stats to derive `last_updated_at` per KB from sidecar hash
- * files at `<kb>/.index/`: the most recent sidecar mtime is the last time
- * any file in this KB was (re)embedded by the active model. Returns an ISO
- * string with millisecond precision, or null when the directory is missing
- * (KB never indexed) or contains no files.
- */
-async function maxMtimeIso(dir: string): Promise<string | null> {
-  let latest = 0;
-  async function walk(target: string): Promise<void> {
-    let entries: Array<import('fs').Dirent>;
-    try {
-      entries = await fsp.readdir(target, { withFileTypes: true });
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'ENOTDIR') return;
-      throw err;
-    }
-    for (const entry of entries) {
-      const child = path.join(target, entry.name);
-      if (entry.isDirectory()) {
-        await walk(child);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      try {
-        const st = await fsp.stat(child);
-        if (st.mtimeMs > latest) latest = st.mtimeMs;
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code === 'ENOENT') continue;
-        throw err;
-      }
-    }
-  }
-  await walk(dir);
-  return latest === 0 ? null : new Date(latest).toISOString();
-}
 
 function mcpErrorContent(error: Error): TextContent {
   const code: KBErrorCode = error instanceof KBError ? error.code : 'INTERNAL';
@@ -480,9 +437,10 @@ export class KnowledgeBaseServer {
   }
 
   /**
-   * Issue #54 — kb_stats. Read-only observability surface; does NOT acquire
-   * the write lock and does NOT trigger an updateIndex. Counts reflect
-   * whatever is on disk + in the loaded FAISS docstore RIGHT NOW.
+   * Issue #54 — kb_stats MCP handler. Thin transport wrapper: resolves the
+   * active model, delegates to `computeKbStats` (#157), wraps the payload
+   * as a `CallToolResult`. Read-only — does NOT acquire the write lock and
+   * does NOT trigger an updateIndex.
    */
   private async handleKbStats(args: {
     knowledge_base_name?: string;
@@ -501,82 +459,11 @@ export class KnowledgeBaseServer {
         throw err;
       }
       const manager = await this.getManagerFor(activeModelId);
-
-      const allKbs = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
-      let kbsToReport: string[];
-      if (args.knowledge_base_name !== undefined) {
-        if (!allKbs.includes(args.knowledge_base_name)) {
-          return {
-            content: [
-              mcpErrorContent(
-                new KBError(
-                  'KB_NOT_FOUND',
-                  `Knowledge base "${args.knowledge_base_name}" not found under ${KNOWLEDGE_BASES_ROOT_DIR}.`,
-                ),
-              ),
-            ],
-            isError: true,
-          };
-        }
-        kbsToReport = [args.knowledge_base_name];
-      } else {
-        kbsToReport = allKbs;
-      }
-
-      const indexStats = manager.getStats();
-
-      const knowledge_bases: Record<string, {
-        file_count: number;
-        chunk_count: number;
-        total_bytes_indexed: number;
-        last_updated_at: string | null;
-      }> = {};
-
-      for (const kb of kbsToReport) {
-        const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb);
-        // Apply the SAME ingest filter the indexer uses, so file_count and
-        // total_bytes_indexed reflect what would actually be embedded — not
-        // the raw file walk (which still includes excluded extensions and
-        // excluded subtrees).
-        const candidatePaths = await getFilesRecursively(kbPath);
-        const filePaths = filterIngestablePaths(candidatePaths, kbPath, {
-          extraExtensions: INGEST_EXTRA_EXTENSIONS,
-          excludePaths: INGEST_EXCLUDE_PATHS,
-        });
-        let totalBytes = 0;
-        for (const filePath of filePaths) {
-          try {
-            const st = await fsp.stat(filePath);
-            totalBytes += st.size;
-          } catch (err) {
-            // Best-effort: a TOCTOU between getFilesRecursively and stat
-            // (e.g. concurrent edit) shouldn't fail the whole stats call.
-            logger.debug(`kb_stats: could not stat ${filePath}: ${(err as Error).message}`);
-          }
-        }
-        const lastUpdatedAt = await maxMtimeIso(path.join(kbPath, '.index'));
-        knowledge_bases[kb] = {
-          file_count: filePaths.length,
-          chunk_count: indexStats.chunkCountsByKb[kb] ?? 0,
-          total_bytes_indexed: totalBytes,
-          last_updated_at: lastUpdatedAt,
-        };
-      }
-
-      const payload = {
-        knowledge_bases,
-        embedding: {
-          provider: manager.embeddingProvider,
-          model: manager.modelName,
-          dim: indexStats.dim,
-        },
-        index_path: FAISS_INDEX_PATH,
-        server: {
-          version: SERVER_VERSION,
-          uptime_ms: Date.now() - this.startedAt,
-        },
-      };
-
+      const payload = await computeKbStats(manager, {
+        knowledgeBaseName: args.knowledge_base_name,
+        serverVersion: SERVER_VERSION,
+        startedAt: this.startedAt,
+      });
       return {
         content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
       };

@@ -1,0 +1,274 @@
+import { describe, expect, it, jest } from '@jest/globals';
+import * as fsp from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+
+// Issue #157 — direct tests for the computeKbStats data layer extracted out
+// of KnowledgeBaseServer.handleKbStats (#54). The integration tests in
+// KnowledgeBaseServer.test.ts cover the MCP wire wrapping; these cover the
+// pure data contract that a future `kb stats` CLI will consume.
+
+interface FakeManager {
+  embeddingProvider: string;
+  modelName: string;
+  getStats(): {
+    totalChunks: number;
+    chunkCountsByKb: Record<string, number>;
+    dim: number | null;
+  };
+}
+
+function makeManager(opts: {
+  provider?: string;
+  modelName?: string;
+  chunkCountsByKb?: Record<string, number>;
+  dim?: number | null;
+}): FakeManager {
+  return {
+    embeddingProvider: opts.provider ?? 'huggingface',
+    modelName: opts.modelName ?? 'BAAI/bge-small-en-v1.5',
+    getStats: () => ({
+      totalChunks: Object.values(opts.chunkCountsByKb ?? {}).reduce((s, n) => s + n, 0),
+      chunkCountsByKb: opts.chunkCountsByKb ?? {},
+      dim: opts.dim ?? null,
+    }),
+  };
+}
+
+async function freshKbStats(env: Record<string, string>): Promise<typeof import('./kb-stats.js')> {
+  for (const [k, v] of Object.entries(env)) process.env[k] = v;
+  jest.resetModules();
+  return import('./kb-stats.js');
+}
+
+describe('computeKbStats', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
+    INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
+  };
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(originalEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('returns one row per registered KB with file_count, total_bytes_indexed, chunk_count', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.mkdir(path.join(tempDir, 'beta'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'one.md'), 'hello world'); // 11 bytes
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'two.md'), '12345');       // 5
+    await fsp.writeFile(path.join(tempDir, 'beta', 'long.md'), 'x'.repeat(100));
+
+    const { computeKbStats } = await freshKbStats({
+      KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+      FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+    });
+
+    const manager = makeManager({
+      chunkCountsByKb: { alpha: 4, beta: 3 },
+      dim: 384,
+    });
+
+    const startedAt = Date.now() - 5;
+    const payload = await computeKbStats(manager as any, {
+      serverVersion: '9.9.9',
+      startedAt,
+    });
+
+    expect(Object.keys(payload.knowledge_bases).sort()).toEqual(['alpha', 'beta']);
+    expect(payload.knowledge_bases.alpha).toEqual({
+      file_count: 2,
+      chunk_count: 4,
+      total_bytes_indexed: 16,
+      last_updated_at: null,
+    });
+    expect(payload.knowledge_bases.beta).toMatchObject({
+      file_count: 1,
+      chunk_count: 3,
+      total_bytes_indexed: 100,
+    });
+    expect(payload.embedding).toEqual({
+      provider: 'huggingface',
+      model: 'BAAI/bge-small-en-v1.5',
+      dim: 384,
+    });
+    expect(payload.index_path).toBe(path.join(tempDir, '.faiss'));
+    expect(payload.server.version).toBe('9.9.9');
+    expect(payload.server.uptime_ms).toBeGreaterThanOrEqual(0);
+
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('scopes to a single KB when knowledgeBaseName is set', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-scope-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.mkdir(path.join(tempDir, 'beta'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'aaa');
+    await fsp.writeFile(path.join(tempDir, 'beta', 'b.md'), 'bbbb');
+
+    const { computeKbStats } = await freshKbStats({
+      KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+      FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+    });
+
+    const manager = makeManager({
+      chunkCountsByKb: { alpha: 5, beta: 4 },
+      dim: 768,
+    });
+
+    const payload = await computeKbStats(manager as any, {
+      knowledgeBaseName: 'alpha',
+      serverVersion: '0.0.0',
+      startedAt: Date.now(),
+    });
+
+    expect(Object.keys(payload.knowledge_bases)).toEqual(['alpha']);
+    expect(payload.knowledge_bases.alpha.chunk_count).toBe(5);
+    expect(payload.embedding.dim).toBe(768);
+
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("throws KBError('KB_NOT_FOUND') when knowledgeBaseName is unregistered (handler maps to wire shape)", async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-missing-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+
+    const { computeKbStats } = await freshKbStats({
+      KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+      FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+    });
+    const { KBError } = await import('./errors.js');
+
+    const manager = makeManager({});
+    await expect(
+      computeKbStats(manager as any, {
+        knowledgeBaseName: 'doesnotexist',
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+      }),
+    ).rejects.toMatchObject({
+      // Throws the typed error rather than wrapping in MCP shape — the
+      // handler is responsible for transport conversion (#157 boundary).
+      code: 'KB_NOT_FOUND',
+    });
+    // Sanity: the thrown error is a real KBError instance, not a plain Error.
+    await expect(
+      computeKbStats(manager as any, {
+        knowledgeBaseName: 'doesnotexist',
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+      }),
+    ).rejects.toBeInstanceOf(KBError);
+
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('derives last_updated_at from the most recent mtime under <kb>/.index/', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-mtime-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    const sidecarDir = path.join(tempDir, 'alpha', '.index');
+    await fsp.mkdir(sidecarDir, { recursive: true });
+    const sidecar = path.join(sidecarDir, 'a.md');
+    await fsp.writeFile(sidecar, 'hash');
+    const fixedMs = 1_700_000_000_000;
+    await fsp.utimes(sidecar, fixedMs / 1000, fixedMs / 1000);
+
+    const { computeKbStats } = await freshKbStats({
+      KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+      FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+    });
+
+    const manager = makeManager({});
+    const payload = await computeKbStats(manager as any, {
+      knowledgeBaseName: 'alpha',
+      serverVersion: '0.0.0',
+      startedAt: Date.now(),
+    });
+    expect(payload.knowledge_bases.alpha.last_updated_at).toBe(new Date(fixedMs).toISOString());
+
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('respects INGEST_EXCLUDE_PATHS so excluded files do not contribute to file_count or bytes', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-exclude-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.mkdir(path.join(tempDir, 'alpha', 'pdfs'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'note.md'), 'hello');         // 5
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'pdfs', 'paper.md'), 'xxx');  // excluded by pattern
+
+    const { computeKbStats } = await freshKbStats({
+      KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+      FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      INGEST_EXCLUDE_PATHS: 'pdfs/**',
+    });
+
+    const manager = makeManager({});
+    const payload = await computeKbStats(manager as any, {
+      serverVersion: '0.0.0',
+      startedAt: Date.now(),
+    });
+    expect(payload.knowledge_bases.alpha.file_count).toBe(1);
+    expect(payload.knowledge_bases.alpha.total_bytes_indexed).toBe(5);
+
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+});
+
+describe('enumerateIngestableKbFiles', () => {
+  it('returns one entry per requested KB, preserving input order', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-enum-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'alpha'));
+      await fsp.mkdir(path.join(tempDir, 'beta'));
+      await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'a');
+      await fsp.writeFile(path.join(tempDir, 'beta', 'b.md'), 'b');
+
+      const { enumerateIngestableKbFiles } = await import('./kb-fs.js');
+      const out = await enumerateIngestableKbFiles(tempDir, ['beta', 'alpha']);
+      expect(out.map((e) => e.kbName)).toEqual(['beta', 'alpha']);
+      expect(out[0].kbPath).toBe(path.join(tempDir, 'beta'));
+      expect(out[0].filePaths.map((p) => path.basename(p))).toEqual(['b.md']);
+      expect(out[1].filePaths.map((p) => path.basename(p))).toEqual(['a.md']);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies extraExtensions and excludePaths from options', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-enum-opts-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'kb'));
+      await fsp.mkdir(path.join(tempDir, 'kb', 'logs'));
+      await fsp.writeFile(path.join(tempDir, 'kb', 'note.md'), 'a');
+      await fsp.writeFile(path.join(tempDir, 'kb', 'data.csv'), 'a,b');
+      await fsp.writeFile(path.join(tempDir, 'kb', 'logs', 'r.md'), 'a');
+
+      const { enumerateIngestableKbFiles } = await import('./kb-fs.js');
+      const out = await enumerateIngestableKbFiles(tempDir, ['kb'], {
+        extraExtensions: ['.csv'],
+        excludePaths: ['logs/**'],
+      });
+      const names = out[0].filePaths.map((p) => path.basename(p)).sort();
+      expect(names).toEqual(['data.csv', 'note.md']);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns an empty filePaths array for a missing KB directory', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-enum-missing-'));
+    try {
+      const { enumerateIngestableKbFiles } = await import('./kb-fs.js');
+      const out = await enumerateIngestableKbFiles(tempDir, ['ghost']);
+      // getFilesRecursively logs and returns [] on ENOENT — caller-stable.
+      expect(out).toEqual([{ kbName: 'ghost', kbPath: path.join(tempDir, 'ghost'), filePaths: [] }]);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
