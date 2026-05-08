@@ -1293,14 +1293,14 @@ describe('KnowledgeBaseServer handlers', () => {
   });
 
   it('sanitizeMetadataForWire passes through metadata with no frontmatter unchanged', async () => {
-    const { sanitizeMetadataForWire } = await import('./KnowledgeBaseServer.js');
+    const { sanitizeMetadataForWire } = await import('./formatter.js');
     const md = { source: '/kb/a.md', relativePath: 'a.md', tags: ['x'] };
     expect(sanitizeMetadataForWire(md, false)).toBe(md);
     expect(sanitizeMetadataForWire(md, true)).toBe(md);
   });
 
   it('sanitizeMetadataForWire passes through metadata whose frontmatter has no extras', async () => {
-    const { sanitizeMetadataForWire } = await import('./KnowledgeBaseServer.js');
+    const { sanitizeMetadataForWire } = await import('./formatter.js');
     const md = {
       source: '/kb/a.md',
       frontmatter: { arxiv_id: '2604.1', title: 'X' },
@@ -1310,7 +1310,7 @@ describe('KnowledgeBaseServer handlers', () => {
   });
 
   it('sanitizeMetadataForWire does not mutate the input object', async () => {
-    const { sanitizeMetadataForWire } = await import('./KnowledgeBaseServer.js');
+    const { sanitizeMetadataForWire } = await import('./formatter.js');
     const md = {
       source: '/kb/a.md',
       frontmatter: {

@@ -14,11 +14,9 @@ import {
   ActiveModelResolutionError,
   listRegisteredModels,
   modelDir,
-  parseModelId,
-  readStoredModelName,
   resolveActiveModel,
 } from './active-model.js';
-import type { EmbeddingProvider } from './model-id.js';
+import { ManagerRegistry } from './manager-registry.js';
 import {
   ADD_DOCUMENT_DESCRIPTION,
   DELETE_DOCUMENT_DESCRIPTION,
@@ -35,7 +33,7 @@ import {
   TransportConfigError,
   type TransportConfig,
 } from './config.js';
-import { formatRetrievalAsMarkdown, sanitizeMetadataForWire } from './formatter.js';
+import { formatRetrievalAsMarkdown } from './formatter.js';
 import {
   listKnowledgeBases,
   resolveKbRelativePath,
@@ -73,18 +71,13 @@ function mcpErrorContent(error: Error): TextContent {
   };
 }
 
-// Re-export for backward compatibility: existing tests import
-// `sanitizeMetadataForWire` from this module. The canonical home is now
-// `src/formatter.ts` (RFC 012 §4.9 boundary fix).
-export { sanitizeMetadataForWire };
-
 export class KnowledgeBaseServer {
   private mcp: McpServer;
-  // RFC 013 M1: per-model manager cache. Lazily populated on first use of
-  // each model_id. The active model is resolved per `handleRetrieveKnowledge`
-  // call (allows future M3 `model_name` arg without redesign).
-  private managerCache: Map<string, FaissIndexManager> = new Map();
-  private managerInitCache: Map<string, Promise<FaissIndexManager>> = new Map();
+  // RFC 013 M1 (#157 step 3): per-model FaissIndexManager cache. Lazily
+  // populates on first use of each model_id. The active model is resolved
+  // per call so a future M3 `model_name` override drops in without
+  // redesign.
+  private readonly managers = new ManagerRegistry();
   private activeWarmupPromise: Promise<void> | null = null;
   private httpHost?: StreamableHttpHost;
   private sseHost?: SseHost;
@@ -103,38 +96,6 @@ export class KnowledgeBaseServer {
       await this.shutdown();
       process.exit(0);
     });
-  }
-
-  /**
-   * Resolve a model_id to a (cached) FaissIndexManager instance.
-   * RFC 013 M1: takes the explicit model_id (resolved by the caller via
-   * `resolveActiveModel`); constructs the manager on first use, caches it.
-   */
-  private async getManagerFor(modelId: string): Promise<FaissIndexManager> {
-    const cached = this.managerCache.get(modelId);
-    if (cached) return cached;
-    const initializing = this.managerInitCache.get(modelId);
-    if (initializing) return initializing;
-    const initPromise = (async () => {
-      const { provider } = parseModelId(modelId);
-      const modelName = await readStoredModelName(modelId);
-      if (modelName === null) {
-        throw new Error(`model_name.txt missing for registered model "${modelId}"`);
-      }
-      const manager = new FaissIndexManager({
-        provider: provider as EmbeddingProvider,
-        modelName,
-      });
-      await manager.initialize();
-      this.managerCache.set(modelId, manager);
-      return manager;
-    })();
-    this.managerInitCache.set(modelId, initPromise);
-    try {
-      return await initPromise;
-    } finally {
-      this.managerInitCache.delete(modelId);
-    }
   }
 
   private buildMcpServer(): McpServer {
@@ -314,7 +275,7 @@ export class KnowledgeBaseServer {
         }
         throw err;
       }
-      const manager = await this.getManagerFor(activeModelId);
+      const manager = await this.managers.getOrCreate(activeModelId);
       const payload = await computeKbStats(manager, {
         knowledgeBaseName: args.knowledge_base_name,
         serverVersion: SERVER_VERSION,
@@ -335,7 +296,7 @@ export class KnowledgeBaseServer {
 
   private async getActiveManagerForMutation(): Promise<FaissIndexManager> {
     const activeModelId = await resolveActiveModel();
-    return this.getManagerFor(activeModelId);
+    return this.managers.getOrCreate(activeModelId);
   }
 
   private async handleAddDocument(args: {
@@ -509,7 +470,7 @@ export class KnowledgeBaseServer {
         }
         throw err;
       }
-      const manager = await this.getManagerFor(activeModelId);
+      const manager = await this.managers.getOrCreate(activeModelId);
 
       // RFC 013 §4.6 — write lock is per-model (resource = `models/<id>/`).
       // A `kb models add B` against another model never blocks retrievals on A.
@@ -656,7 +617,7 @@ export class KnowledgeBaseServer {
   private async warmActiveManager(): Promise<void> {
     try {
       const activeId = await resolveActiveModel();
-      const manager = await this.getManagerFor(activeId);
+      const manager = await this.managers.getOrCreate(activeId);
       if (manager.hasLoadedIndex) {
         logger.info(`Active FAISS index ${activeId} loaded; startup rebuild not needed`);
         return;
@@ -741,7 +702,7 @@ export class KnowledgeBaseServer {
       async () => {
         try {
           const activeId = await resolveActiveModel();
-          const manager = await this.getManagerFor(activeId);
+          const manager = await this.managers.getOrCreate(activeId);
           await withWriteLock(manager.modelDir, () => manager.updateIndex(undefined));
         } catch (err) {
           logger.warn(`Trigger watcher updateIndex failed: ${(err as Error).message}`);
