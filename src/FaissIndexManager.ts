@@ -31,6 +31,7 @@ import {
   OLLAMA_BASE_URL,
   OLLAMA_MODEL,
   OPENAI_MODEL_NAME,
+  resolveChunkSize,
 } from './config.js';
 import {
   activeFileExists,
@@ -89,36 +90,12 @@ async function writeModelNameAtomic(modelNameFile: string, modelName: string): P
 // path, but an absolute resolved path has no symlink to re-resolve.
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CHUNK_SIZE = 1000;
-const DEFAULT_CHUNK_OVERLAP = 200;
 export const DEFAULT_REBUILD_PROGRESS_INTERVAL_FILES = 10;
 
 function totalFileCount(
   entries: ReadonlyArray<{ filePaths: readonly string[] }>,
 ): number {
   return entries.reduce((sum, entry) => sum + entry.filePaths.length, 0);
-}
-
-/**
- * Resolve the splitter chunk size and overlap from env vars, with the
- * historical defaults preserved when nothing is set. `KB_CHUNK_SIZE` lets
- * operators tune the splitter for short-context embedding models without
- * editing source — when `bench:compare` (#107) auto-clamps for a short-ctx
- * leg, it sets this so the production code path emits chunks small enough
- * to fit. `KB_CHUNK_OVERLAP` is honored independently when set; otherwise
- * it scales as `floor(chunkSize / 5)` so the previous 1000/200 ratio
- * (chunkSize=1000 → overlap=200) holds at the default.
- */
-export function resolveChunkSize(): { chunkSize: number; chunkOverlap: number } {
-  const sizeRaw = process.env.KB_CHUNK_SIZE;
-  const overlapRaw = process.env.KB_CHUNK_OVERLAP;
-  const sizeParsed = sizeRaw ? Number(sizeRaw) : NaN;
-  const chunkSize = Number.isFinite(sizeParsed) && sizeParsed > 0 ? Math.floor(sizeParsed) : DEFAULT_CHUNK_SIZE;
-  const overlapParsed = overlapRaw ? Number(overlapRaw) : NaN;
-  const chunkOverlap = Number.isFinite(overlapParsed) && overlapParsed >= 0
-    ? Math.floor(overlapParsed)
-    : (chunkSize === DEFAULT_CHUNK_SIZE ? DEFAULT_CHUNK_OVERLAP : Math.floor(chunkSize / 5));
-  return { chunkSize, chunkOverlap };
 }
 
 /**
