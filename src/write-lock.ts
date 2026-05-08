@@ -37,6 +37,31 @@ const SIDECAR_LOCK_OPTS_BASE: Omit<properLockfile.LockOptions, 'lockfilePath'> =
   retries: { retries: 10, factor: 1.5, minTimeout: 50, maxTimeout: 500 },
 };
 
+export class WriteLockContentionError extends Error {
+  readonly code = 'REFRESH_LOCK_BUSY';
+  readonly resource: string;
+  readonly lockPath: string;
+  readonly causeMessage: string;
+
+  constructor(opts: { resource: string; lockPath: string; causeMessage: string }) {
+    super('Refresh lock is already held for this model. Retry after the current refresh finishes.');
+    this.name = 'WriteLockContentionError';
+    this.resource = opts.resource;
+    this.lockPath = opts.lockPath;
+    this.causeMessage = opts.causeMessage;
+  }
+}
+
+function isLockContentionError(err: unknown): boolean {
+  const code = (err as { code?: unknown })?.code;
+  const message = (err as Error)?.message ?? '';
+  return (
+    code === 'ELOCKED' ||
+    /Lock file is already being held/i.test(message) ||
+    /exceeded.*lock/i.test(message)
+  );
+}
+
 /**
  * Acquire the write lock on `resource`, run `fn`, release the lock. The
  * lock is held for exactly the duration of `fn` — not longer.
@@ -53,10 +78,22 @@ export async function withWriteLock<T>(resource: string, fn: () => Promise<T>): 
   await fsp.mkdir(resource, { recursive: true });
 
   const lockfilePath = path.join(resource, '.kb-write.lock');
-  const release = await properLockfile.lock(resource, {
-    ...WRITE_LOCK_OPTS_BASE,
-    lockfilePath,
-  });
+  let release: () => Promise<void>;
+  try {
+    release = await properLockfile.lock(resource, {
+      ...WRITE_LOCK_OPTS_BASE,
+      lockfilePath,
+    });
+  } catch (err) {
+    if (isLockContentionError(err)) {
+      throw new WriteLockContentionError({
+        resource,
+        lockPath: lockfilePath,
+        causeMessage: (err as Error).message,
+      });
+    }
+    throw err;
+  }
   try {
     return await fn();
   } finally {
