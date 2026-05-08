@@ -142,6 +142,7 @@ export async function bootstrapLayout(): Promise<void> {
   return bootstrapPromise;
 }
 
+/* @internal */
 /** Test-only: reset the bootstrap cache between tests. */
 export function __resetBootstrapForTests(): void {
   bootstrapPromise = null;
