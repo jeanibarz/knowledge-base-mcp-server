@@ -86,6 +86,9 @@ Search options:
   --threshold=<float>   Max similarity score (default 2).
   --k=<int>             Top-K results (default 10).
   --format=md|json      Output format (default md).
+  --group-by-source     Collapse repeated chunks from the same source file in
+                        markdown output. With --format=json, keeps raw
+                        results and adds grouped_results.
   --refresh             Re-scan KB files; acquires per-model write lock.
   --stdin               Read query from stdin (multi-line safe).
 
