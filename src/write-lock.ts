@@ -14,6 +14,7 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
+import { FAISS_INDEX_PATH } from './config.js';
 import { logger } from './logger.js';
 
 const WRITE_LOCK_OPTS_BASE: Omit<properLockfile.LockOptions, 'lockfilePath'> = {
@@ -29,6 +30,11 @@ const WRITE_LOCK_OPTS_BASE: Omit<properLockfile.LockOptions, 'lockfilePath'> = {
   // exhaust this and error with a clear message — that's the documented
   // RFC 012 §4.8.3 slow-path behavior.
   retries: { retries: 5, factor: 1.5, minTimeout: 100, maxTimeout: 1000 },
+};
+
+const SIDECAR_LOCK_OPTS_BASE: Omit<properLockfile.LockOptions, 'lockfilePath'> = {
+  stale: 30_000,
+  retries: { retries: 10, factor: 1.5, minTimeout: 50, maxTimeout: 500 },
 };
 
 /**
@@ -69,4 +75,58 @@ export async function withWriteLock<T>(resource: string, fn: () => Promise<T>): 
  */
 export function writeLockPathFor(resource: string): string {
   return path.join(resource, '.kb-write.lock');
+}
+
+/**
+ * Issue #90 follow-up — cross-model serialization for per-KB hash sidecar
+ * state at `<kb>/.index/`. Sidecars are SHARED across models (the on-disk
+ * shape is per-KB, not per-model), but `updateIndex` historically protected
+ * them with a PER-MODEL write lock. That left two concurrent windows racy:
+ *   1. Two models updating different KBs simultaneously: harmless overwrite
+ *      with the same hash bytes.
+ *   2. One model's `purgeStaleSidecars` (init under missing store) firing
+ *      while another model's `updateIndex` is mid-`Promise.all` of sidecar
+ *      writes: the writer's `fsp.rename(tmp, target)` ENOENTs because the
+ *      parent `.index/` dir was just rmrf'd by the purger.
+ *
+ * The shared lock at `${FAISS_INDEX_PATH}/.kb-sidecar.lock` serializes
+ * every cross-model sidecar mutation: both the purge and the post-save
+ * sidecar write batch acquire it briefly. The lock is held only across
+ * filesystem syscalls (no embedding work), so cross-model contention adds
+ * at most milliseconds per `updateIndex`.
+ */
+export async function withSidecarLock<T>(action: () => Promise<T>): Promise<T> {
+  await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
+  const lockfilePath = sidecarLockPathFor();
+  let release: (() => Promise<void>) | null = null;
+  try {
+    release = await properLockfile.lock(FAISS_INDEX_PATH, {
+      ...SIDECAR_LOCK_OPTS_BASE,
+      lockfilePath,
+    });
+  } catch (err) {
+    // Lock acquisition exhausted retries: a peer is holding it for an
+    // unusually long time, or we're on a filesystem where proper-lockfile
+    // can't operate. Either way, falling through is safer than aborting:
+    // the worst case (rename ENOENT from a concurrent rmrf) is recoverable
+    // on the next updateIndex pass, while a hard abort poisons the caller.
+    logger.warn(
+      `Issue #90 sidecar lock: could not acquire ${lockfilePath}, proceeding without serialization: ${(err as Error).message}`,
+    );
+  }
+  try {
+    return await action();
+  } finally {
+    if (release) {
+      try {
+        await release();
+      } catch {
+        // best-effort
+      }
+    }
+  }
+}
+
+export function sidecarLockPathFor(): string {
+  return path.join(FAISS_INDEX_PATH, '.kb-sidecar.lock');
 }
