@@ -2,18 +2,10 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
-// Issue #59 — provider modules are loaded lazily inside initialize(). Each
-// `@langchain/*` provider drags its full dep graph (e.g. @huggingface/inference,
-// openai, ollama) at import time; eager-loading all three for a process that
-// only ever uses one was ~170 ms / 81 MB peak RSS in RFC 007 §5.1.
-// `import type` is erased by tsc, so the union type is preserved without any
-// runtime require/resolve of the unused provider's tree.
-import type { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
-import type { OllamaEmbeddings } from "@langchain/ollama";
-import type { OpenAIEmbeddings } from "@langchain/openai";
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from "langchain/text_splitter";
+import { createEmbeddingsClient, type EmbeddingsClient } from './embedding-provider.js';
 import { handleFsOperationError, toError } from './error-utils.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
 import { parseFrontmatter } from './frontmatter.js';
@@ -21,12 +13,8 @@ import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
 import { loadFile } from './loaders.js';
 import {
   KNOWLEDGE_BASES_ROOT_DIR,
-  HUGGINGFACE_PROVIDER,
-  HUGGINGFACE_ENDPOINT_URL,
-  HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
-  OLLAMA_BASE_URL,
   resolveChunkSize,
 } from './config.js';
 import {
@@ -43,7 +31,6 @@ import {
   __resetBootstrapForTests as resetBootstrapLayoutForTests,
   bootstrapLayout as bootstrapIndexLayout,
 } from './layout-bootstrap.js';
-import { makeOllamaOnFailedAttempt } from './ollama-error.js';
 import {
   loadFaissStoreAtomic,
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
@@ -117,7 +104,7 @@ export class FaissIndexManager {
   // class invariant is "every method that touches embeddings runs after
   // initialize()", which holds for every call site (KnowledgeBaseServer,
   // cli.ts, every test that exercises retrieval).
-  private embeddings!: HuggingFaceInferenceEmbeddings | OllamaEmbeddings | OpenAIEmbeddings;
+  private embeddings!: EmbeddingsClient;
   // RFC 014 — monotonic counter for unique tmp-symlink names within this
   // process. Incremented on every atomicSave; combined with PID it guarantees
   // no collision between concurrent saves on the same modelDir (which the
@@ -166,64 +153,6 @@ export class FaissIndexManager {
     return this.faissIndex !== null;
   }
 
-  /**
-   * Issue #59 — dynamically imports the active provider's `@langchain/*`
-   * module so cold start only pays for one provider's dep graph. Validates
-   * the relevant API key first; the throw shape and message match the
-   * pre-#59 constructor exactly so caller error handling is unchanged.
-   */
-  private async createEmbeddings(): Promise<
-    HuggingFaceInferenceEmbeddings | OllamaEmbeddings | OpenAIEmbeddings
-  > {
-    if (this.embeddingProvider === 'ollama') {
-      logger.info(`Initializing FaissIndexManager with Ollama embeddings (model: ${this.modelName})`);
-      const { OllamaEmbeddings } = await import('@langchain/ollama');
-      // Issue #86 — Ollama's ResponseError uses snake_case `status_code`,
-      // which langchain's default failed-attempt handler doesn't recognise,
-      // so deterministic 400s (e.g. "input length exceeds the context length")
-      // burn 7 retries. We pass our own onFailedAttempt that short-circuits
-      // those errors and rethrows them as a translated KBError.
-      return new OllamaEmbeddings({
-        baseUrl: OLLAMA_BASE_URL,
-        model: this.modelName,
-        onFailedAttempt: makeOllamaOnFailedAttempt(this.modelName),
-      });
-    }
-    if (this.embeddingProvider === 'openai') {
-      logger.info(`Initializing FaissIndexManager with OpenAI embeddings (model: ${this.modelName})`);
-      const openaiApiKey = process.env.OPENAI_API_KEY;
-      if (!openaiApiKey) {
-        throw new KBError('PROVIDER_AUTH', 'OPENAI_API_KEY environment variable is required when using OpenAI provider');
-      }
-      const { OpenAIEmbeddings } = await import('@langchain/openai');
-      return new OpenAIEmbeddings({
-        apiKey: openaiApiKey,
-        model: this.modelName,
-      });
-    }
-    logger.info(`Initializing FaissIndexManager with HuggingFace embeddings (model: ${this.modelName})`);
-    const huggingFaceApiKey = process.env.HUGGINGFACE_API_KEY;
-    if (!huggingFaceApiKey) {
-      throw new KBError('PROVIDER_AUTH', 'HUGGINGFACE_API_KEY environment variable is required when using HuggingFace provider');
-    }
-    const { HuggingFaceInferenceEmbeddings } = await import('@langchain/community/embeddings/hf');
-
-    // HuggingFace endpoint URL is computed from HUGGINGFACE_MODEL_NAME at
-    // module load (config.ts). In the multi-model world the endpoint is
-    // per-(provider+model), so for non-default models we recompute the URL
-    // here. The router URL pattern is `router.huggingface.co/hf-inference/models/<model>/pipeline/feature-extraction`.
-    const endpointUrl = HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN
-      ? HUGGINGFACE_ENDPOINT_URL
-      : `https://router.huggingface.co/hf-inference/models/${this.modelName}/pipeline/feature-extraction`;
-
-    return new HuggingFaceInferenceEmbeddings({
-      apiKey: huggingFaceApiKey,
-      model: this.modelName,
-      endpointUrl,
-      provider: HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN ? undefined : HUGGINGFACE_PROVIDER,
-    });
-  }
-
   /** RFC 013 §4.8 — process-global, idempotent layout bootstrap. */
   static async bootstrapLayout(): Promise<void> {
     await bootstrapIndexLayout();
@@ -250,7 +179,10 @@ export class FaissIndexManager {
       // embeddings client. Throws here on missing API keys, matching the
       // pre-#59 constructor's error shape.
       if (!this.embeddings) {
-        this.embeddings = await this.createEmbeddings();
+        this.embeddings = await createEmbeddingsClient({
+          provider: this.embeddingProvider,
+          modelName: this.modelName,
+        });
       }
       // Ensure this model's directory exists. mkdir-p is cheap; first-run
       // for a fresh install creates `${PATH}/models/<id>/`.
