@@ -15,7 +15,7 @@ import type { OpenAIEmbeddings } from "@langchain/openai";
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import { Document } from "@langchain/core/documents";
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from "langchain/text_splitter";
-import { toError } from './error-utils.js';
+import { handleFsOperationError, toError } from './error-utils.js';
 import { calculateSHA256, getFilesRecursively } from './file-utils.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
@@ -86,46 +86,6 @@ async function writeModelNameAtomic(modelNameFile: string, modelName: string): P
 // independent open(2) calls — each would re-resolve a symlink given the
 // path, but an absolute resolved path has no symlink to re-resolve.
 // ---------------------------------------------------------------------------
-
-type FsError = NodeJS.ErrnoException & { code?: string };
-
-function isPermissionError(error: unknown): error is FsError {
-  if (!error || typeof error !== 'object') {
-    return false;
-  }
-  const code = (error as FsError).code;
-  return code === 'EACCES' || code === 'EPERM' || code === 'EROFS';
-}
-
-function handleFsOperationError(action: string, targetPath: string, error: unknown): never {
-  const pathDescription = path.resolve(targetPath);
-  const stack = (error as Error)?.stack;
-  if (isPermissionError(error)) {
-    const message = `Permission denied while attempting to ${action} ${pathDescription}. Grant write access and retry.`;
-    logger.error(message);
-    if (stack) {
-      logger.error(stack);
-    }
-    const loggedError = new KBError('PERMISSION_DENIED', message, error) as KBError & {
-      __alreadyLogged?: boolean;
-    };
-    loggedError.__alreadyLogged = true;
-    throw loggedError;
-  }
-  logger.error(`Failed to ${action} ${pathDescription}:`, error);
-  if (stack) {
-    logger.error(stack);
-  }
-  if (error instanceof Error) {
-    (error as Error & { __alreadyLogged?: boolean }).__alreadyLogged = true;
-    throw error;
-  }
-  const newError = new Error(`Failed to ${action} ${pathDescription}: ${String(error)}`) as Error & {
-    __alreadyLogged?: boolean;
-  };
-  newError.__alreadyLogged = true;
-  throw newError;
-}
 
 /**
  * RFC 013 §4.8 — module-level cache for `bootstrapLayout()`. Ensures migration

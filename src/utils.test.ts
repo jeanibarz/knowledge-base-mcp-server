@@ -12,7 +12,8 @@ import {
   SKIPPED_FILENAME_PATTERNS,
 } from './ingest-filter.js';
 import { parseFrontmatter } from './frontmatter.js';
-import { toError } from './error-utils.js';
+import { handleFsOperationError, isPermissionError, toError } from './error-utils.js';
+import { KBError } from './errors.js';
 import { logger } from './logger.js';
 import * as fsp from 'fs/promises';
 import * as fs from 'fs'; // Import fs for PathLike and Dirent
@@ -644,5 +645,69 @@ describe('toError', () => {
     expect(result).toBeInstanceOf(Error);
     expect(typeof result.message).toBe('string');
     expect(result.message.length).toBeGreaterThan(0);
+  });
+});
+
+describe('isPermissionError', () => {
+  it('recognizes filesystem permission-style error codes', () => {
+    expect(isPermissionError(Object.assign(new Error('denied'), { code: 'EACCES' }))).toBe(true);
+    expect(isPermissionError(Object.assign(new Error('denied'), { code: 'EPERM' }))).toBe(true);
+    expect(isPermissionError(Object.assign(new Error('readonly'), { code: 'EROFS' }))).toBe(true);
+  });
+
+  it('rejects non-permission errors and non-objects', () => {
+    expect(isPermissionError(Object.assign(new Error('missing'), { code: 'ENOENT' }))).toBe(false);
+    expect(isPermissionError(null)).toBe(false);
+    expect(isPermissionError('EACCES')).toBe(false);
+  });
+});
+
+describe('handleFsOperationError', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('translates permission errors into already-logged KBError instances', () => {
+    const loggerModule = jest.requireActual('./logger.js') as typeof import('./logger.js');
+    const errorSpy = jest.spyOn(loggerModule.logger, 'error').mockImplementation(() => {});
+    const cause = Object.assign(new Error('cannot write'), { code: 'EACCES' });
+
+    expect.assertions(5);
+    try {
+      handleFsOperationError('write file', '/tmp/example', cause);
+    } catch (error) {
+      expect(error).toBeInstanceOf(KBError);
+      expect((error as KBError).code).toBe('PERMISSION_DENIED');
+      expect((error as Error & { __alreadyLogged?: boolean }).__alreadyLogged).toBe(true);
+      expect((error as Error).message).toContain('Permission denied while attempting to write file');
+    }
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Permission denied'));
+  });
+
+  it('marks non-permission Error instances as already logged and rethrows by reference', () => {
+    const loggerModule = jest.requireActual('./logger.js') as typeof import('./logger.js');
+    jest.spyOn(loggerModule.logger, 'error').mockImplementation(() => {});
+    const original = new Error('boom') as Error & { __alreadyLogged?: boolean };
+
+    try {
+      handleFsOperationError('read file', '/tmp/example', original);
+    } catch (error) {
+      expect(error).toBe(original);
+      expect(original.__alreadyLogged).toBe(true);
+    }
+  });
+
+  it('wraps non-Error values and marks the wrapper as already logged', () => {
+    const loggerModule = jest.requireActual('./logger.js') as typeof import('./logger.js');
+    jest.spyOn(loggerModule.logger, 'error').mockImplementation(() => {});
+
+    try {
+      handleFsOperationError('read file', '/tmp/example', 'boom');
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('Failed to read file');
+      expect((error as Error).message).toContain('boom');
+      expect((error as Error & { __alreadyLogged?: boolean }).__alreadyLogged).toBe(true);
+    }
   });
 });
