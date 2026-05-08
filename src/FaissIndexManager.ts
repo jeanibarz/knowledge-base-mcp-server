@@ -20,22 +20,18 @@ import { parseFrontmatter } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
 import { loadFile } from './loaders.js';
 import {
-  EMBEDDING_PROVIDER,
   KNOWLEDGE_BASES_ROOT_DIR,
-  HUGGINGFACE_MODEL_NAME,
   HUGGINGFACE_PROVIDER,
   HUGGINGFACE_ENDPOINT_URL,
   HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
   OLLAMA_BASE_URL,
-  OLLAMA_MODEL,
-  OPENAI_MODEL_NAME,
   resolveChunkSize,
 } from './config.js';
 import {
   activeFileExists,
-  computeLegacyEnvDerivedId,
+  computeLegacyEnvModelSpec,
   modelDir,
   modelNameFilePath,
 } from './active-model.js';
@@ -98,29 +94,6 @@ function totalFileCount(
   return entries.reduce((sum, entry) => sum + entry.filePaths.length, 0);
 }
 
-/**
- * Legacy constructor fallback — derive (provider, modelName) from env when no
- * args passed. Preserves 0.2.x tests + 0.2.x single-model callers that don't
- * yet thread an explicit model through. Multi-model code paths (`kb models *`,
- * `kb search --model=<id>`, MCP per-call selection) MUST use the explicit form.
- */
-function resolveLegacyConstructorArgs(): FaissIndexManagerOptions {
-  const provider = (EMBEDDING_PROVIDER || 'huggingface') as EmbeddingProvider;
-  let modelName: string;
-  switch (provider) {
-    case 'ollama':
-      modelName = OLLAMA_MODEL;
-      break;
-    case 'openai':
-      modelName = OPENAI_MODEL_NAME;
-      break;
-    default:
-      modelName = HUGGINGFACE_MODEL_NAME;
-      break;
-  }
-  return { provider, modelName };
-}
-
 export interface FaissIndexManagerOptions {
   provider: EmbeddingProvider;
   modelName: string;
@@ -171,10 +144,16 @@ export class FaissIndexManager {
    * model selection) use the explicit form.
    */
   constructor(opts?: FaissIndexManagerOptions) {
-    const resolved = opts ?? resolveLegacyConstructorArgs();
+    const resolved = opts !== undefined
+      ? {
+          provider: opts.provider,
+          modelName: opts.modelName,
+          modelId: deriveModelId(opts.provider, opts.modelName),
+        }
+      : computeLegacyEnvModelSpec();
     this.embeddingProvider = resolved.provider;
     this.modelName = resolved.modelName;
-    this.modelId = deriveModelId(resolved.provider, resolved.modelName);
+    this.modelId = resolved.modelId;
     this.modelDir = modelDir(this.modelId);
     this.modelNameFile = modelNameFilePath(this.modelId);
 
