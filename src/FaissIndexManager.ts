@@ -51,7 +51,6 @@ import {
 } from './faiss-store-layout.js';
 import { withSidecarLock } from './write-lock.js';
 
-export { nextVersionAfter } from './faiss-store-layout.js';
 export { MigrationRefusedError } from './layout-bootstrap.js';
 
 /**

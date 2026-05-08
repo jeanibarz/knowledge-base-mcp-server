@@ -150,11 +150,11 @@ async function holdWriteLock<T>(modelDir: string, fn: () => Promise<T>): Promise
 
 // ---------- tests ----------
 
-describe('RFC 014 atomic save — file-private helpers', () => {
+describe('RFC 014 atomic save — layout helpers', () => {
   let nextVersionAfter: (s: string | null) => string;
 
   beforeAll(async () => {
-    const mod = await import('./FaissIndexManager.js');
+    const mod = await import('./faiss-store-layout.js');
     nextVersionAfter = mod.nextVersionAfter;
   });
 
