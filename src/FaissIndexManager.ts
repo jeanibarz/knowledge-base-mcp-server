@@ -229,6 +229,7 @@ export class FaissIndexManager {
     await bootstrapIndexLayout();
   }
 
+  /* @internal */
   /** Test-only: reset the bootstrap cache between tests. */
   static __resetBootstrapForTests(): void {
     resetBootstrapLayoutForTests();
