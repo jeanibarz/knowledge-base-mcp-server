@@ -20,6 +20,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { runCapture } from './cli-capture.js';
 import { runCompare } from './cli-compare.js';
+import { runDoctor } from './cli-doctor.js';
 import { runList } from './cli-list.js';
 import { runModels } from './cli-models.js';
 import { runRemember } from './cli-remember.js';
@@ -73,6 +74,12 @@ Usage:
                                            One-shot recommendation: which KB
                                            and which file should I update for
                                            the given topic? Strictly read-only.
+  kb doctor [--format=md|json]            Aggregate health surface: active
+                                           model, active index path + mtime,
+                                           per-KB stale counts, CLI version,
+                                           and linked-checkout git status
+                                           (when running from an npm-linked
+                                           working tree). Strictly read-only.
   kb models list                          List registered embedding models.
   kb models add <provider> <model>        Register a new model + ingest.
   kb models set-active <id>               Change the default model.
@@ -187,6 +194,9 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (sub === 'where') {
     return runWhere(rest);
+  }
+  if (sub === 'doctor') {
+    return runDoctor(rest);
   }
 
   process.stderr.write(`kb: unknown subcommand '${sub}'\n${HELP}`);
