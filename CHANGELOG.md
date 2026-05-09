@@ -6,6 +6,37 @@
 
 - **`last_index_update` observability for refresh runs.** `FaissIndexManager.updateIndex()` now keeps a bounded in-memory summary of the latest run: status (`success`, `partial`, `failed`, or `never_run`), scope, model id, timestamps, duration, file/chunk counters, save and sidecar outcomes, and capped relative-path failure summaries. `kb_stats` exposes the object directly, and `kb doctor` includes the same section in JSON plus a concise markdown line. The summary is process-local and resets to `never_run` on startup. Closes #237.
 
+## [Unreleased] — KB-authoring cookbook (#205)
+
+### Added
+
+- **`docs/authoring-knowledge.md` — user-facing guide on writing notes that retrieve well.** Six sections, capped on purpose: file shape and chunker mechanics; splittable markdown; the frontmatter whitelist that lifts into chunk metadata; content-boundary / prompt-injection authoring; when to make a new KB vs. append; `kb doctor` as the post-write checkpoint. Plus a closing section on dense / lexical / hybrid retrieval trade-offs an author can lean into (post-#206). Cited by file path so reviewers detect drift if `chunkSize`, the frontmatter whitelist, or the ingest filter change. Cross-linked from `README.md` §Usage and `CLAUDE.md` Gotchas. Closes #205.
+
+## [Unreleased] — `--mode=hybrid` RRF dense+lexical fusion (#206 stage 2)
+
+### Added
+
+- **`kb search --mode=hybrid` and MCP `retrieve_knowledge` `search_mode: "hybrid"`.** Stage 2 of #206. Runs the dense FAISS leg and the per-KB BM25 lexical leg concurrently, fuses the two ranked lists via Reciprocal Rank Fusion (Cormack 2009; `c=60`), returns the fused top-k. Default remains `dense` (byte-equal to 0.x); `--mode=hybrid` and the new optional `search_mode` MCP arg are strictly additive. Closes recall blind spots on exact-token queries (filenames, RFC/ADR numbers, error codes, env var names, model ids) without regressing natural-language queries.
+- `src/rrf.ts` — pure RRF combinator with per-retriever weights, within-list dedupe (best rank wins), and stable insertion-order tie-break. 13 unit + property-shaped tests. Exports `chunkIdFromMetadata` for callers that need the same `${source}#${chunkIndex}` identifier the dense/lexical legs use.
+- ADR `0006-hybrid-retrieval-rrf-default-c60.md` — rationale for choosing RRF over linear interpolation, and `c=60` over alternatives. Cross-referenced from the threat-model and RFC 006.
+- `docs/testing/fixtures/hybrid-vs-dense.yml` — `kb eval` fixture pack with 6 exact-token cases (where hybrid is expected to lift) plus 6 paraphrase cases (where hybrid must not regress). `gate: false` — operator-facing guidance until the project ships a stable dogfooding KB seed.
+
+### Changed
+
+- The MCP `retrieve_knowledge` tool gains an optional `search_mode: "dense" | "hybrid"` field. Wire-compatible: clients that omit it (every 0.x client) keep the dense path byte-for-byte. Hybrid responses prepend a `> _Mode: hybrid (RRF c=60); dense fetched N, lexical fetched M_` header line to the markdown payload so an inspecting agent can attribute the ranking. The `model_name` envelope from RFC 013 M3 still applies on top.
+
+### Internal
+
+- 598 tests pass (13 new RRF + 585 prior). Dense-path test surface untouched.
+
+## [Unreleased] — `kb search --mode=lexical` BM25 debug surface (#206 stage 1)
+
+### Added
+
+- **`kb search --mode=lexical` — BM25 sparse retrieval debug path.** Stage 1 of #206 (RFC 006 §4 sparse-hybrid follow-up). The CLI now accepts `--mode=dense|lexical` (default `dense`, byte-compatible with prior behavior). Under `--mode=lexical`, the search uses a per-KB BM25 index built over the same chunks the FAISS path embeds, persisted at `${FAISS_INDEX_PATH}/lexical/<kb-name>/index.json`. The lexical index is model-agnostic (one index serves every dense model) and self-invalidates per file via SHA-256 — pass `--refresh` (or run against a fresh KB) to rebuild only the changed entries. No MCP-surface change in stage 1; the `retrieve_knowledge` tool remains dense-only. Stage 2 (RRF fusion of dense + lexical) lands on top.
+- Source content is lower-cased at BM25 ingest time. Upstream `BM25Retriever` lowercases the query but not the documents, so case-mismatched exact-token queries (`INDEX_NOT_INITIALIZED`, `RFC 006`, `pickleparser`, model ids) silently miss without this compensation. The retrieved chunk's original case is preserved in the output.
+- Tokenizer / stemming tuning is deferred to a follow-up — code identifiers like `camelCase` will still under-tokenize. Documented in #206 risks.
+
 ## [Unreleased] — `kb remember --lesson` agent-task lesson template
 
 ### Added

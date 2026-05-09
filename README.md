@@ -38,8 +38,10 @@ For an interactive shell or AI-agent shell-tool flow, install globally and use t
 ```bash
 npm install -g @jeanibarz/knowledge-base-mcp-server@latest
 kb list                       # list available knowledge bases
-kb search "your query"        # read-only search; cheap, fast (~0.6 s)
-kb search "query" --refresh   # also re-scan KB files (write path)
+kb search "your query"                       # read-only dense search; cheap, fast (~0.6 s)
+kb search "query" --refresh                  # also re-scan KB files (write path)
+kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh   # BM25 debug surface (#206 stage 1)
+kb search "INDEX_NOT_INITIALIZED" --mode=hybrid              # dense ⨁ BM25 fused via RRF (#206 stage 2)
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
@@ -297,6 +299,8 @@ npm install -g @jeanibarz/knowledge-base-mcp-server@latest
 **Hook scope.** The hooks trigger on `git pull` / `git merge` / `git pull --rebase`, not on `git checkout` between branches. Run `npm run build` manually after a branch switch if needed. If a rebuild fails, the hook prints a warning and exits 0 so the pull itself isn't reported as failed — fix the build, then run `npm run build` manually.
 
 ## Usage
+
+> **Writing notes that retrieve well?** See [`docs/authoring-knowledge.md`](docs/authoring-knowledge.md) — six-section guide on chunk-friendly markdown, frontmatter taxonomy that lifts into filters, content-boundary safety, and when to split a KB.
 
 The server exposes two tools:
 

@@ -25,6 +25,10 @@ import {
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
+import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
+
+export type SearchMode = 'dense' | 'lexical' | 'hybrid';
 
 interface SearchArgs {
   query: string | null;
@@ -37,6 +41,7 @@ interface SearchArgs {
   refresh: boolean;
   stdin: boolean;
   groupBySource: boolean;
+  mode: SearchMode;
 }
 
 export interface Staleness {
@@ -80,6 +85,13 @@ export async function runSearch(rest: string[]): Promise<number> {
   } else if (parsed.query === null) {
     process.stderr.write('kb search: missing <query> (or use --stdin)\n');
     return 2;
+  }
+
+  if (parsed.mode === 'lexical') {
+    return runLexicalSearch(parsed);
+  }
+  if (parsed.mode === 'hybrid') {
+    return runHybridSearch(parsed);
   }
 
   try {
@@ -218,6 +230,7 @@ function parseSearchArgs(rest: string[]): SearchArgs {
     stdin: false,
     thresholdAuto: false,
     groupBySource: false,
+    mode: 'dense',
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
@@ -225,6 +238,13 @@ function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--group-by-source') { out.groupBySource = true; continue; }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
+    if (raw.startsWith('--mode=')) {
+      const v = raw.slice('--mode='.length);
+      if (v !== 'dense' && v !== 'lexical' && v !== 'hybrid') {
+        throw new Error(`invalid --mode: ${raw} (expected 'dense', 'lexical', or 'hybrid')`);
+      }
+      out.mode = v; continue;
+    }
     if (raw.startsWith('--threshold=')) {
       const v = raw.slice('--threshold='.length);
       if (v === 'auto') { out.thresholdAuto = true; continue; }
@@ -468,4 +488,297 @@ export function formatAutoThresholdHeader(d: AutoThresholdDecision): string {
     return `> _Auto-threshold: ${t} (no clear knee; kept all ${d.kept} results)._`;
   }
   return `> _Auto-threshold: ${t} (knee at result ${d.kneeIndex + 1}; kept ${d.kept})._`;
+}
+
+// -- #206 stage 1 — lexical search dispatch ----------------------------------
+
+interface LexicalKbResult {
+  kbName: string;
+  kbPath: string;
+  refreshSummary: { added: number; updated: number; removed: number; failed: number; totalFiles: number; totalChunks: number } | null;
+  hits: LexicalSearchResult[];
+  error?: Error;
+}
+
+async function listLexicalKbs(scoped?: string): Promise<Array<{ kbName: string; kbPath: string }>> {
+  const all = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+  const filtered = scoped ? all.filter((n) => n === scoped) : all;
+  return filtered.map((kbName) => ({
+    kbName,
+    kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName),
+  }));
+}
+
+async function runLexicalSearch(parsed: SearchArgs): Promise<number> {
+  if (parsed.thresholdAuto || parsed.threshold !== undefined) {
+    process.stderr.write('kb search: --threshold/--threshold=auto are dense-only; ignored under --mode=lexical\n');
+  }
+  if (parsed.groupBySource) {
+    process.stderr.write('kb search: --group-by-source is dense-only in stage 1; ignored under --mode=lexical\n');
+  }
+
+  const query = parsed.query as string;
+
+  let kbs: Array<{ kbName: string; kbPath: string }>;
+  try {
+    kbs = await listLexicalKbs(parsed.kb);
+  } catch (err) {
+    process.stderr.write(`kb search (lexical): could not list KBs: ${(err as Error).message}\n`);
+    return 1;
+  }
+  if (parsed.kb && kbs.length === 0) {
+    process.stderr.write(`kb search (lexical): KB not found: ${parsed.kb}\n`);
+    return 2;
+  }
+
+  const perKb: LexicalKbResult[] = [];
+  for (const { kbName, kbPath } of kbs) {
+    let index: LexicalIndex;
+    try {
+      index = await LexicalIndex.load(kbName, kbPath);
+    } catch (err) {
+      perKb.push({ kbName, kbPath, refreshSummary: null, hits: [], error: err as Error });
+      continue;
+    }
+
+    let refreshSummary: LexicalKbResult['refreshSummary'] = null;
+    if (parsed.refresh || index.numFiles() === 0) {
+      try {
+        refreshSummary = await index.refresh();
+        await index.save();
+      } catch (err) {
+        perKb.push({ kbName, kbPath, refreshSummary: null, hits: [], error: err as Error });
+        continue;
+      }
+    }
+
+    let hits: LexicalSearchResult[];
+    try {
+      hits = await index.query(query, parsed.k);
+    } catch (err) {
+      perKb.push({ kbName, kbPath, refreshSummary, hits: [], error: err as Error });
+      continue;
+    }
+    perKb.push({ kbName, kbPath, refreshSummary, hits });
+  }
+
+  // Merge across KBs by score (BM25 score is positive; higher is better).
+  const merged: LexicalSearchResult[] = [];
+  for (const row of perKb) {
+    for (const hit of row.hits) {
+      merged.push(hit);
+    }
+  }
+  merged.sort((a, b) => b.score - a.score);
+  const topK = merged.slice(0, parsed.k);
+
+  const errors = perKb.filter((r) => r.error);
+  for (const e of errors) {
+    process.stderr.write(`kb search (lexical): ${e.kbName} — ${e.error?.message ?? 'unknown error'}\n`);
+  }
+
+  // For format reuse, transform LexicalSearchResult into the dense
+  // shape `{...Document, score}` that formatRetrievalAs* expect.
+  const formatted = topK.map((h) => {
+    const obj: Record<string, unknown> & { pageContent: string; metadata: Record<string, unknown>; score: number } = {
+      pageContent: h.pageContent,
+      metadata: h.metadata,
+      score: h.score,
+    };
+    return obj;
+  });
+
+  if (parsed.format === 'json') {
+    const payload = {
+      mode: 'lexical' as const,
+      results: formatRetrievalAsJson(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE),
+      knowledge_bases: perKb.map((r) => ({
+        kb: r.kbName,
+        files: r.refreshSummary?.totalFiles ?? null,
+        chunks: r.refreshSummary?.totalChunks ?? null,
+        refresh: r.refreshSummary
+          ? {
+              added: r.refreshSummary.added,
+              updated: r.refreshSummary.updated,
+              removed: r.refreshSummary.removed,
+              failed: r.refreshSummary.failed,
+            }
+          : null,
+        error: r.error ? r.error.message : null,
+      })),
+    };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  } else {
+    process.stdout.write(`> _Mode: lexical (BM25). Stage 1 — debug surface; see #206._\n\n`);
+    if (formatted.length === 0) {
+      process.stdout.write(`_No matches._\n\n`);
+    } else {
+      process.stdout.write(formatRetrievalAsMarkdown(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE));
+      process.stdout.write('\n\n');
+    }
+    const summaryLines = perKb.map((r) => {
+      if (r.error) return `- ${r.kbName}: error — ${r.error.message}`;
+      const f = r.refreshSummary;
+      const counts = f
+        ? `${f.totalFiles} file(s), ${f.totalChunks} chunk(s)` +
+          (f.added || f.updated || f.removed || f.failed
+            ? ` (refresh: +${f.added}/~${f.updated}/-${f.removed}, ${f.failed} failed)`
+            : '')
+        : '(no refresh this run)';
+      return `- ${r.kbName}: ${counts}`;
+    });
+    process.stdout.write(`> _Lexical index status:_\n${summaryLines.join('\n')}\n`);
+  }
+
+  return errors.length > 0 ? 1 : 0;
+}
+
+// -- #206 stage 2 — hybrid (RRF) dispatch ----------------------------------
+
+const HYBRID_FETCH_MULTIPLIER = 4;
+const HYBRID_RRF_C = 60;
+
+interface HybridChunk {
+  pageContent: string;
+  metadata: Record<string, unknown>;
+  score: number;
+}
+
+async function runHybridSearch(parsed: SearchArgs): Promise<number> {
+  if (parsed.thresholdAuto || parsed.threshold !== undefined) {
+    process.stderr.write('kb search: --threshold/--threshold=auto are dense-only; ignored under --mode=hybrid\n');
+  }
+  if (parsed.groupBySource) {
+    process.stderr.write('kb search: --group-by-source is dense-only in stage 2; ignored under --mode=hybrid\n');
+  }
+
+  const query = parsed.query as string;
+  const fetchK = Math.max(parsed.k * HYBRID_FETCH_MULTIPLIER, parsed.k);
+
+  // -- dense leg -----------------------------------------------------------
+  let densePromise: Promise<HybridChunk[]>;
+  let denseError: Error | null = null;
+  let activeModelId: string | null = null;
+  try {
+    await FaissIndexManager.bootstrapLayout();
+    activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
+  } catch (err) {
+    return reportFailure(classifyKbSearchError(err), parsed.format);
+  }
+  let manager: FaissIndexManager;
+  try {
+    manager = await loadManagerForModel(activeModelId);
+  } catch (err) {
+    return reportFailure(classifyKbSearchError(err), parsed.format);
+  }
+  try {
+    if (parsed.refresh) {
+      await withWriteLock(manager.modelDir, async () => {
+        await manager.initialize();
+        await manager.updateIndex(parsed.kb);
+      });
+    } else {
+      await loadWithJsonRetry(manager);
+    }
+  } catch (err) {
+    return reportFailure(classifyKbSearchError(err), parsed.format);
+  }
+  densePromise = manager
+    .similaritySearch(query, fetchK, Number.POSITIVE_INFINITY, parsed.kb)
+    .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })))
+    .catch((err) => {
+      denseError = err as Error;
+      return [];
+    });
+
+  // -- lexical leg ---------------------------------------------------------
+  let lexicalKbs: Array<{ kbName: string; kbPath: string }>;
+  try {
+    lexicalKbs = await listLexicalKbs(parsed.kb);
+  } catch (err) {
+    process.stderr.write(`kb search (hybrid): could not list KBs: ${(err as Error).message}\n`);
+    return 1;
+  }
+
+  const lexicalPromise: Promise<{ hits: HybridChunk[]; refreshed: number; failed: number }> = (async () => {
+    let refreshed = 0;
+    let failed = 0;
+    const all: LexicalSearchResult[] = [];
+    for (const { kbName, kbPath } of lexicalKbs) {
+      try {
+        const idx = await LexicalIndex.load(kbName, kbPath);
+        if (parsed.refresh || idx.numFiles() === 0) {
+          await idx.refresh();
+          await idx.save();
+          refreshed += 1;
+        }
+        const hits = await idx.query(query, fetchK);
+        for (const h of hits) all.push(h);
+      } catch (err) {
+        failed += 1;
+        process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${(err as Error).message}\n`);
+      }
+    }
+    all.sort((a, b) => b.score - a.score);
+    const top = all.slice(0, fetchK);
+    return {
+      hits: top.map((h) => ({ pageContent: h.pageContent, metadata: h.metadata, score: h.score })),
+      refreshed,
+      failed,
+    };
+  })();
+
+  const [denseResults, lexicalResultsRow] = await Promise.all([densePromise, lexicalPromise]);
+  if (denseError) {
+    return reportFailure(classifyKbSearchError(denseError), parsed.format);
+  }
+  const lexicalResults = lexicalResultsRow.hits;
+
+  // -- fuse ----------------------------------------------------------------
+  const denseList: RankedList = {
+    retriever: 'dense',
+    results: denseResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
+  };
+  const lexicalList: RankedList = {
+    retriever: 'lexical',
+    results: lexicalResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
+  };
+  const fused = reciprocalRankFusion([denseList, lexicalList], { c: HYBRID_RRF_C });
+
+  // Index chunks by id for output. When both legs return the same id, prefer
+  // the dense entry (more complete metadata typically), but read from
+  // whichever exists.
+  const byId = new Map<string, HybridChunk>();
+  for (const r of lexicalResults) byId.set(chunkIdFromMetadata(r.metadata), r);
+  for (const r of denseResults) byId.set(chunkIdFromMetadata(r.metadata), r);
+  const ranked = fused.slice(0, parsed.k).map((f) => {
+    const chunk = byId.get(f.id);
+    return chunk ? { ...chunk, score: f.fusedScore } : null;
+  }).filter((x): x is HybridChunk => x !== null);
+
+  if (parsed.format === 'json') {
+    const payload = {
+      mode: 'hybrid' as const,
+      results: formatRetrievalAsJson(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE),
+      retrievers: {
+        dense: { fetched: denseResults.length, model: activeModelId },
+        lexical: { fetched: lexicalResults.length, refreshed: lexicalResultsRow.refreshed, failed: lexicalResultsRow.failed },
+      },
+      rrf: { c: HYBRID_RRF_C, fetch_k: fetchK },
+    };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  } else {
+    process.stdout.write(`> _Mode: hybrid (RRF c=${HYBRID_RRF_C}). Stage 2 — dense ⨁ lexical; see #206._\n\n`);
+    if (ranked.length === 0) {
+      process.stdout.write(`_No matches._\n\n`);
+    } else {
+      process.stdout.write(formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE));
+      process.stdout.write('\n\n');
+    }
+    process.stdout.write(
+      `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`,
+    );
+  }
+
+  return 0;
 }
