@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **`kb search --kb=<name>` now reports freshness for the selected KB separately from global index drift.** JSON output keeps the existing top-level `stale`, `modified_files`, and `new_files` fields as the effective search scope, and adds `global_*` plus `scope` fields so agents can distinguish "this scoped search is current" from "other KBs still have drift." Markdown output mirrors the distinction in the freshness footer.
+- **`kb search --kb=<name>` now reports freshness for the selected KB separately from global index drift.** JSON output keeps the existing top-level `stale`, `modified_files`, and `new_files` fields as the effective search scope, and adds `global_*` plus `scope` fields so agents can distinguish "this scoped search is current" from "other KBs still have drift." Markdown output mirrors the distinction in the freshness footer. Closes #192.
 - **Refresh-lock contention now has agent-friendly output.** When `kb search --refresh --format=json` cannot acquire the write lock, it emits a parseable `{error: {code: "REFRESH_LOCK_BUSY", ...}}` payload instead of only surfacing the raw lockfile message. Human-mode stderr includes retry guidance and the lock path. Closes #181.
 
 ## [Unreleased] — `kb search --group-by-source`
