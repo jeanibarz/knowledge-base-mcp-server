@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — KB-authoring cookbook (#205)
+
+### Added
+
+- **`docs/authoring-knowledge.md` — user-facing guide on writing notes that retrieve well.** Six sections, capped on purpose: file shape and chunker mechanics; splittable markdown; the frontmatter whitelist that lifts into chunk metadata; content-boundary / prompt-injection authoring; when to make a new KB vs. append; `kb doctor` as the post-write checkpoint. Plus a closing section on dense / lexical / hybrid retrieval trade-offs an author can lean into (post-#206). Cited by file path so reviewers detect drift if `chunkSize`, the frontmatter whitelist, or the ingest filter change. Cross-linked from `README.md` §Usage and `CLAUDE.md` Gotchas. Closes #205.
+
 ## [Unreleased] — `--mode=hybrid` RRF dense+lexical fusion (#206 stage 2)
 
 ### Added
