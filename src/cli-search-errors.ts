@@ -192,6 +192,13 @@ export function formatKbSearchFailureJson(failure: SearchFailure): string {
   if (failure.resource !== undefined) {
     error.resource = failure.resource;
   }
+  // Issue #181 backward-compat: `error.retry_hint` was the original
+  // lock-contention contract. Keep it as an alias of `next_action` for
+  // lock failures so existing agents that branch on `REFRESH_LOCK_BUSY`
+  // and read `retry_hint` keep working under the unified envelope.
+  if (failure.category === 'lock') {
+    error.retry_hint = failure.next_action;
+  }
   return `${JSON.stringify({ error }, null, 2)}\n`;
 }
 

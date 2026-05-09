@@ -132,6 +132,21 @@ describe('formatKbSearchFailureJson', () => {
     });
     expect(parsed.error.lock_path).toBeUndefined();
     expect(parsed.error.resource).toBeUndefined();
+    // retry_hint is a lock-only alias (issue #181 backward-compat);
+    // non-lock failures must not surface it or agents can't tell the
+    // categories apart by key shape.
+    expect(parsed.error.retry_hint).toBeUndefined();
+  });
+
+  it('keeps `retry_hint` as a backward-compatible alias of `next_action` for lock failures (#181)', () => {
+    const lockErr = new WriteLockContentionError({
+      resource: '/tmp/model',
+      lockPath: '/tmp/model/.kb-write.lock',
+      causeMessage: 'Lock file is already being held',
+    });
+    const parsed = JSON.parse(formatKbSearchFailureJson(classifyKbSearchError(lockErr)));
+    expect(parsed.error.retry_hint).toBe(parsed.error.next_action);
+    expect(parsed.error.retry_hint).toMatch(/Retry in a few seconds/);
   });
 
   it('produces JSON ending with a single newline so the stream stays line-delimited', () => {

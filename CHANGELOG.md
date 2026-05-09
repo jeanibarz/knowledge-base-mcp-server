@@ -5,7 +5,7 @@
 ### Added
 
 - **Documented `kb doctor` as the canonical KB availability smoke check.** README now explains when to reach for it (any time `kb search` returns nothing), and the four things it covers — active model, FAISS index, per-KB staleness, and embedding-backend reachability. Closes #199.
-- **`kb search` failures now carry a stable `code`, `category`, and `next_action`.** The six categories are `configuration`, `indexing`, `provider`, `permissions`, `input`, and `lock`. With `--format=md` the stderr output adds two trailing lines (`category: <bucket> (code: <CODE>)` and `next: <suggested action>`); with `--format=json` the payload is `{"error":{"code","category","message","next_action",...}}`. Lock-contention output keeps its `lock_path` / `resource` fields and now also conforms to the unified shape, so agents can branch on `error.category` rather than special-casing `REFRESH_LOCK_BUSY`. Closes #199.
+- **`kb search` failures now carry a stable `code`, `category`, and `next_action`.** The six categories are `configuration`, `indexing`, `provider`, `permissions`, `input`, and `lock`. With `--format=md` the stderr output adds two trailing lines (`category: <bucket> (code: <CODE>)` and `next: <suggested action>`); with `--format=json` the payload is `{"error":{"code","category","message","next_action",...}}`. Lock-contention output keeps its `lock_path` / `resource` fields and now also conforms to the unified shape, so agents can branch on `error.category` rather than special-casing `REFRESH_LOCK_BUSY`. The `error.retry_hint` field from #181 is preserved as a backward-compatible alias of `next_action` on lock failures so existing agents that read it keep working. Closes #199.
 
 ### Changed
 

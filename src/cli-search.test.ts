@@ -105,12 +105,18 @@ describe('lock contention output (issue #181 + #199 unified shape)', () => {
 
   it('emits parseable JSON for --format=json callers', () => {
     const parsed = JSON.parse(formatKbSearchFailureJson(classifyKbSearchError(lockErr)));
+    // Issue #181 contracted `retry_hint` for lock failures; #199's unified
+    // envelope adds `category` + `next_action` and aliases `retry_hint` to
+    // `next_action` so existing agents branching on `REFRESH_LOCK_BUSY`
+    // keep working.
     expect(parsed).toEqual({
       error: {
         code: 'REFRESH_LOCK_BUSY',
         category: 'lock',
         message: 'Refresh lock is already held for this model. Retry after the current refresh finishes.',
         next_action:
+          'Retry in a few seconds; only one `kb search --refresh` writer may run per model at a time.',
+        retry_hint:
           'Retry in a few seconds; only one `kb search --refresh` writer may run per model at a time.',
         lock_path: '/tmp/model/.kb-write.lock',
         resource: '/tmp/model',
