@@ -300,6 +300,8 @@ npm install -g @jeanibarz/knowledge-base-mcp-server@latest
 
 ## Usage
 
+> **Writing notes that retrieve well?** See [`docs/authoring-knowledge.md`](docs/authoring-knowledge.md) — six-section guide on chunk-friendly markdown, frontmatter taxonomy that lifts into filters, content-boundary safety, and when to split a KB.
+
 The server exposes two tools:
 
 *   `list_knowledge_bases`: Lists the available knowledge bases.
