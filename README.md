@@ -366,6 +366,36 @@ All non-health transport endpoints require `Authorization: Bearer <MCP_AUTH_TOKE
 
 ## Troubleshooting & Logging
 
+### KB availability smoke check
+
+When `kb search` (or the MCP `retrieve_knowledge` tool) is not returning results, run the read-only `kb doctor` command first — it is the canonical availability check and aggregates the four things that can break a search:
+
+```bash
+kb doctor                # human-readable report
+kb doctor --format=json  # machine-readable for agent shells
+```
+
+The report covers active-model resolution, FAISS index version + mtime, per-KB stale counts, embedding-backend reachability (Ollama / HuggingFace / OpenAI), CLI version, and local git state. The command exits non-zero when any required check fails (active model unresolved, index missing, backend unreachable), so it is safe to use as a precondition gate from scripts.
+
+### Distinguishing search failure modes
+
+`kb search` failures are classified into one of six categories so a user or agent can tell what to fix without reading stack traces. Each failure carries a stable `code`, a `category`, a human `message`, and a concrete `next_action`:
+
+| Category | Typical codes | What to try |
+| --- | --- | --- |
+| `configuration` | `PROVIDER_AUTH`, `KB_NOT_FOUND`, `ACTIVE_MODEL_UNRESOLVED` | Set the missing API key, run `kb list` / `kb models list`, or `kb models set-active <id>`. |
+| `indexing` | `INDEX_NOT_INITIALIZED`, `CORRUPT_INDEX` | Build or rebuild the index with `kb search --refresh`. |
+| `provider` | `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT` | Verify the embedding backend is reachable (`ollama serve`, provider status page). |
+| `permissions` | `PERMISSION_DENIED` | Grant write access to `$FAISS_INDEX_PATH` and per-KB `.index/`. |
+| `input` | `VALIDATION` | Adjust the rejected field named in the message. |
+| `lock` | `REFRESH_LOCK_BUSY` | Retry shortly; only one `kb search --refresh` writer runs per model. |
+
+With `--format=md` the same fields render to stderr as `kb search: <message>` followed by `category:` and `next:` lines. With `--format=json` they render to stdout as `{"error":{"code","category","message","next_action",...}}` so an agent can branch on the category programmatically. When the cause is unclear, the `next_action` falls back to `kb doctor` which prints the exact health snapshot needed to diagnose.
+
+Exit codes mirror the CLI's existing convention — `2` for configuration and input problems the user can fix without retry, `1` for runtime / index / provider / permissions / lock problems.
+
+### Other tips
+
 - Set `LOG_FILE` to capture structured logs (JSON-RPC traffic continues to use stdout). This is especially helpful when diagnosing MCP handshake errors because all diagnostic messages are written to stderr and the optional log file.
 - Permission errors when creating or updating the FAISS index are surfaced with explicit messages in both the console and the log file. Verify that the process can write to `FAISS_INDEX_PATH` and the `.index` directories inside each knowledge base.
 - Run `npm test` to execute the Jest suite (serialised with `--runInBand`) that covers logger fallback behaviour and FAISS permission handling.

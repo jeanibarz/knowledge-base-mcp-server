@@ -2,10 +2,16 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
-  ActiveModelResolutionError,
   resolveActiveModel,
   resolveFaissIndexBinaryPath,
 } from './active-model.js';
+import {
+  classifyKbSearchError,
+  exitCodeForFailure,
+  formatKbSearchFailureJson,
+  formatKbSearchFailureStderr,
+  type SearchFailure,
+} from './cli-search-errors.js';
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KNOWLEDGE_BASES_ROOT_DIR,
@@ -17,7 +23,7 @@ import {
   groupRetrievalBySource,
 } from './formatter.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
-import { withWriteLock, WriteLockContentionError } from './write-lock.js';
+import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 
 interface SearchArgs {
@@ -79,28 +85,21 @@ export async function runSearch(rest: string[]): Promise<number> {
   try {
     await FaissIndexManager.bootstrapLayout();
   } catch (err) {
-    process.stderr.write(`kb search: layout bootstrap failed: ${(err as Error).message}\n`);
-    return 1;
+    return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
   let activeModelId: string;
   try {
     activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
   } catch (err) {
-    if (err instanceof ActiveModelResolutionError) {
-      process.stderr.write(`kb search: ${err.message}\n`);
-      return 2;
-    }
-    process.stderr.write(`kb search: ${(err as Error).message}\n`);
-    return 1;
+    return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
   let manager: FaissIndexManager;
   try {
     manager = await loadManagerForModel(activeModelId);
   } catch (err) {
-    process.stderr.write(`kb search: ${(err as Error).message}\n`);
-    return 2;
+    return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
   try {
@@ -113,16 +112,7 @@ export async function runSearch(rest: string[]): Promise<number> {
       await loadWithJsonRetry(manager);
     }
   } catch (err) {
-    if (err instanceof WriteLockContentionError) {
-      if (parsed.format === 'json') {
-        process.stdout.write(formatLockContentionJson(err));
-      } else {
-        process.stderr.write(formatLockContentionStderr(err));
-      }
-      return 1;
-    }
-    process.stderr.write(`kb search: ${(err as Error).message}\n`);
-    return 1;
+    return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
   let results;
@@ -146,8 +136,7 @@ export async function runSearch(rest: string[]): Promise<number> {
       );
     }
   } catch (err) {
-    process.stderr.write(`kb search: ${(err as Error).message}\n`);
-    return 1;
+    return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
   const staleness = await computeStaleness(activeModelId, parsed.kb);
@@ -404,24 +393,13 @@ function hasStaleCounts(counts: StalenessCounts): boolean {
   return counts.modifiedFiles + counts.newFiles > 0;
 }
 
-export function formatLockContentionJson(err: WriteLockContentionError): string {
-  return `${JSON.stringify({
-    error: {
-      code: err.code,
-      message: err.message,
-      lock_path: err.lockPath,
-      resource: err.resource,
-      retry_hint: 'Retry in a few seconds; only one kb search --refresh writer may run per model at a time.',
-    },
-  }, null, 2)}\n`;
-}
-
-export function formatLockContentionStderr(err: WriteLockContentionError): string {
-  return (
-    `kb search: refresh lock is busy for this model. Retry in a few seconds; ` +
-    `only one \`kb search --refresh\` writer may run per model at a time. ` +
-    `Lock: ${err.lockPath}\n`
-  );
+function reportFailure(failure: SearchFailure, format: 'md' | 'json'): number {
+  if (format === 'json') {
+    process.stdout.write(formatKbSearchFailureJson(failure));
+  } else {
+    process.stderr.write(formatKbSearchFailureStderr(failure));
+  }
+  return exitCodeForFailure(failure);
 }
 
 async function readAllStdin(): Promise<string> {
