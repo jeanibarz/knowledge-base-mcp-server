@@ -214,6 +214,10 @@ describe('ReindexTriggerWatcher (RFC 011 §5.5)', () => {
     await new Promise((r) => setTimeout(r, 200));
 
     await watcher.stop();
-    expect(onTrigger).toHaveBeenCalled();
+    // Coalescing contract: one mtime advance means exactly one fire, no
+    // matter how many polls observe it. Asserting "called at least once"
+    // (the previous bar) would let a regression that re-fired on every
+    // tick after the bump pass silently.
+    expect(onTrigger).toHaveBeenCalledTimes(1);
   });
 });
