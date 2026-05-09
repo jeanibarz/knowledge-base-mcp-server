@@ -10,7 +10,7 @@
 
 ### Changed
 
-- **`kb search --kb=<name>` now reports freshness for the selected KB separately from global index drift.** JSON output keeps the existing top-level `stale`, `modified_files`, and `new_files` fields as the effective search scope, and adds `global_*` plus `scope` fields so agents can distinguish "this scoped search is current" from "other KBs still have drift." Markdown output mirrors the distinction in the freshness footer.
+- **`kb search --kb=<name>` now reports freshness for the selected KB separately from global index drift.** JSON output keeps the existing top-level `stale`, `modified_files`, and `new_files` fields as the effective search scope, and adds `global_*` plus `scope` fields so agents can distinguish "this scoped search is current" from "other KBs still have drift." Markdown output mirrors the distinction in the freshness footer. Closes #192.
 - **Refresh-lock contention now has agent-friendly output.** When `kb search --refresh --format=json` cannot acquire the write lock, it emits a parseable `{error: {code: "REFRESH_LOCK_BUSY", ...}}` payload instead of only surfacing the raw lockfile message. Human-mode stderr includes retry guidance and the lock path. Closes #181.
 
 ## [Unreleased] — `kb search --group-by-source`
@@ -18,6 +18,7 @@
 ### Added
 
 - **`kb search --group-by-source` groups repeated chunks from the same source file.** Markdown output now collapses matching chunks under one source heading, reports the best score for that source, and preserves each chunk's score and location for inspection. JSON output keeps the existing raw `results` array unchanged and adds `grouped_results` only when the flag is present. Closes #182.
+- **Grouped source output now reports `chunk_count` per source.** Both JSON grouped results and markdown grouped output expose the explicit number of matched chunks per source while preserving the raw chunk list. Closes #193.
 
 ## [Unreleased] — CLI `kb remember` semantic preflight (default ON)
 

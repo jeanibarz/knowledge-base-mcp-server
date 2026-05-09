@@ -211,6 +211,7 @@ describe('groupRetrievalBySource', () => {
 
     expect(grouped).toHaveLength(2);
     expect(grouped[0].source).toBe('kb/repeated.md');
+    expect(grouped[0].chunk_count).toBe(2);
     expect(grouped[0].best_score).toBe(0.3);
     expect(grouped[0].chunks).toHaveLength(2);
     expect(grouped[0].locations).toEqual([
@@ -218,6 +219,7 @@ describe('groupRetrievalBySource', () => {
       { score: 0.3, location: { lines: { from: 20, to: 25 } } },
     ]);
     expect(grouped[1].source).toBe('kb/other.md');
+    expect(grouped[1].chunk_count).toBe(1);
   });
 
   it('keeps raw chunk metadata sanitized in grouped JSON-ready output', () => {
@@ -261,6 +263,7 @@ describe('formatRetrievalGroupedBySourceAsMarkdown', () => {
     expect(out).toContain('**Source 1:** `kb/repeated.md`');
     expect(out).not.toContain('**Source 2:**');
     expect(out).toContain('**Best score:** 0.30');
+    expect(out).toContain('**Chunk count:** 2');
     expect(out).toContain('"from":1');
     expect(out).toContain('"from":20');
     expect(out).toContain('first chunk');
