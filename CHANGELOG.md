@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — `kb eval` retrieval fixtures
+
+### Added
+
+- **`kb eval <fixture.yml|json>` fixture-driven retrieval checks.** Fixtures can assert required sources, forbidden sources, expected metadata, duplicate-source budgets, and stale-policy expectations per query, with per-case gating so exploratory cases warn while CI gates fail the command. Closes #194.
+
 ## [Unreleased] — `kb search` scoped freshness and lock errors
 
 ### Changed

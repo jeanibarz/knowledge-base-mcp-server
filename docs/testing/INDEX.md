@@ -1,5 +1,7 @@
 # Testing
 
+- [Retrieval eval command](retrieval-eval.md)
+
 ## Search
 
 ### TS-SEARCH-192: Scoped Search Staleness

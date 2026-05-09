@@ -1,5 +1,7 @@
 # Requirements
 
+- [Retrieval eval command](retrieval-eval.md)
+
 ## Search
 
 ### FR-SEARCH-192: Scoped Search Staleness

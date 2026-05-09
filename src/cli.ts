@@ -21,6 +21,7 @@ import { fileURLToPath } from 'url';
 import { runCapture } from './cli-capture.js';
 import { runCompare } from './cli-compare.js';
 import { runDoctor } from './cli-doctor.js';
+import { runEval } from './cli-eval.js';
 import { runList } from './cli-list.js';
 import { runModels } from './cli-models.js';
 import { runRemember } from './cli-remember.js';
@@ -67,6 +68,8 @@ Usage:
                                            to a KB note as a fenced block.
   kb compare <query> <a> <b>              Side-by-side rank/score table.
   kb doctor [--format=md|json]            Aggregate model/index/backend health.
+  kb eval <fixture.yml|json> [--model=<id>] [--format=md|json]
+                                           Run fixture-driven retrieval checks.
   kb stale-check [--kb=<name>] [--no-cache] [--verbose]
                                            Scan markdown notes for path / URL
                                            references that no longer resolve.
@@ -189,6 +192,9 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (sub === 'doctor') {
     return runDoctor(rest);
+  }
+  if (sub === 'eval') {
+    return runEval(rest);
   }
   if (sub === 'stale-check') {
     return runStaleCheck(rest);
