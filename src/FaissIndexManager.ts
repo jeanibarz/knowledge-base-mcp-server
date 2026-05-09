@@ -153,13 +153,26 @@ function failureSummary(
   error: unknown,
 ): IndexUpdateFailureSummary {
   const err = toError(error);
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  const fsError = error as NodeJS.ErrnoException | undefined;
+  const code = fsError?.code;
   return {
     relative_path: relativePath,
     phase,
     code: typeof code === 'string' ? code : null,
-    message: err.message,
+    message: sanitizeFailureMessage(err.message, relativePath, fsError?.path),
   };
+}
+
+function sanitizeFailureMessage(
+  message: string,
+  relativePath: string | null,
+  rawPath: string | undefined,
+): string {
+  if (!rawPath || !path.isAbsolute(rawPath)) {
+    return message;
+  }
+  const replacement = relativePath ?? '<path>';
+  return message.split(rawPath).join(replacement);
 }
 
 export class FaissIndexManager {
@@ -559,6 +572,7 @@ export class FaissIndexManager {
           scopedKnowledgeBase = undefined;
         }
       }
+      runSummary.scope = scopedKnowledgeBase ?? 'global';
 
       let knowledgeBases: string[] = [];
       if (scopedKnowledgeBase) {
@@ -630,8 +644,17 @@ export class FaissIndexManager {
           anyFileProcessed = true;
           runSummary.files_scanned += 1;
 
-          const fileHash = await calculateSHA256(filePath);
           const relativePath = path.relative(knowledgeBasePath, filePath);
+          let fileHash: string;
+          try {
+            fileHash = await calculateSHA256(filePath);
+          } catch (error: unknown) {
+            logger.error(`Error reading file ${filePath}:`, toError(error));
+            runSummary.files_skipped += 1;
+            loaderFailurePaths.add(filePath);
+            recordFailure(relativePath, 'load', error);
+            continue;
+          }
           const indexDirPath = path.join(knowledgeBasePath, '.index', path.dirname(relativePath));
           const indexFilePath = path.join(indexDirPath, path.basename(filePath));
 

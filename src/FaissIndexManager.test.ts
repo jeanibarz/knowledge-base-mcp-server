@@ -442,6 +442,12 @@ describe('FaissIndexManager permission handling', () => {
     // remaining file.
     const rebuildAdds = addDocumentsMock.mock.calls.length;
     expect(rebuildAdds).toBe(initialAdds);
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      scope: 'global',
+      files_scanned: 2,
+      files_changed: 2,
+    });
 
     // The KB hash sidecars must reflect the rebuild — both files have
     // up-to-date sidecars now.
@@ -554,6 +560,52 @@ describe('FaissIndexManager permission handling', () => {
       sidecars_written: false,
       failure_count: 0,
     });
+  });
+
+  it('sanitizes absolute file paths in update failure summaries', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-summary-sanitize-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'secret.md');
+    await fsp.writeFile(docPath, '# Secret\n\nThis file is unreadable.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    await fsp.chmod(docPath, 0o000);
+    try {
+      jest.resetModules();
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const manager = new FaissIndexManager();
+      await manager.initialize();
+
+      await manager.updateIndex('default');
+
+      const summary = manager.getLastIndexUpdateSummary();
+      expect(summary).toMatchObject({
+        status: 'partial',
+        scope: 'default',
+        files_scanned: 1,
+        files_changed: 0,
+        files_skipped: 1,
+        failure_count: 1,
+        failures: [
+          expect.objectContaining({
+            relative_path: 'secret.md',
+            phase: 'load',
+            code: 'EACCES',
+          }),
+        ],
+      });
+      expect(summary.failures[0].message).not.toContain(tempDir);
+      expect(summary.failures[0].message).not.toContain(docPath);
+      expect(summary.failures[0].message).toContain('secret.md');
+    } finally {
+      await fsp.chmod(docPath, 0o600).catch(() => undefined);
+    }
   });
 
   it('splits non-markdown text files into multiple chunks when content exceeds chunkSize', async () => {
