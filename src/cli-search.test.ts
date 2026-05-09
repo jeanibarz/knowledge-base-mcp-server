@@ -2,12 +2,15 @@ import { describe, expect, it } from '@jest/globals';
 import {
   AutoThresholdDecision,
   computeAutoThreshold,
-  formatLockContentionJson,
-  formatLockContentionStderr,
   formatAutoThresholdHeader,
   formatFreshnessFooter,
   Staleness,
 } from './cli-search.js';
+import {
+  classifyKbSearchError,
+  formatKbSearchFailureJson,
+  formatKbSearchFailureStderr,
+} from './cli-search-errors.js';
 import { WriteLockContentionError } from './write-lock.js';
 
 const MTIME = '2026-05-03T15:33:56.964Z';
@@ -93,33 +96,38 @@ describe('formatFreshnessFooter', () => {
   });
 });
 
-describe('lock contention output', () => {
+describe('lock contention output (issue #181 + #199 unified shape)', () => {
+  const lockErr = new WriteLockContentionError({
+    resource: '/tmp/model',
+    lockPath: '/tmp/model/.kb-write.lock',
+    causeMessage: 'Lock file is already being held',
+  });
+
   it('emits parseable JSON for --format=json callers', () => {
-    const err = new WriteLockContentionError({
-      resource: '/tmp/model',
-      lockPath: '/tmp/model/.kb-write.lock',
-      causeMessage: 'Lock file is already being held',
-    });
-    const parsed = JSON.parse(formatLockContentionJson(err));
+    const parsed = JSON.parse(formatKbSearchFailureJson(classifyKbSearchError(lockErr)));
+    // Issue #181 contracted `retry_hint` for lock failures; #199's unified
+    // envelope adds `category` + `next_action` and aliases `retry_hint` to
+    // `next_action` so existing agents branching on `REFRESH_LOCK_BUSY`
+    // keep working.
     expect(parsed).toEqual({
       error: {
         code: 'REFRESH_LOCK_BUSY',
+        category: 'lock',
         message: 'Refresh lock is already held for this model. Retry after the current refresh finishes.',
+        next_action:
+          'Retry in a few seconds; only one `kb search --refresh` writer may run per model at a time.',
+        retry_hint:
+          'Retry in a few seconds; only one `kb search --refresh` writer may run per model at a time.',
         lock_path: '/tmp/model/.kb-write.lock',
         resource: '/tmp/model',
-        retry_hint: 'Retry in a few seconds; only one kb search --refresh writer may run per model at a time.',
       },
     });
   });
 
   it('prints retry guidance for human-mode stderr', () => {
-    const err = new WriteLockContentionError({
-      resource: '/tmp/model',
-      lockPath: '/tmp/model/.kb-write.lock',
-      causeMessage: 'Lock file is already being held',
-    });
-    const out = formatLockContentionStderr(err);
-    expect(out).toContain('refresh lock is busy');
+    const out = formatKbSearchFailureStderr(classifyKbSearchError(lockErr));
+    expect(out).toContain('Refresh lock is already held');
+    expect(out).toContain('category: lock');
     expect(out).toContain('Retry in a few seconds');
     expect(out).toContain('/tmp/model/.kb-write.lock');
   });
