@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — Batched changed-file embeddings during updateIndex (#236)
+
+### Changed
+
+- **`FaissIndexManager.updateIndex` now embeds changed-file chunks in bounded document batches.** `INDEXING_BATCH_SIZE` controls the batch size, with conservative provider defaults. Empty indexes are seeded with one `fromTexts` batch and remaining chunks append through `addDocuments` batches, while preserving the existing single FAISS save and post-save sidecar hash writes. Closes #236.
+
 ## [Unreleased] — KB-authoring cookbook (#205)
 
 ### Added
