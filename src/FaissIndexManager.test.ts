@@ -375,6 +375,21 @@ describe('FaissIndexManager permission handling', () => {
     await manager.initialize();
 
     await expect(manager.updateIndex()).rejects.toThrow(/Permission denied/);
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'failed',
+      scope: 'global',
+      files_scanned: 1,
+      files_changed: 1,
+      index_mutated: true,
+      saved: false,
+      failure_count: 1,
+      failures: [
+        expect.objectContaining({
+          phase: 'save',
+          message: expect.stringContaining('cannot write index'),
+        }),
+      ],
+    });
     // RFC 014 — first save under v014 writes to index.v0/ via atomicSave.
     expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!));
 
@@ -473,6 +488,72 @@ describe('FaissIndexManager permission handling', () => {
       expect(sidecarContent).toMatch(/^[0-9a-f]{64}$/);
       await expect(fsp.stat(`${sidecarPath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
     }
+  });
+
+  it('records latest update summaries for changed and unchanged runs', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-update-summary-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'doc.md');
+    await fsp.writeFile(docPath, '# Title\n\nSome content for embeddings.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'never_run',
+      model_id: DEFAULT_MODEL_ID,
+    });
+
+    await manager.initialize();
+    await manager.updateIndex('default');
+
+    const changedSummary = manager.getLastIndexUpdateSummary();
+    expect(changedSummary).toMatchObject({
+      status: 'success',
+      scope: 'default',
+      model_id: DEFAULT_MODEL_ID,
+      files_scanned: 1,
+      files_changed: 1,
+      files_unchanged: 0,
+      files_skipped: 0,
+      chunks_added: 1,
+      index_mutated: true,
+      saved: true,
+      sidecars_written: true,
+      failure_count: 0,
+    });
+    expect(changedSummary.started_at).toEqual(expect.any(String));
+    expect(changedSummary.finished_at).toEqual(expect.any(String));
+    expect(changedSummary.duration_ms).toEqual(expect.any(Number));
+
+    saveMock.mockClear();
+    fromTextsMock.mockClear();
+    addDocumentsMock.mockClear();
+
+    await manager.updateIndex('default');
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(fromTextsMock).not.toHaveBeenCalled();
+    expect(addDocumentsMock).not.toHaveBeenCalled();
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      scope: 'default',
+      files_scanned: 1,
+      files_changed: 0,
+      files_unchanged: 1,
+      files_skipped: 0,
+      chunks_added: 0,
+      index_mutated: false,
+      saved: false,
+      sidecars_written: false,
+      failure_count: 0,
+    });
   });
 
   it('splits non-markdown text files into multiple chunks when content exceeds chunkSize', async () => {

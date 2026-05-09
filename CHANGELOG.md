@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — latest index-update summaries in stats and doctor
+
+### Added
+
+- **`last_index_update` observability for refresh runs.** `FaissIndexManager.updateIndex()` now keeps a bounded in-memory summary of the latest run: status (`success`, `partial`, `failed`, or `never_run`), scope, model id, timestamps, duration, file/chunk counters, save and sidecar outcomes, and capped relative-path failure summaries. `kb_stats` exposes the object directly, and `kb doctor` includes the same section in JSON plus a concise markdown line. The summary is process-local and resets to `never_run` on startup. Closes #237.
+
 ## [Unreleased] — `kb remember --lesson` agent-task lesson template
 
 ### Added

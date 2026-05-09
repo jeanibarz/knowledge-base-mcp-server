@@ -13,6 +13,25 @@ const getStatsMock = jest.fn(() => ({
   chunkCountsByKb: {} as Record<string, number>,
   dim: null as number | null,
 }));
+const getLastIndexUpdateSummaryMock = jest.fn(() => ({
+  status: 'never_run',
+  scope: null,
+  model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+  started_at: null,
+  finished_at: null,
+  duration_ms: null,
+  files_scanned: 0,
+  files_changed: 0,
+  files_unchanged: 0,
+  files_skipped: 0,
+  chunks_attempted: 0,
+  chunks_added: 0,
+  index_mutated: false,
+  saved: false,
+  sidecars_written: false,
+  failure_count: 0,
+  failures: [],
+}));
 
 const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provider?: string; modelName?: string }) => {
   // RFC 013 M1+M2: the manager exposes modelDir / modelId / modelName for
@@ -28,6 +47,7 @@ const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provid
     updateIndex: updateIndexMock,
     similaritySearch: similaritySearchMock,
     getStats: getStatsMock,
+    getLastIndexUpdateSummary: getLastIndexUpdateSummaryMock,
     modelDir,
     modelId,
     modelName,
@@ -68,6 +88,26 @@ describe('KnowledgeBaseServer handlers', () => {
     hasLoadedIndexMock.mockReturnValue(true);
     getStatsMock.mockReset();
     getStatsMock.mockReturnValue({ totalChunks: 0, chunkCountsByKb: {}, dim: null });
+    getLastIndexUpdateSummaryMock.mockReset();
+    getLastIndexUpdateSummaryMock.mockReturnValue({
+      status: 'never_run',
+      scope: null,
+      model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+      started_at: null,
+      finished_at: null,
+      duration_ms: null,
+      files_scanned: 0,
+      files_changed: 0,
+      files_unchanged: 0,
+      files_skipped: 0,
+      chunks_attempted: 0,
+      chunks_added: 0,
+      index_mutated: false,
+      saved: false,
+      sidecars_written: false,
+      failure_count: 0,
+      failures: [],
+    });
   });
 
   afterEach(() => {
@@ -297,6 +337,8 @@ describe('KnowledgeBaseServer handlers', () => {
       dim: 384,
     });
     expect(payload.index_path).toBe(process.env.FAISS_INDEX_PATH);
+    expect(payload.last_index_update.status).toBe('never_run');
+    expect(payload.last_index_update.model_id).toBe('huggingface__BAAI-bge-small-en-v1.5');
     expect(typeof payload.server.version).toBe('string');
     expect(payload.server.version.length).toBeGreaterThan(0);
     expect(typeof payload.server.uptime_ms).toBe('number');
