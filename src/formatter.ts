@@ -25,6 +25,7 @@ export interface GroupedRetrievalChunk extends RetrievalJsonResult {
 
 export interface GroupedRetrievalSource {
   source: string;
+  chunk_count: number;
   best_score: number | null;
   locations: Array<{ score: number | null; location: unknown | null }>;
   chunks: GroupedRetrievalChunk[];
@@ -107,6 +108,7 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
         return (
           `**Source ${idx + 1}:** \`${group.source}\`\n\n` +
           `**Best score:** ${formatScore(group.best_score)}\n\n` +
+          `**Chunk count:** ${group.chunk_count}\n\n` +
           `**Matching chunks:**\n\n${chunks}`
         );
       })
@@ -155,13 +157,14 @@ export function groupRetrievalBySource(
     const source = getSourcePath(sanitizedMetadata, idx);
     let group = bySource.get(source);
     if (group === undefined) {
-      group = { source, best_score: null, locations: [], chunks: [] };
+      group = { source, chunk_count: 0, best_score: null, locations: [], chunks: [] };
       bySource.set(source, group);
       groups.push(group);
     }
 
     const score = doc.score ?? null;
     const location = getChunkLocation(sanitizedMetadata);
+    group.chunk_count += 1;
     group.best_score = bestScore(group.best_score, score);
     group.locations.push({ score, location });
     group.chunks.push({
