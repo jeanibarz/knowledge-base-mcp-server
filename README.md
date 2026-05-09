@@ -1,6 +1,7 @@
 # Knowledge Base MCP Server
 
 [![Tests](https://github.com/jeanibarz/knowledge-base-mcp-server/actions/workflows/test.yml/badge.svg)](https://github.com/jeanibarz/knowledge-base-mcp-server/actions/workflows/test.yml)
+[![npm](https://img.shields.io/npm/v/@jeanibarz/knowledge-base-mcp-server.svg)](https://www.npmjs.com/package/@jeanibarz/knowledge-base-mcp-server)
 [![License](https://img.shields.io/github/license/jeanibarz/knowledge-base-mcp-server)](./UNLICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](./package.json)
 
