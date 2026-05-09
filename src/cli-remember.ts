@@ -8,7 +8,7 @@ import { filterIngestablePaths } from './ingest-filter.js';
 import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
-import { appendSectionInDocument, parseHeadingSpec } from './markdown-section.js';
+import { appendSectionInDocument, listHeadings, parseHeadingSpec } from './markdown-section.js';
 import {
   DEFAULT_SIMILAR_K,
   DEFAULT_SIMILAR_THRESHOLD,
@@ -41,6 +41,14 @@ interface RememberArgs {
   yes: boolean;
   refresh: boolean;
   /**
+   * Issue #200 — `--lesson` opts the call into the agent-task-lesson
+   * template. Defaults `--kb` to LESSON_DEFAULT_KB when not set, validates
+   * that stdin has the three canonical sections (Mistake / Why it happened
+   * / Better next time), and emits a guided skeleton when stdin is empty
+   * or sections are missing — instead of writing a low-quality note.
+   */
+  lesson: boolean;
+  /**
    * Whether the preflight semantic-similarity guard runs. Default ON
    * (issue #154 default-on decision). `--no-check-similar` opts out.
    */
@@ -59,6 +67,31 @@ interface RememberArgs {
   format: 'md' | 'json';
   model?: string;
 }
+
+/**
+ * Default knowledge base for `--lesson` writes. The point of the flag is
+ * to remove KB-name guesswork — agents should be able to write a lesson
+ * without thinking about where it lands.
+ */
+export const LESSON_DEFAULT_KB = 'agent-task-lessons';
+
+/**
+ * Required H2 sections in a lesson body. Match is case-insensitive,
+ * trimmed, with trailing punctuation stripped, so `## Mistake:` and
+ * `## Mistakes` count as the canonical "Mistake" section. The level
+ * is enforced — `# Mistake` (H1) and `### Mistake` (H3) do NOT count,
+ * because the skeleton, the docs, and downstream tooling all agree on
+ * the H2 contract; a relaxed check would let lessons drift into
+ * inconsistent shapes that break grep/anchor links over time.
+ * Headings inside fenced code blocks never match — `listHeadings`
+ * walks the markdown AST.
+ */
+const LESSON_HEADING_LEVEL = 2;
+const REQUIRED_LESSON_SECTIONS: ReadonlyArray<{ canonical: string; aliases: ReadonlyArray<string> }> = [
+  { canonical: 'Mistake', aliases: ['mistake', 'mistakes'] },
+  { canonical: 'Why it happened', aliases: ['why it happened'] },
+  { canonical: 'Better next time', aliases: ['better next time'] },
+];
 
 interface Suggestion {
   relativePath: string;
@@ -91,6 +124,22 @@ export async function runRemember(rest: string[]): Promise<number> {
   } catch (err) {
     process.stderr.write(`kb remember: failed to read stdin: ${(err as Error).message}\n`);
     return 1;
+  }
+
+  if (parsed.lesson) {
+    const validation = validateLessonContent(content);
+    if (!validation.ok) {
+      writeLessonValidationFailure(parsed, validation);
+      return 2;
+    }
+    if (parsed.kb === LESSON_DEFAULT_KB) {
+      try {
+        await ensureLessonKbExists(parsed.kb);
+      } catch (err) {
+        process.stderr.write(`kb remember: ${(err as Error).message}\n`);
+        return 1;
+      }
+    }
   }
 
   let preflight: PreflightOutcome | null = null;
@@ -169,6 +218,10 @@ export async function runRemember(rest: string[]): Promise<number> {
     action,
     refreshed: parsed.refresh,
   };
+  if (parsed.lesson) {
+    summary.lesson = true;
+    summary.write_performed = true;
+  }
   if (preflight !== null) {
     summary.similarity_check = {
       performed: true,
@@ -180,6 +233,114 @@ export async function runRemember(rest: string[]): Promise<number> {
   }
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return 0;
+}
+
+interface LessonValidation {
+  ok: boolean;
+  missing: string[];
+  found: string[];
+  /** True when stdin was empty/whitespace — distinguishes "no body at all" from "wrong sections". */
+  empty: boolean;
+}
+
+function normalizeHeadingText(text: string): string {
+  return text
+    .trim()
+    .replace(/[\s:.?!,;]+$/u, '')
+    .toLowerCase();
+}
+
+export function validateLessonContent(content: string): LessonValidation {
+  const empty = content.trim() === '';
+  if (empty) {
+    return {
+      ok: false,
+      missing: REQUIRED_LESSON_SECTIONS.map((s) => s.canonical),
+      found: [],
+      empty: true,
+    };
+  }
+  const headings = listHeadings(content);
+  const seen = new Set<string>();
+  for (const h of headings) {
+    if (h.level !== LESSON_HEADING_LEVEL) continue;
+    const norm = normalizeHeadingText(h.text);
+    for (const req of REQUIRED_LESSON_SECTIONS) {
+      if (req.aliases.includes(norm)) {
+        seen.add(req.canonical);
+      }
+    }
+  }
+  const missing = REQUIRED_LESSON_SECTIONS
+    .filter((s) => !seen.has(s.canonical))
+    .map((s) => s.canonical);
+  return {
+    ok: missing.length === 0,
+    missing,
+    found: Array.from(seen),
+    empty: false,
+  };
+}
+
+export function buildLessonSkeleton(): string {
+  return [
+    '## Mistake',
+    '',
+    '<one or two sentences: what action led to the unwanted outcome>',
+    '',
+    '## Why it happened',
+    '',
+    '<root cause: missing context, wrong assumption, ambiguous instruction, etc.>',
+    '',
+    '## Better next time',
+    '',
+    '<a generic, transferable rule — avoid task-specific names, paths, branches, or PR numbers>',
+    '',
+  ].join('\n');
+}
+
+function writeLessonValidationFailure(args: RememberArgs, validation: LessonValidation): void {
+  const skeleton = buildLessonSkeleton();
+  if (args.format === 'json') {
+    const payload = {
+      action: 'lesson-validation',
+      write_performed: false,
+      lesson: true,
+      knowledge_base_name: args.kb,
+      empty_input: validation.empty,
+      missing_sections: validation.missing,
+      found_sections: validation.found,
+      skeleton,
+      decision_hint: {
+        summary: validation.empty
+          ? 'Lesson body is empty. Fill in the skeleton below and pipe it back through stdin.'
+          : `Lesson body is missing required sections: ${validation.missing.join(', ')}.`,
+        recommended_agent_actions: [
+          'Pipe the returned skeleton (or your edited version) into `kb remember --lesson --title=<...> --stdin --yes`.',
+          'Keep the body generic — avoid PR numbers, branch names, repo-local paths.',
+          'Use --no-check-similar only if you have already inspected the candidates surfaced by the similarity guard.',
+        ],
+      },
+    };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+  const header = validation.empty
+    ? 'kb remember --lesson: stdin is empty.'
+    : `kb remember --lesson: missing required sections: ${validation.missing.join(', ')}.`;
+  process.stdout.write(`${header}\n\nFill in this skeleton and pipe it back through stdin:\n\n`);
+  process.stdout.write(skeleton);
+  process.stdout.write('\n');
+}
+
+async function ensureLessonKbExists(kbName: string): Promise<void> {
+  if (kbName !== LESSON_DEFAULT_KB) return;
+  const kbDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
+  try {
+    await fsp.mkdir(kbDir, { recursive: true });
+  } catch (err) {
+    throw new Error(`failed to create lesson knowledge base at ${kbDir}: ${(err as Error).message}`);
+  }
 }
 
 interface PreflightOutcome {
@@ -229,6 +390,7 @@ export function parseRememberArgs(rest: string[]): RememberArgs {
     stdin: false,
     yes: false,
     refresh: false,
+    lesson: false,
     // Default ON (issue #154): writes run the guard unless the caller
     // explicitly opts out with --no-check-similar.
     checkSimilar: true,
@@ -243,6 +405,7 @@ export function parseRememberArgs(rest: string[]): RememberArgs {
     if (raw === '--stdin') { out.stdin = true; continue; }
     if (raw === '--yes') { out.yes = true; continue; }
     if (raw === '--refresh') { out.refresh = true; continue; }
+    if (raw === '--lesson') { out.lesson = true; continue; }
     if (raw === '--check-similar') {
       out.checkSimilar = true;
       out.checkSimilarExplicit = true;
@@ -303,12 +466,26 @@ export function parseRememberArgs(rest: string[]): RememberArgs {
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     throw new Error(`unexpected argument: ${raw}`);
   }
+  // --lesson removes KB-name guesswork: default `--kb` to the canonical
+  // lesson KB when the caller didn't pass one. An explicit `--kb=` still
+  // wins so the operator can store lessons elsewhere if they want.
+  if (out.lesson && (out.kb === undefined || out.kb.trim() === '')) {
+    out.kb = LESSON_DEFAULT_KB;
+  }
   return out;
 }
 
 function validateRememberArgs(args: RememberArgs): void {
   if (args.kb === undefined || args.kb.trim() === '') {
     throw new Error('missing --kb=<name>');
+  }
+  if (args.lesson) {
+    if (args.suggest) {
+      throw new Error('--lesson cannot be combined with --suggest');
+    }
+    if (args.append !== undefined || args.appendSection !== undefined) {
+      throw new Error('--lesson is for new lesson notes; use --title=<title>, not --append');
+    }
   }
   if (args.suggest) {
     if (args.title === undefined || args.title.trim() === '') {

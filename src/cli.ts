@@ -54,6 +54,16 @@ Usage:
                                            section (after all subsections), not
                                            at EOF. Heading spec must include the
                                            level prefix (e.g. "## OSS gate flow").
+  kb remember --lesson --title=<title> --stdin --yes
+                                           Write a generic agent-task lesson
+                                           into the agent-task-lessons KB
+                                           (override with --kb=<other>). Body
+                                           must include "## Mistake",
+                                           "## Why it happened", and
+                                           "## Better next time" sections;
+                                           empty or malformed input prints a
+                                           guided skeleton (exit 2) instead of
+                                           writing.
   kb remember ... [--similar-threshold=<float>] [--similar-k=<int>]
                   [--force] [--format=md|json] [--no-check-similar]
                                            Writes run a semantic preflight
@@ -110,6 +120,13 @@ Remember options:
   --occurrence=<N>      1-indexed disambiguation when the heading appears
                         multiple times. Requires --append-section.
   --suggest             Read-only suggestions; does not read stdin.
+  --lesson              Apply the agent-task-lesson template: defaults --kb to
+                        agent-task-lessons (override with --kb=<other>),
+                        validates that the body has "## Mistake", "## Why it
+                        happened", and "## Better next time" H2 sections
+                        (level is enforced — H1 / H3 do not count), and prints
+                        a guided skeleton (exit 2) when stdin is empty or
+                        sections are missing instead of writing.
   --stdin               Read note content from stdin.
   --yes                 Required for non-interactive writes.
   --refresh             Re-index the affected KB after a successful write.

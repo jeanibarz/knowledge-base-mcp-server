@@ -624,6 +624,246 @@ describe('kb remember', () => {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('--lesson writes to agent-task-lessons by default and tags the JSON summary', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-lesson-default-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      // Note: agent-task-lessons KB does NOT exist yet — --lesson must
+      // auto-create it so agents don't need a separate mkdir step.
+      await fsp.mkdir(rootDir, { recursive: true });
+
+      const body =
+        '## Mistake\n\nForgot to recheck PR state.\n\n' +
+        '## Why it happened\n\nAssumed CI was green.\n\n' +
+        '## Better next time\n\nAlways re-fetch PR state.\n';
+
+      const r = runCli(
+        ['remember', '--lesson', '--title=Recheck PR state before follow-up pushes', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        body,
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('"knowledge_base_name": "agent-task-lessons"');
+      expect(r.stdout).toContain('"action": "create"');
+      expect(r.stdout).toContain('"lesson": true');
+      expect(r.stdout).toContain('"write_performed": true');
+      const written = await fsp.readFile(
+        path.join(rootDir, 'agent-task-lessons', 'recheck-pr-state-before-follow-up-pushes.md'),
+        'utf-8',
+      );
+      expect(written).toBe(body);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--lesson respects an explicit --kb override', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-lesson-kb-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(path.join(rootDir, 'team-lessons'), { recursive: true });
+
+      const body =
+        '## Mistake\n\nA.\n\n## Why it happened\n\nB.\n\n## Better next time\n\nC.\n';
+
+      const r = runCli(
+        ['remember', '--lesson', '--kb=team-lessons', '--title=Pick canary regions', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        body,
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('"knowledge_base_name": "team-lessons"');
+      await expect(fsp.access(path.join(rootDir, 'team-lessons', 'pick-canary-regions.md'))).resolves.toBeUndefined();
+      // Default lesson KB must NOT be created when the caller named another.
+      await expect(fsp.access(path.join(rootDir, 'agent-task-lessons')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--lesson with empty stdin emits a JSON skeleton and exits 2 without writing', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-lesson-empty-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+
+      const r = runCli(
+        ['remember', '--lesson', '--title=Anything', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        '   \n  \n',
+      );
+
+      expect(r.code).toBe(2);
+      const parsed = JSON.parse(r.stdout) as Record<string, unknown>;
+      expect(parsed.action).toBe('lesson-validation');
+      expect(parsed.write_performed).toBe(false);
+      expect(parsed.empty_input).toBe(true);
+      expect(parsed.missing_sections).toEqual(['Mistake', 'Why it happened', 'Better next time']);
+      expect(parsed.skeleton).toContain('## Mistake');
+      expect(parsed.skeleton).toContain('## Why it happened');
+      expect(parsed.skeleton).toContain('## Better next time');
+      // No note must land on disk.
+      await expect(fsp.access(path.join(rootDir, 'agent-task-lessons', 'anything.md')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--lesson lists missing sections when only some are present', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-lesson-partial-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+
+      // Only "Mistake" is present; the other two are missing.
+      const body = '## Mistake\n\nForgot the thing.\n\n## Notes\n\nMisc.\n';
+
+      const r = runCli(
+        ['remember', '--lesson', '--title=Partial', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        body,
+      );
+
+      expect(r.code).toBe(2);
+      const parsed = JSON.parse(r.stdout) as Record<string, unknown>;
+      expect(parsed.action).toBe('lesson-validation');
+      expect(parsed.empty_input).toBe(false);
+      expect(parsed.missing_sections).toEqual(['Why it happened', 'Better next time']);
+      expect(parsed.found_sections).toEqual(['Mistake']);
+      await expect(fsp.access(path.join(rootDir, 'agent-task-lessons', 'partial.md')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--lesson validation tolerates trailing punctuation and the "Mistakes" plural', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-lesson-aliases-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+
+      const body =
+        '## Mistakes:\n\nA.\n\n' +
+        '## why it happened\n\nB.\n\n' +
+        '## Better next time.\n\nC.\n';
+
+      const r = runCli(
+        ['remember', '--lesson', '--title=Tolerant', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        body,
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('"action": "create"');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--lesson rejects required-section headings at the wrong level (H1 / H3)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-lesson-level-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+
+      // All three required headings exist textually but at the wrong level.
+      // The skeleton, docs, and downstream tooling all agree on H2 — anything
+      // else must NOT count toward the validator's required-sections set.
+      const body =
+        '# Mistake\n\nA.\n\n' +
+        '### Why it happened\n\nB.\n\n' +
+        '#### Better next time\n\nC.\n';
+
+      const r = runCli(
+        ['remember', '--lesson', '--title=Wrong-level', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        body,
+      );
+
+      expect(r.code).toBe(2);
+      const parsed = JSON.parse(r.stdout) as Record<string, unknown>;
+      expect(parsed.action).toBe('lesson-validation');
+      expect(parsed.missing_sections).toEqual(['Mistake', 'Why it happened', 'Better next time']);
+      expect(parsed.found_sections).toEqual([]);
+      await expect(fsp.access(path.join(rootDir, 'agent-task-lessons', 'wrong-level.md')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--lesson does not match a heading hidden inside a fenced code block', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-lesson-fence-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+
+      // The "Mistake" heading lives inside a code fence — must NOT count
+      // toward the required-sections check.
+      const body =
+        '## Why it happened\n\nB.\n\n' +
+        '## Better next time\n\nC.\n\n' +
+        '```\n## Mistake\n```\n';
+
+      const r = runCli(
+        ['remember', '--lesson', '--title=Fenced', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        body,
+      );
+
+      expect(r.code).toBe(2);
+      const parsed = JSON.parse(r.stdout) as Record<string, unknown>;
+      expect(parsed.missing_sections).toEqual(['Mistake']);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--lesson with --format=md prints a human-readable skeleton on validation failure', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-lesson-md-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+
+      const r = runCli(
+        ['remember', '--lesson', '--title=Anything', '--stdin', '--yes', '--format=md'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        '',
+      );
+
+      expect(r.code).toBe(2);
+      expect(r.stdout).toContain('kb remember --lesson');
+      expect(r.stdout).toContain('## Mistake');
+      expect(r.stdout).toContain('## Why it happened');
+      expect(r.stdout).toContain('## Better next time');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--lesson rejects --append (lessons are create-only)', async () => {
+    const r = runCli(
+      ['remember', '--lesson', '--append=foo.md', '--stdin', '--yes'],
+      {},
+      'body',
+    );
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('--lesson is for new lesson notes');
+  });
 });
 
 describe('kb capture', () => {
