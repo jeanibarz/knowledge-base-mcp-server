@@ -36,7 +36,7 @@ describe('logger', () => {
       await new Promise((resolve) => setImmediate(resolve));
     });
 
-    await expect(fsp.stat(path.dirname(logFile))).resolves.toBeTruthy();
+    expect((await fsp.stat(path.dirname(logFile))).isDirectory()).toBe(true);
     const fileContents = await fsp.readFile(logFile, 'utf-8');
     expect(fileContents).toContain('File target message');
     expect(fileContents).toContain('[DEBUG] debug content');

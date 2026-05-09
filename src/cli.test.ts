@@ -1154,8 +1154,13 @@ describe('kb search — active-model resolution (RFC 013 §4.7)', () => {
       });
       expect(r.code).toBe(2);
       expect(r.stderr).toContain('refusing to remove the active model');
-      // Directory still on disk.
-      await expect(fsp.stat(path.join(faissDir, 'models', id))).resolves.toBeDefined();
+      // Directory still on disk AND its model_name.txt is byte-identical —
+      // a regression that "refused" but partially wiped state would pass
+      // the bare existence check; insist on full preservation.
+      expect((await fsp.stat(path.join(faissDir, 'models', id))).isDirectory()).toBe(true);
+      expect(
+        await fsp.readFile(path.join(faissDir, 'models', id, 'model_name.txt'), 'utf-8'),
+      ).toBe('BAAI/bge-small-en-v1.5');
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
@@ -1276,9 +1281,14 @@ describe('kb search — active-model resolution (RFC 013 §4.7)', () => {
       });
       expect(r.code).toBe(0);
 
-      // Old layout migrated.
+      // Old layout migrated. The migrated `faiss.index` must be a directory
+      // (the modern langchain layout — turning it into a regular file would
+      // break load on the next start, but pass a bare existence check).
       const migratedId = 'huggingface__BAAI-bge-small-en-v1.5';
-      await expect(fsp.stat(path.join(faissDir, 'models', migratedId, 'faiss.index'))).resolves.toBeDefined();
+      const migratedIndexDir = path.join(faissDir, 'models', migratedId, 'faiss.index');
+      expect((await fsp.stat(migratedIndexDir)).isDirectory()).toBe(true);
+      expect(await fsp.readFile(path.join(migratedIndexDir, 'faiss.index'), 'utf-8')).toBe('old-bytes');
+      expect(await fsp.readFile(path.join(migratedIndexDir, 'docstore.json'), 'utf-8')).toBe('{"doc":"old"}');
       expect((await fsp.readFile(path.join(faissDir, 'active.txt'), 'utf-8')).trim()).toBe(migratedId);
       // model_name.txt moved into models/<id>/.
       expect(await fsp.readFile(path.join(faissDir, 'models', migratedId, 'model_name.txt'), 'utf-8'))

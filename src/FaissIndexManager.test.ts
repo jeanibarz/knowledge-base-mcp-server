@@ -834,8 +834,12 @@ describe('FaissIndexManager permission handling', () => {
     const migratedId = 'huggingface__sentence-transformers-all-MiniLM-L6-v2';
     const migratedIndexDir = path.join(faissDir, 'models', migratedId, 'faiss.index');
     await expect(fsp.stat(oldIndexDir)).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(fsp.stat(migratedIndexDir)).resolves.toBeDefined();
+    // The migrated path must be a directory (not a regular file or a
+    // symlink — the migration is supposed to move the layout, not turn
+    // it into a sentinel) AND its inner content must round-trip verbatim.
+    expect((await fsp.stat(migratedIndexDir)).isDirectory()).toBe(true);
     expect(await fsp.readFile(path.join(migratedIndexDir, 'faiss.index'), 'utf-8')).toBe('old-model-bytes');
+    expect(await fsp.readFile(path.join(migratedIndexDir, 'docstore.json'), 'utf-8')).toBe('{"old":"docstore"}');
 
     // model_name.txt moved into models/<id>/.
     expect(await fsp.readFile(path.join(faissDir, 'models', migratedId, 'model_name.txt'), 'utf-8'))
@@ -864,8 +868,14 @@ describe('FaissIndexManager permission handling', () => {
       FaissIndexManager.bootstrapLayout()
     ).rejects.toBeInstanceOf(MigrationRefusedError);
 
-    // Old layout untouched.
-    await expect(fsp.stat(path.join(faissDir, 'faiss.index'))).resolves.toBeDefined();
+    // Old layout untouched — assert byte-for-byte content preservation,
+    // not just path existence. A regression that truncated the index
+    // before throwing MigrationRefusedError would pass under the
+    // resolves.toBeDefined() bar.
+    expect((await fsp.stat(path.join(faissDir, 'faiss.index'))).isDirectory()).toBe(true);
+    expect(
+      await fsp.readFile(path.join(faissDir, 'faiss.index', 'faiss.index'), 'utf-8'),
+    ).toBe('mystery-bytes');
     await expect(fsp.stat(path.join(faissDir, 'models'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
@@ -2010,9 +2020,13 @@ describe('FaissIndexManager ingest — PDF + HTML loaders (issue #46)', () => {
     const pdfMetadata = metadatas.find(
       (m) => String(m.source).endsWith('.pdf'),
     );
-    expect(pdfMetadata).toBeDefined();
-    expect(pdfMetadata?.extension).toBe('.pdf');
-    expect(String(pdfMetadata?.knowledgeBase)).toBe('docs');
+    // toMatchObject fails clearly when pdfMetadata is undefined AND when
+    // any subfield mismatches — strictly stronger than the prior
+    // toBeDefined()-then-?.-access pattern.
+    expect(pdfMetadata).toMatchObject({
+      extension: '.pdf',
+      knowledgeBase: 'docs',
+    });
   });
 
   it('ingests a `.html` file via the HTML loader (tags stripped before embedding)', async () => {
@@ -2042,8 +2056,7 @@ describe('FaissIndexManager ingest — PDF + HTML loaders (issue #46)', () => {
     const htmlMetadata = metadatas.find(
       (m) => String(m.source).endsWith('.html'),
     );
-    expect(htmlMetadata).toBeDefined();
-    expect(htmlMetadata?.extension).toBe('.html');
+    expect(htmlMetadata).toMatchObject({ extension: '.html' });
 
     // html-to-text uppercases <h1> by default; assert case-insensitively.
     const htmlTexts = texts.filter((t) =>
