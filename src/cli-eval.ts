@@ -1,0 +1,182 @@
+import * as fsp from 'fs/promises';
+import yaml from 'js-yaml';
+import { FaissIndexManager } from './FaissIndexManager.js';
+import {
+  ActiveModelResolutionError,
+  resolveActiveModel,
+} from './active-model.js';
+import { computeStaleness } from './cli-search.js';
+import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import {
+  evaluateRetrievalCase,
+  formatRetrievalEvalMarkdown,
+  normalizeRetrievalEvalFixture,
+  retrievalEvalExitCode,
+  summarizeRetrievalEval,
+  type RetrievalEvalFixture,
+} from './retrieval-eval.js';
+
+interface EvalArgs {
+  fixturePath: string | null;
+  model?: string;
+  format: 'md' | 'json';
+  k: number;
+  threshold: number;
+}
+
+const DEFAULT_K = 10;
+const DEFAULT_THRESHOLD = 2;
+
+export async function runEval(rest: string[]): Promise<number> {
+  let parsed: EvalArgs;
+  try {
+    parsed = parseEvalArgs(rest);
+  } catch (err) {
+    process.stderr.write(`kb eval: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  if (parsed.fixturePath === null) {
+    process.stderr.write('kb eval: missing <fixture> or --fixture=<path>\n');
+    return 2;
+  }
+
+  let fixture: RetrievalEvalFixture;
+  try {
+    fixture = await loadEvalFixture(parsed.fixturePath);
+  } catch (err) {
+    process.stderr.write(`kb eval: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  try {
+    await FaissIndexManager.bootstrapLayout();
+  } catch (err) {
+    process.stderr.write(`kb eval: layout bootstrap failed: ${(err as Error).message}\n`);
+    return 1;
+  }
+
+  let activeModelId: string;
+  try {
+    activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
+  } catch (err) {
+    if (err instanceof ActiveModelResolutionError) {
+      process.stderr.write(`kb eval: ${err.message}\n`);
+      return 2;
+    }
+    process.stderr.write(`kb eval: ${(err as Error).message}\n`);
+    return 1;
+  }
+
+  let manager: FaissIndexManager;
+  try {
+    manager = await loadManagerForModel(activeModelId);
+    await loadWithJsonRetry(manager);
+  } catch (err) {
+    process.stderr.write(`kb eval: ${(err as Error).message}\n`);
+    return 1;
+  }
+
+  const results = [];
+  for (const fixtureCase of fixture.cases) {
+    try {
+      const caseResults = await manager.similaritySearch(
+        fixtureCase.query,
+        fixtureCase.k ?? parsed.k,
+        fixtureCase.threshold ?? parsed.threshold,
+        fixtureCase.kb,
+      );
+      const staleness = await computeStaleness(activeModelId, fixtureCase.kb);
+      results.push(evaluateRetrievalCase(fixtureCase, caseResults, staleness, fixture.gate));
+    } catch (err) {
+      process.stderr.write(`kb eval: ${fixtureCase.name}: ${(err as Error).message}\n`);
+      return 1;
+    }
+  }
+
+  const report = summarizeRetrievalEval(results);
+  if (parsed.format === 'json') {
+    process.stdout.write(`${JSON.stringify(toJsonReport(report), null, 2)}\n`);
+  } else {
+    process.stdout.write(formatRetrievalEvalMarkdown(report));
+  }
+  return retrievalEvalExitCode(report);
+}
+
+export function parseEvalArgs(rest: string[]): EvalArgs {
+  const out: EvalArgs = {
+    fixturePath: null,
+    format: 'md',
+    k: DEFAULT_K,
+    threshold: DEFAULT_THRESHOLD,
+  };
+
+  for (const raw of rest) {
+    if (raw === '--help' || raw === '-h') {
+      throw new Error(
+        'usage: kb eval <fixture.yml|json> [--model=<id>] [--k=<int>] [--threshold=<float>] [--format=md|json]',
+      );
+    }
+    if (raw.startsWith('--fixture=')) {
+      const value = raw.slice('--fixture='.length);
+      if (value.length === 0) throw new Error('--fixture=<path> requires a non-empty value');
+      out.fixturePath = value;
+      continue;
+    }
+    if (raw.startsWith('--model=')) {
+      out.model = raw.slice('--model='.length);
+      continue;
+    }
+    if (raw.startsWith('--format=')) {
+      const value = raw.slice('--format='.length);
+      if (value !== 'md' && value !== 'json') throw new Error(`invalid --format: ${raw}`);
+      out.format = value;
+      continue;
+    }
+    if (raw.startsWith('--k=')) {
+      const value = Number(raw.slice('--k='.length));
+      if (!Number.isInteger(value) || value <= 0) throw new Error(`invalid --k: ${raw}`);
+      out.k = value;
+      continue;
+    }
+    if (raw.startsWith('--threshold=')) {
+      const value = Number(raw.slice('--threshold='.length));
+      if (!Number.isFinite(value) || value <= 0) throw new Error(`invalid --threshold: ${raw}`);
+      out.threshold = value;
+      continue;
+    }
+    if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
+    if (out.fixturePath !== null) throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
+    out.fixturePath = raw;
+  }
+
+  return out;
+}
+
+async function loadEvalFixture(fixturePath: string): Promise<RetrievalEvalFixture> {
+  const raw = await fsp.readFile(fixturePath, 'utf-8');
+  const parsed = fixturePath.endsWith('.json')
+    ? JSON.parse(raw) as unknown
+    : yaml.load(raw);
+  return normalizeRetrievalEvalFixture(parsed);
+}
+
+function toJsonReport(report: ReturnType<typeof summarizeRetrievalEval>): unknown {
+  return {
+    total: report.total,
+    passed: report.passed,
+    failed: report.failed,
+    gate_failed: report.gateFailed,
+    cases: report.cases.map((result) => ({
+      name: result.name,
+      query: result.query,
+      ...(result.kb !== undefined ? { kb: result.kb } : {}),
+      gate: result.gate,
+      passed: result.passed,
+      failures: result.failures,
+      warnings: result.warnings,
+      result_count: result.resultCount,
+      duplicate_groups: result.duplicateGroups,
+    })),
+  };
+}

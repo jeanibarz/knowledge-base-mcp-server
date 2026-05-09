@@ -43,12 +43,30 @@ kb search "query" --refresh   # also re-scan KB files (write path)
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
+kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
 kb --help
 ```
 
 The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). `kb search` defaults to read-only — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
 
 `kb remember` is a conservative CLI write path for agent shells. `--suggest` is read-only and lists likely existing targets from note filenames/headings. Creates and appends require both `--stdin` and `--yes`; create uses a slugified `.md` filename and refuses overwrites, while append accepts only existing KB-relative paths. Add `--refresh` to re-index the affected KB after a successful write.
+
+`kb eval <fixture.yml|json>` runs retrieval checks from fixtures. Each case can set `query`, optional `kb`, `required_sources`, `forbidden_sources`, `expected_metadata`, `max_duplicate_groups`, `stale_policy`, and `gate`. Failing ungated cases print warnings and exit 0; failing gated cases exit 1 for CI.
+
+```yaml
+gate: false
+cases:
+  - name: deployment runbook
+    query: rollback procedure
+    kb: work
+    gate: true
+    required_sources: [runbooks/deploy.md]
+    forbidden_sources: [archive/old-deploy.md]
+    expected_metadata:
+      frontmatter.status: approved
+    max_duplicate_groups: 1
+    stale_policy: fresh
+```
 
 The MCP server (`knowledge-base-mcp-server` bin) is unchanged and still works with all the configurations in [docs/clients.md](docs/clients.md). The CLI is additive.
 
