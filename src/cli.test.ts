@@ -771,6 +771,39 @@ describe('kb remember', () => {
     }
   });
 
+  it('--lesson rejects required-section headings at the wrong level (H1 / H3)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-lesson-level-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+
+      // All three required headings exist textually but at the wrong level.
+      // The skeleton, docs, and downstream tooling all agree on H2 — anything
+      // else must NOT count toward the validator's required-sections set.
+      const body =
+        '# Mistake\n\nA.\n\n' +
+        '### Why it happened\n\nB.\n\n' +
+        '#### Better next time\n\nC.\n';
+
+      const r = runCli(
+        ['remember', '--lesson', '--title=Wrong-level', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        body,
+      );
+
+      expect(r.code).toBe(2);
+      const parsed = JSON.parse(r.stdout) as Record<string, unknown>;
+      expect(parsed.action).toBe('lesson-validation');
+      expect(parsed.missing_sections).toEqual(['Mistake', 'Why it happened', 'Better next time']);
+      expect(parsed.found_sections).toEqual([]);
+      await expect(fsp.access(path.join(rootDir, 'agent-task-lessons', 'wrong-level.md')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('--lesson does not match a heading hidden inside a fenced code block', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-lesson-fence-'));
     try {

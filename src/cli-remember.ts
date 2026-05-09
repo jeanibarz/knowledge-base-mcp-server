@@ -78,10 +78,15 @@ export const LESSON_DEFAULT_KB = 'agent-task-lessons';
 /**
  * Required H2 sections in a lesson body. Match is case-insensitive,
  * trimmed, with trailing punctuation stripped, so `## Mistake:` and
- * `## Mistakes` count as the canonical "Mistake" section. Headings
- * inside fenced code blocks never match — `listHeadings` walks the
- * markdown AST.
+ * `## Mistakes` count as the canonical "Mistake" section. The level
+ * is enforced — `# Mistake` (H1) and `### Mistake` (H3) do NOT count,
+ * because the skeleton, the docs, and downstream tooling all agree on
+ * the H2 contract; a relaxed check would let lessons drift into
+ * inconsistent shapes that break grep/anchor links over time.
+ * Headings inside fenced code blocks never match — `listHeadings`
+ * walks the markdown AST.
  */
+const LESSON_HEADING_LEVEL = 2;
 const REQUIRED_LESSON_SECTIONS: ReadonlyArray<{ canonical: string; aliases: ReadonlyArray<string> }> = [
   { canonical: 'Mistake', aliases: ['mistake', 'mistakes'] },
   { canonical: 'Why it happened', aliases: ['why it happened'] },
@@ -258,6 +263,7 @@ export function validateLessonContent(content: string): LessonValidation {
   const headings = listHeadings(content);
   const seen = new Set<string>();
   for (const h of headings) {
+    if (h.level !== LESSON_HEADING_LEVEL) continue;
     const norm = normalizeHeadingText(h.text);
     for (const req of REQUIRED_LESSON_SECTIONS) {
       if (req.aliases.includes(norm)) {

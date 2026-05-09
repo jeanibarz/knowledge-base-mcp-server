@@ -123,9 +123,10 @@ Remember options:
   --lesson              Apply the agent-task-lesson template: defaults --kb to
                         agent-task-lessons (override with --kb=<other>),
                         validates that the body has "## Mistake", "## Why it
-                        happened", and "## Better next time" sections, and
-                        prints a guided skeleton (exit 2) when stdin is empty
-                        or sections are missing instead of writing.
+                        happened", and "## Better next time" H2 sections
+                        (level is enforced — H1 / H3 do not count), and prints
+                        a guided skeleton (exit 2) when stdin is empty or
+                        sections are missing instead of writing.
   --stdin               Read note content from stdin.
   --yes                 Required for non-interactive writes.
   --refresh             Re-index the affected KB after a successful write.

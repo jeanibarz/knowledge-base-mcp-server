@@ -50,10 +50,13 @@ Every lesson body must contain three H2 sections:
 PR numbers>
 ```
 
-Heading matching is forgiving: case-insensitive, trailing punctuation stripped,
-and the plural `Mistakes` is accepted as `Mistake`. Headings inside fenced code
-blocks (` ``` ` … ` ``` `) never count — the validator parses the markdown AST,
-not raw lines.
+Heading matching is forgiving on text — case-insensitive, trailing punctuation
+stripped, plural `Mistakes` accepted as `Mistake` — but **strict on level**:
+the three required headings must be H2 (`##`). `# Mistake` (H1) and
+`### Mistake` (H3) do not count, so lessons stay grep-able and downstream
+tooling can rely on a consistent anchor structure. Headings inside fenced
+code blocks (` ``` ` … ` ``` `) never match — the validator parses the
+markdown AST, not raw lines.
 
 The slugified title becomes the filename. Re-running with the same title fails
 loudly (the create path refuses to overwrite an existing slug); use a more
