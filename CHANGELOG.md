@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased] — `kb search --mode=lexical` BM25 debug surface (#206 stage 1)
+
+### Added
+
+- **`kb search --mode=lexical` — BM25 sparse retrieval debug path.** Stage 1 of #206 (RFC 006 §4 sparse-hybrid follow-up). The CLI now accepts `--mode=dense|lexical` (default `dense`, byte-compatible with prior behavior). Under `--mode=lexical`, the search uses a per-KB BM25 index built over the same chunks the FAISS path embeds, persisted at `${FAISS_INDEX_PATH}/lexical/<kb-name>/index.json`. The lexical index is model-agnostic (one index serves every dense model) and self-invalidates per file via SHA-256 — pass `--refresh` (or run against a fresh KB) to rebuild only the changed entries. No MCP-surface change in stage 1; the `retrieve_knowledge` tool remains dense-only. Stage 2 (RRF fusion of dense + lexical) lands on top.
+- Source content is lower-cased at BM25 ingest time. Upstream `BM25Retriever` lowercases the query but not the documents, so case-mismatched exact-token queries (`INDEX_NOT_INITIALIZED`, `RFC 006`, `pickleparser`, model ids) silently miss without this compensation. The retrieved chunk's original case is preserved in the output.
+- Tokenizer / stemming tuning is deferred to a follow-up — code identifiers like `camelCase` will still under-tokenize. Documented in #206 risks.
+
 ## [Unreleased] — `kb remember --lesson` agent-task lesson template
 
 ### Added
