@@ -2135,6 +2135,58 @@ describe('liftFrontmatter (RFC 011 §5.4.2)', () => {
     });
   });
 
+  it('lifts RFC005 lifecycle/search metadata through the safe allowlist', async () => {
+    const { liftFrontmatter } = await import('./frontmatter-lift.js');
+    const result = liftFrontmatter(
+      {
+        status: 'active',
+        review_status: 'pending',
+        contradicted_by: ['older-note.md', 'superseded-rfc.md'],
+        manual_edits: 'false',
+        promote_model: 'deterministic',
+        tier: 'wisdom',
+        confidence: '0.82',
+        last_verified_at: '2026-05-09T01:02:03Z',
+        private_token: 'SECRET_VALUE_XYZ',
+      },
+      '/kb/_wisdom/generated.md',
+    );
+    expect(result).toEqual({
+      status: 'active',
+      review_status: 'pending',
+      contradicted_by: ['older-note.md', 'superseded-rfc.md'],
+      manual_edits: false,
+      promote_model: 'deterministic',
+      tier: 'wisdom',
+      confidence: 0.82,
+      last_verified_at: '2026-05-09T01:02:03Z',
+      extras: { private_token: 'SECRET_VALUE_XYZ' },
+    });
+  });
+
+  it('omits invalid RFC005 lifecycle/search values from the allowlist', async () => {
+    const { liftFrontmatter } = await import('./frontmatter-lift.js');
+    const loggerModule = await import('./logger.js');
+    const debugSpy = jest.spyOn(loggerModule.logger, 'debug').mockImplementation(() => {});
+
+    const result = liftFrontmatter(
+      {
+        status: ['active'],
+        contradicted_by: ['good.md', 42, ''],
+        manual_edits: 'sometimes',
+        confidence: 'high',
+        last_verified_at: { nested: 'value' },
+      },
+      '/kb/_wisdom/generated.md',
+    );
+    expect(result).toEqual({ contradicted_by: ['good.md'] });
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('non-string frontmatter key "status"'));
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('invalid boolean frontmatter key "manual_edits"'));
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('non-numeric confidence'));
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('non-string frontmatter key "last_verified_at"'));
+    debugSpy.mockRestore();
+  });
+
   it('routes non-whitelisted string keys into extras', async () => {
     const { liftFrontmatter } = await import('./frontmatter-lift.js');
     const result = liftFrontmatter(

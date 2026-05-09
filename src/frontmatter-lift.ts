@@ -11,22 +11,26 @@ import { logger } from './logger.js';
 // Unknown string-valued keys are collected into `frontmatter.extras` so a
 // workflow author who adds a new field doesn't silently lose it — but the
 // MCP-boundary sanitizer strips `extras` by default (RFC 011 §7.1 R1, wired
-// in `src/KnowledgeBaseServer.ts`). Non-string-valued keys (YAML arrays or
-// nested maps — FAILSAFE doesn't coerce numbers or booleans) are dropped:
-// there's no safe scalar target for them here.
+// in `src/KnowledgeBaseServer.ts`). Most allowed fields are scalar strings;
+// fields with a stronger RFC005 contract (`contradicted_by`, `manual_edits`,
+// and `confidence`) use explicit type coercion below.
 // -----------------------------------------------------------------------------
 
 /** Whitelisted frontmatter keys lifted into `ChunkMetadata.frontmatter`. */
-const FRONTMATTER_WHITELIST: readonly string[] = [
+const STRING_FRONTMATTER_WHITELIST: readonly string[] = [
   'arxiv_id',
   'title',
   'authors',
   'published',
-  'relevance_score',
   'ingested_at',
   'judge_method',
   'metrics_used',
   'bias_handling',
+  'status',
+  'review_status',
+  'promote_model',
+  'tier',
+  'last_verified_at',
 ] as const;
 
 export interface LiftedFrontmatter {
@@ -39,6 +43,14 @@ export interface LiftedFrontmatter {
   judge_method?: string;
   metrics_used?: string;
   bias_handling?: string;
+  status?: string;
+  review_status?: string;
+  contradicted_by?: string[];
+  manual_edits?: boolean;
+  promote_model?: string;
+  tier?: string;
+  confidence?: number;
+  last_verified_at?: string;
   /** Other string-valued frontmatter keys (e.g. workflow-specific additions). */
   extras?: Record<string, string>;
 }
@@ -61,21 +73,16 @@ export function liftFrontmatter(
     // don't duplicate it into the frontmatter block.
     if (key === 'tags') continue;
 
-    // FAILSAFE parses scalars as strings and lists/maps as arrays/objects.
-    // Only strings survive the lift; arrays and objects are dropped with a
-    // debug log so a workflow author who wrote `metrics: [a, b, c]` sees
-    // why their field disappeared.
-    if (typeof value !== 'string') {
-      logger.debug(`Dropping non-string frontmatter key "${key}" from ${filePath}`);
-      continue;
-    }
-
     if (key === 'relevance_score') {
       // RFC 011 §5.4.3: parseInt + isFinite; non-numeric → omit and log.
       // Log the *length* of the rejected value, never the value itself —
       // frontmatter authored by the workflow is otherwise-untrusted input,
       // and the RFC §5.4.2 leak rule for non-string keys ("key name, not
       // value") applies equally here.
+      if (typeof value !== 'string') {
+        logger.debug(`Dropping non-string frontmatter key "${key}" from ${filePath}`);
+        continue;
+      }
       const parsed = parseInt(value, 10);
       if (Number.isFinite(parsed)) {
         lifted.relevance_score = parsed;
@@ -88,7 +95,50 @@ export function liftFrontmatter(
       continue;
     }
 
-    if ((FRONTMATTER_WHITELIST as readonly string[]).includes(key)) {
+    if (key === 'confidence') {
+      const parsed = parseFiniteNumber(value);
+      if (parsed !== undefined) {
+        lifted.confidence = parsed;
+        hasAny = true;
+      } else {
+        logger.debug(`Dropping non-numeric confidence (type=${typeof value}) from ${filePath}`);
+      }
+      continue;
+    }
+
+    if (key === 'manual_edits') {
+      const parsed = parseBoolean(value);
+      if (parsed !== undefined) {
+        lifted.manual_edits = parsed;
+        hasAny = true;
+      } else {
+        logger.debug(`Dropping invalid boolean frontmatter key "manual_edits" from ${filePath}`);
+      }
+      continue;
+    }
+
+    if (key === 'contradicted_by') {
+      const parsed = parseStringList(value);
+      if (parsed !== undefined) {
+        lifted.contradicted_by = parsed;
+        hasAny = true;
+      } else {
+        logger.debug(`Dropping non-string-list frontmatter key "contradicted_by" from ${filePath}`);
+      }
+      continue;
+    }
+
+    // FAILSAFE parses scalars as strings and lists/maps as arrays/objects.
+    // Only strings survive the generic lift; arrays and objects are dropped
+    // with a debug log so a workflow author who wrote `metrics: [a, b, c]`
+    // sees why their field disappeared. RFC005 fields with typed targets are
+    // handled explicitly above before this generic scalar gate.
+    if (typeof value !== 'string') {
+      logger.debug(`Dropping non-string frontmatter key "${key}" from ${filePath}`);
+      continue;
+    }
+
+    if ((STRING_FRONTMATTER_WHITELIST as readonly string[]).includes(key)) {
       (lifted as Record<string, unknown>)[key] = value;
       hasAny = true;
     } else {
@@ -102,6 +152,38 @@ export function liftFrontmatter(
   }
 
   return hasAny ? lifted : undefined;
+}
+
+function parseFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return undefined;
+}
+
+function parseStringList(value: unknown): string[] | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? [trimmed] : undefined;
+  }
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
 }
 
 /**

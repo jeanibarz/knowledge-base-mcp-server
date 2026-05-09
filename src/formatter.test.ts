@@ -127,6 +127,55 @@ describe('formatRetrievalAsJson', () => {
     const out = formatRetrievalAsJson([doc], false);
     expect(out[0].metadata).toEqual({ frontmatter: { title: 'T' } });
   });
+
+  it('keeps allowlisted lifecycle fields while stripping private frontmatter extras', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'c',
+      metadata: {
+        frontmatter: {
+          status: 'active',
+          review_status: 'pending',
+          contradicted_by: ['old.md'],
+          manual_edits: false,
+          promote_model: 'deterministic',
+          tier: 'wisdom',
+          confidence: 0.82,
+          last_verified_at: '2026-05-09T01:02:03Z',
+          extras: { private_token: 'SECRET_VALUE_XYZ' },
+        },
+      },
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsJson([doc], false);
+
+    expect(out[0].metadata).toEqual({
+      frontmatter: {
+        status: 'active',
+        review_status: 'pending',
+        contradicted_by: ['old.md'],
+        manual_edits: false,
+        promote_model: 'deterministic',
+        tier: 'wisdom',
+        confidence: 0.82,
+        last_verified_at: '2026-05-09T01:02:03Z',
+      },
+    });
+    expect(JSON.stringify(out)).not.toContain('SECRET_VALUE_XYZ');
+    expect(JSON.stringify(out)).not.toContain('private_token');
+  });
+
+  it('does not invent absent lifecycle metadata in JSON output', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'c',
+      metadata: { source: 'doc.md' },
+      score: 0.4,
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsJson([doc], false);
+
+    expect(out[0]).toEqual({ score: 0.4, content: 'c', metadata: { source: 'doc.md' } });
+    expect(out[0].metadata).not.toHaveProperty('frontmatter');
+  });
 });
 
 describe('groupRetrievalBySource', () => {
