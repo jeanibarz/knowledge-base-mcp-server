@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — atomic EOF appends for `kb remember` and `kb capture`
+
+### Changed
+
+- **Plain `kb remember --append` and `kb capture --append` now serialize per-target appends and commit through the shared temp-file fsync + atomic rename helper.** This gives EOF appends the same crash-safe rewrite semantics as `--append-section` while preserving target file permissions. Closes #248.
+
 ## [Unreleased] — `kb remember --suggest` heading cache
 
 ### Changed
