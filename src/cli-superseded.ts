@@ -3,9 +3,8 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { FaissIndexManager } from './FaissIndexManager.js';
-import { resolveActiveModel } from './active-model.js';
-import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import { resolveActiveModel, resolveFaissIndexBinaryPath } from './active-model.js';
+import { loadManagerForModel } from './cli-shared.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { getFilesRecursively } from './file-utils.js';
 import { parseFrontmatter } from './frontmatter.js';
@@ -97,6 +96,8 @@ const DEFAULT_K = 5;
 const DEFAULT_STALE_DAYS = 180;
 const DEFAULT_LOW_CONFIDENCE = 0.5;
 const SEMANTIC_DISTANCE_THRESHOLD = 1.0;
+const SEMANTIC_SELF_CHUNK_OVERFETCH_FACTOR = 10;
+const SEMANTIC_MIN_FETCH = 20;
 const MARKDOWN_EXTS = new Set(['.md', '.markdown']);
 const DEPRECATED_STATUS_RE = /^(archived|deprecated|dormant|obsolete|retired|stale|superseded)$/i;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -278,13 +279,18 @@ export function formatSupersededMarkdown(report: SupersededReport): string {
 
 async function buildSemanticSearcher(args: SupersededArgs): Promise<SemanticNeighborSearcher | undefined> {
   try {
-    await FaissIndexManager.bootstrapLayout();
     const activeModelId = await resolveActiveModel({ explicitOverride: args.model });
+    const indexPath = await resolveFaissIndexBinaryPath(activeModelId);
+    if (indexPath === null) {
+      throw new Error(
+        `no existing FAISS index for model "${activeModelId}"; run kb search --refresh first`,
+      );
+    }
     const manager = await loadManagerForModel(activeModelId);
-    await loadWithJsonRetry(manager);
+    await manager.initialize({ strictReadOnly: true });
     return (note, k) => manager.similaritySearch(
       buildSemanticQuery(note),
-      k + 1,
+      semanticFetchLimit(k),
       SEMANTIC_DISTANCE_THRESHOLD,
       args.kb,
       { extensions: ['.md', '.markdown'] },
@@ -295,6 +301,14 @@ async function buildSemanticSearcher(args: SupersededArgs): Promise<SemanticNeig
     );
     return undefined;
   }
+}
+
+export function semanticFetchLimit(k: number): number {
+  return Math.max(
+    k + 1,
+    k * SEMANTIC_SELF_CHUNK_OVERFETCH_FACTOR,
+    SEMANTIC_MIN_FETCH,
+  );
 }
 
 async function readNote(kbDir: string, kb: string, filePath: string): Promise<SupersededNote> {

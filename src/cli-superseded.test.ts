@@ -6,6 +6,7 @@ import {
   formatSupersededJson,
   formatSupersededMarkdown,
   parseSupersededArgs,
+  semanticFetchLimit,
   supersededCheck,
   type SemanticNeighborSearcher,
 } from './cli-superseded.js';
@@ -168,6 +169,13 @@ describe('supersededCheck', () => {
     } finally {
       await cleanup();
     }
+  });
+});
+
+describe('semanticFetchLimit', () => {
+  it('overfetches beyond one self chunk so chunked source notes do not hide neighbors', () => {
+    expect(semanticFetchLimit(1)).toBeGreaterThan(2);
+    expect(semanticFetchLimit(5)).toBeGreaterThan(6);
   });
 });
 
