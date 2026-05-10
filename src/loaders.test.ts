@@ -266,8 +266,8 @@ describe('PDF loader — pdfjs-dist stdout noise suppression', () => {
     // Depth-count the install/restore so concurrent calls compose.
     const slowPath = path.join(tempDir, 'slow.pdf');
     const fastPath = path.join(tempDir, 'fast.pdf');
-    await fsp.writeFile(slowPath, Buffer.from('%PDF-1.4\n'));
-    await fsp.writeFile(fastPath, Buffer.from('%PDF-1.4\n'));
+    await fsp.writeFile(slowPath, Buffer.from('%PDF-1.4\nslow fixture'));
+    await fsp.writeFile(fastPath, Buffer.from('%PDF-1.4\nfast fixture'));
 
     let releaseSlow!: (v: { text: string }) => void;
     const slowDone = new Promise<{ text: string }>((resolve) => {
@@ -275,20 +275,21 @@ describe('PDF loader — pdfjs-dist stdout noise suppression', () => {
     });
 
     pdfParseFnMock.mockImplementation((buf: Buffer) => {
-      if (buf.length === Buffer.from('%PDF-1.4\n').length) {
-        // Both fixtures are byte-identical; differentiate by call count.
-        const callIdx = pdfParseFnMock.mock.calls.length;
-        if (callIdx === 1) {
-          // First call (slow): emit a Warning: line then await the gate
-          // that the second (fast) call's completion will open.
-          console.log('Warning: slow pre-await');
-          return slowDone.then((res) => {
-            console.log('Warning: slow post-await');
-            return res;
-          });
-        }
-        // Second call (fast): emits + resolves immediately, then opens
-        // the gate so the slow call can finish.
+      const raw = buf.toString('utf-8');
+      if (raw.includes('slow fixture')) {
+        // Slow fixture: emit a Warning: line then await the gate that the
+        // fast fixture's completion will open.
+        console.log('Warning: slow pre-await');
+        return slowDone.then((res) => {
+          console.log('Warning: slow post-await');
+          return res;
+        });
+      }
+      if (raw.includes('fast fixture')) {
+        // Fast fixture: emits + resolves immediately, then opens the gate
+        // so the slow call can finish. Do not rely on mock call count here;
+        // Jest versions differ on whether the current call is visible before
+        // the implementation body runs.
         console.log('Warning: fast');
         const result = { text: 'fast-text' };
         releaseSlow({ text: 'slow-text' });

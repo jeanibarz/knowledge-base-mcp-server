@@ -48,6 +48,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     for (const sub of [
       'list',
       'search',
+      'ask',
       'remember',
       'capture',
       'compare',
@@ -58,6 +59,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'superseded',
       'where',
       'models',
+      'llm',
     ]) {
       expect(r.stdout).toMatch(new RegExp(`\\n  ${sub.replace('-', '\\-')}\\s`));
     }
@@ -72,6 +74,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
   describe.each([
     ['list', 'kb list'],
     ['search', 'kb search'],
+    ['ask', 'kb ask'],
     ['remember', 'kb remember'],
     ['capture', 'kb capture'],
     ['compare', 'kb compare'],
@@ -82,6 +85,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['superseded', 'kb superseded'],
     ['where', 'kb where'],
     ['models', 'kb models'],
+    ['llm', 'kb llm'],
   ])('kb %s --help', (sub, marker) => {
     it('exits 0 with detailed help on stdout', () => {
       const long = runCli([sub, '--help']);
