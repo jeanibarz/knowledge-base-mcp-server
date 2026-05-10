@@ -9,7 +9,7 @@ import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-
 import { withSidecarLock, withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { appendSectionInDocument, listHeadings, parseHeadingSpec } from './markdown-section.js';
-import { appendFileAtomically, atomicWriteFile } from './file-mutation.js';
+import { appendFileAtomically, atomicWriteFile, rewriteFileAtomically } from './file-mutation.js';
 import {
   DEFAULT_SIMILAR_K,
   DEFAULT_SIMILAR_THRESHOLD,
@@ -1005,9 +1005,9 @@ async function appendSectionInExistingNote(
   }
 
   const spec = parseHeadingSpec(headingSpec);
-  const original = await fsp.readFile(documentPath, 'utf-8');
-  const { content: rewritten } = appendSectionInDocument(original, spec, content, { occurrence });
-  await atomicWriteFile(documentPath, rewritten, stat.mode);
+  await rewriteFileAtomically(documentPath, (original) =>
+    appendSectionInDocument(original, spec, content, { occurrence }).content,
+  );
 
   return path.relative(await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName), documentPath)
     .split(path.sep)

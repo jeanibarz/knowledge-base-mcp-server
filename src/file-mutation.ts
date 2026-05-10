@@ -12,6 +12,13 @@ const FILE_MUTATION_LOCK_OPTS: Omit<properLockfile.LockOptions, 'lockfilePath'> 
 };
 
 export async function appendFileAtomically(targetPath: string, content: string): Promise<void> {
+  await rewriteFileAtomically(targetPath, (original) => `${original}${content}`);
+}
+
+export async function rewriteFileAtomically(
+  targetPath: string,
+  rewrite: (original: string) => string | Promise<string>,
+): Promise<void> {
   await withFileMutationLock(targetPath, async () => {
     const stat = await fsp.stat(targetPath);
     if (!stat.isFile()) {
@@ -19,7 +26,7 @@ export async function appendFileAtomically(targetPath: string, content: string):
     }
 
     const original = await fsp.readFile(targetPath, 'utf-8');
-    await atomicWriteFile(targetPath, `${original}${content}`, stat.mode);
+    await atomicWriteFile(targetPath, await rewrite(original), stat.mode);
   });
 }
 

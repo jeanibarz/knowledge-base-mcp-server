@@ -2,7 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { appendFileAtomically, atomicWriteFile } from './file-mutation.js';
+import { appendFileAtomically, atomicWriteFile, rewriteFileAtomically } from './file-mutation.js';
 
 describe('file mutation helpers', () => {
   it('atomically appends by rewrite and preserves target permissions', async () => {
@@ -37,6 +37,25 @@ describe('file mutation helpers', () => {
       expect(lines[0]).toBe('base');
       expect(lines.slice(1).sort()).toEqual(
         Array.from({ length: 12 }, (_, i) => `entry-${i}`).sort(),
+      );
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it('serializes appends with other atomic rewrites on the same target', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-file-mutation-mixed-'));
+    try {
+      const target = path.join(tempDir, 'note.md');
+      await fsp.writeFile(target, '# Note\n\nbody\n', 'utf-8');
+
+      await Promise.all([
+        appendFileAtomically(target, '\nEOF append\n'),
+        rewriteFileAtomically(target, (original) => original.replace('body\n', 'body\nsection insert\n')),
+      ]);
+
+      await expect(fsp.readFile(target, 'utf-8')).resolves.toBe(
+        '# Note\n\nbody\nsection insert\n\nEOF append\n',
       );
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
