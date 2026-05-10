@@ -474,6 +474,15 @@ export class FaissIndexManager {
   }
 
   /**
+   * Reload the last persisted FAISS store into memory, discarding any
+   * in-memory additions from a failed updateIndex run. Callers that pair this
+   * with a write mutation should already hold this manager's write lock.
+   */
+  async reloadPersistedIndex(): Promise<void> {
+    this.faissIndex = await this.loadAtomic();
+  }
+
+  /**
    * RFC 014 — atomic save via versioned dirs + symlink swap.
    *
    * PRECONDITION: caller MUST hold withWriteLock(this.modelDir). Verified

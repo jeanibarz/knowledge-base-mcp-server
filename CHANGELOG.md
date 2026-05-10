@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — `add_document` rollback on indexing failure
+
+### Changed
+
+- **`add_document` now compensates filesystem writes when immediate indexing fails.** If a new document was written and `updateIndex` rejects, the server removes the new file and prunes only parent directories created by that call. If an existing document was overwritten, the previous bytes and file mode are restored. If indexing had already mutated FAISS state, the server reloads the previous persisted index or force-rebuilds from rolled-back files so retrieval does not keep rejected content alive. The MCP error payload includes rollback status so callers can tell whether durable KB content was restored or still needs manual remediation. Closes #235.
+
 ## [Unreleased] — Batched changed-file embeddings during updateIndex (#236)
 
 ### Changed
