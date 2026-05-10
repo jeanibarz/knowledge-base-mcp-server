@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — docs anchor verifier
+
+### Added
+
+- **`npm run docs:check-anchors`.** Contributor-facing documentation drift check that scans architecture docs, RFCs, README, CONTRIBUTING, and CLAUDE.md for source anchors such as `src/FaissIndexManager.ts:153-164` and `src/config.ts::OLLAMA_MODEL`. The checker skips fenced code blocks, supports inline `anchor-check` ignores, validates target file existence, verifies line ranges are in bounds, and resolves simple TypeScript/JavaScript symbol anchors before review. Because existing docs contain stale anchors, the default command reports drift in warning mode; pass `-- --strict` to fail on stale anchors. Closes #233.
+
 ## [Unreleased] — latest index-update summaries in stats and doctor
 
 ### Added
