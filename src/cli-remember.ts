@@ -9,6 +9,7 @@ import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-
 import { withSidecarLock, withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { appendSectionInDocument, listHeadings, parseHeadingSpec } from './markdown-section.js';
+import { appendFileAtomically, atomicWriteFile } from './file-mutation.js';
 import {
   DEFAULT_SIMILAR_K,
   DEFAULT_SIMILAR_THRESHOLD,
@@ -61,6 +62,8 @@ Targeting:
                         \`--lesson\`, which defaults to \`agent-task-lessons\`).
   --title=<title>       Note title; create uses a slugified \`.md\` filename.
   --append=<path>       Existing KB-relative note path; rejects traversal.
+                        EOF appends rewrite under a per-file lock with an
+                        atomic temp-file fsync + rename.
   --append-section=<spec>
                         Heading-aware append target. Spec is "<#level> <text>"
                         (e.g. "## OSS gate flow"). Requires \`--append=<path>\`.
@@ -966,7 +969,7 @@ async function appendExistingNote(kbName: string, relativePath: string, content:
   if (!stat.isFile()) {
     throw new Error(`append target is not a file: ${JSON.stringify(relativePath)}`);
   }
-  await fsp.appendFile(documentPath, content, 'utf-8');
+  await appendFileAtomically(documentPath, content);
   return path.relative(await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName), documentPath)
     .split(path.sep)
     .join('/');
@@ -1010,28 +1013,6 @@ async function appendSectionInExistingNote(
     .split(path.sep)
     .join('/');
 }
-
-async function atomicWriteFile(targetPath: string, data: string, mode?: number): Promise<void> {
-  const tmpPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}`;
-  const permissions = mode === undefined ? undefined : mode & 0o7777;
-  const handle = await fsp.open(tmpPath, 'w', permissions);
-  try {
-    if (permissions !== undefined) {
-      await handle.chmod(permissions);
-    }
-    await handle.writeFile(data, 'utf-8');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
-    await fsp.rename(tmpPath, targetPath);
-  } catch (err) {
-    await fsp.unlink(tmpPath).catch(() => {});
-    throw err;
-  }
-}
-
 
 function slugifyTitle(title: string): string {
   const slug = title

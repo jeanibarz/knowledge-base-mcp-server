@@ -15,6 +15,7 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel } from './cli-shared.js';
+import { appendFileAtomically } from './file-mutation.js';
 import {
   auditEnabled,
   recordMutation,
@@ -57,7 +58,7 @@ Spawns the command (\`shell: false\`), captures up to \`--max-bytes\` of stdout,
 and appends a fenced, provenance-tagged code block to the target KB note.
 The \`--\` separator is required: everything after it is the command + args
 passed verbatim to spawn. Composes with \`kb remember --append=<path>\` for the
-write path.
+atomic EOF append write path.
 
 Targeting:
   --kb=<name>           Target knowledge base. Required.
@@ -386,7 +387,7 @@ async function appendToNote(kbName: string, relativePath: string, content: strin
   if (!stat.isFile()) {
     throw new Error(`append target is not a file: ${JSON.stringify(relativePath)}`);
   }
-  await fsp.appendFile(documentPath, content, 'utf-8');
+  await appendFileAtomically(documentPath, content);
   const kbDir = await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName);
   return path.relative(kbDir, documentPath).split(path.sep).join('/');
 }

@@ -414,6 +414,31 @@ describe('kb remember', () => {
     }
   });
 
+  it('plain --append preserves file permissions while appending', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-append-mode-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const notePath = path.join(rootDir, 'project', 'private.md');
+      await fsp.mkdir(path.dirname(notePath), { recursive: true });
+      await fsp.writeFile(notePath, '# Private\n', 'utf-8');
+      await fsp.chmod(notePath, 0o600);
+
+      const r = runCli(
+        ['remember', '--kb=project', '--append=private.md', '--stdin', '--yes'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        '\nAppended.\n',
+      );
+
+      expect(r.code).toBe(0);
+      expect((await fsp.stat(notePath)).mode & 0o777).toBe(0o600);
+      await expect(fsp.readFile(notePath, 'utf-8')).resolves.toBe('# Private\n\nAppended.\n');
+    } finally {
+      await fsp.chmod(path.join(tempDir, 'kbs', 'project', 'private.md'), 0o600).catch(() => {});
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('appends at the end of a named section, not at EOF', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-section-'));
     try {
@@ -1070,6 +1095,25 @@ describe('kb capture', () => {
         '```\n',
       );
     } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves target file permissions when appending captured output', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-mode-');
+    try {
+      await fsp.chmod(notePath, 0o600);
+
+      const r = runCli(
+        ['capture', '--kb=project', '--append=snapshots.md', '--', 'echo', 'private'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      expect((await fsp.stat(notePath)).mode & 0o777).toBe(0o600);
+      await expect(fsp.readFile(notePath, 'utf-8')).resolves.toContain('private\n');
+    } finally {
+      await fsp.chmod(notePath, 0o600).catch(() => {});
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
   });
