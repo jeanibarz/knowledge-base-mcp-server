@@ -9,11 +9,13 @@
 import { readFileSync, realpathSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { ASK_HELP, runAsk } from './cli-ask.js';
 import { CAPTURE_HELP, runCapture } from './cli-capture.js';
 import { COMPARE_HELP, runCompare } from './cli-compare.js';
 import { DOCTOR_HELP, runDoctor } from './cli-doctor.js';
 import { EVAL_HELP, runEval } from './cli-eval.js';
 import { LIST_HELP, runList } from './cli-list.js';
+import { LLM_HELP, runLlm } from './cli-llm.js';
 import { MODELS_HELP, runModels } from './cli-models.js';
 import { REMEMBER_HELP, runRemember } from './cli-remember.js';
 import { SEARCH_HELP, runSearch } from './cli-search.js';
@@ -38,6 +40,7 @@ interface Subcommand {
 const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'list',         summary: 'List available knowledge bases.',                                         help: LIST_HELP,         handler: runList },
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },
+  { name: 'ask',          summary: 'Answer from retrieved KB context using a local LLM endpoint.',            help: ASK_HELP,          handler: runAsk },
   { name: 'remember',     summary: 'Suggest, create, or append knowledge-base notes (write path).',          help: REMEMBER_HELP,     handler: runRemember },
   { name: 'capture',      summary: 'Run a command and append its stdout to a KB note as a fenced block.',    help: CAPTURE_HELP,      handler: runCapture },
   { name: 'compare',      summary: 'Side-by-side rank/score table for two embedding models.',                help: COMPARE_HELP,      handler: runCompare },
@@ -48,6 +51,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'superseded',   summary: 'Scan a KB for obsolete / contradicted / deprecated / stale notes.',      help: SUPERSEDED_HELP,   handler: runSuperseded },
   { name: 'where',        summary: 'Recommend the best KB and file for a given topic.',                      help: WHERE_HELP,        handler: runWhere },
   { name: 'models',       summary: 'Manage embedding models (list, add, set-active, remove).',               help: MODELS_HELP,       handler: runModels },
+  { name: 'llm',          summary: 'Configure local LLM endpoints and managed warm model services.',          help: LLM_HELP,          handler: runLlm },
 ];
 
 // ----- Top-level help -------------------------------------------------------
@@ -75,6 +79,7 @@ Environment:
   FAISS_INDEX_PATH          Where FAISS stores per-model indexes.
   EMBEDDING_PROVIDER        ollama | openai | huggingface
   KB_ACTIVE_MODEL           Override the active model for this process (RFC 013 §4.7).
+  KB_LLM_ENDPOINT           OpenAI-compatible endpoint used by \`kb ask\`.
   OLLAMA_*, OPENAI_*, HUGGINGFACE_*
                             Provider-specific config; see the provider's docs.
 

@@ -43,6 +43,8 @@ kb search "your query"                       # read-only dense search; cheap, fa
 kb search "query" --refresh                  # also re-scan KB files (write path)
 kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh   # BM25 debug surface (#206 stage 1)
 kb search "INDEX_NOT_INITIALIZED" --mode=hybrid              # dense ⨁ BM25 fused via RRF (#206 stage 2)
+kb llm use-endpoint http://127.0.0.1:8080/v1/chat/completions --profile=local-research-agent
+kb ask "what changed in the daemonization notes?"            # retrieval + local LLM answer
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
@@ -76,6 +78,26 @@ cases:
 ```
 
 The MCP server (`knowledge-base-mcp-server` bin) is unchanged and still works with all the configurations in [docs/clients.md](docs/clients.md). The CLI is additive.
+
+### Local LLM answers (RFC 015)
+
+`kb ask` keeps retrieval deterministic and adds a local OpenAI-compatible chat step on top. It resolves the LLM endpoint from `--endpoint`, `KB_LLM_ENDPOINT`, `--llm-profile`, the active `kb llm` profile, then finally the local-research-agent default on `127.0.0.1:8080`.
+
+```bash
+# Reuse an already-running local-research-agent llama-server.
+kb llm use-endpoint http://127.0.0.1:8080/v1/chat/completions --profile=local-research-agent
+kb llm status
+kb ask "Which notes discuss reboot recovery?" --kb=operating-environment
+
+# Optional managed service for machines that want kb to own the warm model.
+kb llm install --profile=qwen --runner=llama-server \
+  --bin=/path/to/llama-server --model=/path/to/model.gguf --port=8091
+kb llm start --profile=qwen
+kb llm set-model --profile=qwen --model=/path/to/other-model.gguf --start
+kb llm uninstall --profile=qwen
+```
+
+External profiles are reuse-only: `kb llm stop`, `restart`, `uninstall`, and `reap` do not stop services owned by local-research-agent. Managed profiles are namespaced as `kb-llm@<profile>.service`, bind to `127.0.0.1`, and write leases under the user state directory so stale managed models can be reaped instead of staying loaded forever.
 
 ### Comparing embedding models (RFC 013)
 
