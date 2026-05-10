@@ -24,7 +24,11 @@ import {
   OLLAMA_BASE_URL,
 } from './config.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
-import { FaissIndexManager } from './FaissIndexManager.js';
+import {
+  createNeverRunIndexUpdateSummary,
+  FaissIndexManager,
+  type IndexUpdateSummary,
+} from './FaissIndexManager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -66,6 +70,7 @@ export interface DoctorReport {
     origin_main: string | null;
     relation: 'ahead' | 'behind' | 'diverged' | 'up-to-date' | 'unknown';
   } | null;
+  last_index_update: IndexUpdateSummary;
 }
 
 export interface BuildDoctorReportOptions {
@@ -73,6 +78,7 @@ export interface BuildDoctorReportOptions {
   packageRoot?: string;
   invokedPath?: string | null;
   packageVersion?: string;
+  lastIndexUpdateSummary?: IndexUpdateSummary;
 }
 
 export type BackendHealthCheck = (
@@ -188,6 +194,8 @@ export async function buildDoctorReport(
     symlinked_checkout_path: detectSymlinkedCheckoutPath(packageRoot, invokedPath),
   };
   const git = await readGitState(packageRoot);
+  const lastIndexUpdate = options.lastIndexUpdateSummary
+    ?? createNeverRunIndexUpdateSummary(activeModelId);
 
   const status = summarizeStatus(checks);
   return {
@@ -203,6 +211,7 @@ export async function buildDoctorReport(
     backend,
     cli,
     git,
+    last_index_update: lastIndexUpdate,
   };
 }
 
@@ -438,6 +447,7 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   lines.push(`Index: ${report.index.binary_path ?? '<not built>'}`);
   lines.push(`Index version: ${report.index.version ?? '<unknown>'}`);
   lines.push(`Index mtime: ${report.index.mtime ?? '<none>'}`);
+  lines.push(`Last index update: ${formatLastIndexUpdate(report.last_index_update)}`);
   lines.push(`Backend: ${report.backend.healthy ? 'ok' : 'error'} — ${report.backend.detail}`);
   lines.push(`kb version: ${report.cli.version}`);
   if (report.cli.symlinked_checkout_path !== null) {
@@ -466,4 +476,14 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
     lines.push(`  ${check.status.toUpperCase().padEnd(5)} ${check.name}: ${check.detail}`);
   }
   return lines.join('\n') + '\n';
+}
+
+function formatLastIndexUpdate(summary: IndexUpdateSummary): string {
+  if (summary.status === 'never_run') {
+    return 'never run in this process';
+  }
+  const scope = summary.scope ?? '<unknown scope>';
+  const duration = summary.duration_ms === null ? '<unknown duration>' : `${summary.duration_ms}ms`;
+  return `${summary.status} (${scope}, ${duration}, ${summary.files_changed} changed, ` +
+    `${summary.files_unchanged} unchanged, ${summary.files_skipped} skipped)`;
 }

@@ -1,0 +1,104 @@
+# #206 stage 2 — kb eval fixture pack: hybrid (RRF) vs dense baseline.
+#
+# Two case sets:
+#
+#   1. Exact-token queries — dense often misses, hybrid is expected to win.
+#      Targets the literature's "out-of-vocabulary lift" claim
+#      (llm-memory/pdfs/2604.17948.pdf chunks 46-48).
+#
+#   2. Natural-language queries — paraphrased doc headings where dense
+#      should already win. Hybrid must NOT regress these.
+#
+# Run with:
+#   kb eval docs/testing/fixtures/hybrid-vs-dense.yml --mode=dense
+#   kb eval docs/testing/fixtures/hybrid-vs-dense.yml --mode=hybrid
+#
+# The fixture is `gate: false` — failures print a warning and exit 0.
+# This is a guidance pack for operators / contributors to verify the
+# claim against their own KBs; in CI it is currently informational.
+# Once the project ships a stable dogfooding KB seed, the gate flips.
+#
+# `kb` (or `--kb=...` per case) must point at a KB whose corpus actually
+# contains the referenced sources — substitute the paths for your local
+# KBs. The defaults below assume a `docs` KB containing the project's
+# own README, RFCs, and threat-model.
+
+gate: false
+
+cases:
+  # === Exact-token / OOV cases — hybrid expected to win =====================
+
+  - name: exact error code — INDEX_NOT_INITIALIZED
+    query: INDEX_NOT_INITIALIZED
+    kb: docs
+    required_sources:
+      - README.md
+    max_duplicate_groups: 3
+
+  - name: exact RFC reference — RFC 006
+    query: "RFC 006"
+    kb: docs
+    required_sources:
+      - docs/rfcs/006-multi-provider-tiered-retrieval.md
+
+  - name: exact env var — MCP_AUTH_TOKEN
+    query: MCP_AUTH_TOKEN
+    kb: docs
+    required_sources:
+      - README.md
+
+  - name: exact dependency name — pickleparser
+    query: pickleparser
+    kb: docs
+    required_sources:
+      - docs/architecture/threat-model.md
+
+  - name: exact model id — ollama__nomic-embed-text-latest
+    query: "ollama__nomic-embed-text-latest"
+    kb: docs
+    required_sources:
+      - docs/rfcs/013-multimodel-support.md
+
+  - name: exact ADR number — ADR 0002
+    query: "ADR 0002"
+    kb: docs
+    required_sources:
+      - docs/architecture/adr/0002-per-file-hash-sidecars.md
+
+  # === Natural-language cases — hybrid must not regress =====================
+
+  - name: paraphrase — how chunking works
+    query: how does the markdown chunker handle headings
+    kb: docs
+    required_sources:
+      - docs/architecture/adr/0004-markdown-splitter-default.md
+
+  - name: paraphrase — single-process invariant
+    query: why does the server only support one process per index path
+    kb: docs
+    required_sources:
+      - docs/architecture/threat-model.md
+
+  - name: paraphrase — per-file invalidation strategy
+    query: how does the index decide which files to re-embed
+    kb: docs
+    required_sources:
+      - docs/architecture/adr/0002-per-file-hash-sidecars.md
+
+  - name: paraphrase — what does kb doctor check
+    query: what health checks run when I invoke the doctor command
+    kb: docs
+    required_sources:
+      - README.md
+
+  - name: paraphrase — multi-model rationale
+    query: why support keeping multiple embedding models side by side
+    kb: docs
+    required_sources:
+      - docs/rfcs/013-multimodel-support.md
+
+  - name: paraphrase — atomic save guarantees
+    query: how does the FAISS save remain atomic during concurrent writes
+    kb: docs
+    required_sources:
+      - docs/rfcs/014-atomic-faiss-save.md

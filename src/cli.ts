@@ -27,6 +27,7 @@ import { runModels } from './cli-models.js';
 import { runRemember } from './cli-remember.js';
 import { runSearch } from './cli-search.js';
 import { runStaleCheck } from './cli-stale-check.js';
+import { runStats } from './cli-stats.js';
 import { runSuperseded } from './cli-superseded.js';
 import { runWhere } from './cli-where.js';
 
@@ -79,6 +80,9 @@ Usage:
                                            to a KB note as a fenced block.
   kb compare <query> <a> <b>              Side-by-side rank/score table.
   kb doctor [--format=md|json]            Aggregate model/index/backend health.
+  kb stats [--kb=<name>] [--format=md|json]
+                                           Read-only index/corpus stats, mirroring
+                                           the MCP kb_stats payload.
   kb eval <fixture.yml|json> [--model=<id>] [--format=md|json]
                                            Run fixture-driven retrieval checks.
   kb stale-check [--kb=<name>] [--no-cache] [--verbose]
@@ -215,6 +219,9 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (sub === 'doctor') {
     return runDoctor(rest);
+  }
+  if (sub === 'stats') {
+    return runStats(rest);
   }
   if (sub === 'eval') {
     return runEval(rest);

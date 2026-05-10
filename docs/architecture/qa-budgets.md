@@ -34,11 +34,11 @@ Today's embedding call pattern, per `updateIndex` call:
 | Scenario                           | `embedDocuments` calls | Batched? |
 | ---------------------------------- | ---------------------: | -------- |
 | Warm no-op                         | 0                       | N/A      |
-| 1 changed file                     | 1                       | Yes (one call per file, carrying that file's chunks) |
-| N changed files                    | N                       | **No** — each file goes through `addDocuments`/`fromTexts` serially at `src/FaissIndexManager.ts:278-287`. RFC 007 §6.2 batches this. |
-| Fallback rebuild                   | 1                       | Yes — one call with every chunk at `:338-343` |
+| 1 changed file                     | 1                       | Yes — its chunks fit in one bounded batch by default. |
+| N changed files                    | `ceil(total_chunks / INDEXING_BATCH_SIZE)` | Yes — changed-file chunks are queued and embedded in bounded FAISS batches. |
+| Fallback rebuild                   | `ceil(total_chunks / INDEXING_BATCH_SIZE)` | Yes — fallback rebuild uses the same bounded batching path. |
 
-**Provider-rate implication.** A user with 100 modified files on HuggingFace (~100 ms/call) pays 10 s minimum regardless of chunk count per file — because the calls are sequential. The fallback-rebuild path is faster per chunk than the changed-file path because it packs everything into one call.
+**Provider-rate implication.** A user with 100 modified files now pays for batches of chunks rather than one provider round trip per file. The default HuggingFace/OpenAI batch size is 64 chunks; the Ollama default is 16 chunks to keep local-provider payloads conservative.
 
 ## Supported scale
 
@@ -54,7 +54,7 @@ Current ceiling (informal, from code + §5 measurements, **not** a tested guaran
 ## Known cliffs
 
 - **Per-query scan** (`src/KnowledgeBaseServer.ts:84` → `src/FaissIndexManager.ts:202-389`). Every `retrieve_knowledge` pays the ~85 ms scan floor even when nothing changed. RFC 007 §6.3 (scan-on-signal) and §7.5 (mtime+size short-circuit) are the two candidate fixes.
-- **Per-file embedding round-trip** (`src/FaissIndexManager.ts:278-287`). Changed-file calls are serial, not batched. RFC 007 §6.2 tracks the batch refactor.
+- **Embedding provider payload limits.** `INDEXING_BATCH_SIZE` bounds changed-file and fallback rebuild batches. Raise it cautiously for high-throughput remote providers; lower it when a provider rejects large payloads.
 - **Global FAISS store memory** (`src/FaissIndexManager.ts:81`). Querying one KB still loads vectors from every KB into RAM. RFC 007 §6.4 tracks the per-KB split.
 - **No concurrency guard** across processes. One process per `$FAISS_INDEX_PATH` is a documented constraint, not an enforced one — see [`threat-model.md`](./threat-model.md) and issue #44.
 

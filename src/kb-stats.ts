@@ -9,7 +9,7 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import type { FaissIndexManager } from './FaissIndexManager.js';
+import type { FaissIndexManager, IndexUpdateSummary } from './FaissIndexManager.js';
 import {
   FAISS_INDEX_PATH,
   INGEST_EXCLUDE_PATHS,
@@ -31,6 +31,7 @@ export interface KbStatsPayload {
   knowledge_bases: Record<string, KbStatsRow>;
   embedding: { provider: string; model: string; dim: number | null };
   index_path: string;
+  last_index_update: IndexUpdateSummary;
   server: { version: string; uptime_ms: number };
 }
 
@@ -118,6 +119,7 @@ export async function computeKbStats(
       dim: indexStats.dim,
     },
     index_path: FAISS_INDEX_PATH,
+    last_index_update: manager.getLastIndexUpdateSummary(),
     server: {
       version: options.serverVersion,
       uptime_ms: Date.now() - options.startedAt,

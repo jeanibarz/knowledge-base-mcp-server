@@ -1,92 +1,133 @@
 # Data model
 
-Every artifact that survives a process restart lives in one of two directories. This page enumerates the files and the schema of what's inside them.
+Every artifact that survives a process restart lives under either `$KNOWLEDGE_BASES_ROOT_DIR` or `$FAISS_INDEX_PATH`. This page is a current snapshot; if a claim here stops matching the cited source file, the doc is stale.
 
 ## On-disk layout
 
 ```mermaid
 flowchart LR
-  subgraph kbs["$KNOWLEDGE_BASES_ROOT_DIR<br/>src/config.ts:5-6"]
+  subgraph kbs["$KNOWLEDGE_BASES_ROOT_DIR<br/>src/config.ts"]
     direction TB
     subgraph kb1["&lt;kb_name&gt;/  (user-authored)"]
-      Md["*.md, *.txt<br/>(any non-dot ext)"]
-      IdxDir[".index/<br/>(written by this server)"]
-      IdxFile["&lt;subdir&gt;/&lt;basename&gt;<br/>one sha256 hex per source file"]
-      Md -.sha256.-> IdxFile
+      Source["*.md, *.txt, *.pdf, *.html<br/>plus configured extra extensions"]
+      SidecarDir[".index/<br/>(written by this server)"]
+      Sidecar["&lt;subdir&gt;/&lt;basename&gt;<br/>one sha256 hex per source file"]
+      Source -.sha256.-> Sidecar
     end
     kb2["&lt;other_kb&gt;/"]
   end
 
-  subgraph faiss["$FAISS_INDEX_PATH<br/>src/config.ts:8-9"]
+  subgraph faiss["$FAISS_INDEX_PATH<br/>src/config.ts"]
     direction TB
-    Faiss["faiss.index<br/>binary vector index<br/>faiss-node format"]
-    Docs["docstore.json<br/>(pickle-format sibling<br/>written by FaissStore.save)"]
-    Model["model_name.txt<br/>src/FaissIndexManager.ts:25"]
+    Active["active.txt<br/>active model_id"]
+    Models["models/"]
+    ModelDir["&lt;model_id&gt;/<br/>provider__filesystem-safe-slug"]
+    ModelName["model_name.txt<br/>configured embedding model name"]
+    IndexLink["index<br/>symlink to index.vN"]
+    Version["index.vN/"]
+    Faiss["faiss.index<br/>faiss-node binary vector index"]
+    Docs["docstore.json<br/>LangChain docstore sibling"]
+    Legacy["faiss.index/<br/>legacy layout, read fallback"]
+
+    Active --> ModelDir
+    Models --> ModelDir
+    ModelDir --> ModelName
+    ModelDir --> IndexLink
+    IndexLink --> Version
+    Version --> Faiss
+    Version --> Docs
+    ModelDir -.pre-RFC-014.-> Legacy
   end
 ```
 
-The two trees are independent (see [`c4-container.md`](./c4-container.md) for lifecycle notes). Sidecars travel with the source file, not with the vector index — so a user can safely `rm -rf $FAISS_INDEX_PATH/` to force a full rebuild without invalidating the sidecar sha tree, and moving a KB between roots doesn't orphan vectors of unrelated KBs.
+The two trees are independent (see [`c4-container.md`](./c4-container.md) for lifecycle notes). Hash sidecars travel with the source file, not with the vector index. Deleting `$FAISS_INDEX_PATH/` removes vectors but not source files; startup/update code treats the missing FAISS store as a rebuild signal and may purge stale sidecars before re-embedding. Moving a KB between roots does not orphan vectors for unrelated KBs.
 
 ## Artifacts
 
 ### Per-file hash sidecar
 
-Written by `src/FaissIndexManager.ts:362-377`. One text file per indexed source file; content is a lowercase sha256 hex digest of the source bytes.
+Written after a successful FAISS save by `writeSidecarHashes` (`src/file-ingest.ts:118-144`), called from `FaissIndexManager.updateIndex` (`src/FaissIndexManager.ts:782-793`). One text file exists per indexed source file; content is a lowercase sha256 hex digest of the source bytes.
 
-| Field   | Type                     | Source                                      |
-| ------- | ------------------------ | ------------------------------------------- |
-| path    | `<kb>/.index/<rel_dir>/<basename>` | derived at `src/FaissIndexManager.ts:230-231` |
-| content | sha256 hex string (64 chars) | `calculateSHA256` at `src/file-utils.ts:6-11` |
-| atomicity | tmp+rename              | `src/FaissIndexManager.ts:363-374`          |
+| Field | Type | Source |
+| --- | --- | --- |
+| path | `<kb>/.index/<rel_dir>/<basename>` | derived from `relativePath` at `src/FaissIndexManager.ts:647-659` |
+| content | sha256 hex string (64 chars) | `calculateSHA256` at `src/FaissIndexManager.ts:648-650` |
+| atomicity | tmp+rename under the sidecar lock | `src/file-ingest.ts:122-132` |
 
-The path structure mirrors the source tree under `<kb>/` — so a file at `<kb>/a/b/c.md` gets a sidecar at `<kb>/.index/a/b/c.md`. ADR [`0002-per-file-hash-sidecars.md`](./adr/0002-per-file-hash-sidecars.md) covers why this layout was chosen over a single `hashes.json` manifest.
+The path structure mirrors the source tree under `<kb>/`: a file at `<kb>/a/b/c.md` gets a sidecar at `<kb>/.index/a/b/c.md`. ADR [`0002-per-file-hash-sidecars.md`](./adr/0002-per-file-hash-sidecars.md) covers why this layout was chosen over a single `hashes.json` manifest.
 
-### `faiss.index`
+### Model registry
 
-The binary vector index in `faiss-node`'s native format. Produced by `FaissStore.save(path)` (`src/FaissIndexManager.ts:351`), loaded by `FaissStore.load(path, embeddings)` (`src/FaissIndexManager.ts:169`). Endianness and float layout are platform-dependent; a fixture built on one arch may not load on another.
+`$FAISS_INDEX_PATH/active.txt` records the active `model_id`; callers can override it with `KB_ACTIVE_MODEL` (`src/active-model.ts:5`, `:26`). Each registered model lives at `$FAISS_INDEX_PATH/models/<model_id>/`, where `<model_id>` is derived from provider and model name (`README.md:102`, `src/active-model.ts:37-43`).
 
-### Docstore sibling
+A model is registered only when its directory exists, `model_name.txt` exists, and `.adding` does not exist (`src/active-model.ts:107-127`). `model_name.txt` is written per model during `FaissIndexManager.initialize()` (`src/FaissIndexManager.ts:327-334`) and stores the configured embedding model name, not the derived model id.
 
-`FaissStore.save` emits a JSON-serialized docstore alongside `faiss.index` (written to the same directory). The serialization path uses `pickleparser@0.2.1` (`package.json:27`) for cross-language compatibility with Python LangChain on load. This is the **code-exec trust boundary** — loading an attacker-controlled file here is arbitrary-code-execution-shaped; see [`threat-model.md`](./threat-model.md).
+### Versioned FAISS store
 
-### `model_name.txt`
+New saves use the RFC 014 layout in each model directory:
 
-Single-line text file containing the current configured embedding model name. Written once per `initialize()` at `src/FaissIndexManager.ts:181`. Compared to `this.modelName` on the next startup at `:153`. If they differ, `faiss.index` is unlinked and the next `updateIndex` rebuilds — see [`sequence-reindex.md`](./sequence-reindex.md) and ADR [`0005-auto-rebuild-on-model-change.md`](./adr/0005-auto-rebuild-on-model-change.md).
+```text
+models/<model_id>/
+  model_name.txt
+  index -> index.vN
+  index.vN/
+    faiss.index
+    docstore.json
+  index.vN-1/
+    faiss.index
+    docstore.json
+```
+
+`saveFaissStoreAtomic` writes the next `index.vN/`, creates a temporary symlink, atomically renames it to `index`, and keeps the newest three version directories (`src/faiss-store-layout.ts:150-179`). `loadFaissStoreAtomic` pins reads by resolving the `index` symlink once before calling `FaissStore.load`, so `faiss.index` and `docstore.json` come from the same version directory even if another writer swaps the symlink later (`src/faiss-store-layout.ts:58-120`).
+
+`faiss.index` is the binary vector index in `faiss-node`'s native format. `docstore.json` is the LangChain docstore sibling emitted by `FaissStore.save`; it is part of the `$FAISS_INDEX_PATH` code-exec trust boundary because loading attacker-controlled serialized data is unsafe. See [`threat-model.md`](./threat-model.md).
+
+### Legacy FAISS store
+
+The pre-RFC-014 layout is `models/<model_id>/faiss.index/{faiss.index,docstore.json}`. The loader still falls back to it when the `index` symlink is absent (`src/faiss-store-layout.ts:122-142`). The first successful save under the new layout writes `index.vN/` and leaves the legacy directory untouched as downgrade/rollback slack (`src/FaissIndexManager.ts:765-770`). When both layouts are present, `kb models list` can surface a downgrade hazard derived directly from filesystem state (`src/active-model.ts:129-185`).
 
 ## In-memory: chunk metadata schema
 
-Documents are created at two call sites with identical schemas:
-
-- Changed-file branch (`src/FaissIndexManager.ts:261-275`): either split by `MarkdownTextSplitter` (`.md`) or wrapped as a single `Document` (everything else).
-- Fallback branch (`src/FaissIndexManager.ts:317-332`): same logic re-applied during a full rebuild.
-
-### Current schema (today)
+`FaissIndexManager.updateIndex` uses one chunk builder for changed-file indexing and full-rebuild fallback (`src/FaissIndexManager.ts:705-709`, `:748-752`). `buildChunkDocuments` splits markdown with `MarkdownTextSplitter`, other ingested extensions with `RecursiveCharacterTextSplitter`, strips YAML frontmatter from page content, and attaches the metadata below to every emitted `Document` (`src/file-ingest.ts:37-104`).
 
 ```ts
 type ChunkMetadata = {
-  source: string;   // absolute path to the originating file on disk
+  source: string;
+  relativePath: string;
+  knowledgeBase: string;
+  extension: string;
+  chunkIndex: number;
+  tags: string[];
+  frontmatter?: LiftedFrontmatter;
+  pdf_path?: string;
 };
 ```
 
-**That's the whole schema.** The only field set by this server is `source`. It's consumed by:
+### Chunk metadata fields
 
-- `handleRetrieveKnowledge` (`src/KnowledgeBaseServer.ts:98-100`), which serializes `metadata` as pretty-printed JSON in the tool response.
-- Any downstream consumer that wants to dedup, group, or filter by source file — today, none inside this repo.
+| Field | Type | Always present? | Source of truth | Wire exposure |
+| --- | --- | --- | --- | --- |
+| `source` | `string` absolute path | yes | `src/file-ingest.ts:87-95` | visible |
+| `relativePath` | `string` POSIX path relative to `$KNOWLEDGE_BASES_ROOT_DIR` | yes | `src/file-ingest.ts:68-72` | visible; used by path filters |
+| `knowledgeBase` | `string` KB directory name | yes | `buildChunkDocuments(..., knowledgeBaseName)` at `src/file-ingest.ts:50-54`, `:92-97` | visible |
+| `extension` | `string` lowercase extension, including dot | yes | `path.extname(filePath).toLowerCase()` at `src/file-ingest.ts:55`, `:92-98` | visible |
+| `chunkIndex` | `number` zero-based ordinal within the source file | yes | loop index at `src/file-ingest.ts:91-99` | visible; formatter uses it as fallback location |
+| `tags` | `string[]` | yes | `parseFrontmatter(content)` at `src/file-ingest.ts:68`, `:92-100` | visible |
+| `frontmatter` | `LiftedFrontmatter` | no | `liftFrontmatter(frontmatter, filePath)` at `src/file-ingest.ts:74-100` | visible after sanitization; `extras` hidden by default |
+| `pdf_path` | `string` KB-relative POSIX path | no | `detectSiblingPdfPath` for markdown files at `src/file-ingest.ts:80-101` | visible |
 
-### Forthcoming (per RFC 006 M1.3)
+### Lifted frontmatter
 
-The multi-provider tiered-retrieval RFC plans to extend the schema with:
+`liftFrontmatter` is the whitelist for `metadata.frontmatter` (`src/frontmatter-lift.ts:19-56`). String fields are `arxiv_id`, `title`, `authors`, `published`, `ingested_at`, `judge_method`, `metrics_used`, `bias_handling`, `status`, `review_status`, `promote_model`, `tier`, and `last_verified_at`. Typed fields are `relevance_score?: number`, `confidence?: number`, `manual_edits?: boolean`, and `contradicted_by?: string[]`.
 
-| Field           | Type                       | Purpose                                                         |
-| --------------- | -------------------------- | --------------------------------------------------------------- |
-| `tags`          | `string[]`                 | Allow-list / deny-list filtering at query time.                 |
-| `chunkIndex`    | `number`                   | Ordinal within the source file, for reconstructing context.     |
-| `knowledgeBase` | `string`                   | Cheap KB-scope filter without string-matching `source`.         |
+Unknown string-valued YAML keys are collected into `frontmatter.extras`; non-string generic keys are dropped with debug logging (`src/frontmatter-lift.ts:131-154`). `sanitizeMetadataForWire` strips `frontmatter.extras` unless `FRONTMATTER_EXTRAS_WIRE_VISIBLE=true` (`src/formatter.ts:34-58`). The stored FAISS docstore keeps the original metadata object; the sanitizer applies at markdown and JSON response formatting time (`src/formatter.ts:66-90`, `:123-140`).
 
-RFC 006 specifies this; it is **not** live in the current code. When it lands, this section flips from "forthcoming" to "current" in the same PR.
+### Sibling PDF path
+
+For markdown chunks only, `detectSiblingPdfPath` looks for a same-stem PDF in the arxiv layout (`<kb>/pdfs/<stem>.pdf`) and then in the same directory as the markdown file. It returns a KB-relative forward-slash path and rejects paths that escape the KB root (`src/frontmatter-lift.ts:189-218`).
 
 ## Not persisted
 
-- Query text is **not** logged or stored anywhere; it flows straight to `embedQuery` (`src/FaissIndexManager.ts:402`) and is gone when the request returns.
-- Embedding provider keys (`HUGGINGFACE_API_KEY`, `OPENAI_API_KEY`) are held in `process.env` for the life of the process. They are not written to sidecars, `model_name.txt`, or any log payload.
-- There is no cache / queue / scratch dir outside the two trees above.
+- Query text is not written to disk by the retrieval path; it flows to the embedding provider for the request and then is discarded.
+- Embedding provider keys (`HUGGINGFACE_API_KEY`, `OPENAI_API_KEY`) are held in `process.env` for the life of the process. They are not written to sidecars, model registry files, or FAISS docstore metadata.
+- There is no cache, queue, or scratch directory outside `$KNOWLEDGE_BASES_ROOT_DIR` and `$FAISS_INDEX_PATH`.

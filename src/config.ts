@@ -72,6 +72,33 @@ export const INGEST_EXCLUDE_PATHS: readonly string[] = parseCommaSeparatedList(
 );
 
 // ---------------------------------------------------------------------------
+// Indexing batch configuration (RFC 007 §6.2 / issue #236).
+// ---------------------------------------------------------------------------
+
+const DEFAULT_INDEXING_BATCH_SIZE = 64;
+const DEFAULT_OLLAMA_INDEXING_BATCH_SIZE = 16;
+const MAX_INDEXING_BATCH_SIZE = 512;
+
+export function resolveIndexingBatchSize(
+  provider: string = EMBEDDING_PROVIDER,
+): number {
+  const defaultForProvider = provider === 'ollama'
+    ? DEFAULT_OLLAMA_INDEXING_BATCH_SIZE
+    : DEFAULT_INDEXING_BATCH_SIZE;
+  const raw = process.env.INDEXING_BATCH_SIZE;
+  if (raw === undefined || raw.trim() === '') {
+    return defaultForProvider;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return defaultForProvider;
+  }
+  return Math.min(MAX_INDEXING_BATCH_SIZE, Math.max(1, Math.floor(parsed)));
+}
+
+export const INDEXING_BATCH_SIZE: number = resolveIndexingBatchSize();
+
+// ---------------------------------------------------------------------------
 // Chunking configuration (#107 follow-up).
 // ---------------------------------------------------------------------------
 

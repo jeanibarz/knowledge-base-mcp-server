@@ -56,6 +56,8 @@ import { StreamableHttpHost } from './transport/http.js';
 import { SseHost } from './transport/sse.js';
 import { ReindexTriggerWatcher } from './triggerWatcher.js';
 import { KBError, type KBErrorCode } from './errors.js';
+import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
+import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
@@ -71,6 +73,195 @@ function mcpErrorContent(error: Error): TextContent {
       },
     }),
   };
+}
+
+interface AddDocumentSnapshot {
+  existed: boolean;
+  content?: Buffer;
+  mode?: number;
+}
+
+interface RollbackStatus {
+  attempted: true;
+  succeeded: boolean;
+  message: string;
+}
+
+class AddDocumentRollbackError extends Error {
+  readonly originalError: Error;
+  readonly rollback: RollbackStatus;
+
+  constructor(originalError: Error, rollback: RollbackStatus) {
+    super(`indexing failed after writing document: ${originalError.message}`, {
+      cause: originalError,
+    });
+    this.name = 'AddDocumentRollbackError';
+    this.originalError = originalError;
+    this.rollback = rollback;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+function addDocumentRollbackErrorContent(error: AddDocumentRollbackError): TextContent {
+  const code: KBErrorCode = error.originalError instanceof KBError
+    ? error.originalError.code
+    : 'INTERNAL';
+  return {
+    type: 'text',
+    text: JSON.stringify({
+      error: {
+        code,
+        message: error.message,
+        rollback: error.rollback,
+      },
+    }),
+  };
+}
+
+function isMissingPathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+async function snapshotDocumentForRollback(documentPath: string): Promise<AddDocumentSnapshot> {
+  try {
+    const [stat, content] = await Promise.all([
+      fsp.stat(documentPath),
+      fsp.readFile(documentPath),
+    ]);
+    return {
+      existed: true,
+      content,
+      mode: stat.mode,
+    };
+  } catch (error: unknown) {
+    if (isMissingPathError(error)) {
+      return { existed: false };
+    }
+    throw error;
+  }
+}
+
+async function collectExistingAncestorDirs(parentDir: string, stopDir: string): Promise<Set<string>> {
+  const existing = new Set<string>();
+  let current = parentDir;
+  while (current.startsWith(stopDir) && current !== path.dirname(current)) {
+    try {
+      const stat = await fsp.stat(current);
+      if (stat.isDirectory()) {
+        existing.add(current);
+      }
+    } catch (error: unknown) {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    }
+    if (current === stopDir) {
+      break;
+    }
+    current = path.dirname(current);
+  }
+  return existing;
+}
+
+async function pruneDirsCreatedForDocument(
+  parentDir: string,
+  stopDir: string,
+  existingDirs: Set<string>,
+): Promise<void> {
+  let current = parentDir;
+  while (current !== stopDir && current.startsWith(stopDir)) {
+    if (existingDirs.has(current)) {
+      break;
+    }
+    try {
+      await fsp.rmdir(current);
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === 'ENOENT') {
+        // Already gone is equivalent to a successful cleanup for this path.
+      } else if (code === 'ENOTEMPTY' || code === 'EEXIST') {
+        break;
+      } else {
+        throw error;
+      }
+    }
+    current = path.dirname(current);
+  }
+}
+
+async function rollbackAddDocumentWrite(options: {
+  documentPath: string;
+  kbDir: string;
+  snapshot: AddDocumentSnapshot;
+  existingDirs: Set<string>;
+}): Promise<RollbackStatus> {
+  const { documentPath, kbDir, snapshot, existingDirs } = options;
+  try {
+    if (snapshot.existed) {
+      await fsp.writeFile(documentPath, snapshot.content ?? Buffer.alloc(0));
+      if (snapshot.mode !== undefined) {
+        await fsp.chmod(documentPath, snapshot.mode);
+      }
+      return {
+        attempted: true,
+        succeeded: true,
+        message: 'restored previous document content',
+      };
+    }
+
+    await fsp.unlink(documentPath);
+    await pruneDirsCreatedForDocument(path.dirname(documentPath), kbDir, existingDirs);
+    return {
+      attempted: true,
+      succeeded: true,
+      message: 'removed newly written document',
+    };
+  } catch (error: unknown) {
+    const err = toError(error);
+    return {
+      attempted: true,
+      succeeded: false,
+      message: err.message,
+    };
+  }
+}
+
+async function restoreIndexAfterAddDocumentRollback(
+  manager: FaissIndexManager,
+  rollback: RollbackStatus,
+): Promise<RollbackStatus> {
+  if (!rollback.succeeded) {
+    return rollback;
+  }
+
+  const summary = manager.getLastIndexUpdateSummary();
+  if (!summary.index_mutated) {
+    return rollback;
+  }
+
+  try {
+    if (summary.saved) {
+      await manager.updateIndex(undefined, { force: true });
+      return {
+        ...rollback,
+        message: `${rollback.message}; rebuilt FAISS index from rolled-back files`,
+      };
+    }
+
+    await manager.reloadPersistedIndex();
+    return {
+      ...rollback,
+      message: `${rollback.message}; reloaded previous FAISS index state`,
+    };
+  } catch (error: unknown) {
+    const err = toError(error);
+    return {
+      attempted: true,
+      succeeded: false,
+      message: `${rollback.message}; FAISS index restore failed: ${err.message}`,
+    };
+  }
 }
 
 export class KnowledgeBaseServer {
@@ -134,6 +325,12 @@ export class KnowledgeBaseServer {
         extensions: z.array(z.string()).optional().describe('Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional.'),
         path_glob: z.string().optional().describe('Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching.'),
         tags: z.array(z.string()).optional().describe('Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter.'),
+        // #206 stage 2 — sparse+dense hybrid retrieval. Default 'dense' is
+        // wire-compatible with 0.x clients: when the field is absent the
+        // server runs the unmodified dense path. 'hybrid' fuses dense FAISS
+        // top-N with per-KB BM25 top-N via Reciprocal Rank Fusion (c=60,
+        // Cormack 2009); see RFC 006 §4 + #206 + ADR 0006.
+        search_mode: z.enum(['dense', 'hybrid']).optional().describe('Retrieval mode. "dense" (default) uses FAISS only. "hybrid" fuses FAISS top-N with per-KB BM25 top-N via Reciprocal Rank Fusion. See #206.'),
       },
       async (args) => this.handleRetrieveKnowledge(args)
     );
@@ -316,9 +513,27 @@ export class KnowledgeBaseServer {
           args.path,
           { mustExist: false },
         );
+        const kbDir = await resolveKnowledgeBaseDir(
+          KNOWLEDGE_BASES_ROOT_DIR,
+          args.knowledge_base_name,
+        );
+        const existingDirs = await collectExistingAncestorDirs(path.dirname(documentPath), kbDir);
+        const snapshot = await snapshotDocumentForRollback(documentPath);
         await fsp.mkdir(path.dirname(documentPath), { recursive: true });
         await fsp.writeFile(documentPath, args.content, 'utf-8');
-        await manager.updateIndex(args.knowledge_base_name);
+        try {
+          await manager.updateIndex(args.knowledge_base_name);
+        } catch (error: unknown) {
+          const originalError = toError(error);
+          const fileRollback = await rollbackAddDocumentWrite({
+            documentPath,
+            kbDir,
+            snapshot,
+            existingDirs,
+          });
+          const rollback = await restoreIndexAfterAddDocumentRollback(manager, fileRollback);
+          throw new AddDocumentRollbackError(originalError, rollback);
+        }
       });
 
       return {
@@ -335,6 +550,13 @@ export class KnowledgeBaseServer {
     } catch (error: unknown) {
       if (error instanceof ActiveModelResolutionError) {
         return { content: [{ type: 'text', text: error.message }], isError: true };
+      }
+      if (error instanceof AddDocumentRollbackError) {
+        logger.error('Error adding document:', error);
+        if (error.stack) {
+          logger.error(error.stack);
+        }
+        return { content: [addDocumentRollbackErrorContent(error)], isError: true };
       }
       const err = toError(error);
       logger.error('Error adding document:', err);
@@ -446,6 +668,7 @@ export class KnowledgeBaseServer {
     extensions?: string[];
     path_glob?: string;
     tags?: string[];
+    search_mode?: 'dense' | 'hybrid';
   }): Promise<CallToolResult> {
     const query: string = args.query;
     const knowledgeBaseName: string | undefined = args.knowledge_base_name;
@@ -454,6 +677,16 @@ export class KnowledgeBaseServer {
     const filters = (args.extensions || args.path_glob || args.tags)
       ? { extensions: args.extensions, pathGlob: args.path_glob, tags: args.tags }
       : undefined;
+    const searchMode: 'dense' | 'hybrid' = args.search_mode ?? 'dense';
+
+    if (searchMode === 'hybrid') {
+      return this.handleRetrieveKnowledgeHybrid({
+        query,
+        knowledgeBaseName,
+        modelNameOverride,
+        filters,
+      });
+    }
 
     try {
       const startTime = Date.now();
@@ -517,6 +750,120 @@ export class KnowledgeBaseServer {
       if (err.stack) {
         logger.error(err.stack);
       }
+      return { content: [mcpErrorContent(err)], isError: true };
+    }
+  }
+
+  /**
+   * #206 stage 2 — hybrid retrieval handler. Runs the dense leg (FAISS via
+   * the active model) and the lexical leg (per-KB BM25) concurrently, fuses
+   * the two ranked lists with Reciprocal Rank Fusion (c=60, see ADR 0006),
+   * and returns the fused top-10 in the same `formatRetrievalAsMarkdown`
+   * shape as the dense path.
+   *
+   * Notes:
+   * - Threshold and metadata POST-filters are dense-only knobs and are NOT
+   *   applied to the hybrid output. They will be re-introduced in a follow-up
+   *   if user demand exceeds the byte-compat win — keeping them off here
+   *   means hybrid does not silently filter chunks the lexical leg returned.
+   * - The lexical index is auto-refreshed on first use per KB (when empty).
+   *   `kb search --refresh` (CLI) is the explicit refresh path; the MCP
+   *   server keeps the dense `updateIndex` invariant from the dense path.
+   * - Returns the same wire envelope as the dense handler with one added
+   *   markdown header line `> _Mode: hybrid (RRF c=60)_` so an inspecting
+   *   agent can attribute the ranking. JSON-shaped output is unchanged since
+   *   the `retrieve_knowledge` tool returns markdown text content.
+   */
+  private async handleRetrieveKnowledgeHybrid(input: {
+    query: string;
+    knowledgeBaseName?: string;
+    modelNameOverride?: string;
+    filters?: { extensions?: string[]; pathGlob?: string; tags?: string[] };
+  }): Promise<CallToolResult> {
+    const { query, knowledgeBaseName, modelNameOverride, filters } = input;
+    const HYBRID_FETCH_K = 40;
+    const HYBRID_TOP_K = 10;
+    const HYBRID_RRF_C = 60;
+
+    try {
+      let activeModelId: string;
+      try {
+        activeModelId = await resolveActiveModel({ explicitOverride: modelNameOverride });
+      } catch (err) {
+        if (err instanceof ActiveModelResolutionError) {
+          return { content: [{ type: 'text', text: err.message }], isError: true };
+        }
+        throw err;
+      }
+      const manager = await this.managers.getOrCreate(activeModelId);
+      await withWriteLock(manager.modelDir, () => manager.updateIndex(knowledgeBaseName));
+
+      // Dense leg — over-fetch to give RRF room.
+      const densePromise = manager
+        .similaritySearch(query, HYBRID_FETCH_K, Number.POSITIVE_INFINITY, knowledgeBaseName, filters)
+        .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })));
+
+      // Lexical leg — BM25 over the same chunks the FAISS path embeds, but
+      // managed independently (the lexical index is model-agnostic and lives
+      // under `${FAISS_INDEX_PATH}/lexical/<kb>/`). Auto-refresh on first use
+      // per KB; explicit refresh is the CLI's job (`kb search --refresh`).
+      const lexicalPromise: Promise<LexicalSearchResult[]> = (async () => {
+        const all: LexicalSearchResult[] = [];
+        const kbNames = knowledgeBaseName
+          ? [knowledgeBaseName]
+          : await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+        for (const kbName of kbNames) {
+          const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
+          try {
+            const idx = await LexicalIndex.load(kbName, kbPath);
+            if (idx.numFiles() === 0) {
+              await idx.refresh();
+              await idx.save();
+            }
+            const hits = await idx.query(query, HYBRID_FETCH_K);
+            for (const h of hits) all.push(h);
+          } catch (err) {
+            // Per-KB lexical failure is non-fatal; the dense leg still runs.
+            logger.warn(`hybrid: lexical leg failed for KB "${kbName}": ${(err as Error).message}`);
+          }
+        }
+        all.sort((a, b) => b.score - a.score);
+        return all.slice(0, HYBRID_FETCH_K);
+      })();
+
+      const [denseResults, lexicalResults] = await Promise.all([densePromise, lexicalPromise]);
+
+      const denseList: RankedList = {
+        retriever: 'dense',
+        results: denseResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
+      };
+      const lexicalList: RankedList = {
+        retriever: 'lexical',
+        results: lexicalResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
+      };
+      const fused = reciprocalRankFusion([denseList, lexicalList], { c: HYBRID_RRF_C });
+
+      const byId = new Map<string, { pageContent: string; metadata: Record<string, unknown>; score: number }>();
+      for (const r of lexicalResults) byId.set(chunkIdFromMetadata(r.metadata), { pageContent: r.pageContent, metadata: r.metadata, score: r.score });
+      for (const r of denseResults) byId.set(chunkIdFromMetadata(r.metadata), { pageContent: r.pageContent, metadata: r.metadata, score: r.score });
+
+      const ranked = fused.slice(0, HYBRID_TOP_K).map((f) => {
+        const chunk = byId.get(f.id);
+        return chunk ? { ...chunk, score: f.fusedScore } : null;
+      }).filter((x): x is { pageContent: string; metadata: Record<string, unknown>; score: number } => x !== null);
+
+      let responseText = formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
+      const header = `> _Mode: hybrid (RRF c=${HYBRID_RRF_C}); dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} (#206 stage 2)._`;
+      responseText = modelNameOverride !== undefined
+        ? `> _Model: ${activeModelId}_\n${header}\n\n${responseText}`
+        : `${header}\n\n${responseText}`;
+
+      const content: TextContent = { type: 'text', text: responseText };
+      return { content: [content] };
+    } catch (error: unknown) {
+      const err = toError(error);
+      logger.error('Error retrieving knowledge (hybrid):', err);
+      if (err.stack) logger.error(err.stack);
       return { content: [mcpErrorContent(err)], isError: true };
     }
   }
