@@ -39,19 +39,93 @@ function runCli(args: string[], env: Record<string, string> = {}, input?: string
 }
 
 describe('kb CLI — argv parsing and dispatch', () => {
-  it('--help exits 0 with usage text', () => {
+  it('--help exits 0 with usage text and a clean Available commands list', () => {
     const r = runCli(['--help']);
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('kb — knowledge-base CLI');
-    expect(r.stdout).toContain('kb list');
+    expect(r.stdout).toContain('Available commands:');
+    // Each subcommand appears as a top-level entry in the new clean list.
+    for (const sub of [
+      'list',
+      'search',
+      'remember',
+      'capture',
+      'compare',
+      'doctor',
+      'stats',
+      'eval',
+      'stale-check',
+      'superseded',
+      'where',
+      'models',
+    ]) {
+      expect(r.stdout).toMatch(new RegExp(`\\n  ${sub.replace('-', '\\-')}\\s`));
+    }
+    // The hint pointing users at per-command help.
+    expect(r.stdout).toContain('kb <command> --help');
+  });
+
+  // Per-subcommand `--help` interception (regression: every subcommand used
+  // to fail with "unknown flag: --help" or write a one-line usage to stderr
+  // and exit 2). The central interceptor in cli.ts now answers --help / -h
+  // for every registered subcommand on stdout with exit 0.
+  describe.each([
+    ['list', 'kb list'],
+    ['search', 'kb search'],
+    ['remember', 'kb remember'],
+    ['capture', 'kb capture'],
+    ['compare', 'kb compare'],
+    ['doctor', 'kb doctor'],
+    ['stats', 'kb stats'],
+    ['eval', 'kb eval'],
+    ['stale-check', 'kb stale-check'],
+    ['superseded', 'kb superseded'],
+    ['where', 'kb where'],
+    ['models', 'kb models'],
+  ])('kb %s --help', (sub, marker) => {
+    it('exits 0 with detailed help on stdout', () => {
+      const long = runCli([sub, '--help']);
+      expect(long.code).toBe(0);
+      expect(long.stderr).toBe('');
+      expect(long.stdout).toContain(marker);
+      expect(long.stdout).toContain('Usage:');
+
+      const short = runCli([sub, '-h']);
+      expect(short.code).toBe(0);
+      expect(short.stdout).toBe(long.stdout);
+    });
+  });
+
+  it('kb help (no args) prints the top-level help', () => {
+    const r = runCli(['help']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('kb — knowledge-base CLI');
+    expect(r.stdout).toContain('Available commands:');
+  });
+
+  it('kb help <command> mirrors `kb <command> --help`', () => {
+    const a = runCli(['help', 'search']);
+    const b = runCli(['search', '--help']);
+    expect(a.code).toBe(0);
+    expect(b.code).toBe(0);
+    expect(a.stdout).toBe(b.stdout);
+  });
+
+  it('kb help unknown-cmd exits 2 with a stderr error', () => {
+    const r = runCli(['help', 'not-a-real-command']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("unknown command 'not-a-real-command'");
+    expect(r.stdout).toBe('');
+  });
+
+  it('--help anywhere in argv intercepts before the subcommand runs', () => {
+    // Even when the user fat-fingers extra args, --help wins: no spawn,
+    // no index load, no stderr noise.
+    const r = runCli(['search', 'some-query', '--help']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe('');
     expect(r.stdout).toContain('kb search');
-    expect(r.stdout).toContain('kb remember');
-    expect(r.stdout).toContain('kb capture');
-    expect(r.stdout).toContain('kb doctor');
-    expect(r.stdout).toContain('kb stats');
-    expect(r.stdout).toContain('kb eval');
-    expect(r.stdout).toContain('kb stale-check');
-    expect(r.stdout).toContain('kb superseded');
+    expect(r.stdout).toContain('Usage:');
   });
 
   it('no args exits 0 with usage text', () => {

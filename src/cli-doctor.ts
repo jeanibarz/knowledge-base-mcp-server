@@ -32,6 +32,31 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+export const DOCTOR_HELP = `kb doctor — aggregate model / index / backend health report
+
+Usage:
+  kb doctor [--format=md|json]
+
+Composes existing read-only checks (env vars, registered models, active
+model, FAISS index presence + mtime, knowledge-base count, embedding
+backend reachability) into a single status report. Does NOT load the
+FAISS store or embed documents.
+
+Report status is one of \`ok\`, \`warn\`, or \`error\`. The exit code is non-zero
+when any required check fails, so \`kb doctor && kb search ...\` is a safe
+gate from a script.
+
+Options:
+  --format=md|json      Output format (default: md). \`json\` emits the same
+                        underlying report shape for agent shells.
+  --help, -h            Show this help.
+
+Examples:
+  kb doctor
+  kb doctor --format=json
+  kb doctor && kb search "rollback"
+`;
+
 export interface DoctorArgs {
   format: 'md' | 'json';
 }
@@ -107,9 +132,6 @@ export async function runDoctor(rest: string[]): Promise<number> {
 export function parseDoctorArgs(rest: string[]): DoctorArgs {
   const out: DoctorArgs = { format: 'md' };
   for (const raw of rest) {
-    if (raw === '--help' || raw === '-h') {
-      throw new Error('usage: kb doctor [--format=md|json]');
-    }
     if (raw.startsWith('--format=')) {
       const value = raw.slice('--format='.length);
       if (value !== 'md' && value !== 'json') {

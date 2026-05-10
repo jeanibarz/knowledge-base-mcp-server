@@ -1,6 +1,29 @@
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { describeKnowledgeBase, listKnowledgeBases } from './kb-fs.js';
 
+export const LIST_HELP = `kb list — list available knowledge bases
+
+Usage:
+  kb list [--describe|-v] [--format=md|json]
+
+Reads \`KNOWLEDGE_BASES_ROOT_DIR\` and prints one knowledge-base name per
+line (text format) or a JSON array (\`--format=json\`). Strictly read-only —
+does not touch the FAISS index.
+
+Options:
+  --describe, -v        Append a one-line description sourced from each
+                        KB's README.md. With \`--format=json\`, adds a
+                        \`description\` field to each entry.
+  --format=md|json      Output format (default: md). \`md\` is plain text;
+                        \`json\` is a stable shape suitable for agent shells.
+  --help, -h            Show this help.
+
+Examples:
+  kb list
+  kb list --describe
+  kb list --format=json
+`;
+
 interface ListArgs {
   describe: boolean;
   format: 'md' | 'json';

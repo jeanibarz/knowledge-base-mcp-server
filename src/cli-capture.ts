@@ -42,6 +42,43 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   yaml: 'yaml',
 };
 
+export const CAPTURE_HELP = `kb capture — run a command and append its stdout to a KB note as a fenced block
+
+Usage:
+  kb capture --kb=<name> --append=<path> [options] -- <cmd> [args...]
+
+Spawns the command (\`shell: false\`), captures up to \`--max-bytes\` of stdout,
+and appends a fenced, provenance-tagged code block to the target KB note.
+The \`--\` separator is required: everything after it is the command + args
+passed verbatim to spawn. Composes with \`kb remember --append=<path>\` for the
+write path.
+
+Targeting:
+  --kb=<name>           Target knowledge base. Required.
+  --append=<path>       Existing KB-relative note path. Required. Rejects
+                        path traversal and absolute paths before spawning.
+
+Capture options:
+  --note=<text>         Optional "### <text>" header above the captured block.
+  --language=<hint>     Code-fence language hint. Auto-detected from the
+                        command's first .json / .yml / .yaml argument if
+                        absent (e.g. \`-- gh pr view --json title\` → \`json\`).
+  --max-bytes=<N>       Truncate captured stdout at N bytes
+                        (default: ${DEFAULT_MAX_BYTES}).
+  --allow-fail          Capture even when the command exits non-zero.
+                        Without this flag, a non-zero exit aborts the write.
+  --refresh             Re-index the affected KB after a successful write.
+  --                    End of options; remaining argv is the command + args.
+  --help, -h            Show this help.
+
+Examples:
+  kb capture --kb=work --append=oncall.md --note="incident snapshot" -- \\
+    gh pr view 123 --json title,body
+  kb capture --kb=ops --append=deploys.md --language=yaml -- \\
+    kubectl get deployment api -o yaml
+  kb capture --kb=work --append=models.md --allow-fail -- ollama list
+`;
+
 export async function runCapture(rest: string[]): Promise<number> {
   let parsed: CaptureArgs;
   try {
