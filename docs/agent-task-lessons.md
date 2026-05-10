@@ -96,7 +96,7 @@ for one call.
 
 ## Related
 
-- `kb remember` — see `kb --help` for the full flag matrix.
+- `kb remember` — see `kb remember --help` for the full flag matrix.
 - `kb where --topic=<query>` — pre-write recommendation for the best KB
   + file to update.
 - Issue #200 — original feature request.

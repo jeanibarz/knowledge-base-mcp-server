@@ -17,6 +17,52 @@ import { withWriteLock } from './write-lock.js';
 import { estimateCostUsd } from './cost-estimates.js';
 import { pathExists } from './file-utils.js';
 
+export const MODELS_HELP = `kb models — manage embedding models (RFC 013)
+
+Usage:
+  kb models list
+  kb models add <provider> <model> [--yes] [--dry-run]
+  kb models set-active <id>
+  kb models remove <id>
+
+Each model gets its own per-model FAISS index under
+\`\${FAISS_INDEX_PATH}/models/<id>/\`. The active model is the default for
+both the MCP server and the CLI; explicit \`--model=<id>\` overrides that
+per-call (RFC 013 §4.7).
+
+Verbs:
+  list                  Print one row per registered model. The active
+                        model is marked with \`*\`. Models with both the
+                        RFC-014 versioned layout AND a legacy \`faiss.index/\`
+                        directory get a trailing \`[downgrade-hazard]\` flag.
+  add <provider> <model>
+                        Register a new model and run an initial ingest pass
+                        under the per-model write lock. \`<provider>\` is one
+                        of \`ollama\`, \`openai\`, \`huggingface\`. \`<model>\` is
+                        the provider-specific name (e.g. \`nomic-embed-text\`,
+                        \`text-embedding-3-small\`). The CLI computes a model
+                        id of the form \`<provider>__<slug>\`.
+  set-active <id>       Change the default model. Atomically rewrites
+                        \`\${FAISS_INDEX_PATH}/active.txt\`. Subsequent calls
+                        without an explicit \`--model=\` use the new active id.
+  remove <id>           Delete the per-model index directory. Forces a
+                        rebuild on the next \`kb models add <same id>\`.
+
+Options for \`add\`:
+  --yes                 Skip the cost-estimate confirmation prompt.
+  --dry-run             Print the cost estimate; don't embed.
+
+Global:
+  --help, -h            Show this help.
+
+Examples:
+  kb models list
+  kb models add ollama nomic-embed-text
+  kb models add openai text-embedding-3-small --dry-run
+  kb models set-active openai__text-embedding-3-small
+  kb models remove ollama__nomic-embed-text
+`;
+
 export async function runModels(rest: string[]): Promise<number> {
   const verb = rest[0];
   if (!verb) {

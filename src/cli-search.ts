@@ -28,6 +28,53 @@ import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
 
+export const SEARCH_HELP = `kb search — semantic search across knowledge bases
+
+Usage:
+  kb search <query> [options]
+  kb search --stdin [options]
+  kb search <query> --refresh [options]
+
+Default is dense (FAISS) similarity search, read-only. \`--refresh\` re-scans
+KB files under a per-model write lock before searching. \`--mode=lexical\`
+runs a BM25 debug surface; \`--mode=hybrid\` fuses dense + lexical via RRF.
+
+Output ends with a freshness footer (markdown) or staleness fields (JSON)
+indicating whether the index is up-to-date relative to KB file mtimes.
+
+Scope:
+  --kb=<name>           Scope to one knowledge base. Omit to search ALL KBs.
+  --model=<id>          Override the active model for this call (RFC 013).
+
+Result tuning:
+  --threshold=<float>   Max similarity score; lower = closer match (default 2).
+  --threshold=auto      Pick a knee-based cutoff from the top-K score curve.
+  --k=<int>             Top-K results (default 10).
+  --mode=dense|lexical|hybrid
+                        Retrieval mode (default: dense). \`hybrid\` fuses
+                        dense + BM25 via reciprocal rank fusion (#206).
+
+Output:
+  --format=md|json      Output format (default: md).
+  --group-by-source     Collapse repeated chunks from the same source file
+                        in markdown output. With \`--format=json\`, adds a
+                        \`grouped_results\` field alongside raw results.
+
+Indexing:
+  --refresh             Re-scan KB files; acquires the per-model write lock.
+
+Input:
+  --stdin               Read query from stdin (multi-line safe).
+  --help, -h            Show this help.
+
+Examples:
+  kb search "rollback procedure"
+  kb search "deploy" --kb=work --k=5
+  kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh
+  kb search "INDEX_NOT_INITIALIZED" --mode=hybrid
+  kb search --stdin --format=json < query.txt
+`;
+
 export type SearchMode = 'dense' | 'lexical' | 'hybrid';
 
 interface SearchArgs {

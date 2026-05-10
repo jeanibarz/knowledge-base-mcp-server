@@ -12,6 +12,42 @@ import { liftFrontmatter, type LiftedFrontmatter } from './frontmatter-lift.js';
 import { resolveKnowledgeBaseDir } from './kb-fs.js';
 import type { ScoredDocument } from './formatter.js';
 
+export const SUPERSEDED_HELP = `kb superseded — review workflow for obsolete / contradicted / stale notes (read-only)
+
+Usage:
+  kb superseded --kb=<name> [--format=md|json] [--k=<int>] [--include-clean]
+                [--model=<id>]
+
+Scans markdown frontmatter under one KB for:
+  - explicit \`contradicted_by:\` references
+  - deprecated / dormant lifecycle (\`status:\` / \`review_status:\`)
+  - stale \`last_verified_at\` dates
+  - low \`confidence\` on active notes
+
+Then uses the active semantic index to add conservative
+"newer-or-stronger neighbor" evidence when the index is reachable.
+Strictly read-only.
+
+Required:
+  --kb=<name>           Knowledge base to scan.
+
+Options:
+  --format=md|json      Output format (default: md). Use \`json\` for agent
+                        workflows.
+  --k=<int>             Top-K semantic neighbors to consider per note
+                        (default depends on the implementation; typically 5).
+  --include-clean       Include notes with no candidate reasons in the
+                        report — useful for full-inventory views.
+  --model=<id>          Override the active model for the semantic
+                        neighbor lookup (RFC 013).
+  --help, -h            Show this help.
+
+Examples:
+  kb superseded --kb=work
+  kb superseded --kb=work --format=json
+  kb superseded --kb=work --include-clean --k=10
+`;
+
 export type SupersededReason =
   | 'explicit_contradiction'
   | 'deprecated_status'
@@ -142,11 +178,6 @@ export function parseSupersededArgs(rest: string[]): SupersededArgs {
     includeClean: false,
   };
   for (const raw of rest) {
-    if (raw === '--help' || raw === '-h') {
-      throw new Error(
-        'usage: kb superseded --kb=<name> [--format=md|json] [--k=<int>] [--include-clean] [--model=<id>]',
-      );
-    }
     if (raw === '--include-clean') {
       out.includeClean = true;
       continue;

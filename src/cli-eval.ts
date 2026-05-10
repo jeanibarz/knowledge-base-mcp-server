@@ -27,6 +27,45 @@ interface EvalArgs {
 const DEFAULT_K = 10;
 const DEFAULT_THRESHOLD = 2;
 
+export const EVAL_HELP = `kb eval — run fixture-driven retrieval checks
+
+Usage:
+  kb eval <fixture.yml|json> [--model=<id>] [--k=<int>] [--threshold=<float>]
+                              [--format=md|json]
+
+Reads cases from a YAML or JSON fixture and runs each query against the
+active model's index. Each case can set \`query\`, optional \`kb\`,
+\`required_sources\`, \`forbidden_sources\`, \`expected_metadata\`,
+\`max_duplicate_groups\`, \`stale_policy\`, and \`gate\`.
+
+Failing ungated cases print warnings and exit 0; failing GATED cases
+exit 1, suitable for CI gates.
+
+Arguments:
+  <fixture.yml|json>    Path to fixture file. Format inferred from extension.
+
+Options:
+  --model=<id>          Override the active model for the run (RFC 013).
+  --k=<int>             Top-K results per case (default: ${DEFAULT_K}).
+  --threshold=<float>   Max similarity score; lower = closer (default: ${DEFAULT_THRESHOLD}).
+  --format=md|json      Output format (default: md).
+  --help, -h            Show this help.
+
+Fixture example (YAML):
+  gate: false
+  cases:
+    - name: deployment runbook
+      query: rollback procedure
+      kb: work
+      gate: true
+      required_sources: [runbooks/deploy.md]
+      forbidden_sources: [archive/old-deploy.md]
+      expected_metadata:
+        frontmatter.status: approved
+      max_duplicate_groups: 1
+      stale_policy: fresh
+`;
+
 export async function runEval(rest: string[]): Promise<number> {
   let parsed: EvalArgs;
   try {
@@ -112,11 +151,6 @@ export function parseEvalArgs(rest: string[]): EvalArgs {
   };
 
   for (const raw of rest) {
-    if (raw === '--help' || raw === '-h') {
-      throw new Error(
-        'usage: kb eval <fixture.yml|json> [--model=<id>] [--k=<int>] [--threshold=<float>] [--format=md|json]',
-      );
-    }
     if (raw.startsWith('--fixture=')) {
       const value = raw.slice('--fixture='.length);
       if (value.length === 0) throw new Error('--fixture=<path> requires a non-empty value');

@@ -26,6 +26,37 @@ import {
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import type { ScoredDocument } from './formatter.js';
 
+export const WHERE_HELP = `kb where — recommend the best KB and file for a topic (read-only)
+
+Usage:
+  kb where --topic=<query> [--threshold=<float>] [--k=<int>]
+           [--format=md|json] [--model=<id>]
+
+Runs a similarity search across all KBs, picks the KB with the
+highest-scoring hit, and recommends the single best existing file inside
+it. When the top score is above \`--threshold\` (lower = closer), suggests
+\`kb remember --title=...\` to create a new note instead of appending.
+
+Strictly read-only — same posture as \`kb search\` without \`--refresh\`.
+
+Required:
+  --topic=<query>       The topic / one-line description to place.
+
+Options:
+  --threshold=<float>   Confidence cutoff (default: 1.0). Top scores
+                        BELOW this distance are "high confidence existing
+                        target"; above it, recommend creating a new note.
+  --k=<int>             Top-K results to consider when grouping.
+  --format=md|json      Output format (default: md). \`json\` is suitable
+                        for agent shells.
+  --model=<id>          Override the active model for this call (RFC 013).
+  --help, -h            Show this help.
+
+Examples:
+  kb where --topic="quarterly retro template"
+  kb where --topic="oncall rotation" --threshold=0.8 --format=json
+`;
+
 export interface WhereArgs {
   topic: string | null;
   model?: string;
@@ -134,11 +165,6 @@ export function parseWhereArgs(rest: string[]): WhereArgs {
     format: 'md',
   };
   for (const raw of rest) {
-    if (raw === '--help' || raw === '-h') {
-      throw new Error(
-        'usage: kb where --topic=<query> [--threshold=<float>] [--k=<int>] [--format=md|json] [--model=<id>]',
-      );
-    }
     if (raw.startsWith('--topic=')) {
       const v = raw.slice('--topic='.length);
       if (v.length === 0) throw new Error('--topic=<query> requires a non-empty value');

@@ -13,6 +13,27 @@ import { computeKbStats, type ComputeKbStatsOptions, type KbStatsPayload } from 
 
 const CLI_STARTED_AT = Date.now();
 
+export const STATS_HELP = `kb stats — read-only index/corpus stats
+
+Usage:
+  kb stats [--kb=<name>] [--format=md|json]
+
+Mirrors the MCP \`kb_stats\` payload for local shell use: per-KB file/chunk/byte
+counts, last-indexed time, embedding model, index path, and version context.
+Strictly read-only — does not refresh the index.
+
+Options:
+  --kb=<name>           Scope to one knowledge base. Omit for all KBs.
+  --format=md|json      Output format (default: md). \`json\` emits the
+                        underlying \`KbStatsPayload\` shape verbatim.
+  --help, -h            Show this help.
+
+Examples:
+  kb stats
+  kb stats --kb=work
+  kb stats --format=json
+`;
+
 export interface StatsArgs {
   kb?: string;
   format: 'md' | 'json';
@@ -83,9 +104,6 @@ export async function runStats(rest: string[], deps: RunStatsDeps = DEFAULT_DEPS
 export function parseStatsArgs(rest: string[]): StatsArgs {
   const out: StatsArgs = { format: 'md' };
   for (const raw of rest) {
-    if (raw === '--help' || raw === '-h') {
-      throw new Error('usage: kb stats [--kb=<name>] [--format=md|json]');
-    }
     if (raw.startsWith('--kb=')) {
       const value = raw.slice('--kb='.length);
       if (value === '') throw new Error('empty --kb value');

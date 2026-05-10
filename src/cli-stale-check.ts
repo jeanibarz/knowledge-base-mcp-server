@@ -18,6 +18,37 @@ import * as os from 'os';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { listKnowledgeBases, resolveKnowledgeBaseDir } from './kb-fs.js';
 
+export const STALE_CHECK_HELP = `kb stale-check — find broken references in markdown notes (read-only)
+
+Usage:
+  kb stale-check [--kb=<name>] [--no-cache] [--verbose|-v]
+
+Walks every \`.md\` / \`.markdown\` file under one or all KBs and extracts:
+  - tilde-rooted absolute paths       (\`~/foo/bar\`)
+  - http(s) URLs                      (bare or inside markdown links)
+  - markdown-link relative paths      (\`[label](relative/path.md)\`)
+
+Resolves each reference and reports the ones that no longer exist (paths)
+or no longer answer 200/30x (URLs). Strictly read-only.
+
+URL HEAD results are cached for 24h under
+\`<KNOWLEDGE_BASES_ROOT_DIR>/.stale-check-cache.json\` so consecutive runs
+don't replay every request.
+
+Options:
+  --kb=<name>           Scope to one knowledge base. Omit for all KBs.
+  --no-cache            Bypass the URL cache for this run; freshly probe
+                        every URL and overwrite cached entries.
+  --verbose, -v         Include OK references in the report (default:
+                        only print broken/error references).
+  --help, -h            Show this help.
+
+Examples:
+  kb stale-check
+  kb stale-check --kb=work
+  kb stale-check --no-cache --verbose
+`;
+
 export type ReferenceType = 'tilde-path' | 'rel-path' | 'url';
 
 export interface Reference {
@@ -109,11 +140,6 @@ export function parseStaleCheckArgs(rest: string[]): ParsedArgs {
       out.kb = raw.slice('--kb='.length);
       if (out.kb.length === 0) throw new Error('--kb=<name> requires a non-empty value');
       continue;
-    }
-    if (raw === '--help' || raw === '-h') {
-      throw new Error(
-        'usage: kb stale-check [--kb=<name>] [--no-cache] [--verbose]',
-      );
     }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);

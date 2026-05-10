@@ -48,7 +48,8 @@ printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
 kb superseded --kb=work       # read-only review for obsolete/contradicted notes
 kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
-kb --help
+kb --help                     # top-level command list
+kb help search                # per-command help (also: kb search --help)
 ```
 
 The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, and version context. It is read-only and does not refresh the index. `kb search` also defaults to read-only — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.

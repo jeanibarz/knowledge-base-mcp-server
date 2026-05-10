@@ -5,6 +5,34 @@ import {
 } from './active-model.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 
+export const COMPARE_HELP = `kb compare — side-by-side rank/score table for two embedding models
+
+Usage:
+  kb compare <query> <model_a> <model_b> [--k=<int>] [--kb=<name>]
+
+Runs the same query against two registered models' indexes and prints a
+joined table of \`rank_a / rank_b / score_a / score_b / in_both / source\`,
+sorted by best rank in either column. Useful when evaluating a candidate
+embedding model against the current active one.
+
+Scores are per-model L2 distances and are NOT directly comparable across
+models — read the relative ordering, not the magnitudes.
+
+Arguments:
+  <query>               Query string (positional).
+  <model_a>             First model id (\`<provider>__<slug>\`); see \`kb models list\`.
+  <model_b>             Second model id; must differ from <model_a>.
+
+Options:
+  --k=<int>             Top-K results per model (default: 10).
+  --kb=<name>           Scope to one knowledge base. Omit to search ALL KBs.
+  --help, -h            Show this help.
+
+Examples:
+  kb compare "rollback procedure" ollama__nomic-embed-text openai__text-embedding-3-small
+  kb compare "deploy" ollama__nomic-embed-text huggingface__bge-small-en --k=5 --kb=work
+`;
+
 export async function runCompare(rest: string[]): Promise<number> {
   // Parse: <query> <model_a> <model_b> [--k=<int>] [--kb=<name>]
   const positionals: string[] = [];

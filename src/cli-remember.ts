@@ -30,6 +30,85 @@ export type {
   PreflightDecisionHint,
 } from './cli-remember-similarity.js';
 
+export const REMEMBER_HELP = `kb remember — write or extend knowledge-base notes (conservative write path)
+
+Usage:
+  kb remember --suggest --kb=<name> --title=<title>
+  kb remember --kb=<name> --title=<title> --stdin --yes
+  kb remember --kb=<name> --append=<path> --stdin --yes
+  kb remember --kb=<name> --append=<path> --append-section="<#level> <text>"
+              [--occurrence=<N>] --stdin --yes
+  kb remember --lesson --title=<title> --stdin --yes
+
+Modes:
+  --suggest             Read-only: list likely existing note targets for
+                        the given title. Does NOT read stdin and does NOT
+                        write anything.
+  (no --suggest)        Create or append. Both require \`--stdin --yes\`.
+                        Create uses a slugified \`.md\` filename and refuses
+                        to overwrite. Append accepts only existing
+                        KB-relative paths and rejects path traversal.
+
+Targeting:
+  --kb=<name>           Target knowledge base. Required (except with
+                        \`--lesson\`, which defaults to \`agent-task-lessons\`).
+  --title=<title>       Note title; create uses a slugified \`.md\` filename.
+  --append=<path>       Existing KB-relative note path; rejects traversal.
+  --append-section=<spec>
+                        Heading-aware append target. Spec is "<#level> <text>"
+                        (e.g. "## OSS gate flow"). Requires \`--append=<path>\`.
+                        Inserts at the END of the named section (after every
+                        subsection), atomically rewrites the file, and refuses
+                        to fall back to EOF if the heading is missing.
+  --occurrence=<N>      1-indexed disambiguation when the heading appears
+                        multiple times. Requires \`--append-section\`.
+
+Templates:
+  --lesson              Apply the agent-task-lesson template: defaults
+                        \`--kb\` to \`agent-task-lessons\`, validates that the
+                        body has the H2 sections "## Mistake",
+                        "## Why it happened", and "## Better next time".
+                        On empty or malformed input, prints a guided
+                        skeleton and exits 2 instead of writing.
+
+Similarity preflight (default ON, RFC issue #154):
+  --check-similar       Force the preflight ON (default). Surface
+                        index-load failures as exit 1/2 errors instead of
+                        degrading to a warning.
+  --no-check-similar    Disable the preflight for this write.
+  --similar-threshold=<float>
+                        Max FAISS distance treated as related (default 1.0;
+                        lower distance = closer match).
+  --similar-k=<int>     Top-K candidate chunks to surface (default 5).
+  --force               Override the similarity guard and write anyway.
+                        The success response reports that the guard was
+                        overridden so the action stays auditable.
+
+Input / output:
+  --stdin               Read note content from stdin. Required for writes.
+  --yes                 Required for non-interactive writes.
+  --refresh             Re-index the affected KB after a successful write.
+  --format=md|json      Output format for similarity-guard reports
+                        (default: json — agent-friendly machine-readable).
+  --model=<id>          Override the active model for the preflight
+                        similarity search (RFC 013).
+  --help, -h            Show this help.
+
+Exit codes:
+  0   write succeeded (or --suggest produced suggestions)
+  1   runtime / index error
+  2   argv / template-validation error (e.g. \`--lesson\` missing sections)
+  3   similarity preflight refused to write; rerun with --force to override.
+
+Examples:
+  kb remember --suggest --kb=work --title="Quarterly plan"
+  printf '# Quarterly plan\\n\\n...' | \\
+    kb remember --kb=work --title="Quarterly plan" --stdin --yes
+  printf '\\nFollow-up.\\n' | \\
+    kb remember --kb=work --append=quarterly-plan.md --stdin --yes
+  cat lesson.md | kb remember --lesson --title="don't mock the DB" --stdin --yes
+`;
+
 interface RememberArgs {
   kb?: string;
   title?: string;
