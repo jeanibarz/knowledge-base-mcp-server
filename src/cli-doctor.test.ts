@@ -85,6 +85,25 @@ describe('kb doctor', () => {
         packageRoot: tempDir,
         invokedPath: linkedBin,
         packageVersion: '9.9.9',
+        lastIndexUpdateSummary: {
+          status: 'success',
+          scope: 'global',
+          model_id: MODEL_ID,
+          started_at: new Date(indexMs - 1000).toISOString(),
+          finished_at: new Date(indexMs).toISOString(),
+          duration_ms: 1000,
+          files_scanned: 2,
+          files_changed: 1,
+          files_unchanged: 1,
+          files_skipped: 0,
+          chunks_attempted: 3,
+          chunks_added: 3,
+          index_mutated: true,
+          saved: true,
+          sidecars_written: true,
+          failure_count: 0,
+          failures: [],
+        },
       });
 
       expect(report.status).toBe('warn');
@@ -96,6 +115,12 @@ describe('kb doctor', () => {
       expect(report.index.version).toBe('index.v3');
       expect(report.index.mtime).toBe(new Date(indexMs).toISOString());
       expect(report.backend).toMatchObject({ healthy: true, detail: 'backend ok' });
+      expect(report.last_index_update).toMatchObject({
+        status: 'success',
+        scope: 'global',
+        files_changed: 1,
+        files_unchanged: 1,
+      });
       expect(report.cli.symlinked_checkout_path).toBe(tempDir);
       expect(report.stale_counts_by_kb.alpha).toEqual({ modified_files: 1, new_files: 0 });
       expect(report.stale_counts_by_kb.beta).toEqual({ modified_files: 0, new_files: 1 });
@@ -103,11 +128,13 @@ describe('kb doctor', () => {
       const markdown = formatDoctorMarkdown(report);
       expect(markdown).toContain('Status: WARN');
       expect(markdown).toContain(`Active model: ${MODEL_ID}`);
+      expect(markdown).toContain('Last index update: success (global, 1000ms, 1 changed, 1 unchanged, 0 skipped)');
       expect(markdown).toContain('alpha: 1 modified, 0 new');
       expect(markdown).toContain('beta: 0 modified, 1 new');
 
       const json = JSON.parse(JSON.stringify(report)) as typeof report;
       expect(json.stale_counts_by_kb.alpha.modified_files).toBe(1);
+      expect(json.last_index_update.saved).toBe(true);
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
