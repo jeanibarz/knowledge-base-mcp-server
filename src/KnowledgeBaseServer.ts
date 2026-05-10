@@ -227,6 +227,43 @@ async function rollbackAddDocumentWrite(options: {
   }
 }
 
+async function restoreIndexAfterAddDocumentRollback(
+  manager: FaissIndexManager,
+  rollback: RollbackStatus,
+): Promise<RollbackStatus> {
+  if (!rollback.succeeded) {
+    return rollback;
+  }
+
+  const summary = manager.getLastIndexUpdateSummary();
+  if (!summary.index_mutated) {
+    return rollback;
+  }
+
+  try {
+    if (summary.saved) {
+      await manager.updateIndex(undefined, { force: true });
+      return {
+        ...rollback,
+        message: `${rollback.message}; rebuilt FAISS index from rolled-back files`,
+      };
+    }
+
+    await manager.reloadPersistedIndex();
+    return {
+      ...rollback,
+      message: `${rollback.message}; reloaded previous FAISS index state`,
+    };
+  } catch (error: unknown) {
+    const err = toError(error);
+    return {
+      attempted: true,
+      succeeded: false,
+      message: `${rollback.message}; FAISS index restore failed: ${err.message}`,
+    };
+  }
+}
+
 export class KnowledgeBaseServer {
   private mcp: McpServer;
   // RFC 013 M1 (#157 step 3): per-model FaissIndexManager cache. Lazily
@@ -488,12 +525,13 @@ export class KnowledgeBaseServer {
           await manager.updateIndex(args.knowledge_base_name);
         } catch (error: unknown) {
           const originalError = toError(error);
-          const rollback = await rollbackAddDocumentWrite({
+          const fileRollback = await rollbackAddDocumentWrite({
             documentPath,
             kbDir,
             snapshot,
             existingDirs,
           });
+          const rollback = await restoreIndexAfterAddDocumentRollback(manager, fileRollback);
           throw new AddDocumentRollbackError(originalError, rollback);
         }
       });
