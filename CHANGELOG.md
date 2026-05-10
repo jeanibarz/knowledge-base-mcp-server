@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — silence pdfjs-dist stdout noise during PDF ingest
+
+### Fixed
+
+- **`loadPdf` no longer leaks pdfjs-dist `Warning: TT: undefined function`, `Warning: FormatError: Required 'loca' table is not found`, `Warning: Empty 'FlateDecode' stream.`, `Info: ...`, and `Deprecated API usage: ...` lines onto stdout.** `pdf-parse@1.1.1` bundles pdfjs-dist v1.10.100, whose worker module emits font-sanitizer chatter via `console.log` from the fake-worker `LoopbackPort` path that Node always takes; the worker's verbosity is module-private and the configure message that would lower it is only sent on the real-Worker path. The loader now filters `console.log` for the duration of each parse with depth-counting reentrancy, so concurrent dense + lexical hybrid-search refresh legs both stay clean. PDF text extraction is unchanged.
+
 ## [Unreleased] — `kb stats` local index observability
 
 ### Added
