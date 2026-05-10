@@ -39,12 +39,14 @@ For an interactive shell or AI-agent shell-tool flow, install globally and use t
 npm install -g @jeanibarz/knowledge-base-mcp-server@latest
 kb list                       # list available knowledge bases
 kb stats                      # read-only index/corpus stats
-kb search "your query"                       # read-only dense search; cheap, fast (~0.6 s)
+kb search "your query"                       # read-only dense search
+kb search "your query" --timing              # include retrieval-stage timings
 kb search "query" --refresh                  # also re-scan KB files (write path)
 kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh   # BM25 debug surface (#206 stage 1)
 kb search "INDEX_NOT_INITIALIZED" --mode=hybrid              # dense ⨁ BM25 fused via RRF (#206 stage 2)
+kb search "src/cli-search.ts" --mode=auto    # opt-in heuristic: hybrid for code/path/error-shaped queries
 kb llm use-endpoint http://127.0.0.1:8080/v1/chat/completions --profile=local-research-agent
-kb ask "what changed in the daemonization notes?"            # retrieval + local LLM answer
+kb ask "what changed in the daemonization notes?" --timing   # retrieval + local LLM answer with timings
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
@@ -54,7 +56,7 @@ kb --help                     # top-level command list
 kb help search                # per-command help (also: kb search --help)
 ```
 
-The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, and version context. It is read-only and does not refresh the index. `kb search` also defaults to read-only — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
+The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, and version context. It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
 
 `kb remember` is a conservative CLI write path for agent shells. `--suggest` is read-only and lists likely existing targets from note filenames/headings. Creates and appends require both `--stdin` and `--yes`; create uses a slugified `.md` filename and refuses overwrites, while append accepts only existing KB-relative paths. Add `--refresh` to re-index the affected KB after a successful write.
 

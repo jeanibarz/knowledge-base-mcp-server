@@ -12,6 +12,7 @@ describe('parseAskArgs', () => {
       '--k=4',
       '--refresh',
       '--format=json',
+      '--timing',
     ])).toEqual({
       question: 'what changed?',
       kb: 'ops',
@@ -22,6 +23,7 @@ describe('parseAskArgs', () => {
       refresh: true,
       stdin: false,
       format: 'json',
+      timing: true,
     });
   });
 

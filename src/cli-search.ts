@@ -1,6 +1,6 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { FaissIndexManager } from './FaissIndexManager.js';
+import { FaissIndexManager, type SimilaritySearchTiming } from './FaissIndexManager.js';
 import {
   resolveActiveModel,
   resolveFaissIndexBinaryPath,
@@ -25,6 +25,13 @@ import {
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import {
+  compactTimingPayload,
+  elapsedMs,
+  formatTimingFooter,
+  nowMs,
+  type TimingPayload,
+} from './cli-timing.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
 
@@ -38,6 +45,8 @@ Usage:
 Default is dense (FAISS) similarity search, read-only. \`--refresh\` re-scans
 KB files under a per-model write lock before searching. \`--mode=lexical\`
 runs a BM25 debug surface; \`--mode=hybrid\` fuses dense + lexical via RRF.
+\`--mode=auto\` currently keeps dense for prose queries and chooses hybrid for
+code/path/error-token-shaped queries.
 
 Output ends with a freshness footer (markdown) or staleness fields (JSON)
 indicating whether the index is up-to-date relative to KB file mtimes.
@@ -50,7 +59,7 @@ Result tuning:
   --threshold=<float>   Max similarity score; lower = closer match (default 2).
   --threshold=auto      Pick a knee-based cutoff from the top-K score curve.
   --k=<int>             Top-K results (default 10).
-  --mode=dense|lexical|hybrid
+  --mode=dense|lexical|hybrid|auto
                         Retrieval mode (default: dense). \`hybrid\` fuses
                         dense + BM25 via reciprocal rank fusion (#206).
 
@@ -59,6 +68,7 @@ Output:
   --group-by-source     Collapse repeated chunks from the same source file
                         in markdown output. With \`--format=json\`, adds a
                         \`grouped_results\` field alongside raw results.
+  --timing              Include elapsed milliseconds for retrieval stages.
 
 Indexing:
   --refresh             Re-scan KB files; acquires the per-model write lock.
@@ -72,10 +82,12 @@ Examples:
   kb search "deploy" --kb=work --k=5
   kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh
   kb search "INDEX_NOT_INITIALIZED" --mode=hybrid
+  kb search "src/cli.ts" --mode=auto --timing
   kb search --stdin --format=json < query.txt
 `;
 
-export type SearchMode = 'dense' | 'lexical' | 'hybrid';
+export type SearchMode = 'dense' | 'lexical' | 'hybrid' | 'auto';
+export type EffectiveSearchMode = Exclude<SearchMode, 'auto'>;
 
 interface SearchArgs {
   query: string | null;
@@ -89,6 +101,7 @@ interface SearchArgs {
   stdin: boolean;
   groupBySource: boolean;
   mode: SearchMode;
+  timing: boolean;
 }
 
 export interface Staleness {
@@ -114,7 +127,13 @@ export interface AutoThresholdDecision {
   kept: number;
 }
 
+export interface AutoSearchModeDecision {
+  mode: EffectiveSearchMode;
+  reason: string;
+}
+
 export async function runSearch(rest: string[]): Promise<number> {
+  const totalStartedAt = nowMs();
   let parsed: SearchArgs;
   try {
     parsed = parseSearchArgs(rest);
@@ -134,34 +153,55 @@ export async function runSearch(rest: string[]): Promise<number> {
     return 2;
   }
 
-  if (parsed.mode === 'lexical') {
-    return runLexicalSearch(parsed);
+  const autoModeDecision = parsed.mode === 'auto'
+    ? resolveAutoSearchMode(parsed.query)
+    : null;
+  const effectiveMode: EffectiveSearchMode = autoModeDecision
+    ? autoModeDecision.mode
+    : (parsed.mode as EffectiveSearchMode);
+  const timing: TimingPayload | null = parsed.timing
+    ? {
+        requested_mode: parsed.mode,
+        effective_mode: effectiveMode,
+      }
+    : null;
+  const effectiveParsed: SearchArgs = { ...parsed, mode: effectiveMode };
+
+  if (effectiveMode === 'lexical') {
+    return runLexicalSearch(effectiveParsed, timing, totalStartedAt, autoModeDecision);
   }
-  if (parsed.mode === 'hybrid') {
-    return runHybridSearch(parsed);
+  if (effectiveMode === 'hybrid') {
+    return runHybridSearch(effectiveParsed, timing, totalStartedAt, autoModeDecision);
   }
 
   try {
+    const startedAt = nowMs();
     await FaissIndexManager.bootstrapLayout();
+    if (timing) timing.bootstrap_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
   let activeModelId: string;
   try {
+    const startedAt = nowMs();
     activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
+    if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
   let manager: FaissIndexManager;
   try {
+    const startedAt = nowMs();
     manager = await loadManagerForModel(activeModelId);
+    if (timing) timing.manager_load_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
   try {
+    const startedAt = nowMs();
     if (parsed.refresh) {
       await withWriteLock(manager.modelDir, async () => {
         await manager.initialize();
@@ -170,35 +210,49 @@ export async function runSearch(rest: string[]): Promise<number> {
     } else {
       await loadWithJsonRetry(manager);
     }
+    if (timing) timing.index_load_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
   let results;
-  let autoDecision: AutoThresholdDecision | null = null;
+  let autoThresholdDecision: AutoThresholdDecision | null = null;
+  const denseTiming: SimilaritySearchTiming = {};
   try {
+    const startedAt = nowMs();
     if (parsed.thresholdAuto) {
       const rawResults = await manager.similaritySearch(
         parsed.query,
         parsed.k,
         Number.POSITIVE_INFINITY,
         parsed.kb,
+        undefined,
+        timing ? denseTiming : undefined,
       );
-      autoDecision = computeAutoThreshold(rawResults.map((r) => r.score));
-      results = rawResults.slice(0, autoDecision.kept);
+      autoThresholdDecision = computeAutoThreshold(rawResults.map((r) => r.score));
+      results = rawResults.slice(0, autoThresholdDecision.kept);
     } else {
       results = await manager.similaritySearch(
         parsed.query,
         parsed.k,
         parsed.threshold,
         parsed.kb,
+        undefined,
+        timing ? denseTiming : undefined,
       );
+    }
+    if (timing) {
+      timing.dense_search_ms = elapsedMs(startedAt);
+      mergeDenseTiming(timing, denseTiming);
     }
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
+  const stalenessStartedAt = nowMs();
   const staleness = await computeStaleness(activeModelId, parsed.kb);
+  if (timing) timing.staleness_ms = elapsedMs(stalenessStartedAt);
+  if (timing) timing.total_ms = elapsedMs(totalStartedAt);
 
   if (parsed.format === 'json') {
     const body = formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
@@ -220,6 +274,13 @@ export async function runSearch(rest: string[]): Promise<number> {
       : globalCounts;
     const payload = {
       results: body,
+      ...(parsed.mode === 'auto'
+        ? {
+            mode: effectiveMode,
+            requested_mode: 'auto' as const,
+            auto_mode: autoModeDecision,
+          }
+        : {}),
       ...(parsed.groupBySource
         ? { grouped_results: groupRetrievalBySource(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE) }
         : {}),
@@ -240,20 +301,25 @@ export async function runSearch(rest: string[]): Promise<number> {
             },
           }
         : {}),
-      ...(autoDecision !== null
+      ...(autoThresholdDecision !== null
         ? {
             auto_threshold: {
-              threshold: autoDecision.threshold,
-              knee_index: autoDecision.kneeIndex,
-              kept: autoDecision.kept,
+              threshold: autoThresholdDecision.threshold,
+              knee_index: autoThresholdDecision.kneeIndex,
+              kept: autoThresholdDecision.kept,
             },
           }
         : {}),
+      ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else {
-    if (autoDecision !== null) {
-      process.stdout.write(formatAutoThresholdHeader(autoDecision));
+    if (autoModeDecision !== null) {
+      process.stdout.write(formatAutoModeHeader(autoModeDecision));
+      process.stdout.write('\n\n');
+    }
+    if (autoThresholdDecision !== null) {
+      process.stdout.write(formatAutoThresholdHeader(autoThresholdDecision));
       process.stdout.write('\n\n');
     }
     const md = parsed.groupBySource
@@ -263,6 +329,10 @@ export async function runSearch(rest: string[]): Promise<number> {
     process.stdout.write('\n\n');
     process.stdout.write(formatFreshnessFooter(staleness, parsed.refresh));
     process.stdout.write('\n');
+    if (timing) {
+      process.stdout.write(formatTimingFooter('Timing', timing));
+      process.stdout.write('\n');
+    }
   }
 
   return 0;
@@ -278,17 +348,19 @@ function parseSearchArgs(rest: string[]): SearchArgs {
     thresholdAuto: false,
     groupBySource: false,
     mode: 'dense',
+    timing: false,
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
     if (raw === '--stdin')   { out.stdin = true; continue; }
     if (raw === '--group-by-source') { out.groupBySource = true; continue; }
+    if (raw === '--timing') { out.timing = true; continue; }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
     if (raw.startsWith('--mode=')) {
       const v = raw.slice('--mode='.length);
-      if (v !== 'dense' && v !== 'lexical' && v !== 'hybrid') {
-        throw new Error(`invalid --mode: ${raw} (expected 'dense', 'lexical', or 'hybrid')`);
+      if (v !== 'dense' && v !== 'lexical' && v !== 'hybrid' && v !== 'auto') {
+        throw new Error(`invalid --mode: ${raw} (expected 'dense', 'lexical', 'hybrid', or 'auto')`);
       }
       out.mode = v; continue;
     }
@@ -314,6 +386,38 @@ function parseSearchArgs(rest: string[]): SearchArgs {
     throw new Error(`unexpected argument: ${raw}`);
   }
   return out;
+}
+
+export function resolveAutoSearchMode(query: string): AutoSearchModeDecision {
+  const trimmed = query.trim();
+  const hybridMatchers: Array<[RegExp, string]> = [
+    [/(^|[\s`'"])-{1,2}[A-Za-z0-9][\w-]*/, 'CLI flag token'],
+    [/\b[A-Z0-9]+_[A-Z0-9_]+\b/, 'constant or error-code token'],
+    [/\b[A-Za-z0-9_.-]+\.(?:ts|tsx|js|mjs|cjs|json|md|py|go|rs|java|cpp|c|h|yaml|yml|toml|lock)\b/i, 'file-like token'],
+    [/[./\\][A-Za-z0-9_.-]+/, 'path-like token'],
+    [/\b[A-Z][a-z]+[A-Z][A-Za-z0-9]*\b/, 'identifier-like token'],
+    [/\b[A-Za-z_][A-Za-z0-9_]*\([^)]*\)/, 'function-call-like token'],
+    [/\b(?:PR|issue)\s*#?\d+\b/i, 'issue or PR reference'],
+    [/#\d+\b/, 'numbered reference'],
+  ];
+
+  for (const [pattern, reason] of hybridMatchers) {
+    if (pattern.test(trimmed)) return { mode: 'hybrid', reason };
+  }
+  return { mode: 'dense', reason: 'prose query' };
+}
+
+export function formatAutoModeHeader(decision: AutoSearchModeDecision): string {
+  return `> _Mode: auto -> ${decision.mode} (${decision.reason})._`;
+}
+
+function mergeDenseTiming(target: TimingPayload, source: SimilaritySearchTiming): void {
+  if (source.embed_query_ms !== undefined) target.embed_query_ms = source.embed_query_ms;
+  if (source.faiss_search_ms !== undefined) target.faiss_search_ms = source.faiss_search_ms;
+  if (source.query_search_ms !== undefined) target.query_search_ms = source.query_search_ms;
+  if (source.post_filter_ms !== undefined) target.post_filter_ms = source.post_filter_ms;
+  if (source.total_ms !== undefined) target.dense_total_ms = source.total_ms;
+  if (source.fetch_k !== undefined) target.fetch_k = source.fetch_k;
 }
 
 export async function computeStaleness(modelId: string, scopedKb?: string): Promise<Staleness> {
@@ -556,7 +660,12 @@ async function listLexicalKbs(scoped?: string): Promise<Array<{ kbName: string; 
   }));
 }
 
-async function runLexicalSearch(parsed: SearchArgs): Promise<number> {
+async function runLexicalSearch(
+  parsed: SearchArgs,
+  timing: TimingPayload | null = null,
+  totalStartedAt: number = nowMs(),
+  autoModeDecision: AutoSearchModeDecision | null = null,
+): Promise<number> {
   if (parsed.thresholdAuto || parsed.threshold !== undefined) {
     process.stderr.write('kb search: --threshold/--threshold=auto are dense-only; ignored under --mode=lexical\n');
   }
@@ -568,7 +677,9 @@ async function runLexicalSearch(parsed: SearchArgs): Promise<number> {
 
   let kbs: Array<{ kbName: string; kbPath: string }>;
   try {
+    const startedAt = nowMs();
     kbs = await listLexicalKbs(parsed.kb);
+    if (timing) timing.lexical_kb_list_ms = elapsedMs(startedAt);
   } catch (err) {
     process.stderr.write(`kb search (lexical): could not list KBs: ${(err as Error).message}\n`);
     return 1;
@@ -579,6 +690,7 @@ async function runLexicalSearch(parsed: SearchArgs): Promise<number> {
   }
 
   const perKb: LexicalKbResult[] = [];
+  const lexicalStartedAt = nowMs();
   for (const { kbName, kbPath } of kbs) {
     let index: LexicalIndex;
     try {
@@ -607,6 +719,10 @@ async function runLexicalSearch(parsed: SearchArgs): Promise<number> {
       continue;
     }
     perKb.push({ kbName, kbPath, refreshSummary, hits });
+  }
+  if (timing) {
+    timing.lexical_search_ms = elapsedMs(lexicalStartedAt);
+    timing.total_ms = elapsedMs(totalStartedAt);
   }
 
   // Merge across KBs by score (BM25 score is positive; higher is better).
@@ -638,6 +754,9 @@ async function runLexicalSearch(parsed: SearchArgs): Promise<number> {
   if (parsed.format === 'json') {
     const payload = {
       mode: 'lexical' as const,
+      ...(autoModeDecision
+        ? { requested_mode: 'auto' as const, auto_mode: autoModeDecision }
+        : {}),
       results: formatRetrievalAsJson(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE),
       knowledge_bases: perKb.map((r) => ({
         kb: r.kbName,
@@ -653,9 +772,14 @@ async function runLexicalSearch(parsed: SearchArgs): Promise<number> {
           : null,
         error: r.error ? r.error.message : null,
       })),
+      ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else {
+    if (autoModeDecision) {
+      process.stdout.write(formatAutoModeHeader(autoModeDecision));
+      process.stdout.write('\n\n');
+    }
     process.stdout.write(`> _Mode: lexical (BM25). Stage 1 — debug surface; see #206._\n\n`);
     if (formatted.length === 0) {
       process.stdout.write(`_No matches._\n\n`);
@@ -675,6 +799,11 @@ async function runLexicalSearch(parsed: SearchArgs): Promise<number> {
       return `- ${r.kbName}: ${counts}`;
     });
     process.stdout.write(`> _Lexical index status:_\n${summaryLines.join('\n')}\n`);
+    if (timing) {
+      process.stdout.write(`\n`);
+      process.stdout.write(formatTimingFooter('Timing', timing));
+      process.stdout.write('\n');
+    }
   }
 
   return errors.length > 0 ? 1 : 0;
@@ -691,7 +820,12 @@ interface HybridChunk {
   score: number;
 }
 
-async function runHybridSearch(parsed: SearchArgs): Promise<number> {
+async function runHybridSearch(
+  parsed: SearchArgs,
+  timing: TimingPayload | null = null,
+  totalStartedAt: number = nowMs(),
+  autoModeDecision: AutoSearchModeDecision | null = null,
+): Promise<number> {
   if (parsed.thresholdAuto || parsed.threshold !== undefined) {
     process.stderr.write('kb search: --threshold/--threshold=auto are dense-only; ignored under --mode=hybrid\n');
   }
@@ -707,18 +841,25 @@ async function runHybridSearch(parsed: SearchArgs): Promise<number> {
   let denseError: Error | null = null;
   let activeModelId: string | null = null;
   try {
+    let startedAt = nowMs();
     await FaissIndexManager.bootstrapLayout();
+    if (timing) timing.bootstrap_ms = elapsedMs(startedAt);
+    startedAt = nowMs();
     activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
+    if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
   let manager: FaissIndexManager;
   try {
+    const startedAt = nowMs();
     manager = await loadManagerForModel(activeModelId);
+    if (timing) timing.manager_load_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
   try {
+    const startedAt = nowMs();
     if (parsed.refresh) {
       await withWriteLock(manager.modelDir, async () => {
         await manager.initialize();
@@ -727,12 +868,28 @@ async function runHybridSearch(parsed: SearchArgs): Promise<number> {
     } else {
       await loadWithJsonRetry(manager);
     }
+    if (timing) timing.index_load_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
+  const denseTiming: SimilaritySearchTiming = {};
+  const denseStartedAt = nowMs();
   densePromise = manager
-    .similaritySearch(query, fetchK, Number.POSITIVE_INFINITY, parsed.kb)
-    .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })))
+    .similaritySearch(
+      query,
+      fetchK,
+      Number.POSITIVE_INFINITY,
+      parsed.kb,
+      undefined,
+      timing ? denseTiming : undefined,
+    )
+    .then((rs) => {
+      if (timing) {
+        timing.dense_search_ms = elapsedMs(denseStartedAt);
+        mergeDenseTiming(timing, denseTiming);
+      }
+      return rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score }));
+    })
     .catch((err) => {
       denseError = err as Error;
       return [];
@@ -741,12 +898,15 @@ async function runHybridSearch(parsed: SearchArgs): Promise<number> {
   // -- lexical leg ---------------------------------------------------------
   let lexicalKbs: Array<{ kbName: string; kbPath: string }>;
   try {
+    const startedAt = nowMs();
     lexicalKbs = await listLexicalKbs(parsed.kb);
+    if (timing) timing.lexical_kb_list_ms = elapsedMs(startedAt);
   } catch (err) {
     process.stderr.write(`kb search (hybrid): could not list KBs: ${(err as Error).message}\n`);
     return 1;
   }
 
+  const lexicalStartedAt = nowMs();
   const lexicalPromise: Promise<{ hits: HybridChunk[]; refreshed: number; failed: number }> = (async () => {
     let refreshed = 0;
     let failed = 0;
@@ -773,7 +933,10 @@ async function runHybridSearch(parsed: SearchArgs): Promise<number> {
       refreshed,
       failed,
     };
-  })();
+  })().then((row) => {
+    if (timing) timing.lexical_search_ms = elapsedMs(lexicalStartedAt);
+    return row;
+  });
 
   const [denseResults, lexicalResultsRow] = await Promise.all([densePromise, lexicalPromise]);
   if (denseError) {
@@ -782,6 +945,7 @@ async function runHybridSearch(parsed: SearchArgs): Promise<number> {
   const lexicalResults = lexicalResultsRow.hits;
 
   // -- fuse ----------------------------------------------------------------
+  const fusionStartedAt = nowMs();
   const denseList: RankedList = {
     retriever: 'dense',
     results: denseResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
@@ -802,19 +966,31 @@ async function runHybridSearch(parsed: SearchArgs): Promise<number> {
     const chunk = byId.get(f.id);
     return chunk ? { ...chunk, score: f.fusedScore } : null;
   }).filter((x): x is HybridChunk => x !== null);
+  if (timing) {
+    timing.fusion_ms = elapsedMs(fusionStartedAt);
+    timing.total_ms = elapsedMs(totalStartedAt);
+  }
 
   if (parsed.format === 'json') {
     const payload = {
       mode: 'hybrid' as const,
+      ...(autoModeDecision
+        ? { requested_mode: 'auto' as const, auto_mode: autoModeDecision }
+        : {}),
       results: formatRetrievalAsJson(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE),
       retrievers: {
         dense: { fetched: denseResults.length, model: activeModelId },
         lexical: { fetched: lexicalResults.length, refreshed: lexicalResultsRow.refreshed, failed: lexicalResultsRow.failed },
       },
       rrf: { c: HYBRID_RRF_C, fetch_k: fetchK },
+      ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else {
+    if (autoModeDecision) {
+      process.stdout.write(formatAutoModeHeader(autoModeDecision));
+      process.stdout.write('\n\n');
+    }
     process.stdout.write(`> _Mode: hybrid (RRF c=${HYBRID_RRF_C}). Stage 2 — dense ⨁ lexical; see #206._\n\n`);
     if (ranked.length === 0) {
       process.stdout.write(`_No matches._\n\n`);
@@ -825,6 +1001,10 @@ async function runHybridSearch(parsed: SearchArgs): Promise<number> {
     process.stdout.write(
       `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`,
     );
+    if (timing) {
+      process.stdout.write(formatTimingFooter('Timing', timing));
+      process.stdout.write('\n');
+    }
   }
 
   return 0;
