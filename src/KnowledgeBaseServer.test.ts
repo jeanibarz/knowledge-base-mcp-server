@@ -451,6 +451,97 @@ describe('KnowledgeBaseServer handlers', () => {
     });
   });
 
+  it('handleAddDocument removes a new file when indexing fails after the write', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    updateIndexMock.mockRejectedValue(new Error('index boom'));
+
+    const server = await freshServer();
+    const result = await server['handleAddDocument']({
+      knowledge_base_name: 'alpha',
+      path: 'notes/new.md',
+      content: '# New note\n',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(updateIndexMock).toHaveBeenCalledWith('alpha');
+    const documentPath = path.join(tempDir, 'alpha', 'notes', 'new.md');
+    await expect(exists(documentPath)).resolves.toBe(false);
+    await expect(exists(path.dirname(documentPath))).resolves.toBe(false);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload).toMatchObject({
+      error: {
+        code: 'INTERNAL',
+        rollback: {
+          attempted: true,
+          succeeded: true,
+          message: 'removed newly written document',
+        },
+      },
+    });
+    expect(payload.error.message).toContain('index boom');
+  });
+
+  it('handleAddDocument restores overwritten content when indexing fails after the write', async () => {
+    const tempDir = await setRetrieveEnv();
+    const documentPath = path.join(tempDir, 'alpha', 'notes', 'existing.md');
+    await fsp.mkdir(path.dirname(documentPath), { recursive: true });
+    await fsp.writeFile(documentPath, 'old content');
+    await fsp.chmod(documentPath, 0o640);
+    updateIndexMock.mockRejectedValue(new Error('index boom'));
+
+    const server = await freshServer();
+    const result = await server['handleAddDocument']({
+      knowledge_base_name: 'alpha',
+      path: 'notes/existing.md',
+      content: 'new content',
+    });
+
+    expect(result.isError).toBe(true);
+    await expect(fsp.readFile(documentPath, 'utf-8')).resolves.toBe('old content');
+    const stat = await fsp.stat(documentPath);
+    expect(stat.mode & 0o777).toBe(0o640);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload).toMatchObject({
+      error: {
+        rollback: {
+          attempted: true,
+          succeeded: true,
+          message: 'restored previous document content',
+        },
+      },
+    });
+    expect(payload.error.message).toContain('index boom');
+  });
+
+  it('handleAddDocument reports rollback failure when cleanup cannot remove the new file', async () => {
+    const tempDir = await setRetrieveEnv();
+    const notesDir = path.join(tempDir, 'alpha', 'notes');
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    updateIndexMock.mockImplementationOnce(async () => {
+      await fsp.chmod(notesDir, 0o500);
+      throw new Error('index boom');
+    });
+
+    const server = await freshServer();
+    const result = await server['handleAddDocument']({
+      knowledge_base_name: 'alpha',
+      path: 'notes/new.md',
+      content: 'new content',
+    });
+
+    await fsp.chmod(notesDir, 0o700);
+    expect(result.isError).toBe(true);
+    await expect(fsp.readFile(path.join(notesDir, 'new.md'), 'utf-8')).resolves.toBe('new content');
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error.message).toContain('index boom');
+    expect(payload.error.rollback).toMatchObject({
+      attempted: true,
+      succeeded: false,
+    });
+    expect(payload.error.rollback.message).toBeTruthy();
+  });
+
   it('handleAddDocument rejects path traversal and does not update the index', async () => {
     const tempDir = await setRetrieveEnv();
     await fsp.mkdir(path.join(tempDir, 'alpha'));

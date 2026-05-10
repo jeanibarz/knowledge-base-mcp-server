@@ -75,6 +75,158 @@ function mcpErrorContent(error: Error): TextContent {
   };
 }
 
+interface AddDocumentSnapshot {
+  existed: boolean;
+  content?: Buffer;
+  mode?: number;
+}
+
+interface RollbackStatus {
+  attempted: true;
+  succeeded: boolean;
+  message: string;
+}
+
+class AddDocumentRollbackError extends Error {
+  readonly originalError: Error;
+  readonly rollback: RollbackStatus;
+
+  constructor(originalError: Error, rollback: RollbackStatus) {
+    super(`indexing failed after writing document: ${originalError.message}`, {
+      cause: originalError,
+    });
+    this.name = 'AddDocumentRollbackError';
+    this.originalError = originalError;
+    this.rollback = rollback;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+function addDocumentRollbackErrorContent(error: AddDocumentRollbackError): TextContent {
+  const code: KBErrorCode = error.originalError instanceof KBError
+    ? error.originalError.code
+    : 'INTERNAL';
+  return {
+    type: 'text',
+    text: JSON.stringify({
+      error: {
+        code,
+        message: error.message,
+        rollback: error.rollback,
+      },
+    }),
+  };
+}
+
+function isMissingPathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+async function snapshotDocumentForRollback(documentPath: string): Promise<AddDocumentSnapshot> {
+  try {
+    const [stat, content] = await Promise.all([
+      fsp.stat(documentPath),
+      fsp.readFile(documentPath),
+    ]);
+    return {
+      existed: true,
+      content,
+      mode: stat.mode,
+    };
+  } catch (error: unknown) {
+    if (isMissingPathError(error)) {
+      return { existed: false };
+    }
+    throw error;
+  }
+}
+
+async function collectExistingAncestorDirs(parentDir: string, stopDir: string): Promise<Set<string>> {
+  const existing = new Set<string>();
+  let current = parentDir;
+  while (current.startsWith(stopDir) && current !== path.dirname(current)) {
+    try {
+      const stat = await fsp.stat(current);
+      if (stat.isDirectory()) {
+        existing.add(current);
+      }
+    } catch (error: unknown) {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    }
+    if (current === stopDir) {
+      break;
+    }
+    current = path.dirname(current);
+  }
+  return existing;
+}
+
+async function pruneDirsCreatedForDocument(
+  parentDir: string,
+  stopDir: string,
+  existingDirs: Set<string>,
+): Promise<void> {
+  let current = parentDir;
+  while (current !== stopDir && current.startsWith(stopDir)) {
+    if (existingDirs.has(current)) {
+      break;
+    }
+    try {
+      await fsp.rmdir(current);
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === 'ENOENT') {
+        // Already gone is equivalent to a successful cleanup for this path.
+      } else if (code === 'ENOTEMPTY' || code === 'EEXIST') {
+        break;
+      } else {
+        throw error;
+      }
+    }
+    current = path.dirname(current);
+  }
+}
+
+async function rollbackAddDocumentWrite(options: {
+  documentPath: string;
+  kbDir: string;
+  snapshot: AddDocumentSnapshot;
+  existingDirs: Set<string>;
+}): Promise<RollbackStatus> {
+  const { documentPath, kbDir, snapshot, existingDirs } = options;
+  try {
+    if (snapshot.existed) {
+      await fsp.writeFile(documentPath, snapshot.content ?? Buffer.alloc(0));
+      if (snapshot.mode !== undefined) {
+        await fsp.chmod(documentPath, snapshot.mode);
+      }
+      return {
+        attempted: true,
+        succeeded: true,
+        message: 'restored previous document content',
+      };
+    }
+
+    await fsp.unlink(documentPath);
+    await pruneDirsCreatedForDocument(path.dirname(documentPath), kbDir, existingDirs);
+    return {
+      attempted: true,
+      succeeded: true,
+      message: 'removed newly written document',
+    };
+  } catch (error: unknown) {
+    const err = toError(error);
+    return {
+      attempted: true,
+      succeeded: false,
+      message: err.message,
+    };
+  }
+}
+
 export class KnowledgeBaseServer {
   private mcp: McpServer;
   // RFC 013 M1 (#157 step 3): per-model FaissIndexManager cache. Lazily
@@ -324,9 +476,26 @@ export class KnowledgeBaseServer {
           args.path,
           { mustExist: false },
         );
+        const kbDir = await resolveKnowledgeBaseDir(
+          KNOWLEDGE_BASES_ROOT_DIR,
+          args.knowledge_base_name,
+        );
+        const existingDirs = await collectExistingAncestorDirs(path.dirname(documentPath), kbDir);
+        const snapshot = await snapshotDocumentForRollback(documentPath);
         await fsp.mkdir(path.dirname(documentPath), { recursive: true });
         await fsp.writeFile(documentPath, args.content, 'utf-8');
-        await manager.updateIndex(args.knowledge_base_name);
+        try {
+          await manager.updateIndex(args.knowledge_base_name);
+        } catch (error: unknown) {
+          const originalError = toError(error);
+          const rollback = await rollbackAddDocumentWrite({
+            documentPath,
+            kbDir,
+            snapshot,
+            existingDirs,
+          });
+          throw new AddDocumentRollbackError(originalError, rollback);
+        }
       });
 
       return {
@@ -343,6 +512,13 @@ export class KnowledgeBaseServer {
     } catch (error: unknown) {
       if (error instanceof ActiveModelResolutionError) {
         return { content: [{ type: 'text', text: error.message }], isError: true };
+      }
+      if (error instanceof AddDocumentRollbackError) {
+        logger.error('Error adding document:', error);
+        if (error.stack) {
+          logger.error(error.stack);
+        }
+        return { content: [addDocumentRollbackErrorContent(error)], isError: true };
       }
       const err = toError(error);
       logger.error('Error adding document:', err);
