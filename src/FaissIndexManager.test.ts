@@ -257,6 +257,7 @@ describe('FaissIndexManager permission handling', () => {
     HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
     HUGGINGFACE_ENDPOINT_URL: process.env.HUGGINGFACE_ENDPOINT_URL,
     HUGGINGFACE_PROVIDER: process.env.HUGGINGFACE_PROVIDER,
+    INDEXING_BATCH_SIZE: process.env.INDEXING_BATCH_SIZE,
     LOG_FILE: process.env.LOG_FILE,
   };
 
@@ -437,9 +438,9 @@ describe('FaissIndexManager permission handling', () => {
     // After fix: the in-memory store was nulled, so the rebuild starts
     // with fromTexts() again, and BOTH KBs' files are re-ingested.
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
-    // Both alpha (1 file) and beta (1 file) re-embedded — minus the seed
-    // file that fromTexts consumes. So addDocuments runs once for the
-    // remaining file.
+    // Both alpha (1 file) and beta (1 file) re-embedded. With the default
+    // batch size they fit in the fromTexts seed batch, so addDocuments has
+    // the same call count as the initial build.
     const rebuildAdds = addDocumentsMock.mock.calls.length;
     expect(rebuildAdds).toBe(initialAdds);
     expect(manager.getLastIndexUpdateSummary()).toMatchObject({
@@ -485,7 +486,7 @@ describe('FaissIndexManager permission handling', () => {
     // RFC 014 — first save under v014 writes to index.v0/ via atomicSave.
     expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!));
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
-    expect(addDocumentsMock).toHaveBeenCalledTimes(fileCount - 1);
+    expect(addDocumentsMock).not.toHaveBeenCalled();
 
     for (const docPath of docPaths) {
       const relativePath = path.relative(defaultKb, docPath);
@@ -494,6 +495,105 @@ describe('FaissIndexManager permission handling', () => {
       expect(sidecarContent).toMatch(/^[0-9a-f]{64}$/);
       await expect(fsp.stat(`${sidecarPath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
     }
+  });
+
+  it('batches changed-file embeddings according to INDEXING_BATCH_SIZE', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-batch-embeddings-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const fileCount = 5;
+    const docPaths: string[] = [];
+    for (let i = 0; i < fileCount; i += 1) {
+      const docPath = path.join(defaultKb, `doc-${i}.md`);
+      await fsp.writeFile(docPath, `# Doc ${i}\n\nBatching content for document ${i}.`);
+      docPaths.push(docPath);
+    }
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.INDEXING_BATCH_SIZE = '2';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(addDocumentsMock).toHaveBeenCalledTimes(2);
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      chunks_added: 5,
+      index_mutated: true,
+      saved: true,
+      sidecars_written: true,
+    });
+
+    const [seedTexts, seedMetadatas] = fromTextsMock.mock.calls[0] as [
+      string[],
+      Array<{ source: string }>,
+    ];
+    expect(seedTexts).toHaveLength(2);
+    expect(seedMetadatas.map((metadata) => metadata.source)).toEqual(docPaths.slice(0, 2));
+
+    const appendedSources = addDocumentsMock.mock.calls.map((call) => {
+      const [docs] = call as [Array<{ metadata: { source: string } }>];
+      return docs.map((doc) => doc.metadata.source);
+    });
+    expect(appendedSources).toEqual([
+      docPaths.slice(2, 4),
+      docPaths.slice(4, 5),
+    ]);
+
+    for (const docPath of docPaths) {
+      const sidecarPath = path.join(defaultKb, '.index', path.basename(docPath));
+      await expect(fsp.readFile(sidecarPath, 'utf-8')).resolves.toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it('resolves default batch size from an explicit manager provider', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-batch-provider-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const fileCount = 20;
+    const docPaths: string[] = [];
+    for (let i = 0; i < fileCount; i += 1) {
+      const docPath = path.join(defaultKb, `doc-${i}.md`);
+      await fsp.writeFile(docPath, `# Doc ${i}\n\nOllama batch default content ${i}.`);
+      docPaths.push(docPath);
+    }
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    delete process.env.INDEXING_BATCH_SIZE;
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager({
+      provider: 'ollama',
+      modelName: 'mxbai-embed-large',
+    });
+    await manager.initialize();
+    await manager.updateIndex();
+
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(addDocumentsMock).toHaveBeenCalledTimes(1);
+    const indexedDocPaths = [...docPaths].sort();
+    const [seedTexts, seedMetadatas] = fromTextsMock.mock.calls[0] as [
+      string[],
+      Array<{ source: string }>,
+    ];
+    expect(seedTexts).toHaveLength(16);
+    expect(seedMetadatas.map((metadata) => metadata.source)).toEqual(indexedDocPaths.slice(0, 16));
+
+    const [[appendedDocs]] = addDocumentsMock.mock.calls as [[Array<{ metadata: { source: string } }>]];
+    expect(appendedDocs.map((doc) => doc.metadata.source)).toEqual(indexedDocPaths.slice(16));
   });
 
   it('records latest update summaries for changed and unchanged runs', async () => {
@@ -655,8 +755,8 @@ describe('FaissIndexManager permission handling', () => {
     // survive (operator nuked $FAISS_INDEX_PATH, partial restore, crash
     // mid-rebuild), initialize() purges the now-untrustworthy sidecars
     // and updateIndex re-embeds every file from scratch through the
-    // per-file path: first file → fromTexts (creating the new store),
-    // each subsequent file → addDocuments. The fallback rebuild branch
+    // changed-file queue. The first batch creates the new store via
+    // fromTexts; later batches append via addDocuments. The fallback branch
     // is preserved as defence-in-depth (partial purge failure) but no
     // longer fires in this scenario.
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-fallback-'));
@@ -734,11 +834,11 @@ describe('FaissIndexManager permission handling', () => {
 
     await secondManager.updateIndex();
 
-    // Per-file recovery path: first file lands in fromTexts (creating the
-    // new store), each subsequent file is appended via addDocuments.
+    // Recovery path: the changed files fit in the default seed batch, which
+    // creates the new store via fromTexts without additional addDocuments.
     // One save call closes the updateIndex.
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
-    expect(addDocumentsMock).toHaveBeenCalledTimes(fileCount - 1);
+    expect(addDocumentsMock).not.toHaveBeenCalled();
     expect(saveMock).toHaveBeenCalledTimes(1);
     // RFC 014 — first save under v014 writes to index.v0/ via atomicSave.
     expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!));
@@ -1171,12 +1271,11 @@ describe('FaissIndexManager #90 — sidecar invalidation when FAISS store is mis
 
     // updateIndex must now re-embed every file from scratch (no sidecars to
     // mask the empty store). With faissIndex starting at null and no
-    // sidecars present, every file's `fileHash !== storedHash` triggers
-    // re-embed via the per-file path: the first file lands in fromTexts,
-    // the rest in addDocuments. One save call, sidecars rewritten.
+    // sidecars present, every file's `fileHash !== storedHash` queues the
+    // file for the default seed batch. One save call, sidecars rewritten.
     await manager.updateIndex();
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
-    expect(addDocumentsMock).toHaveBeenCalledTimes(2);
+    expect(addDocumentsMock).not.toHaveBeenCalled();
     expect(saveMock).toHaveBeenCalledTimes(1);
 
     for (const file of [fileA1, fileA2, fileB1]) {

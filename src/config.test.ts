@@ -1,4 +1,44 @@
-import { parseReindexTriggerPollMs, resolveChunkSize } from './config.js';
+import {
+  parseReindexTriggerPollMs,
+  resolveChunkSize,
+  resolveIndexingBatchSize,
+} from './config.js';
+
+describe('resolveIndexingBatchSize (issue #236 — INDEXING_BATCH_SIZE)', () => {
+  const saved = process.env.INDEXING_BATCH_SIZE;
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.INDEXING_BATCH_SIZE; else process.env.INDEXING_BATCH_SIZE = saved;
+  });
+
+  it('uses conservative provider defaults when unset', () => {
+    delete process.env.INDEXING_BATCH_SIZE;
+    expect(resolveIndexingBatchSize('huggingface')).toBe(64);
+    expect(resolveIndexingBatchSize('openai')).toBe(64);
+    expect(resolveIndexingBatchSize('ollama')).toBe(16);
+  });
+
+  it('honors positive integer values', () => {
+    process.env.INDEXING_BATCH_SIZE = '7';
+    expect(resolveIndexingBatchSize('ollama')).toBe(7);
+  });
+
+  it('floors fractional values and caps very large batches', () => {
+    process.env.INDEXING_BATCH_SIZE = '7.9';
+    expect(resolveIndexingBatchSize('huggingface')).toBe(7);
+
+    process.env.INDEXING_BATCH_SIZE = '9999';
+    expect(resolveIndexingBatchSize('huggingface')).toBe(512);
+  });
+
+  it('falls back to the provider default for invalid values', () => {
+    process.env.INDEXING_BATCH_SIZE = 'not-a-number';
+    expect(resolveIndexingBatchSize('huggingface')).toBe(64);
+
+    process.env.INDEXING_BATCH_SIZE = '0';
+    expect(resolveIndexingBatchSize('ollama')).toBe(16);
+  });
+});
 
 describe('resolveChunkSize (#107 follow-up — KB_CHUNK_SIZE / KB_CHUNK_OVERLAP env vars)', () => {
   const savedSize = process.env.KB_CHUNK_SIZE;
