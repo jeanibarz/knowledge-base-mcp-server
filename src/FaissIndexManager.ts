@@ -12,7 +12,7 @@ import {
   KNOWLEDGE_BASES_ROOT_DIR,
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
-  INDEXING_BATCH_SIZE,
+  resolveIndexingBatchSize,
 } from './config.js';
 import {
   activeFileExists,
@@ -95,6 +95,87 @@ export interface UpdateIndexOptions {
   force?: boolean;
 }
 
+export type IndexUpdateSummaryStatus = 'success' | 'partial' | 'failed' | 'never_run';
+
+export interface IndexUpdateFailureSummary {
+  relative_path: string | null;
+  phase: 'load' | 'save' | 'sidecar' | 'unknown';
+  code: string | null;
+  message: string;
+}
+
+export interface IndexUpdateSummary {
+  status: IndexUpdateSummaryStatus;
+  scope: 'global' | string | null;
+  model_id: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  files_scanned: number;
+  files_changed: number;
+  files_unchanged: number;
+  files_skipped: number;
+  chunks_attempted: number;
+  chunks_added: number;
+  index_mutated: boolean;
+  saved: boolean;
+  sidecars_written: boolean;
+  failure_count: number;
+  failures: IndexUpdateFailureSummary[];
+}
+
+const MAX_INDEX_UPDATE_FAILURES = 10;
+
+export function createNeverRunIndexUpdateSummary(modelId: string | null = null): IndexUpdateSummary {
+  return {
+    status: 'never_run',
+    scope: null,
+    model_id: modelId,
+    started_at: null,
+    finished_at: null,
+    duration_ms: null,
+    files_scanned: 0,
+    files_changed: 0,
+    files_unchanged: 0,
+    files_skipped: 0,
+    chunks_attempted: 0,
+    chunks_added: 0,
+    index_mutated: false,
+    saved: false,
+    sidecars_written: false,
+    failure_count: 0,
+    failures: [],
+  };
+}
+
+function failureSummary(
+  relativePath: string | null,
+  phase: IndexUpdateFailureSummary['phase'],
+  error: unknown,
+): IndexUpdateFailureSummary {
+  const err = toError(error);
+  const fsError = error as NodeJS.ErrnoException | undefined;
+  const code = fsError?.code;
+  return {
+    relative_path: relativePath,
+    phase,
+    code: typeof code === 'string' ? code : null,
+    message: sanitizeFailureMessage(err.message, relativePath, fsError?.path),
+  };
+}
+
+function sanitizeFailureMessage(
+  message: string,
+  relativePath: string | null,
+  rawPath: string | undefined,
+): string {
+  if (!rawPath || !path.isAbsolute(rawPath)) {
+    return message;
+  }
+  const replacement = relativePath ?? '<path>';
+  return message.split(rawPath).join(replacement);
+}
+
 export class FaissIndexManager {
   private faissIndex: FaissStore | null = null;
   // Issue #59 — populated by initialize() via dynamic import of the active
@@ -113,6 +194,8 @@ export class FaissIndexManager {
   readonly modelId: string;
   readonly modelDir: string;
   readonly modelNameFile: string;
+  private readonly indexingBatchSize: number;
+  private lastIndexUpdateSummary: IndexUpdateSummary;
 
   /**
    * RFC 013 §4.9 file table — preferred form: `new FaissIndexManager({provider, modelName})`
@@ -139,6 +222,8 @@ export class FaissIndexManager {
     this.modelId = resolved.modelId;
     this.modelDir = modelDir(this.modelId);
     this.modelNameFile = modelNameFilePath(this.modelId);
+    this.indexingBatchSize = resolveIndexingBatchSize(this.embeddingProvider);
+    this.lastIndexUpdateSummary = createNeverRunIndexUpdateSummary(this.modelId);
 
     // Issue #59 — embeddings are constructed lazily inside initialize() so
     // the unused providers' @langchain modules never load. API-key validation
@@ -149,6 +234,13 @@ export class FaissIndexManager {
 
   get hasLoadedIndex(): boolean {
     return this.faissIndex !== null;
+  }
+
+  getLastIndexUpdateSummary(): IndexUpdateSummary {
+    return {
+      ...this.lastIndexUpdateSummary,
+      failures: this.lastIndexUpdateSummary.failures.map((failure) => ({ ...failure })),
+    };
   }
 
   /** RFC 013 §4.8 — process-global, idempotent layout bootstrap. */
@@ -415,8 +507,8 @@ export class FaissIndexManager {
       return false;
     }
 
-    for (let offset = 0; offset < documentsToAdd.length; offset += INDEXING_BATCH_SIZE) {
-      const batch = documentsToAdd.slice(offset, offset + INDEXING_BATCH_SIZE);
+    for (let offset = 0; offset < documentsToAdd.length; offset += this.indexingBatchSize) {
+      const batch = documentsToAdd.slice(offset, offset + this.indexingBatchSize);
       if (this.faissIndex === null) {
         logger.info(`Creating new FAISS index from ${batch.length} text(s)...`);
         this.faissIndex = await FaissStore.fromTexts(
@@ -442,6 +534,25 @@ export class FaissIndexManager {
     opts: UpdateIndexOptions = {},
   ): Promise<void> {
     logger.debug('Updating FAISS index...');
+    const startedAtMs = Date.now();
+    const runSummary: IndexUpdateSummary = {
+      ...createNeverRunIndexUpdateSummary(this.modelId),
+      status: 'success',
+      scope: specificKnowledgeBase ?? 'global',
+      started_at: new Date(startedAtMs).toISOString(),
+      finished_at: null,
+      duration_ms: null,
+    };
+    const recordFailure = (
+      relativePath: string | null,
+      phase: IndexUpdateFailureSummary['phase'],
+      error: unknown,
+    ): void => {
+      runSummary.failure_count += 1;
+      if (runSummary.failures.length < MAX_INDEX_UPDATE_FAILURES) {
+        runSummary.failures.push(failureSummary(relativePath, phase, error));
+      }
+    };
     try {
       const forceReindex = opts.force === true;
       // FAISS has no per-vector delete API and we keep one global store
@@ -467,6 +578,7 @@ export class FaissIndexManager {
           scopedKnowledgeBase = undefined;
         }
       }
+      runSummary.scope = scopedKnowledgeBase ?? 'global';
 
       let knowledgeBases: string[] = [];
       if (scopedKnowledgeBase) {
@@ -485,6 +597,7 @@ export class FaissIndexManager {
         Math.floor(opts.progressIntervalFiles ?? DEFAULT_REBUILD_PROGRESS_INTERVAL_FILES),
       );
       const pendingHashWrites: { path: string; hash: string }[] = [];
+      const loaderFailurePaths = new Set<string>();
 
       // First enumerate every candidate path so progress notifications can
       // report a stable denominator before embedding begins. `knowledgeBases`
@@ -541,9 +654,19 @@ export class FaissIndexManager {
       for (const { knowledgeBaseName, knowledgeBasePath, filePaths } of knowledgeBaseFiles) {
         for (const filePath of filePaths) {
           anyFileProcessed = true;
+          runSummary.files_scanned += 1;
 
-          const fileHash = await calculateSHA256(filePath);
           const relativePath = path.relative(knowledgeBasePath, filePath);
+          let fileHash: string;
+          try {
+            fileHash = await calculateSHA256(filePath);
+          } catch (error: unknown) {
+            logger.error(`Error reading file ${filePath}:`, toError(error));
+            runSummary.files_skipped += 1;
+            loaderFailurePaths.add(filePath);
+            recordFailure(relativePath, 'load', error);
+            continue;
+          }
           const indexDirPath = path.join(knowledgeBasePath, '.index', path.dirname(relativePath));
           const indexFilePath = path.join(indexDirPath, path.basename(filePath));
 
@@ -568,6 +691,7 @@ export class FaissIndexManager {
           // otherwise a rebuild can silently omit files whose hashes were
           // already current.
           if (rebuildFromEmptyIndex || forceReindex || fileHash !== storedHash) {
+            runSummary.files_changed += 1;
             logger.info(
               rebuildFromEmptyIndex
                 ? `FAISS index is empty. Rebuilding from ${filePath}...`
@@ -584,6 +708,9 @@ export class FaissIndexManager {
               content = await loadFile(filePath);
             } catch (error: unknown) {
               logger.error(`Error loading file ${filePath}:`, toError(error));
+              runSummary.files_skipped += 1;
+              loaderFailurePaths.add(filePath);
+              recordFailure(relativePath, 'load', error);
               continue;
             }
 
@@ -592,6 +719,7 @@ export class FaissIndexManager {
               content,
               knowledgeBaseName,
             );
+            runSummary.chunks_attempted += documentsToAdd.length;
 
             if (documentsToAdd.length > 0) {
               changedFileDocuments.push({
@@ -604,6 +732,7 @@ export class FaissIndexManager {
               logger.debug(`No documents generated from ${filePath}. Skipping index update.`);
             }
           } else {
+            runSummary.files_unchanged += 1;
             logger.debug(`File ${filePath} unchanged, skipping.`);
           }
         }
@@ -611,6 +740,8 @@ export class FaissIndexManager {
       const documentsToAdd = changedFileDocuments.flatMap((entry) => entry.documents);
       if (await this.addDocumentsToIndex(documentsToAdd)) {
         indexMutated = true;
+        runSummary.index_mutated = true;
+        runSummary.chunks_added += documentsToAdd.length;
         for (const entry of changedFileDocuments) {
           pendingHashWrites.push({ path: entry.indexFilePath, hash: entry.fileHash });
           logger.debug(`Index updated in-memory for ${entry.filePath}.`);
@@ -624,7 +755,7 @@ export class FaissIndexManager {
       if (this.faissIndex === null && anyFileProcessed) {
         logger.info('No updates detected but FAISS index is not initialized. Building index from all available documents...');
         const fallbackDocuments: Array<{ filePath: string; documents: Document[] }> = [];
-        for (const { knowledgeBaseName, filePaths } of knowledgeBaseFiles) {
+        for (const { knowledgeBaseName, knowledgeBasePath, filePaths } of knowledgeBaseFiles) {
           for (const filePath of filePaths) {
             // Issue #46 — same extension-routed loader as the per-file path.
             let content = '';
@@ -632,6 +763,10 @@ export class FaissIndexManager {
               content = await loadFile(filePath);
             } catch (error: unknown) {
               logger.error(`Error loading file ${filePath}:`, toError(error));
+              if (!loaderFailurePaths.has(filePath)) {
+                runSummary.files_skipped += 1;
+                recordFailure(path.relative(knowledgeBasePath, filePath), 'load', error);
+              }
               continue;
             }
             const documents = await buildChunkDocuments(
@@ -639,6 +774,7 @@ export class FaissIndexManager {
               content,
               knowledgeBaseName,
             );
+            runSummary.chunks_attempted += documents.length;
             if (documents.length > 0) {
               fallbackDocuments.push({ filePath, documents });
             }
@@ -646,6 +782,11 @@ export class FaissIndexManager {
         }
         if (await this.addDocumentsToIndex(fallbackDocuments.flatMap((entry) => entry.documents))) {
           indexMutated = true;
+          runSummary.index_mutated = true;
+          runSummary.chunks_added += fallbackDocuments.reduce(
+            (sum, entry) => sum + entry.documents.length,
+            0,
+          );
           for (const entry of fallbackDocuments) {
             processedFiles += 1;
             await reportProgress(entry.filePath);
@@ -661,7 +802,9 @@ export class FaissIndexManager {
         // versioned layout.
         try {
           await this.atomicSave();
+          runSummary.saved = true;
         } catch (saveError: unknown) {
+          recordFailure(null, 'save', saveError);
           handleFsOperationError(
             'save FAISS index for model',
             this.modelId,
@@ -677,10 +820,21 @@ export class FaissIndexManager {
         // completing will re-embed the unhashed files on next start,
         // duplicating their vectors until RFC 007 PR 2.1 lands the
         // pending-manifest protocol.
-        await writeSidecarHashes(pendingHashWrites);
+        try {
+          await writeSidecarHashes(pendingHashWrites);
+          runSummary.sidecars_written = pendingHashWrites.length > 0;
+        } catch (sidecarError: unknown) {
+          recordFailure(null, 'sidecar', sidecarError);
+          throw sidecarError;
+        }
       }
       logger.debug('FAISS index update process completed.');
+      runSummary.status = runSummary.failure_count > 0 ? 'partial' : 'success';
     } catch (error: unknown) {
+      runSummary.status = 'failed';
+      if (runSummary.failure_count === 0) {
+        recordFailure(null, 'unknown', error);
+      }
       const err = toError(error) as Error & { __alreadyLogged?: boolean };
       if (!err.__alreadyLogged) {
         // Issue #86 — for KBError we already crafted an operator-facing
@@ -696,6 +850,14 @@ export class FaissIndexManager {
         }
       }
       throw err;
+    } finally {
+      const finishedAtMs = Date.now();
+      runSummary.finished_at = new Date(finishedAtMs).toISOString();
+      runSummary.duration_ms = finishedAtMs - startedAtMs;
+      this.lastIndexUpdateSummary = {
+        ...runSummary,
+        failures: runSummary.failures.map((failure) => ({ ...failure })),
+      };
     }
   }
 

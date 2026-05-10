@@ -16,6 +16,7 @@ interface FakeManager {
     chunkCountsByKb: Record<string, number>;
     dim: number | null;
   };
+  getLastIndexUpdateSummary(): unknown;
 }
 
 function makeManager(opts: {
@@ -31,6 +32,25 @@ function makeManager(opts: {
       totalChunks: Object.values(opts.chunkCountsByKb ?? {}).reduce((s, n) => s + n, 0),
       chunkCountsByKb: opts.chunkCountsByKb ?? {},
       dim: opts.dim ?? null,
+    }),
+    getLastIndexUpdateSummary: () => ({
+      status: 'never_run',
+      scope: null,
+      model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+      started_at: null,
+      finished_at: null,
+      duration_ms: null,
+      files_scanned: 0,
+      files_changed: 0,
+      files_unchanged: 0,
+      files_skipped: 0,
+      chunks_attempted: 0,
+      chunks_added: 0,
+      index_mutated: false,
+      saved: false,
+      sidecars_written: false,
+      failure_count: 0,
+      failures: [],
     }),
   };
 }
@@ -98,6 +118,10 @@ describe('computeKbStats', () => {
       dim: 384,
     });
     expect(payload.index_path).toBe(path.join(tempDir, '.faiss'));
+    expect(payload.last_index_update).toMatchObject({
+      status: 'never_run',
+      model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+    });
     expect(payload.server.version).toBe('9.9.9');
     expect(payload.server.uptime_ms).toBeGreaterThanOrEqual(0);
 

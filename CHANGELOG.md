@@ -6,6 +6,18 @@
 
 - **`FaissIndexManager.updateIndex` now embeds changed-file chunks in bounded document batches.** `INDEXING_BATCH_SIZE` controls the batch size, with conservative provider defaults. Empty indexes are seeded with one `fromTexts` batch and remaining chunks append through `addDocuments` batches, while preserving the existing single FAISS save and post-save sidecar hash writes. Closes #236.
 
+## [Unreleased] — docs anchor verifier
+
+### Added
+
+- **`npm run docs:check-anchors`.** Contributor-facing documentation drift check that scans architecture docs, RFCs, README, CONTRIBUTING, and CLAUDE.md for source anchors such as `src/FaissIndexManager.ts:153-164` and `src/config.ts::OLLAMA_MODEL`. The checker skips fenced code blocks, supports inline `anchor-check` ignores, validates target file existence, verifies line ranges are in bounds, and resolves simple TypeScript/JavaScript symbol anchors before review. Because existing docs contain stale anchors, the default command reports drift in warning mode; pass `-- --strict` to fail on stale anchors. Closes #233.
+
+## [Unreleased] — latest index-update summaries in stats and doctor
+
+### Added
+
+- **`last_index_update` observability for refresh runs.** `FaissIndexManager.updateIndex()` now keeps a bounded in-memory summary of the latest run: status (`success`, `partial`, `failed`, or `never_run`), scope, model id, timestamps, duration, file/chunk counters, save and sidecar outcomes, and capped relative-path failure summaries. `kb_stats` exposes the object directly, and `kb doctor` includes the same section in JSON plus a concise markdown line. The summary is process-local and resets to `never_run` on startup. Closes #237.
+
 ## [Unreleased] — KB-authoring cookbook (#205)
 
 ### Added

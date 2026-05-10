@@ -376,6 +376,21 @@ describe('FaissIndexManager permission handling', () => {
     await manager.initialize();
 
     await expect(manager.updateIndex()).rejects.toThrow(/Permission denied/);
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'failed',
+      scope: 'global',
+      files_scanned: 1,
+      files_changed: 1,
+      index_mutated: true,
+      saved: false,
+      failure_count: 1,
+      failures: [
+        expect.objectContaining({
+          phase: 'save',
+          message: expect.stringContaining('cannot write index'),
+        }),
+      ],
+    });
     // RFC 014 — first save under v014 writes to index.v0/ via atomicSave.
     expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!));
 
@@ -428,6 +443,12 @@ describe('FaissIndexManager permission handling', () => {
     // the same call count as the initial build.
     const rebuildAdds = addDocumentsMock.mock.calls.length;
     expect(rebuildAdds).toBe(initialAdds);
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      scope: 'global',
+      files_scanned: 2,
+      files_changed: 2,
+    });
 
     // The KB hash sidecars must reflect the rebuild — both files have
     // up-to-date sidecars now.
@@ -504,6 +525,12 @@ describe('FaissIndexManager permission handling', () => {
     expect(saveMock).toHaveBeenCalledTimes(1);
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
     expect(addDocumentsMock).toHaveBeenCalledTimes(2);
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      chunks_added: 5,
+      index_mutated: true,
+      saved: true,
+      sidecars_written: true,
+    });
 
     const [seedTexts, seedMetadatas] = fromTextsMock.mock.calls[0] as [
       string[],
@@ -524,6 +551,160 @@ describe('FaissIndexManager permission handling', () => {
     for (const docPath of docPaths) {
       const sidecarPath = path.join(defaultKb, '.index', path.basename(docPath));
       await expect(fsp.readFile(sidecarPath, 'utf-8')).resolves.toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it('resolves default batch size from an explicit manager provider', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-batch-provider-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const fileCount = 20;
+    const docPaths: string[] = [];
+    for (let i = 0; i < fileCount; i += 1) {
+      const docPath = path.join(defaultKb, `doc-${i}.md`);
+      await fsp.writeFile(docPath, `# Doc ${i}\n\nOllama batch default content ${i}.`);
+      docPaths.push(docPath);
+    }
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    delete process.env.INDEXING_BATCH_SIZE;
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager({
+      provider: 'ollama',
+      modelName: 'mxbai-embed-large',
+    });
+    await manager.initialize();
+    await manager.updateIndex();
+
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(addDocumentsMock).toHaveBeenCalledTimes(1);
+    const indexedDocPaths = [...docPaths].sort();
+    const [seedTexts, seedMetadatas] = fromTextsMock.mock.calls[0] as [
+      string[],
+      Array<{ source: string }>,
+    ];
+    expect(seedTexts).toHaveLength(16);
+    expect(seedMetadatas.map((metadata) => metadata.source)).toEqual(indexedDocPaths.slice(0, 16));
+
+    const [[appendedDocs]] = addDocumentsMock.mock.calls as [[Array<{ metadata: { source: string } }>]];
+    expect(appendedDocs.map((doc) => doc.metadata.source)).toEqual(indexedDocPaths.slice(16));
+  });
+
+  it('records latest update summaries for changed and unchanged runs', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-update-summary-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'doc.md');
+    await fsp.writeFile(docPath, '# Title\n\nSome content for embeddings.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'never_run',
+      model_id: DEFAULT_MODEL_ID,
+    });
+
+    await manager.initialize();
+    await manager.updateIndex('default');
+
+    const changedSummary = manager.getLastIndexUpdateSummary();
+    expect(changedSummary).toMatchObject({
+      status: 'success',
+      scope: 'default',
+      model_id: DEFAULT_MODEL_ID,
+      files_scanned: 1,
+      files_changed: 1,
+      files_unchanged: 0,
+      files_skipped: 0,
+      chunks_added: 1,
+      index_mutated: true,
+      saved: true,
+      sidecars_written: true,
+      failure_count: 0,
+    });
+    expect(changedSummary.started_at).toEqual(expect.any(String));
+    expect(changedSummary.finished_at).toEqual(expect.any(String));
+    expect(changedSummary.duration_ms).toEqual(expect.any(Number));
+
+    saveMock.mockClear();
+    fromTextsMock.mockClear();
+    addDocumentsMock.mockClear();
+
+    await manager.updateIndex('default');
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(fromTextsMock).not.toHaveBeenCalled();
+    expect(addDocumentsMock).not.toHaveBeenCalled();
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      scope: 'default',
+      files_scanned: 1,
+      files_changed: 0,
+      files_unchanged: 1,
+      files_skipped: 0,
+      chunks_added: 0,
+      index_mutated: false,
+      saved: false,
+      sidecars_written: false,
+      failure_count: 0,
+    });
+  });
+
+  it('sanitizes absolute file paths in update failure summaries', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-summary-sanitize-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'secret.md');
+    await fsp.writeFile(docPath, '# Secret\n\nThis file is unreadable.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    await fsp.chmod(docPath, 0o000);
+    try {
+      jest.resetModules();
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const manager = new FaissIndexManager();
+      await manager.initialize();
+
+      await manager.updateIndex('default');
+
+      const summary = manager.getLastIndexUpdateSummary();
+      expect(summary).toMatchObject({
+        status: 'partial',
+        scope: 'default',
+        files_scanned: 1,
+        files_changed: 0,
+        files_skipped: 1,
+        failure_count: 1,
+        failures: [
+          expect.objectContaining({
+            relative_path: 'secret.md',
+            phase: 'load',
+            code: 'EACCES',
+          }),
+        ],
+      });
+      expect(summary.failures[0].message).not.toContain(tempDir);
+      expect(summary.failures[0].message).not.toContain(docPath);
+      expect(summary.failures[0].message).toContain('secret.md');
+    } finally {
+      await fsp.chmod(docPath, 0o600).catch(() => undefined);
     }
   });
 
