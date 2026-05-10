@@ -12,6 +12,7 @@ import {
   KNOWLEDGE_BASES_ROOT_DIR,
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
+  resolveIndexingBatchSize,
 } from './config.js';
 import {
   activeFileExists,
@@ -193,6 +194,7 @@ export class FaissIndexManager {
   readonly modelId: string;
   readonly modelDir: string;
   readonly modelNameFile: string;
+  private readonly indexingBatchSize: number;
   private lastIndexUpdateSummary: IndexUpdateSummary;
 
   /**
@@ -220,6 +222,7 @@ export class FaissIndexManager {
     this.modelId = resolved.modelId;
     this.modelDir = modelDir(this.modelId);
     this.modelNameFile = modelNameFilePath(this.modelId);
+    this.indexingBatchSize = resolveIndexingBatchSize(this.embeddingProvider);
     this.lastIndexUpdateSummary = createNeverRunIndexUpdateSummary(this.modelId);
 
     // Issue #59 — embeddings are constructed lazily inside initialize() so
@@ -471,6 +474,15 @@ export class FaissIndexManager {
   }
 
   /**
+   * Reload the last persisted FAISS store into memory, discarding any
+   * in-memory additions from a failed updateIndex run. Callers that pair this
+   * with a write mutation should already hold this manager's write lock.
+   */
+  async reloadPersistedIndex(): Promise<void> {
+    this.faissIndex = await this.loadAtomic();
+  }
+
+  /**
    * RFC 014 — atomic save via versioned dirs + symlink swap.
    *
    * PRECONDITION: caller MUST hold withWriteLock(this.modelDir). Verified
@@ -504,15 +516,18 @@ export class FaissIndexManager {
       return false;
     }
 
-    if (this.faissIndex === null) {
-      logger.info('Creating new FAISS index from texts...');
-      this.faissIndex = await FaissStore.fromTexts(
-        documentsToAdd.map((doc) => doc.pageContent),
-        documentsToAdd.map((doc) => doc.metadata),
-        this.embeddings
-      );
-    } else {
-      await this.faissIndex.addDocuments(documentsToAdd);
+    for (let offset = 0; offset < documentsToAdd.length; offset += this.indexingBatchSize) {
+      const batch = documentsToAdd.slice(offset, offset + this.indexingBatchSize);
+      if (this.faissIndex === null) {
+        logger.info(`Creating new FAISS index from ${batch.length} text(s)...`);
+        this.faissIndex = await FaissStore.fromTexts(
+          batch.map((doc) => doc.pageContent),
+          batch.map((doc) => doc.metadata),
+          this.embeddings
+        );
+      } else {
+        await this.faissIndex.addDocuments(batch);
+      }
     }
     return true;
   }
@@ -639,6 +654,12 @@ export class FaissIndexManager {
       };
 
       // Process each knowledge base directory.
+      const changedFileDocuments: Array<{
+        filePath: string;
+        indexFilePath: string;
+        fileHash: string;
+        documents: Document[];
+      }> = [];
       for (const { knowledgeBaseName, knowledgeBasePath, filePaths } of knowledgeBaseFiles) {
         for (const filePath of filePaths) {
           anyFileProcessed = true;
@@ -709,14 +730,13 @@ export class FaissIndexManager {
             );
             runSummary.chunks_attempted += documentsToAdd.length;
 
-            if (await this.addDocumentsToIndex(documentsToAdd)) {
-              indexMutated = true;
-              runSummary.index_mutated = true;
-              runSummary.chunks_added += documentsToAdd.length;
-              pendingHashWrites.push({ path: indexFilePath, hash: fileHash });
-              logger.debug(`Index updated in-memory for ${filePath}.`);
-              processedFiles += 1;
-              await reportProgress(filePath);
+            if (documentsToAdd.length > 0) {
+              changedFileDocuments.push({
+                filePath,
+                indexFilePath,
+                fileHash,
+                documents: documentsToAdd,
+              });
             } else {
               logger.debug(`No documents generated from ${filePath}. Skipping index update.`);
             }
@@ -726,11 +746,24 @@ export class FaissIndexManager {
           }
         }
       }
+      const documentsToAdd = changedFileDocuments.flatMap((entry) => entry.documents);
+      if (await this.addDocumentsToIndex(documentsToAdd)) {
+        indexMutated = true;
+        runSummary.index_mutated = true;
+        runSummary.chunks_added += documentsToAdd.length;
+        for (const entry of changedFileDocuments) {
+          pendingHashWrites.push({ path: entry.indexFilePath, hash: entry.fileHash });
+          logger.debug(`Index updated in-memory for ${entry.filePath}.`);
+          processedFiles += 1;
+          await reportProgress(entry.filePath);
+        }
+      }
 
       // If at least one file was processed but no changes triggered index creation,
       // then attempt to build the FAISS index from all available documents.
       if (this.faissIndex === null && anyFileProcessed) {
         logger.info('No updates detected but FAISS index is not initialized. Building index from all available documents...');
+        const fallbackDocuments: Array<{ filePath: string; documents: Document[] }> = [];
         for (const { knowledgeBaseName, knowledgeBasePath, filePaths } of knowledgeBaseFiles) {
           for (const filePath of filePaths) {
             // Issue #46 — same extension-routed loader as the per-file path.
@@ -751,13 +784,21 @@ export class FaissIndexManager {
               knowledgeBaseName,
             );
             runSummary.chunks_attempted += documents.length;
-            if (await this.addDocumentsToIndex(documents)) {
-              indexMutated = true;
-              runSummary.index_mutated = true;
-              runSummary.chunks_added += documents.length;
-              processedFiles += 1;
-              await reportProgress(filePath);
+            if (documents.length > 0) {
+              fallbackDocuments.push({ filePath, documents });
             }
+          }
+        }
+        if (await this.addDocumentsToIndex(fallbackDocuments.flatMap((entry) => entry.documents))) {
+          indexMutated = true;
+          runSummary.index_mutated = true;
+          runSummary.chunks_added += fallbackDocuments.reduce(
+            (sum, entry) => sum + entry.documents.length,
+            0,
+          );
+          for (const entry of fallbackDocuments) {
+            processedFiles += 1;
+            await reportProgress(entry.filePath);
           }
         }
       }
