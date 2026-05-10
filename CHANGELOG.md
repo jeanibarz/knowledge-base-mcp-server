@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — current retrieval metadata and FAISS layout docs (#234)
+
+### Changed
+
+- **`docs/architecture/data-model.md` now documents the live chunk metadata schema and FAISS persistence layout.** The page covers per-model `models/<id>/`, `active.txt`, per-model `model_name.txt`, versioned `index.vN/{faiss.index,docstore.json}`, legacy layout fallback, current chunk metadata fields, lifted frontmatter, `frontmatter.extras` wire sanitization, and markdown sibling `pdf_path`. Closes #234.
+
 ## [Unreleased] — latest index-update summaries in stats and doctor
 
 ### Added
