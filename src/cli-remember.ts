@@ -6,7 +6,7 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { getFilesRecursively } from './file-utils.js';
 import { filterIngestablePaths } from './ingest-filter.js';
 import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-fs.js';
-import { withWriteLock } from './write-lock.js';
+import { withSidecarLock, withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { appendSectionInDocument, listHeadings, parseHeadingSpec } from './markdown-section.js';
 import {
@@ -48,9 +48,9 @@ Usage:
   kb remember --lesson --title=<title> --stdin --yes
 
 Modes:
-  --suggest             Read-only: list likely existing note targets for
-                        the given title. Does NOT read stdin and does NOT
-                        write anything.
+  --suggest             List likely existing note targets for the given title.
+                        Does NOT read stdin and does NOT write note files.
+                        May update a small .index heading cache.
   (no --suggest)        Create or append. Both require \`--stdin --yes\`.
                         Create uses a slugified \`.md\` filename and refuses
                         to overwrite. Append accepts only existing
@@ -184,6 +184,27 @@ interface Suggestion {
   score: number;
   label: string;
 }
+
+interface SuggestHeadingCacheEntry {
+  relativePath: string;
+  mtimeMs: number;
+  size: number;
+  firstHeading: string;
+  pathTokens: string[];
+}
+
+interface SuggestHeadingCacheFile {
+  schema_version: 'remember-suggest-heading-cache.v1';
+  entries: Record<string, SuggestHeadingCacheEntry>;
+}
+
+interface SuggestHeadingCacheState {
+  entries: Record<string, SuggestHeadingCacheEntry>;
+  rebuild: boolean;
+}
+
+const SUGGEST_HEADING_CACHE_FILE = 'remember-suggest-heading-cache.json';
+const SUGGEST_HEADING_CACHE_SCHEMA_VERSION = 'remember-suggest-heading-cache.v1';
 
 export async function runRemember(rest: string[]): Promise<number> {
   let parsed: RememberArgs;
@@ -699,12 +720,30 @@ async function runSuggest(kbName: string, title: string): Promise<number> {
   const kbDir = await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName);
   const allFiles = await getFilesRecursively(kbDir);
   const ingestable = filterIngestablePaths(allFiles, kbDir);
+  const cache = await loadSuggestHeadingCache(kbDir);
+  const nextEntries: Record<string, SuggestHeadingCacheEntry> = {};
+  let cacheChanged = cache.rebuild;
   const suggestions = (await Promise.all(
-    ingestable.map(async (filePath) => scoreCandidate(kbDir, filePath, title)),
+    ingestable.map(async (filePath) => {
+      const result = await scoreCandidate(kbDir, filePath, title, cache.entries);
+      if (result?.cacheEntry !== undefined) {
+        nextEntries[result.cacheEntry.relativePath] = result.cacheEntry;
+        if (!suggestCacheEntriesEqual(cache.entries[result.cacheEntry.relativePath], result.cacheEntry)) {
+          cacheChanged = true;
+        }
+      }
+      return result?.suggestion ?? null;
+    }),
   ))
     .filter((s): s is Suggestion => s !== null)
     .sort((a, b) => b.score - a.score || a.relativePath.localeCompare(b.relativePath))
     .slice(0, 10);
+  if (!sameCacheKeys(cache.entries, nextEntries)) {
+    cacheChanged = true;
+  }
+  if (cacheChanged) {
+    await saveSuggestHeadingCacheBestEffort(kbDir, nextEntries);
+  }
 
   if (suggestions.length === 0) {
     process.stdout.write(`No likely existing targets for "${title}" in ${kbName}.\n`);
@@ -718,34 +757,167 @@ async function runSuggest(kbName: string, title: string): Promise<number> {
   return 0;
 }
 
-async function scoreCandidate(kbDir: string, filePath: string, title: string): Promise<Suggestion | null> {
+async function scoreCandidate(
+  kbDir: string,
+  filePath: string,
+  title: string,
+  cacheEntries: Record<string, SuggestHeadingCacheEntry>,
+): Promise<{ suggestion: Suggestion | null; cacheEntry?: SuggestHeadingCacheEntry } | null> {
   const relativePath = path.relative(kbDir, filePath).split(path.sep).join('/');
   const titleTokens = tokenize(title);
-  const pathText = relativePath.replace(/\.[^.]+$/, '').replace(/[/_-]+/g, ' ');
-  const pathScore = overlapScore(titleTokens, tokenize(pathText));
-
-  let headingScore = 0;
-  let heading = '';
+  let stat;
   try {
-    const content = await fsp.readFile(filePath, 'utf-8');
-    const firstHeading = content.split(/\r?\n/, 30).find((line) => /^#{1,6}\s+\S/.test(line));
-    if (firstHeading !== undefined) {
-      heading = firstHeading.replace(/^#{1,6}\s+/, '').trim();
-      headingScore = overlapScore(titleTokens, tokenize(heading));
-    }
+    stat = await fsp.stat(filePath);
   } catch {
-    // A candidate that vanished or is unreadable between walk and score is
-    // simply not useful as a suggestion.
     return null;
+  }
+  if (!stat.isFile()) return null;
+
+  let cacheEntry = cacheEntries[relativePath];
+  if (
+    cacheEntry === undefined ||
+    cacheEntry.relativePath !== relativePath ||
+    cacheEntry.mtimeMs !== stat.mtimeMs ||
+    cacheEntry.size !== stat.size ||
+    !Array.isArray(cacheEntry.pathTokens)
+  ) {
+    try {
+      cacheEntry = {
+        relativePath,
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        firstHeading: await readFirstHeading(filePath),
+        pathTokens: Array.from(tokenize(pathTextForSuggestion(relativePath))),
+      };
+    } catch {
+      // A candidate that vanished or is unreadable between walk and score is
+      // simply not useful as a suggestion.
+      return null;
+    }
+  }
+
+  const pathScore = overlapScore(titleTokens, new Set(cacheEntry.pathTokens));
+  let headingScore = 0;
+  if (cacheEntry.firstHeading !== '') {
+    headingScore = overlapScore(titleTokens, tokenize(cacheEntry.firstHeading));
   }
 
   const score = Math.max(pathScore, headingScore);
-  if (score <= 0) return null;
+  if (score <= 0) return { suggestion: null, cacheEntry };
   return {
-    relativePath,
-    score,
-    label: headingScore >= pathScore && heading !== '' ? `heading: ${heading}` : 'filename match',
+    suggestion: {
+      relativePath,
+      score,
+      label: headingScore >= pathScore && cacheEntry.firstHeading !== ''
+        ? `heading: ${cacheEntry.firstHeading}`
+        : 'filename match',
+    },
+    cacheEntry,
   };
+}
+
+async function loadSuggestHeadingCache(kbDir: string): Promise<SuggestHeadingCacheState> {
+  const cachePath = suggestHeadingCachePath(kbDir);
+  try {
+    const parsed = JSON.parse(await fsp.readFile(cachePath, 'utf-8')) as unknown;
+    if (!isSuggestHeadingCacheFile(parsed)) {
+      throw new Error('invalid schema');
+    }
+    return { entries: parsed.entries, rebuild: false };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      return { entries: {}, rebuild: false };
+    }
+    process.stderr.write(`kb remember: ignoring invalid suggest heading cache at ${cachePath}: ${(err as Error).message}\n`);
+    return { entries: {}, rebuild: true };
+  }
+}
+
+async function saveSuggestHeadingCacheBestEffort(
+  kbDir: string,
+  entries: Record<string, SuggestHeadingCacheEntry>,
+): Promise<void> {
+  const cachePath = suggestHeadingCachePath(kbDir);
+  const payload: SuggestHeadingCacheFile = {
+    schema_version: SUGGEST_HEADING_CACHE_SCHEMA_VERSION,
+    entries,
+  };
+  try {
+    await withSidecarLock(async () => {
+      await fsp.mkdir(path.dirname(cachePath), { recursive: true });
+      await atomicWriteFile(cachePath, `${JSON.stringify(payload, null, 2)}\n`);
+    });
+  } catch (err) {
+    process.stderr.write(`kb remember: suggest heading cache update skipped: ${(err as Error).message}\n`);
+  }
+}
+
+function suggestHeadingCachePath(kbDir: string): string {
+  return path.join(kbDir, '.index', SUGGEST_HEADING_CACHE_FILE);
+}
+
+function isSuggestHeadingCacheFile(value: unknown): value is SuggestHeadingCacheFile {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as { schema_version?: unknown; entries?: unknown };
+  if (obj.schema_version !== SUGGEST_HEADING_CACHE_SCHEMA_VERSION) return false;
+  if (typeof obj.entries !== 'object' || obj.entries === null || Array.isArray(obj.entries)) return false;
+  for (const [key, entry] of Object.entries(obj.entries)) {
+    if (!isSuggestHeadingCacheEntry(entry) || entry.relativePath !== key) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isSuggestHeadingCacheEntry(value: unknown): value is SuggestHeadingCacheEntry {
+  if (typeof value !== 'object' || value === null) return false;
+  const entry = value as Partial<SuggestHeadingCacheEntry>;
+  return (
+    typeof entry.relativePath === 'string' &&
+    typeof entry.mtimeMs === 'number' &&
+    Number.isFinite(entry.mtimeMs) &&
+    typeof entry.size === 'number' &&
+    Number.isFinite(entry.size) &&
+    typeof entry.firstHeading === 'string' &&
+    Array.isArray(entry.pathTokens) &&
+    entry.pathTokens.every((token) => typeof token === 'string')
+  );
+}
+
+async function readFirstHeading(filePath: string): Promise<string> {
+  const content = await fsp.readFile(filePath, 'utf-8');
+  const firstHeading = content.split(/\r?\n/, 30).find((line) => /^#{1,6}\s+\S/.test(line));
+  return firstHeading === undefined ? '' : firstHeading.replace(/^#{1,6}\s+/, '').trim();
+}
+
+function pathTextForSuggestion(relativePath: string): string {
+  return relativePath.replace(/\.[^.]+$/, '').replace(/[/_-]+/g, ' ');
+}
+
+function sameCacheKeys(
+  before: Record<string, SuggestHeadingCacheEntry>,
+  after: Record<string, SuggestHeadingCacheEntry>,
+): boolean {
+  const beforeKeys = Object.keys(before).sort();
+  const afterKeys = Object.keys(after).sort();
+  if (beforeKeys.length !== afterKeys.length) return false;
+  return beforeKeys.every((key, index) => key === afterKeys[index]);
+}
+
+function suggestCacheEntriesEqual(
+  a: SuggestHeadingCacheEntry | undefined,
+  b: SuggestHeadingCacheEntry,
+): boolean {
+  return (
+    a !== undefined &&
+    a.relativePath === b.relativePath &&
+    a.mtimeMs === b.mtimeMs &&
+    a.size === b.size &&
+    a.firstHeading === b.firstHeading &&
+    a.pathTokens.length === b.pathTokens.length &&
+    a.pathTokens.every((token, index) => token === b.pathTokens[index])
+  );
 }
 
 function overlapScore(a: Set<string>, b: Set<string>): number {
