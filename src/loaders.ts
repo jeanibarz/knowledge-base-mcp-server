@@ -31,6 +31,71 @@ async function loadText(filePath: string): Promise<string> {
   return fsp.readFile(filePath, 'utf-8');
 }
 
+// Reentrancy depth for `silencePdfjsConsole` — pdf-parse calls can interleave
+// (the hybrid-search dense and lexical legs both load PDFs in parallel under
+// `--refresh`). Depth-counting ensures the first concurrent caller installs
+// the filter, the last one restores the real `console.log`, and intermediate
+// callers neither double-install nor restore early.
+let pdfjsSilenceDepth = 0;
+let pdfjsOriginalConsoleLog: typeof console.log | null = null;
+
+/**
+ * Filter `console.log` for the duration of `fn` so the pdfjs-dist v1.10.100
+ * bundle inside `pdf-parse@1.1.1` does not pollute stdout with TrueType
+ * sanitizer chatter.
+ *
+ * Why the noise exists. pdf-parse bundles pdfjs-dist v1.10.100. Inside that
+ * bundle, `warn(msg)` resolves to `console.log('Warning: ' + msg)` and is
+ * called by the TrueType-program sanitizer for every glyph hint it doesn't
+ * understand ("TT: undefined function: 32") and by the font loader on
+ * malformed font tables ("FormatError: Required 'loca' table is not found").
+ * Text extraction succeeds anyway — these are advisory, not failures.
+ *
+ * Why we cannot just lower verbosity. The bundled pdfjs has two copies of
+ * the verbosity flag: one in `pdf.js` (reachable via `PDFJS.verbosity`) and
+ * one in `pdf.worker.js` (module-private, only exposed to outside callers
+ * through `WorkerMessageHandler`). pdf.js synchronizes the two by sending a
+ * `configure` message — but ONLY on the real-Worker path. In Node we always
+ * take the fake-worker `LoopbackPort` path, where no `configure` message is
+ * sent and the worker keeps `verbosity = warnings` regardless of what we set
+ * on the main module. Setting `PDFJS.verbosity = 0` therefore has no effect
+ * on the warnings emitted from inside the worker bundle.
+ *
+ * Filtering the single Node process's `console.log` is the smallest fix that
+ * actually silences the noise. We match the three prefixes pdfjs uses
+ * (`Warning: `, `Info: `, `Deprecated API usage: `) and pass everything else
+ * through unchanged so user `console.log` calls are unaffected. Reentrant
+ * via depth-counting so concurrent PDF loads don't restore each other early.
+ */
+async function silencePdfjsConsole<T>(fn: () => Promise<T>): Promise<T> {
+  if (pdfjsSilenceDepth === 0) {
+    pdfjsOriginalConsoleLog = console.log;
+    const realLog = pdfjsOriginalConsoleLog;
+    console.log = (...args: unknown[]): void => {
+      const first = args[0];
+      if (
+        typeof first === 'string' &&
+        (first.startsWith('Warning: ') ||
+          first.startsWith('Info: ') ||
+          first.startsWith('Deprecated API usage: '))
+      ) {
+        return;
+      }
+      realLog(...args);
+    };
+  }
+  pdfjsSilenceDepth += 1;
+  try {
+    return await fn();
+  } finally {
+    pdfjsSilenceDepth -= 1;
+    if (pdfjsSilenceDepth === 0 && pdfjsOriginalConsoleLog !== null) {
+      console.log = pdfjsOriginalConsoleLog;
+      pdfjsOriginalConsoleLog = null;
+    }
+  }
+}
+
 async function loadPdf(filePath: string): Promise<string> {
   // pdf-parse@1 ships its main as a CJS function with `module.exports = PDF`
   // and a `parent`-less debug branch that fires on import (it tries to read
@@ -47,7 +112,7 @@ async function loadPdf(filePath: string): Promise<string> {
     buf: Buffer,
   ) => Promise<{ text: string }>;
   const buffer = await fsp.readFile(filePath);
-  const result = await pdfParse(buffer);
+  const result = await silencePdfjsConsole(() => pdfParse(buffer));
   return result.text;
 }
 

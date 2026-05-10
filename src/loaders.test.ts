@@ -162,6 +162,156 @@ describe('PDF loader (pdf-parse) — routing + dispatch (pdf-parse is mocked)', 
   });
 });
 
+describe('PDF loader — pdfjs-dist stdout noise suppression', () => {
+  // Regression for the hybrid-search complaint: pdf-parse@1.1.1 bundles
+  // pdfjs-dist v1.10.100, whose worker emits TrueType-sanitizer chatter
+  // ("Warning: TT: undefined function: 32",
+  // "Warning: FormatError: Required 'loca' table is not found",
+  // "Warning: Empty 'FlateDecode' stream.") via console.log when it
+  // re-indexes a PDF whose fonts use glyph hints the sanitizer doesn't
+  // understand. Those lines used to land on stdout and pollute the
+  // retrieval markdown / JSON output. We filter them at the loader's
+  // boundary; this suite locks the filter in place.
+  let tempDir = '';
+  let originalConsoleLog: typeof console.log;
+  let stdoutSpy: jest.Mock;
+
+  beforeEach(async () => {
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-loaders-pdf-noise-'));
+    pdfParseFnMock.mockReset();
+    originalConsoleLog = console.log;
+    stdoutSpy = jest.fn();
+    console.log = stdoutSpy as unknown as typeof console.log;
+  });
+
+  afterEach(async () => {
+    console.log = originalConsoleLog;
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('drops "Warning: ", "Info: ", and "Deprecated API usage: " lines emitted during pdf-parse', async () => {
+    const filePath = path.join(tempDir, 'noisy.pdf');
+    await fsp.writeFile(filePath, Buffer.from('%PDF-1.4\n'));
+    pdfParseFnMock.mockImplementation(async () => {
+      // These three prefixes are exactly what pdfjs-dist v1.10.100's
+      // util.warn / util.info / util.deprecated emit. The test asserts
+      // every such line is dropped so the user's stdout (search results)
+      // stays clean.
+      console.log('Warning: TT: undefined function: 32');
+      console.log('Warning: FormatError: Required "loca" table is not found');
+      console.log('Info: Loading font fallback...');
+      console.log('Deprecated API usage: PDFJS.something');
+      return { text: 'extracted text' };
+    });
+
+    const text = await loadFile(filePath);
+    expect(text).toBe('extracted text');
+    // Filter swallowed all four pdfjs-style lines. Spy never saw them.
+    expect(stdoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('passes non-pdfjs console.log calls through unchanged', async () => {
+    // Defensive: the filter must only match the three pdfjs prefixes.
+    // Anything else a downstream library logs during a PDF parse should
+    // still reach the real console.log. Otherwise we'd silently swallow
+    // legitimate user output if pdf-parse ever delegated to another lib.
+    const filePath = path.join(tempDir, 'mixed.pdf');
+    await fsp.writeFile(filePath, Buffer.from('%PDF-1.4\n'));
+    pdfParseFnMock.mockImplementation(async () => {
+      console.log('Warning: TT: undefined function: 32'); // dropped
+      console.log('user log line that must survive');     // passed through
+      console.log('warning: lower-case prefix is unrelated'); // passed through
+      return { text: 'ok' };
+    });
+
+    await loadFile(filePath);
+    expect(stdoutSpy).toHaveBeenCalledTimes(2);
+    expect(stdoutSpy.mock.calls[0][0]).toBe('user log line that must survive');
+    expect(stdoutSpy.mock.calls[1][0]).toBe('warning: lower-case prefix is unrelated');
+  });
+
+  it('restores console.log after the parse resolves', async () => {
+    const filePath = path.join(tempDir, 'restore.pdf');
+    await fsp.writeFile(filePath, Buffer.from('%PDF-1.4\n'));
+    pdfParseFnMock.mockResolvedValue({ text: 'ok' });
+    const before = console.log;
+
+    await loadFile(filePath);
+
+    // Reference equality — the filter wrapper is gone, our test spy is back.
+    expect(console.log).toBe(before);
+    // And the spy works as expected after restoration.
+    console.log('post-parse line');
+    expect(stdoutSpy).toHaveBeenCalledWith('post-parse line');
+  });
+
+  it('restores console.log even if pdf-parse rejects', async () => {
+    // The filter is installed via try/finally so a corrupt PDF that throws
+    // mid-parse cannot leave the wrapper permanently swallowing
+    // application-level "Warning: ..." logs.
+    const filePath = path.join(tempDir, 'bad.pdf');
+    await fsp.writeFile(filePath, Buffer.from('%PDF-1.4\n'));
+    pdfParseFnMock.mockRejectedValue(new Error('parse boom'));
+    const before = console.log;
+
+    await expect(loadFile(filePath)).rejects.toThrow('parse boom');
+    expect(console.log).toBe(before);
+  });
+
+  it('handles concurrent PDF loads via depth-counting (no early restore)', async () => {
+    // The hybrid-search dense + lexical legs both call into loadPdf in
+    // parallel under --refresh. If the inner load restored console.log
+    // when its own try/finally fired, the outer load's filter would be
+    // gone for the rest of its parse and Warning: lines would leak.
+    // Depth-count the install/restore so concurrent calls compose.
+    const slowPath = path.join(tempDir, 'slow.pdf');
+    const fastPath = path.join(tempDir, 'fast.pdf');
+    await fsp.writeFile(slowPath, Buffer.from('%PDF-1.4\n'));
+    await fsp.writeFile(fastPath, Buffer.from('%PDF-1.4\n'));
+
+    let releaseSlow!: (v: { text: string }) => void;
+    const slowDone = new Promise<{ text: string }>((resolve) => {
+      releaseSlow = resolve;
+    });
+
+    pdfParseFnMock.mockImplementation((buf: Buffer) => {
+      if (buf.length === Buffer.from('%PDF-1.4\n').length) {
+        // Both fixtures are byte-identical; differentiate by call count.
+        const callIdx = pdfParseFnMock.mock.calls.length;
+        if (callIdx === 1) {
+          // First call (slow): emit a Warning: line then await the gate
+          // that the second (fast) call's completion will open.
+          console.log('Warning: slow pre-await');
+          return slowDone.then((res) => {
+            console.log('Warning: slow post-await');
+            return res;
+          });
+        }
+        // Second call (fast): emits + resolves immediately, then opens
+        // the gate so the slow call can finish.
+        console.log('Warning: fast');
+        const result = { text: 'fast-text' };
+        releaseSlow({ text: 'slow-text' });
+        return Promise.resolve(result);
+      }
+      return Promise.resolve({ text: '' });
+    });
+
+    const slowPromise = loadFile(slowPath);
+    const fastPromise = loadFile(fastPath);
+    const [slowText, fastText] = await Promise.all([slowPromise, fastPromise]);
+
+    expect(slowText).toBe('slow-text');
+    expect(fastText).toBe('fast-text');
+    // All three Warning: lines (slow pre-await, fast, slow post-await)
+    // must be dropped — including the slow one that emits AFTER the fast
+    // load's try/finally has already run. Spy never sees them.
+    expect(stdoutSpy).not.toHaveBeenCalled();
+    // After both loads settle, console.log is back to the test spy.
+    expect(console.log).toBe(stdoutSpy);
+  });
+});
+
 describe('HTML loader (html-to-text)', () => {
   let tempDir = '';
 
