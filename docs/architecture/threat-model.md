@@ -72,6 +72,10 @@ RFC 010's proposed ingest / resources tools **will** take user-supplied paths. W
 
 Setting `LOG_FILE` (`src/logger.ts:18-49`) mirrors stderr to disk. The server writes JSON-RPC error metadata, file paths scanned during indexing, and permission-denied stack traces — but **not** the embedding-provider payload or the query text. If `LOG_LEVEL=debug` (`src/logger.ts:14`), it additionally logs file paths that changed. None of this is secret by itself; treat the file as a normal operational log.
 
+## 7. Mutation audit log (`KB_MUTATION_AUDIT_LOG`)
+
+Setting `KB_MUTATION_AUDIT_LOG` (`src/audit-log.ts`) opts into an append-only JSONL ledger of content mutations performed by `kb remember`, `kb capture`, MCP `add_document`, and MCP `delete_document`. Each record carries `surface`, `operation`, `kb`, `relative_path`, before/after `sha256` hashes, `write_performed`, refresh status, and `decision_flags`. Note bodies are **not** written; the hashes are the only content-derived field. KB names and relative paths reveal the same surface area as the underlying KB directory listing, so secure the ledger with the same permissions you grant `$KNOWLEDGE_BASES_ROOT_DIR`. Audit writes are best-effort: a failed append degrades to a `warn` line on stderr and never blocks the primary mutation.
+
 ## Out of scope
 
 - Denial-of-service by a malicious KB file large enough to OOM the embedding provider. Possible, but unlisted — the mitigation is operational (file-size cap in the source tree).
