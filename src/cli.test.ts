@@ -271,7 +271,7 @@ describe('kb remember', () => {
     }
   });
 
-  it('suggests likely targets without reading stdin or writing files', async () => {
+  it('suggests likely targets without reading stdin or writing note files', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-suggest-'));
     try {
       const rootDir = path.join(tempDir, 'kbs');
@@ -289,6 +289,95 @@ describe('kb remember', () => {
       expect(r.stdout).toContain('Likely existing targets');
       expect(r.stdout).toContain('research-plan.md');
       await expect(fsp.access(path.join(kbDir, 'research-plan.md.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('caches suggest headings under the KB index directory', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-suggest-cache-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(rootDir, 'project');
+      const notePath = path.join(kbDir, 'planning.md');
+      const cachePath = path.join(kbDir, '.index', 'remember-suggest-heading-cache.json');
+      await fsp.mkdir(kbDir, { recursive: true });
+      await fsp.writeFile(notePath, '# Research Plan\n\nExisting note.\n', 'utf-8');
+
+      const r = runCli(
+        ['remember', '--suggest', '--kb=project', '--title=Research Plan'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('planning.md');
+      const cache = JSON.parse(await fsp.readFile(cachePath, 'utf-8'));
+      expect(cache.schema_version).toBe('remember-suggest-heading-cache.v1');
+      expect(cache.entries['planning.md'].firstHeading).toBe('Research Plan');
+      expect(cache.entries['planning.md'].pathTokens).toEqual(['planning']);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses a valid warm suggest heading cache without rereading note headings', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-suggest-warm-cache-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(rootDir, 'project');
+      const notePath = path.join(kbDir, 'planning.md');
+      const cachePath = path.join(kbDir, '.index', 'remember-suggest-heading-cache.json');
+      await fsp.mkdir(path.dirname(cachePath), { recursive: true });
+      await fsp.writeFile(notePath, '# Unrelated\n\nExisting note.\n', 'utf-8');
+      const stat = await fsp.stat(notePath);
+      await fsp.writeFile(cachePath, JSON.stringify({
+        schema_version: 'remember-suggest-heading-cache.v1',
+        entries: {
+          'planning.md': {
+            relativePath: 'planning.md',
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            firstHeading: 'Research Plan',
+            pathTokens: ['planning'],
+          },
+        },
+      }, null, 2), 'utf-8');
+
+      const r = runCli(
+        ['remember', '--suggest', '--kb=project', '--title=Research Plan'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('planning.md (heading: Research Plan)');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('warns and rebuilds when the suggest heading cache is corrupt', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-suggest-corrupt-cache-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(rootDir, 'project');
+      const cachePath = path.join(kbDir, '.index', 'remember-suggest-heading-cache.json');
+      await fsp.mkdir(path.dirname(cachePath), { recursive: true });
+      await fsp.writeFile(path.join(kbDir, 'research-plan.md'), '# Research Plan\n\nExisting note.\n', 'utf-8');
+      await fsp.writeFile(cachePath, '{not json', 'utf-8');
+
+      const r = runCli(
+        ['remember', '--suggest', '--kb=project', '--title=Research Plan'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      expect(r.stderr).toContain('ignoring invalid suggest heading cache');
+      expect(r.stdout).toContain('research-plan.md');
+      const cache = JSON.parse(await fsp.readFile(cachePath, 'utf-8'));
+      expect(cache.entries['research-plan.md'].firstHeading).toBe('Research Plan');
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }

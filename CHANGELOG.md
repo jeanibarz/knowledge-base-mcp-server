@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — `kb remember --suggest` heading cache
+
+### Changed
+
+- **`kb remember --suggest` now caches note filenames and first headings under each KB's `.index/remember-suggest-heading-cache.json`.** Warm runs reuse entries whose relative path, size, and mtime still match, refresh stale entries lazily, and rebuild corrupt cache files with a stderr warning instead of failing the suggestion command. Closes #249.
+
 ## [Unreleased] — append-only KB mutation audit log
 
 ### Added
