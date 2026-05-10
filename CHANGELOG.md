@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — append-only KB mutation audit log
+
+### Added
+
+- **`KB_MUTATION_AUDIT_LOG=<path>` (opt-in).** When set, `kb remember`, `kb capture`, MCP `add_document`, and MCP `delete_document` each append one JSON line per write attempt to the configured path. Records include `surface`, `operation`, `kb`, `relative_path`, ISO `timestamp`, `before_sha256`, `after_sha256`, `write_performed`, `refresh_requested`, `refresh_status`, and per-surface `decision_flags`. Note content is not stored — only hashes and metadata. Audit writes are best-effort: a failed append warns on stderr but never aborts the primary mutation. README and `docs/architecture/threat-model.md` document the privacy posture. Closes #250.
+
 ## [Unreleased] — silence pdfjs-dist stdout noise during PDF ingest
 
 ### Fixed

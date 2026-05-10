@@ -50,6 +50,7 @@ import {
 import { withWriteLock } from './write-lock.js';
 import { logger } from './logger.js';
 import { toError } from './error-utils.js';
+import { auditEnabled, recordMutation, sha256OfFileOrNull } from './audit-log.js';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { StreamableHttpHost } from './transport/http.js';
@@ -503,9 +504,34 @@ export class KnowledgeBaseServer {
     path: string;
     content: string;
   }): Promise<CallToolResult> {
+    const auditing = auditEnabled();
+    let documentPath = '';
+    let beforeHash: string | null = null;
+    let writePerformed = false;
+    let indexingFailed = false;
+
+    const auditOnExit = async (error?: Error): Promise<void> => {
+      if (!auditing) return;
+      const afterHash = documentPath !== ''
+        ? await sha256OfFileOrNull(documentPath)
+        : null;
+      await recordMutation({
+        surface: 'mcp.add_document',
+        operation: 'add',
+        kb: args.knowledge_base_name,
+        relative_path: args.path,
+        before_sha256: beforeHash,
+        after_sha256: afterHash,
+        write_performed: writePerformed,
+        refresh_requested: true,
+        refresh_status: writePerformed ? 'ok' : (indexingFailed ? 'failed' : null),
+        decision_flags: { content_bytes: Buffer.byteLength(args.content, 'utf-8') },
+        error: error?.message,
+      });
+    };
+
     try {
       const manager = await this.getActiveManagerForMutation();
-      let documentPath = '';
       await withWriteLock(manager.modelDir, async () => {
         documentPath = await resolveKbPath(
           KNOWLEDGE_BASES_ROOT_DIR,
@@ -513,6 +539,9 @@ export class KnowledgeBaseServer {
           args.path,
           { mustExist: false },
         );
+        if (auditing) {
+          beforeHash = await sha256OfFileOrNull(documentPath);
+        }
         const kbDir = await resolveKnowledgeBaseDir(
           KNOWLEDGE_BASES_ROOT_DIR,
           args.knowledge_base_name,
@@ -524,6 +553,7 @@ export class KnowledgeBaseServer {
         try {
           await manager.updateIndex(args.knowledge_base_name);
         } catch (error: unknown) {
+          indexingFailed = true;
           const originalError = toError(error);
           const fileRollback = await rollbackAddDocumentWrite({
             documentPath,
@@ -534,8 +564,10 @@ export class KnowledgeBaseServer {
           const rollback = await restoreIndexAfterAddDocumentRollback(manager, fileRollback);
           throw new AddDocumentRollbackError(originalError, rollback);
         }
+        writePerformed = true;
       });
 
+      await auditOnExit();
       return {
         content: [{
           type: 'text',
@@ -549,6 +581,7 @@ export class KnowledgeBaseServer {
       };
     } catch (error: unknown) {
       if (error instanceof ActiveModelResolutionError) {
+        await auditOnExit(error);
         return { content: [{ type: 'text', text: error.message }], isError: true };
       }
       if (error instanceof AddDocumentRollbackError) {
@@ -556,6 +589,7 @@ export class KnowledgeBaseServer {
         if (error.stack) {
           logger.error(error.stack);
         }
+        await auditOnExit(error);
         return { content: [addDocumentRollbackErrorContent(error)], isError: true };
       }
       const err = toError(error);
@@ -563,6 +597,7 @@ export class KnowledgeBaseServer {
       if (err.stack) {
         logger.error(err.stack);
       }
+      await auditOnExit(err);
       return { content: [mcpErrorContent(err)], isError: true };
     }
   }
@@ -571,10 +606,34 @@ export class KnowledgeBaseServer {
     knowledge_base_name: string;
     path: string;
   }): Promise<CallToolResult> {
+    const auditing = auditEnabled();
+    let documentPath = '';
+    let sidecarPath = '';
+    let beforeHash: string | null = null;
+    let writePerformed = false;
+
+    const auditOnExit = async (error?: Error): Promise<void> => {
+      if (!auditing) return;
+      const afterHash = documentPath !== ''
+        ? await sha256OfFileOrNull(documentPath)
+        : null;
+      await recordMutation({
+        surface: 'mcp.delete_document',
+        operation: 'delete',
+        kb: args.knowledge_base_name,
+        relative_path: args.path,
+        before_sha256: beforeHash,
+        after_sha256: afterHash,
+        write_performed: writePerformed,
+        refresh_requested: false,
+        refresh_status: null,
+        decision_flags: { sidecar_path: sidecarPath },
+        error: error?.message,
+      });
+    };
+
     try {
       const manager = await this.getActiveManagerForMutation();
-      let documentPath = '';
-      let sidecarPath = '';
       await withWriteLock(manager.modelDir, async () => {
         const kbDir = await resolveKnowledgeBaseDir(
           KNOWLEDGE_BASES_ROOT_DIR,
@@ -586,6 +645,9 @@ export class KnowledgeBaseServer {
           args.path,
           { mustExist: false },
         );
+        if (auditing) {
+          beforeHash = await sha256OfFileOrNull(documentPath);
+        }
         const relativePath = path.relative(kbDir, documentPath);
         sidecarPath = path.join(
           kbDir,
@@ -595,8 +657,10 @@ export class KnowledgeBaseServer {
         );
         await fsp.rm(documentPath);
         await fsp.rm(sidecarPath, { force: true });
+        writePerformed = true;
       });
 
+      await auditOnExit();
       return {
         content: [{
           type: 'text',
@@ -612,6 +676,7 @@ export class KnowledgeBaseServer {
       };
     } catch (error: unknown) {
       if (error instanceof ActiveModelResolutionError) {
+        await auditOnExit(error);
         return { content: [{ type: 'text', text: error.message }], isError: true };
       }
       const err = toError(error);
@@ -619,6 +684,7 @@ export class KnowledgeBaseServer {
       if (err.stack) {
         logger.error(err.stack);
       }
+      await auditOnExit(err);
       return { content: [mcpErrorContent(err)], isError: true };
     }
   }

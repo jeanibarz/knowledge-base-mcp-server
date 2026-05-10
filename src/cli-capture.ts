@@ -15,6 +15,12 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel } from './cli-shared.js';
+import {
+  auditEnabled,
+  recordMutation,
+  sha256OfFileOrNull,
+  type RefreshStatus,
+} from './audit-log.js';
 
 interface CaptureArgs {
   kb?: string;
@@ -127,25 +133,71 @@ export async function runCapture(rest: string[]): Promise<number> {
     language,
   });
 
-  let relativePath: string;
+  const auditing = auditEnabled();
+  const expectedDocPath = auditing
+    ? await safeResolveKbPath(parsed.kb!, parsed.append!)
+    : null;
+  const beforeHash = expectedDocPath !== null
+    ? await sha256OfFileOrNull(expectedDocPath)
+    : null;
+
+  let relativePath = '';
+  let writePerformed = false;
+  let writeError: Error | undefined;
   try {
     relativePath = await appendToNote(parsed.kb!, parsed.append!, block);
+    writePerformed = true;
   } catch (err) {
-    process.stderr.write(`kb capture: ${(err as Error).message}\n`);
-    return 1;
+    writeError = err as Error;
   }
 
-  if (parsed.refresh) {
+  let refreshStatus: RefreshStatus = parsed.refresh ? 'skipped' : null;
+  let refreshError: Error | undefined;
+  if (writePerformed && parsed.refresh) {
     try {
       await refreshKnowledgeBase(parsed.kb!);
+      refreshStatus = 'ok';
     } catch (err) {
-      if (err instanceof ActiveModelResolutionError) {
-        process.stderr.write(`kb capture: ${err.message}\n`);
-        return 2;
-      }
-      process.stderr.write(`kb capture: refresh failed after write: ${(err as Error).message}\n`);
-      return 1;
+      refreshStatus = 'failed';
+      refreshError = err as Error;
     }
+  }
+
+  if (auditing) {
+    const afterHash = expectedDocPath !== null
+      ? await sha256OfFileOrNull(expectedDocPath)
+      : null;
+    await recordMutation({
+      surface: 'cli.kb-capture',
+      operation: 'capture',
+      kb: parsed.kb!,
+      relative_path: writePerformed ? relativePath : parsed.append!,
+      before_sha256: beforeHash,
+      after_sha256: afterHash,
+      write_performed: writePerformed,
+      refresh_requested: parsed.refresh,
+      refresh_status: refreshStatus,
+      decision_flags: {
+        truncated: result.truncated,
+        bytes_elided: result.bytesElided,
+        exit_code: result.exitCode,
+        allow_fail: parsed.allowFail,
+      },
+      error: (writeError ?? refreshError)?.message,
+    });
+  }
+
+  if (writeError !== undefined) {
+    process.stderr.write(`kb capture: ${writeError.message}\n`);
+    return 1;
+  }
+  if (refreshError !== undefined) {
+    if (refreshError instanceof ActiveModelResolutionError) {
+      process.stderr.write(`kb capture: ${refreshError.message}\n`);
+      return 2;
+    }
+    process.stderr.write(`kb capture: refresh failed after write: ${refreshError.message}\n`);
+    return 1;
   }
 
   process.stdout.write(`${JSON.stringify({
@@ -158,6 +210,19 @@ export async function runCapture(rest: string[]): Promise<number> {
     refreshed: parsed.refresh,
   }, null, 2)}\n`);
   return 0;
+}
+
+async function safeResolveKbPath(kbName: string, relativePath: string): Promise<string | null> {
+  try {
+    return await resolveKbPath(
+      KNOWLEDGE_BASES_ROOT_DIR,
+      kbName,
+      relativePath,
+      { mustExist: false },
+    );
+  } catch {
+    return null;
+  }
 }
 
 function parseCaptureArgs(rest: string[]): CaptureArgs {

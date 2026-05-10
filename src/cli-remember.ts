@@ -18,6 +18,13 @@ import {
   formatBlockedMarkdown,
   type SimilarCandidate,
 } from './cli-remember-similarity.js';
+import {
+  auditEnabled,
+  recordMutation,
+  sha256OfFileOrNull,
+  type MutationOperation,
+  type RefreshStatus,
+} from './audit-log.js';
 
 export {
   EXIT_BLOCKED_BY_SIMILARITY_GUARD,
@@ -254,8 +261,24 @@ export async function runRemember(rest: string[]): Promise<number> {
     }
   }
 
-  let relativePath: string;
-  let action: 'create' | 'append' | 'append-section';
+  const auditing = auditEnabled();
+  const planned: MutationOperation =
+    parsed.appendSection !== undefined ? 'append-section'
+    : parsed.append !== undefined ? 'append'
+    : 'create';
+  const expectedRelPath: string | null =
+    planned === 'create' ? null : (parsed.append ?? null);
+  const beforeDocPath = auditing && expectedRelPath !== null
+    ? await safeResolveKbPath(parsed.kb!, expectedRelPath)
+    : null;
+  const beforeHash = beforeDocPath !== null
+    ? await sha256OfFileOrNull(beforeDocPath)
+    : null;
+
+  let relativePath = '';
+  let action: 'create' | 'append' | 'append-section' = planned;
+  let writePerformed = false;
+  let writeError: Error | undefined;
   try {
     if (parsed.appendSection !== undefined) {
       relativePath = await appendSectionInExistingNote(
@@ -273,22 +296,62 @@ export async function runRemember(rest: string[]): Promise<number> {
       relativePath = await createNewNote(parsed.kb!, parsed.title!, content);
       action = 'create';
     }
+    writePerformed = true;
   } catch (err) {
-    process.stderr.write(`kb remember: ${(err as Error).message}\n`);
-    return 1;
+    writeError = err as Error;
   }
 
-  if (parsed.refresh) {
+  let refreshStatus: RefreshStatus = parsed.refresh ? 'skipped' : null;
+  let refreshError: Error | undefined;
+  if (writePerformed && parsed.refresh) {
     try {
       await refreshKnowledgeBase(parsed.kb!);
+      refreshStatus = 'ok';
     } catch (err) {
-      if (err instanceof ActiveModelResolutionError) {
-        process.stderr.write(`kb remember: ${err.message}\n`);
-        return 2;
-      }
-      process.stderr.write(`kb remember: refresh failed after write: ${(err as Error).message}\n`);
-      return 1;
+      refreshStatus = 'failed';
+      refreshError = err as Error;
     }
+  }
+
+  if (auditing) {
+    const afterRelPath = writePerformed ? relativePath : expectedRelPath;
+    const afterDocPath = afterRelPath !== null
+      ? await safeResolveKbPath(parsed.kb!, afterRelPath)
+      : null;
+    const afterHash = afterDocPath !== null
+      ? await sha256OfFileOrNull(afterDocPath)
+      : null;
+    await recordMutation({
+      surface: 'cli.kb-remember',
+      operation: action,
+      kb: parsed.kb!,
+      relative_path: afterRelPath,
+      before_sha256: beforeHash,
+      after_sha256: afterHash,
+      write_performed: writePerformed,
+      refresh_requested: parsed.refresh,
+      refresh_status: refreshStatus,
+      decision_flags: {
+        force: parsed.force,
+        similarity_check: parsed.checkSimilar,
+        lesson: parsed.lesson,
+        append_section: parsed.appendSection !== undefined,
+      },
+      error: (writeError ?? refreshError)?.message,
+    });
+  }
+
+  if (writeError !== undefined) {
+    process.stderr.write(`kb remember: ${writeError.message}\n`);
+    return 1;
+  }
+  if (refreshError !== undefined) {
+    if (refreshError instanceof ActiveModelResolutionError) {
+      process.stderr.write(`kb remember: ${refreshError.message}\n`);
+      return 2;
+    }
+    process.stderr.write(`kb remember: refresh failed after write: ${refreshError.message}\n`);
+    return 1;
   }
 
   const summary: Record<string, unknown> = {
@@ -826,4 +889,17 @@ async function readAllStdin(): Promise<string> {
     process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
     process.stdin.on('error', reject);
   });
+}
+
+async function safeResolveKbPath(kbName: string, relativePath: string): Promise<string | null> {
+  try {
+    return await resolveKbPath(
+      KNOWLEDGE_BASES_ROOT_DIR,
+      kbName,
+      relativePath,
+      { mustExist: false },
+    );
+  } catch {
+    return null;
+  }
 }
