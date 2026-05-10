@@ -39,8 +39,10 @@ For an interactive shell or AI-agent shell-tool flow, install globally and use t
 npm install -g @jeanibarz/knowledge-base-mcp-server@latest
 kb list                       # list available knowledge bases
 kb stats                      # read-only index/corpus stats
-kb search "your query"        # read-only search; cheap, fast (~0.6 s)
-kb search "query" --refresh   # also re-scan KB files (write path)
+kb search "your query"                       # read-only dense search; cheap, fast (~0.6 s)
+kb search "query" --refresh                  # also re-scan KB files (write path)
+kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh   # BM25 debug surface (#206 stage 1)
+kb search "INDEX_NOT_INITIALIZED" --mode=hybrid              # dense ⨁ BM25 fused via RRF (#206 stage 2)
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
@@ -102,7 +104,7 @@ kb models remove huggingface__BAAI-bge-small-en-v1.5
 
 **Migration from 0.2.x → 0.3.0** is automatic on first server (or `kb`) start: the existing single-model index is moved into `${FAISS_INDEX_PATH}/models/<derived_id>/` and `active.txt` is written. Atomic, ~12 ms measured. **Before upgrading**, fully exit any AI client (Claude Code, Cursor, Continue, Cline) that has the MCP server loaded — the migration acquires the single-instance PID advisory before any rename, so it cannot run while a 0.2.x MCP child is still using the directory. See [CHANGELOG](CHANGELOG.md) for rollback recipes.
 
-**MCP surface** — `retrieve_knowledge` gains an optional `model_name` argument; a new `list_models` tool returns the registered models. Tools that don't pass `model_name` keep working unchanged (wire format is byte-equal to 0.2.x).
+**MCP surface** — `retrieve_knowledge` gains an optional `model_name` argument; a new `list_models` tool returns the registered models; `kb_stats` reports the latest in-process `updateIndex` summary under `last_index_update` alongside the static index counts. Tools that don't pass `model_name` keep working unchanged (wire format is byte-equal to 0.2.x).
 
 ### MCP error codes
 
@@ -299,6 +301,8 @@ npm install -g @jeanibarz/knowledge-base-mcp-server@latest
 
 ## Usage
 
+> **Writing notes that retrieve well?** See [`docs/authoring-knowledge.md`](docs/authoring-knowledge.md) — six-section guide on chunk-friendly markdown, frontmatter taxonomy that lifts into filters, content-boundary safety, and when to split a KB.
+
 The server exposes two tools:
 
 *   `list_knowledge_bases`: Lists the available knowledge bases.
@@ -376,7 +380,7 @@ kb doctor                # human-readable report
 kb doctor --format=json  # machine-readable for agent shells
 ```
 
-The report covers active-model resolution, FAISS index version + mtime, per-KB stale counts, embedding-backend reachability (Ollama / HuggingFace / OpenAI), CLI version, and local git state. The command exits non-zero when any required check fails (active model unresolved, index missing, backend unreachable), so it is safe to use as a precondition gate from scripts.
+The report covers active-model resolution, FAISS index version + mtime, the latest in-process index-update summary, per-KB stale counts, embedding-backend reachability (Ollama / HuggingFace / OpenAI), CLI version, and local git state. The command exits non-zero when any required check fails (active model unresolved, index missing, backend unreachable), so it is safe to use as a precondition gate from scripts.
 
 ### Distinguishing search failure modes
 

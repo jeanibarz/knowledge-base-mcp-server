@@ -2,6 +2,18 @@
 
 - [Retrieval eval command](retrieval-eval.md)
 
+## Observability
+
+### TS-OBS-237: Last Index Update Summary
+**Requirement:** FR-OBS-237
+
+**Test Cases:**
+- `FaissIndexManager` shall initialize the latest update summary as `never_run`.
+- `FaissIndexManager.updateIndex` shall record success counters for changed and unchanged files.
+- `FaissIndexManager.updateIndex` shall retain a failed summary when save persistence throws.
+- `computeKbStats` shall include the manager's latest update summary in the payload.
+- `buildDoctorReport` and `formatDoctorMarkdown` shall include the latest update summary.
+
 ## Search
 
 ### TS-SEARCH-192: Scoped Search Staleness
