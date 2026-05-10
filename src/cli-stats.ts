@@ -1,0 +1,160 @@
+import { readFileSync, realpathSync } from 'fs';
+import * as path from 'path';
+import { resolveActiveModel } from './active-model.js';
+import {
+  classifyKbSearchError,
+  exitCodeForFailure,
+  formatKbSearchFailureJson,
+  formatKbSearchFailureStderr,
+} from './cli-search-errors.js';
+import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import { FaissIndexManager } from './FaissIndexManager.js';
+import { computeKbStats, type ComputeKbStatsOptions, type KbStatsPayload } from './kb-stats.js';
+
+const CLI_STARTED_AT = Date.now();
+
+export interface StatsArgs {
+  kb?: string;
+  format: 'md' | 'json';
+}
+
+export interface RunStatsDeps {
+  bootstrapLayout: () => Promise<void>;
+  resolveActiveModel: () => Promise<string>;
+  loadManagerForModel: (modelId: string) => Promise<FaissIndexManager>;
+  loadWithJsonRetry: (manager: FaissIndexManager) => Promise<void>;
+  computeKbStats: (
+    manager: FaissIndexManager,
+    options: ComputeKbStatsOptions,
+  ) => Promise<KbStatsPayload>;
+  readPackageVersion: () => string;
+  stdout: (text: string) => void;
+  stderr: (text: string) => void;
+}
+
+const DEFAULT_DEPS: RunStatsDeps = {
+  bootstrapLayout: () => FaissIndexManager.bootstrapLayout(),
+  resolveActiveModel: () => resolveActiveModel(),
+  loadManagerForModel,
+  loadWithJsonRetry,
+  computeKbStats,
+  readPackageVersion,
+  stdout: (text) => process.stdout.write(text),
+  stderr: (text) => process.stderr.write(text),
+};
+
+export async function runStats(rest: string[], deps: RunStatsDeps = DEFAULT_DEPS): Promise<number> {
+  let parsed: StatsArgs;
+  try {
+    parsed = parseStatsArgs(rest);
+  } catch (err) {
+    deps.stderr(`kb stats: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  try {
+    await deps.bootstrapLayout();
+    const activeModelId = await deps.resolveActiveModel();
+    const manager = await deps.loadManagerForModel(activeModelId);
+    await deps.loadWithJsonRetry(manager);
+    const payload = await deps.computeKbStats(manager, {
+      ...(parsed.kb !== undefined ? { knowledgeBaseName: parsed.kb } : {}),
+      serverVersion: deps.readPackageVersion(),
+      startedAt: CLI_STARTED_AT,
+    });
+
+    if (parsed.format === 'json') {
+      deps.stdout(`${JSON.stringify(payload, null, 2)}\n`);
+    } else {
+      deps.stdout(formatStatsMarkdown(payload));
+    }
+    return 0;
+  } catch (err) {
+    const failure = classifyKbSearchError(err);
+    if (parsed.format === 'json') {
+      deps.stdout(formatKbSearchFailureJson(failure));
+    } else {
+      deps.stderr(formatKbSearchFailureStderr(failure).replace(/^kb search:/, 'kb stats:'));
+    }
+    return exitCodeForFailure(failure);
+  }
+}
+
+export function parseStatsArgs(rest: string[]): StatsArgs {
+  const out: StatsArgs = { format: 'md' };
+  for (const raw of rest) {
+    if (raw === '--help' || raw === '-h') {
+      throw new Error('usage: kb stats [--kb=<name>] [--format=md|json]');
+    }
+    if (raw.startsWith('--kb=')) {
+      const value = raw.slice('--kb='.length);
+      if (value === '') throw new Error('empty --kb value');
+      out.kb = value;
+      continue;
+    }
+    if (raw.startsWith('--format=')) {
+      const value = raw.slice('--format='.length);
+      if (value !== 'md' && value !== 'json') {
+        throw new Error(`invalid --format: ${raw}`);
+      }
+      out.format = value;
+      continue;
+    }
+    if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
+    throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
+  }
+  return out;
+}
+
+export function formatStatsMarkdown(payload: KbStatsPayload): string {
+  const rows = Object.entries(payload.knowledge_bases)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, row]) => {
+      return (
+        `| ${escapeTableCell(name)} | ${formatInteger(row.file_count)} | ` +
+        `${formatInteger(row.chunk_count)} | ${formatInteger(row.total_bytes_indexed)} | ` +
+        `${row.last_updated_at ?? 'never'} |`
+      );
+    });
+
+  const dim = payload.embedding.dim === null ? 'unknown' : String(payload.embedding.dim);
+  const uptimeMs = Math.max(0, Math.round(payload.server.uptime_ms));
+
+  return [
+    '# KB Stats',
+    '',
+    '| Knowledge base | Files | Chunks | Bytes | Last indexed |',
+    '| --- | ---: | ---: | ---: | --- |',
+    ...rows,
+    '',
+    '## Index',
+    '',
+    `- Provider: ${payload.embedding.provider}`,
+    `- Model: ${payload.embedding.model}`,
+    `- Dimensions: ${dim}`,
+    `- Index path: \`${payload.index_path}\``,
+    `- Server version: ${payload.server.version}`,
+    `- Uptime: ${formatInteger(uptimeMs)} ms`,
+    '',
+  ].join('\n');
+}
+
+function escapeTableCell(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+}
+
+function formatInteger(value: number): string {
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
+}
+
+function readPackageVersion(): string {
+  try {
+    const here = realpathSync(process.argv[1] ?? path.join(process.cwd(), 'build', 'cli.js'));
+    const pkgPath = path.join(path.dirname(here), '..', 'package.json');
+    const raw = readFileSync(pkgPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { version?: string };
+    return parsed.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}

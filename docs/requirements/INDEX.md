@@ -17,3 +17,20 @@
 
 **Linked Tests:** TS-SEARCH-192
 **Dependencies:** RFC005
+
+## Stats
+
+### FR-STATS-230: Local Stats CLI
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall expose a read-only `kb stats` CLI command that reports the active index statistics available through the MCP `kb_stats` tool.
+
+**Acceptance Criteria:**
+- [x] Given an active model index, when a user runs `kb stats --format=json`, then the CLI emits the shared `computeKbStats` payload without refreshing the index.
+- [x] Given `kb stats --kb=<name>`, when the knowledge base exists, then the CLI reports only that knowledge base.
+- [x] Given markdown output, when stats are available, then the CLI prints a compact per-KB table plus embedding, index path, version, and uptime metadata.
+- [x] Given an unknown flag or invalid format, when the user runs `kb stats`, then the CLI exits with code 2.
+
+**Linked Tests:** TS-STATS-230
+**Dependencies:** kb_stats MCP tool, multi-model active index resolution

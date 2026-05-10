@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — `kb stats` local index observability
+
+### Added
+
+- **`kb stats [--kb=<name>] [--format=md|json]`.** Read-only CLI access to the same `computeKbStats` payload used by the MCP `kb_stats` tool. JSON preserves the shared payload shape for automation, while markdown prints a compact per-KB table with file count, chunk count, indexed bytes, last indexed time, and active embedding/index metadata. The command loads the active model read-only and does not refresh the index or acquire the write lock. Closes #230.
+
 ## [Unreleased] — `kb remember --lesson` agent-task lesson template
 
 ### Added
