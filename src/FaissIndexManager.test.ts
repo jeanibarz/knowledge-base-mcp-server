@@ -1150,6 +1150,27 @@ describe('FaissIndexManager permission handling', () => {
     await expect(fsp.stat(modelNameFile)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('initialize({ strictReadOnly: true }) does not create a missing model directory', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-strict-readonly-'));
+    const kbDir = path.join(tempDir, 'kb');
+    await fsp.mkdir(kbDir, { recursive: true });
+    const faissDir = path.join(tempDir, '.faiss');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+
+    await expect(manager.initialize({ strictReadOnly: true })).rejects.toThrow(
+      /read-only load will not create/,
+    );
+    await expect(fsp.stat(modelDirIn(faissDir))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('initialize() (default) writes model_name.txt atomically', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-atomic-'));
     const kbDir = path.join(tempDir, 'kb');

@@ -60,8 +60,15 @@ export async function loadFaissStoreAtomic(options: {
   modelId: string;
   embeddings: EmbeddingsInterface;
   handleFsOperationError: FsOperationErrorHandler;
+  repairCorrupt?: boolean;
 }): Promise<FaissStore | null> {
-  const { modelDir, modelId, embeddings, handleFsOperationError } = options;
+  const {
+    modelDir,
+    modelId,
+    embeddings,
+    handleFsOperationError,
+    repairCorrupt = true,
+  } = options;
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
   const legacyPath = path.join(modelDir, LEGACY_INDEX_NAME);
 
@@ -92,6 +99,12 @@ export async function loadFaissStoreAtomic(options: {
       );
       store = await FaissStore.load(resolved, embeddings);
     } catch (err) {
+      if (!repairCorrupt) {
+        throw new Error(
+          `Versioned FAISS index ${resolved} is corrupt or unreadable; ` +
+            `read-only load will not repair it. Underlying error: ${(err as Error).message}`,
+        );
+      }
       logger.warn(
         `Versioned FAISS index ${resolved} is corrupt or unreadable - ` +
           `removing symlink and falling back to rebuild. Legacy faiss.index/ ` +
@@ -127,6 +140,12 @@ export async function loadFaissStoreAtomic(options: {
       );
       return await FaissStore.load(legacyPath, embeddings);
     } catch (err) {
+      if (!repairCorrupt) {
+        throw new Error(
+          `Legacy FAISS index at ${legacyPath} is corrupt or unreadable; ` +
+            `read-only load will not repair it. Underlying error: ${(err as Error).message}`,
+        );
+      }
       logger.warn(
         `Legacy FAISS index at ${legacyPath} is corrupt or unreadable - ` +
           `removing and falling back to rebuild. Error:`,

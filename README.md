@@ -46,6 +46,7 @@ kb search "INDEX_NOT_INITIALIZED" --mode=hybrid              # dense ⨁ BM25 fu
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
+kb superseded --kb=work       # read-only review for obsolete/contradicted notes
 kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
 kb --help
 ```
@@ -53,6 +54,8 @@ kb --help
 The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, and version context. It is read-only and does not refresh the index. `kb search` also defaults to read-only — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
 
 `kb remember` is a conservative CLI write path for agent shells. `--suggest` is read-only and lists likely existing targets from note filenames/headings. Creates and appends require both `--stdin` and `--yes`; create uses a slugified `.md` filename and refuses overwrites, while append accepts only existing KB-relative paths. Add `--refresh` to re-index the affected KB after a successful write.
+
+`kb superseded --kb=<name>` is a read-only active-forgetting review. It scans markdown frontmatter for explicit contradiction, deprecated/dormant lifecycle status, stale verification dates, and low-confidence active notes, then uses the existing semantic index to add conservative newer-neighbor evidence when available. Use `--format=json` for agent workflows and `--include-clean` when you need a full inventory.
 
 `kb eval <fixture.yml|json>` runs retrieval checks from fixtures. Each case can set `query`, optional `kb`, `required_sources`, `forbidden_sources`, `expected_metadata`, `max_duplicate_groups`, `stale_policy`, and `gate`. Failing ungated cases print warnings and exit 0; failing gated cases exit 1 for CI.
 

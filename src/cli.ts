@@ -28,6 +28,7 @@ import { runRemember } from './cli-remember.js';
 import { runSearch } from './cli-search.js';
 import { runStaleCheck } from './cli-stale-check.js';
 import { runStats } from './cli-stats.js';
+import { runSuperseded } from './cli-superseded.js';
 import { runWhere } from './cli-where.js';
 
 // ----- Entry point -----------------------------------------------------------
@@ -88,6 +89,11 @@ Usage:
                                            Scan markdown notes for path / URL
                                            references that no longer resolve.
                                            Strictly read-only.
+  kb superseded --kb=<name> [--format=md|json] [--k=<n>] [--include-clean]
+                                           Scan markdown notes for obsolete,
+                                           contradicted, deprecated, stale, or
+                                           semantically superseded memory
+                                           candidates. Strictly read-only.
   kb where --topic=<query> [--threshold=<float>] [--k=<int>] [--format=md|json]
                                            One-shot recommendation: which KB
                                            and which file should I update for
@@ -222,6 +228,9 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (sub === 'stale-check') {
     return runStaleCheck(rest);
+  }
+  if (sub === 'superseded') {
+    return runSuperseded(rest);
   }
   if (sub === 'where') {
     return runWhere(rest);

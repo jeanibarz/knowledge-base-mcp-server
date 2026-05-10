@@ -95,6 +95,11 @@ export interface UpdateIndexOptions {
   force?: boolean;
 }
 
+export interface InitializeOptions {
+  readOnly?: boolean;
+  strictReadOnly?: boolean;
+}
+
 export type IndexUpdateSummaryStatus = 'success' | 'partial' | 'failed' | 'never_run';
 
 export interface IndexUpdateFailureSummary {
@@ -261,9 +266,14 @@ export class FaissIndexManager {
    *
    * RFC 012 §4.5 — `readOnly: true` skips the `model_name.txt` write so a CLI
    * can load the index without contending with a running MCP server.
+   *
+   * `strictReadOnly: true` is for audit commands that must not create or
+   * repair index layout. It implies readOnly behavior, refuses a missing model
+   * directory, and leaves corrupt index paths untouched.
    */
-  async initialize(opts: { readOnly?: boolean } = {}): Promise<void> {
+  async initialize(opts: InitializeOptions = {}): Promise<void> {
     try {
+      const readOnly = opts.readOnly === true || opts.strictReadOnly === true;
       // Issue #59 — lazy provider import. Idempotent: a second initialize()
       // (e.g. tests that re-call after corrupt-recovery) reuses the existing
       // embeddings client. Throws here on missing API keys, matching the
@@ -277,6 +287,12 @@ export class FaissIndexManager {
       // Ensure this model's directory exists. mkdir-p is cheap; first-run
       // for a fresh install creates `${PATH}/models/<id>/`.
       if (!(await pathExists(this.modelDir))) {
+        if (opts.strictReadOnly === true) {
+          throw new Error(
+            `FAISS model directory missing for "${this.modelId}"; ` +
+              `read-only load will not create ${this.modelDir}`,
+          );
+        }
         try {
           await fsp.mkdir(this.modelDir, { recursive: true });
         } catch (error) {
@@ -290,7 +306,9 @@ export class FaissIndexManager {
       // own corruption recovery — only the FAILED layout is removed, never
       // the other one (preserves legacy as rollback safety even when the
       // versioned layout is corrupt, and vice versa).
-      this.faissIndex = await this.loadAtomic();
+      this.faissIndex = await this.loadAtomic({
+        repairCorrupt: opts.strictReadOnly !== true,
+      });
 
       // Issue #90 — sidecar invalidation when this model's FAISS store is gone.
       //
@@ -323,13 +341,13 @@ export class FaissIndexManager {
       // lighter purge is preferable to silent empty results until then.
       //
       // Skipped under readOnly:true (no mutation allowed in that mode).
-      if (this.faissIndex === null && !opts.readOnly) {
+      if (this.faissIndex === null && !readOnly) {
         await this.purgeStaleSidecars();
       }
 
       // Save the current model name for this model's dir. Skipped under
       // readOnly:true (RFC 012 §4.5).
-      if (!opts.readOnly) {
+      if (!readOnly) {
         try {
           await writeModelNameAtomic(this.modelNameFile, this.modelName);
         } catch (error) {
@@ -464,12 +482,13 @@ export class FaissIndexManager {
    * `list_models` (active-model.ts:detectDowngradeHazard), so no marker
    * file is required — the filesystem is the single source of truth.
    */
-  private async loadAtomic(): Promise<FaissStore | null> {
+  private async loadAtomic(opts: { repairCorrupt?: boolean } = {}): Promise<FaissStore | null> {
     return loadFaissStoreAtomic({
       modelDir: this.modelDir,
       modelId: this.modelId,
       embeddings: this.embeddings,
       handleFsOperationError,
+      repairCorrupt: opts.repairCorrupt,
     });
   }
 
