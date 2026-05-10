@@ -2,6 +2,18 @@
 
 - [Retrieval eval command](retrieval-eval.md)
 
+## Indexing
+
+### TS-INDEX-236: Batched Changed-File Embeddings
+**Requirement:** NFR-INDEX-236
+
+**Test Cases:**
+- `resolveIndexingBatchSize` shall use provider defaults and validate `INDEXING_BATCH_SIZE`.
+- `FaissIndexManager.updateIndex` shall batch multiple changed files into a single seed call when they fit the configured batch size.
+- `FaissIndexManager.updateIndex` shall split changed-file documents into bounded append batches when the configured batch size is exceeded.
+- `FaissIndexManager.updateIndex` shall keep the one-save-at-end invariant and write sidecar hashes only after a successful save.
+- `FaissIndexManager` shall resolve unset batch defaults from an explicitly configured manager provider.
+
 ## Observability
 
 ### TS-OBS-237: Last Index Update Summary

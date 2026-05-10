@@ -6,6 +6,30 @@
 
 - **`kb stats [--kb=<name>] [--format=md|json]`.** Read-only CLI access to the same `computeKbStats` payload used by the MCP `kb_stats` tool. JSON preserves the shared payload shape for automation, while markdown prints a compact per-KB table with file count, chunk count, indexed bytes, last indexed time, and active embedding/index metadata. The command loads the active model read-only and does not refresh the index or acquire the write lock. Closes #230.
 
+## [Unreleased] — current retrieval metadata and FAISS layout docs (#234)
+
+### Changed
+
+- **`docs/architecture/data-model.md` now documents the live chunk metadata schema and FAISS persistence layout.** The page covers per-model `models/<id>/`, `active.txt`, per-model `model_name.txt`, versioned `index.vN/{faiss.index,docstore.json}`, legacy layout fallback, current chunk metadata fields, lifted frontmatter, `frontmatter.extras` wire sanitization, and markdown sibling `pdf_path`. Closes #234.
+
+## [Unreleased] — `add_document` rollback on indexing failure
+
+### Changed
+
+- **`add_document` now compensates filesystem writes when immediate indexing fails.** If a new document was written and `updateIndex` rejects, the server removes the new file and prunes only parent directories created by that call. If an existing document was overwritten, the previous bytes and file mode are restored. If indexing had already mutated FAISS state, the server reloads the previous persisted index or force-rebuilds from rolled-back files so retrieval does not keep rejected content alive. The MCP error payload includes rollback status so callers can tell whether durable KB content was restored or still needs manual remediation. Closes #235.
+
+## [Unreleased] — Batched changed-file embeddings during updateIndex (#236)
+
+### Changed
+
+- **`FaissIndexManager.updateIndex` now embeds changed-file chunks in bounded document batches.** `INDEXING_BATCH_SIZE` controls the batch size, with conservative provider defaults. Empty indexes are seeded with one `fromTexts` batch and remaining chunks append through `addDocuments` batches, while preserving the existing single FAISS save and post-save sidecar hash writes. Closes #236.
+
+## [Unreleased] — docs anchor verifier
+
+### Added
+
+- **`npm run docs:check-anchors`.** Contributor-facing documentation drift check that scans architecture docs, RFCs, README, CONTRIBUTING, and CLAUDE.md for source anchors such as `src/FaissIndexManager.ts:153-164` and `src/config.ts::OLLAMA_MODEL`. The checker skips fenced code blocks, supports inline `anchor-check` ignores, validates target file existence, verifies line ranges are in bounds, and resolves simple TypeScript/JavaScript symbol anchors before review. Because existing docs contain stale anchors, the default command reports drift in warning mode; pass `-- --strict` to fail on stale anchors. Closes #233.
+
 ## [Unreleased] — latest index-update summaries in stats and doctor
 
 ### Added

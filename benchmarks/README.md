@@ -58,11 +58,11 @@ Every run writes a single JSON object with stable top-level keys:
     },
     "cold_index": {
       "files": 100,
-      "chunks": 500,
-      "ms": 10761,
-      "save_calls": 100,
+      "chunks": 600,
+      "ms": 12238,
+      "save_calls": 1,
       "from_texts_calls": 1,
-      "add_documents_calls": 99
+      "add_documents_calls": 9
     },
     "warm_query": {
       "repetitions": 30,
