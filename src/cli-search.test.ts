@@ -2,8 +2,10 @@ import { describe, expect, it } from '@jest/globals';
 import {
   AutoThresholdDecision,
   computeAutoThreshold,
+  formatAutoModeHeader,
   formatAutoThresholdHeader,
   formatFreshnessFooter,
+  resolveAutoSearchMode,
   Staleness,
 } from './cli-search.js';
 import {
@@ -219,5 +221,37 @@ describe('formatAutoThresholdHeader', () => {
   it('handles the empty-result case', () => {
     const d: AutoThresholdDecision = { threshold: 0, kneeIndex: null, kept: 0 };
     expect(formatAutoThresholdHeader(d)).toBe('> _Auto-threshold: no results to score._');
+  });
+});
+
+describe('resolveAutoSearchMode', () => {
+  it('keeps prose queries on dense retrieval', () => {
+    expect(resolveAutoSearchMode('how should I roll back a deployment?')).toEqual({
+      mode: 'dense',
+      reason: 'prose query',
+    });
+  });
+
+  it('uses hybrid for exact error and identifier shaped queries', () => {
+    expect(resolveAutoSearchMode('INDEX_NOT_INITIALIZED')).toMatchObject({
+      mode: 'hybrid',
+    });
+    expect(resolveAutoSearchMode('FaissIndexManager batch size')).toMatchObject({
+      mode: 'hybrid',
+    });
+  });
+
+  it('uses hybrid for flags, paths, and issue references', () => {
+    expect(resolveAutoSearchMode('--refresh behavior')).toMatchObject({ mode: 'hybrid' });
+    expect(resolveAutoSearchMode('src/cli-search.ts')).toMatchObject({ mode: 'hybrid' });
+    expect(resolveAutoSearchMode('PR #253')).toMatchObject({ mode: 'hybrid' });
+  });
+});
+
+describe('formatAutoModeHeader', () => {
+  it('renders the selected mode and reason', () => {
+    expect(formatAutoModeHeader({ mode: 'hybrid', reason: 'file-like token' })).toBe(
+      '> _Mode: auto -> hybrid (file-like token)._',
+    );
   });
 });

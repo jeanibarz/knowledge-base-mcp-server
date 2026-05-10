@@ -129,6 +129,15 @@ export interface IndexUpdateSummary {
   failures: IndexUpdateFailureSummary[];
 }
 
+export interface SimilaritySearchTiming {
+  embed_query_ms?: number;
+  faiss_search_ms?: number;
+  query_search_ms?: number;
+  post_filter_ms?: number;
+  total_ms?: number;
+  fetch_k?: number;
+}
+
 const MAX_INDEX_UPDATE_FAILURES = 10;
 
 export function createNeverRunIndexUpdateSummary(modelId: string | null = null): IndexUpdateSummary {
@@ -920,7 +929,9 @@ export class FaissIndexManager {
     threshold: number = 2,
     knowledgeBaseName?: string,
     filters?: SimilaritySearchFilters,
+    timing?: SimilaritySearchTiming,
   ) {
+    const totalStartedAt = Date.now();
     if (!this.faissIndex) {
       throw new KBError('INDEX_NOT_INITIALIZED', 'FAISS index is not initialized');
     }
@@ -938,13 +949,37 @@ export class FaissIndexManager {
     const fetchK = postFilter.requiresOverfetch
       ? Math.max(k, this.faissIndex.index.ntotal())
       : k;
+    if (timing) timing.fetch_k = fetchK;
 
     // FaissStore.similaritySearchVectorWithScore accepts only (query, k) and
     // silently drops any filter argument, so threshold and KB scoping are both
     // applied as post-filters on the returned [doc, score] tuples.
-    const resultsWithScore = await this.faissIndex.similaritySearchWithScore(query, fetchK);
+    let resultsWithScore: Array<[Document, number]>;
+    const vectorSearch = (
+      this.faissIndex as unknown as {
+        similaritySearchVectorWithScore?: (queryEmbedding: number[], k: number) => Promise<Array<[Document, number]>>;
+      }
+    ).similaritySearchVectorWithScore;
+    if (timing && typeof vectorSearch === 'function') {
+      const embedStartedAt = Date.now();
+      const queryEmbedding = await this.embeddings.embedQuery(query);
+      timing.embed_query_ms = Date.now() - embedStartedAt;
 
+      const faissStartedAt = Date.now();
+      resultsWithScore = await vectorSearch.call(this.faissIndex, queryEmbedding, fetchK);
+      timing.faiss_search_ms = Date.now() - faissStartedAt;
+    } else {
+      const queryStartedAt = Date.now();
+      resultsWithScore = await this.faissIndex.similaritySearchWithScore(query, fetchK);
+      if (timing) timing.query_search_ms = Date.now() - queryStartedAt;
+    }
+
+    const postFilterStartedAt = Date.now();
     const filtered = postFilter.apply(resultsWithScore);
+    if (timing) {
+      timing.post_filter_ms = Date.now() - postFilterStartedAt;
+      timing.total_ms = Date.now() - totalStartedAt;
+    }
 
     return filtered.slice(0, k).map(([doc, score]) => ({
       ...doc,

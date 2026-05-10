@@ -1,4 +1,4 @@
-import { FaissIndexManager } from './FaissIndexManager.js';
+import { FaissIndexManager, type SimilaritySearchTiming } from './FaissIndexManager.js';
 import { resolveActiveModel } from './active-model.js';
 import {
   classifyKbSearchError,
@@ -7,6 +7,13 @@ import {
   formatKbSearchFailureStderr,
 } from './cli-search-errors.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import {
+  compactTimingPayload,
+  elapsedMs,
+  formatTimingFooter,
+  nowMs,
+  type TimingPayload,
+} from './cli-timing.js';
 import { FRONTMATTER_EXTRAS_WIRE_VISIBLE } from './config.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
 import { callChatCompletion } from './llm-client.js';
@@ -37,6 +44,7 @@ Options:
   --endpoint=<url>      OpenAI-compatible chat endpoint for this call only.
   --llm-profile=<name>  Use a saved \`kb llm\` profile.
   --format=md|json      Output format (default: md).
+  --timing              Include elapsed milliseconds for retrieval and LLM stages.
   --stdin               Read question from stdin.
   --help, -h            Show this help.
 `;
@@ -51,6 +59,7 @@ interface AskArgs {
   refresh: boolean;
   stdin: boolean;
   format: 'md' | 'json';
+  timing: boolean;
 }
 
 interface LlmTarget {
@@ -59,6 +68,7 @@ interface LlmTarget {
 }
 
 export async function runAsk(rest: string[]): Promise<number> {
+  const totalStartedAt = nowMs();
   let args: AskArgs;
   try {
     args = parseAskArgs(rest);
@@ -76,10 +86,18 @@ export async function runAsk(rest: string[]): Promise<number> {
 
   let activeModelId: string;
   let results;
+  const timing: TimingPayload | null = args.timing ? {} : null;
   try {
+    let startedAt = nowMs();
     await FaissIndexManager.bootstrapLayout();
+    if (timing) timing.bootstrap_ms = elapsedMs(startedAt);
+    startedAt = nowMs();
     activeModelId = await resolveActiveModel({ explicitOverride: args.model });
+    if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
+    startedAt = nowMs();
     const manager = await loadManagerForModel(activeModelId);
+    if (timing) timing.manager_load_ms = elapsedMs(startedAt);
+    startedAt = nowMs();
     if (args.refresh) {
       await withWriteLock(manager.modelDir, async () => {
         await manager.initialize();
@@ -88,7 +106,21 @@ export async function runAsk(rest: string[]): Promise<number> {
     } else {
       await loadWithJsonRetry(manager);
     }
-    results = await manager.similaritySearch(args.question, args.k, undefined, args.kb);
+    if (timing) timing.index_load_ms = elapsedMs(startedAt);
+    const denseTiming: SimilaritySearchTiming = {};
+    startedAt = nowMs();
+    results = await manager.similaritySearch(
+      args.question,
+      args.k,
+      undefined,
+      args.kb,
+      undefined,
+      timing ? denseTiming : undefined,
+    );
+    if (timing) {
+      timing.retrieval_ms = elapsedMs(startedAt);
+      mergeAskDenseTiming(timing, denseTiming);
+    }
   } catch (err) {
     const failure = classifyKbSearchError(err);
     if (args.format === 'json') process.stdout.write(formatKbSearchFailureJson(failure));
@@ -98,7 +130,9 @@ export async function runAsk(rest: string[]): Promise<number> {
 
   let target: LlmTarget;
   try {
+    const startedAt = nowMs();
     target = await resolveLlmTarget(args);
+    if (timing) timing.llm_profile_resolution_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportAskError(args.format, `kb ask: ${(err as Error).message}`, 2);
   }
@@ -115,11 +149,16 @@ export async function runAsk(rest: string[]): Promise<number> {
   let answer: string;
   let llmModel: string | null = null;
   try {
+    const startedAt = nowMs();
     const response = await callChatCompletion({
       endpoint: target.profile.endpoint,
       messages: buildAskMessages(args.question, retrieval),
       temperature: 0.2,
     });
+    if (timing) {
+      timing.llm_first_token_ms = null;
+      timing.llm_total_ms = elapsedMs(startedAt);
+    }
     answer = response.content;
     llmModel = response.model;
   } catch (err) {
@@ -127,6 +166,7 @@ export async function runAsk(rest: string[]): Promise<number> {
   }
 
   const citations = buildCitations(retrieval);
+  if (timing) timing.total_ms = elapsedMs(totalStartedAt);
   if (args.format === 'json') {
     process.stdout.write(`${JSON.stringify({
       answer,
@@ -144,6 +184,7 @@ export async function runAsk(rest: string[]): Promise<number> {
         refreshed: args.refresh,
         knowledge_base: args.kb ?? null,
       },
+      ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     }, null, 2)}\n`);
   } else {
     process.stdout.write(`${answer}\n\n`);
@@ -156,6 +197,10 @@ export async function runAsk(rest: string[]): Promise<number> {
       }
     }
     process.stdout.write(`\n> _LLM: ${target.profile.name} (${target.profile.mode}) at ${target.profile.endpoint}; retrieval model: ${activeModelId}._\n`);
+    if (timing) {
+      process.stdout.write(formatTimingFooter('Timing', timing));
+      process.stdout.write('\n');
+    }
   }
   return 0;
 }
@@ -167,10 +212,12 @@ export function parseAskArgs(rest: string[]): AskArgs {
     refresh: false,
     stdin: false,
     format: 'md',
+    timing: false,
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
     if (raw === '--stdin') { out.stdin = true; continue; }
+    if (raw === '--timing') { out.timing = true; continue; }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
     if (raw.startsWith('--llm-profile=')) { out.llmProfile = raw.slice('--llm-profile='.length); continue; }
@@ -259,6 +306,15 @@ function reportAskError(format: 'md' | 'json', message: string, code: number): n
     process.stderr.write(`${message}\n`);
   }
   return code;
+}
+
+function mergeAskDenseTiming(target: TimingPayload, source: SimilaritySearchTiming): void {
+  if (source.embed_query_ms !== undefined) target.embed_query_ms = source.embed_query_ms;
+  if (source.faiss_search_ms !== undefined) target.faiss_search_ms = source.faiss_search_ms;
+  if (source.query_search_ms !== undefined) target.query_search_ms = source.query_search_ms;
+  if (source.post_filter_ms !== undefined) target.post_filter_ms = source.post_filter_ms;
+  if (source.total_ms !== undefined) target.retrieval_total_ms = source.total_ms;
+  if (source.fetch_k !== undefined) target.fetch_k = source.fetch_k;
 }
 
 async function readAllStdin(): Promise<string> {
