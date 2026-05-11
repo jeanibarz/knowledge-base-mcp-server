@@ -55,6 +55,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'doctor',
       'stats',
       'eval',
+      'explain',
       'stale-check',
       'superseded',
       'promote',
@@ -82,6 +83,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['doctor', 'kb doctor'],
     ['stats', 'kb stats'],
     ['eval', 'kb eval'],
+    ['explain', 'kb explain'],
     ['stale-check', 'kb stale-check'],
     ['superseded', 'kb superseded'],
     ['promote', 'kb promote'],
@@ -200,6 +202,24 @@ describe('kb CLI — argv parsing and dispatch', () => {
   it('search with --group-by-source is accepted by the parser', () => {
     const r = runCli(['search', 'q', '--group-by-source']);
     expect(r.stderr).not.toContain('unknown flag');
+  });
+
+  it('explain without query exits 2', () => {
+    const r = runCli(['explain']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('missing <query>');
+  });
+
+  it('explain with bogus flag exits 2', () => {
+    const r = runCli(['explain', 'q', '--zzz=1']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('unknown flag');
+  });
+
+  it('explain with --include-content but no --repro-bundle exits 2', () => {
+    const r = runCli(['explain', 'q', '--include-content']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('--include-content requires --repro-bundle');
   });
 });
 
