@@ -319,6 +319,18 @@ Or, when editing locally:
 npm run build       # global `kb` immediately reflects your change
 ```
 
+For source-mapped CLI debugging without rebuilding or relinking, run the
+TypeScript CLI entrypoint directly:
+
+```bash
+npm run dev:cli -- --help
+npm run dev:cli -- search "rollback procedure" --kb=work --k=5
+```
+
+The wrapper prints the active `KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`,
+embedding provider, and embedding model to stderr before each invocation so
+you can confirm which KB and index a command would touch.
+
 **Switching back to the published npm release** (e.g. to compare behaviour):
 
 ```bash
