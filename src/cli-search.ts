@@ -14,11 +14,13 @@ import {
 } from './cli-search-errors.js';
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+  KB_EDITOR_URI,
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config.js';
 import {
   formatRetrievalAsJson,
   formatRetrievalAsMarkdown,
+  formatRetrievalAsVimgrep,
   formatRetrievalGroupedBySourceAsMarkdown,
   groupRetrievalBySource,
 } from './formatter.js';
@@ -64,7 +66,9 @@ Result tuning:
                         dense + BM25 via reciprocal rank fusion (#206).
 
 Output:
-  --format=md|json      Output format (default: md).
+  --format=md|json|vimgrep
+                        Output format (default: md). vimgrep prints
+                        path:line:col:preview for editor quickfix flows.
   --group-by-source     Collapse repeated chunks from the same source file
                         in markdown output. With \`--format=json\`, adds a
                         \`grouped_results\` field alongside raw results.
@@ -88,6 +92,7 @@ Examples:
 
 export type SearchMode = 'dense' | 'lexical' | 'hybrid' | 'auto';
 export type EffectiveSearchMode = Exclude<SearchMode, 'auto'>;
+type SearchFormat = 'md' | 'json' | 'vimgrep';
 
 interface SearchArgs {
   query: string | null;
@@ -96,7 +101,7 @@ interface SearchArgs {
   threshold?: number;
   thresholdAuto: boolean;
   k: number;
-  format: 'md' | 'json';
+  format: SearchFormat;
   refresh: boolean;
   stdin: boolean;
   groupBySource: boolean;
@@ -255,7 +260,7 @@ export async function runSearch(rest: string[]): Promise<number> {
   if (timing) timing.total_ms = elapsedMs(totalStartedAt);
 
   if (parsed.format === 'json') {
-    const body = formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
+    const body = formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
     const effectiveCounts = parsed.refresh
       ? { modifiedFiles: 0, newFiles: 0 }
       : { modifiedFiles: staleness.modifiedFiles, newFiles: staleness.newFiles };
@@ -282,7 +287,7 @@ export async function runSearch(rest: string[]): Promise<number> {
           }
         : {}),
       ...(parsed.groupBySource
-        ? { grouped_results: groupRetrievalBySource(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE) }
+        ? { grouped_results: groupRetrievalBySource(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI) }
         : {}),
       index_mtime: staleness.indexMtime,
       stale: hasStaleCounts(effectiveCounts),
@@ -313,6 +318,9 @@ export async function runSearch(rest: string[]): Promise<number> {
       ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  } else if (parsed.format === 'vimgrep') {
+    const out = formatRetrievalAsVimgrep(results);
+    if (out !== '') process.stdout.write(`${out}\n`);
   } else {
     if (autoModeDecision !== null) {
       process.stdout.write(formatAutoModeHeader(autoModeDecision));
@@ -323,8 +331,8 @@ export async function runSearch(rest: string[]): Promise<number> {
       process.stdout.write('\n\n');
     }
     const md = parsed.groupBySource
-      ? formatRetrievalGroupedBySourceAsMarkdown(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE)
-      : formatRetrievalAsMarkdown(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
+      ? formatRetrievalGroupedBySourceAsMarkdown(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)
+      : formatRetrievalAsMarkdown(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
     process.stdout.write(md);
     process.stdout.write('\n\n');
     process.stdout.write(formatFreshnessFooter(staleness, parsed.refresh));
@@ -338,7 +346,7 @@ export async function runSearch(rest: string[]): Promise<number> {
   return 0;
 }
 
-function parseSearchArgs(rest: string[]): SearchArgs {
+export function parseSearchArgs(rest: string[]): SearchArgs {
   const out: SearchArgs = {
     query: null,
     k: 10,
@@ -378,7 +386,7 @@ function parseSearchArgs(rest: string[]): SearchArgs {
     }
     if (raw.startsWith('--format=')) {
       const v = raw.slice('--format='.length);
-      if (v !== 'md' && v !== 'json') throw new Error(`invalid --format: ${raw}`);
+      if (v !== 'md' && v !== 'json' && v !== 'vimgrep') throw new Error(`invalid --format: ${raw}`);
       out.format = v; continue;
     }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
@@ -564,7 +572,7 @@ function hasStaleCounts(counts: StalenessCounts): boolean {
   return counts.modifiedFiles + counts.newFiles > 0;
 }
 
-function reportFailure(failure: SearchFailure, format: 'md' | 'json'): number {
+function reportFailure(failure: SearchFailure, format: SearchFormat): number {
   if (format === 'json') {
     process.stdout.write(formatKbSearchFailureJson(failure));
   } else {
@@ -757,7 +765,7 @@ async function runLexicalSearch(
       ...(autoModeDecision
         ? { requested_mode: 'auto' as const, auto_mode: autoModeDecision }
         : {}),
-      results: formatRetrievalAsJson(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE),
+      results: formatRetrievalAsJson(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI),
       knowledge_bases: perKb.map((r) => ({
         kb: r.kbName,
         files: r.refreshSummary?.totalFiles ?? null,
@@ -775,6 +783,9 @@ async function runLexicalSearch(
       ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  } else if (parsed.format === 'vimgrep') {
+    const out = formatRetrievalAsVimgrep(formatted as never);
+    if (out !== '') process.stdout.write(`${out}\n`);
   } else {
     if (autoModeDecision) {
       process.stdout.write(formatAutoModeHeader(autoModeDecision));
@@ -784,7 +795,7 @@ async function runLexicalSearch(
     if (formatted.length === 0) {
       process.stdout.write(`_No matches._\n\n`);
     } else {
-      process.stdout.write(formatRetrievalAsMarkdown(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE));
+      process.stdout.write(formatRetrievalAsMarkdown(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI));
       process.stdout.write('\n\n');
     }
     const summaryLines = perKb.map((r) => {
@@ -977,7 +988,7 @@ async function runHybridSearch(
       ...(autoModeDecision
         ? { requested_mode: 'auto' as const, auto_mode: autoModeDecision }
         : {}),
-      results: formatRetrievalAsJson(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE),
+      results: formatRetrievalAsJson(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI),
       retrievers: {
         dense: { fetched: denseResults.length, model: activeModelId },
         lexical: { fetched: lexicalResults.length, refreshed: lexicalResultsRow.refreshed, failed: lexicalResultsRow.failed },
@@ -986,6 +997,9 @@ async function runHybridSearch(
       ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  } else if (parsed.format === 'vimgrep') {
+    const out = formatRetrievalAsVimgrep(ranked as never);
+    if (out !== '') process.stdout.write(`${out}\n`);
   } else {
     if (autoModeDecision) {
       process.stdout.write(formatAutoModeHeader(autoModeDecision));
@@ -995,7 +1009,7 @@ async function runHybridSearch(
     if (ranked.length === 0) {
       process.stdout.write(`_No matches._\n\n`);
     } else {
-      process.stdout.write(formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE));
+      process.stdout.write(formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI));
       process.stdout.write('\n\n');
     }
     process.stdout.write(

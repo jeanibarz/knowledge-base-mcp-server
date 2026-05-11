@@ -4,6 +4,8 @@
 // StdioServerTransport, SseHost, ReindexTriggerWatcher, and zod).
 
 import type { Document } from '@langchain/core/documents';
+import { buildChunkCitation, type ChunkCitation } from './chunk-id.js';
+import { KB_EDITOR_URI, type KBEditorUriMode } from './config.js';
 
 /**
  * Score-bearing search result. Mirrors the shape `FaissIndexManager.similaritySearch`
@@ -17,6 +19,8 @@ export interface RetrievalJsonResult {
   score: number | null;
   content: string;
   metadata: Record<string, unknown>;
+  chunk_id?: string;
+  editor_uri?: string;
 }
 
 export interface GroupedRetrievalChunk extends RetrievalJsonResult {
@@ -66,6 +70,7 @@ export function sanitizeMetadataForWire(
 export function formatRetrievalAsMarkdown(
   results: ScoredDocument[] | null | undefined,
   extrasVisible: boolean,
+  editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
 ): string {
   let formattedResults = '';
   if (results && results.length > 0) {
@@ -77,9 +82,10 @@ export function formatRetrievalAsMarkdown(
           doc.metadata as Record<string, unknown>,
           extrasVisible,
         );
+        const citation = buildChunkCitation(sanitizedMetadata, editorUriMode);
         const metadata = JSON.stringify(sanitizedMetadata, null, 2);
         const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
-        return `${resultHeader}\n\n${scoreText}${content}\n\n**Source:**\n\`\`\`json\n${metadata}\n\`\`\``;
+        return `${resultHeader}\n\n${scoreText}${content}\n\n${formatSourceBlock(metadata, citation)}`;
       })
       .join('\n\n---\n\n');
   } else {
@@ -92,8 +98,9 @@ export function formatRetrievalAsMarkdown(
 export function formatRetrievalGroupedBySourceAsMarkdown(
   results: ScoredDocument[] | null | undefined,
   extrasVisible: boolean,
+  editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
 ): string {
-  const grouped = groupRetrievalBySource(results, extrasVisible);
+  const grouped = groupRetrievalBySource(results, extrasVisible, editorUriMode);
   let formattedResults = '';
   if (grouped.length > 0) {
     formattedResults = grouped
@@ -102,7 +109,8 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
           .map((chunk, chunkIdx) => {
             const scoreText = formatScore(chunk.score);
             const locationText = formatLocation(chunk.location);
-            return `${chunkIdx + 1}. **Score:** ${scoreText}\n   **Location:** ${locationText}\n\n   ${indentChunkContent(chunk.content.trim())}`;
+            const openText = chunk.editor_uri ? `\n   **Open:** ${chunk.editor_uri}` : '';
+            return `${chunkIdx + 1}. **Score:** ${scoreText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(chunk.content.trim())}`;
           })
           .join('\n\n');
         return (
@@ -128,21 +136,29 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
 export function formatRetrievalAsJson(
   results: ScoredDocument[] | null | undefined,
   extrasVisible: boolean,
+  editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
 ): RetrievalJsonResult[] {
   if (!results || results.length === 0) return [];
-  return results.map((doc) => ({
-    score: doc.score ?? null,
-    content: doc.pageContent,
-    metadata: sanitizeMetadataForWire(
+  return results.map((doc) => {
+    const metadata = sanitizeMetadataForWire(
       doc.metadata as Record<string, unknown>,
       extrasVisible,
-    ),
-  }));
+    );
+    const citation = buildChunkCitation(metadata, editorUriMode);
+    return {
+      score: doc.score ?? null,
+      content: doc.pageContent,
+      metadata,
+      ...(citation ? { chunk_id: citation.chunk_id } : {}),
+      ...(citation?.editor_uri ? { editor_uri: citation.editor_uri } : {}),
+    };
+  });
 }
 
 export function groupRetrievalBySource(
   results: ScoredDocument[] | null | undefined,
   extrasVisible: boolean,
+  editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
 ): GroupedRetrievalSource[] {
   if (!results || results.length === 0) return [];
 
@@ -164,6 +180,7 @@ export function groupRetrievalBySource(
 
     const score = doc.score ?? null;
     const location = getChunkLocation(sanitizedMetadata);
+    const citation = buildChunkCitation(sanitizedMetadata, editorUriMode);
     group.chunk_count += 1;
     group.best_score = bestScore(group.best_score, score);
     group.locations.push({ score, location });
@@ -172,10 +189,27 @@ export function groupRetrievalBySource(
       content: doc.pageContent,
       metadata: sanitizedMetadata,
       location,
+      ...(citation ? { chunk_id: citation.chunk_id } : {}),
+      ...(citation?.editor_uri ? { editor_uri: citation.editor_uri } : {}),
     });
   });
 
   return groups;
+}
+
+export function formatRetrievalAsVimgrep(
+  results: ScoredDocument[] | null | undefined,
+): string {
+  if (!results || results.length === 0) return '';
+  return results
+    .map((doc, idx) => {
+      const metadata = doc.metadata as Record<string, unknown>;
+      const citation = buildChunkCitation(metadata, 'none');
+      const fallbackPath = getSourcePath(metadata, idx);
+      const preview = doc.pageContent.trim().replace(/\s+/g, ' ').slice(0, 80);
+      return `${citation?.path ?? fallbackPath}:${citation?.line ?? 1}:${citation?.column ?? 0}:${preview}`;
+    })
+    .join('\n');
 }
 
 function getSourcePath(metadata: Record<string, unknown>, idx: number): string {
@@ -215,4 +249,12 @@ function formatLocation(location: unknown | null): string {
 function indentChunkContent(content: string): string {
   if (content === '') return '';
   return content.replace(/\n/g, '\n   ');
+}
+
+function formatSourceBlock(metadata: string, citation: ChunkCitation | null): string {
+  if (citation === null) {
+    return `**Source:**\n\`\`\`json\n${metadata}\n\`\`\``;
+  }
+  const openLine = citation.editor_uri ? `\n**Open:** ${citation.editor_uri}` : '';
+  return `**Source:** [${citation.chunk_id}](${citation.resource_uri})${openLine}\n\n\`\`\`json\n${metadata}\n\`\`\``;
 }

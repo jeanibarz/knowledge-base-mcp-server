@@ -141,6 +141,23 @@ export const FRONTMATTER_EXTRAS_WIRE_VISIBLE: boolean =
   process.env.FRONTMATTER_EXTRAS_WIRE_VISIBLE === 'true';
 
 // ---------------------------------------------------------------------------
+// Retrieval citation output (#220).
+// ---------------------------------------------------------------------------
+
+export type KBEditorUriMode = 'vscode' | 'cursor' | 'file' | 'none';
+
+export function parseKBEditorUri(raw: string | undefined): KBEditorUriMode {
+  if (raw === undefined || raw.trim() === '') return 'none';
+  const value = raw.trim().toLowerCase();
+  if (value === 'vscode' || value === 'cursor' || value === 'file' || value === 'none') {
+    return value;
+  }
+  throw new Error(`invalid KB_EDITOR_URI=${JSON.stringify(raw)} (expected vscode, cursor, file, or none)`);
+}
+
+export const KB_EDITOR_URI: KBEditorUriMode = parseKBEditorUri(process.env.KB_EDITOR_URI);
+
+// ---------------------------------------------------------------------------
 // Reindex-trigger watcher (RFC 011 §5.5).
 // External workflows (e.g. the arxiv-ingestion n8n flow) signal the server
 // that new content has landed by `touch`ing a dotfile at the KB root. The
