@@ -23,12 +23,18 @@ const NUM_RUNS = process.env.KB_PROPERTY_DEEP === '1' ? 1000 : 50;
 
 const savedChunkSize = process.env.KB_CHUNK_SIZE;
 const savedChunkOverlap = process.env.KB_CHUNK_OVERLAP;
+const savedMaxExtractedTextBytes = process.env.KB_MAX_EXTRACTED_TEXT_BYTES;
+const savedLargeFilePolicy = process.env.KB_LARGE_FILE_POLICY;
 
 afterEach(() => {
   if (savedChunkSize === undefined) delete process.env.KB_CHUNK_SIZE;
   else process.env.KB_CHUNK_SIZE = savedChunkSize;
   if (savedChunkOverlap === undefined) delete process.env.KB_CHUNK_OVERLAP;
   else process.env.KB_CHUNK_OVERLAP = savedChunkOverlap;
+  if (savedMaxExtractedTextBytes === undefined) delete process.env.KB_MAX_EXTRACTED_TEXT_BYTES;
+  else process.env.KB_MAX_EXTRACTED_TEXT_BYTES = savedMaxExtractedTextBytes;
+  if (savedLargeFilePolicy === undefined) delete process.env.KB_LARGE_FILE_POLICY;
+  else process.env.KB_LARGE_FILE_POLICY = savedLargeFilePolicy;
 });
 
 // A "word" is an alphanumeric run; tokens used as content. Avoiding spaces /
@@ -107,5 +113,17 @@ describe('buildChunkDocuments — property tests (issue #219)', () => {
       }),
       { numRuns: Math.min(NUM_RUNS, 10) },
     );
+  });
+
+  it('bounds direct chunk-building input by KB_MAX_EXTRACTED_TEXT_BYTES', async () => {
+    process.env.KB_CHUNK_SIZE = '100';
+    process.env.KB_CHUNK_OVERLAP = '0';
+    process.env.KB_MAX_EXTRACTED_TEXT_BYTES = '5';
+    process.env.KB_LARGE_FILE_POLICY = 'truncate';
+
+    const fakeFile = path.join(os.tmpdir(), 'kb-prop-large.txt');
+    const docs = await buildChunkDocuments(fakeFile, 'abcdefghij', 'kb-prop');
+
+    expect(docs.map((doc) => doc.pageContent).join('')).toBe('abcde');
   });
 });

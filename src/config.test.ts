@@ -2,15 +2,44 @@ import {
   isKnownEmbeddingProvider,
   KNOWN_EMBEDDING_PROVIDERS,
   parseEmbeddingProvider,
+  parseKbLargeFilePolicy,
   parseKbFakeDim,
   parseKbFsWatchDebounceMs,
   parseKbFsWatchFlag,
+  parseKbMaxExtractedTextBytes,
+  parseKbMaxFileBytes,
   parseReindexTriggerPollMs,
   parseKBEditorUri,
   resolveChunkSize,
   resolveIndexingBatchSize,
   UnknownEmbeddingProviderError,
 } from './config.js';
+
+describe('large-file ingest bounds (#285)', () => {
+  it('uses conservative defaults for unset or invalid byte caps', () => {
+    expect(parseKbMaxFileBytes(undefined)).toBe(100 * 1024 * 1024);
+    expect(parseKbMaxFileBytes('')).toBe(100 * 1024 * 1024);
+    expect(parseKbMaxFileBytes('not-a-number')).toBe(100 * 1024 * 1024);
+    expect(parseKbMaxFileBytes('0')).toBe(100 * 1024 * 1024);
+
+    expect(parseKbMaxExtractedTextBytes(undefined)).toBe(16 * 1024 * 1024);
+    expect(parseKbMaxExtractedTextBytes('-1')).toBe(16 * 1024 * 1024);
+  });
+
+  it('honors positive byte caps and floors fractions', () => {
+    expect(parseKbMaxFileBytes('4096')).toBe(4096);
+    expect(parseKbMaxFileBytes('4096.9')).toBe(4096);
+    expect(parseKbMaxExtractedTextBytes('8192')).toBe(8192);
+  });
+
+  it('parses the large-file policy', () => {
+    expect(parseKbLargeFilePolicy(undefined)).toBe('skip');
+    expect(parseKbLargeFilePolicy('')).toBe('skip');
+    expect(parseKbLargeFilePolicy(' TrUnCaTe ')).toBe('truncate');
+    expect(parseKbLargeFilePolicy('error')).toBe('error');
+    expect(() => parseKbLargeFilePolicy('quarantine')).toThrow(/KB_LARGE_FILE_POLICY/);
+  });
+});
 
 describe('resolveIndexingBatchSize (issue #236 — INDEXING_BATCH_SIZE)', () => {
   const saved = process.env.INDEXING_BATCH_SIZE;
