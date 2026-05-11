@@ -10,6 +10,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import {
   ActiveModelResolutionError,
+  listIncompleteModelStates,
   listRegisteredModels,
   parseModelId,
   resolveActiveModel,
@@ -78,6 +79,16 @@ export interface DoctorReport {
     mtime: string | null;
   };
   stale_counts_by_kb: Record<string, { modified_files: number; new_files: number }>;
+  incomplete_models: Array<{
+    model_id: string;
+    status: 'in_progress' | 'stale_interrupted' | 'unknown';
+    detail: string;
+    pid: number | null;
+    provider: string | null;
+    model_name: string | null;
+    started_at: string | null;
+    recovery_command: string | null;
+  }>;
   backend: {
     provider: string | null;
     healthy: boolean;
@@ -196,6 +207,16 @@ export async function buildDoctorReport(
       : `${staleTotal} modified/new ingestable file(s) detected`,
   });
 
+  const incompleteModels = await listIncompleteModelStates();
+  const staleIncompleteModels = incompleteModels.filter((m) => m.status === 'stale_interrupted');
+  checks.push({
+    name: 'incomplete_models',
+    status: staleIncompleteModels.length > 0 ? 'warn' : 'ok',
+    detail: staleIncompleteModels.length === 0
+      ? 'no stale incomplete model directories detected'
+      : `${staleIncompleteModels.length} stale incomplete model director${staleIncompleteModels.length === 1 ? 'y' : 'ies'} detected`,
+  });
+
   const backend = await readBackendHealth(
     activeProvider,
     activeModelName,
@@ -230,6 +251,7 @@ export async function buildDoctorReport(
     },
     index,
     stale_counts_by_kb: staleCounts,
+    incomplete_models: incompleteModels,
     backend,
     cli,
     git,
@@ -490,6 +512,16 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
     for (const name of names) {
       const row = report.stale_counts_by_kb[name];
       lines.push(`  ${name}: ${row.modified_files} modified, ${row.new_files} new`);
+    }
+  }
+  lines.push('');
+  lines.push('Incomplete model dirs:');
+  if (report.incomplete_models.length === 0) {
+    lines.push('  (none)');
+  } else {
+    for (const model of report.incomplete_models) {
+      const recovery = model.recovery_command === null ? '' : `; recovery: ${model.recovery_command}`;
+      lines.push(`  ${model.status} ${model.model_id}: ${model.detail}${recovery}`);
     }
   }
   lines.push('');

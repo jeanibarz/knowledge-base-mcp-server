@@ -124,6 +124,7 @@ describe('kb doctor', () => {
       expect(report.cli.symlinked_checkout_path).toBe(tempDir);
       expect(report.stale_counts_by_kb.alpha).toEqual({ modified_files: 1, new_files: 0 });
       expect(report.stale_counts_by_kb.beta).toEqual({ modified_files: 0, new_files: 1 });
+      expect(report.incomplete_models).toEqual([]);
 
       const markdown = formatDoctorMarkdown(report);
       expect(markdown).toContain('Status: WARN');
@@ -131,10 +132,63 @@ describe('kb doctor', () => {
       expect(markdown).toContain('Last index update: success (global, 1000ms, 1 changed, 1 unchanged, 0 skipped)');
       expect(markdown).toContain('alpha: 1 modified, 0 new');
       expect(markdown).toContain('beta: 0 modified, 1 new');
+      expect(markdown).toContain('Incomplete model dirs:\n  (none)');
 
       const json = JSON.parse(JSON.stringify(report)) as typeof report;
       expect(json.stale_counts_by_kb.alpha.modified_files).toBe(1);
       expect(json.last_index_update.saved).toBe(true);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('warns about stale incomplete model directories', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-incomplete-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(path.join(rootDir, 'alpha'), { recursive: true });
+      const staleId = 'ollama__nomic-embed-text';
+      await seedRegisteredModel(faissDir);
+      await fsp.mkdir(path.join(faissDir, 'models', staleId), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', staleId, '.adding'), JSON.stringify({
+        schema_version: 'kb.model-adding.v1',
+        model_id: staleId,
+        provider: 'ollama',
+        model_name: 'nomic-embed-text',
+        pid: 999999999,
+        started_at: '2026-05-11T10:00:00.000Z',
+      }));
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+      });
+
+      expect(report.checks).toContainEqual({
+        name: 'incomplete_models',
+        status: 'warn',
+        detail: '1 stale incomplete model directory detected',
+      });
+      expect(report.incomplete_models).toEqual([expect.objectContaining({
+        model_id: staleId,
+        status: 'stale_interrupted',
+        pid: 999999999,
+        recovery_command: 'kb models add ollama nomic-embed-text --recover --yes',
+      })]);
+      expect(formatDoctorMarkdown(report)).toContain(
+        `stale_interrupted ${staleId}: previous kb models add writer pid 999999999 is no longer running`,
+      );
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
