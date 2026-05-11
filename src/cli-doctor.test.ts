@@ -399,6 +399,122 @@ describe('kb doctor', () => {
     });
   });
 
+  describe('provider call telemetry (issue #210)', () => {
+    it('omits the provider_calls check when no telemetry has been recorded', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-pc-empty-'));
+      try {
+        const rootDir = path.join(tempDir, 'kbs');
+        const faissDir = path.join(tempDir, '.faiss');
+        await fsp.mkdir(rootDir, { recursive: true });
+        await fsp.mkdir(faissDir, { recursive: true });
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+        });
+        const { ProviderCallMetrics } = await import('./metrics.js');
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          providerCallMetrics: new ProviderCallMetrics({ now: () => 0 }),
+        });
+        expect(report.provider_calls).toEqual({});
+        expect(report.checks.some((c) => c.name === 'provider_calls')).toBe(false);
+        expect(formatDoctorMarkdown(report)).toContain(
+          'Provider calls:\n  (no provider calls observed)',
+        );
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('emits an OK provider_calls check when error rate is within budget', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-pc-ok-'));
+      try {
+        const rootDir = path.join(tempDir, 'kbs');
+        const faissDir = path.join(tempDir, '.faiss');
+        await fsp.mkdir(rootDir, { recursive: true });
+        await fsp.mkdir(faissDir, { recursive: true });
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+        });
+        const { ProviderCallMetrics } = await import('./metrics.js');
+        const metrics = new ProviderCallMetrics({ now: () => 1_700_000_000_000 });
+        for (let index = 0; index < 100; index += 1) {
+          metrics.record('huggingface__bge', { latencyMs: index, ok: true });
+        }
+        // 1 error out of 101 — under the 5% threshold.
+        metrics.record('huggingface__bge', { latencyMs: 50, ok: false });
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          providerCallMetrics: metrics,
+        });
+        const check = report.checks.find((c) => c.name === 'provider_calls');
+        expect(check?.status).toBe('ok');
+        expect(check?.detail).toContain('101 call(s)');
+        const md = formatDoctorMarkdown(report);
+        expect(md).toContain('model=huggingface__bge calls=101 errors=1');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('warns when error rate is above 5% and renders a WARN marker in markdown', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-pc-warn-'));
+      try {
+        const rootDir = path.join(tempDir, 'kbs');
+        const faissDir = path.join(tempDir, '.faiss');
+        await fsp.mkdir(rootDir, { recursive: true });
+        await fsp.mkdir(faissDir, { recursive: true });
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+        });
+        const { ProviderCallMetrics } = await import('./metrics.js');
+        const metrics = new ProviderCallMetrics({ now: () => 1_700_000_000_000 });
+        // 8 errors / 10 calls — well above the 5% threshold.
+        for (let index = 0; index < 2; index += 1) {
+          metrics.record('ollama__nomic', { latencyMs: 5, ok: true });
+        }
+        for (let index = 0; index < 8; index += 1) {
+          metrics.record('ollama__nomic', { latencyMs: 250, ok: false });
+        }
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          providerCallMetrics: metrics,
+        });
+        const check = report.checks.find((c) => c.name === 'provider_calls');
+        expect(check?.status).toBe('warn');
+        expect(check?.detail).toContain('model=ollama__nomic');
+        expect(check?.detail).toContain('errors=8/10');
+        const md = formatDoctorMarkdown(report);
+        expect(md).toContain('model=ollama__nomic calls=10 errors=8');
+        expect(md).toMatch(/p50=\d+(\.\d+)?ms p95=\d+(\.\d+)?ms p99=\d+(\.\d+)?ms tokens=n\/a, WARN/);
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('fake provider (issue #204)', () => {
     it('reports backend WARN with a "testing only" detail when active provider is fake', async () => {
       const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-fake-'));

@@ -68,3 +68,12 @@ BENCH_PROVIDER=openai npm run bench    # real provider (requires OPENAI_API_KEY)
 ```
 
 Baselines in `benchmarks/results/` are keyed by `{provider}-{node_version}-{os}-{arch}`; compare apples to apples.
+
+## Runtime budget enforcement (issue #210)
+
+The bench harness above measures budgets offline. **At runtime**, the same wall-clock numbers are surfaced live in `kb_stats.provider_calls` (per-`model_id` count, errors, p50/p95/p99 latency, token-in sum) and rolled up in `kb doctor`'s `provider_calls` check. The doctor flips the row to `WARN` when `errors / count > 5%` for any active model_id, so an operator can observe both:
+
+- a regression against the latency budgets above (compare live `provider_calls.<model_id>.latency_ms.p95` to the bench baseline);
+- a sudden error-rate spike from the embedding provider (network blip, expired token, model decommission).
+
+The histogram is bounded — 10 log-spaced latency buckets in [1 ms, 30 s] plus an overflow bucket — and labelled only by `model_id`, so memory cost stays at ~200 bytes per model in the registered set. No on-disk state, no `/metrics` endpoint, no per-query labels.

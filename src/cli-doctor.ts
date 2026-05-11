@@ -38,6 +38,19 @@ import {
   type AgeBudgetStatus,
 } from './age-budget.js';
 import { maxMtimeIso } from './kb-stats.js';
+import {
+  providerCallMetrics,
+  type ProviderCallMetrics,
+  type ProviderCallSnapshot,
+} from './metrics.js';
+
+/**
+ * Issue #210 — error-rate threshold above which the doctor surfaces a
+ * WARN row for a model_id. 5% matches the issue spec; intentionally
+ * coarse so transient one-off failures on a low-volume process don't
+ * trip an operator's alarm.
+ */
+export const PROVIDER_CALL_ERROR_RATE_WARN_THRESHOLD = 0.05;
 
 const execFileAsync = promisify(execFile);
 
@@ -140,6 +153,14 @@ export interface DoctorReport {
     relation: 'ahead' | 'behind' | 'diverged' | 'up-to-date' | 'unknown';
   } | null;
   last_index_update: IndexUpdateSummary;
+  /**
+   * Issue #210 — per-`model_id` runtime telemetry for the active
+   * embedding provider. Empty `{}` until the active provider has served
+   * at least one call. The doctor row is WARN when
+   * `errors / count > PROVIDER_CALL_ERROR_RATE_WARN_THRESHOLD` for any
+   * model_id; otherwise it is OK.
+   */
+  provider_calls: Record<string, ProviderCallSnapshot>;
 }
 
 export interface BuildDoctorReportOptions {
@@ -148,6 +169,12 @@ export interface BuildDoctorReportOptions {
   invokedPath?: string | null;
   packageVersion?: string;
   lastIndexUpdateSummary?: IndexUpdateSummary;
+  /**
+   * Issue #210 — test seam for the provider-call telemetry registry.
+   * Production callers leave this undefined so the process-wide
+   * singleton is read.
+   */
+  providerCallMetrics?: ProviderCallMetrics;
 }
 
 export type BackendHealthCheck = (
@@ -306,6 +333,41 @@ export async function buildDoctorReport(
     detail: backend.detail,
   });
 
+  const metricsSource = options.providerCallMetrics ?? providerCallMetrics;
+  const providerCalls = metricsSource.snapshot();
+  // Issue #210 — only emit the row when at least one call has been
+  // observed; otherwise the doctor on a fresh process would always show
+  // a noisy "no telemetry yet" line.
+  if (Object.keys(providerCalls).length > 0) {
+    const breaches = Object.entries(providerCalls)
+      .filter(([, row]) => row.count > 0
+        && row.errors / row.count > PROVIDER_CALL_ERROR_RATE_WARN_THRESHOLD);
+    if (breaches.length > 0) {
+      const summary = breaches
+        .map(([modelId, row]) =>
+          `model=${modelId}, errors=${row.errors}/${row.count}` +
+          ` (${formatErrorRate(row.errors, row.count)})`,
+        )
+        .join('; ');
+      checks.push({
+        name: 'provider_calls',
+        status: 'warn',
+        detail: `${breaches.length} model(s) over ` +
+          `${formatErrorRate(PROVIDER_CALL_ERROR_RATE_WARN_THRESHOLD * 100, 100)}` +
+          ` error rate: ${summary}`,
+      });
+    } else {
+      const totals = Object.values(providerCalls)
+        .reduce((sum, row) => sum + row.count, 0);
+      checks.push({
+        name: 'provider_calls',
+        status: 'ok',
+        detail: `${totals} call(s) across ${Object.keys(providerCalls).length}` +
+          ' model(s) within error budget',
+      });
+    }
+  }
+
   const packageRoot = options.packageRoot ?? resolvePackageRoot();
   const invokedPath = options.invokedPath ?? process.argv[1] ?? null;
   const cli = {
@@ -336,7 +398,14 @@ export async function buildDoctorReport(
     cli,
     git,
     last_index_update: lastIndexUpdate,
+    provider_calls: providerCalls,
   };
+}
+
+function formatErrorRate(errors: number, count: number): string {
+  if (count === 0) return '0%';
+  const pct = (errors / count) * 100;
+  return `${pct.toFixed(1)}%`;
 }
 
 async function readIndexHealth(activeModelId: string | null): Promise<DoctorReport['index']> {
@@ -677,6 +746,28 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
     }
     for (const err of report.age_budget_config_errors) {
       lines.push(`  CONFIG_ERROR: ${err.env_var}=${JSON.stringify(err.raw_value)}`);
+    }
+  }
+  lines.push('');
+  lines.push('Provider calls:');
+  const providerModelIds = Object.keys(report.provider_calls).sort();
+  if (providerModelIds.length === 0) {
+    lines.push('  (no provider calls observed)');
+  } else {
+    for (const modelId of providerModelIds) {
+      const row = report.provider_calls[modelId];
+      const errorMarker = row.count > 0
+        && row.errors / row.count > PROVIDER_CALL_ERROR_RATE_WARN_THRESHOLD
+        ? ', WARN'
+        : '';
+      const tokens = row.tokens_in === null
+        ? 'tokens=n/a'
+        : `tokens=${row.tokens_in}`;
+      lines.push(
+        `  model=${modelId} calls=${row.count} errors=${row.errors}` +
+        ` p50=${row.latency_ms.p50}ms p95=${row.latency_ms.p95}ms` +
+        ` p99=${row.latency_ms.p99}ms ${tokens}${errorMarker}`,
+      );
     }
   }
   lines.push('');

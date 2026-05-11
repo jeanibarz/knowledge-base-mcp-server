@@ -49,6 +49,10 @@ function payload(): KbStatsPayload {
       version: 'test-version',
       uptime_ms: 12,
     },
+    // Issue #210 — required since the KbStatsPayload now carries
+    // per-model provider call telemetry. Empty `{}` matches a fresh
+    // process where the active provider has not been called yet.
+    provider_calls: {},
   };
 }
 
