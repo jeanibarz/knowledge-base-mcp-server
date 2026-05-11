@@ -13,6 +13,7 @@ import {
   HUGGINGFACE_ENDPOINT_URL,
   HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
   HUGGINGFACE_PROVIDER,
+  KB_FAKE_DIM,
   OLLAMA_BASE_URL,
 } from './config.js';
 import { KBError } from './errors.js';
@@ -20,13 +21,39 @@ import { logger } from './logger.js';
 import type { EmbeddingProvider } from './model-id.js';
 import { makeOllamaOnFailedAttempt } from './ollama-error.js';
 
+/**
+ * Issue #204 — deterministic, network-free embedding host. Hash-bag over a
+ * fixed-dim vector, L2-normalized, pure-function. Same input → same vector
+ * across runs and across machines. Public API matches the langchain
+ * Embeddings interface (`embedDocuments` / `embedQuery`) so `FaissStore` can
+ * consume it without any provider-specific glue.
+ */
+export class FakeEmbeddings {
+  readonly dim: number;
+  constructor(options: { dim?: number } = {}) {
+    this.dim = options.dim ?? KB_FAKE_DIM;
+  }
+  async embedDocuments(texts: string[]): Promise<number[][]> {
+    return texts.map((text) => vectorizeFake(text, this.dim));
+  }
+  async embedQuery(text: string): Promise<number[]> {
+    return vectorizeFake(text, this.dim);
+  }
+}
+
 export type EmbeddingsClient =
   | HuggingFaceInferenceEmbeddings
   | OllamaEmbeddings
-  | OpenAIEmbeddings;
+  | OpenAIEmbeddings
+  | FakeEmbeddings;
 
 export interface CreateEmbeddingsOptions {
-  provider: EmbeddingProvider;
+  // Issue #204 — `'fake'` is accepted at the factory boundary but is not in
+  // the strict `EmbeddingProvider` union (model-id.ts) on purpose: model-id
+  // slug derivation, registered-model schema, and cost-estimates do not need
+  // a new arm. Callers that already cast `EMBEDDING_PROVIDER` (active-model
+  // legacy env path, model_id parsing) flow `'fake'` through unchanged.
+  provider: EmbeddingProvider | 'fake';
   modelName: string;
 }
 
@@ -40,6 +67,15 @@ export async function createEmbeddingsClient(
   options: CreateEmbeddingsOptions,
 ): Promise<EmbeddingsClient> {
   const { provider, modelName } = options;
+
+  if (provider === 'fake') {
+    // Issue #204 — no network, no API key, no daemon. The model name is
+    // recorded for slug derivation but does not influence the vector.
+    logger.info(
+      `Initializing FaissIndexManager with FAKE embeddings (model: ${modelName}, dim: ${KB_FAKE_DIM}) — testing only, do not deploy`,
+    );
+    return new FakeEmbeddings({ dim: KB_FAKE_DIM });
+  }
 
   if (provider === 'ollama') {
     logger.info(`Initializing FaissIndexManager with Ollama embeddings (model: ${modelName})`);
@@ -96,4 +132,32 @@ export async function createEmbeddingsClient(
       ? undefined
       : (HUGGINGFACE_PROVIDER as InferenceProviderOrPolicy),
   });
+}
+
+/**
+ * Issue #204 — deterministic hash-bag vectorizer. Tokenize on
+ * whitespace+punctuation, accumulate `vec[fnv1a(token) mod dim] += 1`,
+ * L2-normalize, round to 6 decimals so the byte-stable property holds
+ * across machines (Node's float printing is platform-stable but rounding
+ * removes any last-bit ambiguity from sqrt/division).
+ */
+function vectorizeFake(text: string, dim: number): number[] {
+  const vector = new Array<number>(dim).fill(0);
+  const tokens = text.toLowerCase().split(/\W+/).filter(Boolean);
+  for (const token of tokens) {
+    vector[fnv1a(token) % dim] += 1;
+  }
+  let sumSq = 0;
+  for (const value of vector) sumSq += value * value;
+  const magnitude = sumSq === 0 ? 1 : Math.sqrt(sumSq);
+  return vector.map((value) => Number((value / magnitude).toFixed(6)));
+}
+
+function fnv1a(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
 }

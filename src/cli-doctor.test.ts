@@ -398,4 +398,52 @@ describe('kb doctor', () => {
       }
     });
   });
+
+  describe('fake provider (issue #204)', () => {
+    it('reports backend WARN with a "testing only" detail when active provider is fake', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-fake-'));
+      try {
+        const rootDir = path.join(tempDir, 'kbs');
+        const faissDir = path.join(tempDir, '.faiss');
+        await fsp.mkdir(rootDir, { recursive: true });
+        await fsp.mkdir(faissDir, { recursive: true });
+
+        const fakeModelId = 'fake__bag-256d';
+        const modelDir = path.join(faissDir, 'models', fakeModelId);
+        const versionDir = path.join(modelDir, 'index.v3');
+        await fsp.mkdir(versionDir, { recursive: true });
+        await fsp.writeFile(path.join(modelDir, 'model_name.txt'), 'bag-256d');
+        await fsp.writeFile(path.join(faissDir, 'active.txt'), fakeModelId);
+        await fsp.writeFile(path.join(versionDir, 'faiss.index'), 'fake-index');
+        await fsp.symlink('index.v3', path.join(modelDir, 'index'), 'dir');
+
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'fake',
+        });
+
+        // Use the default backend health check — fake should report healthy
+        // (no daemon/key) but the doctor must elevate the row to WARN.
+        const report = await buildDoctorReport({
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+        });
+
+        expect(report.active_model.provider).toBe('fake');
+        expect(report.backend.healthy).toBe(true);
+        expect(report.backend.detail).toMatch(/testing only/i);
+        const backendCheck = report.checks.find((c) => c.name === 'backend');
+        expect(backendCheck?.status).toBe('warn');
+        // Backend WARN must not flip the overall status to error.
+        expect(report.status).toBe('warn');
+        const markdown = formatDoctorMarkdown(report);
+        expect(markdown).toMatch(/Backend: ok — fake provider/);
+        expect(markdown).toMatch(/WARN\s+backend: fake provider/);
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
 });

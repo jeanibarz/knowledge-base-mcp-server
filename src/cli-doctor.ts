@@ -295,9 +295,14 @@ export async function buildDoctorReport(
     activeModelName,
     options.backendHealthCheck ?? defaultBackendHealthCheck,
   );
+  // Issue #204 — the `fake` provider is functionally healthy (no network,
+  // no key, deterministic vectors) but must not silently power production.
+  // Surface the active fake provider as WARN so `kb doctor` is loud about
+  // it without forcing a non-zero exit code.
+  const backendIsFake = activeProvider === 'fake';
   checks.push({
     name: 'backend',
-    status: backend.healthy ? 'ok' : 'error',
+    status: !backend.healthy ? 'error' : (backendIsFake ? 'warn' : 'ok'),
     detail: backend.detail,
   });
 
@@ -486,6 +491,16 @@ async function defaultBackendHealthCheck(
   provider: string,
   modelName: string,
 ): Promise<{ healthy: boolean; detail: string }> {
+  if (provider === 'fake') {
+    // Issue #204 — deterministic offline provider. No reachability check
+    // possible; the doctor row is marked WARN at the call site so the
+    // operator sees the "testing only" note in the status report.
+    return {
+      healthy: true,
+      detail: `fake provider active for ${modelName} — testing only, do not deploy to production`,
+    };
+  }
+
   if (provider === 'ollama') {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);
