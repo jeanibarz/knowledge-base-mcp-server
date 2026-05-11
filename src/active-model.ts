@@ -91,6 +91,219 @@ export function addingSentinelPath(modelId: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// `.adding` sentinel — structured metadata with PID-only backward compatibility.
+// ---------------------------------------------------------------------------
+
+export const ADDING_SENTINEL_SCHEMA_VERSION = 'kb.model-adding.v1';
+
+export interface AddingSentinelMetadata {
+  schema_version: typeof ADDING_SENTINEL_SCHEMA_VERSION;
+  model_id: string;
+  provider: EmbeddingProvider;
+  model_name: string;
+  pid: number;
+  started_at: string;
+}
+
+export type AddingSentinelReadResult =
+  | { kind: 'missing' }
+  | { kind: 'legacy-pid'; pid: number; raw: string }
+  | { kind: 'metadata'; metadata: AddingSentinelMetadata; raw: string }
+  | { kind: 'unknown'; raw: string; detail: string };
+
+export type IncompleteModelStatus = 'in_progress' | 'stale_interrupted' | 'unknown';
+
+export interface IncompleteModelState {
+  model_id: string;
+  status: IncompleteModelStatus;
+  detail: string;
+  pid: number | null;
+  provider: string | null;
+  model_name: string | null;
+  started_at: string | null;
+  recovery_command: string | null;
+}
+
+type PidLivenessCheck = (pid: number) => boolean;
+
+export function buildAddingSentinelMetadata(args: {
+  modelId: string;
+  provider: EmbeddingProvider;
+  modelName: string;
+  pid?: number;
+  startedAt?: Date;
+}): AddingSentinelMetadata {
+  return {
+    schema_version: ADDING_SENTINEL_SCHEMA_VERSION,
+    model_id: args.modelId,
+    provider: args.provider,
+    model_name: args.modelName,
+    pid: args.pid ?? process.pid,
+    started_at: (args.startedAt ?? new Date()).toISOString(),
+  };
+}
+
+export async function writeAddingSentinel(metadata: AddingSentinelMetadata): Promise<void> {
+  await fsp.writeFile(
+    addingSentinelPath(metadata.model_id),
+    `${JSON.stringify(metadata, null, 2)}\n`,
+    'utf-8',
+  );
+}
+
+export async function readAddingSentinel(modelId: string): Promise<AddingSentinelReadResult> {
+  let raw: string;
+  try {
+    raw = await fsp.readFile(addingSentinelPath(modelId), 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
+    throw err;
+  }
+
+  const trimmed = raw.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const pid = Number(trimmed);
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      return { kind: 'legacy-pid', pid, raw };
+    }
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { kind: 'unknown', raw, detail: 'sentinel is neither PID-only text nor valid JSON metadata' };
+  }
+
+  if (!isAddingSentinelMetadata(parsed)) {
+    return { kind: 'unknown', raw, detail: 'sentinel JSON does not match kb.model-adding.v1 metadata' };
+  }
+  if (parsed.model_id !== modelId) {
+    return {
+      kind: 'unknown',
+      raw,
+      detail: `sentinel model_id "${parsed.model_id}" does not match directory "${modelId}"`,
+    };
+  }
+  return { kind: 'metadata', metadata: parsed, raw };
+}
+
+export async function classifyIncompleteModelState(
+  modelId: string,
+  pidIsLive: PidLivenessCheck = isPidLive,
+): Promise<IncompleteModelState | null> {
+  if (!isValidModelId(modelId)) return null;
+  const dir = modelDir(modelId);
+  try {
+    const st = await fsp.stat(dir);
+    if (!st.isDirectory()) return null;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+
+  const sentinel = await readAddingSentinel(modelId);
+  if (sentinel.kind === 'metadata' || sentinel.kind === 'legacy-pid') {
+    const pid = sentinel.kind === 'metadata' ? sentinel.metadata.pid : sentinel.pid;
+    const provider = sentinel.kind === 'metadata' ? sentinel.metadata.provider : parseModelId(modelId).provider;
+    const modelName = sentinel.kind === 'metadata' ? sentinel.metadata.model_name : await readStoredModelName(modelId);
+    const startedAt = sentinel.kind === 'metadata' ? sentinel.metadata.started_at : null;
+    if (pidIsLive(pid)) {
+      return {
+        model_id: modelId,
+        status: 'in_progress',
+        detail: `kb models add is still running with pid ${pid}`,
+        pid,
+        provider,
+        model_name: modelName,
+        started_at: startedAt,
+        recovery_command: null,
+      };
+    }
+    return {
+      model_id: modelId,
+      status: 'stale_interrupted',
+      detail: `previous kb models add writer pid ${pid} is no longer running`,
+      pid,
+      provider,
+      model_name: modelName,
+      started_at: startedAt,
+      recovery_command: modelName === null ? null : `kb models add ${provider} ${modelName} --recover --yes`,
+    };
+  }
+
+  if (sentinel.kind === 'unknown') {
+    return {
+      model_id: modelId,
+      status: 'unknown',
+      detail: sentinel.detail,
+      pid: null,
+      provider: null,
+      model_name: null,
+      started_at: null,
+      recovery_command: null,
+    };
+  }
+
+  if (await isRegisteredModel(modelId)) return null;
+  return {
+    model_id: modelId,
+    status: 'unknown',
+    detail: 'model directory is incomplete and has no .adding sentinel',
+    pid: null,
+    provider: null,
+    model_name: await readStoredModelName(modelId),
+    started_at: null,
+    recovery_command: null,
+  };
+}
+
+export async function listIncompleteModelStates(): Promise<IncompleteModelState[]> {
+  let entries: string[];
+  try {
+    entries = await fsp.readdir(MODELS_DIR);
+  } catch {
+    return [];
+  }
+  const states: IncompleteModelState[] = [];
+  for (const entry of entries) {
+    if (!isValidModelId(entry)) continue;
+    const state = await classifyIncompleteModelState(entry);
+    if (state !== null) states.push(state);
+  }
+  return states.sort((a, b) => a.model_id.localeCompare(b.model_id));
+}
+
+function isAddingSentinelMetadata(value: unknown): value is AddingSentinelMetadata {
+  if (value === null || typeof value !== 'object') return false;
+  const candidate = value as Partial<AddingSentinelMetadata>;
+  return candidate.schema_version === ADDING_SENTINEL_SCHEMA_VERSION
+    && typeof candidate.model_id === 'string'
+    && isValidModelId(candidate.model_id)
+    && isEmbeddingProvider(candidate.provider)
+    && typeof candidate.model_name === 'string'
+    && candidate.model_name.trim().length > 0
+    && Number.isSafeInteger(candidate.pid)
+    && typeof candidate.pid === 'number'
+    && candidate.pid > 0
+    && typeof candidate.started_at === 'string'
+    && !Number.isNaN(Date.parse(candidate.started_at));
+}
+
+function isEmbeddingProvider(value: unknown): value is EmbeddingProvider {
+  return value === 'ollama' || value === 'openai' || value === 'huggingface';
+}
+
+function isPidLive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Read helpers.
 // ---------------------------------------------------------------------------
 
@@ -279,7 +492,7 @@ export async function resolveActiveModel(opts: ResolveOptions = {}): Promise<str
       const available = (await listRegisteredModels()).map((m) => m.model_id).join(', ') || '<none>';
       throw new ActiveModelResolutionError(
         `Model "${id}" is not registered. Registered: ${available}. ` +
-        `Run \`kb models add <provider> <model>\` to register it first.`,
+        (await unregisteredModelHint(id)),
       );
     }
     return id;
@@ -297,7 +510,8 @@ export async function resolveActiveModel(opts: ResolveOptions = {}): Promise<str
     if (!(await isRegisteredModel(id))) {
       const available = (await listRegisteredModels()).map((m) => m.model_id).join(', ') || '<none>';
       throw new ActiveModelResolutionError(
-        `KB_ACTIVE_MODEL="${id}" is not registered. Registered: ${available}.`,
+        `KB_ACTIVE_MODEL="${id}" is not registered. Registered: ${available}. ` +
+        (await unregisteredModelHint(id)),
       );
     }
     return id;
@@ -317,8 +531,8 @@ export async function resolveActiveModel(opts: ResolveOptions = {}): Promise<str
     if (!(await isRegisteredModel(r.modelId!))) {
       throw new ActiveModelResolutionError(
         `active.txt names model "${r.modelId}" but it is not registered on disk. ` +
-        `Run \`kb models set-active <other>\` to point at a registered model, or remove the .adding sentinel ` +
-        `if a previous \`kb models add\` was interrupted.`,
+        `Run \`kb models set-active <other>\` to point at a registered model. ` +
+        (await unregisteredModelHint(r.modelId!)),
       );
     }
     return r.modelId!;
@@ -334,6 +548,20 @@ export async function resolveActiveModel(opts: ResolveOptions = {}): Promise<str
     );
   }
   return envId;
+}
+
+async function unregisteredModelHint(modelId: string): Promise<string> {
+  const incomplete = await classifyIncompleteModelState(modelId);
+  if (incomplete === null) {
+    return 'Run `kb models add <provider> <model>` to register it first.';
+  }
+  if (incomplete.status === 'in_progress') {
+    return `A \`kb models add\` is still in progress for this model (${incomplete.detail}); wait for it to finish.`;
+  }
+  if (incomplete.status === 'stale_interrupted' && incomplete.recovery_command !== null) {
+    return `A previous \`kb models add\` appears stale/interrupted (${incomplete.detail}); run \`${incomplete.recovery_command}\` to clean up and retry.`;
+  }
+  return `Incomplete model state exists but is not safe to recover automatically (${incomplete.detail}); inspect ${modelDir(modelId)}.`;
 }
 
 export interface LegacyEnvModelSpec {

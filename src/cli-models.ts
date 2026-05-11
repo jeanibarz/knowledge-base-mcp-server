@@ -3,11 +3,14 @@ import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,
   addingSentinelPath,
+  buildAddingSentinelMetadata,
+  classifyIncompleteModelState,
   isRegisteredModel,
   listRegisteredModels,
   modelDir,
   parseModelId,
   resolveActiveModel,
+  writeAddingSentinel,
   writeActiveModelAtomic,
 } from './active-model.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';
@@ -21,7 +24,7 @@ export const MODELS_HELP = `kb models — manage embedding models (RFC 013)
 
 Usage:
   kb models list
-  kb models add <provider> <model> [--yes] [--dry-run]
+  kb models add <provider> <model> [--yes] [--dry-run] [--recover]
   kb models set-active <id>
   kb models remove <id>
 
@@ -51,6 +54,9 @@ Verbs:
 Options for \`add\`:
   --yes                 Skip the cost-estimate confirmation prompt.
   --dry-run             Print the cost estimate; don't embed.
+  --recover             When a previous add left a stale .adding sentinel
+                        whose writer PID is dead, delete that incomplete
+                        model directory before retrying. Requires --yes.
 
 Global:
   --help, -h            Show this help.
@@ -120,9 +126,11 @@ async function runModelsAdd(rest: string[]): Promise<number> {
   const positionals: string[] = [];
   let yes = false;
   let dryRun = false;
+  let recover = false;
   for (const raw of rest) {
     if (raw === '--yes') { yes = true; continue; }
     if (raw === '--dry-run') { dryRun = true; continue; }
+    if (raw === '--recover') { recover = true; continue; }
     if (raw.startsWith('--')) {
       process.stderr.write(`kb models add: unknown flag: ${raw}\n`);
       return 2;
@@ -155,12 +163,26 @@ async function runModelsAdd(rest: string[]): Promise<number> {
     );
     return 2;
   }
-  if (await pathExists(addingSentinelPath(modelId))) {
-    process.stderr.write(
-      `kb models add: previous \`kb models add ${modelId}\` was interrupted (.adding sentinel present). ` +
-      `Run \`kb models remove ${modelId} --force-incomplete\` to clean up, then retry.\n`,
-    );
-    return 2;
+  const incomplete = await classifyIncompleteModelState(modelId);
+  if (incomplete !== null) {
+    if (incomplete.status === 'stale_interrupted' && recover) {
+      if (dryRun) {
+        process.stderr.write('kb models add: --recover cannot be combined with --dry-run because recovery deletes incomplete state.\n');
+        return 2;
+      }
+      if (!yes) {
+        process.stderr.write(
+          `kb models add: stale incomplete model "${modelId}" found, but recovery deletes ${modelDir(modelId)}. ` +
+          `Pass both --recover and --yes to clean up and retry.\n`,
+        );
+        return 2;
+      }
+      await fsp.rm(modelDir(modelId), { recursive: true, force: true });
+      process.stderr.write(`Recovered stale incomplete model "${modelId}" (${incomplete.detail}); retrying add.\n`);
+    } else {
+      process.stderr.write(formatIncompleteAddBlock(modelId, incomplete.status, incomplete.detail));
+      return 2;
+    }
   }
 
   let totalBytes = 0;
@@ -223,7 +245,11 @@ async function runModelsAdd(rest: string[]): Promise<number> {
 
   await fsp.mkdir(modelDir(modelId), { recursive: true });
   const sentinel = addingSentinelPath(modelId);
-  await fsp.writeFile(sentinel, `${process.pid}\n`, 'utf-8');
+  await writeAddingSentinel(buildAddingSentinelMetadata({
+    modelId,
+    provider: provider as EmbeddingProvider,
+    modelName,
+  }));
   let interrupted = false;
   try {
     await withWriteLock(modelDir(modelId), async () => {
@@ -258,6 +284,23 @@ async function runModelsAdd(rest: string[]): Promise<number> {
 
   process.stderr.write(`Successfully added ${modelId}.\n`);
   return 0;
+}
+
+function formatIncompleteAddBlock(modelId: string, status: string, detail: string): string {
+  if (status === 'in_progress') {
+    return `kb models add: model "${modelId}" is already being added (${detail}). Wait for it to finish before retrying.\n`;
+  }
+  if (status === 'stale_interrupted') {
+    return (
+      `kb models add: previous add for "${modelId}" appears stale/interrupted (${detail}). ` +
+      `Pass --recover --yes to delete the incomplete model directory and retry, or run ` +
+      `\`kb models remove ${modelId} --force-incomplete --yes\` to clean up manually.\n`
+    );
+  }
+  return (
+    `kb models add: model "${modelId}" has incomplete state that cannot be recovered automatically (${detail}). ` +
+    `Inspect ${modelDir(modelId)} or run \`kb models remove ${modelId} --force-incomplete --yes\` if you intend to delete it.\n`
+  );
 }
 
 async function runModelsSetActive(rest: string[]): Promise<number> {

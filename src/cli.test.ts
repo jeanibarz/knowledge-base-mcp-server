@@ -1554,6 +1554,127 @@ describe('kb search — active-model resolution (RFC 013 §4.7)', () => {
     }
   });
 
+  it('kb models add blocks while a live .adding writer PID still exists', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-add-live-'));
+    try {
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(tempDir, 'kb');
+      const id = 'ollama__nomic-embed-text';
+      await fsp.mkdir(path.join(kbDir, 'sample'), { recursive: true });
+      await fsp.mkdir(path.join(faissDir, 'models', id), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', id, '.adding'), `${process.pid}\n`);
+
+      const r = runCli(['models', 'add', 'ollama', 'nomic-embed-text', '--dry-run'], {
+        KNOWLEDGE_BASES_ROOT_DIR: kbDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_MODEL: 'nomic-embed-text',
+      });
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain('already being added');
+      expect(r.stderr).toContain(`pid ${process.pid}`);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('kb models add reports stale .adding sentinels but requires --recover and --yes before cleanup', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-add-stale-gate-'));
+    try {
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(tempDir, 'kb');
+      const id = 'ollama__nomic-embed-text';
+      await fsp.mkdir(path.join(kbDir, 'sample'), { recursive: true });
+      await fsp.mkdir(path.join(faissDir, 'models', id), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', id, '.adding'), '999999999\n');
+
+      const withoutRecover = runCli(['models', 'add', 'ollama', 'nomic-embed-text', '--yes'], {
+        KNOWLEDGE_BASES_ROOT_DIR: kbDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_MODEL: 'nomic-embed-text',
+      });
+      expect(withoutRecover.code).toBe(2);
+      expect(withoutRecover.stderr).toContain('stale/interrupted');
+      expect(withoutRecover.stderr).toContain('--recover --yes');
+
+      const withoutYes = runCli(['models', 'add', 'ollama', 'nomic-embed-text', '--recover'], {
+        KNOWLEDGE_BASES_ROOT_DIR: kbDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_MODEL: 'nomic-embed-text',
+      });
+      expect(withoutYes.code).toBe(2);
+      expect(withoutYes.stderr).toContain('Pass both --recover and --yes');
+      await expect(fsp.access(path.join(faissDir, 'models', id, '.adding'))).resolves.toBeUndefined();
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('kb models add refuses --recover for malformed .adding sentinels', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-add-malformed-'));
+    try {
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(tempDir, 'kb');
+      const id = 'ollama__nomic-embed-text';
+      await fsp.mkdir(path.join(kbDir, 'sample'), { recursive: true });
+      await fsp.mkdir(path.join(faissDir, 'models', id), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', id, '.adding'), '{not-json');
+
+      const r = runCli(['models', 'add', 'ollama', 'nomic-embed-text', '--recover', '--yes'], {
+        KNOWLEDGE_BASES_ROOT_DIR: kbDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_MODEL: 'nomic-embed-text',
+      });
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain('cannot be recovered automatically');
+      await expect(fsp.readFile(path.join(faissDir, 'models', id, '.adding'), 'utf-8'))
+        .resolves.toBe('{not-json');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('kb models add --recover --yes deletes a stale incomplete dir before retrying', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-add-recover-'));
+    try {
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(tempDir, 'kb');
+      const id = 'ollama__nomic-embed-text';
+      await fsp.mkdir(kbDir, { recursive: true });
+      await fsp.mkdir(path.join(faissDir, 'models', id), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', id, '.adding'), JSON.stringify({
+        schema_version: 'kb.model-adding.v1',
+        model_id: id,
+        provider: 'ollama',
+        model_name: 'nomic-embed-text',
+        pid: 999999999,
+        started_at: '2026-05-11T10:00:00.000Z',
+      }));
+      await fsp.writeFile(path.join(faissDir, 'models', id, 'old-partial-file'), 'old');
+
+      const r = runCli(['models', 'add', 'ollama', 'nomic-embed-text', '--recover', '--yes'], {
+        KNOWLEDGE_BASES_ROOT_DIR: kbDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_MODEL: 'nomic-embed-text',
+      });
+      expect(r.code).toBe(0);
+      expect(r.stderr).toContain('Recovered stale incomplete model');
+      expect(r.stderr).toContain(`Successfully added ${id}`);
+      await expect(fsp.access(path.join(faissDir, 'models', id, 'old-partial-file')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fsp.access(path.join(faissDir, 'models', id, '.adding')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fsp.readFile(path.join(faissDir, 'models', id, 'model_name.txt'), 'utf-8'))
+        .resolves.toBe('nomic-embed-text');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('kb models set-active exits 2 for non-registered model_id', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-setactive-bad-'));
     try {

@@ -187,6 +187,26 @@ describe('active-model: resolveActiveModel precedence (RFC §4.7)', () => {
     await expect(resolveActiveModel({ explicitOverride: 'ollama__../etc/passwd' }))
       .rejects.toThrow(/Invalid --model/);
   });
+
+  it('active.txt pointing at a stale incomplete model gives the recover command', async () => {
+    jest.resetModules();
+    const { resolveActiveModel } = await import('./active-model.js');
+    const staleId = 'ollama__nomic-embed-text';
+    await fsp.mkdir(path.join(faissDir, 'models', staleId), { recursive: true });
+    await fsp.writeFile(path.join(faissDir, 'active.txt'), staleId);
+    await fsp.writeFile(path.join(faissDir, 'models', staleId, '.adding'), JSON.stringify({
+      schema_version: 'kb.model-adding.v1',
+      model_id: staleId,
+      provider: 'ollama',
+      model_name: 'nomic-embed-text',
+      pid: 999999999,
+      started_at: '2026-05-11T10:00:00.000Z',
+    }));
+
+    await expect(resolveActiveModel()).rejects.toThrow(
+      /kb models add ollama nomic-embed-text --recover --yes/,
+    );
+  });
 });
 
 describe('active-model: isRegisteredModel / listRegisteredModels', () => {
@@ -247,5 +267,69 @@ describe('active-model: isRegisteredModel / listRegisteredModels', () => {
 
     const models = await listRegisteredModels();
     expect(models.map((m) => m.model_id)).toEqual([REGISTERED_ID]);
+  });
+
+  it('writes and reads structured .adding sentinel metadata', async () => {
+    jest.resetModules();
+    const {
+      buildAddingSentinelMetadata,
+      readAddingSentinel,
+      writeAddingSentinel,
+    } = await import('./active-model.js');
+    await fsp.mkdir(path.join(faissDir, 'models', REGISTERED_ID), { recursive: true });
+
+    const metadata = buildAddingSentinelMetadata({
+      modelId: REGISTERED_ID,
+      provider: 'huggingface',
+      modelName: 'BAAI/bge-small-en-v1.5',
+      pid: 123,
+      startedAt: new Date('2026-05-11T10:00:00.000Z'),
+    });
+    await writeAddingSentinel(metadata);
+
+    expect(await readAddingSentinel(REGISTERED_ID)).toMatchObject({
+      kind: 'metadata',
+      metadata,
+    });
+  });
+
+  it('classifies live, dead, legacy PID, and malformed .adding sentinels conservatively', async () => {
+    jest.resetModules();
+    const {
+      buildAddingSentinelMetadata,
+      classifyIncompleteModelState,
+      writeAddingSentinel,
+    } = await import('./active-model.js');
+
+    await fsp.mkdir(path.join(faissDir, 'models', REGISTERED_ID), { recursive: true });
+    await writeAddingSentinel(buildAddingSentinelMetadata({
+      modelId: REGISTERED_ID,
+      provider: 'huggingface',
+      modelName: 'BAAI/bge-small-en-v1.5',
+      pid: 123,
+      startedAt: new Date('2026-05-11T10:00:00.000Z'),
+    }));
+    await expect(classifyIncompleteModelState(REGISTERED_ID, () => true))
+      .resolves.toMatchObject({ status: 'in_progress', pid: 123, recovery_command: null });
+    await expect(classifyIncompleteModelState(REGISTERED_ID, () => false))
+      .resolves.toMatchObject({
+        status: 'stale_interrupted',
+        pid: 123,
+        provider: 'huggingface',
+        model_name: 'BAAI/bge-small-en-v1.5',
+        recovery_command: 'kb models add huggingface BAAI/bge-small-en-v1.5 --recover --yes',
+      });
+
+    const legacyId = 'ollama__nomic-embed-text';
+    await fsp.mkdir(path.join(faissDir, 'models', legacyId), { recursive: true });
+    await fsp.writeFile(path.join(faissDir, 'models', legacyId, '.adding'), '456\n');
+    await expect(classifyIncompleteModelState(legacyId, () => false))
+      .resolves.toMatchObject({ status: 'stale_interrupted', pid: 456, provider: 'ollama' });
+
+    const malformedId = 'openai__text-embedding-3-small';
+    await fsp.mkdir(path.join(faissDir, 'models', malformedId), { recursive: true });
+    await fsp.writeFile(path.join(faissDir, 'models', malformedId, '.adding'), '{not-json');
+    await expect(classifyIncompleteModelState(malformedId, () => false))
+      .resolves.toMatchObject({ status: 'unknown', pid: null, recovery_command: null });
   });
 });

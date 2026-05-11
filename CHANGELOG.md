@@ -12,6 +12,12 @@
 
 - **`npm run dev:cli -- <kb args>` runs the TypeScript `kb` CLI source with source maps enabled.** The contributor-only wrapper forwards args to `src/cli.ts` without requiring a build or relink and prints the active `KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, embedding provider, and embedding model to stderr before execution. Closes #246.
 
+## [Unreleased] — stale model-add recovery
+
+### Added
+
+- **`kb models add --recover --yes` now cleans up stale interrupted model registrations before retrying.** `.adding` sentinels are written as structured metadata with PID-only compatibility for older sentinels. Live writer PIDs still block, dead PIDs are reported as stale/interrupted, malformed sentinel state remains non-destructive, and `kb doctor` warns about stale incomplete model directories with a recovery command. Closes #228.
+
 ## [Unreleased] — atomic EOF appends for `kb remember` and `kb capture`
 
 ### Changed
