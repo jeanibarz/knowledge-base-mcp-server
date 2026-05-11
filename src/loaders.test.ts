@@ -23,6 +23,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   getLoader,
+  LargeFileIngestError,
   LOADERS,
   loadFile,
   SUPPORTED_LOADER_EXTENSIONS,
@@ -332,6 +333,96 @@ describe('PDF loader — pdfjs-dist stdout noise suppression', () => {
     expect(stdoutSpy).not.toHaveBeenCalled();
     // After both loads settle, console.log is back to the test spy.
     expect(console.log).toBe(stdoutSpy);
+  });
+});
+
+describe('large-file bounds (#285)', () => {
+  const savedMaxFileBytes = process.env.KB_MAX_FILE_BYTES;
+  const savedMaxExtractedTextBytes = process.env.KB_MAX_EXTRACTED_TEXT_BYTES;
+  const savedLargeFilePolicy = process.env.KB_LARGE_FILE_POLICY;
+  let tempDir = '';
+
+  beforeEach(async () => {
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-loaders-large-'));
+    pdfParseFnMock.mockReset();
+  });
+
+  afterEach(async () => {
+    if (savedMaxFileBytes === undefined) delete process.env.KB_MAX_FILE_BYTES;
+    else process.env.KB_MAX_FILE_BYTES = savedMaxFileBytes;
+    if (savedMaxExtractedTextBytes === undefined) delete process.env.KB_MAX_EXTRACTED_TEXT_BYTES;
+    else process.env.KB_MAX_EXTRACTED_TEXT_BYTES = savedMaxExtractedTextBytes;
+    if (savedLargeFilePolicy === undefined) delete process.env.KB_LARGE_FILE_POLICY;
+    else process.env.KB_LARGE_FILE_POLICY = savedLargeFilePolicy;
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('skips files that exceed KB_MAX_FILE_BYTES before invoking the PDF parser', async () => {
+    process.env.KB_MAX_FILE_BYTES = '4';
+    process.env.KB_LARGE_FILE_POLICY = 'skip';
+    const filePath = path.join(tempDir, 'large.pdf');
+    await fsp.writeFile(filePath, Buffer.from('%PDF-1.4\nbody'));
+    pdfParseFnMock.mockResolvedValue({ text: 'should not parse' });
+
+    await expect(loadFile(filePath)).rejects.toMatchObject({
+      code: 'KB_LARGE_FILE_SKIPPED',
+      limitKind: 'file_bytes',
+      policy: 'skip',
+    });
+    expect(pdfParseFnMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects extracted text over the cap when KB_LARGE_FILE_POLICY=error', async () => {
+    process.env.KB_MAX_FILE_BYTES = '100';
+    process.env.KB_MAX_EXTRACTED_TEXT_BYTES = '5';
+    process.env.KB_LARGE_FILE_POLICY = 'error';
+    const filePath = path.join(tempDir, 'large.txt');
+    await fsp.writeFile(filePath, 'abcdef');
+
+    let thrown: unknown;
+    try {
+      await loadFile(filePath);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(LargeFileIngestError);
+    expect(thrown).toMatchObject({
+      code: 'KB_LARGE_FILE_TOO_LARGE',
+      limitKind: 'extracted_text_bytes',
+      observedBytes: 6,
+      limitBytes: 5,
+      policy: 'error',
+    });
+  });
+
+  it('streams and truncates text under KB_LARGE_FILE_POLICY=truncate', async () => {
+    process.env.KB_MAX_FILE_BYTES = '100';
+    process.env.KB_MAX_EXTRACTED_TEXT_BYTES = '5';
+    process.env.KB_LARGE_FILE_POLICY = 'truncate';
+    const filePath = path.join(tempDir, 'large.txt');
+    await fsp.writeFile(filePath, 'abcdef');
+
+    await expect(loadFile(filePath)).resolves.toBe('abcde');
+  });
+
+  it('does not split a multibyte UTF-8 character while truncating', async () => {
+    process.env.KB_MAX_FILE_BYTES = '100';
+    process.env.KB_MAX_EXTRACTED_TEXT_BYTES = '5';
+    process.env.KB_LARGE_FILE_POLICY = 'truncate';
+    const filePath = path.join(tempDir, 'emoji.txt');
+    await fsp.writeFile(filePath, 'abcdé');
+
+    await expect(loadFile(filePath)).resolves.toBe('abcd');
+  });
+
+  it('truncates extracted HTML text after markup conversion', async () => {
+    process.env.KB_MAX_FILE_BYTES = '100';
+    process.env.KB_MAX_EXTRACTED_TEXT_BYTES = '5';
+    process.env.KB_LARGE_FILE_POLICY = 'truncate';
+    const filePath = path.join(tempDir, 'large.html');
+    await fsp.writeFile(filePath, '<html><body><p>abcdef</p></body></html>');
+
+    await expect(loadFile(filePath)).resolves.toBe('abcde');
   });
 });
 

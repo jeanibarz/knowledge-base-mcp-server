@@ -21,8 +21,10 @@
 // Both modules are imported lazily inside the loader so the cold-start cost is
 // only paid by KBs that actually contain PDFs or HTML.
 
+import { createReadStream } from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { resolveLargeFileLimits, type KBLargeFilePolicy } from './config.js';
 import { loadWithExtractionCache } from './extraction-cache.js';
 
 /** Loader contract: filePath in, plain text out. Throws on parse failure. */
@@ -39,13 +41,150 @@ const PDF_LOADER_VERSION = 1;
 const HTML_LOADER_NAME = 'html-to-text';
 const HTML_LOADER_VERSION = 1;
 
+export type LargeFileLimitKind = 'file_bytes' | 'extracted_text_bytes';
+
+export class LargeFileIngestError extends Error {
+  readonly code: 'KB_LARGE_FILE_SKIPPED' | 'KB_LARGE_FILE_TOO_LARGE';
+  readonly filePath: string;
+  readonly limitKind: LargeFileLimitKind;
+  readonly observedBytes: number;
+  readonly limitBytes: number;
+  readonly policy: KBLargeFilePolicy;
+
+  constructor(args: {
+    filePath: string;
+    limitKind: LargeFileLimitKind;
+    observedBytes: number;
+    limitBytes: number;
+    policy: KBLargeFilePolicy;
+  }) {
+    const action = args.policy === 'skip' ? 'skipped' : 'rejected';
+    super(
+      `Large file ${action}: ${args.filePath} ${args.limitKind}=${args.observedBytes} ` +
+      `exceeds limit ${args.limitBytes} (KB_LARGE_FILE_POLICY=${args.policy})`,
+    );
+    this.name = 'LargeFileIngestError';
+    this.code = args.policy === 'skip' ? 'KB_LARGE_FILE_SKIPPED' : 'KB_LARGE_FILE_TOO_LARGE';
+    this.filePath = args.filePath;
+    this.limitKind = args.limitKind;
+    this.observedBytes = args.observedBytes;
+    this.limitBytes = args.limitBytes;
+    this.policy = args.policy;
+  }
+}
+
+type LargeFileLimits = ReturnType<typeof resolveLargeFileLimits>;
+
+function throwLargeFileLimit(args: {
+  filePath: string;
+  limitKind: LargeFileLimitKind;
+  observedBytes: number;
+  limitBytes: number;
+  policy: KBLargeFilePolicy;
+}): never {
+  throw new LargeFileIngestError(args);
+}
+
+async function statSize(filePath: string): Promise<number> {
+  return (await fsp.stat(filePath)).size;
+}
+
+function enforceFileSizeLimit(
+  filePath: string,
+  size: number,
+  limits: LargeFileLimits,
+): void {
+  if (size > limits.maxFileBytes) {
+    throwLargeFileLimit({
+      filePath,
+      limitKind: 'file_bytes',
+      observedBytes: size,
+      limitBytes: limits.maxFileBytes,
+      policy: limits.policy,
+    });
+  }
+}
+
+function trimIncompleteUtf8(buffer: Buffer): Buffer {
+  if (buffer.length === 0) return buffer;
+  let leadIndex = buffer.length - 1;
+  while (leadIndex >= 0 && (buffer[leadIndex] & 0xc0) === 0x80) {
+    leadIndex -= 1;
+  }
+  if (leadIndex < 0) return Buffer.alloc(0);
+  const lead = buffer[leadIndex];
+  const expectedLength = lead < 0x80
+    ? 1
+    : (lead & 0xe0) === 0xc0
+      ? 2
+      : (lead & 0xf0) === 0xe0
+        ? 3
+        : (lead & 0xf8) === 0xf0
+          ? 4
+          : 1;
+  const actualLength = buffer.length - leadIndex;
+  return actualLength < expectedLength ? buffer.subarray(0, leadIndex) : buffer;
+}
+
+function utf8Prefix(text: string, maxBytes: number): string {
+  const buffer = Buffer.from(text, 'utf-8');
+  if (buffer.length <= maxBytes) return text;
+  return trimIncompleteUtf8(buffer.subarray(0, maxBytes)).toString('utf-8');
+}
+
+async function readUtf8Prefix(filePath: string, maxBytes: number): Promise<string> {
+  if (maxBytes <= 0) return '';
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of createReadStream(filePath)) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const remaining = maxBytes - total;
+    if (remaining <= 0) break;
+    if (buffer.length > remaining) {
+      chunks.push(buffer.subarray(0, remaining));
+      total += remaining;
+      break;
+    }
+    chunks.push(buffer);
+    total += buffer.length;
+  }
+  return trimIncompleteUtf8(Buffer.concat(chunks, total)).toString('utf-8');
+}
+
+export function applyExtractedTextLimit(filePath: string, text: string): string {
+  const limits = resolveLargeFileLimits();
+  const bytes = Buffer.byteLength(text, 'utf-8');
+  if (bytes <= limits.maxExtractedTextBytes) return text;
+  if (limits.policy === 'truncate') {
+    return utf8Prefix(text, limits.maxExtractedTextBytes);
+  }
+  return throwLargeFileLimit({
+    filePath,
+    limitKind: 'extracted_text_bytes',
+    observedBytes: bytes,
+    limitBytes: limits.maxExtractedTextBytes,
+    policy: limits.policy,
+  });
+}
+
 async function loadText(filePath: string): Promise<string> {
-  // `.md` / `.txt` / `INGEST_EXTRA_EXTENSIONS` opt-ins ride this loader. They
-  // are already a single fsp.readFile away from "normalized text", so caching
-  // would only add overhead (sha256 + a second copy on disk) without saving
-  // any parse work. Skip the cache here on purpose; only the expensive PDF
-  // and HTML parsers cache.
-  return fsp.readFile(filePath, 'utf-8');
+  const limits = resolveLargeFileLimits();
+  const size = await statSize(filePath);
+  if (limits.policy !== 'truncate') {
+    enforceFileSizeLimit(filePath, size, limits);
+    if (size > limits.maxExtractedTextBytes) {
+      throwLargeFileLimit({
+        filePath,
+        limitKind: 'extracted_text_bytes',
+        observedBytes: size,
+        limitBytes: limits.maxExtractedTextBytes,
+        policy: limits.policy,
+      });
+    }
+    return fsp.readFile(filePath, 'utf-8');
+  }
+  const maxReadBytes = Math.min(size, limits.maxFileBytes, limits.maxExtractedTextBytes);
+  return readUtf8Prefix(filePath, maxReadBytes);
 }
 
 // Reentrancy depth for `silencePdfjsConsole` — pdf-parse calls can interleave
@@ -114,6 +253,9 @@ async function silencePdfjsConsole<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function loadPdf(filePath: string): Promise<string> {
+  const limits = resolveLargeFileLimits();
+  const size = await statSize(filePath);
+  enforceFileSizeLimit(filePath, size, limits);
   // pdf-parse@1 ships its main as a CJS function with `module.exports = PDF`
   // and a `parent`-less debug branch that fires on import (it tries to read
   // a bundled test fixture from `./test/data/...`). Importing under that
@@ -127,7 +269,7 @@ async function loadPdf(filePath: string): Promise<string> {
   // Issue #279 — gate the heavy parse behind the content-addressed extraction
   // cache. On a cache hit we never touch pdfjs-dist at all; on a miss we run
   // the original parse and store its output for the next caller.
-  return loadWithExtractionCache({
+  const text = await loadWithExtractionCache({
     filePath,
     loaderName: PDF_LOADER_NAME,
     loaderVersion: PDF_LOADER_VERSION,
@@ -141,13 +283,30 @@ async function loadPdf(filePath: string): Promise<string> {
       return result.text;
     },
   });
+  return applyExtractedTextLimit(filePath, text);
 }
 
 async function loadHtml(filePath: string): Promise<string> {
+  const limits = resolveLargeFileLimits();
+  const size = await statSize(filePath);
+  if (limits.policy === 'truncate') {
+    const { htmlToText } = await import('html-to-text');
+    const raw = await readUtf8Prefix(filePath, Math.min(size, limits.maxFileBytes));
+    return applyExtractedTextLimit(filePath, htmlToText(raw, {
+      wordwrap: false,
+      selectors: [
+        // Hrefs are noise inside an embedding; the link text is what matters.
+        { selector: 'a', options: { ignoreHref: true } },
+        // Images carry no embeddable text; skip the alt-text-only line they'd produce.
+        { selector: 'img', format: 'skip' },
+      ],
+    }));
+  }
+  enforceFileSizeLimit(filePath, size, limits);
   // Issue #279 — same caching gate as `loadPdf`. html-to-text is cheap per
   // call but quadratic in document size on large structured documents, so
   // skipping it on rebuilds is still a meaningful win.
-  return loadWithExtractionCache({
+  const text = await loadWithExtractionCache({
     filePath,
     loaderName: HTML_LOADER_NAME,
     loaderVersion: HTML_LOADER_VERSION,
@@ -165,6 +324,7 @@ async function loadHtml(filePath: string): Promise<string> {
       });
     },
   });
+  return applyExtractedTextLimit(filePath, text);
 }
 
 /**

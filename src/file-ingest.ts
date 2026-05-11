@@ -25,6 +25,7 @@ import { KNOWLEDGE_BASES_ROOT_DIR, resolveChunkSize } from './config.js';
 import { handleFsOperationError } from './error-utils.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
+import { applyExtractedTextLimit } from './loaders.js';
 import { withSidecarLock } from './write-lock.js';
 
 export interface PendingSidecarWrite {
@@ -65,7 +66,8 @@ export async function buildChunkDocuments(
         chunkOverlap,
       });
 
-  const { tags, body, frontmatter } = parseFrontmatter(content);
+  const boundedContent = applyExtractedTextLimit(filePath, content);
+  const { tags, body, frontmatter } = parseFrontmatter(boundedContent);
   const relativePath = path
     .relative(KNOWLEDGE_BASES_ROOT_DIR, filePath)
     .split(path.sep)
