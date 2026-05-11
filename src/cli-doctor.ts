@@ -30,6 +30,14 @@ import {
   FaissIndexManager,
   type IndexUpdateSummary,
 } from './FaissIndexManager.js';
+import {
+  AgeBudgetConfigError,
+  computeAgeBudgetStatus,
+  formatAgeBudgetBreachRow,
+  formatAgeHours,
+  type AgeBudgetStatus,
+} from './age-budget.js';
+import { maxMtimeIso } from './kb-stats.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -79,6 +87,31 @@ export interface DoctorReport {
     mtime: string | null;
   };
   stale_counts_by_kb: Record<string, { modified_files: number; new_files: number }>;
+  /**
+   * Per-KB time-based age budget status (issue #218). Only KBs that have
+   * a configured budget (per-KB or via the global `KB_AGE_BUDGET_HOURS`
+   * fallback) appear in this map. `current_age_hours` is `null` when the
+   * KB has never been indexed.
+   */
+  age_budgets: Record<
+    string,
+    {
+      configured_hours: number;
+      current_age_hours: number | null;
+      breach: boolean;
+    }
+  >;
+  /**
+   * Malformed `KB_AGE_BUDGET_HOURS*` env-var values surfaced as a
+   * separate list so the operator notices a typo even when the
+   * affected KB falls back to "no budget". Empty when all configured
+   * values parsed cleanly.
+   */
+  age_budget_config_errors: Array<{
+    env_var: string;
+    raw_value: string;
+    message: string;
+  }>;
   incomplete_models: Array<{
     model_id: string;
     status: 'in_progress' | 'stale_interrupted' | 'unknown';
@@ -207,6 +240,46 @@ export async function buildDoctorReport(
       : `${staleTotal} modified/new ingestable file(s) detected`,
   });
 
+  const ageBudgetResult = await computeAgeBudgetsByKb(
+    Object.keys(staleCounts),
+  );
+  if (
+    Object.keys(ageBudgetResult.byKb).length > 0 ||
+    ageBudgetResult.configErrors.length > 0
+  ) {
+    const breaches = Object.entries(ageBudgetResult.byKb)
+      .filter(([, row]) => row.breach);
+    if (ageBudgetResult.configErrors.length > 0) {
+      const summary = ageBudgetResult.configErrors
+        .map((e) => `${e.env_var}=${JSON.stringify(e.raw_value)}`)
+        .join(', ');
+      checks.push({
+        name: 'age_budget',
+        status: 'error',
+        detail: `malformed age-budget config: ${summary}`,
+      });
+    } else if (breaches.length > 0) {
+      const summary = breaches
+        .map(([kb, row]) =>
+          `kb=${kb}, age=${formatAgeHours(row.current_age_hours)}h, ` +
+          `budget=${row.configured_hours}h`,
+        )
+        .join('; ');
+      checks.push({
+        name: 'age_budget',
+        status: 'warn',
+        detail: `${breaches.length} KB age-budget breach(es): ${summary}`,
+      });
+    } else {
+      const configured = Object.keys(ageBudgetResult.byKb).length;
+      checks.push({
+        name: 'age_budget',
+        status: 'ok',
+        detail: `no breaches across ${configured} KB(s) with configured budgets`,
+      });
+    }
+  }
+
   const incompleteModels = await listIncompleteModelStates();
   const staleIncompleteModels = incompleteModels.filter((m) => m.status === 'stale_interrupted');
   checks.push({
@@ -251,6 +324,8 @@ export async function buildDoctorReport(
     },
     index,
     stale_counts_by_kb: staleCounts,
+    age_budgets: ageBudgetResult.byKb,
+    age_budget_config_errors: ageBudgetResult.configErrors,
     incomplete_models: incompleteModels,
     backend,
     cli,
@@ -319,6 +394,53 @@ async function computeStaleCountsByKb(
     out[kbName] = { modified_files: modified, new_files: added };
   }
   return out;
+}
+
+/**
+ * Iterate KBs and produce the per-KB age-budget rows for the doctor
+ * report. Only KBs whose name resolves to a configured budget (either
+ * the per-KB env var or the global `KB_AGE_BUDGET_HOURS` fallback) are
+ * included. Malformed env values are collected separately so the
+ * operator notices the typo while the affected KB silently falls back
+ * to "no budget".
+ */
+async function computeAgeBudgetsByKb(
+  kbNames: string[],
+): Promise<{
+  byKb: DoctorReport['age_budgets'];
+  configErrors: DoctorReport['age_budget_config_errors'];
+}> {
+  const nowMs = Date.now();
+  const byKb: DoctorReport['age_budgets'] = {};
+  const configErrors: DoctorReport['age_budget_config_errors'] = [];
+  for (const kbName of kbNames) {
+    const lastIndexAtIso = await maxMtimeIso(
+      path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName, '.index'),
+    );
+    const lastIndexAtMs = lastIndexAtIso === null
+      ? null
+      : Date.parse(lastIndexAtIso);
+    let status: AgeBudgetStatus;
+    try {
+      status = computeAgeBudgetStatus(kbName, lastIndexAtMs, nowMs);
+    } catch (err) {
+      if (!(err instanceof AgeBudgetConfigError)) throw err;
+      configErrors.push({
+        env_var: err.envVar,
+        raw_value: err.rawValue,
+        message: err.message,
+      });
+      continue;
+    }
+    if (status.configuredHours === null) continue;
+    byKb[kbName] = {
+      configured_hours: status.configuredHours,
+      current_age_hours:
+        status.currentAgeHours === null ? null : status.currentAgeHours,
+      breach: status.breach,
+    };
+  }
+  return { byKb, configErrors };
 }
 
 async function countFiles(dir: string): Promise<number> {
@@ -512,6 +634,34 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
     for (const name of names) {
       const row = report.stale_counts_by_kb[name];
       lines.push(`  ${name}: ${row.modified_files} modified, ${row.new_files} new`);
+    }
+  }
+  lines.push('');
+  lines.push('Age budgets:');
+  const budgetNames = Object.keys(report.age_budgets).sort();
+  if (budgetNames.length === 0 && report.age_budget_config_errors.length === 0) {
+    lines.push('  (no budgets configured)');
+  } else {
+    for (const name of budgetNames) {
+      const row = report.age_budgets[name];
+      const age = formatAgeHours(row.current_age_hours);
+      const ageDisplay = age === null ? 'never indexed' : `${age}h`;
+      if (row.breach) {
+        const breachRow = formatAgeBudgetBreachRow({
+          kb: name,
+          configuredHours: row.configured_hours,
+          currentAgeHours: row.current_age_hours,
+          breach: true,
+        });
+        lines.push(`  ${breachRow ?? `${name}: age=${ageDisplay}, budget=${row.configured_hours}h, BREACH`}`);
+      } else {
+        lines.push(
+          `  ${name}: age=${ageDisplay}, budget=${row.configured_hours}h, ok`,
+        );
+      }
+    }
+    for (const err of report.age_budget_config_errors) {
+      lines.push(`  CONFIG_ERROR: ${err.env_var}=${JSON.stringify(err.raw_value)}`);
     }
   }
   lines.push('');
