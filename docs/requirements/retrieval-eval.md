@@ -16,3 +16,5 @@
 - [ ] Given a fixture case with gate behavior, when the case fails, then the command exits nonzero.
 
 **Linked Tests:** TS-RETRIEVAL-EVAL-001
+
+**Authoring Guidance:** See [Retrieval eval fixture methodology](../testing/retrieval-eval-methodology.md) for fixture archetypes, gating policy, contamination guardrails, and the worked starter fixture.

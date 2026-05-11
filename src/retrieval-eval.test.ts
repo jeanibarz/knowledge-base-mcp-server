@@ -1,4 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
+import * as fsp from 'fs/promises';
+import * as path from 'path';
+import yaml from 'js-yaml';
 import type { ScoredDocument } from './formatter.js';
 import type { Staleness } from './cli-search.js';
 import {
@@ -70,6 +73,29 @@ describe('normalizeRetrievalEvalFixture', () => {
     expect(fixture.cases[0].expectedMetadata).toEqual([
       { path: 'frontmatter.status', equals: 'approved' },
     ]);
+  });
+
+  it('parses the methodology starter fixture against the eval schema', async () => {
+    const raw = await fsp.readFile(
+      path.join(process.cwd(), 'docs/testing/fixtures/methodology-starter.yml'),
+      'utf-8',
+    );
+    const fixture = normalizeRetrievalEvalFixture(yaml.load(raw));
+
+    expect(fixture.gate).toBe(false);
+    expect(fixture.cases).toHaveLength(5);
+    expect(fixture.cases.map((fixtureCase) => fixtureCase.name)).toEqual([
+      'smoke - docs answer doctor availability',
+      'recall - per-file hash sidecars remain discoverable',
+      'precision - archived deploy runbook stays out',
+      'metadata - approved baseline carries owner',
+      'near miss - scoped query does not leak personal notes',
+    ]);
+    expect(fixture.cases[3].expectedMetadata).toEqual([
+      { path: 'frontmatter.status', equals: 'approved' },
+      { path: 'frontmatter.owner', equals: 'search-platform' },
+    ]);
+    expect(fixture.cases[4].stalePolicy).toBe('allow_stale');
   });
 });
 
