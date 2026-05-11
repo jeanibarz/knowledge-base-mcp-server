@@ -132,7 +132,7 @@ kb models remove huggingface__BAAI-bge-small-en-v1.5
 
 `<model_id>` is `<provider>__<filesystem-safe-slug>`, derived deterministically from `(provider, model_name)` as typed (e.g. `OLLAMA_MODEL=nomic-embed-text:latest` → `ollama__nomic-embed-text-latest`). On-disk layout: each model lives at `${FAISS_INDEX_PATH}/models/<id>/`. The active model is recorded in `${FAISS_INDEX_PATH}/active.txt` and overridable per-process via `KB_ACTIVE_MODEL`. See [`docs/rfcs/013-multimodel-support.md`](docs/rfcs/013-multimodel-support.md) for the full design.
 
-**Migration from 0.2.x → 0.3.0** is automatic on first server (or `kb`) start: the existing single-model index is moved into `${FAISS_INDEX_PATH}/models/<derived_id>/` and `active.txt` is written. Atomic, ~12 ms measured. **Before upgrading**, fully exit any AI client (Claude Code, Cursor, Continue, Cline) that has the MCP server loaded — the migration acquires the single-instance PID advisory before any rename, so it cannot run while a 0.2.x MCP child is still using the directory. See [CHANGELOG](CHANGELOG.md) for rollback recipes.
+**Migration from 0.2.x → 0.3.0** is automatic on first server (or `kb`) start: the existing single-model index is moved into `${FAISS_INDEX_PATH}/models/<derived_id>/` and `active.txt` is written. Atomic, ~12 ms measured. **Before upgrading**, fully exit any AI client (Claude Code, Cursor, Continue, Cline) that has the MCP server loaded — the migration acquires the single-instance PID advisory before any rename, so it cannot run while a 0.2.x MCP child is still using the directory. Keep a backup of the previous `${FAISS_INDEX_PATH}` if you need rollback safety before upgrading.
 
 **MCP surface** — `retrieve_knowledge` gains an optional `model_name` argument; a new `list_models` tool returns the registered models; `kb_stats` reports the latest in-process `updateIndex` summary under `last_index_update` alongside the static index counts. Tools that don't pass `model_name` keep working unchanged (wire format is byte-equal to 0.2.x).
 
@@ -218,7 +218,7 @@ Use this path if you want to develop against the repo or pin an unreleased commi
         OPENAI_MODEL_NAME=text-embedding-3-small
         KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
         ```
-    *   As of this release, the OpenAI default is `text-embedding-3-small` (up from `text-embedding-ada-002`). Both produce 1536-dim vectors, but the model name change will trigger a one-time FAISS index rebuild on the next query. Override with `OPENAI_MODEL_NAME=...` if you prefer the old default. See the [CHANGELOG](./CHANGELOG.md) for details.
+    *   As of this release, the OpenAI default is `text-embedding-3-small` (up from `text-embedding-ada-002`). Both produce 1536-dim vectors, but the model name change will trigger a one-time FAISS index rebuild on the next query. Override with `OPENAI_MODEL_NAME=...` if you prefer the old default.
 
     ### Option 3: HuggingFace Configuration (Fallback)
     
@@ -232,7 +232,7 @@ Use this path if you want to develop against the repo or pin an unreleased commi
         HUGGINGFACE_PROVIDER=hf-inference       # Optional, router provider for serverless inference
         KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
         ```
-    *   As of this release, the HuggingFace default is `BAAI/bge-small-en-v1.5` (up from `sentence-transformers/all-MiniLM-L6-v2`). Both produce 384-dim vectors, but the model name change will trigger a one-time FAISS index rebuild on the next query. Override with `HUGGINGFACE_MODEL_NAME=...` if you prefer the old default. See the [CHANGELOG](./CHANGELOG.md) for details.
+    *   As of this release, the HuggingFace default is `BAAI/bge-small-en-v1.5` (up from `sentence-transformers/all-MiniLM-L6-v2`). Both produce 384-dim vectors, but the model name change will trigger a one-time FAISS index rebuild on the next query. Override with `HUGGINGFACE_MODEL_NAME=...` if you prefer the old default.
     *   HuggingFace retired the legacy `api-inference.huggingface.co/models/...`
         endpoint in 2025. Feature-extraction calls are now routed through the
         Inference Providers router at

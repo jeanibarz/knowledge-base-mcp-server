@@ -488,7 +488,7 @@ If one provider errors mid-query (network, rate limit, 4xx):
 A per-provider circuit breaker (open after N consecutive failures, half-open after T seconds)
 is deferred — minimal naive short-circuit: a 3s per-provider timeout using `AbortSignal`
 passed to each `embedQuery` call, because the `HuggingFaceInferenceEmbeddings` hanging bug
-motivated the Ollama provider in the first place (`CHANGELOG.md:19-20`). Timeout is
+motivated the Ollama provider in the first place. Timeout is
 configurable via `EMBEDDING_TIMEOUT_MS` (default 3000).
 
 ### 5.8 Evaluation harness — lands *before* axis B, not after
@@ -584,7 +584,7 @@ of well-exercised code; we copy-adapt the `_weightedReciprocalRank` math into
 
 **Rejected in this draft after review.** The `@huggingface/inference` dependency
 (`package.json:17`) is already flaky enough that its unreliability was the documented
-reason for adding Ollama as an alternative in the first place (`CHANGELOG.md:19-20`). Adding
+reason for adding Ollama as an alternative in the first place. Adding
 a *second* HF-hosted network hop — this time on the query-critical path, not just ingest —
 would inherit the same failure profile without the Ollama-was-the-backup mitigation. We
 keep the `Reranker` interface small enough that a HuggingFace backend can be added later in

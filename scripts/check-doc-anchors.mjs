@@ -16,7 +16,7 @@ const DEFAULT_DOC_ROOTS = [
 ];
 
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown']);
-const ANCHOR_RE = /(?<![\w/.-])((?:(?:src|scripts|docs|benchmarks)\/[A-Za-z0-9._/-]+\.(?:ts|tsx|js|mjs|cjs|json|md|markdown|yml|yaml|sh)|(?:package\.json|tsconfig(?:\.[A-Za-z0-9_-]+)?\.json|jest\.config\.js|README\.md|CONTRIBUTING\.md|CLAUDE\.md|CHANGELOG\.md))(?:(::[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)|:(\d+)(?:-(\d+))?))/g;
+const ANCHOR_RE = /(?<![\w/.-])((?:(?:src|scripts|docs|benchmarks)\/[A-Za-z0-9._/-]+\.(?:ts|tsx|js|mjs|cjs|json|md|markdown|yml|yaml|sh)|(?:package\.json|tsconfig(?:\.[A-Za-z0-9_-]+)?\.json|jest\.config\.js|README\.md|CONTRIBUTING\.md|CLAUDE\.md))(?:(::[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)|:(\d+)(?:-(\d+))?))/g;
 const CONTINUATION_RE = /(?<![\w/.:])(?::(\d+)(?:-(\d+))?)(?![\w/.-])/g;
 const FENCE_RE = /^\s*(```|~~~)/;
 const IGNORE_LINE_RE = /anchor-check:\s*ignore/i;
