@@ -218,6 +218,46 @@ describe('computeKbStats', () => {
     await fsp.rm(tempDir, { recursive: true, force: true });
   });
 
+  it('returns an empty provider_calls map by default and a populated one after telemetry is recorded (issue #210)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-metrics-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'alpha'));
+      await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'a');
+
+      const { computeKbStats } = await freshKbStats({
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+      const { ProviderCallMetrics } = await import('./metrics.js');
+      const metrics = new ProviderCallMetrics({ now: () => 1_700_000_000_000 });
+
+      const empty = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        metrics,
+      });
+      expect(empty.provider_calls).toEqual({});
+
+      metrics.record('huggingface__bge-small', { latencyMs: 5, ok: true });
+      metrics.record('huggingface__bge-small', { latencyMs: 50, ok: false });
+      metrics.record('huggingface__bge-small', { latencyMs: 250, ok: true, tokensIn: 12 });
+
+      const populated = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        metrics,
+      });
+      const row = populated.provider_calls['huggingface__bge-small'];
+      expect(row.count).toBe(3);
+      expect(row.errors).toBe(1);
+      expect(row.tokens_in).toBe(12);
+      expect(row.latency_ms.p95).toBeGreaterThanOrEqual(row.latency_ms.p50);
+      expect(row.since_started_at).toBe(new Date(1_700_000_000_000).toISOString());
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('respects INGEST_EXCLUDE_PATHS so excluded files do not contribute to file_count or bytes', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-exclude-'));
     await fsp.mkdir(path.join(tempDir, 'alpha'));

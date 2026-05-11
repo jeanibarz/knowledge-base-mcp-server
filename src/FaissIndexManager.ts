@@ -333,6 +333,11 @@ export class FaissIndexManager {
         this.embeddings = await createEmbeddingsClient({
           provider: this.embeddingProvider,
           modelName: this.modelName,
+          // Issue #210 — wrap the active provider with the runtime
+          // telemetry collector. Keyed by `modelId` so each
+          // (provider, model_name) gets its own histogram, matching
+          // the `kb_stats.provider_calls` payload shape.
+          modelId: this.modelId,
         });
       }
       // Ensure this model's directory exists. mkdir-p is cheap; first-run

@@ -18,6 +18,7 @@ import {
 } from './config.js';
 import { KBError } from './errors.js';
 import { logger } from './logger.js';
+import { instrumentEmbeddingsClient, type ProviderCallMetrics } from './metrics.js';
 import type { EmbeddingProvider } from './model-id.js';
 import { makeOllamaOnFailedAttempt } from './ollama-error.js';
 
@@ -55,6 +56,19 @@ export interface CreateEmbeddingsOptions {
   // legacy env path, model_id parsing) flow `'fake'` through unchanged.
   provider: EmbeddingProvider | 'fake';
   modelName: string;
+  /**
+   * Issue #210 — when provided, wrap the returned client so every
+   * `embedQuery`/`embedDocuments` call lands in the provider-call
+   * telemetry registry under this `model_id`. Optional so legacy
+   * callers and bench harnesses can opt out; `FaissIndexManager.initialize`
+   * passes its own `modelId`.
+   */
+  modelId?: string;
+  /**
+   * Test-seam for the metrics registry. Production callers leave this
+   * undefined so the process-wide singleton is used.
+   */
+  metrics?: ProviderCallMetrics;
 }
 
 /**
@@ -65,6 +79,21 @@ export interface CreateEmbeddingsOptions {
  */
 export async function createEmbeddingsClient(
   options: CreateEmbeddingsOptions,
+): Promise<EmbeddingsClient> {
+  const { provider, modelName } = options;
+
+  const client = await constructEmbeddingsClient({ provider, modelName });
+  if (options.modelId !== undefined) {
+    // Issue #210 — wrap once with the per-model_id telemetry collector.
+    // The wrap is idempotent so a second `initialize()` (e.g.
+    // corrupt-recovery in `FaissIndexManager`) does not double-count.
+    instrumentEmbeddingsClient(client, options.modelId, { metrics: options.metrics });
+  }
+  return client;
+}
+
+async function constructEmbeddingsClient(
+  options: { provider: EmbeddingProvider | 'fake'; modelName: string },
 ): Promise<EmbeddingsClient> {
   const { provider, modelName } = options;
 

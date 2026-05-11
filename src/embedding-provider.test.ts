@@ -130,3 +130,37 @@ describe('createEmbeddingsClient — fake arm (issue #204)', () => {
     ).resolves.toBeDefined();
   });
 });
+
+describe('createEmbeddingsClient — provider call telemetry (issue #210)', () => {
+  it('does not record telemetry when modelId is omitted', async () => {
+    const { createEmbeddingsClient } = await loadFresh({ KB_FAKE_DIM: '32' });
+    const { ProviderCallMetrics } = await import('./metrics.js');
+    const metrics = new ProviderCallMetrics({ now: () => 0 });
+    const client = await createEmbeddingsClient({
+      provider: 'fake',
+      modelName: 'untracked',
+      metrics,
+    });
+    await client.embedQuery('hi');
+    expect(metrics.snapshot()).toEqual({});
+  });
+
+  it('records every embedQuery and embedDocuments call under the supplied modelId', async () => {
+    const { createEmbeddingsClient } = await loadFresh({ KB_FAKE_DIM: '16' });
+    const { ProviderCallMetrics } = await import('./metrics.js');
+    const metrics = new ProviderCallMetrics({ now: () => 0 });
+    const client = await createEmbeddingsClient({
+      provider: 'fake',
+      modelName: 'tracked',
+      modelId: 'fake__tracked',
+      metrics,
+    });
+    await client.embedQuery('one');
+    await client.embedQuery('two');
+    await client.embedDocuments(['a', 'b', 'c']);
+    const snap = metrics.snapshot();
+    expect(snap['fake__tracked'].count).toBe(3);
+    expect(snap['fake__tracked'].errors).toBe(0);
+    expect(snap['fake__tracked'].tokens_in).toBeNull();
+  });
+});

@@ -19,6 +19,11 @@ import {
 import { KBError } from './errors.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
+import {
+  providerCallMetrics,
+  type ProviderCallMetrics,
+  type ProviderCallSnapshot,
+} from './metrics.js';
 
 export interface KbStatsRow {
   file_count: number;
@@ -33,6 +38,14 @@ export interface KbStatsPayload {
   index_path: string;
   last_index_update: IndexUpdateSummary;
   server: { version: string; uptime_ms: number };
+  /**
+   * Issue #210 — per-`model_id` runtime histograms for the active
+   * embedding provider's `embedQuery` / `embedDocuments` calls. Empty
+   * `{}` until the active provider has served at least one call;
+   * additive on the wire, so older clients that do not know about
+   * `provider_calls` keep working.
+   */
+  provider_calls: Record<string, ProviderCallSnapshot>;
 }
 
 export interface ComputeKbStatsOptions {
@@ -42,6 +55,12 @@ export interface ComputeKbStatsOptions {
   serverVersion: string;
   /** `Date.now()` baseline used to derive `server.uptime_ms`. */
   startedAt: number;
+  /**
+   * Issue #210 — test seam for the provider-call telemetry registry.
+   * Production callers leave this undefined so the process-wide
+   * singleton is read.
+   */
+  metrics?: ProviderCallMetrics;
 }
 
 /**
@@ -111,6 +130,7 @@ export async function computeKbStats(
     };
   }
 
+  const metricsSource = options.metrics ?? providerCallMetrics;
   return {
     knowledge_bases,
     embedding: {
@@ -124,6 +144,7 @@ export async function computeKbStats(
       version: options.serverVersion,
       uptime_ms: Date.now() - options.startedAt,
     },
+    provider_calls: metricsSource.snapshot(),
   };
 }
 
