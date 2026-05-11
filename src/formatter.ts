@@ -6,6 +6,12 @@
 import type { Document } from '@langchain/core/documents';
 import { buildChunkCitation, type ChunkCitation } from './chunk-id.js';
 import { KB_EDITOR_URI, type KBEditorUriMode } from './config.js';
+import {
+  applyInjectionGuard,
+  isInjectionGuardBypassed,
+  resolveInjectionGuardOptions,
+  type InjectionGuardOptions,
+} from './injection-guard.js';
 import { getInjectionSignals, type InjectionSignal } from './kb-shield.js';
 
 /**
@@ -82,18 +88,20 @@ export function formatRetrievalAsMarkdown(
 ): string {
   let formattedResults = '';
   if (results && results.length > 0) {
+    const guardOptions = resolveInjectionGuardOptions();
     formattedResults = results
       .map((doc, idx) => {
         const resultHeader = `**Result ${idx + 1}:**`;
-        const content = doc.pageContent.trim();
         const sanitizedMetadata = sanitizeMetadataForWire(
           doc.metadata as Record<string, unknown>,
           extrasVisible,
         );
-        const citation = buildChunkCitation(sanitizedMetadata, editorUriMode);
-        const metadata = JSON.stringify(sanitizedMetadata, null, 2);
+        const guarded = guardRetrievalChunk(doc.pageContent, sanitizedMetadata, guardOptions);
+        const content = guarded.content.trim();
+        const citation = buildChunkCitation(guarded.metadata, editorUriMode);
+        const metadata = JSON.stringify(guarded.metadata, null, 2);
         const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
-        const signals = getInjectionSignals(doc.pageContent);
+        const signals = getShieldSignals(doc.pageContent, sanitizedMetadata, guardOptions);
         const shieldFooter = formatInjectionMarkdown(signals);
         return `${resultHeader}\n\n${scoreText}${content}\n\n${shieldFooter}${formatSourceBlock(metadata, citation)}`;
       })
@@ -150,17 +158,19 @@ export function formatRetrievalAsJson(
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
 ): RetrievalJsonResult[] {
   if (!results || results.length === 0) return [];
+  const guardOptions = resolveInjectionGuardOptions();
   return results.map((doc) => {
     const metadata = sanitizeMetadataForWire(
       doc.metadata as Record<string, unknown>,
       extrasVisible,
     );
-    const citation = buildChunkCitation(metadata, editorUriMode);
-    const signals = getInjectionSignals(doc.pageContent);
+    const guarded = guardRetrievalChunk(doc.pageContent, metadata, guardOptions);
+    const citation = buildChunkCitation(guarded.metadata, editorUriMode);
+    const signals = getShieldSignals(doc.pageContent, metadata, guardOptions);
     return {
       score: doc.score ?? null,
-      content: doc.pageContent,
-      metadata,
+      content: guarded.content,
+      metadata: guarded.metadata,
       ...(citation ? { chunk_id: citation.chunk_id } : {}),
       ...(citation?.editor_uri ? { editor_uri: citation.editor_uri } : {}),
       ...(signals !== undefined ? { injection_signals: signals } : {}),
@@ -177,6 +187,7 @@ export function groupRetrievalBySource(
 
   const groups: GroupedRetrievalSource[] = [];
   const bySource = new Map<string, GroupedRetrievalSource>();
+  const guardOptions = resolveInjectionGuardOptions();
 
   results.forEach((doc, idx) => {
     const sanitizedMetadata = sanitizeMetadataForWire(
@@ -193,15 +204,16 @@ export function groupRetrievalBySource(
 
     const score = doc.score ?? null;
     const location = getChunkLocation(sanitizedMetadata);
-    const citation = buildChunkCitation(sanitizedMetadata, editorUriMode);
-    const signals = getInjectionSignals(doc.pageContent);
+    const guarded = guardRetrievalChunk(doc.pageContent, sanitizedMetadata, guardOptions);
+    const citation = buildChunkCitation(guarded.metadata, editorUriMode);
+    const signals = getShieldSignals(doc.pageContent, sanitizedMetadata, guardOptions);
     group.chunk_count += 1;
     group.best_score = bestScore(group.best_score, score);
     group.locations.push({ score, location });
     group.chunks.push({
       score,
-      content: doc.pageContent,
-      metadata: sanitizedMetadata,
+      content: guarded.content,
+      metadata: guarded.metadata,
       location,
       ...(citation ? { chunk_id: citation.chunk_id } : {}),
       ...(citation?.editor_uri ? { editor_uri: citation.editor_uri } : {}),
@@ -289,6 +301,23 @@ function formatInjectionGrouped(signals: InjectionSignal[] | undefined): string 
     .map((s) => `\n   > ⚠ injection-signal: ${s.rule} [${s.span_start}, ${s.span_end})`)
     .join('');
   return lines;
+}
+
+function guardRetrievalChunk(
+  content: string,
+  metadata: Record<string, unknown>,
+  options: InjectionGuardOptions,
+): { content: string; metadata: Record<string, unknown> } {
+  return applyInjectionGuard(content, metadata, options);
+}
+
+function getShieldSignals(
+  content: string,
+  metadata: Record<string, unknown>,
+  options: InjectionGuardOptions,
+): InjectionSignal[] | undefined {
+  if (isInjectionGuardBypassed(metadata, options)) return undefined;
+  return getInjectionSignals(content);
 }
 
 function formatSourceBlock(metadata: string, citation: ChunkCitation | null): string {

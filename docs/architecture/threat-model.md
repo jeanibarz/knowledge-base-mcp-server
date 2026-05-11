@@ -34,11 +34,15 @@ The surface is permanent until upstream swaps the docstore format away from pick
 
 ## 2. `$KNOWLEDGE_BASES_ROOT_DIR` is a content / prompt-injection boundary
 
-Content under `$KNOWLEDGE_BASES_ROOT_DIR` is read (`src/FaissIndexManager.ts:253-274`), chunked (`:261-267`), embedded, and returned **verbatim** to the MCP client inside the `retrieve_knowledge` response (`src/KnowledgeBaseServer.ts:92-107`). This is not a local code-execution risk — it's a prompt-injection risk **for whatever LLM the MCP client hands the response to**.
+Content under `$KNOWLEDGE_BASES_ROOT_DIR` is read (`src/FaissIndexManager.ts`), chunked, embedded, and returned to the MCP client inside the `retrieve_knowledge` response after retrieval-time formatting (`src/formatter.ts`). This is not a local code-execution risk — it's a prompt-injection risk **for whatever LLM the MCP client hands the response to**.
 
 **Requirement.** The user owns every markdown file in this tree. If a file is scraped from the web or synced from a shared doc platform, it is effectively attacker-controlled from the downstream agent's perspective. Treat it like untrusted input to a downstream LLM, not like untrusted input to this process.
 
-The server itself does **no** content sanitization, **no** quoting, and **no** redaction. By design, retrieved chunks are returned verbatim — the downstream MCP client owns policy. Issue [#217](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/217) adds a strictly-additive, signal-only scanner (`src/kb-shield.ts`, wired through `src/formatter.ts`) that annotates each chunk with an `injection_signals: Array<{rule, span_start, span_end}>` field when a versioned ruleset hits. The field is *evidence* — the chunk's `content` is never modified, and the markdown view surfaces an inline `> ⚠ injection-signal: <rule>` line so a human reviewer notices the same hit. Operators can disable the scanner with `KB_SHIELD=off` (the field is omitted entirely), and the ruleset is versioned via `KB_SHIELD_RULESET_VERSION` (currently `v1`) so additions are observable to downstream consumers.
+The server applies retrieval-time content guards before chunks cross the formatter boundary. Issue [#217](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/217) adds a strictly-additive, signal-only scanner (`src/kb-shield.ts`, wired through `src/formatter.ts`) that annotates each chunk with a top-level `injection_signals: Array<{rule, span_start, span_end}>` field when a versioned ruleset hits. The field is *evidence* — the chunk's `content` is not modified by the shield, and the markdown view surfaces an inline `> ⚠ injection-signal: <rule>` line so a human reviewer notices the same hit. Operators can disable the scanner with `KB_SHIELD=off` (the field is omitted entirely), and the ruleset is versioned via `KB_SHIELD_RULESET_VERSION` (currently `v1`) so additions are observable to downstream consumers.
+
+Issue [#221](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/221) adds a second guard contract for chunk metadata and opt-in delimiters. By default (`KB_INJECTION_GUARD` unset or `tag`), each chunk is scanned for common indirect-prompt-injection signals and the additive `metadata.injection_signals` array is emitted with the result. `KB_INJECTION_GUARD=wrap` wraps chunk content in an `<untrusted-doc>` envelope, and `KB_INJECTION_GUARD=both` combines wrapping with metadata signals. `KB_INJECTION_GUARD=off` disables only this metadata/wrap guard. `KB_INJECTION_GUARD_BYPASS_KBS` skips shield signals, metadata detection, and wrapping for explicitly named KBs that intentionally study injection content.
+
+This guard is a boundary cue, not a guarantee. Pattern matching cannot eliminate prompt injection, and wrapped content still remains untrusted. Downstream agents must continue to treat retrieved text as data, not instructions. ADR [`0006-injection-guard-detect-tag-delimit.md`](./adr/0006-injection-guard-detect-tag-delimit.md) records the decision and constraints.
 
 ## 3. Embedding-provider keys
 
@@ -126,3 +130,4 @@ This page is verified against the following source files and README sections. If
 - Per-model write lock + atomic save: `src/write-lock.ts`, `src/faiss-store-layout.ts:58-179`.
 - Transport config + bearer / origin gates: `src/transport-config.ts:14-122`, `src/transport/base-http-host.ts`.
 - Remote transport hosts: `src/transport/sse.ts:1-139`, `src/transport/http.ts:1-220`.
+- Retrieval-time injection guard: `src/injection-guard.ts`, `src/formatter.ts`.
