@@ -7,6 +7,7 @@ import {
   formatFreshnessFooter,
   parseSearchArgs,
   resolveAutoSearchMode,
+  shouldUsePicker,
   Staleness,
 } from './cli-search.js';
 import {
@@ -146,6 +147,35 @@ describe('parseSearchArgs output format', () => {
 
   it('still rejects unknown output formats', () => {
     expect(() => parseSearchArgs(['query', '--format=xml'])).toThrow(/invalid --format/);
+  });
+});
+
+describe('parseSearchArgs --interactive (#215)', () => {
+  it('defaults --interactive to false', () => {
+    expect(parseSearchArgs(['query'])).toMatchObject({ interactive: false });
+  });
+
+  it('accepts --interactive and -i as the same flag', () => {
+    expect(parseSearchArgs(['query', '--interactive'])).toMatchObject({ interactive: true });
+    expect(parseSearchArgs(['query', '-i'])).toMatchObject({ interactive: true });
+  });
+});
+
+describe('shouldUsePicker (#215)', () => {
+  it('returns false when --interactive is not set', () => {
+    expect(shouldUsePicker({ interactive: false, format: 'md' })).toBe(false);
+  });
+
+  it('returns true for the default markdown format with --interactive', () => {
+    expect(shouldUsePicker({ interactive: true, format: 'md' })).toBe(true);
+  });
+
+  it('lets --format=json override -i so agent shells stay deterministic', () => {
+    expect(shouldUsePicker({ interactive: true, format: 'json' })).toBe(false);
+  });
+
+  it('lets --format=vimgrep override -i so editor quickfix flows stay structured', () => {
+    expect(shouldUsePicker({ interactive: true, format: 'vimgrep' })).toBe(false);
   });
 });
 
