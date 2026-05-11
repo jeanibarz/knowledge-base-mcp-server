@@ -4,6 +4,7 @@ import { readFileSync } from 'fs';
 import type { BenchmarkReport, BenchProvider, ScenarioContext } from './types.js';
 import { installStubProvider } from './stub.js';
 import { runBatchQueryScenario } from './scenarios/batch-query.js';
+import { runCliSearchScenario } from './scenarios/cli-search.js';
 import { runColdIndexScenario } from './scenarios/cold-index.js';
 import { runColdStartScenario } from './scenarios/cold-start.js';
 import { runIndexStorageScenario } from './scenarios/index-storage.js';
@@ -52,6 +53,10 @@ async function main(): Promise<void> {
 
   const includeBatchQuery = parseBoolEnv(process.env.BENCH_INCLUDE_BATCH_QUERY, true);
   const includeIndexStorage = parseBoolEnv(process.env.BENCH_INCLUDE_INDEX_STORAGE, true);
+  // Issue #284 — cli-search spawns the built `kb` binary per repetition; it is
+  // structurally heavier than the in-process scenarios so it stays opt-in.
+  const includeCliSearch = parseBoolEnv(process.env.BENCH_INCLUDE_CLI_SEARCH, false);
+  const cliSearchReps = parsePositiveIntEnv(process.env.BENCH_CLI_SEARCH_REPETITIONS);
 
   const concurrencies = parseConcurrencies(process.env.BENCH_BATCH_CONCURRENCIES);
   const queries = parseQueriesEnv(process.env.BENCH_QUERIES);
@@ -86,6 +91,9 @@ async function main(): Promise<void> {
         chunkSize: fixtureOverrides.chunkSize,
       })
     : undefined;
+  const cli_search = includeCliSearch
+    ? await runCliSearchScenario(context, fixtureOverrides, { repetitions: cliSearchReps })
+    : undefined;
 
   const report: BenchmarkReport = {
     arch: os.arch(),
@@ -102,6 +110,7 @@ async function main(): Promise<void> {
       retrieval_quality,
       warm_query,
       ...(batch_query ? { batch_query } : {}),
+      ...(cli_search ? { cli_search } : {}),
       ...(index_storage ? { index_storage } : {}),
     },
     version: 1,

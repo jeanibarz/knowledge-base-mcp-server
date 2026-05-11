@@ -22,6 +22,8 @@ Optional environment variables:
 
 - `BENCH_RESULTS_PREFIX` changes the output filename prefix. The default is `run`. Use `baseline` when you want a committed baseline file.
 - `BENCH_STUB_EMBED_MS_PER_INPUT` changes the stub embedding latency model. The default is `20` milliseconds per document chunk.
+- `BENCH_INCLUDE_CLI_SEARCH=1` opts into the issue #284 `cli_search` scenario. It is off by default because each repetition spawns the built `kb` binary as a child process; the cost is what the scenario measures, so it stays heavier than the in-process scenarios.
+- `BENCH_CLI_SEARCH_REPETITIONS` sets the per-variant repetition count for `cli_search`. Defaults to 10.
 
 ## Result file naming
 
@@ -99,6 +101,42 @@ The scenario keys stay flat so CI can query them with tools like `jq`, for examp
 ```bash
 jq '.scenarios.warm_query.p50_ms' benchmarks/results/run-stub-node22-linux-x64.json
 ```
+
+### `cli_search` — phase timings for the real `kb search` CLI (issue #284)
+
+When `BENCH_INCLUDE_CLI_SEARCH=1` is set, the harness adds a `cli_search` scenario that spawns the built `kb` binary against an offline `fake` model (issue #204) with a pre-built fixture index. Each repetition reports an externally measured wall time plus the internal phase timings the CLI emits with `--timing`:
+
+```json
+"cli_search": {
+  "fixture_files": 20,
+  "fixture_chunk_count": 110,
+  "variants": [
+    {
+      "variant": "json-global",
+      "format": "json",
+      "repetitions": 10,
+      "wall_p50_ms": 540,
+      "wall_p95_ms": 612,
+      "wall_p99_ms": 612,
+      "process_start_p50_ms": 318,
+      "bootstrap_p50_ms": 4,
+      "model_resolution_p50_ms": 2,
+      "manager_load_p50_ms": 6,
+      "index_load_p50_ms": 71,
+      "embed_query_p50_ms": 1,
+      "faiss_search_p50_ms": 9,
+      "post_filter_p50_ms": 0,
+      "staleness_p50_ms": 12,
+      "cli_total_p50_ms": 222,
+      "rss_peak_bytes": 118800384
+    }
+  ]
+}
+```
+
+`process_start_p50_ms` is derived per repetition as `wall_ms - cli_total_ms`, i.e. the Node startup + module-import cost incurred BEFORE the CLI's first internal timer fires, plus the formatting / stdout write that happens AFTER the CLI's `total_ms` clock stops. `rss_peak_bytes` is the maximum `VmHWM` observed across repetitions via `/proc/<pid>/status` polling; on non-Linux kernels this field is `null`.
+
+Each variant exercises a different output shape so format-related costs (JSON serialization vs markdown rendering, including the staleness footer) are comparable side-by-side. `cli_search` does not run inside `bench:compare`.
 
 ## Stub vs real-provider mode
 
