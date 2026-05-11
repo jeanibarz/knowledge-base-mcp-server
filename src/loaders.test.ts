@@ -9,6 +9,14 @@
 //     unregistered extensions (e.g. `.json` opted in via INGEST_EXTRA_EXTENSIONS)
 //     get the UTF-8 text fallback.
 //   - LOADERS registry is frozen so callers can't mutate it from outside.
+//
+// Issue #279 — every `describe` block that drives the PDF or HTML loader sets
+// `EXTRACTION_TEXT_CACHE_DIR` to a per-test temp path BEFORE calling loadFile.
+// The PDF and HTML loaders now consult an extraction cache by content hash;
+// without per-test redirection, the first test's parse output would land in
+// the global cache and every subsequent test on the same bytes would hit the
+// cache instead of the pdf-parse / html-to-text mock — destroying the call
+// count assertions and the noise-suppression coverage.
 
 import * as fsp from 'fs/promises';
 import * as os from 'os';
@@ -112,13 +120,18 @@ describe('getLoader / loadFile dispatch', () => {
 
 describe('PDF loader (pdf-parse) — routing + dispatch (pdf-parse is mocked)', () => {
   let tempDir = '';
+  let priorCacheDir: string | undefined;
 
   beforeEach(async () => {
     tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-loaders-pdf-'));
+    priorCacheDir = process.env.EXTRACTION_TEXT_CACHE_DIR;
+    process.env.EXTRACTION_TEXT_CACHE_DIR = path.join(tempDir, 'extraction-cache');
     pdfParseFnMock.mockReset();
   });
 
   afterEach(async () => {
+    if (priorCacheDir === undefined) delete process.env.EXTRACTION_TEXT_CACHE_DIR;
+    else process.env.EXTRACTION_TEXT_CACHE_DIR = priorCacheDir;
     await fsp.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -175,9 +188,16 @@ describe('PDF loader — pdfjs-dist stdout noise suppression', () => {
   let tempDir = '';
   let originalConsoleLog: typeof console.log;
   let stdoutSpy: jest.Mock;
+  let priorCacheDir: string | undefined;
 
   beforeEach(async () => {
     tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-loaders-pdf-noise-'));
+    priorCacheDir = process.env.EXTRACTION_TEXT_CACHE_DIR;
+    // Issue #279 — redirect the extraction cache into the per-test tempdir so
+    // every test in this suite drives a real parse (the cache lives only for
+    // the duration of one test, which is what the noise-suppression assertions
+    // assume).
+    process.env.EXTRACTION_TEXT_CACHE_DIR = path.join(tempDir, 'extraction-cache');
     pdfParseFnMock.mockReset();
     originalConsoleLog = console.log;
     stdoutSpy = jest.fn();
@@ -186,6 +206,8 @@ describe('PDF loader — pdfjs-dist stdout noise suppression', () => {
 
   afterEach(async () => {
     console.log = originalConsoleLog;
+    if (priorCacheDir === undefined) delete process.env.EXTRACTION_TEXT_CACHE_DIR;
+    else process.env.EXTRACTION_TEXT_CACHE_DIR = priorCacheDir;
     await fsp.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -315,12 +337,17 @@ describe('PDF loader — pdfjs-dist stdout noise suppression', () => {
 
 describe('HTML loader (html-to-text)', () => {
   let tempDir = '';
+  let priorCacheDir: string | undefined;
 
   beforeEach(async () => {
     tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-loaders-html-'));
+    priorCacheDir = process.env.EXTRACTION_TEXT_CACHE_DIR;
+    process.env.EXTRACTION_TEXT_CACHE_DIR = path.join(tempDir, 'extraction-cache');
   });
 
   afterEach(async () => {
+    if (priorCacheDir === undefined) delete process.env.EXTRACTION_TEXT_CACHE_DIR;
+    else process.env.EXTRACTION_TEXT_CACHE_DIR = priorCacheDir;
     await fsp.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -371,5 +398,141 @@ describe('HTML loader (html-to-text)', () => {
     expect(text).toContain('the docs');
     expect(text).not.toContain('example.com');
     expect(text).not.toContain('https://');
+  });
+});
+
+describe('Issue #279 — PDF loader honors the extraction cache', () => {
+  // End-to-end coverage that the cache wire actually short-circuits the
+  // expensive parser path. We mock pdf-parse and assert the mock fires
+  // exactly once across two loadFile() calls on the same bytes; a third
+  // call after rewriting the file produces a cache miss and re-fires.
+  let tempDir = '';
+  let priorCacheDir: string | undefined;
+
+  beforeEach(async () => {
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-loaders-pdf-cache-'));
+    priorCacheDir = process.env.EXTRACTION_TEXT_CACHE_DIR;
+    process.env.EXTRACTION_TEXT_CACHE_DIR = path.join(tempDir, 'extraction-cache');
+    pdfParseFnMock.mockReset();
+  });
+
+  afterEach(async () => {
+    if (priorCacheDir === undefined) delete process.env.EXTRACTION_TEXT_CACHE_DIR;
+    else process.env.EXTRACTION_TEXT_CACHE_DIR = priorCacheDir;
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('skips pdf-parse on the second load of identical bytes (cache hit)', async () => {
+    const filePath = path.join(tempDir, 'doc.pdf');
+    await fsp.writeFile(filePath, Buffer.from('%PDF-1.4 fixed bytes'));
+    pdfParseFnMock.mockResolvedValue({ text: 'parsed body' });
+
+    const first = await loadFile(filePath);
+    const second = await loadFile(filePath);
+
+    expect(first).toBe('parsed body');
+    expect(second).toBe('parsed body');
+    // The whole point of #279: forced rebuilds and multi-model registration
+    // must not re-drive pdf-parse on bytes whose extraction is already cached.
+    expect(pdfParseFnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-runs pdf-parse when the file bytes change (sha256 differs → cache miss)', async () => {
+    const filePath = path.join(tempDir, 'doc.pdf');
+    await fsp.writeFile(filePath, Buffer.from('%PDF-1.4 first'));
+    pdfParseFnMock
+      .mockResolvedValueOnce({ text: 'first body' })
+      .mockResolvedValueOnce({ text: 'second body' });
+
+    expect(await loadFile(filePath)).toBe('first body');
+
+    await fsp.writeFile(filePath, Buffer.from('%PDF-1.4 second'));
+    expect(await loadFile(filePath)).toBe('second body');
+
+    // First call landed a cache entry, second call's bytes hash to a
+    // different key so the parser must be invoked again — embeddings must
+    // reflect the latest content, not a stale cached extraction.
+    expect(pdfParseFnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cache a failed parse (next call re-runs the parser)', async () => {
+    // A poisoned-cache regression would let one bad PDF permanently break
+    // ingest of that file even after the source was fixed. The loader must
+    // only store successful extractions.
+    const filePath = path.join(tempDir, 'flaky.pdf');
+    await fsp.writeFile(filePath, Buffer.from('%PDF-1.4 flaky'));
+    pdfParseFnMock
+      .mockRejectedValueOnce(new Error('parse boom'))
+      .mockResolvedValueOnce({ text: 'recovered' });
+
+    await expect(loadFile(filePath)).rejects.toThrow('parse boom');
+    expect(await loadFile(filePath)).toBe('recovered');
+    expect(pdfParseFnMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('Issue #279 — HTML loader honors the extraction cache', () => {
+  // The real html-to-text runs end-to-end here (mocking it is brittle because
+  // the loader's `await import('html-to-text')` is lazy and other suites in
+  // this file already pulled in the real module). Instead of counting parser
+  // invocations we inspect the cache directory directly — that is sufficient
+  // to verify the wire because:
+  //   - a successful load with a fresh cacheDir MUST create exactly one entry
+  //     (proves the writeCachedExtraction path runs and points at the right dir);
+  //   - a second load with identical bytes MUST NOT create a second entry
+  //     (proves the readCachedExtraction path is consulted before re-parsing);
+  //   - rewriting the file MUST produce a second, differently-named entry
+  //     (proves the cache key tracks the content hash).
+  let tempDir = '';
+  let cacheDir = '';
+  let priorCacheDir: string | undefined;
+
+  beforeEach(async () => {
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-loaders-html-cache-'));
+    cacheDir = path.join(tempDir, 'extraction-cache');
+    priorCacheDir = process.env.EXTRACTION_TEXT_CACHE_DIR;
+    process.env.EXTRACTION_TEXT_CACHE_DIR = cacheDir;
+  });
+
+  afterEach(async () => {
+    if (priorCacheDir === undefined) delete process.env.EXTRACTION_TEXT_CACHE_DIR;
+    else process.env.EXTRACTION_TEXT_CACHE_DIR = priorCacheDir;
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('writes a cache entry on first load and reuses it (no new entry) on a second load of identical bytes', async () => {
+    const filePath = path.join(tempDir, 'doc.html');
+    await fsp.writeFile(filePath, '<p>Stable HTML body.</p>');
+
+    const first = await loadFile(filePath);
+    const firstEntries = await fsp.readdir(cacheDir);
+
+    const second = await loadFile(filePath);
+    const secondEntries = await fsp.readdir(cacheDir);
+
+    expect(second).toBe(first);
+    expect(firstEntries).toHaveLength(1);
+    // Cache-hit path: second load found the entry and did not write a new one.
+    expect(secondEntries).toEqual(firstEntries);
+  });
+
+  it('writes a second, differently-keyed entry when the file bytes change', async () => {
+    const filePath = path.join(tempDir, 'doc.html');
+    await fsp.writeFile(filePath, '<p>version one</p>');
+    const firstText = await loadFile(filePath);
+    const afterFirst = await fsp.readdir(cacheDir);
+    expect(afterFirst).toHaveLength(1);
+
+    await fsp.writeFile(filePath, '<p>version two</p>');
+    const secondText = await loadFile(filePath);
+    const afterSecond = await fsp.readdir(cacheDir);
+
+    expect(secondText).not.toBe(firstText);
+    // Two distinct cache entries: one per content hash. The first remains on
+    // disk because the key is content-addressed, not path-addressed — a
+    // rollback to v1 of the file would hit the original entry without re-parsing.
+    expect(afterSecond).toHaveLength(2);
+    expect(new Set(afterSecond).size).toBe(2);
+    expect(afterSecond).toEqual(expect.arrayContaining(afterFirst));
   });
 });

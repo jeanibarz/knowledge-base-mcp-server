@@ -23,11 +23,28 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { loadWithExtractionCache } from './extraction-cache.js';
 
 /** Loader contract: filePath in, plain text out. Throws on parse failure. */
 export type Loader = (filePath: string) => Promise<string>;
 
+// Issue #279 — bump these constants whenever the extraction behavior of the
+// corresponding loader changes in a way that would affect chunk content
+// (different html-to-text selectors, a pdf-parse upgrade that alters text
+// flow, etc.). The version is folded into the extraction-cache key so a bump
+// transparently invalidates every cached entry produced by the previous
+// behavior; operators do not need to manually purge `extracted-text/`.
+const PDF_LOADER_NAME = 'pdf-parse';
+const PDF_LOADER_VERSION = 1;
+const HTML_LOADER_NAME = 'html-to-text';
+const HTML_LOADER_VERSION = 1;
+
 async function loadText(filePath: string): Promise<string> {
+  // `.md` / `.txt` / `INGEST_EXTRA_EXTENSIONS` opt-ins ride this loader. They
+  // are already a single fsp.readFile away from "normalized text", so caching
+  // would only add overhead (sha256 + a second copy on disk) without saving
+  // any parse work. Skip the cache here on purpose; only the expensive PDF
+  // and HTML parsers cache.
   return fsp.readFile(filePath, 'utf-8');
 }
 
@@ -106,27 +123,47 @@ async function loadPdf(filePath: string): Promise<string> {
   // truthy value at load time. The `@ts-expect-error` is for the
   // un-typed subpath; pdf-parse/lib/pdf-parse.js is the same function as
   // the package main, just without the debug branch wrapper.
-  // @ts-expect-error: subpath import resolved at runtime, not by tsc
-  const mod = await import('pdf-parse/lib/pdf-parse.js');
-  const pdfParse = (mod.default ?? mod) as (
-    buf: Buffer,
-  ) => Promise<{ text: string }>;
-  const buffer = await fsp.readFile(filePath);
-  const result = await silencePdfjsConsole(() => pdfParse(buffer));
-  return result.text;
+  //
+  // Issue #279 — gate the heavy parse behind the content-addressed extraction
+  // cache. On a cache hit we never touch pdfjs-dist at all; on a miss we run
+  // the original parse and store its output for the next caller.
+  return loadWithExtractionCache({
+    filePath,
+    loaderName: PDF_LOADER_NAME,
+    loaderVersion: PDF_LOADER_VERSION,
+    parse: async (buffer) => {
+      // @ts-expect-error: subpath import resolved at runtime, not by tsc
+      const mod = await import('pdf-parse/lib/pdf-parse.js');
+      const pdfParse = (mod.default ?? mod) as (
+        buf: Buffer,
+      ) => Promise<{ text: string }>;
+      const result = await silencePdfjsConsole(() => pdfParse(buffer));
+      return result.text;
+    },
+  });
 }
 
 async function loadHtml(filePath: string): Promise<string> {
-  const { htmlToText } = await import('html-to-text');
-  const raw = await fsp.readFile(filePath, 'utf-8');
-  return htmlToText(raw, {
-    wordwrap: false,
-    selectors: [
-      // Hrefs are noise inside an embedding; the link text is what matters.
-      { selector: 'a', options: { ignoreHref: true } },
-      // Images carry no embeddable text; skip the alt-text-only line they'd produce.
-      { selector: 'img', format: 'skip' },
-    ],
+  // Issue #279 — same caching gate as `loadPdf`. html-to-text is cheap per
+  // call but quadratic in document size on large structured documents, so
+  // skipping it on rebuilds is still a meaningful win.
+  return loadWithExtractionCache({
+    filePath,
+    loaderName: HTML_LOADER_NAME,
+    loaderVersion: HTML_LOADER_VERSION,
+    parse: async (buffer) => {
+      const { htmlToText } = await import('html-to-text');
+      const raw = buffer.toString('utf-8');
+      return htmlToText(raw, {
+        wordwrap: false,
+        selectors: [
+          // Hrefs are noise inside an embedding; the link text is what matters.
+          { selector: 'a', options: { ignoreHref: true } },
+          // Images carry no embeddable text; skip the alt-text-only line they'd produce.
+          { selector: 'img', format: 'skip' },
+        ],
+      });
+    },
   });
 }
 
