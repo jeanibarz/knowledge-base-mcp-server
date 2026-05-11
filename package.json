@@ -21,6 +21,7 @@
     "start": "node build/index.js",
     "dev": "nodemon src/index.ts",
     "dev:cli": "node --enable-source-maps --import tsx scripts/dev-cli.mjs",
+    "dev:fixture": "node --enable-source-maps --import tsx scripts/dev-fixture.mjs",
     "dev:setup": "bash scripts/dev-setup.sh"
   },
   "repository": {
