@@ -1,4 +1,6 @@
 import {
+  parseKbFsWatchDebounceMs,
+  parseKbFsWatchFlag,
   parseReindexTriggerPollMs,
   parseKBEditorUri,
   resolveChunkSize,
@@ -150,5 +152,54 @@ describe('parseKBEditorUri (#220 — KB_EDITOR_URI)', () => {
 
   it('rejects unsupported modes', () => {
     expect(() => parseKBEditorUri('vim')).toThrow(/KB_EDITOR_URI/);
+  });
+});
+
+describe('parseKbFsWatchFlag (#212 — KB_FS_WATCH)', () => {
+  it('defaults to false when unset, blank, or whitespace', () => {
+    expect(parseKbFsWatchFlag(undefined)).toBe(false);
+    expect(parseKbFsWatchFlag('')).toBe(false);
+    expect(parseKbFsWatchFlag('   ')).toBe(false);
+  });
+
+  it('accepts the documented truthy aliases (case-insensitive)', () => {
+    for (const truthy of ['1', 'true', 'TRUE', 'yes', 'on', ' On ']) {
+      expect(parseKbFsWatchFlag(truthy)).toBe(true);
+    }
+  });
+
+  it('treats anything else as false (default off)', () => {
+    expect(parseKbFsWatchFlag('0')).toBe(false);
+    expect(parseKbFsWatchFlag('false')).toBe(false);
+    expect(parseKbFsWatchFlag('no')).toBe(false);
+    expect(parseKbFsWatchFlag('off')).toBe(false);
+    expect(parseKbFsWatchFlag('garbage')).toBe(false);
+  });
+});
+
+describe('parseKbFsWatchDebounceMs (#212 — KB_FS_WATCH_DEBOUNCE_MS)', () => {
+  it('returns the 250 ms default when unset or blank', () => {
+    expect(parseKbFsWatchDebounceMs(undefined)).toBe(250);
+    expect(parseKbFsWatchDebounceMs('')).toBe(250);
+    expect(parseKbFsWatchDebounceMs('   ')).toBe(250);
+  });
+
+  it('honors positive integer values', () => {
+    expect(parseKbFsWatchDebounceMs('100')).toBe(100);
+    expect(parseKbFsWatchDebounceMs('1500')).toBe(1500);
+  });
+
+  it('clamps absurdly small / large values into [MIN, MAX]', () => {
+    // The lower clamp prevents a 5ms spin; the upper clamp prevents
+    // an operator-supplied multi-hour interval that defeats the point
+    // of the watcher.
+    expect(parseKbFsWatchDebounceMs('1')).toBe(25);
+    expect(parseKbFsWatchDebounceMs('999999999')).toBe(60_000);
+  });
+
+  it('falls back to default for non-numeric / non-positive inputs', () => {
+    expect(parseKbFsWatchDebounceMs('not-a-number')).toBe(250);
+    expect(parseKbFsWatchDebounceMs('0')).toBe(250);
+    expect(parseKbFsWatchDebounceMs('-50')).toBe(250);
   });
 });

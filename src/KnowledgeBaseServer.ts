@@ -21,6 +21,10 @@ import {
   ADD_DOCUMENT_DESCRIPTION,
   DELETE_DOCUMENT_DESCRIPTION,
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+  INGEST_EXCLUDE_PATHS,
+  INGEST_EXTRA_EXTENSIONS,
+  KB_FS_WATCH,
+  KB_FS_WATCH_DEBOUNCE_MS,
   KB_STATS_DESCRIPTION,
   KNOWLEDGE_BASES_ROOT_DIR,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
@@ -56,6 +60,7 @@ import * as path from 'path';
 import { StreamableHttpHost } from './transport/http.js';
 import { SseHost } from './transport/sse.js';
 import { ReindexTriggerWatcher } from './triggerWatcher.js';
+import { RecursiveKbWatcher } from './recursive-fs-watch.js';
 import { KBError, type KBErrorCode } from './errors.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
@@ -277,6 +282,10 @@ export class KnowledgeBaseServer {
   private sseHost?: SseHost;
   private transportMode: 'stdio' | 'sse' | 'http' | null = null;
   private triggerWatcher?: ReindexTriggerWatcher;
+  // RFC 007 §6.6 / issue #212 — opt-in recursive `fs.watch` per KB.
+  // Complements `triggerWatcher` (root-level dotfile poller); this one
+  // observes per-file edits *inside* each KB tree.
+  private fsWatcher?: RecursiveKbWatcher;
   private shutdownInstalled = false;
   // Issue #54 — uptime baseline for kb_stats.server.uptime_ms.
   private readonly startedAt: number = Date.now();
@@ -990,6 +999,7 @@ export class KnowledgeBaseServer {
     logger.info('Knowledge Base MCP server running on stdio');
     this.startActiveManagerWarmup();
     this.startTriggerWatcher();
+    await this.startFsWatcher();
   }
 
   private async runSse(config: TransportConfig): Promise<void> {
@@ -1005,6 +1015,7 @@ export class KnowledgeBaseServer {
     this.transportMode = 'sse';
     this.startActiveManagerWarmup();
     this.startTriggerWatcher();
+    await this.startFsWatcher();
   }
 
   private async runHttp(config: TransportConfig): Promise<void> {
@@ -1018,6 +1029,7 @@ export class KnowledgeBaseServer {
     this.transportMode = 'http';
     this.startActiveManagerWarmup();
     this.startTriggerWatcher();
+    await this.startFsWatcher();
   }
 
   /**
@@ -1099,6 +1111,55 @@ export class KnowledgeBaseServer {
     }
   }
 
+  /**
+   * RFC 007 §6.6 / issue #212 — opt-in recursive `fs.watch` watcher.
+   * Off by default; `KB_FS_WATCH=1` enables it. Failure to enumerate
+   * KBs or attach watchers is logged and swallowed so a partial
+   * filesystem doesn't prevent the server from coming up.
+   */
+  private async startFsWatcher(): Promise<void> {
+    if (this.fsWatcher) return;
+    if (!KB_FS_WATCH) return;
+
+    let kbNames: string[];
+    try {
+      kbNames = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+    } catch (err) {
+      logger.warn(
+        `RecursiveKbWatcher: could not enumerate KBs under ${KNOWLEDGE_BASES_ROOT_DIR}: ${(err as Error).message}`,
+      );
+      return;
+    }
+    if (kbNames.length === 0) {
+      logger.info('RecursiveKbWatcher: no KBs to watch (skipped)');
+      return;
+    }
+    const targets = kbNames.map((kbName) => ({
+      kbName,
+      kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName),
+    }));
+    this.fsWatcher = new RecursiveKbWatcher({
+      targets,
+      onChange: async (kbName) => {
+        try {
+          const activeId = await resolveActiveModel();
+          const manager = await this.managers.getOrCreate(activeId);
+          await withWriteLock(manager.modelDir, () => manager.updateIndex(kbName));
+        } catch (err) {
+          logger.warn(
+            `RecursiveKbWatcher updateIndex(${kbName}) failed: ${(err as Error).message}`,
+          );
+        }
+      },
+      debounceMs: KB_FS_WATCH_DEBOUNCE_MS,
+      ingestFilter: {
+        extraExtensions: INGEST_EXTRA_EXTENSIONS,
+        excludePaths: INGEST_EXCLUDE_PATHS,
+      },
+    });
+    await this.fsWatcher.start();
+  }
+
   private startTriggerWatcher(): void {
     if (this.triggerWatcher) return;
     if (REINDEX_TRIGGER_POLL_MS <= 0) {
@@ -1141,6 +1202,14 @@ export class KnowledgeBaseServer {
         logger.warn(`Error stopping reindex trigger watcher: ${(err as Error).message}`);
       }
       this.triggerWatcher = undefined;
+    }
+    if (this.fsWatcher) {
+      try {
+        await this.fsWatcher.stop();
+      } catch (err) {
+        logger.warn(`Error stopping recursive fs watcher: ${(err as Error).message}`);
+      }
+      this.fsWatcher = undefined;
     }
     if (this.sseHost) {
       try {
