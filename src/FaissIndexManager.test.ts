@@ -3124,3 +3124,250 @@ describe('FaissIndexManager similaritySearch metadata filters (#53)', () => {
     );
   });
 });
+
+describe('progressiveFetchSizes (#229)', () => {
+  let progressiveFetchSizes: (k: number, ntotal: number) => number[];
+
+  beforeAll(async () => {
+    jest.resetModules();
+    ({ progressiveFetchSizes } = await import('./FaissIndexManager.js'));
+  });
+
+  it('returns [ntotal] when the floor window already meets or exceeds ntotal', () => {
+    expect(progressiveFetchSizes(10, 5)).toEqual([5]);
+    expect(progressiveFetchSizes(10, 19)).toEqual([19]);
+    expect(progressiveFetchSizes(10, 20)).toEqual([20]);
+  });
+
+  it('emits the geometric ladder for typical k=10 and large ntotal', () => {
+    expect(progressiveFetchSizes(10, 1000)).toEqual([20, 40, 160, 1000]);
+  });
+
+  it('collapses rungs that meet or exceed ntotal so the sequence stays monotonic', () => {
+    expect(progressiveFetchSizes(10, 100)).toEqual([20, 40, 100]);
+    expect(progressiveFetchSizes(10, 50)).toEqual([20, 40, 50]);
+    expect(progressiveFetchSizes(10, 30)).toEqual([20, 30]);
+  });
+
+  it('keeps a floor of 20 even when k is very small', () => {
+    expect(progressiveFetchSizes(1, 1000)).toEqual([20, 1000]);
+    expect(progressiveFetchSizes(2, 1000)).toEqual([20, 32, 1000]);
+  });
+
+  it('drops duplicate rungs when 4*k equals the floor', () => {
+    // k=5: max(k,20)=20, 4k=20 (duplicate), 16k=80. Expect [20, 80, ntotal].
+    expect(progressiveFetchSizes(5, 1000)).toEqual([20, 80, 1000]);
+  });
+
+  it('caps the whole ladder at ntotal when k itself exceeds ntotal', () => {
+    expect(progressiveFetchSizes(1000, 100)).toEqual([100]);
+  });
+
+  it('returns [] when ntotal is zero so the caller can short-circuit', () => {
+    expect(progressiveFetchSizes(10, 0)).toEqual([]);
+  });
+});
+
+describe('FaissIndexManager progressive overfetch (#229)', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+  };
+
+  beforeEach(() => {
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+    similaritySearchMock.mockReset();
+    embeddingConstructorMock.mockReset();
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(originalEnv) as Array<keyof typeof originalEnv>;
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    jest.restoreAllMocks();
+  });
+
+  async function setupManagerWithNtotal(ntotal: number) {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-overfetch-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'doc.md'), '# Title\n\nProgressive overfetch fixture.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+    const internal = manager as unknown as {
+      faissIndex: { index: { ntotal: () => number } };
+    };
+    internal.faissIndex.index = { ntotal: () => ntotal };
+    return manager;
+  }
+
+  it('unfiltered search makes a single FAISS call with fetchK = k', async () => {
+    const manager = await setupManagerWithNtotal(500);
+    const doc = { pageContent: 'a', metadata: { source: 'a' } };
+    similaritySearchMock.mockResolvedValueOnce([[doc, 0.1]]);
+
+    const results = await manager.similaritySearch('q', 10);
+
+    expect(similaritySearchMock).toHaveBeenCalledTimes(1);
+    expect(similaritySearchMock).toHaveBeenCalledWith('q', 10);
+    expect(results).toHaveLength(1);
+  });
+
+  it('filtered search terminates after the first window when it yields ≥ k hits', async () => {
+    const manager = await setupManagerWithNtotal(1000);
+    // First window is fetchK = max(k=5, 20) = 20. Return 20 items, 6 of which
+    // satisfy the .md filter — more than enough for k=5, so no expansion.
+    const mdHits: Array<[unknown, number]> = Array.from({ length: 6 }, (_, i) => [
+      { pageContent: `m${i}`, metadata: { extension: '.md', relativePath: `kb/m${i}.md` } },
+      0.1 + i * 0.01,
+    ]);
+    const pdfPad: Array<[unknown, number]> = Array.from({ length: 14 }, (_, i) => [
+      { pageContent: `p${i}`, metadata: { extension: '.pdf', relativePath: `kb/p${i}.pdf` } },
+      0.2 + i * 0.01,
+    ]);
+    similaritySearchMock.mockResolvedValueOnce([...mdHits, ...pdfPad]);
+
+    const results = await manager.similaritySearch('q', 5, undefined, undefined, {
+      extensions: ['.md'],
+    });
+
+    expect(similaritySearchMock).toHaveBeenCalledTimes(1);
+    expect(similaritySearchMock).toHaveBeenCalledWith('q', 20);
+    expect(results.map((r) => r.pageContent)).toEqual(['m0', 'm1', 'm2', 'm3', 'm4']);
+  });
+
+  it('expands the fetch window when the first window starves the filter', async () => {
+    const manager = await setupManagerWithNtotal(1000);
+    // Ladder for k=2: [max(k,20)=20, 16k=32, 1000]. The 4k rung collapses
+    // because 4*2 sits below the floor of 20.
+    // Window 1 (fetchK=20): 20 .pdf items, 0 matches. raw.length == fetchK so
+    // we cannot short-circuit on exhaustion; loop must move to window 2.
+    const noMatches: Array<[unknown, number]> = Array.from({ length: 20 }, (_, i) => [
+      { pageContent: `p${i}`, metadata: { extension: '.pdf', relativePath: `kb/p${i}.pdf` } },
+      0.1 + i * 0.01,
+    ]);
+    // Window 2 (fetchK=32): the last 3 items are .md, so the filter clears k=2.
+    const wider: Array<[unknown, number]> = Array.from({ length: 32 }, (_, i) => {
+      const isMd = i >= 29;
+      return [
+        {
+          pageContent: isMd ? `m${i - 29}` : `p${i}`,
+          metadata: {
+            extension: isMd ? '.md' : '.pdf',
+            relativePath: isMd ? `kb/m${i - 29}.md` : `kb/p${i}.pdf`,
+          },
+        },
+        0.1 + i * 0.01,
+      ];
+    });
+    similaritySearchMock.mockResolvedValueOnce(noMatches);
+    similaritySearchMock.mockResolvedValueOnce(wider);
+
+    const results = await manager.similaritySearch('q', 2, undefined, undefined, {
+      extensions: ['.md'],
+    });
+
+    expect(similaritySearchMock).toHaveBeenCalledTimes(2);
+    expect(similaritySearchMock).toHaveBeenNthCalledWith(1, 'q', 20);
+    expect(similaritySearchMock).toHaveBeenNthCalledWith(2, 'q', 32);
+    expect(results.map((r) => r.pageContent)).toEqual(['m0', 'm1']);
+  });
+
+  it('stops early when FAISS returns fewer items than the requested window', async () => {
+    // ntotal=1000 from the patched index, but the live docstore only has 12
+    // chunks for this query. raw.length < fetchK should short-circuit the
+    // loop on the first call — no extra rungs even though the filter starves.
+    const manager = await setupManagerWithNtotal(1000);
+    const items: Array<[unknown, number]> = Array.from({ length: 12 }, (_, i) => [
+      { pageContent: `p${i}`, metadata: { extension: '.pdf', relativePath: `kb/p${i}.pdf` } },
+      0.1 + i * 0.01,
+    ]);
+    similaritySearchMock.mockResolvedValueOnce(items);
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      extensions: ['.md'],
+    });
+
+    expect(similaritySearchMock).toHaveBeenCalledTimes(1);
+    expect(similaritySearchMock).toHaveBeenCalledWith('q', 20);
+    expect(results).toEqual([]);
+  });
+
+  it('worst case: matches buried late still surface via the ntotal fallback rung', async () => {
+    // ntotal=50, k=10 → ladder = [20, 40, 50]. The needle sits at index 45,
+    // which only the final rung can reach. Simulate FAISS returning the top
+    // `fetchK` items by score order.
+    const manager = await setupManagerWithNtotal(50);
+    const items: Array<[unknown, number]> = Array.from({ length: 50 }, (_, i) => {
+      const isMatch = i === 45;
+      return [
+        {
+          pageContent: isMatch ? 'needle' : `p${i}`,
+          metadata: {
+            extension: isMatch ? '.md' : '.pdf',
+            relativePath: isMatch ? 'kb/needle.md' : `kb/p${i}.pdf`,
+          },
+        },
+        0.1 + i * 0.001,
+      ];
+    });
+    similaritySearchMock.mockImplementation(async (...args: unknown[]) => {
+      const fetchK = args[1] as number;
+      return items.slice(0, Math.min(fetchK, items.length));
+    });
+
+    const results = await manager.similaritySearch('q', 10, undefined, undefined, {
+      extensions: ['.md'],
+    });
+
+    expect(similaritySearchMock).toHaveBeenCalledTimes(3);
+    expect(similaritySearchMock).toHaveBeenNthCalledWith(1, 'q', 20);
+    expect(similaritySearchMock).toHaveBeenNthCalledWith(2, 'q', 40);
+    expect(similaritySearchMock).toHaveBeenNthCalledWith(3, 'q', 50);
+    expect(results.map((r) => r.pageContent)).toEqual(['needle']);
+  });
+
+  it('scoped search uses progressive overfetch even without metadata filters', async () => {
+    const manager = await setupManagerWithNtotal(1000);
+    const inScope: Array<[unknown, number]> = Array.from({ length: 4 }, (_, i) => [
+      {
+        pageContent: `s${i}`,
+        metadata: {
+          source: `${process.env.KNOWLEDGE_BASES_ROOT_DIR}/scoped/file${i}.md`,
+          extension: '.md',
+        },
+      },
+      0.1 + i * 0.01,
+    ]);
+    similaritySearchMock.mockResolvedValueOnce(inScope);
+
+    const results = await manager.similaritySearch('q', 10, undefined, 'scoped');
+
+    // First rung is 20. Result count is 4 → less than k=10, but raw.length=4
+    // < fetchK=20 means FAISS is exhausted, so we stop after one call.
+    expect(similaritySearchMock).toHaveBeenCalledTimes(1);
+    expect(similaritySearchMock).toHaveBeenCalledWith('q', 20);
+    expect(results.map((r) => r.pageContent)).toEqual(['s0', 's1', 's2', 's3']);
+  });
+});

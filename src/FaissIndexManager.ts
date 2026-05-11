@@ -33,7 +33,11 @@ import {
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
   saveFaissStoreAtomic,
 } from './faiss-store-layout.js';
-import { createSimilaritySearchPostFilter, type SimilaritySearchFilters } from './search-filters.js';
+import {
+  createSimilaritySearchPostFilter,
+  type ScoredDocument,
+  type SimilaritySearchFilters,
+} from './search-filters.js';
 import { withSidecarLock } from './write-lock.js';
 
 export { MigrationRefusedError } from './layout-bootstrap.js';
@@ -70,6 +74,44 @@ async function writeModelNameAtomic(modelNameFile: string, modelName: string): P
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_REBUILD_PROGRESS_INTERVAL_FILES = 10;
+
+/**
+ * Issue #229 — progressive overfetch sequence for filtered similarity search.
+ *
+ * The langchain FaissStore wrapper silently drops filter arguments (see PR #73
+ * + #53), so KB scope, extension, path-glob, and tag filters all run as
+ * post-filters after FAISS returns. Pre-#229 the manager defended against
+ * filter starvation by fetching `ntotal` whenever any filter was active — a
+ * full-index pass on every scoped query, even when the first 20 hits already
+ * satisfied the request.
+ *
+ * Progressive overfetch swaps the single full pass for a short ladder of
+ * increasing windows. The caller iterates `fetchK` values in order, applies
+ * the post-filter after each FAISS call, and stops once at least `k` filtered
+ * hits exist or FAISS has returned the whole docstore. Worst case still ends
+ * at `ntotal` and preserves the #71/#73 correctness guarantee; the common
+ * case terminates at the first or second rung.
+ *
+ * Ladder = `[max(k, 20), 4k, 16k, ntotal]` with duplicates and rungs that
+ * meet or exceed `ntotal` collapsed. The floor of 20 keeps very small `k`
+ * callers (e.g. `k = 1`) from probing FAISS one item at a time when a single
+ * filter would otherwise reject the top hit. The geometric 4× growth caps
+ * the number of attempts at four for any realistic `ntotal`.
+ */
+export function progressiveFetchSizes(k: number, ntotal: number): number[] {
+  if (ntotal <= 0) return [];
+  const sizes: number[] = [];
+  const candidates = [Math.max(k, 20), k * 4, k * 16];
+  let prev = 0;
+  for (const candidate of candidates) {
+    if (candidate <= prev) continue;
+    if (candidate >= ntotal) break;
+    sizes.push(candidate);
+    prev = candidate;
+  }
+  sizes.push(ntotal);
+  return sizes;
+}
 
 function totalFileCount(
   entries: ReadonlyArray<{ filePaths: readonly string[] }>,
@@ -907,8 +949,9 @@ export class FaissIndexManager {
    * the score + KB filter that already runs here. Each filter is applied to
    * `doc.metadata` after FAISS returns; the FAISS index itself is never
    * pre-filtered (langchain's FaissStore silently drops filter args). When
-   * any filter is active we over-fetch up to `ntotal` so a small `k` doesn't
-   * starve once the post-filter drops the top-ranked unfiltered hits.
+   * any filter is active we over-fetch via progressive windows so a small
+   * `k` doesn't starve once the post-filter drops the top-ranked unfiltered
+   * hits — see `progressiveFetchSizes` (#229) for the ladder.
    *
    *   `extensions`  AND-with-existing — exact match on `metadata.extension`
    *                 (already lowercased + dotted at ingest, so ".md" works
@@ -943,48 +986,85 @@ export class FaissIndexManager {
       filters,
     });
 
-    // Over-fetch when scoping or when any metadata post-filter is active so
-    // the post-filter doesn't starve `k` when other docs dominate the
-    // unfiltered top-K. The cost (linear in ntotal) is bounded by KB size.
-    const fetchK = postFilter.requiresOverfetch
-      ? Math.max(k, this.faissIndex.index.ntotal())
-      : k;
-    if (timing) timing.fetch_k = fetchK;
-
     // FaissStore.similaritySearchVectorWithScore accepts only (query, k) and
     // silently drops any filter argument, so threshold and KB scoping are both
-    // applied as post-filters on the returned [doc, score] tuples.
-    let resultsWithScore: Array<[Document, number]>;
+    // applied as post-filters on the returned [doc, score] tuples. When the
+    // caller wants timing AND the wrapper exposes the vector-first entry
+    // point, embed once up front and reuse the embedding across every
+    // progressive-overfetch rung so the embed cost is paid exactly once.
     const vectorSearch = (
       this.faissIndex as unknown as {
-        similaritySearchVectorWithScore?: (queryEmbedding: number[], k: number) => Promise<Array<[Document, number]>>;
+        similaritySearchVectorWithScore?: (
+          queryEmbedding: number[],
+          k: number,
+        ) => Promise<Array<[Document, number]>>;
       }
     ).similaritySearchVectorWithScore;
-    if (timing && typeof vectorSearch === 'function') {
+    const useVectorPath = timing !== undefined && typeof vectorSearch === 'function';
+    let queryEmbedding: number[] | undefined;
+    if (useVectorPath) {
       const embedStartedAt = Date.now();
-      const queryEmbedding = await this.embeddings.embedQuery(query);
-      timing.embed_query_ms = Date.now() - embedStartedAt;
-
-      const faissStartedAt = Date.now();
-      resultsWithScore = await vectorSearch.call(this.faissIndex, queryEmbedding, fetchK);
-      timing.faiss_search_ms = Date.now() - faissStartedAt;
-    } else {
-      const queryStartedAt = Date.now();
-      resultsWithScore = await this.faissIndex.similaritySearchWithScore(query, fetchK);
-      if (timing) timing.query_search_ms = Date.now() - queryStartedAt;
+      queryEmbedding = await this.embeddings.embedQuery(query);
+      timing!.embed_query_ms = Date.now() - embedStartedAt;
     }
 
-    const postFilterStartedAt = Date.now();
-    const filtered = postFilter.apply(resultsWithScore);
+    const runFaissSearch = async (
+      fetchK: number,
+    ): Promise<Array<[Document, number]>> => {
+      if (useVectorPath) {
+        const faissStartedAt = Date.now();
+        const out = await vectorSearch!.call(this.faissIndex, queryEmbedding!, fetchK);
+        timing!.faiss_search_ms = (timing!.faiss_search_ms ?? 0) + (Date.now() - faissStartedAt);
+        return out;
+      }
+      const queryStartedAt = Date.now();
+      const out = await this.faissIndex!.similaritySearchWithScore(query, fetchK);
+      if (timing) {
+        timing.query_search_ms = (timing.query_search_ms ?? 0) + (Date.now() - queryStartedAt);
+      }
+      return out;
+    };
+
+    if (!postFilter.requiresOverfetch) {
+      // No scope or metadata filter — FAISS top-k is already the final result
+      // set (threshold is a cheap drop-in post-filter). One call.
+      if (timing) timing.fetch_k = k;
+      const resultsWithScore = await runFaissSearch(k);
+      const postFilterStartedAt = Date.now();
+      const filtered = postFilter.apply(resultsWithScore);
+      if (timing) {
+        timing.post_filter_ms = Date.now() - postFilterStartedAt;
+        timing.total_ms = Date.now() - totalStartedAt;
+      }
+      return filtered.slice(0, k).map(([doc, score]) => ({ ...doc, score }));
+    }
+
+    // Issue #229 — progressive overfetch. Walk increasing fetch windows and
+    // stop as soon as the post-filter yields at least `k` hits, or FAISS has
+    // already returned its entire docstore (raw length below the requested
+    // window ⇒ ntotal exhausted). Worst case ends at `ntotal` and matches
+    // the pre-#229 cost; common filtered queries terminate at the first rung.
+    const ntotal = this.faissIndex.index.ntotal();
+    const fetchSizes = progressiveFetchSizes(k, ntotal);
+    let filtered: ScoredDocument[] = [];
+    let lastFetchK = k;
+    let cumulativePostFilterMs = 0;
+    for (const fetchK of fetchSizes) {
+      lastFetchK = fetchK;
+      const resultsWithScore = await runFaissSearch(fetchK);
+      const postFilterStartedAt = Date.now();
+      filtered = postFilter.apply(resultsWithScore);
+      cumulativePostFilterMs += Date.now() - postFilterStartedAt;
+      if (filtered.length >= k) break;
+      if (resultsWithScore.length < fetchK) break;
+    }
     if (timing) {
-      timing.post_filter_ms = Date.now() - postFilterStartedAt;
+      timing.fetch_k = lastFetchK;
+      timing.post_filter_ms = cumulativePostFilterMs;
       timing.total_ms = Date.now() - totalStartedAt;
     }
 
-    return filtered.slice(0, k).map(([doc, score]) => ({
-      ...doc,
-      score,
-    }));
+    return filtered.slice(0, k).map(([doc, score]) => ({ ...doc, score }));
   }
 
   /**
