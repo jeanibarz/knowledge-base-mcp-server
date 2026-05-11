@@ -131,3 +131,14 @@ For markdown chunks only, `detectSiblingPdfPath` looks for a same-stem PDF in th
 - Query text is not written to disk by the retrieval path; it flows to the embedding provider for the request and then is discarded.
 - Embedding provider keys (`HUGGINGFACE_API_KEY`, `OPENAI_API_KEY`) are held in `process.env` for the life of the process. They are not written to sidecars, model registry files, or FAISS docstore metadata.
 - There is no cache, queue, or scratch directory outside `$KNOWLEDGE_BASES_ROOT_DIR` and `$FAISS_INDEX_PATH`.
+
+## Checked against
+
+This page is verified against the following source files. If one of these files moves or its cited lines drift, refresh this doc rather than letting the claim go stale.
+
+- Chunk metadata wire shape: `src/file-ingest.ts:37-104`.
+- Frontmatter whitelist + sanitisation: `src/frontmatter-lift.ts:19-218`, `src/formatter.ts:34-90`.
+- Atomic FAISS save / pinned load: `src/faiss-store-layout.ts:58-179`.
+- Sidecar write path: `src/file-ingest.ts:118-144`, `src/FaissIndexManager.ts:782-793`.
+- Active-model resolution: `src/active-model.ts:5-26`, `:259-330`.
+- Per-model directory and `model_name.txt`: `src/active-model.ts:107-127`, `src/FaissIndexManager.ts:327-334`.
