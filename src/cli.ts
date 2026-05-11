@@ -21,10 +21,12 @@ import { MODELS_HELP, runModels } from './cli-models.js';
 import { PROMOTE_HELP, runPromote } from './cli-promote.js';
 import { REMEMBER_HELP, runRemember } from './cli-remember.js';
 import { SEARCH_HELP, runSearch } from './cli-search.js';
+import { SERVE_HELP, runServe } from './cli-serve.js';
 import { STALE_CHECK_HELP, runStaleCheck } from './cli-stale-check.js';
 import { STATS_HELP, runStats } from './cli-stats.js';
 import { SUPERSEDED_HELP, runSuperseded } from './cli-superseded.js';
 import { WHERE_HELP, runWhere } from './cli-where.js';
+import { tryRunDaemonCommand } from './daemon-client.js';
 
 // ----- Subcommand registry --------------------------------------------------
 
@@ -42,6 +44,7 @@ interface Subcommand {
 const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'list',         summary: 'List available knowledge bases.',                                         help: LIST_HELP,         handler: runList },
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },
+  { name: 'serve',        summary: 'Run a localhost daemon for warm read-only CLI requests.',                 help: SERVE_HELP,        handler: runServe },
   { name: 'ask',          summary: 'Answer from retrieved KB context using a local LLM endpoint.',            help: ASK_HELP,          handler: runAsk },
   { name: 'remember',     summary: 'Suggest, create, or append knowledge-base notes (write path).',          help: REMEMBER_HELP,     handler: runRemember },
   { name: 'capture',      summary: 'Run a command and append its stdout to a KB note as a fenced block.',    help: CAPTURE_HELP,      handler: runCapture },
@@ -83,6 +86,7 @@ Environment:
   FAISS_INDEX_PATH          Where FAISS stores per-model indexes.
   EMBEDDING_PROVIDER        ollama | openai | huggingface
   KB_ACTIVE_MODEL           Override the active model for this process (RFC 013 §4.7).
+  KB_DAEMON_URL             URL for \`kb search --daemon\` (default http://127.0.0.1:17799).
   KB_LLM_ENDPOINT           OpenAI-compatible endpoint used by \`kb ask\`.
   OLLAMA_*, OPENAI_*, HUGGINGFACE_*
                             Provider-specific config; see the provider's docs.
@@ -145,7 +149,29 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (sub === 'search') {
+    return runSearchMaybeViaDaemon(rest);
+  }
+
   return target.handler(rest);
+}
+
+async function runSearchMaybeViaDaemon(rest: string[]): Promise<number> {
+  const daemonIndex = rest.indexOf('--daemon');
+  if (daemonIndex === -1) return runSearch(rest);
+
+  const directRest = rest.filter((arg) => arg !== '--daemon');
+  if (directRest.includes('--refresh')) {
+    return runSearch(directRest);
+  }
+
+  const daemonResult = await tryRunDaemonCommand('search', directRest);
+  if (daemonResult === null) {
+    return runSearch(directRest);
+  }
+  if (daemonResult.stdout !== '') process.stdout.write(daemonResult.stdout);
+  if (daemonResult.stderr !== '') process.stderr.write(daemonResult.stderr);
+  return daemonResult.exitCode;
 }
 
 // ----- version --------------------------------------------------------------
