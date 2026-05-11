@@ -38,7 +38,7 @@ Content under `$KNOWLEDGE_BASES_ROOT_DIR` is read (`src/FaissIndexManager.ts:253
 
 **Requirement.** The user owns every markdown file in this tree. If a file is scraped from the web or synced from a shared doc platform, it is effectively attacker-controlled from the downstream agent's perspective. Treat it like untrusted input to a downstream LLM, not like untrusted input to this process.
 
-The server itself does no sanitization, no quoting, no prompt-injection detection. That is by design — RFC 006 layers filtering on top.
+The server itself does **no** content sanitization, **no** quoting, and **no** redaction. By design, retrieved chunks are returned verbatim — the downstream MCP client owns policy. Issue [#217](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/217) adds a strictly-additive, signal-only scanner (`src/kb-shield.ts`, wired through `src/formatter.ts`) that annotates each chunk with an `injection_signals: Array<{rule, span_start, span_end}>` field when a versioned ruleset hits. The field is *evidence* — the chunk's `content` is never modified, and the markdown view surfaces an inline `> ⚠ injection-signal: <rule>` line so a human reviewer notices the same hit. Operators can disable the scanner with `KB_SHIELD=off` (the field is omitted entirely), and the ruleset is versioned via `KB_SHIELD_RULESET_VERSION` (currently `v1`) so additions are observable to downstream consumers.
 
 ## 3. Embedding-provider keys
 

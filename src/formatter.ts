@@ -6,6 +6,7 @@
 import type { Document } from '@langchain/core/documents';
 import { buildChunkCitation, type ChunkCitation } from './chunk-id.js';
 import { KB_EDITOR_URI, type KBEditorUriMode } from './config.js';
+import { getInjectionSignals, type InjectionSignal } from './kb-shield.js';
 
 /**
  * Score-bearing search result. Mirrors the shape `FaissIndexManager.similaritySearch`
@@ -21,6 +22,13 @@ export interface RetrievalJsonResult {
   metadata: Record<string, unknown>;
   chunk_id?: string;
   editor_uri?: string;
+  /**
+   * Issue #217 — `kb-shield` retrieval-time prompt-injection signals. Populated
+   * with an array (possibly empty) when `KB_SHIELD` is enabled; the field is
+   * omitted when `KB_SHIELD=off`. Signals are evidence the downstream agent
+   * uses to decide policy — the chunk's `content` is **never** modified.
+   */
+  injection_signals?: InjectionSignal[];
 }
 
 export interface GroupedRetrievalChunk extends RetrievalJsonResult {
@@ -85,7 +93,9 @@ export function formatRetrievalAsMarkdown(
         const citation = buildChunkCitation(sanitizedMetadata, editorUriMode);
         const metadata = JSON.stringify(sanitizedMetadata, null, 2);
         const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
-        return `${resultHeader}\n\n${scoreText}${content}\n\n${formatSourceBlock(metadata, citation)}`;
+        const signals = getInjectionSignals(doc.pageContent);
+        const shieldFooter = formatInjectionMarkdown(signals);
+        return `${resultHeader}\n\n${scoreText}${content}\n\n${shieldFooter}${formatSourceBlock(metadata, citation)}`;
       })
       .join('\n\n---\n\n');
   } else {
@@ -110,7 +120,8 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
             const scoreText = formatScore(chunk.score);
             const locationText = formatLocation(chunk.location);
             const openText = chunk.editor_uri ? `\n   **Open:** ${chunk.editor_uri}` : '';
-            return `${chunkIdx + 1}. **Score:** ${scoreText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(chunk.content.trim())}`;
+            const shieldText = formatInjectionGrouped(chunk.injection_signals);
+            return `${chunkIdx + 1}. **Score:** ${scoreText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(chunk.content.trim())}${shieldText}`;
           })
           .join('\n\n');
         return (
@@ -145,12 +156,14 @@ export function formatRetrievalAsJson(
       extrasVisible,
     );
     const citation = buildChunkCitation(metadata, editorUriMode);
+    const signals = getInjectionSignals(doc.pageContent);
     return {
       score: doc.score ?? null,
       content: doc.pageContent,
       metadata,
       ...(citation ? { chunk_id: citation.chunk_id } : {}),
       ...(citation?.editor_uri ? { editor_uri: citation.editor_uri } : {}),
+      ...(signals !== undefined ? { injection_signals: signals } : {}),
     };
   });
 }
@@ -181,6 +194,7 @@ export function groupRetrievalBySource(
     const score = doc.score ?? null;
     const location = getChunkLocation(sanitizedMetadata);
     const citation = buildChunkCitation(sanitizedMetadata, editorUriMode);
+    const signals = getInjectionSignals(doc.pageContent);
     group.chunk_count += 1;
     group.best_score = bestScore(group.best_score, score);
     group.locations.push({ score, location });
@@ -191,6 +205,7 @@ export function groupRetrievalBySource(
       location,
       ...(citation ? { chunk_id: citation.chunk_id } : {}),
       ...(citation?.editor_uri ? { editor_uri: citation.editor_uri } : {}),
+      ...(signals !== undefined ? { injection_signals: signals } : {}),
     });
   });
 
@@ -249,6 +264,31 @@ function formatLocation(location: unknown | null): string {
 function indentChunkContent(content: string): string {
   if (content === '') return '';
   return content.replace(/\n/g, '\n   ');
+}
+
+/**
+ * Issue #217 — render `kb-shield` hits as inline blockquote lines beneath an
+ * offending chunk in the flat markdown view. Visible to the human operator,
+ * not blocking — the chunk content stays untouched above.
+ */
+function formatInjectionMarkdown(signals: InjectionSignal[] | undefined): string {
+  if (!signals || signals.length === 0) return '';
+  const lines = signals
+    .map((s) => `> ⚠ injection-signal: ${s.rule} [${s.span_start}, ${s.span_end})`)
+    .join('\n');
+  return `${lines}\n\n`;
+}
+
+/**
+ * Same idea as `formatInjectionMarkdown`, but indented so it lines up with the
+ * grouped-by-source numbered chunk list.
+ */
+function formatInjectionGrouped(signals: InjectionSignal[] | undefined): string {
+  if (!signals || signals.length === 0) return '';
+  const lines = signals
+    .map((s) => `\n   > ⚠ injection-signal: ${s.rule} [${s.span_start}, ${s.span_end})`)
+    .join('');
+  return lines;
 }
 
 function formatSourceBlock(metadata: string, citation: ChunkCitation | null): string {
