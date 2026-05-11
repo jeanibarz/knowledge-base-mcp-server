@@ -14,6 +14,7 @@ import { CAPTURE_HELP, runCapture } from './cli-capture.js';
 import { COMPARE_HELP, runCompare } from './cli-compare.js';
 import { DOCTOR_HELP, runDoctor } from './cli-doctor.js';
 import { EVAL_HELP, runEval } from './cli-eval.js';
+import { EXPLAIN_HELP, runExplain } from './cli-explain.js';
 import { LIST_HELP, runList } from './cli-list.js';
 import { LLM_HELP, runLlm } from './cli-llm.js';
 import { MODELS_HELP, runModels } from './cli-models.js';
@@ -48,6 +49,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'doctor',       summary: 'Aggregate model / index / backend health report.',                       help: DOCTOR_HELP,       handler: runDoctor },
   { name: 'stats',        summary: 'Read-only index/corpus stats (mirrors the MCP kb_stats payload).',       help: STATS_HELP,        handler: runStats },
   { name: 'eval',         summary: 'Run fixture-driven retrieval checks.',                                   help: EVAL_HELP,         handler: runEval },
+  { name: 'explain',      summary: 'Verbose single-query retrieval trace for debugging and bug reports.',   help: EXPLAIN_HELP,      handler: runExplain },
   { name: 'stale-check',  summary: 'Scan markdown notes for path / URL references that no longer resolve.',  help: STALE_CHECK_HELP,  handler: runStaleCheck },
   { name: 'superseded',   summary: 'Scan a KB for obsolete / contradicted / deprecated / stale notes.',      help: SUPERSEDED_HELP,   handler: runSuperseded },
   { name: 'promote',      summary: 'Review and update lifecycle frontmatter on a KB note.',                  help: PROMOTE_HELP,      handler: runPromote },
