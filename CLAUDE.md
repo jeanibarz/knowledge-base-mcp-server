@@ -28,7 +28,6 @@ node build/index.js    # runs the server over stdio (clients launch it this way)
 - **TypeScript strict** (`tsconfig.json`). No `any` without justification.
 - **Conventional commits** — `feat:`, `fix(scope):`, `docs:`, `chore:` (see `git log` for prior style).
 - **RFCs** under `docs/rfcs/NNN-slug.md` for non-trivial design. Drafts are first-class; merging an RFC does not imply implementation — each implementation PR references the RFC it realises.
-- **CHANGELOG.md** — add an entry under `## [Unreleased]` for any user-visible change.
 
 ### Verification beyond `npm test`
 
@@ -64,7 +63,7 @@ Rationale: follow-up work evaporates the moment context is lost. An issue preser
 
 ## Gotchas
 
-- **HuggingFace endpoint:** the default now routes through `router.huggingface.co/hf-inference/models/<model>/pipeline/feature-extraction` because HuggingFace retired the legacy `api-inference.huggingface.co/models/...` endpoint. `HUGGINGFACE_ENDPOINT_URL` overrides. See CHANGELOG for context.
+- **HuggingFace endpoint:** the default now routes through `router.huggingface.co/hf-inference/models/<model>/pipeline/feature-extraction` because HuggingFace retired the legacy `api-inference.huggingface.co/models/...` endpoint. `HUGGINGFACE_ENDPOINT_URL` overrides.
 - **Model-switch invalidates the index:** changing `EMBEDDING_PROVIDER` or the model env var (`OLLAMA_MODEL`, `HUGGINGFACE_MODEL_NAME`, `OPENAI_MODEL_NAME`) for an existing `FAISS_INDEX_PATH` triggers an auto-rebuild via `FaissIndexManager.initialize()`. Expect a one-time delay on the next `retrieve_knowledge` call while every file is re-embedded.
 - **OpenAI not exposed in `smithery.yaml`:** the code supports OpenAI, the Smithery schema does not (`enum: ["huggingface", "ollama"]`). Users deploying via Smithery cannot currently pick OpenAI — tracked for a separate fix.
 - **Docs / agent skills** are being designed in `docs/rfcs/002-ai-skills-setup.md`. Until that lands, per-skill runbooks do not exist yet; this CLAUDE.md is the single agent-facing entry point.

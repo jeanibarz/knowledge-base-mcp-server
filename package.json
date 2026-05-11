@@ -10,7 +10,6 @@
   },
   "files": [
     "build/",
-    "CHANGELOG.md",
     "UNLICENSE"
   ],
   "scripts": {

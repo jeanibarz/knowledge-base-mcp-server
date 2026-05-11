@@ -28,7 +28,6 @@ Please use the [Feature Request issue template](./.github/ISSUE_TEMPLATE/feature
 
 - Follow existing TypeScript patterns (`tsconfig.json` strict mode).
 - Add tests for new features.
-- Update `CHANGELOG.md` under `## [Unreleased]` for any user-visible change.
 - Update documentation as needed.
 
 ## Spinning Off Follow-Up Issues
