@@ -4,8 +4,9 @@
 // after every successful write; a running MCP server picks up those writes
 // without the caller having to invoke `refresh_knowledge_base` manually.
 //
-// The poller runs ALONGSIDE RFC 007 §6.6's `fs.watch` recursive watcher.
-// The `fs.watch` path sees per-file edits *inside* each KB directory (which
+// The poller runs ALONGSIDE RFC 007 §6.6's `fs.watch` recursive watcher
+// (issue #212, `recursive-fs-watch.ts`, opt-in via `KB_FS_WATCH=1`). The
+// `fs.watch` path sees per-file edits *inside* each KB directory (which
 // is the right surface for inline editing); the poller sees the root-level
 // dotfile that the walker and `fs.watch` both deliberately skip.
 import * as fsp from 'fs/promises';

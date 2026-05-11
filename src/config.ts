@@ -210,6 +210,58 @@ export const REINDEX_TRIGGER_PATH: string =
   || path.join(KNOWLEDGE_BASES_ROOT_DIR, '.reindex-trigger');
 
 // ---------------------------------------------------------------------------
+// Recursive fs.watch watcher (RFC 007 §6.6, issue #212).
+//
+// Observes per-file edits *inside* each registered KB directory, complementing
+// the RFC 011 trigger-file poller (which sees the root-level dotfile that
+// external workflows `touch`). Off by default for v1 because `fs.watch` has
+// platform quirks (NFS, FUSE, very large trees on Linux) we don't want to
+// surprise existing users with — operators opt in with `KB_FS_WATCH=1`.
+// ---------------------------------------------------------------------------
+
+/**
+ * @internal exported only for `config.test.ts`. Accepts the `1` / `true`
+ * / `yes` / `on` family (case-insensitive); everything else is `false`.
+ * Empty / unset → `false` (default off).
+ */
+export function parseKbFsWatchFlag(raw: string | undefined): boolean {
+  if (raw === undefined) return false;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === '') return false;
+  return trimmed === '1' || trimmed === 'true' || trimmed === 'yes' || trimmed === 'on';
+}
+
+export const KB_FS_WATCH: boolean = parseKbFsWatchFlag(process.env.KB_FS_WATCH);
+
+const DEFAULT_KB_FS_WATCH_DEBOUNCE_MS = 250;
+const MIN_KB_FS_WATCH_DEBOUNCE_MS = 25;
+const MAX_KB_FS_WATCH_DEBOUNCE_MS = 60_000;
+
+/**
+ * @internal exported only for `config.test.ts`. Parses the per-(kb, file)
+ * debounce window. Invalid / unset → default 250 ms; otherwise clamped
+ * into `[MIN, MAX]` so an operator-supplied `5` doesn't spin or `3600000`
+ * doesn't defeat the point of the watcher.
+ */
+export function parseKbFsWatchDebounceMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') {
+    return DEFAULT_KB_FS_WATCH_DEBOUNCE_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_KB_FS_WATCH_DEBOUNCE_MS;
+  }
+  return Math.max(
+    MIN_KB_FS_WATCH_DEBOUNCE_MS,
+    Math.min(MAX_KB_FS_WATCH_DEBOUNCE_MS, Math.round(parsed)),
+  );
+}
+
+export const KB_FS_WATCH_DEBOUNCE_MS: number = parseKbFsWatchDebounceMs(
+  process.env.KB_FS_WATCH_DEBOUNCE_MS,
+);
+
+// ---------------------------------------------------------------------------
 // Tool description overrides (RFC 010 M2 / #52).
 // Operators can repurpose the same binary for different deployments (eng
 // docs vs. personal notes vs. postmortems) by overriding the model-facing
