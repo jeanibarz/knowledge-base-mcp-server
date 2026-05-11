@@ -6,6 +6,12 @@
 
 - **`kb search` and `retrieve_knowledge` now surface stable chunk handles.** Results with KB/path/line metadata expose `chunk_id` values like `alpha/docs/deploy.md#L42-L78`, falling back to `#chunk-N` when line ranges are absent. `KB_EDITOR_URI=vscode|cursor|file|none` controls opt-in absolute-path `editor_uri` output; the default `none` keeps local paths hidden. `kb search --format=vimgrep` prints `path:line:col:preview` quickfix lines. Closes #220.
 
+## [Unreleased] — source-mapped `kb` CLI dev runner
+
+### Added
+
+- **`npm run dev:cli -- <kb args>` runs the TypeScript `kb` CLI source with source maps enabled.** The contributor-only wrapper forwards args to `src/cli.ts` without requiring a build or relink and prints the active `KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, embedding provider, and embedding model to stderr before execution. Closes #246.
+
 ## [Unreleased] — atomic EOF appends for `kb remember` and `kb capture`
 
 ### Changed
