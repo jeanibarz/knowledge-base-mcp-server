@@ -27,6 +27,7 @@ import {
 } from './formatter.js';
 import { runPicker } from './cli-search-picker.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
+import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import {
@@ -498,17 +499,20 @@ async function countStaleness(
   enumerations: Awaited<ReturnType<typeof enumerateIngestableKbFiles>>,
   indexMtimeMs: number,
 ): Promise<StalenessCounts> {
+  const fsConcurrency = resolveFsConcurrency();
   let modifiedFiles = 0;
   let newFiles = 0;
   for (const { kbPath, filePaths } of enumerations) {
-    for (const filePath of filePaths) {
+    const modifiedFlags = await mapBounded(filePaths, fsConcurrency, async (filePath): Promise<number> => {
       try {
         const st = await fsp.stat(filePath);
-        if (st.mtimeMs > indexMtimeMs) modifiedFiles += 1;
+        return st.mtimeMs > indexMtimeMs ? 1 : 0;
       } catch {
         // file vanished between the walker and stat; ignore it
+        return 0;
       }
-    }
+    });
+    modifiedFiles += modifiedFlags.reduce((sum, value) => sum + value, 0);
 
     const sidecarCount = await countSidecarFiles(path.join(kbPath, '.index'));
     if (filePaths.length > sidecarCount) {
@@ -525,16 +529,17 @@ async function countSidecarFiles(dir: string): Promise<number> {
   } catch {
     return 0;
   }
-  let count = 0;
-  for (const entry of entries) {
+  const childCounts = await mapBounded(entries, resolveFsConcurrency(), async (entry) => {
     const entryPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      count += await countSidecarFiles(entryPath);
-    } else if (entry.isFile()) {
-      count += 1;
+      return countSidecarFiles(entryPath);
     }
-  }
-  return count;
+    if (entry.isFile()) {
+      return 1;
+    }
+    return 0;
+  });
+  return childCounts.reduce((sum, value) => sum + value, 0);
 }
 
 function emptyStaleness(indexMtime: string | null, scopedKb?: string): Staleness {
