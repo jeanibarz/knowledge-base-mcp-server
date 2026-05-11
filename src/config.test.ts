@@ -1,10 +1,15 @@
 import {
+  isKnownEmbeddingProvider,
+  KNOWN_EMBEDDING_PROVIDERS,
+  parseEmbeddingProvider,
+  parseKbFakeDim,
   parseKbFsWatchDebounceMs,
   parseKbFsWatchFlag,
   parseReindexTriggerPollMs,
   parseKBEditorUri,
   resolveChunkSize,
   resolveIndexingBatchSize,
+  UnknownEmbeddingProviderError,
 } from './config.js';
 
 describe('resolveIndexingBatchSize (issue #236 — INDEXING_BATCH_SIZE)', () => {
@@ -201,5 +206,60 @@ describe('parseKbFsWatchDebounceMs (#212 — KB_FS_WATCH_DEBOUNCE_MS)', () => {
     expect(parseKbFsWatchDebounceMs('not-a-number')).toBe(250);
     expect(parseKbFsWatchDebounceMs('0')).toBe(250);
     expect(parseKbFsWatchDebounceMs('-50')).toBe(250);
+  });
+});
+
+describe('parseEmbeddingProvider (#204 — EMBEDDING_PROVIDER whitelist incl. fake)', () => {
+  it('includes the deterministic offline fake provider', () => {
+    expect(KNOWN_EMBEDDING_PROVIDERS).toEqual(
+      expect.arrayContaining(['huggingface', 'ollama', 'openai', 'fake']),
+    );
+    expect(isKnownEmbeddingProvider('fake')).toBe(true);
+  });
+
+  it('returns the default huggingface provider when unset or blank', () => {
+    expect(parseEmbeddingProvider(undefined)).toBe('huggingface');
+    expect(parseEmbeddingProvider('')).toBe('huggingface');
+    expect(parseEmbeddingProvider('   ')).toBe('huggingface');
+  });
+
+  it('accepts each of the known providers verbatim', () => {
+    for (const p of KNOWN_EMBEDDING_PROVIDERS) {
+      expect(parseEmbeddingProvider(p)).toBe(p);
+    }
+  });
+
+  it('throws UnknownEmbeddingProviderError on a typo', () => {
+    expect(() => parseEmbeddingProvider('hugginface')).toThrow(UnknownEmbeddingProviderError);
+    expect(() => parseEmbeddingProvider('stub')).toThrow(/EMBEDDING_PROVIDER/);
+  });
+});
+
+describe('parseKbFakeDim (#204 — KB_FAKE_DIM)', () => {
+  it('returns the 256 default when unset or blank', () => {
+    expect(parseKbFakeDim(undefined)).toBe(256);
+    expect(parseKbFakeDim('')).toBe(256);
+    expect(parseKbFakeDim('   ')).toBe(256);
+  });
+
+  it('honors positive integer values within [MIN, MAX]', () => {
+    expect(parseKbFakeDim('64')).toBe(64);
+    expect(parseKbFakeDim('1024')).toBe(1024);
+  });
+
+  it('floors fractional values', () => {
+    expect(parseKbFakeDim('128.9')).toBe(128);
+  });
+
+  it('clamps tiny and huge values into [MIN, MAX]', () => {
+    // MIN=8 prevents collapsing the hash bag; MAX=4096 caps memory.
+    expect(parseKbFakeDim('1')).toBe(8);
+    expect(parseKbFakeDim('999999')).toBe(4096);
+  });
+
+  it('falls back to default for non-numeric / non-positive inputs', () => {
+    expect(parseKbFakeDim('not-a-number')).toBe(256);
+    expect(parseKbFakeDim('0')).toBe(256);
+    expect(parseKbFakeDim('-50')).toBe(256);
   });
 });

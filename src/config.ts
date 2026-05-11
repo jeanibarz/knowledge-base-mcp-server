@@ -7,8 +7,77 @@ export const KNOWLEDGE_BASES_ROOT_DIR = process.env.KNOWLEDGE_BASES_ROOT_DIR ||
 export const DEFAULT_FAISS_INDEX_PATH = path.join(KNOWLEDGE_BASES_ROOT_DIR, '.faiss');
 export const FAISS_INDEX_PATH = process.env.FAISS_INDEX_PATH || DEFAULT_FAISS_INDEX_PATH;
 
-// Embedding provider configuration
+// Embedding provider configuration.
+//
+// Issue #204 — `fake` is a deterministic, offline embedding provider used by
+// CI and local development. It produces hash-bag, L2-normalized vectors with
+// no network, no API key, and no Ollama daemon. Whitelisted here so callers
+// that validate against `KNOWN_EMBEDDING_PROVIDERS` accept it; ranking
+// quality is poor by design (testing only, never deploy).
+export const KNOWN_EMBEDDING_PROVIDERS = [
+  'huggingface',
+  'ollama',
+  'openai',
+  'fake',
+] as const;
+
+export type KnownEmbeddingProvider = (typeof KNOWN_EMBEDDING_PROVIDERS)[number];
+
+export class UnknownEmbeddingProviderError extends Error {
+  constructor(rawValue: string) {
+    super(
+      `unknown EMBEDDING_PROVIDER=${JSON.stringify(rawValue)} ` +
+      `(expected one of: ${KNOWN_EMBEDDING_PROVIDERS.join(', ')})`,
+    );
+    this.name = 'UnknownEmbeddingProviderError';
+  }
+}
+
+/**
+ * Issue #204 — soft validator for `EMBEDDING_PROVIDER`. Existing callers
+ * cast the raw env string at use-sites, so wiring a strict throw here would
+ * break boot for anyone with a typo. Callers that want enforcement
+ * (`kb doctor`, future config-lint surfaces) invoke this directly; the
+ * exported `EMBEDDING_PROVIDER` constant preserves pre-#204 behavior.
+ */
+export function parseEmbeddingProvider(raw: string | undefined): KnownEmbeddingProvider {
+  const trimmed = (raw ?? '').trim();
+  if (trimmed === '') return 'huggingface';
+  if ((KNOWN_EMBEDDING_PROVIDERS as readonly string[]).includes(trimmed)) {
+    return trimmed as KnownEmbeddingProvider;
+  }
+  throw new UnknownEmbeddingProviderError(trimmed);
+}
+
+export function isKnownEmbeddingProvider(raw: string): raw is KnownEmbeddingProvider {
+  return (KNOWN_EMBEDDING_PROVIDERS as readonly string[]).includes(raw);
+}
+
 export const EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER || 'huggingface';
+
+// Issue #204 — vector dimension for the deterministic `fake` provider.
+// Defaults to 256; clamped to `[MIN, MAX]` so an operator-supplied `2` does
+// not collapse the hash bag and `999999` does not balloon memory.
+const DEFAULT_KB_FAKE_DIM = 256;
+const MIN_KB_FAKE_DIM = 8;
+const MAX_KB_FAKE_DIM = 4096;
+
+/**
+ * @internal exported only for `config.test.ts`. Parses `KB_FAKE_DIM`.
+ * Invalid / unset → default 256; otherwise floored, then clamped into
+ * `[MIN, MAX]`.
+ */
+export function parseKbFakeDim(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_KB_FAKE_DIM;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_KB_FAKE_DIM;
+  return Math.max(
+    MIN_KB_FAKE_DIM,
+    Math.min(MAX_KB_FAKE_DIM, Math.floor(parsed)),
+  );
+}
+
+export const KB_FAKE_DIM: number = parseKbFakeDim(process.env.KB_FAKE_DIM);
 
 // RFC 013 §4.7 — per-process override for the active model. When set, takes
 // precedence over `${FAISS_INDEX_PATH}/active.txt` for the lifetime of this
