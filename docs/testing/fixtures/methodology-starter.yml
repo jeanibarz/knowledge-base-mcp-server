@@ -1,0 +1,71 @@
+# Starter pack for docs/testing/retrieval-eval-methodology.md.
+#
+# This file is parsed by src/retrieval-eval.test.ts so schema drift is caught
+# without requiring a live embedding provider. Treat the paths as examples to
+# replace with documents you have personally verified in your own KB.
+
+gate: false
+
+cases:
+  # author: docs-maintainer
+  # source-of-truth: README.md
+  # protects: broken docs KB/index plumbing
+  - name: smoke - docs answer doctor availability
+    query: what health checks run when I invoke the doctor command
+    kb: docs
+    k: 5
+    required_sources:
+      - README.md
+    stale_policy: allow_stale
+
+  # author: docs-maintainer
+  # source-of-truth: docs/architecture/adr/0002-per-file-hash-sidecars.md
+  # protects: recall regression for per-file invalidation behavior
+  - name: recall - per-file hash sidecars remain discoverable
+    query: how does the index decide which files to re-embed
+    kb: docs
+    gate: true
+    required_sources:
+      - docs/architecture/adr/0002-per-file-hash-sidecars.md
+    max_duplicate_groups: 1
+    stale_policy: fresh
+
+  # author: ops-example
+  # source-of-truth: runbooks/deploy.md
+  # protects: once-bad archived rollback advice returning above current docs
+  - name: precision - archived deploy runbook stays out
+    query: current production rollback procedure
+    kb: ops
+    gate: true
+    required_sources:
+      - runbooks/deploy.md
+    forbidden_sources:
+      - archive/old-deploy.md
+    threshold: 2
+    stale_policy: fresh
+
+  # author: research-example
+  # source-of-truth: notes/retrieval-baseline.md
+  # protects: authored frontmatter no longer flowing onto retrieved chunks
+  - name: metadata - approved baseline carries owner
+    query: retrieval baseline quality gate
+    kb: research
+    required_sources:
+      - notes/retrieval-baseline.md
+    expected_metadata:
+      frontmatter.status: approved
+      frontmatter.owner: search-platform
+    stale_policy: allow_stale
+
+  # author: regression-example
+  # source-of-truth: issue-71-cross-kb-scope.md
+  # protects: cross-KB leakage seen in a closed scoping bug
+  - name: near miss - scoped query does not leak personal notes
+    query: production database restore checklist
+    kb: work
+    gate: false
+    forbidden_sources:
+      - personal/**
+    max_duplicate_groups: 0
+    stale_policy:
+      expect: allow_stale
