@@ -1,11 +1,5 @@
 # Changelog
 
-## [Unreleased] — source-mapped `kb` CLI dev runner
-
-### Added
-
-- **`npm run dev:cli -- <kb args>` runs the TypeScript `kb` CLI source with source maps enabled.** The contributor-only wrapper forwards args to `src/cli.ts` without requiring a build or relink and prints the active `KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, embedding provider, and embedding model to stderr before execution. Closes #246.
-
 ## [Unreleased] — stale model-add recovery
 
 ### Added
