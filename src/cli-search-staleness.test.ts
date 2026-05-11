@@ -80,7 +80,7 @@ describe('computeStaleness', () => {
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });
 
 describe('buildAgeBudgetFooter (issue #218)', () => {

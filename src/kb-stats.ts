@@ -16,6 +16,7 @@ import {
   INGEST_EXTRA_EXTENSIONS,
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config.js';
+import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import { KBError } from './errors.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
@@ -109,18 +110,20 @@ export async function computeKbStats(
   );
 
   const knowledge_bases: Record<string, KbStatsRow> = {};
+  const fsConcurrency = resolveFsConcurrency();
   for (const { kbName, kbPath, filePaths } of enumerations) {
-    let totalBytes = 0;
-    for (const filePath of filePaths) {
+    const byteCounts = await mapBounded(filePaths, fsConcurrency, async (filePath) => {
       try {
         const st = await fsp.stat(filePath);
-        totalBytes += st.size;
+        return st.size;
       } catch (err) {
         // Best-effort: a TOCTOU between the walker and stat (e.g. concurrent
         // edit) shouldn't fail the whole stats call.
         logger.debug(`kb_stats: could not stat ${filePath}: ${(err as Error).message}`);
+        return 0;
       }
-    }
+    });
+    const totalBytes = byteCounts.reduce((sum, value) => sum + value, 0);
     const lastUpdatedAt = await maxMtimeIso(path.join(kbPath, '.index'));
     knowledge_bases[kbName] = {
       file_count: filePaths.length,
@@ -168,21 +171,24 @@ export async function maxMtimeIso(dir: string): Promise<string | null> {
       if (code === 'ENOENT' || code === 'ENOTDIR') return;
       throw err;
     }
-    for (const entry of entries) {
+    const mtimes = await mapBounded(entries, resolveFsConcurrency(), async (entry) => {
       const child = path.join(target, entry.name);
       if (entry.isDirectory()) {
         await walk(child);
-        continue;
+        return 0;
       }
-      if (!entry.isFile()) continue;
+      if (!entry.isFile()) return 0;
       try {
         const st = await fsp.stat(child);
-        if (st.mtimeMs > latest) latest = st.mtimeMs;
+        return st.mtimeMs;
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
-        if (code === 'ENOENT') continue;
+        if (code === 'ENOENT') return 0;
         throw err;
       }
+    });
+    for (const mtime of mtimes) {
+      if (mtime > latest) latest = mtime;
     }
   }
   await walk(dir);

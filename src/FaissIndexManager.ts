@@ -28,6 +28,7 @@ import {
   __resetBootstrapForTests as resetBootstrapLayoutForTests,
   bootstrapLayout as bootstrapIndexLayout,
 } from './layout-bootstrap.js';
+import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import {
   loadFaissStoreAtomic,
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
@@ -735,90 +736,104 @@ export class FaissIndexManager {
         fileHash: string;
         documents: Document[];
       }> = [];
-      for (const { knowledgeBaseName, knowledgeBasePath, filePaths } of knowledgeBaseFiles) {
-        for (const filePath of filePaths) {
-          anyFileProcessed = true;
-          runSummary.files_scanned += 1;
-
+      const fsConcurrency = resolveFsConcurrency();
+      const fileScanJobs = knowledgeBaseFiles.flatMap(
+        ({ knowledgeBaseName, knowledgeBasePath, filePaths }) => filePaths.map((filePath) => {
           const relativePath = path.relative(knowledgeBasePath, filePath);
-          let fileHash: string;
+          const indexFilePath = path.join(
+            knowledgeBasePath,
+            '.index',
+            path.dirname(relativePath),
+            path.basename(filePath),
+          );
+          return {
+            knowledgeBaseName,
+            knowledgeBasePath,
+            filePath,
+            relativePath,
+            indexFilePath,
+          };
+        }),
+      );
+      const fileScanResults = await mapBounded(
+        fileScanJobs,
+        fsConcurrency,
+        async (job) => {
           try {
-            fileHash = await calculateSHA256(filePath);
+            const fileHash = await calculateSHA256(job.filePath);
+            let storedHash: string | null = null;
+            try {
+              const buffer = await fsp.readFile(job.indexFilePath);
+              storedHash = buffer.toString('utf-8');
+            } catch {
+              // The hash file may not exist yet; that's fine.
+            }
+            return { ...job, success: true as const, fileHash, storedHash };
           } catch (error: unknown) {
-            logger.error(`Error reading file ${filePath}:`, toError(error));
+            return { ...job, success: false as const, error };
+          }
+        },
+      );
+      for (const scan of fileScanResults) {
+        anyFileProcessed = true;
+        runSummary.files_scanned += 1;
+
+        if (!scan.success) {
+          logger.error(`Error reading file ${scan.filePath}:`, toError(scan.error));
+          runSummary.files_skipped += 1;
+          loaderFailurePaths.add(scan.filePath);
+          recordFailure(scan.relativePath, 'load', scan.error);
+          continue;
+        }
+
+        // If the file is new/changed, or the index itself is absent,
+        // process it. The missing-index case must ignore matching sidecars:
+        // otherwise a rebuild can silently omit files whose hashes were
+        // already current.
+        if (rebuildFromEmptyIndex || forceReindex || scan.fileHash !== scan.storedHash) {
+          runSummary.files_changed += 1;
+          logger.info(
+            rebuildFromEmptyIndex
+              ? `FAISS index is empty. Rebuilding from ${scan.filePath}...`
+              : forceReindex
+                ? `Force re-indexing ${scan.filePath}...`
+              : `File ${scan.filePath} has changed. Updating index...`,
+          );
+          // Issue #46 — extension-routed loader. `.pdf` runs through
+          // pdf-parse, `.html`/`.htm` through html-to-text, anything else
+          // (including operator-supplied INGEST_EXTRA_EXTENSIONS like
+          // `.json` or `.csv`) reads as UTF-8.
+          let content = '';
+          try {
+            content = await loadFile(scan.filePath);
+          } catch (error: unknown) {
+            logger.error(`Error loading file ${scan.filePath}:`, toError(error));
             runSummary.files_skipped += 1;
-            loaderFailurePaths.add(filePath);
-            recordFailure(relativePath, 'load', error);
+            loaderFailurePaths.add(scan.filePath);
+            recordFailure(scan.relativePath, 'load', error);
             continue;
           }
-          const indexDirPath = path.join(knowledgeBasePath, '.index', path.dirname(relativePath));
-          const indexFilePath = path.join(indexDirPath, path.basename(filePath));
 
-          if (!(await pathExists(indexDirPath))) {
-            try {
-              await fsp.mkdir(indexDirPath, { recursive: true });
-            } catch (error) {
-              handleFsOperationError('create index metadata directory', indexDirPath, error);
-            }
-          }
+          const documentsToAdd: Document[] = await buildChunkDocuments(
+            scan.filePath,
+            content,
+            scan.knowledgeBaseName,
+          );
+          runSummary.chunks_attempted += documentsToAdd.length;
 
-          let storedHash: string | null = null;
-          try {
-            const buffer = await fsp.readFile(indexFilePath);
-            storedHash = buffer.toString('utf-8');
-          } catch (error) {
-            // The hash file may not exist yet; that's fine.
-          }
-
-          // If the file is new/changed, or the index itself is absent,
-          // process it. The missing-index case must ignore matching sidecars:
-          // otherwise a rebuild can silently omit files whose hashes were
-          // already current.
-          if (rebuildFromEmptyIndex || forceReindex || fileHash !== storedHash) {
-            runSummary.files_changed += 1;
-            logger.info(
-              rebuildFromEmptyIndex
-                ? `FAISS index is empty. Rebuilding from ${filePath}...`
-                : forceReindex
-                  ? `Force re-indexing ${filePath}...`
-                : `File ${filePath} has changed. Updating index...`,
-            );
-            // Issue #46 — extension-routed loader. `.pdf` runs through
-            // pdf-parse, `.html`/`.htm` through html-to-text, anything else
-            // (including operator-supplied INGEST_EXTRA_EXTENSIONS like
-            // `.json` or `.csv`) reads as UTF-8.
-            let content = '';
-            try {
-              content = await loadFile(filePath);
-            } catch (error: unknown) {
-              logger.error(`Error loading file ${filePath}:`, toError(error));
-              runSummary.files_skipped += 1;
-              loaderFailurePaths.add(filePath);
-              recordFailure(relativePath, 'load', error);
-              continue;
-            }
-
-            const documentsToAdd: Document[] = await buildChunkDocuments(
-              filePath,
-              content,
-              knowledgeBaseName,
-            );
-            runSummary.chunks_attempted += documentsToAdd.length;
-
-            if (documentsToAdd.length > 0) {
-              changedFileDocuments.push({
-                filePath,
-                indexFilePath,
-                fileHash,
-                documents: documentsToAdd,
-              });
-            } else {
-              logger.debug(`No documents generated from ${filePath}. Skipping index update.`);
-            }
+          if (documentsToAdd.length > 0) {
+            changedFileDocuments.push({
+              filePath: scan.filePath,
+              indexFilePath: scan.indexFilePath,
+              fileHash: scan.fileHash,
+              documents: documentsToAdd,
+            });
           } else {
-            runSummary.files_unchanged += 1;
-            logger.debug(`File ${filePath} unchanged, skipping.`);
+            logger.debug(`No documents generated from ${scan.filePath}. Skipping index update.`);
           }
+        } else {
+          runSummary.files_unchanged += 1;
+          logger.debug(`File ${scan.filePath} unchanged, skipping.`);
         }
       }
       const documentsToAdd = changedFileDocuments.flatMap((entry) => entry.documents);
