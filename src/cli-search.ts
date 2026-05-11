@@ -23,7 +23,9 @@ import {
   formatRetrievalAsVimgrep,
   formatRetrievalGroupedBySourceAsMarkdown,
   groupRetrievalBySource,
+  type ScoredDocument,
 } from './formatter.js';
+import { runPicker } from './cli-search-picker.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
@@ -79,6 +81,8 @@ Indexing:
 
 Input:
   --stdin               Read query from stdin (multi-line safe).
+  -i, --interactive     Open an interactive results picker (TTY only; ignored
+                        when --format=json or --format=vimgrep is set).
   --help, -h            Show this help.
 
 Examples:
@@ -107,6 +111,7 @@ interface SearchArgs {
   groupBySource: boolean;
   mode: SearchMode;
   timing: boolean;
+  interactive: boolean;
 }
 
 export interface Staleness {
@@ -155,6 +160,11 @@ export async function runSearch(rest: string[]): Promise<number> {
     }
   } else if (parsed.query === null) {
     process.stderr.write('kb search: missing <query> (or use --stdin)\n');
+    return 2;
+  }
+
+  if (shouldUsePicker(parsed) && !process.stdout.isTTY) {
+    process.stderr.write('kb search: --interactive requires a TTY\n');
     return 2;
   }
 
@@ -259,6 +269,10 @@ export async function runSearch(rest: string[]): Promise<number> {
   if (timing) timing.staleness_ms = elapsedMs(stalenessStartedAt);
   if (timing) timing.total_ms = elapsedMs(totalStartedAt);
 
+  if (shouldUsePicker(parsed)) {
+    return runPicker({ results: results as ScoredDocument[] });
+  }
+
   if (parsed.format === 'json') {
     const body = formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
     const effectiveCounts = parsed.refresh
@@ -357,12 +371,14 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     groupBySource: false,
     mode: 'dense',
     timing: false,
+    interactive: false,
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
     if (raw === '--stdin')   { out.stdin = true; continue; }
     if (raw === '--group-by-source') { out.groupBySource = true; continue; }
     if (raw === '--timing') { out.timing = true; continue; }
+    if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
     if (raw.startsWith('--mode=')) {
@@ -394,6 +410,18 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     throw new Error(`unexpected argument: ${raw}`);
   }
   return out;
+}
+
+/**
+ * `--interactive` opens a TTY picker, but only for human-readable output.
+ * `--format=json` and `--format=vimgrep` are structured surfaces consumed by
+ * agents and editors; if both `-i` and one of those formats are passed, the
+ * format wins so agent shells that pass both stay deterministic (#215).
+ */
+export function shouldUsePicker(parsed: { interactive: boolean; format: 'md' | 'json' | 'vimgrep' }): boolean {
+  if (!parsed.interactive) return false;
+  if (parsed.format === 'json' || parsed.format === 'vimgrep') return false;
+  return true;
 }
 
 export function resolveAutoSearchMode(query: string): AutoSearchModeDecision {
@@ -759,6 +787,10 @@ async function runLexicalSearch(
     return obj;
   });
 
+  if (shouldUsePicker(parsed)) {
+    return runPicker({ results: formatted as ScoredDocument[] });
+  }
+
   if (parsed.format === 'json') {
     const payload = {
       mode: 'lexical' as const,
@@ -980,6 +1012,10 @@ async function runHybridSearch(
   if (timing) {
     timing.fusion_ms = elapsedMs(fusionStartedAt);
     timing.total_ms = elapsedMs(totalStartedAt);
+  }
+
+  if (shouldUsePicker(parsed)) {
+    return runPicker({ results: ranked as ScoredDocument[] });
   }
 
   if (parsed.format === 'json') {
