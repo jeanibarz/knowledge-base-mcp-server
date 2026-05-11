@@ -1,5 +1,6 @@
 import {
   parseReindexTriggerPollMs,
+  parseKBEditorUri,
   resolveChunkSize,
   resolveIndexingBatchSize,
 } from './config.js';
@@ -130,5 +131,24 @@ describe('parseReindexTriggerPollMs (RFC 011 §5.5)', () => {
   it('rounds fractional in-range values to an integer', () => {
     expect(parseReindexTriggerPollMs('1500.7')).toBe(1501);
     expect(parseReindexTriggerPollMs('59999.4')).toBe(59999);
+  });
+});
+
+describe('parseKBEditorUri (#220 — KB_EDITOR_URI)', () => {
+  it('defaults to none when unset or blank', () => {
+    expect(parseKBEditorUri(undefined)).toBe('none');
+    expect(parseKBEditorUri('')).toBe('none');
+    expect(parseKBEditorUri('  ')).toBe('none');
+  });
+
+  it('accepts supported editor URI modes case-insensitively', () => {
+    expect(parseKBEditorUri('vscode')).toBe('vscode');
+    expect(parseKBEditorUri('Cursor')).toBe('cursor');
+    expect(parseKBEditorUri('FILE')).toBe('file');
+    expect(parseKBEditorUri('none')).toBe('none');
+  });
+
+  it('rejects unsupported modes', () => {
+    expect(() => parseKBEditorUri('vim')).toThrow(/KB_EDITOR_URI/);
   });
 });

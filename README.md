@@ -58,6 +58,8 @@ kb help search                # per-command help (also: kb search --help)
 
 The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, and version context. It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
 
+`kb search --format=vimgrep` prints one quickfix-compatible line per result: `path:line:col:preview`. JSON results include a stable `chunk_id` such as `alpha/docs/deploy.md#L42-L78` when chunk metadata has a KB, path, and line range; chunks without line metadata fall back to `#chunk-N`. Set `KB_EDITOR_URI=vscode`, `cursor`, or `file` to add opt-in absolute-path `editor_uri` fields and markdown `Open` links. The default `KB_EDITOR_URI=none` omits local absolute paths.
+
 `kb remember` is a conservative CLI write path for agent shells. `--suggest` lists likely existing targets from note filenames/headings, does not read stdin or write notes, and may update a small `.index` heading cache. Creates and appends require both `--stdin` and `--yes`; create uses a slugified `.md` filename and refuses overwrites, while append accepts only existing KB-relative paths. Plain EOF appends and `kb capture --append` serialize per target and commit through a temp-file fsync plus atomic rename. Add `--refresh` to re-index the affected KB after a successful write.
 
 `kb superseded --kb=<name>` is a read-only active-forgetting review. It scans markdown frontmatter for explicit contradiction, deprecated/dormant lifecycle status, stale verification dates, and low-confidence active notes, then uses the existing semantic index to add conservative newer-neighbor evidence when available. Use `--format=json` for agent workflows and `--include-clean` when you need a full inventory.
@@ -374,6 +376,7 @@ The output of the `retrieve_knowledge` tool is a markdown formatted string with 
 ````
 
 Each result includes the content of the most similar chunk, the source file, and a similarity score.
+When chunk metadata includes line information, the markdown source header links a stable chunk handle such as `alpha/docs/deploy.md#L42-L78` to the matching `kb://alpha/docs/deploy.md#L42-L78` resource URI. Set `KB_EDITOR_URI=vscode`, `cursor`, or `file` before launching the server to also include editor-open links with local absolute paths.
 
 ## Remote transport (optional)
 

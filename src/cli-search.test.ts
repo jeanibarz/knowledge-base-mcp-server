@@ -5,6 +5,7 @@ import {
   formatAutoModeHeader,
   formatAutoThresholdHeader,
   formatFreshnessFooter,
+  parseSearchArgs,
   resolveAutoSearchMode,
   Staleness,
 } from './cli-search.js';
@@ -132,6 +133,19 @@ describe('lock contention output (issue #181 + #199 unified shape)', () => {
     expect(out).toContain('category: lock');
     expect(out).toContain('Retry in a few seconds');
     expect(out).toContain('/tmp/model/.kb-write.lock');
+  });
+});
+
+describe('parseSearchArgs output format', () => {
+  it('accepts vimgrep as a search output format', () => {
+    expect(parseSearchArgs(['query', '--format=vimgrep'])).toMatchObject({
+      query: 'query',
+      format: 'vimgrep',
+    });
+  });
+
+  it('still rejects unknown output formats', () => {
+    expect(() => parseSearchArgs(['query', '--format=xml'])).toThrow(/invalid --format/);
   });
 });
 

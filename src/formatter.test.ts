@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   formatRetrievalAsJson,
+  formatRetrievalAsVimgrep,
   formatRetrievalGroupedBySourceAsMarkdown,
   formatRetrievalAsMarkdown,
   groupRetrievalBySource,
@@ -73,6 +74,42 @@ describe('formatRetrievalAsMarkdown', () => {
     expect(out).toContain('"source": "kb/doc.md"');
   });
 
+  it('adds a chunk citation link when stable chunk metadata is present', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'sample content',
+      metadata: {
+        source: '/tmp/kbs/alpha/docs/deploy.md',
+        knowledgeBase: 'alpha',
+        relativePath: 'alpha/docs/deploy.md',
+        loc: { lines: { from: 42, to: 58 } },
+        chunkIndex: 0,
+      },
+      score: 0.42,
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsMarkdown([doc], false, 'none');
+
+    expect(out).toContain('**Source:** [alpha/docs/deploy.md#L42-L58](kb://alpha/docs/deploy.md#L42-L58)');
+    expect(out).not.toContain('**Open:**');
+  });
+
+  it('adds an editor URI only when opted in', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'sample content',
+      metadata: {
+        source: '/tmp/kbs/alpha/docs/deploy.md',
+        knowledgeBase: 'alpha',
+        relativePath: 'alpha/docs/deploy.md',
+        loc: { lines: { from: 42, to: 58 } },
+        chunkIndex: 0,
+      },
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsMarkdown([doc], false, 'vscode');
+
+    expect(out).toContain('**Open:** vscode://file/tmp/kbs/alpha/docs/deploy.md:42:0');
+  });
+
   it('separates multiple results with --- and numbers them', () => {
     const docs = [sampleDoc, { ...sampleDoc, pageContent: 'second' } as ScoredDocument];
     const out = formatRetrievalAsMarkdown(docs, false);
@@ -109,6 +146,25 @@ describe('formatRetrievalAsJson', () => {
     expect(formatRetrievalAsJson([doc], false)).toEqual([
       { score: 1.5, content: 'c', metadata: { source: 'doc.md' } },
     ]);
+  });
+
+  it('adds chunk_id and opt-in editor_uri as additive result fields', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'c',
+      metadata: {
+        source: '/tmp/kbs/alpha/docs/deploy.md',
+        knowledgeBase: 'alpha',
+        relativePath: 'alpha/docs/deploy.md',
+        loc: { lines: { from: 10, to: 12 } },
+        chunkIndex: 0,
+      },
+      score: 1.5,
+    } as unknown as ScoredDocument;
+
+    expect(formatRetrievalAsJson([doc], false, 'cursor')[0]).toMatchObject({
+      chunk_id: 'alpha/docs/deploy.md#L10-L12',
+      editor_uri: 'cursor://file/tmp/kbs/alpha/docs/deploy.md:10:0',
+    });
   });
 
   it('exposes score as null when missing', () => {
@@ -175,6 +231,27 @@ describe('formatRetrievalAsJson', () => {
 
     expect(out[0]).toEqual({ score: 0.4, content: 'c', metadata: { source: 'doc.md' } });
     expect(out[0].metadata).not.toHaveProperty('frontmatter');
+  });
+});
+
+describe('formatRetrievalAsVimgrep', () => {
+  it('prints path:line:col:preview lines for quickfix consumers', () => {
+    const docs: ScoredDocument[] = [
+      {
+        pageContent: 'Deploy procedure starts here.\nAlways verify pods before continuing.',
+        metadata: {
+          source: '/tmp/kbs/work/runbooks/deploy.md',
+          knowledgeBase: 'work',
+          relativePath: 'work/runbooks/deploy.md',
+          loc: { lines: { from: 42, to: 58 } },
+          chunkIndex: 0,
+        },
+      } as unknown as ScoredDocument,
+    ];
+
+    expect(formatRetrievalAsVimgrep(docs)).toBe(
+      'work/runbooks/deploy.md:42:0:Deploy procedure starts here. Always verify pods before continuing.',
+    );
   });
 });
 
