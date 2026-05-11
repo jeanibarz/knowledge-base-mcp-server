@@ -10,6 +10,9 @@ const originalEnv = {
   HUGGINGFACE_MODEL_NAME: process.env.HUGGINGFACE_MODEL_NAME,
   HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
   KB_ACTIVE_MODEL: process.env.KB_ACTIVE_MODEL,
+  KB_AGE_BUDGET_HOURS: process.env.KB_AGE_BUDGET_HOURS,
+  KB_AGE_BUDGET_HOURS_ALPHA: process.env.KB_AGE_BUDGET_HOURS_ALPHA,
+  KB_AGE_BUDGET_HOURS_BETA: process.env.KB_AGE_BUDGET_HOURS_BETA,
 };
 
 const MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
@@ -231,5 +234,168 @@ describe('kb doctor', () => {
     expect(parseDoctorArgs(['--format=json'])).toEqual({ format: 'json' });
     expect(parseDoctorArgs([])).toEqual({ format: 'md' });
     expect(() => parseDoctorArgs(['--format=yaml'])).toThrow(/invalid --format/);
+  });
+
+  describe('age budgets (issue #218)', () => {
+    async function seedKbWithSidecarMtime(
+      rootDir: string,
+      kbName: string,
+      sidecarMtimeMs: number,
+    ): Promise<void> {
+      const indexDir = path.join(rootDir, kbName, '.index');
+      await fsp.mkdir(indexDir, { recursive: true });
+      const sidecar = path.join(indexDir, 'note.md');
+      await fsp.writeFile(sidecar, 'hash');
+      await fsp.utimes(sidecar, sidecarMtimeMs / 1000, sidecarMtimeMs / 1000);
+      await fsp.writeFile(path.join(rootDir, kbName, 'note.md'), 'note');
+    }
+
+    it('omits the age_budget check entirely when no budgets are configured', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-age-none-'));
+      try {
+        const rootDir = path.join(tempDir, 'kbs');
+        const faissDir = path.join(tempDir, '.faiss');
+        await fsp.mkdir(rootDir, { recursive: true });
+        await fsp.mkdir(faissDir, { recursive: true });
+        await seedKbWithSidecarMtime(rootDir, 'alpha', Date.now() - 1000);
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        });
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+        });
+        expect(report.age_budgets).toEqual({});
+        expect(report.age_budget_config_errors).toEqual([]);
+        expect(report.checks.some((c) => c.name === 'age_budget')).toBe(false);
+        expect(formatDoctorMarkdown(report)).toContain('Age budgets:\n  (no budgets configured)');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('emits an AGE_BUDGET_BREACH warning when a KB is over budget', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-age-breach-'));
+      try {
+        const rootDir = path.join(tempDir, 'kbs');
+        const faissDir = path.join(tempDir, '.faiss');
+        await fsp.mkdir(rootDir, { recursive: true });
+        await fsp.mkdir(faissDir, { recursive: true });
+        const nowMs = Date.now();
+        // alpha aged ~47h (over budget=24); beta aged ~12h (within budget=72).
+        await seedKbWithSidecarMtime(rootDir, 'alpha', nowMs - 47 * 3_600_000);
+        await seedKbWithSidecarMtime(rootDir, 'beta', nowMs - 12 * 3_600_000);
+
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          KB_AGE_BUDGET_HOURS_ALPHA: '24',
+          KB_AGE_BUDGET_HOURS_BETA: '72',
+        });
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+        });
+        expect(report.age_budgets.alpha).toMatchObject({
+          configured_hours: 24,
+          breach: true,
+        });
+        expect(report.age_budgets.alpha.current_age_hours).not.toBeNull();
+        expect(report.age_budgets.beta).toMatchObject({
+          configured_hours: 72,
+          breach: false,
+        });
+        const ageBudgetCheck = report.checks.find((c) => c.name === 'age_budget');
+        expect(ageBudgetCheck?.status).toBe('warn');
+        expect(ageBudgetCheck?.detail).toContain('kb=alpha');
+        expect(ageBudgetCheck?.detail).toContain('budget=24h');
+        const md = formatDoctorMarkdown(report);
+        expect(md).toContain('AGE_BUDGET_BREACH: kb=alpha');
+        expect(md).toContain('beta: age=');
+        expect(md).toContain('budget=72h, ok');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('uses the global KB_AGE_BUDGET_HOURS fallback for KBs without a per-KB override', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-age-global-'));
+      try {
+        const rootDir = path.join(tempDir, 'kbs');
+        const faissDir = path.join(tempDir, '.faiss');
+        await fsp.mkdir(rootDir, { recursive: true });
+        await fsp.mkdir(faissDir, { recursive: true });
+        const nowMs = Date.now();
+        await seedKbWithSidecarMtime(rootDir, 'alpha', nowMs - 100 * 3_600_000);
+        const { buildDoctorReport } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          KB_AGE_BUDGET_HOURS: '24',
+        });
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+        });
+        expect(report.age_budgets.alpha).toMatchObject({
+          configured_hours: 24,
+          breach: true,
+        });
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('surfaces an error-level check when KB_AGE_BUDGET_HOURS_<KB> is malformed', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-age-bad-'));
+      try {
+        const rootDir = path.join(tempDir, 'kbs');
+        const faissDir = path.join(tempDir, '.faiss');
+        await fsp.mkdir(rootDir, { recursive: true });
+        await fsp.mkdir(faissDir, { recursive: true });
+        await seedKbWithSidecarMtime(rootDir, 'alpha', Date.now() - 1000);
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          KB_AGE_BUDGET_HOURS_ALPHA: '0',
+        });
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+        });
+        expect(report.age_budget_config_errors).toEqual([
+          expect.objectContaining({
+            env_var: 'KB_AGE_BUDGET_HOURS_ALPHA',
+            raw_value: '0',
+          }),
+        ]);
+        // Affected KB falls back to "no budget", so it does not appear in age_budgets.
+        expect(report.age_budgets.alpha).toBeUndefined();
+        const ageBudgetCheck = report.checks.find((c) => c.name === 'age_budget');
+        expect(ageBudgetCheck?.status).toBe('error');
+        expect(report.status).toBe('error');
+        expect(formatDoctorMarkdown(report)).toContain(
+          'CONFIG_ERROR: KB_AGE_BUDGET_HOURS_ALPHA="0"',
+        );
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 });

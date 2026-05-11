@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { buildAgeBudgetFooter } from './cli-search-staleness.js';
 
 const ORIGINAL_ENV = {
   KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
@@ -79,5 +80,94 @@ describe('computeStaleness', () => {
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('buildAgeBudgetFooter (issue #218)', () => {
+  const nowMs = Date.parse('2026-05-11T12:00:00.000Z');
+
+  it('returns line=null when no age budget is configured', () => {
+    const result = buildAgeBudgetFooter({
+      kb: 'work',
+      lastIndexAtMs: nowMs - 100 * 3_600_000,
+      nowMs,
+      env: {},
+    });
+    expect(result.line).toBeNull();
+    expect(result.status.breach).toBe(false);
+    expect(result.configError).toBeNull();
+  });
+
+  it('returns line=null when the KB is within budget', () => {
+    const result = buildAgeBudgetFooter({
+      kb: 'work',
+      lastIndexAtMs: nowMs - 12 * 3_600_000,
+      nowMs,
+      env: { KB_AGE_BUDGET_HOURS_WORK: '24' },
+    });
+    expect(result.line).toBeNull();
+    expect(result.status.breach).toBe(false);
+  });
+
+  it('returns the spec-exact footer line on breach (47h vs 24h)', () => {
+    const result = buildAgeBudgetFooter({
+      kb: 'work',
+      lastIndexAtMs: nowMs - 47 * 3_600_000,
+      nowMs,
+      env: { KB_AGE_BUDGET_HOURS_WORK: '24' },
+    });
+    expect(result.status.breach).toBe(true);
+    expect(result.line).toBe(
+      '> _Served from index aged 47h, budget 24h. Run `kb search --refresh` to update._',
+    );
+  });
+
+  it('uses the global KB_AGE_BUDGET_HOURS fallback when no per-KB override is set', () => {
+    const result = buildAgeBudgetFooter({
+      kb: 'work',
+      lastIndexAtMs: nowMs - 100 * 3_600_000,
+      nowMs,
+      env: { KB_AGE_BUDGET_HOURS: '24' },
+    });
+    expect(result.status.breach).toBe(true);
+    expect(result.line).toContain('aged 100h, budget 24h');
+  });
+
+  it('returns line=null when the KB has never been indexed (lastIndexAtMs=null)', () => {
+    const result = buildAgeBudgetFooter({
+      kb: 'work',
+      lastIndexAtMs: null,
+      nowMs,
+      env: { KB_AGE_BUDGET_HOURS_WORK: '24' },
+    });
+    expect(result.line).toBeNull();
+    expect(result.status.currentAgeHours).toBeNull();
+    expect(result.status.breach).toBe(false);
+  });
+
+  it('surfaces a config-error footer when the per-KB env value is malformed', () => {
+    const result = buildAgeBudgetFooter({
+      kb: 'work',
+      lastIndexAtMs: nowMs - 50 * 3_600_000,
+      nowMs,
+      env: { KB_AGE_BUDGET_HOURS_WORK: '0' },
+    });
+    expect(result.configError).not.toBeNull();
+    expect(result.configError?.envVar).toBe('KB_AGE_BUDGET_HOURS_WORK');
+    expect(result.line).toContain('Age-budget config error');
+    expect(result.line).toContain('KB_AGE_BUDGET_HOURS_WORK="0"');
+    expect(result.status.configuredHours).toBeNull();
+    expect(result.status.breach).toBe(false);
+  });
+
+  it('uses the normalised env-suffix for KB names with dashes', () => {
+    const result = buildAgeBudgetFooter({
+      kb: 'rfcs-archived',
+      lastIndexAtMs: nowMs - 100 * 3_600_000,
+      nowMs,
+      env: { KB_AGE_BUDGET_HOURS_RFCS_ARCHIVED: '24' },
+    });
+    expect(result.status.breach).toBe(true);
+    expect(result.line).toContain('aged 100h, budget 24h');
   });
 });
