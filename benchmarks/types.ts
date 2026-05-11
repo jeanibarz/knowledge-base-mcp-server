@@ -66,6 +66,32 @@ export interface IndexStorageScenarioResult {
   vectors: number;
 }
 
+export interface CliSearchVariantResult {
+  variant: string;
+  format: 'json' | 'md';
+  repetitions: number;
+  wall_p50_ms: number;
+  wall_p95_ms: number;
+  wall_p99_ms: number;
+  process_start_p50_ms: number | null;
+  bootstrap_p50_ms: number | null;
+  model_resolution_p50_ms: number | null;
+  manager_load_p50_ms: number | null;
+  index_load_p50_ms: number | null;
+  embed_query_p50_ms: number | null;
+  faiss_search_p50_ms: number | null;
+  post_filter_p50_ms: number | null;
+  staleness_p50_ms: number | null;
+  cli_total_p50_ms: number | null;
+  rss_peak_bytes: number | null;
+}
+
+export interface CliSearchScenarioResult {
+  fixture_files: number;
+  fixture_chunk_count: number;
+  variants: CliSearchVariantResult[];
+}
+
 export interface BenchmarkReport {
   arch: string;
   git_sha: string;
@@ -81,6 +107,7 @@ export interface BenchmarkReport {
     retrieval_quality: RetrievalQualityScenarioResult;
     warm_query: WarmQueryScenarioResult;
     batch_query?: BatchQueryScenarioResult;
+    cli_search?: CliSearchScenarioResult;
     index_storage?: IndexStorageScenarioResult;
   };
   version: 1;
