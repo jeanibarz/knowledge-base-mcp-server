@@ -48,6 +48,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     for (const sub of [
       'list',
       'search',
+      'serve',
       'ask',
       'remember',
       'capture',
@@ -76,6 +77,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
   describe.each([
     ['list', 'kb list'],
     ['search', 'kb search'],
+    ['serve', 'kb serve'],
     ['ask', 'kb ask'],
     ['remember', 'kb remember'],
     ['capture', 'kb capture'],
@@ -189,6 +191,11 @@ describe('kb CLI — argv parsing and dispatch', () => {
     const r = runCli(['search', 'q', '--threshold=notanumber']);
     expect(r.code).toBe(2);
     expect(r.stderr).toContain('invalid --threshold');
+  });
+
+  it('search with --daemon is accepted and falls back to direct mode when no daemon is listening', () => {
+    const r = runCli(['search', 'q', '--daemon']);
+    expect(r.stderr).not.toContain('unknown flag');
   });
 
   it('search with --threshold=auto is accepted by the parser', () => {
