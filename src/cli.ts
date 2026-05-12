@@ -27,6 +27,7 @@ import { STATS_HELP, runStats } from './cli-stats.js';
 import { SUPERSEDED_HELP, runSuperseded } from './cli-superseded.js';
 import { WHERE_HELP, runWhere } from './cli-where.js';
 import { tryRunDaemonCommand } from './daemon-client.js';
+import { emitCanonicalLog } from './canonical-log.js';
 
 // ----- Subcommand registry --------------------------------------------------
 
@@ -149,11 +150,43 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  if (sub === 'search') {
-    return runSearchMaybeViaDaemon(rest);
-  }
+  return runSubcommandWithCanonicalLog(
+    target,
+    sub === 'search'
+      ? () => runSearchMaybeViaDaemon(rest)
+      : () => target.handler(rest),
+  );
+}
 
-  return target.handler(rest);
+async function runSubcommandWithCanonicalLog(
+  target: Subcommand,
+  operation: () => Promise<number>,
+): Promise<number> {
+  const startedAt = Date.now();
+  try {
+    const code = await operation();
+    emitCanonicalLog({
+      process: 'cli',
+      cmd: `kb ${target.name}`,
+      took_ms: Date.now() - startedAt,
+      error: code === 0 ? undefined : {
+        code: `EXIT_${code}`,
+        category: code === 2 ? 'input' : 'unknown',
+      },
+    });
+    return code;
+  } catch (error: unknown) {
+    emitCanonicalLog({
+      process: 'cli',
+      cmd: `kb ${target.name}`,
+      took_ms: Date.now() - startedAt,
+      error: {
+        code: (error as { code?: string })?.code ?? 'INTERNAL',
+        category: 'unknown',
+      },
+    });
+    throw error;
+  }
 }
 
 async function runSearchMaybeViaDaemon(rest: string[]): Promise<number> {

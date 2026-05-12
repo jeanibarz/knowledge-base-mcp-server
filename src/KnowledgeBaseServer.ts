@@ -9,7 +9,7 @@ import {
   type TextContent,
 } from '@modelcontextprotocol/sdk/types.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
-import type { IndexUpdateProgress } from './FaissIndexManager.js';
+import type { IndexUpdateProgress, SimilaritySearchTiming } from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,
   listRegisteredModels,
@@ -64,6 +64,12 @@ import { RecursiveKbWatcher } from './recursive-fs-watch.js';
 import { KBError, type KBErrorCode } from './errors.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
+import {
+  canonicalErrorFromToolResult,
+  classifyCanonicalError,
+  emitCanonicalLog,
+  type CanonicalLogInput,
+} from './canonical-log.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
@@ -127,6 +133,20 @@ function addDocumentRollbackErrorContent(error: AddDocumentRollbackError): TextC
 function isMissingPathError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+function topSourcesForCanonicalLog(
+  results: ReadonlyArray<{ metadata?: Record<string, unknown> }>,
+): string[] {
+  const sources: string[] = [];
+  for (const result of results) {
+    const source = result.metadata?.source;
+    if (typeof source === 'string' && !sources.includes(source)) {
+      sources.push(source);
+    }
+    if (sources.length === 3) break;
+  }
+  return sources;
 }
 
 async function snapshotDocumentForRollback(documentPath: string): Promise<AddDocumentSnapshot> {
@@ -401,6 +421,34 @@ export class KnowledgeBaseServer {
     );
   }
 
+  private async withCanonicalTool<T extends CallToolResult>(
+    base: Omit<CanonicalLogInput, 'process' | 'took_ms'>,
+    operation: () => Promise<T>,
+    enrich?: (result: T) => Partial<CanonicalLogInput>,
+  ): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      const result = await operation();
+      const extra = enrich?.(result) ?? {};
+      emitCanonicalLog({
+        process: 'mcp',
+        ...base,
+        ...extra,
+        took_ms: Date.now() - startedAt,
+        error: extra.error ?? canonicalErrorFromToolResult(result),
+      });
+      return result;
+    } catch (error: unknown) {
+      emitCanonicalLog({
+        process: 'mcp',
+        ...base,
+        took_ms: Date.now() - startedAt,
+        error: classifyCanonicalError(error),
+      });
+      throw error;
+    }
+  }
+
   // Issue #157 step 2 — `mcp-resources.ts` owns the wire surface and pure
   // handler bodies. These remain on the class as thin delegates so the
   // existing private-method test surface (KnowledgeBaseServer.test.ts) keeps
@@ -420,7 +468,8 @@ export class KnowledgeBaseServer {
    * surfaced to the agent).
    */
   private async handleListModels(): Promise<CallToolResult> {
-    try {
+    return this.withCanonicalTool({ tool: 'list_models' }, async () => {
+      try {
       const models = await listRegisteredModels();
       let activeId: string | null = null;
       try {
@@ -437,15 +486,17 @@ export class KnowledgeBaseServer {
       return {
         content: [{ type: 'text', text: JSON.stringify(enriched, null, 2) }],
       };
-    } catch (error: unknown) {
+      } catch (error: unknown) {
       const err = toError(error);
       logger.error('Error listing models:', err);
       return { content: [mcpErrorContent(err)], isError: true };
-    }
+      }
+    });
   }
 
   private async handleListKnowledgeBases(): Promise<CallToolResult> {
-    try {
+    return this.withCanonicalTool({ tool: 'list_knowledge_bases' }, async () => {
+      try {
       const knowledgeBases = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
       const content: TextContent = {
         type: 'text',
@@ -459,7 +510,8 @@ export class KnowledgeBaseServer {
         logger.error(err.stack);
       }
       return { content: [mcpErrorContent(err)], isError: true };
-    }
+      }
+    });
   }
 
   /**
@@ -471,7 +523,11 @@ export class KnowledgeBaseServer {
   private async handleKbStats(args: {
     knowledge_base_name?: string;
   }): Promise<CallToolResult> {
-    try {
+    return this.withCanonicalTool({
+      tool: 'kb_stats',
+      kb_scope: args.knowledge_base_name ?? null,
+    }, async () => {
+      try {
       let activeModelId: string;
       try {
         activeModelId = await resolveActiveModel();
@@ -500,7 +556,8 @@ export class KnowledgeBaseServer {
         logger.error(err.stack);
       }
       return { content: [mcpErrorContent(err)], isError: true };
-    }
+      }
+    });
   }
 
   private async getActiveManagerForMutation(): Promise<FaissIndexManager> {
@@ -513,6 +570,10 @@ export class KnowledgeBaseServer {
     path: string;
     content: string;
   }): Promise<CallToolResult> {
+    return this.withCanonicalTool({
+      tool: 'add_document',
+      kb_scope: args.knowledge_base_name,
+    }, async () => {
     const auditing = auditEnabled();
     let documentPath = '';
     let beforeHash: string | null = null;
@@ -609,12 +670,17 @@ export class KnowledgeBaseServer {
       await auditOnExit(err);
       return { content: [mcpErrorContent(err)], isError: true };
     }
+    });
   }
 
   private async handleDeleteDocument(args: {
     knowledge_base_name: string;
     path: string;
   }): Promise<CallToolResult> {
+    return this.withCanonicalTool({
+      tool: 'delete_document',
+      kb_scope: args.knowledge_base_name,
+    }, async () => {
     const auditing = auditEnabled();
     let documentPath = '';
     let sidecarPath = '';
@@ -696,12 +762,17 @@ export class KnowledgeBaseServer {
       await auditOnExit(err);
       return { content: [mcpErrorContent(err)], isError: true };
     }
+    });
   }
 
   private async handleReindexKnowledgeBase(args: {
     knowledge_base_name?: string;
   }): Promise<CallToolResult> {
-    try {
+    return this.withCanonicalTool({
+      tool: 'reindex_knowledge_base',
+      kb_scope: args.knowledge_base_name ?? null,
+    }, async () => {
+      try {
       const manager = await this.getActiveManagerForMutation();
       await withWriteLock(manager.modelDir, async () => {
         if (args.knowledge_base_name !== undefined) {
@@ -732,7 +803,8 @@ export class KnowledgeBaseServer {
         logger.error(err.stack);
       }
       return { content: [mcpErrorContent(err)], isError: true };
-    }
+      }
+    });
   }
 
   private async handleRetrieveKnowledge(args: {
@@ -745,6 +817,7 @@ export class KnowledgeBaseServer {
     tags?: string[];
     search_mode?: 'dense' | 'hybrid';
   }): Promise<CallToolResult> {
+    const canonical: Partial<CanonicalLogInput> = {};
     const query: string = args.query;
     const knowledgeBaseName: string | undefined = args.knowledge_base_name;
     const threshold: number | undefined = args.threshold;
@@ -754,18 +827,29 @@ export class KnowledgeBaseServer {
       : undefined;
     const searchMode: 'dense' | 'hybrid' = args.search_mode ?? 'dense';
 
-    if (searchMode === 'hybrid') {
-      return this.handleRetrieveKnowledgeHybrid({
-        query,
-        knowledgeBaseName,
-        modelNameOverride,
-        filters,
-      });
-    }
+    return this.withCanonicalTool({
+      tool: 'retrieve_knowledge',
+      query,
+      kb_scope: knowledgeBaseName ?? null,
+      k: 10,
+      threshold: threshold ?? 2,
+      search_mode: searchMode,
+    }, async () => {
+      if (searchMode === 'hybrid') {
+        return this.handleRetrieveKnowledgeHybrid({
+          query,
+          knowledgeBaseName,
+          modelNameOverride,
+          filters,
+          canonical,
+        });
+      }
 
     try {
       const startTime = Date.now();
-      logger.debug(`[${startTime}] handleRetrieveKnowledge started`);
+      if (process.env.KB_LOG_VERBOSE === '1') {
+        logger.debug(`[${startTime}] handleRetrieveKnowledge started`);
+      }
 
       // RFC 013 §4.7 — resolve active model per call. M3 honors args.model_name
       // as the explicit per-call override (resolveActiveModel validates it +
@@ -782,28 +866,42 @@ export class KnowledgeBaseServer {
         }
         throw err;
       }
+      canonical.model_id = activeModelId;
       const manager = await this.managers.getOrCreate(activeModelId);
 
       // RFC 013 §4.6 — write lock is per-model (resource = `models/<id>/`).
       // A `kb models add B` against another model never blocks retrievals on A.
       await withWriteLock(manager.modelDir, () => manager.updateIndex(knowledgeBaseName));
-      logger.debug(`[${Date.now()}] FAISS index update completed`);
+      if (process.env.KB_LOG_VERBOSE === '1') {
+        logger.debug(`[${Date.now()}] FAISS index update completed`);
+      }
 
       // Perform similarity search using the provided query.
+      const timing: SimilaritySearchTiming = {};
       const similaritySearchResults = await manager.similaritySearch(
         query,
         10,
         threshold,
         knowledgeBaseName,
         filters,
+        timing,
       );
-      logger.debug(`[${Date.now()}] Similarity search completed`);
+      if (process.env.KB_LOG_VERBOSE === '1') {
+        logger.debug(`[${Date.now()}] Similarity search completed`);
+      }
+      canonical.result_count = similaritySearchResults.length;
+      canonical.top_score = similaritySearchResults[0]?.score;
+      canonical.top_sources = topSourcesForCanonicalLog(similaritySearchResults);
+      canonical.embed_ms = timing.embed_query_ms;
+      canonical.faiss_ms = timing.faiss_search_ms ?? timing.query_search_ms;
 
       // Build a nicely formatted markdown response including the similarity score.
+      const formatStartedAt = Date.now();
       let responseText = formatRetrievalAsMarkdown(
         similaritySearchResults,
         FRONTMATTER_EXTRAS_WIRE_VISIBLE,
       );
+      canonical.format_ms = Date.now() - formatStartedAt;
 
       // RFC 013 M3 §4.5 + round-1 minimalist F5 — emit `model_id` on the
       // response envelope (NOT per-chunk) so an agent comparing two models
@@ -815,7 +913,9 @@ export class KnowledgeBaseServer {
       }
 
       const endTime = Date.now();
-      logger.debug(`[${endTime}] handleRetrieveKnowledge completed in ${endTime - startTime}ms`);
+      if (process.env.KB_LOG_VERBOSE === '1') {
+        logger.debug(`[${endTime}] handleRetrieveKnowledge completed in ${endTime - startTime}ms`);
+      }
 
       const content: TextContent = { type: 'text', text: responseText };
       return { content: [content] };
@@ -827,6 +927,7 @@ export class KnowledgeBaseServer {
       }
       return { content: [mcpErrorContent(err)], isError: true };
     }
+    }, () => canonical);
   }
 
   /**
@@ -854,8 +955,9 @@ export class KnowledgeBaseServer {
     knowledgeBaseName?: string;
     modelNameOverride?: string;
     filters?: { extensions?: string[]; pathGlob?: string; tags?: string[] };
+    canonical?: Partial<CanonicalLogInput>;
   }): Promise<CallToolResult> {
-    const { query, knowledgeBaseName, modelNameOverride, filters } = input;
+    const { query, knowledgeBaseName, modelNameOverride, filters, canonical } = input;
     const HYBRID_FETCH_K = 40;
     const HYBRID_TOP_K = 10;
     const HYBRID_RRF_C = 60;
@@ -870,12 +972,14 @@ export class KnowledgeBaseServer {
         }
         throw err;
       }
+      if (canonical) canonical.model_id = activeModelId;
       const manager = await this.managers.getOrCreate(activeModelId);
       await withWriteLock(manager.modelDir, () => manager.updateIndex(knowledgeBaseName));
 
       // Dense leg — over-fetch to give RRF room.
+      const denseTiming: SimilaritySearchTiming = {};
       const densePromise = manager
-        .similaritySearch(query, HYBRID_FETCH_K, Number.POSITIVE_INFINITY, knowledgeBaseName, filters)
+        .similaritySearch(query, HYBRID_FETCH_K, Number.POSITIVE_INFINITY, knowledgeBaseName, filters, denseTiming)
         .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })));
 
       // Lexical leg — BM25 over the same chunks the FAISS path embeds, but
@@ -907,6 +1011,10 @@ export class KnowledgeBaseServer {
       })();
 
       const [denseResults, lexicalResults] = await Promise.all([densePromise, lexicalPromise]);
+      if (canonical) {
+        canonical.embed_ms = denseTiming.embed_query_ms;
+        canonical.faiss_ms = denseTiming.faiss_search_ms ?? denseTiming.query_search_ms;
+      }
 
       const denseList: RankedList = {
         retriever: 'dense',
@@ -927,7 +1035,14 @@ export class KnowledgeBaseServer {
         return chunk ? { ...chunk, score: f.fusedScore } : null;
       }).filter((x): x is { pageContent: string; metadata: Record<string, unknown>; score: number } => x !== null);
 
+      const formatStartedAt = Date.now();
       let responseText = formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
+      if (canonical) {
+        canonical.result_count = ranked.length;
+        canonical.top_score = ranked[0]?.score;
+        canonical.top_sources = topSourcesForCanonicalLog(ranked);
+        canonical.format_ms = Date.now() - formatStartedAt;
+      }
       const header = `> _Mode: hybrid (RRF c=${HYBRID_RRF_C}); dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} (#206 stage 2)._`;
       responseText = modelNameOverride !== undefined
         ? `> _Model: ${activeModelId}_\n${header}\n\n${responseText}`

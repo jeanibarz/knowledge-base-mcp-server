@@ -6,6 +6,7 @@ describe('logger', () => {
   const originalEnv = {
     LOG_FILE: process.env.LOG_FILE,
     LOG_LEVEL: process.env.LOG_LEVEL,
+    KB_LOG_FORMAT: process.env.KB_LOG_FORMAT,
   };
 
   afterEach(() => {
@@ -18,6 +19,11 @@ describe('logger', () => {
       delete process.env.LOG_LEVEL;
     } else {
       process.env.LOG_LEVEL = originalEnv.LOG_LEVEL;
+    }
+    if (originalEnv.KB_LOG_FORMAT === undefined) {
+      delete process.env.KB_LOG_FORMAT;
+    } else {
+      process.env.KB_LOG_FORMAT = originalEnv.KB_LOG_FORMAT;
     }
     jest.restoreAllMocks();
     jest.resetModules();
@@ -64,5 +70,40 @@ describe('logger', () => {
 
     const stderrOutput = stderrSpy.mock.calls.flat().join('');
     expect(stderrOutput).toMatch(/Failed to (initialize|write log)|Log file stream error/);
+  });
+
+  it('routes canonical JSON lines without text logs when KB_LOG_FORMAT=canonical', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-logger-canonical-'));
+    const logFile = path.join(tempDir, 'logs', 'app.log');
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'canonical';
+
+    await jest.isolateModulesAsync(async () => {
+      const { logger } = await import('./logger.js');
+      logger.info('text should be suppressed');
+      logger.canonical('{"schema_version":"kb-canonical.v1"}');
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+
+    const fileContents = await fsp.readFile(logFile, 'utf-8');
+    expect(fileContents).toBe('{"schema_version":"kb-canonical.v1"}\n');
+  });
+
+  it('suppresses canonical lines when KB_LOG_FORMAT=text', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-logger-text-'));
+    const logFile = path.join(tempDir, 'logs', 'app.log');
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'text';
+
+    await jest.isolateModulesAsync(async () => {
+      const { logger } = await import('./logger.js');
+      logger.info('text remains');
+      logger.canonical('{"schema_version":"kb-canonical.v1"}');
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+
+    const fileContents = await fsp.readFile(logFile, 'utf-8');
+    expect(fileContents).toContain('text remains');
+    expect(fileContents).not.toContain('kb-canonical.v1');
   });
 });

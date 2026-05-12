@@ -272,6 +272,23 @@ export function parseKBEditorUri(raw: string | undefined): KBEditorUriMode {
 export const KB_EDITOR_URI: KBEditorUriMode = parseKBEditorUri(process.env.KB_EDITOR_URI);
 
 // ---------------------------------------------------------------------------
+// Canonical log line configuration (#216).
+// ---------------------------------------------------------------------------
+
+export type KBLogFormat = 'text' | 'canonical' | 'both';
+
+export function parseKBLogFormat(raw: string | undefined): KBLogFormat {
+  if (raw === undefined || raw.trim() === '') return 'both';
+  const value = raw.trim().toLowerCase();
+  if (value === 'text' || value === 'canonical' || value === 'both') {
+    return value;
+  }
+  return 'both';
+}
+
+export const KB_LOG_FORMAT: KBLogFormat = parseKBLogFormat(process.env.KB_LOG_FORMAT);
+
+// ---------------------------------------------------------------------------
 // Reindex-trigger watcher (RFC 011 §5.5).
 // External workflows (e.g. the arxiv-ingestion n8n flow) signal the server
 // that new content has landed by `touch`ing a dotfile at the KB root. The

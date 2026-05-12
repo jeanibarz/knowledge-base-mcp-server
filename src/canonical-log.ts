@@ -1,0 +1,239 @@
+import { createHash, randomBytes } from 'crypto';
+import { logger } from './logger.js';
+import { KBError, type KBErrorCode } from './errors.js';
+import { ActiveModelResolutionError } from './active-model.js';
+
+export const CANONICAL_SCHEMA_VERSION = 'kb-canonical.v1';
+
+export type CanonicalProcess = 'mcp' | 'cli';
+export type CanonicalCacheStatus = 'hit_l1' | 'hit_disk' | 'miss';
+export type CanonicalSearchMode = 'dense' | 'lexical' | 'hybrid' | 'auto';
+export type CanonicalErrorCategory =
+  | 'configuration'
+  | 'indexing'
+  | 'provider'
+  | 'permissions'
+  | 'input'
+  | 'lock'
+  | 'unknown';
+
+export interface CanonicalError {
+  code: string;
+  category: CanonicalErrorCategory;
+}
+
+export interface CanonicalLogEvent {
+  schema_version: typeof CANONICAL_SCHEMA_VERSION;
+  ts: string;
+  request_id: string;
+  process: CanonicalProcess;
+  tool?: string;
+  cmd?: string;
+  model_id?: string;
+  kb_scope?: string | null;
+  query_sha256?: string;
+  query_len_chars?: number;
+  k?: number;
+  threshold?: number;
+  search_mode?: CanonicalSearchMode;
+  result_count?: number;
+  top_score?: number;
+  top_sources?: string[];
+  took_ms: number;
+  embed_ms?: number;
+  faiss_ms?: number;
+  format_ms?: number;
+  cache?: CanonicalCacheStatus;
+  error?: CanonicalError;
+}
+
+export type CanonicalLogInput = Omit<
+  CanonicalLogEvent,
+  'schema_version' | 'ts' | 'request_id' | 'query_sha256'
+> & {
+  request_id?: string;
+  ts?: string;
+  query?: string;
+  query_sha256?: string;
+};
+
+const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
+  'schema_version',
+  'ts',
+  'request_id',
+  'process',
+  'tool',
+  'cmd',
+  'model_id',
+  'kb_scope',
+  'query_sha256',
+  'query_len_chars',
+  'k',
+  'threshold',
+  'search_mode',
+  'result_count',
+  'top_score',
+  'top_sources',
+  'took_ms',
+  'embed_ms',
+  'faiss_ms',
+  'format_ms',
+  'cache',
+  'error',
+];
+
+export function createCanonicalRequestId(): string {
+  const now = Date.now().toString(36).padStart(8, '0');
+  return `${now}${randomBytes(8).toString('hex')}`;
+}
+
+export function hashQuery(query: string): string {
+  return createHash('sha256')
+    .update(query.trim().replace(/\s+/g, ' '), 'utf-8')
+    .digest('hex')
+    .slice(0, 16);
+}
+
+export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogEvent {
+  const event: CanonicalLogEvent = {
+    schema_version: CANONICAL_SCHEMA_VERSION,
+    ts: input.ts ?? new Date().toISOString(),
+    request_id: input.request_id ?? createCanonicalRequestId(),
+    process: input.process,
+    took_ms: Math.max(0, Math.round(input.took_ms)),
+  };
+
+  assignIfDefined(event, 'tool', input.tool);
+  assignIfDefined(event, 'cmd', input.cmd);
+  assignIfDefined(event, 'model_id', input.model_id);
+  assignIfDefined(event, 'kb_scope', input.kb_scope);
+  assignIfDefined(event, 'query_sha256', input.query_sha256 ?? (input.query !== undefined ? hashQuery(input.query) : undefined));
+  assignIfDefined(event, 'query_len_chars', input.query_len_chars ?? (input.query !== undefined ? input.query.length : undefined));
+  assignIfDefined(event, 'k', input.k);
+  assignIfDefined(event, 'threshold', input.threshold);
+  assignIfDefined(event, 'search_mode', input.search_mode);
+  assignIfDefined(event, 'result_count', input.result_count);
+  assignIfDefined(event, 'top_score', input.top_score);
+  assignIfDefined(event, 'top_sources', input.top_sources?.slice(0, 3));
+  assignIfDefined(event, 'embed_ms', roundNonNegative(input.embed_ms));
+  assignIfDefined(event, 'faiss_ms', roundNonNegative(input.faiss_ms));
+  assignIfDefined(event, 'format_ms', roundNonNegative(input.format_ms));
+  assignIfDefined(event, 'cache', input.cache);
+  assignIfDefined(event, 'error', input.error);
+
+  return event;
+}
+
+export function stableCanonicalJson(event: CanonicalLogEvent): string {
+  const ordered: Record<string, unknown> = {};
+  for (const key of CANONICAL_FIELD_ORDER) {
+    if (event[key] !== undefined) {
+      ordered[key] = event[key];
+    }
+  }
+  return JSON.stringify(ordered);
+}
+
+export function emitCanonicalLog(input: CanonicalLogInput): void {
+  logger.canonical(stableCanonicalJson(normalizeCanonicalEvent(input)));
+}
+
+export function classifyCanonicalError(error: unknown): CanonicalError {
+  if (error instanceof ActiveModelResolutionError) {
+    return { code: 'ACTIVE_MODEL_UNRESOLVED', category: 'configuration' };
+  }
+  if (error instanceof KBError) {
+    return { code: error.code, category: categoryForKBError(error.code) };
+  }
+  const code = typeof (error as { code?: unknown } | undefined)?.code === 'string'
+    ? String((error as { code: string }).code)
+    : 'INTERNAL';
+  return { code, category: 'unknown' };
+}
+
+export function canonicalErrorFromToolResult(result: {
+  isError?: boolean;
+  content?: Array<{ type: string; text?: string }>;
+}): CanonicalError | undefined {
+  if (result.isError !== true) return undefined;
+  const text = result.content?.find((entry) => entry.type === 'text' && typeof entry.text === 'string')?.text;
+  if (text === undefined) return { code: 'INTERNAL', category: 'unknown' };
+  try {
+    const parsed = JSON.parse(text) as { error?: { code?: unknown; category?: unknown } };
+    const code = typeof parsed.error?.code === 'string' ? parsed.error.code : 'INTERNAL';
+    const category = typeof parsed.error?.category === 'string'
+      ? normalizeErrorCategory(parsed.error.category)
+      : categoryForCode(code);
+    return { code, category };
+  } catch {
+    return { code: 'INTERNAL', category: 'unknown' };
+  }
+}
+
+function categoryForCode(code: string): CanonicalErrorCategory {
+  return isKBErrorCode(code) ? categoryForKBError(code) : 'unknown';
+}
+
+function categoryForKBError(code: KBErrorCode): CanonicalErrorCategory {
+  switch (code) {
+    case 'INDEX_NOT_INITIALIZED':
+    case 'CORRUPT_INDEX':
+      return 'indexing';
+    case 'PROVIDER_AUTH':
+      return 'configuration';
+    case 'PROVIDER_UNAVAILABLE':
+    case 'PROVIDER_TIMEOUT':
+      return 'provider';
+    case 'KB_NOT_FOUND':
+      return 'configuration';
+    case 'PERMISSION_DENIED':
+      return 'permissions';
+    case 'VALIDATION':
+      return 'input';
+    case 'INTERNAL':
+      return 'unknown';
+  }
+}
+
+function isKBErrorCode(code: string): code is KBErrorCode {
+  return [
+    'INDEX_NOT_INITIALIZED',
+    'PROVIDER_UNAVAILABLE',
+    'PROVIDER_TIMEOUT',
+    'PROVIDER_AUTH',
+    'KB_NOT_FOUND',
+    'PERMISSION_DENIED',
+    'CORRUPT_INDEX',
+    'VALIDATION',
+    'INTERNAL',
+  ].includes(code);
+}
+
+function normalizeErrorCategory(raw: string): CanonicalErrorCategory {
+  if ([
+    'configuration',
+    'indexing',
+    'provider',
+    'permissions',
+    'input',
+    'lock',
+    'unknown',
+  ].includes(raw)) {
+    return raw as CanonicalErrorCategory;
+  }
+  return 'unknown';
+}
+
+function assignIfDefined<K extends keyof CanonicalLogEvent>(
+  event: CanonicalLogEvent,
+  key: K,
+  value: CanonicalLogEvent[K] | undefined,
+): void {
+  if (value !== undefined) {
+    event[key] = value;
+  }
+}
+
+function roundNonNegative(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : Math.max(0, Math.round(value));
+}
