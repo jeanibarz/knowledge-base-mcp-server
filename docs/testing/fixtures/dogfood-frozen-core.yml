@@ -1,0 +1,92 @@
+# Stable dogfood retrieval fixture pack for issue #302.
+#
+# The committed corpus lives under docs/testing/fixtures/dogfood-corpus so a
+# fresh checkout can exercise schema parsing and provider-free determinism in CI.
+# Retrieval runs should index that directory as a KB named `dogfood`.
+#
+# This pack is warning-only while the corpus and provider matrix collect
+# baseline data. Promotion to a gated pack requires stable pass rates across
+# supported providers and agreement on thresholds.
+
+gate: false
+mode: auto
+
+cases:
+  # author: dogfood-fixture
+  # source-of-truth: docs/testing/fixtures/dogfood-corpus/doctor-health.md
+  # protects: smoke coverage for a fresh dogfood KB
+  - name: smoke - doctor health checks are discoverable
+    query: what health checks run when I invoke the doctor command
+    kb: dogfood
+    k: 5
+    required_sources:
+      - docs/testing/fixtures/dogfood-corpus/doctor-health.md
+    stale_policy: allow_stale
+
+  # author: dogfood-fixture
+  # source-of-truth: docs/testing/fixtures/dogfood-corpus/per-file-hash-sidecars.md
+  # judgment: content hash and parser metadata are the relevant recall target; mtime-only advice is intentionally absent from required sources.
+  # protects: recall floor for paraphrased indexing invalidation behavior
+  - name: recall floor - per-file invalidation remains findable
+    query: how does the index decide which files need to be re-embedded
+    kb: dogfood
+    k: 5
+    required_sources:
+      - docs/testing/fixtures/dogfood-corpus/per-file-hash-sidecars.md
+    max_duplicate_groups: 1
+    stale_policy: fresh
+
+  # author: dogfood-fixture
+  # source-of-truth: docs/testing/fixtures/dogfood-corpus/current-rollback.md
+  # judgment: archived rollback guidance is obsolete and should not appear above the current procedure.
+  # protects: precision floor against stale operational advice
+  - name: precision floor - archived rollback stays out
+    query: current production rollback procedure for a knowledge base index
+    kb: dogfood
+    k: 5
+    threshold: 2
+    required_sources:
+      - docs/testing/fixtures/dogfood-corpus/current-rollback.md
+    forbidden_sources:
+      - docs/testing/fixtures/dogfood-corpus/archive/old-rollback.md
+    stale_policy: fresh
+
+  # author: dogfood-fixture
+  # source-of-truth: docs/testing/fixtures/dogfood-corpus/duplicate-canonical.md
+  # judgment: one repeated source group is acceptable during early dogfood runs, but more would hide diverse supporting documents.
+  # protects: duplicate crowding budget in top-k retrieval
+  - name: duplicate budget - canonical duplicate guidance is not crowded out
+    query: how should duplicate source groups be budgeted in retrieval results
+    kb: dogfood
+    k: 5
+    required_sources:
+      - docs/testing/fixtures/dogfood-corpus/duplicate-canonical.md
+    max_duplicate_groups: 1
+    stale_policy: allow_stale
+
+  # author: dogfood-fixture
+  # source-of-truth: docs/testing/fixtures/dogfood-corpus/auth-and-errors.md
+  # protects: hybrid exact-token lift for error codes and env vars
+  - name: hybrid exact token - INDEX_NOT_INITIALIZED
+    query: INDEX_NOT_INITIALIZED MCP_AUTH_TOKEN
+    kb: dogfood
+    mode: auto
+    k: 5
+    required_sources:
+      - docs/testing/fixtures/dogfood-corpus/auth-and-errors.md
+    max_duplicate_groups: 1
+    stale_policy: allow_stale
+
+  # author: dogfood-fixture
+  # source-of-truth: docs/testing/fixtures/dogfood-corpus/atomic-faiss-save.md
+  # judgment: paraphrased storage-safety questions should still find the semantic answer when hybrid mode is selected.
+  # protects: hybrid/non-regression behavior for natural-language queries
+  - name: hybrid non-regression - paraphrased atomic save
+    query: how does the vector index avoid readers seeing a partially written save
+    kb: dogfood
+    mode: hybrid
+    k: 5
+    required_sources:
+      - docs/testing/fixtures/dogfood-corpus/atomic-faiss-save.md
+    max_duplicate_groups: 1
+    stale_policy: fresh
