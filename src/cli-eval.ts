@@ -14,7 +14,9 @@ import {
   retrieveForRetrievalEvalCase,
   retrievalEvalExitCode,
   summarizeRetrievalEval,
+  type RetrievalEvalAggregateRankedMetrics,
   type RetrievalEvalFixture,
+  type RetrievalEvalRankedMetrics,
 } from './retrieval-eval.js';
 
 interface EvalArgs {
@@ -38,7 +40,7 @@ Usage:
 Reads cases from a YAML or JSON fixture and runs each query against the
 active model's index. Each case can set \`query\`, optional \`kb\`,
 \`required_sources\`, \`forbidden_sources\`, \`expected_metadata\`,
-\`max_duplicate_groups\`, \`stale_policy\`, and \`gate\`.
+\`relevant_sources\`/\`judgments\`, \`max_duplicate_groups\`, \`stale_policy\`, and \`gate\`.
 
 Failing ungated cases print warnings and exit 0; failing GATED cases
 exit 1, suitable for CI gates.
@@ -68,6 +70,9 @@ Fixture example (YAML):
       forbidden_sources: [archive/old-deploy.md]
       expected_metadata:
         frontmatter.status: approved
+      relevant_sources:
+        - source: runbooks/deploy.md
+          relevance: 3
       max_duplicate_groups: 1
       stale_policy: fresh
 `;
@@ -209,12 +214,15 @@ async function loadEvalFixture(fixturePath: string): Promise<RetrievalEvalFixtur
   return normalizeRetrievalEvalFixture(parsed);
 }
 
-function toJsonReport(report: ReturnType<typeof summarizeRetrievalEval>): unknown {
+export function toJsonReport(report: ReturnType<typeof summarizeRetrievalEval>): unknown {
   return {
     total: report.total,
     passed: report.passed,
     failed: report.failed,
     gate_failed: report.gateFailed,
+    ...(report.rankedMetrics !== undefined ? {
+      ranked_metrics: toJsonAggregateRankedMetrics(report.rankedMetrics),
+    } : {}),
     cases: report.cases.map((result) => ({
       name: result.name,
       query: result.query,
@@ -228,6 +236,37 @@ function toJsonReport(report: ReturnType<typeof summarizeRetrievalEval>): unknow
       warnings: result.warnings,
       result_count: result.resultCount,
       duplicate_groups: result.duplicateGroups,
+      ...(result.rankedMetrics !== undefined ? {
+        ranked_metrics: toJsonRankedMetrics(result.rankedMetrics),
+      } : {}),
     })),
+  };
+}
+
+function toJsonRankedMetrics(metrics: RetrievalEvalRankedMetrics): unknown {
+  return {
+    k: metrics.k,
+    judged_relevant_count: metrics.judgedRelevantCount,
+    retrieved_relevant_count: metrics.retrievedRelevantCount,
+    ndcg_at_10: metrics.ndcgAt10,
+    mrr_at_10: metrics.mrrAt10,
+    recall_at_k: metrics.recallAtK,
+    precision_at_k: metrics.precisionAtK,
+    map: metrics.map,
+    map_at_k: metrics.mapAtK,
+    hit_rate: metrics.hitRate,
+  };
+}
+
+function toJsonAggregateRankedMetrics(metrics: RetrievalEvalAggregateRankedMetrics): unknown {
+  return {
+    judged_case_count: metrics.judgedCaseCount,
+    ndcg_at_10: metrics.ndcgAt10,
+    mrr_at_10: metrics.mrrAt10,
+    recall_at_k: metrics.recallAtK,
+    precision_at_k: metrics.precisionAtK,
+    map: metrics.map,
+    map_at_k: metrics.mapAtK,
+    hit_rate: metrics.hitRate,
   };
 }

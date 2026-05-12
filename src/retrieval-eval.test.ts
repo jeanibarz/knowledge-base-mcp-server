@@ -2,11 +2,12 @@ import { describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import yaml from 'js-yaml';
-import { parseEvalArgs } from './cli-eval.js';
+import { parseEvalArgs, toJsonReport } from './cli-eval.js';
 import type { ScoredDocument } from './formatter.js';
 import type { Staleness } from './cli-search.js';
 import {
   evaluateRetrievalCase,
+  formatRetrievalEvalMarkdown,
   normalizeRetrievalEvalFixture,
   retrievalEvalExitCode,
   resolveRetrievalEvalMode,
@@ -35,6 +36,7 @@ function fixtureCase(overrides: Partial<RetrievalEvalCase> = {}): RetrievalEvalC
     requiredSources: [],
     forbiddenSources: [],
     expectedMetadata: [],
+    relevanceJudgments: [],
     stalePolicy: 'fresh',
     ...overrides,
   };
@@ -63,7 +65,7 @@ describe('normalizeRetrievalEvalFixture', () => {
     })).toThrow('fixture mode must be "dense", "lexical", "hybrid", or "auto"');
   });
 
-  it('normalizes fixture cases with source, metadata, duplicate, gate, and stale policy fields', () => {
+  it('normalizes fixture cases with source, metadata, duplicate, judgment, gate, and stale policy fields', () => {
     const fixture = normalizeRetrievalEvalFixture({
       gate: true,
       cases: [{
@@ -75,6 +77,10 @@ describe('normalizeRetrievalEvalFixture', () => {
         gate: false,
         required_sources: ['runbooks/routing.md'],
         forbidden_sources: ['archive/old-routing.md'],
+        relevant_sources: [
+          { source: 'runbooks/routing.md', relevance: 3 },
+          'runbooks/fallback.md',
+        ],
         expected_metadata: { 'frontmatter.status': 'approved' },
         max_duplicate_groups: 1,
         stale_policy: { expect: 'fresh' },
@@ -91,12 +97,41 @@ describe('normalizeRetrievalEvalFixture', () => {
       gate: false,
       requiredSources: ['runbooks/routing.md'],
       forbiddenSources: ['archive/old-routing.md'],
+      relevanceJudgments: [
+        { source: 'runbooks/routing.md', relevance: 3 },
+        { source: 'runbooks/fallback.md', relevance: 1 },
+      ],
       maxDuplicateGroups: 1,
       stalePolicy: 'fresh',
     });
     expect(fixture.cases[0].expectedMetadata).toEqual([
       { path: 'frontmatter.status', equals: 'approved' },
     ]);
+  });
+
+  it('normalizes compact judgment objects', () => {
+    const fixture = normalizeRetrievalEvalFixture({
+      cases: [{
+        query: 'deployment notes',
+        judgments: {
+          'runbooks/deploy.md': 2,
+          'runbooks/fallback.md': 1,
+        },
+      }],
+    });
+
+    expect(fixture.cases[0].relevanceJudgments).toEqual([
+      { source: 'runbooks/deploy.md', relevance: 2 },
+      { source: 'runbooks/fallback.md', relevance: 1 },
+    ]);
+  });
+
+  it('preserves the normalized fixture shape when judgments are absent', () => {
+    const fixture = normalizeRetrievalEvalFixture({
+      cases: [{ query: 'deployment notes' }],
+    });
+
+    expect(fixture.cases[0].relevanceJudgments).toBeUndefined();
   });
 
   it('parses the methodology starter fixture against the eval schema', async () => {
@@ -255,5 +290,196 @@ describe('evaluateRetrievalCase', () => {
 
     expect(retrievalEvalExitCode(summarizeRetrievalEval([warning]))).toBe(0);
     expect(retrievalEvalExitCode(summarizeRetrievalEval([gated]))).toBe(1);
+  });
+
+  it('computes perfect ranked metrics for a perfect ranking', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase({
+        k: 3,
+        relevanceJudgments: [
+          { source: 'runbooks/deploy.md', relevance: 1 },
+          { source: 'runbooks/fallback.md', relevance: 1 },
+        ],
+      }),
+      [
+        doc('runbooks/deploy.md'),
+        doc('runbooks/fallback.md'),
+        doc('notes/other.md'),
+      ],
+      FRESH,
+    );
+
+    expect(result.rankedMetrics).toEqual({
+      k: 3,
+      judgedRelevantCount: 2,
+      retrievedRelevantCount: 2,
+      ndcgAt10: 1,
+      mrrAt10: 1,
+      recallAtK: 1,
+      precisionAtK: 2 / 3,
+      map: 1,
+      mapAtK: 1,
+      hitRate: 1,
+    });
+  });
+
+  it('penalizes a relevant source that is retrieved at a low rank', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase({
+        k: 10,
+        relevanceJudgments: [{ source: 'runbooks/deploy.md', relevance: 1 }],
+      }),
+      [
+        doc('noise/1.md'),
+        doc('noise/2.md'),
+        doc('noise/3.md'),
+        doc('noise/4.md'),
+        doc('noise/5.md'),
+        doc('noise/6.md'),
+        doc('noise/7.md'),
+        doc('noise/8.md'),
+        doc('noise/9.md'),
+        doc('runbooks/deploy.md'),
+      ],
+      FRESH,
+    );
+
+    expect(result.rankedMetrics?.hitRate).toBe(1);
+    expect(result.rankedMetrics?.mrrAt10).toBeCloseTo(0.1, 6);
+    expect(result.rankedMetrics?.recallAtK).toBe(1);
+    expect(result.rankedMetrics?.precisionAtK).toBeCloseTo(0.1, 6);
+    expect(result.rankedMetrics?.map).toBeCloseTo(0.1, 6);
+    expect(result.rankedMetrics?.mapAtK).toBeCloseTo(0.1, 6);
+    expect(result.rankedMetrics?.ndcgAt10).toBeCloseTo(1 / Math.log2(11), 6);
+  });
+
+  it('reports zero ranked metrics for a missing judged source without failing the binary case', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase({
+        k: 5,
+        relevanceJudgments: [{ source: 'runbooks/deploy.md', relevance: 1 }],
+      }),
+      [doc('notes/other.md')],
+      FRESH,
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.rankedMetrics).toMatchObject({
+      retrievedRelevantCount: 0,
+      ndcgAt10: 0,
+      mrrAt10: 0,
+      recallAtK: 0,
+      precisionAtK: 0,
+      map: 0,
+      mapAtK: 0,
+      hitRate: 0,
+    });
+  });
+
+  it('uses graded relevance for nDCG and binary relevance for AP-style metrics', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase({
+        k: 3,
+        relevanceJudgments: [
+          { source: 'runbooks/deploy.md', relevance: 3 },
+          { source: 'runbooks/fallback.md', relevance: 2 },
+          { source: 'runbooks/checklist.md', relevance: 1 },
+        ],
+      }),
+      [
+        doc('runbooks/fallback.md'),
+        doc('runbooks/deploy.md'),
+        doc('runbooks/checklist.md'),
+      ],
+      FRESH,
+    );
+
+    const dcg = 3 + (7 / Math.log2(3)) + (1 / Math.log2(4));
+    const idealDcg = 7 + (3 / Math.log2(3)) + (1 / Math.log2(4));
+    expect(result.rankedMetrics?.ndcgAt10).toBeCloseTo(dcg / idealDcg, 6);
+    expect(result.rankedMetrics?.mrrAt10).toBe(1);
+    expect(result.rankedMetrics?.map).toBe(1);
+  });
+});
+
+describe('summarizeRetrievalEval', () => {
+  it('aggregates ranked metrics across judged cases and omits them when absent', () => {
+    const judged = evaluateRetrievalCase(
+      fixtureCase({
+        k: 2,
+        relevanceJudgments: [{ source: 'runbooks/deploy.md', relevance: 1 }],
+      }),
+      [doc('runbooks/deploy.md'), doc('notes/other.md')],
+      FRESH,
+    );
+    const unjudged = evaluateRetrievalCase(fixtureCase(), [doc('notes/other.md')], FRESH);
+
+    const report = summarizeRetrievalEval([judged, unjudged]);
+
+    expect(report.rankedMetrics).toEqual({
+      judgedCaseCount: 1,
+      ndcgAt10: 1,
+      mrrAt10: 1,
+      recallAtK: 1,
+      precisionAtK: 0.5,
+      map: 1,
+      mapAtK: 1,
+      hitRate: 1,
+    });
+    expect(report.cases[1].rankedMetrics).toBeUndefined();
+  });
+
+  it('prints ranked metrics in markdown when judgments are present', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase({
+        k: 2,
+        relevanceJudgments: [{ source: 'runbooks/deploy.md', relevance: 1 }],
+      }),
+      [doc('runbooks/deploy.md'), doc('notes/other.md')],
+      FRESH,
+    );
+
+    const markdown = formatRetrievalEvalMarkdown(summarizeRetrievalEval([result]));
+
+    expect(markdown).toContain('ranked: nDCG@10=1.000');
+    expect(markdown).toContain('Ranked metrics: nDCG@10=1.000');
+  });
+
+  it('includes ranked metrics in JSON output when judgments are present', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase({
+        k: 2,
+        relevanceJudgments: [{ source: 'runbooks/deploy.md', relevance: 1 }],
+      }),
+      [doc('runbooks/deploy.md'), doc('notes/other.md')],
+      FRESH,
+    );
+
+    expect(toJsonReport(summarizeRetrievalEval([result]))).toMatchObject({
+      ranked_metrics: {
+        judged_case_count: 1,
+        ndcg_at_10: 1,
+        mrr_at_10: 1,
+        recall_at_k: 1,
+        precision_at_k: 0.5,
+        map: 1,
+        map_at_k: 1,
+        hit_rate: 1,
+      },
+      cases: [{
+        ranked_metrics: {
+          k: 2,
+          judged_relevant_count: 1,
+          retrieved_relevant_count: 1,
+          ndcg_at_10: 1,
+          mrr_at_10: 1,
+          recall_at_k: 1,
+          precision_at_k: 0.5,
+          map: 1,
+          map_at_k: 1,
+          hit_rate: 1,
+        },
+      }],
+    });
   });
 });
