@@ -69,6 +69,34 @@ BENCH_PROVIDER=openai npm run bench    # real provider (requires OPENAI_API_KEY)
 
 Baselines in `benchmarks/results/` are keyed by `{provider}-{node_version}-{os}-{arch}`; compare apples to apples.
 
+## CI regression summary
+
+The benchmark workflow runs the stub provider on pull requests and appends a budget diff to the GitHub job summary. The diff compares the current `ci-{provider}-{node}-{os}-{arch}.json` report against the matching committed `baseline-{provider}-{node}-{os}-{arch}.json` report.
+
+Rows are advisory by default. A manual `workflow_dispatch` run can enable `enforce_budgets`; that sets `BENCH_BUDGET_FAIL=1` and makes FAIL rows fail the job without rewriting the workflow.
+
+| Metric | WARN threshold | FAIL threshold |
+| ------ | -------------- | -------------- |
+| Cold index wall time | >= 10% and >= 1,000 ms slower | >= 20% and >= 2,000 ms slower |
+| Warm query p50/p95 | >= 10% and >= 10 ms slower | >= 25% and >= 25 ms slower |
+| Warm query p99 | >= 10% and >= 15 ms slower | >= 25% and >= 30 ms slower |
+| Peak RSS | >= 10% and >= 16 MiB higher | >= 25% and >= 32 MiB higher |
+| Index storage total | >= 5% and >= 1 MiB higher | >= 15% and >= 5 MiB higher |
+| Index bytes/vector | >= 5% and >= 16 B higher | >= 15% and >= 48 B higher |
+| Batch throughput p50 | >= 10% lower | >= 20% lower |
+| Retrieval recall@10 | >= 0.010 lower | >= 0.030 lower |
+
+Optional scenarios such as batch throughput and storage are marked SKIP when either the current report or the committed baseline lacks that metric. They start producing deltas as soon as both sides contain the same JSON keys.
+
+To update a baseline intentionally:
+
+```bash
+BENCH_PROVIDER=stub BENCH_RESULTS_PREFIX=baseline npm run bench
+git diff -- benchmarks/results/
+```
+
+Commit the changed baseline with the code change that justifies the new budget. Do not refresh baselines to hide unrelated regressions; include the job-summary diff in the PR discussion when a threshold moves.
+
 ## Runtime budget enforcement (issue #210)
 
 The bench harness above measures budgets offline. **At runtime**, the same wall-clock numbers are surfaced live in `kb_stats.provider_calls` (per-`model_id` count, errors, p50/p95/p99 latency, token-in sum) and rolled up in `kb doctor`'s `provider_calls` check. The doctor flips the row to `WARN` when `errors / count > 5%` for any active model_id, so an operator can observe both:
