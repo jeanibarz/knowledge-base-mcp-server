@@ -6,6 +6,7 @@ import {
   parseKbFakeDim,
   parseKbFsWatchDebounceMs,
   parseKbFsWatchFlag,
+  parseKBLogFormat,
   parseKbMaxExtractedTextBytes,
   parseKbMaxFileBytes,
   parseReindexTriggerPollMs,
@@ -186,6 +187,20 @@ describe('parseKBEditorUri (#220 — KB_EDITOR_URI)', () => {
 
   it('rejects unsupported modes', () => {
     expect(() => parseKBEditorUri('vim')).toThrow(/KB_EDITOR_URI/);
+  });
+});
+
+describe('parseKBLogFormat (#216 — KB_LOG_FORMAT)', () => {
+  it('defaults to both when unset, blank, or invalid', () => {
+    expect(parseKBLogFormat(undefined)).toBe('both');
+    expect(parseKBLogFormat('')).toBe('both');
+    expect(parseKBLogFormat('nope')).toBe('both');
+  });
+
+  it('accepts text, canonical, and both case-insensitively', () => {
+    expect(parseKBLogFormat('text')).toBe('text');
+    expect(parseKBLogFormat('CANONICAL')).toBe('canonical');
+    expect(parseKBLogFormat(' Both ')).toBe('both');
   });
 });
 

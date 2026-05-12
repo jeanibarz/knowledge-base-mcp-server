@@ -26,7 +26,7 @@ interface RunResult {
 
 function runCli(args: string[], env: Record<string, string> = {}, input?: string): RunResult {
   const result = spawnSync('node', [cliPath, ...args], {
-    env: { PATH: process.env.PATH ?? '', ...env },
+    env: { PATH: process.env.PATH ?? '', KB_LOG_FORMAT: 'text', ...env },
     encoding: 'utf-8',
     input,
   });
@@ -179,6 +179,37 @@ describe('kb CLI — argv parsing and dispatch', () => {
     const r = runCli(['search']);
     expect(r.code).toBe(2);
     expect(r.stderr).toContain('missing <query>');
+  });
+
+  it('emits a canonical event for a kb subcommand invocation (#216)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-canonical-'));
+    const logFile = path.join(tempDir, 'canonical.log');
+
+    try {
+      const r = runCli(['search'], {
+        KB_LOG_FORMAT: 'canonical',
+        LOG_FILE: logFile,
+      });
+
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain('missing <query>');
+      const lines = (await fsp.readFile(logFile, 'utf-8')).trim().split('\n');
+      expect(lines).toHaveLength(1);
+      const event = JSON.parse(lines[0]);
+      expect(event).toMatchObject({
+        schema_version: 'kb-canonical.v1',
+        process: 'cli',
+        cmd: 'kb search',
+        error: {
+          code: 'EXIT_2',
+          category: 'input',
+        },
+      });
+      expect(typeof event.request_id).toBe('string');
+      expect(typeof event.took_ms).toBe('number');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('search with bogus flag exits 2', () => {

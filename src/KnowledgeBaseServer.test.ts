@@ -78,6 +78,7 @@ describe('KnowledgeBaseServer handlers', () => {
     EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
     HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
     LOG_FILE: process.env.LOG_FILE,
+    KB_LOG_FORMAT: process.env.KB_LOG_FORMAT,
     RETRIEVE_KNOWLEDGE_DESCRIPTION: process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION,
     LIST_KNOWLEDGE_BASES_DESCRIPTION: process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION,
   };
@@ -91,6 +92,7 @@ describe('KnowledgeBaseServer handlers', () => {
     hasLoadedIndexMock.mockReturnValue(true);
     getStatsMock.mockReset();
     getStatsMock.mockReturnValue({ totalChunks: 0, chunkCountsByKb: {}, dim: null });
+    process.env.KB_LOG_FORMAT = 'text';
     getLastIndexUpdateSummaryMock.mockReset();
     getLastIndexUpdateSummaryMock.mockReturnValue({
       status: 'never_run',
@@ -163,6 +165,16 @@ describe('KnowledgeBaseServer handlers', () => {
       }
       throw error;
     }
+  }
+
+  async function readCanonicalEvents(logFile: string): Promise<Array<Record<string, any>>> {
+    await new Promise((resolve) => setImmediate(resolve));
+    const contents = await fsp.readFile(logFile, 'utf-8');
+    return contents
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
   }
 
   // --- handleListKnowledgeBases ---------------------------------------------
@@ -1036,6 +1048,44 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(text.indexOf('**Result 1:**')).toBeLessThan(text.indexOf('**Result 2:**'));
   });
 
+  it('handleRetrieveKnowledge emits one canonical event with redacted query and result fields (#216)', async () => {
+    const tempDir = await setRetrieveEnv();
+    const logFile = path.join(tempDir, 'canonical.log');
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'canonical';
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'Alpha content', metadata: { source: '/kb/a.md' }, score: 0.129876 },
+      { pageContent: 'Beta content', metadata: { source: '/kb/b.md' }, score: 0.34567 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'raw private query',
+      knowledge_base_name: 'alpha',
+      threshold: 0.75,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const events = await readCanonicalEvents(logFile);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      schema_version: 'kb-canonical.v1',
+      process: 'mcp',
+      tool: 'retrieve_knowledge',
+      model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+      kb_scope: 'alpha',
+      k: 10,
+      threshold: 0.75,
+      search_mode: 'dense',
+      result_count: 2,
+      top_score: 0.129876,
+      top_sources: ['/kb/a.md', '/kb/b.md'],
+    });
+    expect(events[0].query_sha256).toMatch(/^[a-f0-9]{16}$/);
+    expect(JSON.stringify(events[0])).not.toContain('raw private query');
+  });
+
   it('handleRetrieveKnowledge returns "_No similar results found._" when similaritySearch returns []', async () => {
     await setRetrieveEnv();
     updateIndexMock.mockResolvedValue(undefined);
@@ -1118,6 +1168,32 @@ describe('KnowledgeBaseServer handlers', () => {
     });
   });
 
+  it('handleRetrieveKnowledge emits canonical errors with RFC 009 category mapping (#216)', async () => {
+    const tempDir = await setRetrieveEnv();
+    const logFile = path.join(tempDir, 'canonical-error.log');
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'canonical';
+
+    const server = await freshServer();
+    const { KBError } = await import('./errors.js');
+    updateIndexMock.mockRejectedValue(new KBError('PROVIDER_TIMEOUT', 'provider timed out'));
+
+    const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+
+    expect(result.isError).toBe(true);
+    const events = await readCanonicalEvents(logFile);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      schema_version: 'kb-canonical.v1',
+      process: 'mcp',
+      tool: 'retrieve_knowledge',
+      error: {
+        code: 'PROVIDER_TIMEOUT',
+        category: 'provider',
+      },
+    });
+  });
+
   it('threshold argument flows through to similaritySearch(query, 10, threshold, kb, filters)', async () => {
     await setRetrieveEnv();
     updateIndexMock.mockResolvedValue(undefined);
@@ -1126,10 +1202,10 @@ describe('KnowledgeBaseServer handlers', () => {
     const server = await freshServer();
 
     await server['handleRetrieveKnowledge']({ query: 'q', threshold: 0.5 });
-    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.5, undefined, undefined);
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.5, undefined, undefined, expect.any(Object));
 
     await server['handleRetrieveKnowledge']({ query: 'q' });
-    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, undefined, undefined);
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, undefined, undefined, expect.any(Object));
 
     expect(similaritySearchMock).toHaveBeenCalledTimes(2);
   });
@@ -1142,14 +1218,14 @@ describe('KnowledgeBaseServer handlers', () => {
     const server = await freshServer();
 
     await server['handleRetrieveKnowledge']({ query: 'q', knowledge_base_name: 'alpha' });
-    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, 'alpha', undefined);
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, 'alpha', undefined, expect.any(Object));
 
     await server['handleRetrieveKnowledge']({
       query: 'q',
       knowledge_base_name: 'alpha',
       threshold: 0.25,
     });
-    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.25, 'alpha', undefined);
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.25, 'alpha', undefined, expect.any(Object));
   });
 
   it('handleRetrieveKnowledge forwards extensions / path_glob / tags filters (#53)', async () => {
@@ -1171,6 +1247,7 @@ describe('KnowledgeBaseServer handlers', () => {
       undefined,
       undefined,
       { extensions: ['.md'], pathGlob: 'runbooks/**', tags: ['ops', 'oncall'] },
+      expect.any(Object),
     );
 
     await server['handleRetrieveKnowledge']({ query: 'q', extensions: ['.pdf'] });
@@ -1180,6 +1257,7 @@ describe('KnowledgeBaseServer handlers', () => {
       undefined,
       undefined,
       { extensions: ['.pdf'], pathGlob: undefined, tags: undefined },
+      expect.any(Object),
     );
   });
 
