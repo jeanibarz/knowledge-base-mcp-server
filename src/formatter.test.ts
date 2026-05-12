@@ -171,6 +171,34 @@ describe('formatRetrievalAsMarkdown', () => {
     expect(out).not.toContain('shh');
     expect(out).toContain('"title": "T"');
   });
+
+  it('labels semantic matches and context-only chunks when neighbor context is present', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'matched chunk',
+      metadata: { source: 'kb/doc.md', chunkIndex: 2 },
+      score: 0.42,
+      matchType: 'semantic',
+      semanticMatch: true,
+      contextChunks: [
+        {
+          pageContent: 'previous chunk',
+          metadata: { source: 'kb/doc.md', chunkIndex: 1 },
+          matchType: 'context',
+          semanticMatch: false,
+          contextDirection: 'before',
+          contextDistance: 1,
+        },
+      ],
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsMarkdown([doc], false);
+
+    expect(out).toContain('**Result 1 (semantic match):**');
+    expect(out).toContain('matched chunk');
+    expect(out).toContain('**Context chunks:**');
+    expect(out).toContain('**Context (before, distance 1):**');
+    expect(out).toContain('previous chunk');
+  });
 });
 
 describe('formatRetrievalAsJson', () => {
@@ -351,6 +379,49 @@ describe('formatRetrievalAsJson', () => {
     });
     expect(out[0].metadata).not.toHaveProperty('frontmatter');
   });
+
+  it('keeps semantic matches distinct from context-only chunks in JSON output', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'matched chunk',
+      metadata: { source: 'kb/doc.md', chunkIndex: 2 },
+      score: 0.42,
+      matchType: 'semantic',
+      semanticMatch: true,
+      contextChunks: [
+        {
+          pageContent: 'next chunk',
+          metadata: { source: 'kb/doc.md', chunkIndex: 3 },
+          matchType: 'context',
+          semanticMatch: false,
+          contextDirection: 'after',
+          contextDistance: 1,
+        },
+      ],
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsJson([doc], false);
+
+    expect(out[0]).toMatchObject({
+      score: 0.42,
+      content: 'matched chunk',
+      match_type: 'semantic',
+      semantic_match: true,
+      context_chunks: [
+        {
+          match_type: 'context',
+          semantic_match: false,
+          direction: 'after',
+          distance: 1,
+          content: 'next chunk',
+        },
+      ],
+    });
+    expect(out[0].metadata).toMatchObject({ source: 'kb/doc.md', chunkIndex: 2 });
+    expect(out[0].context_chunks?.[0].metadata).toMatchObject({
+      source: 'kb/doc.md',
+      chunkIndex: 3,
+    });
+  });
 });
 
 describe('formatRetrievalAsVimgrep', () => {
@@ -436,6 +507,37 @@ describe('groupRetrievalBySource', () => {
       source: 'kb/doc.md',
       frontmatter: { title: 'Visible' },
       injection_signals: [],
+    });
+  });
+
+  it('carries context-only chunks under grouped semantic chunks', () => {
+    const docs: ScoredDocument[] = [
+      {
+        pageContent: 'match',
+        metadata: { source: 'kb/doc.md', chunkIndex: 1 },
+        score: 0.2,
+        matchType: 'semantic',
+        semanticMatch: true,
+        contextChunks: [
+          {
+            pageContent: 'context',
+            metadata: { source: 'kb/doc.md', chunkIndex: 0 },
+            matchType: 'context',
+            semanticMatch: false,
+            contextDirection: 'before',
+            contextDistance: 1,
+          },
+        ],
+      } as unknown as ScoredDocument,
+    ];
+
+    const grouped = groupRetrievalBySource(docs, false);
+
+    expect(grouped[0].chunks[0].match_type).toBe('semantic');
+    expect(grouped[0].chunks[0].context_chunks?.[0]).toMatchObject({
+      match_type: 'context',
+      direction: 'before',
+      content: 'context',
     });
   });
 });

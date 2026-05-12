@@ -161,6 +161,31 @@ describe('parseSearchArgs --interactive (#215)', () => {
   });
 });
 
+describe('parseSearchArgs neighbor context (#225)', () => {
+  it('accepts explicit before/after context windows', () => {
+    expect(parseSearchArgs([
+      'query',
+      '--context-before=1',
+      '--context-after=2',
+    ])).toMatchObject({
+      query: 'query',
+      neighborContext: { before: 1, after: 2 },
+    });
+  });
+
+  it('accepts --context-window as a before/after shorthand', () => {
+    expect(parseSearchArgs(['query', '--context-window=2'])).toMatchObject({
+      neighborContext: { before: 2, after: 2 },
+    });
+  });
+
+  it('rejects unbounded context windows', () => {
+    expect(() => parseSearchArgs(['query', '--context-window=99'])).toThrow(
+      /invalid --context-window/,
+    );
+  });
+});
+
 describe('shouldUsePicker (#215)', () => {
   it('returns false when --interactive is not set', () => {
     expect(shouldUsePicker({ interactive: false, format: 'md' })).toBe(false);

@@ -20,6 +20,17 @@ import { getInjectionSignals, type InjectionSignal } from './kb-shield.js';
  */
 export interface ScoredDocument extends Document {
   score?: number;
+  matchType?: 'semantic';
+  semanticMatch?: true;
+  contextChunks?: ContextDocument[];
+  contextTruncated?: boolean;
+}
+
+export interface ContextDocument extends Document {
+  matchType: 'context';
+  semanticMatch: false;
+  contextDirection: 'before' | 'after';
+  contextDistance: number;
 }
 
 export interface RetrievalJsonResult {
@@ -34,6 +45,22 @@ export interface RetrievalJsonResult {
    * omitted when `KB_SHIELD=off`. Signals are evidence the downstream agent
    * uses to decide policy — the chunk's `content` is **never** modified.
    */
+  injection_signals?: InjectionSignal[];
+  match_type?: 'semantic';
+  semantic_match?: true;
+  context_chunks?: RetrievalJsonContextChunk[];
+  context_truncated?: boolean;
+}
+
+export interface RetrievalJsonContextChunk {
+  match_type: 'context';
+  semantic_match: false;
+  direction: 'before' | 'after';
+  distance: number;
+  content: string;
+  metadata: Record<string, unknown>;
+  chunk_id?: string;
+  editor_uri?: string;
   injection_signals?: InjectionSignal[];
 }
 
@@ -91,7 +118,10 @@ export function formatRetrievalAsMarkdown(
     const guardOptions = resolveInjectionGuardOptions();
     formattedResults = results
       .map((doc, idx) => {
-        const resultHeader = `**Result ${idx + 1}:**`;
+        const hasContextAnnotation = hasNeighborContextAnnotation(doc);
+        const resultHeader = hasContextAnnotation
+          ? `**Result ${idx + 1} (semantic match):**`
+          : `**Result ${idx + 1}:**`;
         const sanitizedMetadata = sanitizeMetadataForWire(
           doc.metadata as Record<string, unknown>,
           extrasVisible,
@@ -103,7 +133,8 @@ export function formatRetrievalAsMarkdown(
         const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
         const signals = getShieldSignals(doc.pageContent, sanitizedMetadata, guardOptions);
         const shieldFooter = formatInjectionMarkdown(signals);
-        return `${resultHeader}\n\n${scoreText}${content}\n\n${shieldFooter}${formatSourceBlock(metadata, citation)}`;
+        const contextText = formatContextChunksAsMarkdown(doc, extrasVisible, editorUriMode);
+        return `${resultHeader}\n\n${scoreText}${content}\n\n${shieldFooter}${formatSourceBlock(metadata, citation)}${contextText}`;
       })
       .join('\n\n---\n\n');
   } else {
@@ -129,7 +160,9 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
             const locationText = formatLocation(chunk.location);
             const openText = chunk.editor_uri ? `\n   **Open:** ${chunk.editor_uri}` : '';
             const shieldText = formatInjectionGrouped(chunk.injection_signals);
-            return `${chunkIdx + 1}. **Score:** ${scoreText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(chunk.content.trim())}${shieldText}`;
+            const typeText = chunk.match_type ? `\n   **Type:** ${chunk.match_type}` : '';
+            const contextText = formatJsonContextChunksForGroupedMarkdown(chunk.context_chunks);
+            return `${chunkIdx + 1}. **Score:** ${scoreText}${typeText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(chunk.content.trim())}${shieldText}${contextText}`;
           })
           .join('\n\n');
         return (
@@ -174,6 +207,16 @@ export function formatRetrievalAsJson(
       ...(citation ? { chunk_id: citation.chunk_id } : {}),
       ...(citation?.editor_uri ? { editor_uri: citation.editor_uri } : {}),
       ...(signals !== undefined ? { injection_signals: signals } : {}),
+      ...(hasNeighborContextAnnotation(doc)
+        ? {
+            match_type: 'semantic' as const,
+            semantic_match: true as const,
+          }
+        : {}),
+      ...(doc.contextChunks && doc.contextChunks.length > 0
+        ? { context_chunks: formatContextChunksAsJson(doc.contextChunks, extrasVisible, editorUriMode) }
+        : {}),
+      ...(doc.contextTruncated ? { context_truncated: true } : {}),
     };
   });
 }
@@ -218,6 +261,16 @@ export function groupRetrievalBySource(
       ...(citation ? { chunk_id: citation.chunk_id } : {}),
       ...(citation?.editor_uri ? { editor_uri: citation.editor_uri } : {}),
       ...(signals !== undefined ? { injection_signals: signals } : {}),
+      ...(hasNeighborContextAnnotation(doc)
+        ? {
+            match_type: 'semantic' as const,
+            semantic_match: true as const,
+          }
+        : {}),
+      ...(doc.contextChunks && doc.contextChunks.length > 0
+        ? { context_chunks: formatContextChunksAsJson(doc.contextChunks, extrasVisible, editorUriMode) }
+        : {}),
+      ...(doc.contextTruncated ? { context_truncated: true } : {}),
     });
   });
 
@@ -303,6 +356,14 @@ function formatInjectionGrouped(signals: InjectionSignal[] | undefined): string 
   return lines;
 }
 
+function formatInjectionContext(signals: InjectionSignal[] | undefined): string {
+  if (!signals || signals.length === 0) return '';
+  const lines = signals
+    .map((s) => `\n  > ⚠ injection-signal: ${s.rule} [${s.span_start}, ${s.span_end})`)
+    .join('');
+  return lines;
+}
+
 function guardRetrievalChunk(
   content: string,
   metadata: Record<string, unknown>,
@@ -318,6 +379,87 @@ function getShieldSignals(
 ): InjectionSignal[] | undefined {
   if (isInjectionGuardBypassed(metadata, options)) return undefined;
   return getInjectionSignals(content);
+}
+
+function hasNeighborContextAnnotation(doc: ScoredDocument): boolean {
+  return doc.matchType === 'semantic' || doc.semanticMatch === true || doc.contextChunks !== undefined;
+}
+
+function formatContextChunksAsMarkdown(
+  doc: ScoredDocument,
+  extrasVisible: boolean,
+  editorUriMode: KBEditorUriMode,
+): string {
+  if (!doc.contextChunks || doc.contextChunks.length === 0) {
+    return doc.contextTruncated ? '\n\n**Context chunks:** truncated by response cap.' : '';
+  }
+  const guardOptions = resolveInjectionGuardOptions();
+  const chunks = doc.contextChunks
+    .map((chunk) => {
+      const metadata = sanitizeMetadataForWire(
+        chunk.metadata as Record<string, unknown>,
+        extrasVisible,
+      );
+      const guarded = guardRetrievalChunk(chunk.pageContent, metadata, guardOptions);
+      const citation = buildChunkCitation(guarded.metadata, editorUriMode);
+      const signals = getShieldSignals(chunk.pageContent, metadata, guardOptions);
+      const openText = citation?.editor_uri ? `\n   **Open:** ${citation.editor_uri}` : '';
+      const sourceText = citation ? `\n   **Source:** ${citation.chunk_id}` : '';
+      const shieldText = formatInjectionContext(signals);
+      return (
+        `- **Context (${chunk.contextDirection}, distance ${chunk.contextDistance}):**${sourceText}${openText}\n\n` +
+        `  ${indentListContent(guarded.content.trim())}${shieldText}`
+      );
+    })
+    .join('\n\n');
+  const truncated = doc.contextTruncated ? '\n\n_Context truncated by response cap._' : '';
+  return `\n\n**Context chunks:**\n\n${chunks}${truncated}`;
+}
+
+function formatContextChunksAsJson(
+  chunks: ContextDocument[],
+  extrasVisible: boolean,
+  editorUriMode: KBEditorUriMode,
+): RetrievalJsonContextChunk[] {
+  const guardOptions = resolveInjectionGuardOptions();
+  return chunks.map((chunk) => {
+    const metadata = sanitizeMetadataForWire(
+      chunk.metadata as Record<string, unknown>,
+      extrasVisible,
+    );
+    const guarded = guardRetrievalChunk(chunk.pageContent, metadata, guardOptions);
+    const citation = buildChunkCitation(guarded.metadata, editorUriMode);
+    const signals = getShieldSignals(chunk.pageContent, metadata, guardOptions);
+    return {
+      match_type: 'context',
+      semantic_match: false,
+      direction: chunk.contextDirection,
+      distance: chunk.contextDistance,
+      content: guarded.content,
+      metadata: guarded.metadata,
+      ...(citation ? { chunk_id: citation.chunk_id } : {}),
+      ...(citation?.editor_uri ? { editor_uri: citation.editor_uri } : {}),
+      ...(signals !== undefined ? { injection_signals: signals } : {}),
+    };
+  });
+}
+
+function formatJsonContextChunksForGroupedMarkdown(
+  chunks: RetrievalJsonContextChunk[] | undefined,
+): string {
+  if (!chunks || chunks.length === 0) return '';
+  const lines = chunks
+    .map((chunk) => (
+      `   - **Context (${chunk.direction}, distance ${chunk.distance}):**\n\n` +
+      `     ${indentListContent(chunk.content.trim())}${formatInjectionGrouped(chunk.injection_signals)}`
+    ))
+    .join('\n\n');
+  return `\n\n   **Context chunks:**\n\n${lines}`;
+}
+
+function indentListContent(content: string): string {
+  if (content === '') return '';
+  return content.replace(/\n/g, '\n  ');
 }
 
 function formatSourceBlock(metadata: string, citation: ChunkCitation | null): string {

@@ -182,6 +182,30 @@ export interface SimilaritySearchTiming {
   fetch_k?: number;
 }
 
+export const MAX_NEIGHBOR_CONTEXT_WINDOW = 5;
+export const MAX_NEIGHBOR_CONTEXT_CHUNKS = 50;
+
+export interface NeighborContextOptions {
+  before?: number;
+  after?: number;
+  maxContextChunks?: number;
+}
+
+export interface NeighborContextChunk extends Document {
+  matchType: 'context';
+  semanticMatch: false;
+  contextDirection: 'before' | 'after';
+  contextDistance: number;
+}
+
+export interface SearchResultDocument extends Document {
+  score: number;
+  matchType?: 'semantic';
+  semanticMatch?: true;
+  contextChunks?: NeighborContextChunk[];
+  contextTruncated?: boolean;
+}
+
 const MAX_INDEX_UPDATE_FAILURES = 10;
 
 export function createNeverRunIndexUpdateSummary(modelId: string | null = null): IndexUpdateSummary {
@@ -1009,7 +1033,7 @@ export class FaissIndexManager {
     knowledgeBaseName?: string,
     filters?: SimilaritySearchFilters,
     timing?: SimilaritySearchTiming,
-  ) {
+  ): Promise<SearchResultDocument[]> {
     const totalStartedAt = Date.now();
     if (!this.faissIndex) {
       throw new KBError('INDEX_NOT_INITIALIZED', 'FAISS index is not initialized');
@@ -1103,6 +1127,80 @@ export class FaissIndexManager {
     return filtered.slice(0, k).map(([doc, score]) => ({ ...doc, score }));
   }
 
+  expandWithNeighborContext(
+    results: readonly SearchResultDocument[],
+    options: NeighborContextOptions,
+  ): SearchResultDocument[] {
+    const normalized = normalizeNeighborContextOptions(options);
+    if (normalized.before === 0 && normalized.after === 0) {
+      return [...results];
+    }
+    if (!this.faissIndex || results.length === 0) {
+      return results.map(markSemanticResult);
+    }
+
+    const docs = this.getDocstoreDocuments();
+    if (docs.length === 0) {
+      return results.map(markSemanticResult);
+    }
+
+    const byKey = new Map<string, Document>();
+    for (const doc of docs) {
+      const identity = chunkIdentity(doc);
+      if (identity) byKey.set(identity.key, doc);
+    }
+
+    const semanticKeys = new Set<string>();
+    for (const result of results) {
+      const identity = chunkIdentity(result);
+      if (identity) semanticKeys.add(identity.key);
+    }
+
+    const usedContextKeys = new Set<string>();
+    let contextCount = 0;
+    let capReached = false;
+
+    return results.map((result) => {
+      const semantic = markSemanticResult(result);
+      const identity = chunkIdentity(result);
+      if (!identity) return semantic;
+
+      const contextChunks: NeighborContextChunk[] = [];
+      const addContext = (chunkIndex: number, direction: 'before' | 'after'): void => {
+        const key = chunkKey(identity.knowledgeBase, identity.source, chunkIndex);
+        if (semanticKeys.has(key) || usedContextKeys.has(key)) return;
+        const doc = byKey.get(key);
+        if (!doc) return;
+        if (contextCount >= normalized.maxContextChunks) {
+          capReached = true;
+          return;
+        }
+        usedContextKeys.add(key);
+        contextCount += 1;
+        contextChunks.push({
+          ...doc,
+          matchType: 'context',
+          semanticMatch: false,
+          contextDirection: direction,
+          contextDistance: Math.abs(chunkIndex - identity.chunkIndex),
+        });
+      };
+
+      for (let i = normalized.before; i >= 1; i -= 1) {
+        addContext(identity.chunkIndex - i, 'before');
+      }
+      for (let i = 1; i <= normalized.after; i += 1) {
+        addContext(identity.chunkIndex + i, 'after');
+      }
+
+      return {
+        ...semantic,
+        ...(contextChunks.length > 0 ? { contextChunks } : {}),
+        ...(capReached ? { contextTruncated: true } : {}),
+      };
+    });
+  }
+
   /**
    * Issue #54 — observability snapshot for the kb_stats MCP tool.
    *
@@ -1147,6 +1245,16 @@ export class FaissIndexManager {
     return { totalChunks, chunkCountsByKb, dim };
   }
 
+  private getDocstoreDocuments(): Document[] {
+    const docs = (
+      this.faissIndex?.docstore as unknown as {
+        _docs?: Map<string, Document>;
+      } | undefined
+    )?._docs;
+    if (!(docs instanceof Map)) return [];
+    return Array.from(docs.values());
+  }
+
   /**
    * Issue #54 — resolve the path of the active `faiss.index` file used for
    * `last_updated_at`. Handles both the RFC 014 versioned layout
@@ -1157,4 +1265,67 @@ export class FaissIndexManager {
   async resolveActiveIndexFilePath(): Promise<string | null> {
     return resolveActiveIndexFilePathFromLayout(this.modelDir);
   }
+}
+
+function normalizeNeighborContextOptions(options: NeighborContextOptions): Required<NeighborContextOptions> {
+  return {
+    before: normalizeContextCount(options.before ?? 0, 'before'),
+    after: normalizeContextCount(options.after ?? 0, 'after'),
+    maxContextChunks: normalizeMaxContextChunks(options.maxContextChunks ?? MAX_NEIGHBOR_CONTEXT_CHUNKS),
+  };
+}
+
+function normalizeContextCount(value: number, name: string): number {
+  if (!Number.isInteger(value) || value < 0 || value > MAX_NEIGHBOR_CONTEXT_WINDOW) {
+    throw new KBError(
+      'VALIDATION',
+      `neighbor context ${name} must be an integer between 0 and ${MAX_NEIGHBOR_CONTEXT_WINDOW}`,
+    );
+  }
+  return value;
+}
+
+function normalizeMaxContextChunks(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > MAX_NEIGHBOR_CONTEXT_CHUNKS) {
+    throw new KBError(
+      'VALIDATION',
+      `neighbor context maxContextChunks must be an integer between 0 and ${MAX_NEIGHBOR_CONTEXT_CHUNKS}`,
+    );
+  }
+  return value;
+}
+
+function markSemanticResult(result: SearchResultDocument): SearchResultDocument {
+  return {
+    ...result,
+    matchType: 'semantic',
+    semanticMatch: true,
+  };
+}
+
+function chunkIdentity(doc: Document): {
+  key: string;
+  knowledgeBase: string;
+  source: string;
+  chunkIndex: number;
+} | null {
+  const metadata = doc.metadata as Record<string, unknown> | undefined;
+  if (!metadata) return null;
+  const sourceValue = metadata.source ?? metadata.relativePath;
+  if (typeof sourceValue !== 'string' || sourceValue.length === 0) return null;
+  const chunkIndexValue = metadata.chunkIndex ?? metadata.chunk_index;
+  if (!Number.isInteger(chunkIndexValue)) return null;
+  const knowledgeBase = typeof metadata.knowledgeBase === 'string' ? metadata.knowledgeBase : '';
+  const source = sourceValue;
+  const chunkIndex = chunkIndexValue as number;
+  return {
+    key: chunkKey(knowledgeBase, source, chunkIndex),
+    knowledgeBase,
+    source,
+    chunkIndex,
+  };
+}
+
+function chunkKey(knowledgeBase: string, source: string, chunkIndex: number): string {
+  return `${knowledgeBase}\u0000${source}\u0000${chunkIndex}`;
 }
