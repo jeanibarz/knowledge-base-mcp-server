@@ -40,6 +40,7 @@ import {
   type ScoredDocument,
   type SimilaritySearchFilters,
 } from './search-filters.js';
+import { queryEmbeddingCache, type QueryCacheLookupStatus } from './query-cache.js';
 import { withSidecarLock } from './write-lock.js';
 import {
   recordIngestFailure,
@@ -185,6 +186,7 @@ export interface SimilaritySearchTiming {
   post_filter_ms?: number;
   total_ms?: number;
   fetch_k?: number;
+  query_cache?: QueryCacheLookupStatus | 'unavailable';
 }
 
 export const MAX_NEIGHBOR_CONTEXT_WINDOW = 5;
@@ -1209,6 +1211,7 @@ export class FaissIndexManager {
     knowledgeBaseName?: string,
     filters?: SimilaritySearchFilters,
     timing?: SimilaritySearchTiming,
+    opts: { noCache?: boolean } = {},
   ): Promise<SearchResultDocument[]> {
     const totalStartedAt = Date.now();
     if (!this.faissIndex) {
@@ -1225,9 +1228,10 @@ export class FaissIndexManager {
     // FaissStore.similaritySearchVectorWithScore accepts only (query, k) and
     // silently drops any filter argument, so threshold and KB scoping are both
     // applied as post-filters on the returned [doc, score] tuples. When the
-    // caller wants timing AND the wrapper exposes the vector-first entry
-    // point, embed once up front and reuse the embedding across every
-    // progressive-overfetch rung so the embed cost is paid exactly once.
+    // wrapper exposes the vector-first entry point, embed once up front and
+    // reuse the embedding across every progressive-overfetch rung so the
+    // embed cost is paid exactly once. Issue #214 adds the query-embedding
+    // cache at this boundary; document embedding remains untouched.
     const vectorSearch = (
       this.faissIndex as unknown as {
         similaritySearchVectorWithScore?: (
@@ -1236,12 +1240,23 @@ export class FaissIndexManager {
         ) => Promise<Array<[Document, number]>>;
       }
     ).similaritySearchVectorWithScore;
-    const useVectorPath = timing !== undefined && typeof vectorSearch === 'function';
+    const useVectorPath = typeof vectorSearch === 'function';
     let queryEmbedding: number[] | undefined;
     if (useVectorPath) {
       const embedStartedAt = Date.now();
-      queryEmbedding = await this.embeddings.embedQuery(query);
-      timing!.embed_query_ms = Date.now() - embedStartedAt;
+      const cached = await queryEmbeddingCache.getOrCompute({
+        modelId: this.modelId,
+        query,
+        bypass: opts.noCache === true,
+        embed: () => this.embeddings.embedQuery(query),
+      });
+      queryEmbedding = cached.embedding;
+      if (timing) {
+        timing.embed_query_ms = Date.now() - embedStartedAt;
+        timing.query_cache = cached.status;
+      }
+    } else if (timing) {
+      timing.query_cache = 'unavailable';
     }
 
     const runFaissSearch = async (

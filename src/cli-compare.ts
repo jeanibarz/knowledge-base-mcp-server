@@ -8,7 +8,7 @@ import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 export const COMPARE_HELP = `kb compare — side-by-side rank/score table for two embedding models
 
 Usage:
-  kb compare <query> <model_a> <model_b> [--k=<int>] [--kb=<name>]
+  kb compare <query> <model_a> <model_b> [--k=<int>] [--kb=<name>] [--no-cache]
 
 Runs the same query against two registered models' indexes and prints a
 joined table of \`rank_a / rank_b / score_a / score_b / in_both / source\`,
@@ -26,6 +26,7 @@ Arguments:
 Options:
   --k=<int>             Top-K results per model (default: 10).
   --kb=<name>           Scope to one knowledge base. Omit to search ALL KBs.
+  --no-cache            Bypass the query-embedding cache for both model legs.
   --help, -h            Show this help.
 
 Examples:
@@ -38,6 +39,7 @@ export async function runCompare(rest: string[]): Promise<number> {
   const positionals: string[] = [];
   let k = 10;
   let kb: string | undefined;
+  let noCache = false;
   for (const raw of rest) {
     if (raw.startsWith('--k=')) {
       const n = Number(raw.slice('--k='.length));
@@ -49,6 +51,7 @@ export async function runCompare(rest: string[]): Promise<number> {
       continue;
     }
     if (raw.startsWith('--kb=')) { kb = raw.slice('--kb='.length); continue; }
+    if (raw === '--no-cache') { noCache = true; continue; }
     if (raw.startsWith('--')) {
       process.stderr.write(`kb compare: unknown flag: ${raw}\n`);
       return 2;
@@ -91,11 +94,11 @@ export async function runCompare(rest: string[]): Promise<number> {
   try {
     const managerA = await loadManagerForModel(resolvedA);
     await loadWithJsonRetry(managerA);
-    resultsA = await managerA.similaritySearch(query, k, undefined, kb);
+    resultsA = await managerA.similaritySearch(query, k, undefined, kb, undefined, undefined, { noCache });
 
     const managerB = await loadManagerForModel(resolvedB);
     await loadWithJsonRetry(managerB);
-    resultsB = await managerB.similaritySearch(query, k, undefined, kb);
+    resultsB = await managerB.similaritySearch(query, k, undefined, kb, undefined, undefined, { noCache });
   } catch (err) {
     process.stderr.write(`kb compare: ${(err as Error).message}\n`);
     return 1;

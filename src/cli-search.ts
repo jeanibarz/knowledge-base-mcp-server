@@ -78,6 +78,7 @@ Result tuning:
   --context-after=<n>   Include up to n following chunks from the same source
                         around each dense semantic match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
   --context-window=<n>  Shorthand for --context-before=n --context-after=n.
+  --no-cache            Bypass the query-embedding cache for this search.
 
 Output:
   --format=md|json|vimgrep
@@ -124,6 +125,7 @@ interface SearchArgs {
   mode: SearchMode;
   timing: boolean;
   interactive: boolean;
+  noCache: boolean;
   neighborContext?: NeighborContextOptions;
 }
 
@@ -260,6 +262,7 @@ export async function runSearch(rest: string[]): Promise<number> {
         parsed.kb,
         undefined,
         timing ? denseTiming : undefined,
+        { noCache: parsed.noCache },
       );
       autoThresholdDecision = computeAutoThreshold(rawResults.map((r) => r.score));
       results = rawResults.slice(0, autoThresholdDecision.kept);
@@ -271,6 +274,7 @@ export async function runSearch(rest: string[]): Promise<number> {
         parsed.kb,
         undefined,
         timing ? denseTiming : undefined,
+        { noCache: parsed.noCache },
       );
     }
     if (parsed.neighborContext) {
@@ -392,12 +396,14 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     mode: 'dense',
     timing: false,
     interactive: false,
+    noCache: false,
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
     if (raw === '--stdin')   { out.stdin = true; continue; }
     if (raw === '--group-by-source') { out.groupBySource = true; continue; }
     if (raw === '--timing') { out.timing = true; continue; }
+    if (raw === '--no-cache') { out.noCache = true; continue; }
     if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
     if (raw.startsWith('--context-before=')) {
       out.neighborContext = {
@@ -507,6 +513,7 @@ function mergeDenseTiming(target: TimingPayload, source: SimilaritySearchTiming)
   if (source.post_filter_ms !== undefined) target.post_filter_ms = source.post_filter_ms;
   if (source.total_ms !== undefined) target.dense_total_ms = source.total_ms;
   if (source.fetch_k !== undefined) target.fetch_k = source.fetch_k;
+  if (source.query_cache !== undefined) target.query_cache = source.query_cache;
 }
 
 export async function computeStaleness(modelId: string, scopedKb?: string): Promise<Staleness> {
@@ -1022,6 +1029,7 @@ async function runHybridSearch(
       parsed.kb,
       undefined,
       timing ? denseTiming : undefined,
+      { noCache: parsed.noCache },
     )
     .then((rs) => {
       if (timing) {
