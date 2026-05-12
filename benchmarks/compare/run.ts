@@ -19,6 +19,7 @@ import type { BenchmarkReport } from '../types.js';
 import { installStubProvider } from '../stub.js';
 import { renderReport, type CrossModelAggregate, type CrossModelQueryResult } from './render.js';
 import { resolveModelCtx, safeChunkChars } from './model-ctx.js';
+import { loadGoldenFile, scoreGoldenQuality } from './golden.js';
 // Type duplicated locally rather than imported from src/ — tsconfig.bench.json's
 // rootDir scopes types to the benchmarks/ tree (src/ files are out of scope even
 // for type-only imports). All src-side runtime values are loaded via dynamic
@@ -99,6 +100,12 @@ async function main(): Promise<void> {
   if (modelA.id === modelB.id) {
     fatal(`models resolve to the same id "${modelA.id}". Pick two different models.`);
   }
+  const goldenLabels = flags.goldenPath
+    ? await loadGoldenFile(path.resolve(flags.goldenPath))
+    : undefined;
+  if (goldenLabels) {
+    process.stderr.write(`[bench:compare] golden labels: ${Object.keys(goldenLabels).length} labelled queries\n`);
+  }
 
   // Per-model workspace dirs so cross-model post-step can read both indexes.
   const orchestratorTmp = path.join(os.tmpdir(), `kb-bench-compare-${process.pid}-${Date.now()}`);
@@ -168,6 +175,17 @@ async function main(): Promise<void> {
     buildRoot,
     queries,
   });
+  const goldenQuality = goldenLabels
+    ? scoreGoldenQuality(goldenLabels, crossModel.per_query)
+    : undefined;
+  if (goldenQuality) {
+    process.stderr.write(
+      `[bench:compare] golden scoring: ${goldenQuality.labelled_query_count}/${goldenQuality.query_count} queries scored` +
+      (goldenQuality.missing_query_count > 0 ? `, ${goldenQuality.missing_query_count} missing labels` : '') +
+      (goldenQuality.no_positive_label_query_count > 0 ? `, ${goldenQuality.no_positive_label_query_count} without positive labels` : '') +
+      '\n',
+    );
+  }
 
   const cost = await computeCost(modelA, modelB, reportA, reportB, buildRoot);
 
@@ -179,6 +197,7 @@ async function main(): Promise<void> {
     modelB: { id: modelB.id, name: modelB.name },
     fixture: { profile: flags.fixture, chunks: reportA.scenarios.cold_index.chunks },
     crossModel,
+    goldenQuality,
     cost,
     generatedAt: new Date().toISOString(),
   });
@@ -197,6 +216,7 @@ async function main(): Promise<void> {
     reportA,
     reportB,
     crossModel,
+    goldenQuality,
     cost,
     generatedAt: new Date().toISOString(),
   }, null, 2) + '\n', 'utf-8');
@@ -322,19 +342,22 @@ async function crossModelAgreement(args: CrossModelArgs): Promise<CrossModelAggr
     const b = topKsB[i] ?? [];
     return {
       query: q,
-      jaccard: jaccard(a.map((r) => r.doc), b.map((r) => r.doc)),
+      jaccard: jaccard(a.slice(0, 10).map((r) => r.doc), b.slice(0, 10).map((r) => r.doc)),
       topK_a: a,
       topK_b: b,
     };
   });
 
   const jaccards = perQuery.map((q) => q.jaccard).sort((x, y) => x - y);
-  const spearmans = perQuery.map((q) => spearmanOnOverlap(q.topK_a.map((r) => r.doc), q.topK_b.map((r) => r.doc)));
+  const spearmans = perQuery.map((q) => spearmanOnOverlap(
+    q.topK_a.slice(0, 10).map((r) => r.doc),
+    q.topK_b.slice(0, 10).map((r) => r.doc),
+  ));
 
   const overlapDocs = new Set<string>();
   perQuery.forEach((q) => {
-    const seenA = new Set(q.topK_a.map((r) => r.doc));
-    q.topK_b.forEach((r) => { if (seenA.has(r.doc)) overlapDocs.add(r.doc); });
+    const seenA = new Set(q.topK_a.slice(0, 10).map((r) => r.doc));
+    q.topK_b.slice(0, 10).forEach((r) => { if (seenA.has(r.doc)) overlapDocs.add(r.doc); });
   });
 
   return {
@@ -383,7 +406,7 @@ async function runQueriesAgainstManager(
   const out: { doc: string; score: number }[][] = [];
   for (const q of queries) {
     try {
-      const results = await manager.similaritySearch(q, 10);
+      const results = await manager.similaritySearch(q, 20);
       out.push(results.map((r) => ({
         doc: String(r.metadata.source ?? r.metadata.relativePath ?? r.pageContent.slice(0, 40)),
         score: r.score ?? 0,
@@ -597,7 +620,8 @@ Optional:
   --fixture=small|medium|large|external   Default: medium.
   --queries=<path>                         File with one query per line (#-comments allowed).
   --concurrency=1,4,16                     Batch concurrency sweep (default 1,4,16).
-  --golden=<path>                          JSON {query: [doc_paths]} for recall@k.
+  --golden=<path>                          JSON {query: [{source,relevance}]} labels for quality scoring.
+                                            Legacy {query: [doc_paths]} arrays are treated as relevance=1.
   --output-dir=<path>                      Default: benchmarks/results/.
   --skip-add                               Reuse already-registered models (no re-embed).
   --yes                                    Non-interactive (skips paid-provider cost prompt).

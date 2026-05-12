@@ -8,6 +8,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import type { BenchmarkReport } from '../types.js';
 import { renderBarChart, renderLegend, renderLineChart, renderStackedBar } from './chart.js';
+import type { GoldenQualityReport } from './golden.js';
 
 export interface CrossModelQueryResult {
   query: string;
@@ -38,6 +39,7 @@ export interface RenderInput {
   modelB: { id: string; name: string };
   fixture: { profile: string; chunks: number };
   crossModel: CrossModelAggregate;
+  goldenQuality?: GoldenQualityReport;
   cost: CostBreakdownPair;
   generatedAt: string;
 }
@@ -57,6 +59,7 @@ export async function renderReport(input: RenderInput): Promise<string> {
   const template = await loadTemplate();
   const summaryRows = buildSummaryRows(input);
   const recommendationRows = buildRecommendation(input);
+  const qualitySection = buildQualitySection(input);
   const queryDetails = buildQueryDetails(input);
 
   const warmChart = renderBarChart(
@@ -90,6 +93,7 @@ export async function renderReport(input: RenderInput): Promise<string> {
       { name: `B — ${input.modelB.id}`, color: COLOR_B },
     ]))
     .replace('{{SUMMARY_ROWS}}', summaryRows.map(rowHtml).join(''))
+    .replace('{{QUALITY_SECTION}}', qualitySection)
     .replace('{{CHART_WARM}}', warmChart)
     .replace('{{CHART_BATCH_LATENCY}}', batchLatencyChart)
     .replace('{{CHART_THROUGHPUT}}', throughputChart)
@@ -188,6 +192,28 @@ function buildSummaryRows(input: RenderInput): SummaryRow[] {
     ),
   });
 
+  if (input.goldenQuality) {
+    rows.push({
+      metric: 'golden_nDCG@10',
+      a: input.goldenQuality.model_a.ndcg_at_10.toFixed(3),
+      b: input.goldenQuality.model_b.ndcg_at_10.toFixed(3),
+      winner: higherIsBetter(input.goldenQuality.model_a.ndcg_at_10, input.goldenQuality.model_b.ndcg_at_10),
+      detail: `${input.goldenQuality.labelled_query_count} labelled queries`,
+    });
+    rows.push({
+      metric: 'golden_MRR@10',
+      a: input.goldenQuality.model_a.mrr_at_10.toFixed(3),
+      b: input.goldenQuality.model_b.mrr_at_10.toFixed(3),
+      winner: higherIsBetter(input.goldenQuality.model_a.mrr_at_10, input.goldenQuality.model_b.mrr_at_10),
+    });
+    rows.push({
+      metric: 'golden_recall@20',
+      a: input.goldenQuality.model_a.recall_at_20.toFixed(3),
+      b: input.goldenQuality.model_b.recall_at_20.toFixed(3),
+      winner: higherIsBetter(input.goldenQuality.model_a.recall_at_20, input.goldenQuality.model_b.recall_at_20),
+    });
+  }
+
   rows.push({
     metric: 'jaccard_top10_p50',
     a: input.crossModel.jaccard_p50.toFixed(2),
@@ -283,6 +309,66 @@ function renderStorageChart(input: RenderInput): string {
   );
 }
 
+function buildQualitySection(input: RenderInput): string {
+  const quality = input.goldenQuality;
+  if (!quality) {
+    return '<p class="meta">No golden label file was provided; quality rows use only the benchmark fixture recall proxy.</p>';
+  }
+
+  const metricRows = [
+    qualityMetricRow('nDCG@10', quality.model_a.ndcg_at_10, quality.model_b.ndcg_at_10),
+    qualityMetricRow('MRR@10', quality.model_a.mrr_at_10, quality.model_b.mrr_at_10),
+    qualityMetricRow('Recall@5', quality.model_a.recall_at_5, quality.model_b.recall_at_5),
+    qualityMetricRow('Recall@10', quality.model_a.recall_at_10, quality.model_b.recall_at_10),
+    qualityMetricRow('Recall@20', quality.model_a.recall_at_20, quality.model_b.recall_at_20),
+    qualityMetricRow('Hit rate@10', quality.model_a.hit_rate_at_10, quality.model_b.hit_rate_at_10),
+    qualityMetricRow('MAP', quality.model_a.map, quality.model_b.map),
+    qualityMetricRow('MAP@10', quality.model_a.map_at_10, quality.model_b.map_at_10),
+  ].join('');
+
+  const diagnosticRows = quality.per_query.slice(0, 50).map((q) => {
+    if (q.status !== 'scored') {
+      return `<tr><td>${escHtml(q.query)}</td><td>${escHtml(q.status)}</td><td colspan="6" class="tie">not scored</td></tr>`;
+    }
+    return `<tr><td>${escHtml(q.query)}</td><td>${q.relevant_source_count}</td>` +
+      qualityDiagnosticCells(q.model_a) +
+      qualityDiagnosticCells(q.model_b) +
+      '</tr>';
+  }).join('');
+
+  return `<p class="meta">Scored ${quality.labelled_query_count}/${quality.query_count} queries from golden labels` +
+    `${quality.missing_query_count > 0 ? `; ${quality.missing_query_count} missing labels` : ''}` +
+    `${quality.no_positive_label_query_count > 0 ? `; ${quality.no_positive_label_query_count} without positive labels` : ''}.` +
+    `</p>
+<table>
+  <thead><tr><th>Metric</th><th>Model A</th><th>Model B</th><th>Winner</th></tr></thead>
+  <tbody>${metricRows}</tbody>
+</table>
+<h3>Per-query quality diagnostics</h3>
+<table>
+  <thead><tr><th>Query</th><th>Labels</th><th>A nDCG@10</th><th>A MRR@10</th><th>A R@10</th><th>B nDCG@10</th><th>B MRR@10</th><th>B R@10</th></tr></thead>
+  <tbody>${diagnosticRows}</tbody>
+</table>`;
+}
+
+function qualityMetricRow(metric: string, a: number, b: number): string {
+  return rowHtml({
+    metric,
+    a: a.toFixed(3),
+    b: b.toFixed(3),
+    winner: higherIsBetter(a, b),
+  });
+}
+
+function qualityDiagnosticCells(metrics: GoldenQueryMetricsLike | undefined): string {
+  if (!metrics) {
+    return '<td class="tie">N/A</td><td class="tie">N/A</td><td class="tie">N/A</td>';
+  }
+  return `<td>${metrics.ndcg_at_10.toFixed(3)}</td><td>${metrics.mrr_at_10.toFixed(3)}</td><td>${metrics.recall_at_10.toFixed(3)}</td>`;
+}
+
+type GoldenQueryMetricsLike = GoldenQualityReport['per_query'][number]['model_a'];
+
 function buildQueryDetails(input: RenderInput): string {
   if (input.crossModel.per_query.length === 0) {
     return '<p class="meta">no per-query results captured</p>';
@@ -341,10 +427,20 @@ function buildRecommendation(input: RenderInput): string {
     }
   }
 
-  // recall: 5%+ higher
-  const recallA = reportA.scenarios.retrieval_quality.default_recall_at_10;
-  const recallB = reportB.scenarios.retrieval_quality.default_recall_at_10;
-  axes.push(recallAxis(recallA, recallB, 0.05));
+  if (input.goldenQuality) {
+    axes.push(qualityAxis(
+      'labelled quality (nDCG@10)',
+      input.goldenQuality.model_a.ndcg_at_10,
+      input.goldenQuality.model_b.ndcg_at_10,
+      input.goldenQuality.labelled_query_count,
+      0.05,
+    ));
+  } else {
+    // recall: 5%+ higher
+    const recallA = reportA.scenarios.retrieval_quality.default_recall_at_10;
+    const recallB = reportB.scenarios.retrieval_quality.default_recall_at_10;
+    axes.push(recallAxis(recallA, recallB, 0.05));
+  }
 
   // diversity (no winner)
   axes.push({
@@ -419,6 +515,17 @@ function recallAxis(a: number, b: number, threshold: number): RecommendationAxis
   return diff >= threshold
     ? { axis: 'recall@10 (if labelled)', pick: winner, reason: `${winner === 'A' ? "A's" : "B's"} recall is ${(diff * 100).toFixed(1)}pp higher.` }
     : { axis: 'recall@10', pick: 'none', reason: `gap (${(diff * 100).toFixed(1)}pp) below threshold (${(threshold * 100).toFixed(0)}pp).` };
+}
+
+function qualityAxis(label: string, a: number, b: number, queryCount: number, threshold: number): RecommendationAxis {
+  if (queryCount === 0) return { axis: label, pick: 'none', reason: 'golden file had no scored positive labels.' };
+  const winner = a > b ? 'A' : 'B';
+  const winnerVal = Math.max(a, b);
+  const loserVal = Math.min(a, b);
+  const diff = winnerVal - loserVal;
+  return diff >= threshold
+    ? { axis: label, pick: winner, reason: `${winner === 'A' ? "A's" : "B's"} nDCG@10 is ${(diff * 100).toFixed(1)}pp higher across ${queryCount} labelled queries.` }
+    : { axis: label, pick: 'none', reason: `labelled gap (${(diff * 100).toFixed(1)}pp) below threshold (${(threshold * 100).toFixed(0)}pp).` };
 }
 
 function formatMeta(input: RenderInput): string {
