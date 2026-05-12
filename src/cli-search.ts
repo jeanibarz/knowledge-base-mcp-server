@@ -30,6 +30,7 @@ import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import { readFreshnessManifest } from './freshness-manifest.js';
 import {
   compactTimingPayload,
   elapsedMs,
@@ -470,6 +471,15 @@ export async function computeStaleness(modelId: string, scopedKb?: string): Prom
   }
   const indexMtimeMs = indexStat.mtimeMs;
   const indexMtime = new Date(indexMtimeMs).toISOString();
+  const manifest = await readFreshnessManifest({
+    modelId,
+    modelDir: path.dirname(path.dirname(binaryPath)),
+    indexMtimeMs,
+  });
+  if (manifest !== null) {
+    const fromManifest = stalenessFromManifest(manifest, indexMtime, scopedKb);
+    if (fromManifest !== null) return fromManifest;
+  }
 
   let kbs: string[];
   try {
@@ -550,6 +560,37 @@ function emptyStaleness(indexMtime: string | null, scopedKb?: string): Staleness
     newFiles: 0,
     scope: { kb: scopedKb, modifiedFiles: 0, newFiles: 0 },
     global: { modifiedFiles: 0, newFiles: 0 },
+  };
+}
+
+function stalenessFromManifest(
+  manifest: Awaited<ReturnType<typeof readFreshnessManifest>>,
+  indexMtime: string,
+  scopedKb?: string,
+): Staleness | null {
+  if (manifest === null) return null;
+  const global = Object.values(manifest.kbs).reduce<StalenessCounts>(
+    (counts, entry) => ({
+      modifiedFiles: counts.modifiedFiles + entry.modified_files,
+      newFiles: counts.newFiles + entry.new_files,
+    }),
+    { modifiedFiles: 0, newFiles: 0 },
+  );
+  if (!scopedKb) {
+    return { indexMtime, modifiedFiles: global.modifiedFiles, newFiles: global.newFiles };
+  }
+  const scopedEntry = manifest.kbs[scopedKb];
+  if (scopedEntry === undefined) return null;
+  const scopeCounts = {
+    modifiedFiles: scopedEntry.modified_files,
+    newFiles: scopedEntry.new_files,
+  };
+  return {
+    indexMtime,
+    modifiedFiles: scopeCounts.modifiedFiles,
+    newFiles: scopeCounts.newFiles,
+    scope: { kb: scopedKb, ...scopeCounts },
+    global,
   };
 }
 

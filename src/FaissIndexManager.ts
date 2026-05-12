@@ -34,6 +34,7 @@ import {
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
   saveFaissStoreAtomic,
 } from './faiss-store-layout.js';
+import { writeFreshnessManifest } from './freshness-manifest.js';
 import {
   createSimilaritySearchPostFilter,
   type ScoredDocument,
@@ -926,6 +927,21 @@ export class FaissIndexManager {
           recordFailure(null, 'sidecar', sidecarError);
           throw sidecarError;
         }
+      }
+      try {
+        const activeIndexFilePath = await this.resolveActiveIndexFilePath();
+        if (activeIndexFilePath !== null) {
+          const indexStat = await fsp.stat(activeIndexFilePath);
+          await writeFreshnessManifest({
+            modelId: this.modelId,
+            modelDir: this.modelDir,
+            indexMtimeMs: indexStat.mtimeMs,
+          });
+        }
+      } catch (manifestError: unknown) {
+        logger.warn(
+          `Could not write freshness manifest for ${this.modelId}: ${toError(manifestError).message}`,
+        );
       }
       logger.debug('FAISS index update process completed.');
       runSummary.status = runSummary.failure_count > 0 ? 'partial' : 'success';

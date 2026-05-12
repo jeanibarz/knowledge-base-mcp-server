@@ -3,6 +3,7 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { buildAgeBudgetFooter } from './cli-search-staleness.js';
+import { writeFreshnessManifest } from './freshness-manifest.js';
 
 const ORIGINAL_ENV = {
   KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
@@ -81,6 +82,59 @@ describe('computeStaleness', () => {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it('uses a valid freshness manifest without walking the KB tree', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-search-manifest-'));
+    try {
+      const kbRoot = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const modelId = 'ollama__manifest-stale-test';
+      process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+      process.env.FAISS_INDEX_PATH = faissDir;
+
+      const indexBinaryPath = path.join(
+        faissDir,
+        'models',
+        modelId,
+        'faiss.index',
+        'faiss.index',
+      );
+      await fsp.mkdir(path.dirname(indexBinaryPath), { recursive: true });
+      await fsp.writeFile(indexBinaryPath, 'index', 'utf-8');
+
+      const alphaModified = path.join(kbRoot, 'alpha', 'modified.md');
+      const betaNew = path.join(kbRoot, 'beta', 'new.md');
+      await fsp.mkdir(path.dirname(alphaModified), { recursive: true });
+      await fsp.mkdir(path.dirname(betaNew), { recursive: true });
+      await fsp.writeFile(alphaModified, '# Alpha modified\n', 'utf-8');
+      await fsp.writeFile(betaNew, '# Beta new\n', 'utf-8');
+
+      const indexTime = new Date('2026-05-03T15:30:00.000Z');
+      const afterIndex = new Date('2026-05-03T16:00:00.000Z');
+      await fsp.utimes(indexBinaryPath, indexTime, indexTime);
+      await fsp.utimes(alphaModified, afterIndex, afterIndex);
+      await fsp.utimes(betaNew, indexTime, indexTime);
+
+      await writeFreshnessManifest({
+        modelId,
+        modelDir: path.join(faissDir, 'models', modelId),
+        kbRootDir: kbRoot,
+        indexMtimeMs: indexTime.getTime(),
+      });
+      await fsp.rm(kbRoot, { recursive: true, force: true });
+
+      jest.resetModules();
+      const { computeStaleness } = await import('./cli-search.js');
+      await expect(computeStaleness(modelId, 'alpha')).resolves.toMatchObject({
+        modifiedFiles: 1,
+        newFiles: 1,
+        scope: { kb: 'alpha', modifiedFiles: 1, newFiles: 1 },
+        global: { modifiedFiles: 1, newFiles: 2 },
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('buildAgeBudgetFooter (issue #218)', () => {
