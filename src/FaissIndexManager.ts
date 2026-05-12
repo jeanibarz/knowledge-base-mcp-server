@@ -41,6 +41,11 @@ import {
   type SimilaritySearchFilters,
 } from './search-filters.js';
 import { withSidecarLock } from './write-lock.js';
+import {
+  recordIngestFailure,
+  recordIngestSuccess,
+  shouldRetryIngest,
+} from './ingest-quarantine.js';
 
 export { MigrationRefusedError } from './layout-bootstrap.js';
 
@@ -148,7 +153,7 @@ export type IndexUpdateSummaryStatus = 'success' | 'partial' | 'failed' | 'never
 
 export interface IndexUpdateFailureSummary {
   relative_path: string | null;
-  phase: 'load' | 'save' | 'sidecar' | 'unknown';
+  phase: 'load' | 'indexing' | 'save' | 'sidecar' | 'unknown';
   code: string | null;
   message: string;
 }
@@ -663,6 +668,39 @@ export class FaissIndexManager {
         runSummary.failures.push(failureSummary(relativePath, phase, error));
       }
     };
+    const recordQuarantineFailure = async (
+      kbPath: string,
+      relativePath: string,
+      sourceHash: string | null,
+      error: unknown,
+    ): Promise<void> => {
+      try {
+        await recordIngestFailure({
+          kbPath,
+          relativePath,
+          sourceHash,
+          error,
+        });
+      } catch (quarantineError: unknown) {
+        logger.warn(
+          `Could not update ingest quarantine for ${path.join(kbPath, relativePath)}: ` +
+            toError(quarantineError).message,
+        );
+      }
+    };
+    const recordQuarantineSuccess = async (
+      kbPath: string,
+      relativePath: string,
+    ): Promise<void> => {
+      try {
+        await recordIngestSuccess(kbPath, relativePath);
+      } catch (quarantineError: unknown) {
+        logger.warn(
+          `Could not clear ingest quarantine for ${path.join(kbPath, relativePath)}: ` +
+            toError(quarantineError).message,
+        );
+      }
+    };
     try {
       const forceReindex = opts.force === true;
       // FAISS has no per-vector delete API and we keep one global store
@@ -756,11 +794,14 @@ export class FaissIndexManager {
 
       // Process each knowledge base directory.
       const changedFileDocuments: Array<{
+        knowledgeBasePath: string;
+        relativePath: string;
         filePath: string;
         indexFilePath: string;
         fileHash: string;
         documents: Document[];
       }> = [];
+      const successfulIndexedFiles: Array<{ knowledgeBasePath: string; relativePath: string }> = [];
       const fsConcurrency = resolveFsConcurrency();
       const fileScanJobs = knowledgeBaseFiles.flatMap(
         ({ knowledgeBaseName, knowledgeBasePath, filePaths }) => filePaths.map((filePath) => {
@@ -804,10 +845,30 @@ export class FaissIndexManager {
         runSummary.files_scanned += 1;
 
         if (!scan.success) {
-          logger.error(`Error reading file ${scan.filePath}:`, toError(scan.error));
+          logger.warn(`Quarantining unreadable file ${scan.filePath}:`, toError(scan.error));
           runSummary.files_skipped += 1;
           loaderFailurePaths.add(scan.filePath);
           recordFailure(scan.relativePath, 'load', scan.error);
+          await recordQuarantineFailure(
+            scan.knowledgeBasePath,
+            scan.relativePath,
+            null,
+            scan.error,
+          );
+          continue;
+        }
+
+        const retryDecision = await shouldRetryIngest(
+          scan.knowledgeBasePath,
+          scan.relativePath,
+          { sourceHash: scan.fileHash },
+        );
+        if (!retryDecision.retry) {
+          runSummary.files_skipped += 1;
+          logger.warn(
+            `Skipping quarantined file ${scan.filePath} ` +
+              `(${retryDecision.reason}; next_retry_at=${retryDecision.record?.next_retry_at ?? '<unknown>'})`,
+          );
           continue;
         }
 
@@ -832,22 +893,45 @@ export class FaissIndexManager {
           try {
             content = await loadFile(scan.filePath);
           } catch (error: unknown) {
-            logger.error(`Error loading file ${scan.filePath}:`, toError(error));
+            logger.warn(`Quarantining load failure for ${scan.filePath}:`, toError(error));
             runSummary.files_skipped += 1;
             loaderFailurePaths.add(scan.filePath);
             recordFailure(scan.relativePath, 'load', error);
+            await recordQuarantineFailure(
+              scan.knowledgeBasePath,
+              scan.relativePath,
+              scan.fileHash,
+              error,
+            );
             continue;
           }
 
-          const documentsToAdd: Document[] = await buildChunkDocuments(
-            scan.filePath,
-            content,
-            scan.knowledgeBaseName,
-          );
+          let documentsToAdd: Document[];
+          try {
+            documentsToAdd = await buildChunkDocuments(
+              scan.filePath,
+              content,
+              scan.knowledgeBaseName,
+            );
+          } catch (error: unknown) {
+            logger.warn(`Quarantining chunking failure for ${scan.filePath}:`, toError(error));
+            runSummary.files_skipped += 1;
+            loaderFailurePaths.add(scan.filePath);
+            recordFailure(scan.relativePath, 'indexing', error);
+            await recordQuarantineFailure(
+              scan.knowledgeBasePath,
+              scan.relativePath,
+              scan.fileHash,
+              error,
+            );
+            continue;
+          }
           runSummary.chunks_attempted += documentsToAdd.length;
 
           if (documentsToAdd.length > 0) {
             changedFileDocuments.push({
+              knowledgeBasePath: scan.knowledgeBasePath,
+              relativePath: scan.relativePath,
               filePath: scan.filePath,
               indexFilePath: scan.indexFilePath,
               fileHash: scan.fileHash,
@@ -857,17 +941,37 @@ export class FaissIndexManager {
             logger.debug(`No documents generated from ${scan.filePath}. Skipping index update.`);
           }
         } else {
+          await recordQuarantineSuccess(scan.knowledgeBasePath, scan.relativePath);
           runSummary.files_unchanged += 1;
           logger.debug(`File ${scan.filePath} unchanged, skipping.`);
         }
       }
       const documentsToAdd = changedFileDocuments.flatMap((entry) => entry.documents);
-      if (await this.addDocumentsToIndex(documentsToAdd)) {
+      let addedChangedDocuments = false;
+      try {
+        addedChangedDocuments = await this.addDocumentsToIndex(documentsToAdd);
+      } catch (error: unknown) {
+        for (const entry of changedFileDocuments) {
+          recordFailure(entry.relativePath, 'indexing', error);
+          await recordQuarantineFailure(
+            entry.knowledgeBasePath,
+            entry.relativePath,
+            entry.fileHash,
+            error,
+          );
+        }
+        throw error;
+      }
+      if (addedChangedDocuments) {
         indexMutated = true;
         runSummary.index_mutated = true;
         runSummary.chunks_added += documentsToAdd.length;
         for (const entry of changedFileDocuments) {
           pendingHashWrites.push({ path: entry.indexFilePath, hash: entry.fileHash });
+          successfulIndexedFiles.push({
+            knowledgeBasePath: entry.knowledgeBasePath,
+            relativePath: entry.relativePath,
+          });
           logger.debug(`Index updated in-memory for ${entry.filePath}.`);
           processedFiles += 1;
           await reportProgress(entry.filePath);
@@ -878,33 +982,98 @@ export class FaissIndexManager {
       // then attempt to build the FAISS index from all available documents.
       if (this.faissIndex === null && anyFileProcessed) {
         logger.info('No updates detected but FAISS index is not initialized. Building index from all available documents...');
-        const fallbackDocuments: Array<{ filePath: string; documents: Document[] }> = [];
+        const fallbackDocuments: Array<{
+          knowledgeBasePath: string;
+          relativePath: string;
+          filePath: string;
+          fileHash: string | null;
+          documents: Document[];
+        }> = [];
         for (const { knowledgeBaseName, knowledgeBasePath, filePaths } of knowledgeBaseFiles) {
           for (const filePath of filePaths) {
+            const relativePath = path.relative(knowledgeBasePath, filePath);
+            let fileHash: string | null = null;
+            try {
+              fileHash = await calculateSHA256(filePath);
+            } catch {
+              // The first pass already records read failures. Avoid double-counting here.
+            }
+            const retryDecision = await shouldRetryIngest(
+              knowledgeBasePath,
+              relativePath,
+              { sourceHash: fileHash },
+            );
+            if (!retryDecision.retry) {
+              continue;
+            }
             // Issue #46 — same extension-routed loader as the per-file path.
             let content = '';
             try {
               content = await loadFile(filePath);
             } catch (error: unknown) {
-              logger.error(`Error loading file ${filePath}:`, toError(error));
+              logger.warn(`Quarantining fallback load failure for ${filePath}:`, toError(error));
               if (!loaderFailurePaths.has(filePath)) {
                 runSummary.files_skipped += 1;
-                recordFailure(path.relative(knowledgeBasePath, filePath), 'load', error);
+                recordFailure(relativePath, 'load', error);
+                await recordQuarantineFailure(
+                  knowledgeBasePath,
+                  relativePath,
+                  fileHash,
+                  error,
+                );
               }
               continue;
             }
-            const documents = await buildChunkDocuments(
-              filePath,
-              content,
-              knowledgeBaseName,
-            );
+            let documents: Document[];
+            try {
+              documents = await buildChunkDocuments(
+                filePath,
+                content,
+                knowledgeBaseName,
+              );
+            } catch (error: unknown) {
+              if (!loaderFailurePaths.has(filePath)) {
+                runSummary.files_skipped += 1;
+                recordFailure(relativePath, 'indexing', error);
+                await recordQuarantineFailure(
+                  knowledgeBasePath,
+                  relativePath,
+                  fileHash,
+                  error,
+                );
+              }
+              continue;
+            }
             runSummary.chunks_attempted += documents.length;
             if (documents.length > 0) {
-              fallbackDocuments.push({ filePath, documents });
+              fallbackDocuments.push({
+                knowledgeBasePath,
+                relativePath,
+                filePath,
+                fileHash,
+                documents,
+              });
             }
           }
         }
-        if (await this.addDocumentsToIndex(fallbackDocuments.flatMap((entry) => entry.documents))) {
+        let addedFallbackDocuments = false;
+        try {
+          addedFallbackDocuments = await this.addDocumentsToIndex(
+            fallbackDocuments.flatMap((entry) => entry.documents),
+          );
+        } catch (error: unknown) {
+          for (const entry of fallbackDocuments) {
+            recordFailure(entry.relativePath, 'indexing', error);
+            await recordQuarantineFailure(
+              entry.knowledgeBasePath,
+              entry.relativePath,
+              entry.fileHash,
+              error,
+            );
+          }
+          throw error;
+        }
+        if (addedFallbackDocuments) {
           indexMutated = true;
           runSummary.index_mutated = true;
           runSummary.chunks_added += fallbackDocuments.reduce(
@@ -912,6 +1081,10 @@ export class FaissIndexManager {
             0,
           );
           for (const entry of fallbackDocuments) {
+            successfulIndexedFiles.push({
+              knowledgeBasePath: entry.knowledgeBasePath,
+              relativePath: entry.relativePath,
+            });
             processedFiles += 1;
             await reportProgress(entry.filePath);
           }
@@ -947,6 +1120,9 @@ export class FaissIndexManager {
         try {
           await writeSidecarHashes(pendingHashWrites);
           runSummary.sidecars_written = pendingHashWrites.length > 0;
+          for (const entry of successfulIndexedFiles) {
+            await recordQuarantineSuccess(entry.knowledgeBasePath, entry.relativePath);
+          }
         } catch (sidecarError: unknown) {
           recordFailure(null, 'sidecar', sidecarError);
           throw sidecarError;

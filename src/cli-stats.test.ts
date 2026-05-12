@@ -20,6 +20,10 @@ function payload(): KbStatsPayload {
         last_updated_at: '2026-05-09T18:42:18.460Z',
       },
     },
+    quarantined: {
+      beta: 0,
+      alpha: 0,
+    },
     embedding: {
       provider: 'ollama',
       model: 'nomic-embed-text:latest',

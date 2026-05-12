@@ -19,6 +19,7 @@ import { LIST_HELP, runList } from './cli-list.js';
 import { LLM_HELP, runLlm } from './cli-llm.js';
 import { MODELS_HELP, runModels } from './cli-models.js';
 import { PROMOTE_HELP, runPromote } from './cli-promote.js';
+import { QUARANTINE_HELP, runQuarantine } from './cli-quarantine.js';
 import { REMEMBER_HELP, runRemember } from './cli-remember.js';
 import { SEARCH_HELP, runSearch } from './cli-search.js';
 import { SERVE_HELP, runServe } from './cli-serve.js';
@@ -57,6 +58,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'stale-check',  summary: 'Scan markdown notes for path / URL references that no longer resolve.',  help: STALE_CHECK_HELP,  handler: runStaleCheck },
   { name: 'superseded',   summary: 'Scan a KB for obsolete / contradicted / deprecated / stale notes.',      help: SUPERSEDED_HELP,   handler: runSuperseded },
   { name: 'promote',      summary: 'Review and update lifecycle frontmatter on a KB note.',                  help: PROMOTE_HELP,      handler: runPromote },
+  { name: 'quarantine',   summary: 'Inspect and manage per-file ingest quarantine entries.',                 help: QUARANTINE_HELP,   handler: runQuarantine },
   { name: 'where',        summary: 'Recommend the best KB and file for a given topic.',                      help: WHERE_HELP,        handler: runWhere },
   { name: 'models',       summary: 'Manage embedding models (list, add, set-active, remove).',               help: MODELS_HELP,       handler: runModels },
   { name: 'llm',          summary: 'Configure local LLM endpoints and managed warm model services.',          help: LLM_HELP,          handler: runLlm },
