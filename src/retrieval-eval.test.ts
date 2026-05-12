@@ -2,12 +2,14 @@ import { describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import yaml from 'js-yaml';
+import { parseEvalArgs } from './cli-eval.js';
 import type { ScoredDocument } from './formatter.js';
 import type { Staleness } from './cli-search.js';
 import {
   evaluateRetrievalCase,
   normalizeRetrievalEvalFixture,
   retrievalEvalExitCode,
+  resolveRetrievalEvalMode,
   summarizeRetrievalEval,
   type RetrievalEvalCase,
 } from './retrieval-eval.js';
@@ -39,6 +41,28 @@ function fixtureCase(overrides: Partial<RetrievalEvalCase> = {}): RetrievalEvalC
 }
 
 describe('normalizeRetrievalEvalFixture', () => {
+  it('normalizes fixture-level and case-level retrieval modes', () => {
+    const fixture = normalizeRetrievalEvalFixture({
+      gate: false,
+      mode: 'hybrid',
+      cases: [{
+        name: 'auto exact token',
+        query: 'INDEX_NOT_INITIALIZED',
+        mode: 'auto',
+      }],
+    });
+
+    expect(fixture.mode).toBe('hybrid');
+    expect(fixture.cases[0].mode).toBe('auto');
+  });
+
+  it('rejects invalid retrieval modes in fixtures', () => {
+    expect(() => normalizeRetrievalEvalFixture({
+      mode: 'sparse',
+      cases: [{ query: 'deployment notes' }],
+    })).toThrow('fixture mode must be "dense", "lexical", "hybrid", or "auto"');
+  });
+
   it('normalizes fixture cases with source, metadata, duplicate, gate, and stale policy fields', () => {
     const fixture = normalizeRetrievalEvalFixture({
       gate: true,
@@ -99,6 +123,36 @@ describe('normalizeRetrievalEvalFixture', () => {
   });
 });
 
+describe('parseEvalArgs', () => {
+  it('parses retrieval mode selection', () => {
+    expect(parseEvalArgs(['fixture.yml', '--mode=hybrid']).mode).toBe('hybrid');
+    expect(parseEvalArgs(['fixture.yml']).mode).toBeUndefined();
+  });
+
+  it('rejects invalid retrieval modes', () => {
+    expect(() => parseEvalArgs(['fixture.yml', '--mode=sparse'])).toThrow(
+      "invalid --mode: --mode=sparse (expected 'dense', 'lexical', 'hybrid', or 'auto')",
+    );
+  });
+});
+
+describe('resolveRetrievalEvalMode', () => {
+  it('preserves explicit dense mode', () => {
+    expect(resolveRetrievalEvalMode('dense', 'INDEX_NOT_INITIALIZED')).toEqual({
+      requestedMode: 'dense',
+      effectiveMode: 'dense',
+    });
+  });
+
+  it('records auto mode decisions per query', () => {
+    expect(resolveRetrievalEvalMode('auto', 'INDEX_NOT_INITIALIZED')).toEqual({
+      requestedMode: 'auto',
+      effectiveMode: 'hybrid',
+      autoMode: { mode: 'hybrid', reason: 'constant or error-code token' },
+    });
+  });
+});
+
 describe('evaluateRetrievalCase', () => {
   it('passes when required sources and metadata are present and duplicate budget is respected', () => {
     const result = evaluateRetrievalCase(
@@ -121,6 +175,28 @@ describe('evaluateRetrievalCase', () => {
     expect(result.passed).toBe(true);
     expect(result.duplicateGroups).toBe(1);
     expect(result.failures).toEqual([]);
+    expect(result.requestedMode).toBe('dense');
+    expect(result.effectiveMode).toBe('dense');
+  });
+
+  it('records requested and effective retrieval mode in case results', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase(),
+      [],
+      FRESH,
+      false,
+      {
+        requestedMode: 'auto',
+        effectiveMode: 'hybrid',
+        autoMode: { mode: 'hybrid', reason: 'constant or error-code token' },
+      },
+    );
+
+    expect(summarizeRetrievalEval([result]).cases[0]).toMatchObject({
+      requestedMode: 'auto',
+      effectiveMode: 'hybrid',
+      autoMode: { mode: 'hybrid', reason: 'constant or error-code token' },
+    });
   });
 
   it('fails when a required source is missing', () => {

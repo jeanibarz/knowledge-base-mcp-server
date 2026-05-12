@@ -5,12 +5,13 @@ import {
   ActiveModelResolutionError,
   resolveActiveModel,
 } from './active-model.js';
-import { computeStaleness } from './cli-search.js';
+import { computeStaleness, type SearchMode } from './cli-search.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import {
   evaluateRetrievalCase,
   formatRetrievalEvalMarkdown,
   normalizeRetrievalEvalFixture,
+  retrieveForRetrievalEvalCase,
   retrievalEvalExitCode,
   summarizeRetrievalEval,
   type RetrievalEvalFixture,
@@ -22,6 +23,7 @@ interface EvalArgs {
   format: 'md' | 'json';
   k: number;
   threshold: number;
+  mode?: SearchMode;
 }
 
 const DEFAULT_K = 10;
@@ -31,7 +33,7 @@ export const EVAL_HELP = `kb eval — run fixture-driven retrieval checks
 
 Usage:
   kb eval <fixture.yml|json> [--model=<id>] [--k=<int>] [--threshold=<float>]
-                              [--format=md|json]
+                              [--mode=dense|lexical|hybrid|auto] [--format=md|json]
 
 Reads cases from a YAML or JSON fixture and runs each query against the
 active model's index. Each case can set \`query\`, optional \`kb\`,
@@ -48,6 +50,10 @@ Options:
   --model=<id>          Override the active model for the run (RFC 013).
   --k=<int>             Top-K results per case (default: ${DEFAULT_K}).
   --threshold=<float>   Max similarity score; lower = closer (default: ${DEFAULT_THRESHOLD}).
+                        Dense-only; lexical and hybrid modes ignore it.
+  --mode=dense|lexical|hybrid|auto
+                        Retrieval mode (default: dense). Fixture-level mode
+                        sets a default; case-level mode overrides both.
   --format=md|json      Output format (default: md).
   --help, -h            Show this help.
 
@@ -119,14 +125,14 @@ export async function runEval(rest: string[]): Promise<number> {
   const results = [];
   for (const fixtureCase of fixture.cases) {
     try {
-      const caseResults = await manager.similaritySearch(
-        fixtureCase.query,
-        fixtureCase.k ?? parsed.k,
-        fixtureCase.threshold ?? parsed.threshold,
-        fixtureCase.kb,
-      );
+      const requestedMode = fixtureCase.mode ?? parsed.mode ?? fixture.mode ?? 'dense';
+      const search = await retrieveForRetrievalEvalCase(fixtureCase, {
+        manager,
+        defaultK: parsed.k,
+        defaultThreshold: parsed.threshold,
+      }, requestedMode);
       const staleness = await computeStaleness(activeModelId, fixtureCase.kb);
-      results.push(evaluateRetrievalCase(fixtureCase, caseResults, staleness, fixture.gate));
+      results.push(evaluateRetrievalCase(fixtureCase, search.results, staleness, fixture.gate, search));
     } catch (err) {
       process.stderr.write(`kb eval: ${fixtureCase.name}: ${(err as Error).message}\n`);
       return 1;
@@ -165,6 +171,14 @@ export function parseEvalArgs(rest: string[]): EvalArgs {
       const value = raw.slice('--format='.length);
       if (value !== 'md' && value !== 'json') throw new Error(`invalid --format: ${raw}`);
       out.format = value;
+      continue;
+    }
+    if (raw.startsWith('--mode=')) {
+      const value = raw.slice('--mode='.length);
+      if (value !== 'dense' && value !== 'lexical' && value !== 'hybrid' && value !== 'auto') {
+        throw new Error(`invalid --mode: ${raw} (expected 'dense', 'lexical', 'hybrid', or 'auto')`);
+      }
+      out.mode = value;
       continue;
     }
     if (raw.startsWith('--k=')) {
@@ -206,6 +220,9 @@ function toJsonReport(report: ReturnType<typeof summarizeRetrievalEval>): unknow
       query: result.query,
       ...(result.kb !== undefined ? { kb: result.kb } : {}),
       gate: result.gate,
+      requested_mode: result.requestedMode,
+      effective_mode: result.effectiveMode,
+      ...(result.autoMode !== undefined ? { auto_mode: result.autoMode } : {}),
       passed: result.passed,
       failures: result.failures,
       warnings: result.warnings,
