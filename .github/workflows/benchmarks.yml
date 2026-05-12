@@ -3,10 +3,16 @@ name: Benchmarks
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      enforce_budgets:
+        description: Fail the benchmark job when budget diff rows are FAIL.
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   benchmark-harness:
-    continue-on-error: true
+    continue-on-error: ${{ !(github.event_name == 'workflow_dispatch' && inputs.enforce_budgets) }}
     runs-on: ubuntu-latest
 
     steps:
@@ -27,6 +33,23 @@ jobs:
           BENCH_PROVIDER: stub
           BENCH_RESULTS_PREFIX: ci
         run: npm run bench
+
+      - name: Summarize benchmark budget diff
+        if: always()
+        env:
+          BENCH_BUDGET_FAIL: ${{ github.event_name == 'workflow_dispatch' && inputs.enforce_budgets && '1' || '0' }}
+        run: |
+          current="$(find benchmarks/results -maxdepth 1 -name 'ci-*.json' -print -quit)"
+          if [ -z "$current" ]; then
+            {
+              echo "## Benchmark regression summary"
+              echo
+              echo "No current benchmark result was produced, so no budget diff could be computed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          node build/benchmarks/budget-diff.js --current "$current"
 
       - name: Upload benchmark artifact
         if: always()
