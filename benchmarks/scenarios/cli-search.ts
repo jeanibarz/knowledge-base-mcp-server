@@ -30,6 +30,8 @@ const FAKE_MODEL_ID = 'fake__bench-fake';
 const FAKE_MODEL_NAME = 'bench-fake';
 
 export interface CliSearchTimingFields {
+  lexical_kb_list_ms?: number;
+  lexical_search_ms?: number;
   bootstrap_ms?: number;
   model_resolution_ms?: number;
   manager_load_ms?: number;
@@ -38,6 +40,7 @@ export interface CliSearchTimingFields {
   embed_query_ms?: number;
   faiss_search_ms?: number;
   query_search_ms?: number;
+  fusion_ms?: number;
   post_filter_ms?: number;
   staleness_ms?: number;
   total_ms?: number;
@@ -49,9 +52,21 @@ export interface CliSearchRepetition {
   timing: CliSearchTimingFields | null;
 }
 
-interface CliSearchVariantSpec {
+type CliSearchMode = 'dense' | 'lexical' | 'hybrid' | 'auto';
+type CliSearchEffectiveMode = Exclude<CliSearchMode, 'auto'>;
+type CliSearchScope = 'global' | 'scoped';
+type CliSearchQueryShape = 'prose' | 'code';
+type CliSearchProfile = 'default' | 'matrix';
+
+export interface CliSearchVariantSpec {
   name: string;
   format: 'json' | 'md';
+  mode: CliSearchMode;
+  effectiveMode: CliSearchEffectiveMode;
+  scope: CliSearchScope;
+  queryShape: CliSearchQueryShape;
+  k: number;
+  groupBySource: boolean;
   args: string[];
 }
 
@@ -62,7 +77,8 @@ interface CliSearchScenarioOptions {
   chunkSize?: number;
 }
 
-const DEFAULT_REPETITIONS = 10;
+const DEFAULT_REPETITIONS = 5;
+const DEFAULT_MATRIX_K_VALUES = [5, 10, 25] as const;
 
 export async function runCliSearchScenario(
   context: ScenarioContext,
@@ -85,6 +101,14 @@ export async function runCliSearchScenario(
     targetChunksPerFile,
     chunkSize: fixtureOverrides.chunkSize ?? options.chunkSize,
   });
+  const secondaryFixture = await generateKnowledgeBaseFixture({
+    files: Math.max(1, Math.min(2, files)),
+    knowledgeBaseName: `${context.knowledgeBaseName}-secondary`,
+    rootDir: context.knowledgeBasesRootDir,
+    seed: context.fixtureSeed + 71,
+    targetChunksPerFile: Math.max(1, Math.min(2, targetChunksPerFile)),
+    chunkSize: fixtureOverrides.chunkSize ?? options.chunkSize,
+  });
 
   await registerFakeModel(context.faissIndexPath);
 
@@ -93,28 +117,142 @@ export async function runCliSearchScenario(
 
   await prebuildIndex(cliPath, childEnv, fixture.query);
 
-  const variants: CliSearchVariantSpec[] = [
-    { name: 'json-global', format: 'json', args: ['--format=json', '--timing'] },
-    { name: 'md-global', format: 'md', args: ['--format=md', '--timing'] },
-  ];
+  const profile = parseCliSearchProfile(process.env.BENCH_CLI_SEARCH_PROFILE);
+  const variants = buildCliSearchVariants(profile, context.knowledgeBaseName);
+  const queries: Record<CliSearchQueryShape, string> = {
+    prose: fixture.query,
+    code: 'doc-001.md --refresh INDEX_NOT_INITIALIZED',
+  };
 
   const variantResults: CliSearchVariantResult[] = [];
   for (const variant of variants) {
     // One warmup invocation to absorb fs / page-cache cold-start noise so the
     // measured `process_start_ms` reflects steady-state Node import cost.
-    await spawnCliSearch(cliPath, [fixture.query, ...variant.args], childEnv);
+    await spawnCliSearch(cliPath, [queries[variant.queryShape], ...variant.args], childEnv);
 
     const reps: CliSearchRepetition[] = [];
     for (let r = 0; r < repetitions; r += 1) {
-      reps.push(await spawnCliSearch(cliPath, [fixture.query, ...variant.args], childEnv));
+      reps.push(await spawnCliSearch(cliPath, [queries[variant.queryShape], ...variant.args], childEnv));
     }
-    variantResults.push(aggregateCliSearchVariant(variant.name, variant.format, reps));
+    variantResults.push(aggregateCliSearchVariant(variant, reps));
   }
 
   return {
-    fixture_files: fixture.files,
-    fixture_chunk_count: fixture.chunkCount,
+    schema_version: 2,
+    profile,
+    fixture_knowledge_bases: 2,
+    fixture_files: fixture.files + secondaryFixture.files,
+    fixture_chunk_count: fixture.chunkCount + secondaryFixture.chunkCount,
     variants: variantResults,
+  };
+}
+
+export function parseCliSearchProfile(value: string | undefined): CliSearchProfile {
+  return value === 'matrix' ? 'matrix' : 'default';
+}
+
+export function buildCliSearchVariants(
+  profile: CliSearchProfile = 'default',
+  scopedKnowledgeBaseName = 'default',
+): CliSearchVariantSpec[] {
+  if (profile === 'matrix') {
+    return buildMatrixCliSearchVariants(scopedKnowledgeBaseName);
+  }
+
+  return [
+    makeVariant({ mode: 'dense', format: 'json', scope: 'global', k: 10, queryShape: 'prose', scopedKnowledgeBaseName }),
+    makeVariant({ mode: 'lexical', format: 'json', scope: 'global', k: 10, queryShape: 'prose', scopedKnowledgeBaseName }),
+    makeVariant({ mode: 'hybrid', format: 'json', scope: 'global', k: 10, queryShape: 'prose', scopedKnowledgeBaseName }),
+    makeVariant({ mode: 'auto', effectiveMode: 'hybrid', format: 'json', scope: 'global', k: 10, queryShape: 'code', scopedKnowledgeBaseName }),
+    makeVariant({ mode: 'dense', format: 'md', scope: 'scoped', k: 10, queryShape: 'prose', scopedKnowledgeBaseName }),
+    makeVariant({ mode: 'dense', format: 'json', scope: 'global', k: 5, queryShape: 'prose', scopedKnowledgeBaseName }),
+    makeVariant({ mode: 'dense', format: 'json', scope: 'global', k: 25, queryShape: 'prose', groupBySource: true, scopedKnowledgeBaseName }),
+  ];
+}
+
+function buildMatrixCliSearchVariants(scopedKnowledgeBaseName: string): CliSearchVariantSpec[] {
+  const variants: CliSearchVariantSpec[] = [];
+  const modes: Array<{
+    mode: CliSearchMode;
+    effectiveMode?: CliSearchEffectiveMode;
+    queryShape: CliSearchQueryShape;
+  }> = [
+    { mode: 'dense', queryShape: 'prose' },
+    { mode: 'lexical', queryShape: 'prose' },
+    { mode: 'hybrid', queryShape: 'prose' },
+    { mode: 'auto', effectiveMode: 'dense', queryShape: 'prose' },
+    { mode: 'auto', effectiveMode: 'hybrid', queryShape: 'code' },
+  ];
+
+  for (const mode of modes) {
+    for (const scope of ['global', 'scoped'] as const) {
+      for (const format of ['json', 'md'] as const) {
+        for (const k of DEFAULT_MATRIX_K_VALUES) {
+          variants.push(makeVariant({ ...mode, format, scope, k, scopedKnowledgeBaseName }));
+        }
+      }
+    }
+  }
+
+  for (const scope of ['global', 'scoped'] as const) {
+    for (const format of ['json', 'md'] as const) {
+      for (const k of DEFAULT_MATRIX_K_VALUES) {
+        variants.push(makeVariant({
+          mode: 'dense',
+          format,
+          scope,
+          k,
+          queryShape: 'prose',
+          groupBySource: true,
+          scopedKnowledgeBaseName,
+        }));
+      }
+    }
+  }
+
+  return variants;
+}
+
+function makeVariant(input: {
+  mode: CliSearchMode;
+  effectiveMode?: CliSearchEffectiveMode;
+  format: 'json' | 'md';
+  scope: CliSearchScope;
+  queryShape: CliSearchQueryShape;
+  k: number;
+  groupBySource?: boolean;
+  scopedKnowledgeBaseName: string;
+}): CliSearchVariantSpec {
+  const groupBySource = input.groupBySource ?? false;
+  const effectiveMode = input.effectiveMode ?? (input.mode === 'auto' ? 'dense' : input.mode);
+  const args = [
+    `--mode=${input.mode}`,
+    `--format=${input.format}`,
+    `--k=${input.k}`,
+    '--timing',
+  ];
+  if (input.scope === 'scoped') args.push(`--kb=${input.scopedKnowledgeBaseName}`);
+  if (groupBySource) args.push('--group-by-source');
+
+  const nameParts = [
+    input.mode === 'auto' ? `auto-${effectiveMode}` : input.mode,
+    input.format,
+    input.scope,
+    `k${input.k}`,
+    input.queryShape,
+    ...(groupBySource ? ['grouped'] : []),
+  ];
+
+  return {
+    name: nameParts.join('-'),
+    format: input.format,
+    mode: input.mode,
+    effectiveMode,
+    scope: input.scope,
+    queryShape: input.queryShape,
+    k: input.k,
+    groupBySource,
+    args,
   };
 }
 
@@ -156,16 +294,16 @@ export function parseCliSearchTimingFromStdout(stdout: string): CliSearchTimingF
 /**
  * Reduce a list of per-repetition measurements to p50/p95/p99 across wall
  * time and each named phase timing. Missing phase values are skipped (the
- * percentile is computed only over reps that emitted the field); a variant
- * with zero phase samples reports `null` for that percentile.
+ * percentile is computed only over reps that emitted the field). The legacy
+ * flat fields report `null` with zero samples; `phase_percentiles` omits the
+ * phase when no repetition emitted it.
  */
 export function aggregateCliSearchVariant(
-  name: string,
-  format: 'json' | 'md',
+  variant: CliSearchVariantSpec,
   reps: readonly CliSearchRepetition[],
 ): CliSearchVariantResult {
   if (reps.length === 0) {
-    throw new Error(`cli-search scenario: aggregateCliSearchVariant("${name}") called with no repetitions`);
+    throw new Error(`cli-search scenario: aggregateCliSearchVariant("${variant.name}") called with no repetitions`);
   }
   const wallSamples = reps.map((r) => r.wall_ms);
   const rssSamples = reps.map((r) => r.rss_peak_bytes).filter((v): v is number => v !== null);
@@ -187,14 +325,38 @@ export function aggregateCliSearchVariant(
       processStartSamples.push(Math.max(0, r.wall_ms - totalMs));
     }
   }
+  const phaseSamples: Record<string, number[]> = {
+    process_start_ms: processStartSamples,
+    lexical_kb_list_ms: sampleFor('lexical_kb_list_ms'),
+    lexical_search_ms: sampleFor('lexical_search_ms'),
+    bootstrap_ms: sampleFor('bootstrap_ms'),
+    model_resolution_ms: sampleFor('model_resolution_ms'),
+    manager_load_ms: sampleFor('manager_load_ms'),
+    index_load_ms: sampleFor('index_load_ms'),
+    dense_search_ms: sampleFor('dense_search_ms'),
+    embed_query_ms: sampleFor('embed_query_ms'),
+    faiss_search_ms: sampleFor('faiss_search_ms'),
+    query_search_ms: sampleFor('query_search_ms'),
+    fusion_ms: sampleFor('fusion_ms'),
+    post_filter_ms: sampleFor('post_filter_ms'),
+    staleness_ms: sampleFor('staleness_ms'),
+    total_ms: cliTotalSamples,
+  };
 
   return {
-    variant: name,
-    format,
+    variant: variant.name,
+    format: variant.format,
+    mode: variant.mode,
+    effective_mode: variant.effectiveMode,
+    scope: variant.scope,
+    query_shape: variant.queryShape,
+    k: variant.k,
+    group_by_source: variant.groupBySource,
     repetitions: reps.length,
     wall_p50_ms: percentile(wallSamples, 50),
     wall_p95_ms: percentile(wallSamples, 95),
     wall_p99_ms: percentile(wallSamples, 99),
+    phase_percentiles: buildPhasePercentiles(phaseSamples),
     process_start_p50_ms: processStartSamples.length > 0 ? percentile(processStartSamples, 50) : null,
     bootstrap_p50_ms: percentileOrNull(sampleFor('bootstrap_ms'), 50),
     model_resolution_p50_ms: percentileOrNull(sampleFor('model_resolution_ms'), 50),
@@ -209,6 +371,20 @@ export function aggregateCliSearchVariant(
   };
 }
 
+function buildPhasePercentiles(samplesByPhase: Record<string, number[]>): CliSearchVariantResult['phase_percentiles'] {
+  const out: CliSearchVariantResult['phase_percentiles'] = {};
+  for (const [phase, samples] of Object.entries(samplesByPhase)) {
+    if (samples.length === 0) continue;
+    out[phase] = {
+      samples: samples.length,
+      p50_ms: percentile(samples, 50),
+      p95_ms: percentile(samples, 95),
+      p99_ms: percentile(samples, 99),
+    };
+  }
+  return out;
+}
+
 function percentileOrNull(samples: number[], p: number): number | null {
   return samples.length > 0 ? percentile(samples, p) : null;
 }
@@ -216,9 +392,10 @@ function percentileOrNull(samples: number[], p: number): number | null {
 function pickTimingFields(source: Record<string, unknown>): CliSearchTimingFields {
   const out: CliSearchTimingFields = {};
   const keys: Array<keyof CliSearchTimingFields> = [
-    'bootstrap_ms', 'model_resolution_ms', 'manager_load_ms', 'index_load_ms',
-    'dense_search_ms', 'embed_query_ms', 'faiss_search_ms', 'query_search_ms',
-    'post_filter_ms', 'staleness_ms', 'total_ms',
+    'lexical_kb_list_ms', 'lexical_search_ms', 'bootstrap_ms', 'model_resolution_ms',
+    'manager_load_ms', 'index_load_ms', 'dense_search_ms', 'embed_query_ms',
+    'faiss_search_ms', 'query_search_ms', 'fusion_ms', 'post_filter_ms',
+    'staleness_ms', 'total_ms',
   ];
   for (const key of keys) {
     const value = source[key];

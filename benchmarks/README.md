@@ -23,7 +23,8 @@ Optional environment variables:
 - `BENCH_RESULTS_PREFIX` changes the output filename prefix. The default is `run`. Use `baseline` when you want a committed baseline file.
 - `BENCH_STUB_EMBED_MS_PER_INPUT` changes the stub embedding latency model. The default is `20` milliseconds per document chunk.
 - `BENCH_INCLUDE_CLI_SEARCH=1` opts into the issue #284 `cli_search` scenario. It is off by default because each repetition spawns the built `kb` binary as a child process; the cost is what the scenario measures, so it stays heavier than the in-process scenarios.
-- `BENCH_CLI_SEARCH_REPETITIONS` sets the per-variant repetition count for `cli_search`. Defaults to 10.
+- `BENCH_CLI_SEARCH_REPETITIONS` sets the per-variant repetition count for `cli_search`. Defaults to 5.
+- `BENCH_CLI_SEARCH_PROFILE=matrix` expands `cli_search` from the compact default profile to a broader local matrix across retrieval modes, scopes, formats, grouping, query shapes, and `k` values.
 
 ## Result file naming
 
@@ -102,22 +103,36 @@ The scenario keys stay flat so CI can query them with tools like `jq`, for examp
 jq '.scenarios.warm_query.p50_ms' benchmarks/results/run-stub-node22-linux-x64.json
 ```
 
-### `cli_search` — phase timings for the real `kb search` CLI (issue #284)
+### `cli_search` — phase timings for the real `kb search` CLI (issues #284 and #303)
 
-When `BENCH_INCLUDE_CLI_SEARCH=1` is set, the harness adds a `cli_search` scenario that spawns the built `kb` binary against an offline `fake` model (issue #204) with a pre-built fixture index. Each repetition reports an externally measured wall time plus the internal phase timings the CLI emits with `--timing`:
+When `BENCH_INCLUDE_CLI_SEARCH=1` is set, the harness adds a `cli_search` scenario that spawns the built `kb` binary against an offline `fake` model (issue #204) with a pre-built fixture index. The scenario builds two synthetic knowledge bases so scoped `--kb=<name>` and global searches exercise different CLI paths. Each repetition reports an externally measured wall time plus the internal phase timings the CLI emits with `--timing`:
 
 ```json
 "cli_search": {
-  "fixture_files": 20,
-  "fixture_chunk_count": 110,
+  "schema_version": 2,
+  "profile": "default",
+  "fixture_knowledge_bases": 2,
+  "fixture_files": 22,
+  "fixture_chunk_count": 114,
   "variants": [
     {
-      "variant": "json-global",
+      "variant": "dense-json-global-k10-prose",
       "format": "json",
-      "repetitions": 10,
+      "mode": "dense",
+      "effective_mode": "dense",
+      "scope": "global",
+      "query_shape": "prose",
+      "k": 10,
+      "group_by_source": false,
+      "repetitions": 5,
       "wall_p50_ms": 540,
       "wall_p95_ms": 612,
       "wall_p99_ms": 612,
+      "phase_percentiles": {
+        "process_start_ms": { "samples": 5, "p50_ms": 318, "p95_ms": 340, "p99_ms": 340 },
+        "bootstrap_ms": { "samples": 5, "p50_ms": 4, "p95_ms": 6, "p99_ms": 6 },
+        "total_ms": { "samples": 5, "p50_ms": 222, "p95_ms": 260, "p99_ms": 260 }
+      },
       "process_start_p50_ms": 318,
       "bootstrap_p50_ms": 4,
       "model_resolution_p50_ms": 2,
@@ -136,7 +151,15 @@ When `BENCH_INCLUDE_CLI_SEARCH=1` is set, the harness adds a `cli_search` scenar
 
 `process_start_p50_ms` is derived per repetition as `wall_ms - cli_total_ms`, i.e. the Node startup + module-import cost incurred BEFORE the CLI's first internal timer fires, plus the formatting / stdout write that happens AFTER the CLI's `total_ms` clock stops. `rss_peak_bytes` is the maximum `VmHWM` observed across repetitions via `/proc/<pid>/status` polling; on non-Linux kernels this field is `null`.
 
-Each variant exercises a different output shape so format-related costs (JSON serialization vs markdown rendering, including the staleness footer) are comparable side-by-side. `cli_search` does not run inside `bench:compare`.
+The default profile is compact enough for CI smoke coverage while still distinguishing dense, lexical, hybrid, and auto retrieval; global vs scoped KB search; JSON vs markdown output; grouped source output; prose vs code-like query shapes; and representative `k` values. `phase_percentiles` reports p50/p95/p99 for every timing phase emitted by that variant, including mode-specific phases such as `lexical_search_ms` and `fusion_ms`. The legacy flat p50 fields remain for existing consumers.
+
+Use the broader profile for local reliability runs:
+
+```bash
+BENCH_INCLUDE_CLI_SEARCH=1 BENCH_CLI_SEARCH_PROFILE=matrix npm run bench
+```
+
+`cli_search` does not run inside `bench:compare`.
 
 ## Stub vs real-provider mode
 
