@@ -43,6 +43,7 @@ import {
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
 } from './metrics.js';
+import { countIngestQuarantine } from './ingest-quarantine.js';
 
 /**
  * Issue #210 — error-rate threshold above which the doctor surfaces a
@@ -100,6 +101,7 @@ export interface DoctorReport {
     mtime: string | null;
   };
   stale_counts_by_kb: Record<string, { modified_files: number; new_files: number }>;
+  quarantine_counts_by_kb: Record<string, number>;
   /**
    * Per-KB time-based age budget status (issue #218). Only KBs that have
    * a configured budget (per-KB or via the global `KB_AGE_BUDGET_HOURS`
@@ -267,6 +269,16 @@ export async function buildDoctorReport(
       : `${staleTotal} modified/new ingestable file(s) detected`,
   });
 
+  const quarantineCounts = await computeQuarantineCountsByKb(Object.keys(staleCounts));
+  const quarantineTotal = Object.values(quarantineCounts).reduce((sum, count) => sum + count, 0);
+  checks.push({
+    name: 'INGEST_QUARANTINE_NONZERO',
+    status: quarantineTotal === 0 ? 'ok' : 'warn',
+    detail: quarantineTotal === 0
+      ? 'no quarantined ingest files detected'
+      : `${quarantineTotal} quarantined ingest file(s) detected`,
+  });
+
   const ageBudgetResult = await computeAgeBudgetsByKb(
     Object.keys(staleCounts),
   );
@@ -391,6 +403,7 @@ export async function buildDoctorReport(
     },
     index,
     stale_counts_by_kb: staleCounts,
+    quarantine_counts_by_kb: quarantineCounts,
     age_budgets: ageBudgetResult.byKb,
     age_budget_config_errors: ageBudgetResult.configErrors,
     incomplete_models: incompleteModels,
@@ -466,6 +479,22 @@ async function computeStaleCountsByKb(
       ? filePaths.length
       : Math.max(0, filePaths.length - sidecarCount);
     out[kbName] = { modified_files: modified, new_files: added };
+  }
+  return out;
+}
+
+async function computeQuarantineCountsByKb(
+  kbNames: string[],
+): Promise<DoctorReport['quarantine_counts_by_kb']> {
+  const out: DoctorReport['quarantine_counts_by_kb'] = {};
+  for (const kbName of kbNames) {
+    try {
+      out[kbName] = await countIngestQuarantine(
+        path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName),
+      );
+    } catch {
+      out[kbName] = 0;
+    }
   }
   return out;
 }
@@ -718,6 +747,16 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
     for (const name of names) {
       const row = report.stale_counts_by_kb[name];
       lines.push(`  ${name}: ${row.modified_files} modified, ${row.new_files} new`);
+    }
+  }
+  lines.push('');
+  lines.push('Ingest quarantine by KB:');
+  const quarantineNames = Object.keys(report.quarantine_counts_by_kb).sort();
+  if (quarantineNames.length === 0) {
+    lines.push('  (no knowledge bases found)');
+  } else {
+    for (const name of quarantineNames) {
+      lines.push(`  ${name}: ${report.quarantine_counts_by_kb[name]} quarantined`);
     }
   }
   lines.push('');

@@ -25,6 +25,7 @@ import {
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
 } from './metrics.js';
+import { countIngestQuarantine } from './ingest-quarantine.js';
 
 export interface KbStatsRow {
   file_count: number;
@@ -35,6 +36,7 @@ export interface KbStatsRow {
 
 export interface KbStatsPayload {
   knowledge_bases: Record<string, KbStatsRow>;
+  quarantined: Record<string, number>;
   embedding: { provider: string; model: string; dim: number | null };
   index_path: string;
   last_index_update: IndexUpdateSummary;
@@ -110,6 +112,7 @@ export async function computeKbStats(
   );
 
   const knowledge_bases: Record<string, KbStatsRow> = {};
+  const quarantined: Record<string, number> = {};
   const fsConcurrency = resolveFsConcurrency();
   for (const { kbName, kbPath, filePaths } of enumerations) {
     const byteCounts = await mapBounded(filePaths, fsConcurrency, async (filePath) => {
@@ -131,11 +134,13 @@ export async function computeKbStats(
       total_bytes_indexed: totalBytes,
       last_updated_at: lastUpdatedAt,
     };
+    quarantined[kbName] = await countIngestQuarantine(kbPath);
   }
 
   const metricsSource = options.metrics ?? providerCallMetrics;
   return {
     knowledge_bases,
+    quarantined,
     embedding: {
       provider: manager.embeddingProvider,
       model: manager.modelName,

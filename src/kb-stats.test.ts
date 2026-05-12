@@ -112,6 +112,7 @@ describe('computeKbStats', () => {
       chunk_count: 3,
       total_bytes_indexed: 100,
     });
+    expect(payload.quarantined).toEqual({ alpha: 0, beta: 0 });
     expect(payload.embedding).toEqual({
       provider: 'huggingface',
       model: 'BAAI/bge-small-en-v1.5',
@@ -280,6 +281,37 @@ describe('computeKbStats', () => {
     expect(payload.knowledge_bases.alpha.total_bytes_indexed).toBe(5);
 
     await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('reports per-KB ingest quarantine counts', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-quarantine-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'alpha'));
+      await fsp.mkdir(path.join(tempDir, 'beta'));
+      await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'aaa');
+      await fsp.writeFile(path.join(tempDir, 'beta', 'b.md'), 'bbbb');
+
+      const { computeKbStats } = await freshKbStats({
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+      const { recordIngestFailure } = await import('./ingest-quarantine.js');
+      await recordIngestFailure({
+        kbPath: path.join(tempDir, 'alpha'),
+        relativePath: 'a.md',
+        sourceHash: 'hash-a',
+        error: new Error('bad input'),
+      });
+
+      const payload = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+      });
+
+      expect(payload.quarantined).toEqual({ alpha: 1, beta: 0 });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

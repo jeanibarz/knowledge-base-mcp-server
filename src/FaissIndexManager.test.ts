@@ -259,6 +259,9 @@ describe('FaissIndexManager permission handling', () => {
     HUGGINGFACE_PROVIDER: process.env.HUGGINGFACE_PROVIDER,
     INDEXING_BATCH_SIZE: process.env.INDEXING_BATCH_SIZE,
     LOG_FILE: process.env.LOG_FILE,
+    KB_MAX_FILE_BYTES: process.env.KB_MAX_FILE_BYTES,
+    KB_MAX_EXTRACTED_TEXT_BYTES: process.env.KB_MAX_EXTRACTED_TEXT_BYTES,
+    KB_LARGE_FILE_POLICY: process.env.KB_LARGE_FILE_POLICY,
   };
 
 
@@ -660,6 +663,68 @@ describe('FaissIndexManager permission handling', () => {
       sidecars_written: false,
       failure_count: 0,
     });
+  });
+
+  it('quarantines load failures, skips them during backoff, and clears the entry after content changes and indexes', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-quarantine-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'bad.md');
+    await fsp.writeFile(docPath, '# Bad\n\nThis content is too large for the configured ingest cap.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_MAX_FILE_BYTES = '4';
+    process.env.KB_LARGE_FILE_POLICY = 'error';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { listIngestQuarantine } = await import('./ingest-quarantine.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    await manager.updateIndex('default');
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'partial',
+      files_scanned: 1,
+      files_changed: 1,
+      files_skipped: 1,
+      failure_count: 1,
+      failures: [expect.objectContaining({
+        relative_path: 'bad.md',
+        phase: 'load',
+        code: 'KB_LARGE_FILE_TOO_LARGE',
+      })],
+    });
+    expect(fromTextsMock).not.toHaveBeenCalled();
+    expect(await listIngestQuarantine(defaultKb)).toEqual([
+      expect.objectContaining({
+        relative_path: 'bad.md',
+        retry_count: 1,
+        source_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }),
+    ]);
+
+    fromTextsMock.mockClear();
+    await manager.updateIndex('default');
+    expect(fromTextsMock).not.toHaveBeenCalled();
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      files_scanned: 1,
+      files_changed: 0,
+      files_skipped: 1,
+      failure_count: 0,
+    });
+    expect((await listIngestQuarantine(defaultKb))[0].retry_count).toBe(1);
+
+    process.env.KB_MAX_FILE_BYTES = '1000';
+    await fsp.writeFile(docPath, '# Fixed\n\nSmall enough.');
+    await manager.updateIndex('default');
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    await expect(listIngestQuarantine(defaultKb)).resolves.toEqual([]);
   });
 
   it('sanitizes absolute file paths in update failure summaries', async () => {
