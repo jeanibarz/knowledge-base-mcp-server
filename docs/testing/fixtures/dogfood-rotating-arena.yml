@@ -1,0 +1,62 @@
+# Rotating dogfood retrieval arena for issue #302.
+#
+# Add bug-derived or adversarial cases here first. Cases that stay stable across
+# providers can later graduate into dogfood-frozen-core.yml.
+
+gate: false
+mode: auto
+
+cases:
+  # author: dogfood-fixture
+  # source-of-truth: docs/testing/fixtures/dogfood-corpus/current-rollback.md
+  # judgment: the archived note deliberately contains similar rollback terms and is a precision near miss.
+  # protects: adversarial stale-document precision
+  - name: arena precision - current rollback beats archived note
+    query: should rollback delete the docstore and rebuild vectors from scratch
+    kb: dogfood
+    k: 5
+    threshold: 2
+    required_sources:
+      - docs/testing/fixtures/dogfood-corpus/current-rollback.md
+    forbidden_sources:
+      - docs/testing/fixtures/dogfood-corpus/archive/old-rollback.md
+    stale_policy: fresh
+
+  # author: dogfood-fixture
+  # source-of-truth: docs/testing/fixtures/dogfood-corpus/hybrid-tokens.md
+  # protects: exact-token retrieval for model ids
+  - name: arena hybrid - exact model id remains findable
+    query: ollama__nomic-embed-text-latest
+    kb: dogfood
+    mode: auto
+    k: 5
+    required_sources:
+      - docs/testing/fixtures/dogfood-corpus/hybrid-tokens.md
+    max_duplicate_groups: 1
+    stale_policy: allow_stale
+
+  # author: dogfood-fixture
+  # source-of-truth: docs/testing/fixtures/dogfood-corpus/hybrid-tokens.md
+  # protects: exact-token retrieval for parser dependency names
+  - name: arena hybrid - exact parser token remains findable
+    query: pickleparser RFC 006
+    kb: dogfood
+    mode: auto
+    k: 5
+    required_sources:
+      - docs/testing/fixtures/dogfood-corpus/hybrid-tokens.md
+    max_duplicate_groups: 1
+    stale_policy: allow_stale
+
+  # author: dogfood-fixture
+  # source-of-truth: docs/testing/fixtures/dogfood-corpus/duplicate-canonical.md
+  # judgment: the shadow copy is included as a near miss but should not displace the canonical source.
+  # protects: duplicate and near-duplicate crowding behavior
+  - name: arena duplicate - canonical source survives shadow copy
+    query: duplicate crowding repeated chunks from the same source
+    kb: dogfood
+    k: 5
+    required_sources:
+      - docs/testing/fixtures/dogfood-corpus/duplicate-canonical.md
+    max_duplicate_groups: 1
+    stale_policy: allow_stale
