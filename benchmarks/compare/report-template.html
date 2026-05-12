@@ -84,6 +84,9 @@
   </tbody>
 </table>
 
+<h2>Labelled quality</h2>
+{{QUALITY_SECTION}}
+
 <h2>Latency distribution (single + batch)</h2>
 <div class="charts">
   <div>
@@ -119,7 +122,7 @@
   <ul>
     <li>This report is your-KB selection guidance, NOT an MTEB leaderboard (RFC 013 §3.2 N10).</li>
     <li>Latency depends on hardware; rerun on the deployment target.</li>
-    <li>Recall@10 requires golden labels; absent them, only Jaccard / Spearman are shown.</li>
+    <li>Labelled quality metrics require <code>--golden</code>; absent them, only fixture recall and Jaccard / Spearman diagnostics are shown.</li>
     <li>Cost numbers reflect <code>src/cost-estimates.ts</code> <code>LAST_VERIFIED={{COST_LAST_VERIFIED}}</code>; verify if stale.</li>
     <li>One machine, one moment. Comparing across hardware = run the orchestrator on each and diff manually.</li>
   </ul>
