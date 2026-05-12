@@ -69,10 +69,22 @@ export interface IndexStorageScenarioResult {
 export interface CliSearchVariantResult {
   variant: string;
   format: 'json' | 'md';
+  mode: 'dense' | 'lexical' | 'hybrid' | 'auto';
+  effective_mode: 'dense' | 'lexical' | 'hybrid';
+  scope: 'global' | 'scoped';
+  query_shape: 'prose' | 'code';
+  k: number;
+  group_by_source: boolean;
   repetitions: number;
   wall_p50_ms: number;
   wall_p95_ms: number;
   wall_p99_ms: number;
+  phase_percentiles: Record<string, {
+    samples: number;
+    p50_ms: number;
+    p95_ms: number;
+    p99_ms: number;
+  }>;
   process_start_p50_ms: number | null;
   bootstrap_p50_ms: number | null;
   model_resolution_p50_ms: number | null;
@@ -87,6 +99,9 @@ export interface CliSearchVariantResult {
 }
 
 export interface CliSearchScenarioResult {
+  schema_version: 2;
+  profile: 'default' | 'matrix';
+  fixture_knowledge_bases: number;
   fixture_files: number;
   fixture_chunk_count: number;
   variants: CliSearchVariantResult[];
