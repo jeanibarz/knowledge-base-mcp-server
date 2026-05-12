@@ -171,6 +171,12 @@ Real-provider modes (`ollama`, `huggingface`, `openai`) keep the repository logi
 
 The benchmark fixtures are generated at bench start from a seeded `mulberry32` PRNG. This keeps the corpus stable across runs while avoiding checked-in FAISS binaries that can break across platforms. The generator lives in `benchmarks/fixtures/generator.ts`.
 
+The default `small` and `medium` compare fixtures are CI-safe synthetic corpora. They are intentionally compact and do not write persistent corpus caches.
+
+`--fixture=large` is maintainer-local. It builds a realistic arxiv-style technical corpus under `benchmarks/.cache/large-corpus/<cache-key>/` by default, verifies every cached markdown file plus `queries.json` and `golden.json` with SHA-256 hashes from `MANIFEST.json`, then copies that verified corpus into each temporary benchmark workspace. Set `BENCH_LARGE_CORPUS_CACHE_DIR=/path/to/cache` to keep the cache outside the repository checkout. If the cache cannot be created or verified, the runner fails with setup instructions instead of silently falling back to a smaller fixture.
+
+The large fixture includes labelled judgments for single-hop, multi-hop, exact-token, paraphrase, and near-duplicate queries. When `--fixture=large` is used without `--queries` or `--golden`, `bench:compare` automatically uses the fixture's query set and golden labels so the report includes ranked quality metrics in addition to indexing time, storage, warm query latency, and batch throughput.
+
 ## Comparing two embedding models — `bench:compare` (RFC 013 M5)
 
 The `bench:compare` orchestrator drives two back-to-back per-model bench runs against a shared corpus and emits a self-contained HTML comparison report (inline CSS + SVG; no CDN, no JS framework). Use it to pick between two embedding models on **your hardware** without wiring up MTEB.
@@ -192,10 +198,10 @@ Flags (all post `--`):
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--models=<id_a>,<id_b>` | required | Two `<provider>__<slug>` ids (or `<provider>:<modelName>`). |
-| `--fixture=small\|medium\|external` | `medium` | Synthetic profile; `external` honors `KNOWLEDGE_BASES_ROOT_DIR`. (`large`/arxiv corpus is a follow-up.) |
-| `--queries=<path>` | bundled `queries-default.txt` for prose corpora; fixture-derived for synthetic | One query per line; `#`-comments allowed. |
+| `--fixture=small\|medium\|large\|external` | `medium` | `small`/`medium` use CI-safe synthetic fixtures; `large` uses the cached maintainer-local corpus; `external` honors `KNOWLEDGE_BASES_ROOT_DIR`. |
+| `--queries=<path>` | fixture-derived for small/medium; large-corpus queries for large; bundled `queries-default.txt` for external prose corpora | One query per line; `#`-comments allowed. |
 | `--concurrency=1,4,16` | `1,4,16` | Concurrency sweep for the batch-query phase. |
-| `--golden=<path>` | none | Reserved — JSON `{query: [doc_paths]}` for recall@k. (Not yet wired into the report; follow-up.) |
+| `--golden=<path>` | large fixture labels when `--fixture=large`, otherwise none | JSON `{query: [{source,relevance}]}` for ranked IR metrics. Legacy `{query: [doc_paths]}` arrays are treated as binary labels. |
 | `--output-dir=<path>` | `benchmarks/results` | Where the HTML + JSON pair lands. |
 | `--skip-add` | off | Reuse already-registered models (no re-embed). |
 | `--yes` | off | Non-interactive; skips paid-provider cost prompt. |
@@ -252,6 +258,19 @@ BENCH_FIXTURE_CHUNK_CHARS=1000 npm run bench:compare -- --models=…
 `BENCH_FIXTURE_FILES=N` and `BENCH_FIXTURE_CHUNKS_PER_FILE=N` are also
 honored as scope knobs that override each scenario's hardcoded defaults.
 
+For a maintainer-local large run:
+
+```bash
+BENCH_LARGE_CORPUS_CACHE_DIR=/tmp/kb-bench-large-cache \
+  npm run bench:compare -- \
+  --models=ollama__nomic-embed-text-latest,huggingface__BAAI-bge-small-en-v1.5 \
+  --fixture=large \
+  --concurrency=1,4,16 \
+  --yes
+```
+
+The first run populates the deterministic cache; later runs reuse it after integrity verification. Do not commit generated cache contents or compare results unless you are deliberately updating benchmark artifacts.
+
 Concurrency invariants (RFC 013 §4.13.9):
 
 - Both per-model bench legs run **back-to-back, never in parallel** — avoids CPU/network confounding.
@@ -260,8 +279,6 @@ Concurrency invariants (RFC 013 §4.13.9):
 
 Follow-ups not in M5 v1:
 
-- `--fixture=large` with the ~3000-chunk arxiv (`cs.IR + cs.CL`) corpus and sha256-keyed cache (`benchmarks/.cache/`) — RFC 013 §4.13.4. Today the orchestrator runs against the existing seeded synthetic generator at the bench's hardcoded sizes (~600 chunks for cold-index).
-- `--golden` recall@k integration into the report.
 - `workflow_dispatch` GitHub workflow for maintainer-triggered real-provider runs (RFC 013 §4.13.7).
 
 ## Jest mocking strategy note
