@@ -26,6 +26,7 @@ import {
   type ProviderCallSnapshot,
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
+import { queryEmbeddingCache, type QueryCacheStats } from './query-cache.js';
 
 export interface KbStatsRow {
   file_count: number;
@@ -49,6 +50,7 @@ export interface KbStatsPayload {
    * `provider_calls` keep working.
    */
   provider_calls: Record<string, ProviderCallSnapshot>;
+  query_cache: QueryCacheStats;
 }
 
 export interface ComputeKbStatsOptions {
@@ -153,6 +155,7 @@ export async function computeKbStats(
       uptime_ms: Date.now() - options.startedAt,
     },
     provider_calls: metricsSource.snapshot(),
+    query_cache: await queryEmbeddingCache.stats(),
   };
 }
 
