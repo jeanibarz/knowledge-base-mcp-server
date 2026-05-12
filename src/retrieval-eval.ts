@@ -1,8 +1,23 @@
+import * as path from 'path';
 import { minimatch } from 'minimatch';
+import type { FaissIndexManager } from './FaissIndexManager.js';
 import type { ScoredDocument } from './formatter.js';
-import type { Staleness } from './cli-search.js';
+import {
+  resolveAutoSearchMode,
+  type AutoSearchModeDecision,
+  type EffectiveSearchMode,
+  type SearchMode,
+  type Staleness,
+} from './cli-search.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { listKnowledgeBases } from './kb-fs.js';
+import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
+import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
 
 export type StalePolicy = 'allow_stale' | 'fresh' | 'stale';
+
+const HYBRID_FETCH_MULTIPLIER = 4;
+const HYBRID_RRF_C = 60;
 
 export interface ExpectedMetadataRule {
   path: string;
@@ -15,6 +30,7 @@ export interface RetrievalEvalCase {
   kb?: string;
   k?: number;
   threshold?: number;
+  mode?: SearchMode;
   gate?: boolean;
   requiredSources: string[];
   forbiddenSources: string[];
@@ -29,6 +45,7 @@ export interface RetrievalEvalCaseInput {
   kb?: string;
   k?: number;
   threshold?: number;
+  mode?: SearchMode;
   gate?: boolean;
   required_sources?: string[];
   forbidden_sources?: string[];
@@ -39,6 +56,7 @@ export interface RetrievalEvalCaseInput {
 
 export interface RetrievalEvalFixture {
   gate: boolean;
+  mode?: SearchMode;
   cases: RetrievalEvalCase[];
 }
 
@@ -46,6 +64,9 @@ export interface RetrievalEvalCaseResult {
   name: string;
   query: string;
   kb?: string;
+  requestedMode: SearchMode;
+  effectiveMode: EffectiveSearchMode;
+  autoMode?: AutoSearchModeDecision;
   gate: boolean;
   passed: boolean;
   failures: string[];
@@ -62,6 +83,19 @@ export interface RetrievalEvalReport {
   gateFailed: number;
 }
 
+export interface RetrievalEvalSearchContext {
+  manager: Pick<FaissIndexManager, 'similaritySearch'>;
+  defaultK: number;
+  defaultThreshold: number;
+}
+
+export interface RetrievalEvalSearchResult {
+  results: ScoredDocument[];
+  requestedMode: SearchMode;
+  effectiveMode: EffectiveSearchMode;
+  autoMode?: AutoSearchModeDecision;
+}
+
 export function normalizeRetrievalEvalFixture(input: unknown): RetrievalEvalFixture {
   if (!isRecord(input)) {
     throw new Error('fixture must be an object with a cases array');
@@ -73,7 +107,44 @@ export function normalizeRetrievalEvalFixture(input: unknown): RetrievalEvalFixt
   }
   return {
     gate,
+    ...readOptionalSearchMode(input, 'mode', 'fixture'),
     cases: rawCases.map((raw, idx) => normalizeCase(raw, idx + 1)),
+  };
+}
+
+export async function retrieveForRetrievalEvalCase(
+  fixtureCase: RetrievalEvalCase,
+  context: RetrievalEvalSearchContext,
+  requestedMode: SearchMode,
+): Promise<RetrievalEvalSearchResult> {
+  const mode = resolveRetrievalEvalMode(requestedMode, fixtureCase.query);
+  let results: ScoredDocument[];
+  if (mode.effectiveMode === 'dense') {
+    results = await retrieveDense(fixtureCase, context);
+  } else if (mode.effectiveMode === 'lexical') {
+    results = await retrieveLexical(
+      fixtureCase.query,
+      fixtureCase.k ?? context.defaultK,
+      fixtureCase.kb,
+    );
+  } else {
+    results = await retrieveHybrid(fixtureCase, context);
+  }
+  return { ...mode, results };
+}
+
+export function resolveRetrievalEvalMode(
+  requestedMode: SearchMode,
+  query: string,
+): Omit<RetrievalEvalSearchResult, 'results'> {
+  if (requestedMode !== 'auto') {
+    return { requestedMode, effectiveMode: requestedMode };
+  }
+  const autoMode = resolveAutoSearchMode(query);
+  return {
+    requestedMode,
+    effectiveMode: autoMode.mode,
+    autoMode,
   };
 }
 
@@ -82,6 +153,7 @@ export function evaluateRetrievalCase(
   results: readonly ScoredDocument[],
   staleness: Staleness,
   fixtureGate = false,
+  search?: Omit<RetrievalEvalSearchResult, 'results'>,
 ): RetrievalEvalCaseResult {
   const failures: string[] = [];
   const warnings: string[] = [];
@@ -128,6 +200,9 @@ export function evaluateRetrievalCase(
     name: fixtureCase.name,
     query: fixtureCase.query,
     ...(fixtureCase.kb !== undefined ? { kb: fixtureCase.kb } : {}),
+    requestedMode: search?.requestedMode ?? 'dense',
+    effectiveMode: search?.effectiveMode ?? 'dense',
+    ...(search?.autoMode !== undefined ? { autoMode: search.autoMode } : {}),
     gate,
     passed: failures.length === 0,
     failures,
@@ -157,8 +232,11 @@ export function formatRetrievalEvalMarkdown(report: RetrievalEvalReport): string
   for (const result of report.cases) {
     const status = result.passed ? 'PASS' : result.gate ? 'FAIL' : 'WARN';
     const scope = result.kb === undefined ? 'all KBs' : `kb=${result.kb}`;
+    const mode = result.requestedMode === result.effectiveMode
+      ? result.effectiveMode
+      : `${result.requestedMode} -> ${result.effectiveMode}`;
     lines.push(
-      `- ${status} ${result.name} (${scope}, ${result.resultCount} result(s), duplicate groups: ${result.duplicateGroups})`,
+      `- ${status} ${result.name} (${scope}, mode: ${mode}, ${result.resultCount} result(s), duplicate groups: ${result.duplicateGroups})`,
     );
     for (const failure of result.failures) {
       lines.push(`  - ${failure}`);
@@ -190,12 +268,99 @@ function normalizeCase(raw: unknown, caseNumber: number): RetrievalEvalCase {
     ...(kb !== undefined ? { kb } : {}),
     ...(k !== undefined ? { k } : {}),
     ...(threshold !== undefined ? { threshold } : {}),
+    ...readOptionalSearchMode(raw, 'mode', `case ${caseNumber}`),
     ...(gate !== undefined ? { gate } : {}),
     requiredSources: readOptionalStringArray(raw, 'required_sources') ?? [],
     forbiddenSources: readOptionalStringArray(raw, 'forbidden_sources') ?? [],
     expectedMetadata: normalizeExpectedMetadata(raw.expected_metadata, caseNumber),
     ...(maxDuplicateGroups !== undefined ? { maxDuplicateGroups } : {}),
     stalePolicy: normalizeStalePolicy(raw.stale_policy, caseNumber),
+  };
+}
+
+async function retrieveDense(
+  fixtureCase: RetrievalEvalCase,
+  context: RetrievalEvalSearchContext,
+): Promise<ScoredDocument[]> {
+  return context.manager.similaritySearch(
+    fixtureCase.query,
+    fixtureCase.k ?? context.defaultK,
+    fixtureCase.threshold ?? context.defaultThreshold,
+    fixtureCase.kb,
+  );
+}
+
+async function retrieveLexical(
+  query: string,
+  k: number,
+  scopedKb?: string,
+): Promise<ScoredDocument[]> {
+  const kbs = await listLexicalKbs(scopedKb);
+  const merged: LexicalSearchResult[] = [];
+  for (const { kbName, kbPath } of kbs) {
+    const index = await LexicalIndex.load(kbName, kbPath);
+    if (index.numFiles() === 0) {
+      await index.refresh();
+      await index.save();
+    }
+    merged.push(...await index.query(query, k));
+  }
+  merged.sort((a, b) => b.score - a.score);
+  return merged.slice(0, k).map(toScoredDocument);
+}
+
+async function retrieveHybrid(
+  fixtureCase: RetrievalEvalCase,
+  context: RetrievalEvalSearchContext,
+): Promise<ScoredDocument[]> {
+  const k = fixtureCase.k ?? context.defaultK;
+  const fetchK = Math.max(k * HYBRID_FETCH_MULTIPLIER, k);
+  const [denseResults, lexicalResults] = await Promise.all([
+    context.manager.similaritySearch(
+      fixtureCase.query,
+      fetchK,
+      Number.POSITIVE_INFINITY,
+      fixtureCase.kb,
+    ),
+    retrieveLexical(fixtureCase.query, fetchK, fixtureCase.kb),
+  ]);
+  const denseList: RankedList = {
+    retriever: 'dense',
+    results: denseResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
+  };
+  const lexicalList: RankedList = {
+    retriever: 'lexical',
+    results: lexicalResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
+  };
+  const fused = reciprocalRankFusion([denseList, lexicalList], { c: HYBRID_RRF_C });
+  const byId = new Map<string, ScoredDocument>();
+  for (const result of lexicalResults) byId.set(chunkIdFromMetadata(result.metadata), result);
+  for (const result of denseResults) byId.set(chunkIdFromMetadata(result.metadata), result);
+  const ranked: ScoredDocument[] = [];
+  for (const entry of fused.slice(0, k)) {
+    const result = byId.get(entry.id);
+    if (result) ranked.push({ ...result, score: entry.fusedScore });
+  }
+  return ranked;
+}
+
+async function listLexicalKbs(scopedKb?: string): Promise<Array<{ kbName: string; kbPath: string }>> {
+  const all = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+  const filtered = scopedKb ? all.filter((name) => name === scopedKb) : all;
+  if (scopedKb !== undefined && filtered.length === 0) {
+    throw new Error(`KB not found: ${scopedKb}`);
+  }
+  return filtered.map((kbName) => ({
+    kbName,
+    kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName),
+  }));
+}
+
+function toScoredDocument(result: LexicalSearchResult): ScoredDocument {
+  return {
+    pageContent: result.pageContent,
+    metadata: result.metadata,
+    score: result.score,
   };
 }
 
@@ -217,6 +382,19 @@ function normalizeExpectedMetadata(raw: unknown, caseNumber: number): ExpectedMe
     return rules;
   }
   throw new Error(`case ${caseNumber} expected_metadata must be an object or array of objects`);
+}
+
+function readOptionalSearchMode(
+  input: Record<string, unknown>,
+  key: string,
+  context: string,
+): { mode?: SearchMode } {
+  const value = input[key];
+  if (value === undefined) return {};
+  if (value === 'dense' || value === 'lexical' || value === 'hybrid' || value === 'auto') {
+    return { mode: value };
+  }
+  throw new Error(`${context} ${key} must be "dense", "lexical", "hybrid", or "auto"`);
 }
 
 function normalizeStalePolicy(raw: unknown, caseNumber: number): StalePolicy {

@@ -12,6 +12,7 @@
 # Run with:
 #   kb eval docs/testing/fixtures/hybrid-vs-dense.yml --mode=dense
 #   kb eval docs/testing/fixtures/hybrid-vs-dense.yml --mode=hybrid
+#   kb eval docs/testing/fixtures/hybrid-vs-dense.yml --mode=auto --format=json
 #
 # The fixture is `gate: false` — failures print a warning and exit 0.
 # This is a guidance pack for operators / contributors to verify the
