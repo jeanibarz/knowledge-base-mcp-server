@@ -12,6 +12,9 @@ The unit tests in `src/retrieval-eval.test.ts` cover:
 - Retrieval mode parsing for `dense`, `lexical`, `hybrid`, and `auto`.
 - Fixture-level and case-level retrieval mode normalization.
 - Per-case requested/effective retrieval mode reporting.
+- Optional ranked relevance judgments via `relevant_sources` and `judgments`.
+- Ranked IR metrics for perfect ranking, relevant-but-low-ranked sources,
+  missing judged sources, graded relevance, and aggregate reporting.
 - Parse coverage for the worked example in `docs/testing/fixtures/methodology-starter.yml`.
 
 `kb eval` defaults to dense retrieval to preserve the original evaluator behavior.
@@ -20,5 +23,11 @@ mode choices exposed by `kb search`. A fixture can also set top-level `mode` as
 its default, and individual cases can override it with case-level `mode`.
 JSON output records `requested_mode`, `effective_mode`, and `auto_mode` when
 auto selection is used.
+
+Cases with `relevant_sources` or `judgments` also emit `ranked_metrics` in both
+markdown and JSON. The evaluator reports per-case `nDCG@10`, `MRR@10`,
+`Recall@k`, `Precision@k`, `MAP`, `MAP@k`, and hit rate, then reports aggregate
+means across judged cases. Cases without judgments preserve the original
+binary pass/fail output shape.
 
 For authoring guidance, see [Retrieval eval fixture methodology](retrieval-eval-methodology.md).

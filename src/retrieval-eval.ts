@@ -24,6 +24,35 @@ export interface ExpectedMetadataRule {
   equals: unknown;
 }
 
+export interface RelevanceJudgment {
+  source: string;
+  relevance: number;
+}
+
+export interface RetrievalEvalRankedMetrics {
+  k: number;
+  judgedRelevantCount: number;
+  retrievedRelevantCount: number;
+  ndcgAt10: number;
+  mrrAt10: number;
+  recallAtK: number;
+  precisionAtK: number;
+  map: number;
+  mapAtK: number;
+  hitRate: number;
+}
+
+export interface RetrievalEvalAggregateRankedMetrics {
+  judgedCaseCount: number;
+  ndcgAt10: number;
+  mrrAt10: number;
+  recallAtK: number;
+  precisionAtK: number;
+  map: number;
+  mapAtK: number;
+  hitRate: number;
+}
+
 export interface RetrievalEvalCase {
   name: string;
   query: string;
@@ -35,6 +64,7 @@ export interface RetrievalEvalCase {
   requiredSources: string[];
   forbiddenSources: string[];
   expectedMetadata: ExpectedMetadataRule[];
+  relevanceJudgments?: RelevanceJudgment[];
   maxDuplicateGroups?: number;
   stalePolicy: StalePolicy;
 }
@@ -49,6 +79,8 @@ export interface RetrievalEvalCaseInput {
   gate?: boolean;
   required_sources?: string[];
   forbidden_sources?: string[];
+  relevant_sources?: Array<string | { source?: unknown; relevance?: unknown }>;
+  judgments?: Record<string, unknown> | Array<string | { source?: unknown; relevance?: unknown }>;
   expected_metadata?: Record<string, unknown> | Array<Record<string, unknown>>;
   max_duplicate_groups?: number;
   stale_policy?: StalePolicy | { expect?: StalePolicy };
@@ -73,6 +105,7 @@ export interface RetrievalEvalCaseResult {
   warnings: string[];
   resultCount: number;
   duplicateGroups: number;
+  rankedMetrics?: RetrievalEvalRankedMetrics;
 }
 
 export interface RetrievalEvalReport {
@@ -81,6 +114,7 @@ export interface RetrievalEvalReport {
   passed: number;
   failed: number;
   gateFailed: number;
+  rankedMetrics?: RetrievalEvalAggregateRankedMetrics;
 }
 
 export interface RetrievalEvalSearchContext {
@@ -196,6 +230,7 @@ export function evaluateRetrievalCase(
   }
 
   const gate = fixtureCase.gate ?? fixtureGate;
+  const rankedMetrics = computeRankedMetrics(fixtureCase, results);
   return {
     name: fixtureCase.name,
     query: fixtureCase.query,
@@ -209,17 +244,20 @@ export function evaluateRetrievalCase(
     warnings,
     resultCount: results.length,
     duplicateGroups,
+    ...(rankedMetrics !== undefined ? { rankedMetrics } : {}),
   };
 }
 
 export function summarizeRetrievalEval(results: RetrievalEvalCaseResult[]): RetrievalEvalReport {
   const failed = results.filter((r) => !r.passed).length;
+  const rankedMetrics = summarizeRankedMetrics(results);
   return {
     cases: results,
     total: results.length,
     passed: results.length - failed,
     failed,
     gateFailed: results.filter((r) => r.gate && !r.passed).length,
+    ...(rankedMetrics !== undefined ? { rankedMetrics } : {}),
   };
 }
 
@@ -235,8 +273,11 @@ export function formatRetrievalEvalMarkdown(report: RetrievalEvalReport): string
     const mode = result.requestedMode === result.effectiveMode
       ? result.effectiveMode
       : `${result.requestedMode} -> ${result.effectiveMode}`;
+    const ranked = result.rankedMetrics === undefined
+      ? ''
+      : `, ranked: ${formatRankedMetrics(result.rankedMetrics)}`;
     lines.push(
-      `- ${status} ${result.name} (${scope}, mode: ${mode}, ${result.resultCount} result(s), duplicate groups: ${result.duplicateGroups})`,
+      `- ${status} ${result.name} (${scope}, mode: ${mode}, ${result.resultCount} result(s), duplicate groups: ${result.duplicateGroups}${ranked})`,
     );
     for (const failure of result.failures) {
       lines.push(`  - ${failure}`);
@@ -249,6 +290,9 @@ export function formatRetrievalEvalMarkdown(report: RetrievalEvalReport): string
   lines.push(
     `Summary: ${report.passed}/${report.total} passed; ${report.failed} failed; ${report.gateFailed} gate failure(s).`,
   );
+  if (report.rankedMetrics !== undefined) {
+    lines.push(`Ranked metrics: ${formatAggregateRankedMetrics(report.rankedMetrics)}.`);
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -262,6 +306,7 @@ function normalizeCase(raw: unknown, caseNumber: number): RetrievalEvalCase {
   const threshold = readOptionalPositiveNumber(raw, 'threshold');
   const gate = readOptionalBoolean(raw, 'gate');
   const maxDuplicateGroups = readOptionalNonNegativeInteger(raw, 'max_duplicate_groups');
+  const relevanceJudgments = normalizeRelevanceJudgments(raw, caseNumber);
   return {
     name: readOptionalString(raw, 'name') ?? `case ${caseNumber}`,
     query,
@@ -273,6 +318,7 @@ function normalizeCase(raw: unknown, caseNumber: number): RetrievalEvalCase {
     requiredSources: readOptionalStringArray(raw, 'required_sources') ?? [],
     forbiddenSources: readOptionalStringArray(raw, 'forbidden_sources') ?? [],
     expectedMetadata: normalizeExpectedMetadata(raw.expected_metadata, caseNumber),
+    ...(relevanceJudgments.length > 0 ? { relevanceJudgments } : {}),
     ...(maxDuplicateGroups !== undefined ? { maxDuplicateGroups } : {}),
     stalePolicy: normalizeStalePolicy(raw.stale_policy, caseNumber),
   };
@@ -382,6 +428,248 @@ function normalizeExpectedMetadata(raw: unknown, caseNumber: number): ExpectedMe
     return rules;
   }
   throw new Error(`case ${caseNumber} expected_metadata must be an object or array of objects`);
+}
+
+function normalizeRelevanceJudgments(
+  raw: Record<string, unknown>,
+  caseNumber: number,
+): RelevanceJudgment[] {
+  const entries: RelevanceJudgment[] = [];
+  const relevantSources = raw.relevant_sources;
+  const judgments = raw.judgments;
+
+  if (relevantSources !== undefined) {
+    entries.push(...normalizeJudgmentArray(relevantSources, caseNumber, 'relevant_sources'));
+  }
+  if (judgments !== undefined) {
+    if (isRecord(judgments)) {
+      for (const [source, relevance] of Object.entries(judgments)) {
+        entries.push({
+          source: validateJudgmentSource(source, caseNumber, 'judgments'),
+          relevance: validateJudgmentRelevance(relevance, caseNumber, `judgments.${source}`),
+        });
+      }
+    } else {
+      entries.push(...normalizeJudgmentArray(judgments, caseNumber, 'judgments'));
+    }
+  }
+
+  const deduped = new Map<string, RelevanceJudgment>();
+  for (const entry of entries) {
+    const existing = deduped.get(entry.source);
+    if (existing === undefined || entry.relevance > existing.relevance) {
+      deduped.set(entry.source, entry);
+    }
+  }
+  return Array.from(deduped.values());
+}
+
+function normalizeJudgmentArray(
+  raw: unknown,
+  caseNumber: number,
+  key: string,
+): RelevanceJudgment[] {
+  if (!Array.isArray(raw)) {
+    throw new Error(`case ${caseNumber} ${key} must be an array or object`);
+  }
+  return raw.map((entry, idx) => {
+    if (typeof entry === 'string') {
+      return {
+        source: validateJudgmentSource(entry, caseNumber, `${key}[${idx}]`),
+        relevance: 1,
+      };
+    }
+    if (!isRecord(entry)) {
+      throw new Error(`case ${caseNumber} ${key}[${idx}] must be a source string or object`);
+    }
+    return {
+      source: validateJudgmentSource(entry.source, caseNumber, `${key}[${idx}].source`),
+      relevance: validateJudgmentRelevance(
+        entry.relevance ?? 1,
+        caseNumber,
+        `${key}[${idx}].relevance`,
+      ),
+    };
+  });
+}
+
+function validateJudgmentSource(value: unknown, caseNumber: number, key: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`case ${caseNumber} ${key} must be a non-empty source string`);
+  }
+  return value;
+}
+
+function validateJudgmentRelevance(value: unknown, caseNumber: number, key: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new Error(`case ${caseNumber} ${key} must be a non-negative finite relevance number`);
+  }
+  return value;
+}
+
+function computeRankedMetrics(
+  fixtureCase: RetrievalEvalCase,
+  results: readonly ScoredDocument[],
+): RetrievalEvalRankedMetrics | undefined {
+  const positiveJudgments = (fixtureCase.relevanceJudgments ?? []).filter((j) => j.relevance > 0);
+  if (positiveJudgments.length === 0) return undefined;
+
+  const k = fixtureCase.k ?? 10;
+  const topK = results.slice(0, k);
+  const retrievedAtK = matchedJudgmentIndexes(topK, positiveJudgments);
+
+  return {
+    k,
+    judgedRelevantCount: positiveJudgments.length,
+    retrievedRelevantCount: retrievedAtK.size,
+    ndcgAt10: ndcgAt(results, positiveJudgments, 10),
+    mrrAt10: reciprocalRankAt(results, positiveJudgments, 10),
+    recallAtK: retrievedAtK.size / positiveJudgments.length,
+    precisionAtK: retrievedAtK.size / k,
+    map: averagePrecisionAt(results, positiveJudgments, results.length, positiveJudgments.length),
+    mapAtK: averagePrecisionAt(topK, positiveJudgments, k, Math.min(positiveJudgments.length, k)),
+    hitRate: retrievedAtK.size > 0 ? 1 : 0,
+  };
+}
+
+function summarizeRankedMetrics(
+  results: readonly RetrievalEvalCaseResult[],
+): RetrievalEvalAggregateRankedMetrics | undefined {
+  const judged = results
+    .map((result) => result.rankedMetrics)
+    .filter((metrics): metrics is RetrievalEvalRankedMetrics => metrics !== undefined);
+  if (judged.length === 0) return undefined;
+  return {
+    judgedCaseCount: judged.length,
+    ndcgAt10: mean(judged.map((m) => m.ndcgAt10)),
+    mrrAt10: mean(judged.map((m) => m.mrrAt10)),
+    recallAtK: mean(judged.map((m) => m.recallAtK)),
+    precisionAtK: mean(judged.map((m) => m.precisionAtK)),
+    map: mean(judged.map((m) => m.map)),
+    mapAtK: mean(judged.map((m) => m.mapAtK)),
+    hitRate: mean(judged.map((m) => m.hitRate)),
+  };
+}
+
+function matchedJudgmentIndexes(
+  results: readonly ScoredDocument[],
+  judgments: readonly RelevanceJudgment[],
+): Set<number> {
+  const matched = new Set<number>();
+  for (const doc of results) {
+    const index = bestMatchingJudgmentIndex(doc, judgments);
+    if (index !== undefined) matched.add(index);
+  }
+  return matched;
+}
+
+function reciprocalRankAt(
+  results: readonly ScoredDocument[],
+  judgments: readonly RelevanceJudgment[],
+  cutoff: number,
+): number {
+  const seen = new Set<number>();
+  for (let idx = 0; idx < Math.min(results.length, cutoff); idx += 1) {
+    const match = bestMatchingJudgmentIndex(results[idx], judgments, seen);
+    if (match !== undefined) return 1 / (idx + 1);
+  }
+  return 0;
+}
+
+function averagePrecisionAt(
+  results: readonly ScoredDocument[],
+  judgments: readonly RelevanceJudgment[],
+  cutoff: number,
+  denominator: number,
+): number {
+  if (denominator === 0) return 0;
+  const seen = new Set<number>();
+  let retrievedRelevant = 0;
+  let precisionSum = 0;
+  for (let idx = 0; idx < Math.min(results.length, cutoff); idx += 1) {
+    const match = bestMatchingJudgmentIndex(results[idx], judgments, seen);
+    if (match === undefined) continue;
+    seen.add(match);
+    retrievedRelevant += 1;
+    precisionSum += retrievedRelevant / (idx + 1);
+  }
+  return precisionSum / denominator;
+}
+
+function ndcgAt(
+  results: readonly ScoredDocument[],
+  judgments: readonly RelevanceJudgment[],
+  cutoff: number,
+): number {
+  const seen = new Set<number>();
+  let dcg = 0;
+  for (let idx = 0; idx < Math.min(results.length, cutoff); idx += 1) {
+    const match = bestMatchingJudgmentIndex(results[idx], judgments, seen);
+    if (match === undefined) continue;
+    seen.add(match);
+    dcg += gradedGain(judgments[match].relevance) / Math.log2(idx + 2);
+  }
+
+  const ideal = judgments
+    .map((judgment) => judgment.relevance)
+    .sort((a, b) => b - a)
+    .slice(0, cutoff)
+    .reduce((sum, relevance, idx) => sum + (gradedGain(relevance) / Math.log2(idx + 2)), 0);
+  return ideal === 0 ? 0 : dcg / ideal;
+}
+
+function bestMatchingJudgmentIndex(
+  doc: ScoredDocument,
+  judgments: readonly RelevanceJudgment[],
+  exclude: ReadonlySet<number> = new Set(),
+): number | undefined {
+  let bestIndex: number | undefined;
+  let bestRelevance = Number.NEGATIVE_INFINITY;
+  judgments.forEach((judgment, idx) => {
+    if (exclude.has(idx) || !documentMatchesSource(doc, judgment.source)) return;
+    if (judgment.relevance > bestRelevance) {
+      bestIndex = idx;
+      bestRelevance = judgment.relevance;
+    }
+  });
+  return bestIndex;
+}
+
+function gradedGain(relevance: number): number {
+  return (2 ** relevance) - 1;
+}
+
+function mean(values: readonly number[]): number {
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function formatRankedMetrics(metrics: RetrievalEvalRankedMetrics): string {
+  return [
+    `nDCG@10=${formatMetric(metrics.ndcgAt10)}`,
+    `MRR@10=${formatMetric(metrics.mrrAt10)}`,
+    `Recall@${metrics.k}=${formatMetric(metrics.recallAtK)}`,
+    `Precision@${metrics.k}=${formatMetric(metrics.precisionAtK)}`,
+    `MAP=${formatMetric(metrics.map)}`,
+    `MAP@${metrics.k}=${formatMetric(metrics.mapAtK)}`,
+    `HitRate@${metrics.k}=${formatMetric(metrics.hitRate)}`,
+  ].join(', ');
+}
+
+function formatAggregateRankedMetrics(metrics: RetrievalEvalAggregateRankedMetrics): string {
+  return [
+    `nDCG@10=${formatMetric(metrics.ndcgAt10)}`,
+    `MRR@10=${formatMetric(metrics.mrrAt10)}`,
+    `Recall@k=${formatMetric(metrics.recallAtK)}`,
+    `Precision@k=${formatMetric(metrics.precisionAtK)}`,
+    `MAP=${formatMetric(metrics.map)}`,
+    `MAP@k=${formatMetric(metrics.mapAtK)}`,
+    `HitRate=${formatMetric(metrics.hitRate)}`,
+    `judged cases=${metrics.judgedCaseCount}`,
+  ].join(', ');
+}
+
+function formatMetric(value: number): string {
+  return value.toFixed(3);
 }
 
 function readOptionalSearchMode(
