@@ -1,6 +1,7 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { MarkdownTextSplitter } from 'langchain/text_splitter';
+import { getDefaultLargeCorpusSpec, materializeLargeCorpusFixture } from './large-corpus.js';
 
 interface KnowledgeBaseFixtureOptions {
   // Optional override for MarkdownTextSplitter chunkSize. Default 1000 chars.
@@ -48,6 +49,25 @@ const VOCABULARY = Array.from({ length: 2_000 }, (_, index) => `token-${index.to
 export async function generateKnowledgeBaseFixture(
   options: KnowledgeBaseFixtureOptions,
 ): Promise<KnowledgeBaseFixture> {
+  if (process.env.BENCH_FIXTURE_PROFILE === 'large') {
+    const fixture = await materializeLargeCorpusFixture({
+      chunkSize: options.chunkSize,
+      knowledgeBaseName: options.knowledgeBaseName,
+      rootDir: options.rootDir,
+      spec: getDefaultLargeCorpusSpec({
+        documentCount: options.files,
+        seed: options.seed,
+        targetChunksPerFile: options.targetChunksPerFile,
+      }),
+    });
+    return {
+      chunkCount: fixture.chunkCount,
+      files: fixture.files,
+      knowledgeBaseName: fixture.knowledgeBaseName,
+      query: fixture.query,
+    };
+  }
+
   const knowledgeBasePath = path.join(options.rootDir, options.knowledgeBaseName);
   await fsp.mkdir(knowledgeBasePath, { recursive: true });
 

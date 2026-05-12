@@ -20,6 +20,13 @@ import { installStubProvider } from '../stub.js';
 import { renderReport, type CrossModelAggregate, type CrossModelQueryResult } from './render.js';
 import { resolveModelCtx, safeChunkChars } from './model-ctx.js';
 import { loadGoldenFile, scoreGoldenQuality } from './golden.js';
+import {
+  ensureLargeCorpusCache,
+  getDefaultLargeCorpusSpec,
+  largeCorpusGoldenLabels,
+  largeCorpusQueryLines,
+  type LargeCorpusCache,
+} from '../fixtures/large-corpus.js';
 // Type duplicated locally rather than imported from src/ — tsconfig.bench.json's
 // rootDir scopes types to the benchmarks/ tree (src/ files are out of scope even
 // for type-only imports). All src-side runtime values are loaded via dynamic
@@ -100,8 +107,23 @@ async function main(): Promise<void> {
   if (modelA.id === modelB.id) {
     fatal(`models resolve to the same id "${modelA.id}". Pick two different models.`);
   }
+  const largeCorpusCache = flags.fixture === 'large'
+    ? await ensureLargeCorpusCache({
+        spec: getDefaultLargeCorpusSpec({
+          documentCount: fixtureFileCount(flags.fixture),
+          targetChunksPerFile: fixtureChunksPerFile(flags.fixture),
+        }),
+      })
+    : undefined;
+  if (largeCorpusCache) {
+    process.stderr.write(
+      `[bench:compare] large fixture cache: ${largeCorpusCache.cachePath} (${largeCorpusCache.manifest.files.length} files)\n`,
+    );
+  }
   const goldenLabels = flags.goldenPath
     ? await loadGoldenFile(path.resolve(flags.goldenPath))
+    : largeCorpusCache
+      ? await largeCorpusGoldenLabels(largeCorpusCache, 'default')
     : undefined;
   if (goldenLabels) {
     process.stderr.write(`[bench:compare] golden labels: ${Object.keys(goldenLabels).length} labelled queries\n`);
@@ -140,6 +162,7 @@ async function main(): Promise<void> {
     buildRoot,
     isFirst: true,
     fixtureChunkChars,
+    largeCorpusCache,
   });
 
   process.stderr.write(`[bench:compare] running model B bench…\n`);
@@ -152,6 +175,7 @@ async function main(): Promise<void> {
     buildRoot,
     isFirst: false,
     fixtureChunkChars,
+    largeCorpusCache,
   });
 
   process.stderr.write(`[bench:compare] cross-model agreement…\n`);
@@ -165,7 +189,7 @@ async function main(): Promise<void> {
   if (isStubRun) {
     await installStubProvider();
   }
-  const queries = await resolveQueries(flags, sharedKbRoot);
+  const queries = await resolveQueries(flags, sharedKbRoot, largeCorpusCache);
   const crossModel = await crossModelAgreement({
     workspaceA,
     workspaceB,
@@ -245,6 +269,7 @@ interface RunOnceArgs {
   // to the bench leg via BENCH_FIXTURE_CHUNK_CHARS. undefined = leg uses its
   // default (1000).
   fixtureChunkChars?: number;
+  largeCorpusCache?: LargeCorpusCache;
 }
 
 async function runOnce(args: RunOnceArgs): Promise<BenchmarkReport> {
@@ -264,6 +289,7 @@ async function runOnce(args: RunOnceArgs): Promise<BenchmarkReport> {
     // comparison JSON next to the HTML report is what survives.
     BENCH_RESULTS_DIR: args.workspace,
     BENCH_BATCH_CONCURRENCIES: args.flags.concurrencies.join(','),
+    ...fixtureProfileEnv(args.flags, args.largeCorpusCache),
     ...(args.flags.queriesPath ? { BENCH_QUERIES: path.resolve(args.flags.queriesPath) } : {}),
     ...(args.fixtureChunkChars !== undefined
       ? {
@@ -408,7 +434,7 @@ async function runQueriesAgainstManager(
     try {
       const results = await manager.similaritySearch(q, 20);
       out.push(results.map((r) => ({
-        doc: String(r.metadata.source ?? r.metadata.relativePath ?? r.pageContent.slice(0, 40)),
+        doc: String(r.metadata.relativePath ?? r.metadata.source ?? r.pageContent.slice(0, 40)),
         score: r.score ?? 0,
       })));
     } catch {
@@ -477,10 +503,17 @@ async function computeCost(
   };
 }
 
-async function resolveQueries(flags: CliFlags, kbRoot: string): Promise<string[]> {
+async function resolveQueries(
+  flags: CliFlags,
+  kbRoot: string,
+  largeCorpusCache?: LargeCorpusCache,
+): Promise<string[]> {
   if (flags.queriesPath) {
     const raw = await fsp.readFile(flags.queriesPath, 'utf-8');
     return raw.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  }
+  if (flags.fixture === 'large' && largeCorpusCache) {
+    return largeCorpusQueryLines(largeCorpusCache);
   }
   // Default: pull queries-default.txt OR derive from synthetic fixture.
   // For the synthetic small/medium fixtures, prose queries return nothing
@@ -505,6 +538,43 @@ async function resolveQueries(flags: CliFlags, kbRoot: string): Promise<string[]
     }
   }
   return [];
+}
+
+function fixtureProfileEnv(
+  flags: CliFlags,
+  largeCorpusCache?: LargeCorpusCache,
+): NodeJS.ProcessEnv {
+  if (flags.fixture === 'external') {
+    return {};
+  }
+
+  const env: NodeJS.ProcessEnv = {
+    BENCH_FIXTURE_CHUNKS_PER_FILE: String(fixtureChunksPerFile(flags.fixture)),
+    BENCH_FIXTURE_FILES: String(fixtureFileCount(flags.fixture)),
+    BENCH_FIXTURE_PROFILE: flags.fixture === 'large' ? 'large' : '',
+  };
+
+  if (flags.fixture === 'large' && largeCorpusCache) {
+    env.BENCH_LARGE_CORPUS_CACHE_DIR = path.dirname(largeCorpusCache.cachePath);
+  }
+
+  return env;
+}
+
+function fixtureFileCount(fixture: Exclude<CliFlags['fixture'], 'external'>): number {
+  return positiveIntEnv('BENCH_FIXTURE_FILES') ?? FIXTURE_FILES[fixture];
+}
+
+function fixtureChunksPerFile(fixture: Exclude<CliFlags['fixture'], 'external'>): number {
+  return positiveIntEnv('BENCH_FIXTURE_CHUNKS_PER_FILE') ?? FIXTURE_CHUNKS_PER_FILE[fixture];
+}
+
+function positiveIntEnv(name: string): number | undefined {
+  const value = process.env[name];
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.floor(parsed);
 }
 
 async function deriveQueriesFromFixture(kbRoot: string, max: number): Promise<string[]> {
