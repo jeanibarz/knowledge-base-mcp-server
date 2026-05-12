@@ -1,6 +1,11 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { FaissIndexManager, type SimilaritySearchTiming } from './FaissIndexManager.js';
+import {
+  FaissIndexManager,
+  MAX_NEIGHBOR_CONTEXT_WINDOW,
+  type NeighborContextOptions,
+  type SimilaritySearchTiming,
+} from './FaissIndexManager.js';
 import {
   resolveActiveModel,
   resolveFaissIndexBinaryPath,
@@ -68,6 +73,11 @@ Result tuning:
   --mode=dense|lexical|hybrid|auto
                         Retrieval mode (default: dense). \`hybrid\` fuses
                         dense + BM25 via reciprocal rank fusion (#206).
+  --context-before=<n>  Include up to n preceding chunks from the same source
+                        around each dense semantic match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
+  --context-after=<n>   Include up to n following chunks from the same source
+                        around each dense semantic match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
+  --context-window=<n>  Shorthand for --context-before=n --context-after=n.
 
 Output:
   --format=md|json|vimgrep
@@ -114,6 +124,7 @@ interface SearchArgs {
   mode: SearchMode;
   timing: boolean;
   interactive: boolean;
+  neighborContext?: NeighborContextOptions;
 }
 
 export interface Staleness {
@@ -183,6 +194,10 @@ export async function runSearch(rest: string[]): Promise<number> {
       }
     : null;
   const effectiveParsed: SearchArgs = { ...parsed, mode: effectiveMode };
+  if (hasNeighborContext(parsed) && effectiveMode !== 'dense') {
+    process.stderr.write('kb search: neighbor context expansion is only supported with --mode=dense\n');
+    return 2;
+  }
 
   if (effectiveMode === 'lexical') {
     return runLexicalSearch(effectiveParsed, timing, totalStartedAt, autoModeDecision);
@@ -257,6 +272,9 @@ export async function runSearch(rest: string[]): Promise<number> {
         undefined,
         timing ? denseTiming : undefined,
       );
+    }
+    if (parsed.neighborContext) {
+      results = manager.expandWithNeighborContext(results, parsed.neighborContext);
     }
     if (timing) {
       timing.dense_search_ms = elapsedMs(startedAt);
@@ -381,6 +399,25 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--group-by-source') { out.groupBySource = true; continue; }
     if (raw === '--timing') { out.timing = true; continue; }
     if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
+    if (raw.startsWith('--context-before=')) {
+      out.neighborContext = {
+        ...out.neighborContext,
+        before: parseNeighborContextCount(raw, '--context-before='),
+      };
+      continue;
+    }
+    if (raw.startsWith('--context-after=')) {
+      out.neighborContext = {
+        ...out.neighborContext,
+        after: parseNeighborContextCount(raw, '--context-after='),
+      };
+      continue;
+    }
+    if (raw.startsWith('--context-window=')) {
+      const count = parseNeighborContextCount(raw, '--context-window=');
+      out.neighborContext = { ...out.neighborContext, before: count, after: count };
+      continue;
+    }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
     if (raw.startsWith('--mode=')) {
@@ -412,6 +449,20 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     throw new Error(`unexpected argument: ${raw}`);
   }
   return out;
+}
+
+function parseNeighborContextCount(raw: string, prefix: string): number {
+  const n = Number(raw.slice(prefix.length));
+  if (!Number.isInteger(n) || n < 0 || n > MAX_NEIGHBOR_CONTEXT_WINDOW) {
+    throw new Error(`invalid ${prefix.slice(0, -1)}: ${raw} (expected integer 0-${MAX_NEIGHBOR_CONTEXT_WINDOW})`);
+  }
+  return n;
+}
+
+function hasNeighborContext(parsed: SearchArgs): boolean {
+  const before = parsed.neighborContext?.before ?? 0;
+  const after = parsed.neighborContext?.after ?? 0;
+  return before > 0 || after > 0;
 }
 
 /**

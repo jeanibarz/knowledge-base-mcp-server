@@ -3371,3 +3371,105 @@ describe('FaissIndexManager progressive overfetch (#229)', () => {
     expect(results.map((r) => r.pageContent)).toEqual(['s0', 's1', 's2', 's3']);
   });
 });
+
+describe('FaissIndexManager neighbor context expansion', () => {
+  it('adds adjacent chunks from the same source while keeping the semantic match distinct', async () => {
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager({
+      provider: 'huggingface',
+      modelName: 'BAAI/bge-small-en-v1.5',
+    });
+    const docs = new Map([
+      ['0', { pageContent: 'before', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 0 } }],
+      ['1', { pageContent: 'match', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 } }],
+      ['2', { pageContent: 'after', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } }],
+      ['other', { pageContent: 'wrong source', metadata: { knowledgeBase: 'kb', source: '/kb/other.md', chunkIndex: 0 } }],
+    ]);
+    (manager as any).faissIndex = { docstore: { _docs: docs } };
+
+    const expanded = manager.expandWithNeighborContext([
+      {
+        pageContent: 'match',
+        metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 },
+        score: 0.12,
+      },
+    ], { before: 1, after: 1 });
+
+    expect(expanded).toHaveLength(1);
+    expect(expanded[0]).toMatchObject({
+      pageContent: 'match',
+      score: 0.12,
+      matchType: 'semantic',
+      semanticMatch: true,
+    });
+    expect(expanded[0].contextChunks?.map((chunk) => ({
+      content: chunk.pageContent,
+      type: chunk.matchType,
+      semantic: chunk.semanticMatch,
+      direction: chunk.contextDirection,
+    }))).toEqual([
+      { content: 'before', type: 'context', semantic: false, direction: 'before' },
+      { content: 'after', type: 'context', semantic: false, direction: 'after' },
+    ]);
+  });
+
+  it('deduplicates overlapping context and never reclassifies another semantic match as context', async () => {
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager({
+      provider: 'huggingface',
+      modelName: 'BAAI/bge-small-en-v1.5',
+    });
+    const docs = new Map([
+      ['0', { pageContent: 'zero', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 0 } }],
+      ['1', { pageContent: 'one', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 } }],
+      ['2', { pageContent: 'two', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } }],
+      ['3', { pageContent: 'three', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 3 } }],
+    ]);
+    (manager as any).faissIndex = { docstore: { _docs: docs } };
+
+    const expanded = manager.expandWithNeighborContext([
+      {
+        pageContent: 'one',
+        metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 },
+        score: 0.1,
+      },
+      {
+        pageContent: 'two',
+        metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 },
+        score: 0.2,
+      },
+    ], { before: 1, after: 1 });
+
+    expect(expanded.map((result) => result.pageContent)).toEqual(['one', 'two']);
+    expect(expanded[0].contextChunks?.map((chunk) => chunk.pageContent)).toEqual(['zero']);
+    expect(expanded[1].contextChunks?.map((chunk) => chunk.pageContent)).toEqual(['three']);
+  });
+
+  it('caps context chunks per response', async () => {
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager({
+      provider: 'huggingface',
+      modelName: 'BAAI/bge-small-en-v1.5',
+    });
+    const docs = new Map([
+      ['0', { pageContent: 'zero', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 0 } }],
+      ['1', { pageContent: 'one', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 } }],
+      ['2', { pageContent: 'two', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } }],
+    ]);
+    (manager as any).faissIndex = { docstore: { _docs: docs } };
+
+    const expanded = manager.expandWithNeighborContext([
+      {
+        pageContent: 'one',
+        metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 },
+        score: 0.1,
+      },
+    ], { before: 1, after: 1, maxContextChunks: 1 });
+
+    expect(expanded[0].contextChunks?.map((chunk) => chunk.pageContent)).toEqual(['zero']);
+    expect(expanded[0].contextTruncated).toBe(true);
+  });
+});

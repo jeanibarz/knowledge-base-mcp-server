@@ -9,7 +9,11 @@ import {
   type TextContent,
 } from '@modelcontextprotocol/sdk/types.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
-import type { IndexUpdateProgress, SimilaritySearchTiming } from './FaissIndexManager.js';
+import type {
+  IndexUpdateProgress,
+  NeighborContextOptions,
+  SimilaritySearchTiming,
+} from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,
   listRegisteredModels,
@@ -85,6 +89,21 @@ function mcpErrorContent(error: Error): TextContent {
       },
     }),
   };
+}
+
+function resolveNeighborContextOptions(args: {
+  context_before?: number;
+  context_after?: number;
+  context_window?: number;
+}): NeighborContextOptions | undefined {
+  const before = args.context_before ?? args.context_window ?? 0;
+  const after = args.context_after ?? args.context_window ?? 0;
+  if (before === 0 && after === 0) return undefined;
+  return { before, after };
+}
+
+function hasNeighborContext(options: NeighborContextOptions | undefined): boolean {
+  return (options?.before ?? 0) > 0 || (options?.after ?? 0) > 0;
 }
 
 interface AddDocumentSnapshot {
@@ -355,6 +374,9 @@ export class KnowledgeBaseServer {
         extensions: z.array(z.string()).optional().describe('Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional.'),
         path_glob: z.string().optional().describe('Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching.'),
         tags: z.array(z.string()).optional().describe('Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter.'),
+        context_before: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense semantic match. Defaults to 0.'),
+        context_after: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each dense semantic match. Defaults to 0.'),
+        context_window: z.number().int().min(0).max(5).optional().describe('Shorthand for setting context_before and context_after to the same value. Defaults to 0.'),
         // #206 stage 2 — sparse+dense hybrid retrieval. Default 'dense' is
         // wire-compatible with 0.x clients: when the field is absent the
         // server runs the unmodified dense path. 'hybrid' fuses dense FAISS
@@ -815,6 +837,9 @@ export class KnowledgeBaseServer {
     extensions?: string[];
     path_glob?: string;
     tags?: string[];
+    context_before?: number;
+    context_after?: number;
+    context_window?: number;
     search_mode?: 'dense' | 'hybrid';
   }): Promise<CallToolResult> {
     const canonical: Partial<CanonicalLogInput> = {};
@@ -826,6 +851,7 @@ export class KnowledgeBaseServer {
       ? { extensions: args.extensions, pathGlob: args.path_glob, tags: args.tags }
       : undefined;
     const searchMode: 'dense' | 'hybrid' = args.search_mode ?? 'dense';
+    const neighborContext = resolveNeighborContextOptions(args);
 
     return this.withCanonicalTool({
       tool: 'retrieve_knowledge',
@@ -836,6 +862,20 @@ export class KnowledgeBaseServer {
       search_mode: searchMode,
     }, async () => {
       if (searchMode === 'hybrid') {
+        if (hasNeighborContext(neighborContext)) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: {
+                  code: 'VALIDATION',
+                  message: 'neighbor context expansion is only supported with dense retrieve_knowledge',
+                },
+              }),
+            }],
+            isError: true,
+          };
+        }
         return this.handleRetrieveKnowledgeHybrid({
           query,
           knowledgeBaseName,
@@ -878,7 +918,7 @@ export class KnowledgeBaseServer {
 
       // Perform similarity search using the provided query.
       const timing: SimilaritySearchTiming = {};
-      const similaritySearchResults = await manager.similaritySearch(
+      let similaritySearchResults = await manager.similaritySearch(
         query,
         10,
         threshold,
@@ -886,6 +926,12 @@ export class KnowledgeBaseServer {
         filters,
         timing,
       );
+      if (neighborContext) {
+        similaritySearchResults = manager.expandWithNeighborContext(
+          similaritySearchResults,
+          neighborContext,
+        );
+      }
       if (process.env.KB_LOG_VERBOSE === '1') {
         logger.debug(`[${Date.now()}] Similarity search completed`);
       }

@@ -6,6 +6,7 @@ const initializeMock = jest.fn();
 const updateIndexMock = jest.fn();
 const reloadPersistedIndexMock = jest.fn();
 const similaritySearchMock = jest.fn();
+const expandWithNeighborContextMock = jest.fn((results: unknown) => results);
 const hasLoadedIndexMock = jest.fn(() => true);
 // Issue #54 — kb_stats reads chunk_count + dim from the manager. Default to
 // an empty store so tests that don't care about stats still see a sane shape.
@@ -48,6 +49,7 @@ const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provid
     updateIndex: updateIndexMock,
     reloadPersistedIndex: reloadPersistedIndexMock,
     similaritySearch: similaritySearchMock,
+    expandWithNeighborContext: expandWithNeighborContextMock,
     getStats: getStatsMock,
     getLastIndexUpdateSummary: getLastIndexUpdateSummaryMock,
     modelDir,
@@ -88,6 +90,8 @@ describe('KnowledgeBaseServer handlers', () => {
     updateIndexMock.mockReset();
     reloadPersistedIndexMock.mockReset();
     similaritySearchMock.mockReset();
+    expandWithNeighborContextMock.mockReset();
+    expandWithNeighborContextMock.mockImplementation((results: unknown) => results);
     hasLoadedIndexMock.mockReset();
     hasLoadedIndexMock.mockReturnValue(true);
     getStatsMock.mockReset();
@@ -312,6 +316,66 @@ describe('KnowledgeBaseServer handlers', () => {
     const server = await freshServer();
     const result = await server['handleRetrieveKnowledge']({ query: 'q' });
     expect(result.content[0].text).not.toContain('Model:');
+  });
+
+  it('handleRetrieveKnowledge expands neighbor context only when requested', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+    const semanticResults = [
+      {
+        pageContent: 'match',
+        metadata: { source: '/tmp/doc.md', chunkIndex: 1 },
+        score: 0.5,
+      },
+    ];
+    similaritySearchMock.mockResolvedValue(semanticResults);
+    expandWithNeighborContextMock.mockReturnValue([
+      {
+        ...semanticResults[0],
+        matchType: 'semantic',
+        semanticMatch: true,
+        contextChunks: [
+          {
+            pageContent: 'neighbor',
+            metadata: { source: '/tmp/doc.md', chunkIndex: 2 },
+            matchType: 'context',
+            semanticMatch: false,
+            contextDirection: 'after',
+            contextDistance: 1,
+          },
+        ],
+      },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'q',
+      context_before: 1,
+      context_after: 1,
+    });
+
+    expect(expandWithNeighborContextMock).toHaveBeenCalledWith(
+      semanticResults,
+      { before: 1, after: 1 },
+    );
+    expect(result.content[0].text).toContain('semantic match');
+    expect(result.content[0].text).toContain('Context chunks');
+    expect(result.content[0].text).toContain('neighbor');
+  });
+
+  it('handleRetrieveKnowledge rejects neighbor context for hybrid mode', async () => {
+    await setRetrieveEnv();
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'q',
+      search_mode: 'hybrid',
+      context_window: 1,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.code).toBe('VALIDATION');
+    expect(similaritySearchMock).not.toHaveBeenCalled();
   });
 
   // --- handleKbStats (#54) -------------------------------------------------
