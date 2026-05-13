@@ -1,8 +1,10 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import {
   AutoThresholdDecision,
+  buildDenseSearchJsonPayload,
   computeAutoThreshold,
   createRefreshProgressReporter,
+  formatDenseSearchMarkdownOutput,
   formatAutoModeHeader,
   formatAutoThresholdHeader,
   formatFreshnessFooter,
@@ -226,6 +228,16 @@ describe('parseSearchArgs output format', () => {
   });
 });
 
+describe('parseSearchArgs freshness', () => {
+  it('enables freshness by default', () => {
+    expect(parseSearchArgs(['query'])).toMatchObject({ freshness: true });
+  });
+
+  it('accepts --no-freshness to omit freshness work and output', () => {
+    expect(parseSearchArgs(['query', '--no-freshness'])).toMatchObject({ freshness: false });
+  });
+});
+
 describe('parseSearchArgs --interactive (#215)', () => {
   it('defaults --interactive to false', () => {
     expect(parseSearchArgs(['query'])).toMatchObject({ interactive: false });
@@ -277,6 +289,88 @@ describe('shouldUsePicker (#215)', () => {
 
   it('lets --format=vimgrep override -i so editor quickfix flows stay structured', () => {
     expect(shouldUsePicker({ interactive: true, format: 'vimgrep' })).toBe(false);
+  });
+});
+
+describe('dense freshness output (#332)', () => {
+  it('marks JSON freshness as omitted and omits stale fields', () => {
+    const payload = buildDenseSearchJsonPayload({
+      results: [],
+      requestedMode: 'dense',
+      effectiveMode: 'dense',
+      autoModeDecision: null,
+      groupBySource: false,
+      refreshed: false,
+      scopedKb: undefined,
+      staleness: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+
+    expect(payload).toMatchObject({ freshness_omitted: true });
+    expect(payload).not.toHaveProperty('index_mtime');
+    expect(payload).not.toHaveProperty('stale');
+    expect(payload).not.toHaveProperty('modified_files');
+    expect(payload).not.toHaveProperty('new_files');
+    expect(payload).not.toHaveProperty('global_stale');
+  });
+
+  it('omits the markdown freshness footer when freshness is omitted', () => {
+    const output = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: null,
+      refreshed: false,
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+
+    expect(output).toContain('## Semantic Search Results');
+    expect(output).not.toContain('Index up-to-date');
+    expect(output).not.toContain('Index may be stale');
+    expect(output).not.toContain('Run `kb search --refresh`');
+  });
+
+  it('keeps default JSON freshness fields when freshness is present', () => {
+    const staleness: Staleness = { indexMtime: MTIME, modifiedFiles: 1, newFiles: 2 };
+    const payload = buildDenseSearchJsonPayload({
+      results: [],
+      requestedMode: 'dense',
+      effectiveMode: 'dense',
+      autoModeDecision: null,
+      groupBySource: false,
+      refreshed: false,
+      scopedKb: undefined,
+      staleness,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+
+    expect(payload).toMatchObject({
+      index_mtime: MTIME,
+      stale: true,
+      modified_files: 1,
+      new_files: 2,
+      global_stale: true,
+      global_modified_files: 1,
+      global_new_files: 2,
+    });
+    expect(payload).not.toHaveProperty('freshness_omitted');
+  });
+
+  it('keeps the default markdown freshness footer when freshness is present', () => {
+    const output = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: { indexMtime: MTIME, modifiedFiles: 0, newFiles: 0 },
+      refreshed: false,
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+
+    expect(output).toContain(`> _Index up-to-date as of ${MTIME}._`);
   });
 });
 
