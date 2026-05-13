@@ -14,11 +14,13 @@ import {
 } from './file-ingest.js';
 import { loadFile } from './loaders.js';
 import {
+  FAISS_INDEX_PATH,
   KNOWLEDGE_BASES_ROOT_DIR,
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
   resolveIndexingBatchSize,
 } from './config.js';
+import { casRootForIndexPath } from './docstore-cas.js';
 import {
   activeFileExists,
   computeLegacyEnvModelSpec,
@@ -827,6 +829,7 @@ export class FaissIndexManager {
       modelDir: this.modelDir,
       modelId: this.modelId,
       swapCounter: this.swapCounter,
+      casRoot: casRootForIndexPath(FAISS_INDEX_PATH),
     });
   }
 

@@ -2,6 +2,11 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import { FaissStore } from '@langchain/community/vectorstores/faiss';
+import {
+  dedupeDocstoreOnSave,
+  gcDocstoreCas,
+  type DedupOutcome,
+} from './docstore-cas.js';
 import { pathExists } from './file-utils.js';
 import { logger } from './logger.js';
 
@@ -255,8 +260,16 @@ export async function saveFaissStoreAtomic(options: {
   modelDir: string;
   modelId: string;
   swapCounter: number;
+  /**
+   * RFC 016 — when provided, the per-model `docstore.json` written by
+   * `FaissStore.save` is canonicalized and hardlinked to a shared payload
+   * under `casRoot` before the symlink swap. `null` disables dedup (the
+   * existing behavior pre-RFC-016, retained for unit tests and any caller
+   * that does not have a stable shared root to use).
+   */
+  casRoot?: string | null;
 }): Promise<void> {
-  const { store, modelDir, modelId, swapCounter } = options;
+  const { store, modelDir, modelId, swapCounter, casRoot = null } = options;
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
   const currentTarget = await readSymlinkOrNull(symlinkPath);
   const nextVersion = nextVersionAfter(currentTarget);
@@ -268,6 +281,15 @@ export async function saveFaissStoreAtomic(options: {
   }
   await store.save(stagingDir);
 
+  // RFC 016 — canonicalize + hardlink docstore into the CAS before we swap
+  // the symlink. A crash between save and dedup leaves a complete (but
+  // un-deduped) staging dir; RFC 014's orphan-staging cleanup on the next
+  // save handles it.
+  let dedup: DedupOutcome | null = null;
+  if (casRoot !== null) {
+    dedup = await dedupeDocstoreOnSave({ stagingDir, casRoot, swapCounter });
+  }
+
   const tmpLink = path.join(
     modelDir,
     `.${SYMLINK_NAME}.tmp.${process.pid}.${swapCounter}`,
@@ -275,12 +297,26 @@ export async function saveFaissStoreAtomic(options: {
   await fsp.symlink(nextVersion, tmpLink);
   await fsp.rename(tmpLink, symlinkPath);
   logger.info(
-    `atomicSave: ${modelId} ${currentTarget ?? '(none)'} -> ${nextVersion}`,
+    `atomicSave: ${modelId} ${currentTarget ?? '(none)'} -> ${nextVersion}` +
+      (dedup
+        ? ` (docstore-cas: ${dedup.status}` +
+          (dedup.hash ? `, sha=${dedup.hash.slice(0, 12)}` : '') +
+          (dedup.bytes ? `, bytes=${dedup.bytes}` : '') +
+          (dedup.skipReason ? `, reason=${dedup.skipReason}` : '') +
+          ')'
+        : ''),
   );
 
   await pruneInactiveIndexVersions(modelDir, {
     retention: resolveIndexVersionRetention(),
   });
+  if (casRoot !== null) {
+    // Best-effort orphan reclamation. Runs under withCasLock so it cannot
+    // race with a concurrent save's link step. See RFC 016 §5.
+    await gcDocstoreCas(casRoot).catch((err) => {
+      logger.warn(`atomicSave: docstore-cas gc failed: ${(err as Error).message}`);
+    });
+  }
 }
 
 export async function resolveActiveIndexFilePath(modelDir: string): Promise<string | null> {
