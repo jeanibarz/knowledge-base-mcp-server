@@ -22,6 +22,10 @@ import {
 import { pathExists } from './file-utils.js';
 import { deriveModelId, EmbeddingProvider, isValidModelId, parseModelId } from './model-id.js';
 import { logger } from './logger.js';
+import {
+  parseIndexVersionDirName,
+  resolveIndexVersionRetention,
+} from './faiss-store-layout.js';
 
 const ACTIVE_FILE = path.join(FAISS_INDEX_PATH, 'active.txt');
 const MODELS_DIR = path.join(FAISS_INDEX_PATH, 'models');
@@ -80,6 +84,96 @@ export async function resolveFaissIndexBinaryPath(modelId: string): Promise<stri
   }
   const legacy = path.join(dir, 'faiss.index', 'faiss.index');
   return (await pathExists(legacy)) ? legacy : null;
+}
+
+export interface ModelIndexVersionStorage {
+  version: string;
+  bytes: number;
+  active: boolean;
+}
+
+export interface ModelIndexStorageSummary {
+  active_version: string | null;
+  retention_previous_versions: number;
+  version_count: number;
+  total_version_bytes: number;
+  active_version_bytes: number | null;
+  inactive_version_count: number;
+  inactive_version_bytes: number;
+  versions: ModelIndexVersionStorage[];
+}
+
+export async function readModelIndexStorage(
+  modelId: string,
+): Promise<ModelIndexStorageSummary> {
+  const dir = modelDir(modelId);
+  let activeVersion: string | null = null;
+  try {
+    const st = await fsp.lstat(path.join(dir, 'index'));
+    if (st.isSymbolicLink()) {
+      activeVersion = await fsp.readlink(path.join(dir, 'index'));
+      if (parseIndexVersionDirName(activeVersion) === null) activeVersion = null;
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+
+  let entries: string[];
+  try {
+    entries = await fsp.readdir(dir);
+  } catch {
+    entries = [];
+  }
+  const versions: ModelIndexVersionStorage[] = [];
+  for (const entry of entries) {
+    if (parseIndexVersionDirName(entry) === null) continue;
+    versions.push({
+      version: entry,
+      bytes: await directorySizeBytes(path.join(dir, entry)),
+      active: entry === activeVersion,
+    });
+  }
+  versions.sort((a, b) => a.version.localeCompare(b.version, undefined, { numeric: true }));
+  const totalVersionBytes = versions.reduce((sum, v) => sum + v.bytes, 0);
+  const activeVersionBytes = versions.find((v) => v.active)?.bytes ?? null;
+  const inactiveVersionBytes = versions
+    .filter((v) => !v.active)
+    .reduce((sum, v) => sum + v.bytes, 0);
+  return {
+    active_version: activeVersion,
+    retention_previous_versions: resolveIndexVersionRetention(),
+    version_count: versions.length,
+    total_version_bytes: totalVersionBytes,
+    active_version_bytes: activeVersionBytes,
+    inactive_version_count: versions.filter((v) => !v.active).length,
+    inactive_version_bytes: inactiveVersionBytes,
+    versions,
+  };
+}
+
+async function directorySizeBytes(dir: string): Promise<number> {
+  let total = 0;
+  let entries: Array<import('fs').Dirent>;
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 0;
+    throw err;
+  }
+  for (const entry of entries) {
+    const child = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += await directorySizeBytes(child);
+    } else if (entry.isFile()) {
+      try {
+        total += (await fsp.stat(child)).size;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
+  }
+  return total;
 }
 
 export function modelNameFilePath(modelId: string): string {

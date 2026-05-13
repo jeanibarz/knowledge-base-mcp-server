@@ -152,10 +152,12 @@ async function holdWriteLock<T>(modelDir: string, fn: () => Promise<T>): Promise
 
 describe('RFC 014 atomic save — layout helpers', () => {
   let nextVersionAfter: (s: string | null) => string;
+  let resolveIndexVersionRetention: (raw?: string) => number;
 
   beforeAll(async () => {
     const mod = await import('./faiss-store-layout.js');
     nextVersionAfter = mod.nextVersionAfter;
+    resolveIndexVersionRetention = mod.resolveIndexVersionRetention;
   });
 
   test('nextVersionAfter(null) returns index.v0', () => {
@@ -177,6 +179,15 @@ describe('RFC 014 atomic save — layout helpers', () => {
     // Empty string is falsy and equivalent to null — both indicate no
     // current versioned layout exists yet (fresh install).
     expect(nextVersionAfter('')).toBe('index.v0');
+  });
+
+  test('retention config defaults to two inactive versions and accepts zero', () => {
+    expect(resolveIndexVersionRetention(undefined)).toBe(2);
+    expect(resolveIndexVersionRetention('')).toBe(2);
+    expect(resolveIndexVersionRetention('0')).toBe(0);
+    expect(resolveIndexVersionRetention(' 4 ')).toBe(4);
+    expect(resolveIndexVersionRetention('-1')).toBe(2);
+    expect(resolveIndexVersionRetention('abc')).toBe(2);
   });
 });
 
@@ -294,11 +305,12 @@ describe('RFC 014 atomic save — F1 invariant (reader-during-writer)', () => {
   }, 30_000);
 });
 
-describe('RFC 014 atomic save — GC retention (N=3)', () => {
+describe('RFC 014 atomic save — index version pruning', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
     resetMockState();
+    delete process.env.KB_INDEX_VERSION_RETENTION;
     tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'rfc014-gc-'));
   });
 
@@ -306,7 +318,7 @@ describe('RFC 014 atomic save — GC retention (N=3)', () => {
     await fsp.rm(tmpDir, { recursive: true, force: true });
   });
 
-  test('after 6 saves, only index.v3, v4, v5 remain', async () => {
+  test('default retention keeps active version plus two inactive versions', async () => {
     const mgr = await makeManager(tmpDir);
     const modelDir = modelDirIn(tmpDir);
     await fsp.mkdir(modelDir, { recursive: true });
@@ -321,6 +333,47 @@ describe('RFC 014 atomic save — GC retention (N=3)', () => {
     const versions = entries.filter((e) => /^index\.v\d+$/.test(e)).sort();
     expect(versions).toEqual(['index.v3', 'index.v4', 'index.v5']);
     expect(await fsp.readlink(path.join(modelDir, 'index'))).toBe('index.v5');
+  });
+
+  test('KB_INDEX_VERSION_RETENTION=0 keeps only the active version after save', async () => {
+    process.env.KB_INDEX_VERSION_RETENTION = '0';
+    const mgr = await makeManager(tmpDir);
+    const modelDir = modelDirIn(tmpDir);
+    await fsp.mkdir(modelDir, { recursive: true });
+    await mgr.initialize({ readOnly: true });
+    (mgr as any).faissIndex = new MockFaissStore();
+
+    for (let i = 0; i < 4; i += 1) {
+      await holdWriteLock(modelDir, () => (mgr as any).atomicSave());
+    }
+
+    const entries = await fsp.readdir(modelDir);
+    const versions = entries.filter((e) => /^index\.v\d+$/.test(e)).sort();
+    expect(versions).toEqual(['index.v3']);
+    expect(await fsp.readlink(path.join(modelDir, 'index'))).toBe('index.v3');
+  });
+
+  test('pruning never removes the active symlink target', async () => {
+    const modelDir = modelDirIn(tmpDir);
+    await fsp.mkdir(modelDir, { recursive: true });
+    for (let i = 0; i < 6; i += 1) {
+      const dir = path.join(modelDir, `index.v${i}`);
+      await fsp.mkdir(dir);
+      await fsp.writeFile(path.join(dir, 'faiss.index'), `v${i}`);
+    }
+    await fsp.symlink('index.v1', path.join(modelDir, 'index'));
+
+    const { pruneInactiveIndexVersions } = await import('./faiss-store-layout.js');
+    const result = await pruneInactiveIndexVersions(modelDir, { retention: 1 });
+
+    expect(result.active).toBe('index.v1');
+    expect(result.removed).not.toContain('index.v1');
+    expect(await fsp.readlink(path.join(modelDir, 'index'))).toBe('index.v1');
+    await expect(fsp.stat(path.join(modelDir, 'index.v1'))).resolves.toBeDefined();
+    const versions = (await fsp.readdir(modelDir))
+      .filter((e) => /^index\.v\d+$/.test(e))
+      .sort();
+    expect(versions).toEqual(['index.v1', 'index.v5']);
   });
 });
 

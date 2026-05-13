@@ -78,7 +78,9 @@ models/<model_id>/
     docstore.json
 ```
 
-`saveFaissStoreAtomic` writes the next `index.vN/`, creates a temporary symlink, atomically renames it to `index`, and keeps the newest three version directories (`src/faiss-store-layout.ts:150-179`). `loadFaissStoreAtomic` pins reads by resolving the `index` symlink once before calling `FaissStore.load`, so `faiss.index` and `docstore.json` come from the same version directory even if another writer swaps the symlink later (`src/faiss-store-layout.ts:58-120`).
+`saveFaissStoreAtomic` writes the next `index.vN/`, creates a temporary symlink, atomically renames it to `index`, and then prunes inactive version directories (`src/faiss-store-layout.ts`). The default retention policy keeps the active version plus two inactive retained versions. Operators can set `KB_INDEX_VERSION_RETENTION=<non-negative integer>` to change the inactive-version count; `0` keeps only the active version after a successful save. Pruning reads the active `index` symlink before deleting anything and never removes that target, even if it is outside the newest retained versions. `kb doctor` reports active, inactive, and total version-directory storage so retained-version cost is visible during health checks.
+
+`loadFaissStoreAtomic` pins reads by resolving the `index` symlink once before calling `FaissStore.load`, so `faiss.index` and `docstore.json` come from the same version directory even if another writer swaps the symlink later (`src/faiss-store-layout.ts:58-120`).
 
 `faiss.index` is the binary vector index in `faiss-node`'s native format. `docstore.json` is the LangChain docstore sibling emitted by `FaissStore.save`; it is part of the `$FAISS_INDEX_PATH` code-exec trust boundary because loading attacker-controlled serialized data is unsafe. See [`threat-model.md`](./threat-model.md).
 
@@ -138,7 +140,7 @@ This page is verified against the following source files. If one of these files 
 
 - Chunk metadata wire shape: `src/file-ingest.ts:37-104`.
 - Frontmatter whitelist + sanitisation: `src/frontmatter-lift.ts:19-218`, `src/formatter.ts:34-90`.
-- Atomic FAISS save / pinned load: `src/faiss-store-layout.ts:58-179`.
+- Atomic FAISS save / pinned load / version retention: `src/faiss-store-layout.ts`.
 - Sidecar write path: `src/file-ingest.ts:118-144`, `src/FaissIndexManager.ts:782-793`.
 - Active-model resolution: `src/active-model.ts:5-26`, `:259-330`.
 - Per-model directory and `model_name.txt`: `src/active-model.ts:107-127`, `src/FaissIndexManager.ts:327-334`.
