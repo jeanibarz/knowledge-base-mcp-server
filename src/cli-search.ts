@@ -140,6 +140,20 @@ interface SearchArgs {
   neighborContext?: NeighborContextOptions;
 }
 
+export interface RunSearchDeps {
+  bootstrapLayout: typeof FaissIndexManager.bootstrapLayout;
+  resolveActiveModel: typeof resolveActiveModel;
+  loadManagerForModel: typeof loadManagerForModel;
+  loadWithJsonRetry: typeof loadWithJsonRetry;
+}
+
+const DEFAULT_RUN_SEARCH_DEPS: RunSearchDeps = {
+  bootstrapLayout: FaissIndexManager.bootstrapLayout,
+  resolveActiveModel,
+  loadManagerForModel,
+  loadWithJsonRetry,
+};
+
 export interface Staleness {
   indexMtime: string | null;
   modifiedFiles: number;
@@ -168,7 +182,10 @@ export interface AutoSearchModeDecision {
   reason: string;
 }
 
-export async function runSearch(rest: string[]): Promise<number> {
+export async function runSearch(
+  rest: string[],
+  deps: RunSearchDeps = DEFAULT_RUN_SEARCH_DEPS,
+): Promise<number> {
   const totalStartedAt = nowMs();
   let parsed: SearchArgs;
   try {
@@ -221,7 +238,7 @@ export async function runSearch(rest: string[]): Promise<number> {
 
   try {
     const startedAt = nowMs();
-    await FaissIndexManager.bootstrapLayout();
+    await deps.bootstrapLayout();
     if (timing) timing.bootstrap_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -230,7 +247,7 @@ export async function runSearch(rest: string[]): Promise<number> {
   let activeModelId: string;
   try {
     const startedAt = nowMs();
-    activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
+    activeModelId = await deps.resolveActiveModel({ explicitOverride: parsed.model });
     if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -239,7 +256,7 @@ export async function runSearch(rest: string[]): Promise<number> {
   let manager: FaissIndexManager;
   try {
     const startedAt = nowMs();
-    manager = await loadManagerForModel(activeModelId);
+    manager = await deps.loadManagerForModel(activeModelId);
     if (timing) timing.manager_load_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -256,7 +273,7 @@ export async function runSearch(rest: string[]): Promise<number> {
         });
       });
     } else {
-      await loadWithJsonRetry(manager);
+      await deps.loadWithJsonRetry(manager);
     }
     if (timing) timing.index_load_ms = elapsedMs(startedAt);
   } catch (err) {
@@ -275,7 +292,7 @@ export async function runSearch(rest: string[]): Promise<number> {
         Number.POSITIVE_INFINITY,
         parsed.kb,
         undefined,
-        timing ? denseTiming : undefined,
+        denseTiming,
         { noCache: parsed.noCache },
       );
       autoThresholdDecision = computeAutoThreshold(rawResults.map((r) => r.score));
@@ -287,7 +304,7 @@ export async function runSearch(rest: string[]): Promise<number> {
         parsed.threshold,
         parsed.kb,
         undefined,
-        timing ? denseTiming : undefined,
+        denseTiming,
         { noCache: parsed.noCache },
       );
     }
@@ -1219,7 +1236,7 @@ async function runHybridSearch(
       Number.POSITIVE_INFINITY,
       parsed.kb,
       undefined,
-      timing ? denseTiming : undefined,
+      denseTiming,
       { noCache: parsed.noCache },
     )
     .then((rs) => {

@@ -11,10 +11,13 @@ import {
   formatRefreshProgressLine,
   parseSearchArgs,
   resolveAutoSearchMode,
+  runSearch,
   shouldUsePicker,
+  type RunSearchDeps,
   Staleness,
 } from './cli-search.js';
 import { compactTimingPayload, type TimingPayload } from './cli-timing.js';
+import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
 import {
   classifyKbSearchError,
   formatKbSearchFailureJson,
@@ -235,6 +238,89 @@ describe('parseSearchArgs freshness', () => {
 
   it('accepts --no-freshness to omit freshness work and output', () => {
     expect(parseSearchArgs(['query', '--no-freshness'])).toMatchObject({ freshness: false });
+  });
+});
+
+describe('runSearch timing guard (#331)', () => {
+  function makeDeps(): {
+    deps: RunSearchDeps;
+    manager: FaissIndexManager & {
+      similaritySearch: jest.Mock;
+    };
+  } {
+    const manager = {
+      similaritySearch: jest.fn(async (...args: unknown[]) => {
+        const timing = args[5] as SimilaritySearchTiming | undefined;
+        // Mirrors FaissIndexManager's vector-search timing write. This used
+        // to throw for plain `kb search` because the CLI passed undefined.
+        timing!.faiss_search_ms = (timing!.faiss_search_ms ?? 0) + 7;
+        return [];
+      }),
+    } as unknown as FaissIndexManager & { similaritySearch: jest.Mock };
+
+    return {
+      manager,
+      deps: {
+        bootstrapLayout: jest.fn(async () => {}),
+        resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+        loadManagerForModel: jest.fn(async () => manager),
+        loadWithJsonRetry: jest.fn(async () => {}),
+      },
+    };
+  }
+
+  async function captureSearchOutput(
+    args: string[],
+    deps: RunSearchDeps,
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+
+    try {
+      const code = await runSearch(args, deps);
+      return { code, stdout: stdout.join(''), stderr: stderr.join('') };
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  }
+
+  it('keeps plain markdown search from dereferencing missing timing metrics', async () => {
+    const { deps, manager } = makeDeps();
+
+    const out = await captureSearchOutput(['query', '--no-freshness'], deps);
+
+    expect(out.code).toBe(0);
+    expect(out.stderr).toBe('');
+    expect(out.stdout).toContain('## Semantic Search Results');
+    expect(out.stdout).not.toContain('Timing');
+    expect(manager.similaritySearch).toHaveBeenCalledTimes(1);
+    expect(manager.similaritySearch.mock.calls[0][5]).toMatchObject({ faiss_search_ms: 7 });
+  });
+
+  it('keeps plain JSON search from dereferencing missing timing metrics', async () => {
+    const { deps, manager } = makeDeps();
+
+    const out = await captureSearchOutput(['query', '--format=json', '--no-freshness'], deps);
+
+    expect(out.code).toBe(0);
+    expect(out.stderr).toBe('');
+    expect(manager.similaritySearch).toHaveBeenCalledTimes(1);
+    expect(manager.similaritySearch.mock.calls[0][5]).toMatchObject({ faiss_search_ms: 7 });
+    const payload = JSON.parse(out.stdout);
+    expect(payload).toMatchObject({
+      results: [],
+      freshness_omitted: true,
+    });
+    expect(payload).not.toHaveProperty('timing');
   });
 });
 
