@@ -1,7 +1,6 @@
 // FaissIndexManager.ts — RFC 013 M1+M2 (multi-model layout).
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { FaissStore } from "@langchain/community/vectorstores/faiss";
 import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import { Document } from "@langchain/core/documents";
 import { createEmbeddingsClient, type EmbeddingsClient } from './embedding-provider.js';
@@ -54,6 +53,7 @@ import {
 } from './search-filters.js';
 import { queryEmbeddingCache, type QueryCacheLookupStatus } from './query-cache.js';
 import { withSidecarLock } from './write-lock.js';
+import { FaissStoreAdapter } from './faiss-store-adapter.js';
 import {
   recordIngestFailure,
   recordIngestSuccess,
@@ -440,7 +440,7 @@ function parsePersistedIndexUpdateSummary(value: unknown): IndexUpdateSummary | 
 }
 
 export class FaissIndexManager {
-  private faissIndex: FaissStore | null = null;
+  private faissIndex: FaissStoreAdapter | null = null;
   // Issue #59 — populated by initialize() via dynamic import of the active
   // provider's @langchain module. Definite-assignment-asserted because the
   // class invariant is "every method that touches embeddings runs after
@@ -789,14 +789,15 @@ export class FaissIndexManager {
    * `list_models` (active-model.ts:detectDowngradeHazard), so no marker
    * file is required — the filesystem is the single source of truth.
    */
-  private async loadAtomic(opts: { repairCorrupt?: boolean } = {}): Promise<FaissStore | null> {
-    return loadFaissStoreAtomic({
+  private async loadAtomic(opts: { repairCorrupt?: boolean } = {}): Promise<FaissStoreAdapter | null> {
+    const store = await loadFaissStoreAtomic({
       modelDir: this.modelDir,
       modelId: this.modelId,
       embeddings: this.embeddings,
       handleFsOperationError,
       repairCorrupt: opts.repairCorrupt,
     });
+    return store === null ? null : FaissStoreAdapter.fromStore(store);
   }
 
   /**
@@ -830,12 +831,22 @@ export class FaissIndexManager {
 
     this.swapCounter += 1;
     await saveFaissStoreAtomic({
-      store: this.faissIndex,
+      store: this.faissStoreForPersistence(),
       modelDir: this.modelDir,
       modelId: this.modelId,
       swapCounter: this.swapCounter,
       casRoot: casRootForIndexPath(FAISS_INDEX_PATH),
     });
+  }
+
+  private faissStoreForPersistence(): ReturnType<FaissStoreAdapter['getStoreForPersistence']> {
+    const candidate = this.faissIndex as
+      | FaissStoreAdapter
+      | ReturnType<FaissStoreAdapter['getStoreForPersistence']>;
+    if (candidate instanceof FaissStoreAdapter) {
+      return candidate.getStoreForPersistence();
+    }
+    return candidate;
   }
 
   private async addDocumentsToIndex(
@@ -863,22 +874,15 @@ export class FaissIndexManager {
       batchIndex += 1;
       if (this.faissIndex === null) {
         logger.info(`Creating new FAISS index from ${batch.length} text(s)...`);
-        this.faissIndex = await FaissStore.fromTexts(
-          batch.map((doc) => doc.pageContent),
-          batch.map((doc) => doc.metadata),
+        this.faissIndex = await FaissStoreAdapter.fromDocuments(
+          batch,
           indexingEmbeddings,
         );
         // The store must keep the real client for query embeddings and later
         // operations; the deduper is only an insertion-time wrapper.
-        this.faissIndex.embeddings = this.embeddings;
+        this.faissIndex.restoreEmbeddings(this.embeddings);
       } else {
-        const previousEmbeddings = this.faissIndex.embeddings;
-        this.faissIndex.embeddings = indexingEmbeddings;
-        try {
-          await this.faissIndex.addDocuments(batch);
-        } finally {
-          this.faissIndex.embeddings = previousEmbeddings;
-        }
+        await this.faissIndex.addDocumentsWithEmbeddings(batch, indexingEmbeddings);
       }
       processedChunks += batch.length;
       if (opts?.onProgress) {
@@ -1824,48 +1828,26 @@ export class FaissIndexManager {
     // reuse the embedding across every progressive-overfetch rung so the
     // embed cost is paid exactly once. Issue #214 adds the query-embedding
     // cache at this boundary; document embedding remains untouched.
-    const vectorSearch = (
-      this.faissIndex as unknown as {
-        similaritySearchVectorWithScore?: (
-          queryEmbedding: number[],
-          k: number,
-        ) => Promise<Array<[Document, number]>>;
-      }
-    ).similaritySearchVectorWithScore;
-    const useVectorPath = typeof vectorSearch === 'function';
-    let queryEmbedding: number[] | undefined;
-    if (useVectorPath) {
-      const embedStartedAt = Date.now();
-      const cached = await queryEmbeddingCache.getOrCompute({
+    let queryEmbeddingLookup: ReturnType<typeof queryEmbeddingCache.getOrCompute> | null = null;
+    const getQueryEmbedding = (): ReturnType<typeof queryEmbeddingCache.getOrCompute> => {
+      queryEmbeddingLookup ??= queryEmbeddingCache.getOrCompute({
         modelId: this.modelId,
         query,
         bypass: opts.noCache === true,
         embed: () => this.embeddings.embedQuery(query),
       });
-      queryEmbedding = cached.embedding;
-      if (timing) {
-        timing.embed_query_ms = Date.now() - embedStartedAt;
-        timing.query_cache = cached.status;
-      }
-    } else if (timing) {
-      timing.query_cache = 'unavailable';
-    }
+      return queryEmbeddingLookup;
+    };
 
     const runFaissSearch = async (
       fetchK: number,
     ): Promise<Array<[Document, number]>> => {
-      if (useVectorPath) {
-        const faissStartedAt = Date.now();
-        const out = await vectorSearch!.call(this.faissIndex, queryEmbedding!, fetchK);
-        timing!.faiss_search_ms = (timing!.faiss_search_ms ?? 0) + (Date.now() - faissStartedAt);
-        return out;
-      }
-      const queryStartedAt = Date.now();
-      const out = await this.faissIndex!.similaritySearchWithScore(query, fetchK);
-      if (timing) {
-        timing.query_search_ms = (timing.query_search_ms ?? 0) + (Date.now() - queryStartedAt);
-      }
-      return out;
+      return this.faissIndex!.similaritySearchUsingBestPath({
+        query,
+        k: fetchK,
+        timing,
+        getQueryEmbedding,
+      });
     };
 
     if (!postFilter.requiresOverfetch) {
@@ -1887,7 +1869,7 @@ export class FaissIndexManager {
     // already returned its entire docstore (raw length below the requested
     // window ⇒ ntotal exhausted). Worst case ends at `ntotal` and matches
     // the pre-#229 cost; common filtered queries terminate at the first rung.
-    const ntotal = this.faissIndex.index.ntotal();
+    const ntotal = this.faissIndex.totalVectors();
     const fetchSizes = progressiveFetchSizes(k, ntotal);
     let filtered: ScoredDocument[] = [];
     let lastFetchK = k;
@@ -2007,35 +1989,14 @@ export class FaissIndexManager {
     if (!this.faissIndex) {
       return { totalChunks: 0, chunkCountsByKb: {}, dim: null };
     }
-    const totalChunks = this.faissIndex.index.ntotal();
-    const dim = this.faissIndex.index.getDimension();
-    const chunkCountsByKb: Record<string, number> = {};
-    // SynchronousInMemoryDocstore exposes `_docs: Map<string, Document>`
-    // (langchain 0.3 internal — verified against the bundled
-    // node_modules/langchain/dist/stores/doc/in_memory.js). The cast
-    // surfaces only the fields we touch.
-    const docs = (
-      this.faissIndex.docstore as unknown as {
-        _docs: Map<string, { metadata?: { knowledgeBase?: unknown } }>;
-      }
-    )._docs;
-    for (const doc of docs.values()) {
-      const kb = doc.metadata?.knowledgeBase;
-      if (typeof kb === 'string') {
-        chunkCountsByKb[kb] = (chunkCountsByKb[kb] ?? 0) + 1;
-      }
-    }
+    const totalChunks = this.faissIndex.totalVectors();
+    const dim = this.faissIndex.vectorDimension();
+    const chunkCountsByKb = this.faissIndex.chunkCountsByKnowledgeBase();
     return { totalChunks, chunkCountsByKb, dim };
   }
 
   private getDocstoreDocuments(): Document[] {
-    const docs = (
-      this.faissIndex?.docstore as unknown as {
-        _docs?: Map<string, Document>;
-      } | undefined
-    )?._docs;
-    if (!(docs instanceof Map)) return [];
-    return Array.from(docs.values());
+    return this.faissIndex?.docstoreDocuments() ?? [];
   }
 
   /**
