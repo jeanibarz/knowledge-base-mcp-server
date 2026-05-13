@@ -17,7 +17,7 @@ import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import type { BenchmarkReport } from '../types.js';
 import { installStubProvider } from '../stub.js';
-import { renderReport, type CrossModelAggregate, type CrossModelQueryResult } from './render.js';
+import { renderReport, type CrossModelAggregate, type CrossModelQueryResult, type SourceDiversityDiagnostics } from './render.js';
 import { resolveModelCtx, safeChunkChars } from './model-ctx.js';
 import { loadGoldenFile, scoreGoldenQuality } from './golden.js';
 import {
@@ -371,6 +371,8 @@ async function crossModelAgreement(args: CrossModelArgs): Promise<CrossModelAggr
       jaccard: jaccard(a.slice(0, 10).map((r) => r.doc), b.slice(0, 10).map((r) => r.doc)),
       topK_a: a,
       topK_b: b,
+      diversity_a: sourceDiversityAt10(a.map((r) => r.doc)),
+      diversity_b: sourceDiversityAt10(b.map((r) => r.doc)),
     };
   });
 
@@ -442,6 +444,18 @@ async function runQueriesAgainstManager(
     }
   }
   return out;
+}
+
+function sourceDiversityAt10(docs: string[]): SourceDiversityDiagnostics {
+  const topK = docs.slice(0, 10);
+  const counts = new Map<string, number>();
+  topK.forEach((doc) => counts.set(doc, (counts.get(doc) ?? 0) + 1));
+  const maxCount = Math.max(0, ...Array.from(counts.values()));
+  return {
+    unique_source_count_at_10: counts.size,
+    duplicate_source_groups_at_10: Array.from(counts.values()).filter((count) => count > 1).length,
+    max_source_share_at_10: topK.length === 0 ? 0 : Number((maxCount / topK.length).toFixed(6)),
+  };
 }
 
 function jaccard(a: string[], b: string[]): number {

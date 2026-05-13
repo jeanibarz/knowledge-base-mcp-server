@@ -323,6 +323,111 @@ describe('evaluateRetrievalCase', () => {
     });
   });
 
+  it('reports source crowding metrics for duplicate chunks from one source', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase({ k: 4, maxDuplicateGroups: 1 }),
+      [
+        doc('runbooks/deploy.md'),
+        doc('runbooks/deploy.md'),
+        doc('runbooks/deploy.md'),
+        doc('runbooks/fallback.md'),
+      ],
+      FRESH,
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.duplicateGroups).toBe(1);
+    expect(result.diversityMetrics.source).toEqual({
+      k: 4,
+      resultCount: 4,
+      uniqueSourceCountAtK: 2,
+      duplicateSourceGroupsAtK: 1,
+      maxSourceShareAtK: 0.75,
+    });
+  });
+
+  it('rewards diversified relevant sources in source diversity metrics', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase({
+        k: 4,
+        relevanceJudgments: [
+          { source: 'runbooks/deploy.md', relevance: 1 },
+          { source: 'runbooks/fallback.md', relevance: 1 },
+          { source: 'runbooks/checklist.md', relevance: 1 },
+        ],
+      }),
+      [
+        doc('runbooks/deploy.md'),
+        doc('runbooks/fallback.md'),
+        doc('runbooks/checklist.md'),
+        doc('notes/other.md'),
+      ],
+      FRESH,
+    );
+
+    expect(result.diversityMetrics.source.uniqueSourceCountAtK).toBe(4);
+    expect(result.diversityMetrics.source.maxSourceShareAtK).toBe(0.25);
+    expect(result.rankedMetrics?.recallAtK).toBe(1);
+  });
+
+  it('computes intent-aware diversity when judgments define groups', () => {
+    const fixture = normalizeRetrievalEvalFixture({
+      cases: [{
+        query: 'deployment readiness',
+        k: 4,
+        relevant_sources: [
+          { source: 'runbooks/deploy.md', relevance: 3, intent: 'procedure' },
+          { source: 'runbooks/checklist.md', relevance: 2, groups: ['checklist'] },
+          { source: 'runbooks/rollback.md', relevance: 2, intents: ['rollback'] },
+        ],
+      }],
+    });
+    const fixtureCaseWithGroups = fixture.cases[0];
+
+    const crowded = evaluateRetrievalCase(
+      fixtureCaseWithGroups,
+      [
+        doc('runbooks/deploy.md'),
+        doc('runbooks/deploy.md'),
+        doc('runbooks/deploy.md'),
+        doc('runbooks/checklist.md'),
+      ],
+      FRESH,
+    );
+    const diverse = evaluateRetrievalCase(
+      fixtureCaseWithGroups,
+      [
+        doc('runbooks/deploy.md'),
+        doc('runbooks/checklist.md'),
+        doc('runbooks/rollback.md'),
+        doc('notes/other.md'),
+      ],
+      FRESH,
+    );
+
+    expect(fixtureCaseWithGroups.relevanceJudgments).toEqual([
+      { source: 'runbooks/deploy.md', relevance: 3, groups: ['procedure'] },
+      { source: 'runbooks/checklist.md', relevance: 2, groups: ['checklist'] },
+      { source: 'runbooks/rollback.md', relevance: 2, groups: ['rollback'] },
+    ]);
+    expect(crowded.diversityMetrics.intent).toMatchObject({
+      k: 4,
+      groupCount: 3,
+      retrievedGroupCountAtK: 2,
+      intentRecallAtK: 2 / 3,
+    });
+    expect(diverse.diversityMetrics.intent).toMatchObject({
+      k: 4,
+      groupCount: 3,
+      retrievedGroupCountAtK: 3,
+      intentRecallAtK: 1,
+      alphaNdcgAtK: 1,
+    });
+    expect(crowded.diversityMetrics.intent?.alphaNdcgAtK).toBeLessThan(
+      diverse.diversityMetrics.intent?.alphaNdcgAtK ?? 0,
+    );
+  });
+
   it('penalizes a relevant source that is retrieved at a low rank', () => {
     const result = evaluateRetrievalCase(
       fixtureCase({
@@ -426,10 +531,16 @@ describe('summarizeRetrievalEval', () => {
       mapAtK: 1,
       hitRate: 1,
     });
+    expect(report.diversityMetrics.source).toEqual({
+      caseCount: 2,
+      uniqueSourceCountAtK: 1.5,
+      duplicateSourceGroupsAtK: 0,
+      maxSourceShareAtK: 0.75,
+    });
     expect(report.cases[1].rankedMetrics).toBeUndefined();
   });
 
-  it('prints ranked metrics in markdown when judgments are present', () => {
+  it('prints ranked and diversity metrics in markdown when judgments are present', () => {
     const result = evaluateRetrievalCase(
       fixtureCase({
         k: 2,
@@ -442,10 +553,12 @@ describe('summarizeRetrievalEval', () => {
     const markdown = formatRetrievalEvalMarkdown(summarizeRetrievalEval([result]));
 
     expect(markdown).toContain('ranked: nDCG@10=1.000');
+    expect(markdown).toContain('diversity: unique-source@2=2');
     expect(markdown).toContain('Ranked metrics: nDCG@10=1.000');
+    expect(markdown).toContain('Diversity metrics: unique-source@k=2.000');
   });
 
-  it('includes ranked metrics in JSON output when judgments are present', () => {
+  it('includes ranked and diversity metrics in JSON output when judgments are present', () => {
     const result = evaluateRetrievalCase(
       fixtureCase({
         k: 2,
@@ -456,6 +569,14 @@ describe('summarizeRetrievalEval', () => {
     );
 
     expect(toJsonReport(summarizeRetrievalEval([result]))).toMatchObject({
+      diversity_metrics: {
+        source: {
+          case_count: 1,
+          unique_source_count_at_k: 2,
+          duplicate_source_groups_at_k: 0,
+          max_source_share_at_k: 0.5,
+        },
+      },
       ranked_metrics: {
         judged_case_count: 1,
         ndcg_at_10: 1,
@@ -478,6 +599,15 @@ describe('summarizeRetrievalEval', () => {
           map: 1,
           map_at_k: 1,
           hit_rate: 1,
+        },
+        diversity_metrics: {
+          source: {
+            k: 2,
+            result_count: 2,
+            unique_source_count_at_k: 2,
+            duplicate_source_groups_at_k: 0,
+            max_source_share_at_k: 0.5,
+          },
         },
       }],
     });

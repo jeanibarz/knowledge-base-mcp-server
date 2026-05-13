@@ -8,8 +8,9 @@ smallest schema knob that would catch that failure again.
 Use this guide when creating or reviewing fixtures for `kb eval`. The schema is
 deliberately small: top-level `gate`, and per-case `name`, `query`, `kb`, `k`,
 `threshold`, `gate`, `required_sources`, `forbidden_sources`,
-`expected_metadata`, `relevant_sources`/`judgments`,
-`max_duplicate_groups`, and `stale_policy`.
+`expected_metadata`, `relevant_sources`/`judgments`, optional judgement
+`group`/`groups`/`intent`/`intents`, `max_duplicate_groups`, and
+`stale_policy`.
 
 ## Why Fixtures Miss Regressions
 
@@ -54,22 +55,36 @@ themselves. Keep `required_sources`, `forbidden_sources`, and `gate` for CI
 floors. Use ranked metrics to compare retrieval modes, embedding models, and
 fixture packs without turning every rank movement into a hard failure.
 
+Source diversity metrics are emitted for every case. `unique-source@k` counts
+distinct source documents in the top-k results, `duplicate-groups@k` counts
+sources that appear more than once in that top-k, and `max-source-share@k`
+reports the largest single-source share of the returned top-k. These are useful
+diagnostics for crowding even when a fixture has no relevance judgments.
+`max_duplicate_groups` keeps its existing pass/fail behavior and remains the
+hard gate knob for duplicate crowding.
+
 `relevant_sources` is the readable form:
 
 ```yaml
 relevant_sources:
   - source: runbooks/deploy.md
     relevance: 3
+    intent: procedure
   - source: runbooks/fallback.md
     relevance: 1
+    groups: [fallback]
 ```
 
 `judgments` is the compact equivalent:
 
 ```yaml
 judgments:
-  runbooks/deploy.md: 3
-  runbooks/fallback.md: 1
+  runbooks/deploy.md:
+    relevance: 3
+    intent: procedure
+  runbooks/fallback.md:
+    relevance: 1
+    groups: [fallback]
 ```
 
 Relevance is a non-negative grade. Use `1` for ordinary relevant sources, `2`
@@ -78,6 +93,14 @@ for explicit non-relevant qrels if you need to keep a compact object aligned
 with another benchmark. The metric denominator includes only positive grades.
 `nDCG@10` uses the graded values; `MRR@10`, recall, precision, MAP, and hit
 rate treat every positive grade as relevant.
+
+Use `group`, `groups`, `intent`, or `intents` when a query has multiple valid
+subtopics or source clusters. When any positive judgment carries one of these
+labels, eval output also includes intent recall@k and alpha-nDCG@k. These
+metrics reward covering multiple labelled groups and penalize repeated hits
+from the same intent. They are informational diagnostics; use
+`required_sources`, `forbidden_sources`, or `max_duplicate_groups` when a
+diversity condition should fail CI.
 
 ## Four Fixture Archetypes
 
@@ -143,10 +166,13 @@ rank 2 swap.
   relevant_sources:
     - source: runbooks/deploy.md
       relevance: 3
+      intent: procedure
     - source: runbooks/post-incident-checklist.md
       relevance: 2
+      intent: checklist
     - source: runbooks/service-owner-escalation.md
       relevance: 1
+      intent: escalation
   gate: false
 ```
 
@@ -216,12 +242,12 @@ answer key.
 |---|---|---|
 | Canonical answer disappears | `required_sources` | Keep `query` close to the user wording that failed. |
 | Wrong legacy answer returns | `forbidden_sources` | Use only once-bad or clearly obsolete sources. |
-| Duplicate chunks crowd the result set | `max_duplicate_groups` | Set a loose budget first; tighten after observing stable output. |
+| Duplicate chunks crowd the result set | `max_duplicate_groups` | Watch unique-source@k and max-source-share@k first; set a loose budget, then tighten after observing stable output. |
 | Search crosses KB boundaries | `kb` plus `forbidden_sources` | Forbid a representative source from the wrong KB. |
 | Stale index hides fresh edits | `stale_policy: fresh` | Use this only in environments that refresh before eval. |
 | Stale-warning path regresses | `stale_policy: stale` | Reserve for tests that intentionally create stale state. |
 | Authored metadata stops flowing | `expected_metadata` | Prefer whitelisted frontmatter fields. |
-| Model or mode change shifts quality | `relevant_sources` or `judgments` | Compare aggregate nDCG@10, MRR@10, Recall@k, Precision@k, MAP/MAP@k, and hit rate. |
+| Model or mode change shifts quality | `relevant_sources` or `judgments` | Compare aggregate nDCG@10, MRR@10, Recall@k, Precision@k, MAP/MAP@k, hit rate, source diversity, and group/intent metrics when labels exist. |
 | Threshold or top-k change cuts too hard | `k` and `threshold` | Pin only when the budget itself is part of the contract. |
 
 ## Worked Example
