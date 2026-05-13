@@ -87,6 +87,19 @@ export interface DoctorArgs {
 
 export type HealthStatus = 'ok' | 'warn' | 'error';
 
+export interface DoctorIndexSecurityEntry {
+  name: 'faiss_root' | 'active_file' | 'active_model_dir' | 'active_index_version_dir';
+  path: string;
+  exists: boolean;
+  kind: 'directory' | 'file' | 'other' | 'missing';
+  mode_octal: string | null;
+  uid: number | null;
+  expected_uid: number | null;
+  permission_status: 'ok' | 'warn' | 'skipped';
+  ownership_status: 'ok' | 'warn' | 'skipped';
+  warnings: string[];
+}
+
 export interface DoctorReport {
   status: HealthStatus;
   checks: Array<{ name: string; status: HealthStatus; detail: string }>;
@@ -107,6 +120,16 @@ export interface DoctorReport {
       total_version_bytes: number;
       retention_previous_versions: number;
     };
+  };
+  /**
+   * Best-effort filesystem security checks for the FAISS trust boundary.
+   * Ownership is skipped on platforms without `process.getuid`; permission
+   * warnings are derived from POSIX group/world write bits where available.
+   */
+  index_security: {
+    permission_check: 'checked' | 'skipped';
+    ownership_check: 'checked' | 'skipped';
+    entries: DoctorIndexSecurityEntry[];
   };
   stale_counts_by_kb: Record<string, { modified_files: number; new_files: number }>;
   quarantine_counts_by_kb: Record<string, number>;
@@ -262,6 +285,16 @@ export async function buildDoctorReport(
       ? 'active model index is not built'
       : `${index.version ?? 'unknown'} at ${index.mtime ?? 'unknown mtime'}`,
   });
+  const indexSecurity = await readIndexSecurity(activeModelId, index.binary_path);
+  const indexSecurityWarningCount = indexSecurity.entries
+    .reduce((sum, entry) => sum + entry.warnings.length, 0);
+  checks.push({
+    name: 'index_security',
+    status: indexSecurityWarningCount > 0 ? 'warn' : 'ok',
+    detail: indexSecurityWarningCount === 0
+      ? 'FAISS index boundary permissions look safe'
+      : `${indexSecurityWarningCount} FAISS index boundary permission warning(s)`,
+  });
 
   const staleCounts = await computeStaleCountsByKb(
     activeModelId,
@@ -411,6 +444,7 @@ export async function buildDoctorReport(
       model_name: activeModelName,
     },
     index,
+    index_security: indexSecurity,
     stale_counts_by_kb: staleCounts,
     quarantine_counts_by_kb: quarantineCounts,
     age_budgets: ageBudgetResult.byKb,
@@ -465,6 +499,101 @@ async function readIndexHealth(activeModelId: string | null): Promise<DoctorRepo
   } catch {
     return { path: FAISS_INDEX_PATH, binary_path: null, version: null, mtime: null, storage: storageSummary };
   }
+}
+
+async function readIndexSecurity(
+  activeModelId: string | null,
+  binaryPath: string | null,
+): Promise<DoctorReport['index_security']> {
+  const expectedUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  const canCheckPosixMode = process.platform !== 'win32';
+  const candidates: Array<Pick<DoctorIndexSecurityEntry, 'name' | 'path'>> = [
+    { name: 'faiss_root', path: FAISS_INDEX_PATH },
+    { name: 'active_file', path: path.join(FAISS_INDEX_PATH, 'active.txt') },
+  ];
+  if (activeModelId !== null) {
+    const activeModelDir = path.join(FAISS_INDEX_PATH, 'models', activeModelId);
+    candidates.push({ name: 'active_model_dir', path: activeModelDir });
+  }
+  if (binaryPath !== null) {
+    candidates.push({ name: 'active_index_version_dir', path: path.dirname(binaryPath) });
+  }
+
+  const entries: DoctorIndexSecurityEntry[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(`${candidate.name}:${candidate.path}`)) continue;
+    seen.add(`${candidate.name}:${candidate.path}`);
+    entries.push(await statIndexSecurityEntry(candidate, expectedUid, canCheckPosixMode));
+  }
+  return {
+    permission_check: canCheckPosixMode ? 'checked' : 'skipped',
+    ownership_check: expectedUid === null ? 'skipped' : 'checked',
+    entries,
+  };
+}
+
+async function statIndexSecurityEntry(
+  candidate: Pick<DoctorIndexSecurityEntry, 'name' | 'path'>,
+  expectedUid: number | null,
+  canCheckPosixMode: boolean,
+): Promise<DoctorIndexSecurityEntry> {
+  let st: import('fs').Stats;
+  try {
+    st = await fsp.stat(candidate.path);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return {
+        ...candidate,
+        exists: false,
+        kind: 'missing',
+        mode_octal: null,
+        uid: null,
+        expected_uid: expectedUid,
+        permission_status: 'skipped',
+        ownership_status: expectedUid === null ? 'skipped' : 'ok',
+        warnings: [],
+      };
+    }
+    return {
+      ...candidate,
+      exists: false,
+      kind: 'missing',
+      mode_octal: null,
+      uid: null,
+      expected_uid: expectedUid,
+      permission_status: 'skipped',
+      ownership_status: expectedUid === null ? 'skipped' : 'ok',
+      warnings: [`stat_failed: ${(err as Error).message}`],
+    };
+  }
+
+  const kind = st.isDirectory() ? 'directory' : st.isFile() ? 'file' : 'other';
+  const mode = st.mode & 0o777;
+  const modeDisplay = formatMode(mode);
+  const permissionWarning = canCheckPosixMode && (mode & 0o022) !== 0;
+  const warnings: string[] = [];
+  if (canCheckPosixMode && (mode & 0o020) !== 0) warnings.push(`group_writable: mode ${modeDisplay}`);
+  if (canCheckPosixMode && (mode & 0o002) !== 0) warnings.push(`world_writable: mode ${modeDisplay}`);
+  if (expectedUid !== null && st.uid !== expectedUid) {
+    warnings.push(`unexpected_owner: uid ${st.uid}, expected ${expectedUid}`);
+  }
+  return {
+    ...candidate,
+    exists: true,
+    kind,
+    mode_octal: modeDisplay,
+    uid: typeof st.uid === 'number' ? st.uid : null,
+    expected_uid: expectedUid,
+    permission_status: canCheckPosixMode ? (permissionWarning ? 'warn' : 'ok') : 'skipped',
+    ownership_status: expectedUid === null ? 'skipped' : (st.uid === expectedUid ? 'ok' : 'warn'),
+    warnings,
+  };
+}
+
+function formatMode(mode: number): string {
+  return `0${mode.toString(8).padStart(3, '0')}`;
 }
 
 async function computeStaleCountsByKb(
@@ -758,6 +887,19 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
       `${report.index.storage.inactive_version_count} retained inactive version(s); ` +
       `retention=${report.index.storage.retention_previous_versions})`,
   );
+  lines.push('FAISS index security:');
+  for (const entry of report.index_security.entries) {
+    const mode = entry.mode_octal === null ? 'mode=n/a' : `mode=${entry.mode_octal}`;
+    const uid = entry.uid === null ? 'uid=n/a' : `uid=${entry.uid}`;
+    const marker = entry.warnings.length === 0 ? 'ok' : `WARN ${entry.warnings.join('; ')}`;
+    lines.push(`  ${entry.name}: ${entry.path} (${mode}, ${uid}) ${marker}`);
+  }
+  if (report.index_security.permission_check === 'skipped') {
+    lines.push('  permissions: skipped on this platform');
+  }
+  if (report.index_security.ownership_check === 'skipped') {
+    lines.push('  ownership: skipped on this platform');
+  }
   lines.push(`Last index update: ${formatLastIndexUpdate(report.last_index_update)}`);
   lines.push(`Backend: ${report.backend.healthy ? 'ok' : 'error'} — ${report.backend.detail}`);
   lines.push(`kb version: ${report.cli.version}`);

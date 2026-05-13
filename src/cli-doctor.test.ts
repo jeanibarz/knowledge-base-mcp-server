@@ -40,6 +40,14 @@ async function seedRegisteredModel(faissDir: string): Promise<string> {
   return modelDir;
 }
 
+async function seedVersionedIndex(modelDir: string): Promise<string> {
+  const versionDir = path.join(modelDir, 'index.v1');
+  await fsp.mkdir(versionDir, { recursive: true });
+  await fsp.writeFile(path.join(versionDir, 'faiss.index'), 'fake-index');
+  await fsp.symlink('index.v1', path.join(modelDir, 'index'), 'dir');
+  return versionDir;
+}
+
 function persistedSuccessSummary() {
   return {
     status: 'success',
@@ -63,6 +71,128 @@ function persistedSuccessSummary() {
 }
 
 describe('kb doctor', () => {
+  const itOnPosix = process.platform === 'win32' ? it.skip : it;
+
+  itOnPosix('reports safe FAISS index permissions without warnings', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-perms-safe-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      const versionDir = await seedVersionedIndex(modelDir);
+      await fsp.chmod(faissDir, 0o700);
+      await fsp.chmod(path.join(faissDir, 'active.txt'), 0o600);
+      await fsp.chmod(modelDir, 0o700);
+      await fsp.chmod(versionDir, 0o700);
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+      });
+
+      expect(report.index_security.ownership_check).toBe('checked');
+      expect(report.index_security.entries).toEqual([
+        expect.objectContaining({ name: 'faiss_root', mode_octal: '0700', warnings: [] }),
+        expect.objectContaining({ name: 'active_file', mode_octal: '0600', warnings: [] }),
+        expect.objectContaining({ name: 'active_model_dir', mode_octal: '0700', warnings: [] }),
+        expect.objectContaining({ name: 'active_index_version_dir', mode_octal: '0700', warnings: [] }),
+      ]);
+      expect(report.checks).toContainEqual({
+        name: 'index_security',
+        status: 'ok',
+        detail: 'FAISS index boundary permissions look safe',
+      });
+      const md = formatDoctorMarkdown(report);
+      expect(md).toContain('FAISS index security:');
+      expect(md).toContain('active_index_version_dir:');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  itOnPosix('warns when FAISS index boundary paths are group or world writable', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-perms-unsafe-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      const versionDir = await seedVersionedIndex(modelDir);
+      await fsp.chmod(faissDir, 0o777);
+      await fsp.chmod(path.join(faissDir, 'active.txt'), 0o666);
+      await fsp.chmod(modelDir, 0o770);
+      await fsp.chmod(versionDir, 0o772);
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+      });
+
+      expect(report.status).toBe('warn');
+      const check = report.checks.find((c) => c.name === 'index_security');
+      expect(check?.status).toBe('warn');
+      expect(check?.detail).toContain('FAISS index boundary permission warning');
+      expect(report.index_security.entries).toEqual([
+        expect.objectContaining({
+          name: 'faiss_root',
+          permission_status: 'warn',
+          warnings: expect.arrayContaining([
+            'group_writable: mode 0777',
+            'world_writable: mode 0777',
+          ]),
+        }),
+        expect.objectContaining({
+          name: 'active_file',
+          permission_status: 'warn',
+          warnings: expect.arrayContaining([
+            'group_writable: mode 0666',
+            'world_writable: mode 0666',
+          ]),
+        }),
+        expect.objectContaining({
+          name: 'active_model_dir',
+          permission_status: 'warn',
+          warnings: expect.arrayContaining(['group_writable: mode 0770']),
+        }),
+        expect.objectContaining({
+          name: 'active_index_version_dir',
+          permission_status: 'warn',
+          warnings: expect.arrayContaining([
+            'group_writable: mode 0772',
+            'world_writable: mode 0772',
+          ]),
+        }),
+      ]);
+      const md = formatDoctorMarkdown(report);
+      expect(md).toMatch(/WARN\s+index_security:/);
+      expect(md).toContain('faiss_root:');
+      expect(md).toContain('world_writable: mode 0777');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('reports active model, index version/mtime, backend health, and stale counts by KB', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-'));
     try {

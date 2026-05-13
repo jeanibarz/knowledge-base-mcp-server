@@ -28,6 +28,7 @@ Sections below go one level deeper on each.
 - Do **not** restore `$FAISS_INDEX_PATH` (or any `models/<id>/`) from an untrusted backup, container image, or package.
 - Do **not** mount `$FAISS_INDEX_PATH` on a shared filesystem with write access for untrusted peers.
 - Do **not** point `$FAISS_INDEX_PATH` at a directory another tool writes to.
+- Do run `kb doctor` after changing storage locations or restoring index files; it warns when the FAISS root, `active.txt`, the active model directory, or the active index version directory are group/world writable or owned by a different local user. These checks are best-effort and ownership is skipped on platforms that do not expose POSIX user IDs.
 - **Do** treat deletion as safe: `kb models remove <id>` (or `rm -rf ${FAISS_INDEX_PATH}/models/<id>/`) forces a rebuild on the next `kb models add`. The in-memory FaissStore in a running MCP server keeps working until process exit — verified empirically (RFC 013 §10 E6), `faiss-node` reads the index into memory at `.load()` time and does not mmap.
 
 The surface is permanent until upstream swaps the docstore format away from pickle. ADR [`0001-faiss-over-qdrant.md`](./adr/0001-faiss-over-qdrant.md) explains why we stay with FAISS despite this cost; a future RFC may migrate the docstore to a JSON-only format.
