@@ -65,8 +65,8 @@ runs a BM25 debug surface; \`--mode=hybrid\` fuses dense + lexical via RRF.
 \`--mode=auto\` currently keeps dense for prose queries and chooses hybrid for
 code/path/error-token-shaped queries.
 
-Output ends with a freshness footer (markdown) or staleness fields (JSON)
-indicating whether the index is up-to-date relative to KB file mtimes.
+Output normally ends with a freshness footer (markdown) or staleness fields
+(JSON) indicating whether the index is up-to-date relative to KB file mtimes.
 
 Scope:
   --kb=<name>           Scope to one knowledge base. Omit to search ALL KBs.
@@ -94,6 +94,7 @@ Output:
                         in markdown output. With \`--format=json\`, adds a
                         \`grouped_results\` field alongside raw results.
   --timing              Include elapsed milliseconds for retrieval stages.
+  --no-freshness        Skip the staleness scan and omit freshness output.
 
 Indexing:
   --refresh             Re-scan KB files; acquires the per-model write lock.
@@ -135,6 +136,7 @@ interface SearchArgs {
   timing: boolean;
   interactive: boolean;
   noCache: boolean;
+  freshness: boolean;
   neighborContext?: NeighborContextOptions;
 }
 
@@ -300,9 +302,9 @@ export async function runSearch(rest: string[]): Promise<number> {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
-  const stalenessStartedAt = nowMs();
-  const staleness = await computeStaleness(activeModelId, parsed.kb);
-  if (timing) timing.staleness_ms = elapsedMs(stalenessStartedAt);
+  const staleness = parsed.freshness
+    ? await computeStalenessWithTiming(activeModelId, parsed.kb, timing)
+    : null;
   if (timing) timing.total_ms = elapsedMs(totalStartedAt);
 
   if (shouldUsePicker(parsed)) {
@@ -310,87 +312,32 @@ export async function runSearch(rest: string[]): Promise<number> {
   }
 
   if (parsed.format === 'json') {
-    const body = formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
-    const effectiveCounts = parsed.refresh
-      ? { modifiedFiles: 0, newFiles: 0 }
-      : { modifiedFiles: staleness.modifiedFiles, newFiles: staleness.newFiles };
-    const globalCounts = staleness.global ?? {
-      modifiedFiles: staleness.modifiedFiles,
-      newFiles: staleness.newFiles,
-    };
-    const scopedCounts = staleness.scope
-      ? {
-          modifiedFiles: parsed.refresh ? 0 : staleness.scope.modifiedFiles,
-          newFiles: parsed.refresh ? 0 : staleness.scope.newFiles,
-        }
-      : null;
-    const globalCountsForPayload = parsed.refresh && !parsed.kb
-      ? { modifiedFiles: 0, newFiles: 0 }
-      : globalCounts;
-    const payload = {
-      results: body,
-      ...(parsed.mode === 'auto'
-        ? {
-            mode: effectiveMode,
-            requested_mode: 'auto' as const,
-            auto_mode: autoModeDecision,
-          }
-        : {}),
-      ...(parsed.groupBySource
-        ? { grouped_results: groupRetrievalBySource(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI) }
-        : {}),
-      index_mtime: staleness.indexMtime,
-      stale: hasStaleCounts(effectiveCounts),
-      modified_files: effectiveCounts.modifiedFiles,
-      new_files: effectiveCounts.newFiles,
-      global_stale: hasStaleCounts(globalCountsForPayload),
-      global_modified_files: globalCountsForPayload.modifiedFiles,
-      global_new_files: globalCountsForPayload.newFiles,
-      ...(staleness.scope && scopedCounts
-        ? {
-            scope: {
-              kb: staleness.scope.kb,
-              stale: hasStaleCounts(scopedCounts),
-              modified_files: scopedCounts.modifiedFiles,
-              new_files: scopedCounts.newFiles,
-            },
-          }
-        : {}),
-      ...(autoThresholdDecision !== null
-        ? {
-            auto_threshold: {
-              threshold: autoThresholdDecision.threshold,
-              knee_index: autoThresholdDecision.kneeIndex,
-              kept: autoThresholdDecision.kept,
-            },
-          }
-        : {}),
-      ...(timing ? { timing: compactTimingPayload(timing) } : {}),
-    };
+    const payload = buildDenseSearchJsonPayload({
+      results,
+      requestedMode: parsed.mode,
+      effectiveMode,
+      autoModeDecision,
+      groupBySource: parsed.groupBySource,
+      refreshed: parsed.refresh,
+      scopedKb: parsed.kb,
+      staleness,
+      autoThresholdDecision,
+      timing,
+    });
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
     const out = formatRetrievalAsVimgrep(results);
     if (out !== '') process.stdout.write(`${out}\n`);
   } else {
-    if (autoModeDecision !== null) {
-      process.stdout.write(formatAutoModeHeader(autoModeDecision));
-      process.stdout.write('\n\n');
-    }
-    if (autoThresholdDecision !== null) {
-      process.stdout.write(formatAutoThresholdHeader(autoThresholdDecision));
-      process.stdout.write('\n\n');
-    }
-    const md = parsed.groupBySource
-      ? formatRetrievalGroupedBySourceAsMarkdown(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)
-      : formatRetrievalAsMarkdown(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
-    process.stdout.write(md);
-    process.stdout.write('\n\n');
-    process.stdout.write(formatFreshnessFooter(staleness, parsed.refresh));
-    process.stdout.write('\n');
-    if (timing) {
-      process.stdout.write(formatTimingFooter('Timing', timing));
-      process.stdout.write('\n');
-    }
+    process.stdout.write(formatDenseSearchMarkdownOutput({
+      results,
+      groupBySource: parsed.groupBySource,
+      staleness,
+      refreshed: parsed.refresh,
+      autoModeDecision,
+      autoThresholdDecision,
+      timing,
+    }));
   }
 
   return 0;
@@ -409,6 +356,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     timing: false,
     interactive: false,
     noCache: false,
+    freshness: true,
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
@@ -416,6 +364,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--group-by-source') { out.groupBySource = true; continue; }
     if (raw === '--timing') { out.timing = true; continue; }
     if (raw === '--no-cache') { out.noCache = true; continue; }
+    if (raw === '--no-freshness') { out.freshness = false; continue; }
     if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
     if (raw.startsWith('--context-before=')) {
       out.neighborContext = {
@@ -735,6 +684,133 @@ function stalenessFromManifest(
     scope: { kb: scopedKb, ...scopeCounts },
     global,
   };
+}
+
+async function computeStalenessWithTiming(
+  activeModelId: string,
+  scopedKb: string | undefined,
+  timing: TimingPayload | null,
+): Promise<Staleness> {
+  const stalenessStartedAt = nowMs();
+  const staleness = await computeStaleness(activeModelId, scopedKb);
+  if (timing) timing.staleness_ms = elapsedMs(stalenessStartedAt);
+  return staleness;
+}
+
+export interface DenseSearchJsonPayloadInput {
+  results: ScoredDocument[];
+  requestedMode: SearchMode;
+  effectiveMode: EffectiveSearchMode;
+  autoModeDecision: AutoSearchModeDecision | null;
+  groupBySource: boolean;
+  refreshed: boolean;
+  scopedKb: string | undefined;
+  staleness: Staleness | null;
+  autoThresholdDecision: AutoThresholdDecision | null;
+  timing: TimingPayload | null;
+}
+
+export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    results: formatRetrievalAsJson(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI),
+  };
+  if (input.requestedMode === 'auto') {
+    payload.mode = input.effectiveMode;
+    payload.requested_mode = 'auto';
+    payload.auto_mode = input.autoModeDecision;
+  }
+  if (input.groupBySource) {
+    payload.grouped_results = groupRetrievalBySource(
+      input.results,
+      FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+      KB_EDITOR_URI,
+    );
+  }
+  Object.assign(payload, buildFreshnessJsonFields(input));
+  if (input.autoThresholdDecision !== null) {
+    payload.auto_threshold = {
+      threshold: input.autoThresholdDecision.threshold,
+      knee_index: input.autoThresholdDecision.kneeIndex,
+      kept: input.autoThresholdDecision.kept,
+    };
+  }
+  if (input.timing) {
+    payload.timing = compactTimingPayload(input.timing);
+  }
+  return payload;
+}
+
+function buildFreshnessJsonFields(input: DenseSearchJsonPayloadInput): Record<string, unknown> {
+  const { refreshed, scopedKb, staleness } = input;
+  if (staleness === null) return { freshness_omitted: true };
+
+  const effectiveCounts = refreshed
+    ? { modifiedFiles: 0, newFiles: 0 }
+    : { modifiedFiles: staleness.modifiedFiles, newFiles: staleness.newFiles };
+  const globalCounts = staleness.global ?? {
+    modifiedFiles: staleness.modifiedFiles,
+    newFiles: staleness.newFiles,
+  };
+  const scopedCounts = staleness.scope
+    ? {
+        modifiedFiles: refreshed ? 0 : staleness.scope.modifiedFiles,
+        newFiles: refreshed ? 0 : staleness.scope.newFiles,
+      }
+    : null;
+  const globalCountsForPayload = refreshed && !scopedKb
+    ? { modifiedFiles: 0, newFiles: 0 }
+    : globalCounts;
+
+  return {
+    index_mtime: staleness.indexMtime,
+    stale: hasStaleCounts(effectiveCounts),
+    modified_files: effectiveCounts.modifiedFiles,
+    new_files: effectiveCounts.newFiles,
+    global_stale: hasStaleCounts(globalCountsForPayload),
+    global_modified_files: globalCountsForPayload.modifiedFiles,
+    global_new_files: globalCountsForPayload.newFiles,
+    ...(staleness.scope && scopedCounts
+      ? {
+          scope: {
+            kb: staleness.scope.kb,
+            stale: hasStaleCounts(scopedCounts),
+            modified_files: scopedCounts.modifiedFiles,
+            new_files: scopedCounts.newFiles,
+          },
+        }
+      : {}),
+  };
+}
+
+export interface DenseSearchMarkdownOutputInput {
+  results: ScoredDocument[];
+  groupBySource: boolean;
+  staleness: Staleness | null;
+  refreshed: boolean;
+  autoModeDecision: AutoSearchModeDecision | null;
+  autoThresholdDecision: AutoThresholdDecision | null;
+  timing: TimingPayload | null;
+}
+
+export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutputInput): string {
+  let output = '';
+  if (input.autoModeDecision !== null) {
+    output += `${formatAutoModeHeader(input.autoModeDecision)}\n\n`;
+  }
+  if (input.autoThresholdDecision !== null) {
+    output += `${formatAutoThresholdHeader(input.autoThresholdDecision)}\n\n`;
+  }
+  const md = input.groupBySource
+    ? formatRetrievalGroupedBySourceAsMarkdown(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)
+    : formatRetrievalAsMarkdown(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
+  output += `${md}\n\n`;
+  if (input.staleness !== null) {
+    output += `${formatFreshnessFooter(input.staleness, input.refreshed)}\n`;
+  }
+  if (input.timing) {
+    output += `${formatTimingFooter('Timing', input.timing)}\n`;
+  }
+  return output;
 }
 
 export function formatFreshnessFooter(s: Staleness, refreshed: boolean): string {
