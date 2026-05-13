@@ -54,6 +54,21 @@
 **Linked Tests:** TS-OBS-315
 **Dependencies:** FR-OBS-237
 
+### FR-OBS-316: Refresh Progress Heartbeats
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall emit phase-aware `kb search --refresh` progress heartbeats to stderr during dense index refresh work without writing progress text to JSON stdout.
+**Rationale:** Long refreshes spend most of their wall time embedding and saving after file discovery has already logged changes; operators need bounded-batch progress without breaking machine-readable search output.
+
+**Acceptance Criteria:**
+- [x] Given changed-file chunks exceeding the configured indexing batch size, when `updateIndex` embeds them, then progress events identify each bounded embedding batch.
+- [x] Given `kb search --refresh --format=json`, when refresh progress is emitted, then progress lines are written to stderr and the JSON success payload remains parseable on stdout.
+- [x] Given `kb search --refresh --format=json --timing`, when refresh progress is emitted, then the timing payload includes refresh embedding batch counters and phase elapsed counters.
+
+**Linked Tests:** TS-OBS-316
+**Dependencies:** NFR-INDEX-236
+
 ## Search
 
 ### FR-SUPERSEDED-232: Superseded Memory Review

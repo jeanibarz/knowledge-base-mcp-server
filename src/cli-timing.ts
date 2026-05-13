@@ -1,6 +1,24 @@
 export type TimingValue = number | string | boolean | null;
 
 export type TimingPayload = Record<string, TimingValue | undefined>;
+export type RefreshTimingPhase = 'embed' | 'save' | 'sidecar' | 'manifest';
+
+export interface RefreshProgressTimingInput {
+  phase?: string;
+  phaseStatus?: string;
+  phaseElapsedMs?: number;
+  processedChunks?: number;
+  totalChunks?: number;
+  batchIndex?: number;
+  batchCount?: number;
+  batchSize?: number;
+  filesScanned?: number;
+  filesChanged?: number;
+  filesSkipped?: number;
+  chunksDiscovered?: number;
+  saved?: boolean;
+  sidecarsWritten?: number;
+}
 
 export function nowMs(): number {
   return Date.now();
@@ -30,6 +48,56 @@ export function formatTimingFooter(label: string, timing: TimingPayload): string
   const modeText = formatModeText(timing);
   const body = entries.length > 0 ? entries.join(', ') : 'no timing data';
   return `> _${label}${modeText}: ${body}._`;
+}
+
+export function recordRefreshProgressTiming(
+  timing: TimingPayload,
+  progress: RefreshProgressTimingInput,
+): void {
+  if (progress.filesScanned !== undefined) timing.refresh_files_scanned = progress.filesScanned;
+  if (progress.filesChanged !== undefined) timing.refresh_files_changed = progress.filesChanged;
+  if (progress.filesSkipped !== undefined) timing.refresh_files_skipped = progress.filesSkipped;
+  if (progress.chunksDiscovered !== undefined) {
+    timing.refresh_chunks_discovered = progress.chunksDiscovered;
+  }
+
+  if (progress.phase === 'embed') {
+    if (progress.processedChunks !== undefined) {
+      timing.refresh_embed_chunks = progress.processedChunks;
+    }
+    if (progress.totalChunks !== undefined) {
+      timing.refresh_embed_chunks_total = progress.totalChunks;
+    }
+    if (progress.batchIndex !== undefined) {
+      timing.refresh_embed_batches = progress.batchIndex;
+    }
+    if (progress.batchCount !== undefined) {
+      timing.refresh_embed_batches_total = progress.batchCount;
+    }
+    if (progress.batchSize !== undefined) {
+      timing.refresh_embed_batch_size = progress.batchSize;
+    }
+    if (progress.phaseElapsedMs !== undefined) {
+      timing.refresh_embed_ms = progress.phaseElapsedMs;
+    }
+  }
+
+  if (
+    progress.phaseStatus === 'completed' &&
+    progress.phaseElapsedMs !== undefined &&
+    isRefreshTimingPhase(progress.phase)
+  ) {
+    timing[`refresh_${progress.phase}_ms`] = progress.phaseElapsedMs;
+  }
+
+  if (progress.saved !== undefined) timing.refresh_saved = progress.saved;
+  if (progress.sidecarsWritten !== undefined) {
+    timing.refresh_sidecars_written = progress.sidecarsWritten;
+  }
+}
+
+function isRefreshTimingPhase(phase: string | undefined): phase is RefreshTimingPhase {
+  return phase === 'embed' || phase === 'save' || phase === 'sidecar' || phase === 'manifest';
 }
 
 function formatModeText(timing: TimingPayload): string {

@@ -137,6 +137,24 @@ export interface IndexUpdateProgress {
   totalFiles: number;
   currentFile: string;
   modelId: string;
+  phase?: 'scan' | 'load' | 'embed' | 'save' | 'sidecar' | 'manifest';
+  phaseStatus?: 'started' | 'progress' | 'completed';
+  filesScanned?: number;
+  filesChanged?: number;
+  filesSkipped?: number;
+  chunksDiscovered?: number;
+  processedChunks?: number;
+  totalChunks?: number;
+  batchIndex?: number;
+  batchCount?: number;
+  batchSize?: number;
+  provider?: EmbeddingProvider;
+  modelName?: string;
+  elapsedMs?: number;
+  phaseElapsedMs?: number;
+  throughputChunksPerSecond?: number;
+  saved?: boolean;
+  sidecarsWritten?: number;
 }
 
 export interface UpdateIndexOptions {
@@ -761,13 +779,26 @@ export class FaissIndexManager {
     });
   }
 
-  private async addDocumentsToIndex(documentsToAdd: Document[]): Promise<boolean> {
+  private async addDocumentsToIndex(
+    documentsToAdd: Document[],
+    opts: {
+      onProgress?: (progress: IndexUpdateProgress) => void | Promise<void>;
+      processedFiles: () => number;
+      totalFiles: number;
+      updateStartedAtMs: number;
+    } | null = null,
+  ): Promise<boolean> {
     if (documentsToAdd.length === 0) {
       return false;
     }
 
+    const batchCount = Math.ceil(documentsToAdd.length / this.indexingBatchSize);
+    const embedStartedAtMs = Date.now();
+    let processedChunks = 0;
+    let batchIndex = 0;
     for (let offset = 0; offset < documentsToAdd.length; offset += this.indexingBatchSize) {
       const batch = documentsToAdd.slice(offset, offset + this.indexingBatchSize);
+      batchIndex += 1;
       if (this.faissIndex === null) {
         logger.info(`Creating new FAISS index from ${batch.length} text(s)...`);
         this.faissIndex = await FaissStore.fromTexts(
@@ -777,6 +808,32 @@ export class FaissIndexManager {
         );
       } else {
         await this.faissIndex.addDocuments(batch);
+      }
+      processedChunks += batch.length;
+      if (opts?.onProgress) {
+        const phaseElapsedMs = Date.now() - embedStartedAtMs;
+        const throughputChunksPerSecond = phaseElapsedMs > 0
+          ? processedChunks / (phaseElapsedMs / 1000)
+          : null;
+        const lastSource = batch[batch.length - 1]?.metadata?.source;
+        await opts.onProgress({
+          processedFiles: opts.processedFiles(),
+          totalFiles: opts.totalFiles,
+          currentFile: typeof lastSource === 'string' ? lastSource : '',
+          modelId: this.modelId,
+          phase: 'embed',
+          phaseStatus: 'progress',
+          processedChunks,
+          totalChunks: documentsToAdd.length,
+          batchIndex,
+          batchCount,
+          batchSize: batch.length,
+          provider: this.embeddingProvider,
+          modelName: this.modelName,
+          elapsedMs: Date.now() - opts.updateStartedAtMs,
+          phaseElapsedMs,
+          throughputChunksPerSecond: throughputChunksPerSecond ?? undefined,
+        });
       }
     }
     return true;
@@ -917,6 +974,64 @@ export class FaissIndexManager {
       }));
 
       const totalFiles = totalFileCount(knowledgeBaseFiles);
+      const emitProgress = async (
+        progress: Omit<IndexUpdateProgress, 'modelId' | 'provider' | 'modelName' | 'elapsedMs'>,
+      ): Promise<void> => {
+        if (!opts.onProgress) return;
+        await opts.onProgress({
+          ...progress,
+          modelId: this.modelId,
+          provider: this.embeddingProvider,
+          modelName: this.modelName,
+          elapsedMs: Date.now() - startedAtMs,
+        });
+      };
+      let scannedFilesForProgress = 0;
+      let lastScanProgressFileCount = 0;
+      const reportScanProgress = async (currentFile: string): Promise<void> => {
+        if (!opts.onProgress || scannedFilesForProgress === lastScanProgressFileCount) {
+          return;
+        }
+        if (
+          scannedFilesForProgress % progressIntervalFiles !== 0 &&
+          scannedFilesForProgress !== totalFiles
+        ) {
+          return;
+        }
+        lastScanProgressFileCount = scannedFilesForProgress;
+        await emitProgress({
+          processedFiles,
+          totalFiles,
+          currentFile,
+          phase: 'scan',
+          phaseStatus: 'progress',
+          filesScanned: scannedFilesForProgress,
+        });
+      };
+      let lastLoadProgressFileCount = 0;
+      const reportLoadProgress = async (currentFile: string): Promise<void> => {
+        if (!opts.onProgress || runSummary.files_scanned === lastLoadProgressFileCount) {
+          return;
+        }
+        if (
+          runSummary.files_scanned % progressIntervalFiles !== 0 &&
+          runSummary.files_scanned !== totalFiles
+        ) {
+          return;
+        }
+        lastLoadProgressFileCount = runSummary.files_scanned;
+        await emitProgress({
+          processedFiles,
+          totalFiles,
+          currentFile,
+          phase: 'load',
+          phaseStatus: 'progress',
+          filesScanned: runSummary.files_scanned,
+          filesChanged: runSummary.files_changed,
+          filesSkipped: runSummary.files_skipped,
+          chunksDiscovered: runSummary.chunks_attempted,
+        });
+      };
       const reportProgress = async (currentFile: string): Promise<void> => {
         if (!opts.onProgress || processedFiles === lastProgressFileCount) {
           return;
@@ -933,6 +1048,9 @@ export class FaissIndexManager {
           totalFiles,
           currentFile,
           modelId: this.modelId,
+          provider: this.embeddingProvider,
+          modelName: this.modelName,
+          elapsedMs: Date.now() - startedAtMs,
         });
       };
 
@@ -981,6 +1099,9 @@ export class FaissIndexManager {
             return { ...job, success: true as const, fileHash, storedHash };
           } catch (error: unknown) {
             return { ...job, success: false as const, error };
+          } finally {
+            scannedFilesForProgress += 1;
+            await reportScanProgress(job.filePath);
           }
         },
       );
@@ -999,6 +1120,7 @@ export class FaissIndexManager {
             null,
             scan.error,
           );
+          await reportLoadProgress(scan.filePath);
           continue;
         }
 
@@ -1013,6 +1135,7 @@ export class FaissIndexManager {
             `Skipping quarantined file ${scan.filePath} ` +
               `(${retryDecision.reason}; next_retry_at=${retryDecision.record?.next_retry_at ?? '<unknown>'})`,
           );
+          await reportLoadProgress(scan.filePath);
           continue;
         }
 
@@ -1047,6 +1170,7 @@ export class FaissIndexManager {
               scan.fileHash,
               error,
             );
+            await reportLoadProgress(scan.filePath);
             continue;
           }
 
@@ -1068,6 +1192,7 @@ export class FaissIndexManager {
               scan.fileHash,
               error,
             );
+            await reportLoadProgress(scan.filePath);
             continue;
           }
           runSummary.chunks_attempted += documentsToAdd.length;
@@ -1089,11 +1214,17 @@ export class FaissIndexManager {
           runSummary.files_unchanged += 1;
           logger.debug(`File ${scan.filePath} unchanged, skipping.`);
         }
+        await reportLoadProgress(scan.filePath);
       }
       const documentsToAdd = changedFileDocuments.flatMap((entry) => entry.documents);
       let addedChangedDocuments = false;
       try {
-        addedChangedDocuments = await this.addDocumentsToIndex(documentsToAdd);
+        addedChangedDocuments = await this.addDocumentsToIndex(documentsToAdd, {
+          onProgress: opts.onProgress,
+          processedFiles: () => processedFiles,
+          totalFiles,
+          updateStartedAtMs: startedAtMs,
+        });
       } catch (error: unknown) {
         for (const entry of changedFileDocuments) {
           recordFailure(entry.relativePath, 'indexing', error);
@@ -1204,6 +1335,12 @@ export class FaissIndexManager {
         try {
           addedFallbackDocuments = await this.addDocumentsToIndex(
             fallbackDocuments.flatMap((entry) => entry.documents),
+            {
+              onProgress: opts.onProgress,
+              processedFiles: () => processedFiles,
+              totalFiles,
+              updateStartedAtMs: startedAtMs,
+            },
           );
         } catch (error: unknown) {
           for (const entry of fallbackDocuments) {
@@ -1242,8 +1379,25 @@ export class FaissIndexManager {
         // updated; first save under v014 effectively migrates the model to
         // versioned layout.
         try {
+          const saveStartedAtMs = Date.now();
+          await emitProgress({
+            processedFiles,
+            totalFiles,
+            currentFile: '',
+            phase: 'save',
+            phaseStatus: 'started',
+          });
           await this.atomicSave();
           runSummary.saved = true;
+          await emitProgress({
+            processedFiles,
+            totalFiles,
+            currentFile: '',
+            phase: 'save',
+            phaseStatus: 'completed',
+            phaseElapsedMs: Date.now() - saveStartedAtMs,
+            saved: true,
+          });
         } catch (saveError: unknown) {
           recordFailure(null, 'save', saveError);
           handleFsOperationError(
@@ -1262,8 +1416,26 @@ export class FaissIndexManager {
         // duplicating their vectors until RFC 007 PR 2.1 lands the
         // pending-manifest protocol.
         try {
+          const sidecarStartedAtMs = Date.now();
+          await emitProgress({
+            processedFiles,
+            totalFiles,
+            currentFile: '',
+            phase: 'sidecar',
+            phaseStatus: 'started',
+            sidecarsWritten: pendingHashWrites.length,
+          });
           await writeSidecarHashes(pendingHashWrites);
           runSummary.sidecars_written = pendingHashWrites.length > 0;
+          await emitProgress({
+            processedFiles,
+            totalFiles,
+            currentFile: '',
+            phase: 'sidecar',
+            phaseStatus: 'completed',
+            phaseElapsedMs: Date.now() - sidecarStartedAtMs,
+            sidecarsWritten: pendingHashWrites.length,
+          });
           for (const entry of successfulIndexedFiles) {
             await recordQuarantineSuccess(entry.knowledgeBasePath, entry.relativePath);
           }
@@ -1273,6 +1445,7 @@ export class FaissIndexManager {
         }
       }
       try {
+        const manifestStartedAtMs = Date.now();
         const activeIndexFilePath = await this.resolveActiveIndexFilePath();
         if (activeIndexFilePath !== null) {
           const indexStat = await fsp.stat(activeIndexFilePath);
@@ -1282,6 +1455,14 @@ export class FaissIndexManager {
             indexMtimeMs: indexStat.mtimeMs,
           });
         }
+        await emitProgress({
+          processedFiles,
+          totalFiles,
+          currentFile: '',
+          phase: 'manifest',
+          phaseStatus: 'completed',
+          phaseElapsedMs: Date.now() - manifestStartedAtMs,
+        });
       } catch (manifestError: unknown) {
         logger.warn(
           `Could not write freshness manifest for ${this.modelId}: ${toError(manifestError).message}`,

@@ -89,6 +89,11 @@ Optional stable fields:
   `{"threshold": number, "knee_index": number|null, "kept": number}`.
 - `timing`: present with `--timing`; keys are elapsed millisecond counters and
   mode labels. Treat the object as diagnostic, not a compatibility contract.
+  For dense and hybrid `--refresh` runs, the same diagnostic object may include
+  refresh counters such as `refresh_embed_batches`,
+  `refresh_embed_batches_total`, `refresh_embed_chunks`,
+  `refresh_embed_chunks_total`, `refresh_embed_ms`, `refresh_save_ms`,
+  `refresh_sidecar_ms`, and `refresh_manifest_ms`.
 
 Refresh preflight:
 
@@ -98,6 +103,10 @@ Refresh preflight:
   cheap-to-stat stale bytes.
 - The preflight is always stderr text. JSON stdout remains the success envelope
   above, and agents must not expect a JSON field for the preflight.
+- Refresh progress heartbeats are also stderr text. Embedding heartbeats include
+  the current bounded batch, embedded chunk count, provider/model, elapsed time,
+  and rolling throughput when available; save, sidecar, and manifest phases
+  emit start/completion lines. These lines never appear in JSON stdout.
 - TTY and non-TTY runs continue without prompting by default; there is no
   confirmation gate or required `--yes` for `kb search --refresh`.
 - The stderr text includes changed/new file counts by KB, estimated stale bytes,

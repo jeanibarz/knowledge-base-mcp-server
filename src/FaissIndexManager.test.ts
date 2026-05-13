@@ -541,11 +541,52 @@ describe('FaissIndexManager permission handling', () => {
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
     const manager = new FaissIndexManager();
     await manager.initialize();
-    await manager.updateIndex();
+    const progressEvents: Array<{
+      phase?: string;
+      batchIndex?: number;
+      batchCount?: number;
+      batchSize?: number;
+      processedChunks?: number;
+      totalChunks?: number;
+      provider?: string;
+      modelName?: string;
+      throughputChunksPerSecond?: number;
+    }> = [];
+    await manager.updateIndex(undefined, {
+      onProgress: (progress) => {
+        progressEvents.push(progress);
+      },
+    });
 
     expect(saveMock).toHaveBeenCalledTimes(1);
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
     expect(addDocumentsMock).toHaveBeenCalledTimes(2);
+    const embedEvents = progressEvents.filter((event) => event.phase === 'embed');
+    expect(embedEvents).toEqual([
+      expect.objectContaining({
+        batchIndex: 1,
+        batchCount: 3,
+        batchSize: 2,
+        processedChunks: 2,
+        totalChunks: 5,
+        provider: 'huggingface',
+        modelName: 'BAAI/bge-small-en-v1.5',
+      }),
+      expect.objectContaining({
+        batchIndex: 2,
+        batchCount: 3,
+        batchSize: 2,
+        processedChunks: 4,
+        totalChunks: 5,
+      }),
+      expect.objectContaining({
+        batchIndex: 3,
+        batchCount: 3,
+        batchSize: 1,
+        processedChunks: 5,
+        totalChunks: 5,
+      }),
+    ]);
     expect(manager.getLastIndexUpdateSummary()).toMatchObject({
       chunks_added: 5,
       index_mutated: true,
