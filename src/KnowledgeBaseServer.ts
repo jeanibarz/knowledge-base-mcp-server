@@ -69,8 +69,12 @@ import { SseHost } from './transport/sse.js';
 import { ReindexTriggerWatcher } from './triggerWatcher.js';
 import { RecursiveKbWatcher } from './recursive-fs-watch.js';
 import { KBError, type KBErrorCode } from './errors.js';
-import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
-import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
+import {
+  HYBRID_RRF_C,
+  fuseHybridResults,
+  hybridFetchK,
+  runLexicalLeg,
+} from './hybrid-retrieval.js';
 import {
   canonicalErrorFromToolResult,
   classifyCanonicalError,
@@ -634,9 +638,8 @@ export class KnowledgeBaseServer {
     canonical?: Partial<CanonicalLogInput>;
   }): Promise<CallToolResult> {
     const { query, knowledgeBaseName, modelNameOverride, filters, canonical } = input;
-    const HYBRID_FETCH_K = 40;
     const HYBRID_TOP_K = 10;
-    const HYBRID_RRF_C = 60;
+    const fetchK = hybridFetchK(HYBRID_TOP_K);
 
     try {
       let activeModelId: string;
@@ -655,36 +658,26 @@ export class KnowledgeBaseServer {
       // Dense leg — over-fetch to give RRF room.
       const denseTiming: SimilaritySearchTiming = {};
       const densePromise = manager
-        .similaritySearch(query, HYBRID_FETCH_K, Number.POSITIVE_INFINITY, knowledgeBaseName, filters, denseTiming)
+        .similaritySearch(query, fetchK, Number.POSITIVE_INFINITY, knowledgeBaseName, filters, denseTiming)
         .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })));
 
       // Lexical leg — BM25 over the same chunks the FAISS path embeds, but
       // managed independently (the lexical index is model-agnostic and lives
       // under `${FAISS_INDEX_PATH}/lexical/<kb>/`). Auto-refresh on first use
       // per KB; explicit refresh is the CLI's job (`kb search --refresh`).
-      const lexicalPromise: Promise<LexicalSearchResult[]> = (async () => {
-        const all: LexicalSearchResult[] = [];
-        const kbNames = knowledgeBaseName
-          ? [knowledgeBaseName]
-          : await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
-        for (const kbName of kbNames) {
-          const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
-          try {
-            const idx = await LexicalIndex.load(kbName, kbPath);
-            if (idx.numFiles() === 0) {
-              await idx.refresh();
-              await idx.save();
-            }
-            const hits = await idx.query(query, HYBRID_FETCH_K);
-            for (const h of hits) all.push(h);
-          } catch (err) {
-            // Per-KB lexical failure is non-fatal; the dense leg still runs.
-            logger.warn(`hybrid: lexical leg failed for KB "${kbName}": ${(err as Error).message}`);
-          }
-        }
-        all.sort((a, b) => b.score - a.score);
-        return all.slice(0, HYBRID_FETCH_K);
-      })();
+      const kbNames = knowledgeBaseName
+        ? [knowledgeBaseName]
+        : await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+      const kbs = kbNames.map((kbName) => ({ kbName, kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName) }));
+      const lexicalPromise = runLexicalLeg({
+        kbs,
+        query,
+        fetchK,
+        refresh: 'when-empty',
+        onError: (kbName, err) => {
+          logger.warn(`hybrid: lexical leg failed for KB "${kbName}": ${err.message}`);
+        },
+      }).then((res) => res.hits);
 
       const [denseResults, lexicalResults] = await Promise.all([densePromise, lexicalPromise]);
       if (canonical) {
@@ -692,24 +685,11 @@ export class KnowledgeBaseServer {
         canonical.faiss_ms = denseTiming.faiss_search_ms ?? denseTiming.query_search_ms;
       }
 
-      const denseList: RankedList = {
-        retriever: 'dense',
-        results: denseResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
-      };
-      const lexicalList: RankedList = {
-        retriever: 'lexical',
-        results: lexicalResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
-      };
-      const fused = reciprocalRankFusion([denseList, lexicalList], { c: HYBRID_RRF_C });
-
-      const byId = new Map<string, { pageContent: string; metadata: Record<string, unknown>; score: number }>();
-      for (const r of lexicalResults) byId.set(chunkIdFromMetadata(r.metadata), { pageContent: r.pageContent, metadata: r.metadata, score: r.score });
-      for (const r of denseResults) byId.set(chunkIdFromMetadata(r.metadata), { pageContent: r.pageContent, metadata: r.metadata, score: r.score });
-
-      const ranked = fused.slice(0, HYBRID_TOP_K).map((f) => {
-        const chunk = byId.get(f.id);
-        return chunk ? { ...chunk, score: f.fusedScore } : null;
-      }).filter((x): x is { pageContent: string; metadata: Record<string, unknown>; score: number } => x !== null);
+      const ranked = fuseHybridResults({
+        denseResults,
+        lexicalResults,
+        k: HYBRID_TOP_K,
+      });
 
       const formatStartedAt = Date.now();
       let responseText = formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE);

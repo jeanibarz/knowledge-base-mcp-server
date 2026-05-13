@@ -49,7 +49,14 @@ import {
   type TimingPayload,
 } from './cli-timing.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
-import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
+import {
+  HYBRID_RRF_C,
+  fuseHybridResults,
+  hybridFetchK,
+  listLexicalKbs,
+  runLexicalLeg,
+  type HybridChunk,
+} from './hybrid-retrieval.js';
 import {
   buildRefreshPreflightEstimate,
   maybeWriteRefreshPreflight,
@@ -1097,15 +1104,6 @@ interface LexicalKbResult {
   error?: Error;
 }
 
-async function listLexicalKbs(scoped?: string): Promise<Array<{ kbName: string; kbPath: string }>> {
-  const all = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
-  const filtered = scoped ? all.filter((n) => n === scoped) : all;
-  return filtered.map((kbName) => ({
-    kbName,
-    kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName),
-  }));
-}
-
 async function runLexicalSearch(
   parsed: SearchArgs,
   timing: TimingPayload | null = null,
@@ -1264,15 +1262,6 @@ async function runLexicalSearch(
 
 // -- #206 stage 2 — hybrid (RRF) dispatch ----------------------------------
 
-const HYBRID_FETCH_MULTIPLIER = 4;
-const HYBRID_RRF_C = 60;
-
-interface HybridChunk {
-  pageContent: string;
-  metadata: Record<string, unknown>;
-  score: number;
-}
-
 async function runHybridSearch(
   parsed: SearchArgs,
   timing: TimingPayload | null = null,
@@ -1287,7 +1276,7 @@ async function runHybridSearch(
   }
 
   const query = parsed.query as string;
-  const fetchK = Math.max(parsed.k * HYBRID_FETCH_MULTIPLIER, parsed.k);
+  const fetchK = hybridFetchK(parsed.k);
 
   // -- dense leg -----------------------------------------------------------
   let densePromise: Promise<HybridChunk[]>;
@@ -1364,33 +1353,15 @@ async function runHybridSearch(
   }
 
   const lexicalStartedAt = nowMs();
-  const lexicalPromise: Promise<{ hits: HybridChunk[]; refreshed: number; failed: number }> = (async () => {
-    let refreshed = 0;
-    let failed = 0;
-    const all: LexicalSearchResult[] = [];
-    for (const { kbName, kbPath } of lexicalKbs) {
-      try {
-        const idx = await LexicalIndex.load(kbName, kbPath);
-        if (parsed.refresh || idx.numFiles() === 0) {
-          await idx.refresh();
-          await idx.save();
-          refreshed += 1;
-        }
-        const hits = await idx.query(query, fetchK);
-        for (const h of hits) all.push(h);
-      } catch (err) {
-        failed += 1;
-        process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${(err as Error).message}\n`);
-      }
-    }
-    all.sort((a, b) => b.score - a.score);
-    const top = all.slice(0, fetchK);
-    return {
-      hits: top.map((h) => ({ pageContent: h.pageContent, metadata: h.metadata, score: h.score })),
-      refreshed,
-      failed,
-    };
-  })().then((row) => {
+  const lexicalPromise = runLexicalLeg({
+    kbs: lexicalKbs,
+    query,
+    fetchK,
+    refresh: parsed.refresh ? 'always' : 'when-empty',
+    onError: (kbName, err) => {
+      process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${err.message}\n`);
+    },
+  }).then((row) => {
     if (timing) timing.lexical_search_ms = elapsedMs(lexicalStartedAt);
     return row;
   });
@@ -1403,26 +1374,11 @@ async function runHybridSearch(
 
   // -- fuse ----------------------------------------------------------------
   const fusionStartedAt = nowMs();
-  const denseList: RankedList = {
-    retriever: 'dense',
-    results: denseResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
-  };
-  const lexicalList: RankedList = {
-    retriever: 'lexical',
-    results: lexicalResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
-  };
-  const fused = reciprocalRankFusion([denseList, lexicalList], { c: HYBRID_RRF_C });
-
-  // Index chunks by id for output. When both legs return the same id, prefer
-  // the dense entry (more complete metadata typically), but read from
-  // whichever exists.
-  const byId = new Map<string, HybridChunk>();
-  for (const r of lexicalResults) byId.set(chunkIdFromMetadata(r.metadata), r);
-  for (const r of denseResults) byId.set(chunkIdFromMetadata(r.metadata), r);
-  const ranked = fused.slice(0, parsed.k).map((f) => {
-    const chunk = byId.get(f.id);
-    return chunk ? { ...chunk, score: f.fusedScore } : null;
-  }).filter((x): x is HybridChunk => x !== null);
+  const ranked = fuseHybridResults({
+    denseResults,
+    lexicalResults,
+    k: parsed.k,
+  });
   if (timing) {
     timing.fusion_ms = elapsedMs(fusionStartedAt);
     timing.total_ms = elapsedMs(totalStartedAt);

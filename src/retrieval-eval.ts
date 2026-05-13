@@ -1,4 +1,3 @@
-import * as path from 'path';
 import { minimatch } from 'minimatch';
 import type { FaissIndexManager } from './FaissIndexManager.js';
 import type { ScoredDocument } from './formatter.js';
@@ -9,15 +8,14 @@ import {
   type SearchMode,
   type Staleness,
 } from './cli-search.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
-import { listKnowledgeBases } from './kb-fs.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
-import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
+import {
+  fuseHybridResults,
+  hybridFetchK,
+  listLexicalKbs,
+} from './hybrid-retrieval.js';
 
 export type StalePolicy = 'allow_stale' | 'fresh' | 'stale';
-
-const HYBRID_FETCH_MULTIPLIER = 4;
-const HYBRID_RRF_C = 60;
 
 export interface ExpectedMetadataRule {
   path: string;
@@ -451,6 +449,13 @@ async function retrieveLexical(
   scopedKb?: string,
 ): Promise<ScoredDocument[]> {
   const kbs = await listLexicalKbs(scopedKb);
+  // The eval runner is strict about scope: a missing scoped KB is a fixture
+  // bug worth surfacing, not silent dense-only fallback. The shared
+  // `listLexicalKbs` returns `[]` for an unknown name (matching CLI/MCP), so
+  // we replicate the prior eval-specific check here.
+  if (scopedKb !== undefined && kbs.length === 0) {
+    throw new Error(`KB not found: ${scopedKb}`);
+  }
   const merged: LexicalSearchResult[] = [];
   for (const { kbName, kbPath } of kbs) {
     const index = await LexicalIndex.load(kbName, kbPath);
@@ -469,7 +474,7 @@ async function retrieveHybrid(
   context: RetrievalEvalSearchContext,
 ): Promise<ScoredDocument[]> {
   const k = fixtureCase.k ?? context.defaultK;
-  const fetchK = Math.max(k * HYBRID_FETCH_MULTIPLIER, k);
+  const fetchK = hybridFetchK(k);
   const [denseResults, lexicalResults] = await Promise.all([
     context.manager.similaritySearch(
       fixtureCase.query,
@@ -479,36 +484,11 @@ async function retrieveHybrid(
     ),
     retrieveLexical(fixtureCase.query, fetchK, fixtureCase.kb),
   ]);
-  const denseList: RankedList = {
-    retriever: 'dense',
-    results: denseResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
-  };
-  const lexicalList: RankedList = {
-    retriever: 'lexical',
-    results: lexicalResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
-  };
-  const fused = reciprocalRankFusion([denseList, lexicalList], { c: HYBRID_RRF_C });
-  const byId = new Map<string, ScoredDocument>();
-  for (const result of lexicalResults) byId.set(chunkIdFromMetadata(result.metadata), result);
-  for (const result of denseResults) byId.set(chunkIdFromMetadata(result.metadata), result);
-  const ranked: ScoredDocument[] = [];
-  for (const entry of fused.slice(0, k)) {
-    const result = byId.get(entry.id);
-    if (result) ranked.push({ ...result, score: entry.fusedScore });
-  }
-  return ranked;
-}
-
-async function listLexicalKbs(scopedKb?: string): Promise<Array<{ kbName: string; kbPath: string }>> {
-  const all = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
-  const filtered = scopedKb ? all.filter((name) => name === scopedKb) : all;
-  if (scopedKb !== undefined && filtered.length === 0) {
-    throw new Error(`KB not found: ${scopedKb}`);
-  }
-  return filtered.map((kbName) => ({
-    kbName,
-    kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName),
-  }));
+  return fuseHybridResults({
+    denseResults,
+    lexicalResults,
+    k,
+  });
 }
 
 function toScoredDocument(result: LexicalSearchResult): ScoredDocument {
