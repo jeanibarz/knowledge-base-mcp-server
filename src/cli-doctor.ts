@@ -22,8 +22,13 @@ import {
   HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
+  KB_FS_WATCH,
   KNOWLEDGE_BASES_ROOT_DIR,
   OLLAMA_BASE_URL,
+  REINDEX_TRIGGER_PATH,
+  REINDEX_TRIGGER_POLL_MS,
+  resolveReindexTriggerPath,
+  resolveReindexTriggerPollMs,
 } from './config.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import {
@@ -45,6 +50,7 @@ import {
   type ProviderCallSnapshot,
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
+import { inspectReindexTriggerFilesystem } from './triggerWatcher.js';
 
 /**
  * Issue #210 — error-rate threshold above which the doctor surfaces a
@@ -59,7 +65,7 @@ const execFileAsync = promisify(execFile);
 export const DOCTOR_HELP = `kb doctor — aggregate model / index / backend health report
 
 Usage:
-  kb doctor [--format=md|json]
+  kb doctor [--format=md|json] [--reindex-trigger]
 
 Composes existing read-only checks (env vars, registered models, active
 model, FAISS index presence + mtime, knowledge-base count, embedding
@@ -73,6 +79,8 @@ gate from a script.
 Options:
   --format=md|json      Output format (default: md). \`json\` emits the same
                         underlying report shape for agent shells.
+  --reindex-trigger     Include focused reindex-trigger diagnostics
+                        (also included in the aggregate report).
   --help, -h            Show this help.
 
 Examples:
@@ -83,6 +91,7 @@ Examples:
 
 export interface DoctorArgs {
   format: 'md' | 'json';
+  reindexTrigger: boolean;
 }
 
 export type HealthStatus = 'ok' | 'warn' | 'error';
@@ -187,6 +196,43 @@ export interface DoctorReport {
   } | null;
   last_index_update: IndexUpdateSummary;
   /**
+   * Reindex-trigger diagnostics for external ingest workflows. This is a
+   * read-only configuration and filesystem check; it cannot prove that a
+   * separate MCP server process is actively watching the trigger.
+   */
+  reindex_trigger: {
+    status: HealthStatus;
+    enabled: boolean;
+    poll_ms: number;
+    poll_ms_source: 'default' | 'env' | 'fallback';
+    poll_ms_raw: string | null;
+    path: string;
+    path_source: 'default' | 'env';
+    path_raw: string | null;
+    kb_fs_watch_enabled: boolean;
+    trigger_file: {
+      exists: boolean;
+      kind: 'file' | 'directory' | 'other' | 'missing';
+      mtime: string | null;
+      age_ms: number | null;
+      size_bytes: number | null;
+      stat_error: string | null;
+    };
+    parent: {
+      path: string;
+      exists: boolean;
+      writable: boolean | null;
+      access_error: string | null;
+    };
+    freshness: {
+      index_mtime: string | null;
+      trigger_mtime: string | null;
+      trigger_newer_than_index: boolean | null;
+    };
+    warnings: string[];
+    limitation: string;
+  };
+  /**
    * Issue #210 — per-`model_id` runtime telemetry for the active
    * embedding provider. Empty `{}` until the active provider has served
    * at least one call. The doctor row is WARN when
@@ -234,7 +280,7 @@ export async function runDoctor(rest: string[]): Promise<number> {
 }
 
 export function parseDoctorArgs(rest: string[]): DoctorArgs {
-  const out: DoctorArgs = { format: 'md' };
+  const out: DoctorArgs = { format: 'md', reindexTrigger: false };
   for (const raw of rest) {
     if (raw.startsWith('--format=')) {
       const value = raw.slice('--format='.length);
@@ -242,6 +288,10 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
         throw new Error(`invalid --format: ${raw}`);
       }
       out.format = value;
+      continue;
+    }
+    if (raw === '--reindex-trigger') {
+      out.reindexTrigger = true;
       continue;
     }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
@@ -433,6 +483,12 @@ export async function buildDoctorReport(
   const lastIndexUpdate = options.lastIndexUpdateSummary
     ?? (await FaissIndexManager.readPersistedIndexUpdateSummary(activeModelId))
     ?? createNeverRunIndexUpdateSummary(activeModelId);
+  const reindexTrigger = await readReindexTriggerHealth(index.mtime);
+  checks.push({
+    name: 'reindex_trigger',
+    status: reindexTrigger.status,
+    detail: formatReindexTriggerCheckDetail(reindexTrigger),
+  });
 
   const status = summarizeStatus(checks);
   return {
@@ -454,8 +510,89 @@ export async function buildDoctorReport(
     cli,
     git,
     last_index_update: lastIndexUpdate,
+    reindex_trigger: reindexTrigger,
     provider_calls: providerCalls,
   };
+}
+
+async function readReindexTriggerHealth(
+  indexMtime: string | null,
+): Promise<DoctorReport['reindex_trigger']> {
+  const poll = resolveReindexTriggerPollMs(process.env.REINDEX_TRIGGER_POLL_MS);
+  const triggerPath = resolveReindexTriggerPath(
+    process.env.REINDEX_TRIGGER_PATH,
+    KNOWLEDGE_BASES_ROOT_DIR,
+  );
+  const fsState = await inspectReindexTriggerFilesystem(REINDEX_TRIGGER_PATH);
+  const warnings = [
+    ...triggerPath.warnings,
+    ...(poll.warning === null ? [] : [poll.warning]),
+    ...fsState.warnings,
+  ];
+
+  if (REINDEX_TRIGGER_POLL_MS <= 0) {
+    warnings.push('REINDEX_TRIGGER_POLL_MS=0 disables the reindex-trigger watcher');
+  }
+
+  const triggerMtimeMs = fsState.mtime === null ? null : Date.parse(fsState.mtime);
+  const indexMtimeMs = indexMtime === null ? null : Date.parse(indexMtime);
+  const triggerNewerThanIndex = triggerMtimeMs === null || indexMtimeMs === null
+    ? null
+    : triggerMtimeMs > indexMtimeMs;
+  if (triggerNewerThanIndex === true) {
+    warnings.push('trigger file is newer than the active index; a refresh may be pending');
+  }
+
+  const hasError = fsState.kind === 'directory'
+    || fsState.kind === 'other'
+    || !fsState.parent_exists
+    || fsState.parent_writable === false;
+  const status: HealthStatus = hasError ? 'error' : warnings.length > 0 ? 'warn' : 'ok';
+  const now = Date.now();
+  return {
+    status,
+    enabled: REINDEX_TRIGGER_POLL_MS > 0,
+    poll_ms: REINDEX_TRIGGER_POLL_MS,
+    poll_ms_source: poll.source,
+    poll_ms_raw: poll.raw_value,
+    path: REINDEX_TRIGGER_PATH,
+    path_source: triggerPath.source,
+    path_raw: triggerPath.raw_value,
+    kb_fs_watch_enabled: KB_FS_WATCH,
+    trigger_file: {
+      exists: fsState.exists,
+      kind: fsState.kind,
+      mtime: fsState.mtime,
+      age_ms: triggerMtimeMs === null ? null : Math.max(0, now - triggerMtimeMs),
+      size_bytes: fsState.size_bytes,
+      stat_error: fsState.stat_error,
+    },
+    parent: {
+      path: fsState.parent_path,
+      exists: fsState.parent_exists,
+      writable: fsState.parent_writable,
+      access_error: fsState.parent_access_error,
+    },
+    freshness: {
+      index_mtime: indexMtime,
+      trigger_mtime: fsState.mtime,
+      trigger_newer_than_index: triggerNewerThanIndex,
+    },
+    warnings,
+    limitation: 'configuration and filesystem state only; this CLI cannot prove another MCP server process is actively watching',
+  };
+}
+
+function formatReindexTriggerCheckDetail(
+  report: DoctorReport['reindex_trigger'],
+): string {
+  if (!report.enabled) {
+    return `disabled; path=${report.path}`;
+  }
+  if (report.warnings.length > 0) {
+    return `${report.warnings.length} reindex-trigger warning(s); path=${report.path}`;
+  }
+  return `enabled every ${report.poll_ms}ms; path=${report.path}`;
 }
 
 function formatErrorRate(errors: number, count: number): string {
@@ -901,6 +1038,39 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
     lines.push('  ownership: skipped on this platform');
   }
   lines.push(`Last index update: ${formatLastIndexUpdate(report.last_index_update)}`);
+  lines.push('Reindex trigger:');
+  lines.push(
+    `  path: ${report.reindex_trigger.path} (${report.reindex_trigger.path_source})`,
+  );
+  lines.push(
+    `  poll: ${report.reindex_trigger.enabled ? `${report.reindex_trigger.poll_ms}ms` : 'disabled'} ` +
+    `(${report.reindex_trigger.poll_ms_source})`,
+  );
+  const triggerFile = report.reindex_trigger.trigger_file;
+  const triggerMtime = triggerFile.mtime ?? 'none';
+  const triggerAge = triggerFile.age_ms === null ? 'n/a' : `${Math.round(triggerFile.age_ms / 1000)}s`;
+  lines.push(
+    `  trigger file: ${triggerFile.exists ? triggerFile.kind : 'missing'}, ` +
+    `mtime=${triggerMtime}, age=${triggerAge}`,
+  );
+  lines.push(
+    `  parent: ${report.reindex_trigger.parent.path} ` +
+    `(exists=${report.reindex_trigger.parent.exists ? 'yes' : 'no'}, ` +
+    `writable=${formatNullableBoolean(report.reindex_trigger.parent.writable)})`,
+  );
+  lines.push(`  freshness: ${formatReindexTriggerFreshness(report.reindex_trigger)}`);
+  lines.push(
+    `  KB_FS_WATCH: ${report.reindex_trigger.kb_fs_watch_enabled ? 'on' : 'off'} ` +
+    '(independent per-file watcher)',
+  );
+  if (report.reindex_trigger.warnings.length === 0) {
+    lines.push('  warnings: (none)');
+  } else {
+    for (const warning of report.reindex_trigger.warnings) {
+      lines.push(`  WARN ${warning}`);
+    }
+  }
+  lines.push(`  note: ${report.reindex_trigger.limitation}`);
   lines.push(`Backend: ${report.backend.healthy ? 'ok' : 'error'} — ${report.backend.detail}`);
   lines.push(`kb version: ${report.cli.version}`);
   if (report.cli.symlinked_checkout_path !== null) {
@@ -1012,6 +1182,25 @@ function formatBytes(bytes: number | null): string {
   }
   if (unit === 0) return `${bytes} B`;
   return `${value.toFixed(1)} ${units[unit]}`;
+}
+
+function formatNullableBoolean(value: boolean | null): string {
+  if (value === null) return 'unknown';
+  return value ? 'yes' : 'no';
+}
+
+function formatReindexTriggerFreshness(
+  report: DoctorReport['reindex_trigger'],
+): string {
+  const indexMtime = report.freshness.index_mtime ?? 'none';
+  const triggerMtime = report.freshness.trigger_mtime ?? 'none';
+  if (report.freshness.trigger_newer_than_index === null) {
+    return `unknown (trigger=${triggerMtime}, index=${indexMtime})`;
+  }
+  if (report.freshness.trigger_newer_than_index) {
+    return `trigger newer than active index (trigger=${triggerMtime}, index=${indexMtime})`;
+  }
+  return `trigger not newer than active index (trigger=${triggerMtime}, index=${indexMtime})`;
 }
 
 function formatLastIndexUpdate(summary: IndexUpdateSummary): string {

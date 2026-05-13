@@ -11,6 +11,8 @@ import {
   parseKbMaxFileBytes,
   parseReindexTriggerPollMs,
   parseKBEditorUri,
+  resolveReindexTriggerPath,
+  resolveReindexTriggerPollMs,
   resolveChunkSize,
   resolveIndexingBatchSize,
   UnknownEmbeddingProviderError,
@@ -168,6 +170,68 @@ describe('parseReindexTriggerPollMs (RFC 011 §5.5)', () => {
   it('rounds fractional in-range values to an integer', () => {
     expect(parseReindexTriggerPollMs('1500.7')).toBe(1501);
     expect(parseReindexTriggerPollMs('59999.4')).toBe(59999);
+  });
+});
+
+describe('resolveReindexTriggerPollMs (#334 doctor diagnostics)', () => {
+  it('returns source metadata for defaults, disabled, and fallback values', () => {
+    expect(resolveReindexTriggerPollMs(undefined)).toMatchObject({
+      value: 5000,
+      source: 'default',
+      warning: null,
+    });
+    expect(resolveReindexTriggerPollMs('0')).toMatchObject({
+      value: 0,
+      source: 'env',
+      warning: null,
+    });
+    expect(resolveReindexTriggerPollMs('nope')).toMatchObject({
+      value: 5000,
+      source: 'fallback',
+      raw_value: 'nope',
+    });
+    expect(resolveReindexTriggerPollMs('nope').warning).toContain('REINDEX_TRIGGER_POLL_MS');
+  });
+
+  it('surfaces clamp and rounding warnings without changing parser semantics', () => {
+    expect(resolveReindexTriggerPollMs('500')).toMatchObject({
+      value: 1000,
+      source: 'env',
+    });
+    expect(resolveReindexTriggerPollMs('500').warning).toContain('clamped');
+
+    expect(resolveReindexTriggerPollMs('1500.7')).toMatchObject({
+      value: 1501,
+      source: 'env',
+    });
+    expect(resolveReindexTriggerPollMs('1500.7').warning).toContain('rounded');
+  });
+});
+
+describe('resolveReindexTriggerPath (#334 doctor diagnostics)', () => {
+  it('defaults to .reindex-trigger under the KB root when unset or blank', () => {
+    expect(resolveReindexTriggerPath(undefined, '/tmp/kbs')).toEqual({
+      path: '/tmp/kbs/.reindex-trigger',
+      source: 'default',
+      raw_value: null,
+      warnings: [],
+    });
+    expect(resolveReindexTriggerPath('   ', '/tmp/kbs')).toMatchObject({
+      path: '/tmp/kbs/.reindex-trigger',
+      source: 'default',
+    });
+  });
+
+  it('preserves explicit paths and warns when they are relative', () => {
+    expect(resolveReindexTriggerPath('/tmp/custom-trigger', '/tmp/kbs')).toEqual({
+      path: '/tmp/custom-trigger',
+      source: 'env',
+      raw_value: '/tmp/custom-trigger',
+      warnings: [],
+    });
+    const relative = resolveReindexTriggerPath('relative-trigger', '/tmp/kbs');
+    expect(relative.path).toBe('relative-trigger');
+    expect(relative.warnings).toEqual([expect.stringContaining('relative')]);
   });
 });
 

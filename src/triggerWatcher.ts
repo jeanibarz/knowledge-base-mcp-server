@@ -10,9 +10,102 @@
 // is the right surface for inline editing); the poller sees the root-level
 // dotfile that the walker and `fs.watch` both deliberately skip.
 import * as fsp from 'fs/promises';
+import { constants as fsConstants } from 'fs';
+import * as path from 'path';
 import { logger } from './logger.js';
 
 type FsError = NodeJS.ErrnoException & { code?: string };
+
+export type ReindexTriggerFileKind = 'file' | 'directory' | 'other' | 'missing';
+
+export interface ReindexTriggerFilesystemState {
+  trigger_path: string;
+  parent_path: string;
+  exists: boolean;
+  kind: ReindexTriggerFileKind;
+  mtime: string | null;
+  size_bytes: number | null;
+  parent_exists: boolean;
+  parent_writable: boolean | null;
+  stat_error: string | null;
+  parent_access_error: string | null;
+  warnings: string[];
+}
+
+export async function inspectReindexTriggerFilesystem(
+  triggerPath: string,
+): Promise<ReindexTriggerFilesystemState> {
+  const parentPath = path.dirname(triggerPath);
+  const warnings: string[] = [];
+  let exists = false;
+  let kind: ReindexTriggerFileKind = 'missing';
+  let mtime: string | null = null;
+  let sizeBytes: number | null = null;
+  let statError: string | null = null;
+
+  try {
+    const st = await fsp.stat(triggerPath);
+    exists = true;
+    kind = st.isFile() ? 'file' : st.isDirectory() ? 'directory' : 'other';
+    mtime = new Date(st.mtimeMs).toISOString();
+    sizeBytes = st.size;
+    if (kind !== 'file') {
+      warnings.push(`trigger path exists but is ${kind}, not a file`);
+    }
+  } catch (error) {
+    const code = (error as FsError | undefined)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      warnings.push('trigger file does not exist yet');
+    } else {
+      statError = (error as Error).message;
+      warnings.push(`trigger stat failed: ${statError}`);
+    }
+  }
+
+  let parentExists = false;
+  let parentWritable: boolean | null = null;
+  let parentAccessError: string | null = null;
+  try {
+    const parentStat = await fsp.stat(parentPath);
+    parentExists = parentStat.isDirectory();
+    if (!parentExists) {
+      warnings.push('trigger parent exists but is not a directory');
+      parentWritable = false;
+    } else {
+      try {
+        await fsp.access(parentPath, fsConstants.W_OK);
+        parentWritable = true;
+      } catch (error) {
+        parentWritable = false;
+        parentAccessError = (error as Error).message;
+        warnings.push(`trigger parent is not writable: ${parentAccessError}`);
+      }
+    }
+  } catch (error) {
+    const code = (error as FsError | undefined)?.code;
+    parentWritable = false;
+    parentAccessError = (error as Error).message;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      warnings.push('trigger parent directory does not exist');
+    } else {
+      warnings.push(`trigger parent stat failed: ${parentAccessError}`);
+    }
+  }
+
+  return {
+    trigger_path: triggerPath,
+    parent_path: parentPath,
+    exists,
+    kind,
+    mtime,
+    size_bytes: sizeBytes,
+    parent_exists: parentExists,
+    parent_writable: parentWritable,
+    stat_error: statError,
+    parent_access_error: parentAccessError,
+    warnings,
+  };
+}
 
 /**
  * Observes mtime on a single file and invokes `onTrigger` whenever it

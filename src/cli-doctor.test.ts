@@ -14,6 +14,9 @@ const originalEnv = {
   KB_AGE_BUDGET_HOURS: process.env.KB_AGE_BUDGET_HOURS,
   KB_AGE_BUDGET_HOURS_ALPHA: process.env.KB_AGE_BUDGET_HOURS_ALPHA,
   KB_AGE_BUDGET_HOURS_BETA: process.env.KB_AGE_BUDGET_HOURS_BETA,
+  REINDEX_TRIGGER_PATH: process.env.REINDEX_TRIGGER_PATH,
+  REINDEX_TRIGGER_POLL_MS: process.env.REINDEX_TRIGGER_POLL_MS,
+  KB_FS_WATCH: process.env.KB_FS_WATCH,
 };
 
 const MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
@@ -314,6 +317,90 @@ describe('kb doctor', () => {
     }
   });
 
+  it('reports reindex-trigger configuration, filesystem state, and freshness in markdown and JSON', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-trigger-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      const versionDir = await seedVersionedIndex(modelDir);
+      const binaryPath = path.join(versionDir, 'faiss.index');
+      const triggerPath = path.join(rootDir, '.reindex-trigger');
+      await fsp.writeFile(triggerPath, '');
+
+      const indexMs = 1_700_000_000_000;
+      const triggerMs = indexMs + 5_000;
+      await fsp.utimes(binaryPath, indexMs / 1000, indexMs / 1000);
+      await fsp.utimes(triggerPath, triggerMs / 1000, triggerMs / 1000);
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+        REINDEX_TRIGGER_PATH: triggerPath,
+        REINDEX_TRIGGER_POLL_MS: '2000',
+        KB_FS_WATCH: '1',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+      });
+
+      expect(report.reindex_trigger).toMatchObject({
+        status: 'warn',
+        enabled: true,
+        poll_ms: 2000,
+        poll_ms_source: 'env',
+        path: triggerPath,
+        path_source: 'env',
+        kb_fs_watch_enabled: true,
+        trigger_file: {
+          exists: true,
+          kind: 'file',
+          mtime: new Date(triggerMs).toISOString(),
+        },
+        parent: {
+          path: rootDir,
+          exists: true,
+          writable: true,
+        },
+        freshness: {
+          index_mtime: new Date(indexMs).toISOString(),
+          trigger_mtime: new Date(triggerMs).toISOString(),
+          trigger_newer_than_index: true,
+        },
+      });
+      expect(report.reindex_trigger.warnings).toEqual([
+        'trigger file is newer than the active index; a refresh may be pending',
+      ]);
+      expect(report.checks).toContainEqual({
+        name: 'reindex_trigger',
+        status: 'warn',
+        detail: expect.stringContaining('reindex-trigger warning'),
+      });
+
+      const markdown = formatDoctorMarkdown(report);
+      expect(markdown).toContain('Reindex trigger:');
+      expect(markdown).toContain(`path: ${triggerPath} (env)`);
+      expect(markdown).toContain('poll: 2000ms (env)');
+      expect(markdown).toContain('freshness: trigger newer than active index');
+      expect(markdown).toContain('configuration and filesystem state only');
+      expect(markdown).not.toContain('actively watching: yes');
+
+      const json = JSON.parse(JSON.stringify(report)) as typeof report;
+      expect(json.reindex_trigger.freshness.trigger_newer_than_index).toBe(true);
+      expect(json.reindex_trigger.limitation).toContain('cannot prove');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('warns when a KB has quarantined ingest failures', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-quarantine-'));
     try {
@@ -490,8 +577,13 @@ describe('kb doctor', () => {
 
   it('parses --format=json and rejects unsupported formats', async () => {
     const { parseDoctorArgs } = await freshDoctor({});
-    expect(parseDoctorArgs(['--format=json'])).toEqual({ format: 'json' });
-    expect(parseDoctorArgs([])).toEqual({ format: 'md' });
+    expect(parseDoctorArgs(['--format=json'])).toEqual({ format: 'json', reindexTrigger: false });
+    expect(parseDoctorArgs(['--reindex-trigger'])).toEqual({ format: 'md', reindexTrigger: true });
+    expect(parseDoctorArgs(['--reindex-trigger', '--format=json'])).toEqual({
+      format: 'json',
+      reindexTrigger: true,
+    });
+    expect(parseDoctorArgs([])).toEqual({ format: 'md', reindexTrigger: false });
     expect(() => parseDoctorArgs(['--format=yaml'])).toThrow(/invalid --format/);
   });
 

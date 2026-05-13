@@ -2,7 +2,10 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
-import { ReindexTriggerWatcher } from './triggerWatcher.js';
+import {
+  ReindexTriggerWatcher,
+  inspectReindexTriggerFilesystem,
+} from './triggerWatcher.js';
 
 /**
  * The watcher runs off `setInterval`, which makes real-time testing flaky
@@ -219,5 +222,46 @@ describe('ReindexTriggerWatcher (RFC 011 §5.5)', () => {
     // (the previous bar) would let a regression that re-fired on every
     // tick after the bump pass silently.
     expect(onTrigger).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('inspectReindexTriggerFilesystem (#334 doctor diagnostics)', () => {
+  let tempDir: string;
+  let triggerPath: string;
+
+  beforeEach(async () => {
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-trigger-state-'));
+    triggerPath = path.join(tempDir, '.reindex-trigger');
+  });
+
+  afterEach(async () => {
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('reports a missing trigger file while validating the writable parent', async () => {
+    const state = await inspectReindexTriggerFilesystem(triggerPath);
+    expect(state).toMatchObject({
+      trigger_path: triggerPath,
+      parent_path: tempDir,
+      exists: false,
+      kind: 'missing',
+      mtime: null,
+      size_bytes: null,
+      parent_exists: true,
+      parent_writable: true,
+      stat_error: null,
+    });
+    expect(state.warnings).toEqual(['trigger file does not exist yet']);
+  });
+
+  it('reports file mtime and kind when the trigger exists', async () => {
+    await fsp.writeFile(triggerPath, 'touch\n');
+    const state = await inspectReindexTriggerFilesystem(triggerPath);
+    expect(state.exists).toBe(true);
+    expect(state.kind).toBe('file');
+    expect(state.size_bytes).toBe(Buffer.byteLength('touch\n'));
+    expect(state.mtime).toEqual(expect.any(String));
+    expect(state.parent_writable).toBe(true);
+    expect(state.warnings).toEqual([]);
   });
 });
