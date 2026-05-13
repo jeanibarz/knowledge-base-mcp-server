@@ -79,11 +79,26 @@ describe('computeStaleness', () => {
         newFiles: 1,
         scope: { kb: 'alpha', modifiedFiles: 1, newFiles: 1 },
         global: { modifiedFiles: 2, newFiles: 2 },
+        scan: {
+          scope: 'scoped',
+          source: 'filesystem',
+          filesScanned: 2,
+          globalFiles: 3,
+          scopedFiles: 2,
+          kbsScanned: 2,
+        },
       });
 
       await expect(computeStaleness(modelId)).resolves.toMatchObject({
         modifiedFiles: 2,
         newFiles: 2,
+        scan: {
+          scope: 'global',
+          source: 'filesystem',
+          filesScanned: 3,
+          globalFiles: 3,
+          kbsScanned: 2,
+        },
       });
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
@@ -137,6 +152,14 @@ describe('computeStaleness', () => {
         newFiles: 1,
         scope: { kb: 'alpha', modifiedFiles: 1, newFiles: 1 },
         global: { modifiedFiles: 1, newFiles: 2 },
+        scan: {
+          scope: 'scoped',
+          source: 'manifest',
+          filesScanned: 1,
+          globalFiles: 2,
+          scopedFiles: 1,
+          kbsScanned: 1,
+        },
       });
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });

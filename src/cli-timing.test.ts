@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import {
   compactTimingPayload,
   formatTimingFooter,
+  recordFreshnessScanTiming,
   recordRefreshProgressTiming,
 } from './cli-timing.js';
 
@@ -16,6 +17,33 @@ describe('compactTimingPayload', () => {
       total_ms: 13,
       fetch_k: 4,
       llm_first_token_ms: null,
+    });
+  });
+});
+
+describe('recordFreshnessScanTiming', () => {
+  it('records freshness scan cost, counts, scope, and source as flat timing fields', () => {
+    const timing = {};
+
+    recordFreshnessScanTiming(timing, {
+      elapsedMs: 12.6,
+      scope: 'scoped',
+      source: 'manifest',
+      filesScanned: 7,
+      globalFiles: 23,
+      scopedFiles: 7,
+      kbsScanned: 1,
+    });
+
+    expect(compactTimingPayload(timing)).toEqual({
+      staleness_ms: 13,
+      freshness_scan_ms: 13,
+      freshness_scan_scope: 'scoped',
+      freshness_scan_source: 'manifest',
+      freshness_scan_files: 7,
+      freshness_scan_global_files: 23,
+      freshness_scan_scoped_files: 7,
+      freshness_scan_kbs: 1,
     });
   });
 });
