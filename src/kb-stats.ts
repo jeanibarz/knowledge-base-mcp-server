@@ -9,7 +9,7 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import type { FaissIndexManager, IndexUpdateSummary } from './FaissIndexManager.js';
+import { FaissIndexManager, type IndexUpdateSummary } from './FaissIndexManager.js';
 import {
   FAISS_INDEX_PATH,
   INGEST_EXCLUDE_PATHS,
@@ -140,6 +140,15 @@ export async function computeKbStats(
   }
 
   const metricsSource = options.metrics ?? providerCallMetrics;
+  const managerSummary = manager.getLastIndexUpdateSummary();
+  const readPersistedSummary = FaissIndexManager.readPersistedIndexUpdateSummary;
+  const lastIndexUpdate = managerSummary.status === 'never_run'
+    ? (
+        typeof readPersistedSummary === 'function'
+          ? await readPersistedSummary(manager.modelId)
+          : null
+      ) ?? managerSummary
+    : managerSummary;
   return {
     knowledge_bases,
     quarantined,
@@ -149,7 +158,7 @@ export async function computeKbStats(
       dim: indexStats.dim,
     },
     index_path: FAISS_INDEX_PATH,
-    last_index_update: manager.getLastIndexUpdateSummary(),
+    last_index_update: lastIndexUpdate,
     server: {
       version: options.serverVersion,
       uptime_ms: Date.now() - options.startedAt,

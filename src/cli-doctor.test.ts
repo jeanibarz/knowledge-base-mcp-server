@@ -40,6 +40,28 @@ async function seedRegisteredModel(faissDir: string): Promise<string> {
   return modelDir;
 }
 
+function persistedSuccessSummary() {
+  return {
+    status: 'success',
+    scope: 'global',
+    model_id: MODEL_ID,
+    started_at: '2026-05-12T10:00:00.000Z',
+    finished_at: '2026-05-12T10:00:05.000Z',
+    duration_ms: 5000,
+    files_scanned: 4,
+    files_changed: 2,
+    files_unchanged: 2,
+    files_skipped: 0,
+    chunks_attempted: 5,
+    chunks_added: 5,
+    index_mutated: true,
+    saved: true,
+    sidecars_written: true,
+    failure_count: 0,
+    failures: [],
+  };
+}
+
 describe('kb doctor', () => {
   it('reports active model, index version/mtime, backend health, and stale counts by KB', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-'));
@@ -200,6 +222,53 @@ describe('kb doctor', () => {
         detail: '1 quarantined ingest file(s) detected',
       });
       expect(formatDoctorMarkdown(report)).toContain('Ingest quarantine by KB:\n  alpha: 1 quarantined');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the persisted update summary for a fresh-process doctor report', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-persisted-summary-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(path.join(rootDir, 'alpha'), { recursive: true });
+      await fsp.writeFile(path.join(rootDir, 'alpha', 'a.md'), 'alpha');
+      const modelDir = await seedRegisteredModel(faissDir);
+      await fsp.writeFile(
+        path.join(modelDir, 'last-index-update.json'),
+        JSON.stringify({
+          schema_version: 'kb.last-index-update.v1',
+          summary: persistedSuccessSummary(),
+        }),
+      );
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+      });
+
+      expect(report.last_index_update).toMatchObject({
+        status: 'success',
+        scope: 'global',
+        model_id: MODEL_ID,
+        duration_ms: 5000,
+        files_changed: 2,
+        files_unchanged: 2,
+      });
+      expect(formatDoctorMarkdown(report)).toContain(
+        'Last index update: success (global, 5000ms, 2 changed, 2 unchanged, 0 skipped)',
+      );
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }

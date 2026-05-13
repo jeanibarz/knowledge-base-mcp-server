@@ -448,9 +448,10 @@ Stable fields:
   `symlinked_checkout_path`.
 - `git`: either `null` or an object with `branch`, `head`, `origin_main`, and
   `relation`.
-- `last_index_update`: the latest in-process update summary. The object shape is
-  shared with stats/manager observability; agents should branch first on
-  `last_index_update.status`.
+- `last_index_update`: the latest update summary. Fresh processes use the
+  compact persisted summary for the active model when no update has run in the
+  current process. The object shape is shared with stats/manager observability;
+  agents should branch first on `last_index_update.status`.
 
 Stdout/stderr and exit codes:
 

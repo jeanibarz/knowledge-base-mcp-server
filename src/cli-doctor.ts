@@ -398,6 +398,7 @@ export async function buildDoctorReport(
   };
   const git = await readGitState(packageRoot);
   const lastIndexUpdate = options.lastIndexUpdateSummary
+    ?? (await FaissIndexManager.readPersistedIndexUpdateSummary(activeModelId))
     ?? createNeverRunIndexUpdateSummary(activeModelId);
 
   const status = summarizeStatus(checks);

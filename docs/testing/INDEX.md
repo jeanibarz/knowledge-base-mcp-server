@@ -26,6 +26,16 @@
 - `computeKbStats` shall include the manager's latest update summary in the payload.
 - `buildDoctorReport` and `formatDoctorMarkdown` shall include the latest update summary.
 
+### TS-OBS-315: Persisted Last Index Update Summary
+**Requirement:** FR-OBS-315
+
+**Test Cases:**
+- `FaissIndexManager.updateIndex` shall atomically persist the completed summary under the active model directory.
+- `FaissIndexManager.updateIndex` shall persist failed and partial summaries with capped sanitized failure details.
+- `computeKbStats` shall use the persisted summary when the manager summary is `never_run`.
+- `computeKbStats` shall ignore missing or malformed persisted summaries and keep the manager summary.
+- `buildDoctorReport` shall use the persisted summary for the active model when no explicit in-process summary is supplied.
+
 ## Search
 
 ### TS-SUPERSEDED-232: Superseded Memory Review

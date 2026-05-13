@@ -214,6 +214,8 @@ export interface SearchResultDocument extends Document {
 }
 
 const MAX_INDEX_UPDATE_FAILURES = 10;
+const LAST_INDEX_UPDATE_SUMMARY_FILE = 'last-index-update.json';
+const LAST_INDEX_UPDATE_SUMMARY_SCHEMA_VERSION = 'kb.last-index-update.v1';
 
 export function createNeverRunIndexUpdateSummary(modelId: string | null = null): IndexUpdateSummary {
   return {
@@ -234,6 +236,13 @@ export function createNeverRunIndexUpdateSummary(modelId: string | null = null):
     sidecars_written: false,
     failure_count: 0,
     failures: [],
+  };
+}
+
+function cloneIndexUpdateSummary(summary: IndexUpdateSummary): IndexUpdateSummary {
+  return {
+    ...summary,
+    failures: summary.failures.map((failure) => ({ ...failure })),
   };
 }
 
@@ -263,6 +272,95 @@ function sanitizeFailureMessage(
   }
   const replacement = relativePath ?? '<path>';
   return message.split(rawPath).join(replacement);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function numberOrDefault(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function booleanOrDefault(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function parseSummaryStatus(value: unknown): IndexUpdateSummaryStatus | null {
+  if (
+    value === 'success' ||
+    value === 'partial' ||
+    value === 'failed' ||
+    value === 'never_run'
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function parseFailurePhase(value: unknown): IndexUpdateFailureSummary['phase'] {
+  if (
+    value === 'load' ||
+    value === 'indexing' ||
+    value === 'save' ||
+    value === 'sidecar' ||
+    value === 'unknown'
+  ) {
+    return value;
+  }
+  return 'unknown';
+}
+
+function parsePersistedIndexUpdateSummary(value: unknown): IndexUpdateSummary | null {
+  const candidate = isRecord(value) && isRecord(value.summary)
+    ? value.summary
+    : value;
+  if (!isRecord(candidate)) return null;
+
+  const status = parseSummaryStatus(candidate.status);
+  if (status === null) return null;
+
+  const modelId = stringOrNull(candidate.model_id);
+  const base = createNeverRunIndexUpdateSummary(modelId);
+  const failures = Array.isArray(candidate.failures)
+    ? candidate.failures
+        .filter(isRecord)
+        .slice(0, MAX_INDEX_UPDATE_FAILURES)
+        .map((failure): IndexUpdateFailureSummary => ({
+          relative_path: stringOrNull(failure.relative_path),
+          phase: parseFailurePhase(failure.phase),
+          code: stringOrNull(failure.code),
+          message: typeof failure.message === 'string' ? failure.message : '',
+        }))
+    : [];
+
+  return {
+    ...base,
+    status,
+    scope: stringOrNull(candidate.scope),
+    started_at: stringOrNull(candidate.started_at),
+    finished_at: stringOrNull(candidate.finished_at),
+    duration_ms: numberOrNull(candidate.duration_ms),
+    files_scanned: numberOrDefault(candidate.files_scanned, base.files_scanned),
+    files_changed: numberOrDefault(candidate.files_changed, base.files_changed),
+    files_unchanged: numberOrDefault(candidate.files_unchanged, base.files_unchanged),
+    files_skipped: numberOrDefault(candidate.files_skipped, base.files_skipped),
+    chunks_attempted: numberOrDefault(candidate.chunks_attempted, base.chunks_attempted),
+    chunks_added: numberOrDefault(candidate.chunks_added, base.chunks_added),
+    index_mutated: booleanOrDefault(candidate.index_mutated, base.index_mutated),
+    saved: booleanOrDefault(candidate.saved, base.saved),
+    sidecars_written: booleanOrDefault(candidate.sidecars_written, base.sidecars_written),
+    failure_count: numberOrDefault(candidate.failure_count, failures.length),
+    failures,
+  };
 }
 
 export class FaissIndexManager {
@@ -326,10 +424,54 @@ export class FaissIndexManager {
   }
 
   getLastIndexUpdateSummary(): IndexUpdateSummary {
-    return {
-      ...this.lastIndexUpdateSummary,
-      failures: this.lastIndexUpdateSummary.failures.map((failure) => ({ ...failure })),
+    return cloneIndexUpdateSummary(this.lastIndexUpdateSummary);
+  }
+
+  static async readPersistedIndexUpdateSummary(
+    modelId: string | null,
+  ): Promise<IndexUpdateSummary | null> {
+    if (modelId === null) return null;
+    const summaryPath = path.join(modelDir(modelId), LAST_INDEX_UPDATE_SUMMARY_FILE);
+    let raw: string;
+    try {
+      raw = await fsp.readFile(summaryPath, 'utf-8');
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+      logger.warn(
+        `Could not read persisted index update summary for ${modelId}: ${toError(err).message}`,
+      );
+      return null;
+    }
+
+    try {
+      return parsePersistedIndexUpdateSummary(JSON.parse(raw));
+    } catch (err) {
+      logger.warn(
+        `Ignoring malformed persisted index update summary for ${modelId}: ${toError(err).message}`,
+      );
+      return null;
+    }
+  }
+
+  private async persistIndexUpdateSummary(summary: IndexUpdateSummary): Promise<void> {
+    await fsp.mkdir(this.modelDir, { recursive: true });
+    const summaryPath = path.join(this.modelDir, LAST_INDEX_UPDATE_SUMMARY_FILE);
+    const tmpPath = path.join(
+      this.modelDir,
+      `.${LAST_INDEX_UPDATE_SUMMARY_FILE}.${process.pid}.${process.hrtime.bigint()}.tmp`,
+    );
+    const payload = {
+      schema_version: LAST_INDEX_UPDATE_SUMMARY_SCHEMA_VERSION,
+      summary: cloneIndexUpdateSummary(summary),
     };
+    try {
+      await fsp.writeFile(tmpPath, JSON.stringify(payload), { encoding: 'utf-8', mode: 0o600 });
+      await fsp.rename(tmpPath, summaryPath);
+    } catch (err) {
+      await fsp.rm(tmpPath, { force: true }).catch(() => undefined);
+      throw err;
+    }
   }
 
   /** RFC 013 §4.8 — process-global, idempotent layout bootstrap. */
@@ -1171,10 +1313,14 @@ export class FaissIndexManager {
       const finishedAtMs = Date.now();
       runSummary.finished_at = new Date(finishedAtMs).toISOString();
       runSummary.duration_ms = finishedAtMs - startedAtMs;
-      this.lastIndexUpdateSummary = {
-        ...runSummary,
-        failures: runSummary.failures.map((failure) => ({ ...failure })),
-      };
+      this.lastIndexUpdateSummary = cloneIndexUpdateSummary(runSummary);
+      try {
+        await this.persistIndexUpdateSummary(this.lastIndexUpdateSummary);
+      } catch (persistError: unknown) {
+        logger.warn(
+          `Could not persist index update summary for ${this.modelId}: ${toError(persistError).message}`,
+        );
+      }
     }
   }
 

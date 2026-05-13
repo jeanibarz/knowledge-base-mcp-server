@@ -19,6 +19,9 @@ function versionedIndexPathIn(faissPath: string, version = 'v0'): string {
 function modelNameFileIn(faissPath: string): string {
   return path.join(modelDirIn(faissPath), 'model_name.txt');
 }
+function lastIndexUpdatePathIn(faissPath: string): string {
+  return path.join(modelDirIn(faissPath), 'last-index-update.json');
+}
 
 const saveMock = jest.fn();
 const addDocumentsMock = jest.fn();
@@ -394,6 +397,21 @@ describe('FaissIndexManager permission handling', () => {
         }),
       ],
     });
+    const persistedSummary = JSON.parse(
+      await fsp.readFile(lastIndexUpdatePathIn(process.env.FAISS_INDEX_PATH!), 'utf-8'),
+    );
+    expect(persistedSummary).toMatchObject({
+      schema_version: 'kb.last-index-update.v1',
+      summary: {
+        status: 'failed',
+        scope: 'global',
+        model_id: DEFAULT_MODEL_ID,
+        files_scanned: 1,
+        files_changed: 1,
+        saved: false,
+        failure_count: 1,
+      },
+    });
     // RFC 014 — first save under v014 writes to index.v0/ via atomicSave.
     expect(saveMock).toHaveBeenCalledWith(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!));
 
@@ -641,6 +659,22 @@ describe('FaissIndexManager permission handling', () => {
     expect(changedSummary.started_at).toEqual(expect.any(String));
     expect(changedSummary.finished_at).toEqual(expect.any(String));
     expect(changedSummary.duration_ms).toEqual(expect.any(Number));
+    const persistedChangedSummary = JSON.parse(
+      await fsp.readFile(lastIndexUpdatePathIn(process.env.FAISS_INDEX_PATH!), 'utf-8'),
+    );
+    expect(persistedChangedSummary).toMatchObject({
+      schema_version: 'kb.last-index-update.v1',
+      summary: {
+        status: 'success',
+        scope: 'default',
+        model_id: DEFAULT_MODEL_ID,
+        files_scanned: 1,
+        files_changed: 1,
+        chunks_added: 1,
+        saved: true,
+        sidecars_written: true,
+      },
+    });
 
     saveMock.mockClear();
     fromTextsMock.mockClear();
@@ -662,6 +696,16 @@ describe('FaissIndexManager permission handling', () => {
       saved: false,
       sidecars_written: false,
       failure_count: 0,
+    });
+    const persistedUnchangedSummary = JSON.parse(
+      await fsp.readFile(lastIndexUpdatePathIn(process.env.FAISS_INDEX_PATH!), 'utf-8'),
+    );
+    expect(persistedUnchangedSummary.summary).toMatchObject({
+      status: 'success',
+      scope: 'default',
+      files_changed: 0,
+      files_unchanged: 1,
+      saved: false,
     });
   });
 
@@ -691,6 +735,21 @@ describe('FaissIndexManager permission handling', () => {
       status: 'partial',
       files_scanned: 1,
       files_changed: 1,
+      files_skipped: 1,
+      failure_count: 1,
+      failures: [expect.objectContaining({
+        relative_path: 'bad.md',
+        phase: 'load',
+        code: 'KB_LARGE_FILE_TOO_LARGE',
+      })],
+    });
+    const persistedPartialSummary = JSON.parse(
+      await fsp.readFile(lastIndexUpdatePathIn(process.env.FAISS_INDEX_PATH!), 'utf-8'),
+    );
+    expect(persistedPartialSummary.summary).toMatchObject({
+      status: 'partial',
+      scope: 'default',
+      files_scanned: 1,
       files_skipped: 1,
       failure_count: 1,
       failures: [expect.objectContaining({
