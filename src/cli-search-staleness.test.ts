@@ -6,6 +6,7 @@ import {
   REFRESH_PREFLIGHT_BYTE_THRESHOLD,
   REFRESH_PREFLIGHT_FILE_THRESHOLD,
   buildAgeBudgetFooter,
+  buildEmptyResultGuidance,
   buildRefreshPreflightEstimate,
   formatRefreshPreflightEstimate,
   maybeWriteRefreshPreflight,
@@ -332,6 +333,198 @@ describe('refresh preflight estimate (issue #318)', () => {
 
     expect(stderr.join('')).toContain('kb search refresh preflight');
     expect(JSON.parse(stdout.join(''))).toEqual({ results: [] });
+  });
+});
+
+describe('buildEmptyResultGuidance (issue #335)', () => {
+  const MTIME = '2026-05-13T15:30:00.000Z';
+
+  it('returns null markdown and null JSON when freshness was skipped (--no-freshness)', () => {
+    const result = buildEmptyResultGuidance({
+      query: 'rollback procedure',
+      scopedKb: undefined,
+      refreshed: false,
+      staleness: null,
+    });
+    expect(result.markdown).toBeNull();
+    expect(result.json).toBeNull();
+  });
+
+  it('returns null markdown when global scope is fresh (no inline guidance to add)', () => {
+    const result = buildEmptyResultGuidance({
+      query: 'rollback procedure',
+      scopedKb: undefined,
+      refreshed: false,
+      staleness: {
+        indexMtime: MTIME,
+        scoped: { modifiedFiles: 0, newFiles: 0 },
+        global: null,
+      },
+    });
+    expect(result.markdown).toBeNull();
+    expect(result.json).toMatchObject({
+      refresh_command: 'kb search "rollback procedure" --refresh',
+      scope: 'global',
+      index_mtime: MTIME,
+      index_built: true,
+      refreshed: false,
+      scoped_stale: false,
+      global_stale: false,
+    });
+    expect(result.json).not.toHaveProperty('scope_kb');
+  });
+
+  it('emits an inline tip when the unscoped global index is stale', () => {
+    const result = buildEmptyResultGuidance({
+      query: 'rollback procedure',
+      scopedKb: undefined,
+      refreshed: false,
+      staleness: {
+        indexMtime: MTIME,
+        scoped: { modifiedFiles: 3, newFiles: 1 },
+        global: null,
+      },
+    });
+    expect(result.markdown).toBe(
+      `> **Tip:** No results found, and the index is stale ` +
+        `(3 modified, 1 new file(s) since ${MTIME}). ` +
+        'Try `kb search "rollback procedure" --refresh` to update the index and re-run.',
+    );
+    expect(result.json).toMatchObject({
+      refresh_command: 'kb search "rollback procedure" --refresh',
+      scope: 'global',
+      scoped_stale: true,
+      scoped_modified_files: 3,
+      scoped_new_files: 1,
+      global_stale: true,
+      global_modified_files: 3,
+      global_new_files: 1,
+    });
+  });
+
+  it('emits a scoped tip with the --kb=<name> refresh command when the scoped KB is stale', () => {
+    const result = buildEmptyResultGuidance({
+      query: 'auth flow',
+      scopedKb: 'work',
+      refreshed: false,
+      staleness: {
+        indexMtime: MTIME,
+        scoped: { modifiedFiles: 2, newFiles: 5 },
+        global: { modifiedFiles: 4, newFiles: 7 },
+      },
+    });
+    expect(result.markdown).toBe(
+      `> **Tip:** No results found, and the "work" KB scope is stale ` +
+        `(2 modified, 5 new file(s) since ${MTIME}). ` +
+        'Try `kb search "auth flow" --kb=work --refresh` to update the index and re-run.',
+    );
+    expect(result.json).toMatchObject({
+      refresh_command: 'kb search "auth flow" --kb=work --refresh',
+      scope: 'scoped',
+      scope_kb: 'work',
+      scoped_stale: true,
+      scoped_modified_files: 2,
+      scoped_new_files: 5,
+      global_stale: true,
+      global_modified_files: 4,
+      global_new_files: 7,
+    });
+  });
+
+  it('points to the global index when the scoped KB is fresh but global drift exists', () => {
+    const result = buildEmptyResultGuidance({
+      query: 'auth flow',
+      scopedKb: 'work',
+      refreshed: false,
+      staleness: {
+        indexMtime: MTIME,
+        scoped: { modifiedFiles: 0, newFiles: 0 },
+        global: { modifiedFiles: 4, newFiles: 7 },
+      },
+    });
+    expect(result.markdown).not.toBeNull();
+    expect(result.markdown).toContain('"work" KB scope is up-to-date');
+    expect(result.markdown).toContain('drop `--kb=work`');
+    expect(result.markdown).toContain('`kb search "auth flow" --refresh`');
+    expect(result.json).toMatchObject({
+      scope: 'scoped',
+      scope_kb: 'work',
+      scoped_stale: false,
+      global_stale: true,
+    });
+  });
+
+  it('returns null markdown when the scoped KB is fresh and global is fresh', () => {
+    const result = buildEmptyResultGuidance({
+      query: 'auth flow',
+      scopedKb: 'work',
+      refreshed: false,
+      staleness: {
+        indexMtime: MTIME,
+        scoped: { modifiedFiles: 0, newFiles: 0 },
+        global: { modifiedFiles: 0, newFiles: 0 },
+      },
+    });
+    expect(result.markdown).toBeNull();
+    expect(result.json).toMatchObject({
+      scope: 'scoped',
+      scope_kb: 'work',
+      scoped_stale: false,
+      global_stale: false,
+    });
+  });
+
+  it('returns null markdown when the run already refreshed the index', () => {
+    const result = buildEmptyResultGuidance({
+      query: 'auth flow',
+      scopedKb: 'work',
+      refreshed: true,
+      staleness: {
+        indexMtime: MTIME,
+        scoped: { modifiedFiles: 0, newFiles: 0 },
+        global: { modifiedFiles: 0, newFiles: 0 },
+      },
+    });
+    expect(result.markdown).toBeNull();
+    expect(result.json).toMatchObject({ refreshed: true });
+  });
+
+  it('suggests creating the index when it has never been built', () => {
+    const result = buildEmptyResultGuidance({
+      query: 'rollback procedure',
+      scopedKb: undefined,
+      refreshed: false,
+      staleness: {
+        indexMtime: null,
+        scoped: { modifiedFiles: 0, newFiles: 0 },
+        global: null,
+      },
+    });
+    expect(result.markdown).toBe(
+      '> **Tip:** No results found, and the index has not been built yet. ' +
+        'Run `kb search "rollback procedure" --refresh` to create it, then re-run the query.',
+    );
+    expect(result.json).toMatchObject({
+      index_built: false,
+      index_mtime: null,
+    });
+  });
+
+  it('escapes embedded quotes in the refresh command so the suggestion stays copy-pasteable', () => {
+    const result = buildEmptyResultGuidance({
+      query: 'error "oops" $HOME',
+      scopedKb: undefined,
+      refreshed: false,
+      staleness: {
+        indexMtime: MTIME,
+        scoped: { modifiedFiles: 1, newFiles: 0 },
+        global: null,
+      },
+    });
+    expect(result.json?.refresh_command).toBe(
+      'kb search "error \\"oops\\" \\$HOME" --refresh',
+    );
+    expect(result.markdown).toContain('kb search "error \\"oops\\" \\$HOME" --refresh');
   });
 });
 

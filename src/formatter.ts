@@ -102,6 +102,26 @@ export function sanitizeMetadataForWire(
   };
 }
 
+const SEMANTIC_SEARCH_HEADER = '## Semantic Search Results';
+const SEMANTIC_SEARCH_DISCLAIMER =
+  '\n\n> **Disclaimer:** The provided results might not all be relevant. Please cross-check the relevance of the information.';
+const NO_RESULTS_LINE = '_No similar results found._';
+
+/**
+ * Renders the empty-result body for `kb search` / `retrieve_knowledge`. With no
+ * argument it matches the legacy `_No similar results found._` block; with an
+ * `inlineGuidance` markdown fragment it injects that block between the
+ * "no results" line and the disclaimer (issue #335).
+ *
+ * Issue #335 — CLI-only callers pass a staleness-derived inline tip so the
+ * refresh command lands at the empty result, not just in the trailing footer.
+ * MCP callers stay on the no-argument path and keep byte-equal output.
+ */
+export function formatRetrievalEmptyAsMarkdown(inlineGuidance?: string): string {
+  const guidance = inlineGuidance ? `\n\n${inlineGuidance}` : '';
+  return `${SEMANTIC_SEARCH_HEADER}\n\n${NO_RESULTS_LINE}${guidance}${SEMANTIC_SEARCH_DISCLAIMER}`;
+}
+
 /**
  * Produces the markdown body of a `retrieve_knowledge` / `kb search` response.
  * Byte-equal to the previous inline KnowledgeBaseServer formatting. Adding a
@@ -113,35 +133,32 @@ export function formatRetrievalAsMarkdown(
   extrasVisible: boolean,
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
 ): string {
-  let formattedResults = '';
-  if (results && results.length > 0) {
-    const guardOptions = resolveInjectionGuardOptions();
-    formattedResults = results
-      .map((doc, idx) => {
-        const hasContextAnnotation = hasNeighborContextAnnotation(doc);
-        const resultHeader = hasContextAnnotation
-          ? `**Result ${idx + 1} (semantic match):**`
-          : `**Result ${idx + 1}:**`;
-        const sanitizedMetadata = sanitizeMetadataForWire(
-          doc.metadata as Record<string, unknown>,
-          extrasVisible,
-        );
-        const guarded = guardRetrievalChunk(doc.pageContent, sanitizedMetadata, guardOptions);
-        const content = guarded.content.trim();
-        const citation = buildChunkCitation(guarded.metadata, editorUriMode);
-        const metadata = JSON.stringify(guarded.metadata, null, 2);
-        const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
-        const signals = getShieldSignals(doc.pageContent, sanitizedMetadata, guardOptions);
-        const shieldFooter = formatInjectionMarkdown(signals);
-        const contextText = formatContextChunksAsMarkdown(doc, extrasVisible, editorUriMode);
-        return `${resultHeader}\n\n${scoreText}${content}\n\n${shieldFooter}${formatSourceBlock(metadata, citation)}${contextText}`;
-      })
-      .join('\n\n---\n\n');
-  } else {
-    formattedResults = '_No similar results found._';
+  if (!results || results.length === 0) {
+    return formatRetrievalEmptyAsMarkdown();
   }
-  const disclaimer = '\n\n> **Disclaimer:** The provided results might not all be relevant. Please cross-check the relevance of the information.';
-  return `## Semantic Search Results\n\n${formattedResults}${disclaimer}`;
+  const guardOptions = resolveInjectionGuardOptions();
+  const formattedResults = results
+    .map((doc, idx) => {
+      const hasContextAnnotation = hasNeighborContextAnnotation(doc);
+      const resultHeader = hasContextAnnotation
+        ? `**Result ${idx + 1} (semantic match):**`
+        : `**Result ${idx + 1}:**`;
+      const sanitizedMetadata = sanitizeMetadataForWire(
+        doc.metadata as Record<string, unknown>,
+        extrasVisible,
+      );
+      const guarded = guardRetrievalChunk(doc.pageContent, sanitizedMetadata, guardOptions);
+      const content = guarded.content.trim();
+      const citation = buildChunkCitation(guarded.metadata, editorUriMode);
+      const metadata = JSON.stringify(guarded.metadata, null, 2);
+      const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
+      const signals = getShieldSignals(doc.pageContent, sanitizedMetadata, guardOptions);
+      const shieldFooter = formatInjectionMarkdown(signals);
+      const contextText = formatContextChunksAsMarkdown(doc, extrasVisible, editorUriMode);
+      return `${resultHeader}\n\n${scoreText}${content}\n\n${shieldFooter}${formatSourceBlock(metadata, citation)}${contextText}`;
+    })
+    .join('\n\n---\n\n');
+  return `${SEMANTIC_SEARCH_HEADER}\n\n${formattedResults}${SEMANTIC_SEARCH_DISCLAIMER}`;
 }
 
 export function formatRetrievalGroupedBySourceAsMarkdown(
@@ -150,34 +167,31 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
 ): string {
   const grouped = groupRetrievalBySource(results, extrasVisible, editorUriMode);
-  let formattedResults = '';
-  if (grouped.length > 0) {
-    formattedResults = grouped
-      .map((group, idx) => {
-        const chunks = group.chunks
-          .map((chunk, chunkIdx) => {
-            const scoreText = formatScore(chunk.score);
-            const locationText = formatLocation(chunk.location);
-            const openText = chunk.editor_uri ? `\n   **Open:** ${chunk.editor_uri}` : '';
-            const shieldText = formatInjectionGrouped(chunk.injection_signals);
-            const typeText = chunk.match_type ? `\n   **Type:** ${chunk.match_type}` : '';
-            const contextText = formatJsonContextChunksForGroupedMarkdown(chunk.context_chunks);
-            return `${chunkIdx + 1}. **Score:** ${scoreText}${typeText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(chunk.content.trim())}${shieldText}${contextText}`;
-          })
-          .join('\n\n');
-        return (
-          `**Source ${idx + 1}:** \`${group.source}\`\n\n` +
-          `**Best score:** ${formatScore(group.best_score)}\n\n` +
-          `**Chunk count:** ${group.chunk_count}\n\n` +
-          `**Matching chunks:**\n\n${chunks}`
-        );
-      })
-      .join('\n\n---\n\n');
-  } else {
-    formattedResults = '_No similar results found._';
+  if (grouped.length === 0) {
+    return formatRetrievalEmptyAsMarkdown();
   }
-  const disclaimer = '\n\n> **Disclaimer:** The provided results might not all be relevant. Please cross-check the relevance of the information.';
-  return `## Semantic Search Results\n\n${formattedResults}${disclaimer}`;
+  const formattedResults = grouped
+    .map((group, idx) => {
+      const chunks = group.chunks
+        .map((chunk, chunkIdx) => {
+          const scoreText = formatScore(chunk.score);
+          const locationText = formatLocation(chunk.location);
+          const openText = chunk.editor_uri ? `\n   **Open:** ${chunk.editor_uri}` : '';
+          const shieldText = formatInjectionGrouped(chunk.injection_signals);
+          const typeText = chunk.match_type ? `\n   **Type:** ${chunk.match_type}` : '';
+          const contextText = formatJsonContextChunksForGroupedMarkdown(chunk.context_chunks);
+          return `${chunkIdx + 1}. **Score:** ${scoreText}${typeText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(chunk.content.trim())}${shieldText}${contextText}`;
+        })
+        .join('\n\n');
+      return (
+        `**Source ${idx + 1}:** \`${group.source}\`\n\n` +
+        `**Best score:** ${formatScore(group.best_score)}\n\n` +
+        `**Chunk count:** ${group.chunk_count}\n\n` +
+        `**Matching chunks:**\n\n${chunks}`
+      );
+    })
+    .join('\n\n---\n\n');
+  return `${SEMANTIC_SEARCH_HEADER}\n\n${formattedResults}${SEMANTIC_SEARCH_DISCLAIMER}`;
 }
 
 /**

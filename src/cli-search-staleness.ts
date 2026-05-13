@@ -289,6 +289,194 @@ function formatBytes(bytes: number): string {
   return `${rounded.replace(/\.0$/, '')} ${unit}`;
 }
 
+// -- Empty-result inline guidance (issue #335) -------------------------------
+//
+// When `kb search` returns zero results, the legacy CLI markdown body was just
+// `_No similar results found._` and any stale-scope hint lived only in the
+// trailing freshness footer. Operators reading top-down missed the footer and
+// re-ran the query without refreshing. This helper renders an inline tip block
+// (and a parallel JSON shape) that lands directly under the empty body when
+// the scoped or global index is stale.
+//
+// Markdown form is a single blockquote line so it composes with the existing
+// "Disclaimer" blockquote without nested-fence rendering quirks.
+//
+// JSON form is additive: callers splice it into the dense search JSON payload
+// under `empty_result_guidance` without touching the existing freshness fields.
+
+export interface EmptyResultStalenessSnapshot {
+  /** ISO-8601 mtime of the FAISS index, or null when the index has never been built. */
+  indexMtime: string | null;
+  /** Counts for the active scope — either the selected KB or the global index. */
+  scoped: {
+    modifiedFiles: number;
+    newFiles: number;
+  };
+  /** Global counts when a KB scope is active; null for unscoped runs (scoped already === global). */
+  global: {
+    modifiedFiles: number;
+    newFiles: number;
+  } | null;
+}
+
+export interface BuildEmptyResultGuidanceInput {
+  /** User-typed search query; embedded into the suggested refresh command. */
+  query: string;
+  /** KB scope selected via `--kb=<name>`; `undefined` for global searches. */
+  scopedKb: string | undefined;
+  /** True when this CLI invocation already passed `--refresh`. */
+  refreshed: boolean;
+  /** Compact staleness snapshot. `null` when freshness was skipped (`--no-freshness`). */
+  staleness: EmptyResultStalenessSnapshot | null;
+}
+
+export interface EmptyResultGuidanceJson {
+  refresh_command: string;
+  scope: 'global' | 'scoped';
+  scope_kb?: string;
+  index_mtime: string | null;
+  index_built: boolean;
+  refreshed: boolean;
+  scoped_stale: boolean;
+  scoped_modified_files: number;
+  scoped_new_files: number;
+  global_stale: boolean;
+  global_modified_files: number;
+  global_new_files: number;
+}
+
+export interface EmptyResultGuidance {
+  /** Markdown blockquote tip to inline under `_No similar results found._`, or null when nothing actionable to surface. */
+  markdown: string | null;
+  /** Additive JSON fragment for the dense search payload, or null when freshness was skipped. */
+  json: EmptyResultGuidanceJson | null;
+}
+
+/**
+ * Compute the inline empty-result guidance block (markdown + JSON) for a
+ * `kb search` run that returned zero matches.
+ *
+ * Returns `markdown: null` when there is nothing actionable to say — i.e.
+ * the run was already refreshed, or both scope and global are fresh. In those
+ * cases the CLI falls back to the plain "no similar results found" body and
+ * the existing freshness footer (which itself becomes "_Index up-to-date_"
+ * or "_Index refreshed_"); no behaviour change for fresh runs.
+ *
+ * Returns `json: null` only when freshness was skipped entirely (`--no-freshness`).
+ */
+export function buildEmptyResultGuidance(
+  input: BuildEmptyResultGuidanceInput,
+): EmptyResultGuidance {
+  if (input.staleness === null) {
+    return { markdown: null, json: null };
+  }
+  const refreshCommand = buildRefreshCommand(input.query, input.scopedKb);
+  const indexBuilt = input.staleness.indexMtime !== null;
+  const scopedCounts = input.staleness.scoped;
+  const globalCounts = input.staleness.global ?? input.staleness.scoped;
+  const scopedStale = scopedCounts.modifiedFiles + scopedCounts.newFiles > 0;
+  const globalStale = globalCounts.modifiedFiles + globalCounts.newFiles > 0;
+  const scope: 'global' | 'scoped' = input.scopedKb ? 'scoped' : 'global';
+  const json: EmptyResultGuidanceJson = {
+    refresh_command: refreshCommand,
+    scope,
+    ...(input.scopedKb ? { scope_kb: input.scopedKb } : {}),
+    index_mtime: input.staleness.indexMtime,
+    index_built: indexBuilt,
+    refreshed: input.refreshed,
+    scoped_stale: scopedStale,
+    scoped_modified_files: scopedCounts.modifiedFiles,
+    scoped_new_files: scopedCounts.newFiles,
+    global_stale: globalStale,
+    global_modified_files: globalCounts.modifiedFiles,
+    global_new_files: globalCounts.newFiles,
+  };
+  const markdown = renderEmptyGuidanceMarkdown({
+    indexBuilt,
+    refreshed: input.refreshed,
+    scopedKb: input.scopedKb,
+    query: input.query,
+    scopedCounts,
+    globalCounts,
+    scopedStale,
+    globalStale,
+    refreshCommand,
+    indexMtime: input.staleness.indexMtime,
+  });
+  return { markdown, json };
+}
+
+function renderEmptyGuidanceMarkdown(input: {
+  indexBuilt: boolean;
+  refreshed: boolean;
+  scopedKb: string | undefined;
+  query: string;
+  scopedCounts: { modifiedFiles: number; newFiles: number };
+  globalCounts: { modifiedFiles: number; newFiles: number };
+  scopedStale: boolean;
+  globalStale: boolean;
+  refreshCommand: string;
+  indexMtime: string | null;
+}): string | null {
+  if (!input.indexBuilt) {
+    return (
+      `> **Tip:** No results found, and the index has not been built yet. ` +
+      `Run \`${input.refreshCommand}\` to create it, then re-run the query.`
+    );
+  }
+  if (input.refreshed) {
+    // The user already paid the refresh cost on this invocation; emitting
+    // another "run --refresh" tip would just be noise.
+    return null;
+  }
+  if (input.scopedKb) {
+    if (input.scopedStale) {
+      const stamp = input.indexMtime ?? 'index mtime unknown';
+      return (
+        `> **Tip:** No results found, and the "${input.scopedKb}" KB scope is stale ` +
+        `(${input.scopedCounts.modifiedFiles} modified, ${input.scopedCounts.newFiles} new file(s) since ${stamp}). ` +
+        `Try \`${input.refreshCommand}\` to update the index and re-run.`
+      );
+    }
+    if (input.globalStale) {
+      const globalRefresh = buildRefreshCommand(input.query, undefined);
+      return (
+        `> **Tip:** No results found. The "${input.scopedKb}" KB scope is up-to-date, but the global ` +
+        `index has drift outside this scope (${input.globalCounts.modifiedFiles} modified, ` +
+        `${input.globalCounts.newFiles} new file(s)). If the answer might live in another KB, drop ` +
+        `\`--kb=${input.scopedKb}\` and run \`${globalRefresh}\` to refresh and search the full index.`
+      );
+    }
+    return null;
+  }
+  if (input.scopedStale) {
+    const stamp = input.indexMtime ?? 'index mtime unknown';
+    return (
+      `> **Tip:** No results found, and the index is stale ` +
+      `(${input.scopedCounts.modifiedFiles} modified, ${input.scopedCounts.newFiles} new file(s) since ${stamp}). ` +
+      `Try \`${input.refreshCommand}\` to update the index and re-run.`
+    );
+  }
+  return null;
+}
+
+function buildRefreshCommand(query: string, scopedKb: string | undefined): string {
+  const kbFlag = scopedKb ? ` --kb=${scopedKb}` : '';
+  if (query === '') {
+    return `kb search${kbFlag} --refresh`;
+  }
+  return `kb search ${shellQuoteQuery(query)}${kbFlag} --refresh`;
+}
+
+function shellQuoteQuery(query: string): string {
+  // The suggested refresh command lands in markdown blockquotes / JSON
+  // payloads, so we need a deterministic, copy-pasteable representation that
+  // round-trips through `sh -c`. Double-quote and escape internal `"` / `\` /
+  // `$` / backticks — the same set bash would interpret inside double quotes.
+  const escaped = query.replace(/(["\\$`])/g, '\\$1');
+  return `"${escaped}"`;
+}
+
 /**
  * Compute the age-budget footer line for a scoped `kb search` run.
  *

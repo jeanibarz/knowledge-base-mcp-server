@@ -27,6 +27,7 @@ import {
   formatRetrievalAsJson,
   formatRetrievalAsMarkdown,
   formatRetrievalAsVimgrep,
+  formatRetrievalEmptyAsMarkdown,
   formatRetrievalGroupedBySourceAsMarkdown,
   groupRetrievalBySource,
   type ScoredDocument,
@@ -58,8 +59,10 @@ import {
   type HybridChunk,
 } from './hybrid-retrieval.js';
 import {
+  buildEmptyResultGuidance,
   buildRefreshPreflightEstimate,
   maybeWriteRefreshPreflight,
+  type EmptyResultGuidance,
 } from './cli-search-staleness.js';
 
 export const SEARCH_HELP = `kb search — semantic search across knowledge bases
@@ -357,6 +360,7 @@ export async function runSearch(
       groupBySource: parsed.groupBySource,
       refreshed: parsed.refresh,
       scopedKb: parsed.kb,
+      query: parsed.query ?? undefined,
       staleness,
       autoThresholdDecision,
       timing,
@@ -371,6 +375,8 @@ export async function runSearch(
       groupBySource: parsed.groupBySource,
       staleness,
       refreshed: parsed.refresh,
+      scopedKb: parsed.kb,
+      query: parsed.query ?? undefined,
       autoModeDecision,
       autoThresholdDecision,
       timing,
@@ -830,6 +836,8 @@ export interface DenseSearchJsonPayloadInput {
   groupBySource: boolean;
   refreshed: boolean;
   scopedKb: string | undefined;
+  /** Original user query; embedded in the issue #335 empty-result refresh-command suggestion. */
+  query?: string;
   staleness: Staleness | null;
   autoThresholdDecision: AutoThresholdDecision | null;
   timing: TimingPayload | null;
@@ -852,6 +860,10 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
     );
   }
   Object.assign(payload, buildFreshnessJsonFields(input));
+  const emptyGuidance = computeEmptyResultGuidance(input);
+  if (emptyGuidance?.json) {
+    payload.empty_result_guidance = emptyGuidance.json;
+  }
   if (input.autoThresholdDecision !== null) {
     payload.auto_threshold = {
       threshold: input.autoThresholdDecision.threshold,
@@ -863,6 +875,35 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
     payload.timing = compactTimingPayload(input.timing);
   }
   return payload;
+}
+
+function computeEmptyResultGuidance(input: {
+  results: ScoredDocument[];
+  refreshed: boolean;
+  scopedKb: string | undefined;
+  query?: string;
+  staleness: Staleness | null;
+}): EmptyResultGuidance | null {
+  if (input.results.length > 0) return null;
+  if (input.staleness === null) return null;
+  return buildEmptyResultGuidance({
+    query: input.query ?? '',
+    scopedKb: input.scopedKb,
+    refreshed: input.refreshed,
+    staleness: {
+      indexMtime: input.staleness.indexMtime,
+      scoped: {
+        modifiedFiles: input.staleness.scope?.modifiedFiles ?? input.staleness.modifiedFiles,
+        newFiles: input.staleness.scope?.newFiles ?? input.staleness.newFiles,
+      },
+      global: input.staleness.scope
+        ? {
+            modifiedFiles: input.staleness.global?.modifiedFiles ?? 0,
+            newFiles: input.staleness.global?.newFiles ?? 0,
+          }
+        : null,
+    },
+  });
 }
 
 function buildFreshnessJsonFields(input: DenseSearchJsonPayloadInput): Record<string, unknown> {
@@ -912,6 +953,9 @@ export interface DenseSearchMarkdownOutputInput {
   groupBySource: boolean;
   staleness: Staleness | null;
   refreshed: boolean;
+  scopedKb?: string;
+  /** Original user query; embedded in the issue #335 empty-result refresh-command suggestion. */
+  query?: string;
   autoModeDecision: AutoSearchModeDecision | null;
   autoThresholdDecision: AutoThresholdDecision | null;
   timing: TimingPayload | null;
@@ -925,11 +969,27 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
   if (input.autoThresholdDecision !== null) {
     output += `${formatAutoThresholdHeader(input.autoThresholdDecision)}\n\n`;
   }
-  const md = input.groupBySource
-    ? formatRetrievalGroupedBySourceAsMarkdown(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)
-    : formatRetrievalAsMarkdown(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
+  const emptyGuidance = computeEmptyResultGuidance({
+    results: input.results,
+    refreshed: input.refreshed,
+    scopedKb: input.scopedKb,
+    query: input.query,
+    staleness: input.staleness,
+  });
+  const inlineEmptyGuidance = emptyGuidance?.markdown ?? null;
+  let md: string;
+  if (input.results.length === 0 && inlineEmptyGuidance !== null) {
+    md = formatRetrievalEmptyAsMarkdown(inlineEmptyGuidance);
+  } else if (input.groupBySource) {
+    md = formatRetrievalGroupedBySourceAsMarkdown(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
+  } else {
+    md = formatRetrievalAsMarkdown(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
+  }
   output += `${md}\n\n`;
-  if (input.staleness !== null) {
+  if (input.staleness !== null && inlineEmptyGuidance === null) {
+    // Suppress the trailing footer when the inline empty-result block already
+    // includes the refresh command + stale counts — operators shouldn't see
+    // the same suggestion twice (issue #335).
     output += `${formatFreshnessFooter(input.staleness, input.refreshed)}\n`;
   }
   if (input.timing) {
