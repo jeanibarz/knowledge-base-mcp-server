@@ -15,6 +15,8 @@ import {
   retrievalEvalExitCode,
   summarizeRetrievalEval,
   type RetrievalEvalAggregateRankedMetrics,
+  type RetrievalEvalAggregateDiversityMetrics,
+  type RetrievalEvalDiversityMetrics,
   type RetrievalEvalFixture,
   type RetrievalEvalRankedMetrics,
 } from './retrieval-eval.js';
@@ -40,7 +42,8 @@ Usage:
 Reads cases from a YAML or JSON fixture and runs each query against the
 active model's index. Each case can set \`query\`, optional \`kb\`,
 \`required_sources\`, \`forbidden_sources\`, \`expected_metadata\`,
-\`relevant_sources\`/\`judgments\`, \`max_duplicate_groups\`, \`stale_policy\`, and \`gate\`.
+\`relevant_sources\`/\`judgments\`, optional judgement \`groups\`/\`intents\`,
+\`max_duplicate_groups\`, \`stale_policy\`, and \`gate\`.
 
 Failing ungated cases print warnings and exit 0; failing GATED cases
 exit 1, suitable for CI gates.
@@ -73,6 +76,7 @@ Fixture example (YAML):
       relevant_sources:
         - source: runbooks/deploy.md
           relevance: 3
+          intent: procedure
       max_duplicate_groups: 1
       stale_policy: fresh
 `;
@@ -220,6 +224,7 @@ export function toJsonReport(report: ReturnType<typeof summarizeRetrievalEval>):
     passed: report.passed,
     failed: report.failed,
     gate_failed: report.gateFailed,
+    diversity_metrics: toJsonAggregateDiversityMetrics(report.diversityMetrics),
     ...(report.rankedMetrics !== undefined ? {
       ranked_metrics: toJsonAggregateRankedMetrics(report.rankedMetrics),
     } : {}),
@@ -236,10 +241,32 @@ export function toJsonReport(report: ReturnType<typeof summarizeRetrievalEval>):
       warnings: result.warnings,
       result_count: result.resultCount,
       duplicate_groups: result.duplicateGroups,
+      diversity_metrics: toJsonDiversityMetrics(result.diversityMetrics),
       ...(result.rankedMetrics !== undefined ? {
         ranked_metrics: toJsonRankedMetrics(result.rankedMetrics),
       } : {}),
     })),
+  };
+}
+
+function toJsonDiversityMetrics(metrics: RetrievalEvalDiversityMetrics): unknown {
+  return {
+    source: {
+      k: metrics.source.k,
+      result_count: metrics.source.resultCount,
+      unique_source_count_at_k: metrics.source.uniqueSourceCountAtK,
+      duplicate_source_groups_at_k: metrics.source.duplicateSourceGroupsAtK,
+      max_source_share_at_k: metrics.source.maxSourceShareAtK,
+    },
+    ...(metrics.intent !== undefined ? {
+      intent: {
+        k: metrics.intent.k,
+        group_count: metrics.intent.groupCount,
+        retrieved_group_count_at_k: metrics.intent.retrievedGroupCountAtK,
+        intent_recall_at_k: metrics.intent.intentRecallAtK,
+        alpha_ndcg_at_k: metrics.intent.alphaNdcgAtK,
+      },
+    } : {}),
   };
 }
 
@@ -255,6 +282,24 @@ function toJsonRankedMetrics(metrics: RetrievalEvalRankedMetrics): unknown {
     map: metrics.map,
     map_at_k: metrics.mapAtK,
     hit_rate: metrics.hitRate,
+  };
+}
+
+function toJsonAggregateDiversityMetrics(metrics: RetrievalEvalAggregateDiversityMetrics): unknown {
+  return {
+    source: {
+      case_count: metrics.source.caseCount,
+      unique_source_count_at_k: metrics.source.uniqueSourceCountAtK,
+      duplicate_source_groups_at_k: metrics.source.duplicateSourceGroupsAtK,
+      max_source_share_at_k: metrics.source.maxSourceShareAtK,
+    },
+    ...(metrics.intent !== undefined ? {
+      intent: {
+        case_count: metrics.intent.caseCount,
+        intent_recall_at_k: metrics.intent.intentRecallAtK,
+        alpha_ndcg_at_k: metrics.intent.alphaNdcgAtK,
+      },
+    } : {}),
   };
 }
 

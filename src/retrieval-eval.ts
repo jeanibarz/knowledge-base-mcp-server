@@ -27,6 +27,7 @@ export interface ExpectedMetadataRule {
 export interface RelevanceJudgment {
   source: string;
   relevance: number;
+  groups?: string[];
 }
 
 export interface RetrievalEvalRankedMetrics {
@@ -42,6 +43,27 @@ export interface RetrievalEvalRankedMetrics {
   hitRate: number;
 }
 
+export interface RetrievalEvalSourceDiversityMetrics {
+  k: number;
+  resultCount: number;
+  uniqueSourceCountAtK: number;
+  duplicateSourceGroupsAtK: number;
+  maxSourceShareAtK: number;
+}
+
+export interface RetrievalEvalIntentDiversityMetrics {
+  k: number;
+  groupCount: number;
+  retrievedGroupCountAtK: number;
+  intentRecallAtK: number;
+  alphaNdcgAtK: number;
+}
+
+export interface RetrievalEvalDiversityMetrics {
+  source: RetrievalEvalSourceDiversityMetrics;
+  intent?: RetrievalEvalIntentDiversityMetrics;
+}
+
 export interface RetrievalEvalAggregateRankedMetrics {
   judgedCaseCount: number;
   ndcgAt10: number;
@@ -51,6 +73,20 @@ export interface RetrievalEvalAggregateRankedMetrics {
   map: number;
   mapAtK: number;
   hitRate: number;
+}
+
+export interface RetrievalEvalAggregateDiversityMetrics {
+  source: {
+    caseCount: number;
+    uniqueSourceCountAtK: number;
+    duplicateSourceGroupsAtK: number;
+    maxSourceShareAtK: number;
+  };
+  intent?: {
+    caseCount: number;
+    intentRecallAtK: number;
+    alphaNdcgAtK: number;
+  };
 }
 
 export interface RetrievalEvalCase {
@@ -105,6 +141,7 @@ export interface RetrievalEvalCaseResult {
   warnings: string[];
   resultCount: number;
   duplicateGroups: number;
+  diversityMetrics: RetrievalEvalDiversityMetrics;
   rankedMetrics?: RetrievalEvalRankedMetrics;
 }
 
@@ -114,6 +151,7 @@ export interface RetrievalEvalReport {
   passed: number;
   failed: number;
   gateFailed: number;
+  diversityMetrics: RetrievalEvalAggregateDiversityMetrics;
   rankedMetrics?: RetrievalEvalAggregateRankedMetrics;
 }
 
@@ -231,6 +269,7 @@ export function evaluateRetrievalCase(
 
   const gate = fixtureCase.gate ?? fixtureGate;
   const rankedMetrics = computeRankedMetrics(fixtureCase, results);
+  const diversityMetrics = computeDiversityMetrics(fixtureCase, results);
   return {
     name: fixtureCase.name,
     query: fixtureCase.query,
@@ -244,6 +283,7 @@ export function evaluateRetrievalCase(
     warnings,
     resultCount: results.length,
     duplicateGroups,
+    diversityMetrics,
     ...(rankedMetrics !== undefined ? { rankedMetrics } : {}),
   };
 }
@@ -251,12 +291,14 @@ export function evaluateRetrievalCase(
 export function summarizeRetrievalEval(results: RetrievalEvalCaseResult[]): RetrievalEvalReport {
   const failed = results.filter((r) => !r.passed).length;
   const rankedMetrics = summarizeRankedMetrics(results);
+  const diversityMetrics = summarizeDiversityMetrics(results);
   return {
     cases: results,
     total: results.length,
     passed: results.length - failed,
     failed,
     gateFailed: results.filter((r) => r.gate && !r.passed).length,
+    diversityMetrics,
     ...(rankedMetrics !== undefined ? { rankedMetrics } : {}),
   };
 }
@@ -276,8 +318,9 @@ export function formatRetrievalEvalMarkdown(report: RetrievalEvalReport): string
     const ranked = result.rankedMetrics === undefined
       ? ''
       : `, ranked: ${formatRankedMetrics(result.rankedMetrics)}`;
+    const diversity = `, diversity: ${formatDiversityMetrics(result.diversityMetrics)}`;
     lines.push(
-      `- ${status} ${result.name} (${scope}, mode: ${mode}, ${result.resultCount} result(s), duplicate groups: ${result.duplicateGroups}${ranked})`,
+      `- ${status} ${result.name} (${scope}, mode: ${mode}, ${result.resultCount} result(s), duplicate groups: ${result.duplicateGroups}${ranked}${diversity})`,
     );
     for (const failure of result.failures) {
       lines.push(`  - ${failure}`);
@@ -293,6 +336,7 @@ export function formatRetrievalEvalMarkdown(report: RetrievalEvalReport): string
   if (report.rankedMetrics !== undefined) {
     lines.push(`Ranked metrics: ${formatAggregateRankedMetrics(report.rankedMetrics)}.`);
   }
+  lines.push(`Diversity metrics: ${formatAggregateDiversityMetrics(report.diversityMetrics)}.`);
   return `${lines.join('\n')}\n`;
 }
 
@@ -443,11 +487,8 @@ function normalizeRelevanceJudgments(
   }
   if (judgments !== undefined) {
     if (isRecord(judgments)) {
-      for (const [source, relevance] of Object.entries(judgments)) {
-        entries.push({
-          source: validateJudgmentSource(source, caseNumber, 'judgments'),
-          relevance: validateJudgmentRelevance(relevance, caseNumber, `judgments.${source}`),
-        });
+      for (const [source, rawJudgment] of Object.entries(judgments)) {
+        entries.push(normalizeJudgmentObjectEntry(source, rawJudgment, caseNumber));
       }
     } else {
       entries.push(...normalizeJudgmentArray(judgments, caseNumber, 'judgments'));
@@ -458,10 +499,36 @@ function normalizeRelevanceJudgments(
   for (const entry of entries) {
     const existing = deduped.get(entry.source);
     if (existing === undefined || entry.relevance > existing.relevance) {
-      deduped.set(entry.source, entry);
+      deduped.set(entry.source, mergeJudgments(existing, entry));
+    } else if (existing !== undefined) {
+      deduped.set(entry.source, mergeJudgments(existing, entry));
     }
   }
   return Array.from(deduped.values());
+}
+
+function normalizeJudgmentObjectEntry(
+  source: string,
+  rawJudgment: unknown,
+  caseNumber: number,
+): RelevanceJudgment {
+  const baseSource = validateJudgmentSource(source, caseNumber, 'judgments');
+  if (!isRecord(rawJudgment)) {
+    return {
+      source: baseSource,
+      relevance: validateJudgmentRelevance(rawJudgment, caseNumber, `judgments.${source}`),
+    };
+  }
+  const groups = normalizeJudgmentGroups(rawJudgment, caseNumber, `judgments.${source}`);
+  return {
+    source: baseSource,
+    relevance: validateJudgmentRelevance(
+      rawJudgment.relevance ?? 1,
+      caseNumber,
+      `judgments.${source}.relevance`,
+    ),
+    ...(groups.length > 0 ? { groups } : {}),
+  };
 }
 
 function normalizeJudgmentArray(
@@ -489,8 +556,26 @@ function normalizeJudgmentArray(
         caseNumber,
         `${key}[${idx}].relevance`,
       ),
+      ...(() => {
+        const groups = normalizeJudgmentGroups(entry, caseNumber, `${key}[${idx}]`);
+        return groups.length > 0 ? { groups } : {};
+      })(),
     };
   });
+}
+
+function mergeJudgments(
+  existing: RelevanceJudgment | undefined,
+  incoming: RelevanceJudgment,
+): RelevanceJudgment {
+  if (existing === undefined) return incoming;
+  const relevance = Math.max(existing.relevance, incoming.relevance);
+  const groups = Array.from(new Set([...(existing.groups ?? []), ...(incoming.groups ?? [])]));
+  return {
+    source: incoming.source,
+    relevance,
+    ...(groups.length > 0 ? { groups } : {}),
+  };
 }
 
 function validateJudgmentSource(value: unknown, caseNumber: number, key: string): string {
@@ -505,6 +590,23 @@ function validateJudgmentRelevance(value: unknown, caseNumber: number, key: stri
     throw new Error(`case ${caseNumber} ${key} must be a non-negative finite relevance number`);
   }
   return value;
+}
+
+function normalizeJudgmentGroups(
+  input: Record<string, unknown>,
+  caseNumber: number,
+  key: string,
+): string[] {
+  const raw = input.groups ?? input.group ?? input.intents ?? input.intent;
+  if (raw === undefined) return [];
+  const values = typeof raw === 'string' ? [raw] : raw;
+  if (
+    !Array.isArray(values) ||
+    values.some((entry) => typeof entry !== 'string' || entry.trim() === '')
+  ) {
+    throw new Error(`case ${caseNumber} ${key} groups/intents must be a non-empty string or string array`);
+  }
+  return Array.from(new Set(values));
 }
 
 function computeRankedMetrics(
@@ -529,6 +631,85 @@ function computeRankedMetrics(
     map: averagePrecisionAt(results, positiveJudgments, results.length, positiveJudgments.length),
     mapAtK: averagePrecisionAt(topK, positiveJudgments, k, Math.min(positiveJudgments.length, k)),
     hitRate: retrievedAtK.size > 0 ? 1 : 0,
+  };
+}
+
+function computeDiversityMetrics(
+  fixtureCase: RetrievalEvalCase,
+  results: readonly ScoredDocument[],
+): RetrievalEvalDiversityMetrics {
+  const k = fixtureCase.k ?? 10;
+  return {
+    source: computeSourceDiversityMetrics(results, k),
+    ...(() => {
+      const intent = computeIntentDiversityMetrics(fixtureCase, results, k);
+      return intent === undefined ? {} : { intent };
+    })(),
+  };
+}
+
+function computeSourceDiversityMetrics(
+  results: readonly ScoredDocument[],
+  k: number,
+): RetrievalEvalSourceDiversityMetrics {
+  const topK = results.slice(0, k);
+  const counts = countSources(topK);
+  const maxCount = Math.max(0, ...Array.from(counts.values()));
+  return {
+    k,
+    resultCount: topK.length,
+    uniqueSourceCountAtK: counts.size,
+    duplicateSourceGroupsAtK: Array.from(counts.values()).filter((count) => count > 1).length,
+    maxSourceShareAtK: topK.length === 0 ? 0 : maxCount / topK.length,
+  };
+}
+
+function computeIntentDiversityMetrics(
+  fixtureCase: RetrievalEvalCase,
+  results: readonly ScoredDocument[],
+  k: number,
+): RetrievalEvalIntentDiversityMetrics | undefined {
+  const judgments = (fixtureCase.relevanceJudgments ?? [])
+    .filter((judgment) => judgment.relevance > 0 && (judgment.groups?.length ?? 0) > 0);
+  if (judgments.length === 0) return undefined;
+
+  const allGroups = new Set(judgments.flatMap((judgment) => judgment.groups ?? []));
+  const topK = results.slice(0, k);
+  const retrievedGroups = new Set<string>();
+  for (const doc of topK) {
+    for (const group of groupsForDocument(doc, judgments)) retrievedGroups.add(group);
+  }
+
+  return {
+    k,
+    groupCount: allGroups.size,
+    retrievedGroupCountAtK: retrievedGroups.size,
+    intentRecallAtK: allGroups.size === 0 ? 0 : retrievedGroups.size / allGroups.size,
+    alphaNdcgAtK: alphaNdcgAt(topK, judgments, k),
+  };
+}
+
+function summarizeDiversityMetrics(
+  results: readonly RetrievalEvalCaseResult[],
+): RetrievalEvalAggregateDiversityMetrics {
+  const sourceMetrics = results.map((result) => result.diversityMetrics.source);
+  const intentMetrics = results
+    .map((result) => result.diversityMetrics.intent)
+    .filter((metrics): metrics is RetrievalEvalIntentDiversityMetrics => metrics !== undefined);
+  return {
+    source: {
+      caseCount: sourceMetrics.length,
+      uniqueSourceCountAtK: meanOrZero(sourceMetrics.map((m) => m.uniqueSourceCountAtK)),
+      duplicateSourceGroupsAtK: meanOrZero(sourceMetrics.map((m) => m.duplicateSourceGroupsAtK)),
+      maxSourceShareAtK: meanOrZero(sourceMetrics.map((m) => m.maxSourceShareAtK)),
+    },
+    ...(intentMetrics.length > 0 ? {
+      intent: {
+        caseCount: intentMetrics.length,
+        intentRecallAtK: mean(intentMetrics.map((m) => m.intentRecallAtK)),
+        alphaNdcgAtK: mean(intentMetrics.map((m) => m.alphaNdcgAtK)),
+      },
+    } : {}),
   };
 }
 
@@ -561,6 +742,82 @@ function matchedJudgmentIndexes(
     if (index !== undefined) matched.add(index);
   }
   return matched;
+}
+
+function groupsForDocument(
+  doc: ScoredDocument,
+  judgments: readonly RelevanceJudgment[],
+): string[] {
+  const groups = new Set<string>();
+  for (const judgment of judgments) {
+    if (!documentMatchesSource(doc, judgment.source)) continue;
+    for (const group of judgment.groups ?? []) groups.add(group);
+  }
+  return Array.from(groups);
+}
+
+function alphaNdcgAt(
+  results: readonly ScoredDocument[],
+  judgments: readonly RelevanceJudgment[],
+  cutoff: number,
+  alpha = 0.5,
+): number {
+  const dcg = alphaDcg(results.map((doc) => groupsForDocument(doc, judgments)), cutoff, alpha);
+  const ideal = idealAlphaDcg(judgments, cutoff, alpha);
+  return ideal === 0 ? 0 : dcg / ideal;
+}
+
+function alphaDcg(
+  groupSets: readonly string[][],
+  cutoff: number,
+  alpha: number,
+): number {
+  const seenByGroup = new Map<string, number>();
+  let dcg = 0;
+  for (let idx = 0; idx < Math.min(groupSets.length, cutoff); idx += 1) {
+    let gain = 0;
+    for (const group of groupSets[idx]) {
+      const seen = seenByGroup.get(group) ?? 0;
+      gain += (1 - alpha) ** seen;
+    }
+    for (const group of groupSets[idx]) {
+      seenByGroup.set(group, (seenByGroup.get(group) ?? 0) + 1);
+    }
+    dcg += gain / Math.log2(idx + 2);
+  }
+  return dcg;
+}
+
+function idealAlphaDcg(
+  judgments: readonly RelevanceJudgment[],
+  cutoff: number,
+  alpha: number,
+): number {
+  const remaining = judgments
+    .map((judgment) => Array.from(new Set(judgment.groups ?? [])))
+    .filter((groups) => groups.length > 0);
+  const chosen: string[][] = [];
+  const seenByGroup = new Map<string, number>();
+  while (chosen.length < cutoff && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestGain = Number.NEGATIVE_INFINITY;
+    remaining.forEach((groups, idx) => {
+      const gain = groups.reduce((sum, group) => {
+        const seen = seenByGroup.get(group) ?? 0;
+        return sum + ((1 - alpha) ** seen);
+      }, 0);
+      if (gain > bestGain) {
+        bestGain = gain;
+        bestIdx = idx;
+      }
+    });
+    const [next] = remaining.splice(bestIdx, 1);
+    chosen.push(next);
+    for (const group of next) {
+      seenByGroup.set(group, (seenByGroup.get(group) ?? 0) + 1);
+    }
+  }
+  return alphaDcg(chosen, cutoff, alpha);
 }
 
 function reciprocalRankAt(
@@ -643,6 +900,10 @@ function mean(values: readonly number[]): number {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function meanOrZero(values: readonly number[]): number {
+  return values.length === 0 ? 0 : mean(values);
+}
+
 function formatRankedMetrics(metrics: RetrievalEvalRankedMetrics): string {
   return [
     `nDCG@10=${formatMetric(metrics.ndcgAt10)}`,
@@ -652,6 +913,18 @@ function formatRankedMetrics(metrics: RetrievalEvalRankedMetrics): string {
     `MAP=${formatMetric(metrics.map)}`,
     `MAP@${metrics.k}=${formatMetric(metrics.mapAtK)}`,
     `HitRate@${metrics.k}=${formatMetric(metrics.hitRate)}`,
+  ].join(', ');
+}
+
+function formatDiversityMetrics(metrics: RetrievalEvalDiversityMetrics): string {
+  return [
+    `unique-source@${metrics.source.k}=${metrics.source.uniqueSourceCountAtK}`,
+    `max-source-share@${metrics.source.k}=${formatMetric(metrics.source.maxSourceShareAtK)}`,
+    `duplicate-groups@${metrics.source.k}=${metrics.source.duplicateSourceGroupsAtK}`,
+    ...(metrics.intent === undefined ? [] : [
+      `intent-recall@${metrics.intent.k}=${formatMetric(metrics.intent.intentRecallAtK)}`,
+      `alpha-nDCG@${metrics.intent.k}=${formatMetric(metrics.intent.alphaNdcgAtK)}`,
+    ]),
   ].join(', ');
 }
 
@@ -665,6 +938,20 @@ function formatAggregateRankedMetrics(metrics: RetrievalEvalAggregateRankedMetri
     `MAP@k=${formatMetric(metrics.mapAtK)}`,
     `HitRate=${formatMetric(metrics.hitRate)}`,
     `judged cases=${metrics.judgedCaseCount}`,
+  ].join(', ');
+}
+
+function formatAggregateDiversityMetrics(metrics: RetrievalEvalAggregateDiversityMetrics): string {
+  return [
+    `unique-source@k=${formatMetric(metrics.source.uniqueSourceCountAtK)}`,
+    `max-source-share@k=${formatMetric(metrics.source.maxSourceShareAtK)}`,
+    `duplicate-groups@k=${formatMetric(metrics.source.duplicateSourceGroupsAtK)}`,
+    `cases=${metrics.source.caseCount}`,
+    ...(metrics.intent === undefined ? [] : [
+      `intent-recall@k=${formatMetric(metrics.intent.intentRecallAtK)}`,
+      `alpha-nDCG@k=${formatMetric(metrics.intent.alphaNdcgAtK)}`,
+      `intent cases=${metrics.intent.caseCount}`,
+    ]),
   ].join(', ');
 }
 
@@ -714,12 +1001,16 @@ function sourceMatches(source: string, pattern: string): boolean {
 }
 
 function countDuplicateSourceGroups(results: readonly ScoredDocument[]): number {
+  return Array.from(countSources(results).values()).filter((count) => count > 1).length;
+}
+
+function countSources(results: readonly ScoredDocument[]): Map<string, number> {
   const counts = new Map<string, number>();
   results.forEach((doc, idx) => {
     const key = sourceIdentities(doc)[0] ?? `(unknown source ${idx + 1})`;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   });
-  return Array.from(counts.values()).filter((count) => count > 1).length;
+  return counts;
 }
 
 function metadataMatchesRule(metadata: unknown, rule: ExpectedMetadataRule): boolean {

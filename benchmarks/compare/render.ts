@@ -10,11 +10,19 @@ import type { BenchmarkReport } from '../types.js';
 import { renderBarChart, renderLegend, renderLineChart, renderStackedBar } from './chart.js';
 import type { GoldenQualityReport } from './golden.js';
 
+export interface SourceDiversityDiagnostics {
+  unique_source_count_at_10: number;
+  duplicate_source_groups_at_10: number;
+  max_source_share_at_10: number;
+}
+
 export interface CrossModelQueryResult {
   query: string;
   jaccard: number;
   topK_a: { doc: string; score: number }[];
   topK_b: { doc: string; score: number }[];
+  diversity_a?: SourceDiversityDiagnostics;
+  diversity_b?: SourceDiversityDiagnostics;
 }
 
 export interface CrossModelAggregate {
@@ -212,6 +220,41 @@ function buildSummaryRows(input: RenderInput): SummaryRow[] {
       b: input.goldenQuality.model_b.recall_at_20.toFixed(3),
       winner: higherIsBetter(input.goldenQuality.model_a.recall_at_20, input.goldenQuality.model_b.recall_at_20),
     });
+    rows.push({
+      metric: 'golden_unique_source@10',
+      a: input.goldenQuality.model_a.unique_source_count_at_10.toFixed(2),
+      b: input.goldenQuality.model_b.unique_source_count_at_10.toFixed(2),
+      winner: higherIsBetter(
+        input.goldenQuality.model_a.unique_source_count_at_10,
+        input.goldenQuality.model_b.unique_source_count_at_10,
+      ),
+      detail: 'higher = less crowding',
+    });
+    rows.push({
+      metric: 'golden_max_source_share@10',
+      a: input.goldenQuality.model_a.max_source_share_at_10.toFixed(3),
+      b: input.goldenQuality.model_b.max_source_share_at_10.toFixed(3),
+      winner: lowerIsBetter(
+        input.goldenQuality.model_a.max_source_share_at_10,
+        input.goldenQuality.model_b.max_source_share_at_10,
+      ),
+      detail: 'lower = less crowding',
+    });
+    if (
+      input.goldenQuality.model_a.alpha_ndcg_at_10 !== undefined &&
+      input.goldenQuality.model_b.alpha_ndcg_at_10 !== undefined
+    ) {
+      rows.push({
+        metric: 'golden_alpha_nDCG@10',
+        a: input.goldenQuality.model_a.alpha_ndcg_at_10.toFixed(3),
+        b: input.goldenQuality.model_b.alpha_ndcg_at_10.toFixed(3),
+        winner: higherIsBetter(
+          input.goldenQuality.model_a.alpha_ndcg_at_10,
+          input.goldenQuality.model_b.alpha_ndcg_at_10,
+        ),
+        detail: 'intent-aware',
+      });
+    }
   }
 
   rows.push({
@@ -314,6 +357,14 @@ function buildQualitySection(input: RenderInput): string {
   if (!quality) {
     return '<p class="meta">No golden label file was provided; quality rows use only the benchmark fixture recall proxy.</p>';
   }
+  const intentMetricRows =
+    quality.model_a.intent_recall_at_10 !== undefined &&
+    quality.model_b.intent_recall_at_10 !== undefined
+      ? [
+          qualityMetricRow('Intent recall@10', quality.model_a.intent_recall_at_10, quality.model_b.intent_recall_at_10),
+          qualityMetricRow('alpha-nDCG@10', quality.model_a.alpha_ndcg_at_10 ?? 0, quality.model_b.alpha_ndcg_at_10 ?? 0),
+        ]
+      : [];
 
   const metricRows = [
     qualityMetricRow('nDCG@10', quality.model_a.ndcg_at_10, quality.model_b.ndcg_at_10),
@@ -324,11 +375,15 @@ function buildQualitySection(input: RenderInput): string {
     qualityMetricRow('Hit rate@10', quality.model_a.hit_rate_at_10, quality.model_b.hit_rate_at_10),
     qualityMetricRow('MAP', quality.model_a.map, quality.model_b.map),
     qualityMetricRow('MAP@10', quality.model_a.map_at_10, quality.model_b.map_at_10),
+    qualityMetricRow('Unique source@10', quality.model_a.unique_source_count_at_10, quality.model_b.unique_source_count_at_10),
+    qualityMetricRow('Duplicate groups@10', quality.model_a.duplicate_source_groups_at_10, quality.model_b.duplicate_source_groups_at_10, 'lower'),
+    qualityMetricRow('Max source share@10', quality.model_a.max_source_share_at_10, quality.model_b.max_source_share_at_10, 'lower'),
+    ...intentMetricRows,
   ].join('');
 
   const diagnosticRows = quality.per_query.slice(0, 50).map((q) => {
     if (q.status !== 'scored') {
-      return `<tr><td>${escHtml(q.query)}</td><td>${escHtml(q.status)}</td><td colspan="6" class="tie">not scored</td></tr>`;
+      return `<tr><td>${escHtml(q.query)}</td><td>${escHtml(q.status)}</td><td colspan="10" class="tie">not scored</td></tr>`;
     }
     return `<tr><td>${escHtml(q.query)}</td><td>${q.relevant_source_count}</td>` +
       qualityDiagnosticCells(q.model_a) +
@@ -346,25 +401,25 @@ function buildQualitySection(input: RenderInput): string {
 </table>
 <h3>Per-query quality diagnostics</h3>
 <table>
-  <thead><tr><th>Query</th><th>Labels</th><th>A nDCG@10</th><th>A MRR@10</th><th>A R@10</th><th>B nDCG@10</th><th>B MRR@10</th><th>B R@10</th></tr></thead>
+  <thead><tr><th>Query</th><th>Labels</th><th>A nDCG@10</th><th>A MRR@10</th><th>A R@10</th><th>A uniq@10</th><th>A max share</th><th>B nDCG@10</th><th>B MRR@10</th><th>B R@10</th><th>B uniq@10</th><th>B max share</th></tr></thead>
   <tbody>${diagnosticRows}</tbody>
 </table>`;
 }
 
-function qualityMetricRow(metric: string, a: number, b: number): string {
+function qualityMetricRow(metric: string, a: number, b: number, direction: 'higher' | 'lower' = 'higher'): string {
   return rowHtml({
     metric,
     a: a.toFixed(3),
     b: b.toFixed(3),
-    winner: higherIsBetter(a, b),
+    winner: direction === 'higher' ? higherIsBetter(a, b) : lowerIsBetter(a, b),
   });
 }
 
 function qualityDiagnosticCells(metrics: GoldenQueryMetricsLike | undefined): string {
   if (!metrics) {
-    return '<td class="tie">N/A</td><td class="tie">N/A</td><td class="tie">N/A</td>';
+    return '<td class="tie">N/A</td><td class="tie">N/A</td><td class="tie">N/A</td><td class="tie">N/A</td><td class="tie">N/A</td>';
   }
-  return `<td>${metrics.ndcg_at_10.toFixed(3)}</td><td>${metrics.mrr_at_10.toFixed(3)}</td><td>${metrics.recall_at_10.toFixed(3)}</td>`;
+  return `<td>${metrics.ndcg_at_10.toFixed(3)}</td><td>${metrics.mrr_at_10.toFixed(3)}</td><td>${metrics.recall_at_10.toFixed(3)}</td><td>${metrics.unique_source_count_at_10.toFixed(0)}</td><td>${metrics.max_source_share_at_10.toFixed(3)}</td>`;
 }
 
 type GoldenQueryMetricsLike = GoldenQualityReport['per_query'][number]['model_a'];
@@ -385,12 +440,20 @@ function buildQueryDetails(input: RenderInput): string {
     }).join('');
     return `<details class="query-detail">
 <summary>j=${q.jaccard.toFixed(2)} • ${escHtml(q.query.slice(0, 80))}${q.query.length > 80 ? '…' : ''}</summary>
+<p class="meta">A diversity: ${formatSourceDiversity(q.diversity_a)} • B diversity: ${formatSourceDiversity(q.diversity_b)}</p>
 <div class="results">
   <div><strong>A</strong>${list(q.topK_a)}</div>
   <div><strong>B</strong>${list(q.topK_b)}</div>
 </div>
 </details>`;
   }).join('');
+}
+
+function formatSourceDiversity(diversity: SourceDiversityDiagnostics | undefined): string {
+  if (!diversity) return 'N/A';
+  return `unique-source@10=${diversity.unique_source_count_at_10}, ` +
+    `max-source-share@10=${diversity.max_source_share_at_10.toFixed(3)}, ` +
+    `duplicate-groups@10=${diversity.duplicate_source_groups_at_10}`;
 }
 
 interface RecommendationAxis {

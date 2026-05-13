@@ -105,8 +105,44 @@ describe('golden model quality scoring', () => {
     expect(scored.per_query[0]?.model_a?.unique_retrieved_count).toBe(2);
     expect(scored.model_a.recall_at_10).toBe(1);
     expect(scored.model_a.map_at_10).toBe(1);
+    expect(scored.per_query[0]?.model_a?.unique_source_count_at_10).toBe(2);
+    expect(scored.per_query[0]?.model_b?.max_source_share_at_10).toBe(1);
     expect(scored.model_b.recall_at_10).toBe(0.5);
     expect(scored.model_b.map_at_10).toBe(0.5);
+  });
+
+  it('scores intent-aware diversity when golden labels define groups', () => {
+    const labels = parseGoldenLabels({
+      'multi intent': [
+        { source: 'procedure.md', relevance: 3, intent: 'procedure' },
+        { source: 'checklist.md', relevance: 2, group: 'checklist' },
+        { source: 'rollback.md', relevance: 2, intents: ['rollback'] },
+      ],
+    });
+
+    const scored = scoreGoldenQuality(labels, [{
+      query: 'multi intent',
+      topK_a: [
+        { doc: 'procedure.md', score: 0.9 },
+        { doc: 'checklist.md', score: 0.8 },
+        { doc: 'rollback.md', score: 0.7 },
+      ],
+      topK_b: [
+        { doc: 'procedure.md', score: 0.9 },
+        { doc: 'procedure.md', score: 0.8 },
+        { doc: 'checklist.md', score: 0.7 },
+      ],
+    }]);
+
+    expect(labels['multi intent']).toEqual([
+      { source: 'procedure.md', relevance: 3, groups: ['procedure'] },
+      { source: 'checklist.md', relevance: 2, groups: ['checklist'] },
+      { source: 'rollback.md', relevance: 2, groups: ['rollback'] },
+    ]);
+    expect(scored.model_a.intent_recall_at_10).toBe(1);
+    expect(scored.model_a.alpha_ndcg_at_10).toBe(1);
+    expect(scored.model_b.intent_recall_at_10).toBeCloseTo(2 / 3, 6);
+    expect(scored.model_b.alpha_ndcg_at_10).toBeLessThan(scored.model_a.alpha_ndcg_at_10 ?? 0);
   });
 
   it('fails invalid golden labels with a clear error', () => {
