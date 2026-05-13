@@ -10,6 +10,11 @@ interface StoredRecord {
   vector: number[];
 }
 
+interface StubPayload {
+  format: 'stub-faiss-v1';
+  records: StoredRecord[];
+}
+
 interface StubEmbeddingHost {
   embedDocuments(texts: string[]): Promise<number[][]>;
   embedQuery(text: string): Promise<number[]>;
@@ -49,8 +54,8 @@ class StubFaissStore {
 
   static async load(filePath: string, embeddings: StubEmbeddingHost): Promise<StubFaissStore> {
     counters.loadCalls += 1;
-    const contents = await fsp.readFile(filePath, 'utf-8');
-    const parsed = JSON.parse(contents) as { records: StoredRecord[] };
+    const contents = await fsp.readFile(await resolveStorePayloadPath(filePath), 'utf-8');
+    const parsed = JSON.parse(contents) as StubPayload;
     return new StubFaissStore(embeddings, parsed.records);
   }
 
@@ -70,8 +75,17 @@ class StubFaissStore {
 
   async save(filePath: string): Promise<void> {
     counters.saveCalls += 1;
-    await fsp.mkdir(path.dirname(filePath), { recursive: true });
-    await fsp.writeFile(filePath, JSON.stringify({ format: 'stub-faiss-v1', records: this.records }), 'utf-8');
+    await fsp.mkdir(filePath, { recursive: true });
+    await fsp.writeFile(
+      path.join(filePath, 'faiss.index'),
+      JSON.stringify({ format: 'stub-faiss-v1', records: this.records } satisfies StubPayload),
+      'utf-8',
+    );
+    await fsp.writeFile(
+      path.join(filePath, 'docstore.json'),
+      JSON.stringify(toDocstoreTuple(this.records)),
+      'utf-8',
+    );
   }
 
   async similaritySearchWithScore(
@@ -168,6 +182,26 @@ async function patchFaissStore(): Promise<void> {
 
   mutableFaissStore.fromTexts = StubFaissStore.fromTexts;
   mutableFaissStore.load = StubFaissStore.load;
+}
+
+async function resolveStorePayloadPath(filePath: string): Promise<string> {
+  const stat = await fsp.stat(filePath);
+  return stat.isDirectory() ? path.join(filePath, 'faiss.index') : filePath;
+}
+
+function toDocstoreTuple(
+  records: StoredRecord[],
+): [Array<[string, { pageContent: string; metadata: Record<string, unknown> }]>, Record<string, string>] {
+  const entries: Array<[string, { pageContent: string; metadata: Record<string, unknown> }]> = [];
+  const mapping: Record<string, string> = {};
+
+  records.forEach((record, index) => {
+    const id = `stub-doc-${index}`;
+    entries.push([id, { pageContent: record.pageContent, metadata: record.metadata }]);
+    mapping[String(index)] = id;
+  });
+
+  return [entries, mapping];
 }
 
 function vectorize(text: string): number[] {
