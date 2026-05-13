@@ -14,6 +14,13 @@
 - `FaissIndexManager.updateIndex` shall keep the one-save-at-end invariant and write sidecar hashes only after a successful save.
 - `FaissIndexManager` shall resolve unset batch defaults from an explicitly configured manager provider.
 
+### TS-INDEX-281: Duplicate Chunk Embedding Compaction
+**Requirement:** NFR-INDEX-281
+
+**Test Cases:**
+- `normalizeChunkTextForEmbedding` shall collapse insignificant Unicode and whitespace differences before indexing dedupe.
+- `FaissIndexManager.updateIndex` shall call the embedding provider with unique normalized changed-file chunk text while preserving every duplicate source metadata entry in the FAISS insertion path.
+
 ## Observability
 
 ### TS-OBS-237: Last Index Update Summary

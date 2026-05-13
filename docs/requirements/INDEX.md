@@ -21,6 +21,21 @@
 **Linked Tests:** TS-INDEX-236
 **Dependencies:** RFC007
 
+### NFR-INDEX-281: Duplicate Chunk Embedding Compaction
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall embed each unique normalized changed-file chunk text at most once per `updateIndex` operation while preserving one FAISS/docstore entry for every source chunk.
+**Rationale:** Knowledge bases often contain repeated boilerplate, mirrored notes, or duplicated generated sections. Exact normalized-text compaction reduces provider embedding work without changing citation or retrieval metadata.
+
+**Acceptance Criteria:**
+- [x] Given changed chunks with identical normalized text across files or knowledge bases, when `updateIndex` embeds them in one operation, then the embedding provider receives that normalized text once.
+- [x] Given duplicate chunk text is compacted for provider calls, then the FAISS insertion path still receives every source chunk and its source-specific metadata.
+- [x] Given a query embedding is requested, then document-indexing compaction shall not alter query embedding behavior.
+
+**Linked Tests:** TS-INDEX-281
+**Dependencies:** NFR-INDEX-236
+
 ## Observability
 
 ### FR-OBS-237: Last Index Update Summary
