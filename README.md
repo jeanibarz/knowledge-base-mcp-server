@@ -415,6 +415,8 @@ All non-health transport endpoints require `Authorization: Bearer <MCP_AUTH_TOKE
 
 ## Troubleshooting & Logging
 
+For a command-oriented runbook covering empty results, stale-index footers, linked-checkout/global-bin drift, missing active models, backend availability, and refresh lock contention, see [`docs/troubleshooting-local-kb.md`](docs/troubleshooting-local-kb.md).
+
 ### KB availability smoke check
 
 When `kb search` (or the MCP `retrieve_knowledge` tool) is not returning results, run the read-only `kb doctor` command first — it is the canonical availability check and aggregates the four things that can break a search:

@@ -24,6 +24,8 @@ Alternatively, install once globally (`npm install -g @jeanibarz/knowledge-base-
 
 For shell-driven workflows (REPL queries, scripted ingest checks, agent Bash-tool calls), the same package ships a `kb` bin that doesn't require an MCP client at all. Each `kb` invocation is a fresh process, so global upgrades are picked up immediately. See the README "Install (CLI alongside the MCP server)" section.
 
+For local empty-result, stale-index, active-model, provider, lock, or linked-checkout drift diagnosis, use the [`kb` troubleshooting runbook](./troubleshooting-local-kb.md).
+
 ## Multi-model setups (RFC 013, 0.3.0+)
 
 The default config in the snippets below resolves to a single embedding model via the legacy env vars (`EMBEDDING_PROVIDER` + `OLLAMA_MODEL`/`OPENAI_MODEL_NAME`/`HUGGINGFACE_MODEL_NAME`). On 0.3.0+, you can keep multiple models registered side-by-side and have the MCP server use any of them per-call.
@@ -295,4 +297,4 @@ Once the client launches the server, run a quick smoke test from the client UI:
 2. Call `list_knowledge_bases`. Each subdirectory of `<KB_ROOT>` (excluding dotfiles) is one knowledge base.
 3. Call `retrieve_knowledge` with a query that should hit your seeded content.
 
-If no tools show up, the most common causes are: `npx` not being on the client's `PATH`, a package install failure, or missing provider credentials. Source installs can also fail because of a wrong absolute path in `args` or a missing `npm run build`. Logs go to stderr and to `LOG_FILE` if set — see the [Troubleshooting](../README.md#troubleshooting--logging) section.
+If no tools show up, the most common causes are: `npx` not being on the client's `PATH`, a package install failure, or missing provider credentials. Source installs can also fail because of a wrong absolute path in `args` or a missing `npm run build`. Logs go to stderr and to `LOG_FILE` if set — see the [Troubleshooting](../README.md#troubleshooting--logging) section and the [`kb` troubleshooting runbook](./troubleshooting-local-kb.md).
