@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 import {
   formatRetrievalAsJson,
   formatRetrievalAsVimgrep,
+  formatRetrievalEmptyAsMarkdown,
   formatRetrievalGroupedBySourceAsMarkdown,
   formatRetrievalAsMarkdown,
   groupRetrievalBySource,
@@ -198,6 +199,31 @@ describe('formatRetrievalAsMarkdown', () => {
     expect(out).toContain('**Context chunks:**');
     expect(out).toContain('**Context (before, distance 1):**');
     expect(out).toContain('previous chunk');
+  });
+});
+
+describe('formatRetrievalEmptyAsMarkdown (issue #335)', () => {
+  it('matches the legacy "no similar results" body when no inline guidance is passed', () => {
+    const out = formatRetrievalEmptyAsMarkdown();
+    expect(out).toContain('## Semantic Search Results');
+    expect(out).toContain('_No similar results found._');
+    expect(out).toContain('Disclaimer');
+    expect(out).toBe(formatRetrievalAsMarkdown([], false));
+  });
+
+  it('injects the inline guidance block between the "no results" line and the disclaimer', () => {
+    const tip = '> **Tip:** No results, the index is stale. Run `kb search --refresh` to update.';
+    const out = formatRetrievalEmptyAsMarkdown(tip);
+    expect(out).toContain('_No similar results found._');
+    expect(out).toContain(tip);
+    expect(out.indexOf('_No similar results found._'))
+      .toBeLessThan(out.indexOf(tip));
+    expect(out.indexOf(tip)).toBeLessThan(out.indexOf('Disclaimer'));
+  });
+
+  it('does not change the empty body when the inline guidance is an empty string', () => {
+    const out = formatRetrievalEmptyAsMarkdown('');
+    expect(out).toBe(formatRetrievalEmptyAsMarkdown());
   });
 });
 

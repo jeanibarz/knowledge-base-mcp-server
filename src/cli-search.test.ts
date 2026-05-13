@@ -17,6 +17,7 @@ import {
   Staleness,
 } from './cli-search.js';
 import { compactTimingPayload, type TimingPayload } from './cli-timing.js';
+import type { ScoredDocument } from './formatter.js';
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
 import {
   classifyKbSearchError,
@@ -513,6 +514,209 @@ describe('dense freshness output (#332)', () => {
     expect(output).toContain(
       '> _Timing: freshness_scan_ms=5ms, freshness_scan_files=8, freshness_scan_scope=scoped._',
     );
+  });
+});
+
+describe('empty-result inline staleness guidance (issue #335)', () => {
+  it('does not change the markdown body when results are non-empty', () => {
+    const doc = {
+      pageContent: 'hit',
+      metadata: { source: 'kb/doc.md' },
+      score: 0.5,
+    } as unknown as ScoredDocument;
+    const output = formatDenseSearchMarkdownOutput({
+      results: [doc],
+      groupBySource: false,
+      staleness: {
+        indexMtime: MTIME,
+        modifiedFiles: 4,
+        newFiles: 1,
+        scope: { kb: 'work', modifiedFiles: 4, newFiles: 1 },
+        global: { modifiedFiles: 7, newFiles: 9 },
+      },
+      refreshed: false,
+      scopedKb: 'work',
+      query: 'auth flow',
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+    expect(output).toContain('**Result 1:**');
+    expect(output).not.toContain('**Tip:**');
+    expect(output).toContain('Index may be stale for KB "work"');
+  });
+
+  it('inlines the staleness tip and suppresses the duplicate freshness footer on empty scoped-stale runs', () => {
+    const output = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: {
+        indexMtime: MTIME,
+        modifiedFiles: 2,
+        newFiles: 5,
+        scope: { kb: 'work', modifiedFiles: 2, newFiles: 5 },
+        global: { modifiedFiles: 4, newFiles: 7 },
+      },
+      refreshed: false,
+      scopedKb: 'work',
+      query: 'auth flow',
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+    expect(output).toContain('_No similar results found._');
+    expect(output).toContain('**Tip:** No results found, and the "work" KB scope is stale');
+    expect(output).toContain('kb search "auth flow" --kb=work --refresh');
+    expect(output).not.toContain('Run `kb search --kb=work --refresh` to update this scope');
+  });
+
+  it('inlines the staleness tip on empty global-stale runs and suppresses the footer', () => {
+    const output = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: {
+        indexMtime: MTIME,
+        modifiedFiles: 3,
+        newFiles: 1,
+      },
+      refreshed: false,
+      scopedKb: undefined,
+      query: 'auth flow',
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+    expect(output).toContain('**Tip:** No results found, and the index is stale');
+    expect(output).toContain('kb search "auth flow" --refresh');
+    expect(output).not.toContain('Index may be stale: ');
+  });
+
+  it('keeps the existing "up-to-date" footer on empty fresh runs (no inline tip)', () => {
+    const output = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: {
+        indexMtime: MTIME,
+        modifiedFiles: 0,
+        newFiles: 0,
+      },
+      refreshed: false,
+      scopedKb: undefined,
+      query: 'auth flow',
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+    expect(output).toContain('_No similar results found._');
+    expect(output).not.toContain('**Tip:**');
+    expect(output).toContain(`> _Index up-to-date as of ${MTIME}._`);
+  });
+
+  it('keeps the existing "refreshed" footer on empty refreshed runs (no inline tip)', () => {
+    const output = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: {
+        indexMtime: MTIME,
+        modifiedFiles: 0,
+        newFiles: 0,
+      },
+      refreshed: true,
+      scopedKb: undefined,
+      query: 'auth flow',
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+    expect(output).not.toContain('**Tip:**');
+    expect(output).toContain(`> _Index refreshed at ${MTIME}._`);
+  });
+
+  it('JSON payload exposes empty_result_guidance on stale empty scoped runs', () => {
+    const payload = buildDenseSearchJsonPayload({
+      results: [],
+      requestedMode: 'dense',
+      effectiveMode: 'dense',
+      autoModeDecision: null,
+      groupBySource: false,
+      refreshed: false,
+      scopedKb: 'work',
+      query: 'auth flow',
+      staleness: {
+        indexMtime: MTIME,
+        modifiedFiles: 2,
+        newFiles: 5,
+        scope: { kb: 'work', modifiedFiles: 2, newFiles: 5 },
+        global: { modifiedFiles: 4, newFiles: 7 },
+      },
+      autoThresholdDecision: null,
+      timing: null,
+    });
+    expect(payload).toMatchObject({
+      results: [],
+      empty_result_guidance: {
+        refresh_command: 'kb search "auth flow" --kb=work --refresh',
+        scope: 'scoped',
+        scope_kb: 'work',
+        index_built: true,
+        refreshed: false,
+        scoped_stale: true,
+        scoped_modified_files: 2,
+        scoped_new_files: 5,
+        global_stale: true,
+        global_modified_files: 4,
+        global_new_files: 7,
+      },
+    });
+    expect(payload).toMatchObject({
+      stale: true,
+      modified_files: 2,
+      new_files: 5,
+    });
+  });
+
+  it('JSON payload omits empty_result_guidance when results are non-empty', () => {
+    const doc = {
+      pageContent: 'hit',
+      metadata: { source: 'kb/doc.md' },
+      score: 0.1,
+    } as unknown as ScoredDocument;
+    const payload = buildDenseSearchJsonPayload({
+      results: [doc],
+      requestedMode: 'dense',
+      effectiveMode: 'dense',
+      autoModeDecision: null,
+      groupBySource: false,
+      refreshed: false,
+      scopedKb: undefined,
+      query: 'auth flow',
+      staleness: {
+        indexMtime: MTIME,
+        modifiedFiles: 3,
+        newFiles: 1,
+      },
+      autoThresholdDecision: null,
+      timing: null,
+    });
+    expect(payload).not.toHaveProperty('empty_result_guidance');
+  });
+
+  it('JSON payload omits empty_result_guidance when freshness was skipped', () => {
+    const payload = buildDenseSearchJsonPayload({
+      results: [],
+      requestedMode: 'dense',
+      effectiveMode: 'dense',
+      autoModeDecision: null,
+      groupBySource: false,
+      refreshed: false,
+      scopedKb: undefined,
+      query: 'auth flow',
+      staleness: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+    expect(payload).toMatchObject({ freshness_omitted: true });
+    expect(payload).not.toHaveProperty('empty_result_guidance');
   });
 });
 
