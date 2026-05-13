@@ -295,6 +295,8 @@ describe('FaissIndexManager permission handling', () => {
     KB_MAX_FILE_BYTES: process.env.KB_MAX_FILE_BYTES,
     KB_MAX_EXTRACTED_TEXT_BYTES: process.env.KB_MAX_EXTRACTED_TEXT_BYTES,
     KB_LARGE_FILE_POLICY: process.env.KB_LARGE_FILE_POLICY,
+    KB_CHUNK_SIZE: process.env.KB_CHUNK_SIZE,
+    KB_CHUNK_OVERLAP: process.env.KB_CHUNK_OVERLAP,
   };
 
 
@@ -711,6 +713,140 @@ describe('FaissIndexManager permission handling', () => {
       chunks_added: 3,
       index_mutated: true,
       saved: true,
+    });
+  });
+
+  it('persists chunk manifests and embeds only appended chunks when a changed file keeps its stable prefix', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-chunk-manifest-append-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'large.txt');
+    const paragraph = (label: string) => `${label} ${'stable words '.repeat(12)}`;
+    await fsp.writeFile(
+      docPath,
+      [paragraph('alpha'), paragraph('beta'), paragraph('gamma')].join('\n\n'),
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_CHUNK_SIZE = '80';
+    process.env.KB_CHUNK_OVERLAP = '0';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    const manifestPath = path.join(defaultKb, '.index', 'large.txt.chunks.json');
+    const initialManifest = JSON.parse(await fsp.readFile(manifestPath, 'utf-8')) as {
+      chunks: unknown[];
+    };
+    expect(initialManifest.chunks.length).toBeGreaterThan(1);
+    const [initialTexts] = fromTextsMock.mock.calls[0] as [string[]];
+    expect(initialTexts).toHaveLength(initialManifest.chunks.length);
+
+    fromTextsMock.mockClear();
+    addDocumentsMock.mockClear();
+    embedDocumentsMock.mockClear();
+    saveMock.mockClear();
+
+    await fsp.writeFile(
+      docPath,
+      [
+        paragraph('alpha'),
+        paragraph('beta'),
+        paragraph('gamma'),
+        paragraph('delta appended'),
+      ].join('\n\n'),
+    );
+    await manager.updateIndex('default');
+
+    const updatedManifest = JSON.parse(await fsp.readFile(manifestPath, 'utf-8')) as {
+      source_sha256: string;
+      chunks: unknown[];
+    };
+    const appendedChunkCount = updatedManifest.chunks.length - initialManifest.chunks.length;
+    expect(appendedChunkCount).toBeGreaterThan(0);
+    expect(appendedChunkCount).toBeLessThan(updatedManifest.chunks.length);
+    expect(fromTextsMock).not.toHaveBeenCalled();
+    expect(addDocumentsMock).toHaveBeenCalledTimes(1);
+    const [[appendedDocs]] = addDocumentsMock.mock.calls as [[Array<{ pageContent: string }>]];
+    expect(appendedDocs).toHaveLength(appendedChunkCount);
+    const providerTexts = embedDocumentsMock.mock.calls.flatMap((call) => {
+      const [texts] = call as [string[]];
+      return texts;
+    });
+    expect(providerTexts).toHaveLength(appendedChunkCount);
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      scope: 'default',
+      files_changed: 1,
+      chunks_added: appendedChunkCount,
+      index_mutated: true,
+      saved: true,
+      sidecars_written: true,
+    });
+    await expect(fsp.readFile(path.join(defaultKb, '.index', 'large.txt'), 'utf-8'))
+      .resolves.toBe(updatedManifest.source_sha256);
+  });
+
+  it('falls back to a full rebuild when a changed file removes chunks so stale content is compacted away', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-chunk-manifest-rebuild-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'large.txt');
+    const paragraph = (label: string) => `${label} ${'content words '.repeat(12)}`;
+    await fsp.writeFile(
+      docPath,
+      [
+        paragraph('keep alpha'),
+        paragraph('remove obsolete sentinel'),
+        paragraph('keep omega'),
+      ].join('\n\n'),
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_CHUNK_SIZE = '80';
+    process.env.KB_CHUNK_OVERLAP = '0';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    fromTextsMock.mockClear();
+    addDocumentsMock.mockClear();
+    saveMock.mockClear();
+    embedDocumentsMock.mockClear();
+
+    await fsp.writeFile(
+      docPath,
+      [paragraph('keep alpha'), paragraph('keep omega')].join('\n\n'),
+    );
+    await manager.updateIndex('default');
+
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(addDocumentsMock).not.toHaveBeenCalled();
+    const [rebuiltTexts] = fromTextsMock.mock.calls[0] as [string[]];
+    expect(rebuiltTexts.join('\n')).not.toContain('obsolete sentinel');
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      scope: 'default',
+      files_changed: 1,
+      index_mutated: true,
+      saved: true,
+      sidecars_written: true,
     });
   });
 
