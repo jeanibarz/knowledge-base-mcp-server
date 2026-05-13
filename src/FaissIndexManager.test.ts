@@ -28,12 +28,26 @@ const addDocumentsMock = jest.fn();
 const fromTextsMock = jest.fn();
 const loadMock = jest.fn();
 const similaritySearchMock = jest.fn();
+const embedDocumentsMock = jest.fn(async (texts: string[]) => texts.map(mockVectorForText));
+const embedQueryMock = jest.fn(async (text: string) => mockVectorForText(text));
 const embeddingConstructorMock = jest.fn();
 const ollamaEmbeddingConstructorMock = jest.fn();
 const openAIEmbeddingConstructorMock = jest.fn();
 
+function mockVectorForText(text: string): number[] {
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+  }
+  return [text.length, hash >>> 0];
+}
+
 class MockFaissStore {
+  constructor(public embeddings: { embedDocuments: (texts: string[]) => Promise<number[][]> }) {}
+
   async addDocuments(...args: unknown[]) {
+    const [documents] = args as [Array<{ pageContent: string }>];
+    await this.embeddings.embedDocuments(documents.map((doc) => doc.pageContent));
     return addDocumentsMock(...args);
   }
 
@@ -47,12 +61,22 @@ class MockFaissStore {
 
   static async fromTexts(...args: unknown[]) {
     fromTextsMock(...args);
-    return new MockFaissStore();
+    const [texts, , embeddings] = args as [
+      string[],
+      unknown,
+      { embedDocuments: (texts: string[]) => Promise<number[][]> },
+    ];
+    await embeddings.embedDocuments(texts);
+    return new MockFaissStore(embeddings);
   }
 
   static async load(...args: unknown[]) {
     loadMock(...args);
-    return new MockFaissStore();
+    const [, embeddings] = args as [
+      unknown,
+      { embedDocuments: (texts: string[]) => Promise<number[][]> },
+    ];
+    return new MockFaissStore(embeddings);
   }
 }
 
@@ -62,6 +86,8 @@ jest.mock('@langchain/community/embeddings/hf', () => ({
     constructor(public _config: unknown) {
       embeddingConstructorMock(_config);
     }
+    embedDocuments = embedDocumentsMock;
+    embedQuery = embedQueryMock;
   },
 }));
 
@@ -71,6 +97,8 @@ jest.mock('@langchain/ollama', () => ({
     constructor(public _config: unknown) {
       ollamaEmbeddingConstructorMock(_config);
     }
+    embedDocuments = embedDocumentsMock;
+    embedQuery = embedQueryMock;
   },
 }));
 
@@ -80,6 +108,8 @@ jest.mock('@langchain/openai', () => ({
     constructor(public _config: unknown) {
       openAIEmbeddingConstructorMock(_config);
     }
+    embedDocuments = embedDocumentsMock;
+    embedQuery = embedQueryMock;
   },
 }));
 
@@ -614,6 +644,108 @@ describe('FaissIndexManager permission handling', () => {
       const sidecarPath = path.join(defaultKb, '.index', path.basename(docPath));
       await expect(fsp.readFile(sidecarPath, 'utf-8')).resolves.toMatch(/^[0-9a-f]{64}$/);
     }
+  });
+
+  it('embeds duplicate normalized chunk text once per indexing operation while preserving every source', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-dedupe-embeddings-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const alphaKb = path.join(kbDir, 'alpha');
+    const betaKb = path.join(kbDir, 'beta');
+    await fsp.mkdir(alphaKb, { recursive: true });
+    await fsp.mkdir(betaKb, { recursive: true });
+
+    const alphaDuplicate = path.join(alphaKb, 'shared-a.md');
+    const alphaUnique = path.join(alphaKb, 'unique.md');
+    const betaDuplicate = path.join(betaKb, 'shared-b.md');
+    await fsp.writeFile(alphaDuplicate, '# Shared\n\nRepeated boilerplate chunk.');
+    await fsp.writeFile(alphaUnique, '# Unique\n\nOnly this source has this chunk.');
+    await fsp.writeFile(betaDuplicate, '# Shared\n\nRepeated boilerplate chunk.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.INDEXING_BATCH_SIZE = '2';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { normalizeChunkTextForEmbedding } = await import('./file-ingest.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    embedDocumentsMock.mockClear();
+
+    await manager.updateIndex();
+
+    const [seedTexts, seedMetadatas] = fromTextsMock.mock.calls[0] as [
+      string[],
+      Array<{ source: string }>,
+    ];
+    const appendedDocs = addDocumentsMock.mock.calls.flatMap((call) => {
+      const [docs] = call as [Array<{ pageContent: string; metadata: { source: string } }>];
+      return docs;
+    });
+    const indexedTexts = [
+      ...seedTexts,
+      ...appendedDocs.map((doc) => doc.pageContent),
+    ];
+    const indexedSources = [
+      ...seedMetadatas.map((metadata) => metadata.source),
+      ...appendedDocs.map((doc) => doc.metadata.source),
+    ];
+
+    expect(indexedSources.sort()).toEqual([
+      alphaDuplicate,
+      alphaUnique,
+      betaDuplicate,
+    ].sort());
+    expect(indexedTexts).toHaveLength(3);
+
+    const providerTexts = embedDocumentsMock.mock.calls.flatMap((call) => {
+      const [texts] = call as [string[]];
+      return texts;
+    });
+    expect(providerTexts).toEqual([...new Set(indexedTexts.map(normalizeChunkTextForEmbedding))]);
+    expect(providerTexts).toHaveLength(2);
+    expect(providerTexts).toContain(normalizeChunkTextForEmbedding(seedTexts[0]));
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      chunks_added: 3,
+      index_mutated: true,
+      saved: true,
+    });
+  });
+
+  it('propagates an indexing error when the provider returns the wrong vector count', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-dedupe-vector-count-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'doc.md'), '# Doc\n\nContent that needs one embedding.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    embedDocumentsMock.mockResolvedValueOnce([]);
+
+    await expect(manager.updateIndex()).rejects.toThrow(
+      'Embedding provider returned 0 vector(s) for 1 document(s)',
+    );
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'failed',
+      files_changed: 1,
+      failure_count: 1,
+      failures: [
+        expect.objectContaining({
+          phase: 'indexing',
+          message: 'Embedding provider returned 0 vector(s) for 1 document(s)',
+        }),
+      ],
+    });
   });
 
   it('resolves default batch size from an explicit manager provider', async () => {

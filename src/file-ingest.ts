@@ -1,7 +1,7 @@
 // src/file-ingest.ts
 //
 // Issue #179 — per-file embedding helpers extracted out of the
-// `FaissIndexManager.updateIndex` loop. Two pieces live here:
+// `FaissIndexManager.updateIndex` loop. Three pieces live here:
 //
 //   1. `buildChunkDocuments(filePath, content, knowledgeBaseName)` —
 //      run the markdown / recursive splitter, attach the wire-shape
@@ -12,6 +12,8 @@
 //      lock. Recreates the parent dir if a peer's `purgeStaleSidecars`
 //      raced and rmrf'd it between the loop's pre-pass `mkdir` and
 //      this write.
+//   3. `normalizeChunkTextForEmbedding(text)` — canonicalize chunk text
+//      for exact duplicate embedding compaction during indexing.
 //
 // The class still owns the loop orchestration and `addDocumentsToIndex`
 // (which mutates `this.faissIndex`); these helpers are pure / I/O-only
@@ -33,6 +35,10 @@ export interface PendingSidecarWrite {
   path: string;
   /** SHA-256 hex digest of the embedded source file. */
   hash: string;
+}
+
+export function normalizeChunkTextForEmbedding(text: string): string {
+  return text.normalize('NFC').replace(/\s+/g, ' ').trim();
 }
 
 /**

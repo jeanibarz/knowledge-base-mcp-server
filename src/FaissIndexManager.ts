@@ -2,11 +2,16 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { FaissStore } from "@langchain/community/vectorstores/faiss";
+import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import { Document } from "@langchain/core/documents";
 import { createEmbeddingsClient, type EmbeddingsClient } from './embedding-provider.js';
 import { handleFsOperationError, toError } from './error-utils.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
-import { buildChunkDocuments, writeSidecarHashes } from './file-ingest.js';
+import {
+  buildChunkDocuments,
+  normalizeChunkTextForEmbedding,
+  writeSidecarHashes,
+} from './file-ingest.js';
 import { loadFile } from './loaders.js';
 import {
   KNOWLEDGE_BASES_ROOT_DIR,
@@ -119,6 +124,52 @@ export function progressiveFetchSizes(k: number, ntotal: number): number[] {
   }
   sizes.push(ntotal);
   return sizes;
+}
+
+class IndexingEmbeddingDeduper implements EmbeddingsInterface {
+  private readonly vectorsByNormalizedText = new Map<string, number[]>();
+
+  constructor(private readonly delegate: EmbeddingsInterface) {}
+
+  async embedDocuments(texts: string[]): Promise<number[][]> {
+    const normalizedTexts = texts.map(normalizeChunkTextForEmbedding);
+    const missingTexts: string[] = [];
+    const missingSet = new Set<string>();
+
+    for (const normalizedText of normalizedTexts) {
+      if (
+        !this.vectorsByNormalizedText.has(normalizedText) &&
+        !missingSet.has(normalizedText)
+      ) {
+        missingSet.add(normalizedText);
+        missingTexts.push(normalizedText);
+      }
+    }
+
+    if (missingTexts.length > 0) {
+      const vectors = await this.delegate.embedDocuments(missingTexts);
+      if (vectors.length !== missingTexts.length) {
+        throw new Error(
+          `Embedding provider returned ${vectors.length} vector(s) for ${missingTexts.length} document(s)`,
+        );
+      }
+      for (let i = 0; i < missingTexts.length; i += 1) {
+        this.vectorsByNormalizedText.set(missingTexts[i], vectors[i]);
+      }
+    }
+
+    return normalizedTexts.map((normalizedText) => {
+      const vector = this.vectorsByNormalizedText.get(normalizedText);
+      if (vector === undefined) {
+        throw new Error('Missing cached vector for normalized chunk text');
+      }
+      return vector;
+    });
+  }
+
+  async embedQuery(text: string): Promise<number[]> {
+    return this.delegate.embedQuery(text);
+  }
 }
 
 function totalFileCount(
@@ -796,6 +847,9 @@ export class FaissIndexManager {
     const embedStartedAtMs = Date.now();
     let processedChunks = 0;
     let batchIndex = 0;
+    // Scope duplicate-compaction to this indexing operation. FAISS still
+    // receives every document; only provider embedDocuments calls are deduped.
+    const indexingEmbeddings = new IndexingEmbeddingDeduper(this.embeddings);
     for (let offset = 0; offset < documentsToAdd.length; offset += this.indexingBatchSize) {
       const batch = documentsToAdd.slice(offset, offset + this.indexingBatchSize);
       batchIndex += 1;
@@ -804,10 +858,19 @@ export class FaissIndexManager {
         this.faissIndex = await FaissStore.fromTexts(
           batch.map((doc) => doc.pageContent),
           batch.map((doc) => doc.metadata),
-          this.embeddings
+          indexingEmbeddings,
         );
+        // The store must keep the real client for query embeddings and later
+        // operations; the deduper is only an insertion-time wrapper.
+        this.faissIndex.embeddings = this.embeddings;
       } else {
-        await this.faissIndex.addDocuments(batch);
+        const previousEmbeddings = this.faissIndex.embeddings;
+        this.faissIndex.embeddings = indexingEmbeddings;
+        try {
+          await this.faissIndex.addDocuments(batch);
+        } finally {
+          this.faissIndex.embeddings = previousEmbeddings;
+        }
       }
       processedChunks += batch.length;
       if (opts?.onProgress) {
