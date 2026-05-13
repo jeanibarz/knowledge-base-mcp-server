@@ -42,7 +42,10 @@ import {
   elapsedMs,
   formatTimingFooter,
   nowMs,
+  recordFreshnessScanTiming,
   recordRefreshProgressTiming,
+  type FreshnessScanSource,
+  type FreshnessScanScope,
   type TimingPayload,
 } from './cli-timing.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
@@ -160,6 +163,7 @@ export interface Staleness {
   newFiles: number;
   scope?: StalenessScope;
   global?: StalenessCounts;
+  scan?: StalenessScanStats;
 }
 
 export interface StalenessCounts {
@@ -169,6 +173,15 @@ export interface StalenessCounts {
 
 export interface StalenessScope extends StalenessCounts {
   kb: string;
+}
+
+export interface StalenessScanStats {
+  scope: FreshnessScanScope;
+  source: FreshnessScanSource;
+  filesScanned: number;
+  globalFiles: number;
+  scopedFiles?: number;
+  kbsScanned: number;
 }
 
 export interface AutoThresholdDecision {
@@ -599,19 +612,45 @@ export async function computeStaleness(modelId: string, scopedKb?: string): Prom
 
   const enumerations = await enumerateIngestableKbFiles(KNOWLEDGE_BASES_ROOT_DIR, kbs);
   const global = await countStaleness(enumerations, indexMtimeMs);
+  const globalFiles = countEnumeratedFiles(enumerations);
   if (!scopedKb) {
-    return { indexMtime, modifiedFiles: global.modifiedFiles, newFiles: global.newFiles };
+    return {
+      indexMtime,
+      modifiedFiles: global.modifiedFiles,
+      newFiles: global.newFiles,
+      scan: buildStalenessScanStats({
+        scopedKb,
+        source: 'filesystem',
+        globalFiles,
+        scopedFiles: undefined,
+        kbsScanned: enumerations.length,
+      }),
+    };
   }
 
   const scopedEnumeration = enumerations.filter((entry) => entry.kbName === scopedKb);
   const scopeCounts = await countStaleness(scopedEnumeration, indexMtimeMs);
+  const scopedFiles = countEnumeratedFiles(scopedEnumeration);
   return {
     indexMtime,
     modifiedFiles: scopeCounts.modifiedFiles,
     newFiles: scopeCounts.newFiles,
     scope: { kb: scopedKb, ...scopeCounts },
     global,
+    scan: buildStalenessScanStats({
+      scopedKb,
+      source: 'filesystem',
+      globalFiles,
+      scopedFiles,
+      kbsScanned: enumerations.length,
+    }),
   };
+}
+
+function countEnumeratedFiles(
+  enumerations: Awaited<ReturnType<typeof enumerateIngestableKbFiles>>,
+): number {
+  return enumerations.reduce((sum, entry) => sum + entry.filePaths.length, 0);
 }
 
 async function countStaleness(
@@ -662,13 +701,21 @@ async function countSidecarFiles(dir: string): Promise<number> {
 }
 
 function emptyStaleness(indexMtime: string | null, scopedKb?: string): Staleness {
-  if (!scopedKb) return { indexMtime, modifiedFiles: 0, newFiles: 0 };
+  const scan = buildStalenessScanStats({
+    scopedKb,
+    source: 'none',
+    globalFiles: 0,
+    scopedFiles: scopedKb ? 0 : undefined,
+    kbsScanned: 0,
+  });
+  if (!scopedKb) return { indexMtime, modifiedFiles: 0, newFiles: 0, scan };
   return {
     indexMtime,
     modifiedFiles: 0,
     newFiles: 0,
     scope: { kb: scopedKb, modifiedFiles: 0, newFiles: 0 },
     global: { modifiedFiles: 0, newFiles: 0 },
+    scan,
   };
 }
 
@@ -686,10 +733,25 @@ function stalenessFromManifest(
     { modifiedFiles: 0, newFiles: 0 },
   );
   if (!scopedKb) {
-    return { indexMtime, modifiedFiles: global.modifiedFiles, newFiles: global.newFiles };
+    const globalFiles = Object.values(manifest.kbs)
+      .reduce((sum, entry) => sum + entry.file_count, 0);
+    return {
+      indexMtime,
+      modifiedFiles: global.modifiedFiles,
+      newFiles: global.newFiles,
+      scan: buildStalenessScanStats({
+        scopedKb,
+        source: 'manifest',
+        globalFiles,
+        scopedFiles: undefined,
+        kbsScanned: Object.keys(manifest.kbs).length,
+      }),
+    };
   }
   const scopedEntry = manifest.kbs[scopedKb];
   if (scopedEntry === undefined) return null;
+  const globalFiles = Object.values(manifest.kbs)
+    .reduce((sum, entry) => sum + entry.file_count, 0);
   const scopeCounts = {
     modifiedFiles: scopedEntry.modified_files,
     newFiles: scopedEntry.new_files,
@@ -700,6 +762,34 @@ function stalenessFromManifest(
     newFiles: scopeCounts.newFiles,
     scope: { kb: scopedKb, ...scopeCounts },
     global,
+    scan: buildStalenessScanStats({
+      scopedKb,
+      source: 'manifest',
+      globalFiles,
+      scopedFiles: scopedEntry.file_count,
+      kbsScanned: 1,
+    }),
+  };
+}
+
+function buildStalenessScanStats(input: {
+  scopedKb: string | undefined;
+  source: FreshnessScanSource;
+  globalFiles: number;
+  scopedFiles: number | undefined;
+  kbsScanned: number;
+}): StalenessScanStats {
+  const scope: FreshnessScanScope = input.scopedKb ? 'scoped' : 'global';
+  const filesScanned = scope === 'scoped'
+    ? input.scopedFiles ?? 0
+    : input.globalFiles;
+  return {
+    scope,
+    source: input.source,
+    filesScanned,
+    globalFiles: input.globalFiles,
+    ...(input.scopedFiles !== undefined ? { scopedFiles: input.scopedFiles } : {}),
+    kbsScanned: input.kbsScanned,
   };
 }
 
@@ -710,7 +800,18 @@ async function computeStalenessWithTiming(
 ): Promise<Staleness> {
   const stalenessStartedAt = nowMs();
   const staleness = await computeStaleness(activeModelId, scopedKb);
-  if (timing) timing.staleness_ms = elapsedMs(stalenessStartedAt);
+  if (timing) {
+    recordFreshnessScanTiming(timing, {
+      elapsedMs: elapsedMs(stalenessStartedAt),
+      ...(staleness.scan ?? buildStalenessScanStats({
+        scopedKb,
+        source: 'none',
+        globalFiles: 0,
+        scopedFiles: scopedKb ? 0 : undefined,
+        kbsScanned: 0,
+      })),
+    });
+  }
   return staleness;
 }
 

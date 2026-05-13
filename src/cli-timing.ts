@@ -2,6 +2,18 @@ export type TimingValue = number | string | boolean | null;
 
 export type TimingPayload = Record<string, TimingValue | undefined>;
 export type RefreshTimingPhase = 'embed' | 'save' | 'sidecar' | 'manifest';
+export type FreshnessScanScope = 'global' | 'scoped';
+export type FreshnessScanSource = 'filesystem' | 'manifest' | 'none';
+
+export interface FreshnessScanTimingInput {
+  elapsedMs: number;
+  scope: FreshnessScanScope;
+  source: FreshnessScanSource;
+  filesScanned: number;
+  globalFiles: number;
+  scopedFiles?: number;
+  kbsScanned: number;
+}
 
 export interface RefreshProgressTimingInput {
   phase?: string;
@@ -48,6 +60,23 @@ export function formatTimingFooter(label: string, timing: TimingPayload): string
   const modeText = formatModeText(timing);
   const body = entries.length > 0 ? entries.join(', ') : 'no timing data';
   return `> _${label}${modeText}: ${body}._`;
+}
+
+export function recordFreshnessScanTiming(
+  timing: TimingPayload,
+  scan: FreshnessScanTimingInput,
+): void {
+  const elapsed = roundedMs(scan.elapsedMs);
+  timing.staleness_ms = elapsed;
+  timing.freshness_scan_ms = elapsed;
+  timing.freshness_scan_scope = scan.scope;
+  timing.freshness_scan_source = scan.source;
+  timing.freshness_scan_files = scan.filesScanned;
+  timing.freshness_scan_global_files = scan.globalFiles;
+  if (scan.scopedFiles !== undefined) {
+    timing.freshness_scan_scoped_files = scan.scopedFiles;
+  }
+  timing.freshness_scan_kbs = scan.kbsScanned;
 }
 
 export function recordRefreshProgressTiming(

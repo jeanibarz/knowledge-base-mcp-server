@@ -445,6 +445,42 @@ describe('dense freshness output (#332)', () => {
     expect(payload).not.toHaveProperty('freshness_omitted');
   });
 
+  it('includes freshness scan metadata in JSON timing only when timing is requested', () => {
+    const staleness: Staleness = {
+      indexMtime: MTIME,
+      modifiedFiles: 1,
+      newFiles: 2,
+    };
+    const payload = buildDenseSearchJsonPayload({
+      results: [],
+      requestedMode: 'dense',
+      effectiveMode: 'dense',
+      autoModeDecision: null,
+      groupBySource: false,
+      refreshed: false,
+      scopedKb: undefined,
+      staleness,
+      autoThresholdDecision: null,
+      timing: {
+        freshness_scan_ms: 4,
+        freshness_scan_files: 3,
+        freshness_scan_scope: 'global',
+        freshness_scan_source: 'filesystem',
+      },
+    });
+
+    expect(payload).toMatchObject({
+      timing: {
+        freshness_scan_ms: 4,
+        freshness_scan_files: 3,
+        freshness_scan_scope: 'global',
+        freshness_scan_source: 'filesystem',
+      },
+    });
+    expect(payload).not.toHaveProperty('freshness_scan_ms');
+    expect(payload).not.toHaveProperty('freshness_scan_files');
+  });
+
   it('keeps the default markdown freshness footer when freshness is present', () => {
     const output = formatDenseSearchMarkdownOutput({
       results: [],
@@ -457,6 +493,26 @@ describe('dense freshness output (#332)', () => {
     });
 
     expect(output).toContain(`> _Index up-to-date as of ${MTIME}._`);
+  });
+
+  it('includes freshness scan metadata in the markdown timing footer', () => {
+    const output = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: { indexMtime: MTIME, modifiedFiles: 0, newFiles: 0 },
+      refreshed: false,
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: {
+        freshness_scan_ms: 5,
+        freshness_scan_files: 8,
+        freshness_scan_scope: 'scoped',
+      },
+    });
+
+    expect(output).toContain(
+      '> _Timing: freshness_scan_ms=5ms, freshness_scan_files=8, freshness_scan_scope=scoped._',
+    );
   });
 });
 
