@@ -8,6 +8,7 @@ import {
 import { computeStaleness, type SearchMode } from './cli-search.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import {
+  buildRetrievalEvalScaffoldFixture,
   evaluateRetrievalCase,
   formatRetrievalEvalMarkdown,
   normalizeRetrievalEvalFixture,
@@ -21,23 +22,41 @@ import {
   type RetrievalEvalRankedMetrics,
 } from './retrieval-eval.js';
 
-interface EvalArgs {
-  fixturePath: string | null;
+type EvalArgs = EvalRunArgs | EvalScaffoldArgs;
+
+interface EvalBaseArgs {
   model?: string;
-  format: 'md' | 'json';
   k: number;
   threshold: number;
+  thresholdExplicit: boolean;
   mode?: SearchMode;
+}
+
+interface EvalRunArgs extends EvalBaseArgs {
+  action: 'run';
+  fixturePath: string | null;
+  format: 'md' | 'json';
+}
+
+interface EvalScaffoldArgs extends EvalBaseArgs {
+  action: 'scaffold';
+  query: string | null;
+  kb?: string;
+  requiredSources: number;
 }
 
 const DEFAULT_K = 10;
 const DEFAULT_THRESHOLD = 2;
+const DEFAULT_SCAFFOLD_REQUIRED_SOURCES = 3;
 
 export const EVAL_HELP = `kb eval — run fixture-driven retrieval checks
 
 Usage:
   kb eval <fixture.yml|json> [--model=<id>] [--k=<int>] [--threshold=<float>]
                               [--mode=dense|lexical|hybrid|auto] [--format=md|json]
+  kb eval scaffold <query> [--model=<id>] [--kb=<name>] [--k=<int>]
+                            [--threshold=<float>] [--mode=dense|lexical|hybrid|auto]
+                            [--required-sources=<int>]
 
 Reads cases from a YAML or JSON fixture and runs each query against the
 active model's index. Each case can set \`query\`, optional \`kb\`,
@@ -48,8 +67,14 @@ active model's index. Each case can set \`query\`, optional \`kb\`,
 Failing ungated cases print warnings and exit 0; failing GATED cases
 exit 1, suitable for CI gates.
 
+\`kb eval scaffold <query>\` runs a live retrieval query and prints starter
+retrieval-eval YAML to stdout. The generated case uses top unique result
+sources as \`required_sources\`, includes simple metadata expectations when
+available, and records a stale policy. It never writes files.
+
 Arguments:
   <fixture.yml|json>    Path to fixture file. Format inferred from extension.
+  scaffold <query>      Emit a starter retrieval-eval fixture for query.
 
 Options:
   --model=<id>          Override the active model for the run (RFC 013).
@@ -60,6 +85,10 @@ Options:
                         Retrieval mode (default: dense). Fixture-level mode
                         sets a default; case-level mode overrides both.
   --format=md|json      Output format (default: md).
+  --kb=<name>           Scope scaffold retrieval to one knowledge base.
+  --required-sources=<int>
+                        Max unique result sources to seed in scaffold YAML
+                        (default: ${DEFAULT_SCAFFOLD_REQUIRED_SOURCES}).
   --help, -h            Show this help.
 
 Fixture example (YAML):
@@ -88,6 +117,10 @@ export async function runEval(rest: string[]): Promise<number> {
   } catch (err) {
     process.stderr.write(`kb eval: ${(err as Error).message}\n`);
     return 2;
+  }
+
+  if (parsed.action === 'scaffold') {
+    return runEvalScaffold(parsed);
   }
 
   if (parsed.fixturePath === null) {
@@ -158,15 +191,27 @@ export async function runEval(rest: string[]): Promise<number> {
 }
 
 export function parseEvalArgs(rest: string[]): EvalArgs {
-  const out: EvalArgs = {
+  const action = rest[0] === 'scaffold' ? 'scaffold' : 'run';
+  const args = action === 'scaffold' ? rest.slice(1) : rest;
+  const out: EvalArgs = action === 'scaffold' ? {
+    action: 'scaffold',
+    query: null,
+    k: DEFAULT_K,
+    threshold: DEFAULT_THRESHOLD,
+    thresholdExplicit: false,
+    requiredSources: DEFAULT_SCAFFOLD_REQUIRED_SOURCES,
+  } : {
+    action: 'run',
     fixturePath: null,
     format: 'md',
     k: DEFAULT_K,
     threshold: DEFAULT_THRESHOLD,
+    thresholdExplicit: false,
   };
 
-  for (const raw of rest) {
+  for (const raw of args) {
     if (raw.startsWith('--fixture=')) {
+      if (out.action === 'scaffold') throw new Error('--fixture=<path> is not supported for scaffold');
       const value = raw.slice('--fixture='.length);
       if (value.length === 0) throw new Error('--fixture=<path> requires a non-empty value');
       out.fixturePath = value;
@@ -177,6 +222,7 @@ export function parseEvalArgs(rest: string[]): EvalArgs {
       continue;
     }
     if (raw.startsWith('--format=')) {
+      if (out.action === 'scaffold') throw new Error('--format is not supported for scaffold');
       const value = raw.slice('--format='.length);
       if (value !== 'md' && value !== 'json') throw new Error(`invalid --format: ${raw}`);
       out.format = value;
@@ -200,14 +246,106 @@ export function parseEvalArgs(rest: string[]): EvalArgs {
       const value = Number(raw.slice('--threshold='.length));
       if (!Number.isFinite(value) || value <= 0) throw new Error(`invalid --threshold: ${raw}`);
       out.threshold = value;
+      out.thresholdExplicit = true;
+      continue;
+    }
+    if (raw.startsWith('--kb=')) {
+      if (out.action !== 'scaffold') throw new Error('--kb=<name> is only supported for scaffold');
+      const value = raw.slice('--kb='.length);
+      if (value.length === 0) throw new Error('--kb=<name> requires a non-empty value');
+      out.kb = value;
+      continue;
+    }
+    if (raw.startsWith('--required-sources=')) {
+      if (out.action !== 'scaffold') throw new Error('--required-sources=<int> is only supported for scaffold');
+      const value = Number(raw.slice('--required-sources='.length));
+      if (!Number.isInteger(value) || value < 0) throw new Error(`invalid --required-sources: ${raw}`);
+      out.requiredSources = value;
       continue;
     }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
-    if (out.fixturePath !== null) throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
-    out.fixturePath = raw;
+    if (out.action === 'scaffold') {
+      if (out.query !== null) throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
+      out.query = raw;
+    } else {
+      if (out.fixturePath !== null) throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
+      out.fixturePath = raw;
+    }
   }
 
   return out;
+}
+
+async function runEvalScaffold(parsed: EvalScaffoldArgs): Promise<number> {
+  if (parsed.query === null) {
+    process.stderr.write('kb eval: missing scaffold <query>\n');
+    return 2;
+  }
+
+  try {
+    await FaissIndexManager.bootstrapLayout();
+  } catch (err) {
+    process.stderr.write(`kb eval: layout bootstrap failed: ${(err as Error).message}\n`);
+    return 1;
+  }
+
+  let activeModelId: string;
+  try {
+    activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
+  } catch (err) {
+    if (err instanceof ActiveModelResolutionError) {
+      process.stderr.write(`kb eval: ${err.message}\n`);
+      return 2;
+    }
+    process.stderr.write(`kb eval: ${(err as Error).message}\n`);
+    return 1;
+  }
+
+  let manager: FaissIndexManager;
+  try {
+    manager = await loadManagerForModel(activeModelId);
+    await loadWithJsonRetry(manager);
+  } catch (err) {
+    process.stderr.write(`kb eval: ${(err as Error).message}\n`);
+    return 1;
+  }
+
+  try {
+    const searchCase = normalizeRetrievalEvalFixture({
+      cases: [{
+        name: 'scaffold',
+        query: parsed.query,
+        ...(parsed.kb !== undefined ? { kb: parsed.kb } : {}),
+        k: parsed.k,
+        ...(parsed.thresholdExplicit ? { threshold: parsed.threshold } : {}),
+        ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
+        stale_policy: 'allow_stale',
+      }],
+    }).cases[0];
+    const requestedMode = parsed.mode ?? 'dense';
+    const [search, staleness] = await Promise.all([
+      retrieveForRetrievalEvalCase(searchCase, {
+        manager,
+        defaultK: parsed.k,
+        defaultThreshold: parsed.threshold,
+      }, requestedMode),
+      computeStaleness(activeModelId, parsed.kb),
+    ]);
+    const scaffold = buildRetrievalEvalScaffoldFixture(search.results, {
+      query: parsed.query,
+      ...(parsed.kb !== undefined ? { kb: parsed.kb } : {}),
+      k: parsed.k,
+      ...(parsed.thresholdExplicit ? { threshold: parsed.threshold } : {}),
+      ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
+      maxRequiredSources: parsed.requiredSources,
+      staleness,
+    });
+    process.stdout.write(yaml.dump(scaffold, { lineWidth: -1, noRefs: true, sortKeys: false }));
+    return 0;
+  } catch (err) {
+    process.stderr.write(`kb eval: scaffold: ${(err as Error).message}\n`);
+    return 1;
+  }
 }
 
 async function loadEvalFixture(fixturePath: string): Promise<RetrievalEvalFixture> {

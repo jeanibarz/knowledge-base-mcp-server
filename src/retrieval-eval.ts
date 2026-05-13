@@ -168,6 +168,44 @@ export interface RetrievalEvalSearchResult {
   autoMode?: AutoSearchModeDecision;
 }
 
+export interface RetrievalEvalScaffoldOptions {
+  query: string;
+  kb?: string;
+  k: number;
+  threshold?: number;
+  mode?: SearchMode;
+  maxRequiredSources?: number;
+  staleness?: Staleness;
+}
+
+export interface RetrievalEvalScaffoldFixtureInput {
+  gate: false;
+  cases: RetrievalEvalScaffoldCaseInput[];
+}
+
+export interface RetrievalEvalScaffoldCaseInput {
+  name: string;
+  query: string;
+  kb?: string;
+  k: number;
+  threshold?: number;
+  mode?: SearchMode;
+  required_sources: string[];
+  expected_metadata?: Record<string, unknown>;
+  stale_policy: StalePolicy;
+}
+
+const DEFAULT_SCAFFOLD_REQUIRED_SOURCES = 3;
+const SCAFFOLD_METADATA_PATHS = [
+  'frontmatter.status',
+  'frontmatter.owner',
+  'frontmatter.review_status',
+  'frontmatter.review.status',
+  'frontmatter.type',
+  'frontmatter.category',
+  'frontmatter.topic',
+] as const;
+
 export function normalizeRetrievalEvalFixture(input: unknown): RetrievalEvalFixture {
   if (!isRecord(input)) {
     throw new Error('fixture must be an object with a cases array');
@@ -182,6 +220,33 @@ export function normalizeRetrievalEvalFixture(input: unknown): RetrievalEvalFixt
     ...readOptionalSearchMode(input, 'mode', 'fixture'),
     cases: rawCases.map((raw, idx) => normalizeCase(raw, idx + 1)),
   };
+}
+
+export function buildRetrievalEvalScaffoldFixture(
+  results: readonly ScoredDocument[],
+  options: RetrievalEvalScaffoldOptions,
+): RetrievalEvalScaffoldFixtureInput {
+  const requiredSources = selectRequiredSources(
+    results,
+    options.maxRequiredSources ?? DEFAULT_SCAFFOLD_REQUIRED_SOURCES,
+  );
+  const expectedMetadata = selectExpectedMetadata(results, new Set(requiredSources));
+  const fixture: RetrievalEvalScaffoldFixtureInput = {
+    gate: false,
+    cases: [{
+      name: scaffoldCaseName(options.query),
+      query: options.query,
+      ...(options.kb !== undefined ? { kb: options.kb } : {}),
+      k: options.k,
+      ...(options.threshold !== undefined ? { threshold: options.threshold } : {}),
+      ...(options.mode !== undefined ? { mode: options.mode } : {}),
+      required_sources: requiredSources,
+      ...(Object.keys(expectedMetadata).length > 0 ? { expected_metadata: expectedMetadata } : {}),
+      stale_policy: scaffoldStalePolicy(options.staleness),
+    }],
+  };
+  normalizeRetrievalEvalFixture(fixture);
+  return fixture;
 }
 
 export async function retrieveForRetrievalEvalCase(
@@ -1011,6 +1076,67 @@ function countSources(results: readonly ScoredDocument[]): Map<string, number> {
     counts.set(key, (counts.get(key) ?? 0) + 1);
   });
   return counts;
+}
+
+function selectRequiredSources(
+  results: readonly ScoredDocument[],
+  maxRequiredSources: number,
+): string[] {
+  if (maxRequiredSources <= 0) return [];
+  const selected: string[] = [];
+  const seen = new Set<string>();
+  for (const doc of results) {
+    const source = portableSourceIdentity(doc);
+    if (source === undefined || seen.has(source)) continue;
+    selected.push(source);
+    seen.add(source);
+    if (selected.length >= maxRequiredSources) break;
+  }
+  return selected;
+}
+
+function portableSourceIdentity(doc: ScoredDocument): string | undefined {
+  const metadata = doc.metadata as Record<string, unknown>;
+  const relativePath = metadata.relativePath;
+  if (typeof relativePath === 'string' && relativePath.trim() !== '') {
+    return relativePath;
+  }
+  return sourceIdentities(doc)[0];
+}
+
+function selectExpectedMetadata(
+  results: readonly ScoredDocument[],
+  requiredSources: ReadonlySet<string>,
+): Record<string, unknown> {
+  const expected: Record<string, unknown> = {};
+  for (const doc of results) {
+    const source = portableSourceIdentity(doc);
+    if (source === undefined || !requiredSources.has(source)) continue;
+    for (const dotPath of SCAFFOLD_METADATA_PATHS) {
+      if (dotPath in expected) continue;
+      const value = readPath(doc.metadata, dotPath);
+      if (isMetadataScaffoldValue(value)) expected[dotPath] = value;
+    }
+  }
+  return expected;
+}
+
+function isMetadataScaffoldValue(value: unknown): boolean {
+  return (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  );
+}
+
+function scaffoldStalePolicy(staleness: Staleness | undefined): StalePolicy {
+  if (staleness === undefined) return 'allow_stale';
+  return isStale(staleness) ? 'allow_stale' : 'fresh';
+}
+
+function scaffoldCaseName(query: string): string {
+  const compact = query.trim().replace(/\s+/g, ' ');
+  return `scaffold - ${compact.slice(0, 60)}`;
 }
 
 function metadataMatchesRule(metadata: unknown, rule: ExpectedMetadataRule): boolean {

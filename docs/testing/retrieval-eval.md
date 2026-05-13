@@ -28,6 +28,18 @@ its default, and individual cases can override it with case-level `mode`.
 JSON output records `requested_mode`, `effective_mode`, and `auto_mode` when
 auto selection is used.
 
+Use `kb eval scaffold "<query>"` to turn a live retrieval query into starter
+fixture YAML on stdout:
+
+```bash
+kb eval scaffold "rollback procedure" --kb=work --mode=hybrid --k=5
+```
+
+The scaffold output is intentionally not written to disk. It seeds one ungated
+case with top unique result sources as `required_sources`, simple metadata
+expectations when the retrieved chunks already expose them, and a stale policy
+that validates through `normalizeRetrievalEvalFixture`.
+
 Every case emits `diversity_metrics` in JSON and a diversity summary in
 markdown. Source-level diagnostics include unique-source@k, duplicate-groups@k,
 and max-source-share@k, with aggregate means across cases.

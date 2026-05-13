@@ -6,6 +6,7 @@ import { parseEvalArgs, toJsonReport } from './cli-eval.js';
 import type { ScoredDocument } from './formatter.js';
 import type { Staleness } from './cli-search.js';
 import {
+  buildRetrievalEvalScaffoldFixture,
   evaluateRetrievalCase,
   formatRetrievalEvalMarkdown,
   normalizeRetrievalEvalFixture,
@@ -16,6 +17,7 @@ import {
 } from './retrieval-eval.js';
 
 const FRESH: Staleness = { indexMtime: '2026-05-09T08:00:00.000Z', modifiedFiles: 0, newFiles: 0 };
+const STALE: Staleness = { indexMtime: '2026-05-09T08:00:00.000Z', modifiedFiles: 1, newFiles: 0 };
 
 function doc(source: string, score = 0.5, metadata: Record<string, unknown> = {}): ScoredDocument {
   return {
@@ -164,10 +166,103 @@ describe('parseEvalArgs', () => {
     expect(parseEvalArgs(['fixture.yml']).mode).toBeUndefined();
   });
 
+  it('parses scaffold query and narrow scaffold options', () => {
+    expect(parseEvalArgs([
+      'scaffold',
+      'rollback procedure',
+      '--kb=ops',
+      '--k=5',
+      '--mode=hybrid',
+      '--required-sources=2',
+    ])).toMatchObject({
+      action: 'scaffold',
+      query: 'rollback procedure',
+      kb: 'ops',
+      k: 5,
+      mode: 'hybrid',
+      requiredSources: 2,
+    });
+  });
+
   it('rejects invalid retrieval modes', () => {
     expect(() => parseEvalArgs(['fixture.yml', '--mode=sparse'])).toThrow(
       "invalid --mode: --mode=sparse (expected 'dense', 'lexical', 'hybrid', or 'auto')",
     );
+  });
+
+  it('keeps scaffold-only flags out of fixture runner mode', () => {
+    expect(() => parseEvalArgs(['fixture.yml', '--kb=ops'])).toThrow(
+      '--kb=<name> is only supported for scaffold',
+    );
+    expect(() => parseEvalArgs(['scaffold', 'query', '--format=json'])).toThrow(
+      '--format is not supported for scaffold',
+    );
+  });
+});
+
+describe('buildRetrievalEvalScaffoldFixture', () => {
+  it('emits starter YAML that normalizes as a retrieval eval fixture', () => {
+    const scaffold = buildRetrievalEvalScaffoldFixture([
+      doc('/tmp/kbs/ops/runbooks/deploy.md', 0.1, {
+        relativePath: 'runbooks/deploy.md',
+        frontmatter: { status: 'approved', owner: 'search-platform' },
+      }),
+      doc('/tmp/kbs/ops/runbooks/deploy.md', 0.2, {
+        relativePath: 'runbooks/deploy.md',
+      }),
+      doc('/tmp/kbs/ops/runbooks/rollback.md', 0.3, {
+        relativePath: 'runbooks/rollback.md',
+        frontmatter: { status: 'draft' },
+      }),
+    ], {
+      query: 'rollback procedure',
+      kb: 'ops',
+      k: 5,
+      mode: 'hybrid',
+      maxRequiredSources: 2,
+      staleness: FRESH,
+    });
+    const rawYaml = yaml.dump(scaffold, { lineWidth: -1, noRefs: true, sortKeys: false });
+    const normalized = normalizeRetrievalEvalFixture(yaml.load(rawYaml));
+
+    expect(scaffold).toEqual({
+      gate: false,
+      cases: [{
+        name: 'scaffold - rollback procedure',
+        query: 'rollback procedure',
+        kb: 'ops',
+        k: 5,
+        mode: 'hybrid',
+        required_sources: [
+          'runbooks/deploy.md',
+          'runbooks/rollback.md',
+        ],
+        expected_metadata: {
+          'frontmatter.status': 'approved',
+          'frontmatter.owner': 'search-platform',
+        },
+        stale_policy: 'fresh',
+      }],
+    });
+    expect(normalized.cases[0]).toMatchObject({
+      query: 'rollback procedure',
+      requiredSources: ['runbooks/deploy.md', 'runbooks/rollback.md'],
+      expectedMetadata: [
+        { path: 'frontmatter.status', equals: 'approved' },
+        { path: 'frontmatter.owner', equals: 'search-platform' },
+      ],
+      stalePolicy: 'fresh',
+    });
+  });
+
+  it('uses allow_stale for scaffold output when the live index is stale', () => {
+    const scaffold = buildRetrievalEvalScaffoldFixture([doc('notes/drift.md')], {
+      query: 'drift',
+      k: 10,
+      staleness: STALE,
+    });
+
+    expect(scaffold.cases[0].stale_policy).toBe('allow_stale');
   });
 });
 
