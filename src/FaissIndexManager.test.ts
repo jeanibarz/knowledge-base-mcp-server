@@ -118,6 +118,22 @@ jest.mock('@langchain/community/vectorstores/faiss', () => ({
   FaissStore: MockFaissStore,
 }));
 
+function loadedFaissStore(manager: unknown): Record<string, unknown> {
+  const internal = manager as {
+    faissIndex?: { getStoreForPersistence?: () => unknown } | null;
+  };
+  const store = internal.faissIndex?.getStoreForPersistence?.();
+  if (store === undefined || store === null || typeof store !== 'object') {
+    throw new Error('manager has no loaded FAISS store');
+  }
+  return store as Record<string, unknown>;
+}
+
+async function setLoadedFaissStore(manager: unknown, store: Record<string, unknown>): Promise<void> {
+  const { FaissStoreAdapter } = await import('./faiss-store-adapter.js');
+  (manager as { faissIndex?: unknown }).faissIndex = FaissStoreAdapter.fromStore(store as never);
+}
+
 function createPermissionError(message: string): NodeJS.ErrnoException {
   const error = new Error(message) as NodeJS.ErrnoException;
   error.code = 'EACCES';
@@ -3292,10 +3308,10 @@ describe('FaissIndexManager similaritySearch metadata filters (#53)', () => {
     // Provide ntotal() so the over-fetch branch (scoped or filtered) doesn't
     // crash on undefined.index. The real FaissStore exposes this; the mock
     // does not, so wire the minimum surface the implementation reads.
-    interface IndexHandle { index: { ntotal: () => number } }
-    (manager as unknown as IndexHandle).index = { ntotal: () => 100 };
-    const internal = manager as unknown as { faissIndex: { index: { ntotal: () => number } } };
-    internal.faissIndex.index = { ntotal: () => 100 };
+    loadedFaissStore(manager).index = {
+      ntotal: () => 100,
+      getDimension: () => 2,
+    };
     return manager;
   }
 
@@ -3512,8 +3528,10 @@ describe('FaissIndexManager similaritySearch metadata filters (#53)', () => {
     const manager = new FaissIndexManager();
     await manager.initialize();
     await manager.updateIndex();
-    const internal = manager as unknown as { faissIndex: { index: { ntotal: () => number } } };
-    internal.faissIndex.index = { ntotal: () => 100 };
+    loadedFaissStore(manager).index = {
+      ntotal: () => 100,
+      getDimension: () => 2,
+    };
 
     // Capture the metadata that ingest stamped on the chunks for both files;
     // feed those exact objects back via the FAISS mock so the post-filter
@@ -3648,10 +3666,10 @@ describe('FaissIndexManager progressive overfetch (#229)', () => {
     const manager = new FaissIndexManager();
     await manager.initialize();
     await manager.updateIndex();
-    const internal = manager as unknown as {
-      faissIndex: { index: { ntotal: () => number } };
+    loadedFaissStore(manager).index = {
+      ntotal: () => ntotal,
+      getDimension: () => 2,
     };
-    internal.faissIndex.index = { ntotal: () => ntotal };
     return manager;
   }
 
@@ -3819,7 +3837,7 @@ describe('FaissIndexManager neighbor context expansion', () => {
       ['2', { pageContent: 'after', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } }],
       ['other', { pageContent: 'wrong source', metadata: { knowledgeBase: 'kb', source: '/kb/other.md', chunkIndex: 0 } }],
     ]);
-    (manager as any).faissIndex = { docstore: { _docs: docs } };
+    await setLoadedFaissStore(manager, { docstore: { _docs: docs } });
 
     const expanded = manager.expandWithNeighborContext([
       {
@@ -3860,7 +3878,7 @@ describe('FaissIndexManager neighbor context expansion', () => {
       ['2', { pageContent: 'two', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } }],
       ['3', { pageContent: 'three', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 3 } }],
     ]);
-    (manager as any).faissIndex = { docstore: { _docs: docs } };
+    await setLoadedFaissStore(manager, { docstore: { _docs: docs } });
 
     const expanded = manager.expandWithNeighborContext([
       {
@@ -3892,7 +3910,7 @@ describe('FaissIndexManager neighbor context expansion', () => {
       ['1', { pageContent: 'one', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 } }],
       ['2', { pageContent: 'two', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } }],
     ]);
-    (manager as any).faissIndex = { docstore: { _docs: docs } };
+    await setLoadedFaissStore(manager, { docstore: { _docs: docs } });
 
     const expanded = manager.expandWithNeighborContext([
       {
