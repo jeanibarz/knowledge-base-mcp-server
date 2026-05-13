@@ -38,6 +38,22 @@
 **Linked Tests:** TS-OBS-237
 **Dependencies:** FR-SEARCH-192
 
+### FR-OBS-315: Persisted Last Index Update Summary
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall persist the latest `updateIndex` run summary under the active model directory and use that persisted summary for fresh-process stats and doctor reports when no in-process update has run.
+**Rationale:** Long refreshes can finish in a different CLI process from later diagnostics; persisting the compact sanitized summary preserves post-mortem evidence without requiring the original terminal output.
+
+**Acceptance Criteria:**
+- [x] Given an index update completes successfully, when the update finishes, then the active model directory contains the latest sanitized update summary.
+- [x] Given an index update fails or completes partially, when the update attempt finishes, then the active model directory contains the failed or partial summary with capped failure details.
+- [x] Given `kb stats` or `kb doctor` runs in a fresh process and the in-memory summary is `never_run`, when a persisted summary exists for the active model, then the report uses the persisted summary.
+- [x] Given the persisted summary is missing or malformed, when stats or doctor output is requested, then the report falls back to the in-memory `never_run` summary.
+
+**Linked Tests:** TS-OBS-315
+**Dependencies:** FR-OBS-237
+
 ## Search
 
 ### FR-SUPERSEDED-232: Superseded Memory Review

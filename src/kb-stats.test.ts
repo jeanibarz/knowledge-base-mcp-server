@@ -11,6 +11,7 @@ import * as path from 'path';
 interface FakeManager {
   embeddingProvider: string;
   modelName: string;
+  modelId: string;
   getStats(): {
     totalChunks: number;
     chunkCountsByKb: Record<string, number>;
@@ -22,21 +23,25 @@ interface FakeManager {
 function makeManager(opts: {
   provider?: string;
   modelName?: string;
+  modelId?: string;
   chunkCountsByKb?: Record<string, number>;
   dim?: number | null;
+  lastIndexUpdateSummary?: unknown;
 }): FakeManager {
+  const modelId = opts.modelId ?? 'huggingface__BAAI-bge-small-en-v1.5';
   return {
     embeddingProvider: opts.provider ?? 'huggingface',
     modelName: opts.modelName ?? 'BAAI/bge-small-en-v1.5',
+    modelId,
     getStats: () => ({
       totalChunks: Object.values(opts.chunkCountsByKb ?? {}).reduce((s, n) => s + n, 0),
       chunkCountsByKb: opts.chunkCountsByKb ?? {},
       dim: opts.dim ?? null,
     }),
-    getLastIndexUpdateSummary: () => ({
+    getLastIndexUpdateSummary: () => opts.lastIndexUpdateSummary ?? ({
       status: 'never_run',
       scope: null,
-      model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+      model_id: modelId,
       started_at: null,
       finished_at: null,
       duration_ms: null,
@@ -52,6 +57,28 @@ function makeManager(opts: {
       failure_count: 0,
       failures: [],
     }),
+  };
+}
+
+function successfulSummary(modelId = 'huggingface__BAAI-bge-small-en-v1.5') {
+  return {
+    status: 'success',
+    scope: 'global',
+    model_id: modelId,
+    started_at: '2026-05-12T10:00:00.000Z',
+    finished_at: '2026-05-12T10:00:05.000Z',
+    duration_ms: 5000,
+    files_scanned: 3,
+    files_changed: 2,
+    files_unchanged: 1,
+    files_skipped: 0,
+    chunks_attempted: 4,
+    chunks_added: 4,
+    index_mutated: true,
+    saved: true,
+    sidecars_written: true,
+    failure_count: 0,
+    failures: [],
   };
 }
 
@@ -217,6 +244,87 @@ describe('computeKbStats', () => {
     expect(payload.knowledge_bases.alpha.last_updated_at).toBe(new Date(fixedMs).toISOString());
 
     await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('uses a persisted update summary when the fresh manager summary is never_run', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-persisted-summary-'));
+    try {
+      const kbRoot = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const modelId = 'huggingface__BAAI-bge-small-en-v1.5';
+      await fsp.mkdir(path.join(kbRoot, 'alpha'), { recursive: true });
+      await fsp.writeFile(path.join(kbRoot, 'alpha', 'a.md'), 'alpha');
+      await fsp.mkdir(path.join(faissDir, 'models', modelId), { recursive: true });
+      await fsp.writeFile(
+        path.join(faissDir, 'models', modelId, 'last-index-update.json'),
+        JSON.stringify({
+          schema_version: 'kb.last-index-update.v1',
+          summary: successfulSummary(modelId),
+        }),
+      );
+
+      const { computeKbStats } = await freshKbStats({
+        KNOWLEDGE_BASES_ROOT_DIR: kbRoot,
+        FAISS_INDEX_PATH: faissDir,
+      });
+
+      const payload = await computeKbStats(makeManager({ modelId }) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+      });
+
+      expect(payload.last_index_update).toMatchObject({
+        status: 'success',
+        scope: 'global',
+        model_id: modelId,
+        duration_ms: 5000,
+        files_changed: 2,
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the fresh manager summary when the persisted summary is missing or malformed', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-persisted-summary-fallback-'));
+    try {
+      const kbRoot = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const modelId = 'huggingface__BAAI-bge-small-en-v1.5';
+      await fsp.mkdir(path.join(kbRoot, 'alpha'), { recursive: true });
+      await fsp.writeFile(path.join(kbRoot, 'alpha', 'a.md'), 'alpha');
+
+      const { computeKbStats } = await freshKbStats({
+        KNOWLEDGE_BASES_ROOT_DIR: kbRoot,
+        FAISS_INDEX_PATH: faissDir,
+      });
+
+      const missing = await computeKbStats(makeManager({ modelId }) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+      });
+      expect(missing.last_index_update).toMatchObject({
+        status: 'never_run',
+        model_id: modelId,
+      });
+
+      await fsp.mkdir(path.join(faissDir, 'models', modelId), { recursive: true });
+      await fsp.writeFile(
+        path.join(faissDir, 'models', modelId, 'last-index-update.json'),
+        '{not-json',
+      );
+
+      const malformed = await computeKbStats(makeManager({ modelId }) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+      });
+      expect(malformed.last_index_update).toMatchObject({
+        status: 'never_run',
+        model_id: modelId,
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('returns an empty provider_calls map by default and a populated one after telemetry is recorded (issue #210)', async () => {
