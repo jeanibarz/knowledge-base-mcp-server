@@ -10,6 +10,7 @@ const originalEnv = {
   HUGGINGFACE_MODEL_NAME: process.env.HUGGINGFACE_MODEL_NAME,
   HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
   KB_ACTIVE_MODEL: process.env.KB_ACTIVE_MODEL,
+  KB_INDEX_VERSION_RETENTION: process.env.KB_INDEX_VERSION_RETENTION,
   KB_AGE_BUDGET_HOURS: process.env.KB_AGE_BUDGET_HOURS,
   KB_AGE_BUDGET_HOURS_ALPHA: process.env.KB_AGE_BUDGET_HOURS_ALPHA,
   KB_AGE_BUDGET_HOURS_BETA: process.env.KB_AGE_BUDGET_HOURS_BETA,
@@ -57,6 +58,9 @@ describe('kb doctor', () => {
       await fsp.writeFile(path.join(rootDir, 'alpha', '.index', 'newer.md'), 'hash');
 
       const modelDir = await seedRegisteredModel(faissDir);
+      const inactiveVersionDir = path.join(modelDir, 'index.v2');
+      await fsp.mkdir(inactiveVersionDir, { recursive: true });
+      await fsp.writeFile(path.join(inactiveVersionDir, 'faiss.index'), 'old-index');
       const versionDir = path.join(modelDir, 'index.v3');
       await fsp.mkdir(versionDir, { recursive: true });
       const binaryPath = path.join(versionDir, 'faiss.index');
@@ -81,6 +85,7 @@ describe('kb doctor', () => {
         EMBEDDING_PROVIDER: 'huggingface',
         HUGGINGFACE_MODEL_NAME: MODEL_NAME,
         HUGGINGFACE_API_KEY: 'test-key',
+        KB_INDEX_VERSION_RETENTION: '2',
       });
 
       const report = await buildDoctorReport({
@@ -117,6 +122,13 @@ describe('kb doctor', () => {
       });
       expect(report.index.version).toBe('index.v3');
       expect(report.index.mtime).toBe(new Date(indexMs).toISOString());
+      expect(report.index.storage).toMatchObject({
+        active_version_bytes: Buffer.byteLength('fake-index'),
+        inactive_version_count: 1,
+        inactive_version_bytes: Buffer.byteLength('old-index'),
+        total_version_bytes: Buffer.byteLength('fake-index') + Buffer.byteLength('old-index'),
+        retention_previous_versions: 2,
+      });
       expect(report.backend).toMatchObject({ healthy: true, detail: 'backend ok' });
       expect(report.last_index_update).toMatchObject({
         status: 'success',
@@ -134,6 +146,8 @@ describe('kb doctor', () => {
       expect(markdown).toContain('Status: WARN');
       expect(markdown).toContain(`Active model: ${MODEL_ID}`);
       expect(markdown).toContain('Last index update: success (global, 1000ms, 1 changed, 1 unchanged, 0 skipped)');
+      expect(markdown).toContain('Index storage:');
+      expect(markdown).toContain('inactive across 1 retained inactive version(s); retention=2');
       expect(markdown).toContain('alpha: 1 modified, 0 new');
       expect(markdown).toContain('beta: 0 modified, 1 new');
       expect(markdown).toContain('Ingest quarantine by KB:\n  alpha: 0 quarantined\n  beta: 0 quarantined');

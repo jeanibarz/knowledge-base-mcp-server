@@ -13,6 +13,7 @@ import {
   listIncompleteModelStates,
   listRegisteredModels,
   parseModelId,
+  readModelIndexStorage,
   resolveActiveModel,
   resolveFaissIndexBinaryPath,
 } from './active-model.js';
@@ -99,6 +100,13 @@ export interface DoctorReport {
     binary_path: string | null;
     version: string | null;
     mtime: string | null;
+    storage: {
+      active_version_bytes: number | null;
+      inactive_version_count: number;
+      inactive_version_bytes: number;
+      total_version_bytes: number;
+      retention_previous_versions: number;
+    };
   };
   stale_counts_by_kb: Record<string, { modified_files: number; new_files: number }>;
   quarantine_counts_by_kb: Record<string, number>;
@@ -422,12 +430,27 @@ function formatErrorRate(errors: number, count: number): string {
 }
 
 async function readIndexHealth(activeModelId: string | null): Promise<DoctorReport['index']> {
+  const emptyStorage: DoctorReport['index']['storage'] = {
+    active_version_bytes: null,
+    inactive_version_count: 0,
+    inactive_version_bytes: 0,
+    total_version_bytes: 0,
+    retention_previous_versions: 0,
+  };
   if (activeModelId === null) {
-    return { path: FAISS_INDEX_PATH, binary_path: null, version: null, mtime: null };
+    return { path: FAISS_INDEX_PATH, binary_path: null, version: null, mtime: null, storage: emptyStorage };
   }
+  const storage = await readModelIndexStorage(activeModelId);
+  const storageSummary: DoctorReport['index']['storage'] = {
+    active_version_bytes: storage.active_version_bytes,
+    inactive_version_count: storage.inactive_version_count,
+    inactive_version_bytes: storage.inactive_version_bytes,
+    total_version_bytes: storage.total_version_bytes,
+    retention_previous_versions: storage.retention_previous_versions,
+  };
   const binaryPath = await resolveFaissIndexBinaryPath(activeModelId);
   if (binaryPath === null) {
-    return { path: FAISS_INDEX_PATH, binary_path: null, version: null, mtime: null };
+    return { path: FAISS_INDEX_PATH, binary_path: null, version: null, mtime: null, storage: storageSummary };
   }
   try {
     const st = await fsp.stat(binaryPath);
@@ -436,9 +459,10 @@ async function readIndexHealth(activeModelId: string | null): Promise<DoctorRepo
       binary_path: binaryPath,
       version: indexVersionFromPath(binaryPath),
       mtime: new Date(st.mtimeMs).toISOString(),
+      storage: storageSummary,
     };
   } catch {
-    return { path: FAISS_INDEX_PATH, binary_path: null, version: null, mtime: null };
+    return { path: FAISS_INDEX_PATH, binary_path: null, version: null, mtime: null, storage: storageSummary };
   }
 }
 
@@ -726,6 +750,13 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   lines.push(`Index: ${report.index.binary_path ?? '<not built>'}`);
   lines.push(`Index version: ${report.index.version ?? '<unknown>'}`);
   lines.push(`Index mtime: ${report.index.mtime ?? '<none>'}`);
+  lines.push(
+    `Index storage: ${formatBytes(report.index.storage.total_version_bytes)} total ` +
+      `(${formatBytes(report.index.storage.active_version_bytes)} active, ` +
+      `${formatBytes(report.index.storage.inactive_version_bytes)} inactive across ` +
+      `${report.index.storage.inactive_version_count} retained inactive version(s); ` +
+      `retention=${report.index.storage.retention_previous_versions})`,
+  );
   lines.push(`Last index update: ${formatLastIndexUpdate(report.last_index_update)}`);
   lines.push(`Backend: ${report.backend.healthy ? 'ok' : 'error'} — ${report.backend.detail}`);
   lines.push(`kb version: ${report.cli.version}`);
@@ -825,6 +856,19 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
     lines.push(`  ${check.status.toUpperCase().padEnd(5)} ${check.name}: ${check.detail}`);
   }
   return lines.join('\n') + '\n';
+}
+
+function formatBytes(bytes: number | null): string {
+  if (bytes === null) return 'n/a';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  if (unit === 0) return `${bytes} B`;
+  return `${value.toFixed(1)} ${units[unit]}`;
 }
 
 function formatLastIndexUpdate(summary: IndexUpdateSummary): string {
