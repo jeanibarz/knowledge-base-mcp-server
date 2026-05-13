@@ -20,6 +20,7 @@ Invocation:
 
 ```bash
 kb search "<query>" --format=json [--kb=<name>] [--model=<id>] [--k=<int>]
+kb search "<query>" --format=json --refresh [--kb=<name>]
 kb search --stdin --format=json
 kb search "<query>" --format=json --mode=dense|lexical|hybrid|auto
 KB_EDITOR_URI=cursor kb search "<query>" --format=json
@@ -88,6 +89,21 @@ Optional stable fields:
   `{"threshold": number, "knee_index": number|null, "kept": number}`.
 - `timing`: present with `--timing`; keys are elapsed millisecond counters and
   mode labels. Treat the object as diagnostic, not a compatibility contract.
+
+Refresh preflight:
+
+- Dense and hybrid `kb search --refresh` compute a nonblocking stale-delta
+  preflight before embedding starts when the selected scope exceeds either
+  documented threshold: more than 100 changed/new files or more than 100 MiB of
+  cheap-to-stat stale bytes.
+- The preflight is always stderr text. JSON stdout remains the success envelope
+  above, and agents must not expect a JSON field for the preflight.
+- TTY and non-TTY runs continue without prompting by default; there is no
+  confirmation gate or required `--yes` for `kb search --refresh`.
+- The stderr text includes changed/new file counts by KB, estimated stale bytes,
+  top KBs by stale bytes/files, the active provider/model, provider class
+  (`local` or `paid`), `--kb=<name>` scoping suggestions, and PDF exclusion
+  guidance when stale PDFs are present.
 - `mode`, `requested_mode`, `auto_mode`: present when `--mode=auto` is used.
   `mode` is the selected effective mode; `auto_mode` has `mode` and `reason`.
 

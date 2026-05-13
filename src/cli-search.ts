@@ -45,6 +45,10 @@ import {
 } from './cli-timing.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
+import {
+  buildRefreshPreflightEstimate,
+  maybeWriteRefreshPreflight,
+} from './cli-search-staleness.js';
 
 export const SEARCH_HELP = `kb search — semantic search across knowledge bases
 
@@ -91,6 +95,9 @@ Output:
 
 Indexing:
   --refresh             Re-scan KB files; acquires the per-model write lock.
+                        If the stale delta is larger than 100 files or
+                        100 MiB, prints a nonblocking refresh preflight to
+                        stderr before embedding starts.
 
 Input:
   --stdin               Read query from stdin (multi-line safe).
@@ -238,6 +245,7 @@ export async function runSearch(rest: string[]): Promise<number> {
     const startedAt = nowMs();
     if (parsed.refresh) {
       await withWriteLock(manager.modelDir, async () => {
+        await printRefreshPreflightIfLarge(activeModelId, manager, parsed.kb, parsed.format);
         await manager.initialize();
         await manager.updateIndex(parsed.kb);
       });
@@ -713,6 +721,33 @@ function reportFailure(failure: SearchFailure, format: SearchFormat): number {
   return exitCodeForFailure(failure);
 }
 
+async function printRefreshPreflightIfLarge(
+  activeModelId: string,
+  manager: FaissIndexManager,
+  scopedKb: string | undefined,
+  format: SearchFormat,
+): Promise<void> {
+  const binaryPath = await resolveFaissIndexBinaryPath(activeModelId);
+  let indexMtimeMs: number | null = null;
+  if (binaryPath !== null) {
+    try {
+      indexMtimeMs = (await fsp.stat(binaryPath)).mtimeMs;
+    } catch {
+      indexMtimeMs = null;
+    }
+  }
+  const estimate = await buildRefreshPreflightEstimate({
+    activeModel: {
+      modelId: activeModelId,
+      provider: manager.embeddingProvider,
+      modelName: manager.modelName,
+    },
+    indexMtimeMs,
+    scopedKb,
+  });
+  maybeWriteRefreshPreflight(estimate, { format });
+}
+
 async function readAllStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   return new Promise((resolve, reject) => {
@@ -1009,6 +1044,7 @@ async function runHybridSearch(
     const startedAt = nowMs();
     if (parsed.refresh) {
       await withWriteLock(manager.modelDir, async () => {
+        await printRefreshPreflightIfLarge(activeModelId, manager, parsed.kb, parsed.format);
         await manager.initialize();
         await manager.updateIndex(parsed.kb);
       });

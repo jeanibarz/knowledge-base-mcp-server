@@ -2,7 +2,14 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { buildAgeBudgetFooter } from './cli-search-staleness.js';
+import {
+  REFRESH_PREFLIGHT_BYTE_THRESHOLD,
+  REFRESH_PREFLIGHT_FILE_THRESHOLD,
+  buildAgeBudgetFooter,
+  buildRefreshPreflightEstimate,
+  formatRefreshPreflightEstimate,
+  maybeWriteRefreshPreflight,
+} from './cli-search-staleness.js';
 import { writeFreshnessManifest } from './freshness-manifest.js';
 
 const ORIGINAL_ENV = {
@@ -134,6 +141,174 @@ describe('computeStaleness', () => {
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('refresh preflight estimate (issue #318)', () => {
+  it('does not print below the documented stale-delta thresholds', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-refresh-preflight-small-'));
+    try {
+      const kbRoot = path.join(tempDir, 'kbs');
+      const alpha = path.join(kbRoot, 'alpha');
+      await fsp.mkdir(path.join(alpha, '.index'), { recursive: true });
+      const doc = path.join(alpha, 'small.md');
+      await fsp.writeFile(doc, 'small\n', 'utf-8');
+      await fsp.writeFile(path.join(alpha, '.index', 'small.md'), 'old-hash', 'utf-8');
+      const indexMtimeMs = Date.parse('2026-05-12T10:00:00.000Z');
+      await fsp.utimes(doc, new Date(indexMtimeMs + 60_000), new Date(indexMtimeMs + 60_000));
+
+      const estimate = await buildRefreshPreflightEstimate({
+        kbRootDir: kbRoot,
+        indexMtimeMs,
+        scopedKb: undefined,
+        activeModel: {
+          modelId: 'ollama__nomic-embed-text-latest',
+          provider: 'ollama',
+          modelName: 'nomic-embed-text:latest',
+        },
+      });
+      const writes: string[] = [];
+
+      expect(estimate).toMatchObject({
+        totalModifiedFiles: 1,
+        totalNewFiles: 0,
+      });
+      expect(maybeWriteRefreshPreflight(estimate, { write: (text) => writes.push(text) })).toBe(false);
+      expect(writes).toEqual([]);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints a large stale-delta estimate with by-KB counts, bytes, model, provider class, and scoped suggestions', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-refresh-preflight-large-'));
+    try {
+      const kbRoot = path.join(tempDir, 'kbs');
+      const alpha = path.join(kbRoot, 'alpha');
+      const beta = path.join(kbRoot, 'beta');
+      await fsp.mkdir(path.join(alpha, '.index'), { recursive: true });
+      await fsp.mkdir(beta, { recursive: true });
+
+      const alphaModified = path.join(alpha, 'modified.md');
+      const alphaPdf = path.join(alpha, 'new.pdf');
+      const betaNew = path.join(beta, 'new.md');
+      await fsp.writeFile(alphaModified, 'x'.repeat(64), 'utf-8');
+      await fsp.writeFile(alphaPdf, 'p'.repeat(REFRESH_PREFLIGHT_BYTE_THRESHOLD + 1), 'utf-8');
+      await fsp.writeFile(betaNew, 'b'.repeat(32), 'utf-8');
+      await fsp.writeFile(path.join(alpha, '.index', 'modified.md'), 'old-hash', 'utf-8');
+      const indexMtimeMs = Date.parse('2026-05-12T10:00:00.000Z');
+      await fsp.utimes(alphaModified, new Date(indexMtimeMs + 60_000), new Date(indexMtimeMs + 60_000));
+
+      const estimate = await buildRefreshPreflightEstimate({
+        kbRootDir: kbRoot,
+        indexMtimeMs,
+        activeModel: {
+          modelId: 'openai__text-embedding-3-small',
+          provider: 'openai',
+          modelName: 'text-embedding-3-small',
+        },
+      });
+      const text = formatRefreshPreflightEstimate(estimate);
+
+      expect(estimate.exceedsThreshold).toBe(true);
+      expect(text).toContain(`thresholds: ${REFRESH_PREFLIGHT_FILE_THRESHOLD} files or 100 MiB`);
+      expect(text).toContain('Active model: openai__text-embedding-3-small');
+      expect(text).toContain('provider=openai');
+      expect(text).toContain('provider_class=paid');
+      expect(text).toContain('Estimated chunks: unknown until extraction');
+      expect(text).toContain('- alpha: 1 modified, 1 new');
+      expect(text).toContain('- beta: 0 modified, 1 new');
+      expect(text).toContain('Top stale KBs:');
+      expect(text).toContain('kb search "<query>" --refresh --kb=alpha');
+      expect(text).toContain('INGEST_EXCLUDE_PATHS=pdfs/**');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('scopes estimates to --kb and does not suggest narrowing to another KB', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-refresh-preflight-scoped-'));
+    try {
+      const kbRoot = path.join(tempDir, 'kbs');
+      const alpha = path.join(kbRoot, 'alpha');
+      const beta = path.join(kbRoot, 'beta');
+      await fsp.mkdir(alpha, { recursive: true });
+      await fsp.mkdir(beta, { recursive: true });
+      for (let i = 0; i < REFRESH_PREFLIGHT_FILE_THRESHOLD + 1; i += 1) {
+        await fsp.writeFile(path.join(alpha, `alpha-${i}.md`), 'alpha\n', 'utf-8');
+        await fsp.writeFile(path.join(beta, `beta-${i}.md`), 'beta\n', 'utf-8');
+      }
+
+      const estimate = await buildRefreshPreflightEstimate({
+        kbRootDir: kbRoot,
+        indexMtimeMs: null,
+        scopedKb: 'alpha',
+        activeModel: {
+          modelId: 'ollama__nomic-embed-text-latest',
+          provider: 'ollama',
+          modelName: 'nomic-embed-text:latest',
+        },
+      });
+      const text = formatRefreshPreflightEstimate(estimate);
+
+      expect(estimate.totalNewFiles).toBe(REFRESH_PREFLIGHT_FILE_THRESHOLD + 1);
+      expect(estimate.kbs).toHaveLength(1);
+      expect(estimate.kbs[0].kb).toBe('alpha');
+      expect(text).toContain('Scope: --kb=alpha');
+      expect(text).toContain('provider_class=local');
+      expect(text).toContain('Already scoped to `--kb=alpha`');
+      expect(text).not.toContain('--kb=beta');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes preflight text to stderr even for JSON output mode', async () => {
+    const estimate = {
+      activeModel: {
+        modelId: 'ollama__nomic-embed-text-latest',
+        provider: 'ollama',
+        modelName: 'nomic-embed-text:latest',
+        providerClass: 'local' as const,
+      },
+      scopedKb: undefined,
+      thresholdFiles: REFRESH_PREFLIGHT_FILE_THRESHOLD,
+      thresholdBytes: REFRESH_PREFLIGHT_BYTE_THRESHOLD,
+      exceedsThreshold: true,
+      totalModifiedFiles: 0,
+      totalNewFiles: REFRESH_PREFLIGHT_FILE_THRESHOLD + 1,
+      totalStaleFiles: REFRESH_PREFLIGHT_FILE_THRESHOLD + 1,
+      estimatedBytes: 1,
+      estimatedChunks: null,
+      stalePdfFiles: 0,
+      kbs: [{
+        kb: 'alpha',
+        modifiedFiles: 0,
+        newFiles: REFRESH_PREFLIGHT_FILE_THRESHOLD + 1,
+        staleFiles: REFRESH_PREFLIGHT_FILE_THRESHOLD + 1,
+        estimatedBytes: 1,
+        stalePdfFiles: 0,
+      }],
+      topKbs: [{
+        kb: 'alpha',
+        modifiedFiles: 0,
+        newFiles: REFRESH_PREFLIGHT_FILE_THRESHOLD + 1,
+        staleFiles: REFRESH_PREFLIGHT_FILE_THRESHOLD + 1,
+        estimatedBytes: 1,
+        stalePdfFiles: 0,
+      }],
+    };
+    const stderr: string[] = [];
+    const stdout: string[] = [];
+
+    expect(maybeWriteRefreshPreflight(estimate, {
+      format: 'json',
+      write: (text) => stderr.push(text),
+    })).toBe(true);
+    stdout.push(JSON.stringify({ results: [] }));
+
+    expect(stderr.join('')).toContain('kb search refresh preflight');
+    expect(JSON.parse(stdout.join(''))).toEqual({ results: [] });
   });
 });
 
