@@ -2,6 +2,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import {
   FaissIndexManager,
+  type IndexUpdateProgress,
   MAX_NEIGHBOR_CONTEXT_WINDOW,
   type NeighborContextOptions,
   type SimilaritySearchTiming,
@@ -41,6 +42,7 @@ import {
   elapsedMs,
   formatTimingFooter,
   nowMs,
+  recordRefreshProgressTiming,
   type TimingPayload,
 } from './cli-timing.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
@@ -247,7 +249,9 @@ export async function runSearch(rest: string[]): Promise<number> {
       await withWriteLock(manager.modelDir, async () => {
         await printRefreshPreflightIfLarge(activeModelId, manager, parsed.kb, parsed.format);
         await manager.initialize();
-        await manager.updateIndex(parsed.kb);
+        await manager.updateIndex(parsed.kb, {
+          onProgress: createRefreshProgressReporter(timing),
+        });
       });
     } else {
       await loadWithJsonRetry(manager);
@@ -512,6 +516,79 @@ export function resolveAutoSearchMode(query: string): AutoSearchModeDecision {
 
 export function formatAutoModeHeader(decision: AutoSearchModeDecision): string {
   return `> _Mode: auto -> ${decision.mode} (${decision.reason})._`;
+}
+
+export function createRefreshProgressReporter(
+  timing: TimingPayload | null,
+  writeStderr: (line: string) => void = (line) => process.stderr.write(line),
+): (progress: IndexUpdateProgress) => void {
+  return (progress) => {
+    if (timing) recordRefreshProgressTiming(timing, progress);
+    const line = formatRefreshProgressLine(progress);
+    if (line !== null) writeStderr(`${line}\n`);
+  };
+}
+
+export function formatRefreshProgressLine(progress: IndexUpdateProgress): string | null {
+  const elapsed = formatElapsed(progress.elapsedMs);
+  if (progress.phase === 'embed') {
+    const batch = progress.batchIndex !== undefined && progress.batchCount !== undefined
+      ? ` batch ${progress.batchIndex}/${progress.batchCount}`
+      : '';
+    const chunks = progress.processedChunks !== undefined && progress.totalChunks !== undefined
+      ? `, ${progress.processedChunks}/${progress.totalChunks} chunks`
+      : '';
+    const rate = progress.throughputChunksPerSecond !== undefined
+      ? `, ${formatRate(progress.throughputChunksPerSecond)} chunks/s`
+      : '';
+    return `kb search refresh: embed${batch}${chunks}${rate}${formatModel(progress)}${elapsed}`;
+  }
+  if (progress.phase === 'save') {
+    const status = progress.phaseStatus === 'completed' ? 'completed' : 'started';
+    return `kb search refresh: save ${status}${elapsed}`;
+  }
+  if (progress.phase === 'sidecar') {
+    const status = progress.phaseStatus === 'completed' ? 'completed' : 'started';
+    const count = progress.sidecarsWritten !== undefined
+      ? ` (${progress.sidecarsWritten} hash sidecar${progress.sidecarsWritten === 1 ? '' : 's'})`
+      : '';
+    return `kb search refresh: sidecar ${status}${count}${elapsed}`;
+  }
+  if (progress.phase === 'manifest') {
+    return `kb search refresh: manifest ${progress.phaseStatus ?? 'progress'}${elapsed}`;
+  }
+  if (progress.phase === 'scan') {
+    const files = progress.filesScanned !== undefined
+      ? `${progress.filesScanned}/${progress.totalFiles} files`
+      : `${progress.processedFiles}/${progress.totalFiles} files`;
+    return `kb search refresh: scan ${files}${elapsed}`;
+  }
+  if (progress.phase === 'load') {
+    const files = progress.filesScanned !== undefined
+      ? `${progress.filesScanned}/${progress.totalFiles} files`
+      : `${progress.processedFiles}/${progress.totalFiles} files`;
+    const chunks = progress.chunksDiscovered !== undefined
+      ? `, ${progress.chunksDiscovered} chunks discovered`
+      : '';
+    return `kb search refresh: load ${files}${chunks}${elapsed}`;
+  }
+  return null;
+}
+
+function formatModel(progress: IndexUpdateProgress): string {
+  if (!progress.provider || !progress.modelName) return '';
+  return `, model=${progress.provider}/${progress.modelName}`;
+}
+
+function formatElapsed(ms: number | undefined): string {
+  if (ms === undefined) return '';
+  if (ms < 1000) return `, elapsed=${Math.round(ms)}ms`;
+  return `, elapsed=${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatRate(value: number): string {
+  if (value >= 10) return value.toFixed(0);
+  return value.toFixed(1);
 }
 
 function mergeDenseTiming(target: TimingPayload, source: SimilaritySearchTiming): void {
@@ -1046,7 +1123,9 @@ async function runHybridSearch(
       await withWriteLock(manager.modelDir, async () => {
         await printRefreshPreflightIfLarge(activeModelId, manager, parsed.kb, parsed.format);
         await manager.initialize();
-        await manager.updateIndex(parsed.kb);
+        await manager.updateIndex(parsed.kb, {
+          onProgress: createRefreshProgressReporter(timing),
+        });
       });
     } else {
       await loadWithJsonRetry(manager);

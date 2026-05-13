@@ -36,6 +36,15 @@
 - `computeKbStats` shall ignore missing or malformed persisted summaries and keep the manager summary.
 - `buildDoctorReport` shall use the persisted summary for the active model when no explicit in-process summary is supplied.
 
+### TS-OBS-316: Refresh Progress Heartbeats
+**Requirement:** FR-OBS-316
+
+**Test Cases:**
+- `FaissIndexManager.updateIndex` shall emit one `embed` progress event for each bounded embedding batch.
+- `formatRefreshProgressLine` shall format embedding batch progress as concise operator-facing stderr text.
+- `createRefreshProgressReporter` shall write progress through the stderr writer and shall not write to stdout.
+- `recordRefreshProgressTiming` shall copy refresh batch counters and completed phase elapsed times into the flat timing payload.
+
 ## Search
 
 ### TS-SUPERSEDED-232: Superseded Memory Review

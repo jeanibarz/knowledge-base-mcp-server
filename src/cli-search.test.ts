@@ -1,15 +1,18 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import {
   AutoThresholdDecision,
   computeAutoThreshold,
+  createRefreshProgressReporter,
   formatAutoModeHeader,
   formatAutoThresholdHeader,
   formatFreshnessFooter,
+  formatRefreshProgressLine,
   parseSearchArgs,
   resolveAutoSearchMode,
   shouldUsePicker,
   Staleness,
 } from './cli-search.js';
+import { compactTimingPayload, type TimingPayload } from './cli-timing.js';
 import {
   classifyKbSearchError,
   formatKbSearchFailureJson,
@@ -134,6 +137,79 @@ describe('lock contention output (issue #181 + #199 unified shape)', () => {
     expect(out).toContain('category: lock');
     expect(out).toContain('Retry in a few seconds');
     expect(out).toContain('/tmp/model/.kb-write.lock');
+  });
+});
+
+describe('refresh progress output (#316)', () => {
+  it('formats bounded embedding batches as concise stderr progress lines', () => {
+    expect(formatRefreshProgressLine({
+      processedFiles: 0,
+      totalFiles: 5,
+      currentFile: '/kb/default/doc-1.md',
+      modelId: 'huggingface__BAAI-bge-small-en-v1.5',
+      phase: 'embed',
+      phaseStatus: 'progress',
+      batchIndex: 2,
+      batchCount: 3,
+      processedChunks: 4,
+      totalChunks: 5,
+      throughputChunksPerSecond: 12.4,
+      provider: 'huggingface',
+      modelName: 'BAAI/bge-small-en-v1.5',
+      elapsedMs: 1250,
+    })).toBe(
+      'kb search refresh: embed batch 2/3, 4/5 chunks, 12 chunks/s, ' +
+      'model=huggingface/BAAI/bge-small-en-v1.5, elapsed=1.3s',
+    );
+  });
+
+  it('writes refresh progress to stderr while preserving JSON stdout', () => {
+    const timing: TimingPayload = {};
+    const stderr: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    try {
+      const reporter = createRefreshProgressReporter(timing, (line) => {
+        stderr.push(line);
+      });
+      reporter({
+        processedFiles: 0,
+        totalFiles: 5,
+        currentFile: '/kb/default/doc-0.md',
+        modelId: 'huggingface__BAAI-bge-small-en-v1.5',
+        phase: 'embed',
+        phaseStatus: 'progress',
+        batchIndex: 1,
+        batchCount: 3,
+        batchSize: 2,
+        processedChunks: 2,
+        totalChunks: 5,
+        phaseElapsedMs: 500,
+        elapsedMs: 500,
+      });
+
+      expect(stderr).toEqual([
+        'kb search refresh: embed batch 1/3, 2/5 chunks, elapsed=500ms\n',
+      ]);
+      expect(stdoutSpy).not.toHaveBeenCalled();
+      const stdoutPayload = JSON.stringify({
+        results: [],
+        timing: compactTimingPayload(timing),
+      });
+      expect(JSON.parse(stdoutPayload)).toEqual({
+        results: [],
+        timing: {
+          refresh_embed_chunks: 2,
+          refresh_embed_chunks_total: 5,
+          refresh_embed_batches: 1,
+          refresh_embed_batches_total: 3,
+          refresh_embed_batch_size: 2,
+          refresh_embed_ms: 500,
+        },
+      });
+    } finally {
+      stdoutSpy.mockRestore();
+    }
   });
 });
 
