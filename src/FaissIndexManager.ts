@@ -8,8 +8,13 @@ import { createEmbeddingsClient, type EmbeddingsClient } from './embedding-provi
 import { handleFsOperationError, toError } from './error-utils.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
 import {
+  buildChunkManifest,
   buildChunkDocuments,
+  countStableChunkPrefix,
+  readChunkManifest,
+  type ChunkManifest,
   normalizeChunkTextForEmbedding,
+  writeChunkManifests,
   writeSidecarHashes,
 } from './file-ingest.js';
 import { loadFile } from './loaders.js';
@@ -1012,6 +1017,7 @@ export class FaissIndexManager {
         Math.floor(opts.progressIntervalFiles ?? DEFAULT_REBUILD_PROGRESS_INTERVAL_FILES),
       );
       const pendingHashWrites: { path: string; hash: string }[] = [];
+      const pendingChunkManifestWrites: { path: string; manifest: ChunkManifest }[] = [];
       const loaderFailurePaths = new Set<string>();
 
       // First enumerate every candidate path so progress notifications can
@@ -1126,9 +1132,30 @@ export class FaissIndexManager {
         relativePath: string;
         filePath: string;
         indexFilePath: string;
+        chunkManifestPath: string;
         fileHash: string;
         documents: Document[];
+        manifest: ChunkManifest;
       }> = [];
+      const metadataOnlyFileUpdates: Array<{
+        knowledgeBasePath: string;
+        relativePath: string;
+        filePath: string;
+        indexFilePath: string;
+        chunkManifestPath: string;
+        fileHash: string;
+        manifest: ChunkManifest;
+      }> = [];
+      const indexableScans: Array<{
+        knowledgeBaseName: string;
+        knowledgeBasePath: string;
+        filePath: string;
+        relativePath: string;
+        indexFilePath: string;
+        chunkManifestPath: string;
+        fileHash: string;
+      }> = [];
+      let requiresFullRebuild = false;
       const successfulIndexedFiles: Array<{ knowledgeBasePath: string; relativePath: string }> = [];
       const fsConcurrency = resolveFsConcurrency();
       const fileScanJobs = knowledgeBaseFiles.flatMap(
@@ -1146,6 +1173,7 @@ export class FaissIndexManager {
             filePath,
             relativePath,
             indexFilePath,
+            chunkManifestPath: `${indexFilePath}.chunks.json`,
           };
         }),
       );
@@ -1204,6 +1232,15 @@ export class FaissIndexManager {
           await reportLoadProgress(scan.filePath);
           continue;
         }
+        indexableScans.push({
+          knowledgeBaseName: scan.knowledgeBaseName,
+          knowledgeBasePath: scan.knowledgeBasePath,
+          filePath: scan.filePath,
+          relativePath: scan.relativePath,
+          indexFilePath: scan.indexFilePath,
+          chunkManifestPath: scan.chunkManifestPath,
+          fileHash: scan.fileHash,
+        });
 
         // If the file is new/changed, or the index itself is absent,
         // process it. The missing-index case must ignore matching sidecars:
@@ -1264,15 +1301,68 @@ export class FaissIndexManager {
           runSummary.chunks_attempted += documentsToAdd.length;
 
           if (documentsToAdd.length > 0) {
-            changedFileDocuments.push({
-              knowledgeBasePath: scan.knowledgeBasePath,
-              relativePath: scan.relativePath,
-              filePath: scan.filePath,
-              indexFilePath: scan.indexFilePath,
-              fileHash: scan.fileHash,
-              documents: documentsToAdd,
-            });
+            const nextManifest = buildChunkManifest(documentsToAdd, scan.fileHash);
+            let documentsForIndex = documentsToAdd;
+            if (!rebuildFromEmptyIndex && !forceReindex) {
+              const previousManifest = await readChunkManifest(scan.chunkManifestPath);
+              if (previousManifest === null) {
+                requiresFullRebuild = true;
+                logger.info(
+                  `Chunk manifest missing for changed file ${scan.filePath}; ` +
+                    `falling back to a full rebuild to avoid stale vectors.`,
+                );
+              } else {
+                const stablePrefix = countStableChunkPrefix(previousManifest, nextManifest);
+                if (
+                  stablePrefix === previousManifest.chunks.length &&
+                  nextManifest.chunks.length >= previousManifest.chunks.length
+                ) {
+                  documentsForIndex = documentsToAdd.slice(stablePrefix);
+                } else {
+                  requiresFullRebuild = true;
+                  logger.info(
+                    `Chunk manifest for ${scan.filePath} changed outside a stable append; ` +
+                      `falling back to a full rebuild because FAISS vector deletion is unsupported.`,
+                  );
+                }
+              }
+            }
+
+            if (!requiresFullRebuild) {
+              if (documentsForIndex.length > 0) {
+                changedFileDocuments.push({
+                  knowledgeBasePath: scan.knowledgeBasePath,
+                  relativePath: scan.relativePath,
+                  filePath: scan.filePath,
+                  indexFilePath: scan.indexFilePath,
+                  chunkManifestPath: scan.chunkManifestPath,
+                  fileHash: scan.fileHash,
+                  documents: documentsForIndex,
+                  manifest: nextManifest,
+                });
+              } else {
+                metadataOnlyFileUpdates.push({
+                  knowledgeBasePath: scan.knowledgeBasePath,
+                  relativePath: scan.relativePath,
+                  filePath: scan.filePath,
+                  indexFilePath: scan.indexFilePath,
+                  chunkManifestPath: scan.chunkManifestPath,
+                  fileHash: scan.fileHash,
+                  manifest: nextManifest,
+                });
+              }
+            }
           } else {
+            if (!rebuildFromEmptyIndex && !forceReindex) {
+              const previousManifest = await readChunkManifest(scan.chunkManifestPath);
+              if (previousManifest !== null && previousManifest.chunks.length > 0) {
+                requiresFullRebuild = true;
+                logger.info(
+                  `Changed file ${scan.filePath} now emits no chunks; ` +
+                    `falling back to a full rebuild to remove stale vectors.`,
+                );
+              }
+            }
             logger.debug(`No documents generated from ${scan.filePath}. Skipping index update.`);
           }
         } else {
@@ -1281,6 +1371,72 @@ export class FaissIndexManager {
           logger.debug(`File ${scan.filePath} unchanged, skipping.`);
         }
         await reportLoadProgress(scan.filePath);
+      }
+      if (requiresFullRebuild) {
+        this.faissIndex = null;
+        changedFileDocuments.length = 0;
+        metadataOnlyFileUpdates.length = 0;
+        runSummary.chunks_attempted = 0;
+        logger.info(
+          'Rebuilding the full FAISS index because at least one changed file ' +
+            'could not be updated incrementally without leaving stale vectors.',
+        );
+        for (const scan of indexableScans) {
+          let content = '';
+          try {
+            content = await loadFile(scan.filePath);
+          } catch (error: unknown) {
+            logger.warn(`Quarantining rebuild load failure for ${scan.filePath}:`, toError(error));
+            runSummary.files_skipped += 1;
+            loaderFailurePaths.add(scan.filePath);
+            recordFailure(scan.relativePath, 'load', error);
+            await recordQuarantineFailure(
+              scan.knowledgeBasePath,
+              scan.relativePath,
+              scan.fileHash,
+              error,
+            );
+            continue;
+          }
+
+          let documents: Document[];
+          try {
+            documents = await buildChunkDocuments(
+              scan.filePath,
+              content,
+              scan.knowledgeBaseName,
+            );
+          } catch (error: unknown) {
+            logger.warn(`Quarantining rebuild chunking failure for ${scan.filePath}:`, toError(error));
+            runSummary.files_skipped += 1;
+            loaderFailurePaths.add(scan.filePath);
+            recordFailure(scan.relativePath, 'indexing', error);
+            await recordQuarantineFailure(
+              scan.knowledgeBasePath,
+              scan.relativePath,
+              scan.fileHash,
+              error,
+            );
+            continue;
+          }
+
+          runSummary.chunks_attempted += documents.length;
+          if (documents.length === 0) {
+            logger.debug(`No documents generated from ${scan.filePath}. Skipping rebuild entry.`);
+            continue;
+          }
+
+          changedFileDocuments.push({
+            knowledgeBasePath: scan.knowledgeBasePath,
+            relativePath: scan.relativePath,
+            filePath: scan.filePath,
+            indexFilePath: scan.indexFilePath,
+            chunkManifestPath: scan.chunkManifestPath,
+            fileHash: scan.fileHash,
+            documents,
+            manifest: buildChunkManifest(documents, scan.fileHash),
+          });
+        }
       }
       const documentsToAdd = changedFileDocuments.flatMap((entry) => entry.documents);
       let addedChangedDocuments = false;
@@ -1309,6 +1465,10 @@ export class FaissIndexManager {
         runSummary.chunks_added += documentsToAdd.length;
         for (const entry of changedFileDocuments) {
           pendingHashWrites.push({ path: entry.indexFilePath, hash: entry.fileHash });
+          pendingChunkManifestWrites.push({
+            path: entry.chunkManifestPath,
+            manifest: entry.manifest,
+          });
           successfulIndexedFiles.push({
             knowledgeBasePath: entry.knowledgeBasePath,
             relativePath: entry.relativePath,
@@ -1317,6 +1477,17 @@ export class FaissIndexManager {
           processedFiles += 1;
           await reportProgress(entry.filePath);
         }
+      }
+      for (const entry of metadataOnlyFileUpdates) {
+        pendingHashWrites.push({ path: entry.indexFilePath, hash: entry.fileHash });
+        pendingChunkManifestWrites.push({
+          path: entry.chunkManifestPath,
+          manifest: entry.manifest,
+        });
+        successfulIndexedFiles.push({
+          knowledgeBasePath: entry.knowledgeBasePath,
+          relativePath: entry.relativePath,
+        });
       }
 
       // If at least one file was processed but no changes triggered index creation,
@@ -1327,8 +1498,11 @@ export class FaissIndexManager {
           knowledgeBasePath: string;
           relativePath: string;
           filePath: string;
+          indexFilePath: string;
+          chunkManifestPath: string;
           fileHash: string | null;
           documents: Document[];
+          manifest: ChunkManifest;
         }> = [];
         for (const { knowledgeBaseName, knowledgeBasePath, filePaths } of knowledgeBaseFiles) {
           for (const filePath of filePaths) {
@@ -1387,12 +1561,21 @@ export class FaissIndexManager {
             }
             runSummary.chunks_attempted += documents.length;
             if (documents.length > 0) {
+              const indexFilePath = path.join(
+                knowledgeBasePath,
+                '.index',
+                path.dirname(relativePath),
+                path.basename(filePath),
+              );
               fallbackDocuments.push({
                 knowledgeBasePath,
                 relativePath,
                 filePath,
+                indexFilePath,
+                chunkManifestPath: `${indexFilePath}.chunks.json`,
                 fileHash,
                 documents,
+                manifest: buildChunkManifest(documents, fileHash ?? '0'.repeat(64)),
               });
             }
           }
@@ -1428,6 +1611,13 @@ export class FaissIndexManager {
             0,
           );
           for (const entry of fallbackDocuments) {
+            if (entry.fileHash !== null) {
+              pendingHashWrites.push({ path: entry.indexFilePath, hash: entry.fileHash });
+              pendingChunkManifestWrites.push({
+                path: entry.chunkManifestPath,
+                manifest: entry.manifest,
+              });
+            }
             successfulIndexedFiles.push({
               knowledgeBasePath: entry.knowledgeBasePath,
               relativePath: entry.relativePath,
@@ -1438,42 +1628,49 @@ export class FaissIndexManager {
         }
       }
 
-      if (indexMutated && this.faissIndex !== null) {
+      if (
+        (indexMutated && this.faissIndex !== null) ||
+        pendingHashWrites.length > 0 ||
+        pendingChunkManifestWrites.length > 0
+      ) {
         // RFC 014 — atomicSave writes to a versioned `index.vN/` and swaps
         // the `index` symlink atomically. The legacy `faiss.index/` directory
         // (if present from a pre-RFC-014 install) is intentionally NOT
         // updated; first save under v014 effectively migrates the model to
         // versioned layout.
-        try {
-          const saveStartedAtMs = Date.now();
-          await emitProgress({
-            processedFiles,
-            totalFiles,
-            currentFile: '',
-            phase: 'save',
-            phaseStatus: 'started',
-          });
-          await this.atomicSave();
-          runSummary.saved = true;
-          await emitProgress({
-            processedFiles,
-            totalFiles,
-            currentFile: '',
-            phase: 'save',
-            phaseStatus: 'completed',
-            phaseElapsedMs: Date.now() - saveStartedAtMs,
-            saved: true,
-          });
-        } catch (saveError: unknown) {
-          recordFailure(null, 'save', saveError);
-          handleFsOperationError(
-            'save FAISS index for model',
-            this.modelId,
-            saveError,
-          );
+        if (indexMutated) {
+          try {
+            const saveStartedAtMs = Date.now();
+            await emitProgress({
+              processedFiles,
+              totalFiles,
+              currentFile: '',
+              phase: 'save',
+              phaseStatus: 'started',
+            });
+            await this.atomicSave();
+            runSummary.saved = true;
+            await emitProgress({
+              processedFiles,
+              totalFiles,
+              currentFile: '',
+              phase: 'save',
+              phaseStatus: 'completed',
+              phaseElapsedMs: Date.now() - saveStartedAtMs,
+              saved: true,
+            });
+          } catch (saveError: unknown) {
+            recordFailure(null, 'save', saveError);
+            handleFsOperationError(
+              'save FAISS index for model',
+              this.modelId,
+              saveError,
+            );
+          }
         }
-        // Sidecar hashes are written only after the index has persisted so
-        // we never claim a hash for vectors that never landed on disk.
+        // Sidecars are written only after any needed index save has
+        // completed. Metadata-only updates (same chunks, different file
+        // bytes) do not need a FAISS save, but can still advance sidecars.
         // `writeSidecarHashes` runs the batch under `withSidecarLock` so a
         // concurrent model's `purgeStaleSidecars` cannot rmrf
         // `<kb>/.index/` between our pre-loop `mkdir` and `rename` (issue
@@ -1489,10 +1686,12 @@ export class FaissIndexManager {
             currentFile: '',
             phase: 'sidecar',
             phaseStatus: 'started',
-            sidecarsWritten: pendingHashWrites.length,
+            sidecarsWritten: pendingHashWrites.length + pendingChunkManifestWrites.length,
           });
           await writeSidecarHashes(pendingHashWrites);
-          runSummary.sidecars_written = pendingHashWrites.length > 0;
+          await writeChunkManifests(pendingChunkManifestWrites);
+          runSummary.sidecars_written =
+            pendingHashWrites.length > 0 || pendingChunkManifestWrites.length > 0;
           await emitProgress({
             processedFiles,
             totalFiles,
@@ -1500,7 +1699,7 @@ export class FaissIndexManager {
             phase: 'sidecar',
             phaseStatus: 'completed',
             phaseElapsedMs: Date.now() - sidecarStartedAtMs,
-            sidecarsWritten: pendingHashWrites.length,
+            sidecarsWritten: pendingHashWrites.length + pendingChunkManifestWrites.length,
           });
           for (const entry of successfulIndexedFiles) {
             await recordQuarantineSuccess(entry.knowledgeBasePath, entry.relativePath);

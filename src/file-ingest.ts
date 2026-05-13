@@ -20,6 +20,7 @@
 // so they're testable on their own and don't carry per-instance state.
 
 import * as fsp from 'fs/promises';
+import * as crypto from 'crypto';
 import * as path from 'path';
 import { Document } from '@langchain/core/documents';
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
@@ -37,8 +38,150 @@ export interface PendingSidecarWrite {
   hash: string;
 }
 
+export const CHUNK_MANIFEST_SCHEMA_VERSION = 'kb.chunk-manifest.v1';
+
+export interface ChunkManifestEntry {
+  chunkIndex: number;
+  textHash: string;
+  metadataHash: string;
+  vectorDocstoreId: string;
+}
+
+export interface ChunkManifest {
+  schema_version: typeof CHUNK_MANIFEST_SCHEMA_VERSION;
+  source_sha256: string;
+  chunks: ChunkManifestEntry[];
+}
+
+export interface PendingChunkManifestWrite {
+  /** Absolute path of the chunk manifest sidecar under `<kb>/.index/`. */
+  path: string;
+  manifest: ChunkManifest;
+}
+
 export function normalizeChunkTextForEmbedding(text: string): string {
   return text.normalize('NFC').replace(/\s+/g, ' ').trim();
+}
+
+function sha256Hex(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeJsonValue(value: unknown): unknown {
+  if (value === null) return null;
+  if (Array.isArray(value)) {
+    return value.map(normalizeJsonValue);
+  }
+  if (isJsonObject(value)) {
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      sorted[key] = normalizeJsonValue(value[key]);
+    }
+    return sorted;
+  }
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function stableJsonStringify(value: unknown): string {
+  return JSON.stringify(normalizeJsonValue(value));
+}
+
+export function buildChunkManifest(
+  documents: ReadonlyArray<Document>,
+  sourceHash: string,
+): ChunkManifest {
+  return {
+    schema_version: CHUNK_MANIFEST_SCHEMA_VERSION,
+    source_sha256: sourceHash,
+    chunks: documents.map((document, index) => {
+      const chunkIndex = typeof document.metadata?.chunkIndex === 'number'
+        ? document.metadata.chunkIndex
+        : index;
+      const textHash = sha256Hex(normalizeChunkTextForEmbedding(document.pageContent));
+      const metadataHash = sha256Hex(stableJsonStringify(document.metadata ?? {}));
+      return {
+        chunkIndex,
+        textHash,
+        metadataHash,
+        vectorDocstoreId: sha256Hex(`${chunkIndex}\0${textHash}\0${metadataHash}`),
+      };
+    }),
+  };
+}
+
+function isChunkManifestEntry(value: unknown): value is ChunkManifestEntry {
+  if (!isJsonObject(value)) return false;
+  return (
+    typeof value.chunkIndex === 'number' &&
+    Number.isSafeInteger(value.chunkIndex) &&
+    value.chunkIndex >= 0 &&
+    typeof value.textHash === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.textHash) &&
+    typeof value.metadataHash === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.metadataHash) &&
+    typeof value.vectorDocstoreId === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.vectorDocstoreId)
+  );
+}
+
+function isChunkManifest(value: unknown): value is ChunkManifest {
+  if (!isJsonObject(value)) return false;
+  return (
+    value.schema_version === CHUNK_MANIFEST_SCHEMA_VERSION &&
+    typeof value.source_sha256 === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.source_sha256) &&
+    Array.isArray(value.chunks) &&
+    value.chunks.every(isChunkManifestEntry)
+  );
+}
+
+export async function readChunkManifest(manifestPath: string): Promise<ChunkManifest | null> {
+  let raw: string;
+  try {
+    raw = await fsp.readFile(manifestPath, 'utf-8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    throw error;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isChunkManifest(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function countStableChunkPrefix(
+  previous: ChunkManifest,
+  next: ChunkManifest,
+): number {
+  const limit = Math.min(previous.chunks.length, next.chunks.length);
+  let stablePrefix = 0;
+  for (; stablePrefix < limit; stablePrefix += 1) {
+    const previousChunk = previous.chunks[stablePrefix];
+    const nextChunk = next.chunks[stablePrefix];
+    if (
+      previousChunk.chunkIndex !== nextChunk.chunkIndex ||
+      previousChunk.textHash !== nextChunk.textHash ||
+      previousChunk.metadataHash !== nextChunk.metadataHash
+    ) {
+      break;
+    }
+  }
+  return stablePrefix;
 }
 
 /**
@@ -145,6 +288,34 @@ export async function writeSidecarHashes(
             // best-effort cleanup; original error is what matters
           }
           handleFsOperationError('write file hash metadata to', target, error);
+        }
+      }),
+    );
+  });
+}
+
+export async function writeChunkManifests(
+  pendingManifestWrites: ReadonlyArray<PendingChunkManifestWrite>,
+): Promise<void> {
+  if (pendingManifestWrites.length === 0) return;
+  await withSidecarLock(async () => {
+    await Promise.all(
+      pendingManifestWrites.map(async ({ path: target, manifest }) => {
+        const tmpPath = `${target}.tmp`;
+        try {
+          await fsp.mkdir(path.dirname(target), { recursive: true });
+          await fsp.writeFile(tmpPath, JSON.stringify(manifest), {
+            encoding: 'utf-8',
+            mode: 0o600,
+          });
+          await fsp.rename(tmpPath, target);
+        } catch (error) {
+          try {
+            await fsp.unlink(tmpPath);
+          } catch {
+            // best-effort cleanup; original error is what matters
+          }
+          handleFsOperationError('write chunk manifest to', target, error);
         }
       }),
     );
