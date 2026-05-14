@@ -49,43 +49,125 @@ describe('FaissStoreAdapter', () => {
     });
   });
 
-  it('temporarily swaps embeddings for addDocuments and restores the original client', async () => {
-    const originalEmbeddings = { embedDocuments: jest.fn(), embedQuery: jest.fn() };
-    const indexingEmbeddings = { embedDocuments: jest.fn(), embedQuery: jest.fn() };
-    const addDocuments = jest.fn(async function add(this: { embeddings: unknown }) {
-      expect(this.embeddings).toBe(indexingEmbeddings);
-    });
-    const store = {
-      embeddings: originalEmbeddings,
-      addDocuments,
+  // RFC 017 §3 — `addDocumentsWithEmbeddings` no longer routes through
+  // `FaissStore.addDocuments`; instead it embeds via the passed-in
+  // `embeddings` (the IndexingEmbeddingDeduper at the production call
+  // site) and then calls `store.addVectors(vectors, documents)`. The
+  // documents are stored verbatim while the embedding input may differ
+  // when `metadata.contextual_preface` is present.
+  it('embeds upstream and calls addVectors with original documents', async () => {
+    const indexingEmbeddings = {
+      embedDocuments: jest.fn(async (texts: string[]) =>
+        texts.map((_t, i) => Array(4).fill(i + 1)),
+      ),
+      embedQuery: jest.fn(),
     };
+    const addVectors = jest.fn(async () => {});
+    const ntotal = jest.fn(() => 2);
+    const docsMap = new Map<string, unknown>([
+      ['id-0', { pageContent: 'a', metadata: {} }],
+      ['id-1', { pageContent: 'b', metadata: {} }],
+    ]);
+    const store = {
+      embeddings: { embedDocuments: jest.fn(), embedQuery: jest.fn() },
+      addVectors,
+      index: { ntotal, getDimension: () => 4 },
+      docstore: { _docs: docsMap },
+    };
+    const docs = [
+      { pageContent: 'a', metadata: {} },
+      { pageContent: 'b', metadata: {} },
+    ];
 
-    await adapterFor(store).addDocumentsWithEmbeddings(
-      [{ pageContent: 'doc', metadata: {} }] as never,
-      indexingEmbeddings as never,
-    );
+    await adapterFor(store).addDocumentsWithEmbeddings(docs as never, indexingEmbeddings as never);
 
-    expect(addDocuments).toHaveBeenCalledWith([{ pageContent: 'doc', metadata: {} }]);
-    expect(store.embeddings).toBe(originalEmbeddings);
+    // Both embedding texts came from doc.pageContent (no preface metadata).
+    expect(indexingEmbeddings.embedDocuments).toHaveBeenCalledWith(['a', 'b']);
+    // The original docs are what landed in the store, byte-for-byte.
+    expect(addVectors).toHaveBeenCalledWith([[1, 1, 1, 1], [2, 2, 2, 2]], docs);
   });
 
-  it('restores embeddings when addDocuments throws', async () => {
-    const originalEmbeddings = { embedDocuments: jest.fn(), embedQuery: jest.fn() };
-    const indexingEmbeddings = { embedDocuments: jest.fn(), embedQuery: jest.fn() };
+  it('uses the preface-prepended form for embedding when metadata.contextual_preface is set', async () => {
+    const indexingEmbeddings = {
+      embedDocuments: jest.fn(async (texts: string[]) =>
+        texts.map(() => [0, 0, 0, 0]),
+      ),
+      embedQuery: jest.fn(),
+    };
     const store = {
-      embeddings: originalEmbeddings,
-      addDocuments: jest.fn(async () => {
-        throw new Error('provider failed');
-      }),
+      embeddings: { embedDocuments: jest.fn(), embedQuery: jest.fn() },
+      addVectors: jest.fn(async () => {}),
+      index: { ntotal: () => 1, getDimension: () => 4 },
+      docstore: {
+        _docs: new Map<string, unknown>([['id-0', { pageContent: 'chunk', metadata: {} }]]),
+      },
+    };
+    const docs = [
+      {
+        pageContent: 'chunk',
+        metadata: { contextual_preface: 'In Section 3, this chunk discusses pinning to CPU.' },
+      },
+    ];
+
+    await adapterFor(store).addDocumentsWithEmbeddings(docs as never, indexingEmbeddings as never);
+
+    // Embedding input is preface + "\n\n" + chunk, NOT the raw chunk.
+    expect(indexingEmbeddings.embedDocuments).toHaveBeenCalledWith([
+      'In Section 3, this chunk discusses pinning to CPU.\n\nchunk',
+    ]);
+  });
+
+  it('rejects an embedding/document length mismatch', async () => {
+    const indexingEmbeddings = {
+      embedDocuments: jest.fn(async () => [[1, 2, 3]]), // 1 vector
+      embedQuery: jest.fn(),
+    };
+    const store = {
+      embeddings: { embedDocuments: jest.fn(), embedQuery: jest.fn() },
+      addVectors: jest.fn(),
     };
 
     await expect(
       adapterFor(store).addDocumentsWithEmbeddings(
-        [{ pageContent: 'doc', metadata: {} }] as never,
+        [
+          { pageContent: 'a', metadata: {} },
+          { pageContent: 'b', metadata: {} },
+        ] as never,
         indexingEmbeddings as never,
       ),
-    ).rejects.toThrow('provider failed');
-    expect(store.embeddings).toBe(originalEmbeddings);
+    ).rejects.toThrow(/Embedding provider returned 1 vector\(s\) for 2 document\(s\)/);
+    expect(store.addVectors).not.toHaveBeenCalled();
+  });
+
+  it('rejects post-batch when ntotal !== docstore.size', async () => {
+    // Simulate the partial-batch failure: addVectors "succeeds" but the
+    // docstore ends up smaller than the index. Per RFC 017 §3, the
+    // adapter must throw rather than allow a corrupted store to persist.
+    const indexingEmbeddings = {
+      embedDocuments: jest.fn(async () => [
+        [1, 1, 1, 1],
+        [2, 2, 2, 2],
+      ]),
+      embedQuery: jest.fn(),
+    };
+    const store = {
+      embeddings: { embedDocuments: jest.fn(), embedQuery: jest.fn() },
+      addVectors: jest.fn(async () => {}),
+      index: { ntotal: () => 2, getDimension: () => 4 },
+      docstore: {
+        _docs: new Map<string, unknown>([['id-0', { pageContent: 'a', metadata: {} }]]),
+      },
+    };
+
+    await expect(
+      adapterFor(store).addDocumentsWithEmbeddings(
+        [
+          { pageContent: 'a', metadata: {} },
+          { pageContent: 'b', metadata: {} },
+        ] as never,
+        indexingEmbeddings as never,
+      ),
+    ).rejects.toThrow(/index\/docstore divergence/);
   });
 
   it('uses vector-first search when LangChain exposes it', async () => {

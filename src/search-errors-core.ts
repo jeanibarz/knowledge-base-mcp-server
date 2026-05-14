@@ -21,6 +21,7 @@ export type SearchFailureCategory =
   | 'configuration'
   | 'indexing'
   | 'provider'
+  | 'external'
   | 'permissions'
   | 'input'
   | 'lock'
@@ -154,6 +155,43 @@ function classifyKBError(err: KBError): SearchFailure {
         category: 'unknown',
         message: err.message,
         next_action: RUN_DOCTOR,
+      };
+    // RFC 017 — contextual-retrieval failure surfaces. None of these are
+    // reachable from the search path today (they originate at ingest time
+    // and during M0b's reindex CLI), so the search-error mapping keeps a
+    // generic recovery hint. Wired into the exhaustiveness check so
+    // adding more codes still fails the compile if forgotten.
+    case 'PREFACE_LLM_FAILURE':
+      return {
+        code,
+        category: 'external',
+        message: err.message,
+        next_action:
+          'A previous contextual-preface generation failed. Confirm `KB_LLM_ENDPOINT` is reachable and re-run ingest; the failure is retried automatically per RFC 017 backoff schedule.',
+      };
+    case 'PREFACE_SIDECAR_CORRUPT':
+      return {
+        code,
+        category: 'indexing',
+        message: err.message,
+        next_action:
+          'Delete the offending contextual-preface sidecar under `$FAISS_INDEX_PATH/.contextual-prefaces/` to force regeneration on the next ingest.',
+      };
+    case 'REINDEX_LOCK_HELD':
+      return {
+        code,
+        category: 'lock',
+        message: err.message,
+        next_action:
+          'Another `kb reindex` is in progress on this model. Wait for it to finish, then retry.',
+      };
+    case 'REINDEX_BUDGET_EXCEEDED':
+      return {
+        code,
+        category: 'input',
+        message: err.message,
+        next_action:
+          'The estimated reindex runtime would cross the LRA cron window (06:00-10:30 UTC). Schedule the run for the quiet window or pass `--force`.',
       };
     default: {
       // Exhaustiveness — if a new KBErrorCode is added, the switch above must
