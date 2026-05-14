@@ -2801,6 +2801,83 @@ describe('FaissIndexManager ingest — PDF + HTML loaders (issue #46)', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('removes a stale PDF-only persisted index when the new default filter has no ingestable files', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ingest-pdf-only-migration-'));
+    const kbRoot = path.join(tempDir, 'kb');
+    const docsKb = path.join(kbRoot, 'docs');
+    await fsp.mkdir(docsKb, { recursive: true });
+    await fsp.writeFile(
+      path.join(docsKb, 'paper.pdf'),
+      Buffer.from('%PDF-1.4\n%mocked content does not need to be valid here'),
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.INGEST_EXTRA_EXTENSIONS = '.pdf';
+    delete process.env.INGEST_EXCLUDE_PATHS;
+
+    jest.resetModules();
+    {
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const first = new FaissIndexManager();
+      await first.initialize();
+      await first.updateIndex();
+    }
+    expect(collectIngestedDocs().metadatas.some((m) => String(m.source).endsWith('.pdf'))).toBe(
+      true,
+    );
+
+    const modelDir = modelDirIn(process.env.FAISS_INDEX_PATH!);
+    const activeIndexPath = path.join(
+      versionedIndexPathIn(process.env.FAISS_INDEX_PATH!),
+      'faiss.index',
+    );
+    await fsp.mkdir(path.dirname(activeIndexPath), { recursive: true });
+    await fsp.writeFile(activeIndexPath, 'mock faiss bytes', 'utf-8');
+    const activeIndexStat = await fsp.stat(activeIndexPath);
+    const { freshnessManifestPath, writeFreshnessManifest } = await import(
+      './freshness-manifest.js'
+    );
+    await writeFreshnessManifest({
+      modelId: DEFAULT_MODEL_ID,
+      modelDir,
+      kbRootDir: kbRoot,
+      indexMtimeMs: activeIndexStat.mtimeMs,
+      filterConfig: {
+        baseExtensions: ['.md', '.markdown', '.txt', '.rst', '.html', '.htm', '.pdf'],
+        extraExtensions: [],
+        excludePaths: [],
+      },
+    });
+
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+    delete process.env.INGEST_EXTRA_EXTENSIONS;
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const second = new FaissIndexManager();
+    await second.initialize();
+    await second.updateIndex();
+
+    expect(loadMock).toHaveBeenCalledTimes(1);
+    expect(fromTextsMock).not.toHaveBeenCalled();
+    expect(addDocumentsMock).not.toHaveBeenCalled();
+    await expect(fsp.stat(path.join(modelDir, 'index'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(
+      fsp.stat(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(freshnessManifestPath(modelDir))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('ingests a `.html` file via the HTML loader (tags stripped before embedding)', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ingest-html-'));
     const kbRoot = path.join(tempDir, 'kb');

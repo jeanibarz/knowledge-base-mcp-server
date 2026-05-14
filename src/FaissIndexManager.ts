@@ -46,6 +46,7 @@ import {
   saveFaissStoreAtomic,
 } from './faiss-store-layout.js';
 import {
+  freshnessManifestPath,
   readFreshnessManifest,
   writeFreshnessManifest,
 } from './freshness-manifest.js';
@@ -818,6 +819,58 @@ export class FaissIndexManager {
     }
   }
 
+  private async purgePersistedIndexStore(
+    reason: 'force_reindex' | 'ingest_filter_changed',
+  ): Promise<void> {
+    const removed: string[] = [];
+    let entries: Array<{ name: string }>;
+    try {
+      entries = await fsp.readdir(this.modelDir, { withFileTypes: true });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return;
+      logger.warn(
+        `Could not list persisted index store for ${this.modelId} at ${this.modelDir}: ` +
+          `${(err as Error).message}`,
+      );
+      return;
+    }
+
+    for (const entry of entries) {
+      if (
+        entry.name !== 'index' &&
+        entry.name !== 'faiss.index' &&
+        !/^index\.v\d+$/.test(entry.name)
+      ) {
+        continue;
+      }
+      const target = path.join(this.modelDir, entry.name);
+      try {
+        await fsp.rm(target, { recursive: true, force: true });
+        removed.push(entry.name);
+      } catch (err) {
+        logger.warn(
+          `Could not remove stale persisted index entry ${target}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    try {
+      await fsp.rm(freshnessManifestPath(this.modelDir), { force: true });
+    } catch (err) {
+      logger.warn(
+        `Could not remove stale freshness manifest for ${this.modelId}: ${(err as Error).message}`,
+      );
+    }
+
+    if (removed.length > 0) {
+      logger.warn(
+        `Removed stale persisted FAISS index for model ${this.modelId} ` +
+          `(${reason}; entries=${removed.join(', ')}).`,
+      );
+    }
+  }
+
   /**
    * Issue #283 — absolute path of this model's predicate-pushdown sidecar.
    * Lives next to `last-index-update.json` and `model_name.txt` under the
@@ -1125,8 +1178,10 @@ export class FaissIndexManager {
       // Both are wrong. Treat scope as advisory under force: log the
       // upgrade and rebuild globally.
       let scopedKnowledgeBase = specificKnowledgeBase;
+      let shouldPurgePersistedIndexIfEmpty = false;
       if (forceReindex) {
         this.faissIndex = null;
+        shouldPurgePersistedIndexIfEmpty = true;
         if (scopedKnowledgeBase !== undefined) {
           logger.info(
             `Forced reindex of "${scopedKnowledgeBase}" upgraded to a global rebuild ` +
@@ -1148,6 +1203,7 @@ export class FaissIndexManager {
           });
           if (freshnessManifest === null) {
             this.faissIndex = null;
+            shouldPurgePersistedIndexIfEmpty = true;
             if (scopedKnowledgeBase !== undefined) {
               logger.info(
                 `Ingest filter changed for "${scopedKnowledgeBase}"; upgrading scoped ` +
@@ -1893,7 +1949,11 @@ export class FaissIndexManager {
       try {
         const manifestStartedAtMs = Date.now();
         const activeIndexFilePath = await this.resolveActiveIndexFilePath();
-        if (activeIndexFilePath !== null) {
+        if (this.faissIndex === null && shouldPurgePersistedIndexIfEmpty) {
+          await this.purgePersistedIndexStore(
+            forceReindex ? 'force_reindex' : 'ingest_filter_changed',
+          );
+        } else if (activeIndexFilePath !== null) {
           const indexStat = await fsp.stat(activeIndexFilePath);
           await writeFreshnessManifest({
             modelId: this.modelId,
