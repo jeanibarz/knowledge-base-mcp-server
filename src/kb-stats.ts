@@ -12,10 +12,12 @@ import * as path from 'path';
 import { FaissIndexManager, type IndexUpdateSummary } from './FaissIndexManager.js';
 import {
   FAISS_INDEX_PATH,
+  KNOWLEDGE_BASES_ROOT_DIR,
+} from './config/paths.js';
+import {
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
-  KNOWLEDGE_BASES_ROOT_DIR,
-} from './config.js';
+} from './config/ingest.js';
 import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import { KBError } from './errors.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';

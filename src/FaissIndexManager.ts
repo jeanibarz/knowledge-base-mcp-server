@@ -20,10 +20,14 @@ import { loadFile } from './loaders.js';
 import {
   FAISS_INDEX_PATH,
   KNOWLEDGE_BASES_ROOT_DIR,
+} from './config/paths.js';
+import {
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
+} from './config/ingest.js';
+import {
   resolveIndexingBatchSize,
-} from './config.js';
+} from './config/indexing.js';
 import { casRootForIndexPath } from './docstore-cas.js';
 import {
   activeFileExists,

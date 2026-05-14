@@ -21,8 +21,10 @@ import {
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KB_EDITOR_URI,
+} from './config/retrieval.js';
+import {
   KNOWLEDGE_BASES_ROOT_DIR,
-} from './config.js';
+} from './config/paths.js';
 import {
   formatRetrievalAsJson,
   formatRetrievalAsMarkdown,

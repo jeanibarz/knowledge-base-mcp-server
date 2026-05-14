@@ -14,7 +14,7 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
-import { FAISS_INDEX_PATH } from './config.js';
+import { FAISS_INDEX_PATH } from './config/paths.js';
 import { logger } from './logger.js';
 
 const WRITE_LOCK_OPTS_BASE: Omit<properLockfile.LockOptions, 'lockfilePath'> = {

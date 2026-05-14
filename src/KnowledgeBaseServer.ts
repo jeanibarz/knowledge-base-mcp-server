@@ -26,20 +26,28 @@ import { ManagerRegistry } from './manager-registry.js';
 import {
   ADD_DOCUMENT_DESCRIPTION,
   DELETE_DOCUMENT_DESCRIPTION,
-  FRONTMATTER_EXTRAS_WIRE_VISIBLE,
-  INGEST_EXCLUDE_PATHS,
-  INGEST_EXTRA_EXTENSIONS,
-  KB_FS_WATCH,
-  KB_FS_WATCH_DEBOUNCE_MS,
   KB_STATS_DESCRIPTION,
-  KNOWLEDGE_BASES_ROOT_DIR,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   LIST_MODELS_DESCRIPTION,
   REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
+  RETRIEVE_KNOWLEDGE_DESCRIPTION,
+} from './config/mcp-descriptions.js';
+import {
+  FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+} from './config/retrieval.js';
+import {
+  INGEST_EXCLUDE_PATHS,
+  INGEST_EXTRA_EXTENSIONS,
+} from './config/ingest.js';
+import {
+  KB_FS_WATCH,
+  KB_FS_WATCH_DEBOUNCE_MS,
   REINDEX_TRIGGER_PATH,
   REINDEX_TRIGGER_POLL_MS,
-  RETRIEVE_KNOWLEDGE_DESCRIPTION,
-} from './config.js';
+} from './config/watchers.js';
+import {
+  KNOWLEDGE_BASES_ROOT_DIR,
+} from './config/paths.js';
 import {
   loadTransportConfig,
   TransportConfigError,

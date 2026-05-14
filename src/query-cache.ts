@@ -4,10 +4,12 @@ import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
 import {
   FAISS_INDEX_PATH,
+} from './config/paths.js';
+import {
   KB_QUERY_CACHE_DISK_MAX_BYTES,
   KB_QUERY_CACHE_ENABLED,
   KB_QUERY_CACHE_LRU_MAX,
-} from './config.js';
+} from './config/cache.js';
 import { pathExists } from './file-utils.js';
 import { logger } from './logger.js';
 import { isValidModelId } from './model-id.js';

@@ -5,7 +5,7 @@
 
 import type { Document } from '@langchain/core/documents';
 import { buildChunkCitation, type ChunkCitation } from './chunk-id.js';
-import { KB_EDITOR_URI, type KBEditorUriMode } from './config.js';
+import { KB_EDITOR_URI, type KBEditorUriMode } from './config/retrieval.js';
 import {
   applyInjectionGuard,
   isInjectionGuardBypassed,
