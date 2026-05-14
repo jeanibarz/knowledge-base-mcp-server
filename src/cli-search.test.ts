@@ -1,21 +1,26 @@
+import * as path from 'path';
 import { describe, expect, it, jest } from '@jest/globals';
 import {
   AutoThresholdDecision,
   buildDenseSearchJsonPayload,
+  buildExplainEmptyDiagnostics,
   computeAutoThreshold,
   createRefreshProgressReporter,
   formatDenseSearchMarkdownOutput,
   formatAutoModeHeader,
   formatAutoThresholdHeader,
+  formatExplainEmptyDiagnosticsMarkdown,
   formatFreshnessFooter,
   formatRefreshProgressLine,
   parseSearchArgs,
   resolveAutoSearchMode,
   runSearch,
   shouldUsePicker,
+  type ExplainEmptyDiagnostics,
   type RunSearchDeps,
   Staleness,
 } from './cli-search.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { compactTimingPayload, type TimingPayload } from './cli-timing.js';
 import type { ScoredDocument } from './formatter.js';
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
@@ -239,6 +244,18 @@ describe('parseSearchArgs freshness', () => {
 
   it('accepts --no-freshness to omit freshness work and output', () => {
     expect(parseSearchArgs(['query', '--no-freshness'])).toMatchObject({ freshness: false });
+  });
+});
+
+describe('parseSearchArgs --explain-empty (#328)', () => {
+  it('defaults to false so the inline #335 guidance keeps its current behaviour', () => {
+    expect(parseSearchArgs(['query'])).toMatchObject({ explainEmpty: false });
+  });
+
+  it('accepts --explain-empty as a boolean opt-in', () => {
+    expect(parseSearchArgs(['query', '--explain-empty'])).toMatchObject({
+      explainEmpty: true,
+    });
   });
 });
 
@@ -838,5 +855,501 @@ describe('formatAutoModeHeader', () => {
     expect(formatAutoModeHeader({ mode: 'hybrid', reason: 'file-like token' })).toBe(
       '> _Mode: auto -> hybrid (file-like token)._',
     );
+  });
+});
+
+describe('buildExplainEmptyDiagnostics (#328)', () => {
+  const KB_ROOT = '/kb-root';
+  const candidate = (kbName: string, score: number, file = 'doc.md') =>
+    ({
+      score,
+      metadata: { source: `${KB_ROOT}/${kbName}/${file}` },
+    } as const);
+
+  it('classifies scope drops first then threshold drops so counts sum to pre-filter total', () => {
+    const raw = [
+      candidate('work', 0.3),     // in-scope, under threshold → kept
+      candidate('work', 0.9),     // in-scope, over threshold → threshold drop
+      candidate('personal', 0.2), // out-of-scope (even though score would pass) → scope drop
+      candidate('personal', 0.9), // out-of-scope → scope drop (scope wins over threshold)
+    ];
+    const d = buildExplainEmptyDiagnostics({
+      rawCandidates: raw,
+      threshold: 0.5,
+      scopedKb: 'work',
+      allKbs: ['personal', 'work'],
+      staleness: null,
+      kbRoot: KB_ROOT,
+    });
+
+    expect(d.candidatesPreFilter).toBe(4);
+    expect(d.candidatesPostFilter).toBe(1);
+    expect(d.filterDrops.kbScope).toBe(2);
+    expect(d.filterDrops.threshold).toBe(1);
+    expect(d.filterDrops.kbScope).toBeGreaterThanOrEqual(0);
+    expect(d.filterDrops.threshold).toBeGreaterThanOrEqual(0);
+    expect(
+      d.filterDrops.kbScope + d.filterDrops.threshold + d.candidatesPostFilter,
+    ).toBe(d.candidatesPreFilter);
+  });
+
+  it('reports kbs_searched as just the scoped KB and kbs_skipped with a reason', () => {
+    const d = buildExplainEmptyDiagnostics({
+      rawCandidates: [],
+      threshold: 0.5,
+      scopedKb: 'work',
+      allKbs: ['personal', 'work', 'archive'],
+      staleness: null,
+      kbRoot: KB_ROOT,
+    });
+    expect(d.scope.requestedKb).toBe('work');
+    expect(d.scope.kbsSearched).toEqual(['work']);
+    expect(d.scope.kbsSkipped).toEqual([
+      { kb: 'personal', reason: 'outside --kb=work' },
+      { kb: 'archive', reason: 'outside --kb=work' },
+    ]);
+  });
+
+  it('reports global scope when no --kb is set', () => {
+    const d = buildExplainEmptyDiagnostics({
+      rawCandidates: [],
+      threshold: 0.5,
+      scopedKb: undefined,
+      allKbs: ['personal', 'work'],
+      staleness: null,
+      kbRoot: KB_ROOT,
+    });
+    expect(d.scope.requestedKb).toBeNull();
+    expect(d.scope.kbsSearched).toEqual(['personal', 'work']);
+    expect(d.scope.kbsSkipped).toEqual([]);
+  });
+
+  it('caps nearest_candidates to 3 by default and preserves drop classification', () => {
+    const raw = [
+      candidate('work', 0.10),
+      candidate('work', 0.20),
+      candidate('work', 0.30),
+      candidate('work', 0.40),
+      candidate('work', 0.50),
+    ];
+    const d = buildExplainEmptyDiagnostics({
+      rawCandidates: raw,
+      threshold: 0.25,
+      scopedKb: 'work',
+      allKbs: ['work'],
+      staleness: null,
+      kbRoot: KB_ROOT,
+    });
+    expect(d.nearestCandidates).toHaveLength(3);
+    expect(d.nearestCandidates.map((c) => c.score)).toEqual([0.10, 0.20, 0.30]);
+    expect(d.nearestCandidates.map((c) => c.droppedBy)).toEqual([
+      'none',
+      'none',
+      'threshold',
+    ]);
+    expect(d.nearestCandidates.every((c) => c.kb === 'work')).toBe(true);
+  });
+
+  it('reuses provided staleness without rescanning and folds scoped + global counts', () => {
+    const staleness: Staleness = {
+      indexMtime: MTIME,
+      modifiedFiles: 2,
+      newFiles: 5,
+      scope: { kb: 'work', modifiedFiles: 2, newFiles: 5 },
+      global: { modifiedFiles: 4, newFiles: 7 },
+    };
+    const d = buildExplainEmptyDiagnostics({
+      rawCandidates: [],
+      threshold: 0.5,
+      scopedKb: 'work',
+      allKbs: ['work'],
+      staleness,
+      kbRoot: KB_ROOT,
+    });
+    expect(d.freshness.indexBuilt).toBe(true);
+    expect(d.freshness.indexMtime).toBe(MTIME);
+    expect(d.freshness.scoped).toEqual({ modifiedFiles: 2, newFiles: 5 });
+    expect(d.freshness.global).toEqual({ modifiedFiles: 4, newFiles: 7 });
+  });
+
+  it('marks freshness as not-built when staleness is null (--no-freshness)', () => {
+    const d = buildExplainEmptyDiagnostics({
+      rawCandidates: [],
+      threshold: 0.5,
+      scopedKb: undefined,
+      allKbs: ['work'],
+      staleness: null,
+      kbRoot: KB_ROOT,
+    });
+    expect(d.freshness.indexBuilt).toBe(false);
+    expect(d.freshness.indexMtime).toBeNull();
+    expect(d.freshness.scoped).toBeNull();
+  });
+});
+
+describe('formatExplainEmptyDiagnosticsMarkdown (#328)', () => {
+  const baseDiagnostics: ExplainEmptyDiagnostics = {
+    threshold: 0.5,
+    candidatesPreFilter: 4,
+    candidatesPostFilter: 0,
+    filterDrops: { kbScope: 2, threshold: 2 },
+    scope: {
+      requestedKb: 'work',
+      kbsSearched: ['work'],
+      kbsSkipped: [{ kb: 'personal', reason: 'outside --kb=work' }],
+    },
+    freshness: {
+      indexBuilt: true,
+      indexMtime: MTIME,
+      scoped: { modifiedFiles: 2, newFiles: 5 },
+      global: { modifiedFiles: 4, newFiles: 7 },
+    },
+    nearestCandidates: [
+      { score: 0.62, source: '/kb-root/work/runbook.md', kb: 'work', droppedBy: 'threshold' },
+      { score: 0.71, source: '/kb-root/personal/diary.md', kb: 'personal', droppedBy: 'kb_scope' },
+    ],
+  };
+
+  it('renders a Diagnostics subsection with per-filter drops, scope, and nearest candidates', () => {
+    const out = formatExplainEmptyDiagnosticsMarkdown(baseDiagnostics);
+    expect(out).toMatch(/^### Diagnostics$/m);
+    expect(out).toContain('Candidates inspected: 4');
+    expect(out).toContain('Candidates kept after filters: 0');
+    expect(out).toContain('Per-filter drops: kb_scope=2, threshold=2 (threshold=0.50)');
+    expect(out).toContain('--kb=work');
+    expect(out).toContain(`Index: built ${MTIME}, scoped drift=2m+5n, global drift=4m+7n`);
+    expect(out).toContain('score=0.620 /kb-root/work/runbook.md — dropped by threshold');
+    expect(out).toContain('score=0.710 /kb-root/personal/diary.md — dropped by kb_scope');
+  });
+
+  it('omits the scoped-drift fragment when the run was global', () => {
+    const out = formatExplainEmptyDiagnosticsMarkdown({
+      ...baseDiagnostics,
+      scope: {
+        requestedKb: null,
+        kbsSearched: ['work', 'personal'],
+        kbsSkipped: [],
+      },
+      freshness: { ...baseDiagnostics.freshness, scoped: null },
+    });
+    expect(out).toContain('Scope: global (2 KB(s) searched: work, personal)');
+    expect(out).toContain(`Index: built ${MTIME}, global drift=4m+7n`);
+    expect(out).not.toContain('scoped drift=');
+  });
+
+  it('says "index not yet built" when freshness shows no index', () => {
+    const out = formatExplainEmptyDiagnosticsMarkdown({
+      ...baseDiagnostics,
+      freshness: {
+        indexBuilt: false,
+        indexMtime: null,
+        scoped: null,
+        global: { modifiedFiles: 0, newFiles: 0 },
+      },
+    });
+    expect(out).toContain('Index: not yet built (run `kb search --refresh` to create it)');
+  });
+
+  it('surfaces an explicit "none" when FAISS returned zero candidates', () => {
+    const out = formatExplainEmptyDiagnosticsMarkdown({
+      ...baseDiagnostics,
+      candidatesPreFilter: 0,
+      filterDrops: { kbScope: 0, threshold: 0 },
+      nearestCandidates: [],
+    });
+    expect(out).toContain('Nearest candidates: none (index may be empty or never built)');
+  });
+});
+
+describe('--explain-empty output integration (#328)', () => {
+  const diagnostics: ExplainEmptyDiagnostics = {
+    threshold: 0.5,
+    candidatesPreFilter: 3,
+    candidatesPostFilter: 0,
+    filterDrops: { kbScope: 1, threshold: 2 },
+    scope: {
+      requestedKb: 'work',
+      kbsSearched: ['work'],
+      kbsSkipped: [{ kb: 'personal', reason: 'outside --kb=work' }],
+    },
+    freshness: {
+      indexBuilt: true,
+      indexMtime: MTIME,
+      scoped: { modifiedFiles: 0, newFiles: 0 },
+      global: { modifiedFiles: 0, newFiles: 0 },
+    },
+    nearestCandidates: [
+      { score: 0.62, source: '/kb-root/work/a.md', kb: 'work', droppedBy: 'threshold' },
+    ],
+  };
+
+  it('emits the Diagnostics block in markdown when results are empty', () => {
+    const output = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: {
+        indexMtime: MTIME,
+        modifiedFiles: 0,
+        newFiles: 0,
+        scope: { kb: 'work', modifiedFiles: 0, newFiles: 0 },
+        global: { modifiedFiles: 0, newFiles: 0 },
+      },
+      refreshed: false,
+      scopedKb: 'work',
+      query: 'auth flow',
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+      explainEmptyDiagnostics: diagnostics,
+    });
+    expect(output).toContain('_No similar results found._');
+    expect(output).toContain('### Diagnostics');
+    expect(output).toContain('Per-filter drops: kb_scope=1, threshold=2');
+    // Per-filter drops + post-filter count sum to pre-filter total (regression on
+    // the diagnostic invariant the issue asks for).
+    expect(1 + 2 + 0).toBe(3);
+  });
+
+  it('omits the Diagnostics block in markdown when results are non-empty', () => {
+    const doc = {
+      pageContent: 'hit',
+      metadata: { source: 'kb/doc.md' },
+      score: 0.5,
+    } as unknown as ScoredDocument;
+    const output = formatDenseSearchMarkdownOutput({
+      results: [doc],
+      groupBySource: false,
+      staleness: { indexMtime: MTIME, modifiedFiles: 0, newFiles: 0 },
+      refreshed: false,
+      query: 'auth flow',
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+      explainEmptyDiagnostics: diagnostics,
+    });
+    expect(output).toContain('**Result 1:**');
+    expect(output).not.toContain('### Diagnostics');
+  });
+
+  it('emits empty_result_diagnostics in JSON alongside empty_result_guidance when results are empty', () => {
+    const payload = buildDenseSearchJsonPayload({
+      results: [],
+      requestedMode: 'dense',
+      effectiveMode: 'dense',
+      autoModeDecision: null,
+      groupBySource: false,
+      refreshed: false,
+      scopedKb: 'work',
+      query: 'auth flow',
+      staleness: {
+        indexMtime: MTIME,
+        modifiedFiles: 2,
+        newFiles: 5,
+        scope: { kb: 'work', modifiedFiles: 2, newFiles: 5 },
+        global: { modifiedFiles: 4, newFiles: 7 },
+      },
+      autoThresholdDecision: null,
+      timing: null,
+      explainEmptyDiagnostics: diagnostics,
+    });
+    expect(payload).toHaveProperty('empty_result_guidance');
+    expect(payload).toMatchObject({
+      empty_result_diagnostics: {
+        threshold: 0.5,
+        candidates_pre_filter: 3,
+        candidates_post_filter: 0,
+        filter_drops: { kb_scope: 1, threshold: 2 },
+        scope: {
+          requested_kb: 'work',
+          kbs_searched: ['work'],
+          kbs_skipped: [{ kb: 'personal', reason: 'outside --kb=work' }],
+        },
+        freshness: {
+          index_built: true,
+          index_mtime: MTIME,
+          scoped: { modified_files: 0, new_files: 0 },
+          global: { modified_files: 0, new_files: 0 },
+        },
+        nearest_candidates: [
+          {
+            score: 0.62,
+            source: '/kb-root/work/a.md',
+            kb: 'work',
+            dropped_by: 'threshold',
+          },
+        ],
+      },
+    });
+  });
+
+  it('omits empty_result_diagnostics in JSON when results are non-empty', () => {
+    const doc = {
+      pageContent: 'hit',
+      metadata: { source: 'kb/doc.md' },
+      score: 0.1,
+    } as unknown as ScoredDocument;
+    const payload = buildDenseSearchJsonPayload({
+      results: [doc],
+      requestedMode: 'dense',
+      effectiveMode: 'dense',
+      autoModeDecision: null,
+      groupBySource: false,
+      refreshed: false,
+      scopedKb: undefined,
+      query: 'auth flow',
+      staleness: { indexMtime: MTIME, modifiedFiles: 3, newFiles: 1 },
+      autoThresholdDecision: null,
+      timing: null,
+      explainEmptyDiagnostics: diagnostics,
+    });
+    expect(payload).not.toHaveProperty('empty_result_diagnostics');
+  });
+
+  it('runSearch wires the diagnostic probe end-to-end and emits JSON diagnostics on empty + --explain-empty', async () => {
+    // Two-call dance: the main search returns [] (scoped, threshold=2 default),
+    // and the diagnostic probe re-runs with threshold=+Inf and no kb scope to
+    // capture the raw candidates the operator never saw.
+    const calls: Array<{
+      args: unknown[];
+    }> = [];
+    // Synthesize sources that match KNOWLEDGE_BASES_ROOT_DIR so the diagnostic
+    // KB-name extraction recognises them.
+    const sourceFor = (kb: string, file: string) =>
+      path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, file);
+    const manager = {
+      similaritySearch: jest.fn(async (...args: unknown[]) => {
+        calls.push({ args });
+        const threshold = args[2] as number;
+        const scopedKb = args[3] as string | undefined;
+        const timing = args[5] as SimilaritySearchTiming | undefined;
+        if (timing) timing.faiss_search_ms = (timing.faiss_search_ms ?? 0) + 1;
+        if (scopedKb === undefined && threshold === Number.POSITIVE_INFINITY) {
+          // Diagnostic probe — return three raw candidates.
+          return [
+            { pageContent: '', metadata: { source: sourceFor('personal', 'a.md') }, score: 0.10 },
+            { pageContent: '', metadata: { source: sourceFor('work', 'b.md') }, score: 0.60 },
+            { pageContent: '', metadata: { source: sourceFor('work', 'c.md') }, score: 0.80 },
+          ];
+        }
+        return [];
+      }),
+    } as unknown as FaissIndexManager & { similaritySearch: jest.Mock };
+
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+    };
+
+    const stdoutChunks: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((c) => {
+      stdoutChunks.push(String(c));
+      return true;
+    });
+    try {
+      const code = await runSearch(
+        ['auth flow', '--kb=work', '--explain-empty', '--format=json', '--no-freshness'],
+        deps,
+      );
+      expect(code).toBe(0);
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+
+    // Two similaritySearch calls: main (scoped, threshold=2) + diagnostic probe.
+    expect(manager.similaritySearch).toHaveBeenCalledTimes(2);
+    const mainCall = calls[0].args;
+    const probeCall = calls[1].args;
+    // Default threshold is undefined at the CLI boundary; FaissIndexManager
+    // applies the parameter default of 2 internally — the probe explicitly
+    // passes +Inf and an undefined KB scope so it captures the raw top-K.
+    expect(mainCall[3]).toBe('work');       // scoped to --kb=work
+    expect(probeCall[2]).toBe(Number.POSITIVE_INFINITY);
+    expect(probeCall[3]).toBeUndefined();    // probe is unscoped
+
+    const payload = JSON.parse(stdoutChunks.join(''));
+    expect(payload.empty_result_diagnostics).toBeDefined();
+    expect(payload.empty_result_diagnostics).toMatchObject({
+      threshold: 2,
+      candidates_pre_filter: 3,
+      candidates_post_filter: 2,
+      filter_drops: { kb_scope: 1, threshold: 0 },
+      scope: { requested_kb: 'work' },
+    });
+    // Sum-consistency invariant: per-filter drops + kept == pre-filter.
+    const { filter_drops, candidates_post_filter, candidates_pre_filter } =
+      payload.empty_result_diagnostics;
+    expect(filter_drops.kb_scope).toBeGreaterThanOrEqual(0);
+    expect(filter_drops.threshold).toBeGreaterThanOrEqual(0);
+    expect(filter_drops.kb_scope + filter_drops.threshold + candidates_post_filter)
+      .toBe(candidates_pre_filter);
+  });
+
+  it('runSearch skips the diagnostic probe when results are non-empty (regression: no extra cost)', async () => {
+    const manager = {
+      similaritySearch: jest.fn(async (...args: unknown[]) => {
+        const timing = args[5] as SimilaritySearchTiming | undefined;
+        if (timing) timing.faiss_search_ms = (timing.faiss_search_ms ?? 0) + 1;
+        return [
+          { pageContent: 'hit', metadata: { source: '/kb/work/a.md' }, score: 0.1 },
+        ];
+      }),
+    } as unknown as FaissIndexManager & { similaritySearch: jest.Mock };
+
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+    };
+
+    const stdoutChunks: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((c) => {
+      stdoutChunks.push(String(c));
+      return true;
+    });
+    try {
+      const code = await runSearch(
+        ['auth flow', '--explain-empty', '--format=json', '--no-freshness'],
+        deps,
+      );
+      expect(code).toBe(0);
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+
+    // Exactly one call — the diagnostic probe should not run on non-empty
+    // results, so `--explain-empty` is free in the happy path.
+    expect(manager.similaritySearch).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(stdoutChunks.join(''));
+    expect(payload).not.toHaveProperty('empty_result_diagnostics');
+  });
+
+  it('preserves the #335 inline guidance regression when --explain-empty is off', () => {
+    // Off-by-default: same call shape as the existing #335 test, no
+    // `explainEmptyDiagnostics` passed → diagnostics never appear and the
+    // inline tip + omitted-footer behaviour is byte-equal.
+    const output = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: {
+        indexMtime: MTIME,
+        modifiedFiles: 2,
+        newFiles: 5,
+        scope: { kb: 'work', modifiedFiles: 2, newFiles: 5 },
+        global: { modifiedFiles: 4, newFiles: 7 },
+      },
+      refreshed: false,
+      scopedKb: 'work',
+      query: 'auth flow',
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+    expect(output).not.toContain('### Diagnostics');
+    expect(output).toContain('**Tip:** No results found, and the "work" KB scope is stale');
+    expect(output).toContain('kb search "auth flow" --kb=work --refresh');
+    expect(output).not.toContain('Run `kb search --kb=work --refresh` to update this scope');
   });
 });
