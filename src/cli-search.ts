@@ -5,6 +5,7 @@ import {
   type IndexUpdateProgress,
   MAX_NEIGHBOR_CONTEXT_WINDOW,
   type NeighborContextOptions,
+  type SearchResultDocument,
   type SimilaritySearchTiming,
 } from './FaissIndexManager.js';
 import {
@@ -108,6 +109,10 @@ Output:
                         \`grouped_results\` field alongside raw results.
   --timing              Include elapsed milliseconds for retrieval stages.
   --no-freshness        Skip the staleness scan and omit freshness output.
+  --explain-empty       Opt-in deep diagnostics for empty results: pre/post
+                        filter candidate counts, per-filter drops, scope,
+                        index freshness, and the nearest non-matching
+                        candidates. Has no effect when results are non-empty.
 
 Indexing:
   --refresh             Re-scan KB files; acquires the per-model write lock.
@@ -150,6 +155,7 @@ interface SearchArgs {
   interactive: boolean;
   noCache: boolean;
   freshness: boolean;
+  explainEmpty: boolean;
   neighborContext?: NeighborContextOptions;
 }
 
@@ -252,6 +258,12 @@ export async function runSearch(
     return 2;
   }
 
+  if (parsed.explainEmpty && effectiveMode !== 'dense') {
+    process.stderr.write(
+      `kb search: --explain-empty is dense-only; ignored under --mode=${effectiveMode}\n`,
+    );
+  }
+
   if (effectiveMode === 'lexical') {
     return runLexicalSearch(effectiveParsed, timing, totalStartedAt, autoModeDecision);
   }
@@ -345,6 +357,21 @@ export async function runSearch(
   const staleness = parsed.freshness
     ? await computeStalenessWithTiming(activeModelId, parsed.kb, timing)
     : null;
+
+  const explainEmptyDiagnostics =
+    parsed.explainEmpty && results.length === 0
+      ? await gatherExplainEmptyDiagnostics({
+          manager,
+          query: parsed.query ?? '',
+          threshold: parsed.thresholdAuto
+            ? Number.POSITIVE_INFINITY
+            : parsed.threshold ?? 2,
+          scopedKb: parsed.kb,
+          noCache: parsed.noCache,
+          staleness,
+        })
+      : null;
+
   if (timing) timing.total_ms = elapsedMs(totalStartedAt);
 
   if (shouldUsePicker(parsed)) {
@@ -364,6 +391,7 @@ export async function runSearch(
       staleness,
       autoThresholdDecision,
       timing,
+      explainEmptyDiagnostics,
     });
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
@@ -380,11 +408,73 @@ export async function runSearch(
       autoModeDecision,
       autoThresholdDecision,
       timing,
+      explainEmptyDiagnostics,
     }));
   }
 
   return 0;
 }
+
+/**
+ * Issue #328 — gather inputs for `buildExplainEmptyDiagnostics`. Runs a
+ * single FAISS top-K probe with `threshold=+Inf` and **no** KB scope so the
+ * raw candidates can be locally classified into kb_scope/threshold/none
+ * drops. We do not re-run the staleness scan; we consume whatever the main
+ * search path already computed.
+ *
+ * Errors in either step degrade gracefully to empty inputs so diagnostics
+ * never abort a search that otherwise succeeded.
+ */
+async function gatherExplainEmptyDiagnostics(input: {
+  manager: FaissIndexManager;
+  query: string;
+  threshold: number;
+  scopedKb: string | undefined;
+  noCache: boolean;
+  staleness: Staleness | null;
+}): Promise<ExplainEmptyDiagnostics> {
+  const rawCandidates = await fetchExplainEmptyRawCandidates(input);
+  const allKbs = await listAvailableKbsForDiagnostics();
+  return buildExplainEmptyDiagnostics({
+    rawCandidates,
+    threshold: input.threshold,
+    scopedKb: input.scopedKb,
+    allKbs,
+    staleness: input.staleness,
+    kbRoot: KNOWLEDGE_BASES_ROOT_DIR,
+  });
+}
+
+async function fetchExplainEmptyRawCandidates(input: {
+  manager: FaissIndexManager;
+  query: string;
+  noCache: boolean;
+}): Promise<SearchResultDocument[]> {
+  if (input.query === '') return [];
+  try {
+    return await input.manager.similaritySearch(
+      input.query,
+      EXPLAIN_EMPTY_PROBE_K,
+      Number.POSITIVE_INFINITY,
+      undefined,
+      undefined,
+      undefined,
+      { noCache: input.noCache },
+    );
+  } catch {
+    return [];
+  }
+}
+
+async function listAvailableKbsForDiagnostics(): Promise<string[]> {
+  try {
+    return await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+  } catch {
+    return [];
+  }
+}
+
+const EXPLAIN_EMPTY_PROBE_K = 10;
 
 export function parseSearchArgs(rest: string[]): SearchArgs {
   const out: SearchArgs = {
@@ -400,6 +490,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     interactive: false,
     noCache: false,
     freshness: true,
+    explainEmpty: false,
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
@@ -408,6 +499,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--timing') { out.timing = true; continue; }
     if (raw === '--no-cache') { out.noCache = true; continue; }
     if (raw === '--no-freshness') { out.freshness = false; continue; }
+    if (raw === '--explain-empty') { out.explainEmpty = true; continue; }
     if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
     if (raw.startsWith('--context-before=')) {
       out.neighborContext = {
@@ -841,6 +933,8 @@ export interface DenseSearchJsonPayloadInput {
   staleness: Staleness | null;
   autoThresholdDecision: AutoThresholdDecision | null;
   timing: TimingPayload | null;
+  /** Issue #328 — opt-in deep diagnostics for an empty result set. Ignored when results is non-empty. */
+  explainEmptyDiagnostics?: ExplainEmptyDiagnostics | null;
 }
 
 export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput): Record<string, unknown> {
@@ -863,6 +957,9 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
   const emptyGuidance = computeEmptyResultGuidance(input);
   if (emptyGuidance?.json) {
     payload.empty_result_guidance = emptyGuidance.json;
+  }
+  if (input.results.length === 0 && input.explainEmptyDiagnostics) {
+    payload.empty_result_diagnostics = explainEmptyDiagnosticsToJson(input.explainEmptyDiagnostics);
   }
   if (input.autoThresholdDecision !== null) {
     payload.auto_threshold = {
@@ -959,6 +1056,8 @@ export interface DenseSearchMarkdownOutputInput {
   autoModeDecision: AutoSearchModeDecision | null;
   autoThresholdDecision: AutoThresholdDecision | null;
   timing: TimingPayload | null;
+  /** Issue #328 — opt-in deep diagnostics block, rendered only when results is empty. */
+  explainEmptyDiagnostics?: ExplainEmptyDiagnostics | null;
 }
 
 export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutputInput): string {
@@ -986,6 +1085,9 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
     md = formatRetrievalAsMarkdown(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
   }
   output += `${md}\n\n`;
+  if (input.results.length === 0 && input.explainEmptyDiagnostics) {
+    output += `${formatExplainEmptyDiagnosticsMarkdown(input.explainEmptyDiagnostics)}\n\n`;
+  }
   if (input.staleness !== null && inlineEmptyGuidance === null) {
     // Suppress the trailing footer when the inline empty-result block already
     // includes the refresh command + stale counts — operators shouldn't see
@@ -1048,6 +1150,290 @@ function formatScopedFreshnessFooter(s: Staleness, refreshed: boolean): string {
 
 function hasStaleCounts(counts: StalenessCounts): boolean {
   return counts.modifiedFiles + counts.newFiles > 0;
+}
+
+// -- Issue #328 — opt-in deep diagnostics for empty results ------------------
+//
+// When `kb search` returns zero results and the operator passed
+// `--explain-empty`, we build a single self-describing record that explains
+// *why* the run was empty in terms of state the CLI already has cheap access
+// to:
+//
+//   - Pre-filter candidate count (raw FAISS top-K, no filters)
+//   - Post-filter candidate count (always 0 here; included for symmetry)
+//   - Per-filter drops (kb_scope and threshold). Classification order is
+//     scope-first, threshold-second so the counts sum to pre_filter:
+//     `kb_scope + threshold + post_filter == pre_filter`.
+//   - Active scope: which KBs were searched, which were skipped + reason
+//   - Index freshness summary (consumes the existing `Staleness` we already
+//     scanned; never re-runs the staleness scan)
+//   - 1-3 nearest non-matching candidates (with their similarity score) —
+//     scored from the FAISS top-K we pulled with threshold=+Inf.
+//
+// We do NOT modify the existing `computeEmptyResultGuidance` core (issue
+// #335); diagnostics are an additive sibling, rendered alongside it.
+
+export type ExplainEmptyDropReason = 'kb_scope' | 'threshold' | 'none';
+
+export interface ExplainEmptyDiagnosticsCandidate {
+  score: number;
+  source: string | null;
+  kb: string | null;
+  droppedBy: ExplainEmptyDropReason;
+}
+
+export interface ExplainEmptyDiagnosticsScope {
+  requestedKb: string | null;
+  kbsSearched: string[];
+  kbsSkipped: Array<{ kb: string; reason: string }>;
+}
+
+export interface ExplainEmptyDiagnosticsFreshness {
+  indexBuilt: boolean;
+  indexMtime: string | null;
+  scoped: { modifiedFiles: number; newFiles: number } | null;
+  global: { modifiedFiles: number; newFiles: number };
+}
+
+export interface ExplainEmptyDiagnostics {
+  threshold: number;
+  candidatesPreFilter: number;
+  candidatesPostFilter: number;
+  filterDrops: {
+    kbScope: number;
+    threshold: number;
+  };
+  scope: ExplainEmptyDiagnosticsScope;
+  freshness: ExplainEmptyDiagnosticsFreshness;
+  nearestCandidates: ExplainEmptyDiagnosticsCandidate[];
+}
+
+export interface BuildExplainEmptyDiagnosticsInput {
+  rawCandidates: ReadonlyArray<Pick<SearchResultDocument, 'score' | 'metadata'>>;
+  threshold: number;
+  scopedKb: string | undefined;
+  allKbs: readonly string[];
+  staleness: Staleness | null;
+  kbRoot: string;
+  /** Maximum number of nearest-candidate rows to emit. Defaults to 3. */
+  nearestCount?: number;
+}
+
+export function buildExplainEmptyDiagnostics(
+  input: BuildExplainEmptyDiagnosticsInput,
+): ExplainEmptyDiagnostics {
+  const nearestCount = input.nearestCount ?? 3;
+  const classified = input.rawCandidates.map((c) => {
+    const source = extractSourceString(c.metadata);
+    const kb = source !== null ? extractKbNameFromSource(source, input.kbRoot) : null;
+    const droppedBy = classifyDropReason({
+      kb,
+      score: c.score,
+      threshold: input.threshold,
+      scopedKb: input.scopedKb,
+    });
+    return { score: c.score, source, kb, droppedBy };
+  });
+
+  const kbScopeDrops = classified.filter((c) => c.droppedBy === 'kb_scope').length;
+  const thresholdDrops = classified.filter((c) => c.droppedBy === 'threshold').length;
+  const kept = classified.filter((c) => c.droppedBy === 'none').length;
+
+  const kbsSearched = input.scopedKb ? [input.scopedKb] : [...input.allKbs];
+  const kbsSkipped = input.scopedKb
+    ? input.allKbs
+        .filter((k) => k !== input.scopedKb)
+        .map((k) => ({ kb: k, reason: `outside --kb=${input.scopedKb}` }))
+    : [];
+
+  const freshness: ExplainEmptyDiagnosticsFreshness = input.staleness === null
+    ? {
+        indexBuilt: false,
+        indexMtime: null,
+        scoped: null,
+        global: { modifiedFiles: 0, newFiles: 0 },
+      }
+    : {
+        indexBuilt: input.staleness.indexMtime !== null,
+        indexMtime: input.staleness.indexMtime,
+        scoped: input.staleness.scope
+          ? {
+              modifiedFiles: input.staleness.scope.modifiedFiles,
+              newFiles: input.staleness.scope.newFiles,
+            }
+          : null,
+        global: {
+          modifiedFiles:
+            input.staleness.global?.modifiedFiles ?? input.staleness.modifiedFiles,
+          newFiles: input.staleness.global?.newFiles ?? input.staleness.newFiles,
+        },
+      };
+
+  return {
+    threshold: input.threshold,
+    candidatesPreFilter: input.rawCandidates.length,
+    candidatesPostFilter: kept,
+    filterDrops: { kbScope: kbScopeDrops, threshold: thresholdDrops },
+    scope: {
+      requestedKb: input.scopedKb ?? null,
+      kbsSearched,
+      kbsSkipped,
+    },
+    freshness,
+    nearestCandidates: classified.slice(0, nearestCount),
+  };
+}
+
+function classifyDropReason(input: {
+  kb: string | null;
+  score: number;
+  threshold: number;
+  scopedKb: string | undefined;
+}): ExplainEmptyDropReason {
+  // Order matters: scope first, then threshold. This mirrors the structural
+  // partitioning of similaritySearch's post-filter (scope is a hard
+  // boundary; threshold is a score cutoff applied within scope) and keeps
+  // drops mutually exclusive so per-filter counts sum to pre-filter total.
+  if (input.scopedKb !== undefined && input.kb !== input.scopedKb) {
+    return 'kb_scope';
+  }
+  if (input.score > input.threshold) {
+    return 'threshold';
+  }
+  return 'none';
+}
+
+function extractSourceString(metadata: unknown): string | null {
+  if (metadata === null || typeof metadata !== 'object') return null;
+  const src = (metadata as { source?: unknown }).source;
+  return typeof src === 'string' ? src : null;
+}
+
+function extractKbNameFromSource(source: string, kbRoot: string): string | null {
+  const prefix = kbRoot.endsWith(path.sep) ? kbRoot : `${kbRoot}${path.sep}`;
+  if (!source.startsWith(prefix)) return null;
+  const rest = source.slice(prefix.length);
+  const sepIdx = rest.indexOf(path.sep);
+  if (sepIdx === -1) return rest.length > 0 ? rest : null;
+  return rest.slice(0, sepIdx);
+}
+
+export interface ExplainEmptyDiagnosticsJson {
+  threshold: number;
+  candidates_pre_filter: number;
+  candidates_post_filter: number;
+  filter_drops: { kb_scope: number; threshold: number };
+  scope: {
+    requested_kb: string | null;
+    kbs_searched: string[];
+    kbs_skipped: Array<{ kb: string; reason: string }>;
+  };
+  freshness: {
+    index_built: boolean;
+    index_mtime: string | null;
+    scoped: { modified_files: number; new_files: number } | null;
+    global: { modified_files: number; new_files: number };
+  };
+  nearest_candidates: Array<{
+    score: number;
+    source: string | null;
+    kb: string | null;
+    dropped_by: ExplainEmptyDropReason;
+  }>;
+}
+
+export function explainEmptyDiagnosticsToJson(
+  d: ExplainEmptyDiagnostics,
+): ExplainEmptyDiagnosticsJson {
+  return {
+    threshold: d.threshold,
+    candidates_pre_filter: d.candidatesPreFilter,
+    candidates_post_filter: d.candidatesPostFilter,
+    filter_drops: {
+      kb_scope: d.filterDrops.kbScope,
+      threshold: d.filterDrops.threshold,
+    },
+    scope: {
+      requested_kb: d.scope.requestedKb,
+      kbs_searched: d.scope.kbsSearched,
+      kbs_skipped: d.scope.kbsSkipped,
+    },
+    freshness: {
+      index_built: d.freshness.indexBuilt,
+      index_mtime: d.freshness.indexMtime,
+      scoped: d.freshness.scoped
+        ? {
+            modified_files: d.freshness.scoped.modifiedFiles,
+            new_files: d.freshness.scoped.newFiles,
+          }
+        : null,
+      global: {
+        modified_files: d.freshness.global.modifiedFiles,
+        new_files: d.freshness.global.newFiles,
+      },
+    },
+    nearest_candidates: d.nearestCandidates.map((c) => ({
+      score: c.score,
+      source: c.source,
+      kb: c.kb,
+      dropped_by: c.droppedBy,
+    })),
+  };
+}
+
+export function formatExplainEmptyDiagnosticsMarkdown(d: ExplainEmptyDiagnostics): string {
+  const lines: string[] = ['### Diagnostics', ''];
+  lines.push(`- Candidates inspected: ${d.candidatesPreFilter} (FAISS top-K, no filters)`);
+  lines.push(`- Candidates kept after filters: ${d.candidatesPostFilter}`);
+  lines.push(
+    `- Per-filter drops: kb_scope=${d.filterDrops.kbScope}, threshold=${d.filterDrops.threshold}` +
+      ` (threshold=${formatThresholdForDiagnostics(d.threshold)})`,
+  );
+  lines.push(formatScopeLine(d.scope));
+  lines.push(formatFreshnessLine(d.freshness));
+  if (d.nearestCandidates.length === 0) {
+    lines.push('- Nearest candidates: none (index may be empty or never built)');
+  } else {
+    lines.push('- Nearest candidates (top-K from FAISS, before filters):');
+    for (const c of d.nearestCandidates) {
+      const where = c.source ?? '(unknown source)';
+      const tag = c.droppedBy === 'none' ? 'kept' : `dropped by ${c.droppedBy}`;
+      lines.push(`  - score=${c.score.toFixed(3)} ${where} — ${tag}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function formatThresholdForDiagnostics(threshold: number): string {
+  if (!Number.isFinite(threshold)) return 'infinity';
+  return threshold.toFixed(2);
+}
+
+function formatScopeLine(scope: ExplainEmptyDiagnosticsScope): string {
+  if (scope.requestedKb === null) {
+    const kbs = scope.kbsSearched.length === 0
+      ? '(none — no KBs available)'
+      : scope.kbsSearched.join(', ');
+    return `- Scope: global (${scope.kbsSearched.length} KB(s) searched: ${kbs})`;
+  }
+  const skippedCount = scope.kbsSkipped.length;
+  const skippedText = skippedCount === 0
+    ? 'no other KBs available'
+    : `${skippedCount} skipped (outside --kb=${scope.requestedKb})`;
+  return `- Scope: \`--kb=${scope.requestedKb}\` (1 searched; ${skippedText})`;
+}
+
+function formatFreshnessLine(f: ExplainEmptyDiagnosticsFreshness): string {
+  if (!f.indexBuilt) {
+    return '- Index: not yet built (run `kb search --refresh` to create it)';
+  }
+  const scopedPart = f.scoped
+    ? `, scoped drift=${f.scoped.modifiedFiles}m+${f.scoped.newFiles}n`
+    : '';
+  return (
+    `- Index: built ${f.indexMtime}${scopedPart}, ` +
+    `global drift=${f.global.modifiedFiles}m+${f.global.newFiles}n`
+  );
 }
 
 function reportFailure(failure: SearchFailure, format: SearchFormat): number {

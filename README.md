@@ -42,6 +42,7 @@ kb stats                      # read-only index/corpus stats
 kb search "your query"                       # read-only dense search
 kb search "your query" --timing              # include retrieval-stage timings
 kb search "query" --refresh                  # also re-scan KB files (write path)
+kb search "query" --explain-empty            # opt-in deep diagnostics when results are empty (#328)
 kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh   # BM25 debug surface (#206 stage 1)
 kb search "INDEX_NOT_INITIALIZED" --mode=hybrid              # dense ⨁ BM25 fused via RRF (#206 stage 2)
 kb search "src/cli-search.ts" --mode=auto    # opt-in heuristic: hybrid for code/path/error-shaped queries
