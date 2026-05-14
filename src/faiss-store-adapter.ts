@@ -193,6 +193,15 @@ export class FaissStoreAdapter {
     return Array.from(getDocstoreMap(this.store).values());
   }
 
+  /**
+   * Issue #283 — emit `[docstoreId, Document]` pairs in insertion order so
+   * the metadata sidecar can persist a stable id keyed by exactly what the
+   * langchain docstore uses internally.
+   */
+  docstoreEntries(): Array<[string, Document]> {
+    return Array.from(getDocstoreMap(this.store).entries());
+  }
+
   chunkCountsByKnowledgeBase(): Record<string, number> {
     const counts: Record<string, number> = {};
     for (const doc of getDocstoreMap(this.store).values()) {

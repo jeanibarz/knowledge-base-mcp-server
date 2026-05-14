@@ -3924,3 +3924,356 @@ describe('FaissIndexManager neighbor context expansion', () => {
     expect(expanded[0].contextTruncated).toBe(true);
   });
 });
+
+describe('FaissIndexManager predicate-pushdown sidecar (#283)', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+  };
+
+  beforeEach(() => {
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+    similaritySearchMock.mockReset();
+    embeddingConstructorMock.mockReset();
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(originalEnv) as Array<keyof typeof originalEnv>;
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    jest.restoreAllMocks();
+  });
+
+  // The progressive-overfetch suite above patches the loaded mock store's
+  // index to fake an arbitrary `ntotal`. We layer a sidecar on top of that
+  // by writing the JSONL file directly to the per-model directory; the
+  // manager's `loadMetadataSidecar` then sees a populated, non-stale
+  // sidecar and the fast-path can fire.
+  async function setupManagerWithSidecar(opts: {
+    ntotal: number;
+    rows: Array<{
+      docstoreId: string;
+      knowledgeBase: string;
+      source: string;
+      relativePath: string;
+      extension: string;
+      tags?: string[];
+      frontmatter?: Record<string, string>;
+    }>;
+  }) {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-sidecar-fast-path-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'doc.md'), '# Title\n\nSidecar fast-path fixture.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { writeMetadataSidecar, METADATA_SIDECAR_FILENAME } = await import('./metadata-sidecar.js');
+
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+    loadedFaissStore(manager).index = {
+      ntotal: () => opts.ntotal,
+      getDimension: () => 2,
+    };
+
+    const sidecarPath = path.join(tempDir, '.faiss', 'models', DEFAULT_MODEL_ID, METADATA_SIDECAR_FILENAME);
+    await writeMetadataSidecar({
+      sidecarPath,
+      modelId: DEFAULT_MODEL_ID,
+      rows: opts.rows.map((row) => ({
+        docstoreId: row.docstoreId,
+        knowledgeBase: row.knowledgeBase,
+        source: row.source,
+        relativePath: row.relativePath,
+        extension: row.extension,
+        tags: row.tags ?? [],
+        frontmatter: row.frontmatter,
+      })),
+    });
+    (manager as { __resetMetadataSidecarCacheForTests?: () => void })
+      .__resetMetadataSidecarCacheForTests?.();
+    return { manager, tempDir, sidecarPath };
+  }
+
+  it('short-circuits to the empty result when no sidecar row matches the filter (no FAISS call)', async () => {
+    const { manager } = await setupManagerWithSidecar({
+      ntotal: 200,
+      rows: Array.from({ length: 200 }, (_, i) => ({
+        docstoreId: String(i),
+        knowledgeBase: 'docs',
+        source: `/kb/docs/file${i}.md`,
+        relativePath: `docs/file${i}.md`,
+        extension: '.md',
+      })),
+    });
+
+    const timing: Record<string, unknown> = {};
+    const results = await manager.similaritySearch(
+      'q',
+      10,
+      undefined,
+      undefined,
+      { extensions: ['.txt'] },
+      timing,
+    );
+
+    expect(results).toEqual([]);
+    expect(similaritySearchMock).not.toHaveBeenCalled();
+    expect(timing.sidecar_fast_path).toBe('short_circuit');
+    expect(timing.sidecar_candidates).toBe(0);
+  });
+
+  it('runs a single FAISS search at the targeted fetchK when the filter is highly selective', async () => {
+    // 100 .md+ops chunks out of 10_000 = 1% selectivity. The sidecar has
+    // a row per docstore vector so the header total matches the live
+    // ntotal; the fast-path picks a rung sized to the candidate count and
+    // returns as soon as it satisfies k.
+    const candidateCount = 100;
+    const { manager } = await setupManagerWithSidecar({
+      ntotal: 10_000,
+      rows: Array.from({ length: 10_000 }, (_, i) => {
+        const isCandidate = i < candidateCount;
+        return {
+          docstoreId: String(i),
+          knowledgeBase: 'docs',
+          source: isCandidate ? `/kb/docs/runbook${i}.md` : `/kb/docs/other${i}.pdf`,
+          relativePath: isCandidate ? `docs/runbooks/runbook${i}.md` : `docs/other${i}.pdf`,
+          extension: isCandidate ? '.md' : '.pdf',
+          tags: isCandidate ? ['ops'] : ['misc'],
+        };
+      }),
+    });
+
+    similaritySearchMock.mockImplementation(async (...args: unknown[]) => {
+      const fetchK = args[1] as number;
+      // Half the returned results match the filter so k=10 is satisfied.
+      const out: Array<[unknown, number]> = [];
+      for (let i = 0; i < fetchK; i += 1) {
+        out.push([
+          {
+            pageContent: `r${i}`,
+            metadata: i % 2 === 0
+              ? { extension: '.md', tags: ['ops'], relativePath: `docs/runbooks/r${i}.md` }
+              : { extension: '.pdf', tags: ['ops'], relativePath: `docs/r${i}.pdf` },
+          },
+          0.1 + i * 0.0001,
+        ]);
+      }
+      return out;
+    });
+
+    const timing: Record<string, unknown> = {};
+    const results = await manager.similaritySearch(
+      'q',
+      10,
+      undefined,
+      undefined,
+      { extensions: ['.md'], tags: ['ops'] },
+      timing,
+    );
+
+    expect(similaritySearchMock).toHaveBeenCalledTimes(1);
+    expect(results).toHaveLength(10);
+    expect(timing.sidecar_fast_path).toBe('hit');
+    expect(timing.sidecar_candidates).toBe(100);
+    // The fast-path requested far less than ntotal (which the post-filter
+    // ladder would walk up to in the worst case).
+    const callArgs = similaritySearchMock.mock.calls[0];
+    expect(callArgs[1]).toBeLessThan(10_000);
+  });
+
+  it('falls back to the progressive overfetch ladder when the filter is too broad', async () => {
+    // 800 of 1000 chunks match → selectivity 80%, above the SELECTIVITY_CEILING.
+    // fast-path declines (timing reports 'unused') and the existing #229 ladder
+    // runs unchanged. Rows total matches ntotal so the sidecar is not stale.
+    const { manager } = await setupManagerWithSidecar({
+      ntotal: 1000,
+      rows: [
+        ...Array.from({ length: 800 }, (_, i) => ({
+          docstoreId: String(i),
+          knowledgeBase: 'docs',
+          source: `/kb/docs/m${i}.md`,
+          relativePath: `docs/m${i}.md`,
+          extension: '.md',
+        })),
+        ...Array.from({ length: 200 }, (_, i) => ({
+          docstoreId: String(800 + i),
+          knowledgeBase: 'docs',
+          source: `/kb/docs/p${i}.pdf`,
+          relativePath: `docs/p${i}.pdf`,
+          extension: '.pdf',
+        })),
+      ],
+    });
+
+    const mdHits: Array<[unknown, number]> = Array.from({ length: 6 }, (_, i) => [
+      { pageContent: `m${i}`, metadata: { extension: '.md', relativePath: `docs/m${i}.md` } },
+      0.1 + i * 0.01,
+    ]);
+    const pdfPad: Array<[unknown, number]> = Array.from({ length: 14 }, (_, i) => [
+      { pageContent: `p${i}`, metadata: { extension: '.pdf', relativePath: `docs/p${i}.pdf` } },
+      0.2 + i * 0.01,
+    ]);
+    similaritySearchMock.mockResolvedValueOnce([...mdHits, ...pdfPad]);
+
+    const timing: Record<string, unknown> = {};
+    const results = await manager.similaritySearch(
+      'q',
+      5,
+      undefined,
+      undefined,
+      { extensions: ['.md'] },
+      timing,
+    );
+
+    expect(similaritySearchMock).toHaveBeenCalledTimes(1);
+    expect(similaritySearchMock).toHaveBeenCalledWith('q', 20);
+    expect(results).toHaveLength(5);
+    expect(timing.sidecar_fast_path).toBe('unused');
+  });
+
+  it('falls back to the post-filter ladder when the sidecar is missing entirely', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-sidecar-missing-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'doc.md'), '# Title\n\nMissing sidecar fixture.');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+    loadedFaissStore(manager).index = {
+      ntotal: () => 1000,
+      getDimension: () => 2,
+    };
+    // The mock store has no docstore, so refreshMetadataSidecar threw and
+    // no JSONL was persisted. This is exactly the on-disk "no sidecar" state.
+
+    const mdHits: Array<[unknown, number]> = Array.from({ length: 6 }, (_, i) => [
+      { pageContent: `m${i}`, metadata: { extension: '.md', relativePath: `kb/m${i}.md` } },
+      0.1 + i * 0.01,
+    ]);
+    const pad: Array<[unknown, number]> = Array.from({ length: 14 }, (_, i) => [
+      { pageContent: `p${i}`, metadata: { extension: '.pdf', relativePath: `kb/p${i}.pdf` } },
+      0.2 + i * 0.01,
+    ]);
+    similaritySearchMock.mockResolvedValueOnce([...mdHits, ...pad]);
+
+    const timing: Record<string, unknown> = {};
+    const results = await manager.similaritySearch(
+      'q',
+      5,
+      undefined,
+      undefined,
+      { extensions: ['.md'] },
+      timing,
+    );
+
+    expect(similaritySearchMock).toHaveBeenCalledTimes(1);
+    expect(similaritySearchMock).toHaveBeenCalledWith('q', 20);
+    expect(results).toHaveLength(5);
+    expect(timing.sidecar_fast_path).toBe('missing');
+  });
+
+  it('treats an ntotal mismatch as stale and falls through to the ladder for correctness', async () => {
+    // Sidecar header says 100 chunks but the live mock store reports 200.
+    // The stale signal must drop the fast-path even though the sidecar file
+    // is otherwise valid.
+    const { manager } = await setupManagerWithSidecar({
+      ntotal: 200,
+      rows: Array.from({ length: 100 }, (_, i) => ({
+        docstoreId: String(i),
+        knowledgeBase: 'docs',
+        source: `/kb/docs/file${i}.md`,
+        relativePath: `docs/file${i}.md`,
+        extension: '.md',
+      })),
+    });
+
+    const mdHits: Array<[unknown, number]> = Array.from({ length: 6 }, (_, i) => [
+      { pageContent: `m${i}`, metadata: { extension: '.md', relativePath: `docs/m${i}.md` } },
+      0.1 + i * 0.01,
+    ]);
+    const pad: Array<[unknown, number]> = Array.from({ length: 14 }, (_, i) => [
+      { pageContent: `p${i}`, metadata: { extension: '.pdf', relativePath: `docs/p${i}.pdf` } },
+      0.2 + i * 0.01,
+    ]);
+    similaritySearchMock.mockResolvedValueOnce([...mdHits, ...pad]);
+
+    const timing: Record<string, unknown> = {};
+    const results = await manager.similaritySearch(
+      'q',
+      5,
+      undefined,
+      undefined,
+      { extensions: ['.md'] },
+      timing,
+    );
+
+    expect(similaritySearchMock).toHaveBeenCalledTimes(1);
+    expect(similaritySearchMock).toHaveBeenCalledWith('q', 20);
+    expect(results).toHaveLength(5);
+    expect(timing.sidecar_fast_path).toBe('missing');
+  });
+
+  it('falls back to the ladder when the sidecar JSONL on disk is corrupt', async () => {
+    const { manager, sidecarPath } = await setupManagerWithSidecar({
+      ntotal: 100,
+      rows: Array.from({ length: 100 }, (_, i) => ({
+        docstoreId: String(i),
+        knowledgeBase: 'docs',
+        source: `/kb/docs/file${i}.md`,
+        relativePath: `docs/file${i}.md`,
+        extension: '.md',
+      })),
+    });
+    await fsp.writeFile(sidecarPath, '{not-valid-jsonl', 'utf-8');
+    (manager as { __resetMetadataSidecarCacheForTests?: () => void })
+      .__resetMetadataSidecarCacheForTests?.();
+
+    const items: Array<[unknown, number]> = Array.from({ length: 20 }, (_, i) => [
+      { pageContent: `m${i}`, metadata: { extension: '.md', relativePath: `docs/m${i}.md` } },
+      0.1 + i * 0.001,
+    ]);
+    similaritySearchMock.mockResolvedValueOnce(items);
+
+    const timing: Record<string, unknown> = {};
+    const results = await manager.similaritySearch(
+      'q',
+      5,
+      undefined,
+      undefined,
+      { extensions: ['.md'] },
+      timing,
+    );
+
+    expect(similaritySearchMock).toHaveBeenCalledWith('q', 20);
+    expect(results).toHaveLength(5);
+    expect(timing.sidecar_fast_path).toBe('missing');
+  });
+});
