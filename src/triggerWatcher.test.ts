@@ -201,6 +201,166 @@ describe('ReindexTriggerWatcher (RFC 011 §5.5)', () => {
     expect(onTrigger).not.toHaveBeenCalled();
   });
 
+  describe('startup catch-up (#356) — pending trigger newer than active index', () => {
+    // `start()` reads `mtime(triggerPath)` ONCE and compares it against
+    // the active-index mtime returned by the injected lookup callback.
+    // Tests control the comparison by writing the trigger file with a
+    // known mtime and returning a smaller (or larger, or null) index
+    // mtime from the lookup.
+    async function setMtime(filePath: string, mtimeMs: number): Promise<void> {
+      const sec = mtimeMs / 1000;
+      await fsp.utimes(filePath, sec, sec);
+    }
+
+    it('fires the catch-up trigger once when trigger mtime > active index mtime', async () => {
+      await fsp.writeFile(triggerPath, '');
+      // Trigger is 5s newer than the (synthetic) active index mtime.
+      const indexMtimeMs = Date.now() - 10_000;
+      const triggerMtimeMs = indexMtimeMs + 5_000;
+      await setMtime(triggerPath, triggerMtimeMs);
+
+      const onTrigger = jest.fn().mockResolvedValue(undefined);
+      const getActiveIndexMtimeMs = jest.fn().mockResolvedValue(indexMtimeMs);
+      // pollMs large so the real interval timer never fires during the test.
+      const watcher = new ReindexTriggerWatcher(
+        triggerPath,
+        onTrigger,
+        60_000,
+        getActiveIndexMtimeMs,
+      );
+
+      await watcher.start();
+      // Drain the in-flight onTrigger scheduled inside catchUpAtStart.
+      await watcher.stop();
+
+      expect(getActiveIndexMtimeMs).toHaveBeenCalledTimes(1);
+      expect(onTrigger).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT fire catch-up when trigger mtime is older than the active index', async () => {
+      await fsp.writeFile(triggerPath, '');
+      // Trigger predates the index (the workflow ran, was indexed, and
+      // nothing has touched the trigger since). No refresh pending.
+      const indexMtimeMs = Date.now();
+      const triggerMtimeMs = indexMtimeMs - 5_000;
+      await setMtime(triggerPath, triggerMtimeMs);
+
+      const onTrigger = jest.fn().mockResolvedValue(undefined);
+      const getActiveIndexMtimeMs = jest.fn().mockResolvedValue(indexMtimeMs);
+      const watcher = new ReindexTriggerWatcher(
+        triggerPath,
+        onTrigger,
+        60_000,
+        getActiveIndexMtimeMs,
+      );
+
+      await watcher.start();
+      await watcher.stop();
+
+      expect(getActiveIndexMtimeMs).toHaveBeenCalledTimes(1);
+      expect(onTrigger).not.toHaveBeenCalled();
+    });
+
+    it('does NOT fire catch-up when trigger mtime equals the active index mtime', async () => {
+      // Tie-breaking belongs to "no fire" — RFC 011 §5.5 and `kb doctor`
+      // both treat strict `>` as the refresh-pending signal.
+      await fsp.writeFile(triggerPath, '');
+      const sameMtimeMs = Date.now() - 1_000;
+      await setMtime(triggerPath, sameMtimeMs);
+
+      const onTrigger = jest.fn().mockResolvedValue(undefined);
+      const getActiveIndexMtimeMs = jest.fn().mockResolvedValue(sameMtimeMs);
+      const watcher = new ReindexTriggerWatcher(
+        triggerPath,
+        onTrigger,
+        60_000,
+        getActiveIndexMtimeMs,
+      );
+
+      await watcher.start();
+      await watcher.stop();
+
+      expect(onTrigger).not.toHaveBeenCalled();
+    });
+
+    it('after catch-up fire, a subsequent mtime bump still fires exactly once (idempotency)', async () => {
+      await fsp.writeFile(triggerPath, '');
+      const indexMtimeMs = Date.now() - 10_000;
+      const initialTriggerMtimeMs = indexMtimeMs + 5_000;
+      await setMtime(triggerPath, initialTriggerMtimeMs);
+
+      const onTrigger = jest.fn().mockResolvedValue(undefined);
+      const getActiveIndexMtimeMs = jest.fn().mockResolvedValue(indexMtimeMs);
+      const watcher = new ReindexTriggerWatcher(
+        triggerPath,
+        onTrigger,
+        60_000,
+        getActiveIndexMtimeMs,
+      );
+
+      await watcher.start();
+      // Allow the in-flight catch-up onTrigger to settle.
+      await new Promise((r) => setImmediate(r));
+      expect(onTrigger).toHaveBeenCalledTimes(1);
+
+      // A poll with NO mtime change must not double-fire.
+      await watcher.poll();
+      expect(onTrigger).toHaveBeenCalledTimes(1);
+
+      // A genuine post-catch-up bump (e.g. workflow ran again) must
+      // fire exactly once via the normal mtime-delta path.
+      const bumpedMtimeMs = initialTriggerMtimeMs + 5_000;
+      await setMtime(triggerPath, bumpedMtimeMs);
+      await watcher.poll();
+      await watcher.stop();
+
+      expect(onTrigger).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips catch-up when no active index mtime can be resolved (lookup returns null)', async () => {
+      // No active model / no index built — defer to the normal poll
+      // loop so we don't fire on every server restart.
+      await fsp.writeFile(triggerPath, '');
+      await setMtime(triggerPath, Date.now() - 60_000);
+
+      const onTrigger = jest.fn().mockResolvedValue(undefined);
+      const getActiveIndexMtimeMs = jest.fn().mockResolvedValue(null);
+      const watcher = new ReindexTriggerWatcher(
+        triggerPath,
+        onTrigger,
+        60_000,
+        getActiveIndexMtimeMs,
+      );
+
+      await watcher.start();
+      await watcher.stop();
+
+      expect(getActiveIndexMtimeMs).toHaveBeenCalledTimes(1);
+      expect(onTrigger).not.toHaveBeenCalled();
+    });
+
+    it('skips catch-up when the trigger file is absent at startup', async () => {
+      // No trigger file → the workflow hasn't run yet. The existing
+      // `sawAbsent` path covers post-startup creation.
+      const onTrigger = jest.fn().mockResolvedValue(undefined);
+      const getActiveIndexMtimeMs = jest.fn().mockResolvedValue(Date.now());
+      const watcher = new ReindexTriggerWatcher(
+        triggerPath,
+        onTrigger,
+        60_000,
+        getActiveIndexMtimeMs,
+      );
+
+      await watcher.start();
+      await watcher.stop();
+
+      // The lookup is never called because the trigger stat fails fast
+      // with ENOENT.
+      expect(getActiveIndexMtimeMs).not.toHaveBeenCalled();
+      expect(onTrigger).not.toHaveBeenCalled();
+    });
+  });
+
   it('start() installs a timer that invokes poll() periodically', async () => {
     // Smoke test the real-timer path at a short interval — this is the
     // only test that exercises setInterval directly; the rest drive
