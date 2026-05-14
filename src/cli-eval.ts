@@ -5,7 +5,7 @@ import {
   ActiveModelResolutionError,
   resolveActiveModel,
 } from './active-model.js';
-import { computeStaleness, type SearchMode } from './cli-search.js';
+import { computeStaleness, type SearchMode } from './search-core.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import {
   buildRetrievalEvalScaffoldFixture,

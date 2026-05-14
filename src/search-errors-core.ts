@@ -7,6 +7,11 @@
 // classifier is deliberately conservative: unknown errors fall into the
 // `unknown` bucket with `kb doctor` as the next action rather than
 // pretending we know more than we do.
+//
+// This is the command-independent core: it is consumed by `cli-search`,
+// `cli-ask`, `cli-stats`, `cli-explain`, and the ingest-quarantine
+// classifier. CLI adapters should import from here, not from a sibling
+// CLI command module (issue #341 boundary fix).
 
 import { ActiveModelResolutionError } from './active-model.js';
 import { KBError, type KBErrorCode } from './errors.js';

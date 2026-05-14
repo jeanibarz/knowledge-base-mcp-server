@@ -73,7 +73,7 @@ describe('computeStaleness', () => {
       await fsp.utimes(betaModified, afterIndex, afterIndex);
 
       jest.resetModules();
-      const { computeStaleness } = await import('./cli-search.js');
+      const { computeStaleness } = await import('./search-core.js');
 
       await expect(computeStaleness(modelId, 'alpha')).resolves.toMatchObject({
         modifiedFiles: 1,
@@ -147,7 +147,7 @@ describe('computeStaleness', () => {
       await fsp.rm(kbRoot, { recursive: true, force: true });
 
       jest.resetModules();
-      const { computeStaleness } = await import('./cli-search.js');
+      const { computeStaleness } = await import('./search-core.js');
       await expect(computeStaleness(modelId, 'alpha')).resolves.toMatchObject({
         modifiedFiles: 1,
         newFiles: 1,

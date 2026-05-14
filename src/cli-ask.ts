@@ -5,7 +5,7 @@ import {
   exitCodeForFailure,
   formatKbSearchFailureJson,
   formatKbSearchFailureStderr,
-} from './cli-search-errors.js';
+} from './search-errors-core.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import {
   compactTimingPayload,

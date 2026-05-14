@@ -7,7 +7,7 @@ import {
   type EffectiveSearchMode,
   type SearchMode,
   type Staleness,
-} from './cli-search.js';
+} from './search-core.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
 import {
   fuseHybridResults,

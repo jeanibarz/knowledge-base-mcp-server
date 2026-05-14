@@ -3,8 +3,8 @@
 // Reuses the same retrieval primitives as `kb search`:
 //   - active-model resolution (resolveActiveModel)
 //   - FaissIndexManager.similaritySearch
-//   - cli-search.computeStaleness (freshness footer)
-//   - cli-search-errors classifier (uniform error contract)
+//   - search-core.computeStaleness (freshness footer)
+//   - search-errors-core classifier (uniform error contract)
 //
 // CLI-only on purpose — see #209. There is intentionally NO MCP tool that
 // emits this trace; agents should call the CLI when they need the surface.
@@ -23,8 +23,8 @@ import {
   formatKbSearchFailureJson,
   formatKbSearchFailureStderr,
   type SearchFailure,
-} from './cli-search-errors.js';
-import { computeStaleness } from './cli-search.js';
+} from './search-errors-core.js';
+import { computeStaleness } from './search-core.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import {
   FAISS_INDEX_PATH,

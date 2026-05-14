@@ -88,12 +88,12 @@ Notes:
 `;
 
 export const PROMOTE_TIERS = ['working', 'validated', 'wisdom'] as const;
-export type PromoteTier = (typeof PROMOTE_TIERS)[number];
+type PromoteTier = (typeof PROMOTE_TIERS)[number];
 
 export const PROMOTE_REVIEW_STATUSES = ['approved', 'needs-review'] as const;
-export type PromoteReviewStatus = (typeof PROMOTE_REVIEW_STATUSES)[number];
+type PromoteReviewStatus = (typeof PROMOTE_REVIEW_STATUSES)[number];
 
-export interface PromoteArgs {
+interface PromoteArgs {
   kb: string;
   format: 'md' | 'json';
   yes: boolean;
@@ -109,7 +109,7 @@ export interface PromoteArgs {
   lastVerifiedAt?: string; // ISO date or literal "now"
 }
 
-export interface PromoteUpdates {
+interface PromoteUpdates {
   tier?: PromoteTier;
   review_status?: PromoteReviewStatus;
   confidence?: number;
@@ -257,7 +257,7 @@ function isReviewStatus(value: string): value is PromoteReviewStatus {
 // Frontmatter rewrite (pure)
 // ---------------------------------------------------------------------------
 
-export interface FrontmatterRewriteResult {
+interface FrontmatterRewriteResult {
   before: Record<string, unknown>;
   after: Record<string, unknown>;
   changed: string[];
@@ -323,7 +323,7 @@ function serializeWithFrontmatter(fm: Record<string, unknown>, body: string): st
 // Apply mode (dry-run + file mutation)
 // ---------------------------------------------------------------------------
 
-export interface PromoteApplyOptions {
+interface PromoteApplyOptions {
   rootDir: string;
   kb: string;
   relativePath: string;
@@ -332,7 +332,7 @@ export interface PromoteApplyOptions {
   now?: Date;
 }
 
-export interface PromoteApplyResult {
+interface PromoteApplyResult {
   kb: string;
   relativePath: string;
   applied: boolean;
@@ -395,26 +395,26 @@ export type SemanticCandidateSearcher = (
   kb: string,
 ) => Promise<ScoredDocument[]>;
 
-export interface PromoteCandidate {
+interface PromoteCandidate {
   relativePath: string;
   score: number;
   excerpt: string;
   frontmatter: RelevantFrontmatter;
 }
 
-export interface PromoteListReport {
+interface PromoteListReport {
   kb: string;
   query: string;
   generatedAt: string;
   candidates: PromoteCandidate[];
 }
 
-export type RelevantFrontmatter = Pick<
+type RelevantFrontmatter = Pick<
   LiftedFrontmatter,
   'title' | 'tier' | 'status' | 'review_status' | 'confidence' | 'last_verified_at'
 >;
 
-export interface PromoteListOptions {
+interface PromoteListOptions {
   kb: string;
   query: string;
   k: number;

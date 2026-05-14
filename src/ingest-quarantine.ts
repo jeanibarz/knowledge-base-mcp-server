@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { classifyKbSearchError, type SearchFailureCategory } from './cli-search-errors.js';
+import { classifyKbSearchError, type SearchFailureCategory } from './search-errors-core.js';
 import { toError } from './error-utils.js';
 import { assertNoTraversal } from './kb-fs.js';
 import { withSidecarLock } from './write-lock.js';
