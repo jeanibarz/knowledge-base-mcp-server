@@ -1,4 +1,5 @@
 // KnowledgeBaseServer.ts
+import * as fsp from 'fs/promises';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -19,6 +20,7 @@ import {
   listRegisteredModels,
   modelDir,
   resolveActiveModel,
+  resolveFaissIndexBinaryPath,
 } from './active-model.js';
 import { ManagerRegistry } from './manager-registry.js';
 import {
@@ -952,8 +954,27 @@ export class KnowledgeBaseServer {
         }
       },
       REINDEX_TRIGGER_POLL_MS,
+      // Issue #356 — let the watcher catch up on a pending trigger at
+      // startup. Returns the active model's FAISS index mtime in ms,
+      // or null if the active model / index can't be resolved (e.g.
+      // no model is registered, or the index hasn't been built yet).
+      // The watcher fires once if the trigger is newer than this.
+      async () => {
+        try {
+          const activeId = await resolveActiveModel();
+          const binaryPath = await resolveFaissIndexBinaryPath(activeId);
+          if (binaryPath === null) return null;
+          const st = await fsp.stat(binaryPath);
+          return st.mtimeMs;
+        } catch {
+          // Active model unresolved, index missing, or stat failed —
+          // skip the catch-up. The watcher's normal poll loop still
+          // covers any post-startup trigger touches.
+          return null;
+        }
+      },
     );
-    this.triggerWatcher.start();
+    void this.triggerWatcher.start();
   }
 
   private installHttpShutdown(): void {

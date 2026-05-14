@@ -136,6 +136,9 @@ export class ReindexTriggerWatcher {
   private readonly triggerPath: string;
   private readonly onTrigger: () => Promise<void>;
   private readonly pollMs: number;
+  private readonly getActiveIndexMtimeMs:
+    | (() => Promise<number | null>)
+    | null;
 
   private timer: NodeJS.Timeout | null = null;
   private lastMtimeMs: number | null = null;
@@ -155,10 +158,12 @@ export class ReindexTriggerWatcher {
     triggerPath: string,
     onTrigger: () => Promise<void>,
     pollMs: number,
+    getActiveIndexMtimeMs?: () => Promise<number | null>,
   ) {
     this.triggerPath = triggerPath;
     this.onTrigger = onTrigger;
     this.pollMs = pollMs;
+    this.getActiveIndexMtimeMs = getActiveIndexMtimeMs ?? null;
   }
 
   /**
@@ -168,8 +173,16 @@ export class ReindexTriggerWatcher {
    * installed); callers that want the watcher off should avoid
    * constructing it at all, but this escape hatch matches the
    * `REINDEX_TRIGGER_POLL_MS=0` env contract.
+   *
+   * Issue #356 — when `getActiveIndexMtimeMs` is provided, `start()`
+   * does a one-shot comparison between the current trigger mtime and
+   * the active model's index mtime. If the trigger is newer (the same
+   * "refresh pending" condition `kb doctor` flags), one catch-up fire
+   * is scheduled before the poll loop installs its timer. Without
+   * this, a trigger touched while the server was offline would sit
+   * unindexed until something else bumps its mtime.
    */
-  start(): void {
+  async start(): Promise<void> {
     if (this.timer !== null || this.stopped) return;
     if (this.pollMs <= 0) {
       logger.info(
@@ -177,6 +190,9 @@ export class ReindexTriggerWatcher {
       );
       return;
     }
+    await this.catchUpAtStart();
+    // `stop()` may have arrived while we were resolving the index mtime.
+    if (this.stopped || this.timer !== null) return;
     logger.info(
       `ReindexTriggerWatcher started; poll=${this.pollMs}ms path=${this.triggerPath}`,
     );
@@ -189,6 +205,72 @@ export class ReindexTriggerWatcher {
     if (typeof this.timer.unref === 'function') {
       this.timer.unref();
     }
+  }
+
+  /**
+   * Issue #356 — one-shot catch-up. If the trigger file already exists
+   * and is newer than the active index, fire `onTrigger` once and seed
+   * `lastMtimeMs` to the current trigger mtime so the first poll tick
+   * does NOT re-fire (no double-fire) and a genuine subsequent bump
+   * still fires normally (idempotent).
+   *
+   * No-op when:
+   *  - No `getActiveIndexMtimeMs` callback was wired (legacy / tests).
+   *  - The trigger file doesn't exist yet (handled by `sawAbsent` —
+   *    a file that appears post-startup is its own signal).
+   *  - The active index mtime can't be resolved (no built index yet,
+   *    or the lookup throws). We defer to the existing baseline-seed
+   *    behaviour rather than firing on every startup when no index
+   *    exists.
+   *  - Trigger mtime ≤ index mtime (no refresh pending).
+   */
+  private async catchUpAtStart(): Promise<void> {
+    if (this.getActiveIndexMtimeMs === null) return;
+    let triggerMtimeMs: number;
+    try {
+      const st = await fsp.stat(this.triggerPath);
+      triggerMtimeMs = st.mtimeMs;
+    } catch (error) {
+      const code = (error as FsError | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        // No trigger file yet — defer to the normal poll loop, which
+        // already fires on the first successful stat post-absence.
+        this.sawAbsent = true;
+        return;
+      }
+      logger.warn(
+        `ReindexTriggerWatcher startup catch-up stat failed for ${this.triggerPath}: ${(error as Error).message}`,
+      );
+      return;
+    }
+
+    let indexMtimeMs: number | null;
+    try {
+      indexMtimeMs = await this.getActiveIndexMtimeMs();
+    } catch (error) {
+      logger.warn(
+        `ReindexTriggerWatcher startup catch-up index mtime lookup failed: ${(error as Error).message}`,
+      );
+      return;
+    }
+
+    if (indexMtimeMs === null || triggerMtimeMs <= indexMtimeMs) {
+      // No refresh pending — seed baseline so the first poll tick
+      // doesn't treat the existing trigger as a fresh signal.
+      this.lastMtimeMs = triggerMtimeMs;
+      return;
+    }
+
+    // Refresh pending: trigger touched after the active index was
+    // written. Fire ONCE before the poll loop starts, and seed
+    // `lastMtimeMs` to the current trigger mtime so the first poll
+    // tick sees no advance (idempotency) and any subsequent genuine
+    // bump still fires.
+    logger.info(
+      `Reindex trigger startup catch-up: trigger mtime ${new Date(triggerMtimeMs).toISOString()} > active index mtime ${new Date(indexMtimeMs).toISOString()}; scheduling updateIndex(*)`,
+    );
+    this.lastMtimeMs = triggerMtimeMs;
+    this.requestRun();
   }
 
   /**
