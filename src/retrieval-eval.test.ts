@@ -4,7 +4,7 @@ import * as path from 'path';
 import yaml from 'js-yaml';
 import { parseEvalArgs, toJsonReport } from './cli-eval.js';
 import type { ScoredDocument } from './formatter.js';
-import type { Staleness } from './cli-search.js';
+import type { Staleness } from './search-core.js';
 import {
   buildRetrievalEvalScaffoldFixture,
   evaluateRetrievalCase,

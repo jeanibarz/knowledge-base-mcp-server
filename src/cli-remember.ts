@@ -27,17 +27,6 @@ import {
   type RefreshStatus,
 } from './audit-log.js';
 
-export {
-  EXIT_BLOCKED_BY_SIMILARITY_GUARD,
-  buildBlockedJson,
-  candidatesFromResults,
-  formatBlockedMarkdown,
-} from './cli-remember-similarity.js';
-export type {
-  SimilarCandidate,
-  PreflightDecisionHint,
-} from './cli-remember-similarity.js';
-
 export const REMEMBER_HELP = `kb remember — write or extend knowledge-base notes (conservative write path)
 
 Usage:
@@ -162,7 +151,7 @@ interface RememberArgs {
  * to remove KB-name guesswork — agents should be able to write a lesson
  * without thinking about where it lands.
  */
-export const LESSON_DEFAULT_KB = 'agent-task-lessons';
+const LESSON_DEFAULT_KB = 'agent-task-lessons';
 
 /**
  * Required H2 sections in a lesson body. Match is case-insensitive,
@@ -416,7 +405,7 @@ function normalizeHeadingText(text: string): string {
     .toLowerCase();
 }
 
-export function validateLessonContent(content: string): LessonValidation {
+function validateLessonContent(content: string): LessonValidation {
   const empty = content.trim() === '';
   if (empty) {
     return {
@@ -448,7 +437,7 @@ export function validateLessonContent(content: string): LessonValidation {
   };
 }
 
-export function buildLessonSkeleton(): string {
+function buildLessonSkeleton(): string {
   return [
     '## Mistake',
     '',
@@ -550,7 +539,7 @@ function writeBlockedOutput(args: RememberArgs, preflight: PreflightOutcome): vo
   process.stdout.write(`${JSON.stringify(buildBlockedJson(preflight.candidates), null, 2)}\n`);
 }
 
-export function parseRememberArgs(rest: string[]): RememberArgs {
+function parseRememberArgs(rest: string[]): RememberArgs {
   const out: RememberArgs = {
     suggest: false,
     stdin: false,

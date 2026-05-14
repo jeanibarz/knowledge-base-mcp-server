@@ -4,7 +4,7 @@ import {
   exitCodeForFailure,
   formatKbSearchFailureJson,
   formatKbSearchFailureStderr,
-} from './cli-search-errors.js';
+} from './search-errors-core.js';
 import { ActiveModelResolutionError } from './active-model.js';
 import { KBError } from './errors.js';
 import { WriteLockContentionError } from './write-lock.js';
