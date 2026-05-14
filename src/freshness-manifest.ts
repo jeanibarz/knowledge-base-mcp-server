@@ -6,12 +6,14 @@ import {
   INGEST_EXTRA_EXTENSIONS,
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config.js';
+import { INGEST_BASE_EXTENSIONS } from './ingest-filter.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 
 export const FRESHNESS_MANIFEST_SCHEMA_VERSION = 'kb.freshness-manifest.v1';
 export const FRESHNESS_MANIFEST_FILE = 'freshness.json';
 
 export interface FreshnessManifestFilterConfig {
+  baseExtensions?: readonly string[];
   extraExtensions: readonly string[];
   excludePaths: readonly string[];
 }
@@ -32,6 +34,7 @@ export interface FreshnessManifest {
   index_mtime_ms: number;
   filter_hash: string;
   filter: {
+    base_extensions: string[];
     extra_extensions: string[];
     exclude_paths: string[];
   };
@@ -113,6 +116,7 @@ export async function writeFreshnessManifest(
     index_mtime_ms: input.indexMtimeMs,
     filter_hash: filterHash,
     filter: {
+      base_extensions: [...normalizedFilter.baseExtensions],
       extra_extensions: [...normalizedFilter.extraExtensions],
       exclude_paths: [...normalizedFilter.excludePaths],
     },
@@ -176,6 +180,7 @@ export async function countSidecarFiles(dir: string): Promise<number> {
 
 function defaultFilterConfig(): FreshnessManifestFilterConfig {
   return {
+    baseExtensions: INGEST_BASE_EXTENSIONS,
     extraExtensions: INGEST_EXTRA_EXTENSIONS,
     excludePaths: INGEST_EXCLUDE_PATHS,
   };
@@ -183,8 +188,9 @@ function defaultFilterConfig(): FreshnessManifestFilterConfig {
 
 function normalizeFilterConfig(
   config: FreshnessManifestFilterConfig,
-): { extraExtensions: string[]; excludePaths: string[] } {
+): { baseExtensions: string[]; extraExtensions: string[]; excludePaths: string[] } {
   return {
+    baseExtensions: [...(config.baseExtensions ?? INGEST_BASE_EXTENSIONS)],
     extraExtensions: [...config.extraExtensions],
     excludePaths: [...config.excludePaths],
   };
@@ -199,6 +205,7 @@ function isFreshnessManifest(value: unknown): value is FreshnessManifest {
   if (typeof value.index_mtime_ms !== 'number') return false;
   if (typeof value.filter_hash !== 'string') return false;
   if (!isRecord(value.filter)) return false;
+  if (!isStringArray(value.filter.base_extensions)) return false;
   if (!isStringArray(value.filter.extra_extensions)) return false;
   if (!isStringArray(value.filter.exclude_paths)) return false;
   if (value.complete !== true) return false;

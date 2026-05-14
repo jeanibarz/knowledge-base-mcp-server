@@ -45,7 +45,10 @@ import {
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
   saveFaissStoreAtomic,
 } from './faiss-store-layout.js';
-import { writeFreshnessManifest } from './freshness-manifest.js';
+import {
+  readFreshnessManifest,
+  writeFreshnessManifest,
+} from './freshness-manifest.js';
 import {
   createSimilaritySearchPostFilter,
   type ScoredDocument,
@@ -677,7 +680,7 @@ export class FaissIndexManager {
       //
       // Skipped under readOnly:true (no mutation allowed in that mode).
       if (this.faissIndex === null && !readOnly) {
-        await this.purgeStaleSidecars();
+        await this.purgeStaleSidecars('store_missing');
       }
 
       // Save the current model name for this model's dir. Skipped under
@@ -727,11 +730,15 @@ export class FaissIndexManager {
    * still works for those KBs since `find` does not follow symlinks
    * by default.
    */
-  private async purgeStaleSidecars(): Promise<void> {
-    await withSidecarLock(() => this.purgeStaleSidecarsLocked());
+  private async purgeStaleSidecars(
+    reason: 'store_missing' | 'ingest_filter_changed',
+  ): Promise<void> {
+    await withSidecarLock(() => this.purgeStaleSidecarsLocked(reason));
   }
 
-  private async purgeStaleSidecarsLocked(): Promise<void> {
+  private async purgeStaleSidecarsLocked(
+    reason: 'store_missing' | 'ingest_filter_changed',
+  ): Promise<void> {
     let kbs: string[];
     try {
       kbs = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
@@ -780,13 +787,20 @@ export class FaissIndexManager {
       }
     }
 
-    if (purged.length > 0) {
+    if (purged.length > 0 && reason === 'store_missing') {
       logger.warn(
         `Issue #90: FAISS store for model ${this.modelId} not found on disk but ` +
           `per-KB hash sidecars existed. Purged stale sidecars for ${purged.length} ` +
           `knowledge base(s) [${purged.join(', ')}] so the next updateIndex re-embeds. ` +
           `Common causes: manual removal of $FAISS_INDEX_PATH, partial backup restore, ` +
           `crash mid-rebuild, or model switch with the prior model's store moved aside.`,
+      );
+    } else if (purged.length > 0) {
+      logger.warn(
+        `Ingest filter for model ${this.modelId} changed since the last successful index ` +
+          `save. Purged stale sidecars for ${purged.length} knowledge base(s) ` +
+          `[${purged.join(', ')}] so the next updateIndex rebuilds only currently ` +
+          `ingestable files.`,
       );
     }
     // Issue #283 — drop the metadata sidecar too; it indexes the same
@@ -1120,6 +1134,34 @@ export class FaissIndexManager {
               `vectors or drop other KBs).`,
           );
           scopedKnowledgeBase = undefined;
+        }
+      }
+
+      if (!forceReindex && this.faissIndex !== null) {
+        const activeIndexFilePath = await this.resolveActiveIndexFilePath();
+        if (activeIndexFilePath !== null) {
+          const indexStat = await fsp.stat(activeIndexFilePath);
+          const freshnessManifest = await readFreshnessManifest({
+            modelId: this.modelId,
+            modelDir: this.modelDir,
+            indexMtimeMs: indexStat.mtimeMs,
+          });
+          if (freshnessManifest === null) {
+            this.faissIndex = null;
+            if (scopedKnowledgeBase !== undefined) {
+              logger.info(
+                `Ingest filter changed for "${scopedKnowledgeBase}"; upgrading scoped ` +
+                  `refresh to a global rebuild because FAISS vector deletion is unsupported.`,
+              );
+              scopedKnowledgeBase = undefined;
+            }
+            logger.info(
+              `Freshness manifest for model ${this.modelId} is missing or stale; ` +
+                `rebuilding the full FAISS index to avoid stale vectors from files that ` +
+                `are no longer ingestable.`,
+            );
+            await this.purgeStaleSidecars('ingest_filter_changed');
+          }
         }
       }
       runSummary.scope = scopedKnowledgeBase ?? 'global';

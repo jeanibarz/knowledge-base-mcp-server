@@ -188,12 +188,12 @@ Dotfile-prefixed entries were already excluded by `src/utils.ts:28`, so `.index/
 **Rule B — extension allowlist.** After Rule A, a file is included only if its lowercased extension is in the ingest allowlist:
 
 ```
-.md, .markdown, .txt, .rst
+.md, .markdown, .txt, .rst, .html, .htm
 ```
 
 Explicitly excluded by omission: `.pdf`, `.jsonl`, `.json` (unless revisited — see below), `.log`, `.png`, `.jpg`, `.docx`, `.epub`. This is narrower than the RFC 010 §5.3.3 Resources mimetype map by design:
 
-- `.json` / `.yaml` / `.csv` / `.xml` / `.html` are **not** in the ingest allowlist. They *may* be in a KB (the Resources surface in RFC 010 M5 is happy to serve them), but their text content typically isn't prose — embedding a JSON array or a CSV row as a dense chunk is almost always the wrong retrieval unit. An operator who *does* want those embedded sets `INGEST_EXTRA_EXTENSIONS=".json,.yaml"` (§5.2.3).
+- `.json` / `.yaml` / `.csv` / `.xml` are **not** in the ingest allowlist. They *may* be in a KB (the Resources surface in RFC 010 M5 is happy to serve them), but their text content typically isn't prose — embedding a JSON array or a CSV row as a dense chunk is almost always the wrong retrieval unit. An operator who *does* want those embedded sets `INGEST_EXTRA_EXTENSIONS=".json,.yaml"` (§5.2.3).
 - `.pdf` is handled as a sibling-file surface (§5.3), not corpus.
 
 The allowlist is file-extension-based; the walker does not inspect file magic. This matches `FaissIndexManager.buildChunkDocuments`'s existing extension test at `src/FaissIndexManager.ts:224`.
@@ -209,15 +209,17 @@ Two env vars, read once at `FaissIndexManager` construction:
 
 Rule A's built-in list is authoritative — operators can *add* exclusions but not remove them. A KB that actually wants `_seen.jsonl` embedded is not a KB this server supports; that's a workflow design bug.
 
+PDFs are not in the default extension allowlist. The PDF loader remains available for explicit opt-in deployments via `INGEST_EXTRA_EXTENSIONS=".pdf"`, but arxiv-shaped KBs default to indexing markdown notes instead of sibling `pdfs/` payloads.
+
 #### 5.2.4 Implementation site
 
-`src/FaissIndexManager.ts:289` (`const filePaths = await getFilesRecursively(knowledgeBasePath);`) and `src/FaissIndexManager.ts:361` (the rebuild-path equivalent) both consume the walker output. A shared helper `filterIngestablePaths(paths, kbPath)` at `src/utils.ts` (next to `getFilesRecursively`) runs Rule A then Rule B, returns the filtered list. Both call sites wrap the walker:
+`src/FaissIndexManager.ts` consumes `enumerateIngestableKbFiles(...)`, the shared per-KB walk plus ingest-filter helper from `src/kb-fs.ts`. The helper applies `filterIngestablePaths(paths, kbPath)` from `src/ingest-filter.ts`, which runs Rule A then Rule B and returns the filtered list:
 
 ```ts
-const filePaths = filterIngestablePaths(
-  await getFilesRecursively(knowledgeBasePath),
-  knowledgeBasePath
-);
+const entries = await enumerateIngestableKbFiles(rootDir, kbNames, {
+  extraExtensions: INGEST_EXTRA_EXTENSIONS,
+  excludePaths: INGEST_EXCLUDE_PATHS,
+});
 ```
 
 Behaviour on an all-markdown KB (the three pre-existing KBs) is identical to today — every `.md` is in the allowlist, no path matches Rule A.

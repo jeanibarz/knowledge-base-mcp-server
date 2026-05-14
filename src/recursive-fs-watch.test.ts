@@ -102,11 +102,11 @@ describe('RecursiveKbWatcher (RFC 007 §6.6 / issue #212)', () => {
     const watcher = makeWatcher({
       onChange,
       debounceMs: 25,
-      excludePaths: ['pdfs/**'],
+      excludePaths: ['drafts/**'],
     });
     await watcher.start();
 
-    watcher.handleFsEvent(KB, 'pdfs/paper.pdf');
+    watcher.handleFsEvent(KB, 'drafts/paper.md');
     await drain(80);
     expect(onChange).not.toHaveBeenCalled();
 

@@ -2393,12 +2393,7 @@ describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_API_KEY = 'test-key';
     delete process.env.INGEST_EXTRA_EXTENSIONS;
-    // Issue #46 — `.pdf` is now in the base allowlist, so the arxiv
-    // workflow (which already pairs each notes/*.md with a sibling
-    // pdfs/*.pdf) must opt PDFs out via INGEST_EXCLUDE_PATHS to keep its
-    // pre-#46 behavior of "embed the markdown sibling only, not the
-    // binary PDF".
-    process.env.INGEST_EXCLUDE_PATHS = 'pdfs/**';
+    delete process.env.INGEST_EXCLUDE_PATHS;
 
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
@@ -2476,10 +2471,10 @@ describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
     // The steady-state per-KB update loop and the store-loss recovery
     // path (#90, sidecars purged at initialize → all files re-embedded
     // through the per-file path on the next updateIndex) are conceptually
-    // independent — but both go through the same `filterIngestablePaths`
-    // call site (line 967 in updateIndex). This test guards against a
-    // future refactor that adds a second `getFilesRecursively` site
-    // without wrapping it in the filter.
+    // independent — but both go through the same `enumerateIngestableKbFiles`
+    // path in updateIndex. This test guards against a future refactor that
+    // adds a second `getFilesRecursively` site without wrapping it in the
+    // filter.
     //
     // Pre-#90 this test drove the (now-effectively-dead) fallback rebuild
     // branch by seeding sidecars then deleting the FAISS store. Post-#90
@@ -2496,8 +2491,7 @@ describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_API_KEY = 'test-key';
     delete process.env.INGEST_EXTRA_EXTENSIONS;
-    // Issue #46 — same pdfs/** opt-out as the steady-state arxiv test.
-    process.env.INGEST_EXCLUDE_PATHS = 'pdfs/**';
+    delete process.env.INGEST_EXCLUDE_PATHS;
 
     // First pass: seed sidecars via the per-KB update loop.
     jest.resetModules();
@@ -2668,7 +2662,7 @@ describe('FaissIndexManager ingest — PDF + HTML loaders (issue #46)', () => {
     process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_API_KEY = 'test-key';
-    delete process.env.INGEST_EXTRA_EXTENSIONS;
+    process.env.INGEST_EXTRA_EXTENSIONS = '.pdf';
     delete process.env.INGEST_EXCLUDE_PATHS;
 
     jest.resetModules();
@@ -2689,6 +2683,122 @@ describe('FaissIndexManager ingest — PDF + HTML loaders (issue #46)', () => {
       extension: '.pdf',
       knowledgeBase: 'docs',
     });
+  });
+
+  it('lets INGEST_EXCLUDE_PATHS suppress PDFs even when .pdf is explicitly opted in', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ingest-pdf-excluded-'));
+    const kbRoot = path.join(tempDir, 'kb');
+    const docsKb = path.join(kbRoot, 'docs');
+    const notesDir = path.join(docsKb, 'notes');
+    const pdfsDir = path.join(docsKb, 'pdfs');
+    await fsp.mkdir(notesDir, { recursive: true });
+    await fsp.mkdir(pdfsDir, { recursive: true });
+    await fsp.writeFile(path.join(notesDir, 'summary.md'), '# Summary\n\nUse the note.\n');
+    await fsp.writeFile(
+      path.join(pdfsDir, 'paper.pdf'),
+      Buffer.from('%PDF-1.4\n%mocked content does not need to be valid here'),
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.INGEST_EXTRA_EXTENSIONS = '.pdf';
+    process.env.INGEST_EXCLUDE_PATHS = 'pdfs/**';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    const { texts, metadatas } = collectIngestedDocs();
+    const sources = new Set(metadatas.map((m) => String(m.source)));
+    expect(sources.has(path.join(docsKb, 'notes', 'summary.md'))).toBe(true);
+    expect(sources.has(path.join(docsKb, 'pdfs', 'paper.pdf'))).toBe(false);
+    expect(texts.some((t) => t.includes('Mock PDF body'))).toBe(false);
+    await expect(
+      fsp.stat(path.join(docsKb, '.index', 'pdfs', 'paper.pdf')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rebuilds once when an existing index has a freshness manifest from the old PDF-default filter', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ingest-pdf-migration-'));
+    const kbRoot = path.join(tempDir, 'kb');
+    const docsKb = path.join(kbRoot, 'docs');
+    await fsp.mkdir(docsKb, { recursive: true });
+    await fsp.writeFile(path.join(docsKb, 'summary.md'), '# Summary\n\nUse the note.\n');
+    await fsp.writeFile(
+      path.join(docsKb, 'paper.pdf'),
+      Buffer.from('%PDF-1.4\n%mocked content does not need to be valid here'),
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.INGEST_EXTRA_EXTENSIONS = '.pdf';
+    delete process.env.INGEST_EXCLUDE_PATHS;
+
+    jest.resetModules();
+    {
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const first = new FaissIndexManager();
+      await first.initialize();
+      await first.updateIndex();
+    }
+    expect(collectIngestedDocs().metadatas.some((m) => String(m.source).endsWith('.pdf'))).toBe(
+      true,
+    );
+    await expect(
+      fsp.stat(path.join(docsKb, '.index', 'paper.pdf')),
+    ).resolves.toMatchObject({ isFile: expect.any(Function) });
+
+    // The mocked FaissStore.save creates the versioned directory + symlink
+    // but not a concrete faiss.index file. Seed one so the freshness
+    // migration path sees the same on-disk signal as a real index.
+    const activeIndexPath = path.join(
+      versionedIndexPathIn(process.env.FAISS_INDEX_PATH!),
+      'faiss.index',
+    );
+    await fsp.mkdir(path.dirname(activeIndexPath), { recursive: true });
+    await fsp.writeFile(activeIndexPath, 'mock faiss bytes', 'utf-8');
+    const activeIndexStat = await fsp.stat(activeIndexPath);
+    const { writeFreshnessManifest } = await import('./freshness-manifest.js');
+    await writeFreshnessManifest({
+      modelId: DEFAULT_MODEL_ID,
+      modelDir: modelDirIn(process.env.FAISS_INDEX_PATH!),
+      kbRootDir: kbRoot,
+      indexMtimeMs: activeIndexStat.mtimeMs,
+      filterConfig: {
+        baseExtensions: ['.md', '.markdown', '.txt', '.rst', '.html', '.htm', '.pdf'],
+        extraExtensions: [],
+        excludePaths: [],
+      },
+    });
+
+    saveMock.mockReset();
+    addDocumentsMock.mockReset();
+    fromTextsMock.mockReset();
+    loadMock.mockReset();
+    delete process.env.INGEST_EXTRA_EXTENSIONS;
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const second = new FaissIndexManager();
+    await second.initialize();
+    await second.updateIndex();
+
+    expect(loadMock).toHaveBeenCalledTimes(1);
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    const { texts, metadatas } = collectIngestedDocs();
+    const sources = new Set(metadatas.map((m) => String(m.source)));
+    expect(sources.has(path.join(docsKb, 'summary.md'))).toBe(true);
+    expect(sources.has(path.join(docsKb, 'paper.pdf'))).toBe(false);
+    expect(texts.some((t) => t.includes('Mock PDF body'))).toBe(false);
+    await expect(
+      fsp.stat(path.join(docsKb, '.index', 'paper.pdf')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('ingests a `.html` file via the HTML loader (tags stripped before embedding)', async () => {
@@ -2760,7 +2870,7 @@ describe('FaissIndexManager ingest — PDF + HTML loaders (issue #46)', () => {
     expect(sources.has(path.join(docsKb, 'tool.exe'))).toBe(false);
   });
 
-  it('mixed-extension KB: .md + .pdf + .html all ingest, dispatched by extension', async () => {
+  it('mixed-extension KB: .md + opt-in .pdf + .html all ingest, dispatched by extension', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ingest-mixed-'));
     const kbRoot = path.join(tempDir, 'kb');
     const docsKb = path.join(kbRoot, 'docs');
@@ -2779,7 +2889,7 @@ describe('FaissIndexManager ingest — PDF + HTML loaders (issue #46)', () => {
     process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_API_KEY = 'test-key';
-    delete process.env.INGEST_EXTRA_EXTENSIONS;
+    process.env.INGEST_EXTRA_EXTENSIONS = '.pdf';
     delete process.env.INGEST_EXCLUDE_PATHS;
 
     jest.resetModules();
@@ -3169,10 +3279,7 @@ describe('FaissIndexManager integration — frontmatter + pdf_path (RFC 011 M2)'
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_API_KEY = 'test-key';
     delete process.env.INGEST_EXTRA_EXTENSIONS;
-    // Issue #46 — `.pdf` is in the base allowlist; the arxiv layout pairs
-    // the .md note with the actual PDF, so keep the PDF out of embeddings
-    // to mirror the workflow's intent (notes are the source of truth).
-    process.env.INGEST_EXCLUDE_PATHS = 'pdfs/**';
+    delete process.env.INGEST_EXCLUDE_PATHS;
 
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');

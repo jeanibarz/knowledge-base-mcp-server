@@ -59,6 +59,10 @@ describe('freshness manifest', () => {
       modified_files: 0,
       new_files: 1,
     });
+    expect(manifest.filter.base_extensions).toEqual(
+      expect.arrayContaining(['.md', '.html', '.htm']),
+    );
+    expect(manifest.filter.base_extensions).not.toContain('.pdf');
     await expect(fsp.stat(freshnessManifestPath(modelDir))).resolves.toMatchObject({
       isFile: expect.any(Function),
     });
@@ -86,6 +90,30 @@ describe('freshness manifest', () => {
       kbRootDir: kbRoot,
       indexMtimeMs: 1000,
       filterConfig: { extraExtensions: ['.adoc'], excludePaths: [] },
+    })).resolves.toBeNull();
+
+    await writeFreshnessManifest({
+      modelId: 'huggingface__test',
+      modelDir,
+      kbRootDir: kbRoot,
+      indexMtimeMs: 1000,
+      filterConfig: {
+        baseExtensions: ['.md', '.markdown', '.txt', '.rst', '.html', '.htm', '.pdf'],
+        extraExtensions: [],
+        excludePaths: [],
+      },
+    });
+
+    await expect(readFreshnessManifest({
+      modelId: 'huggingface__test',
+      modelDir,
+      kbRootDir: kbRoot,
+      indexMtimeMs: 1000,
+      filterConfig: {
+        baseExtensions: ['.md', '.markdown', '.txt', '.rst', '.html', '.htm'],
+        extraExtensions: [],
+        excludePaths: [],
+      },
     })).resolves.toBeNull();
   });
 
@@ -125,6 +153,15 @@ describe('freshness manifest', () => {
     })).toBe(computeFreshnessManifestFilterHash({
       extraExtensions: ['.adoc'],
       excludePaths: ['drafts/**'],
+    }));
+    expect(computeFreshnessManifestFilterHash({
+      baseExtensions: ['.md', '.pdf'],
+      extraExtensions: [],
+      excludePaths: [],
+    })).not.toBe(computeFreshnessManifestFilterHash({
+      baseExtensions: ['.md'],
+      extraExtensions: [],
+      excludePaths: [],
     }));
     expect(computeFreshnessManifestFilterHash({
       extraExtensions: ['.mdx'],

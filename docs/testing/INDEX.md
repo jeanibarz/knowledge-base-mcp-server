@@ -4,6 +4,17 @@
 
 ## Indexing
 
+### TS-INDEX-358: Default Text-First Ingest Filter
+**Requirement:** NFR-INDEX-358
+
+**Test Cases:**
+- `filterIngestablePaths` shall exclude `.pdf` files by default while accepting markdown notes.
+- `filterIngestablePaths` shall accept `.pdf` files when `.pdf` is supplied through `extraExtensions`.
+- `filterIngestablePaths` shall let `excludePaths` suppress PDF files even after PDF extension opt-in.
+- `FaissIndexManager.updateIndex` shall let `INGEST_EXCLUDE_PATHS` suppress PDFs after `.pdf` extension opt-in.
+- `FaissIndexManager.updateIndex` shall rebuild from current ingestable files when the freshness manifest records an older base allowlist that admitted PDFs.
+- `RecursiveFsWatcher` shall honor ingest exclusion globs for otherwise ingestable markdown paths.
+
 ### TS-INDEX-236: Batched Changed-File Embeddings
 **Requirement:** NFR-INDEX-236
 
