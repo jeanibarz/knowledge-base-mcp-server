@@ -51,6 +51,18 @@ import {
   type ScoredDocument,
   type SimilaritySearchFilters,
 } from './search-filters.js';
+import {
+  METADATA_SIDECAR_FILENAME,
+  buildSidecarRowFromDocument,
+  deleteMetadataSidecar,
+  isSidecarStale,
+  readMetadataSidecar,
+  recommendFastPathFetchK,
+  toSidecarFilter,
+  writeMetadataSidecar,
+  type MetadataSidecar,
+  type MetadataSidecarRow,
+} from './metadata-sidecar.js';
 import { queryEmbeddingCache, type QueryCacheLookupStatus } from './query-cache.js';
 import { withSidecarLock } from './write-lock.js';
 import { FaissStoreAdapter } from './faiss-store-adapter.js';
@@ -263,6 +275,17 @@ export interface SimilaritySearchTiming {
   total_ms?: number;
   fetch_k?: number;
   query_cache?: QueryCacheLookupStatus | 'unavailable';
+  /**
+   * Issue #283 — outcome of the metadata-sidecar predicate-pushdown
+   * fast-path. `unused` means the active filter did not benefit from the
+   * sidecar; `missing`/`stale` mean the sidecar did not exist or did not
+   * match `ntotal` (post-filter ladder ran). `hit` means the fast-path
+   * served the query without falling back. `miss_underflow` means we
+   * tried the fast-path but the targeted fetchK did not yield enough
+   * filtered hits and we fell through to the ladder.
+   */
+  sidecar_fast_path?: 'hit' | 'unused' | 'missing' | 'stale' | 'miss_underflow' | 'short_circuit';
+  sidecar_candidates?: number;
 }
 
 export const MAX_NEIGHBOR_CONTEXT_WINDOW = 5;
@@ -459,6 +482,11 @@ export class FaissIndexManager {
   readonly modelNameFile: string;
   private readonly indexingBatchSize: number;
   private lastIndexUpdateSummary: IndexUpdateSummary;
+  // Issue #283 — cached metadata sidecar so we don't re-parse the JSONL
+  // file on every query. Invalidated whenever updateIndex rewrites it,
+  // and re-checked for staleness on every search via `isSidecarStale`.
+  private metadataSidecarCache: { sidecar: MetadataSidecar; loadedAt: number } | null = null;
+  private metadataSidecarMissingLogged = false;
 
   /**
    * RFC 013 §4.9 file table — preferred form: `new FaissIndexManager({provider, modelName})`
@@ -761,6 +789,12 @@ export class FaissIndexManager {
           `crash mid-rebuild, or model switch with the prior model's store moved aside.`,
       );
     }
+    // Issue #283 — drop the metadata sidecar too; it indexes the same
+    // (now absent) docstore and would otherwise return stale candidate
+    // ids to the predicate-pushdown fast-path.
+    await deleteMetadataSidecar(this.metadataSidecarPath());
+    this.metadataSidecarCache = null;
+    this.metadataSidecarMissingLogged = false;
     if (skippedSymlinks.length > 0) {
       logger.warn(
         `Issue #90 sidecar purge: skipped ${skippedSymlinks.length} symlinked KB entry(ies) ` +
@@ -768,6 +802,92 @@ export class FaissIndexManager {
           `If those KBs need their sidecars cleared, run \`find <kb-target> -type d -name .index -exec rm -rf {} +\` manually.`,
       );
     }
+  }
+
+  /**
+   * Issue #283 — absolute path of this model's predicate-pushdown sidecar.
+   * Lives next to `last-index-update.json` and `model_name.txt` under the
+   * per-model directory so a model swap can never confuse two sidecars.
+   */
+  private metadataSidecarPath(): string {
+    return path.join(this.modelDir, METADATA_SIDECAR_FILENAME);
+  }
+
+  /**
+   * Issue #283 — rebuild the sidecar from the current in-memory docstore
+   * after a successful index save. Held under `withSidecarLock` so a
+   * concurrent `purgeStaleSidecars` cross-model can't rmrf the directory
+   * (the sidecar lives under `<modelDir>`, not under `<kb>/.index/`, but
+   * the lock keeps both write paths in a single serial domain).
+   */
+  private async refreshMetadataSidecar(): Promise<void> {
+    if (!this.faissIndex) return;
+    const entries = this.faissIndex.docstoreEntries();
+    const rows: MetadataSidecarRow[] = [];
+    for (const [docstoreId, document] of entries) {
+      const row = buildSidecarRowFromDocument(docstoreId, document);
+      if (row !== null) rows.push(row);
+    }
+    const sidecarPath = this.metadataSidecarPath();
+    await withSidecarLock(() =>
+      writeMetadataSidecar({ sidecarPath, modelId: this.modelId, rows }),
+    );
+    this.metadataSidecarCache = null;
+    this.metadataSidecarMissingLogged = false;
+  }
+
+  /**
+   * Issue #283 — read-time sidecar accessor. Caches the parsed sidecar
+   * for this process and re-validates on every call against the live
+   * `ntotal`. Returns null whenever the sidecar is missing, stale, or
+   * corrupt — the caller must then fall through to the post-filter
+   * ladder for correctness. The first miss in a process logs ONE
+   * canonical warn to keep operator logs clean under repeated queries.
+   */
+  private async loadMetadataSidecar(): Promise<MetadataSidecar | null> {
+    if (!this.faissIndex) return null;
+    const ntotal = this.faissIndex.totalVectors();
+    if (this.metadataSidecarCache !== null) {
+      if (!isSidecarStale(this.metadataSidecarCache.sidecar, ntotal)) {
+        return this.metadataSidecarCache.sidecar;
+      }
+      this.metadataSidecarCache = null;
+    }
+    const sidecarPath = this.metadataSidecarPath();
+    const sidecar = await readMetadataSidecar({ sidecarPath, modelId: this.modelId });
+    if (sidecar === null) {
+      if (!this.metadataSidecarMissingLogged) {
+        logger.warn(
+          `Issue #283 metadata sidecar absent or unreadable for model ${this.modelId}; ` +
+            `metadata-filtered queries will use the post-filter overfetch ladder. ` +
+            `Run \`npm run build && node build/index.js\` (or any updateIndex) to regenerate.`,
+        );
+        this.metadataSidecarMissingLogged = true;
+      }
+      return null;
+    }
+    if (isSidecarStale(sidecar, ntotal)) {
+      logger.warn(
+        `Issue #283 metadata sidecar for ${this.modelId} reports ${sidecar.totalChunks} chunks ` +
+          `but the live FAISS docstore has ${ntotal}; falling back to post-filter overfetch.`,
+      );
+      this.metadataSidecarCache = null;
+      return null;
+    }
+    this.metadataSidecarCache = { sidecar, loadedAt: Date.now() };
+    this.metadataSidecarMissingLogged = false;
+    return sidecar;
+  }
+
+  /**
+   * Test seam — drops the in-memory sidecar cache so a test that mutates
+   * the on-disk JSONL directly (without going through `refreshMetadataSidecar`)
+   * sees the new bytes on the next search.
+   */
+  /** @internal */
+  __resetMetadataSidecarCacheForTests(): void {
+    this.metadataSidecarCache = null;
+    this.metadataSidecarMissingLogged = false;
   }
 
   /**
@@ -1694,6 +1814,21 @@ export class FaissIndexManager {
           });
           await writeSidecarHashes(pendingHashWrites);
           await writeChunkManifests(pendingChunkManifestWrites);
+          if (indexMutated && this.faissIndex !== null) {
+            // Issue #283 — keep the predicate-pushdown sidecar in sync
+            // with the FAISS docstore. Best-effort: a write failure here
+            // logs and falls through; the next query simply picks the
+            // post-filter ladder until the next successful refresh.
+            try {
+              await this.refreshMetadataSidecar();
+            } catch (sidecarRefreshError: unknown) {
+              logger.warn(
+                `Issue #283 metadata sidecar refresh failed for ${this.modelId}: ` +
+                  `${toError(sidecarRefreshError).message}. Queries will use the ` +
+                  `post-filter overfetch ladder until the next successful refresh.`,
+              );
+            }
+          }
           runSummary.sidecars_written =
             pendingHashWrites.length > 0 || pendingChunkManifestWrites.length > 0;
           await emitProgress({
@@ -1864,16 +1999,76 @@ export class FaissIndexManager {
       return filtered.slice(0, k).map(([doc, score]) => ({ ...doc, score }));
     }
 
+    const ntotal = this.faissIndex.totalVectors();
+
+    // Issue #283 — predicate-pushdown fast-path. When a metadata-aware
+    // filter is active and the per-model sidecar matches the live docstore
+    // we use it to:
+    //   (a) short-circuit to an empty result when no row matches (no FAISS
+    //       call at all),
+    //   (b) pick a single FAISS fetchK targeted at the filter selectivity
+    //       so common 1%-class filters terminate in one search instead of
+    //       walking the [20, 4k, 16k, ntotal] ladder.
+    // The post-filter still runs on the FAISS results for correctness:
+    // sidecar candidates only narrow how MANY vectors we ask FAISS for,
+    // they do not bypass the post-filter.
+    const sidecarFilter = toSidecarFilter({
+      knowledgeBaseName,
+      knowledgeBasesRootDir: KNOWLEDGE_BASES_ROOT_DIR,
+      filters,
+    });
+    const sidecar = await this.loadMetadataSidecar();
+    let cumulativePostFilterMs = 0;
+    let filtered: ScoredDocument[] = [];
+
+    if (sidecar !== null && sidecar.hasFilter(sidecarFilter)) {
+      const candidates = sidecar.candidateIds(sidecarFilter);
+      if (timing) timing.sidecar_candidates = candidates.length;
+      if (candidates.length === 0) {
+        if (timing) {
+          timing.sidecar_fast_path = 'short_circuit';
+          timing.fetch_k = 0;
+          timing.post_filter_ms = 0;
+          timing.total_ms = Date.now() - totalStartedAt;
+        }
+        return [];
+      }
+      const fastFetchK = recommendFastPathFetchK({
+        k,
+        candidates: candidates.length,
+        ntotal,
+      });
+      if (fastFetchK !== null) {
+        const resultsWithScore = await runFaissSearch(fastFetchK);
+        const postFilterStartedAt = Date.now();
+        filtered = postFilter.apply(resultsWithScore);
+        cumulativePostFilterMs += Date.now() - postFilterStartedAt;
+        const fastPathSatisfied =
+          filtered.length >= k || resultsWithScore.length < fastFetchK;
+        if (fastPathSatisfied) {
+          if (timing) {
+            timing.fetch_k = fastFetchK;
+            timing.post_filter_ms = cumulativePostFilterMs;
+            timing.sidecar_fast_path = 'hit';
+            timing.total_ms = Date.now() - totalStartedAt;
+          }
+          return filtered.slice(0, k).map(([doc, score]) => ({ ...doc, score }));
+        }
+        if (timing) timing.sidecar_fast_path = 'miss_underflow';
+      } else if (timing) {
+        timing.sidecar_fast_path = 'unused';
+      }
+    } else if (timing) {
+      timing.sidecar_fast_path = sidecar === null ? 'missing' : 'unused';
+    }
+
     // Issue #229 — progressive overfetch. Walk increasing fetch windows and
     // stop as soon as the post-filter yields at least `k` hits, or FAISS has
     // already returned its entire docstore (raw length below the requested
     // window ⇒ ntotal exhausted). Worst case ends at `ntotal` and matches
     // the pre-#229 cost; common filtered queries terminate at the first rung.
-    const ntotal = this.faissIndex.totalVectors();
     const fetchSizes = progressiveFetchSizes(k, ntotal);
-    let filtered: ScoredDocument[] = [];
     let lastFetchK = k;
-    let cumulativePostFilterMs = 0;
     for (const fetchK of fetchSizes) {
       lastFetchK = fetchK;
       const resultsWithScore = await runFaissSearch(fetchK);
