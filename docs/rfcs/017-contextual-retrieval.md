@@ -1,6 +1,6 @@
 # RFC 017 — Contextual Retrieval at Ingest
 
-**Status:** Draft (v3 — post-round-2 critic revision)
+**Status:** Draft (v4 — post-round-2 critic revision + index-layout correction)
 **Depends on:** RFC 013 (per-model layout), RFC 014 (atomic save), RFC 015 (warm-LLM endpoint discovery), RFC 016 (docstore dedup, `withSidecarLock`)
 **Tracks:** retrieval quality on chunked notes that lose pronoun / heading / section context
 
@@ -129,7 +129,7 @@ export function embeddingText(doc: Document): string {
    - Compute `chunkHash = sha256(chunk)`.
    - If sidecar has a record at index `i` with matching `chunkHash`, `chunkIndex == i`, **non-null `preface`**, matching `generator`, matching `model`, matching `documentHash`, matching `chunk_size` + `chunk_overlap` env values → cache hit; reuse.
    - Else → call the LLM (§4). On success, slot into the result. **On failure** (`preface: null`), do **not** mark this as a permanent cache hit; future runs treat it as retryable subject to a per-error retry-after deadline (§Failure modes).
-3. Per-file sidecar writes happen **per-KB at swap time** (§5 step 7), not per-file inline. The in-memory cost per run is bounded by the largest KB, not the whole corpus.
+3. Per-file sidecar writes happen **per-KB at the end of that KB's walk** (§5 step 6c), not per-file inline and not at end-of-run. The in-memory cost per run is bounded by the largest KB's sidecar buffer, not the whole corpus.
 
 Sidecar shape:
 
@@ -227,15 +227,19 @@ Behavior:
 3. **Per-model lock with reindex-appropriate tuning.** `withWriteLock` today has `stale: 10_000`, `update: 5_000` — designed for sub-second MCP writes; would go stale during long `addVectors` batches. The reindex path acquires the lock with extended parameters (`stale: 60_000`, `update: 15_000`) so a busy GC pause or large batch doesn't drop the lock. The reindex holds the lock for the full run. MCP `updateIndex` calls during a reindex will see `WriteLockContentionError`; callers must tolerate this (we adjust the MCP retry envelope from 5 attempts in 10s to 30 attempts over 5 minutes — still fails for the multi-hour case, see Open Questions).
 4. **`.reindex.run.json` with PID liveness.** Written at lock acquisition with `pid`, `started_at`, `kbs_in_scope`. On the next startup (any `kb_stats`, `kb reindex`, or trigger watcher invocation), if the file exists, check whether the `pid` is still alive (`process.kill(pid, 0)` semantics). If dead, treat the file as stale, delete it, and emit `reindex.zombie-cleanup` log line. This defeats the zombie-file failure mode where SIGKILL leaves the file claiming `in_progress` forever.
 5. **Trigger watcher coordination.** On every poll, the watcher reads `.reindex.run.json`. If present AND `pid` alive, defer — set `pending=true`, do NOT attempt the lock (avoid contention error log noise). If present AND `pid` dead, run the PID-liveness cleanup from step 4. On reindex completion, the watcher drains any deferred triggers.
-6. **Per-KB swap and sidecar promotion.** For each KB in scope (not the whole corpus in one transaction):
-   a. Walk source files in stable order; for each, re-run `buildChunkDocuments` with contextual retrieval on and re-embed via the §3 path.
-   b. Append to a per-KB staging dir under `index.vN+1/<kb-name>/`. Verify `ntotal === docstore.size` invariant after each batch.
-   c. **At the end of this KB:** atomic-promote per RFC 014, then write that KB's accumulated sidecars (under `withSidecarLock`). Update `.reindex.run.json` with `last_completed_kb`, `kbs_done`.
-   d. Continue to next KB.
-   This bounds kill-loss to "one KB's worth of LLM work," not "the entire run." On the deployed corpus that's worst-case ~1 hour, not ~8.
-7. **On failure mid-KB.** That KB's staging is abandoned (RFC 014 orphan cleanup). Already-completed KBs are not rolled back. Sidecars from prior KBs survive as cache hits for the next run. The run exits `outcome: partial` if at least one KB completed; `failed` if zero KBs completed.
+6. **Whole-index swap with per-KB sidecar persistence.** The FAISS index layout is **single-index-per-model** (`models/<id>/index.vN/{faiss.index, docstore.json}` per RFC 013/014 — one index, all KBs co-located, filtered by `metadata.knowledgeBase`). Per-KB index staging dirs and per-KB symlink swaps are infeasible without restructuring the layout. The reindex therefore separates two distinct caches:
+   - **Sidecars (LLM-expensive, KB-scoped):** `${FAISS_INDEX_PATH}/.contextual-prefaces/<kb-name>/<relative-path>.json`. Written **per-KB-complete, under `withSidecarLock`**, as soon as every file in that KB has finished its LLM phase. Independent of the FAISS index. Survives across runs.
+   - **FAISS index (embedding-cheap, whole-corpus):** the single `index.vN+1/` staging tree under the model dir. Built up in memory as the reindex walks every KB. **Atomically swapped exactly once at the end of the entire run** per RFC 014.
 
-The trade-off vs v2's single-swap design: per-KB swap means a brief window between KB-N's symlink swap and KB-N's sidecar write where the FAISS index has new vectors and the sidecar file isn't there yet. A SIGKILL in that window leaves `kb_stats` reporting `covered_chunks: 0` for KB-N when it should be 100% — the next reindex regenerates KB-N's prefaces (~one hour of LLM cost). This is the documented cost of using per-KB instead of all-or-nothing semantics. We choose per-KB because losing one KB is recoverable; losing 8 hours is operationally painful enough that operators may avoid the feature.
+   Per-KB walk:
+   a. For each file in the KB, re-run `buildChunkDocuments` with contextual retrieval on. `resolveContextualPrefaces` reads the on-disk sidecar (cache hits from prior runs) and calls the LLM only for misses.
+   b. Re-embed the chunks via the §3 path; append to the in-memory `index.vN+1` staging store. Verify `ntotal === docstore.size` invariant after each batch.
+   c. **At the end of this KB:** persist all newly-generated sidecars for this KB to disk under `withSidecarLock` (tmp + rename per source file, `mkdir -p` on subdirs). Update `.reindex.run.json` with `last_completed_kb`, `kbs_done`.
+   d. Continue to the next KB. The staging FAISS index keeps accumulating; it is **not** touched on disk yet.
+7. **End-of-run swap.** After every in-scope KB has finished and its sidecars are persisted, call `saveFaissStoreAtomic` on the accumulated staging store (RFC 014 — writes `index.vN+1/{faiss.index, docstore.json}` and swaps the `index` symlink in one operation). Only at this point does the live index reflect any preface-augmented vectors.
+8. **On failure mid-run.** The staging FAISS index in memory is discarded (no disk writes outside per-KB sidecars). Already-persisted sidecars from completed KBs survive on disk as cache hits for the next run; the in-progress KB's prefaces are lost and re-generated next time. The run exits `outcome: partial` if at least one KB completed its sidecar persistence; `failed` if zero KBs did.
+
+The trade-off: kill-loss for LLM work is bounded to the in-progress KB (worst case ~1h on the deployed corpus). Kill-loss for embedding work is the whole staging index (cheap — `nomic-embed-text` does ~50 chunks/sec, so 5-15k chunks = 100-300s of recovery on the next run). A SIGKILL between the last KB's sidecar persistence and the index swap leaves all sidecars on disk but no preface-augmented vectors in the live index — the next reindex sees universal cache hits and only pays the embedding cost again. **No partial-state visibility anomaly** — `kb_stats` consistently reports either the old (non-contextual) index or the new (fully-contextual) one, never a half-and-half state.
 
 ### 6. Configuration surface
 
@@ -295,7 +299,8 @@ Canonical log lines (`src/canonical-log.ts`, all using `took_ms` per the existin
 - `contextual-preface.resolve` per file — fields: `source`, `chunks`, `cache_hits`, `llm_calls`, `failures`, `took_ms`.
 - `contextual-preface.llm-call` per call — fields: `source`, `chunk_index`, `took_ms`, `prompt_tokens`, `completion_tokens`, `outcome` (`success` | `truncated_doc` | `retry` | `failure_unreachable` | `failure_malformed` | `failure_refusal` | `failure_circuit_breaker`).
 - `reindex.start` — fields: `kbs`, `estimated_chunks`, `estimated_seconds`, `guard_now_utc`.
-- `reindex.kb-completed` per KB — fields: `kb`, `files`, `cache_hits`, `llm_calls`, `failures`, `took_ms`, `swap_performed`.
+- `reindex.kb-completed` per KB — fields: `kb`, `files`, `cache_hits`, `llm_calls`, `failures`, `took_ms`, `sidecars_persisted` (boolean — did this KB's sidecars reach disk).
+- `reindex.index-swap` once at end-of-run — fields: `kbs_in_index`, `total_chunks`, `took_ms`.
 - `reindex.exit` — fields: `outcome` (`completed` | `partial` | `tempfail` | `failed`), `kbs_completed`, `kbs_attempted`, `took_ms`.
 - `reindex.zombie-cleanup` — fields: `prior_pid`, `prior_started_at`, `prior_kbs_done`.
 
@@ -313,11 +318,11 @@ The `external` category itself is new — added to `CanonicalErrorCategory` in `
 
 | failure | detection | response |
 |---|---|---|
-| LLM endpoint unreachable | `callChatCompletion` throws connection error | retry up to 2 times with 1s + jitter; on final failure, sidecar entry buffered (and written on per-KB swap) with `error_code: "llm_unreachable"`, `next_retry_after: now + 24h`. Chunk embeds verbatim. |
+| LLM endpoint unreachable | `callChatCompletion` throws connection error | retry up to 2 times with 1s + jitter; on final failure, sidecar entry buffered in memory (persisted at the end of this KB's walk) with `error_code: "llm_unreachable"`, `next_retry_after: now + 24h`. Chunk embeds verbatim. |
 | LLM returns empty / malformed | response content empty or > `MAX_TOKENS * 4` chars | log `warn`; `next_retry_after` = now + 1h. |
 | LLM returns a refusal | response begins with `"I cannot"`, `"As an AI"`, etc. | failure; `next_retry_after` = now + 72h. |
 | Document exceeds 48k char budget | `len(documentBody) > 48_000` | truncate to leading 48k chars; emit `outcome: truncated_doc`; `next_retry_after` = never until file changes. |
-| **Consecutive LLM timeouts (deadlocked slot)** | 5 consecutive 30s timeouts on the same run | abort the run with `outcome: failed`, exit code 71. Per-KB swaps already performed survive. |
+| **Consecutive LLM timeouts (deadlocked slot)** | 5 consecutive 30s timeouts on the same run | abort the run with `outcome: failed`, exit code 71. Per-KB sidecars already persisted survive as cache hits for the next run; the staging FAISS index is discarded. |
 | Source file mutated during ingest (narrow window) | post-LLM `fs.stat` shows mtime/size changed | discard prefaces for this file; emit `RetryableError`. **Note: this only narrows the window — a mutation between the post-stat and `addVectors` completion still results in a stale-content vector. The next ingest cycle reconciles via `documentHash` diff. The invariant is "eventually consistent," not "no stale vector ever visible."** |
 | Sidecar JSON corrupt / partial | `JSON.parse` throws | treat as full cache miss for this file; rewrite. Log `PREFACE_SIDECAR_CORRUPT`. |
 | `addVectors` partial-failure | post-batch `ntotal !== docstore.size` invariant | refuse to save the staging KB; abort the KB with `outcome: partial`. Already-completed KBs survive. |
@@ -325,7 +330,8 @@ The `external` category itself is new — added to `CanonicalErrorCategory` in `
 | Reindex lock held by another PID | `withWriteLock(modelDir)` fails after extended retry envelope | exit code 73 (`EX_LOCK`) with the holder's PID. |
 | **Reindex zombie (`.reindex.run.json` from SIGKILL run)** | startup check: file present, `process.kill(pid, 0)` throws | delete the file, emit `reindex.zombie-cleanup`, treat state as `never` (or the last successfully-completed state from prior runs). |
 | **Watcher TOCTOU on `.reindex.run.json`** | watcher reads file → file deleted by completing reindex between read and lock attempt | watcher's lock attempt succeeds; no deadlock. Watcher proceeds with `updateIndex`. Acceptable race. |
-| SIGKILL between KB symlink swap and KB sidecar write | next startup: `kb_stats` shows `covered_chunks: 0` for KB-N when the index has new vectors | the next reindex regenerates KB-N's prefaces. Cost: one KB's worth of LLM calls. Documented in §5 trade-off. |
+| SIGKILL after a KB's sidecars are persisted but before end-of-run index swap | persisted sidecars on disk; live FAISS index still on `vN` (no preface-augmented vectors) | next reindex sees universal cache hits for completed KBs; only pays the embedding cost (cheap, ~100-300s for the whole corpus). LLM-budget kill-loss bounded to the in-progress KB. |
+| SIGKILL during a KB's sidecar persistence pass (mid `withSidecarLock`) | partial sidecar set on disk for that KB; some files have new entries, some don't | per-file sidecar writes are tmp+rename atomic, so individual files are either fully written or absent — no torn JSON. The KB's `coverage_pct` will be partial on the next `kb_stats`; the next reindex regenerates the missing files. |
 | Clock skew defeats `next_retry_after` | NTP slew, manual clock change, container clock drift | retries may fire too early (forward jump) or never (backward jump); the cache key `chunkHash` is stable, so a forward-jump retry just re-burns the LLM. Documented in Open Questions; not fatal. |
 | LRA cron starts during a reindex | `now > guard_window_start_utc` at the top of each KB iteration | finish the current file's batch, exit with `outcome: tempfail` and exit code 75. KBs already swapped survive. Operator re-runs after 10:30 UTC. |
 | Cache poisoned by a single bad preface | per-error `next_retry_after` budget; `generator` version bump for global invalidation | future runs retry expired entries. Per-file invalidate CLI deferred to follow-up. |
@@ -346,11 +352,11 @@ Note on M0a testability: `fromDocuments` is only exercised end-to-end on a fresh
 
 **M0b — `kb reindex --with-context` CLI** (one PR).
 - New `src/cli-reindex.ts` + `SUBCOMMANDS` registration.
-- LRA cron guard with `getUTCHours()` + `getUTCMinutes()`; self-runtime estimator with 8s/chunk multiplier; `.reindex.run.json` with PID liveness; per-KB swap + sidecar promotion.
+- LRA cron guard with `getUTCHours()` + `getUTCMinutes()`; self-runtime estimator with 8s/chunk multiplier; `.reindex.run.json` with PID liveness; **per-KB sidecar persistence + whole-corpus end-of-run FAISS swap** (the FAISS layout is single-index-per-model; per-KB index swaps are infeasible without restructuring the layout).
 - Lock acquisition uses extended `withWriteLock` parameters (`stale: 60_000`, `update: 15_000`) for the multi-hour hold.
 - Trigger watcher coordination (`.reindex.run.json` consult; zombie cleanup).
 - Run-level status file + canonical log lines.
-- Integration test against a fake llama-server: full reindex of a 3-file fixture KB; assert per-KB swap; assert sidecar parity.
+- Integration test against a fake llama-server: full reindex of a 3-file fixture KB; assert per-KB sidecar persistence happens at KB end; assert single end-of-run FAISS swap; assert sidecar/index consistency.
 - End-to-end test of M0a's `fromDocuments` path via the CLI on a fresh-index fixture.
 
 **M0c — `kb eval --compare-index`** (one PR, gating M1).
@@ -366,12 +372,12 @@ Note on M0a testability: `fromDocuments` is only exercised end-to-end on a fresh
 - `kb reindex --with-context` (all shelves).
 - Self-runtime estimator computes the budget upfront (`8s × N`); refuses if it would cross 06:00 UTC.
 - Estimated cost on the deployed corpus: ~5k-15k chunks total. **Cold case (KV-cache evicted, 8s/chunk): up to 33 hours for the upper bound.** **Warm case (sole-tenant, 1-2s/chunk): 1-8 hours.** Even the warm case fits the 12h window comfortably; the cold case requires staging across multiple windows. The estimator refuses to start a single-window run that wouldn't fit.
-- Per-KB swap (§5 step 6) means a kill mid-run loses only the current KB's work, not the whole run.
+- Per-KB sidecar persistence (§5 step 6c) means a kill mid-run loses only the current KB's LLM work; embedding work for completed KBs is rerun (cheap, ~100-300s) but the LLM-expensive prefaces survive on disk and serve as cache hits.
 - **MCP callers during M2 will see `WriteLockContentionError` for ingestion paths.** The MCP retry envelope is extended in M0b (5×10s → 30×5min) but multi-hour reindexes still exceed it. Operators should expect ingestion to pause during M2; the trigger watcher's deferred-trigger drain (§5 step 5) catches up after the lock releases.
 
 **M3 — Default to on** (separate PR, later). Out of scope for this RFC.
 
-Rollback path: clear `KB_CONTEXTUAL_RETRIEVAL`. Existing FAISS indexes built without prefaces remain queryable throughout. Per-KB swaps mean a mid-M2 abort leaves some shelves on the new index and others on the old — both states are valid and queryable. The mixed-corpus hazard (different prefixes in the embedding text across two halves of the corpus) is real and documented; the operator either completes M2 in a later window or accepts the mixed-quality state.
+Rollback path: clear `KB_CONTEXTUAL_RETRIEVAL`. Existing FAISS indexes built without prefaces remain queryable throughout. **There is no mixed-corpus state**: the FAISS index is whole-corpus all-or-nothing per run. A mid-M2 abort discards the in-flight staging index; the live `index.vN` (pre-contextual) keeps serving until a complete M2 run swaps to `index.vN+1` (fully contextual).
 
 ## Open questions
 
@@ -385,7 +391,7 @@ Rollback path: clear `KB_CONTEXTUAL_RETRIEVAL`. Existing FAISS indexes built wit
 - **Round 1 (operability-reviewer, delivery-pragmatist, design-minimalist, failure-mode-analyst).** See git history of this file for v1 → v2 deltas. Major changes: `elapsed_ms` → `took_ms`; run-level status file; both insertion paths patched; per-error retry-after; deduper re-key; M0 split into M0a/M0b/M0c; sidecar-after-swap ordering; config surface reduced from 5 to 3 env vars.
 
 - **Round 2 (same 4 critics, v2 → v3).** Incorporated:
-  - **Per-KB swap, not single end-of-run swap** (delivery-pragmatist + failure-mode #5 OOM + failure-mode #1 kill-loss). Bounds kill-loss to ~1 hour, not ~8.
+  - **Per-KB sidecar persistence + whole-corpus end-of-run FAISS swap** (delivery-pragmatist + failure-mode #5 OOM + failure-mode #1 kill-loss; corrected in v4 — see Critic feedback round 3 below). Bounds LLM-budget kill-loss to ~1 hour while respecting the single-index-per-model layout.
   - **`withSidecarLock` around `.contextual-prefaces/` writes** (failure-mode #2 cross-model sidecar collision). Uses the existing primitive from RFC 016.
   - **PID liveness check on `.reindex.run.json`** (failure-mode #4 zombie file + operability #3 partial fix). `process.kill(pid, 0)` on startup; `stale` state in `reindex_state` enum.
   - **Consecutive-timeout circuit breaker** (failure-mode #8 deadlocked LLM slot). 5 consecutive 30s timeouts abort the run.
@@ -406,7 +412,15 @@ Rollback path: clear `KB_CONTEXTUAL_RETRIEVAL`. Existing FAISS indexes built wit
   Rejected / deferred:
   - **Monotonic-clock anchoring for `next_retry_after`** — added to Open Questions instead. Wall-clock skew is real but the cost of a misfired retry is "one extra LLM call," not corruption.
   - **`KB_CHUNK_KEEP_SEPARATOR` in cache key** (failure-mode splitter coverage). Tied to the `splitter_fingerprint` decision; cut along with it.
-  - **Node `--max-old-space-size` floor recommendation** (failure-mode #5 OOM). Per-KB swap (§5 step 6) bounds the in-memory footprint to one KB's worth of prefaces (~1-3 MB), well within default heap. Documentation note only.
+  - **Node `--max-old-space-size` floor recommendation** (failure-mode #5 OOM). Per-KB sidecar persistence (§5 step 6c) bounds the in-memory preface footprint to one KB's buffer (~1-3 MB); the staging FAISS index holds all chunks' embeddings (~46 MB for 15k chunks at 768-dim float32) but that's well within default heap. Documentation note only.
   - **Pre-splitter pipeline fingerprinting** (failure-mode splitter coverage). Same reasoning as `splitter_fingerprint` cut.
 
-  No round-3 needed: round 2 mostly produced corrections inside the existing design rather than new directions. The remaining open questions are operational follow-ups, not blockers.
+  No round-3 critic invocation: round 2 produced corrections inside the existing design rather than new directions.
+
+- **Author-driven round 3 — index-layout correction (v3 → v4).** While starting M0a implementation, the v3 "per-KB swap" design was found to be infeasible against the current FAISS layout: `src/FaissIndexManager.ts:99-105` and `src/faiss-store-layout.ts:273-300` document a single-index-per-model layout (`models/<id>/index.vN/{faiss.index, docstore.json}`, all KBs filtered by `metadata.knowledgeBase`). A per-KB staging directory would not be read by the loader, and a per-KB symlink swap would replace the entire index with one KB's content, making other shelves vanish from search.
+
+  Correction in v4: separate two caches.
+  - **Sidecars (LLM-expensive, KB-scoped)** persist per-KB-complete to `.contextual-prefaces/` under `withSidecarLock`. Bounds the LLM-budget kill-loss to the in-progress KB.
+  - **FAISS index (embedding-cheap, whole-corpus)** is built up in memory across every KB and atomically swapped exactly once at end-of-run per RFC 014.
+
+  Trade-off: a mid-run kill discards the staging FAISS index (re-embedding cost ~100-300s on the next run) but the LLM-expensive prefaces from completed KBs survive on disk. No mixed-corpus state — the live index is whole-corpus all-or-nothing. This is arguably *cleaner* than v3's per-KB-swap design, which had a documented "between symlink swap and sidecar write" failure window that doesn't exist in v4.
