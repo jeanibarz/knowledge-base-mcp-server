@@ -9,6 +9,11 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import {
+  GENERATOR_VERSION as CONTEXTUAL_PREFACE_GENERATOR,
+  sidecarRootDir as contextualPrefaceRoot,
+} from './contextual-preface.js';
+import { isContextualRetrievalEnabled } from './config/contextual-preface.js';
 import { FaissIndexManager, type IndexUpdateSummary } from './FaissIndexManager.js';
 import {
   FAISS_INDEX_PATH,
@@ -35,6 +40,26 @@ export interface KbStatsRow {
   chunk_count: number;
   total_bytes_indexed: number;
   last_updated_at: string | null;
+  /**
+   * RFC 017 — contextual-retrieval observability. Present (with
+   * `enabled: false`) when KB_CONTEXTUAL_RETRIEVAL is off; populated with
+   * coverage counts when it's on. Additive on the wire: clients that
+   * predate RFC 017 ignore the field; clients that know about it can
+   * report coverage_pct, null_preface_chunks, and the reindex state.
+   */
+  contextual_preface?: KbStatsContextualPrefaceBlock;
+}
+
+export interface KbStatsContextualPrefaceBlock {
+  enabled: boolean;
+  reindex_state: 'never' | 'in_progress' | 'completed' | 'partial' | 'failed' | 'stale';
+  last_completed_at: string | null;
+  covered_chunks: number;
+  null_preface_chunks: number;
+  coverage_pct: number;
+  cache_bytes: number;
+  model: string | null;
+  generator: string | null;
 }
 
 export interface KbStatsPayload {
@@ -132,11 +157,14 @@ export async function computeKbStats(
     });
     const totalBytes = byteCounts.reduce((sum, value) => sum + value, 0);
     const lastUpdatedAt = await maxMtimeIso(path.join(kbPath, '.index'));
+    const chunkCount = indexStats.chunkCountsByKb[kbName] ?? 0;
+    const contextualPreface = await computeContextualPrefaceBlock(kbName, chunkCount);
     knowledge_bases[kbName] = {
       file_count: filePaths.length,
-      chunk_count: indexStats.chunkCountsByKb[kbName] ?? 0,
+      chunk_count: chunkCount,
       total_bytes_indexed: totalBytes,
       last_updated_at: lastUpdatedAt,
+      contextual_preface: contextualPreface,
     };
     quarantined[kbName] = await countIngestQuarantine(kbPath);
   }
@@ -212,4 +240,103 @@ export async function maxMtimeIso(dir: string): Promise<string | null> {
   }
   await walk(dir);
   return latest === 0 ? null : new Date(latest).toISOString();
+}
+
+/**
+ * RFC 017 — compute the `contextual_preface` sub-block for a single KB.
+ *
+ * M0a scope: no run-level CLI exists yet, so `reindex_state` is derived
+ * purely from sidecar presence. The M0b CLI will write a
+ * `.reindex.run.json` file under the FAISS index root that distinguishes
+ * `in_progress` / `partial` / `stale` from the M0a-visible states.
+ *
+ * Cheap when no sidecars exist for the KB (the directory's absent → the
+ * readdir returns ENOENT → we return the `never` placeholder).
+ */
+async function computeContextualPrefaceBlock(
+  kbName: string,
+  totalChunks: number,
+): Promise<import('./kb-stats.js').KbStatsContextualPrefaceBlock> {
+  const enabled = isContextualRetrievalEnabled();
+  const sidecarDir = path.join(contextualPrefaceRoot(), kbName.replace(/[^A-Za-z0-9._-]/g, '_'));
+  let dirEntries: Array<import('fs').Dirent> = [];
+  try {
+    dirEntries = await fsp.readdir(sidecarDir, { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      logger.debug(`kb_stats: contextual sidecar readdir failed for ${sidecarDir}: ${(err as Error).message}`);
+    }
+    // No sidecars yet → never reindexed.
+    return {
+      enabled,
+      reindex_state: 'never',
+      last_completed_at: null,
+      covered_chunks: 0,
+      null_preface_chunks: 0,
+      coverage_pct: 0,
+      cache_bytes: 0,
+      model: null,
+      generator: enabled ? CONTEXTUAL_PREFACE_GENERATOR : null,
+    };
+  }
+
+  let covered = 0;
+  let nulls = 0;
+  let cacheBytes = 0;
+  let latestMtime = 0;
+  let modelSeen: string | null = null;
+
+  for (const entry of dirEntries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const filePath = path.join(sidecarDir, entry.name);
+    let stat: import('fs').Stats;
+    try {
+      stat = await fsp.stat(filePath);
+    } catch {
+      continue;
+    }
+    cacheBytes += stat.size;
+    if (stat.mtimeMs > latestMtime) latestMtime = stat.mtimeMs;
+    let raw: string;
+    try {
+      raw = await fsp.readFile(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    let parsed: { chunks?: Array<{ preface?: unknown }>; model?: unknown };
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (typeof parsed.model === 'string') modelSeen = parsed.model;
+    if (!Array.isArray(parsed.chunks)) continue;
+    for (const c of parsed.chunks) {
+      if (typeof c?.preface === 'string' && c.preface.length > 0) covered += 1;
+      else if (c?.preface === null) nulls += 1;
+    }
+  }
+
+  const coveragePct = totalChunks > 0 ? Math.round((covered / totalChunks) * 1000) / 10 : 0;
+  const lastCompletedAt = latestMtime === 0 ? null : new Date(latestMtime).toISOString();
+  // M0a: a populated sidecar dir + zero failures + coverage matching the
+  // chunk count means a completed run. Without a `.reindex.run.json` file
+  // we can't tell `partial` from `failed`; both surface as `completed` if
+  // coverage_pct === 100, otherwise as `partial`.
+  const reindexState = covered + nulls === 0
+    ? 'never'
+    : (covered === totalChunks ? 'completed' : 'partial');
+
+  return {
+    enabled,
+    reindex_state: reindexState,
+    last_completed_at: lastCompletedAt,
+    covered_chunks: covered,
+    null_preface_chunks: nulls,
+    coverage_pct: coveragePct,
+    cache_bytes: cacheBytes,
+    model: modelSeen,
+    generator: dirEntries.length > 0 ? CONTEXTUAL_PREFACE_GENERATOR : null,
+  };
 }

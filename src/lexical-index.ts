@@ -36,6 +36,7 @@ import { BM25Retriever } from '@langchain/community/retrievers/bm25';
 import { FAISS_INDEX_PATH } from './config/paths.js';
 import { INGEST_EXCLUDE_PATHS, INGEST_EXTRA_EXTENSIONS } from './config/ingest.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
+import { embeddingText } from './contextual-preface.js';
 import { buildChunkDocuments } from './file-ingest.js';
 import { KBError } from './errors.js';
 import { enumerateIngestableKbFiles } from './kb-fs.js';
@@ -43,11 +44,26 @@ import { loadFile } from './loaders.js';
 import { logger } from './logger.js';
 import { toError } from './error-utils.js';
 
-const SCHEMA_VERSION = 1;
+// RFC 017 §3 — schema v2 splits BM25 scoring text from caller-output
+// text. v1 (pre-RFC-017) stored `pageContent` as both. v2 adds an
+// optional `searchText` field: when present, BM25 scores against it; the
+// original `pageContent` is what the caller sees. v2 indexes are readable
+// by v1 readers as long as they fall back to `pageContent` for BM25,
+// which the v1 query path did anyway — so the format change is backwards
+// compatible at the JSON level. The version bump is purely advisory.
+const SCHEMA_VERSION = 2;
+const SCHEMA_VERSIONS_READABLE = [1, 2] as const;
 
 interface SerializedDocument {
   pageContent: string;
   metadata: Record<string, unknown>;
+  /**
+   * RFC 017 §3 — preface-prepended embedding-input text used for BM25
+   * scoring. Absent when contextual retrieval is disabled (`pageContent`
+   * is used directly). Never returned to callers — the query path always
+   * outputs `pageContent` verbatim.
+   */
+  searchText?: string;
 }
 
 interface FileEntry {
@@ -142,7 +158,8 @@ export class LexicalIndex {
       );
     }
 
-    if (!isPlainObject(parsed) || (parsed as { version?: unknown }).version !== SCHEMA_VERSION) {
+    const rawVersion = (parsed as { version?: unknown }).version;
+    if (!isPlainObject(parsed) || typeof rawVersion !== 'number' || !SCHEMA_VERSIONS_READABLE.includes(rawVersion as 1 | 2)) {
       throw new KBError(
         'CORRUPT_INDEX',
         `Lexical index for KB "${kbName}" has unsupported schema; delete ${filePath} to force a rebuild on the next --refresh.`,
@@ -240,10 +257,23 @@ export class LexicalIndex {
         continue;
       }
 
-      const serialized: SerializedDocument[] = chunks.map((doc) => ({
-        pageContent: doc.pageContent,
-        metadata: doc.metadata,
-      }));
+      // RFC 017 §3 — split BM25-scoring text from caller-output text. When
+      // `metadata.contextual_preface` is present, `embeddingText` returns
+      // the preface-prepended form for BM25 to score; otherwise it returns
+      // `pageContent`. Only persist `searchText` when it actually differs
+      // (no preface present means `searchText === pageContent`, which is
+      // wasteful to serialize).
+      const serialized: SerializedDocument[] = chunks.map((doc) => {
+        const scoring = embeddingText(doc);
+        const entry: SerializedDocument = {
+          pageContent: doc.pageContent,
+          metadata: doc.metadata,
+        };
+        if (scoring !== doc.pageContent) {
+          entry.searchText = scoring;
+        }
+        return entry;
+      });
       this.entries.set(relPath, { sha256: sha, chunks: serialized });
       if (existing) {
         summary.updated += 1;
@@ -314,8 +344,13 @@ export class LexicalIndex {
       for (const chunk of entry.chunks) {
         const idx = originals.length;
         originals.push(chunk);
+        // RFC 017 §3 — BM25 scores against `searchText` when present
+        // (preface-prepended), otherwise against `pageContent`. The
+        // output path always returns the original `pageContent`, threaded
+        // via the `_orig_idx` mapping.
+        const scoringText = chunk.searchText ?? chunk.pageContent;
         flat.push(new Document({
-          pageContent: chunk.pageContent.toLowerCase(),
+          pageContent: scoringText.toLowerCase(),
           metadata: { _orig_idx: idx },
         }));
       }

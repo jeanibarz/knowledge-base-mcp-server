@@ -25,7 +25,12 @@ function lastIndexUpdatePathIn(faissPath: string): string {
 
 const saveMock = jest.fn();
 const addDocumentsMock = jest.fn();
-const fromTextsMock = jest.fn();
+// RFC 017 §3 — FaissStoreAdapter no longer routes through
+// `FaissStore.fromTexts` or `FaissStore.addDocuments`; both paths now
+// embed upstream and call `addVectors(vectors, documents)`. The mock
+// below tracks the new contract.
+const fromTextsMock = jest.fn(); // legacy — retained for any test that still asserts on it
+const addVectorsMock = jest.fn();
 const loadMock = jest.fn();
 const similaritySearchMock = jest.fn();
 const embedDocumentsMock = jest.fn(async (texts: string[]) => texts.map(mockVectorForText));
@@ -43,11 +48,60 @@ function mockVectorForText(text: string): number[] {
 }
 
 class MockFaissStore {
+  // Simulated FAISS-side state: a flat docstore Map and an ntotal counter
+  // so the RFC 017 §3 `ntotal === docstore.size` parity check passes
+  // through the adapter without throwing.
+  public docstore = { _docs: new Map<string, { pageContent: string; metadata: unknown }>() };
+  public index = {
+    _n: 0,
+    ntotal: () => this.index._n,
+    getDimension: () => 2,
+  };
+
   constructor(public embeddings: { embedDocuments: (texts: string[]) => Promise<number[][]> }) {}
 
+  // RFC 017 §3 — the only mutation surface used by FaissStoreAdapter.
+  async addVectors(vectors: number[][], documents: Array<{ pageContent: string; metadata?: Record<string, unknown> }>) {
+    // Back-compat shim for existing tests that assert against
+    // `fromTextsMock`. Pre-RFC-017, `FaissStoreAdapter.fromDocuments`
+    // called `FaissStore.fromTexts(texts, metadatas, embeddings)` — the
+    // initial seed. Now it constructs the store directly and calls
+    // `addVectors`. We track the first addVectors as the seed so tests
+    // that count `fromTextsMock` calls continue to work without
+    // mechanical migration.
+    if (this.index._n === 0) {
+      fromTextsMock(
+        documents.map((d) => d.pageContent),
+        documents.map((d) => d.metadata ?? {}),
+        this.embeddings,
+      );
+    } else {
+      // Subsequent batches were tracked by `addDocumentsMock` pre-RFC-017;
+      // the production path now bypasses `addDocuments` and calls
+      // `addVectors` directly. Surface the call to addDocumentsMock for
+      // back-compat with existing test assertions that count incremental
+      // batches.
+      addDocumentsMock(documents);
+    }
+    addVectorsMock(vectors, documents);
+    documents.forEach((doc, i) => {
+      this.docstore._docs.set(`doc-${this.index._n + i}`, {
+        pageContent: doc.pageContent,
+        metadata: doc.metadata ?? {},
+      });
+    });
+    this.index._n += documents.length;
+  }
+
+  // Legacy `addDocuments` retained so any code path that still uses it
+  // (tests that bypass the adapter, etc.) works.
   async addDocuments(...args: unknown[]) {
-    const [documents] = args as [Array<{ pageContent: string }>];
+    const [documents] = args as [Array<{ pageContent: string; metadata?: Record<string, unknown> }>];
     await this.embeddings.embedDocuments(documents.map((doc) => doc.pageContent));
+    await this.addVectors(
+      documents.map((d) => mockVectorForText(d.pageContent)),
+      documents,
+    );
     return addDocumentsMock(...args);
   }
 
