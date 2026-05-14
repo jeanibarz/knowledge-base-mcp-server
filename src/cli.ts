@@ -20,6 +20,7 @@ import { LLM_HELP, runLlm } from './cli-llm.js';
 import { MODELS_HELP, runModels } from './cli-models.js';
 import { PROMOTE_HELP, runPromote } from './cli-promote.js';
 import { QUARANTINE_HELP, runQuarantine } from './cli-quarantine.js';
+import { REINDEX_HELP, runReindexCli } from './cli-reindex.js';
 import { REMEMBER_HELP, runRemember } from './cli-remember.js';
 import { SEARCH_HELP, runSearch } from './cli-search.js';
 import { SERVE_HELP, runServe } from './cli-serve.js';
@@ -62,6 +63,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'where',        summary: 'Recommend the best KB and file for a given topic.',                      help: WHERE_HELP,        handler: runWhere },
   { name: 'models',       summary: 'Manage embedding models (list, add, set-active, remove).',               help: MODELS_HELP,       handler: runModels },
   { name: 'llm',          summary: 'Configure local LLM endpoints and managed warm model services.',          help: LLM_HELP,          handler: runLlm },
+  { name: 'reindex',      summary: 'Rebuild FAISS indexes (RFC 017 — requires --with-context).',              help: REINDEX_HELP,      handler: runReindexCli },
 ];
 
 // ----- Top-level help -------------------------------------------------------

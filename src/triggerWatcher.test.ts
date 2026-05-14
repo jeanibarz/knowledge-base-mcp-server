@@ -424,4 +424,71 @@ describe('inspectReindexTriggerFilesystem (#334 doctor diagnostics)', () => {
     expect(state.parent_writable).toBe(true);
     expect(state.warnings).toEqual([]);
   });
+
+});
+
+// RFC 017 M0b §5 step 5 — when a `kb reindex --with-context` is in
+// flight, the watcher must defer rather than try to grab the same
+// per-model write lock. The cooperative signal is the
+// `.reindex.run.json` file under `$FAISS_INDEX_PATH`. The runner module
+// captures `FAISS_INDEX_PATH` at import time, so the test resolves the
+// expected path through the runner's own helper rather than rebuilding
+// it from the test's tempDir.
+describe('ReindexTriggerWatcher RFC 017 M0b cooperative deferral', () => {
+  let tempDir: string;
+  let triggerPath: string;
+  let runStatePath: string;
+
+  beforeEach(async () => {
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-trigger-defer-'));
+    triggerPath = path.join(tempDir, '.reindex-trigger');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const runner = require('./reindex-runner.js') as {
+      runStateFilePath(): string;
+    };
+    runStatePath = runner.runStateFilePath();
+    await fsp.mkdir(path.dirname(runStatePath), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fsp.rm(tempDir, { recursive: true, force: true });
+    try {
+      await fsp.unlink(runStatePath);
+    } catch {
+      // file may already be gone
+    }
+  });
+
+  it('defers onTrigger while a peer reindex names a live PID', async () => {
+    // Write a run-state file with THIS process's PID — always alive.
+    await fsp.writeFile(
+      runStatePath,
+      JSON.stringify({
+        schema_version: 'reindex-run.v1',
+        pid: process.pid,
+        started_at: new Date().toISOString(),
+        kbs_in_scope: ['alpha'],
+      }),
+    );
+
+    await fsp.writeFile(triggerPath, 'first');
+    const onTrigger = jest.fn().mockResolvedValue(undefined);
+    const watcher = new ReindexTriggerWatcher(triggerPath, onTrigger, 60_000);
+
+    await watcher.poll(); // baseline seed
+    // Bump mtime so the next poll observes a "new" trigger.
+    const stat = await fsp.stat(triggerPath);
+    const newSec = stat.mtimeMs / 1000 + 5;
+    await fsp.utimes(triggerPath, newSec, newSec);
+    await watcher.poll(); // would normally fire; should defer
+
+    expect(onTrigger).not.toHaveBeenCalled();
+
+    // Remove the run-state file (reindex finished); the next poll
+    // should drain the deferred trigger and fire `onTrigger` once.
+    await fsp.unlink(runStatePath);
+    await watcher.poll();
+    await new Promise((r) => setImmediate(r));
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+  });
 });
