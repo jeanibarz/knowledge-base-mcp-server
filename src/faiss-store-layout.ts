@@ -144,6 +144,25 @@ export async function pruneInactiveIndexVersions(
 
 type FsOperationErrorHandler = (action: string, targetPath: string, error: unknown) => never;
 
+/**
+ * RFC 017 M0c — load a specific `index.vN/` directory directly,
+ * bypassing the `index` symlink. Used by `kb eval --compare-index` to
+ * load two different historical versions of the same model's index for
+ * a side-by-side recall comparison. Read-only (no symlink mutation, no
+ * corruption-repair side effects). Throws if the directory or its
+ * `faiss.index`/`docstore.json` contents are missing or corrupt.
+ */
+export async function loadFaissStoreFromVersionDir(options: {
+  versionDir: string;
+  embeddings: EmbeddingsInterface;
+}): Promise<FaissStore> {
+  const { versionDir, embeddings } = options;
+  if (!(await pathExists(versionDir))) {
+    throw new Error(`loadFromVersionDir: directory not found: ${versionDir}`);
+  }
+  return FaissStore.load(versionDir, embeddings);
+}
+
 export async function loadFaissStoreAtomic(options: {
   modelDir: string;
   modelId: string;

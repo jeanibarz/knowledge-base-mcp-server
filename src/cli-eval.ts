@@ -5,6 +5,11 @@ import {
   ActiveModelResolutionError,
   resolveActiveModel,
 } from './active-model.js';
+import {
+  formatCompareReportMarkdown,
+  resolveIndexVersionPath,
+  runCompareEval,
+} from './cli-eval-compare.js';
 import { computeStaleness, type SearchMode } from './search-core.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import {
@@ -36,6 +41,8 @@ interface EvalRunArgs extends EvalBaseArgs {
   action: 'run';
   fixturePath: string | null;
   format: 'md' | 'json';
+  /** RFC 017 M0c — `--compare-index` activates the two-index comparison flow. */
+  compareIndex?: { before: string; after: string };
 }
 
 interface EvalScaffoldArgs extends EvalBaseArgs {
@@ -89,6 +96,15 @@ Options:
   --required-sources=<int>
                         Max unique result sources to seed in scaffold YAML
                         (default: ${DEFAULT_SCAFFOLD_REQUIRED_SOURCES}).
+  --compare-index       RFC 017 M0c — run the fixture against two FAISS
+                        index versions and emit a per-case rank/score diff
+                        report. Requires --before and --after.
+  --before=<v>          Index version to evaluate as the BEFORE side. May be
+                        a numeric version (e.g. \`42\` → \`<modelDir>/index.v42\`)
+                        or an absolute path to a directory containing
+                        \`faiss.index\` + \`docstore.json\`.
+  --after=<v>           Index version to evaluate as the AFTER side. Same
+                        format as --before.
   --help, -h            Show this help.
 
 Fixture example (YAML):
@@ -164,6 +180,34 @@ export async function runEval(rest: string[]): Promise<number> {
     return 1;
   }
 
+  // RFC 017 M0c — when `--compare-index` is set, fork off the compare
+  // path. Returns its own exit code; standard fixture-eval result
+  // formatting is bypassed.
+  if (parsed.compareIndex) {
+    try {
+      const beforePath = resolveIndexVersionPath(parsed.compareIndex.before, manager.modelDir);
+      const afterPath = resolveIndexVersionPath(parsed.compareIndex.after, manager.modelDir);
+      const report = await runCompareEval({
+        manager,
+        fixture,
+        before: beforePath,
+        after: afterPath,
+        defaultK: parsed.k,
+        defaultThreshold: parsed.threshold,
+        defaultMode: parsed.mode ?? fixture.mode ?? 'dense',
+      });
+      if (parsed.format === 'json') {
+        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      } else {
+        process.stdout.write(formatCompareReportMarkdown(report));
+      }
+      return 0;
+    } catch (err) {
+      process.stderr.write(`kb eval: ${(err as Error).message}\n`);
+      return 1;
+    }
+  }
+
   const results = [];
   for (const fixtureCase of fixture.cases) {
     try {
@@ -208,6 +252,13 @@ export function parseEvalArgs(rest: string[]): EvalArgs {
     threshold: DEFAULT_THRESHOLD,
     thresholdExplicit: false,
   };
+  // RFC 017 M0c — staging for --compare-index. `--compare-index` is a
+  // pure flag (no value); the two sides come from `--before=<v>` and
+  // `--after=<v>`. We collect them and assemble the final tuple after
+  // the loop so the order of flags doesn't matter.
+  let compareEnabled = false;
+  let compareBefore: string | null = null;
+  let compareAfter: string | null = null;
 
   for (const raw of args) {
     if (raw.startsWith('--fixture=')) {
@@ -263,6 +314,31 @@ export function parseEvalArgs(rest: string[]): EvalArgs {
       out.requiredSources = value;
       continue;
     }
+    if (raw === '--compare-index') {
+      if (out.action === 'scaffold') {
+        throw new Error('--compare-index is not supported for scaffold');
+      }
+      compareEnabled = true;
+      continue;
+    }
+    if (raw.startsWith('--before=')) {
+      if (out.action === 'scaffold') {
+        throw new Error('--before=<v> is not supported for scaffold');
+      }
+      const value = raw.slice('--before='.length);
+      if (value.length === 0) throw new Error('--before=<v> requires a non-empty value');
+      compareBefore = value;
+      continue;
+    }
+    if (raw.startsWith('--after=')) {
+      if (out.action === 'scaffold') {
+        throw new Error('--after=<v> is not supported for scaffold');
+      }
+      const value = raw.slice('--after='.length);
+      if (value.length === 0) throw new Error('--after=<v> requires a non-empty value');
+      compareAfter = value;
+      continue;
+    }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     if (out.action === 'scaffold') {
       if (out.query !== null) throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
@@ -271,6 +347,19 @@ export function parseEvalArgs(rest: string[]): EvalArgs {
       if (out.fixturePath !== null) throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
       out.fixturePath = raw;
     }
+  }
+
+  if (compareEnabled || compareBefore !== null || compareAfter !== null) {
+    if (out.action !== 'run') {
+      throw new Error('--compare-index is only supported for the run action');
+    }
+    if (!compareEnabled) {
+      throw new Error('--before / --after require --compare-index');
+    }
+    if (compareBefore === null || compareAfter === null) {
+      throw new Error('--compare-index requires both --before=<v> and --after=<v>');
+    }
+    out.compareIndex = { before: compareBefore, after: compareAfter };
   }
 
   return out;
