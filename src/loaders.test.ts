@@ -48,8 +48,8 @@ const SAMPLE_PDF_FIXTURE = path.join(
 
 // Mock pdf-parse so the suite never actually drives pdfjs-dist. Real PDF
 // round-trip is exercised by `scripts/generate-pdf-fixture.cjs` and by the
-// runtime path that ingests `.pdf` files at `npm start`. The mock here
-// verifies that the PDF loader (a) reads the file from disk into a buffer,
+// runtime path when `.pdf` is enabled with INGEST_EXTRA_EXTENSIONS. The mock
+// here verifies that the PDF loader (a) reads the file from disk into a buffer,
 // (b) hands it to pdf-parse, and (c) returns the extracted text — which is
 // the only logic in `loadPdf` worth unit-testing in isolation.
 const pdfParseFnMock = jest.fn();

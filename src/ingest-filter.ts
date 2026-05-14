@@ -8,13 +8,12 @@ import { logger } from './logger.js';
 // getFilesRecursively already skips dotfiles (`.index/`, `.reindex-trigger`,
 // `.DS_Store`-when-dot-prefixed). The ingest filter runs on top of that walker
 // output to refuse content that is not retrieval-worthy: workflow sidecars
-// (`_seen.jsonl`), log directories (`logs/`, `tmp/`), and image / archive
-// extensions (`.jsonl`, `.log`, images). Issue #46 added `.pdf`, `.html`, and
-// `.htm` to the allowlist with dedicated loaders in `src/loaders.ts`. The
+// (`_seen.jsonl`), log directories (`logs/`, `tmp/`), and bulky / non-text
+// extensions (`.pdf`, `.jsonl`, `.log`, images). Issue #46 added dedicated
+// loaders for `.pdf`, `.html`, and `.htm`; only HTML is base-allowed. The
 // arxiv ingestion workflow's ledger must still NOT reach the splitter - the
 // walker today would chunk `_seen.jsonl` as JSON lines (RFC 011 §2.2). KBs
-// that pair markdown notes with sibling PDFs (e.g. arxiv `notes/` + `pdfs/`)
-// can suppress the PDFs with `INGEST_EXCLUDE_PATHS=pdfs/**`.
+// that explicitly want PDF extraction can opt in with `INGEST_EXTRA_EXTENSIONS=.pdf`.
 // -----------------------------------------------------------------------------
 
 /**
@@ -22,18 +21,17 @@ import { logger } from './logger.js';
  * lowercased and include the leading dot. `INGEST_EXTRA_EXTENSIONS` merges
  * into this set; operators cannot remove base entries.
  *
- * Issue #46 - `.pdf`, `.html`, `.htm` ride the extension-routed loader layer
- * in `src/loaders.ts`. Adding here without a loader would re-introduce the
- * UTF-8-decoded-binary-noise bug; `loaders.ts` is the single source of truth
- * for what a loader exists for, this list is the source of truth for what
- * the ingest filter admits.
+ * Issue #46 - `.html` and `.htm` ride the extension-routed loader layer in
+ * `src/loaders.ts`. `.pdf` also has a loader, but is deliberately excluded
+ * from the base allowlist because PDF extraction is heavyweight and most
+ * arxiv-shaped KBs already store markdown notes next to sibling PDFs. Operators
+ * can opt PDFs back in with `INGEST_EXTRA_EXTENSIONS=.pdf`.
  */
 export const INGEST_BASE_EXTENSIONS: readonly string[] = [
   '.md',
   '.markdown',
   '.txt',
   '.rst',
-  '.pdf',
   '.html',
   '.htm',
 ] as const;

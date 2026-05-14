@@ -4,6 +4,22 @@
 
 ## Indexing
 
+### NFR-INDEX-358: Default Text-First Ingest Filter
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall exclude PDF files from the default ingest allowlist while preserving explicit operator opt-in for PDF extraction.
+**Rationale:** PDF extraction is heavyweight and many knowledge bases store markdown notes beside source PDFs; default refreshes should avoid duplicate, expensive PDF ingestion.
+
+**Acceptance Criteria:**
+- [x] Given markdown and PDF files in the same knowledge base, when default ingest filtering runs, then markdown files are accepted and PDF files are excluded.
+- [x] Given `INGEST_EXTRA_EXTENSIONS` includes `.pdf`, when ingest filtering runs, then PDF files are accepted unless an exclusion glob also matches them.
+- [x] Given `INGEST_EXCLUDE_PATHS` matches an opt-in PDF subtree, when ingest filtering runs, then matching PDF files remain excluded.
+- [x] Given an existing index was written when PDFs were ingestable, when refresh runs with the new default filter, then the system rebuilds from currently ingestable files and purges stale PDF sidecars.
+
+**Linked Tests:** TS-INDEX-358
+**Dependencies:** RFC011
+
 ### NFR-INDEX-236: Batched Changed-File Embeddings
 **Status:** Implemented
 **Priority:** High

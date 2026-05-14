@@ -231,7 +231,7 @@ export function formatRefreshPreflightEstimate(
     lines.push(`- Start with \`kb search "<query>" --refresh --kb=${estimate.topKbs[0].kb}\` to refresh the largest stale KB first.`);
   }
   if (estimate.stalePdfFiles > 0) {
-    lines.push('- Exclude bulky PDFs with `INGEST_EXCLUDE_PATHS=pdfs/**` when they are not needed for this run.');
+    lines.push('- PDFs are excluded by default; if you opted them in, use `INGEST_EXCLUDE_PATHS=pdfs/**` to skip bulky PDF subtrees for this run.');
   }
   lines.push('- This preflight is informational: TTY and non-TTY runs continue without prompting.');
   return `${lines.join('\n')}\n`;

@@ -214,10 +214,10 @@ describe('refresh preflight estimate (issue #318)', () => {
       await fsp.mkdir(beta, { recursive: true });
 
       const alphaModified = path.join(alpha, 'modified.md');
-      const alphaPdf = path.join(alpha, 'new.pdf');
+      const alphaLarge = path.join(alpha, 'new.md');
       const betaNew = path.join(beta, 'new.md');
       await fsp.writeFile(alphaModified, 'x'.repeat(64), 'utf-8');
-      await fsp.writeFile(alphaPdf, 'p'.repeat(REFRESH_PREFLIGHT_BYTE_THRESHOLD + 1), 'utf-8');
+      await fsp.writeFile(alphaLarge, 'p'.repeat(REFRESH_PREFLIGHT_BYTE_THRESHOLD + 1), 'utf-8');
       await fsp.writeFile(betaNew, 'b'.repeat(32), 'utf-8');
       await fsp.writeFile(path.join(alpha, '.index', 'modified.md'), 'old-hash', 'utf-8');
       const indexMtimeMs = Date.parse('2026-05-12T10:00:00.000Z');
@@ -244,7 +244,6 @@ describe('refresh preflight estimate (issue #318)', () => {
       expect(text).toContain('- beta: 0 modified, 1 new');
       expect(text).toContain('Top stale KBs:');
       expect(text).toContain('kb search "<query>" --refresh --kb=alpha');
-      expect(text).toContain('INGEST_EXCLUDE_PATHS=pdfs/**');
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
