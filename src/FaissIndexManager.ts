@@ -46,6 +46,7 @@ import {
 import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import {
   loadFaissStoreAtomic,
+  loadFaissStoreFromVersionDir,
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
   saveFaissStoreAtomic,
 } from './faiss-store-layout.js';
@@ -998,6 +999,30 @@ export class FaissIndexManager {
    */
   async reloadPersistedIndex(): Promise<void> {
     this.faissIndex = await this.loadAtomic();
+  }
+
+  /**
+   * RFC 017 M0c — load a specific `index.vN/` directory directly,
+   * bypassing the `index` symlink. Used by `kb eval --compare-index`
+   * to evaluate the same fixture against two different versions of the
+   * persisted store (typically before/after a contextual-retrieval
+   * reindex). The caller passes a directory containing `faiss.index`
+   * and `docstore.json`; we replace `this.faissIndex` with an adapter
+   * around the loaded store.
+   *
+   * Read-only — this method does NOT acquire the per-model write lock.
+   * It is the caller's responsibility to ensure no concurrent writer is
+   * mutating the version dir during the load.
+   */
+  async loadFromVersionDir(versionDir: string): Promise<void> {
+    if (!this.embeddings) {
+      throw new Error('FaissIndexManager.loadFromVersionDir requires initialize() first');
+    }
+    const store = await loadFaissStoreFromVersionDir({
+      versionDir,
+      embeddings: this.embeddings,
+    });
+    this.faissIndex = FaissStoreAdapter.fromStore(store);
   }
 
   /**
