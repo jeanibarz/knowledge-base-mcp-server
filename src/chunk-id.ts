@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { pathToFileURL } from 'url';
-import type { KBEditorUriMode } from './config.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import type { KBEditorUriMode } from './config/retrieval.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { buildResourceUri } from './mcp-resources.js';
 
 export interface ChunkCitation {

@@ -15,7 +15,7 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { listKnowledgeBases, resolveKnowledgeBaseDir } from './kb-fs.js';
 
 export const STALE_CHECK_HELP = `kb stale-check — find broken references in markdown notes (read-only)

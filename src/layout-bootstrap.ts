@@ -1,7 +1,7 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
-import { FAISS_INDEX_PATH } from './config.js';
+import { FAISS_INDEX_PATH } from './config/paths.js';
 import { writeActiveModelAtomic } from './active-model.js';
 import { pathExists } from './file-utils.js';
 import { logger } from './logger.js';

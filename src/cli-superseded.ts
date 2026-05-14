@@ -5,7 +5,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { resolveActiveModel, resolveFaissIndexBinaryPath } from './active-model.js';
 import { loadManagerForModel } from './cli-shared.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { getFilesRecursively } from './file-utils.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { liftFrontmatter, type LiftedFrontmatter } from './frontmatter-lift.js';

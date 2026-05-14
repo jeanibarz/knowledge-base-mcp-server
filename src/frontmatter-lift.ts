@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { logger } from './logger.js';
 
 // -----------------------------------------------------------------------------

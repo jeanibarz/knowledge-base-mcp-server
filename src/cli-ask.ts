@@ -14,7 +14,7 @@ import {
   nowMs,
   type TimingPayload,
 } from './cli-timing.js';
-import { FRONTMATTER_EXTRAS_WIRE_VISIBLE } from './config.js';
+import { FRONTMATTER_EXTRAS_WIRE_VISIBLE } from './config/retrieval.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
 import { callChatCompletion } from './llm-client.js';
 import {

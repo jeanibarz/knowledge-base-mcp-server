@@ -10,7 +10,7 @@ import {
   shouldUsePicker,
   type RunSearchDeps,
 } from './cli-search.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { compactTimingPayload, type TimingPayload } from './cli-timing.js';
 import type { ScoredDocument } from './formatter.js';
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';

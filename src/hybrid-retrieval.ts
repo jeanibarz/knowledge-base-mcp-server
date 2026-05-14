@@ -59,7 +59,7 @@
 
 import * as path from 'path';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
 

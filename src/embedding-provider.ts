@@ -15,7 +15,7 @@ import {
   HUGGINGFACE_PROVIDER,
   KB_FAKE_DIM,
   OLLAMA_BASE_URL,
-} from './config.js';
+} from './config/provider.js';
 import { KBError } from './errors.js';
 import { logger } from './logger.js';
 import { instrumentEmbeddingsClient, type ProviderCallMetrics } from './metrics.js';

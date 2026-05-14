@@ -24,7 +24,7 @@
 import { createReadStream } from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { resolveLargeFileLimits, type KBLargeFilePolicy } from './config.js';
+import { resolveLargeFileLimits, type KBLargeFilePolicy } from './config/ingest.js';
 import { loadWithExtractionCache } from './extraction-cache.js';
 
 /** Loader contract: filePath in, plain text out. Throws on parse failure. */

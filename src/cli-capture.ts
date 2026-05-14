@@ -11,7 +11,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { ActiveModelResolutionError, resolveActiveModel } from './active-model.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel } from './cli-shared.js';

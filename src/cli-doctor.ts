@@ -19,17 +19,23 @@ import {
 } from './active-model.js';
 import {
   FAISS_INDEX_PATH,
+  KNOWLEDGE_BASES_ROOT_DIR,
+} from './config/paths.js';
+import {
   HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
+  OLLAMA_BASE_URL,
+} from './config/provider.js';
+import {
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
+} from './config/ingest.js';
+import {
   KB_FS_WATCH,
-  KNOWLEDGE_BASES_ROOT_DIR,
-  OLLAMA_BASE_URL,
   REINDEX_TRIGGER_PATH,
   REINDEX_TRIGGER_POLL_MS,
   resolveReindexTriggerPath,
   resolveReindexTriggerPollMs,
-} from './config.js';
+} from './config/watchers.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import {
   createNeverRunIndexUpdateSummary,
