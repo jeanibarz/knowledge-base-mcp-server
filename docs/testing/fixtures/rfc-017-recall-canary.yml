@@ -1,0 +1,109 @@
+# RFC 017 M1 — recall canary for the `operating-environment` shelf.
+#
+# Purpose. Drive `kb eval --compare-index` so an operator can measure
+# whether contextual retrieval (RFC 017) actually improves recall on
+# this shelf before committing to the M2 full reindex:
+#
+#   kb eval --compare-index --before=<v_pre> --after=<v_post> \
+#           docs/testing/fixtures/rfc-017-recall-canary.yml
+#
+# Why these queries. The `operating-environment` shelf is dense in
+# pronoun-heavy, heading-referencing operational prose — exactly the
+# content whose chunks lose their context when embedded in isolation
+# (RFC 017 §Problem). Each query below is phrased the way the operator
+# actually asks it, not the way the note is titled, so the canary
+# exercises the recall gap contextual retrieval is meant to close.
+#
+# `--compare-index` only runs each query against the two index
+# versions and diffs the rank/score — it does NOT evaluate `gate`,
+# `required_sources`, or `forbidden_sources`. Those fields are kept so
+# the same fixture doubles as a plain `kb eval` gate later; treat the
+# `required_sources` paths as the note the operator expects to surface
+# and re-verify them against the live shelf before promoting `gate`.
+
+gate: false
+mode: dense
+
+cases:
+  # source-of-truth: local-research-agent.md
+  # protects: the canonical "how do I pause the stack" answer
+  - name: recall - how to stop the local research agent stack
+    query: how do I stop the local research agent and free GPU memory
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/local-research-agent.md
+    stale_policy: allow_stale
+
+  # source-of-truth: local-research-agent.md (the lra wrapper section)
+  # protects: the one-command control surface added this session
+  - name: recall - single command controlling the whole stack
+    query: which command starts and stops llama-server ollama and n8n together
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/local-research-agent.md
+    stale_policy: allow_stale
+
+  # source-of-truth: qwen36-hybrid-ssm-blocks-speculative-decoding.md
+  # protects: a hardware-gotcha note that a title-only query would miss
+  - name: recall - speculative decoding fails on the gate model
+    query: why can't I use speculative decoding with the relevance gate model
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/qwen36-hybrid-ssm-blocks-speculative-decoding.md
+    stale_policy: allow_stale
+
+  # source-of-truth: update-local-kb-cli-from-symlinked-checkout.md
+  # protects: a procedure note whose body never repeats its title
+  - name: recall - updating the kb CLI from a symlinked checkout
+    query: how do I refresh the kb command line tool to the newest build
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/update-local-kb-cli-from-symlinked-checkout.md
+    stale_policy: allow_stale
+
+  # source-of-truth: local-research-agent.md (VRAM budget table)
+  # protects: a query that depends on chunk context (the table row
+  # naming each daemon's VRAM share)
+  - name: recall - VRAM budget across the local LLM stack
+    query: how much GPU memory does each model in the local stack consume
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/local-research-agent.md
+    stale_policy: allow_stale
+
+  # source-of-truth: kookr-task-spawning-daemon-oss-registry-state-paths.md
+  # protects: a paths note where the relevant chunk relies on document
+  # context to disambiguate "it"
+  - name: recall - where the kookr task daemon keeps its state
+    query: where does the kookr task-spawning daemon store its registry state
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/kookr-task-spawning-daemon-oss-registry-state-paths.md
+    stale_policy: allow_stale
+
+  # source-of-truth: bandwidth-surgery.md
+  # protects: a research-experiment note that has to coexist with the
+  # always-on stack — query is about the coexistence constraint
+  - name: recall - bandwidth-surgery experiment GPU coexistence
+    query: what experiment has to share the GPU with the always-on research stack
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/bandwidth-surgery.md
+    stale_policy: allow_stale
+
+  # source-of-truth: local-research-agent.md (cron schedule table)
+  # protects: a time-window query answered by a chunk deep in the note
+  - name: recall - daily arxiv ingestion schedule
+    query: when does the daily arxiv ingestion run and which hours should I avoid heavy GPU work
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/local-research-agent.md
+    stale_policy: allow_stale
