@@ -1,0 +1,394 @@
+# RFC 018 M0 (#369) — relevance-gate validation query set.
+#
+# Drives `kb eval-gate`. Each case carries a retrieved candidate set (the
+# "retrieval replay" — id / source / content / dense_distance, optionally
+# lexical_hit) so the harness is deterministic and CI-checkable without a
+# live embedding provider. The runner replaces these with live retrieval
+# when run against a real index.
+#
+# Why these candidates. Dense distances are grounded in the RFC 018
+# empirical probe (`nomic-embed-text`, §3): in-domain top-1 distances
+# 0.43-0.74, out-of-domain 1.00-1.09, default A1 floor 0.95. They are
+# hand-authored, not curated toward no-good-answer (RFC 018 M0 warns that
+# flatters the gate). For a production-grounded run, regenerate the
+# candidate sets from real `kb search` canonical logs.
+#
+# Two structurally different KBs (RFC 018 M0 requires >= 2):
+#   codeops — code/ops notes: error codes, file paths, identifier-heavy.
+#   prose   — research prose: narrative, paraphrase-heavy, no identifiers.
+#
+# Buckets: `has-answer` (the KB holds the answer) vs `no-good-answer`
+# (it does not — retrieval still returns its k near-misses). The
+# `answer-present-but-distant` class is the RFC 018 §6 residual-risk
+# fixture: a real answer chunk that sits FAR from the query.
+
+# Pre-registered directional thresholds (RFC 018 M0).
+epsilon: 0.10              # no-good-answer correctness must trend up by >= this
+has_answer_tolerance: 0.0  # has-answer correctness must not trend down at all
+
+gate_sim:
+  score_floor: 0.95        # A1 absolute floor (RFC 018 §3 probe-corrected default)
+  no_good_answer_floor: 0.95
+  judge_input_cap: 10
+
+cases:
+  # ===== codeops — has-answer, standard =====================================
+  - name: codeops - atomic faiss save mechanism
+    kb: codeops
+    query: how does the index avoid a half-written FAISS store
+    bucket: has-answer
+    reference_answer: >-
+      Each save writes a new versioned directory and then atomically swaps a
+      symlink, so a crash mid-write never leaves a half-written index.
+    answer_sources: [codeops/atomic-faiss-save.md]
+    candidates:
+      - id: c1
+        source: codeops/atomic-faiss-save.md
+        content: >-
+          FAISS saves write a fresh index.vN directory then swap the `current`
+          symlink in one atomic rename; a crash mid-write leaves the prior
+          version intact.
+        dense_distance: 0.49
+      - id: c2
+        source: codeops/faiss-store-layout.md
+        content: The per-model store layout keeps docstore.json beside the index binary.
+        dense_distance: 0.71
+      - id: c3
+        source: codeops/prune-index-versions.md
+        content: Old atomic index versions are pruned after a successful swap.
+        dense_distance: 0.83
+      - id: c4
+        source: codeops/embedding-provider.md
+        content: The embedding provider is selected from EMBEDDING_PROVIDER at construction.
+        dense_distance: 1.22
+
+  - name: codeops - per-file hash invalidation
+    kb: codeops
+    query: how does the index decide which files to re-embed
+    bucket: has-answer
+    task_context: >-
+      Debugging why an edited note is not showing updated content in search
+      results; need to know what triggers a re-embed.
+    reference_answer: >-
+      Per-file SHA256 hash sidecars under <kb>/.index/ are compared on each
+      retrieve; a changed hash marks that file for re-embedding.
+    answer_sources: [codeops/per-file-hash-sidecars.md]
+    candidates:
+      - id: c1
+        source: codeops/per-file-hash-sidecars.md
+        content: >-
+          Each file's SHA256 is stored in a sidecar under <kb>/.index/; on
+          retrieve the live hash is compared and a mismatch re-embeds only
+          that file.
+        dense_distance: 0.52
+      - id: c2
+        source: codeops/reindex-trigger.md
+        content: A reindex trigger file's mtime is polled by the watcher.
+        dense_distance: 0.69
+      - id: c3
+        source: codeops/doctor-health.md
+        content: kb doctor aggregates model, index, and backend health.
+        dense_distance: 1.18
+
+  - name: codeops - hybrid rrf fusion
+    kb: codeops
+    query: how are dense and lexical results combined
+    bucket: has-answer
+    reference_answer: >-
+      Dense and BM25 lexical result lists are fused with Reciprocal Rank
+      Fusion at c=60.
+    answer_sources: [codeops/hybrid-tokens.md]
+    candidates:
+      - id: c1
+        source: codeops/hybrid-tokens.md
+        content: >-
+          Hybrid retrieval runs a dense leg and a BM25 lexical leg, then fuses
+          the two ranked lists with Reciprocal Rank Fusion (c=60).
+        dense_distance: 0.55
+      - id: c2
+        source: codeops/auth-and-errors.md
+        content: Structured MCP error codes follow the RFC 009 taxonomy.
+        dense_distance: 0.88
+      - id: c3
+        source: codeops/duplicate-canonical.md
+        content: Canonical docstore.json is hardlinked across multi-model indexes.
+        dense_distance: 1.04
+
+  - name: codeops - injection guard stage
+    kb: codeops
+    query: what inspects retrieved content before it reaches the caller
+    bucket: has-answer
+    reference_answer: >-
+      The injection-guard stage inspects retrieved chunks post-retrieval and
+      pre-caller, neutralising embedded instructions.
+    answer_sources: [codeops/injection-guard.md]
+    candidates:
+      - id: c1
+        source: codeops/injection-guard.md
+        content: >-
+          The injection-guard runs after retrieval and before the caller,
+          scanning chunk text for embedded instructions and flagging them.
+        dense_distance: 0.58
+      - id: c2
+        source: codeops/hybrid-tokens.md
+        content: Hybrid retrieval fuses a dense and a lexical leg.
+        dense_distance: 0.79
+
+  - name: codeops - doctor command checks
+    kb: codeops
+    query: what does the doctor command report
+    bucket: has-answer
+    reference_answer: >-
+      kb doctor reports aggregate model, index, and backend health, including
+      reindex-trigger diagnostics and FAISS permission warnings.
+    answer_sources: [codeops/doctor-health.md]
+    candidates:
+      - id: c1
+        source: codeops/doctor-health.md
+        content: >-
+          kb doctor aggregates model, index, and backend health and surfaces
+          reindex-trigger diagnostics plus unsafe-permission warnings.
+        dense_distance: 0.47
+      - id: c2
+        source: codeops/reindex-trigger.md
+        content: The watcher polls the reindex-trigger file mtime.
+        dense_distance: 0.66
+      - id: c3
+        source: codeops/atomic-faiss-save.md
+        content: Saves swap a symlink atomically.
+        dense_distance: 0.90
+
+  # ===== codeops — has-answer, answer-present-but-distant ===================
+  - name: codeops - rollback procedure phrased loosely
+    kb: codeops
+    query: undo a bad release
+    bucket: has-answer
+    fixture_class: answer-present-but-distant
+    reference_answer: >-
+      The current rollback procedure restores the previous versioned index
+      directory and re-points the symlink.
+    answer_sources: [codeops/current-rollback.md]
+    candidates:
+      # The real answer chunk: titled "rollback" but the loose query
+      # "undo a bad release" sits far from it in embedding space.
+      - id: c1
+        source: codeops/current-rollback.md
+        content: >-
+          Rollback restores the previous index.vN directory and re-points the
+          current symlink to it; no re-embedding is needed.
+        dense_distance: 1.05
+      # A near-miss that IS close to the loose query — survives A1, so the
+      # gate keeps it and drops the true (distant) answer.
+      - id: c2
+        source: codeops/atomic-faiss-save.md
+        content: A failed save leaves the prior version intact for recovery.
+        dense_distance: 0.58
+      - id: c3
+        source: codeops/prune-index-versions.md
+        content: Pruning removes superseded index versions.
+        dense_distance: 0.82
+
+  # ===== codeops — no-good-answer ===========================================
+  - name: codeops - question the KB cannot answer (kubernetes)
+    kb: codeops
+    query: how do I configure horizontal pod autoscaling for this server
+    bucket: no-good-answer
+    reference_answer: >-
+      This knowledge base has no content about Kubernetes or pod autoscaling;
+      the honest answer is that it does not cover this.
+    candidates:
+      - id: c1
+        source: codeops/embedding-provider.md
+        content: EMBEDDING_PROVIDER selects huggingface, ollama, or openai at startup.
+        dense_distance: 1.03
+      - id: c2
+        source: codeops/atomic-faiss-save.md
+        content: Saves swap a versioned directory symlink atomically.
+        dense_distance: 1.07
+      - id: c3
+        source: codeops/doctor-health.md
+        content: kb doctor aggregates model and index health.
+        dense_distance: 1.09
+
+  - name: codeops - question the KB cannot answer (billing)
+    kb: codeops
+    query: what is the monthly cost of the hosted retrieval tier
+    bucket: no-good-answer
+    reference_answer: >-
+      The knowledge base contains no pricing or billing information; it cannot
+      answer this.
+    candidates:
+      - id: c1
+        source: codeops/faiss-store-layout.md
+        content: The store keeps docstore.json beside the index binary.
+        dense_distance: 1.01
+      - id: c2
+        source: codeops/hybrid-tokens.md
+        content: Hybrid retrieval fuses dense and lexical legs with RRF.
+        dense_distance: 1.06
+
+  # ===== prose — has-answer, standard =======================================
+  - name: prose - contextual retrieval rationale
+    kb: prose
+    query: why does embedding a chunk with surrounding context help recall
+    bucket: has-answer
+    reference_answer: >-
+      A chunk embedded in isolation loses the document context that
+      disambiguates its pronouns and headings; prepending a short context
+      preface restores the signal a query can match against.
+    answer_sources: [prose/contextual-retrieval.md]
+    candidates:
+      - id: c1
+        source: prose/contextual-retrieval.md
+        content: >-
+          When a chunk is embedded alone it loses the surrounding document,
+          so pronoun-heavy or heading-referencing text drifts away from the
+          queries that should match it; a short generated context preface
+          restores that signal.
+        dense_distance: 0.51
+      - id: c2
+        source: prose/retrieval-tradeoffs.md
+        content: Dense retrieval is paraphrase-tolerant; lexical retrieval is exact-token.
+        dense_distance: 0.74
+      - id: c3
+        source: prose/onboarding-notes.md
+        content: New contributors start by reading the architecture overview.
+        dense_distance: 1.15
+
+  - name: prose - context rot narrative
+    kb: prose
+    query: what happens to answer quality when too much context is injected
+    bucket: has-answer
+    task_context: >-
+      Writing a design note arguing for a context budget; need the prior
+      finding on how injected volume affects answer quality.
+    reference_answer: >-
+      Past a point, adding more retrieved context degrades answer quality —
+      the model anchors on near-miss material and loses the thread; the team
+      calls this context rot.
+    answer_sources: [prose/context-rot.md]
+    candidates:
+      - id: c1
+        source: prose/context-rot.md
+        content: >-
+          Beyond a certain volume, extra retrieved context stops helping and
+          starts hurting: the model anchors on plausible-looking near-misses
+          and drifts. The team's shorthand for this is context rot.
+        dense_distance: 0.46
+      - id: c2
+        source: prose/retrieval-tradeoffs.md
+        content: A noisier candidate set sometimes matches a precise one on final quality.
+        dense_distance: 0.68
+      - id: c3
+        source: prose/llm-judge-reliability.md
+        content: LLM graders agree with humans only moderately on nuanced answers.
+        dense_distance: 0.95
+
+  - name: prose - llm-as-judge agreement caveat
+    kb: prose
+    query: how much should we trust an LLM grader
+    bucket: has-answer
+    reference_answer: >-
+      An LLM grader's human agreement must be measured before its verdicts
+      are trusted; near the documented noise floor it cannot resolve small
+      effects.
+    answer_sources: [prose/llm-judge-reliability.md]
+    candidates:
+      - id: c1
+        source: prose/llm-judge-reliability.md
+        content: >-
+          Before trusting an LLM grader, measure its agreement with human
+          labels; a grader near the noise floor cannot resolve a small
+          effect and disqualifies the comparison.
+        dense_distance: 0.53
+      - id: c2
+        source: prose/context-rot.md
+        content: Injected near-misses make a model drift off-task.
+        dense_distance: 0.86
+
+  # ===== prose — has-answer, answer-present-but-distant =====================
+  - name: prose - reranker note phrased as a question about ordering
+    kb: prose
+    query: make the best result show up first
+    bucket: has-answer
+    fixture_class: answer-present-but-distant
+    reference_answer: >-
+      A cross-encoder reranker scores each candidate against the query
+      directly and reorders them, giving a calibrated relevance score the
+      fused rank lacks.
+    answer_sources: [prose/cross-encoder-reranker.md]
+    candidates:
+      # The true answer chunk is distant from the loosely phrased query.
+      - id: c1
+        source: prose/cross-encoder-reranker.md
+        content: >-
+          A cross-encoder reranker re-scores each candidate jointly with the
+          query, producing a calibrated relevance score and a reordering the
+          rank-based fusion cannot give.
+        dense_distance: 1.07
+      - id: c2
+        source: prose/retrieval-tradeoffs.md
+        content: Rank-based fusion scores are uninformative as absolute relevance.
+        dense_distance: 1.02
+      - id: c3
+        source: prose/contextual-retrieval.md
+        content: Context prefaces help recall, not ordering.
+        dense_distance: 1.08
+
+  # ===== prose — no-good-answer =============================================
+  - name: prose - question the KB cannot answer (hiring)
+    kb: prose
+    query: what is the team's parental leave policy
+    bucket: no-good-answer
+    reference_answer: >-
+      These research notes contain no HR or leave-policy content; they cannot
+      answer this.
+    candidates:
+      - id: c1
+        source: prose/onboarding-notes.md
+        content: New contributors read the architecture overview first.
+        dense_distance: 1.04
+      - id: c2
+        source: prose/context-rot.md
+        content: Too much injected context degrades answer quality.
+        dense_distance: 1.08
+
+  - name: prose - question the KB cannot answer (weather)
+    kb: prose
+    query: will it rain in the data centre region tomorrow
+    bucket: no-good-answer
+    reference_answer: >-
+      The knowledge base has no weather data; it cannot answer this.
+    candidates:
+      - id: c1
+        source: prose/retrieval-tradeoffs.md
+        content: Dense retrieval tolerates paraphrase; lexical is exact-token.
+        dense_distance: 1.05
+      - id: c2
+        source: prose/llm-judge-reliability.md
+        content: Measure grader/human agreement before trusting verdicts.
+        dense_distance: 1.09
+
+  # A no-good-answer query that nonetheless has a strong lexical hit — the
+  # RFC 018 §6 BM25 veto blocks the empty verdict here, so the gate keeps
+  # the (still irrelevant) best candidate flagged low-confidence.
+  - name: prose - no answer but a lexical decoy matches
+    kb: prose
+    query: reranker latency budget for the judge call
+    bucket: no-good-answer
+    reference_answer: >-
+      These notes describe what a reranker is but contain nothing about a
+      latency budget for a judge call; they cannot answer this.
+    candidates:
+      - id: c1
+        source: prose/cross-encoder-reranker.md
+        content: >-
+          A cross-encoder reranker re-scores candidates jointly with the
+          query. (Shares the terms "reranker" and "judge" with the query but
+          says nothing about a latency budget.)
+        dense_distance: 1.02
+        lexical_hit: true
+      - id: c2
+        source: prose/context-rot.md
+        content: Context rot describes answer-quality decay under volume.
+        dense_distance: 1.07
