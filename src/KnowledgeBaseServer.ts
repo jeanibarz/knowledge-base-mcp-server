@@ -81,7 +81,7 @@ import { RecursiveKbWatcher } from './recursive-fs-watch.js';
 import { KBError, type KBErrorCode } from './errors.js';
 import {
   HYBRID_RRF_C,
-  fuseHybridResults,
+  fuseHybridResultsWithDiagnostics,
   hybridFetchK,
   runLexicalLeg,
 } from './hybrid-retrieval.js';
@@ -91,6 +91,14 @@ import {
   emitCanonicalLog,
   type CanonicalLogInput,
 } from './canonical-log.js';
+import {
+  applyRelevanceGate,
+  emitRelevanceGateDecision,
+  formatGateVerdictFooter,
+  type RelevanceGateOverride,
+} from './relevance-gate.js';
+import type { RelevanceGateVerdict } from './relevance-gate-schema.js';
+import { chunkIdFromMetadata } from './rrf.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
@@ -106,6 +114,19 @@ function mcpErrorContent(error: Error): TextContent {
       },
     }),
   };
+}
+
+function withGateVerdict<T extends CallToolResult>(
+  result: T,
+  verdict: RelevanceGateVerdict,
+): T {
+  return {
+    ...result,
+    structuredContent: {
+      ...((result as { structuredContent?: Record<string, unknown> }).structuredContent ?? {}),
+      gate_verdict: verdict,
+    },
+  } as T;
 }
 
 function resolveNeighborContextOptions(args: {
@@ -211,6 +232,8 @@ export class KnowledgeBaseServer {
         // top-N with per-KB BM25 top-N via Reciprocal Rank Fusion (c=60,
         // Cormack 2009); see RFC 006 §4 + #206 + ADR 0006.
         search_mode: z.enum(['dense', 'hybrid']).optional().describe('Retrieval mode. "dense" (default) uses FAISS only. "hybrid" fuses FAISS top-N with per-KB BM25 top-N via Reciprocal Rank Fusion. See #206.'),
+        task_context: z.string().optional().describe('Optional task context used by the relevance gate judge. Truncated to 2000 characters.'),
+        gate: z.enum(['on', 'off']).optional().describe('Per-call relevance gate override. Omit to use KB_RELEVANCE_GATE.'),
       },
       async (args) => this.handleRetrieveKnowledge(args)
     );
@@ -485,6 +508,8 @@ export class KnowledgeBaseServer {
     context_after?: number;
     context_window?: number;
     search_mode?: 'dense' | 'hybrid';
+    task_context?: string;
+    gate?: 'on' | 'off';
   }): Promise<CallToolResult> {
     const canonical: Partial<CanonicalLogInput> = {};
     const query: string = args.query;
@@ -495,6 +520,8 @@ export class KnowledgeBaseServer {
       ? { extensions: args.extensions, pathGlob: args.path_glob, tags: args.tags }
       : undefined;
     const searchMode: 'dense' | 'hybrid' = args.search_mode ?? 'dense';
+    const taskContext = args.task_context;
+    const gateOverride: RelevanceGateOverride = args.gate;
     const neighborContext = resolveNeighborContextOptions(args);
 
     return this.withCanonicalTool({
@@ -526,6 +553,8 @@ export class KnowledgeBaseServer {
           modelNameOverride,
           filters,
           canonical,
+          taskContext,
+          gateOverride,
         });
       }
 
@@ -576,6 +605,25 @@ export class KnowledgeBaseServer {
           neighborContext,
         );
       }
+      const denseDistanceById = new Map<string, number>();
+      for (const result of similaritySearchResults) {
+        denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
+      }
+      const gate = await applyRelevanceGate({
+        query,
+        taskContext,
+        candidates: similaritySearchResults,
+        denseDistanceById,
+        gateOverride,
+      });
+      similaritySearchResults = gate.results;
+      emitRelevanceGateDecision({
+        process: 'mcp',
+        query,
+        kbScope: knowledgeBaseName ?? null,
+        searchMode,
+        verdict: gate.verdict,
+      });
       if (process.env.KB_LOG_VERBOSE === '1') {
         logger.debug(`[${Date.now()}] Similarity search completed`);
       }
@@ -591,6 +639,9 @@ export class KnowledgeBaseServer {
         similaritySearchResults,
         FRONTMATTER_EXTRAS_WIRE_VISIBLE,
       );
+      if (gate.verdict.state !== 'bypassed') {
+        responseText = `${responseText}\n\n${formatGateVerdictFooter(gate.verdict)}`;
+      }
       canonical.format_ms = Date.now() - formatStartedAt;
 
       // RFC 013 M3 §4.5 + round-1 minimalist F5 — emit `model_id` on the
@@ -608,7 +659,7 @@ export class KnowledgeBaseServer {
       }
 
       const content: TextContent = { type: 'text', text: responseText };
-      return { content: [content] };
+      return withGateVerdict({ content: [content] }, gate.verdict);
     } catch (error: unknown) {
       const err = toError(error);
       logger.error('Error retrieving knowledge:', err);
@@ -646,8 +697,10 @@ export class KnowledgeBaseServer {
     modelNameOverride?: string;
     filters?: { extensions?: string[]; pathGlob?: string; tags?: string[] };
     canonical?: Partial<CanonicalLogInput>;
+    taskContext?: string;
+    gateOverride?: RelevanceGateOverride;
   }): Promise<CallToolResult> {
-    const { query, knowledgeBaseName, modelNameOverride, filters, canonical } = input;
+    const { query, knowledgeBaseName, modelNameOverride, filters, canonical, taskContext, gateOverride } = input;
     const HYBRID_TOP_K = 10;
     const fetchK = hybridFetchK(HYBRID_TOP_K);
 
@@ -695,14 +748,34 @@ export class KnowledgeBaseServer {
         canonical.faiss_ms = denseTiming.faiss_search_ms ?? denseTiming.query_search_ms;
       }
 
-      const ranked = fuseHybridResults({
+      const fusion = fuseHybridResultsWithDiagnostics({
         denseResults,
         lexicalResults,
         k: HYBRID_TOP_K,
       });
+      let ranked = fusion.results;
+      const gate = await applyRelevanceGate({
+        query,
+        taskContext,
+        candidates: ranked,
+        denseDistanceById: fusion.denseDistanceById,
+        lexicalHitIds: fusion.lexicalHitIds,
+        gateOverride,
+      });
+      ranked = gate.results;
+      emitRelevanceGateDecision({
+        process: 'mcp',
+        query,
+        kbScope: knowledgeBaseName ?? null,
+        searchMode: 'hybrid',
+        verdict: gate.verdict,
+      });
 
       const formatStartedAt = Date.now();
       let responseText = formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
+      if (gate.verdict.state !== 'bypassed') {
+        responseText = `${responseText}\n\n${formatGateVerdictFooter(gate.verdict)}`;
+      }
       if (canonical) {
         canonical.result_count = ranked.length;
         canonical.top_score = ranked[0]?.score;
@@ -715,7 +788,7 @@ export class KnowledgeBaseServer {
         : `${header}\n\n${responseText}`;
 
       const content: TextContent = { type: 'text', text: responseText };
-      return { content: [content] };
+      return withGateVerdict({ content: [content] }, gate.verdict);
     } catch (error: unknown) {
       const err = toError(error);
       logger.error('Error retrieving knowledge (hybrid):', err);
