@@ -102,7 +102,7 @@ Setting `LOG_FILE` (`src/logger.ts:18-49`) mirrors stderr to disk. The server wr
 
 ## 7. Mutation audit log (`KB_MUTATION_AUDIT_LOG`)
 
-Setting `KB_MUTATION_AUDIT_LOG` (`src/audit-log.ts`) opts into an append-only JSONL ledger of content mutations performed by `kb remember`, `kb capture`, MCP `add_document`, and MCP `delete_document`. Each record carries `surface`, `operation`, `kb`, `relative_path`, before/after `sha256` hashes, `write_performed`, refresh status, and `decision_flags`. Note bodies are **not** written; the hashes are the only content-derived field. KB names and relative paths reveal the same surface area as the underlying KB directory listing, so secure the ledger with the same permissions you grant `$KNOWLEDGE_BASES_ROOT_DIR`. Audit writes are best-effort: a failed append degrades to a `warn` line on stderr and never blocks the primary mutation.
+Setting `KB_MUTATION_AUDIT_LOG` (`src/audit-log.ts`) opts into an append-only JSONL ledger of content mutations performed by `kb remember`, `kb capture`, `kb ask --save-transcript`, MCP `add_document`, and MCP `delete_document`. Each record carries `surface`, `operation`, `kb`, `relative_path`, before/after `sha256` hashes, `write_performed`, refresh status, and `decision_flags`. Note bodies are **not** written; the hashes are the only content-derived field. KB names and relative paths reveal the same surface area as the underlying KB directory listing, so secure the ledger with the same permissions you grant `$KNOWLEDGE_BASES_ROOT_DIR`. Audit writes are best-effort: a failed append degrades to a `warn` line on stderr and never blocks the primary mutation.
 
 ## 8. Remote MCP transport (`MCP_TRANSPORT=sse` / `=http`)
 

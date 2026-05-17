@@ -19,6 +19,7 @@ import {
   formatBlockedMarkdown,
   type SimilarCandidate,
 } from './cli-remember-similarity.js';
+import { slugifyTitle } from './slug.js';
 import {
   auditEnabled,
   recordMutation,
@@ -1001,17 +1002,6 @@ async function appendSectionInExistingNote(
   return path.relative(await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName), documentPath)
     .split(path.sep)
     .join('/');
-}
-
-function slugifyTitle(title: string): string {
-  const slug = title
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/-{2,}/g, '-');
-  return slug.length > 0 ? slug.slice(0, 80).replace(/-+$/g, '') : 'note';
 }
 
 async function refreshKnowledgeBase(kbName: string): Promise<void> {
