@@ -359,10 +359,18 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
   //    per-model write lock is acquired internally by updateIndex.
   let summary: IndexUpdateSummary;
   try {
-    const manager = options.manager ?? (await createManagerForReindex());
-    summary = options.runUpdateIndex
-      ? await options.runUpdateIndex()
-      : await runManagerUpdateIndex(manager);
+    if (options.runUpdateIndex) {
+      // Test seam (or an injecting caller): bypass manager construction
+      // entirely. `createManagerForReindex()` calls `initialize()`, which
+      // resolves the embedding provider and throws when no provider key
+      // is configured (e.g. in CI) — even though the real `updateIndex`
+      // is being mocked here. The manager is only consumed by the
+      // non-seam path below, so construct it lazily there.
+      summary = await options.runUpdateIndex();
+    } else {
+      const manager = options.manager ?? (await createManagerForReindex());
+      summary = await runManagerUpdateIndex(manager);
+    }
   } catch (err) {
     await deleteRunState();
     emitCanonicalLog({
