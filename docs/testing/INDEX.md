@@ -65,6 +65,15 @@
 
 ## Search
 
+### TS-ASK-382: Cited Ask Transcript Records
+**Requirement:** FR-ASK-382
+
+**Test Cases:**
+- `parseAskArgs` shall parse `--save-transcript`, `--title=<title>`, and `--yes`.
+- `parseAskArgs` shall reject transcript saves without `--yes` or without a target `--kb=<name>`.
+- `buildAskTranscriptMarkdown` shall include the question, answer, citation paths, source chunk ids, LLM provenance, retrieval metadata, and timing metadata when present.
+- `createAskTranscriptNote` shall create a new slugged markdown note and shall refuse to overwrite an existing transcript note.
+
 ### TS-SUPERSEDED-232: Superseded Memory Review
 **Requirement:** FR-SUPERSEDED-232
 

@@ -48,6 +48,7 @@ kb search "INDEX_NOT_INITIALIZED" --mode=hybrid              # dense ⨁ BM25 fu
 kb search "src/cli-search.ts" --mode=auto    # opt-in heuristic: hybrid for code/path/error-shaped queries
 kb llm use-endpoint http://127.0.0.1:8080/v1/chat/completions --profile=local-research-agent
 kb ask "what changed in the daemonization notes?" --timing   # retrieval + local LLM answer with timings
+kb ask "what changed?" --kb=work --save-transcript --title="Ask - daemon changes" --yes
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
@@ -90,11 +91,15 @@ The MCP server (`knowledge-base-mcp-server` bin) is unchanged and still works wi
 
 `kb ask` keeps retrieval deterministic and adds a local OpenAI-compatible chat step on top. It resolves the LLM endpoint from `--endpoint`, `KB_LLM_ENDPOINT`, `--llm-profile`, the active `kb llm` profile, then finally the local-research-agent default on `127.0.0.1:8080`.
 
+Add `--save-transcript --kb=<name> --yes` to persist the generated answer as a new markdown note in that KB. The saved record includes the question, answer, citations, source chunk ids, LLM endpoint/profile/model, retrieval model, and timing metadata when `--timing` is present. `--title=<title>` controls the note title and slug; existing transcript notes are never overwritten.
+
 ```bash
 # Reuse an already-running local-research-agent llama-server.
 kb llm use-endpoint http://127.0.0.1:8080/v1/chat/completions --profile=local-research-agent
 kb llm status
 kb ask "Which notes discuss reboot recovery?" --kb=operating-environment
+kb ask "Which notes discuss reboot recovery?" --kb=operating-environment \
+  --save-transcript --title="Reboot recovery answer" --yes
 
 # Optional managed service for machines that want kb to own the warm model.
 kb llm install --profile=qwen --runner=llama-server \
@@ -254,7 +259,7 @@ Use this path if you want to develop against the repo or pin an unreleased commi
     *   The server supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`.
     *   **Single process per `FAISS_INDEX_PATH`.** Only one server process may write to a given `FAISS_INDEX_PATH` at a time. Running multiple processes (e.g. systemd `Restart=on-failure` racing the dying instance, pm2 with multiple replicas, Kubernetes pods sharing a PV, or a stray `kb search --refresh` overlapping the MCP server) against the same index directory can corrupt the FAISS store, hash sidecars, and pending-manifest. A process-level lockfile is the planned long-term fix — see [#44](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/44) for tracking and [`docs/architecture/threat-model.md`](docs/architecture/threat-model.md) for the current concurrency posture.
     *   Logging can be routed to a file by setting `LOG_FILE=/path/to/logs/knowledge-base.log`. Log verbosity defaults to `info` and can be adjusted with `LOG_LEVEL=debug|info|warn|error`.
-    *   **Mutation audit log (opt-in).** Set `KB_MUTATION_AUDIT_LOG=/path/to/kb-mutations.jsonl` to capture an append-only JSONL ledger of KB content writes. Each line records `surface` (`cli.kb-remember` / `cli.kb-capture` / `mcp.add_document` / `mcp.delete_document`), `operation`, `kb`, `relative_path`, `timestamp`, `before_sha256`, `after_sha256`, `write_performed`, `refresh_requested`, `refresh_status`, and per-surface `decision_flags`. Note content is **not** stored; only hashes and metadata. The feature is best-effort — an audit write failure logs a `warn` to stderr but never aborts the primary mutation. KB names and paths are inherent to the records, so treat the audit log with the same sensitivity as the underlying KB directory.
+    *   **Mutation audit log (opt-in).** Set `KB_MUTATION_AUDIT_LOG=/path/to/kb-mutations.jsonl` to capture an append-only JSONL ledger of KB content writes. Each line records `surface` (`cli.kb-remember` / `cli.kb-capture` / `cli.kb-ask` / `mcp.add_document` / `mcp.delete_document`), `operation`, `kb`, `relative_path`, `timestamp`, `before_sha256`, `after_sha256`, `write_performed`, `refresh_requested`, `refresh_status`, and per-surface `decision_flags`. Note content is **not** stored; only hashes and metadata. The feature is best-effort — an audit write failure logs a `warn` to stderr but never aborts the primary mutation. KB names and paths are inherent to the records, so treat the audit log with the same sensitivity as the underlying KB directory.
     *   **Tailor tool descriptions per deployment.** The `retrieve_knowledge` and `list_knowledge_bases` descriptions the agent reads when picking tools can be overridden via `RETRIEVE_KNOWLEDGE_DESCRIPTION` and `LIST_KNOWLEDGE_BASES_DESCRIPTION`. Unset or empty falls back to the built-in defaults. Example:
         ```bash
         RETRIEVE_KNOWLEDGE_DESCRIPTION="Search engineering runbooks, RFCs, and postmortems."
