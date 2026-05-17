@@ -615,6 +615,7 @@ export class KnowledgeBaseServer {
         candidates: similaritySearchResults,
         denseDistanceById,
         gateOverride,
+        process: 'mcp',
       });
       similaritySearchResults = gate.results;
       emitRelevanceGateDecision({
@@ -623,6 +624,8 @@ export class KnowledgeBaseServer {
         kbScope: knowledgeBaseName ?? null,
         searchMode,
         verdict: gate.verdict,
+        taskContext,
+        observability: gate.observability,
       });
       if (process.env.KB_LOG_VERBOSE === '1') {
         logger.debug(`[${Date.now()}] Similarity search completed`);
@@ -761,6 +764,7 @@ export class KnowledgeBaseServer {
         denseDistanceById: fusion.denseDistanceById,
         lexicalHitIds: fusion.lexicalHitIds,
         gateOverride,
+        process: 'mcp',
       });
       ranked = gate.results;
       emitRelevanceGateDecision({
@@ -769,6 +773,8 @@ export class KnowledgeBaseServer {
         kbScope: knowledgeBaseName ?? null,
         searchMode: 'hybrid',
         verdict: gate.verdict,
+        taskContext,
+        observability: gate.observability,
       });
 
       const formatStartedAt = Date.now();

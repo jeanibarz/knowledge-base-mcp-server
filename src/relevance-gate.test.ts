@@ -1,7 +1,9 @@
-import { describe, expect, it } from '@jest/globals';
-import { applyRelevanceGate } from './relevance-gate.js';
+import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { applyRelevanceGate, emitRelevanceGateDecision } from './relevance-gate.js';
 import type { RelevanceGateConfig } from './config/relevance-gate.js';
 import { chunkIdFromMetadata } from './rrf.js';
+import { RelevanceGateMetrics, relevanceGateMetrics } from './relevance-gate-metrics.js';
+import type { RelevanceGateVerdict } from './relevance-gate-schema.js';
 
 function config(overrides: Partial<RelevanceGateConfig> = {}): RelevanceGateConfig {
   return {
@@ -36,7 +38,25 @@ function fakeFetchJson(content: string): typeof fetch {
   }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as unknown as typeof fetch;
 }
 
+function metricVerdict(overrides: Partial<RelevanceGateVerdict> = {}): RelevanceGateVerdict {
+  return {
+    schema_version: 'kb.relevance-gate.v1',
+    state: 'injected',
+    low_confidence: false,
+    input_count: 1,
+    output_count: 1,
+    dropped: [],
+    judge: { status: 'not-run' },
+    empty_verdict_enabled: false,
+    ...overrides,
+  };
+}
+
 describe('relevance gate', () => {
+  beforeEach(() => {
+    relevanceGateMetrics.reset();
+  });
+
   it('bypasses by default when the feature flag is off', async () => {
     const rows = [candidate('/kb/a.md', 0, 0.2, 'alpha')];
     const result = await applyRelevanceGate({
@@ -243,5 +263,168 @@ describe('relevance gate', () => {
 
     const cached = await applyRelevanceGate(input);
     expect(cached.results).toEqual(rows);
+  });
+
+  it('records exact A2 drop-rate counters for kb stats', async () => {
+    const rows = [
+      candidate('/kb/a.md', 0, 0.1, 'near'),
+      candidate('/kb/a.md', 1, 0.2, 'also near'),
+      candidate('/kb/a.md', 2, 1.4, 'far'),
+    ];
+
+    await applyRelevanceGate({
+      query: 'metrics drop',
+      candidates: rows,
+      config: config({ judgeEndpoint: undefined }),
+    });
+
+    expect(relevanceGateMetrics.snapshot()).toMatchObject({
+      gated_queries: 1,
+      verdict_injected: 1,
+      low_confidence_rate: 0,
+      drop_rate_A1: 0,
+      drop_rate_A2: 0.3333,
+      drop_rate_B: 0,
+    });
+  });
+
+  it('records exact A1 drop-rate counters for kb stats', async () => {
+    const rows = [
+      candidate('/kb/a.md', 0, 0.1, 'near'),
+      candidate('/kb/b.md', 0, 0.2, 'far by dense distance'),
+    ];
+
+    await applyRelevanceGate({
+      query: 'metrics a1 drop',
+      candidates: rows,
+      denseDistanceById: new Map([
+        [idOf(rows[0]), 0.1],
+        [idOf(rows[1]), 1.2],
+      ]),
+      config: config({ judgeEndpoint: undefined }),
+    });
+
+    expect(relevanceGateMetrics.snapshot()).toMatchObject({
+      gated_queries: 1,
+      verdict_injected: 1,
+      drop_rate_A1: 0.5,
+      drop_rate_A2: 0,
+      drop_rate_B: 0,
+    });
+  });
+
+  it('records exact Stage B drop-rate counters for kb stats', async () => {
+    const rows = [
+      candidate('/kb/a.md', 0, 0.1, 'deployment rollback checklist'),
+      candidate('/kb/b.md', 0, 0.1, 'obsolete deployment rollback notes'),
+    ];
+
+    await applyRelevanceGate({
+      query: 'metrics b drop',
+      taskContext: 'please answer a deployment rollback question with precise operational context',
+      candidates: rows,
+      config: config(),
+      fetchImpl: fakeFetchJson('{"overall":"relevant","verdicts":[{"id":"/kb/a.md#0","decision":"keep","reason":"rollback checklist"},{"id":"/kb/b.md#0","decision":"drop","reason":"obsolete deployment rollback"}]}'),
+    });
+
+    expect(relevanceGateMetrics.snapshot()).toMatchObject({
+      gated_queries: 1,
+      verdict_injected: 1,
+      drop_rate_A1: 0,
+      drop_rate_A2: 0,
+      drop_rate_B: 0.5,
+    });
+  });
+
+  it('records empty-index and no-relevant-context verdict counters for kb stats', async () => {
+    await applyRelevanceGate({
+      query: 'metrics empty index',
+      candidates: [],
+      config: config(),
+    });
+    await applyRelevanceGate({
+      query: 'metrics no relevant context',
+      taskContext: 'please answer a deployment rollback question with precise operational context',
+      candidates: [candidate('/kb/a.md', 0, 0.1, 'deployment rollback')],
+      config: config({ emptyVerdictEnabled: true }),
+      fetchImpl: fakeFetchJson('{"overall":"no-relevant-context","verdicts":[]}'),
+    });
+
+    expect(relevanceGateMetrics.snapshot()).toMatchObject({
+      gated_queries: 2,
+      verdict_empty_index: 1,
+      verdict_no_relevant_context: 1,
+    });
+  });
+
+  it('emits process-aware canonical alarms when judge degrade rate is high', () => {
+    const metrics = new RelevanceGateMetrics();
+    const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      for (let i = 0; i < 5; i += 1) {
+        metrics.record(metricVerdict({
+          judge: { status: 'failed', reason: 'judge unavailable' },
+        }), 'mcp');
+      }
+
+      const event = JSON.parse(String(stderr.mock.calls.at(-1)?.[0]).trim());
+      expect(event).toMatchObject({
+        process: 'mcp',
+        event: 'relevance-gate.degrade-rate',
+        level: 'warn',
+        tool: 'relevance-gate.degrade-rate',
+        recovery_hint: expect.stringContaining('KB_GATE_LLM_ENDPOINT'),
+        gate: {
+          judge_window_size: 5,
+          judge_window_degraded: 5,
+          judge_degrade_rate: 1,
+          warn_threshold: 0.1,
+        },
+      });
+      expect(event.cmd).toBeUndefined();
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('emits reproduction fields in the canonical decision event', async () => {
+    const rows = [candidate('/kb/a.md', 0, 0.2, 'deployment rollback')];
+    const gate = await applyRelevanceGate({
+      query: 'canonical fields',
+      taskContext: 'please answer a deployment rollback question with precise operational context',
+      candidates: rows,
+      config: config(),
+      fetchImpl: fakeFetchJson('{"overall":"relevant","verdicts":[{"id":"/kb/a.md#0","decision":"keep","reason":"rollback"}]}'),
+    });
+    const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      emitRelevanceGateDecision({
+        process: 'cli',
+        query: 'canonical fields',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        searchMode: 'dense',
+        verdict: gate.verdict,
+        observability: gate.observability,
+      });
+      const line = String(stderr.mock.calls[0][0]).trim();
+      const event = JSON.parse(line);
+      expect(event.cmd).toBe('relevance-gate.decision');
+      expect(event.gate).toMatchObject({
+        query_sha: expect.any(String),
+        task_context_sha: expect.any(String),
+        judge_model: 'judge-model',
+        judge_prompt_hash: expect.any(String),
+        floor: 0.95,
+        degraded: false,
+      });
+      expect(event.gate.candidates[0]).toMatchObject({
+        id: '/kb/a.md#0',
+        content_sha: expect.any(String),
+        decision: 'kept',
+      });
+      expect(event.gate.shuffled_order).toEqual(['/kb/a.md#0']);
+    } finally {
+      stderr.mockRestore();
+    }
   });
 });

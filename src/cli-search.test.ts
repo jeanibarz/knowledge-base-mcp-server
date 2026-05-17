@@ -126,6 +126,14 @@ describe('parseSearchArgs --explain-empty (#328)', () => {
   });
 });
 
+describe('parseSearchArgs --explain (RFC 018 M0c)', () => {
+  it('accepts relevance-gate explanation output', () => {
+    expect(parseSearchArgs(['query', '--explain'])).toMatchObject({
+      explain: true,
+    });
+  });
+});
+
 describe('parseSearchArgs relevance gate (RFC 018)', () => {
   it('accepts gate overrides and task context inputs', () => {
     expect(parseSearchArgs([
@@ -265,6 +273,36 @@ describe('runSearch timing guard (#331)', () => {
 
     expect(out.code).toBe(0);
     expect(out.stdout).toContain('> _Relevance gate: injected; kept 1/1._');
+  });
+
+  it('renders the relevance gate dropped list when --explain is used', () => {
+    const out = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: null,
+      refreshed: false,
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+      explain: true,
+      gateVerdict: {
+        schema_version: 'kb.relevance-gate.v1',
+        state: 'injected',
+        low_confidence: false,
+        input_count: 2,
+        output_count: 1,
+        dropped: [{
+          id: '/kb/a.md#1',
+          stage: 'A2-distribution-knee',
+          reason: 'after score-distribution knee',
+        }],
+        judge: { status: 'skipped', reason: 'task_context absent or too short' },
+        empty_verdict_enabled: false,
+      },
+    });
+
+    expect(out).toContain('> _Relevance gate dropped candidates:_');
+    expect(out).toContain('> - /kb/a.md#1 (A2-distribution-knee): after score-distribution knee');
   });
 });
 

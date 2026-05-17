@@ -38,6 +38,15 @@ export interface RelevanceJudgeResult {
   verdicts: RelevanceJudgeVerdict[];
   model: string | null;
   rawContent: string;
+  shuffledIds: string[];
+  promptHash: string;
+}
+
+interface ParsedJudgeResult {
+  overall: RelevanceJudgeOverall;
+  verdicts: RelevanceJudgeVerdict[];
+  model: string | null;
+  rawContent: string;
 }
 
 export class RelevanceJudgeError extends Error {
@@ -77,21 +86,26 @@ const STOP_WORDS = new Set([
 
 export async function judgeRelevance(options: RelevanceJudgeOptions): Promise<RelevanceJudgeResult> {
   const shuffled = deterministicShuffle(options.candidates, options.seed);
+  const messages = buildJudgeMessages(options.query, options.taskContext, shuffled);
   const response = await callChatCompletion({
     endpoint: options.endpoint,
     model: options.model,
     temperature: 0,
     timeoutMs: options.timeoutMs,
-    messages: buildJudgeMessages(options.query, options.taskContext, shuffled),
+    messages,
   }, options.fetchImpl ?? fetch);
 
-  return normalizeJudgeResponse(response, options.candidates);
+  return {
+    ...normalizeJudgeResponse(response, options.candidates),
+    shuffledIds: shuffled.map((candidate) => candidate.id),
+    promptHash: hashPrompt(messages),
+  };
 }
 
 export function normalizeJudgeResponse(
   response: Pick<ChatCompletionResult, 'content' | 'model'>,
   candidates: RelevanceJudgeCandidate[],
-): RelevanceJudgeResult {
+): ParsedJudgeResult {
   const parsed = parseJudgeJson(response.content);
   const overall = parseOverall(parsed.overall);
   const rawVerdicts = Array.isArray(parsed.verdicts) ? parsed.verdicts : [];
@@ -129,6 +143,13 @@ export function normalizeJudgeResponse(
     model: response.model,
     rawContent: response.content,
   };
+}
+
+function hashPrompt(messages: readonly LlmChatMessage[]): string {
+  return createHash('sha256')
+    .update(JSON.stringify(messages), 'utf-8')
+    .digest('hex')
+    .slice(0, 16);
 }
 
 function buildJudgeMessages(

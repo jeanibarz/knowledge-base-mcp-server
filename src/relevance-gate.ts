@@ -14,6 +14,7 @@ import {
   RELEVANCE_GATE_SCHEMA_VERSION,
   type RelevanceGateVerdict,
 } from './relevance-gate-schema.js';
+import { relevanceGateMetrics } from './relevance-gate-metrics.js';
 
 export type RelevanceGateOverride = 'on' | 'off' | undefined;
 
@@ -30,19 +31,44 @@ export interface RelevanceGateInput<T extends RelevanceGateCandidate = Relevance
   gateOverride?: RelevanceGateOverride;
   config?: RelevanceGateConfig;
   fetchImpl?: typeof fetch;
+  process?: CanonicalProcess;
 }
 
 export interface RelevanceGateResult<T extends RelevanceGateCandidate = RelevanceGateCandidate> {
   results: T[];
   verdict: RelevanceGateVerdict;
+  observability: RelevanceGateObservability;
 }
 
 export interface RelevanceGateCanonicalInput {
   process: CanonicalProcess;
   query: string;
+  taskContext?: string;
   kbScope?: string | null;
   searchMode: CanonicalSearchMode;
   verdict: RelevanceGateVerdict;
+  observability?: RelevanceGateObservability;
+}
+
+export interface RelevanceGateObservability {
+  task_context_sha: string | null;
+  query_sha: string;
+  floor: number;
+  judge_model: string | null;
+  judge_prompt_hash: string | null;
+  shuffled_order: string[];
+  degraded: boolean;
+  degrade_reason: string | null;
+  judge_skipped: string | null;
+  candidates: RelevanceGateCandidateReproduction[];
+}
+
+export interface RelevanceGateCandidateReproduction {
+  id: string;
+  content_sha: string;
+  decision: 'kept' | 'dropped';
+  stage: string | null;
+  reason: string | null;
 }
 
 interface CandidateRow<T extends RelevanceGateCandidate> {
@@ -60,6 +86,7 @@ interface DropRecord {
 interface CachedGateDecision {
   verdict: RelevanceGateVerdict;
   resultIds: Set<string>;
+  observability: RelevanceGateObservability;
 }
 
 const verdictCache = new Map<string, CachedGateDecision>();
@@ -70,27 +97,48 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   const config = input.config ?? resolveRelevanceGateConfig();
   const enabled = input.gateOverride === 'on' || (config.enabled && input.gateOverride !== 'off');
   if (!enabled) {
+    const verdict = buildVerdict({
+      state: 'bypassed',
+      inputCount: input.candidates.length,
+      outputCount: input.candidates.length,
+      emptyVerdictEnabled: config.emptyVerdictEnabled,
+      judge: { status: 'not-run', reason: 'gate disabled' },
+    });
     return {
       results: input.candidates,
-      verdict: buildVerdict({
-        state: 'bypassed',
-        inputCount: input.candidates.length,
-        outputCount: input.candidates.length,
-        emptyVerdictEnabled: config.emptyVerdictEnabled,
-        judge: { status: 'not-run', reason: 'gate disabled' },
+      verdict,
+      observability: buildObservability({
+        query: input.query,
+        taskContext: input.taskContext,
+        config,
+        rows: rowsForObservability(input.candidates),
+        survivors: rowsForObservability(input.candidates),
+        dropped: [],
+        judge: verdict.judge,
       }),
     };
   }
 
   if (input.candidates.length === 0) {
+    const verdict = buildVerdict({
+      state: 'empty-index',
+      inputCount: 0,
+      outputCount: 0,
+      emptyVerdictEnabled: config.emptyVerdictEnabled,
+      judge: { status: 'not-run', reason: 'no candidates' },
+    });
+    relevanceGateMetrics.record(verdict, input.process);
     return {
       results: [],
-      verdict: buildVerdict({
-        state: 'empty-index',
-        inputCount: 0,
-        outputCount: 0,
-        emptyVerdictEnabled: config.emptyVerdictEnabled,
-        judge: { status: 'not-run', reason: 'no candidates' },
+      verdict,
+      observability: buildObservability({
+        query: input.query,
+        taskContext: input.taskContext,
+        config,
+        rows: [],
+        survivors: [],
+        dropped: [],
+        judge: verdict.judge,
       }),
     };
   }
@@ -98,9 +146,11 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   const cacheKey = buildCacheKey(input, config);
   const cached = verdictCache.get(cacheKey);
   if (cached !== undefined) {
+    relevanceGateMetrics.record(cached.verdict, input.process);
     return {
       results: replayVerdict(input.candidates, cached),
       verdict: cached.verdict,
+      observability: cached.observability,
     };
   }
 
@@ -115,6 +165,8 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   const lexicalHitIds = input.lexicalHitIds ?? new Set<string>();
   let survivors: CandidateRow<T>[];
   let judge: RelevanceGateVerdict['judge'];
+  let judgePromptHash: string | null = null;
+  let shuffledOrder: string[] = [];
   let lowConfidence = false;
   let state: RelevanceGateVerdict['state'] = 'injected';
 
@@ -139,6 +191,8 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
     judge = judged.judge;
     state = judged.state;
     if (judged.lowConfidence) lowConfidence = true;
+    judgePromptHash = judged.judgePromptHash;
+    shuffledOrder = judged.shuffledOrder;
     if (judged.degraded) {
       survivors = applyA2(afterA1, dropped, input.denseDistanceById);
     }
@@ -162,11 +216,24 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
     judge,
     emptyVerdictEnabled: config.emptyVerdictEnabled,
   });
+  const observability = buildObservability({
+    query: input.query,
+    taskContext: input.taskContext,
+    config,
+    rows,
+    survivors,
+    dropped,
+    judge,
+    judgePromptHash,
+    shuffledOrder,
+  });
+  relevanceGateMetrics.record(verdict, input.process);
   verdictCache.set(cacheKey, {
     verdict,
     resultIds: new Set(survivors.map((row) => row.id)),
+    observability,
   });
-  return { results, verdict };
+  return { results, verdict, observability };
 }
 
 export function emitRelevanceGateDecision(input: RelevanceGateCanonicalInput): void {
@@ -180,6 +247,26 @@ export function emitRelevanceGateDecision(input: RelevanceGateCanonicalInput): v
     search_mode: input.searchMode,
     result_count: input.verdict.output_count,
     took_ms: 0,
+    gate: {
+      state: input.verdict.state,
+      input_count: input.verdict.input_count,
+      output_count: input.verdict.output_count,
+      low_confidence: input.verdict.low_confidence,
+      task_context_sha: input.observability?.task_context_sha ?? hashNullable(input.taskContext),
+      query_sha: input.observability?.query_sha ?? shortHash(input.query),
+      candidates: input.observability?.candidates ?? [],
+      judge_model: input.observability?.judge_model ?? input.verdict.judge.model ?? null,
+      judge_prompt_hash: input.observability?.judge_prompt_hash ?? null,
+      floor: input.observability?.floor ?? null,
+      shuffled_order: input.observability?.shuffled_order ?? [],
+      degraded: input.observability?.degraded ?? (input.verdict.judge.status === 'failed'),
+      degrade_reason:
+        input.observability?.degrade_reason ??
+        (input.verdict.judge.status === 'failed' ? input.verdict.judge.reason ?? 'judge failed' : null),
+      judge_skipped:
+        input.observability?.judge_skipped ??
+        (input.verdict.judge.status === 'skipped' ? input.verdict.judge.reason ?? 'skipped' : null),
+    },
   });
 }
 
@@ -190,6 +277,18 @@ export function formatGateVerdictFooter(verdict: RelevanceGateVerdict): string {
   const low = verdict.low_confidence ? '; low confidence' : '';
   const judge = verdict.judge.status === 'failed' ? '; judge degraded' : '';
   return `> _Relevance gate: ${verdict.state}; kept ${verdict.output_count}/${verdict.input_count}${low}${judge}._`;
+}
+
+export function formatGateDroppedList(verdict: RelevanceGateVerdict): string {
+  const lines = ['> _Relevance gate dropped candidates:_'];
+  if (verdict.dropped.length === 0) {
+    lines.push('> - none');
+    return lines.join('\n');
+  }
+  for (const drop of verdict.dropped) {
+    lines.push(`> - ${drop.id} (${drop.stage}): ${drop.reason}`);
+  }
+  return lines.join('\n');
 }
 
 function applyA1<T extends RelevanceGateCandidate>(
@@ -273,6 +372,8 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
   state: RelevanceGateVerdict['state'];
   lowConfidence: boolean;
   degraded: boolean;
+  judgePromptHash: string | null;
+  shuffledOrder: string[];
 }> {
   const judgedRows = input.rows.slice(0, input.config.judgeInputLimit);
   const overflowRows = input.rows.slice(input.config.judgeInputLimit);
@@ -301,6 +402,8 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
       state: 'injected',
       lowConfidence: false,
       degraded: true,
+      judgePromptHash: null,
+      shuffledOrder: [],
     };
   }
 
@@ -311,6 +414,8 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
       state: 'injected',
       lowConfidence: false,
       degraded: false,
+      judgePromptHash: result.promptHash,
+      shuffledOrder: result.shuffledIds,
     };
   }
 
@@ -330,6 +435,8 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
         state: 'no-relevant-context',
         lowConfidence: false,
         degraded: false,
+        judgePromptHash: result.promptHash,
+        shuffledOrder: result.shuffledIds,
       };
     }
     const reason = input.config.emptyVerdictEnabled
@@ -341,6 +448,8 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
       state: 'injected',
       lowConfidence: true,
       degraded: false,
+      judgePromptHash: result.promptHash,
+      shuffledOrder: result.shuffledIds,
     };
   }
 
@@ -362,6 +471,8 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
     state: 'injected',
     lowConfidence: result.verdicts.some((verdict) => verdict.downgraded === true),
     degraded: false,
+    judgePromptHash: result.promptHash,
+    shuffledOrder: result.shuffledIds,
   };
 }
 
@@ -427,6 +538,68 @@ function buildCacheKey<T extends RelevanceGateCandidate>(
     hash.update(candidate.pageContent);
   }
   return hash.digest('hex');
+}
+
+function rowsForObservability<T extends RelevanceGateCandidate>(
+  candidates: T[],
+): CandidateRow<T>[] {
+  return candidates.map((candidate, originalIndex) => ({
+    id: chunkIdFromMetadata(candidate.metadata as Record<string, unknown>),
+    result: candidate,
+    originalIndex,
+  }));
+}
+
+function buildObservability<T extends RelevanceGateCandidate>(input: {
+  query: string;
+  taskContext?: string;
+  config: RelevanceGateConfig;
+  rows: CandidateRow<T>[];
+  survivors: CandidateRow<T>[];
+  dropped: DropRecord[];
+  judge: RelevanceGateVerdict['judge'];
+  judgePromptHash?: string | null;
+  shuffledOrder?: string[];
+}): RelevanceGateObservability {
+  const survivorIds = new Set(input.survivors.map((row) => row.id));
+  const firstDropById = new Map<string, DropRecord>();
+  for (const drop of input.dropped) {
+    if (!firstDropById.has(drop.id)) firstDropById.set(drop.id, drop);
+  }
+  return {
+    task_context_sha: hashNullable(input.taskContext),
+    query_sha: shortHash(input.query),
+    floor: input.config.scoreFloor,
+    judge_model: input.judge.model ?? input.config.judgeModel ?? null,
+    judge_prompt_hash: input.judgePromptHash ?? null,
+    shuffled_order: input.shuffledOrder ?? [],
+    degraded: input.judge.status === 'failed',
+    degrade_reason: input.judge.status === 'failed' ? input.judge.reason ?? 'judge failed' : null,
+    judge_skipped: input.judge.status === 'skipped' ? input.judge.reason ?? 'skipped' : null,
+    candidates: input.rows.map((row) => {
+      const drop = firstDropById.get(row.id);
+      const kept = survivorIds.has(row.id);
+      return {
+        id: row.id,
+        content_sha: shortHash(row.result.pageContent),
+        decision: kept ? 'kept' : 'dropped',
+        stage: kept ? null : drop?.stage ?? null,
+        reason: kept ? null : drop?.reason ?? null,
+      };
+    }),
+  };
+}
+
+function hashNullable(value: string | undefined): string | null {
+  if (value === undefined || value.trim() === '') return null;
+  return shortHash(value);
+}
+
+function shortHash(value: string): string {
+  return createHash('sha256')
+    .update(value.trim().replace(/\s+/g, ' '), 'utf-8')
+    .digest('hex')
+    .slice(0, 16);
 }
 
 function normalizeTaskContext(taskContext: string | undefined): string {

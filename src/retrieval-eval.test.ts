@@ -128,6 +128,34 @@ describe('normalizeRetrievalEvalFixture', () => {
     ]);
   });
 
+  it('normalizes optional expected_gate_verdict with judge-suggested unverified provenance', () => {
+    const fixture = normalizeRetrievalEvalFixture({
+      cases: [{
+        query: 'deployment notes',
+        expected_gate_verdict: {
+          state: 'no-relevant-context',
+          provenance: 'judge-suggested',
+          verification: 'unverified',
+        },
+      }],
+    });
+
+    expect(fixture.cases[0].expectedGateVerdict).toEqual({
+      state: 'no-relevant-context',
+      provenance: 'judge-suggested',
+      verification: 'unverified',
+    });
+  });
+
+  it('rejects invalid expected_gate_verdict states', () => {
+    expect(() => normalizeRetrievalEvalFixture({
+      cases: [{
+        query: 'deployment notes',
+        expected_gate_verdict: 'maybe',
+      }],
+    })).toThrow('expected_gate_verdict must be "bypassed", "empty-index", "injected", or "no-relevant-context"');
+  });
+
   it('preserves the normalized fixture shape when judgments are absent', () => {
     const fixture = normalizeRetrievalEvalFixture({
       cases: [{ query: 'deployment notes' }],
@@ -327,6 +355,54 @@ describe('evaluateRetrievalCase', () => {
       effectiveMode: 'hybrid',
       autoMode: { mode: 'hybrid', reason: 'constant or error-code token' },
     });
+  });
+
+  it('warns when an expected gate verdict cannot be checked', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase({
+        expectedGateVerdict: {
+          state: 'no-relevant-context',
+          provenance: 'judge-suggested',
+          verification: 'unverified',
+        },
+      }),
+      [],
+      FRESH,
+    );
+
+    expect(result.warnings).toEqual([
+      'expected gate verdict no-relevant-context was not checked; retrieval path did not report a gate verdict',
+      'expected gate verdict is judge-suggested and unverified',
+    ]);
+    expect(summarizeRetrievalEval([result]).expectedGateVerdictWarnings).toBe(1);
+  });
+
+  it('compares expected gate verdicts against reported retrieval results', () => {
+    const matching = evaluateRetrievalCase(
+      fixtureCase({ expectedGateVerdict: { state: 'injected' } }),
+      [],
+      FRESH,
+      false,
+      {
+        requestedMode: 'dense',
+        effectiveMode: 'dense',
+        gateVerdictState: 'injected',
+      },
+    );
+    const mismatched = evaluateRetrievalCase(
+      fixtureCase({ expectedGateVerdict: { state: 'no-relevant-context' } }),
+      [],
+      FRESH,
+      false,
+      {
+        requestedMode: 'dense',
+        effectiveMode: 'dense',
+        gateVerdictState: 'injected',
+      },
+    );
+
+    expect(matching.warnings).toEqual([]);
+    expect(mismatched.warnings).toContain('expected gate verdict no-relevant-context, got injected');
   });
 
   it('fails when a required source is missing', () => {
@@ -639,6 +715,11 @@ describe('summarizeRetrievalEval', () => {
     const result = evaluateRetrievalCase(
       fixtureCase({
         k: 2,
+        expectedGateVerdict: {
+          state: 'injected',
+          provenance: 'human-labeled',
+          verification: 'verified',
+        },
         relevanceJudgments: [{ source: 'runbooks/deploy.md', relevance: 1 }],
       }),
       [doc('runbooks/deploy.md'), doc('notes/other.md')],
@@ -653,10 +734,28 @@ describe('summarizeRetrievalEval', () => {
     expect(markdown).toContain('Diversity metrics: unique-source@k=2.000');
   });
 
+  it('prints expected gate verdict metadata and warning totals in markdown', () => {
+    const result = evaluateRetrievalCase(
+      fixtureCase({ expectedGateVerdict: { state: 'no-relevant-context' } }),
+      [],
+      FRESH,
+    );
+
+    const markdown = formatRetrievalEvalMarkdown(summarizeRetrievalEval([result]));
+
+    expect(markdown).toContain('expected gate: no-relevant-context');
+    expect(markdown).toContain('1 expected gate warning(s).');
+  });
+
   it('includes ranked and diversity metrics in JSON output when judgments are present', () => {
     const result = evaluateRetrievalCase(
       fixtureCase({
         k: 2,
+        expectedGateVerdict: {
+          state: 'injected',
+          provenance: 'human-labeled',
+          verification: 'verified',
+        },
         relevanceJudgments: [{ source: 'runbooks/deploy.md', relevance: 1 }],
       }),
       [doc('runbooks/deploy.md'), doc('notes/other.md')],
@@ -683,6 +782,11 @@ describe('summarizeRetrievalEval', () => {
         hit_rate: 1,
       },
       cases: [{
+        expected_gate_verdict: {
+          state: 'injected',
+          provenance: 'human-labeled',
+          verification: 'verified',
+        },
         ranked_metrics: {
           k: 2,
           judged_relevant_count: 1,
