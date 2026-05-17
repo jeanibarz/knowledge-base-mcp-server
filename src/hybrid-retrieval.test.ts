@@ -18,6 +18,7 @@ import {
   HYBRID_FETCH_MULTIPLIER,
   HYBRID_RRF_C,
   fuseHybridResults,
+  fuseHybridResultsWithDiagnostics,
   hybridFetchK,
   runLexicalLeg,
   type HybridChunk,
@@ -140,6 +141,18 @@ describe('fuseHybridResults', () => {
     const out = fuseHybridResults({ denseResults: dense, lexicalResults: [], k: 5 });
     expect(out.map((r) => r.metadata.source)).toEqual(['a.md', 'b.md']);
     expect(out[0].score).toBeCloseTo(1 / (DEFAULT_C + 1), 12);
+  });
+
+  it('returns dense-distance and lexical-hit side channels for the relevance gate', () => {
+    const dense = [chunk('a.md', 0, 0.42), chunk('b.md', 0, 0.73)];
+    const lexical = [chunk('b.md', 0, 4.0), chunk('c.md', 0, 3.0)];
+    const out = fuseHybridResultsWithDiagnostics({ denseResults: dense, lexicalResults: lexical, k: 3 });
+
+    expect(out.results.map((r) => r.metadata.source)).toEqual(['b.md', 'a.md', 'c.md']);
+    expect(out.denseDistanceById.get('a.md#0')).toBe(0.42);
+    expect(out.denseDistanceById.get('b.md#0')).toBe(0.73);
+    expect(out.lexicalHitIds.has('b.md#0')).toBe(true);
+    expect(out.lexicalHitIds.has('c.md#0')).toBe(true);
   });
 
   it('uses HYBRID_RRF_C by default and accepts an override', () => {

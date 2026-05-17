@@ -50,12 +50,23 @@ import {
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
 import {
   HYBRID_RRF_C,
-  fuseHybridResults,
+  fuseHybridResultsWithDiagnostics,
   hybridFetchK,
   listLexicalKbs,
   runLexicalLeg,
   type HybridChunk,
 } from './hybrid-retrieval.js';
+import {
+  applyRelevanceGate,
+  emitRelevanceGateDecision,
+  formatGateVerdictFooter,
+  type RelevanceGateOverride,
+} from './relevance-gate.js';
+import {
+  RELEVANCE_GATE_SCHEMA_VERSION,
+  type RelevanceGateVerdict,
+} from './relevance-gate-schema.js';
+import { chunkIdFromMetadata } from './rrf.js';
 import {
   buildEmptyResultGuidance,
   buildRefreshPreflightEstimate,
@@ -114,6 +125,12 @@ Result tuning:
                         around each dense semantic match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
   --context-window=<n>  Shorthand for --context-before=n --context-after=n.
   --no-cache            Bypass the query-embedding cache for this search.
+  --gate                Run the relevance gate for this call even when
+                        KB_RELEVANCE_GATE is off.
+  --no-gate             Bypass the relevance gate for this call.
+  --task-context=<str>  Task context used by the relevance judge.
+  --task-context-file=<path>
+                        Read task context from a UTF-8 file.
 
 Output:
   --format=md|json|vimgrep
@@ -170,6 +187,9 @@ interface SearchArgs {
   freshness: boolean;
   explainEmpty: boolean;
   neighborContext?: NeighborContextOptions;
+  gateOverride?: RelevanceGateOverride;
+  taskContext?: string;
+  taskContextFile?: string;
 }
 
 export interface RunSearchDeps {
@@ -209,6 +229,16 @@ export async function runSearch(
     process.stderr.write('kb search: missing <query> (or use --stdin)\n');
     return 2;
   }
+
+  if (parsed.taskContextFile !== undefined) {
+    try {
+      parsed.taskContext = await fsp.readFile(parsed.taskContextFile, 'utf-8');
+    } catch (err) {
+      process.stderr.write(`kb search: could not read --task-context-file: ${(err as Error).message}\n`);
+      return 2;
+    }
+  }
+  const query = parsed.query;
 
   if (shouldUsePicker(parsed) && !process.stdout.isTTY) {
     process.stderr.write('kb search: --interactive requires a TTY\n');
@@ -297,7 +327,7 @@ export async function runSearch(
     const startedAt = nowMs();
     if (parsed.thresholdAuto) {
       const rawResults = await manager.similaritySearch(
-        parsed.query,
+        query,
         parsed.k,
         Number.POSITIVE_INFINITY,
         parsed.kb,
@@ -309,7 +339,7 @@ export async function runSearch(
       results = rawResults.slice(0, autoThresholdDecision.kept);
     } else {
       results = await manager.similaritySearch(
-        parsed.query,
+        query,
         parsed.k,
         parsed.threshold,
         parsed.kb,
@@ -329,6 +359,32 @@ export async function runSearch(
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
+  const denseDistanceById = new Map<string, number>();
+  for (const result of results) {
+    denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
+  }
+  let gateVerdict: RelevanceGateVerdict;
+  try {
+    const gate = await applyRelevanceGate({
+      query,
+      taskContext: parsed.taskContext,
+      candidates: results,
+      denseDistanceById,
+      gateOverride: parsed.gateOverride,
+    });
+    results = gate.results;
+    gateVerdict = gate.verdict;
+    emitRelevanceGateDecision({
+      process: 'cli',
+      query,
+      kbScope: parsed.kb ?? null,
+      searchMode: effectiveMode,
+      verdict: gateVerdict,
+    });
+  } catch (err) {
+    return reportFailure(classifyKbSearchError(err), parsed.format);
+  }
+
   const staleness = parsed.freshness
     ? await computeStalenessWithTiming(activeModelId, parsed.kb, timing)
     : null;
@@ -337,7 +393,7 @@ export async function runSearch(
     parsed.explainEmpty && results.length === 0
       ? await gatherExplainEmptyDiagnostics({
           manager,
-          query: parsed.query ?? '',
+          query,
           threshold: parsed.thresholdAuto
             ? Number.POSITIVE_INFINITY
             : parsed.threshold ?? 2,
@@ -362,11 +418,12 @@ export async function runSearch(
       groupBySource: parsed.groupBySource,
       refreshed: parsed.refresh,
       scopedKb: parsed.kb,
-      query: parsed.query ?? undefined,
+      query,
       staleness,
       autoThresholdDecision,
       timing,
       explainEmptyDiagnostics,
+      gateVerdict,
     });
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
@@ -379,11 +436,12 @@ export async function runSearch(
       staleness,
       refreshed: parsed.refresh,
       scopedKb: parsed.kb,
-      query: parsed.query ?? undefined,
+      query,
       autoModeDecision,
       autoThresholdDecision,
       timing,
       explainEmptyDiagnostics,
+      gateVerdict,
     }));
   }
 
@@ -473,6 +531,8 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--group-by-source') { out.groupBySource = true; continue; }
     if (raw === '--timing') { out.timing = true; continue; }
     if (raw === '--no-cache') { out.noCache = true; continue; }
+    if (raw === '--gate') { out.gateOverride = 'on'; continue; }
+    if (raw === '--no-gate') { out.gateOverride = 'off'; continue; }
     if (raw === '--no-freshness') { out.freshness = false; continue; }
     if (raw === '--explain-empty') { out.explainEmpty = true; continue; }
     if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
@@ -497,6 +557,8 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
+    if (raw.startsWith('--task-context=')) { out.taskContext = raw.slice('--task-context='.length); continue; }
+    if (raw.startsWith('--task-context-file=')) { out.taskContextFile = raw.slice('--task-context-file='.length); continue; }
     if (raw.startsWith('--mode=')) {
       const v = raw.slice('--mode='.length);
       if (v !== 'dense' && v !== 'lexical' && v !== 'hybrid' && v !== 'auto') {
@@ -675,6 +737,7 @@ export interface DenseSearchJsonPayloadInput {
   timing: TimingPayload | null;
   /** Issue #328 — opt-in deep diagnostics for an empty result set. Ignored when results is non-empty. */
   explainEmptyDiagnostics?: ExplainEmptyDiagnostics | null;
+  gateVerdict?: RelevanceGateVerdict;
 }
 
 export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput): Record<string, unknown> {
@@ -708,6 +771,7 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
       kept: input.autoThresholdDecision.kept,
     };
   }
+  payload.gate_verdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
   if (input.timing) {
     payload.timing = compactTimingPayload(input.timing);
   }
@@ -798,6 +862,7 @@ export interface DenseSearchMarkdownOutputInput {
   timing: TimingPayload | null;
   /** Issue #328 — opt-in deep diagnostics block, rendered only when results is empty. */
   explainEmptyDiagnostics?: ExplainEmptyDiagnostics | null;
+  gateVerdict?: RelevanceGateVerdict;
 }
 
 export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutputInput): string {
@@ -834,10 +899,27 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
     // the same suggestion twice (issue #335).
     output += `${formatFreshnessFooter(input.staleness, input.refreshed)}\n`;
   }
+  const gateVerdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
+  if (gateVerdict.state !== 'bypassed') {
+    output += `${formatGateVerdictFooter(gateVerdict)}\n`;
+  }
   if (input.timing) {
     output += `${formatTimingFooter('Timing', input.timing)}\n`;
   }
   return output;
+}
+
+function defaultBypassedGateVerdict(count: number): RelevanceGateVerdict {
+  return {
+    schema_version: RELEVANCE_GATE_SCHEMA_VERSION,
+    state: 'bypassed',
+    low_confidence: false,
+    input_count: count,
+    output_count: count,
+    dropped: [],
+    judge: { status: 'not-run', reason: 'gate disabled' },
+    empty_verdict_enabled: false,
+  };
 }
 
 function reportFailure(failure: SearchFailure, format: SearchFormat): number {
@@ -1165,14 +1247,38 @@ async function runHybridSearch(
 
   // -- fuse ----------------------------------------------------------------
   const fusionStartedAt = nowMs();
-  const ranked = fuseHybridResults({
+  const fusion = fuseHybridResultsWithDiagnostics({
     denseResults,
     lexicalResults,
     k: parsed.k,
   });
+  let ranked = fusion.results;
   if (timing) {
     timing.fusion_ms = elapsedMs(fusionStartedAt);
     timing.total_ms = elapsedMs(totalStartedAt);
+  }
+
+  let gateVerdict: RelevanceGateVerdict;
+  try {
+    const gate = await applyRelevanceGate({
+      query,
+      taskContext: parsed.taskContext,
+      candidates: ranked,
+      denseDistanceById: fusion.denseDistanceById,
+      lexicalHitIds: fusion.lexicalHitIds,
+      gateOverride: parsed.gateOverride,
+    });
+    ranked = gate.results;
+    gateVerdict = gate.verdict;
+    emitRelevanceGateDecision({
+      process: 'cli',
+      query,
+      kbScope: parsed.kb ?? null,
+      searchMode: 'hybrid',
+      verdict: gateVerdict,
+    });
+  } catch (err) {
+    return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
   if (shouldUsePicker(parsed)) {
@@ -1191,6 +1297,7 @@ async function runHybridSearch(
         lexical: { fetched: lexicalResults.length, refreshed: lexicalResultsRow.refreshed, failed: lexicalResultsRow.failed },
       },
       rrf: { c: HYBRID_RRF_C, fetch_k: fetchK },
+      gate_verdict: gateVerdict,
       ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
@@ -1212,6 +1319,9 @@ async function runHybridSearch(
     process.stdout.write(
       `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`,
     );
+    if (gateVerdict.state !== 'bypassed') {
+      process.stdout.write(`${formatGateVerdictFooter(gateVerdict)}\n`);
+    }
     if (timing) {
       process.stdout.write(formatTimingFooter('Timing', timing));
       process.stdout.write('\n');
