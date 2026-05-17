@@ -59,6 +59,7 @@ import {
 import {
   applyRelevanceGate,
   emitRelevanceGateDecision,
+  formatGateDroppedList,
   formatGateVerdictFooter,
   type RelevanceGateOverride,
 } from './relevance-gate.js';
@@ -145,6 +146,8 @@ Output:
                         filter candidate counts, per-filter drops, scope,
                         index freshness, and the nearest non-matching
                         candidates. Has no effect when results are non-empty.
+  --explain             Include relevance-gate dropped-candidate details in
+                        markdown output. JSON always includes gate_verdict.
 
 Indexing:
   --refresh             Re-scan KB files; acquires the per-model write lock.
@@ -186,6 +189,7 @@ interface SearchArgs {
   noCache: boolean;
   freshness: boolean;
   explainEmpty: boolean;
+  explain: boolean;
   neighborContext?: NeighborContextOptions;
   gateOverride?: RelevanceGateOverride;
   taskContext?: string;
@@ -371,6 +375,7 @@ export async function runSearch(
       candidates: results,
       denseDistanceById,
       gateOverride: parsed.gateOverride,
+      process: 'cli',
     });
     results = gate.results;
     gateVerdict = gate.verdict;
@@ -380,6 +385,7 @@ export async function runSearch(
       kbScope: parsed.kb ?? null,
       searchMode: effectiveMode,
       verdict: gateVerdict,
+      observability: gate.observability,
     });
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -442,6 +448,7 @@ export async function runSearch(
       timing,
       explainEmptyDiagnostics,
       gateVerdict,
+      explain: parsed.explain,
     }));
   }
 
@@ -524,6 +531,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     noCache: false,
     freshness: true,
     explainEmpty: false,
+    explain: false,
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
@@ -535,6 +543,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--no-gate') { out.gateOverride = 'off'; continue; }
     if (raw === '--no-freshness') { out.freshness = false; continue; }
     if (raw === '--explain-empty') { out.explainEmpty = true; continue; }
+    if (raw === '--explain') { out.explain = true; continue; }
     if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
     if (raw.startsWith('--context-before=')) {
       out.neighborContext = {
@@ -863,6 +872,7 @@ export interface DenseSearchMarkdownOutputInput {
   /** Issue #328 — opt-in deep diagnostics block, rendered only when results is empty. */
   explainEmptyDiagnostics?: ExplainEmptyDiagnostics | null;
   gateVerdict?: RelevanceGateVerdict;
+  explain?: boolean;
 }
 
 export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutputInput): string {
@@ -902,6 +912,9 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
   const gateVerdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
   if (gateVerdict.state !== 'bypassed') {
     output += `${formatGateVerdictFooter(gateVerdict)}\n`;
+  }
+  if (input.explain) {
+    output += `${formatGateDroppedList(gateVerdict)}\n`;
   }
   if (input.timing) {
     output += `${formatTimingFooter('Timing', input.timing)}\n`;
@@ -1267,6 +1280,7 @@ async function runHybridSearch(
       denseDistanceById: fusion.denseDistanceById,
       lexicalHitIds: fusion.lexicalHitIds,
       gateOverride: parsed.gateOverride,
+      process: 'cli',
     });
     ranked = gate.results;
     gateVerdict = gate.verdict;
@@ -1276,6 +1290,7 @@ async function runHybridSearch(
       kbScope: parsed.kb ?? null,
       searchMode: 'hybrid',
       verdict: gateVerdict,
+      observability: gate.observability,
     });
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -1321,6 +1336,9 @@ async function runHybridSearch(
     );
     if (gateVerdict.state !== 'bypassed') {
       process.stdout.write(`${formatGateVerdictFooter(gateVerdict)}\n`);
+    }
+    if (parsed.explain) {
+      process.stdout.write(`${formatGateDroppedList(gateVerdict)}\n`);
     }
     if (timing) {
       process.stdout.write(formatTimingFooter('Timing', timing));

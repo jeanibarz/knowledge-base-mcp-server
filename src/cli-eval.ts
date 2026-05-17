@@ -463,6 +463,17 @@ export function toJsonReport(report: ReturnType<typeof summarizeRetrievalEval>):
       requested_mode: result.requestedMode,
       effective_mode: result.effectiveMode,
       ...(result.autoMode !== undefined ? { auto_mode: result.autoMode } : {}),
+      ...(result.expectedGateVerdict !== undefined ? {
+        expected_gate_verdict: {
+          state: result.expectedGateVerdict.state,
+          ...(result.expectedGateVerdict.provenance !== undefined
+            ? { provenance: result.expectedGateVerdict.provenance }
+            : {}),
+          ...(result.expectedGateVerdict.verification !== undefined
+            ? { verification: result.expectedGateVerdict.verification }
+            : {}),
+        },
+      } : {}),
       passed: result.passed,
       failures: result.failures,
       warnings: result.warnings,

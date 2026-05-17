@@ -33,6 +33,8 @@ export interface CanonicalLogEvent {
   ts: string;
   request_id: string;
   process: CanonicalProcess;
+  event?: string;
+  level?: 'warn';
   tool?: string;
   cmd?: string;
   model_id?: string;
@@ -51,6 +53,8 @@ export interface CanonicalLogEvent {
   format_ms?: number;
   cache?: CanonicalCacheStatus;
   error?: CanonicalError;
+  recovery_hint?: string;
+  gate?: Record<string, unknown>;
 }
 
 export type CanonicalLogInput = Omit<
@@ -68,6 +72,8 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'ts',
   'request_id',
   'process',
+  'event',
+  'level',
   'tool',
   'cmd',
   'model_id',
@@ -86,6 +92,8 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'format_ms',
   'cache',
   'error',
+  'recovery_hint',
+  'gate',
 ];
 
 export function createCanonicalRequestId(): string {
@@ -110,6 +118,8 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   };
 
   assignIfDefined(event, 'tool', input.tool);
+  assignIfDefined(event, 'event', input.event);
+  assignIfDefined(event, 'level', input.level);
   assignIfDefined(event, 'cmd', input.cmd);
   assignIfDefined(event, 'model_id', input.model_id);
   assignIfDefined(event, 'kb_scope', input.kb_scope);
@@ -126,6 +136,8 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   assignIfDefined(event, 'format_ms', roundNonNegative(input.format_ms));
   assignIfDefined(event, 'cache', input.cache);
   assignIfDefined(event, 'error', input.error);
+  assignIfDefined(event, 'recovery_hint', input.recovery_hint);
+  assignIfDefined(event, 'gate', input.gate);
 
   return event;
 }

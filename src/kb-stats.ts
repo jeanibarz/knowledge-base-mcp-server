@@ -34,6 +34,10 @@ import {
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
 import { queryEmbeddingCache, type QueryCacheStats } from './query-cache.js';
+import {
+  relevanceGateMetrics,
+  type RelevanceGateMetricsSnapshot,
+} from './relevance-gate-metrics.js';
 
 export interface KbStatsRow {
   file_count: number;
@@ -78,6 +82,7 @@ export interface KbStatsPayload {
    */
   provider_calls: Record<string, ProviderCallSnapshot>;
   query_cache: QueryCacheStats;
+  relevance_gate: RelevanceGateMetricsSnapshot;
 }
 
 export interface ComputeKbStatsOptions {
@@ -195,6 +200,7 @@ export async function computeKbStats(
     },
     provider_calls: metricsSource.snapshot(),
     query_cache: await queryEmbeddingCache.stats(),
+    relevance_gate: relevanceGateMetrics.snapshot(),
   };
 }
 

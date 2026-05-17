@@ -98,9 +98,16 @@ export interface RetrievalEvalCase {
   requiredSources: string[];
   forbiddenSources: string[];
   expectedMetadata: ExpectedMetadataRule[];
+  expectedGateVerdict?: ExpectedGateVerdict;
   relevanceJudgments?: RelevanceJudgment[];
   maxDuplicateGroups?: number;
   stalePolicy: StalePolicy;
+}
+
+export interface ExpectedGateVerdict {
+  state: 'bypassed' | 'empty-index' | 'injected' | 'no-relevant-context';
+  provenance?: 'human-labeled' | 'judge-suggested';
+  verification?: 'verified' | 'unverified';
 }
 
 export interface RetrievalEvalCaseInput {
@@ -116,6 +123,11 @@ export interface RetrievalEvalCaseInput {
   relevant_sources?: Array<string | { source?: unknown; relevance?: unknown }>;
   judgments?: Record<string, unknown> | Array<string | { source?: unknown; relevance?: unknown }>;
   expected_metadata?: Record<string, unknown> | Array<Record<string, unknown>>;
+  expected_gate_verdict?: string | {
+    state?: unknown;
+    provenance?: unknown;
+    verification?: unknown;
+  };
   max_duplicate_groups?: number;
   stale_policy?: StalePolicy | { expect?: StalePolicy };
 }
@@ -134,6 +146,7 @@ export interface RetrievalEvalCaseResult {
   effectiveMode: EffectiveSearchMode;
   autoMode?: AutoSearchModeDecision;
   gate: boolean;
+  expectedGateVerdict?: ExpectedGateVerdict;
   passed: boolean;
   failures: string[];
   warnings: string[];
@@ -149,6 +162,7 @@ export interface RetrievalEvalReport {
   passed: number;
   failed: number;
   gateFailed: number;
+  expectedGateVerdictWarnings: number;
   diversityMetrics: RetrievalEvalAggregateDiversityMetrics;
   rankedMetrics?: RetrievalEvalAggregateRankedMetrics;
 }
@@ -164,6 +178,7 @@ export interface RetrievalEvalSearchResult {
   requestedMode: SearchMode;
   effectiveMode: EffectiveSearchMode;
   autoMode?: AutoSearchModeDecision;
+  gateVerdictState?: ExpectedGateVerdict['state'];
 }
 
 export interface RetrievalEvalScaffoldOptions {
@@ -331,6 +346,23 @@ export function evaluateRetrievalCase(
   }
 
   const gate = fixtureCase.gate ?? fixtureGate;
+  if (fixtureCase.expectedGateVerdict !== undefined) {
+    if (search?.gateVerdictState === undefined) {
+      warnings.push(
+        `expected gate verdict ${fixtureCase.expectedGateVerdict.state} was not checked; retrieval path did not report a gate verdict`,
+      );
+    } else if (search.gateVerdictState !== fixtureCase.expectedGateVerdict.state) {
+      warnings.push(
+        `expected gate verdict ${fixtureCase.expectedGateVerdict.state}, got ${search.gateVerdictState}`,
+      );
+    }
+    if (
+      fixtureCase.expectedGateVerdict.provenance === 'judge-suggested' &&
+      fixtureCase.expectedGateVerdict.verification === 'unverified'
+    ) {
+      warnings.push('expected gate verdict is judge-suggested and unverified');
+    }
+  }
   const rankedMetrics = computeRankedMetrics(fixtureCase, results);
   const diversityMetrics = computeDiversityMetrics(fixtureCase, results);
   return {
@@ -341,6 +373,9 @@ export function evaluateRetrievalCase(
     effectiveMode: search?.effectiveMode ?? 'dense',
     ...(search?.autoMode !== undefined ? { autoMode: search.autoMode } : {}),
     gate,
+    ...(fixtureCase.expectedGateVerdict !== undefined
+      ? { expectedGateVerdict: fixtureCase.expectedGateVerdict }
+      : {}),
     passed: failures.length === 0,
     failures,
     warnings,
@@ -361,6 +396,10 @@ export function summarizeRetrievalEval(results: RetrievalEvalCaseResult[]): Retr
     passed: results.length - failed,
     failed,
     gateFailed: results.filter((r) => r.gate && !r.passed).length,
+    expectedGateVerdictWarnings: results.filter((r) =>
+      r.expectedGateVerdict !== undefined &&
+      r.warnings.some((warning) => warning.startsWith('expected gate verdict')),
+    ).length,
     diversityMetrics,
     ...(rankedMetrics !== undefined ? { rankedMetrics } : {}),
   };
@@ -382,8 +421,11 @@ export function formatRetrievalEvalMarkdown(report: RetrievalEvalReport): string
       ? ''
       : `, ranked: ${formatRankedMetrics(result.rankedMetrics)}`;
     const diversity = `, diversity: ${formatDiversityMetrics(result.diversityMetrics)}`;
+    const expectedGate = result.expectedGateVerdict === undefined
+      ? ''
+      : `, expected gate: ${result.expectedGateVerdict.state}`;
     lines.push(
-      `- ${status} ${result.name} (${scope}, mode: ${mode}, ${result.resultCount} result(s), duplicate groups: ${result.duplicateGroups}${ranked}${diversity})`,
+      `- ${status} ${result.name} (${scope}, mode: ${mode}, ${result.resultCount} result(s), duplicate groups: ${result.duplicateGroups}${expectedGate}${ranked}${diversity})`,
     );
     for (const failure of result.failures) {
       lines.push(`  - ${failure}`);
@@ -394,7 +436,7 @@ export function formatRetrievalEvalMarkdown(report: RetrievalEvalReport): string
   }
   lines.push('');
   lines.push(
-    `Summary: ${report.passed}/${report.total} passed; ${report.failed} failed; ${report.gateFailed} gate failure(s).`,
+    `Summary: ${report.passed}/${report.total} passed; ${report.failed} failed; ${report.gateFailed} gate failure(s); ${report.expectedGateVerdictWarnings} expected gate warning(s).`,
   );
   if (report.rankedMetrics !== undefined) {
     lines.push(`Ranked metrics: ${formatAggregateRankedMetrics(report.rankedMetrics)}.`);
@@ -414,6 +456,7 @@ function normalizeCase(raw: unknown, caseNumber: number): RetrievalEvalCase {
   const gate = readOptionalBoolean(raw, 'gate');
   const maxDuplicateGroups = readOptionalNonNegativeInteger(raw, 'max_duplicate_groups');
   const relevanceJudgments = normalizeRelevanceJudgments(raw, caseNumber);
+  const expectedGateVerdict = normalizeExpectedGateVerdict(raw.expected_gate_verdict, caseNumber);
   return {
     name: readOptionalString(raw, 'name') ?? `case ${caseNumber}`,
     query,
@@ -425,10 +468,65 @@ function normalizeCase(raw: unknown, caseNumber: number): RetrievalEvalCase {
     requiredSources: readOptionalStringArray(raw, 'required_sources') ?? [],
     forbiddenSources: readOptionalStringArray(raw, 'forbidden_sources') ?? [],
     expectedMetadata: normalizeExpectedMetadata(raw.expected_metadata, caseNumber),
+    ...(expectedGateVerdict !== undefined ? { expectedGateVerdict } : {}),
     ...(relevanceJudgments.length > 0 ? { relevanceJudgments } : {}),
     ...(maxDuplicateGroups !== undefined ? { maxDuplicateGroups } : {}),
     stalePolicy: normalizeStalePolicy(raw.stale_policy, caseNumber),
   };
+}
+
+function normalizeExpectedGateVerdict(
+  raw: unknown,
+  caseNumber: number,
+): ExpectedGateVerdict | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === 'string') {
+    return { state: normalizeGateVerdictState(raw, `case ${caseNumber} expected_gate_verdict`) };
+  }
+  if (!isRecord(raw)) {
+    throw new Error(`case ${caseNumber} expected_gate_verdict must be a string or object`);
+  }
+  const state = normalizeGateVerdictState(raw.state, `case ${caseNumber} expected_gate_verdict.state`);
+  const provenance = normalizeGateVerdictProvenance(raw.provenance, caseNumber);
+  const verification = normalizeGateVerdictVerification(raw.verification, caseNumber);
+  return {
+    state,
+    ...(provenance !== undefined ? { provenance } : {}),
+    ...(verification !== undefined ? { verification } : {}),
+  };
+}
+
+function normalizeGateVerdictState(
+  raw: unknown,
+  context: string,
+): ExpectedGateVerdict['state'] {
+  if (
+    raw === 'bypassed' ||
+    raw === 'empty-index' ||
+    raw === 'injected' ||
+    raw === 'no-relevant-context'
+  ) {
+    return raw;
+  }
+  throw new Error(`${context} must be "bypassed", "empty-index", "injected", or "no-relevant-context"`);
+}
+
+function normalizeGateVerdictProvenance(
+  raw: unknown,
+  caseNumber: number,
+): ExpectedGateVerdict['provenance'] | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === 'human-labeled' || raw === 'judge-suggested') return raw;
+  throw new Error(`case ${caseNumber} expected_gate_verdict.provenance must be "human-labeled" or "judge-suggested"`);
+}
+
+function normalizeGateVerdictVerification(
+  raw: unknown,
+  caseNumber: number,
+): ExpectedGateVerdict['verification'] | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === 'verified' || raw === 'unverified') return raw;
+  throw new Error(`case ${caseNumber} expected_gate_verdict.verification must be "verified" or "unverified"`);
 }
 
 async function retrieveDense(

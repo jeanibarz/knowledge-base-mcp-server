@@ -69,6 +69,23 @@ function payload(): KbStatsPayload {
       l1_size: 0,
       disk_size_bytes: 0,
     },
+    relevance_gate: {
+      gated_queries: 0,
+      verdict_injected: 0,
+      verdict_no_relevant_context: 0,
+      verdict_empty_index: 0,
+      low_confidence_rate: 0,
+      drop_rate_A1: 0,
+      drop_rate_A2: 0,
+      drop_rate_B: 0,
+      judge_degrade_rate: 0,
+      judge_window: {
+        size: 0,
+        degraded: 0,
+        rate: 0,
+        warn_threshold: 0.1,
+      },
+    },
   };
 }
 
@@ -150,6 +167,8 @@ describe('kb stats CLI', () => {
     expect(out).toContain('- Provider: ollama');
     expect(out).toContain('- Model: nomic-embed-text:latest');
     expect(out).toContain('- Index path: `/tmp/kb-index`');
+    expect(out).toContain('## Relevance Gate');
+    expect(out).toContain('- Gated queries: 0');
   });
 
   it('returns exit 2 for argv errors', async () => {
