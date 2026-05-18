@@ -245,6 +245,9 @@ The trade-off: kill-loss for LLM work is bounded to the in-progress KB (worst ca
 
 Final environment surface — three vars, not five:
 
+Operator defaults and validation commands are summarized in
+[`docs/feature-flags.md`](../feature-flags.md#contextual-retrieval-at-ingest).
+
 | env var | default | effect |
 |---|---|---|
 | `KB_CONTEXTUAL_RETRIEVAL` | `off` | master switch; when `off`, the new code paths are no-ops. |
