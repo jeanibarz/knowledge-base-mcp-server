@@ -383,8 +383,14 @@ Source and test anchors: `src/cli-remember.ts:381-400`,
 Invocation:
 
 ```bash
-kb capture --kb=<name> --append=<path> [--allow-fail] [--max-bytes=<N>] -- <cmd> [args...]
+kb capture --kb=<name> --append=<path> [--allow-fail] [--max-bytes=<N>] [--no-redact] -- <cmd> [args...]
 ```
+
+Captured stdout and the displayed `$ <cmd>` line are redacted by default before
+they are appended. Common credential surfaces include bearer/basic
+Authorization headers, cookie headers, dotenv-style secret variables,
+credential-bearing URLs, JSON secret fields, and common provider token shapes.
+Pass `--no-redact` only when raw output must be preserved.
 
 Successful captures always print JSON:
 
@@ -396,7 +402,12 @@ Successful captures always print JSON:
   "truncated": false,
   "bytes_elided": 0,
   "exit_code": 0,
-  "refreshed": false
+  "refreshed": false,
+  "redaction_summary": {
+    "enabled": true,
+    "total": 0,
+    "by_type": {}
+  }
 }
 ```
 
@@ -410,6 +421,13 @@ Stable success fields:
 - `exit_code`: captured command exit code. This can be non-zero only when
   `--allow-fail` is used.
 - `refreshed`: boolean matching whether `--refresh` was requested and completed.
+- `redaction_summary`: object describing persisted-content redaction.
+  `enabled` is `false` only when `--no-redact` is passed; `total` is the number
+  of replacements applied across captured stdout and the displayed command
+  line; `by_type` counts replacements by stable detector name. Stable detector
+  names are `credential_url`, `authorization_header`, `cookie_header`,
+  `json_secret`, `dotenv_secret`, `key_value_secret`, `bearer_token`, and
+  `provider_token`.
 
 Stdout/stderr and exit codes:
 
@@ -421,8 +439,7 @@ Stdout/stderr and exit codes:
 - The captured child command inherits stderr, so child stderr is not part of the
   JSON contract and can appear beside `kb capture` diagnostics.
 
-Source and test anchors: `src/cli-capture.ts:204-213`,
-`src/cli-capture.ts:89-125`, `src/cli.test.ts:1063-1247`.
+Source and test anchors: `src/cli-capture.ts`, `src/cli.test.ts`.
 
 ## `kb where`
 
