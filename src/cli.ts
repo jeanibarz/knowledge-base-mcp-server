@@ -45,6 +45,44 @@ interface Subcommand {
   handler: (rest: string[]) => Promise<number>;
 }
 
+interface HelpManifestOption {
+  flags: string[];
+  value: string | null;
+  description: string;
+}
+
+interface HelpManifestCommand {
+  name: string;
+  summary: string;
+  usage: string[];
+  options: HelpManifestOption[];
+  stability: 'stable';
+}
+
+interface HelpManifestDefinition {
+  name: string;
+  description: string;
+}
+
+interface HelpManifestExitCode {
+  code: number;
+  description: string;
+}
+
+interface HelpArgs {
+  command?: string;
+  format: 'md' | 'json';
+}
+
+const HELP_SCHEMA_VERSION = 'kb.help.v1';
+const NON_OPTION_HELP_SECTIONS = new Set([
+  'Usage:',
+  'Examples:',
+  'Notes:',
+  'Environment:',
+  'Exit codes:',
+]);
+
 const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'list',         summary: 'List available knowledge bases.',                                         help: LIST_HELP,         handler: runList },
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },
@@ -132,16 +170,35 @@ export async function main(argv: string[]): Promise<number> {
 
   // `kb help` and `kb help <command>` mirror `kb --help` and `kb <command> --help`.
   if (sub === 'help') {
-    if (rest.length === 0 || wantsHelp(rest)) {
+    if (wantsHelp(rest)) {
       process.stdout.write(HELP);
       return 0;
     }
-    const target = SUBCOMMANDS.find((s) => s.name === rest[0]);
-    if (!target) {
-      process.stderr.write(`kb help: unknown command '${rest[0]}'\n`);
+    let helpArgs: HelpArgs;
+    try {
+      helpArgs = parseHelpArgs(rest);
+    } catch (err) {
+      process.stderr.write(`kb help: ${(err as Error).message}\n`);
       return 2;
     }
-    process.stdout.write(target.help);
+    if (helpArgs.command === undefined) {
+      if (helpArgs.format === 'json') writeJson(buildTopLevelHelpManifest());
+      else process.stdout.write(HELP);
+      return 0;
+    }
+    const target = SUBCOMMANDS.find((s) => s.name === helpArgs.command);
+    if (!target) {
+      process.stderr.write(`kb help: unknown command '${helpArgs.command}'\n`);
+      return 2;
+    }
+    if (helpArgs.format === 'json') {
+      writeJson({
+        schema_version: HELP_SCHEMA_VERSION,
+        command: buildCommandHelpManifest(target),
+      });
+    } else {
+      process.stdout.write(target.help);
+    }
     return 0;
   }
 
@@ -162,6 +219,246 @@ export async function main(argv: string[]): Promise<number> {
       ? () => runSearchMaybeViaDaemon(rest)
       : () => target.handler(rest),
   );
+}
+
+function parseHelpArgs(rest: readonly string[]): HelpArgs {
+  const out: HelpArgs = { format: 'md' };
+  for (const raw of rest) {
+    if (raw === '--format=json') {
+      out.format = 'json';
+      continue;
+    }
+    if (raw === '--format=md') {
+      out.format = 'md';
+      continue;
+    }
+    if (raw.startsWith('--format=')) {
+      throw new Error(`invalid --format: ${raw}`);
+    }
+    if (raw.startsWith('--')) {
+      throw new Error(`unknown flag: ${raw}`);
+    }
+    if (out.command === undefined) {
+      out.command = raw;
+    }
+  }
+  return out;
+}
+
+function writeJson(payload: unknown): void {
+  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function buildTopLevelHelpManifest() {
+  return {
+    schema_version: HELP_SCHEMA_VERSION,
+    command: 'kb',
+    usage: extractUsageLines(HELP),
+    commands: SUBCOMMANDS.map(buildCommandHelpManifest),
+    environment: extractDefinitionList(HELP, 'Environment:'),
+    exit_codes: extractExitCodes(HELP),
+    stability: 'stable' as const,
+  };
+}
+
+function buildCommandHelpManifest(command: Subcommand): HelpManifestCommand {
+  return {
+    name: command.name,
+    summary: command.summary,
+    usage: extractUsageLines(command.help),
+    options: extractOptions(command.help),
+    stability: 'stable',
+  };
+}
+
+function extractUsageLines(help: string): string[] {
+  const lines = help.split('\n');
+  const usageIndex = lines.findIndex((line) => line.trim() === 'Usage:');
+  if (usageIndex === -1) return [];
+  const usage: string[] = [];
+  for (let i = usageIndex + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') {
+      if (usage.length === 0) continue;
+      const nextContent = lines.slice(i + 1).find((nextLine) => nextLine.trim() !== '');
+      if (nextContent !== undefined && nextContent.startsWith('  ')) continue;
+      break;
+    }
+    if (!line.startsWith('  ')) break;
+    const trimmed = line.trim();
+    if (trimmed.startsWith('#')) {
+      continue;
+    }
+    usage.push(trimmed);
+  }
+  return usage;
+}
+
+function extractOptions(help: string): HelpManifestOption[] {
+  const options: HelpManifestOption[] = [];
+  let current: HelpManifestOption | null = null;
+  let inOptionSection = false;
+  for (const line of help.split('\n')) {
+    if (!line.startsWith(' ') && line.trim().endsWith(':')) {
+      inOptionSection = isOptionMetadataSection(line.trim());
+      current = null;
+      continue;
+    }
+    if (!inOptionSection) {
+      continue;
+    }
+    const optionLine = parseOptionLine(line);
+    if (optionLine !== null) {
+      current = optionLine;
+      options.push(optionLine);
+      continue;
+    }
+    if (current !== null && isContinuationLine(line)) {
+      current.description = appendDescription(current.description, line.trim());
+    } else if (line.trim() === '') {
+      current = null;
+    }
+  }
+  addUsageOptions(options, extractUsageLines(help));
+  return options;
+}
+
+function isOptionMetadataSection(heading: string): boolean {
+  return !NON_OPTION_HELP_SECTIONS.has(heading);
+}
+
+function parseOptionLine(line: string): HelpManifestOption | null {
+  if (!line.startsWith('  ')) return null;
+  const trimmed = line.trimStart();
+  if (!trimmed.startsWith('-')) return null;
+  const match = /^(\S+(?:,\s+\S+)*)\s{2,}(.*)$/.exec(trimmed);
+  const flagSpec = match?.[1] ?? trimmed;
+  const parsedFlags = parseFlagSpec(flagSpec);
+  if (parsedFlags.flags.length === 0) return null;
+  return {
+    flags: parsedFlags.flags,
+    value: parsedFlags.value,
+    description: match?.[2]?.trim() ?? '',
+  };
+}
+
+function parseFlagSpec(flagSpec: string): { flags: string[]; value: string | null } {
+  const flags: string[] = [];
+  let value: string | null = null;
+  for (const rawPart of flagSpec.split(',')) {
+    const part = rawPart.trim();
+    if (part === '') continue;
+    const eqIndex = part.indexOf('=');
+    const flag = eqIndex === -1 ? part : part.slice(0, eqIndex);
+    if (!isHelpFlagToken(flag)) continue;
+    flags.push(flag);
+    if (eqIndex !== -1 && value === null) value = part.slice(eqIndex + 1);
+  }
+  return { flags, value };
+}
+
+function addUsageOptions(options: HelpManifestOption[], usageLines: string[]): void {
+  const seen = new Set(options.flatMap((option) => option.flags));
+  for (const usageLine of usageLines) {
+    for (const flagSpec of usageFlagSpecs(usageLine)) {
+      const parsed = parseFlagSpec(flagSpec);
+      const newFlags = parsed.flags.filter((flag) => !seen.has(flag));
+      if (newFlags.length === 0) continue;
+      for (const flag of newFlags) seen.add(flag);
+      options.push({
+        flags: newFlags,
+        value: parsed.value,
+        description: '',
+      });
+    }
+  }
+}
+
+function usageFlagSpecs(usageLine: string): string[] {
+  const specs: string[] = [];
+  const matches = usageLine.match(/--[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\s\]]+)?/g) ?? [];
+  for (const match of matches) {
+    if (match.includes('|--')) {
+      specs.push(...match.split('|').filter((part) => part.startsWith('--')));
+    } else {
+      specs.push(match);
+    }
+  }
+  return specs;
+}
+
+function isHelpFlagToken(value: string): boolean {
+  return value === '--' || /^--?[A-Za-z0-9][A-Za-z0-9-]*$/.test(value);
+}
+
+function extractDefinitionList(help: string, heading: string): HelpManifestDefinition[] {
+  const lines = help.split('\n');
+  const headingIndex = lines.findIndex((line) => line.trim() === heading);
+  if (headingIndex === -1) return [];
+  const definitions: HelpManifestDefinition[] = [];
+  let current: HelpManifestDefinition[] = [];
+  for (const line of lines.slice(headingIndex + 1)) {
+    if (line.trim() === '') {
+      if (definitions.length > 0) break;
+      continue;
+    }
+    if (!line.startsWith('  ')) break;
+    if (isDefinitionContinuationLine(line) && current.length > 0) {
+      for (const definition of current) {
+        definition.description = appendDescription(definition.description, line.trim());
+      }
+      continue;
+    }
+    const match = /^ {2}(.+?)\s{2,}(.*)$/.exec(line);
+    if (match) {
+      current = pushDefinitions(definitions, match[1], match[2].trim());
+      continue;
+    }
+    current = pushDefinitions(definitions, line.trim(), '');
+  }
+  return definitions;
+}
+
+function pushDefinitions(
+  definitions: HelpManifestDefinition[],
+  namesText: string,
+  description: string,
+): HelpManifestDefinition[] {
+  const current = namesText.split(',').map((name) => ({
+    name: name.trim(),
+    description,
+  })).filter((definition) => definition.name !== '');
+  definitions.push(...current);
+  return current;
+}
+
+function extractExitCodes(help: string): HelpManifestExitCode[] {
+  const lines = help.split('\n');
+  const headingIndex = lines.findIndex((line) => line.trim() === 'Exit codes:');
+  if (headingIndex === -1) return [];
+  const exitCodes: HelpManifestExitCode[] = [];
+  for (const line of lines.slice(headingIndex + 1)) {
+    if (line.trim() === '') {
+      if (exitCodes.length > 0) break;
+      continue;
+    }
+    const match = /^ {2}(\d+)\s{2,}(.*)$/.exec(line);
+    if (!match) break;
+    exitCodes.push({ code: Number(match[1]), description: match[2].trim() });
+  }
+  return exitCodes;
+}
+
+function isContinuationLine(line: string): boolean {
+  return line.startsWith('                        ') && line.trim() !== '';
+}
+
+function isDefinitionContinuationLine(line: string): boolean {
+  return /^ {4,}\S/.test(line);
+}
+
+function appendDescription(description: string, continuation: string): string {
+  return description === '' ? continuation : `${description} ${continuation}`;
 }
 
 async function runSubcommandWithCanonicalLog(

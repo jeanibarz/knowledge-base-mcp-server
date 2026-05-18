@@ -65,6 +65,17 @@
 
 ## Search
 
+### TS-CLI-383: Machine-Readable Help Manifest
+**Requirement:** FR-CLI-383
+
+**Test Cases:**
+- `kb help --format=json` shall emit parseable JSON with schema version `kb.help.v1`, top-level usage, environment variables, exit codes, and every registered command.
+- `kb help <command> --format=json` shall emit parseable JSON for the selected command with name, summary, usage, options, and stability metadata.
+- `kb help <command> --format=json` shall preserve wrapped usage blocks without parsing example continuations as option definitions.
+- `kb help --format=<unsupported>` and unknown `kb help` flags shall exit 2 with stderr diagnostics and empty stdout.
+- `kb help <command> --format=json` shall preserve the existing unknown-command stderr error and exit code when the command is not registered.
+- `kb help` without `--format=json` shall preserve the existing human-readable help output.
+
 ### TS-ASK-382: Cited Ask Transcript Records
 **Requirement:** FR-ASK-382
 

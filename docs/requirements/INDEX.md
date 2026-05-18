@@ -102,6 +102,22 @@
 
 ## Search
 
+### FR-CLI-383: Machine-Readable Help Manifest
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall expose command and option metadata through `kb help --format=json` without requiring callers to parse prose help output.
+**Rationale:** Contributor tooling, completions, and agent workflows need a stable command manifest that stays aligned with the CLI registry and per-command help text.
+
+**Acceptance Criteria:**
+- [x] Given `kb help --format=json`, when the command runs, then stdout is valid JSON with a stable schema version, top-level usage, environment variables, exit codes, and every registered command.
+- [x] Given `kb help <command> --format=json`, when the command exists, then stdout is valid JSON for that command with its name, summary, usage lines, option metadata, and stability tag.
+- [x] Given `kb help <command> --format=json`, when the command does not exist, then the CLI preserves the existing unknown-command stderr error and exit code.
+- [x] Given `kb help` without `--format=json`, when the command runs, then existing markdown/plain help output remains unchanged.
+
+**Linked Tests:** TS-CLI-383
+**Dependencies:** RFC012
+
 ### FR-ASK-382: Cited Ask Transcript Records
 **Status:** Implemented
 **Priority:** Medium

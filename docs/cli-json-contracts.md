@@ -14,6 +14,89 @@ Contract policy:
   command section says otherwise. Human diagnostics, warnings, logger output,
   and argv/runtime errors generally go to stderr.
 
+## `kb help`
+
+Invocation:
+
+```bash
+kb help --format=json
+kb help <command> --format=json
+```
+
+Top-level success envelope:
+
+```json
+{
+  "schema_version": "kb.help.v1",
+  "command": "kb",
+  "usage": ["kb <command> [options]"],
+  "commands": [
+    {
+      "name": "search",
+      "summary": "Semantic search across one or all knowledge bases.",
+      "usage": ["kb search <query> [options]"],
+      "options": [
+        {
+          "flags": ["--format"],
+          "value": "md|json|vimgrep",
+          "description": "Output format."
+        }
+      ],
+      "stability": "stable"
+    }
+  ],
+  "environment": [
+    {
+      "name": "KNOWLEDGE_BASES_ROOT_DIR",
+      "description": "Root directory containing one folder per KB."
+    }
+  ],
+  "exit_codes": [
+    { "code": 0, "description": "success (results found or empty)" }
+  ],
+  "stability": "stable"
+}
+```
+
+Command-specific success envelope:
+
+```json
+{
+  "schema_version": "kb.help.v1",
+  "command": {
+    "name": "search",
+    "summary": "Semantic search across one or all knowledge bases.",
+    "usage": ["kb search <query> [options]"],
+    "options": [],
+    "stability": "stable"
+  }
+}
+```
+
+Stable fields:
+
+- `schema_version`: currently `kb.help.v1`.
+- Top-level `command`: literal `kb`.
+- Top-level `usage`: array of usage lines from the top-level help block.
+- Top-level `commands`: one object per registered command, in CLI help order.
+- Command `name`, `summary`, `usage`, `options`, and `stability`.
+- Option `flags`: array of flag names without value placeholders, such as
+  `--format` and `-h`.
+- Option `value`: string value placeholder when the help text declares one,
+  otherwise `null`.
+- Option `description`: prose description from the command help.
+- Top-level `environment` and `exit_codes`: metadata from the top-level help
+  block.
+- `stability`: currently `stable`; consumers should feature-detect fields and
+  check `schema_version` before assuming compatibility.
+
+Stdout/stderr and exit codes:
+
+- Success JSON is stdout with exit `0`.
+- Unknown command handling matches prose help: stderr diagnostic, empty stdout,
+  exit `2`.
+- `kb help` without `--format=json` keeps the existing human-readable output.
+
 ## `kb search`
 
 Invocation:
