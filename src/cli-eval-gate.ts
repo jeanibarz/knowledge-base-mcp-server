@@ -46,31 +46,49 @@ import {
   type GraderCalibrationFixture,
   type GraderVerdict,
 } from './relevance-gate-eval.js';
+import {
+  DEFAULT_FLOOR_SWEEP_SPEC,
+  formatM1ReportMarkdown,
+  parseFloorSweepSpec,
+  runM1,
+  toM1JsonReport,
+  type M1RunOptions,
+} from './relevance-gate-m1.js';
 
-export const EVAL_GATE_HELP = `kb eval-gate — RFC 018 M0 relevance-gate validation harness
+export const EVAL_GATE_HELP = `kb eval-gate — RFC 018 relevance-gate validation + M1 canary harness
 
 Usage:
   kb eval-gate <fixture.yml|json> [options]
 
-Runs the RFC 018 M0 "validate before build" check: each query is answered
-twice — once with the raw top-k, once with a gate-simulated (threshold
-surgery) candidate set — and the answers are graded for downstream quality.
-The report carries the pre-registered directional pass criterion and the
-three pre-registered numbers (empty-verdict fire rate; per-chunk-drop
+Default (M0) — runs the RFC 018 M0 "validate before build" check: each query
+is answered twice — once with the raw top-k, once with a gate-simulated
+(threshold surgery) candidate set — and the answers are graded for downstream
+quality. The report carries the pre-registered directional pass criterion and
+the three pre-registered numbers (empty-verdict fire rate; per-chunk-drop
 contribution isolated from the empty verdict; judge false-empty rate).
 
-With a reachable LLM endpoint the run is "live"; otherwise (or with
+With a reachable LLM endpoint the M0 run is "live"; otherwise (or with
 --dry-run) it falls back to "simulation" — the offline consuming-agent
 causal model — so the harness always produces a report.
 
+--m1 — runs the RFC 018 M1 canary against the REAL gate (KB_RELEVANCE_GATE=on,
+Stage B LLM judge live): downstream answer quality, recall on known-good
+fixtures, the position-swap probe (RFC §5), a KB_GATE_SCORE_FLOOR sweep, the
+BM25-veto calibration, and a go/no-go recommendation. --m1 requires a
+reachable endpoint; it never falls back to simulation.
+
 Options:
+  --m1                  Run the M1 canary (real gate) instead of M0.
+  --floor-sweep=lo:hi:step  M1 KB_GATE_SCORE_FLOOR sweep range (default ${DEFAULT_FLOOR_SWEEP_SPEC}).
+  --score-floor=<n>     M1 canary A1 floor (default: the fixture gate_sim value).
   --calibration=<path>  Grader-calibration fixture; its grader/human
                         agreement is pre-registered as an admissibility
-                        threshold (live mode only).
+                        threshold (live / M1 mode only).
   --endpoint=<url>      OpenAI-compatible chat endpoint for the consuming
-                        agent and the grader. Falls back to KB_LLM_ENDPOINT.
+                        agent, the grader, and the M1 Stage B judge. Falls
+                        back to KB_LLM_ENDPOINT.
   --model=<id>          Model id passed to the endpoint.
-  --dry-run             Skip the LLM; use the offline causal model.
+  --dry-run             Skip the LLM; use the offline causal model (M0 only).
   --format=md|json      Output format (default: md).
   --out=<path>          Also write the report to this file.
   --help, -h            Show this help.
@@ -82,18 +100,33 @@ interface EvalGateArgs {
   endpoint?: string;
   model?: string;
   dryRun: boolean;
+  m1: boolean;
+  floorSweepSpec?: string;
+  scoreFloor?: number;
   format: 'md' | 'json';
   outPath?: string;
 }
 
 export function parseEvalGateArgs(rest: string[]): EvalGateArgs {
-  const out: EvalGateArgs = { fixturePath: null, dryRun: false, format: 'md' };
+  const out: EvalGateArgs = { fixturePath: null, dryRun: false, m1: false, format: 'md' };
   for (const raw of rest) {
     if (raw === '--dry-run') { out.dryRun = true; continue; }
+    if (raw === '--m1') { out.m1 = true; continue; }
     if (raw.startsWith('--calibration=')) { out.calibrationPath = requireValue(raw, '--calibration='); continue; }
     if (raw.startsWith('--endpoint=')) { out.endpoint = requireValue(raw, '--endpoint='); continue; }
     if (raw.startsWith('--model=')) { out.model = requireValue(raw, '--model='); continue; }
     if (raw.startsWith('--out=')) { out.outPath = requireValue(raw, '--out='); continue; }
+    if (raw.startsWith('--floor-sweep=')) {
+      out.floorSweepSpec = requireValue(raw, '--floor-sweep=');
+      parseFloorSweepSpec(out.floorSweepSpec);
+      continue;
+    }
+    if (raw.startsWith('--score-floor=')) {
+      const value = Number(requireValue(raw, '--score-floor='));
+      if (!Number.isFinite(value) || value <= 0) throw new Error(`--score-floor must be a positive number: ${raw}`);
+      out.scoreFloor = value;
+      continue;
+    }
     if (raw.startsWith('--format=')) {
       const v = raw.slice('--format='.length);
       if (v !== 'md' && v !== 'json') throw new Error(`invalid --format: ${raw}`);
@@ -136,6 +169,10 @@ export async function runEvalGate(rest: string[]): Promise<number> {
   } catch (err) {
     process.stderr.write(`kb eval-gate: ${(err as Error).message}\n`);
     return 2;
+  }
+
+  if (args.m1) {
+    return runM1Mode(args, fixture, calibration);
   }
 
   const endpoint = args.endpoint ?? process.env.KB_LLM_ENDPOINT?.trim();
@@ -191,6 +228,71 @@ export async function runEvalGate(rest: string[]): Promise<number> {
     ? `${JSON.stringify(toJsonReport(aggregate, caseResults, meta), null, 2)}\n`
     : formatGateEvalReportMarkdown(aggregate, meta)
         + (mode === 'simulation' ? SIMULATION_CAVEAT : '');
+
+  process.stdout.write(report);
+  if (args.outPath !== undefined) {
+    await fsp.writeFile(args.outPath, report, 'utf-8');
+    process.stderr.write(`kb eval-gate: report written to ${args.outPath}\n`);
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// M1 canary mode (RFC 018 M1 / #372) — the real gate, no simulation fallback
+// ---------------------------------------------------------------------------
+
+async function runM1Mode(
+  args: EvalGateArgs,
+  fixture: GateEvalFixture,
+  calibration: GraderCalibrationFixture | null,
+): Promise<number> {
+  const endpoint = args.endpoint ?? process.env.KB_LLM_ENDPOINT?.trim();
+  if (endpoint === undefined || endpoint === '') {
+    process.stderr.write('kb eval-gate --m1: a live endpoint is required (--endpoint or KB_LLM_ENDPOINT).\n');
+    return 2;
+  }
+  // M1 is a live measurement — verify the endpoint answers with the chosen
+  // model (probeLlmEndpoint hardcodes a model id some servers, e.g. ollama,
+  // reject; this check honours --model).
+  try {
+    await callChatCompletion({
+      endpoint,
+      ...(args.model !== undefined ? { model: args.model } : {}),
+      messages: [
+        { role: 'system', content: 'Reply with exactly: ok' },
+        { role: 'user', content: 'health check' },
+      ],
+      temperature: 0,
+      timeoutMs: 60_000,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `kb eval-gate --m1: endpoint ${endpoint} not reachable for chat — ${(err as Error).message}.\n`,
+    );
+    return 1;
+  }
+
+  const options: M1RunOptions = {
+    endpoint,
+    ...(args.model !== undefined ? { model: args.model } : {}),
+    scoreFloor: args.scoreFloor ?? fixture.gateSim.scoreFloor,
+    floorSweepSpec: args.floorSweepSpec ?? DEFAULT_FLOOR_SWEEP_SPEC,
+  };
+
+  let report: string;
+  try {
+    const result = await runM1(fixture, calibration, options);
+    const reportMeta = {
+      fixturePath: args.fixturePath as string,
+      generatedAt: new Date().toISOString(),
+    };
+    report = args.format === 'json'
+      ? `${JSON.stringify(toM1JsonReport(result, reportMeta), null, 2)}\n`
+      : formatM1ReportMarkdown(result, reportMeta);
+  } catch (err) {
+    process.stderr.write(`kb eval-gate --m1: run failed: ${(err as Error).message}\n`);
+    return 1;
+  }
 
   process.stdout.write(report);
   if (args.outPath !== undefined) {

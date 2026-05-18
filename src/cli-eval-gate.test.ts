@@ -21,8 +21,25 @@ describe('parseEvalGateArgs', () => {
       endpoint: 'http://127.0.0.1:8080',
       model: 'local',
       dryRun: true,
+      m1: false,
       format: 'json',
       outPath: 'report.md',
+    });
+  });
+
+  it('parses the M1 canary flags', () => {
+    expect(parseEvalGateArgs([
+      'q.yml',
+      '--m1',
+      '--floor-sweep=0.80:1.10:0.05',
+      '--score-floor=0.9',
+    ])).toEqual({
+      fixturePath: 'q.yml',
+      dryRun: false,
+      m1: true,
+      floorSweepSpec: '0.80:1.10:0.05',
+      scoreFloor: 0.9,
+      format: 'md',
     });
   });
 
@@ -31,6 +48,8 @@ describe('parseEvalGateArgs', () => {
     expect(() => parseEvalGateArgs(['q.yml', '--bogus'])).toThrow(/unknown flag/);
     expect(() => parseEvalGateArgs(['q.yml', 'extra.yml'])).toThrow(/unexpected argument/);
     expect(() => parseEvalGateArgs(['q.yml', '--endpoint='])).toThrow(/requires a non-empty value/);
+    expect(() => parseEvalGateArgs(['q.yml', '--floor-sweep=0.8:1.0'])).toThrow(/lo:hi:step/);
+    expect(() => parseEvalGateArgs(['q.yml', '--score-floor=-1'])).toThrow(/positive number/);
   });
 });
 
