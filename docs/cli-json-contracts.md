@@ -557,6 +557,71 @@ Source and test anchors: `src/cli-doctor.ts:66-99`,
 `src/cli-doctor.ts:114-130`, `src/cli-doctor.ts:149-237`,
 `src/cli-doctor.test.ts:39-180`.
 
+## `kb logs`
+
+Invocation:
+
+```bash
+kb logs recent --format=json [--limit=<n>] [--file=<path>]
+kb logs show --request-id=<id> --format=json [--file=<path>]
+kb logs show --query-sha=<hash> --format=json [--file=<path>]
+```
+
+Report envelope:
+
+```json
+{
+  "schema_version": "kb.logs.v1",
+  "action": "show",
+  "source": "/tmp/kb.log",
+  "filters": { "request_id": "req-1" },
+  "scanned_line_count": 10,
+  "canonical_event_count": 3,
+  "ignored_line_count": 6,
+  "malformed_canonical_line_count": 1,
+  "result_count": 1,
+  "events": [
+    {
+      "ts": "2026-05-18T20:00:00.000Z",
+      "request_id": "req-1",
+      "process": "cli",
+      "cmd": "kb search",
+      "query_sha256": "0123456789abcdef",
+      "took_ms": 42,
+      "timings": { "embed_ms": 10, "faiss_ms": 20, "format_ms": 3 },
+      "cache": "miss",
+      "result_count": 3,
+      "top_sources": ["docs/a.md"],
+      "error": { "code": "PROVIDER_TIMEOUT", "category": "provider" },
+      "recovery_hint": "Run `kb doctor`."
+    }
+  ]
+}
+```
+
+Stable fields:
+
+- `schema_version` is `kb.logs.v1`.
+- `action` is `recent` or `show`.
+- `source` is the resolved log file path. Resolution uses `--file`, then
+  `LOG_FILE`, then existing local default paths.
+- Counts report the scan outcome before filtering.
+- `events[]` contains summaries of `kb-canonical.v1` lines only. Text log
+  lines are ignored. Each event includes `timings`; optional fields are
+  present only when the canonical log line carried them.
+
+Stdout/stderr and exit codes:
+
+- JSON reports are stdout. No matches still exit `0` with `result_count: 0`.
+- If no log file is discoverable, JSON output uses an error envelope with
+  `schema_version: "kb.logs.v1"` and exits `2`.
+- Argument errors print `kb logs: ...` to stderr and exit `2`.
+- File read failures use a JSON error envelope and exit `1`.
+
+Source and test anchors: `src/cli-logs.ts:114-161`,
+`src/cli-logs.ts:222-259`, `src/cli-logs.ts:309-390`,
+`src/cli-logs.test.ts:68-174`.
+
 ## `kb eval`
 
 Invocation:

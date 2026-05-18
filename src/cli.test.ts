@@ -54,6 +54,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'capture',
       'compare',
       'doctor',
+      'logs',
       'stats',
       'eval',
       'eval-gate',
@@ -85,6 +86,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['capture', 'kb capture'],
     ['compare', 'kb compare'],
     ['doctor', 'kb doctor'],
+    ['logs', 'kb logs'],
     ['stats', 'kb stats'],
     ['eval', 'kb eval'],
     ['eval-gate', 'kb eval-gate'],
@@ -144,6 +146,8 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(manifest.environment).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'KNOWLEDGE_BASES_ROOT_DIR' }),
       expect.objectContaining({ name: 'KB_LLM_ENDPOINT' }),
+      expect.objectContaining({ name: 'LOG_FILE' }),
+      expect.objectContaining({ name: 'KB_LOG_FORMAT' }),
       expect.objectContaining({
         name: 'OLLAMA_*',
         description: expect.stringContaining('Provider-specific config'),
@@ -173,6 +177,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'capture',
       'compare',
       'doctor',
+      'logs',
       'stats',
       'eval',
       'eval-gate',
@@ -398,6 +403,63 @@ describe('kb CLI — argv parsing and dispatch', () => {
       });
       expect(typeof event.request_id).toBe('string');
       expect(typeof event.took_ms).toBe('number');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('dispatches kb logs through the built CLI with default deps (#387)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-logs-'));
+    const logFile = path.join(tempDir, 'canonical.log');
+
+    try {
+      await fsp.writeFile(logFile, [
+        JSON.stringify({
+          schema_version: 'kb-canonical.v1',
+          ts: '2026-05-18T20:00:00.000Z',
+          request_id: 'req-cli-1',
+          process: 'cli',
+          cmd: 'kb search',
+          query_sha256: 'old',
+          took_ms: 10,
+        }),
+        JSON.stringify({
+          schema_version: 'kb-canonical.v1',
+          ts: '2026-05-18T20:01:00.000Z',
+          request_id: 'req-cli-2',
+          process: 'cli',
+          cmd: 'kb search',
+          query_sha256: 'new',
+          result_count: 2,
+          took_ms: 20,
+        }),
+      ].join('\n'));
+
+      const recent = runCli(['logs', 'recent', '--limit=1', '--format=json', `--file=${logFile}`]);
+      expect(recent.code).toBe(0);
+      expect(recent.stderr).toBe('');
+      const payload = JSON.parse(recent.stdout) as {
+        schema_version: string;
+        result_count: number;
+        events: Array<{ request_id: string; query_sha256: string }>;
+      };
+      expect(payload.schema_version).toBe('kb.logs.v1');
+      expect(payload.result_count).toBe(1);
+      expect(payload.events).toEqual([
+        expect.objectContaining({ request_id: 'req-cli-2', query_sha256: 'new' }),
+      ]);
+
+      const shown = runCli([
+        'logs',
+        'show',
+        '--query-sha=old',
+        '--format=json',
+        `--file=${logFile}`,
+      ]);
+      expect(shown.code).toBe(0);
+      expect(JSON.parse(shown.stdout).events).toEqual([
+        expect.objectContaining({ request_id: 'req-cli-1', query_sha256: 'old' }),
+      ]);
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
