@@ -24,6 +24,14 @@ interface RunResult {
   stderr: string;
 }
 
+interface HelpManifestForTest {
+  commands: Array<{
+    name: string;
+    summary: string;
+    options: Array<{ flags: string[]; value: string | null; description: string }>;
+  }>;
+}
+
 function runCli(args: string[], env: Record<string, string> = {}, input?: string): RunResult {
   const result = spawnSync('node', [cliPath, ...args], {
     env: { PATH: process.env.PATH ?? '', KB_LOG_FORMAT: 'text', ...env },
@@ -66,6 +74,8 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'where',
       'models',
       'llm',
+      'reindex',
+      'completion',
     ]) {
       expect(r.stdout).toMatch(new RegExp(`\\n  ${sub.replace('-', '\\-')}\\s`));
     }
@@ -98,6 +108,8 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['where', 'kb where'],
     ['models', 'kb models'],
     ['llm', 'kb llm'],
+    ['reindex', 'kb reindex'],
+    ['completion', 'kb completion'],
   ])('kb %s --help', (sub, marker) => {
     it('exits 0 with detailed help on stdout', () => {
       const long = runCli([sub, '--help']);
@@ -190,6 +202,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'models',
       'llm',
       'reindex',
+      'completion',
     ]);
     for (const command of manifest.commands) {
       for (const option of command.options) {
@@ -225,6 +238,113 @@ describe('kb CLI — argv parsing and dispatch', () => {
         value: null,
       }),
     ]));
+    const completion = manifest.commands.find((command) => command.name === 'completion');
+    expect(completion).toMatchObject({
+      summary: 'Generate shell completions for bash, zsh, or fish.',
+      usage: ['kb completion bash', 'kb completion zsh', 'kb completion fish'],
+    });
+  });
+
+  it('kb completion bash is generated from the command and option manifest (#389)', () => {
+    const r = runCli(['completion', 'bash']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe('');
+    expect(r.stdout).toContain('complete -F _kb kb');
+    expect(r.stdout).toContain('help list');
+    expect(r.stdout).toContain('search');
+    expect(r.stdout).toContain('reindex');
+    expect(r.stdout).toContain('completion');
+    expect(r.stdout).toContain('bash');
+    expect(r.stdout).toContain('zsh');
+    expect(r.stdout).toContain('fish');
+    expect(r.stdout).toContain('recent show');
+    expect(r.stdout).toContain('set-active');
+    expect(r.stdout).toContain('--mode=hybrid');
+    expect(r.stdout).toContain('--format=json');
+    expect(r.stdout).toContain('--threshold=auto');
+  });
+
+  it('kb completion bash completes enum values after Bash splits on equals (#389)', () => {
+    const script = runCli(['completion', 'bash']).stdout;
+    const result = spawnSync('bash', ['-c', [
+      'eval "$KB_COMPLETION_SCRIPT"',
+      'COMP_WORDS=(kb search --mode hy)',
+      'COMP_CWORD=3',
+      "COMP_LINE='kb search --mode=hy'",
+      'COMP_POINT=${#COMP_LINE}',
+      '_kb',
+      'printf "%s\\n" "${COMPREPLY[@]}"',
+    ].join('\n')], {
+      env: { PATH: process.env.PATH ?? '', KB_COMPLETION_SCRIPT: script },
+      encoding: 'utf-8',
+    });
+    if (result.error) throw result.error;
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout.trim().split('\n')).toContain('hybrid');
+  });
+
+  it('kb completion zsh and fish include command-local flags and enum values (#389)', () => {
+    const zsh = runCli(['completion', 'zsh']);
+    expect(zsh.code).toBe(0);
+    expect(zsh.stderr).toBe('');
+    expect(zsh.stdout).toContain('#compdef kb');
+    expect(zsh.stdout).toContain('search:Semantic search across one or all knowledge bases.');
+    expect(zsh.stdout).toContain("_values 'shell' bash zsh fish");
+    expect(zsh.stdout).toContain('recent');
+    expect(zsh.stdout).toContain('--mode=hybrid');
+    expect(zsh.stdout).toContain('--threshold=auto');
+
+    const fish = runCli(['completion', 'fish']);
+    expect(fish.code).toBe(0);
+    expect(fish.stderr).toBe('');
+    expect(fish.stdout).toContain('complete -c kb -f');
+    expect(fish.stdout).toContain("-a 'search'");
+    expect(fish.stdout).toContain("__fish_seen_subcommand_from completion' -a 'bash zsh fish'");
+    expect(fish.stdout).toContain("__fish_seen_subcommand_from logs' -a 'recent show'");
+    expect(fish.stdout).toContain("-l 'mode' -a 'dense lexical hybrid auto'");
+    expect(fish.stdout).toContain("-l 'format' -a 'md json vimgrep'");
+    expect(fish.stdout).toContain("-l 'threshold' -a 'auto'");
+    expect(fish.stdout).toContain("-l 'review-status' -a 'approved needs-review'");
+  });
+
+  it('kb completion covers every manifest command, flag, and enum value (#389)', () => {
+    const manifest = JSON.parse(runCli(['help', '--format=json']).stdout) as HelpManifestForTest;
+    const bash = runCli(['completion', 'bash']);
+    const zsh = runCli(['completion', 'zsh']);
+    const fish = runCli(['completion', 'fish']);
+
+    expect(bash.code).toBe(0);
+    expect(zsh.code).toBe(0);
+    expect(fish.code).toBe(0);
+
+    for (const command of manifest.commands) {
+      expect(bash.stdout).toContain(`${command.name})`);
+      expect(zsh.stdout).toContain(`${command.name}:`);
+      expect(zsh.stdout).toContain(`${command.name})`);
+      expect(fish.stdout).toContain(`-a '${command.name}'`);
+
+      for (const option of command.options) {
+        for (const flag of option.flags) {
+          if (flag === '--') continue;
+          expect(bash.stdout).toContain(flag);
+          expect(zsh.stdout).toContain(flag);
+          if (flag.startsWith('--')) {
+            expect(fish.stdout).toContain(`-l '${flag.slice(2)}'`);
+          } else if (/^-[A-Za-z0-9]$/.test(flag)) {
+            expect(fish.stdout).toContain(`-s '${flag.slice(1)}'`);
+          }
+        }
+      }
+    }
+  });
+
+  it('kb completion rejects unsupported shells without printing a script (#389)', () => {
+    const r = runCli(['completion', 'powershell']);
+    expect(r.code).toBe(2);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain("unsupported shell 'powershell'");
   });
 
   it('kb help <command> mirrors `kb <command> --help`', () => {

@@ -11,6 +11,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { ASK_HELP, runAsk } from './cli-ask.js';
 import { CAPTURE_HELP, runCapture } from './cli-capture.js';
+import { COMPLETION_HELP, runCompletion } from './cli-completion.js';
 import { COMPARE_HELP, runCompare } from './cli-compare.js';
 import { DOCTOR_HELP, runDoctor } from './cli-doctor.js';
 import { EVAL_HELP, runEval } from './cli-eval.js';
@@ -106,6 +107,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'models',       summary: 'Manage embedding models (list, add, set-active, remove).',               help: MODELS_HELP,       handler: runModels },
   { name: 'llm',          summary: 'Configure local LLM endpoints and managed warm model services.',          help: LLM_HELP,          handler: runLlm },
   { name: 'reindex',      summary: 'Rebuild FAISS indexes (RFC 017 — requires --with-context).',              help: REINDEX_HELP,      handler: runReindexCli },
+  { name: 'completion',   summary: 'Generate shell completions for bash, zsh, or fish.',                      help: COMPLETION_HELP,   handler: runCompletionWithCurrentManifest },
 ];
 
 // ----- Top-level help -------------------------------------------------------
@@ -121,6 +123,7 @@ Usage:
   kb <command> [options]
   kb help [<command>]
   kb <command> --help
+  kb completion bash|zsh|fish
   kb --version
 
 Available commands:
@@ -149,6 +152,10 @@ Exit codes:
 }
 
 const HELP = buildTopLevelHelp();
+
+function runCompletionWithCurrentManifest(rest: string[]): Promise<number> {
+  return runCompletion(rest, buildTopLevelHelpManifest().commands);
+}
 
 // ----- Entry point ----------------------------------------------------------
 
@@ -215,6 +222,10 @@ export async function main(argv: string[]): Promise<number> {
   if (wantsHelp(rest)) {
     process.stdout.write(target.help);
     return 0;
+  }
+
+  if (sub === 'completion') {
+    return target.handler(rest);
   }
 
   return runSubcommandWithCanonicalLog(

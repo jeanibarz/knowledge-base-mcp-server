@@ -15,8 +15,10 @@ const SUBCOMMANDS = [
   'capture',
   'compare',
   'doctor',
+  'logs',
   'stats',
   'eval',
+  'eval-gate',
   'explain',
   'stale-check',
   'superseded',
@@ -25,6 +27,8 @@ const SUBCOMMANDS = [
   'where',
   'models',
   'llm',
+  'reindex',
+  'completion',
 ] as const;
 
 type Subcommand = typeof SUBCOMMANDS[number];
@@ -291,10 +295,14 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
     { subcommand: 'capture', args: ['capture'], expected: 'missing --kb=<name>' },
     { subcommand: 'compare', args: ['compare', 'alpha'], expected: 'expected <query> <model_a> <model_b>' },
     { subcommand: 'doctor', args: ['doctor', '--format=xml'], expected: 'invalid --format' },
+    { subcommand: 'logs', args: ['logs'], expected: 'missing action: expected recent or show' },
     { subcommand: 'stats', args: ['stats', '--format=xml'], expected: 'invalid --format' },
     { subcommand: 'eval', args: ['eval'], expected: 'missing <fixture>' },
+    { subcommand: 'eval-gate', args: ['eval-gate'], expected: 'missing <fixture>' },
     { subcommand: 'where', args: ['where'], expected: 'missing --topic=<query>' },
     { subcommand: 'promote', args: ['promote'], expected: 'missing --kb=<name>' },
+    { subcommand: 'reindex', args: ['reindex'], expected: '--with-context is required' },
+    { subcommand: 'completion', args: ['completion'], expected: 'expected one shell' },
   ];
 
   describe.each(invalidArgCases)('kb $subcommand invalid args', ({ args, expected }) => {
