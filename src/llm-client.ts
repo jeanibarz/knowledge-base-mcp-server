@@ -25,6 +25,11 @@ export interface LlmProbeResult {
   detail: string;
 }
 
+export interface LlmProbeOptions {
+  healthTimeoutMs?: number;
+  chatTimeoutMs?: number;
+}
+
 export class LlmClientError extends Error {
   constructor(message: string) {
     super(message);
@@ -100,13 +105,17 @@ export async function callChatCompletion(
 export async function probeLlmEndpoint(
   endpoint: string,
   fetchImpl: FetchLike = fetch,
+  options: LlmProbeOptions = {},
 ): Promise<LlmProbeResult> {
   const chatEndpoint = normalizeChatEndpoint(endpoint);
   const healthUrl = deriveHealthUrl(chatEndpoint);
   let healthOk = false;
   let healthDetail = '';
   try {
-    const health = await fetchImpl(healthUrl, { method: 'GET', signal: AbortSignal.timeout(3_000) });
+    const health = await fetchImpl(healthUrl, {
+      method: 'GET',
+      signal: AbortSignal.timeout(options.healthTimeoutMs ?? 3_000),
+    });
     healthOk = health.ok;
     healthDetail = `health HTTP ${health.status}`;
   } catch (err) {
@@ -122,7 +131,7 @@ export async function probeLlmEndpoint(
         { role: 'user', content: 'health check' },
       ],
       temperature: 0,
-      timeoutMs: 15_000,
+      timeoutMs: options.chatTimeoutMs ?? 15_000,
     }, fetchImpl);
     return {
       endpoint: chatEndpoint,

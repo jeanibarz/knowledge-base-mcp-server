@@ -508,6 +508,20 @@ Report envelope:
     "healthy": true,
     "detail": "Ollama http://localhost:11434 is reachable..."
   },
+  "llm_endpoint": {
+    "status": "ok",
+    "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+    "health_url": "http://127.0.0.1:8080/health",
+    "endpoint_source": "profile",
+    "profile_name": "local-research-agent",
+    "profile_mode": "external",
+    "managed_by": "local-research-agent",
+    "unit_name": null,
+    "health_ok": true,
+    "chat_ok": true,
+    "detail": "ready; profile=local-research-agent; source=profile; ...",
+    "next_action": null
+  },
   "cli": {
     "version": "0.2.2",
     "package_root": "/path/to/package",
@@ -536,6 +550,13 @@ Stable fields:
 - `stale_counts_by_kb`: object keyed by KB name with `modified_files` and
   `new_files`.
 - `backend`: `provider`, `healthy`, and `detail`.
+- `llm_endpoint`: local LLM readiness for `kb ask`. `status` is `ok` or
+  `warn`; failed LLM readiness is a warning because search health can still be
+  usable. `endpoint_source` is `env`, `profile`, `default`, or `unresolved`.
+  `profile_name`, `profile_mode`, `managed_by`, and `unit_name` describe the
+  resolved profile/ownership when known. `health_ok` checks the derived
+  `/health` URL and `chat_ok` checks an OpenAI-compatible chat completion.
+  `next_action` is `null` when ready, otherwise a human-readable repair hint.
 - `cli`: `version`, `package_root`, `invoked_path`, and
   `symlinked_checkout_path`.
 - `git`: either `null` or an object with `branch`, `head`, `origin_main`, and
@@ -553,9 +574,10 @@ Stdout/stderr and exit codes:
   the report with `status: "error"`.
 - Argument errors print `kb doctor: ...` to stderr and exit `2`.
 
-Source and test anchors: `src/cli-doctor.ts:66-99`,
-`src/cli-doctor.ts:114-130`, `src/cli-doctor.ts:149-237`,
-`src/cli-doctor.test.ts:39-180`.
+Source and test anchors: `src/cli-doctor.ts:84-107`,
+`src/cli-doctor.ts:201-214`, `src/cli-doctor.ts:476-483`,
+`src/cli-doctor.ts:926-1045`, `src/cli-doctor.ts:1243-1260`,
+`src/cli-doctor.test.ts:336-602`.
 
 ## `kb logs`
 

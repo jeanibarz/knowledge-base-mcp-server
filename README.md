@@ -427,14 +427,14 @@ For a command-oriented runbook covering empty results, stale-index footers, link
 
 ### KB availability smoke check
 
-When `kb search` (or the MCP `retrieve_knowledge` tool) is not returning results, run the read-only `kb doctor` command first — it is the canonical availability check and aggregates the four things that can break a search:
+When `kb search` (or the MCP `retrieve_knowledge` tool) is not returning results, run the read-only `kb doctor` command first — it is the canonical availability check for retrieval and also reports local LLM readiness for `kb ask`:
 
 ```bash
 kb doctor                # human-readable report
 kb doctor --format=json  # machine-readable for agent shells
 ```
 
-The report covers active-model resolution, FAISS index version + mtime, the latest in-process index-update summary, per-KB stale counts, embedding-backend reachability (Ollama / HuggingFace / OpenAI), CLI version, and local git state. The command exits non-zero when any required check fails (active model unresolved, index missing, backend unreachable), so it is safe to use as a precondition gate from scripts.
+The report covers active-model resolution, FAISS index version + mtime, the latest in-process index-update summary, per-KB stale counts, embedding-backend reachability (Ollama / HuggingFace / OpenAI), local LLM endpoint readiness, CLI version, and local git state. The command exits non-zero when any required retrieval check fails (active model unresolved, index missing, backend unreachable); LLM endpoint failures are WARN rows because search can remain healthy while `kb ask` is not ready.
 
 ### Distinguishing search failure modes
 

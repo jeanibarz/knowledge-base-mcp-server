@@ -57,6 +57,12 @@ import {
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
 import { inspectReindexTriggerFilesystem } from './triggerWatcher.js';
+import { deriveHealthUrl, probeLlmEndpoint, type LlmProbeResult } from './llm-client.js';
+import {
+  createExternalProfile,
+  resolveProfile,
+  type LlmProfile,
+} from './llm-profiles.js';
 
 /**
  * Issue #210 — error-rate threshold above which the doctor surfaces a
@@ -65,6 +71,9 @@ import { inspectReindexTriggerFilesystem } from './triggerWatcher.js';
  * trip an operator's alarm.
  */
 export const PROVIDER_CALL_ERROR_RATE_WARN_THRESHOLD = 0.05;
+const DEFAULT_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
+const DOCTOR_LLM_HEALTH_TIMEOUT_MS = 1_000;
+const DOCTOR_LLM_CHAT_TIMEOUT_MS = 3_000;
 
 const execFileAsync = promisify(execFile);
 
@@ -75,8 +84,9 @@ Usage:
 
 Composes existing read-only checks (env vars, registered models, active
 model, FAISS index presence + mtime, knowledge-base count, embedding
-backend reachability) into a single status report. Does NOT load the
-FAISS store or embed documents.
+backend reachability, and local LLM endpoint readiness for kb ask) into
+a single status report. Does NOT load the FAISS store, embed documents,
+or start managed LLM services.
 
 Report status is one of \`ok\`, \`warn\`, or \`error\`. The exit code is non-zero
 when any required check fails, so \`kb doctor && kb search ...\` is a safe
@@ -188,6 +198,20 @@ export interface DoctorReport {
     healthy: boolean;
     detail: string;
   };
+  llm_endpoint: {
+    status: HealthStatus;
+    endpoint: string | null;
+    health_url: string | null;
+    endpoint_source: 'env' | 'profile' | 'default' | 'unresolved';
+    profile_name: string | null;
+    profile_mode: 'managed' | 'external' | null;
+    managed_by: string | null;
+    unit_name: string | null;
+    health_ok: boolean;
+    chat_ok: boolean;
+    detail: string;
+    next_action: string | null;
+  };
   cli: {
     version: string;
     package_root: string;
@@ -260,12 +284,19 @@ export interface BuildDoctorReportOptions {
    * singleton is read.
    */
   providerCallMetrics?: ProviderCallMetrics;
+  /**
+   * Issue #388 — test seam for the local LLM endpoint readiness check.
+   * Production callers leave this undefined so the doctor performs a
+   * short, read-only probe without starting any services.
+   */
+  llmEndpointProbe?: LlmEndpointProbe;
 }
 
 export type BackendHealthCheck = (
   provider: string,
   modelName: string,
 ) => Promise<{ healthy: boolean; detail: string }>;
+export type LlmEndpointProbe = (endpoint: string) => Promise<LlmProbeResult>;
 
 export async function runDoctor(rest: string[]): Promise<number> {
   let parsed: DoctorArgs;
@@ -442,6 +473,15 @@ export async function buildDoctorReport(
     detail: backend.detail,
   });
 
+  const llmEndpoint = await readLlmEndpointHealth(
+    options.llmEndpointProbe ?? defaultLlmEndpointProbe,
+  );
+  checks.push({
+    name: 'llm_endpoint',
+    status: llmEndpoint.status,
+    detail: llmEndpoint.detail,
+  });
+
   const metricsSource = options.providerCallMetrics ?? providerCallMetrics;
   const providerCalls = metricsSource.snapshot();
   // Issue #210 — only emit the row when at least one call has been
@@ -513,6 +553,7 @@ export async function buildDoctorReport(
     age_budget_config_errors: ageBudgetResult.configErrors,
     incomplete_models: incompleteModels,
     backend,
+    llm_endpoint: llmEndpoint,
     cli,
     git,
     last_index_update: lastIndexUpdate,
@@ -882,6 +923,127 @@ async function readBackendHealth(
   return { provider, ...result };
 }
 
+async function readLlmEndpointHealth(
+  check: LlmEndpointProbe,
+): Promise<DoctorReport['llm_endpoint']> {
+  let target: { profile: LlmProfile; source: DoctorReport['llm_endpoint']['endpoint_source'] };
+  try {
+    target = await resolveDoctorLlmTarget();
+  } catch (err) {
+    return {
+      status: 'warn',
+      endpoint: null,
+      health_url: null,
+      endpoint_source: 'unresolved',
+      profile_name: null,
+      profile_mode: null,
+      managed_by: null,
+      unit_name: null,
+      health_ok: false,
+      chat_ok: false,
+      detail: `LLM profile resolution failed: ${(err as Error).message}`,
+      next_action: 'Run kb llm status --format=json, then fix or remove the active LLM profile.',
+    };
+  }
+
+  const { profile, source } = target;
+  try {
+    const probe = await check(profile.endpoint);
+    const status: HealthStatus = probe.health_ok && probe.chat_ok ? 'ok' : 'warn';
+    return {
+      status,
+      endpoint: probe.endpoint,
+      health_url: probe.health_url,
+      endpoint_source: source,
+      profile_name: profile.name,
+      profile_mode: profile.mode,
+      managed_by: profile.mode === 'external' ? profile.managed_by ?? null : null,
+      unit_name: profile.mode === 'managed' ? profile.unit_name : null,
+      health_ok: probe.health_ok,
+      chat_ok: probe.chat_ok,
+      detail: formatLlmEndpointDetail(profile, source, probe),
+      next_action: status === 'ok' ? null : llmEndpointNextAction(profile, probe),
+    };
+  } catch (err) {
+    const endpoint = profile.endpoint;
+    return {
+      status: 'warn',
+      endpoint,
+      health_url: safeDeriveHealthUrl(endpoint),
+      endpoint_source: source,
+      profile_name: profile.name,
+      profile_mode: profile.mode,
+      managed_by: profile.mode === 'external' ? profile.managed_by ?? null : null,
+      unit_name: profile.mode === 'managed' ? profile.unit_name : null,
+      health_ok: false,
+      chat_ok: false,
+      detail: `LLM endpoint probe failed: ${(err as Error).message}`,
+      next_action: `Run kb llm probe --endpoint=${endpoint} after starting or fixing the local LLM service.`,
+    };
+  }
+}
+
+async function resolveDoctorLlmTarget(): Promise<{
+  profile: LlmProfile;
+  source: DoctorReport['llm_endpoint']['endpoint_source'];
+}> {
+  if (process.env.KB_LLM_ENDPOINT?.trim()) {
+    return {
+      profile: await createExternalProfile('env', process.env.KB_LLM_ENDPOINT),
+      source: 'env',
+    };
+  }
+  const configured = await resolveProfile();
+  if (configured) return { profile: configured, source: 'profile' };
+  return {
+    profile: await createExternalProfile(
+      'local-research-agent',
+      DEFAULT_LLM_ENDPOINT,
+      'local-research-agent',
+    ),
+    source: 'default',
+  };
+}
+
+async function defaultLlmEndpointProbe(endpoint: string): Promise<LlmProbeResult> {
+  return probeLlmEndpoint(endpoint, fetch, {
+    healthTimeoutMs: DOCTOR_LLM_HEALTH_TIMEOUT_MS,
+    chatTimeoutMs: DOCTOR_LLM_CHAT_TIMEOUT_MS,
+  });
+}
+
+function formatLlmEndpointDetail(
+  profile: LlmProfile,
+  source: DoctorReport['llm_endpoint']['endpoint_source'],
+  probe: LlmProbeResult,
+): string {
+  const owner = profile.mode === 'managed'
+    ? `managed ${profile.unit_name}`
+    : `external${profile.managed_by ? ` (${profile.managed_by})` : ''}`;
+  const readiness = probe.chat_ok
+    ? (probe.health_ok ? 'ready' : 'chat ready, health endpoint unhealthy')
+    : 'not ready';
+  return `${readiness}; profile=${profile.name}; source=${source}; owner=${owner}; ${probe.detail}`;
+}
+
+function llmEndpointNextAction(profile: LlmProfile, probe: LlmProbeResult): string {
+  if (profile.mode === 'managed') {
+    return `Run kb llm start --profile=${profile.name}, then kb llm probe --endpoint=${probe.endpoint}.`;
+  }
+  if (profile.mode === 'external' && profile.managed_by) {
+    return `Start or fix ${profile.managed_by}, then run kb llm probe --endpoint=${probe.endpoint}.`;
+  }
+  return `Start or fix the external LLM service, then run kb llm probe --endpoint=${probe.endpoint}.`;
+}
+
+function safeDeriveHealthUrl(endpoint: string): string | null {
+  try {
+    return deriveHealthUrl(endpoint);
+  } catch {
+    return null;
+  }
+}
+
 async function defaultBackendHealthCheck(
   provider: string,
   modelName: string,
@@ -1078,6 +1240,24 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   }
   lines.push(`  note: ${report.reindex_trigger.limitation}`);
   lines.push(`Backend: ${report.backend.healthy ? 'ok' : 'error'} — ${report.backend.detail}`);
+  lines.push('LLM endpoint:');
+  lines.push(`  status: ${report.llm_endpoint.status}`);
+  lines.push(`  source: ${report.llm_endpoint.endpoint_source}`);
+  lines.push(`  profile: ${report.llm_endpoint.profile_name ?? '<unresolved>'} (${report.llm_endpoint.profile_mode ?? 'n/a'})`);
+  if (report.llm_endpoint.unit_name !== null) {
+    lines.push(`  unit: ${report.llm_endpoint.unit_name}`);
+  }
+  if (report.llm_endpoint.managed_by !== null) {
+    lines.push(`  managed_by: ${report.llm_endpoint.managed_by}`);
+  }
+  lines.push(`  endpoint: ${report.llm_endpoint.endpoint ?? '<unresolved>'}`);
+  lines.push(`  health_url: ${report.llm_endpoint.health_url ?? '<unresolved>'}`);
+  lines.push(`  health_ok: ${report.llm_endpoint.health_ok ? 'yes' : 'no'}`);
+  lines.push(`  chat_ok: ${report.llm_endpoint.chat_ok ? 'yes' : 'no'}`);
+  lines.push(`  detail: ${report.llm_endpoint.detail}`);
+  if (report.llm_endpoint.next_action !== null) {
+    lines.push(`  next_action: ${report.llm_endpoint.next_action}`);
+  }
   lines.push(`kb version: ${report.cli.version}`);
   if (report.cli.symlinked_checkout_path !== null) {
     lines.push(`Linked checkout: ${report.cli.symlinked_checkout_path}`);
