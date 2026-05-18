@@ -25,6 +25,7 @@ import {
 } from './cli-timing.js';
 import { FRONTMATTER_EXTRAS_WIRE_VISIBLE } from './config/retrieval.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
+import { resolveInjectionGuardOptions } from './injection-guard.js';
 import { callChatCompletion } from './llm-client.js';
 import {
   createExternalProfile,
@@ -53,6 +54,9 @@ Options:
   --kb=<name>           Scope retrieval to one knowledge base.
   --model=<id>          Override the active embedding model for retrieval.
   --k=<int>             Retrieval top-K (default 8).
+  --context-budget-tokens=<int>
+                        Approximate token budget for snippets sent to the LLM
+                        (default 6000).
   --refresh             Re-scan KB files before retrieval.
   --endpoint=<url>      OpenAI-compatible chat endpoint for this call only.
   --llm-profile=<name>  Use a saved \`kb llm\` profile.
@@ -73,6 +77,7 @@ interface AskArgs {
   llmProfile?: string;
   endpoint?: string;
   k: number;
+  contextBudgetTokens: number;
   refresh: boolean;
   stdin: boolean;
   format: 'md' | 'json';
@@ -106,6 +111,7 @@ interface AskLlmPayload {
 interface AskRetrievalPayload {
   embedding_model: string;
   k: number;
+  context_budget_tokens: number;
   refreshed: boolean;
   knowledge_base: string | null;
 }
@@ -126,6 +132,38 @@ interface SavedTranscriptInfo {
   knowledge_base: string;
   path: string;
   title: string;
+}
+
+interface PackedAskSnippet {
+  result: RetrievalJsonResult;
+  text: string;
+}
+
+type AskPackedChunkStatus = 'included' | 'excluded';
+
+interface AskPackedChunkPayload {
+  index: number;
+  status: AskPackedChunkStatus;
+  estimated_tokens: number;
+  included_tokens: number;
+  truncated: boolean;
+  knowledge_base: string | null;
+  path: string;
+  chunk_id?: string;
+}
+
+interface AskContextPackingPayload {
+  budget_tokens: number;
+  estimated_tokens: number;
+  included_chunks: number;
+  excluded_chunks: number;
+  truncated_chunks: number;
+  chunks: AskPackedChunkPayload[];
+}
+
+interface AskContextPacking {
+  included: PackedAskSnippet[];
+  payload: AskContextPackingPayload;
 }
 
 export interface RunAskDeps {
@@ -149,6 +187,11 @@ const defaultRunAskDeps: RunAskDeps = {
   createTranscriptNote: createAskTranscriptNote,
   knowledgeBasesRootDir: KNOWLEDGE_BASES_ROOT_DIR,
 };
+
+export const DEFAULT_ASK_CONTEXT_BUDGET_TOKENS = 6000;
+const MIN_CONTEXT_BUDGET_TOKENS = 64;
+const APPROX_CHARS_PER_TOKEN = 4;
+const ASK_SNIPPET_SEPARATOR = '\n\n---\n\n';
 
 export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDeps): Promise<number> {
   const totalStartedAt = nowMs();
@@ -229,13 +272,21 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
   }
 
   const retrieval = formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
+  const packedContext = packAskContext(retrieval, args.contextBudgetTokens);
+  if (timing) {
+    timing.context_budget_tokens = packedContext.payload.budget_tokens;
+    timing.context_estimated_tokens = packedContext.payload.estimated_tokens;
+    timing.context_included_chunks = packedContext.payload.included_chunks;
+    timing.context_excluded_chunks = packedContext.payload.excluded_chunks;
+    timing.context_truncated_chunks = packedContext.payload.truncated_chunks;
+  }
   let answer: string;
   let llmModel: string | null = null;
   try {
     const startedAt = nowMs();
     const response = await deps.callChatCompletion({
       endpoint: target.profile.endpoint,
-      messages: buildAskMessages(args.question, retrieval),
+      messages: buildAskMessages(args.question, packedContext.included),
       temperature: 0.2,
     });
     if (timing) {
@@ -249,7 +300,7 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
   }
 
   if (timing) timing.total_ms = elapsedMs(totalStartedAt);
-  const citations = buildCitations(retrieval);
+  const citations = buildCitations(packedContext.included.map((snippet) => snippet.result));
   const compactTiming = timing ? compactTimingPayload(timing) : undefined;
   const llmPayload: AskLlmPayload = {
     endpoint: target.profile.endpoint,
@@ -261,6 +312,7 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
   const retrievalPayload: AskRetrievalPayload = {
     embedding_model: activeModelId,
     k: args.k,
+    context_budget_tokens: args.contextBudgetTokens,
     refreshed: args.refresh,
     knowledge_base: args.kb ?? null,
   };
@@ -338,6 +390,7 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
       citations,
       llm: llmPayload,
       retrieval: retrievalPayload,
+      context_packing: packedContext.payload,
       ...(compactTiming ? { timing: compactTiming } : {}),
       ...(savedTranscript ? { transcript: savedTranscript } : {}),
     }, null, 2)}\n`);
@@ -353,6 +406,11 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
       }
     }
     process.stdout.write(`\n> _LLM: ${target.profile.name} (${target.profile.mode}) at ${target.profile.endpoint}; retrieval model: ${activeModelId}._\n`);
+    process.stdout.write(`> _Context: ${packedContext.payload.included_chunks}/${retrieval.length} chunks, approx ${packedContext.payload.estimated_tokens}/${packedContext.payload.budget_tokens} tokens`);
+    if (packedContext.payload.truncated_chunks > 0) {
+      process.stdout.write(`, ${packedContext.payload.truncated_chunks} truncated`);
+    }
+    process.stdout.write('._\n');
     if (savedTranscript) {
       process.stdout.write(`> _Transcript saved: ${savedTranscript.knowledge_base}:${savedTranscript.path}._\n`);
     }
@@ -368,6 +426,7 @@ export function parseAskArgs(rest: string[]): AskArgs {
   const out: AskArgs = {
     question: null,
     k: 8,
+    contextBudgetTokens: DEFAULT_ASK_CONTEXT_BUDGET_TOKENS,
     refresh: false,
     stdin: false,
     format: 'md',
@@ -398,6 +457,14 @@ export function parseAskArgs(rest: string[]): AskArgs {
       const n = Number(raw.slice('--k='.length));
       if (!Number.isInteger(n) || n <= 0) throw new Error(`invalid --k: ${raw}`);
       out.k = n; continue;
+    }
+    if (raw.startsWith('--context-budget-tokens=')) {
+      const n = Number(raw.slice('--context-budget-tokens='.length));
+      if (!Number.isInteger(n) || n < MIN_CONTEXT_BUDGET_TOKENS) {
+        throw new Error(`invalid --context-budget-tokens: ${raw}`);
+      }
+      out.contextBudgetTokens = n;
+      continue;
     }
     if (raw.startsWith('--format=')) {
       const v = raw.slice('--format='.length);
@@ -441,10 +508,8 @@ async function resolveLlmTarget(args: AskArgs): Promise<LlmTarget> {
   };
 }
 
-function buildAskMessages(question: string, retrieval: RetrievalJsonResult[]) {
-  const context = retrieval.map((r, idx) => {
-    return `Snippet ${idx + 1}\nScore: ${r.score ?? 'n/a'}\nMetadata: ${JSON.stringify(r.metadata)}\nContent:\n${r.content}`;
-  }).join('\n\n---\n\n');
+function buildAskMessages(question: string, snippets: PackedAskSnippet[]) {
+  const context = snippets.map((snippet) => snippet.text).join(ASK_SNIPPET_SEPARATOR);
   return [
     {
       role: 'system' as const,
@@ -455,6 +520,157 @@ function buildAskMessages(question: string, retrieval: RetrievalJsonResult[]) {
       content: `Question:\n${question}\n\nRetrieved snippets:\n${context || '(no snippets retrieved)'}`,
     },
   ];
+}
+
+export function packAskContext(
+  retrieval: RetrievalJsonResult[],
+  budgetTokens: number = DEFAULT_ASK_CONTEXT_BUDGET_TOKENS,
+): AskContextPacking {
+  const included: PackedAskSnippet[] = [];
+  const chunks: AskPackedChunkPayload[] = [];
+  let estimatedTokens = 0;
+  let excludedChunks = 0;
+  let truncatedChunks = 0;
+
+  retrieval.forEach((result, index) => {
+    const fullSnippet = buildAskSnippet(result, index + 1, result.content);
+    const fullTokens = estimateTokens(fullSnippet);
+    const separatorTokens = included.length === 0 ? 0 : estimateTokens(ASK_SNIPPET_SEPARATOR);
+    const remaining = Math.max(0, budgetTokens - estimatedTokens - separatorTokens);
+    let snippetText: string | null = null;
+    let includedTokens = 0;
+    let truncated = false;
+
+    if (fullTokens <= remaining) {
+      snippetText = fullSnippet;
+      includedTokens = fullTokens;
+    } else {
+      const header = buildAskSnippet(result, index + 1, '');
+      const headerTokens = estimateTokens(header);
+      const availableContentTokens = remaining - headerTokens;
+      if (availableContentTokens > 0) {
+        const truncatedContent = truncateContentToTokenBudget(result.content, availableContentTokens);
+        if (truncatedContent.trim() !== '') {
+          snippetText = buildAskSnippet(result, index + 1, truncatedContent);
+          includedTokens = estimateTokens(snippetText);
+          if (includedTokens <= remaining) {
+            truncated = true;
+          } else {
+            snippetText = null;
+            includedTokens = 0;
+          }
+        }
+      }
+    }
+
+    const pathValue = stringMetadata(result.metadata, 'relativePath')
+      ?? stringMetadata(result.metadata, 'source')
+      ?? '(unknown source)';
+    const chunkPayload: AskPackedChunkPayload = {
+      index: index + 1,
+      status: snippetText === null ? 'excluded' : 'included',
+      estimated_tokens: fullTokens,
+      included_tokens: includedTokens,
+      truncated,
+      knowledge_base: stringMetadata(result.metadata, 'knowledgeBase'),
+      path: pathValue,
+      ...(result.chunk_id ? { chunk_id: result.chunk_id } : {}),
+    };
+    chunks.push(chunkPayload);
+
+    if (snippetText === null) {
+      excludedChunks++;
+      return;
+    }
+
+    estimatedTokens += separatorTokens + includedTokens;
+    if (truncated) truncatedChunks++;
+    included.push({
+      result,
+      text: snippetText,
+    });
+  });
+
+  return {
+    included,
+    payload: {
+      budget_tokens: budgetTokens,
+      estimated_tokens: estimatedTokens,
+      included_chunks: included.length,
+      excluded_chunks: excludedChunks,
+      truncated_chunks: truncatedChunks,
+      chunks,
+    },
+  };
+}
+
+function buildAskSnippet(result: RetrievalJsonResult, index: number, content: string): string {
+  return `Snippet ${index}\nScore: ${result.score ?? 'n/a'}\nMetadata: ${JSON.stringify(result.metadata)}\nContent:\n${content}`;
+}
+
+function estimateTokens(value: string): number {
+  const trimmed = value.trim();
+  if (trimmed === '') return 0;
+  return Math.max(1, Math.ceil(trimmed.length / APPROX_CHARS_PER_TOKEN));
+}
+
+function truncateContentToTokenBudget(value: string, budgetTokens: number): string {
+  const wrapped = splitInjectionGuardWrapper(value);
+  if (wrapped !== null) {
+    const marker = '[truncated]';
+    const availableInnerTokens = budgetTokens - estimateTokens(`${wrapped.open}\n${marker}\n${wrapped.close}`);
+    if (availableInnerTokens <= 0) return '';
+    const inner = truncatePlainTextToTokenBudget(wrapped.content, availableInnerTokens);
+    if (inner.trim() === '') return '';
+    return `${wrapped.open}\n${inner}\n${marker}\n${wrapped.close}`;
+  }
+  const markerTokens = estimateTokens('\n[truncated]');
+  const truncated = truncatePlainTextToTokenBudget(value, budgetTokens - markerTokens);
+  return truncated.trim() === '' ? '' : `${truncated}\n[truncated]`;
+}
+
+function splitInjectionGuardWrapper(value: string): { open: string; content: string; close: string } | null {
+  const options = resolveInjectionGuardOptions();
+  const close = options.wrapClose;
+  const trimmed = value.trim();
+  if (!trimmed.endsWith(close)) return null;
+  const firstNewline = trimmed.indexOf('\n');
+  if (firstNewline <= 0) return null;
+  const open = trimmed.slice(0, firstNewline);
+  if (!matchesConfiguredWrapOpen(open, options.wrapOpen)) return null;
+  const contentEnd = trimmed.length - close.length;
+  const content = trimmed.slice(firstNewline + 1, contentEnd).replace(/\n$/, '');
+  return { open, content, close };
+}
+
+function matchesConfiguredWrapOpen(open: string, configuredOpen: string): boolean {
+  const markerIndex = configuredOpen.indexOf('{source}');
+  if (markerIndex < 0) return open === configuredOpen;
+  const prefix = configuredOpen.slice(0, markerIndex);
+  const suffix = configuredOpen.slice(markerIndex + '{source}'.length);
+  return open.startsWith(prefix) && open.endsWith(suffix);
+}
+
+function truncatePlainTextToTokenBudget(value: string, budgetTokens: number): string {
+  const maxChars = Math.max(0, budgetTokens * APPROX_CHARS_PER_TOKEN);
+  if (value.length <= maxChars) return value;
+  const hardCut = value.slice(0, maxChars).trimEnd();
+  const boundary = findLastBoundary(hardCut);
+  const candidate = boundary >= Math.max(32, Math.floor(maxChars * 0.5))
+    ? hardCut.slice(0, boundary).trimEnd()
+    : hardCut;
+  return candidate.trimEnd();
+}
+
+function findLastBoundary(value: string): number {
+  const newline = value.lastIndexOf('\n');
+  const sentence = Math.max(
+    value.lastIndexOf('. '),
+    value.lastIndexOf('? '),
+    value.lastIndexOf('! '),
+  );
+  const boundary = Math.max(newline, sentence >= 0 ? sentence + 1 : -1);
+  return boundary;
 }
 
 function buildCitations(retrieval: RetrievalJsonResult[]): AskCitation[] {
@@ -542,6 +758,7 @@ export function buildAskTranscriptMarkdown(record: AskTranscriptRecord): string 
   lines.push(`- retrieval model: \`${record.retrieval.embedding_model}\``);
   lines.push(`- retrieval knowledge base: \`${record.retrieval.knowledge_base ?? 'all'}\``);
   lines.push(`- retrieval k: \`${record.retrieval.k}\``);
+  lines.push(`- context budget tokens: \`${record.retrieval.context_budget_tokens}\``);
   lines.push(`- refreshed before retrieval: \`${record.retrieval.refreshed}\``);
   if (record.timing !== undefined) {
     lines.push('');
