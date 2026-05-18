@@ -56,6 +56,7 @@ kb superseded --kb=work       # read-only review for obsolete/contradicted notes
 kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
 kb --help                     # top-level command list
 kb help search                # per-command help (also: kb search --help)
+kb completion bash            # generate a bash shell completion script
 ```
 
 The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). The consolidated operator matrix for retrieval flags, defaults, per-call overrides, rollout status, and validation commands lives in [docs/feature-flags.md](docs/feature-flags.md). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, and version context. It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
