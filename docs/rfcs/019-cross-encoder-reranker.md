@@ -87,6 +87,9 @@ Cross-encoder scores are cacheable. Reuse the #313 query-cache pattern: an in-me
 
 ### 6. Configuration surface
 
+Operator defaults, rollout status, and validation commands are summarized in
+[`docs/feature-flags.md`](../feature-flags.md#reranker).
+
 | env var | default | effect |
 |---|---|---|
 | `KB_RERANK` | `off` | `off` (identical to today) \| `on` (rerank the top-`N` fused candidates). |

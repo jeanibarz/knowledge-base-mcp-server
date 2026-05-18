@@ -209,7 +209,9 @@ A small in-memory `Map`, process-lifetime, bounded LRU (no disk tier — v2's L2
 
 ### 10. Configuration surface
 
-Four env vars (`KB_GATE_DROP_CONFIDENCE` cut with the confidence field).
+Core env vars are listed below (`KB_GATE_DROP_CONFIDENCE` was cut with the confidence field).
+Operator defaults, per-call overrides, and validation commands are summarized in
+[`docs/feature-flags.md`](../feature-flags.md#relevance-gate).
 
 | env var | default | effect |
 |---|---|---|
