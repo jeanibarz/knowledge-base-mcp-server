@@ -1587,6 +1587,156 @@ describe('kb capture', () => {
     }
   });
 
+  it('redacts common secrets in captured stdout by default', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-redact-');
+    try {
+      const dataPath = path.join(tempDir, 'secrets.txt');
+      await fsp.writeFile(
+        dataPath,
+        [
+          'Authorization: Bearer bearer-token-that-should-not-persist',
+          'Cookie: sessionid=abc123; theme=light',
+          'OPENAI_API_KEY=sk-testtoken000000000000000000',
+          '{"access_token":"json-token-that-should-not-persist"}',
+          'dsn=https://user:pass@example.com/path',
+          'normal cookies and bread baking',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const r = runCli(
+        ['capture', '--kb=project', '--append=snapshots.md', '--', 'cat', dataPath],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      const summary = JSON.parse(r.stdout) as {
+        redaction_summary: { enabled: boolean; total: number; by_type: Record<string, number> };
+      };
+      expect(summary.redaction_summary.enabled).toBe(true);
+      expect(summary.redaction_summary.total).toBe(5);
+      expect(summary.redaction_summary.by_type).toEqual({
+        authorization_header: 1,
+        cookie_header: 1,
+        dotenv_secret: 1,
+        json_secret: 1,
+        credential_url: 1,
+      });
+
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('Authorization: Bearer [REDACTED]');
+      expect(after).toContain('Cookie: [REDACTED]');
+      expect(after).toContain('OPENAI_API_KEY=[REDACTED]');
+      expect(after).toContain('"access_token":"[REDACTED]"');
+      expect(after).toContain('dsn=https://[REDACTED]@example.com/path');
+      expect(after).toContain('normal cookies and bread baking');
+      expect(after).not.toContain('bearer-token-that-should-not-persist');
+      expect(after).not.toContain('sessionid=abc123');
+      expect(after).not.toContain('sk-testtoken000000000000000000');
+      expect(after).not.toContain('json-token-that-should-not-persist');
+      expect(after).not.toContain('user:pass@example.com');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts secrets from the displayed command line by default', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-redact-command-');
+    try {
+      const r = runCli(
+        [
+          'capture',
+          '--kb=project',
+          '--append=snapshots.md',
+          '--',
+          'printf',
+          'Authorization: Bearer command-token-that-should-not-persist\n',
+        ],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('Authorization: Bearer [REDACTED]');
+      expect(after).not.toContain('command-token-that-should-not-persist');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts prefixed secret keys in captured stdout and displayed command lines', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-prefixed-redact-');
+    try {
+      const r = runCli(
+        [
+          'capture',
+          '--kb=project',
+          '--append=snapshots.md',
+          '--',
+          'sh',
+          '-c',
+          'MY_PASSWORD=command-secret printf \'{"DATABASE_PASSWORD":"json-secret"}\\n\'',
+        ],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      const summary = JSON.parse(r.stdout) as {
+        redaction_summary: { enabled: boolean; total: number; by_type: Record<string, number> };
+      };
+      expect(summary.redaction_summary).toEqual({
+        enabled: true,
+        total: 3,
+        by_type: {
+          json_secret: 2,
+          key_value_secret: 1,
+        },
+      });
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('MY_PASSWORD=[REDACTED]');
+      expect(after).toContain('"DATABASE_PASSWORD":"[REDACTED]"');
+      expect(after).not.toContain('command-secret');
+      expect(after).not.toContain('json-secret');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves raw captured stdout when --no-redact is passed', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-no-redact-');
+    try {
+      const r = runCli(
+        [
+          'capture',
+          '--kb=project',
+          '--append=snapshots.md',
+          '--no-redact',
+          '--',
+          'sh',
+          '-c',
+          'MY_PASSWORD=raw-command-secret printf safe-output',
+        ],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      const summary = JSON.parse(r.stdout) as {
+        redaction_summary: { enabled: boolean; total: number; by_type: Record<string, number> };
+      };
+      expect(summary.redaction_summary).toEqual({
+        enabled: false,
+        total: 0,
+        by_type: {},
+      });
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('MY_PASSWORD=raw-command-secret');
+      expect(after).toContain('safe-output');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('truncates at --max-bytes and records the elision count', async () => {
     const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-trunc-');
     try {
