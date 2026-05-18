@@ -18,6 +18,7 @@ import { EVAL_GATE_HELP, runEvalGate } from './cli-eval-gate.js';
 import { EXPLAIN_HELP, runExplain } from './cli-explain.js';
 import { LIST_HELP, runList } from './cli-list.js';
 import { LLM_HELP, runLlm } from './cli-llm.js';
+import { LOGS_HELP, runLogs } from './cli-logs.js';
 import { MODELS_HELP, runModels } from './cli-models.js';
 import { PROMOTE_HELP, runPromote } from './cli-promote.js';
 import { QUARANTINE_HELP, runQuarantine } from './cli-quarantine.js';
@@ -92,6 +93,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'capture',      summary: 'Run a command and append its stdout to a KB note as a fenced block.',    help: CAPTURE_HELP,      handler: runCapture },
   { name: 'compare',      summary: 'Side-by-side rank/score table for two embedding models.',                help: COMPARE_HELP,      handler: runCompare },
   { name: 'doctor',       summary: 'Aggregate model / index / backend health report.',                       help: DOCTOR_HELP,       handler: runDoctor },
+  { name: 'logs',         summary: 'Inspect historical canonical request logs.',                             help: LOGS_HELP,         handler: runLogs },
   { name: 'stats',        summary: 'Read-only index/corpus stats (mirrors the MCP kb_stats payload).',       help: STATS_HELP,        handler: runStats },
   { name: 'eval',         summary: 'Run fixture-driven retrieval checks.',                                   help: EVAL_HELP,         handler: runEval },
   { name: 'eval-gate',    summary: 'RFC 018 M0 relevance-gate validation harness (downstream answer quality).', help: EVAL_GATE_HELP,  handler: runEvalGate },
@@ -133,6 +135,8 @@ Environment:
   KB_ACTIVE_MODEL           Override the active model for this process (RFC 013 §4.7).
   KB_DAEMON_URL             URL for \`kb search --daemon\` (default http://127.0.0.1:17799).
   KB_LLM_ENDPOINT           OpenAI-compatible endpoint used by \`kb ask\`.
+  LOG_FILE                  Optional file used by \`kb logs\` and by runtime logging.
+  KB_LOG_FORMAT             text | canonical | both (default both).
   OLLAMA_*, OPENAI_*, HUGGINGFACE_*
                             Provider-specific config; see the provider's docs.
 
