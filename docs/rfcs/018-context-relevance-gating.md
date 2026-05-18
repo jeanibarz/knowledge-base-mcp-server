@@ -298,6 +298,8 @@ This RFC delivers the kb-mcp-server mechanism; the Kookr-side hook is cross-repo
 
 **M1 — Canary** (operator-driven, post-M0c). Run a representative query set — including no-good-answer and the "answer-present-but-distant" fixture class — with `KB_RELEVANCE_GATE=on`. Success = downstream answer quality (per the M0 method), plus recall on known-good fixtures; injection-rate is reported but is **not** a success criterion. Run the position-swap probe. Tune the dense and BM25 floors. Go/no-go: keep `on` only if answer quality improves without recall loss.
 
+> **M1 ran 2026-05-18 (#372)** — `kb eval-gate --m1`; full report in `docs/rfcs/018-m1-canary-report.md`. Result: **NO-GO** for default-on — no downstream answer-quality gain and a recall regression, measured with the only available local judge (`gemma3:4b`, which §5 classes as under-capable). `KB_RELEVANCE_GATE` stays `off` by default. The M0a/M0c code is validated, not removed (sunset clause satisfied). Re-validate with a capable judge model and after the RFC 019 reranker lands.
+
 **M2 — Kookr hook integration** (cross-repo, separate task). The hook adopts §11. **Acceptance criteria:** the hook passes a freshness-stamped `task_context`; validates the response against the `relevance-gate-schema` artifact; honors `no-relevant-context` / `empty-index` (integration test injecting nothing on the respective fixtures) and propagates `low_confidence`; echoes `gate_verdict` to the debug channel.
 
 **M3 — Default the gate on.** Out of scope; conditional on M1.

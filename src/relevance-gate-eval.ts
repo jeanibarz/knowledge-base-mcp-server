@@ -606,6 +606,7 @@ export interface GateEvalReportMeta {
 export function formatGateEvalReportMarkdown(
   aggregate: GateEvalAggregate,
   meta: GateEvalReportMeta,
+  headerLine = '# RFC 018 M0 — relevance-gate validation report',
 ): string {
   const pct = (v: number): string => `${(v * 100).toFixed(1)}%`;
   const signed = (v: number): string => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}pp`;
@@ -613,7 +614,7 @@ export function formatGateEvalReportMarkdown(
     bucket.count === 0 ? 'n/a' : pct(bucket[key] / bucket.count);
 
   const lines: string[] = [];
-  lines.push('# RFC 018 M0 — relevance-gate validation report');
+  lines.push(headerLine);
   lines.push('');
   lines.push(`- Generated: ${meta.generatedAt}`);
   lines.push(`- Fixture: \`${meta.fixturePath}\``);
