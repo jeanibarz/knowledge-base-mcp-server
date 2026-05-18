@@ -1,4 +1,5 @@
 import * as fsp from 'fs/promises';
+import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -21,6 +22,20 @@ function modelNameFileIn(faissPath: string): string {
 }
 function lastIndexUpdatePathIn(faissPath: string): string {
   return path.join(modelDirIn(faissPath), 'last-index-update.json');
+}
+function pendingManifestPathIn(faissPath: string): string {
+  return path.join(modelDirIn(faissPath), 'pending-manifest.json');
+}
+async function seedVersionedIndex(faissPath: string): Promise<void> {
+  const modelDirPath = modelDirIn(faissPath);
+  const versionDir = versionedIndexPathIn(faissPath);
+  await fsp.mkdir(versionDir, { recursive: true });
+  await fsp.writeFile(path.join(versionDir, 'faiss.index'), 'mock-index');
+  await fsp.writeFile(path.join(versionDir, 'docstore.json'), '{}');
+  await fsp.symlink('index.v0', path.join(modelDirPath, 'index'));
+}
+function sha256Hex(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
 }
 
 const saveMock = jest.fn();
@@ -618,6 +633,180 @@ describe('FaissIndexManager permission handling', () => {
       expect(sidecarContent).toMatch(/^[0-9a-f]{64}$/);
       await expect(fsp.stat(`${sidecarPath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
     }
+    await expect(fsp.stat(pendingManifestPathIn(process.env.FAISS_INDEX_PATH!)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('recovers a save-complete pending manifest by finishing hash and chunk sidecars', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pending-complete-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'doc.md');
+    const sourceHash = sha256Hex('# Title\n\nRecovered content.');
+    await fsp.writeFile(docPath, '# Title\n\nRecovered content.');
+
+    const faissDir = path.join(tempDir, '.faiss');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const sidecarPath = path.join(defaultKb, '.index', 'doc.md');
+    const chunkManifestPath = `${sidecarPath}.chunks.json`;
+    const chunkManifest = {
+      schema_version: 'kb.chunk-manifest.v1',
+      source_sha256: sourceHash,
+      chunks: [{
+        chunkIndex: 0,
+        textHash: sha256Hex('Recovered content.'),
+        metadataHash: sha256Hex('metadata'),
+        vectorDocstoreId: sha256Hex('docstore-id'),
+      }],
+    };
+    await seedVersionedIndex(faissDir);
+    await fsp.writeFile(
+      pendingManifestPathIn(faissDir),
+      JSON.stringify({
+        schema_version: 'kb.pending-sidecar-commit.v1',
+        phase: 'save-complete',
+        pending_hash_writes: [{ path: sidecarPath, hash: sourceHash }],
+        pending_chunk_manifest_writes: [{
+          path: chunkManifestPath,
+          manifest: chunkManifest,
+        }],
+      }),
+      'utf-8',
+    );
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    await expect(fsp.readFile(sidecarPath, 'utf-8')).resolves.toBe(sourceHash);
+    await expect(fsp.readFile(chunkManifestPath, 'utf-8'))
+      .resolves.toBe(JSON.stringify(chunkManifest));
+    await expect(fsp.stat(pendingManifestPathIn(faissDir)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    expect(loadMock).toHaveBeenCalledWith(versionedIndexPathIn(faissDir), expect.anything());
+  });
+
+  it('refuses a save-complete pending manifest when the active FAISS index is missing', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pending-missing-index-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const faissDir = path.join(tempDir, '.faiss');
+    await fsp.mkdir(modelDirIn(faissDir), { recursive: true });
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const sidecarPath = path.join(defaultKb, '.index', 'doc.md');
+    await fsp.writeFile(
+      pendingManifestPathIn(faissDir),
+      JSON.stringify({
+        schema_version: 'kb.pending-sidecar-commit.v1',
+        phase: 'save-complete',
+        pending_hash_writes: [{ path: sidecarPath, hash: 'a'.repeat(64) }],
+        pending_chunk_manifest_writes: [],
+      }),
+      'utf-8',
+    );
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await expect(manager.initialize()).rejects.toThrow(/marked save-complete/);
+    await expect(fsp.stat(sidecarPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('leaves a save-complete pending manifest when sidecar writes fail after FAISS save', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pending-sidecar-fail-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'doc.md');
+    const docContent = '# Title\n\nSidecar failure content.';
+    const sourceHash = sha256Hex(docContent);
+    await fsp.writeFile(docPath, docContent);
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    const sidecarPath = path.join(defaultKb, '.index', 'doc.md');
+    await fsp.mkdir(path.dirname(sidecarPath), { recursive: true });
+    await fsp.chmod(path.dirname(sidecarPath), 0o500);
+
+    await expect(manager.updateIndex()).rejects.toThrow(/write file hash metadata/);
+    expect(saveMock).toHaveBeenCalledTimes(1);
+
+    const manifest = JSON.parse(
+      await fsp.readFile(pendingManifestPathIn(process.env.FAISS_INDEX_PATH!), 'utf-8'),
+    ) as {
+      phase: string;
+      pending_hash_writes: Array<{ path: string; hash: string }>;
+      pending_chunk_manifest_writes: Array<{ path: string; manifest: { source_sha256: string } }>;
+    };
+    expect(manifest.phase).toBe('save-complete');
+    expect(manifest.pending_hash_writes).toEqual([{ path: sidecarPath, hash: sourceHash }]);
+    expect(manifest.pending_chunk_manifest_writes).toEqual([
+      expect.objectContaining({
+        path: `${sidecarPath}.chunks.json`,
+        manifest: expect.objectContaining({ source_sha256: sourceHash }),
+      }),
+    ]);
+  });
+
+  it('purges the persisted store and sidecars for an ambiguous save-started pending manifest', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pending-started-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(path.join(defaultKb, '.index'), { recursive: true });
+    const sidecarPath = path.join(defaultKb, '.index', 'doc.md');
+    await fsp.writeFile(sidecarPath, 'b'.repeat(64));
+
+    const faissDir = path.join(tempDir, '.faiss');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    await seedVersionedIndex(faissDir);
+    await fsp.writeFile(
+      pendingManifestPathIn(faissDir),
+      JSON.stringify({
+        schema_version: 'kb.pending-sidecar-commit.v1',
+        phase: 'save-started',
+        pending_hash_writes: [{ path: sidecarPath, hash: 'c'.repeat(64) }],
+        pending_chunk_manifest_writes: [],
+      }),
+      'utf-8',
+    );
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    await expect(fsp.stat(path.join(modelDirIn(faissDir), 'index')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(versionedIndexPathIn(faissDir)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(path.join(defaultKb, '.index')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(pendingManifestPathIn(faissDir)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('batches changed-file embeddings according to INDEXING_BATCH_SIZE', async () => {

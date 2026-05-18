@@ -287,8 +287,21 @@ export async function saveFaissStoreAtomic(options: {
    * that does not have a stable shared root to use).
    */
   casRoot?: string | null;
+  /**
+   * Called immediately after the active `index` symlink has been swapped to
+   * the new version, before best-effort pruning/GC. Callers use this as the
+   * durable commit point for sidecar recovery records.
+   */
+  onCommitted?: () => Promise<void>;
 }): Promise<void> {
-  const { store, modelDir, modelId, swapCounter, casRoot = null } = options;
+  const {
+    store,
+    modelDir,
+    modelId,
+    swapCounter,
+    casRoot = null,
+    onCommitted,
+  } = options;
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
   const currentTarget = await readSymlinkOrNull(symlinkPath);
   const nextVersion = nextVersionAfter(currentTarget);
@@ -315,6 +328,7 @@ export async function saveFaissStoreAtomic(options: {
   );
   await fsp.symlink(nextVersion, tmpLink);
   await fsp.rename(tmpLink, symlinkPath);
+  await onCommitted?.();
   logger.info(
     `atomicSave: ${modelId} ${currentTarget ?? '(none)'} -> ${nextVersion}` +
       (dedup

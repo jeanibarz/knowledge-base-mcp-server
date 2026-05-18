@@ -139,7 +139,7 @@ function isChunkManifestEntry(value: unknown): value is ChunkManifestEntry {
   );
 }
 
-function isChunkManifest(value: unknown): value is ChunkManifest {
+export function isChunkManifest(value: unknown): value is ChunkManifest {
   if (!isJsonObject(value)) return false;
   return (
     value.schema_version === CHUNK_MANIFEST_SCHEMA_VERSION &&
