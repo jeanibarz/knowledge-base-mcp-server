@@ -56,6 +56,11 @@ import {
   writeFreshnessManifest,
 } from './freshness-manifest.js';
 import {
+  clearPendingSidecarCommitManifest,
+  readPendingSidecarCommitManifest,
+  writePendingSidecarCommitManifest,
+} from './pending-sidecar-commit.js';
+import {
   createSimilaritySearchPostFilter,
   type ScoredDocument,
   type SimilaritySearchFilters,
@@ -643,6 +648,9 @@ export class FaissIndexManager {
           handleFsOperationError('create FAISS model directory', this.modelDir, error);
         }
       }
+      if (!readOnly) {
+        await this.recoverPendingSidecarCommit();
+      }
       // RFC 013: no model-switch wipe at initialize time. Each model has its
       // own dir; a different provider+model goes to a different `models/<id>/`.
       // RFC 014: load via the new versioned layout if present, fall back to
@@ -737,13 +745,13 @@ export class FaissIndexManager {
    * by default.
    */
   private async purgeStaleSidecars(
-    reason: 'store_missing' | 'ingest_filter_changed',
+    reason: 'store_missing' | 'ingest_filter_changed' | 'pending_sidecar_commit',
   ): Promise<void> {
     await withSidecarLock(() => this.purgeStaleSidecarsLocked(reason));
   }
 
   private async purgeStaleSidecarsLocked(
-    reason: 'store_missing' | 'ingest_filter_changed',
+    reason: 'store_missing' | 'ingest_filter_changed' | 'pending_sidecar_commit',
   ): Promise<void> {
     let kbs: string[];
     try {
@@ -801,6 +809,12 @@ export class FaissIndexManager {
           `Common causes: manual removal of $FAISS_INDEX_PATH, partial backup restore, ` +
           `crash mid-rebuild, or model switch with the prior model's store moved aside.`,
       );
+    } else if (purged.length > 0 && reason === 'pending_sidecar_commit') {
+      logger.warn(
+        `Pending sidecar commit recovery for model ${this.modelId} purged stale ` +
+          `sidecars for ${purged.length} knowledge base(s) [${purged.join(', ')}] ` +
+          `because the previous process crashed before the FAISS save outcome was confirmed.`,
+      );
     } else if (purged.length > 0) {
       logger.warn(
         `Ingest filter for model ${this.modelId} changed since the last successful index ` +
@@ -825,7 +839,7 @@ export class FaissIndexManager {
   }
 
   private async purgePersistedIndexStore(
-    reason: 'force_reindex' | 'ingest_filter_changed',
+    reason: 'force_reindex' | 'ingest_filter_changed' | 'pending_sidecar_commit',
   ): Promise<void> {
     const removed: string[] = [];
     let entries: Array<{ name: string }>;
@@ -874,6 +888,41 @@ export class FaissIndexManager {
           `(${reason}; entries=${removed.join(', ')}).`,
       );
     }
+  }
+
+  private async recoverPendingSidecarCommit(): Promise<void> {
+    const pending = await readPendingSidecarCommitManifest(this.modelDir);
+    if (pending === null) return;
+
+    if (pending.phase === 'save-started') {
+      logger.warn(
+        `Pending sidecar commit for model ${this.modelId} was interrupted before ` +
+          `the FAISS save was confirmed. Removing the persisted store and stale ` +
+          `sidecars so the next updateIndex rebuilds instead of risking duplicate vectors.`,
+      );
+      await this.purgePersistedIndexStore('pending_sidecar_commit');
+      await this.purgeStaleSidecars('pending_sidecar_commit');
+      await clearPendingSidecarCommitManifest(this.modelDir);
+      return;
+    }
+
+    const activeIndexFilePath = await this.resolveActiveIndexFilePath();
+    if (activeIndexFilePath === null) {
+      throw new Error(
+        `Pending sidecar commit for model ${this.modelId} is marked save-complete, ` +
+          `but no active FAISS index file exists under ${this.modelDir}. Refusing ` +
+          `to write hash sidecars for vectors that cannot be verified on disk.`,
+      );
+    }
+
+    logger.warn(
+      `Recovering pending sidecar commit for model ${this.modelId}: ` +
+        `${pending.pending_hash_writes.length} hash sidecar(s), ` +
+        `${pending.pending_chunk_manifest_writes.length} chunk manifest(s).`,
+    );
+    await writeSidecarHashes(pending.pending_hash_writes);
+    await writeChunkManifests(pending.pending_chunk_manifest_writes);
+    await clearPendingSidecarCommitManifest(this.modelDir);
   }
 
   /**
@@ -1033,7 +1082,7 @@ export class FaissIndexManager {
    * future caller that bypasses updateIndex must wrap in withWriteLock.
    * In NODE_ENV=test we assert the lock is held via proper-lockfile.check().
    */
-  private async atomicSave(): Promise<void> {
+  private async atomicSave(opts: { onCommitted?: () => Promise<void> } = {}): Promise<void> {
     if (!this.faissIndex) throw new Error('atomicSave called with null faissIndex');
 
     // PRECONDITION: caller MUST hold withWriteLock(this.modelDir). The four
@@ -1052,6 +1101,7 @@ export class FaissIndexManager {
       modelId: this.modelId,
       swapCounter: this.swapCounter,
       casRoot: casRootForIndexPath(FAISS_INDEX_PATH),
+      onCommitted: opts.onCommitted,
     });
   }
 
@@ -1889,7 +1939,11 @@ export class FaissIndexManager {
         // (if present from a pre-RFC-014 install) is intentionally NOT
         // updated; first save under v014 effectively migrates the model to
         // versioned layout.
+        const shouldPersistPendingSidecarCommit =
+          indexMutated &&
+          (pendingHashWrites.length > 0 || pendingChunkManifestWrites.length > 0);
         if (indexMutated) {
+          let faissStoreCommitted = false;
           try {
             const saveStartedAtMs = Date.now();
             await emitProgress({
@@ -1899,7 +1953,27 @@ export class FaissIndexManager {
               phase: 'save',
               phaseStatus: 'started',
             });
-            await this.atomicSave();
+            if (shouldPersistPendingSidecarCommit) {
+              await writePendingSidecarCommitManifest({
+                modelDir: this.modelDir,
+                phase: 'save-started',
+                pendingHashWrites,
+                pendingChunkManifestWrites,
+              });
+            }
+            await this.atomicSave({
+              onCommitted: shouldPersistPendingSidecarCommit
+                ? async () => {
+                    faissStoreCommitted = true;
+                    await writePendingSidecarCommitManifest({
+                      modelDir: this.modelDir,
+                      phase: 'save-complete',
+                      pendingHashWrites,
+                      pendingChunkManifestWrites,
+                    });
+                  }
+                : undefined,
+            });
             runSummary.saved = true;
             await emitProgress({
               processedFiles,
@@ -1917,6 +1991,10 @@ export class FaissIndexManager {
               this.modelId,
               saveError,
             );
+          } finally {
+            if (!faissStoreCommitted && shouldPersistPendingSidecarCommit) {
+              await clearPendingSidecarCommitManifest(this.modelDir).catch(() => undefined);
+            }
           }
         }
         // Sidecars are written only after any needed index save has
@@ -1925,10 +2003,9 @@ export class FaissIndexManager {
         // `writeSidecarHashes` runs the batch under `withSidecarLock` so a
         // concurrent model's `purgeStaleSidecars` cannot rmrf
         // `<kb>/.index/` between our pre-loop `mkdir` and `rename` (issue
-        // #90 follow-up). A crash between save() and every rename
-        // completing will re-embed the unhashed files on next start,
-        // duplicating their vectors until RFC 007 PR 2.1 lands the
-        // pending-manifest protocol.
+        // #90 follow-up). For index-mutating updates, pending-manifest.json
+        // remains on disk until every sidecar write completes so initialize()
+        // can finish the sidecar commit after a process crash.
         try {
           const sidecarStartedAtMs = Date.now();
           await emitProgress({
@@ -1969,6 +2046,9 @@ export class FaissIndexManager {
           });
           for (const entry of successfulIndexedFiles) {
             await recordQuarantineSuccess(entry.knowledgeBasePath, entry.relativePath);
+          }
+          if (shouldPersistPendingSidecarCommit) {
+            await clearPendingSidecarCommitManifest(this.modelDir);
           }
         } catch (sidecarError: unknown) {
           recordFailure(null, 'sidecar', sidecarError);
