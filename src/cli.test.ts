@@ -117,6 +117,111 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.stdout).toContain('Available commands:');
   });
 
+  it('kb help --format=json emits a stable command manifest (#383)', () => {
+    const r = runCli(['help', '--format=json']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe('');
+    const manifest = JSON.parse(r.stdout) as {
+      schema_version: string;
+      command: string;
+      usage: string[];
+      commands: Array<{
+        name: string;
+        summary: string;
+        usage: string[];
+        options: Array<{ flags: string[]; value: string | null; description: string }>;
+        stability: string;
+      }>;
+      environment: Array<{ name: string; description: string }>;
+      exit_codes: Array<{ code: number; description: string }>;
+      stability: string;
+    };
+
+    expect(manifest.schema_version).toBe('kb.help.v1');
+    expect(manifest.command).toBe('kb');
+    expect(manifest.usage).toContain('kb <command> [options]');
+    expect(manifest.stability).toBe('stable');
+    expect(manifest.environment).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'KNOWLEDGE_BASES_ROOT_DIR' }),
+      expect.objectContaining({ name: 'KB_LLM_ENDPOINT' }),
+      expect.objectContaining({
+        name: 'OLLAMA_*',
+        description: expect.stringContaining('Provider-specific config'),
+      }),
+      expect.objectContaining({
+        name: 'OPENAI_*',
+        description: expect.stringContaining('Provider-specific config'),
+      }),
+      expect.objectContaining({
+        name: 'HUGGINGFACE_*',
+        description: expect.stringContaining('Provider-specific config'),
+      }),
+    ]));
+    expect(manifest.environment.find((entry) => entry.name === 'KB_LLM_ENDPOINT')?.description)
+      .toBe('OpenAI-compatible endpoint used by `kb ask`.');
+    expect(manifest.exit_codes).toEqual(expect.arrayContaining([
+      { code: 0, description: 'success (results found or empty)' },
+      { code: 2, description: 'argv / env / model-resolution error' },
+    ]));
+    const names = manifest.commands.map((command) => command.name);
+    expect(names).toEqual([
+      'list',
+      'search',
+      'serve',
+      'ask',
+      'remember',
+      'capture',
+      'compare',
+      'doctor',
+      'stats',
+      'eval',
+      'eval-gate',
+      'explain',
+      'stale-check',
+      'superseded',
+      'promote',
+      'quarantine',
+      'where',
+      'models',
+      'llm',
+      'reindex',
+    ]);
+    for (const command of manifest.commands) {
+      for (const option of command.options) {
+        for (const flag of option.flags) {
+          expect(`${command.name}:${flag}`).toMatch(/^[a-z0-9-]+:--?$|^[a-z0-9-]+:--?[A-Za-z0-9][A-Za-z0-9-]*$/);
+        }
+      }
+    }
+    const search = manifest.commands.find((command) => command.name === 'search');
+    expect(search).toMatchObject({
+      summary: 'Semantic search across one or all knowledge bases.',
+      stability: 'stable',
+    });
+    expect(search?.usage).toContain('kb search <query> [options]');
+    expect(search?.options).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        flags: ['--format'],
+        value: 'md|json|vimgrep',
+      }),
+      expect.objectContaining({
+        flags: ['--help', '-h'],
+        value: null,
+      }),
+    ]));
+    const llm = manifest.commands.find((command) => command.name === 'llm');
+    expect(llm?.options).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        flags: ['--profile'],
+        value: '<name>',
+      }),
+      expect.objectContaining({
+        flags: ['--all'],
+        value: null,
+      }),
+    ]));
+  });
+
   it('kb help <command> mirrors `kb <command> --help`', () => {
     const a = runCli(['help', 'search']);
     const b = runCli(['search', '--help']);
@@ -125,11 +230,93 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(a.stdout).toBe(b.stdout);
   });
 
+  it('kb help <command> --format=json emits only the selected command manifest (#383)', () => {
+    const r = runCli(['help', 'search', '--format=json']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe('');
+    const payload = JSON.parse(r.stdout) as {
+      schema_version: string;
+      command: {
+        name: string;
+        summary: string;
+        usage: string[];
+        options: Array<{ flags: string[]; value: string | null; description: string }>;
+        stability: string;
+      };
+    };
+
+    expect(payload.schema_version).toBe('kb.help.v1');
+    expect(payload.command.name).toBe('search');
+    expect(payload.command.usage).toContain('kb search <query> [options]');
+    expect(payload.command.options).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        flags: ['--kb'],
+        value: '<name>',
+      }),
+      expect.objectContaining({
+        flags: ['--format'],
+        value: 'md|json|vimgrep',
+      }),
+    ]));
+    expect(payload.command.stability).toBe('stable');
+  });
+
+  it('kb help <command> --format=json handles wrapped usage and examples safely (#383)', () => {
+    const r = runCli(['help', 'promote', '--format=json']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe('');
+    const payload = JSON.parse(r.stdout) as {
+      command: {
+        usage: string[];
+        options: Array<{ flags: string[]; value: string | null; description: string }>;
+      };
+    };
+
+    expect(payload.command.usage).toEqual(expect.arrayContaining([
+      'kb promote --kb=<name> --query=<topic> [--k=<int>] [--format=md|json]',
+      'kb promote --kb=<name> --path=<rel.md>',
+      '[--review-status=approved|needs-review]',
+      '[--format=md|json] [--yes]',
+    ]));
+    const reviewStatusOptions = payload.command.options.filter((option) => (
+      option.flags.includes('--review-status')
+    ));
+    expect(reviewStatusOptions).toHaveLength(1);
+    expect(reviewStatusOptions[0]).toMatchObject({
+      value: '<value>',
+      description: expect.stringContaining('New review status'),
+    });
+    expect(payload.command.options).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        value: 'approved --last-verified-at=now --yes',
+      }),
+    ]));
+  });
+
   it('kb help unknown-cmd exits 2 with a stderr error', () => {
     const r = runCli(['help', 'not-a-real-command']);
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("unknown command 'not-a-real-command'");
     expect(r.stdout).toBe('');
+  });
+
+  it('kb help unknown-cmd --format=json keeps the existing error contract (#383)', () => {
+    const r = runCli(['help', 'not-a-real-command', '--format=json']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("unknown command 'not-a-real-command'");
+    expect(r.stdout).toBe('');
+  });
+
+  it('kb help --format rejects unsupported formats and unknown flags (#383)', () => {
+    const invalidFormat = runCli(['help', '--format=yaml']);
+    expect(invalidFormat.code).toBe(2);
+    expect(invalidFormat.stderr).toContain('invalid --format: --format=yaml');
+    expect(invalidFormat.stdout).toBe('');
+
+    const unknownFlag = runCli(['help', 'search', '--bogus']);
+    expect(unknownFlag.code).toBe(2);
+    expect(unknownFlag.stderr).toContain('unknown flag: --bogus');
+    expect(unknownFlag.stdout).toBe('');
   });
 
   it('--help anywhere in argv intercepts before the subcommand runs', () => {
