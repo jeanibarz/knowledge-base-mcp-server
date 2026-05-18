@@ -9,7 +9,7 @@ kb doctor
 kb doctor --format=json
 ```
 
-`kb doctor` reports active-model resolution, index path and version, stale file counts, embedding backend health, CLI package and symlink state, git drift for linked checkouts, and the latest index-update summary. Use it before deleting index files or changing client configuration.
+`kb doctor` reports active-model resolution, index path and version, stale file counts, embedding backend health, local LLM endpoint readiness for `kb ask`, CLI package and symlink state, git drift for linked checkouts, and the latest index-update summary. Use it before deleting index files, changing client configuration, or debugging local LLM answers.
 
 ## Quick Symptom Table
 
