@@ -23,7 +23,7 @@ import {
   ActiveModelResolutionError,
   resolveActiveModel,
 } from './active-model.js';
-import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import { loadManagerForModel, loadWithJsonRetry as loadManagerWithJsonRetry } from './cli-shared.js';
 import type { ScoredDocument } from './formatter.js';
 
 export const WHERE_HELP = `kb where — recommend the best KB and file for a topic (read-only)
@@ -72,54 +72,74 @@ export interface WhereDecision {
   suggestedInvocation: string;
 }
 
+type WhereSearchManager = Pick<FaissIndexManager, 'similaritySearch'>;
+
+export interface RunWhereDeps {
+  bootstrapLayout: () => Promise<void>;
+  resolveActiveModel: (options: { explicitOverride?: string }) => Promise<string>;
+  loadManagerForModel: (modelId: string) => Promise<WhereSearchManager>;
+  loadWithJsonRetry: (manager: WhereSearchManager) => Promise<void>;
+  stdout: (text: string) => void;
+  stderr: (text: string) => void;
+}
+
+const DEFAULT_WHERE_DEPS: RunWhereDeps = {
+  bootstrapLayout: () => FaissIndexManager.bootstrapLayout(),
+  resolveActiveModel,
+  loadManagerForModel,
+  loadWithJsonRetry: (manager) => loadManagerWithJsonRetry(manager as FaissIndexManager),
+  stdout: (text) => process.stdout.write(text),
+  stderr: (text) => process.stderr.write(text),
+};
+
 const DEFAULT_CONFIDENCE_THRESHOLD = 1.0;
 const DEFAULT_K = 20;
 
-export async function runWhere(rest: string[]): Promise<number> {
+export async function runWhere(rest: string[], deps: RunWhereDeps = DEFAULT_WHERE_DEPS): Promise<number> {
   let parsed: WhereArgs;
   try {
     parsed = parseWhereArgs(rest);
   } catch (err) {
-    process.stderr.write(`kb where: ${(err as Error).message}\n`);
+    deps.stderr(`kb where: ${(err as Error).message}\n`);
     return 2;
   }
 
   if (parsed.topic === null) {
-    process.stderr.write('kb where: missing --topic=<query>\n');
+    deps.stderr('kb where: missing --topic=<query>\n');
     return 2;
   }
 
   try {
-    await FaissIndexManager.bootstrapLayout();
+    await deps.bootstrapLayout();
   } catch (err) {
-    process.stderr.write(`kb where: layout bootstrap failed: ${(err as Error).message}\n`);
+    deps.stderr(`kb where: layout bootstrap failed: ${(err as Error).message}\n`);
     return 1;
   }
 
   let activeModelId: string;
   try {
-    activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
+    activeModelId = await deps.resolveActiveModel({ explicitOverride: parsed.model });
   } catch (err) {
     if (err instanceof ActiveModelResolutionError) {
-      process.stderr.write(`kb where: ${err.message}\n`);
+      deps.stderr(`kb where: ${err.message}\n`);
       return 2;
     }
-    process.stderr.write(`kb where: ${(err as Error).message}\n`);
+    deps.stderr(`kb where: ${(err as Error).message}\n`);
     return 1;
   }
 
-  let manager: FaissIndexManager;
+  let manager: WhereSearchManager;
   try {
-    manager = await loadManagerForModel(activeModelId);
+    manager = await deps.loadManagerForModel(activeModelId);
   } catch (err) {
-    process.stderr.write(`kb where: ${(err as Error).message}\n`);
+    deps.stderr(`kb where: ${(err as Error).message}\n`);
     return 2;
   }
 
   try {
-    await loadWithJsonRetry(manager);
+    await deps.loadWithJsonRetry(manager);
   } catch (err) {
-    process.stderr.write(`kb where: ${(err as Error).message}\n`);
+    deps.stderr(`kb where: ${(err as Error).message}\n`);
     return 1;
   }
 
@@ -132,16 +152,16 @@ export async function runWhere(rest: string[]): Promise<number> {
       Number.POSITIVE_INFINITY,
     );
   } catch (err) {
-    process.stderr.write(`kb where: ${(err as Error).message}\n`);
+    deps.stderr(`kb where: ${(err as Error).message}\n`);
     return 1;
   }
 
   const decision = decideWhere(results, parsed.threshold);
   if (decision === null) {
     if (parsed.format === 'json') {
-      process.stdout.write(`${JSON.stringify({ recommended_kb: null, results: [] }, null, 2)}\n`);
+      deps.stdout(`${JSON.stringify({ recommended_kb: null, results: [] }, null, 2)}\n`);
     } else {
-      process.stdout.write(
+      deps.stdout(
         '_No similar notes found. Run `kb search --refresh` if the index is empty or stale._\n',
       );
     }
@@ -149,10 +169,10 @@ export async function runWhere(rest: string[]): Promise<number> {
   }
 
   if (parsed.format === 'json') {
-    process.stdout.write(`${JSON.stringify(toJsonShape(decision), null, 2)}\n`);
+    deps.stdout(`${JSON.stringify(toWhereJsonShape(decision), null, 2)}\n`);
   } else {
-    process.stdout.write(formatWhereMarkdown(decision));
-    process.stdout.write('\n');
+    deps.stdout(formatWhereMarkdown(decision));
+    deps.stdout('\n');
   }
   return 0;
 }
@@ -287,7 +307,7 @@ export function formatWhereMarkdown(d: WhereDecision): string {
   );
 }
 
-function toJsonShape(d: WhereDecision): Record<string, unknown> {
+export function toWhereJsonShape(d: WhereDecision): Record<string, unknown> {
   return {
     recommended_kb: d.recommendedKb,
     existing_target: d.existingTarget,
