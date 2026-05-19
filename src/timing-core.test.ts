@@ -4,7 +4,7 @@ import {
   formatTimingFooter,
   recordFreshnessScanTiming,
   recordRefreshProgressTiming,
-} from './cli-timing.js';
+} from './timing-core.js';
 
 describe('compactTimingPayload', () => {
   it('drops undefined values and rounds numeric measurements', () => {

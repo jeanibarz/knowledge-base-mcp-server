@@ -367,3 +367,136 @@ describe('aggregateContextualSidecarStats — #409 cache / failure diagnostics',
     expect(stats.failures_by_error_code).toEqual({ llm_refusal: 1 });
   });
 });
+
+describe('classifyContextualSidecarChunks — cache-aware reindex estimate (#408)', () => {
+  // Minimal sidecar writer — mirrors the on-disk shape `persistSidecar`
+  // produces, without going through the LLM resolver.
+  async function writeSidecar(
+    mod: ContextualPrefaceModule,
+    source: string,
+    kb: string,
+    chunks: Array<Record<string, unknown>>,
+    overrides: Record<string, unknown> = {},
+  ): Promise<void> {
+    const sidecarPath = mod.sidecarPathFor(source, kb);
+    await fsp.mkdir(path.dirname(sidecarPath), { recursive: true });
+    const payload = {
+      schema_version: 'contextual-preface.sidecar.v1',
+      source,
+      knowledge_base: kb,
+      document_hash: 'doc-hash',
+      generator: mod.GENERATOR_VERSION,
+      model: 'mock-llm',
+      chunk_size: 1000,
+      chunk_overlap: 200,
+      chunks,
+      ...overrides,
+    };
+    await fsp.writeFile(sidecarPath, JSON.stringify(payload), 'utf-8');
+  }
+
+  it('reports all-cold when no sidecar exists', async () => {
+    const mod = await loadModule();
+    const tally = await mod.classifyContextualSidecarChunks('/kbs/alpha/n.md', 'alpha', 3);
+    expect(tally).toEqual({ cache_hits: 0, retry_skips: 0, cold_chunks: 3 });
+  });
+
+  it('counts chunks with a stored preface as cache hits', async () => {
+    const mod = await loadModule();
+    const source = '/kbs/alpha/n.md';
+    await writeSidecar(mod, source, 'alpha', [
+      { chunk_index: 0, chunk_hash: 'a', preface: 'ctx 0' },
+      { chunk_index: 1, chunk_hash: 'b', preface: 'ctx 1' },
+    ]);
+    const tally = await mod.classifyContextualSidecarChunks(source, 'alpha', 2);
+    expect(tally).toEqual({ cache_hits: 2, retry_skips: 0, cold_chunks: 0 });
+  });
+
+  it('counts a future retry-after as a skip and an elapsed one as cold', async () => {
+    const mod = await loadModule();
+    const source = '/kbs/alpha/n.md';
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    const past = new Date(Date.now() - 3_600_000).toISOString();
+    await writeSidecar(mod, source, 'alpha', [
+      { chunk_index: 0, chunk_hash: 'a', preface: null, error_code: 'llm_unreachable', next_retry_after: future },
+      { chunk_index: 1, chunk_hash: 'b', preface: null, error_code: 'llm_unreachable', next_retry_after: past },
+      { chunk_index: 2, chunk_hash: 'c', preface: null },
+    ]);
+    const tally = await mod.classifyContextualSidecarChunks(source, 'alpha', 3);
+    expect(tally).toEqual({ cache_hits: 0, retry_skips: 1, cold_chunks: 2 });
+  });
+
+  it('treats indices with no matching sidecar entry as cold (partial sidecar)', async () => {
+    const mod = await loadModule();
+    const source = '/kbs/alpha/n.md';
+    await writeSidecar(mod, source, 'alpha', [
+      { chunk_index: 0, chunk_hash: 'a', preface: 'ctx 0' },
+    ]);
+    // Manifest says 4 chunks; the sidecar only covers index 0.
+    const tally = await mod.classifyContextualSidecarChunks(source, 'alpha', 4);
+    expect(tally).toEqual({ cache_hits: 1, retry_skips: 0, cold_chunks: 3 });
+  });
+
+  it('invalidates the whole sidecar when the generator version differs', async () => {
+    const mod = await loadModule();
+    const source = '/kbs/alpha/n.md';
+    await writeSidecar(
+      mod,
+      source,
+      'alpha',
+      [
+        { chunk_index: 0, chunk_hash: 'a', preface: 'ctx 0' },
+        { chunk_index: 1, chunk_hash: 'b', preface: 'ctx 1' },
+      ],
+      { generator: 'contextual-preface.v0-stale' },
+    );
+    const tally = await mod.classifyContextualSidecarChunks(source, 'alpha', 2);
+    expect(tally).toEqual({ cache_hits: 0, retry_skips: 0, cold_chunks: 2 });
+  });
+
+  it('invalidates the whole sidecar when the chunk size differs', async () => {
+    const mod = await loadModule();
+    const source = '/kbs/alpha/n.md';
+    await writeSidecar(
+      mod,
+      source,
+      'alpha',
+      [{ chunk_index: 0, chunk_hash: 'a', preface: 'ctx 0' }],
+      { chunk_size: 512 },
+    );
+    const tally = await mod.classifyContextualSidecarChunks(source, 'alpha', 1);
+    expect(tally).toEqual({ cache_hits: 0, retry_skips: 0, cold_chunks: 1 });
+  });
+
+  it('honours the nowMs argument for deterministic retry arithmetic', async () => {
+    const mod = await loadModule();
+    const source = '/kbs/alpha/n.md';
+    await writeSidecar(mod, source, 'alpha', [
+      { chunk_index: 0, chunk_hash: 'a', preface: null, next_retry_after: '2026-06-01T00:00:00.000Z' },
+    ]);
+    const before = await mod.classifyContextualSidecarChunks(
+      source, 'alpha', 1, Date.parse('2026-05-01T00:00:00.000Z'),
+    );
+    expect(before).toEqual({ cache_hits: 0, retry_skips: 1, cold_chunks: 0 });
+    const after = await mod.classifyContextualSidecarChunks(
+      source, 'alpha', 1, Date.parse('2026-07-01T00:00:00.000Z'),
+    );
+    expect(after).toEqual({ cache_hits: 0, retry_skips: 0, cold_chunks: 1 });
+  });
+
+  it('returns an all-zero tally for a zero expected chunk count', async () => {
+    const mod = await loadModule();
+    expect(await mod.classifyContextualSidecarChunks('/kbs/alpha/n.md', 'alpha', 0))
+      .toEqual({ cache_hits: 0, retry_skips: 0, cold_chunks: 0 });
+  });
+
+  it('treats a corrupt sidecar as all-cold', async () => {
+    const mod = await loadModule();
+    const source = '/kbs/alpha/n.md';
+    const sidecarPath = mod.sidecarPathFor(source, 'alpha');
+    await fsp.mkdir(path.dirname(sidecarPath), { recursive: true });
+    await fsp.writeFile(sidecarPath, '{ not valid json', 'utf-8');
+    const tally = await mod.classifyContextualSidecarChunks(source, 'alpha', 2);
+    expect(tally).toEqual({ cache_hits: 0, retry_skips: 0, cold_chunks: 2 });
+  });
+});

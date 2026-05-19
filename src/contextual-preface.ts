@@ -472,6 +472,108 @@ async function readSidecar(sidecarPath: string): Promise<SidecarFile | null> {
   return parsed;
 }
 
+// ---------------------------------------------------------------------------
+// Cache-aware reindex estimation (#408)
+// ---------------------------------------------------------------------------
+
+/** Per-chunk cache classification used by the contextual reindex estimator. */
+export interface SidecarChunkTally {
+  /** Chunks with a valid cached preface — the reindex reuses them, no LLM call. */
+  cache_hits: number;
+  /**
+   * Chunks whose sidecar records a failure whose `next_retry_after` has not
+   * elapsed — `resolveContextualPrefaces` skips them without an LLM call.
+   */
+  retry_skips: number;
+  /**
+   * Chunks needing a cold LLM call: no sidecar, a missing entry, an expired
+   * failure, or a sidecar invalidated by a generator / chunk-size change.
+   */
+  cold_chunks: number;
+}
+
+/**
+ * RFC 017 §5 step 1 (cache-aware refinement, #408) — read one source's
+ * contextual-preface sidecar and classify the first `expectedChunkCount`
+ * chunk indices for `kb reindex` cost estimation.
+ *
+ * `expectedChunkCount` is the chunk count the caller already knows from the
+ * source's chunk manifest — the authoritative count of what the rebuild will
+ * process. The sidecar supplies the per-chunk cache state left behind by a
+ * previous contextual run.
+ *
+ * This is deliberately a *rough* estimate. It matches sidecar entries by
+ * `chunk_index` and does NOT recompute per-chunk or per-document hashes, so a
+ * sidecar that is stale relative to an edited source file is still counted as
+ * a hit. It DOES honour the global cache-key components the resolver checks
+ * cheaply — `generator`, `chunk_size`, `chunk_overlap` — so a `GENERATOR_VERSION`
+ * bump or a chunk-size change correctly invalidates the whole sidecar. The
+ * estimate is a scheduling heuristic for the LRA cron-window guard, never a
+ * correctness invariant; the rebuild re-validates every entry for real.
+ *
+ * A missing, corrupt, or schema-mismatched sidecar yields all-cold.
+ */
+export async function classifyContextualSidecarChunks(
+  source: string,
+  knowledgeBaseName: string,
+  expectedChunkCount: number,
+  nowMs: number = Date.now(),
+): Promise<SidecarChunkTally> {
+  if (expectedChunkCount <= 0) {
+    return { cache_hits: 0, retry_skips: 0, cold_chunks: 0 };
+  }
+  const allCold: SidecarChunkTally = {
+    cache_hits: 0,
+    retry_skips: 0,
+    cold_chunks: expectedChunkCount,
+  };
+
+  const sidecar = await readSidecar(sidecarPathFor(source, knowledgeBaseName));
+  if (sidecar === null) return allCold;
+
+  // Whole-sidecar invalidation — mirrors the global cache-key components
+  // `resolveContextualPrefaces` checks. A change to any of these forces an
+  // LLM call for every chunk regardless of the per-entry state.
+  const { chunkSize, chunkOverlap } = resolveChunkSize();
+  if (
+    sidecar.generator !== GENERATOR_VERSION ||
+    sidecar.chunk_size !== chunkSize ||
+    sidecar.chunk_overlap !== chunkOverlap
+  ) {
+    return allCold;
+  }
+
+  const byIndex = new Map<number, SidecarChunkEntry>();
+  for (const entry of sidecar.chunks) byIndex.set(entry.chunk_index, entry);
+
+  let cacheHits = 0;
+  let retrySkips = 0;
+  let cold = 0;
+  for (let i = 0; i < expectedChunkCount; i += 1) {
+    const entry = byIndex.get(i);
+    if (entry === undefined) {
+      cold += 1;
+      continue;
+    }
+    // A non-null preface is a cache hit (the resolver reuses it verbatim).
+    if (entry.preface !== null) {
+      cacheHits += 1;
+      continue;
+    }
+    // Recorded failure: a `next_retry_after` still in the future is skipped
+    // by the resolver without an LLM call; an elapsed or absent one is cold.
+    const retryAtMs = entry.next_retry_after !== undefined
+      ? Date.parse(entry.next_retry_after)
+      : NaN;
+    if (!Number.isNaN(retryAtMs) && retryAtMs > nowMs) {
+      retrySkips += 1;
+    } else {
+      cold += 1;
+    }
+  }
+  return { cache_hits: cacheHits, retry_skips: retrySkips, cold_chunks: cold };
+}
+
 async function persistSidecar(
   sidecarPath: string,
   args: PrefaceResolveArgs,
@@ -558,6 +660,99 @@ function makeFailureEntry(
     error_code: errorCode,
     next_retry_after: nextRetryAfter,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Progress ledger support (#407)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read-only view of one contextual-preface sidecar's per-chunk
+ * resolution state. Derived from the on-disk sidecar — the durable,
+ * incrementally-written (tmp + rename, per source file) record of LLM
+ * work — so it survives a SIGINT, crash, or host reboot mid-reindex.
+ * Consumed by `kb reindex status` (see `src/reindex-progress.ts`) to
+ * report which files completed, failed, or still need contextual
+ * prefaces.
+ */
+export interface ContextualSidecarStatus {
+  /** Absolute source-file path the sidecar describes. */
+  source: string;
+  /** Knowledge base the sidecar belongs to. */
+  knowledgeBase: string;
+  /** Chunk entries persisted in the sidecar. */
+  chunksTotal: number;
+  /** Chunk entries carrying a non-empty preface. */
+  chunksResolved: number;
+  /** Chunk entries with no preface (generation failed or pending retry). */
+  chunksFailed: number;
+  /** Distinct error codes across the failed chunks, sorted. */
+  errorCodes: ContextualErrorCode[];
+}
+
+function summarizeSidecar(sidecar: SidecarFile): ContextualSidecarStatus {
+  let resolved = 0;
+  let failed = 0;
+  const errorCodes = new Set<ContextualErrorCode>();
+  for (const chunk of sidecar.chunks) {
+    if (typeof chunk.preface === 'string' && chunk.preface.length > 0) {
+      resolved += 1;
+    } else {
+      failed += 1;
+      if (chunk.error_code !== undefined) errorCodes.add(chunk.error_code);
+    }
+  }
+  return {
+    source: sidecar.source,
+    knowledgeBase: sidecar.knowledge_base,
+    chunksTotal: sidecar.chunks.length,
+    chunksResolved: resolved,
+    chunksFailed: failed,
+    errorCodes: [...errorCodes].sort(),
+  };
+}
+
+/**
+ * Walk the contextual-preface sidecar tree under `FAISS_INDEX_PATH` and
+ * summarize every sidecar found. Best-effort: a missing sidecar root,
+ * an unreadable subdirectory, or a corrupt / schema-mismatched sidecar
+ * is skipped rather than thrown — a progress report should degrade, not
+ * crash, on a damaged cache.
+ */
+export async function readContextualSidecarStatuses(): Promise<ContextualSidecarStatus[]> {
+  const root = sidecarRootDir();
+  let kbDirs: Array<import('fs').Dirent>;
+  try {
+    kbDirs = await fsp.readdir(root, { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      logger.warn(`RFC 017: failed to read sidecar root ${root}: ${(err as Error).message}`);
+    }
+    return [];
+  }
+
+  const statuses: ContextualSidecarStatus[] = [];
+  for (const kbDir of kbDirs) {
+    if (!kbDir.isDirectory()) continue;
+    const dir = path.join(root, kbDir.name);
+    let files: Array<import('fs').Dirent>;
+    try {
+      files = await fsp.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      logger.warn(`RFC 017: failed to read sidecar dir ${dir}: ${(err as Error).message}`);
+      continue;
+    }
+    for (const file of files) {
+      // `.json.tmp` files (interrupted atomic writes) end in `.tmp`, so
+      // the `.json` suffix check below already excludes them.
+      if (!file.isFile() || !file.name.endsWith('.json')) continue;
+      const sidecar = await readSidecar(path.join(dir, file.name));
+      if (sidecar === null) continue;
+      statuses.push(summarizeSidecar(sidecar));
+    }
+  }
+  return statuses;
 }
 
 // ---------------------------------------------------------------------------

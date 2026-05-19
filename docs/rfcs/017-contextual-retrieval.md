@@ -213,16 +213,27 @@ Hard-coded parameters:
 ```
 kb reindex --with-context [--kb=<name>…] [--force]
 
-  --kb=<name>     Reindex only this KB. Repeat the flag to reindex several.
+  --kb=<name>     Guard/estimator hint only — NOT a scoped rebuild (see
+                  the implementation note below). Repeat to pass several.
                   Default: every shelf.
   --force         Skip the LRA-cron-window guard AND the self-runtime-budget guard.
 ```
 
 (`--dry-run` and `kb reindex` without `--with-context` deferred to follow-up PRs.)
 
+> **Implementation note (M0b).** `--kb` does **not** scope the rebuild.
+> The M0b runner delegates to `FaissIndexManager.updateIndex(undefined,
+> { force: true })`, which always rebuilds the whole single-index-per-model
+> FAISS index (step 6 — a per-KB rebuild would orphan the other shelves'
+> vectors). `--kb` only narrows the chunk-count estimate (step 1) and the
+> cron-window guard arithmetic, and validates that the named KBs exist
+> (unknown name → exit 2). A genuinely scoped rebuild is deferred to a
+> follow-up.
+
 Behavior:
 
 1. **Self-runtime estimator.** Count total chunks across in-scope KBs from existing chunk manifests. Multiply by **8s** (cold-case per-chunk cost — the worst case, not the floor) for the upper bound. If `now + estimated_runtime` would cross 06:00 UTC, refuse to start unless `--force`. Logged as `reindex.start` with `estimated_seconds`.
+   - **Cache-aware refinement (#408).** Pricing *every* chunk at 8s over-estimates a reindex that follows a partial or successful contextual run, since valid per-source preface sidecars (`${FAISS_INDEX_PATH}/.contextual-prefaces/`) make those chunks cache hits with no LLM call. The estimator therefore classifies each manifest chunk against its sidecar — `cache_hits`, `retry_skips` (a recorded failure whose `next_retry_after` has not elapsed), and `cold_chunks` — and prices only `cold_chunks` at 8s. It mirrors the resolver's cheap global cache-key checks (`generator`, `chunk_size`, `chunk_overlap`) so a `GENERATOR_VERSION` bump correctly resets every chunk to cold, but it does not recompute per-chunk hashes: a sidecar stale against an edited source is still counted as a hit. This is a scheduling heuristic, not a correctness invariant — the rebuild re-validates every entry. A first-ever reindex (no sidecars) yields `cold_chunks == total_chunks`, identical to the original estimate.
 2. **LRA cron guard.** Check `new Date().getUTCHours()` + `getUTCMinutes()` explicitly. Inside 06:00-10:30 UTC, refuse unless `--force`.
 3. **Per-model lock with reindex-appropriate tuning.** `withWriteLock` today has `stale: 10_000`, `update: 5_000` — designed for sub-second MCP writes; would go stale during long `addVectors` batches. The reindex path acquires the lock with extended parameters (`stale: 60_000`, `update: 15_000`) so a busy GC pause or large batch doesn't drop the lock. The reindex holds the lock for the full run. MCP `updateIndex` calls during a reindex will see `WriteLockContentionError`; callers must tolerate this (we adjust the MCP retry envelope from 5 attempts in 10s to 30 attempts over 5 minutes — still fails for the multi-hour case, see Open Questions).
 4. **`.reindex.run.json` with PID liveness.** Written at lock acquisition with `pid`, `started_at`, `kbs_in_scope`. On the next startup (any `kb_stats`, `kb reindex`, or trigger watcher invocation), if the file exists, check whether the `pid` is still alive (`process.kill(pid, 0)` semantics). If dead, treat the file as stale, delete it, and emit `reindex.zombie-cleanup` log line. This defeats the zombie-file failure mode where SIGKILL leaves the file claiming `in_progress` forever.

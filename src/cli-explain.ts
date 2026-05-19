@@ -33,7 +33,7 @@ import {
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
 } from './config/ingest.js';
-import { elapsedMs, nowMs } from './cli-timing.js';
+import { elapsedMs, nowMs } from './timing-core.js';
 import {
   buildCandidates,
   buildQueryBlock,

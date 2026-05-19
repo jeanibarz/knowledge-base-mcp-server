@@ -50,6 +50,13 @@ is off.
 | Preface token budget | `KB_CONTEXTUAL_MAX_TOKENS` | `150` | Contextual ingest LLM call | Implemented | none | `KB_CONTEXTUAL_RETRIEVAL=on KB_CONTEXTUAL_MAX_TOKENS=120 KB_LLM_ENDPOINT=http://127.0.0.1:8080/v1/chat/completions kb reindex --with-context` |
 | Preface LLM endpoint | `KB_LLM_ENDPOINT` | unset for contextual ingest | Contextual ingest | Implemented | none | `KB_CONTEXTUAL_RETRIEVAL=on KB_LLM_ENDPOINT=http://127.0.0.1:8080/v1/chat/completions kb reindex --with-context` |
 
+`kb reindex --with-context` accepts `--kb=<name>`, but it is a guard and
+estimator hint, not a scoped rebuild: the rebuild always covers the whole
+single-index-per-model FAISS index. `--kb` only narrows the runtime estimate
+and the LRA cron-window guard, and validates that the named KBs exist. A
+partial rebuild is impossible without orphaning the other shelves' vectors;
+see RFC 017 §5.
+
 Hard-coded contextual-ingest constants are intentionally not env flags:
 48,000 character document truncation, 30 second LLM timeout, 2 retries, 5
 consecutive timeouts before circuit breaking, and the reindex guard window

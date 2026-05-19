@@ -441,6 +441,65 @@ Stdout/stderr and exit codes:
 
 Source and test anchors: `src/cli-capture.ts`, `src/cli.test.ts`.
 
+## `kb import-url`
+
+Invocation:
+
+```bash
+kb import-url --kb=<name> <url> [--note=<path.md>] [--title=<text>] \
+  [--max-bytes=<N>] [--timeout=<ms>] [--max-redirects=<N>] \
+  [--allow-local-network] [--refresh]
+```
+
+A successful import always prints JSON:
+
+```json
+{
+  "knowledge_base_name": "research",
+  "path": "example-domain.md",
+  "action": "import-url",
+  "source_url": "https://example.com/",
+  "final_url": "https://example.com/",
+  "http_status": 200,
+  "content_type": "text/html",
+  "content_sha256": "fb91d75a6bb430787a61b0aec5e374f580030f2878e1613eab5ca6310f7bbb9a",
+  "byte_count": 528,
+  "refreshed": false
+}
+```
+
+Stable success fields:
+
+- `knowledge_base_name`: target KB name.
+- `path`: KB-relative path of the newly written note.
+- `action`: always `import-url`.
+- `source_url`: the URL requested on the command line.
+- `final_url`: the URL that served the content after any redirects.
+- `http_status`: terminal HTTP status (always `2xx` on success).
+- `content_type`: response content type, parameters stripped.
+- `content_sha256`: SHA-256 of the downloaded response body.
+- `byte_count`: size of the downloaded response body in bytes.
+- `refreshed`: boolean matching whether `--refresh` was requested and completed.
+
+The written note carries a YAML frontmatter provenance block — `title`,
+`source_url`, optional `resolved_url` (only when it differs from `source_url`),
+`fetched_at`, `content_sha256`, `content_type`, `http_status`, `byte_count` —
+followed by the extracted plain text.
+
+Stdout/stderr and exit codes:
+
+- Success JSON is stdout with exit `0`.
+- There is no stable JSON error envelope. Argument, fetch (scheme / SSRF /
+  redirect / size / timeout), extraction, write, and refresh errors print
+  `kb import-url: ...` to stderr.
+- Argument errors exit `2`; runtime/fetch/write errors exit `1`.
+- Private, loopback, and link-local addresses are refused by default; pass
+  `--allow-local-network` to permit them.
+
+Source and test anchors: `src/cli-import-url.ts:283-299`,
+`src/url-snapshot.ts:175-205`, `src/url-snapshot.ts:395-470`,
+`src/cli-import-url.test.ts:132-330`.
+
 ## `kb where`
 
 Invocation:
@@ -782,3 +841,92 @@ future CLI adds `--format=json`.
 Source and test anchors: `src/cli-models.ts:20-64`,
 `src/cli-models.ts:88-117`, `src/active-model.ts:129-166`,
 `src/cli.test.ts:1463-1505`.
+
+## `kb reindex status`
+
+Invocation:
+
+```bash
+kb reindex status [--kb=<name>...] [--format=json]
+```
+
+`kb reindex status` is a read-only command (RFC 017 #407). It rolls the
+contextual-preface sidecars under `$FAISS_INDEX_PATH/.contextual-prefaces/`
+into a per-KB / per-file progress ledger so an operator can see, after a
+SIGINT, crash, or host reboot, which files completed their LLM preface work
+and which still need it.
+
+Success envelope:
+
+```json
+{
+  "schema_version": "reindex-progress.v1",
+  "computed_at": "2026-05-19T11:02:03.456Z",
+  "run_active": false,
+  "run": null,
+  "kbs": [
+    {
+      "knowledge_base": "operating-environment",
+      "files_indexed": 120,
+      "files_with_sidecar": 50,
+      "files_complete": 47,
+      "files_incomplete": 3,
+      "files_pending": 70,
+      "chunks_resolved": 1843,
+      "chunks_failed": 12,
+      "files": [
+        {
+          "source": "/abs/path/to/note.md",
+          "status": "incomplete",
+          "chunks_total": 10,
+          "chunks_resolved": 8,
+          "chunks_failed": 2,
+          "error_codes": ["llm_unreachable"]
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "knowledge_bases": 1,
+    "files_indexed": 120,
+    "files_with_sidecar": 50,
+    "files_complete": 47,
+    "files_incomplete": 3,
+    "files_pending": 70,
+    "chunks_resolved": 1843,
+    "chunks_failed": 12
+  }
+}
+```
+
+Stable fields:
+
+- `schema_version` is the string `reindex-progress.v1`.
+- `computed_at` is an ISO-8601 timestamp.
+- `run_active` is a boolean — `true` when `.reindex.run.json` names a live PID.
+- `run` is `null`, or an object with `pid`, `started_at`, and `kbs_in_scope`.
+- `kbs` is an array, sorted by `knowledge_base`. Each entry has the integer
+  counts shown above and a `files` array sorted by `source`.
+- `files[].status` is `complete` (every chunk has a preface) or `incomplete`.
+- `files[].error_codes` is a sorted array of distinct contextual error codes
+  (`llm_unreachable`, `llm_malformed`, `llm_refusal`, `truncated_doc`).
+- `totals` aggregates every reported KB.
+
+Notes:
+
+- `files_indexed` counts chunk manifests under `<kb>/.index/` and is the
+  denominator the reindex walks; `files_pending` is
+  `max(0, files_indexed - files_with_sidecar)`. Both are approximate while a
+  reindex is in flight.
+- `--kb=<name>` (repeatable) restricts the report. A named KB with no sidecars
+  is still reported with zero counts.
+
+Stdout/stderr and exit codes:
+
+- The JSON snapshot is stdout with exit `0`; the same snapshot is also
+  materialized to `$FAISS_INDEX_PATH/.reindex.progress.json`.
+- Argument errors print `kb reindex status: ...` to stderr and exit `2`.
+
+Source and test anchors: `src/cli-reindex.ts::runReindexStatusCli`,
+`src/reindex-progress.ts::computeReindexProgress`,
+`src/cli-reindex-status.test.ts`, `src/reindex-progress.test.ts`.
