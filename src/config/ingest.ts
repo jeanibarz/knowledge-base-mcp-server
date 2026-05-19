@@ -64,3 +64,18 @@ export function resolveLargeFileLimits(): {
     policy: parseKbLargeFilePolicy(process.env.KB_LARGE_FILE_POLICY),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Refresh quiescence guard (#428).
+// ---------------------------------------------------------------------------
+
+export function parseRefreshQuiesceMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return 0;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.floor(parsed);
+}
+
+export function resolveRefreshQuiesceMs(): number {
+  return parseRefreshQuiesceMs(process.env.KB_REFRESH_QUIESCE_MS);
+}

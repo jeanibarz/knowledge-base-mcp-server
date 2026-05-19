@@ -382,6 +382,7 @@ describe('FaissIndexManager permission handling', () => {
     KB_LARGE_FILE_POLICY: process.env.KB_LARGE_FILE_POLICY,
     KB_CHUNK_SIZE: process.env.KB_CHUNK_SIZE,
     KB_CHUNK_OVERLAP: process.env.KB_CHUNK_OVERLAP,
+    KB_REFRESH_QUIESCE_MS: process.env.KB_REFRESH_QUIESCE_MS,
   };
 
 
@@ -1275,6 +1276,150 @@ describe('FaissIndexManager permission handling', () => {
       files_unchanged: 1,
       saved: false,
     });
+  });
+
+  it('defers files inside the refresh quiescence window and indexes them on a later pass', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-quiesce-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'draft.md');
+    await fsp.writeFile(docPath, '# Draft\n\nProducer is still settling.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_REFRESH_QUIESCE_MS = '60000';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    await manager.updateIndex('default');
+    expect(fromTextsMock).not.toHaveBeenCalled();
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      scope: 'default',
+      files_scanned: 1,
+      files_changed: 0,
+      files_skipped: 1,
+      warning_count: 1,
+      warnings: [
+        expect.objectContaining({
+          relative_path: 'draft.md',
+          code: 'KB_REFRESH_NOT_QUIESCENT',
+          quiesce_ms: 60000,
+        }),
+      ],
+      failure_count: 0,
+    });
+    const persistedDeferredSummary = JSON.parse(
+      await fsp.readFile(lastIndexUpdatePathIn(process.env.FAISS_INDEX_PATH!), 'utf-8'),
+    );
+    expect(persistedDeferredSummary.summary).toMatchObject({
+      files_skipped: 1,
+      warning_count: 1,
+      warnings: [
+        expect.objectContaining({
+          relative_path: 'draft.md',
+          code: 'KB_REFRESH_NOT_QUIESCENT',
+        }),
+      ],
+    });
+
+    fromTextsMock.mockClear();
+    const oldTimestamp = new Date(Date.now() - 120_000);
+    await fsp.utimes(docPath, oldTimestamp, oldTimestamp);
+
+    await manager.updateIndex('default');
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      files_scanned: 1,
+      files_changed: 1,
+      files_skipped: 0,
+      warning_count: 0,
+      warnings: [],
+      failure_count: 0,
+    });
+  });
+
+  it('defers files that change during the refresh scan and indexes them on a later pass', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-quiesce-race-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'draft.md');
+    await fsp.writeFile(docPath, '# Draft\n\nInitial content.');
+    const oldTimestamp = new Date(Date.now() - 120_000);
+    await fsp.utimes(docPath, oldTimestamp, oldTimestamp);
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_REFRESH_QUIESCE_MS = '60000';
+
+    jest.resetModules();
+    const actualFileUtils = jest.requireActual<typeof import('./file-utils.js')>('./file-utils.js');
+    let mutatedDuringHash = false;
+    jest.doMock('./file-utils.js', () => ({
+      ...actualFileUtils,
+      calculateSHA256: jest.fn(async (filePath: string) => {
+        const hash = await actualFileUtils.calculateSHA256(filePath);
+        if (filePath === docPath && !mutatedDuringHash) {
+          mutatedDuringHash = true;
+          await fsp.writeFile(docPath, '# Draft\n\nChanged while refresh was scanning.');
+        }
+        return hash;
+      }),
+    }));
+
+    try {
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const manager = new FaissIndexManager();
+      await manager.initialize();
+
+      await manager.updateIndex('default');
+      expect(fromTextsMock).not.toHaveBeenCalled();
+      expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+        status: 'success',
+        scope: 'default',
+        files_scanned: 1,
+        files_changed: 0,
+        files_skipped: 1,
+        warning_count: 1,
+        warnings: [
+          expect.objectContaining({
+            relative_path: 'draft.md',
+            code: 'KB_REFRESH_FILE_CHANGED_DURING_SCAN',
+            quiesce_ms: 60000,
+          }),
+        ],
+        failure_count: 0,
+      });
+
+      fromTextsMock.mockClear();
+      mutatedDuringHash = true;
+      await fsp.utimes(docPath, oldTimestamp, oldTimestamp);
+
+      await manager.updateIndex('default');
+      expect(fromTextsMock).toHaveBeenCalledTimes(1);
+      expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+        status: 'success',
+        files_scanned: 1,
+        files_changed: 1,
+        files_skipped: 0,
+        warning_count: 0,
+        warnings: [],
+        failure_count: 0,
+      });
+    } finally {
+      jest.dontMock('./file-utils.js');
+      jest.resetModules();
+    }
   });
 
   it('quarantines load failures, skips them during backoff, and clears the entry after content changes and indexes', async () => {

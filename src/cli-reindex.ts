@@ -213,6 +213,7 @@ function formatHumanResult(result: ReindexResult): string {
       `  summary: files_scanned=${result.summary.files_scanned ?? 0} ` +
         `files_changed=${result.summary.files_changed ?? 0} ` +
         `files_unchanged=${result.summary.files_unchanged ?? 0} ` +
+        `warnings=${result.summary.warning_count ?? 0} ` +
         `failures=${result.summary.failure_count ?? 0}`,
     );
   }

@@ -665,6 +665,12 @@ Stable fields:
   compact persisted summary for the active model when no update has run in the
   current process. The object shape is shared with stats/manager observability;
   agents should branch first on `last_index_update.status`.
+  When `KB_REFRESH_QUIESCE_MS` is non-zero, recently modified files or files
+  that change during the refresh scan are deferred and reported additively via
+  `warning_count` and `warnings[]`. Warning entries contain `relative_path`,
+  stable `code`, `message`, and may include numeric `mtime_age_ms` and
+  `quiesce_ms`. Stable codes are `KB_REFRESH_NOT_QUIESCENT` and
+  `KB_REFRESH_FILE_CHANGED_DURING_SCAN`.
 
 Stdout/stderr and exit codes:
 

@@ -24,6 +24,7 @@ import {
 import {
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
+  resolveRefreshQuiesceMs,
 } from './config/ingest.js';
 import {
   resolveIndexingBatchSize,
@@ -261,6 +262,18 @@ export interface IndexUpdateFailureSummary {
   message: string;
 }
 
+export type IndexUpdateWarningCode =
+  | 'KB_REFRESH_NOT_QUIESCENT'
+  | 'KB_REFRESH_FILE_CHANGED_DURING_SCAN';
+
+export interface IndexUpdateWarningSummary {
+  relative_path: string | null;
+  code: IndexUpdateWarningCode;
+  message: string;
+  mtime_age_ms?: number;
+  quiesce_ms?: number;
+}
+
 export interface IndexUpdateSummary {
   status: IndexUpdateSummaryStatus;
   scope: 'global' | string | null;
@@ -277,6 +290,8 @@ export interface IndexUpdateSummary {
   index_mutated: boolean;
   saved: boolean;
   sidecars_written: boolean;
+  warning_count: number;
+  warnings: IndexUpdateWarningSummary[];
   failure_count: number;
   failures: IndexUpdateFailureSummary[];
 }
@@ -347,6 +362,8 @@ export function createNeverRunIndexUpdateSummary(modelId: string | null = null):
     index_mutated: false,
     saved: false,
     sidecars_written: false,
+    warning_count: 0,
+    warnings: [],
     failure_count: 0,
     failures: [],
   };
@@ -355,6 +372,8 @@ export function createNeverRunIndexUpdateSummary(modelId: string | null = null):
 function cloneIndexUpdateSummary(summary: IndexUpdateSummary): IndexUpdateSummary {
   return {
     ...summary,
+    warning_count: summary.warning_count ?? 0,
+    warnings: (summary.warnings ?? []).map((warning) => ({ ...warning })),
     failures: summary.failures.map((failure) => ({ ...failure })),
   };
 }
@@ -454,6 +473,30 @@ function parsePersistedIndexUpdateSummary(value: unknown): IndexUpdateSummary | 
           message: typeof failure.message === 'string' ? failure.message : '',
         }))
     : [];
+  const warnings = Array.isArray(candidate.warnings)
+    ? candidate.warnings
+        .filter(isRecord)
+        .map((warning): IndexUpdateWarningSummary | null => {
+          const code = warning.code;
+          if (
+            code !== 'KB_REFRESH_NOT_QUIESCENT' &&
+            code !== 'KB_REFRESH_FILE_CHANGED_DURING_SCAN'
+          ) {
+            return null;
+          }
+          const parsed: IndexUpdateWarningSummary = {
+            relative_path: stringOrNull(warning.relative_path),
+            code,
+            message: typeof warning.message === 'string' ? warning.message : '',
+          };
+          const mtimeAgeMs = numberOrNull(warning.mtime_age_ms);
+          const quiesceMs = numberOrNull(warning.quiesce_ms);
+          if (mtimeAgeMs !== null) parsed.mtime_age_ms = mtimeAgeMs;
+          if (quiesceMs !== null) parsed.quiesce_ms = quiesceMs;
+          return parsed;
+        })
+        .filter((warning): warning is IndexUpdateWarningSummary => warning !== null)
+    : [];
 
   return {
     ...base,
@@ -471,6 +514,8 @@ function parsePersistedIndexUpdateSummary(value: unknown): IndexUpdateSummary | 
     index_mutated: booleanOrDefault(candidate.index_mutated, base.index_mutated),
     saved: booleanOrDefault(candidate.saved, base.saved),
     sidecars_written: booleanOrDefault(candidate.sidecars_written, base.sidecars_written),
+    warning_count: numberOrDefault(candidate.warning_count, warnings.length),
+    warnings,
     failure_count: numberOrDefault(candidate.failure_count, failures.length),
     failures,
   };
@@ -1210,6 +1255,12 @@ export class FaissIndexManager {
         runSummary.failures.push(failureSummary(relativePath, phase, error));
       }
     };
+    const recordWarning = (warning: IndexUpdateWarningSummary): void => {
+      runSummary.warning_count += 1;
+      if (runSummary.warnings.length < MAX_INDEX_UPDATE_FAILURES) {
+        runSummary.warnings.push(warning);
+      }
+    };
     const recordQuarantineFailure = async (
       kbPath: string,
       relativePath: string,
@@ -1245,6 +1296,7 @@ export class FaissIndexManager {
     };
     try {
       const forceReindex = opts.force === true;
+      let hadActiveIndexBeforeForce = false;
       // FAISS has no per-vector delete API and we keep one global store
       // across all KBs. So a forced rebuild MUST null the in-memory index
       // AND walk every KB. A scoped force ("rebuild just KB alpha") would
@@ -1259,6 +1311,7 @@ export class FaissIndexManager {
       let scopedKnowledgeBase = specificKnowledgeBase;
       let shouldPurgePersistedIndexIfEmpty = false;
       if (forceReindex) {
+        hadActiveIndexBeforeForce = (await this.resolveActiveIndexFilePath()) !== null;
         this.faissIndex = null;
         shouldPurgePersistedIndexIfEmpty = true;
         if (scopedKnowledgeBase !== undefined) {
@@ -1320,6 +1373,53 @@ export class FaissIndexManager {
       const pendingHashWrites: { path: string; hash: string }[] = [];
       const pendingChunkManifestWrites: { path: string; manifest: ChunkManifest }[] = [];
       const loaderFailurePaths = new Set<string>();
+      const deferredNonQuiescentPaths = new Set<string>();
+      const refreshQuiesceMs = resolveRefreshQuiesceMs();
+      let skipFallbackBuild = false;
+      const changedDuringScanWarning = (relativePath: string): IndexUpdateWarningSummary => ({
+        relative_path: relativePath,
+        code: 'KB_REFRESH_FILE_CHANGED_DURING_SCAN',
+        message:
+          `Skipping ${relativePath} because its size, mtime, or hash changed ` +
+          `while refresh was scanning it; a later refresh will retry it.`,
+        quiesce_ms: refreshQuiesceMs,
+      });
+      const recordDeferredNonQuiescentPath = (
+        filePath: string,
+        warning: IndexUpdateWarningSummary,
+      ): void => {
+        if (deferredNonQuiescentPaths.has(filePath)) {
+          return;
+        }
+        deferredNonQuiescentPaths.add(filePath);
+        runSummary.files_skipped += 1;
+        recordWarning(warning);
+        logger.warn(warning.message);
+      };
+      const stillMatchesScan = async (scan: {
+        filePath: string;
+        relativePath: string;
+        fileHash: string;
+        fileSize: number;
+        mtimeMs: number;
+      }): Promise<IndexUpdateWarningSummary | null> => {
+        if (refreshQuiesceMs <= 0) {
+          return null;
+        }
+        try {
+          const afterLoadStat = await fsp.stat(scan.filePath);
+          if (afterLoadStat.size !== scan.fileSize || afterLoadStat.mtimeMs !== scan.mtimeMs) {
+            return changedDuringScanWarning(scan.relativePath);
+          }
+          const afterLoadHash = await calculateSHA256(scan.filePath);
+          if (afterLoadHash !== scan.fileHash) {
+            return changedDuringScanWarning(scan.relativePath);
+          }
+          return null;
+        } catch {
+          return changedDuringScanWarning(scan.relativePath);
+        }
+      };
 
       // First enumerate every candidate path so progress notifications can
       // report a stable denominator before embedding begins. `knowledgeBases`
@@ -1455,6 +1555,8 @@ export class FaissIndexManager {
         indexFilePath: string;
         chunkManifestPath: string;
         fileHash: string;
+        fileSize: number;
+        mtimeMs: number;
       }> = [];
       let requiresFullRebuild = false;
       const successfulIndexedFiles: Array<{ knowledgeBasePath: string; relativePath: string }> = [];
@@ -1483,7 +1585,53 @@ export class FaissIndexManager {
         fsConcurrency,
         async (job) => {
           try {
+            const beforeStat = await fsp.stat(job.filePath);
+            let stableStat = beforeStat;
+            if (refreshQuiesceMs > 0) {
+              const mtimeAgeMs = Math.max(0, Date.now() - beforeStat.mtimeMs);
+              if (mtimeAgeMs < refreshQuiesceMs) {
+                return {
+                  ...job,
+                  success: false as const,
+                  deferred: true as const,
+                  error: new Error('refresh file is not quiescent'),
+                  warning: {
+                    relative_path: job.relativePath,
+                    code: 'KB_REFRESH_NOT_QUIESCENT' as const,
+                    message:
+                      `Skipping ${job.relativePath} because its mtime age ` +
+                      `${Math.floor(mtimeAgeMs)}ms is below KB_REFRESH_QUIESCE_MS=${refreshQuiesceMs}; ` +
+                      `a later refresh will retry it.`,
+                    mtime_age_ms: Math.floor(mtimeAgeMs),
+                    quiesce_ms: refreshQuiesceMs,
+                  },
+                };
+              }
+            }
             const fileHash = await calculateSHA256(job.filePath);
+            if (refreshQuiesceMs > 0) {
+              const afterStat = await fsp.stat(job.filePath);
+              if (
+                beforeStat.size !== afterStat.size ||
+                beforeStat.mtimeMs !== afterStat.mtimeMs
+              ) {
+                return {
+                  ...job,
+                  success: false as const,
+                  deferred: true as const,
+                  error: new Error('refresh file changed during scan'),
+                  warning: {
+                    relative_path: job.relativePath,
+                    code: 'KB_REFRESH_FILE_CHANGED_DURING_SCAN' as const,
+                    message:
+                      `Skipping ${job.relativePath} because its size or mtime changed ` +
+                      `while refresh was scanning it; a later refresh will retry it.`,
+                    quiesce_ms: refreshQuiesceMs,
+                  },
+                };
+              }
+              stableStat = afterStat;
+            }
             let storedHash: string | null = null;
             try {
               const buffer = await fsp.readFile(job.indexFilePath);
@@ -1491,7 +1639,14 @@ export class FaissIndexManager {
             } catch {
               // The hash file may not exist yet; that's fine.
             }
-            return { ...job, success: true as const, fileHash, storedHash };
+            return {
+              ...job,
+              success: true as const,
+              fileHash,
+              storedHash,
+              fileSize: stableStat.size,
+              mtimeMs: stableStat.mtimeMs,
+            };
           } catch (error: unknown) {
             return { ...job, success: false as const, error };
           } finally {
@@ -1505,6 +1660,11 @@ export class FaissIndexManager {
         runSummary.files_scanned += 1;
 
         if (!scan.success) {
+          if ('deferred' in scan && scan.deferred) {
+            recordDeferredNonQuiescentPath(scan.filePath, scan.warning);
+            await reportLoadProgress(scan.filePath);
+            continue;
+          }
           logger.warn(`Quarantining unreadable file ${scan.filePath}:`, toError(scan.error));
           runSummary.files_skipped += 1;
           loaderFailurePaths.add(scan.filePath);
@@ -1541,6 +1701,8 @@ export class FaissIndexManager {
           indexFilePath: scan.indexFilePath,
           chunkManifestPath: scan.chunkManifestPath,
           fileHash: scan.fileHash,
+          fileSize: scan.fileSize,
+          mtimeMs: scan.mtimeMs,
         });
 
         // If the file is new/changed, or the index itself is absent,
@@ -1574,6 +1736,12 @@ export class FaissIndexManager {
               scan.fileHash,
               error,
             );
+            await reportLoadProgress(scan.filePath);
+            continue;
+          }
+          const loadWarning = await stillMatchesScan(scan);
+          if (loadWarning !== null) {
+            recordDeferredNonQuiescentPath(scan.filePath, loadWarning);
             await reportLoadProgress(scan.filePath);
             continue;
           }
@@ -1673,7 +1841,39 @@ export class FaissIndexManager {
         }
         await reportLoadProgress(scan.filePath);
       }
+      if (
+        forceReindex &&
+        hadActiveIndexBeforeForce &&
+        deferredNonQuiescentPaths.size > 0
+      ) {
+        await this.reloadPersistedIndex();
+        shouldPurgePersistedIndexIfEmpty = false;
+        skipFallbackBuild = true;
+        requiresFullRebuild = false;
+        changedFileDocuments.length = 0;
+        metadataOnlyFileUpdates.length = 0;
+        runSummary.chunks_attempted = 0;
+        logger.warn(
+          'Skipping forced FAISS rebuild because at least one file is not quiescent; ' +
+            'the existing persisted index remains active and a later refresh will retry.',
+        );
+      } else if (
+        requiresFullRebuild &&
+        this.faissIndex !== null &&
+        deferredNonQuiescentPaths.size > 0
+      ) {
+        requiresFullRebuild = false;
+        changedFileDocuments.length = 0;
+        metadataOnlyFileUpdates.length = 0;
+        runSummary.chunks_attempted = 0;
+        logger.warn(
+          'Deferring full FAISS rebuild because at least one file is not quiescent; ' +
+            'the existing index remains active and a later refresh will retry.',
+        );
+      }
       if (requiresFullRebuild) {
+        const hadIndexBeforeFullRebuild = this.faissIndex !== null;
+        const deferredCountBeforeFullRebuild = deferredNonQuiescentPaths.size;
         this.faissIndex = null;
         changedFileDocuments.length = 0;
         metadataOnlyFileUpdates.length = 0;
@@ -1697,6 +1897,11 @@ export class FaissIndexManager {
               scan.fileHash,
               error,
             );
+            continue;
+          }
+          const loadWarning = await stillMatchesScan(scan);
+          if (loadWarning !== null) {
+            recordDeferredNonQuiescentPath(scan.filePath, loadWarning);
             continue;
           }
 
@@ -1737,6 +1942,19 @@ export class FaissIndexManager {
             documents,
             manifest: buildChunkManifest(documents, scan.fileHash),
           });
+        }
+        if (
+          hadIndexBeforeFullRebuild &&
+          deferredNonQuiescentPaths.size > deferredCountBeforeFullRebuild
+        ) {
+          await this.reloadPersistedIndex();
+          changedFileDocuments.length = 0;
+          metadataOnlyFileUpdates.length = 0;
+          runSummary.chunks_attempted = 0;
+          logger.warn(
+            'Discarding in-progress full FAISS rebuild because a file changed during scan; ' +
+              'the existing persisted index remains active and a later refresh will retry.',
+          );
         }
       }
       const documentsToAdd = changedFileDocuments.flatMap((entry) => entry.documents);
@@ -1793,7 +2011,7 @@ export class FaissIndexManager {
 
       // If at least one file was processed but no changes triggered index creation,
       // then attempt to build the FAISS index from all available documents.
-      if (this.faissIndex === null && anyFileProcessed) {
+      if (this.faissIndex === null && anyFileProcessed && !skipFallbackBuild) {
         logger.info('No updates detected but FAISS index is not initialized. Building index from all available documents...');
         const fallbackDocuments: Array<{
           knowledgeBasePath: string;
@@ -1807,6 +2025,9 @@ export class FaissIndexManager {
         }> = [];
         for (const { knowledgeBaseName, knowledgeBasePath, filePaths } of knowledgeBaseFiles) {
           for (const filePath of filePaths) {
+            if (deferredNonQuiescentPaths.has(filePath)) {
+              continue;
+            }
             const relativePath = path.relative(knowledgeBasePath, filePath);
             let fileHash: string | null = null;
             try {
@@ -1839,6 +2060,18 @@ export class FaissIndexManager {
                 );
               }
               continue;
+            }
+            if (refreshQuiesceMs > 0 && fileHash !== null) {
+              try {
+                const afterLoadHash = await calculateSHA256(filePath);
+                if (afterLoadHash !== fileHash) {
+                  recordDeferredNonQuiescentPath(filePath, changedDuringScanWarning(relativePath));
+                  continue;
+                }
+              } catch {
+                recordDeferredNonQuiescentPath(filePath, changedDuringScanWarning(relativePath));
+                continue;
+              }
             }
             let documents: Document[];
             try {

@@ -46,6 +46,8 @@ function payload(): KbStatsPayload {
       index_mutated: false,
       saved: false,
       sidecars_written: false,
+      warning_count: 0,
+      warnings: [],
       failure_count: 0,
       failures: [],
     },
