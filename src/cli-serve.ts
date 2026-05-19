@@ -3,23 +3,50 @@ import type { AddressInfo } from 'node:net';
 import { runList } from './cli-list.js';
 import { runSearch } from './cli-search.js';
 import { runStats } from './cli-stats.js';
-import type { DaemonCommand, DaemonRunResult } from './daemon-client.js';
+import {
+  daemonUrlFromEnv,
+  tryFetchDaemonHealth,
+  type DaemonCommand,
+  type DaemonHealth,
+  type DaemonRunResult,
+} from './daemon-client.js';
 
 export const SERVE_HELP = `kb serve — resident local daemon for warm CLI reads
 
 Usage:
   kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000]
+  kb serve status [--json]
 
 Starts a localhost-only JSON HTTP daemon used by \`kb search --daemon\`.
 The daemon accepts read-only search/list/stats requests and exits after the
 idle timeout.
 
+\`kb serve status\` reports whether a daemon is reachable at the configured
+URL along with its PID, idle timeout, supported commands, and uptime. It
+never starts or stops a daemon. When \`kb search --daemon\` cannot reach a
+daemon it prints a one-line notice to stderr and runs the search directly.
+
 Options:
   --host=<host>             Loopback host to bind (default: 127.0.0.1).
   --port=<port>             TCP port to bind (default: 17799; 0 for tests).
   --idle-timeout-ms=<ms>    Stop after this much idle time (default: 300000).
+  --json                    \`kb serve status\`: emit the daemon health JSON.
   --help, -h                Show this help.
+
+Environment:
+  KB_DAEMON_URL             Daemon URL queried by \`kb serve status\` and
+                            \`kb search --daemon\` (default
+                            http://127.0.0.1:17799).
+
+Exit codes:
+  0   daemon started, or \`kb serve status\` found a reachable daemon
+  1   runtime error
+  2   invalid arguments or environment
+  3   \`kb serve status\`: no daemon reachable at the configured URL
 `;
+
+/** Read-only commands the daemon accepts, advertised by \`GET /health\`. */
+const DAEMON_COMMANDS: readonly DaemonCommand[] = ['search', 'list', 'stats'];
 
 interface ServeArgs {
   host: string;
@@ -51,6 +78,10 @@ const DEFAULT_SERVE_ARGS: ServeArgs = {
 };
 
 export async function runServe(rest: string[]): Promise<number> {
+  if (rest[0] === 'status') {
+    return runServeStatus(rest.slice(1));
+  }
+
   let parsed: ServeArgs;
   try {
     parsed = parseServeArgs(rest);
@@ -79,6 +110,84 @@ export async function runServe(rest: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * `kb serve status` — a read-only lifecycle probe for the resident daemon.
+ *
+ * Queries `GET /health` at the configured `KB_DAEMON_URL` and reports
+ * reachability without ever starting or stopping a daemon. Exit codes: 0
+ * reachable, 2 bad argument/environment, 3 no daemon listening, 1 a daemon
+ * answered with an unusable payload.
+ */
+export async function runServeStatus(args: string[]): Promise<number> {
+  let json = false;
+  for (const raw of args) {
+    if (raw === '--json') {
+      json = true;
+      continue;
+    }
+    process.stderr.write(`kb serve status: unexpected argument: ${raw}\n`);
+    return 2;
+  }
+
+  let url: URL;
+  try {
+    url = daemonUrlFromEnv();
+  } catch (err) {
+    process.stderr.write(`kb serve status: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  let health: DaemonHealth | null;
+  try {
+    health = await tryFetchDaemonHealth();
+  } catch (err) {
+    // A daemon answered but its /health payload was unusable.
+    process.stderr.write(`kb serve status: ${(err as Error).message}\n`);
+    return 1;
+  }
+
+  if (health === null) {
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ reachable: false, url: url.href })}\n`);
+    } else {
+      process.stdout.write(`kb serve: no daemon reachable at ${url.href}\n`);
+      process.stdout.write('  start one with: kb serve\n');
+    }
+    return 3;
+  }
+
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ reachable: true, url: url.href, daemon: health })}\n`);
+  } else {
+    process.stdout.write(formatServeStatus(health, url));
+  }
+  return 0;
+}
+
+function formatServeStatus(health: DaemonHealth, queriedUrl: URL): string {
+  const lines = [`kb serve: daemon running at ${health.url ?? queriedUrl.href}`];
+  if (health.pid !== undefined) lines.push(`  pid:          ${health.pid}`);
+  if (health.uptime_ms !== undefined) {
+    lines.push(`  uptime:       ${formatDuration(health.uptime_ms)}`);
+  }
+  if (health.idle_timeout_ms !== undefined) {
+    lines.push(
+      `  idle timeout: ${health.idle_timeout_ms === 0 ? 'disabled' : formatDuration(health.idle_timeout_ms)}`,
+    );
+  }
+  if (health.commands !== undefined) {
+    lines.push(`  commands:     ${health.commands.join(', ')}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 120) return `${seconds}s`;
+  return `${Math.round(seconds / 60)}m`;
+}
+
 export async function startDaemonServer(
   options: StartDaemonServerOptions = {},
 ): Promise<ResidentDaemon> {
@@ -91,15 +200,26 @@ export async function startDaemonServer(
   const handlers = options.handlers ?? defaultHandlers();
   let idleTimer: NodeJS.Timeout | undefined;
   let queue: Promise<void> = Promise.resolve();
+  const startedAt = Date.now();
+  let boundUrl = '';
 
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
   });
 
+  const buildHealth = (): DaemonHealth => ({
+    status: 'ok',
+    pid: process.pid,
+    url: boundUrl,
+    idle_timeout_ms: parsed.idleTimeoutMs,
+    commands: [...DAEMON_COMMANDS],
+    uptime_ms: Date.now() - startedAt,
+  });
+
   const server = http.createServer((req, res) => {
     resetIdleTimer();
-    void handleRequest(req, res, handlers, (job) => {
+    void handleRequest(req, res, handlers, buildHealth, (job) => {
       queue = queue.then(job, job);
       return queue;
     });
@@ -127,9 +247,11 @@ export async function startDaemonServer(
   resetIdleTimer();
   const address = server.address() as AddressInfo;
   const hostForUrl = parsed.host.includes(':') ? `[${parsed.host}]` : parsed.host;
+  const url = new URL(`http://${hostForUrl}:${address.port}`);
+  boundUrl = url.href;
   return {
     server,
-    url: new URL(`http://${hostForUrl}:${address.port}`),
+    url,
     stop: () => new Promise<void>((resolve, reject) => {
       if (!server.listening) {
         resolve();
@@ -194,10 +316,11 @@ async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   handlers: DaemonCommandHandlers,
+  buildHealth: () => DaemonHealth,
   enqueue: (job: () => Promise<void>) => Promise<void>,
 ): Promise<void> {
   if (req.method === 'GET' && req.url === '/health') {
-    writeJson(res, 200, { status: 'ok' });
+    writeJson(res, 200, buildHealth());
     return;
   }
   if (req.method !== 'POST' || req.url !== '/v1/run') {

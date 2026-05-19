@@ -6,6 +6,21 @@ export interface DaemonRunResult {
 
 export type DaemonCommand = 'search' | 'list' | 'stats';
 
+/**
+ * Lifecycle snapshot returned by the daemon's `GET /health` endpoint and
+ * surfaced verbatim by `kb serve status --json`. Every field beyond `status`
+ * is optional so a newer client stays compatible with an older daemon that
+ * only answers `{ status: 'ok' }`.
+ */
+export interface DaemonHealth {
+  status: string;
+  pid?: number;
+  url?: string;
+  idle_timeout_ms?: number;
+  commands?: string[];
+  uptime_ms?: number;
+}
+
 export interface DaemonClientOptions {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
@@ -78,22 +93,73 @@ export async function runDaemonCommand(
     const payload = await response.json();
     return parseDaemonRunResult(payload);
   } catch (err) {
-    if (err instanceof DaemonProtocolError) throw err;
-    const code = (err as NodeJS.ErrnoException | undefined)?.code;
-    if (
-      code === 'ECONNREFUSED' ||
-      code === 'ECONNRESET' ||
-      code === 'ENOTFOUND' ||
-      code === 'EHOSTUNREACH' ||
-      (err as Error | undefined)?.name === 'AbortError' ||
-      (err as Error | undefined)?.name === 'TypeError'
-    ) {
-      throw new DaemonUnavailableError(`kb daemon is not reachable at ${endpoint.href}`, { cause: err });
-    }
-    throw err;
+    rethrowDaemonFetchError(err, endpoint.href);
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * Query the daemon's `GET /health` endpoint without running a command.
+ *
+ * Throws {@link DaemonUnavailableError} when nothing is listening and
+ * {@link DaemonProtocolError} when a daemon answers with an unusable payload.
+ */
+export async function fetchDaemonHealth(
+  options: DaemonClientOptions = {},
+): Promise<DaemonHealth> {
+  const endpoint = new URL('/health', daemonUrlFromEnv(options.env));
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 1500);
+  try {
+    const response = await fetchImpl(endpoint, { method: 'GET', signal: controller.signal });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new DaemonProtocolError(`daemon returned HTTP ${response.status}${text ? `: ${text}` : ''}`);
+    }
+    return parseDaemonHealth(await response.json());
+  } catch (err) {
+    rethrowDaemonFetchError(err, endpoint.href);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Like {@link fetchDaemonHealth} but resolves to `null` when no daemon is
+ * reachable, so callers can render a "not running" status without a try/catch.
+ */
+export async function tryFetchDaemonHealth(
+  options: DaemonClientOptions = {},
+): Promise<DaemonHealth | null> {
+  try {
+    return await fetchDaemonHealth(options);
+  } catch (err) {
+    if (err instanceof DaemonUnavailableError) return null;
+    throw err;
+  }
+}
+
+/**
+ * Re-throw a `fetch` failure as a {@link DaemonUnavailableError} when it looks
+ * like nothing is listening; pass {@link DaemonProtocolError} and anything
+ * unexpected through unchanged.
+ */
+function rethrowDaemonFetchError(err: unknown, endpointHref: string): never {
+  if (err instanceof DaemonProtocolError) throw err;
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNRESET' ||
+    code === 'ENOTFOUND' ||
+    code === 'EHOSTUNREACH' ||
+    (err as Error | undefined)?.name === 'AbortError' ||
+    (err as Error | undefined)?.name === 'TypeError'
+  ) {
+    throw new DaemonUnavailableError(`kb daemon is not reachable at ${endpointHref}`, { cause: err });
+  }
+  throw err;
 }
 
 function parseDaemonRunResult(payload: unknown): DaemonRunResult {
@@ -113,4 +179,23 @@ function parseDaemonRunResult(payload: unknown): DaemonRunResult {
     stdout: obj.stdout,
     stderr: obj.stderr,
   };
+}
+
+function parseDaemonHealth(payload: unknown): DaemonHealth {
+  if (typeof payload !== 'object' || payload === null) {
+    throw new DaemonProtocolError('daemon /health returned a non-object payload');
+  }
+  const obj = payload as Record<string, unknown>;
+  if (typeof obj.status !== 'string') {
+    throw new DaemonProtocolError('daemon /health response missing status string');
+  }
+  const health: DaemonHealth = { status: obj.status };
+  if (typeof obj.pid === 'number') health.pid = obj.pid;
+  if (typeof obj.url === 'string') health.url = obj.url;
+  if (typeof obj.idle_timeout_ms === 'number') health.idle_timeout_ms = obj.idle_timeout_ms;
+  if (Array.isArray(obj.commands) && obj.commands.every((item) => typeof item === 'string')) {
+    health.commands = obj.commands as string[];
+  }
+  if (typeof obj.uptime_ms === 'number') health.uptime_ms = obj.uptime_ms;
+  return health;
 }
