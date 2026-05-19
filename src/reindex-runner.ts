@@ -35,6 +35,11 @@ import {
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config/paths.js';
 import { emitCanonicalLog } from './canonical-log.js';
+import {
+  isContextualRetrievalEnabled,
+  type ContextualErrorCode,
+} from './config/contextual-preface.js';
+import { aggregateContextualSidecarStats } from './contextual-preface.js';
 import { KBError } from './errors.js';
 import { FaissIndexManager, type IndexUpdateSummary } from './FaissIndexManager.js';
 import { listKnowledgeBases } from './kb-fs.js';
@@ -93,6 +98,29 @@ export interface ReindexResult {
   took_ms: number;
   reason: string | null;
   summary: IndexUpdateSummary | null;
+  /**
+   * #409 — post-run contextual-preface diagnostics, aggregated from the
+   * sidecars of the in-scope KBs after `updateIndex` finishes. `null` when
+   * contextual retrieval is disabled or the run never reached the rebuild
+   * (`guard_blocked` / `lock_held` / pre-flight `failed`). Surfacing this
+   * keeps preface cache / failure detail out of debug-only logs.
+   */
+  contextual: ContextualReindexSummary | null;
+}
+
+/**
+ * #409 — contextual-preface cache / failure counters summed across the
+ * in-scope KBs, read back from the sidecars the just-completed reindex
+ * persisted. `covered_chunks` are successful prefaces; `null_preface_chunks`
+ * failed; `retry_pending_chunks` are the failed subset still inside their
+ * per-error backoff (the next reindex skips them).
+ */
+export interface ContextualReindexSummary {
+  kbs: number;
+  covered_chunks: number;
+  null_preface_chunks: number;
+  retry_pending_chunks: number;
+  failures_by_error_code: Partial<Record<ContextualErrorCode, number>>;
 }
 
 interface RunStateFile {
@@ -273,6 +301,38 @@ export async function estimateChunkCountForKbs(kbs: readonly string[]): Promise<
   return total;
 }
 
+/**
+ * #409 — after a reindex actually runs, sum the contextual-preface
+ * sidecar counters across the in-scope KBs so `kb reindex` can report
+ * preface cache / failure detail instead of leaving it in debug logs.
+ * Returns `null` when contextual retrieval is disabled (the reindex
+ * embedded chunks verbatim, so any stale sidecars would be misleading).
+ */
+export async function summarizeContextualOutcome(
+  kbs: readonly string[],
+): Promise<ContextualReindexSummary | null> {
+  if (!isContextualRetrievalEnabled()) return null;
+  const summary: ContextualReindexSummary = {
+    kbs: kbs.length,
+    covered_chunks: 0,
+    null_preface_chunks: 0,
+    retry_pending_chunks: 0,
+    failures_by_error_code: {},
+  };
+  for (const kb of kbs) {
+    const stats = await aggregateContextualSidecarStats(kb);
+    summary.covered_chunks += stats.covered_chunks;
+    summary.null_preface_chunks += stats.null_preface_chunks;
+    summary.retry_pending_chunks += stats.retry_pending_chunks;
+    for (const [code, count] of Object.entries(stats.failures_by_error_code)) {
+      const key = code as ContextualErrorCode;
+      summary.failures_by_error_code[key] =
+        (summary.failures_by_error_code[key] ?? 0) + (count ?? 0);
+    }
+  }
+  return summary;
+}
+
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -339,6 +399,7 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
       took_ms: Date.now() - startedAtMs,
       reason,
       summary: null,
+      contextual: null,
     };
   }
 
@@ -389,6 +450,7 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
       took_ms: Date.now() - startedAtMs,
       reason: (err as Error).message,
       summary: null,
+      contextual: null,
     };
   } finally {
     // Always remove the run-state file on exit. The trigger watcher's
@@ -420,6 +482,7 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
     took_ms: Date.now() - startedAtMs,
     reason: outcome === 'completed' ? null : 'updateIndex reported non-success status',
     summary,
+    contextual: await summarizeContextualOutcome(kbs),
   };
 }
 
@@ -467,6 +530,7 @@ function finalizeGuardBlocked(
     took_ms: Date.now() - startedAtMs,
     reason,
     summary: null,
+    contextual: null,
   };
 }
 

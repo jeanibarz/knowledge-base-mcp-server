@@ -36,6 +36,10 @@ Behavior:
     same machinery the existing \`kb search --refresh\` path uses, so
     sidecar invalidation, error handling, and atomic FAISS swaps come
     for free.
+  - When \`KB_CONTEXTUAL_RETRIEVAL=on\`, prints a \`contextual:\` line
+    summarising preface coverage and failures (covered / failed /
+    retry-pending chunks, with an error-code breakdown) read back from
+    the sidecars the run persisted. \`kb stats\` reports the same per-KB.
 
 Options:
   --with-context        Required in M0b. Required for the CLI to do
@@ -163,6 +167,21 @@ function formatHumanResult(result: ReindexResult): string {
         `files_changed=${result.summary.files_changed ?? 0} ` +
         `files_unchanged=${result.summary.files_unchanged ?? 0} ` +
         `failures=${result.summary.failure_count ?? 0}`,
+    );
+  }
+  if (result.contextual !== null) {
+    // #409 — surface contextual-preface cache / failure counters so the
+    // operator sees rollout health without grepping debug logs.
+    const c = result.contextual;
+    const errors = Object.entries(c.failures_by_error_code)
+      .sort(([, a], [, b]) => (b ?? 0) - (a ?? 0))
+      .map(([code, count]) => `${code}=${count}`)
+      .join(', ');
+    lines.push(
+      `  contextual: covered=${c.covered_chunks} ` +
+        `failed=${c.null_preface_chunks} ` +
+        `retry_pending=${c.retry_pending_chunks}` +
+        (errors.length > 0 ? ` errors=[${errors}]` : ''),
     );
   }
   return lines.join('\n') + '\n';

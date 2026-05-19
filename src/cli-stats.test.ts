@@ -1,7 +1,7 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import { runStats, type RunStatsDeps } from './cli-stats.js';
+import { formatContextualSection, runStats, type RunStatsDeps } from './cli-stats.js';
 import type { FaissIndexManager } from './FaissIndexManager.js';
-import type { KbStatsPayload } from './kb-stats.js';
+import type { KbStatsContextualPrefaceBlock, KbStatsPayload } from './kb-stats.js';
 import { KBError } from './errors.js';
 
 function payload(): KbStatsPayload {
@@ -89,6 +89,24 @@ function payload(): KbStatsPayload {
   };
 }
 
+function contextualBlock(
+  over: Partial<KbStatsContextualPrefaceBlock> = {},
+): KbStatsContextualPrefaceBlock {
+  return {
+    enabled: true,
+    reindex_state: 'completed',
+    last_completed_at: '2026-05-18T00:00:00.000Z',
+    covered_chunks: 4,
+    null_preface_chunks: 0,
+    coverage_pct: 100,
+    cache_bytes: 1024,
+    model: 'mock-llm',
+    generator: 'contextual-preface.v1',
+    failures: { retry_pending: 0, by_error_code: {} },
+    ...over,
+  };
+}
+
 function makeDeps(opts: {
   payload?: KbStatsPayload;
   computeError?: Error;
@@ -169,6 +187,50 @@ describe('kb stats CLI', () => {
     expect(out).toContain('- Index path: `/tmp/kb-index`');
     expect(out).toContain('## Relevance Gate');
     expect(out).toContain('- Gated queries: 0');
+  });
+
+  it('renders a Contextual Retrieval section in markdown when sidecars exist (#409)', async () => {
+    const withContext = payload();
+    withContext.knowledge_bases.alpha.contextual_preface = contextualBlock({
+      reindex_state: 'partial',
+      covered_chunks: 54,
+      null_preface_chunks: 7,
+      coverage_pct: 88.5,
+      failures: { retry_pending: 3, by_error_code: { llm_unreachable: 5, llm_malformed: 2 } },
+    });
+    withContext.knowledge_bases.beta.contextual_preface = contextualBlock({
+      reindex_state: 'never',
+      covered_chunks: 0,
+      coverage_pct: 0,
+    });
+    const { deps, stdout } = makeDeps({ payload: withContext });
+
+    const code = await runStats([], deps);
+
+    expect(code).toBe(0);
+    const out = stdout.join('');
+    expect(out).toContain('## Contextual Retrieval');
+    expect(out).toContain('- Feature flag: enabled');
+    // The `partial` KB renders; the `never` KB is folded away.
+    expect(out).toContain('| alpha | partial | 88.5% | 54 | 7 | 3 | llm_unreachable=5, llm_malformed=2 |');
+    expect(out).not.toContain('| beta | never |');
+  });
+
+  it('folds the contextual section to one line when no KB has sidecars (#409)', () => {
+    const lines = formatContextualSection({
+      knowledge_bases: {
+        alpha: {
+          file_count: 1,
+          chunk_count: 2,
+          total_bytes_indexed: 10,
+          last_updated_at: null,
+          contextual_preface: contextualBlock({ enabled: false, reindex_state: 'never' }),
+        },
+      },
+    } as unknown as KbStatsPayload);
+    expect(lines).toContain('## Contextual Retrieval');
+    expect(lines).toContain('- Feature flag: disabled');
+    expect(lines).toContain('- No contextual-preface sidecars on disk yet.');
   });
 
   it('returns exit 2 for argv errors', async () => {

@@ -9,7 +9,12 @@ import {
 } from './search-errors-core.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
-import { computeKbStats, type ComputeKbStatsOptions, type KbStatsPayload } from './kb-stats.js';
+import {
+  computeKbStats,
+  type ComputeKbStatsOptions,
+  type KbStatsContextualPrefaceBlock,
+  type KbStatsPayload,
+} from './kb-stats.js';
 
 const CLI_STARTED_AT = Date.now();
 
@@ -20,7 +25,9 @@ Usage:
 
 Mirrors the MCP \`kb_stats\` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
-Includes process-lifetime relevance-gate counters when the gate has run.
+Includes process-lifetime relevance-gate counters when the gate has run, and a
+Contextual Retrieval section with per-KB preface coverage and failure counts
+(by error code) when contextual-preface sidecars exist.
 Strictly read-only — does not refresh the index.
 
 Options:
@@ -169,7 +176,55 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
       `${formatInteger(payload.relevance_gate.judge_window.size)}, ` +
       `warn>${formatRate(payload.relevance_gate.judge_window.warn_threshold)})`,
     '',
+    ...formatContextualSection(payload),
   ].join('\n');
+}
+
+/**
+ * #409 — render the per-KB `contextual_preface` block in the markdown
+ * surface. The JSON output already carries it; without this section a
+ * human running `kb stats` sees no contextual coverage or failure detail
+ * at all. KBs that were never reindexed with contextual retrieval are
+ * folded into a single line so the common (feature-off) case stays terse.
+ */
+export function formatContextualSection(payload: KbStatsPayload): string[] {
+  const blocks = Object.entries(payload.knowledge_bases)
+    .map(([name, row]) => [name, row.contextual_preface] as const)
+    .filter((e): e is readonly [string, KbStatsContextualPrefaceBlock] => e[1] !== undefined);
+  if (blocks.length === 0) return [];
+
+  const enabled = blocks.some(([, block]) => block.enabled);
+  const active = blocks
+    .filter(([, block]) => block.reindex_state !== 'never')
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  const lines: string[] = [
+    '## Contextual Retrieval',
+    '',
+    `- Feature flag: ${enabled ? 'enabled' : 'disabled'}`,
+  ];
+  if (active.length === 0) {
+    lines.push('- No contextual-preface sidecars on disk yet.', '');
+    return lines;
+  }
+  lines.push(
+    '',
+    '| Knowledge base | State | Coverage | Covered | Failed | Retry-pending | Top errors |',
+    '| --- | --- | ---: | ---: | ---: | ---: | --- |',
+  );
+  for (const [name, block] of active) {
+    const errors = Object.entries(block.failures.by_error_code)
+      .sort(([, a], [, b]) => (b ?? 0) - (a ?? 0))
+      .map(([code, count]) => `${code}=${count}`)
+      .join(', ');
+    lines.push(
+      `| ${escapeTableCell(name)} | ${block.reindex_state} | ${block.coverage_pct.toFixed(1)}% | ` +
+        `${formatInteger(block.covered_chunks)} | ${formatInteger(block.null_preface_chunks)} | ` +
+        `${formatInteger(block.failures.retry_pending)} | ${errors.length > 0 ? errors : '—'} |`,
+    );
+  }
+  lines.push('');
+  return lines;
 }
 
 function escapeTableCell(value: string): string {

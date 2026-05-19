@@ -277,18 +277,24 @@ Hard-coded constants (not env vars):
       "enabled": true,
       "reindex_state": "completed",
       "last_completed_at": "2026-05-14T22:13:00Z",
-      "covered_chunks": 58,
-      "null_preface_chunks": 0,
-      "coverage_pct": 100.0,
+      "covered_chunks": 56,
+      "null_preface_chunks": 2,
+      "coverage_pct": 96.6,
       "cache_bytes": 18211,
       "model": "qwen3.6-35b-a3b",
-      "generator": "contextual-preface.v1"
+      "generator": "contextual-preface.v1",
+      "failures": {
+        "retry_pending": 1,
+        "by_error_code": { "llm_unreachable": 1, "truncated_doc": 1 }
+      }
     }
   }]
 }
 ```
 
 Two count fields, not three: `covered_chunks` and `null_preface_chunks`. The "uncovered" remainder (`total_chunks - covered - null_preface`) is derived in the display layer when `reindex_state != completed` (steady-state it's always zero).
+
+`failures` (#409) breaks `null_preface_chunks` down so the count is actionable instead of opaque: `retry_pending` is the failed-chunk subset whose `next_retry_after` has not elapsed (the next reindex skips them, no LLM call); `by_error_code` is keyed by `ContextualErrorCode`. It is derived from the same sidecar scan as the count fields — a stale-clock `next_retry_after` (see Open Questions) only mis-buckets `retry_pending`, never corrupts a count. `kb reindex` surfaces the same counters summed across the in-scope KBs as a `contextual` block on `ReindexResult` (a `contextual:` line in the human output), read back from the sidecars the run persisted; both `kb stats` and `kb reindex` route through one sidecar reader (`aggregateContextualSidecarStats`).
 
 `reindex_state ∈ {never, in_progress, completed, partial, failed, stale}` — `stale` is the new value surfaced when `.reindex.run.json` exists but its `pid` is dead (the next operation cleans it up and transitions; while transitioning, `kb_stats` returns `stale`). `in_progress` means a live PID is currently holding the lock.
 
