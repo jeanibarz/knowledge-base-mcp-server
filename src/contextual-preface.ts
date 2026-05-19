@@ -328,6 +328,108 @@ async function readSidecar(sidecarPath: string): Promise<SidecarFile | null> {
   return parsed;
 }
 
+// ---------------------------------------------------------------------------
+// Cache-aware reindex estimation (#408)
+// ---------------------------------------------------------------------------
+
+/** Per-chunk cache classification used by the contextual reindex estimator. */
+export interface SidecarChunkTally {
+  /** Chunks with a valid cached preface — the reindex reuses them, no LLM call. */
+  cache_hits: number;
+  /**
+   * Chunks whose sidecar records a failure whose `next_retry_after` has not
+   * elapsed — `resolveContextualPrefaces` skips them without an LLM call.
+   */
+  retry_skips: number;
+  /**
+   * Chunks needing a cold LLM call: no sidecar, a missing entry, an expired
+   * failure, or a sidecar invalidated by a generator / chunk-size change.
+   */
+  cold_chunks: number;
+}
+
+/**
+ * RFC 017 §5 step 1 (cache-aware refinement, #408) — read one source's
+ * contextual-preface sidecar and classify the first `expectedChunkCount`
+ * chunk indices for `kb reindex` cost estimation.
+ *
+ * `expectedChunkCount` is the chunk count the caller already knows from the
+ * source's chunk manifest — the authoritative count of what the rebuild will
+ * process. The sidecar supplies the per-chunk cache state left behind by a
+ * previous contextual run.
+ *
+ * This is deliberately a *rough* estimate. It matches sidecar entries by
+ * `chunk_index` and does NOT recompute per-chunk or per-document hashes, so a
+ * sidecar that is stale relative to an edited source file is still counted as
+ * a hit. It DOES honour the global cache-key components the resolver checks
+ * cheaply — `generator`, `chunk_size`, `chunk_overlap` — so a `GENERATOR_VERSION`
+ * bump or a chunk-size change correctly invalidates the whole sidecar. The
+ * estimate is a scheduling heuristic for the LRA cron-window guard, never a
+ * correctness invariant; the rebuild re-validates every entry for real.
+ *
+ * A missing, corrupt, or schema-mismatched sidecar yields all-cold.
+ */
+export async function classifyContextualSidecarChunks(
+  source: string,
+  knowledgeBaseName: string,
+  expectedChunkCount: number,
+  nowMs: number = Date.now(),
+): Promise<SidecarChunkTally> {
+  if (expectedChunkCount <= 0) {
+    return { cache_hits: 0, retry_skips: 0, cold_chunks: 0 };
+  }
+  const allCold: SidecarChunkTally = {
+    cache_hits: 0,
+    retry_skips: 0,
+    cold_chunks: expectedChunkCount,
+  };
+
+  const sidecar = await readSidecar(sidecarPathFor(source, knowledgeBaseName));
+  if (sidecar === null) return allCold;
+
+  // Whole-sidecar invalidation — mirrors the global cache-key components
+  // `resolveContextualPrefaces` checks. A change to any of these forces an
+  // LLM call for every chunk regardless of the per-entry state.
+  const { chunkSize, chunkOverlap } = resolveChunkSize();
+  if (
+    sidecar.generator !== GENERATOR_VERSION ||
+    sidecar.chunk_size !== chunkSize ||
+    sidecar.chunk_overlap !== chunkOverlap
+  ) {
+    return allCold;
+  }
+
+  const byIndex = new Map<number, SidecarChunkEntry>();
+  for (const entry of sidecar.chunks) byIndex.set(entry.chunk_index, entry);
+
+  let cacheHits = 0;
+  let retrySkips = 0;
+  let cold = 0;
+  for (let i = 0; i < expectedChunkCount; i += 1) {
+    const entry = byIndex.get(i);
+    if (entry === undefined) {
+      cold += 1;
+      continue;
+    }
+    // A non-null preface is a cache hit (the resolver reuses it verbatim).
+    if (entry.preface !== null) {
+      cacheHits += 1;
+      continue;
+    }
+    // Recorded failure: a `next_retry_after` still in the future is skipped
+    // by the resolver without an LLM call; an elapsed or absent one is cold.
+    const retryAtMs = entry.next_retry_after !== undefined
+      ? Date.parse(entry.next_retry_after)
+      : NaN;
+    if (!Number.isNaN(retryAtMs) && retryAtMs > nowMs) {
+      retrySkips += 1;
+    } else {
+      cold += 1;
+    }
+  }
+  return { cache_hits: cacheHits, retry_skips: retrySkips, cold_chunks: cold };
+}
+
 async function persistSidecar(
   sidecarPath: string,
   args: PrefaceResolveArgs,
