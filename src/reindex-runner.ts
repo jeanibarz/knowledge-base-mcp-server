@@ -58,7 +58,14 @@ export const REINDEX_RUN_FILENAME = '.reindex.run.json';
 export const REINDEX_RUN_SCHEMA_VERSION = 'reindex-run.v1';
 
 export interface ReindexOptions {
-  /** Scope to these KB names. Empty array means "every registered KB". */
+  /**
+   * KB names used for the chunk-count estimate and the cron-window guard
+   * arithmetic — NOT a scoped rebuild. `updateIndex` is always invoked
+   * with an `undefined` (whole-corpus) scope; see `runManagerUpdateIndex`.
+   * A partial rebuild would orphan the other shelves' vectors in the
+   * single-index-per-model FAISS layout. Empty array means "every
+   * registered KB".
+   */
   knowledgeBases: readonly string[];
   /**
    * Skip the LRA-cron guard AND the self-runtime-budget guard. Operators

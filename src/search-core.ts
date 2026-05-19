@@ -16,7 +16,7 @@ import type { SearchResultDocument } from './FaissIndexManager.js';
 import type {
   FreshnessScanScope,
   FreshnessScanSource,
-} from './cli-timing.js';
+} from './timing-core.js';
 import { readFreshnessManifest } from './freshness-manifest.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 
