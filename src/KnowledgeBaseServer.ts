@@ -101,6 +101,7 @@ import type { RelevanceGateVerdict } from './relevance-gate-schema.js';
 import { chunkIdFromMetadata } from './rrf.js';
 import {
   applyRerankerIfEnabled,
+  RerankerConfigError,
   resolveRerankerConfig,
   type RerankOverride,
 } from './reranker.js';
@@ -109,7 +110,11 @@ const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
 
 function mcpErrorContent(error: Error): TextContent {
-  const code: KBErrorCode = error instanceof KBError ? error.code : 'INTERNAL';
+  const code = error instanceof KBError
+    ? error.code
+    : error instanceof RerankerConfigError
+      ? error.code
+      : 'INTERNAL';
   return {
     type: 'text',
     text: JSON.stringify({
@@ -773,6 +778,7 @@ export class KnowledgeBaseServer {
         results: ranked,
         k: HYBRID_TOP_K,
         override: rerankOverride,
+        config: rerankConfig,
         process: 'mcp',
         searchMode: 'hybrid',
         kbScope: knowledgeBaseName ?? null,

@@ -15,6 +15,7 @@
 
 import { ActiveModelResolutionError } from './active-model.js';
 import { KBError, type KBErrorCode } from './errors.js';
+import { RerankerConfigError } from './config/reranker.js';
 import { WriteLockContentionError } from './write-lock.js';
 
 export type SearchFailureCategory =
@@ -64,6 +65,16 @@ export function classifyKbSearchError(err: unknown): SearchFailure {
       next_action:
         'Run `kb models list` to see registered models, then `kb models add <provider> <model>` or ' +
         '`kb models set-active <id>` to make one active. `kb doctor` shows the current resolution state.',
+    };
+  }
+
+  if (err instanceof RerankerConfigError) {
+    return {
+      code: err.code,
+      category: 'configuration',
+      message: err.message,
+      next_action:
+        'Fix KB_RERANK and KB_RERANK_TOP_N, or pass `--no-rerank` for this search. `kb doctor` reports reranker configuration.',
     };
   }
 

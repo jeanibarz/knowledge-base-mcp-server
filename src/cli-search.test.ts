@@ -291,6 +291,47 @@ describe('runSearch timing guard (#331)', () => {
     }
   });
 
+  it('reports malformed hybrid reranker config as a structured search failure', async () => {
+    const manager = {
+      modelDir: '/tmp/kb-test-model',
+      initialize: jest.fn(async () => {}),
+      updateIndex: jest.fn(async () => {}),
+      similaritySearch: jest.fn(async () => []),
+    } as unknown as FaissIndexManager & { similaritySearch: jest.Mock };
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      runLexicalLeg: jest.fn(async () => ({
+        refreshed: 0,
+        failed: 0,
+        hits: [],
+      })),
+    };
+    const previousRerank = process.env.KB_RERANK;
+    const previousTopN = process.env.KB_RERANK_TOP_N;
+    process.env.KB_RERANK = 'on';
+    process.env.KB_RERANK_TOP_N = 'nope';
+
+    try {
+      const out = await captureSearchOutput(['query', '--mode=hybrid', '--no-freshness'], deps);
+
+      expect(out.code).toBe(2);
+      expect(out.stdout).toBe('');
+      expect(out.stderr).toContain('kb search: invalid KB_RERANK_TOP_N="nope"');
+      expect(out.stderr).toContain('category: configuration (code: RERANK_CONFIG_INVALID)');
+      expect(out.stderr).toContain('kb doctor');
+      expect(deps.runLexicalLeg).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousRerank === undefined) delete process.env.KB_RERANK;
+      else process.env.KB_RERANK = previousRerank;
+      if (previousTopN === undefined) delete process.env.KB_RERANK_TOP_N;
+      else process.env.KB_RERANK_TOP_N = previousTopN;
+    }
+  });
+
   it('reranks the hybrid runtime path before emitting JSON results', async () => {
     const manager = {
       modelDir: '/tmp/kb-test-model',

@@ -72,6 +72,7 @@ import {
   parseRerankFlag,
   resolveRerankerConfig,
   type RerankOverride,
+  type RerankerConfig,
 } from './reranker.js';
 import {
   inspectTaskContext,
@@ -1335,7 +1336,12 @@ async function runHybridSearch(
 
   // -- fuse ----------------------------------------------------------------
   const fusionStartedAt = nowMs();
-  const rerankConfig = resolveRerankerConfig(process.env, parsed.rerankOverride);
+  let rerankConfig: RerankerConfig;
+  try {
+    rerankConfig = resolveRerankerConfig(process.env, parsed.rerankOverride);
+  } catch (err) {
+    return reportFailure(classifyKbSearchError(err), parsed.format);
+  }
   const fusionK = rerankConfig.enabled ? Math.max(parsed.k, rerankConfig.topN) : parsed.k;
   const fusion = fuseHybridResultsWithDiagnostics({
     denseResults,
@@ -1349,6 +1355,7 @@ async function runHybridSearch(
     results: ranked,
     k: parsed.k,
     override: parsed.rerankOverride,
+    config: rerankConfig,
     process: 'cli',
     searchMode: 'hybrid',
     kbScope: parsed.kb ?? null,

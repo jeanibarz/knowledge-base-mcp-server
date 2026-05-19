@@ -1198,6 +1198,32 @@ describe('KnowledgeBaseServer handlers', () => {
     }
   });
 
+  it('handleRetrieveKnowledge reports malformed hybrid reranker config with a stable code', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Alpha content');
+    process.env.KB_RERANK = 'on';
+    process.env.KB_RERANK_TOP_N = 'nope';
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'Alpha content', metadata: { source: '/kb/a.md', chunkIndex: 0 }, score: 0.2 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'what is alpha',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toMatchObject({
+      code: 'RERANK_CONFIG_INVALID',
+      message: 'invalid KB_RERANK_TOP_N="nope" (expected integer 1-1000)',
+    });
+  });
+
   it('handleRetrieveKnowledge emits one canonical event with redacted query and result fields (#216)', async () => {
     const tempDir = await setRetrieveEnv();
     const logFile = path.join(tempDir, 'canonical.log');

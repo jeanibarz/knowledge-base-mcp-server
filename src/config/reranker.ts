@@ -17,23 +17,32 @@ export interface RerankerEnv {
   KB_RERANK_TOP_N?: string;
 }
 
+export class RerankerConfigError extends Error {
+  readonly code = 'RERANK_CONFIG_INVALID';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'RerankerConfigError';
+  }
+}
+
 export function parseRerankFlag(raw: string | undefined): boolean {
   if (raw === undefined || raw.trim() === '') return false;
   const value = raw.trim().toLowerCase();
   if (value === 'on' || value === 'true' || value === '1') return true;
   if (value === 'off' || value === 'false' || value === '0') return false;
-  throw new Error(`invalid KB_RERANK=${JSON.stringify(raw)} (expected on/off, true/false, or 1/0)`);
+  throw new RerankerConfigError(`invalid KB_RERANK=${JSON.stringify(raw)} (expected on/off, true/false, or 1/0)`);
 }
 
 export function parseRerankTopN(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_RERANK_TOP_N;
   const trimmed = raw.trim();
   if (!/^\d+$/.test(trimmed)) {
-    throw new Error(`invalid KB_RERANK_TOP_N=${JSON.stringify(raw)} (expected integer 1-${MAX_RERANK_TOP_N})`);
+    throw new RerankerConfigError(`invalid KB_RERANK_TOP_N=${JSON.stringify(raw)} (expected integer 1-${MAX_RERANK_TOP_N})`);
   }
   const value = Number(trimmed);
   if (!Number.isInteger(value) || value < 1 || value > MAX_RERANK_TOP_N) {
-    throw new Error(`invalid KB_RERANK_TOP_N=${JSON.stringify(raw)} (expected integer 1-${MAX_RERANK_TOP_N})`);
+    throw new RerankerConfigError(`invalid KB_RERANK_TOP_N=${JSON.stringify(raw)} (expected integer 1-${MAX_RERANK_TOP_N})`);
   }
   return value;
 }
