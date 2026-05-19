@@ -417,6 +417,99 @@ function makeFailureEntry(
 }
 
 // ---------------------------------------------------------------------------
+// Progress ledger support (#407)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read-only view of one contextual-preface sidecar's per-chunk
+ * resolution state. Derived from the on-disk sidecar — the durable,
+ * incrementally-written (tmp + rename, per source file) record of LLM
+ * work — so it survives a SIGINT, crash, or host reboot mid-reindex.
+ * Consumed by `kb reindex status` (see `src/reindex-progress.ts`) to
+ * report which files completed, failed, or still need contextual
+ * prefaces.
+ */
+export interface ContextualSidecarStatus {
+  /** Absolute source-file path the sidecar describes. */
+  source: string;
+  /** Knowledge base the sidecar belongs to. */
+  knowledgeBase: string;
+  /** Chunk entries persisted in the sidecar. */
+  chunksTotal: number;
+  /** Chunk entries carrying a non-empty preface. */
+  chunksResolved: number;
+  /** Chunk entries with no preface (generation failed or pending retry). */
+  chunksFailed: number;
+  /** Distinct error codes across the failed chunks, sorted. */
+  errorCodes: ContextualErrorCode[];
+}
+
+function summarizeSidecar(sidecar: SidecarFile): ContextualSidecarStatus {
+  let resolved = 0;
+  let failed = 0;
+  const errorCodes = new Set<ContextualErrorCode>();
+  for (const chunk of sidecar.chunks) {
+    if (typeof chunk.preface === 'string' && chunk.preface.length > 0) {
+      resolved += 1;
+    } else {
+      failed += 1;
+      if (chunk.error_code !== undefined) errorCodes.add(chunk.error_code);
+    }
+  }
+  return {
+    source: sidecar.source,
+    knowledgeBase: sidecar.knowledge_base,
+    chunksTotal: sidecar.chunks.length,
+    chunksResolved: resolved,
+    chunksFailed: failed,
+    errorCodes: [...errorCodes].sort(),
+  };
+}
+
+/**
+ * Walk the contextual-preface sidecar tree under `FAISS_INDEX_PATH` and
+ * summarize every sidecar found. Best-effort: a missing sidecar root,
+ * an unreadable subdirectory, or a corrupt / schema-mismatched sidecar
+ * is skipped rather than thrown — a progress report should degrade, not
+ * crash, on a damaged cache.
+ */
+export async function readContextualSidecarStatuses(): Promise<ContextualSidecarStatus[]> {
+  const root = sidecarRootDir();
+  let kbDirs: Array<import('fs').Dirent>;
+  try {
+    kbDirs = await fsp.readdir(root, { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      logger.warn(`RFC 017: failed to read sidecar root ${root}: ${(err as Error).message}`);
+    }
+    return [];
+  }
+
+  const statuses: ContextualSidecarStatus[] = [];
+  for (const kbDir of kbDirs) {
+    if (!kbDir.isDirectory()) continue;
+    const dir = path.join(root, kbDir.name);
+    let files: Array<import('fs').Dirent>;
+    try {
+      files = await fsp.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      logger.warn(`RFC 017: failed to read sidecar dir ${dir}: ${(err as Error).message}`);
+      continue;
+    }
+    for (const file of files) {
+      // `.json.tmp` files (interrupted atomic writes) end in `.tmp`, so
+      // the `.json` suffix check below already excludes them.
+      if (!file.isFile() || !file.name.endsWith('.json')) continue;
+      const sidecar = await readSidecar(path.join(dir, file.name));
+      if (sidecar === null) continue;
+      statuses.push(summarizeSidecar(sidecar));
+    }
+  }
+  return statuses;
+}
+
+// ---------------------------------------------------------------------------
 // LLM call
 // ---------------------------------------------------------------------------
 
