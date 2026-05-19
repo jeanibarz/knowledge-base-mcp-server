@@ -296,6 +296,8 @@ describe('kb doctor', () => {
           index_mutated: true,
           saved: true,
           sidecars_written: true,
+          warning_count: 0,
+          warnings: [],
           failure_count: 0,
           failures: [],
         },
