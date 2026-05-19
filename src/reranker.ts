@@ -7,6 +7,7 @@ import {
   parseRerankFlag,
   parseRerankTopN,
   resolveRerankerConfig,
+  RerankerConfigError,
   type RerankOverride,
   type RerankerConfig,
 } from './config/reranker.js';
@@ -18,6 +19,7 @@ export {
   parseRerankFlag,
   parseRerankTopN,
   resolveRerankerConfig,
+  RerankerConfigError,
   type RerankOverride,
   type RerankerConfig,
 };
@@ -61,6 +63,7 @@ export interface ApplyRerankerInput<T extends RerankableDocument> {
   results: readonly T[];
   k: number;
   override?: RerankOverride;
+  config?: RerankerConfig;
   process?: CanonicalProcess;
   searchMode?: CanonicalSearchMode;
   kbScope?: string | null;
@@ -127,7 +130,7 @@ export async function getDefaultReranker(config: RerankerConfig): Promise<Rerank
 export async function applyRerankerIfEnabled<T extends RerankableDocument>(
   input: ApplyRerankerInput<T>,
 ): Promise<RerankFusedResultsOutput<T>> {
-  const config = resolveRerankerConfig(process.env, input.override);
+  const config = input.config ?? resolveRerankerConfig(process.env, input.override);
   if (!config.enabled) {
     return {
       results: input.results.slice(0, input.k),
