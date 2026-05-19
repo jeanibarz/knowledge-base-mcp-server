@@ -68,6 +68,12 @@ import {
   type RelevanceGateVerdict,
 } from './relevance-gate-schema.js';
 import {
+  applyRerankerIfEnabled,
+  parseRerankFlag,
+  resolveRerankerConfig,
+  type RerankOverride,
+} from './reranker.js';
+import {
   inspectTaskContext,
   resolveTaskContextArgvMax,
   resolveTaskContextPolicyMode,
@@ -135,6 +141,9 @@ Result tuning:
   --gate                Run the relevance gate for this call even when
                         KB_RELEVANCE_GATE is off.
   --no-gate             Bypass the relevance gate for this call.
+  --rerank              Run the RFC 019 cross-encoder reranker for this call
+                        (currently applies to hybrid retrieval).
+  --no-rerank           Bypass the reranker for this call.
   --task-context=<str>  Task context used by the relevance judge. Prefer
                         --task-context-file for long or prompt-like text:
                         argv is exposed in 'ps', shell history, and hooks.
@@ -204,6 +213,7 @@ interface SearchArgs {
   explain: boolean;
   neighborContext?: NeighborContextOptions;
   gateOverride?: RelevanceGateOverride;
+  rerankOverride?: RerankOverride;
   taskContext?: string;
   taskContextFile?: string;
 }
@@ -213,6 +223,8 @@ export interface RunSearchDeps {
   resolveActiveModel: typeof resolveActiveModel;
   loadManagerForModel: typeof loadManagerForModel;
   loadWithJsonRetry: typeof loadWithJsonRetry;
+  listLexicalKbs?: typeof listLexicalKbs;
+  runLexicalLeg?: typeof runLexicalLeg;
 }
 
 const DEFAULT_RUN_SEARCH_DEPS: RunSearchDeps = {
@@ -220,6 +232,8 @@ const DEFAULT_RUN_SEARCH_DEPS: RunSearchDeps = {
   resolveActiveModel,
   loadManagerForModel,
   loadWithJsonRetry,
+  listLexicalKbs,
+  runLexicalLeg,
 };
 
 export async function runSearch(
@@ -309,11 +323,13 @@ export async function runSearch(
   }
 
   if (effectiveMode === 'lexical') {
+    warnIfRerankIgnored(parsed, effectiveMode);
     return runLexicalSearch(effectiveParsed, timing, totalStartedAt, autoModeDecision);
   }
   if (effectiveMode === 'hybrid') {
-    return runHybridSearch(effectiveParsed, timing, totalStartedAt, autoModeDecision);
+    return runHybridSearch(effectiveParsed, timing, totalStartedAt, autoModeDecision, deps);
   }
+  warnIfRerankIgnored(parsed, effectiveMode);
 
   try {
     const startedAt = nowMs();
@@ -576,6 +592,8 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--no-cache') { out.noCache = true; continue; }
     if (raw === '--gate') { out.gateOverride = 'on'; continue; }
     if (raw === '--no-gate') { out.gateOverride = 'off'; continue; }
+    if (raw === '--rerank') { out.rerankOverride = 'on'; continue; }
+    if (raw === '--no-rerank') { out.rerankOverride = 'off'; continue; }
     if (raw === '--no-freshness') { out.freshness = false; continue; }
     if (raw === '--explain-empty') { out.explainEmpty = true; continue; }
     if (raw === '--explain') { out.explain = true; continue; }
@@ -632,6 +650,27 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     throw new Error(`unexpected argument: ${raw}`);
   }
   return out;
+}
+
+function warnIfRerankIgnored(parsed: SearchArgs, effectiveMode: EffectiveSearchMode): void {
+  let enabled: boolean;
+  if (parsed.rerankOverride === 'on') {
+    enabled = true;
+  } else if (parsed.rerankOverride === 'off') {
+    enabled = false;
+  } else {
+    try {
+      enabled = parseRerankFlag(process.env.KB_RERANK);
+    } catch (err) {
+      process.stderr.write(
+        `kb search: invalid KB_RERANK ignored under --mode=${effectiveMode}: ${(err as Error).message}\n`,
+      );
+      return;
+    }
+  }
+  if (enabled && effectiveMode !== 'hybrid') {
+    process.stderr.write(`kb search: rerank is currently hybrid-only; ignored under --mode=${effectiveMode}\n`);
+  }
 }
 
 function parseNeighborContextCount(raw: string, prefix: string): number {
@@ -1188,6 +1227,7 @@ async function runHybridSearch(
   timing: TimingPayload | null = null,
   totalStartedAt: number = nowMs(),
   autoModeDecision: AutoSearchModeDecision | null = null,
+  deps: RunSearchDeps = DEFAULT_RUN_SEARCH_DEPS,
 ): Promise<number> {
   if (parsed.thresholdAuto || parsed.threshold !== undefined) {
     process.stderr.write('kb search: --threshold/--threshold=auto are dense-only; ignored under --mode=hybrid\n');
@@ -1205,10 +1245,10 @@ async function runHybridSearch(
   let activeModelId: string | null = null;
   try {
     let startedAt = nowMs();
-    await FaissIndexManager.bootstrapLayout();
+    await deps.bootstrapLayout();
     if (timing) timing.bootstrap_ms = elapsedMs(startedAt);
     startedAt = nowMs();
-    activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
+    activeModelId = await deps.resolveActiveModel({ explicitOverride: parsed.model });
     if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -1216,7 +1256,7 @@ async function runHybridSearch(
   let manager: FaissIndexManager;
   try {
     const startedAt = nowMs();
-    manager = await loadManagerForModel(activeModelId);
+    manager = await deps.loadManagerForModel(activeModelId);
     if (timing) timing.manager_load_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -1232,7 +1272,7 @@ async function runHybridSearch(
         });
       });
     } else {
-      await loadWithJsonRetry(manager);
+      await deps.loadWithJsonRetry(manager);
     }
     if (timing) timing.index_load_ms = elapsedMs(startedAt);
   } catch (err) {
@@ -1266,7 +1306,7 @@ async function runHybridSearch(
   let lexicalKbs: Array<{ kbName: string; kbPath: string }>;
   try {
     const startedAt = nowMs();
-    lexicalKbs = await listLexicalKbs(parsed.kb);
+    lexicalKbs = await (deps.listLexicalKbs ?? listLexicalKbs)(parsed.kb);
     if (timing) timing.lexical_kb_list_ms = elapsedMs(startedAt);
   } catch (err) {
     process.stderr.write(`kb search (hybrid): could not list KBs: ${(err as Error).message}\n`);
@@ -1274,7 +1314,7 @@ async function runHybridSearch(
   }
 
   const lexicalStartedAt = nowMs();
-  const lexicalPromise = runLexicalLeg({
+  const lexicalPromise = (deps.runLexicalLeg ?? runLexicalLeg)({
     kbs: lexicalKbs,
     query,
     fetchK,
@@ -1295,14 +1335,32 @@ async function runHybridSearch(
 
   // -- fuse ----------------------------------------------------------------
   const fusionStartedAt = nowMs();
+  const rerankConfig = resolveRerankerConfig(process.env, parsed.rerankOverride);
+  const fusionK = rerankConfig.enabled ? Math.max(parsed.k, rerankConfig.topN) : parsed.k;
   const fusion = fuseHybridResultsWithDiagnostics({
     denseResults,
     lexicalResults,
-    k: parsed.k,
+    k: fusionK,
   });
   let ranked = fusion.results;
+  if (timing) timing.fusion_ms = elapsedMs(fusionStartedAt);
+  const rerankResult = await applyRerankerIfEnabled({
+    query,
+    results: ranked,
+    k: parsed.k,
+    override: parsed.rerankOverride,
+    process: 'cli',
+    searchMode: 'hybrid',
+    kbScope: parsed.kb ?? null,
+  });
+  ranked = rerankResult.results;
   if (timing) {
-    timing.fusion_ms = elapsedMs(fusionStartedAt);
+    if (rerankResult.candidatesIn > 0) {
+      timing.rerank_ms = rerankResult.tookMs;
+      timing.rerank_cache_hits = rerankResult.cacheHits;
+      timing.rerank_candidates = rerankResult.candidatesIn;
+      if (rerankResult.degraded) timing.rerank_degraded = true;
+    }
     timing.total_ms = elapsedMs(totalStartedAt);
   }
 
@@ -1347,6 +1405,14 @@ async function runHybridSearch(
         lexical: { fetched: lexicalResults.length, refreshed: lexicalResultsRow.refreshed, failed: lexicalResultsRow.failed },
       },
       rrf: { c: HYBRID_RRF_C, fetch_k: fetchK },
+      rerank: {
+        enabled: rerankResult.candidatesIn > 0,
+        model: rerankResult.model,
+        candidates: rerankResult.candidatesIn,
+        cache_hits: rerankResult.cacheHits,
+        degraded: rerankResult.degraded,
+        degrade_reason: rerankResult.degradeReason,
+      },
       gate_verdict: gateVerdict,
       ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
@@ -1359,7 +1425,7 @@ async function runHybridSearch(
       process.stdout.write(formatAutoModeHeader(autoModeDecision));
       process.stdout.write('\n\n');
     }
-    process.stdout.write(`> _Mode: hybrid (RRF c=${HYBRID_RRF_C}). Stage 2 — dense ⨁ lexical; see #206._\n\n`);
+    process.stdout.write(`> _Mode: hybrid (RRF c=${HYBRID_RRF_C}). Stage 2 - dense + lexical; see #206._\n\n`);
     if (ranked.length === 0) {
       process.stdout.write(`_No matches._\n\n`);
     } else {
@@ -1369,6 +1435,12 @@ async function runHybridSearch(
     process.stdout.write(
       `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`,
     );
+    if (rerankResult.candidatesIn > 0) {
+      const degraded = rerankResult.degraded ? '; degraded to fused order' : '';
+      process.stdout.write(
+        `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`,
+      );
+    }
     if (gateVerdict.state !== 'bypassed') {
       process.stdout.write(`${formatGateVerdictFooter(gateVerdict)}\n`);
     }

@@ -1,6 +1,6 @@
 # RFC 019 — Cross-Encoder Reranker
 
-**Status:** Draft (v1 — to be iterated via the `rfc-iterative-review` workflow before implementation)
+**Status:** Accepted; M0a/M0b complete; `KB_RERANK=off` remains the default
 **Depends on:** #206 (hybrid RRF), #313 (query-embedding cache pattern), RFC 009 (error taxonomy), RFC 010 (MCP surface)
 **Composes with:** RFC 017 (contextual retrieval — improves *what* is embedded), RFC 018 (relevance gating — decides *whether* to inject)
 **Tracks:** retrieval precision — first-stage fusion produces a rank ordering, not a calibrated relevance score
@@ -100,28 +100,29 @@ CLI: `kb search --rerank` / `--no-rerank` per-call override; `--timing` reports 
 
 ### 7. Observability
 
-- A `rerank.stage` canonical-log line: `query_sha`, `model`, `candidates_in`, `took_ms`, `cache_hits`.
-- `kb stats` reports rerank stage p50/p95 latency and cache hit rate.
-- `kb doctor` checks the reranker model is present in the cache when `KB_RERANK=on`.
-- `kb search --explain` shows fused rank vs. reranked rank side by side, so a reorder is auditable.
+- A `rerank.stage` canonical-log line: `query_sha256`, `model`, `candidates_in`, `took_ms`, `cache_hits`, and `degraded`.
+- `kb search --timing` reports rerank stage latency, candidates, and cache hits; `--format=json` adds the `rerank` status object and per-hit `rerank_score` when reranking ran.
+- MCP `retrieve_knowledge` hybrid output annotates the header when reranking ran.
+- `kb doctor` reports reranker config and whether the Transformers.js model appears to be cached when `KB_RERANK=on`.
+- Follow-up observability before default-on: `kb stats` p50/p95/cache-hit summaries and a `kb search --explain` rank-audit view that shows fused rank vs. reranked rank side by side.
 
 ## Failure modes
 
 | failure | detection | response |
 |---|---|---|
 | Reranker model not in cache, no network | provider load throws | `KB_RERANK=on` degrades to the fused order with a one-time `WARN`; `kb doctor` flags it. Retrieval never breaks. |
-| Reranker call exceeds a latency budget | per-call timer | abort, fall back to fused order for that query, log `rerank.degraded`. |
+| Reranker call is too slow for interactive use | `kb search --timing`, M0b report | keep `KB_RERANK=off` by default; add a timeout/abort guard before reconsidering default-on. |
 | ONNX runtime unavailable on the platform | provider init throws | degrade to fused order; `kb doctor` reports the platform gap. |
 | `topN` larger than the fused set | length check | re-score whatever exists; no error. |
 | Reranker returns a wrong-length score array | length mismatch | discard the rerank pass for that query, fall back to fused order, log. |
 
-The reranker is **always fail-soft**: any reranker failure degrades to today's fused ordering. It can never break retrieval and never empties a result set (that is RFC 018's concern, not this stage's).
+Provider load/scoring errors and malformed score arrays fail soft to today's fused ordering. M0a does not include a timeout/abort guard, so a hung provider call can still hang that query; this is one reason M0b kept reranking opt-in. The stage never empties a result set by itself (that is RFC 018's concern, not this stage's).
 
 ## Migration / rollout
 
-- **M0a — Reranker provider + stage** (one PR). `src/reranker.ts` (provider interface + the `transformers.js` ONNX implementation), `rerankFusedResults`, `KB_RERANK*` config, wire into the shared retrieval path behind the flag, `rerank_score` in JSON output, score cache, canonical log + `kb doctor` check. Default `off`. Unit tests with a stub reranker; an integration test with the real model on a small fixture.
-- **M0b — Eval** (one PR / operator run). The `retrieval-eval` harness already computes nDCG@10 / MRR@10 / recall@k — run it with `KB_RERANK` off vs. on over the existing fixtures and report the precision lift. This is the reranker's natural validation: unlike RFC 018's gate, the reranker is *not* recall-negative (it reorders, never drops), so the bar is simply "nDCG/MRR improve, latency acceptable."
-- **M0c — Default on** (separate PR, conditional on M0b). If M0b shows a clear nDCG/MRR lift at acceptable latency, flip the default to `on`.
+- **M0a — Reranker provider + stage** (one PR). `src/reranker.ts` (provider interface + the `transformers.js` ONNX implementation), `rerankFusedResults`, `KB_RERANK*` config, wire into the shared retrieval path behind the flag, `rerank_score` in JSON output, score cache, canonical log + `kb doctor` check. Default `off`. Unit tests with a stub reranker; an integration test with the real model on a small fixture. **Implemented for hybrid retrieval and eval.**
+- **M0b — Eval** (one PR / operator run). The `retrieval-eval` harness already computes nDCG@10 / MRR@10 / recall@k — run it with `KB_RERANK` off vs. on over the existing fixtures and report the precision lift. This is the reranker's natural validation: unlike RFC 018's gate, the reranker is *not* recall-negative (it reorders, never drops), so the bar is simply "nDCG/MRR improve, latency acceptable." **Completed 2026-05-19; see [`019-m0b-reranker-report.md`](019-m0b-reranker-report.md).**
+- **M0c — Default on** (separate PR, conditional on M0b). If M0b shows a clear nDCG/MRR lift at acceptable latency, flip the default to `on`. Otherwise keep `KB_RERANK=off`. **Decision: no-go for default-on on the 2026-05-19 operating-environment canary. The corrected cross-encoder path produced a small nDCG@10/MRR@10 lift, but cold CLI latency was too high for default-on. Keep opt-in.**
 
 **Composition note.** RFC 019 and RFC 018 are concurrent tracks. When both land, the order is fusion → rerank → gate; the gate's A1/A2 thresholds are re-tuned against the reranker's calibrated score (which is a far better floor signal than a raw distance). RFC 017 is independent of both.
 
@@ -134,4 +135,4 @@ The reranker is **always fail-soft**: any reranker failure degrades to today's f
 - **Interaction with RFC 018's `KB_GATE_JUDGE_INPUT` cap.** With the reranker on, the top-`k` handed to the gate is already precision-ordered — the gate's judge may need fewer candidates. A tuning question for when both land.
 - **Reranking the contextual-preface text vs. the original** (§4 picks the original) — worth an A/B in M0b if RFC 017 is also enabled.
 
-_This RFC is a v1 draft. It should pass through the `rfc-iterative-review` workflow (critic rounds + empirical probe) before implementation, the same as RFC 018._
+_This RFC has moved from draft to implementation. M0b did not justify a default-on flip; reranking remains available as an opt-in hybrid retrieval stage._

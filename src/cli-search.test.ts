@@ -15,6 +15,7 @@ import { compactTimingPayload, type TimingPayload } from './timing-core.js';
 import type { ScoredDocument } from './formatter.js';
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
 import type { ExplainEmptyDiagnostics, Staleness } from './search-core.js';
+import { setRerankerFactoryForTests } from './reranker.js';
 
 const MTIME = '2026-05-03T15:33:56.964Z';
 
@@ -155,6 +156,17 @@ describe('parseSearchArgs relevance gate (RFC 018)', () => {
   });
 });
 
+describe('parseSearchArgs reranker (RFC 019)', () => {
+  it('accepts per-call reranker overrides', () => {
+    expect(parseSearchArgs(['query', '--rerank'])).toMatchObject({
+      rerankOverride: 'on',
+    });
+    expect(parseSearchArgs(['query', '--no-rerank'])).toMatchObject({
+      rerankOverride: 'off',
+    });
+  });
+});
+
 describe('runSearch timing guard (#331)', () => {
   function makeDeps(): {
     deps: RunSearchDeps;
@@ -256,6 +268,150 @@ describe('runSearch timing guard (#331)', () => {
       input_count: 1,
       output_count: 1,
       judge: { status: 'skipped' },
+    });
+  });
+
+  it('ignores invalid reranker-only topN config when dense mode cannot rerank', async () => {
+    const { deps } = makeDeps();
+    const previousRerank = process.env.KB_RERANK;
+    const previousTopN = process.env.KB_RERANK_TOP_N;
+    process.env.KB_RERANK = 'on';
+    process.env.KB_RERANK_TOP_N = 'nope';
+
+    try {
+      const out = await captureSearchOutput(['query', '--mode=dense', '--no-freshness'], deps);
+
+      expect(out.code).toBe(0);
+      expect(out.stderr).toContain('rerank is currently hybrid-only; ignored under --mode=dense');
+    } finally {
+      if (previousRerank === undefined) delete process.env.KB_RERANK;
+      else process.env.KB_RERANK = previousRerank;
+      if (previousTopN === undefined) delete process.env.KB_RERANK_TOP_N;
+      else process.env.KB_RERANK_TOP_N = previousTopN;
+    }
+  });
+
+  it('reranks the hybrid runtime path before emitting JSON results', async () => {
+    const manager = {
+      modelDir: '/tmp/kb-test-model',
+      initialize: jest.fn(async () => {}),
+      updateIndex: jest.fn(async () => {}),
+      similaritySearch: jest.fn(async (...args: unknown[]) => {
+        const timing = args[5] as SimilaritySearchTiming | undefined;
+        if (timing) timing.faiss_search_ms = (timing.faiss_search_ms ?? 0) + 1;
+        return [
+          {
+            pageContent: 'dense loser',
+            metadata: { source: '/kb/dense-loser.md', chunkIndex: 0 },
+            score: 0.1,
+          },
+          {
+            pageContent: 'dense middle',
+            metadata: { source: '/kb/dense-middle.md', chunkIndex: 0 },
+            score: 0.2,
+          },
+        ];
+      }),
+    } as unknown as FaissIndexManager & { similaritySearch: jest.Mock };
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      runLexicalLeg: jest.fn(async () => ({
+        refreshed: 0,
+        failed: 0,
+        hits: [
+          {
+            pageContent: 'lexical winner',
+            metadata: { source: '/kb/lexical-winner.md', chunkIndex: 0 },
+            score: 10,
+          },
+        ],
+      })),
+    };
+    const restoreFactory = setRerankerFactoryForTests(async () => ({
+      id: 'stub-reranker',
+      rerank: async (_query, candidates) =>
+        candidates.map((candidate) => (candidate.includes('winner') ? 10 : 0)),
+    }));
+    const previousRerank = process.env.KB_RERANK;
+    const previousTopN = process.env.KB_RERANK_TOP_N;
+    process.env.KB_RERANK = 'on';
+    process.env.KB_RERANK_TOP_N = '3';
+
+    try {
+      const out = await captureSearchOutput(
+        ['query', '--mode=hybrid', '--k=2', '--format=json', '--timing', '--no-freshness'],
+        deps,
+      );
+
+      expect(out.code).toBe(0);
+      expect(out.stderr).toContain('"cmd":"rerank.stage"');
+      expect(manager.similaritySearch).toHaveBeenCalledWith(
+        'query',
+        8,
+        Number.POSITIVE_INFINITY,
+        undefined,
+        undefined,
+        expect.any(Object),
+        { noCache: false },
+      );
+      expect(deps.runLexicalLeg).toHaveBeenCalledWith(expect.objectContaining({
+        query: 'query',
+        fetchK: 8,
+      }));
+      const payload = JSON.parse(out.stdout);
+      expect(payload).toMatchObject({
+        mode: 'hybrid',
+        rerank: {
+          enabled: true,
+          model: 'stub-reranker',
+          candidates: 3,
+          cache_hits: 0,
+          degraded: false,
+        },
+      });
+      expect(payload.results[0]).toMatchObject({
+        content: 'lexical winner',
+        rerank_score: 10,
+      });
+      expect(payload.timing).toMatchObject({
+        rerank_candidates: 3,
+      });
+    } finally {
+      restoreFactory();
+      if (previousRerank === undefined) delete process.env.KB_RERANK;
+      else process.env.KB_RERANK = previousRerank;
+      if (previousTopN === undefined) delete process.env.KB_RERANK_TOP_N;
+      else process.env.KB_RERANK_TOP_N = previousTopN;
+    }
+  });
+
+  it('includes rerank_score in JSON result output when present', () => {
+    const payload = buildDenseSearchJsonPayload({
+      results: [{
+        pageContent: 'deployment rollback',
+        metadata: { source: '/kb/deploy.md', chunkIndex: 0 },
+        score: 0.02,
+        rerankScore: 0.93,
+      } as ScoredDocument,
+      ],
+      requestedMode: 'hybrid',
+      effectiveMode: 'hybrid',
+      autoModeDecision: null,
+      groupBySource: false,
+      refreshed: false,
+      scopedKb: undefined,
+      staleness: null,
+      autoThresholdDecision: null,
+      timing: null,
+    });
+
+    expect((payload.results as Array<Record<string, unknown>>)[0]).toMatchObject({
+      score: 0.02,
+      rerank_score: 0.93,
     });
   });
 

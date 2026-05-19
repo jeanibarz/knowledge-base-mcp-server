@@ -20,6 +20,7 @@ import { getInjectionSignals, type InjectionSignal } from './kb-shield.js';
  */
 export interface ScoredDocument extends Document {
   score?: number;
+  rerankScore?: number;
   matchType?: 'semantic';
   semanticMatch?: true;
   contextChunks?: ContextDocument[];
@@ -35,6 +36,7 @@ export interface ContextDocument extends Document {
 
 export interface RetrievalJsonResult {
   score: number | null;
+  rerank_score?: number;
   content: string;
   metadata: Record<string, unknown>;
   chunk_id?: string;
@@ -216,6 +218,7 @@ export function formatRetrievalAsJson(
     const signals = getShieldSignals(doc.pageContent, metadata, guardOptions);
     return {
       score: doc.score ?? null,
+      ...(doc.rerankScore !== undefined ? { rerank_score: doc.rerankScore } : {}),
       content: guarded.content,
       metadata: guarded.metadata,
       ...(citation ? { chunk_id: citation.chunk_id } : {}),

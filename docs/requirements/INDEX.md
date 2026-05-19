@@ -1,6 +1,7 @@
 # Requirements
 
 - [Retrieval eval command](retrieval-eval.md)
+- [Reranker](reranker.md)
 
 ## Indexing
 
@@ -101,6 +102,21 @@
 **Dependencies:** NFR-INDEX-236
 
 ## Search
+
+### FR-SEARCH-374: Cross-Encoder Reranker
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall optionally rerank first-stage retrieval candidates with a local cross-encoder before result assembly and relevance gating.
+
+**Acceptance Criteria:**
+- [x] Given reranking is disabled, hybrid retrieval preserves fused ordering.
+- [x] Given reranking is enabled, the top candidate block is sorted by descending cross-encoder score and the unscored tail stays after it.
+- [x] Given JSON output, reranked results expose `rerank_score` alongside the original retrieval `score`.
+- [x] Given reranker failure, retrieval degrades to the fused baseline instead of failing.
+
+**Linked Tests:** TS-SEARCH-374
+**Dependencies:** RFC019
 
 ### FR-CLI-383: Machine-Readable Help Manifest
 **Status:** Implemented
