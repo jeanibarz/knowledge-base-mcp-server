@@ -13,7 +13,7 @@ import {
   formatTimingFooter,
   nowMs,
   type TimingPayload,
-} from './cli-timing.js';
+} from './timing-core.js';
 import { FRONTMATTER_EXTRAS_WIRE_VISIBLE } from './config.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
 import { callChatCompletion } from './llm-client.js';

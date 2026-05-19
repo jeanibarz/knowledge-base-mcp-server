@@ -44,7 +44,7 @@ import {
   recordFreshnessScanTiming,
   recordRefreshProgressTiming,
   type TimingPayload,
-} from './cli-timing.js';
+} from './timing-core.js';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
 import {
   HYBRID_RRF_C,

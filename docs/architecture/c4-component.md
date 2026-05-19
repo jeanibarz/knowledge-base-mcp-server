@@ -173,6 +173,7 @@ flowchart TB
 
 - **No source import cycles.** The current non-test TypeScript graph has 43 internal edges and no direct or transitive cycles.
 - **Runtime orchestration points outward.** `KnowledgeBaseServer` and `cli.ts` may depend on indexing/model/filesystem helpers; those helpers do not import either orchestration surface.
+- **Non-CLI modules never import `cli-*` adapters.** Only `cli.ts` and `cli-*.ts` command modules may import a `cli-*` adapter. Shared, server, and transport modules import command-independent `*-core` modules (`search-core.ts`, `search-errors-core.ts`, `timing-core.ts`) instead. `src/non-cli-import-boundary.test.ts` scans every production module and fails on a regression; `src/search-core.boundaries.test.ts` pins two specific consumers.
 - **`logger` remains a leaf.** It has no source imports and must continue writing logs away from stdout.
 - **`active-model.ts` is the model layout authority.** New code should not reconstruct `models/<id>/` paths independently.
 - **FAISS store layout is not embedded in the manager.** Versioned index load/save behavior belongs in `faiss-store-layout.ts`; `FaissIndexManager` remains the ingest/search orchestrator.
