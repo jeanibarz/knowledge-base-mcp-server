@@ -174,6 +174,111 @@ describe('self-runtime estimator', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cache-aware estimate (#408) — only chunks without a valid contextual-
+// preface sidecar are priced at the 8s cold-LLM ceiling.
+// ---------------------------------------------------------------------------
+
+describe('cache-aware reindex estimate (#408)', () => {
+  type ContextualPrefaceModule = typeof import('./contextual-preface.js');
+
+  async function writeManifest(kb: string, relPath: string, chunkCount: number): Promise<void> {
+    const manifestPath = path.join(tempDir, 'kbs', kb, '.index', `${relPath}.chunks.json`);
+    await fsp.mkdir(path.dirname(manifestPath), { recursive: true });
+    await fsp.writeFile(manifestPath, JSON.stringify({ chunks: new Array(chunkCount).fill({}) }));
+  }
+
+  async function writeSidecar(
+    cp: ContextualPrefaceModule,
+    kb: string,
+    relPath: string,
+    chunks: Array<Record<string, unknown>>,
+  ): Promise<void> {
+    const source = path.join(tempDir, 'kbs', kb, relPath);
+    const sidecarPath = cp.sidecarPathFor(source, kb);
+    await fsp.mkdir(path.dirname(sidecarPath), { recursive: true });
+    await fsp.writeFile(
+      sidecarPath,
+      JSON.stringify({
+        schema_version: 'contextual-preface.sidecar.v1',
+        source,
+        knowledge_base: kb,
+        document_hash: 'doc-hash',
+        generator: cp.GENERATOR_VERSION,
+        model: 'mock-llm',
+        chunk_size: 1000,
+        chunk_overlap: 200,
+        chunks,
+      }),
+    );
+  }
+
+  it('estimateContextualReindexWork sums chunk counts from nested manifests', async () => {
+    await writeManifest('alpha', 'top', 3);
+    await writeManifest('alpha', path.join('sub', 'nested'), 5);
+    const est = await runner.estimateContextualReindexWork(['alpha']);
+    // No sidecars yet — every chunk is cold, identical to the pre-#408 estimate.
+    expect(est).toEqual({ total_chunks: 8, cache_hits: 0, retry_skips: 0, cold_chunks: 8 });
+  });
+
+  it('estimateContextualReindexWork counts sidecar hits as non-cold', async () => {
+    await writeManifest('alpha', 'note', 4);
+    const cp = (await import('./contextual-preface.js')) as ContextualPrefaceModule;
+    await writeSidecar(cp, 'alpha', 'note', [
+      { chunk_index: 0, chunk_hash: 'a', preface: 'ctx 0' },
+      { chunk_index: 1, chunk_hash: 'b', preface: 'ctx 1' },
+    ]);
+    const est = await runner.estimateContextualReindexWork(['alpha']);
+    expect(est).toEqual({ total_chunks: 4, cache_hits: 2, retry_skips: 0, cold_chunks: 2 });
+  });
+
+  it('prices only cold chunks for the LRA-window guard', async () => {
+    // 1000 chunks × 8s = 8000s (~2h13m) would cross 06:00 UTC from a
+    // 04:00 start. With 990 chunks cached, only 10 are cold → 80s.
+    await writeManifest('alpha', 'note', 1000);
+    const cp = (await import('./contextual-preface.js')) as ContextualPrefaceModule;
+    const cachedChunks = Array.from({ length: 990 }, (_unused, i) => ({
+      chunk_index: i,
+      chunk_hash: `h${i}`,
+      preface: `ctx ${i}`,
+    }));
+    await writeSidecar(cp, 'alpha', 'note', cachedChunks);
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: false,
+      now: new Date(Date.UTC(2026, 4, 15, 4, 0, 0)),
+      resolveKbs: async () => ['alpha'],
+      runUpdateIndex: async () => makeNeverRunSummary(),
+    });
+    expect(result.outcome).toBe('completed');
+    expect(result.estimated_seconds).toBe(80);
+    expect(result.contextual_estimate).toEqual({
+      total_chunks: 1000,
+      cache_hits: 990,
+      retry_skips: 0,
+      cold_chunks: 10,
+    });
+  });
+
+  it('still guard-blocks when nothing is cached and the run would cross the window', async () => {
+    await writeManifest('alpha', 'note', 1000);
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: false,
+      now: new Date(Date.UTC(2026, 4, 15, 4, 0, 0)),
+      resolveKbs: async () => ['alpha'],
+      runUpdateIndex: async () => makeNeverRunSummary(),
+    });
+    expect(result.outcome).toBe('guard_blocked');
+    expect(result.contextual_estimate).toEqual({
+      total_chunks: 1000,
+      cache_hits: 0,
+      retry_skips: 0,
+      cold_chunks: 1000,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // .reindex.run.json + PID liveness
 // ---------------------------------------------------------------------------
 

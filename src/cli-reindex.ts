@@ -35,6 +35,10 @@ Behavior:
   - Refuses to start inside the LRA cron window (06:00-10:30 UTC) or
     when the estimated runtime would cross it; pass --force to bypass
     both guards.
+  - The runtime estimate is cache-aware: only chunks without a valid
+    contextual-preface sidecar are priced at the 8s cold-LLM ceiling, so
+    a reindex resumed after a partial run is not blocked for work it
+    would skip. The breakdown is reported as \`contextual_estimate\`.
   - Writes a run-state file at \`$FAISS_INDEX_PATH/.reindex.run.json\`
     so the trigger watcher (RFC 014) defers its own updates until the
     reindex finishes. The file is deleted on exit (and zombie-cleaned
@@ -187,11 +191,16 @@ export async function runReindexCli(rest: string[]): Promise<number> {
 
 function formatHumanResult(result: ReindexResult): string {
   const lines: string[] = [];
+  const est = result.contextual_estimate;
   lines.push(`kb reindex: ${result.outcome}`);
-  lines.push(`  kbs_attempted:        ${result.kbs_attempted}`);
+  lines.push(`  kbs_attempted:         ${result.kbs_attempted}`);
   lines.push(`  total_chunks_estimate: ${result.total_chunks_estimate}`);
-  lines.push(`  estimated_seconds:    ${result.estimated_seconds}`);
-  lines.push(`  took_ms:              ${result.took_ms}`);
+  lines.push(
+    `  contextual_estimate:   cold=${est.cold_chunks} ` +
+      `cache_hits=${est.cache_hits} retry_skips=${est.retry_skips}`,
+  );
+  lines.push(`  estimated_seconds:     ${result.estimated_seconds}`);
+  lines.push(`  took_ms:               ${result.took_ms}`);
   if (result.reason !== null) {
     lines.push(`  reason: ${result.reason}`);
   }

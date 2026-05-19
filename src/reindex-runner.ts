@@ -35,6 +35,7 @@ import {
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config/paths.js';
 import { emitCanonicalLog } from './canonical-log.js';
+import { classifyContextualSidecarChunks } from './contextual-preface.js';
 import { KBError } from './errors.js';
 import { FaissIndexManager, type IndexUpdateSummary } from './FaissIndexManager.js';
 import { listKnowledgeBases } from './kb-fs.js';
@@ -92,11 +93,30 @@ export interface ReindexOptions {
   runUpdateIndex?: () => Promise<IndexUpdateSummary>;
 }
 
+/**
+ * RFC 017 §5 step 1 (cache-aware refinement, #408) — breakdown of the
+ * contextual-preface work the runtime estimate is built from. `cold_chunks`
+ * is the count actually priced at the 8s cold-LLM ceiling; `cache_hits` and
+ * `retry_skips` are reused from per-source sidecars at no LLM cost.
+ */
+export interface ContextualReindexEstimate {
+  /** Total chunks across all in-scope KBs, summed from chunk manifests. */
+  total_chunks: number;
+  /** Chunks with a valid cached preface — no LLM call. */
+  cache_hits: number;
+  /** Chunks with a recorded failure whose retry-after has not elapsed. */
+  retry_skips: number;
+  /** Chunks needing a cold LLM call: misses, expired failures, no sidecar. */
+  cold_chunks: number;
+}
+
 export interface ReindexResult {
   outcome: 'completed' | 'partial' | 'failed' | 'guard_blocked' | 'lock_held';
   kbs_attempted: number;
   total_chunks_estimate: number;
   estimated_seconds: number;
+  /** Cache-aware breakdown behind `estimated_seconds` (#408). */
+  contextual_estimate: ContextualReindexEstimate;
   took_ms: number;
   reason: string | null;
   summary: IndexUpdateSummary | null;
@@ -280,6 +300,98 @@ export async function estimateChunkCountForKbs(kbs: readonly string[]): Promise<
   return total;
 }
 
+/**
+ * Recursively collect every `*.chunks.json` manifest path under a KB's
+ * `.index/` directory. The manifest tree mirrors the KB's own directory
+ * layout (`FaissIndexManager` writes `<kb>/.index/<rel-dir>/<file>.chunks.json`),
+ * so a non-recursive `readdir` would miss manifests for nested sources.
+ */
+async function collectChunkManifestPaths(indexDir: string): Promise<string[]> {
+  let entries: Array<import('fs').Dirent>;
+  try {
+    entries = await fsp.readdir(indexDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const entry of entries) {
+    const full = path.join(indexDir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...(await collectChunkManifestPaths(full)));
+    } else if (entry.isFile() && entry.name.endsWith('.chunks.json')) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/** Read a chunk manifest's chunk count; best-effort, 0 on any failure. */
+async function readManifestChunkCount(manifestPath: string): Promise<number> {
+  try {
+    const raw = await fsp.readFile(manifestPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { chunks?: unknown };
+    return Array.isArray(parsed.chunks) ? parsed.chunks.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * RFC 017 §5 step 1 (cache-aware refinement, #408) — estimate how much
+ * *cold* contextual-preface LLM work a `kb reindex` would actually incur,
+ * instead of pricing every chunk at the 8s cold-case ceiling.
+ *
+ * The original estimator multiplied the total chunk count by 8s. After a
+ * partial or successful contextual run, the per-source sidecars under
+ * `$FAISS_INDEX_PATH/.contextual-prefaces/` already hold valid prefaces for
+ * many chunks; the rebuild reuses them with no LLM call. This walks both
+ * read-only inputs and returns the breakdown:
+ *
+ *   - chunk manifests under `<kb>/.index/**.chunks.json` give the
+ *     authoritative count of chunks the rebuild will process.
+ *   - contextual-preface sidecars classify each chunk as a cache hit, a
+ *     not-yet-due retry skip, or a cold LLM call (see
+ *     `classifyContextualSidecarChunks`).
+ *
+ * `cold_chunks * REINDEX_PER_CHUNK_ESTIMATE_MS` is then the cache-aware
+ * runtime upper bound. A first-ever reindex (no sidecars) yields
+ * `cold_chunks === total_chunks`, identical to the pre-#408 estimate.
+ */
+export async function estimateContextualReindexWork(
+  kbs: readonly string[],
+  now: Date = new Date(),
+): Promise<ContextualReindexEstimate> {
+  const nowMs = now.getTime();
+  let totalChunks = 0;
+  let cacheHits = 0;
+  let retrySkips = 0;
+  let coldChunks = 0;
+
+  for (const kb of kbs) {
+    const indexDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, '.index');
+    for (const manifestPath of await collectChunkManifestPaths(indexDir)) {
+      const chunkCount = await readManifestChunkCount(manifestPath);
+      if (chunkCount <= 0) continue;
+      totalChunks += chunkCount;
+      // The manifest path mirrors the source layout:
+      // `<kb>/.index/<rel>.chunks.json` → source `<kb>/<rel>`.
+      const rel = path.relative(indexDir, manifestPath).replace(/\.chunks\.json$/, '');
+      const source = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, rel);
+      const tally = await classifyContextualSidecarChunks(source, kb, chunkCount, nowMs);
+      cacheHits += tally.cache_hits;
+      retrySkips += tally.retry_skips;
+      coldChunks += tally.cold_chunks;
+    }
+  }
+
+  return {
+    total_chunks: totalChunks,
+    cache_hits: cacheHits,
+    retry_skips: retrySkips,
+    cold_chunks: coldChunks,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -288,10 +400,14 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
   const startedAtMs = Date.now();
   const now = options.now ?? new Date();
 
-  // 1. Resolve scope + estimate runtime.
+  // 1. Resolve scope + estimate runtime. The estimate is cache-aware
+  //    (#408): only chunks without a valid contextual-preface sidecar are
+  //    priced at the 8s cold-LLM ceiling, so a reindex following a partial
+  //    run is not needlessly guard-blocked for work it would skip.
   const kbs = await resolveKbsInScope(options);
-  const totalChunks = await estimateChunkCountForKbs(kbs);
-  const estimatedSeconds = Math.ceil((totalChunks * REINDEX_PER_CHUNK_ESTIMATE_MS) / 1_000);
+  const estimate = await estimateContextualReindexWork(kbs, now);
+  const totalChunks = estimate.total_chunks;
+  const estimatedSeconds = Math.ceil((estimate.cold_chunks * REINDEX_PER_CHUNK_ESTIMATE_MS) / 1_000);
 
   emitCanonicalLog({
     process: 'cli',
@@ -300,6 +416,7 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
     kb_scope: kbs.length === 1 ? kbs[0] : null,
     top_sources: kbs.slice(0, 3),
     k: totalChunks,
+    result_count: estimate.cold_chunks,
     threshold: estimatedSeconds,
   });
 
@@ -308,7 +425,7 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
     if (isInsideGuardWindow(now)) {
       return finalizeGuardBlocked(
         kbs.length,
-        totalChunks,
+        estimate,
         estimatedSeconds,
         startedAtMs,
         `Inside LRA cron window (${formatWindow()} UTC). Pass --force to override.`,
@@ -317,7 +434,7 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
     if (wouldCrossLraWindow(now, estimatedSeconds)) {
       return finalizeGuardBlocked(
         kbs.length,
-        totalChunks,
+        estimate,
         estimatedSeconds,
         startedAtMs,
         `Estimated runtime ${estimatedSeconds}s would cross the next LRA cron window (${formatWindow()} UTC). Pass --force to override or schedule for a longer window.`,
@@ -343,6 +460,7 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
       kbs_attempted: kbs.length,
       total_chunks_estimate: totalChunks,
       estimated_seconds: estimatedSeconds,
+      contextual_estimate: estimate,
       took_ms: Date.now() - startedAtMs,
       reason,
       summary: null,
@@ -393,6 +511,7 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
       kbs_attempted: kbs.length,
       total_chunks_estimate: totalChunks,
       estimated_seconds: estimatedSeconds,
+      contextual_estimate: estimate,
       took_ms: Date.now() - startedAtMs,
       reason: (err as Error).message,
       summary: null,
@@ -424,6 +543,7 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
     kbs_attempted: kbs.length,
     total_chunks_estimate: totalChunks,
     estimated_seconds: estimatedSeconds,
+    contextual_estimate: estimate,
     took_ms: Date.now() - startedAtMs,
     reason: outcome === 'completed' ? null : 'updateIndex reported non-success status',
     summary,
@@ -452,7 +572,7 @@ function formatWindow(): string {
 
 function finalizeGuardBlocked(
   kbCount: number,
-  totalChunks: number,
+  estimate: ContextualReindexEstimate,
   estimatedSeconds: number,
   startedAtMs: number,
   reason: string,
@@ -469,8 +589,9 @@ function finalizeGuardBlocked(
   return {
     outcome: 'guard_blocked',
     kbs_attempted: kbCount,
-    total_chunks_estimate: totalChunks,
+    total_chunks_estimate: estimate.total_chunks,
     estimated_seconds: estimatedSeconds,
+    contextual_estimate: estimate,
     took_ms: Date.now() - startedAtMs,
     reason,
     summary: null,
