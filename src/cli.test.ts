@@ -189,6 +189,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'ask',
       'remember',
       'capture',
+      'import-url',
       'compare',
       'doctor',
       'logs',
@@ -252,7 +253,8 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.code).toBe(0);
     expect(r.stderr).toBe('');
     expect(r.stdout).toContain('complete -F _kb kb');
-    expect(r.stdout).toContain('help list');
+    expect(r.stdout).toContain('help');
+    expect(r.stdout).toContain('list');
     expect(r.stdout).toContain('search');
     expect(r.stdout).toContain('reindex');
     expect(r.stdout).toContain('completion');
