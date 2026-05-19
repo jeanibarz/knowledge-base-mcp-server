@@ -159,6 +159,58 @@ describe('computeKbStats', () => {
     await fsp.rm(tempDir, { recursive: true, force: true });
   });
 
+  it('surfaces a contextual_preface failure breakdown derived from sidecars (#409)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-contextual-'));
+    const faissPath = path.join(tempDir, '.faiss');
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.mkdir(path.join(tempDir, 'beta'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'body');
+    await fsp.writeFile(path.join(tempDir, 'beta', 'doc.md'), 'body');
+
+    const sidecarDir = path.join(faissPath, '.contextual-prefaces', 'alpha');
+    await fsp.mkdir(sidecarDir, { recursive: true });
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    await fsp.writeFile(
+      path.join(sidecarDir, 'doc.json'),
+      JSON.stringify({
+        schema_version: 'contextual-preface.sidecar.v1',
+        model: 'mock-llm',
+        chunks: [
+          { chunk_index: 0, chunk_hash: 'h0', preface: 'ctx 0' },
+          { chunk_index: 1, chunk_hash: 'h1', preface: 'ctx 1' },
+          { chunk_index: 2, chunk_hash: 'h2', preface: null, error_code: 'llm_unreachable', next_retry_after: future },
+        ],
+      }),
+    );
+
+    const { computeKbStats } = await freshKbStats({
+      KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+      FAISS_INDEX_PATH: faissPath,
+    });
+    const manager = makeManager({ chunkCountsByKb: { alpha: 3, beta: 2 } });
+    const payload = await computeKbStats(manager as any, {
+      serverVersion: '0.0.0',
+      startedAt: Date.now(),
+    });
+
+    const alpha = payload.knowledge_bases.alpha.contextual_preface;
+    expect(alpha?.covered_chunks).toBe(2);
+    expect(alpha?.null_preface_chunks).toBe(1);
+    expect(alpha?.reindex_state).toBe('partial');
+    expect(alpha?.model).toBe('mock-llm');
+    expect(alpha?.failures).toEqual({
+      retry_pending: 1,
+      by_error_code: { llm_unreachable: 1 },
+    });
+
+    // A KB with no sidecars still carries a zeroed `failures` block.
+    const beta = payload.knowledge_bases.beta.contextual_preface;
+    expect(beta?.reindex_state).toBe('never');
+    expect(beta?.failures).toEqual({ retry_pending: 0, by_error_code: {} });
+
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
   it('scopes to a single KB when knowledgeBaseName is set', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-scope-'));
     await fsp.mkdir(path.join(tempDir, 'alpha'));

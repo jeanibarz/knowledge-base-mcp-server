@@ -287,6 +287,20 @@ export function sidecarRootDir(): string {
   return path.join(FAISS_INDEX_PATH, SIDECAR_ROOT_DIRNAME);
 }
 
+/**
+ * The contextual-preface sidecar directory for one KB:
+ *
+ *   `${FAISS_INDEX_PATH}/.contextual-prefaces/<safe-kb>/`
+ *
+ * The `<safe-kb>` slug strips characters that aren't filesystem-safe.
+ * `sidecarPathFor` and `aggregateContextualSidecarStats` both route
+ * through here so the slug is derived in exactly one place.
+ */
+export function sidecarDirFor(knowledgeBaseName: string): string {
+  const safeKb = knowledgeBaseName.replace(/[^A-Za-z0-9._-]/g, '_');
+  return path.join(sidecarRootDir(), safeKb);
+}
+
 export function sidecarPathFor(sourceAbsPath: string, knowledgeBaseName: string): string {
   // We use the basename + a content-derived prefix of the absolute path so
   // two source files with the same basename in different subdirs don't
@@ -297,9 +311,139 @@ export function sidecarPathFor(sourceAbsPath: string, knowledgeBaseName: string)
   // where <flattened-source> is the source path with `/` → `__SEP__` so we
   // don't need to mkdir-p deep trees. The KB's own subdirectory structure
   // is preserved in the metadata.source field on disk.
-  const safeKb = knowledgeBaseName.replace(/[^A-Za-z0-9._-]/g, '_');
   const flat = sourceAbsPath.replace(/^\/+/, '').replace(/\//g, '__SEP__');
-  return path.join(sidecarRootDir(), safeKb, `${flat}.json`);
+  return path.join(sidecarDirFor(knowledgeBaseName), `${flat}.json`);
+}
+
+// ---------------------------------------------------------------------------
+// Sidecar aggregation — #409 operator-facing cache / failure diagnostics
+// ---------------------------------------------------------------------------
+
+/**
+ * Counters scanned from one KB's contextual-preface sidecars. A pure
+ * on-disk read: no LLM call, no lock. Backs the `contextual_preface`
+ * block in `kb stats` and the contextual summary line in `kb reindex`
+ * output, so failure detail stops being debug-log-only (#409).
+ */
+export interface ContextualSidecarStats {
+  /** Number of `*.json` sidecar files scanned for the KB. */
+  sidecar_count: number;
+  /** Chunks with a non-empty preface persisted (successful generations). */
+  covered_chunks: number;
+  /** Chunks whose `preface` is `null` — generation failed for them. */
+  null_preface_chunks: number;
+  /**
+   * Subset of `null_preface_chunks` whose `next_retry_after` is still in
+   * the future: the next reindex SKIPS these (no LLM call) and keeps
+   * embedding the chunk verbatim until the per-error backoff elapses.
+   */
+  retry_pending_chunks: number;
+  /**
+   * Failure counts keyed by `ContextualErrorCode`. Sums to at most
+   * `null_preface_chunks` — a malformed sidecar entry without a known
+   * `error_code` still counts toward `null_preface_chunks` but not here.
+   */
+  failures_by_error_code: Partial<Record<ContextualErrorCode, number>>;
+  /** Total bytes of every sidecar JSON file scanned. */
+  cache_bytes: number;
+  /** Most recent sidecar file mtime, ISO; `null` when the KB has no sidecars. */
+  latest_sidecar_at: string | null;
+  /** `model` recorded in the last sidecar read; `null` when none carry one. */
+  model: string | null;
+}
+
+/**
+ * Scan one KB's sidecar directory and tally cache / failure counters.
+ * Missing directory (KB never reindexed with contextual retrieval on) and
+ * corrupt individual sidecars degrade to zero contributions rather than
+ * throwing — `kb stats` and `kb reindex` must stay read-only and robust.
+ *
+ * `nowMs` is injectable purely so tests can pin `retry_pending_chunks`
+ * arithmetic; production callers use the `Date.now()` default.
+ */
+export async function aggregateContextualSidecarStats(
+  knowledgeBaseName: string,
+  nowMs: number = Date.now(),
+): Promise<ContextualSidecarStats> {
+  const stats: ContextualSidecarStats = {
+    sidecar_count: 0,
+    covered_chunks: 0,
+    null_preface_chunks: 0,
+    retry_pending_chunks: 0,
+    failures_by_error_code: {},
+    cache_bytes: 0,
+    latest_sidecar_at: null,
+    model: null,
+  };
+
+  const dir = sidecarDirFor(knowledgeBaseName);
+  let dirEntries: Array<import('fs').Dirent>;
+  try {
+    dirEntries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      logger.debug(`RFC 017: contextual sidecar readdir failed for ${dir}: ${(err as Error).message}`);
+    }
+    return stats;
+  }
+
+  let latestMtime = 0;
+  for (const entry of dirEntries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const filePath = path.join(dir, entry.name);
+
+    let st: import('fs').Stats;
+    try {
+      st = await fsp.stat(filePath);
+    } catch {
+      continue;
+    }
+    stats.sidecar_count += 1;
+    stats.cache_bytes += st.size;
+    if (st.mtimeMs > latestMtime) latestMtime = st.mtimeMs;
+
+    let raw: string;
+    try {
+      raw = await fsp.readFile(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    let parsed: { chunks?: unknown; model?: unknown };
+    try {
+      parsed = JSON.parse(raw) as { chunks?: unknown; model?: unknown };
+    } catch {
+      continue;
+    }
+    if (typeof parsed.model === 'string') stats.model = parsed.model;
+    if (!Array.isArray(parsed.chunks)) continue;
+
+    for (const chunk of parsed.chunks) {
+      if (typeof chunk !== 'object' || chunk === null) continue;
+      const c = chunk as { preface?: unknown; error_code?: unknown; next_retry_after?: unknown };
+      if (typeof c.preface === 'string' && c.preface.length > 0) {
+        stats.covered_chunks += 1;
+        continue;
+      }
+      if (c.preface !== null) continue;
+      stats.null_preface_chunks += 1;
+      if (typeof c.error_code === 'string' && isContextualErrorCode(c.error_code)) {
+        stats.failures_by_error_code[c.error_code] =
+          (stats.failures_by_error_code[c.error_code] ?? 0) + 1;
+      }
+      if (typeof c.next_retry_after === 'string') {
+        const retryAtMs = parseIsoToMs(c.next_retry_after);
+        if (retryAtMs !== null && retryAtMs > nowMs) stats.retry_pending_chunks += 1;
+      }
+    }
+  }
+
+  stats.latest_sidecar_at = latestMtime === 0 ? null : new Date(latestMtime).toISOString();
+  return stats;
+}
+
+function isContextualErrorCode(value: string): value is ContextualErrorCode {
+  return Object.prototype.hasOwnProperty.call(CONTEXTUAL_RETRY_AFTER_MS, value);
 }
 
 async function readSidecar(sidecarPath: string): Promise<SidecarFile | null> {

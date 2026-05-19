@@ -261,6 +261,113 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
   });
 });
 
+describe('aggregateContextualSidecarStats — #409 cache / failure diagnostics', () => {
+  // Sidecar fixtures are written directly so the scan can be exercised
+  // without driving the LLM resolver. The helper's contract is "read
+  // whatever sidecar JSON is on disk", so a hand-built file is faithful.
+  async function writeSidecar(
+    mod: ContextualPrefaceModule,
+    kb: string,
+    fileName: string,
+    chunks: Array<Record<string, unknown>>,
+    extra: Record<string, unknown> = {},
+  ): Promise<string> {
+    const dir = mod.sidecarDirFor(kb);
+    await fsp.mkdir(dir, { recursive: true });
+    const filePath = path.join(dir, fileName);
+    await fsp.writeFile(
+      filePath,
+      JSON.stringify({ schema_version: 'contextual-preface.sidecar.v1', model: 'mock-llm', chunks, ...extra }),
+      'utf-8',
+    );
+    return filePath;
+  }
+
+  it('returns all-zero stats when the KB has no sidecar directory', async () => {
+    const { aggregateContextualSidecarStats } = await loadModule();
+    const stats = await aggregateContextualSidecarStats('never-indexed');
+    expect(stats).toEqual({
+      sidecar_count: 0,
+      covered_chunks: 0,
+      null_preface_chunks: 0,
+      retry_pending_chunks: 0,
+      failures_by_error_code: {},
+      cache_bytes: 0,
+      latest_sidecar_at: null,
+      model: null,
+    });
+  });
+
+  it('tallies covered, null, error-code, and retry-pending counts across sidecars', async () => {
+    const mod = await loadModule();
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    await writeSidecar(mod, 'alpha', 'a.json', [
+      { chunk_index: 0, chunk_hash: 'h0', preface: 'ctx 0' },
+      { chunk_index: 1, chunk_hash: 'h1', preface: 'ctx 1' },
+    ]);
+    await writeSidecar(mod, 'alpha', 'b.json', [
+      { chunk_index: 0, chunk_hash: 'h2', preface: 'ctx 2' },
+      { chunk_index: 1, chunk_hash: 'h3', preface: null, error_code: 'llm_unreachable', next_retry_after: future },
+      { chunk_index: 2, chunk_hash: 'h4', preface: null, error_code: 'llm_malformed', next_retry_after: past },
+      { chunk_index: 3, chunk_hash: 'h5', preface: null, error_code: 'truncated_doc', next_retry_after: future },
+    ]);
+
+    const stats = await mod.aggregateContextualSidecarStats('alpha');
+    expect(stats.sidecar_count).toBe(2);
+    expect(stats.covered_chunks).toBe(3);
+    expect(stats.null_preface_chunks).toBe(3);
+    // Only the two future-dated failures are still inside their backoff.
+    expect(stats.retry_pending_chunks).toBe(2);
+    expect(stats.failures_by_error_code).toEqual({
+      llm_unreachable: 1,
+      llm_malformed: 1,
+      truncated_doc: 1,
+    });
+    expect(stats.model).toBe('mock-llm');
+    expect(stats.cache_bytes).toBeGreaterThan(0);
+    expect(stats.latest_sidecar_at).not.toBeNull();
+  });
+
+  it('counts a failed chunk as retry-pending only when next_retry_after is in the future', async () => {
+    const mod = await loadModule();
+    const nowMs = Date.parse('2026-05-19T12:00:00.000Z');
+    await writeSidecar(mod, 'beta', 'c.json', [
+      { chunk_index: 0, chunk_hash: 'h0', preface: null, error_code: 'llm_unreachable', next_retry_after: '2026-05-20T00:00:00.000Z' },
+      { chunk_index: 1, chunk_hash: 'h1', preface: null, error_code: 'llm_unreachable', next_retry_after: '2026-05-19T06:00:00.000Z' },
+    ]);
+    const stats = await mod.aggregateContextualSidecarStats('beta', nowMs);
+    expect(stats.null_preface_chunks).toBe(2);
+    expect(stats.retry_pending_chunks).toBe(1);
+  });
+
+  it('skips a corrupt sidecar but still counts its bytes and readable siblings', async () => {
+    const mod = await loadModule();
+    await writeSidecar(mod, 'gamma', 'good.json', [
+      { chunk_index: 0, chunk_hash: 'h0', preface: 'ctx' },
+    ]);
+    const dir = mod.sidecarDirFor('gamma');
+    await fsp.writeFile(path.join(dir, 'broken.json'), '{not valid json', 'utf-8');
+
+    const stats = await mod.aggregateContextualSidecarStats('gamma');
+    expect(stats.sidecar_count).toBe(2);
+    expect(stats.covered_chunks).toBe(1);
+    expect(stats.null_preface_chunks).toBe(0);
+  });
+
+  it('ignores a failure entry whose error_code is not a known ContextualErrorCode', async () => {
+    const mod = await loadModule();
+    await writeSidecar(mod, 'delta', 'd.json', [
+      { chunk_index: 0, chunk_hash: 'h0', preface: null, error_code: 'mystery_code' },
+      { chunk_index: 1, chunk_hash: 'h1', preface: null, error_code: 'llm_refusal' },
+    ]);
+    const stats = await mod.aggregateContextualSidecarStats('delta');
+    // Both count as failures; only the recognised code lands in the breakdown.
+    expect(stats.null_preface_chunks).toBe(2);
+    expect(stats.failures_by_error_code).toEqual({ llm_refusal: 1 });
+  });
+});
+
 describe('classifyContextualSidecarChunks — cache-aware reindex estimate (#408)', () => {
   // Minimal sidecar writer — mirrors the on-disk shape `persistSidecar`
   // produces, without going through the LLM resolver.

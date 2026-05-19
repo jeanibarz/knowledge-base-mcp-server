@@ -47,9 +47,13 @@ beforeEach(async () => {
   savedEnv = {
     FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
     KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    KB_CONTEXTUAL_RETRIEVAL: process.env.KB_CONTEXTUAL_RETRIEVAL,
   };
   setEnv('FAISS_INDEX_PATH', path.join(tempDir, 'faiss'));
   setEnv('KNOWLEDGE_BASES_ROOT_DIR', path.join(tempDir, 'kbs'));
+  // Default off so result-reporting tests are deterministic regardless of
+  // the ambient environment; the #409 tests opt in explicitly.
+  setEnv('KB_CONTEXTUAL_RETRIEVAL', undefined);
   await fsp.mkdir(path.join(tempDir, 'kbs', 'alpha'), { recursive: true });
   await fsp.mkdir(path.join(tempDir, 'kbs', 'beta'), { recursive: true });
   // Need a real ingestable file so listKnowledgeBases finds the KBs.
@@ -418,5 +422,71 @@ describe('result reporting', () => {
     });
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/embedding provider unreachable/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #409 — post-run contextual-preface diagnostics on ReindexResult.
+// ---------------------------------------------------------------------------
+
+describe('contextual-preface summary (#409)', () => {
+  async function writeSidecar(
+    kb: string,
+    fileName: string,
+    chunks: Array<Record<string, unknown>>,
+  ): Promise<void> {
+    const dir = path.join(tempDir, 'faiss', '.contextual-prefaces', kb);
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(
+      path.join(dir, fileName),
+      JSON.stringify({ schema_version: 'contextual-preface.sidecar.v1', model: 'mock-llm', chunks }),
+      'utf-8',
+    );
+  }
+
+  it('leaves result.contextual null when KB_CONTEXTUAL_RETRIEVAL is off', async () => {
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: true,
+      resolveKbs: async () => ['alpha'],
+      runUpdateIndex: async () => makeNeverRunSummary(),
+    });
+    expect(result.contextual).toBeNull();
+  });
+
+  it('aggregates sidecar cache / failure counters across in-scope KBs when enabled', async () => {
+    setEnv('KB_CONTEXTUAL_RETRIEVAL', 'on');
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    const past = new Date(Date.now() - 3_600_000).toISOString();
+    await writeSidecar('alpha', 'a.json', [
+      { chunk_index: 0, chunk_hash: 'h0', preface: 'ctx 0' },
+      { chunk_index: 1, chunk_hash: 'h1', preface: null, error_code: 'llm_unreachable', next_retry_after: future },
+    ]);
+    await writeSidecar('beta', 'b.json', [
+      { chunk_index: 0, chunk_hash: 'h2', preface: 'ctx 2' },
+      { chunk_index: 1, chunk_hash: 'h3', preface: 'ctx 3' },
+      { chunk_index: 2, chunk_hash: 'h4', preface: null, error_code: 'llm_malformed', next_retry_after: past },
+    ]);
+
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: true,
+      resolveKbs: async () => ['alpha', 'beta'],
+      runUpdateIndex: async () => makeNeverRunSummary(),
+    });
+
+    expect(result.outcome).toBe('completed');
+    expect(result.contextual).toEqual({
+      kbs: 2,
+      covered_chunks: 3,
+      null_preface_chunks: 2,
+      // Only alpha's future-dated failure is still inside its backoff.
+      retry_pending_chunks: 1,
+      failures_by_error_code: { llm_unreachable: 1, llm_malformed: 1 },
+    });
+  });
+
+  it('summarizeContextualOutcome returns null when contextual retrieval is disabled', async () => {
+    await expect(runner.summarizeContextualOutcome(['alpha'])).resolves.toBeNull();
   });
 });

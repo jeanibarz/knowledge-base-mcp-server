@@ -10,10 +10,13 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import {
+  aggregateContextualSidecarStats,
   GENERATOR_VERSION as CONTEXTUAL_PREFACE_GENERATOR,
-  sidecarRootDir as contextualPrefaceRoot,
 } from './contextual-preface.js';
-import { isContextualRetrievalEnabled } from './config/contextual-preface.js';
+import {
+  isContextualRetrievalEnabled,
+  type ContextualErrorCode,
+} from './config/contextual-preface.js';
 import { FaissIndexManager, type IndexUpdateSummary } from './FaissIndexManager.js';
 import {
   FAISS_INDEX_PATH,
@@ -64,6 +67,20 @@ export interface KbStatsContextualPrefaceBlock {
   cache_bytes: number;
   model: string | null;
   generator: string | null;
+  /**
+   * #409 — failure diagnostics that break `null_preface_chunks` down so an
+   * operator can act on it instead of guessing. `retry_pending` counts the
+   * failed chunks whose `next_retry_after` has not elapsed — the next
+   * reindex skips them, keeping the chunk embedded verbatim. `by_error_code`
+   * keys are `ContextualErrorCode` values (`llm_unreachable`, `llm_malformed`,
+   * `llm_refusal`, `truncated_doc`). Additive on the wire.
+   */
+  failures: KbStatsContextualFailureBlock;
+}
+
+export interface KbStatsContextualFailureBlock {
+  retry_pending: number;
+  by_error_code: Partial<Record<ContextualErrorCode, number>>;
 }
 
 export interface KbStatsPayload {
@@ -256,80 +273,25 @@ export async function maxMtimeIso(dir: string): Promise<string | null> {
  * `.reindex.run.json` file under the FAISS index root that distinguishes
  * `in_progress` / `partial` / `stale` from the M0a-visible states.
  *
- * Cheap when no sidecars exist for the KB (the directory's absent → the
- * readdir returns ENOENT → we return the `never` placeholder).
+ * The on-disk scan (covered / null / failure-by-error-code counts, cache
+ * bytes, latest mtime) is delegated to `aggregateContextualSidecarStats`
+ * so `kb stats` and `kb reindex` share one sidecar reader (#409). Cheap
+ * when no sidecars exist for the KB — the helper returns all-zeros.
  */
 async function computeContextualPrefaceBlock(
   kbName: string,
   totalChunks: number,
-): Promise<import('./kb-stats.js').KbStatsContextualPrefaceBlock> {
+): Promise<KbStatsContextualPrefaceBlock> {
   const enabled = isContextualRetrievalEnabled();
-  const sidecarDir = path.join(contextualPrefaceRoot(), kbName.replace(/[^A-Za-z0-9._-]/g, '_'));
-  let dirEntries: Array<import('fs').Dirent> = [];
-  try {
-    dirEntries = await fsp.readdir(sidecarDir, { withFileTypes: true });
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-      logger.debug(`kb_stats: contextual sidecar readdir failed for ${sidecarDir}: ${(err as Error).message}`);
-    }
-    // No sidecars yet → never reindexed.
-    return {
-      enabled,
-      reindex_state: 'never',
-      last_completed_at: null,
-      covered_chunks: 0,
-      null_preface_chunks: 0,
-      coverage_pct: 0,
-      cache_bytes: 0,
-      model: null,
-      generator: enabled ? CONTEXTUAL_PREFACE_GENERATOR : null,
-    };
-  }
+  const stats = await aggregateContextualSidecarStats(kbName);
 
-  let covered = 0;
-  let nulls = 0;
-  let cacheBytes = 0;
-  let latestMtime = 0;
-  let modelSeen: string | null = null;
-
-  for (const entry of dirEntries) {
-    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-    const filePath = path.join(sidecarDir, entry.name);
-    let stat: import('fs').Stats;
-    try {
-      stat = await fsp.stat(filePath);
-    } catch {
-      continue;
-    }
-    cacheBytes += stat.size;
-    if (stat.mtimeMs > latestMtime) latestMtime = stat.mtimeMs;
-    let raw: string;
-    try {
-      raw = await fsp.readFile(filePath, 'utf-8');
-    } catch {
-      continue;
-    }
-    let parsed: { chunks?: Array<{ preface?: unknown }>; model?: unknown };
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-    if (typeof parsed.model === 'string') modelSeen = parsed.model;
-    if (!Array.isArray(parsed.chunks)) continue;
-    for (const c of parsed.chunks) {
-      if (typeof c?.preface === 'string' && c.preface.length > 0) covered += 1;
-      else if (c?.preface === null) nulls += 1;
-    }
-  }
-
+  const covered = stats.covered_chunks;
+  const nulls = stats.null_preface_chunks;
   const coveragePct = totalChunks > 0 ? Math.round((covered / totalChunks) * 1000) / 10 : 0;
-  const lastCompletedAt = latestMtime === 0 ? null : new Date(latestMtime).toISOString();
-  // M0a: a populated sidecar dir + zero failures + coverage matching the
-  // chunk count means a completed run. Without a `.reindex.run.json` file
-  // we can't tell `partial` from `failed`; both surface as `completed` if
-  // coverage_pct === 100, otherwise as `partial`.
+  // M0a: a populated sidecar dir + coverage matching the chunk count means
+  // a completed run. Without a `.reindex.run.json` file we can't tell
+  // `partial` from `failed`; both surface as `completed` when coverage is
+  // total, otherwise as `partial`.
   const reindexState = covered + nulls === 0
     ? 'never'
     : (covered === totalChunks ? 'completed' : 'partial');
@@ -337,12 +299,18 @@ async function computeContextualPrefaceBlock(
   return {
     enabled,
     reindex_state: reindexState,
-    last_completed_at: lastCompletedAt,
+    last_completed_at: stats.latest_sidecar_at,
     covered_chunks: covered,
     null_preface_chunks: nulls,
     coverage_pct: coveragePct,
-    cache_bytes: cacheBytes,
-    model: modelSeen,
-    generator: dirEntries.length > 0 ? CONTEXTUAL_PREFACE_GENERATOR : null,
+    cache_bytes: stats.cache_bytes,
+    model: stats.model,
+    // Report the generator when sidecars exist, or when the feature is on
+    // (the generator that *would* run) — matches the pre-#409 behavior.
+    generator: stats.sidecar_count > 0 || enabled ? CONTEXTUAL_PREFACE_GENERATOR : null,
+    failures: {
+      retry_pending: stats.retry_pending_chunks,
+      by_error_code: stats.failures_by_error_code,
+    },
   };
 }
