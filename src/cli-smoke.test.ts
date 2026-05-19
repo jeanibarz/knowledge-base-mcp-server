@@ -9,6 +9,7 @@ const cliPath = path.join(process.cwd(), 'build', 'cli.js');
 const SUBCOMMANDS = [
   'list',
   'search',
+  'open',
   'serve',
   'ask',
   'remember',
@@ -274,6 +275,25 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
         expect(parseStdoutJson(result)).toEqual({ profiles: [] });
       },
     },
+    {
+      name: 'open resolves a KB-relative path to an absolute source path',
+      subcommand: 'open',
+      args: ['open', 'alpha/note.md', '--json'],
+      assert: (result) => {
+        expect(result.code).toBe(0);
+        const body = parseStdoutJson(result) as {
+          knowledgeBase?: string;
+          relativePath?: string;
+          path?: string;
+        };
+        expect(body).toMatchObject({
+          knowledgeBase: 'alpha',
+          relativePath: 'alpha/note.md',
+        });
+        expect(path.isAbsolute(body.path ?? '')).toBe(true);
+        expect(body.path?.endsWith(path.join('alpha', 'note.md'))).toBe(true);
+      },
+    },
   ];
 
   describe.each(outputCases)('$name', ({ args, assert }) => {
@@ -289,6 +309,7 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
   }> = [
     { subcommand: 'list', args: ['list', '--format=xml'], expected: 'invalid --format' },
     { subcommand: 'search', args: ['search', 'alpha', '--threshold=nope'], expected: 'invalid --threshold' },
+    { subcommand: 'open', args: ['open'], expected: 'missing <chunk-id' },
     { subcommand: 'serve', args: ['serve', '--bogus'], expected: 'unknown flag: --bogus' },
     { subcommand: 'ask', args: ['ask'], expected: 'missing <question>' },
     { subcommand: 'remember', args: ['remember'], expected: 'missing --kb=<name>' },

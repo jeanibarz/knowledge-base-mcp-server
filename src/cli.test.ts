@@ -56,6 +56,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     for (const sub of [
       'list',
       'search',
+      'open',
       'serve',
       'ask',
       'remember',
@@ -90,6 +91,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
   describe.each([
     ['list', 'kb list'],
     ['search', 'kb search'],
+    ['open', 'kb open'],
     ['serve', 'kb serve'],
     ['ask', 'kb ask'],
     ['remember', 'kb remember'],
@@ -183,6 +185,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(names).toEqual([
       'list',
       'search',
+      'open',
       'serve',
       'ask',
       'remember',

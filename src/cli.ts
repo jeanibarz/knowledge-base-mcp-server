@@ -21,6 +21,7 @@ import { LIST_HELP, runList } from './cli-list.js';
 import { LLM_HELP, runLlm } from './cli-llm.js';
 import { LOGS_HELP, runLogs } from './cli-logs.js';
 import { MODELS_HELP, runModels } from './cli-models.js';
+import { OPEN_HELP, runOpen } from './cli-open.js';
 import { PROMOTE_HELP, runPromote } from './cli-promote.js';
 import { QUARANTINE_HELP, runQuarantine } from './cli-quarantine.js';
 import { REINDEX_HELP, runReindexCli } from './cli-reindex.js';
@@ -88,6 +89,7 @@ const NON_OPTION_HELP_SECTIONS = new Set([
 const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'list',         summary: 'List available knowledge bases.',                                         help: LIST_HELP,         handler: runList },
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },
+  { name: 'open',         summary: 'Resolve a chunk id / kb:// URI / result path to its source file.',        help: OPEN_HELP,         handler: runOpen },
   { name: 'serve',        summary: 'Run a localhost daemon for warm read-only CLI requests.',                 help: SERVE_HELP,        handler: runServe },
   { name: 'ask',          summary: 'Answer from retrieved KB context using a local LLM endpoint.',            help: ASK_HELP,          handler: runAsk },
   { name: 'remember',     summary: 'Suggest, create, or append knowledge-base notes (write path).',          help: REMEMBER_HELP,     handler: runRemember },

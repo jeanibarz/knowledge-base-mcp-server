@@ -757,6 +757,61 @@ Stdout/stderr and exit codes:
 Source and test anchors: `src/cli-list.ts:53-101`,
 `src/cli.test.ts:1328-1385`.
 
+## `kb open`
+
+Invocation:
+
+```bash
+kb open alpha/docs/deploy.md#L42-L78 --json
+kb open kb://alpha/docs/deploy.md --json
+```
+
+`kb open` resolves any of the three pointers `kb search` prints — a chunk id,
+a `kb://` resource URI, or a KB-relative result path — back to the absolute
+filesystem path of the source document. It is strictly read-only: it never
+launches an editor or touches the FAISS index.
+
+Text mode (default) prints the resolved absolute path on stdout, one line.
+
+`--json` envelope:
+
+```json
+{
+  "target": "alpha/docs/deploy.md#L42-L78",
+  "knowledgeBase": "alpha",
+  "relativePath": "alpha/docs/deploy.md",
+  "path": "/home/user/knowledge-bases/alpha/docs/deploy.md",
+  "line": 42,
+  "lineEnd": 78,
+  "editorUri": "vscode://file/home/user/knowledge-bases/alpha/docs/deploy.md:42:0"
+}
+```
+
+Stable fields:
+
+- `target` echoes the reference exactly as supplied.
+- `knowledgeBase` and `relativePath` (KB-prefixed, matching a search result's
+  `metadata.relativePath`) identify the document.
+- `path` is the realpath-resolved absolute file path.
+- `line` and `lineEnd` are present only when the reference carried an
+  `#L<from>-L<to>` (or bare `#L<line>`) fragment.
+- `chunkIndex` is present only for a `#chunk-<n>` fragment.
+- `editorUri` is present only when `KB_EDITOR_URI` is `vscode`, `cursor`, or
+  `file`; it mirrors the `editor_uri` field `kb search` emits.
+
+Stdout/stderr and exit codes:
+
+- The resolved path (text) or JSON object is stdout with exit `0`.
+- There is no stable JSON error envelope. Errors print `kb open: ...` to
+  stderr.
+- Exit `2` for a missing/invalid argument, an unparseable reference, an
+  unknown KB, or a path that escapes the KB root.
+- Exit `1` when the reference is well-formed but the file does not exist (a
+  stale pointer).
+
+Source and test anchors: `src/cli-open.ts`, `src/chunk-id.ts::parseChunkReference`,
+`src/cli-open.test.ts`, `src/chunk-id.test.ts`.
+
 ## `kb models list`
 
 Invocation:
