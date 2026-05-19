@@ -213,12 +213,22 @@ Hard-coded parameters:
 ```
 kb reindex --with-context [--kb=<name>…] [--force]
 
-  --kb=<name>     Reindex only this KB. Repeat the flag to reindex several.
+  --kb=<name>     Guard/estimator hint only — NOT a scoped rebuild (see
+                  the implementation note below). Repeat to pass several.
                   Default: every shelf.
   --force         Skip the LRA-cron-window guard AND the self-runtime-budget guard.
 ```
 
 (`--dry-run` and `kb reindex` without `--with-context` deferred to follow-up PRs.)
+
+> **Implementation note (M0b).** `--kb` does **not** scope the rebuild.
+> The M0b runner delegates to `FaissIndexManager.updateIndex(undefined,
+> { force: true })`, which always rebuilds the whole single-index-per-model
+> FAISS index (step 6 — a per-KB rebuild would orphan the other shelves'
+> vectors). `--kb` only narrows the chunk-count estimate (step 1) and the
+> cron-window guard arithmetic, and validates that the named KBs exist
+> (unknown name → exit 2). A genuinely scoped rebuild is deferred to a
+> follow-up.
 
 Behavior:
 

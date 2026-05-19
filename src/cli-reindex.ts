@@ -17,11 +17,12 @@ Usage:
   kb reindex --with-context [--kb=<name>...] [--force]
 
 The \`--with-context\` flag is REQUIRED in this milestone (M0b). It
-triggers a full rebuild of every in-scope KB through the contextual-
-retrieval ingest path: per-chunk LLM-generated prefaces are prepended
-for embedding while the docstore content stays byte-identical. The
-\`KB_CONTEXTUAL_RETRIEVAL=on\` environment variable must also be set;
-the CLI emits a warning otherwise.
+triggers a full rebuild of the ENTIRE FAISS index — every KB, every
+chunk — through the contextual-retrieval ingest path: per-chunk
+LLM-generated prefaces are prepended for embedding while the docstore
+content stays byte-identical. The \`KB_CONTEXTUAL_RETRIEVAL=on\`
+environment variable must also be set; the CLI emits a warning
+otherwise.
 
 Behavior:
   - Refuses to start inside the LRA cron window (06:00-10:30 UTC) or
@@ -35,13 +36,23 @@ Behavior:
     \`FaissIndexManager.updateIndex(undefined, { force: true })\` —
     same machinery the existing \`kb search --refresh\` path uses, so
     sidecar invalidation, error handling, and atomic FAISS swaps come
-    for free.
+    for free. The \`undefined\` scope argument is deliberate: the
+    rebuild is ALWAYS global and \`--kb\` never narrows it (see below).
 
 Options:
   --with-context        Required in M0b. Required for the CLI to do
                         anything; without it, exit code 2.
-  --kb=<name>           Limit reindex to this KB. Repeat the flag for
-                        multiple KBs. Default: every registered KB.
+  --kb=<name>           Guard/estimator hint only — NOT a scoped
+                        rebuild. The FAISS index is single-index-per-
+                        model with every KB co-located, so a partial
+                        rebuild would orphan the other shelves'
+                        vectors; the rebuild is therefore always
+                        global regardless of this flag. --kb only
+                        narrows the chunk-count estimate and the
+                        cron-window guard arithmetic, and is validated
+                        against registered KBs (unknown name -> exit
+                        2). Repeat for multiple KBs. Default: every
+                        registered KB.
   --force               Bypass the LRA cron window guard AND the
                         self-runtime-budget guard. Required to start
                         a reindex inside 06:00-10:30 UTC or when the
