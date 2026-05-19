@@ -51,6 +51,7 @@ kb ask "what changed in the daemonization notes?" --timing   # retrieval + local
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
+kb import-url --kb=research https://example.com/article   # snapshot a URL into a provenance-tagged note
 kb superseded --kb=work       # read-only review for obsolete/contradicted notes
 kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
 kb --help                     # top-level command list
@@ -62,6 +63,8 @@ The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_D
 `kb search --format=vimgrep` prints one quickfix-compatible line per result: `path:line:col:preview`. JSON results include a stable `chunk_id` such as `alpha/docs/deploy.md#L42-L78` when chunk metadata has a KB, path, and line range; chunks without line metadata fall back to `#chunk-N`. Set `KB_EDITOR_URI=vscode`, `cursor`, or `file` to add opt-in absolute-path `editor_uri` fields and markdown `Open` links. The default `KB_EDITOR_URI=none` omits local absolute paths.
 
 `kb remember` is a conservative CLI write path for agent shells. `--suggest` lists likely existing targets from note filenames/headings, does not read stdin or write notes, and may update a small `.index` heading cache. Creates and appends require both `--stdin` and `--yes`; create uses a slugified `.md` filename and refuses overwrites, while append accepts only existing KB-relative paths. Plain EOF appends and `kb capture --append` serialize per target and commit through a temp-file fsync plus atomic rename. Add `--refresh` to re-index the affected KB after a successful write. For machine-readable command shapes, see [`docs/cli-json-contracts.md`](docs/cli-json-contracts.md).
+
+`kb import-url --kb=<name> <url>` snapshots a web page or PDF into one new KB note while preserving provenance. It fetches the URL over http(s), routes HTML and PDF responses through the same loaders the indexer uses, and writes a note whose YAML frontmatter records `source_url`, `fetched_at`, `content_sha256`, `content_type`, `http_status`, and `byte_count`. The fetch is guarded: only http/https schemes are allowed, redirects are followed manually and re-validated per hop (`--max-redirects`, default 5), responses are size-capped (`--max-bytes`, default 8 MiB) and time-bounded (`--timeout`, default 30000 ms), and private/loopback/link-local addresses are refused unless `--allow-local-network` is passed (SSRF guard). The note path defaults to a slug of the page title; pass `--note=<path.md>` to choose it, `--title` to override the title, and `--refresh` to re-index afterwards. It refuses to overwrite an existing note.
 
 `kb superseded --kb=<name>` is a read-only active-forgetting review. It scans markdown frontmatter for explicit contradiction, deprecated/dormant lifecycle status, stale verification dates, and low-confidence active notes, then uses the existing semantic index to add conservative newer-neighbor evidence when available. Use `--format=json` for agent workflows and `--include-clean` when you need a full inventory.
 

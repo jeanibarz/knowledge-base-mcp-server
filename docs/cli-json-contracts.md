@@ -341,6 +341,65 @@ Stdout/stderr and exit codes:
 Source and test anchors: `src/cli-capture.ts:204-213`,
 `src/cli-capture.ts:89-125`, `src/cli.test.ts:1063-1247`.
 
+## `kb import-url`
+
+Invocation:
+
+```bash
+kb import-url --kb=<name> <url> [--note=<path.md>] [--title=<text>] \
+  [--max-bytes=<N>] [--timeout=<ms>] [--max-redirects=<N>] \
+  [--allow-local-network] [--refresh]
+```
+
+A successful import always prints JSON:
+
+```json
+{
+  "knowledge_base_name": "research",
+  "path": "example-domain.md",
+  "action": "import-url",
+  "source_url": "https://example.com/",
+  "final_url": "https://example.com/",
+  "http_status": 200,
+  "content_type": "text/html",
+  "content_sha256": "fb91d75a6bb430787a61b0aec5e374f580030f2878e1613eab5ca6310f7bbb9a",
+  "byte_count": 528,
+  "refreshed": false
+}
+```
+
+Stable success fields:
+
+- `knowledge_base_name`: target KB name.
+- `path`: KB-relative path of the newly written note.
+- `action`: always `import-url`.
+- `source_url`: the URL requested on the command line.
+- `final_url`: the URL that served the content after any redirects.
+- `http_status`: terminal HTTP status (always `2xx` on success).
+- `content_type`: response content type, parameters stripped.
+- `content_sha256`: SHA-256 of the downloaded response body.
+- `byte_count`: size of the downloaded response body in bytes.
+- `refreshed`: boolean matching whether `--refresh` was requested and completed.
+
+The written note carries a YAML frontmatter provenance block — `title`,
+`source_url`, optional `resolved_url` (only when it differs from `source_url`),
+`fetched_at`, `content_sha256`, `content_type`, `http_status`, `byte_count` —
+followed by the extracted plain text.
+
+Stdout/stderr and exit codes:
+
+- Success JSON is stdout with exit `0`.
+- There is no stable JSON error envelope. Argument, fetch (scheme / SSRF /
+  redirect / size / timeout), extraction, write, and refresh errors print
+  `kb import-url: ...` to stderr.
+- Argument errors exit `2`; runtime/fetch/write errors exit `1`.
+- Private, loopback, and link-local addresses are refused by default; pass
+  `--allow-local-network` to permit them.
+
+Source and test anchors: `src/cli-import-url.ts:283-299`,
+`src/url-snapshot.ts:175-205`, `src/url-snapshot.ts:395-470`,
+`src/cli-import-url.test.ts:132-330`.
+
 ## `kb where`
 
 Invocation:
