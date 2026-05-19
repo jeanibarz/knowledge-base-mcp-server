@@ -28,9 +28,11 @@ import { computeStaleness } from './search-core.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import {
   FAISS_INDEX_PATH,
+} from './config/paths.js';
+import {
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
-} from './config.js';
+} from './config/ingest.js';
 import { elapsedMs, nowMs } from './timing-core.js';
 import {
   buildCandidates,

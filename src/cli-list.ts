@@ -1,4 +1,4 @@
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { describeKnowledgeBase, listKnowledgeBases } from './kb-fs.js';
 
 export const LIST_HELP = `kb list — list available knowledge bases

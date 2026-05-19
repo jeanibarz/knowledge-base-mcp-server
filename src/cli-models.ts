@@ -14,7 +14,7 @@ import {
   writeActiveModelAtomic,
 } from './active-model.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { estimateCostUsd } from './cost-estimates.js';

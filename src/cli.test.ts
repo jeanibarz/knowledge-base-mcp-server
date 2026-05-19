@@ -24,6 +24,14 @@ interface RunResult {
   stderr: string;
 }
 
+interface HelpManifestForTest {
+  commands: Array<{
+    name: string;
+    summary: string;
+    options: Array<{ flags: string[]; value: string | null; description: string }>;
+  }>;
+}
+
 function runCli(args: string[], env: Record<string, string> = {}, input?: string): RunResult {
   const result = spawnSync('node', [cliPath, ...args], {
     env: { PATH: process.env.PATH ?? '', KB_LOG_FORMAT: 'text', ...env },
@@ -52,10 +60,13 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'ask',
       'remember',
       'capture',
+      'import-url',
       'compare',
       'doctor',
+      'logs',
       'stats',
       'eval',
+      'eval-gate',
       'explain',
       'stale-check',
       'superseded',
@@ -64,6 +75,8 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'where',
       'models',
       'llm',
+      'reindex',
+      'completion',
     ]) {
       expect(r.stdout).toMatch(new RegExp(`\\n  ${sub.replace('-', '\\-')}\\s`));
     }
@@ -82,10 +95,13 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['ask', 'kb ask'],
     ['remember', 'kb remember'],
     ['capture', 'kb capture'],
+    ['import-url', 'kb import-url'],
     ['compare', 'kb compare'],
     ['doctor', 'kb doctor'],
+    ['logs', 'kb logs'],
     ['stats', 'kb stats'],
     ['eval', 'kb eval'],
+    ['eval-gate', 'kb eval-gate'],
     ['explain', 'kb explain'],
     ['stale-check', 'kb stale-check'],
     ['superseded', 'kb superseded'],
@@ -94,6 +110,8 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['where', 'kb where'],
     ['models', 'kb models'],
     ['llm', 'kb llm'],
+    ['reindex', 'kb reindex'],
+    ['completion', 'kb completion'],
   ])('kb %s --help', (sub, marker) => {
     it('exits 0 with detailed help on stdout', () => {
       const long = runCli([sub, '--help']);
@@ -115,6 +133,224 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.stdout).toContain('Available commands:');
   });
 
+  it('kb help --format=json emits a stable command manifest (#383)', () => {
+    const r = runCli(['help', '--format=json']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe('');
+    const manifest = JSON.parse(r.stdout) as {
+      schema_version: string;
+      command: string;
+      usage: string[];
+      commands: Array<{
+        name: string;
+        summary: string;
+        usage: string[];
+        options: Array<{ flags: string[]; value: string | null; description: string }>;
+        stability: string;
+      }>;
+      environment: Array<{ name: string; description: string }>;
+      exit_codes: Array<{ code: number; description: string }>;
+      stability: string;
+    };
+
+    expect(manifest.schema_version).toBe('kb.help.v1');
+    expect(manifest.command).toBe('kb');
+    expect(manifest.usage).toContain('kb <command> [options]');
+    expect(manifest.stability).toBe('stable');
+    expect(manifest.environment).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'KNOWLEDGE_BASES_ROOT_DIR' }),
+      expect.objectContaining({ name: 'KB_LLM_ENDPOINT' }),
+      expect.objectContaining({ name: 'LOG_FILE' }),
+      expect.objectContaining({ name: 'KB_LOG_FORMAT' }),
+      expect.objectContaining({
+        name: 'OLLAMA_*',
+        description: expect.stringContaining('Provider-specific config'),
+      }),
+      expect.objectContaining({
+        name: 'OPENAI_*',
+        description: expect.stringContaining('Provider-specific config'),
+      }),
+      expect.objectContaining({
+        name: 'HUGGINGFACE_*',
+        description: expect.stringContaining('Provider-specific config'),
+      }),
+    ]));
+    expect(manifest.environment.find((entry) => entry.name === 'KB_LLM_ENDPOINT')?.description)
+      .toBe('OpenAI-compatible endpoint used by `kb ask`.');
+    expect(manifest.exit_codes).toEqual(expect.arrayContaining([
+      { code: 0, description: 'success (results found or empty)' },
+      { code: 2, description: 'argv / env / model-resolution error' },
+    ]));
+    const names = manifest.commands.map((command) => command.name);
+    expect(names).toEqual([
+      'list',
+      'search',
+      'serve',
+      'ask',
+      'remember',
+      'capture',
+      'import-url',
+      'compare',
+      'doctor',
+      'logs',
+      'stats',
+      'eval',
+      'eval-gate',
+      'explain',
+      'stale-check',
+      'superseded',
+      'promote',
+      'quarantine',
+      'where',
+      'models',
+      'llm',
+      'reindex',
+      'completion',
+    ]);
+    for (const command of manifest.commands) {
+      for (const option of command.options) {
+        for (const flag of option.flags) {
+          expect(`${command.name}:${flag}`).toMatch(/^[a-z0-9-]+:--?$|^[a-z0-9-]+:--?[A-Za-z0-9][A-Za-z0-9-]*$/);
+        }
+      }
+    }
+    const search = manifest.commands.find((command) => command.name === 'search');
+    expect(search).toMatchObject({
+      summary: 'Semantic search across one or all knowledge bases.',
+      stability: 'stable',
+    });
+    expect(search?.usage).toContain('kb search <query> [options]');
+    expect(search?.options).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        flags: ['--format'],
+        value: 'md|json|vimgrep',
+      }),
+      expect.objectContaining({
+        flags: ['--help', '-h'],
+        value: null,
+      }),
+    ]));
+    const llm = manifest.commands.find((command) => command.name === 'llm');
+    expect(llm?.options).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        flags: ['--profile'],
+        value: '<name>',
+      }),
+      expect.objectContaining({
+        flags: ['--all'],
+        value: null,
+      }),
+    ]));
+    const completion = manifest.commands.find((command) => command.name === 'completion');
+    expect(completion).toMatchObject({
+      summary: 'Generate shell completions for bash, zsh, or fish.',
+      usage: ['kb completion bash', 'kb completion zsh', 'kb completion fish'],
+    });
+  });
+
+  it('kb completion bash is generated from the command and option manifest (#389)', () => {
+    const r = runCli(['completion', 'bash']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe('');
+    expect(r.stdout).toContain('complete -F _kb kb');
+    expect(r.stdout).toContain('help');
+    expect(r.stdout).toContain('list');
+    expect(r.stdout).toContain('search');
+    expect(r.stdout).toContain('reindex');
+    expect(r.stdout).toContain('completion');
+    expect(r.stdout).toContain('bash');
+    expect(r.stdout).toContain('zsh');
+    expect(r.stdout).toContain('fish');
+    expect(r.stdout).toContain('recent show');
+    expect(r.stdout).toContain('set-active');
+    expect(r.stdout).toContain('--mode=hybrid');
+    expect(r.stdout).toContain('--format=json');
+    expect(r.stdout).toContain('--threshold=auto');
+  });
+
+  it('kb completion bash completes enum values after Bash splits on equals (#389)', () => {
+    const script = runCli(['completion', 'bash']).stdout;
+    const result = spawnSync('bash', ['-c', [
+      'eval "$KB_COMPLETION_SCRIPT"',
+      'COMP_WORDS=(kb search --mode hy)',
+      'COMP_CWORD=3',
+      "COMP_LINE='kb search --mode=hy'",
+      'COMP_POINT=${#COMP_LINE}',
+      '_kb',
+      'printf "%s\\n" "${COMPREPLY[@]}"',
+    ].join('\n')], {
+      env: { PATH: process.env.PATH ?? '', KB_COMPLETION_SCRIPT: script },
+      encoding: 'utf-8',
+    });
+    if (result.error) throw result.error;
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout.trim().split('\n')).toContain('hybrid');
+  });
+
+  it('kb completion zsh and fish include command-local flags and enum values (#389)', () => {
+    const zsh = runCli(['completion', 'zsh']);
+    expect(zsh.code).toBe(0);
+    expect(zsh.stderr).toBe('');
+    expect(zsh.stdout).toContain('#compdef kb');
+    expect(zsh.stdout).toContain('search:Semantic search across one or all knowledge bases.');
+    expect(zsh.stdout).toContain("_values 'shell' bash zsh fish");
+    expect(zsh.stdout).toContain('recent');
+    expect(zsh.stdout).toContain('--mode=hybrid');
+    expect(zsh.stdout).toContain('--threshold=auto');
+
+    const fish = runCli(['completion', 'fish']);
+    expect(fish.code).toBe(0);
+    expect(fish.stderr).toBe('');
+    expect(fish.stdout).toContain('complete -c kb -f');
+    expect(fish.stdout).toContain("-a 'search'");
+    expect(fish.stdout).toContain("__fish_seen_subcommand_from completion' -a 'bash zsh fish'");
+    expect(fish.stdout).toContain("__fish_seen_subcommand_from logs' -a 'recent show'");
+    expect(fish.stdout).toContain("-l 'mode' -a 'dense lexical hybrid auto'");
+    expect(fish.stdout).toContain("-l 'format' -a 'md json vimgrep'");
+    expect(fish.stdout).toContain("-l 'threshold' -a 'auto'");
+    expect(fish.stdout).toContain("-l 'review-status' -a 'approved needs-review'");
+  });
+
+  it('kb completion covers every manifest command, flag, and enum value (#389)', () => {
+    const manifest = JSON.parse(runCli(['help', '--format=json']).stdout) as HelpManifestForTest;
+    const bash = runCli(['completion', 'bash']);
+    const zsh = runCli(['completion', 'zsh']);
+    const fish = runCli(['completion', 'fish']);
+
+    expect(bash.code).toBe(0);
+    expect(zsh.code).toBe(0);
+    expect(fish.code).toBe(0);
+
+    for (const command of manifest.commands) {
+      expect(bash.stdout).toContain(`${command.name})`);
+      expect(zsh.stdout).toContain(`${command.name}:`);
+      expect(zsh.stdout).toContain(`${command.name})`);
+      expect(fish.stdout).toContain(`-a '${command.name}'`);
+
+      for (const option of command.options) {
+        for (const flag of option.flags) {
+          if (flag === '--') continue;
+          expect(bash.stdout).toContain(flag);
+          expect(zsh.stdout).toContain(flag);
+          if (flag.startsWith('--')) {
+            expect(fish.stdout).toContain(`-l '${flag.slice(2)}'`);
+          } else if (/^-[A-Za-z0-9]$/.test(flag)) {
+            expect(fish.stdout).toContain(`-s '${flag.slice(1)}'`);
+          }
+        }
+      }
+    }
+  });
+
+  it('kb completion rejects unsupported shells without printing a script (#389)', () => {
+    const r = runCli(['completion', 'powershell']);
+    expect(r.code).toBe(2);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain("unsupported shell 'powershell'");
+  });
+
   it('kb help <command> mirrors `kb <command> --help`', () => {
     const a = runCli(['help', 'search']);
     const b = runCli(['search', '--help']);
@@ -123,11 +359,93 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(a.stdout).toBe(b.stdout);
   });
 
+  it('kb help <command> --format=json emits only the selected command manifest (#383)', () => {
+    const r = runCli(['help', 'search', '--format=json']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe('');
+    const payload = JSON.parse(r.stdout) as {
+      schema_version: string;
+      command: {
+        name: string;
+        summary: string;
+        usage: string[];
+        options: Array<{ flags: string[]; value: string | null; description: string }>;
+        stability: string;
+      };
+    };
+
+    expect(payload.schema_version).toBe('kb.help.v1');
+    expect(payload.command.name).toBe('search');
+    expect(payload.command.usage).toContain('kb search <query> [options]');
+    expect(payload.command.options).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        flags: ['--kb'],
+        value: '<name>',
+      }),
+      expect.objectContaining({
+        flags: ['--format'],
+        value: 'md|json|vimgrep',
+      }),
+    ]));
+    expect(payload.command.stability).toBe('stable');
+  });
+
+  it('kb help <command> --format=json handles wrapped usage and examples safely (#383)', () => {
+    const r = runCli(['help', 'promote', '--format=json']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe('');
+    const payload = JSON.parse(r.stdout) as {
+      command: {
+        usage: string[];
+        options: Array<{ flags: string[]; value: string | null; description: string }>;
+      };
+    };
+
+    expect(payload.command.usage).toEqual(expect.arrayContaining([
+      'kb promote --kb=<name> --query=<topic> [--k=<int>] [--format=md|json]',
+      'kb promote --kb=<name> --path=<rel.md>',
+      '[--review-status=approved|needs-review]',
+      '[--format=md|json] [--yes]',
+    ]));
+    const reviewStatusOptions = payload.command.options.filter((option) => (
+      option.flags.includes('--review-status')
+    ));
+    expect(reviewStatusOptions).toHaveLength(1);
+    expect(reviewStatusOptions[0]).toMatchObject({
+      value: '<value>',
+      description: expect.stringContaining('New review status'),
+    });
+    expect(payload.command.options).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        value: 'approved --last-verified-at=now --yes',
+      }),
+    ]));
+  });
+
   it('kb help unknown-cmd exits 2 with a stderr error', () => {
     const r = runCli(['help', 'not-a-real-command']);
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("unknown command 'not-a-real-command'");
     expect(r.stdout).toBe('');
+  });
+
+  it('kb help unknown-cmd --format=json keeps the existing error contract (#383)', () => {
+    const r = runCli(['help', 'not-a-real-command', '--format=json']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("unknown command 'not-a-real-command'");
+    expect(r.stdout).toBe('');
+  });
+
+  it('kb help --format rejects unsupported formats and unknown flags (#383)', () => {
+    const invalidFormat = runCli(['help', '--format=yaml']);
+    expect(invalidFormat.code).toBe(2);
+    expect(invalidFormat.stderr).toContain('invalid --format: --format=yaml');
+    expect(invalidFormat.stdout).toBe('');
+
+    const unknownFlag = runCli(['help', 'search', '--bogus']);
+    expect(unknownFlag.code).toBe(2);
+    expect(unknownFlag.stderr).toContain('unknown flag: --bogus');
+    expect(unknownFlag.stdout).toBe('');
   });
 
   it('--help anywhere in argv intercepts before the subcommand runs', () => {
@@ -209,6 +527,63 @@ describe('kb CLI — argv parsing and dispatch', () => {
       });
       expect(typeof event.request_id).toBe('string');
       expect(typeof event.took_ms).toBe('number');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('dispatches kb logs through the built CLI with default deps (#387)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-logs-'));
+    const logFile = path.join(tempDir, 'canonical.log');
+
+    try {
+      await fsp.writeFile(logFile, [
+        JSON.stringify({
+          schema_version: 'kb-canonical.v1',
+          ts: '2026-05-18T20:00:00.000Z',
+          request_id: 'req-cli-1',
+          process: 'cli',
+          cmd: 'kb search',
+          query_sha256: 'old',
+          took_ms: 10,
+        }),
+        JSON.stringify({
+          schema_version: 'kb-canonical.v1',
+          ts: '2026-05-18T20:01:00.000Z',
+          request_id: 'req-cli-2',
+          process: 'cli',
+          cmd: 'kb search',
+          query_sha256: 'new',
+          result_count: 2,
+          took_ms: 20,
+        }),
+      ].join('\n'));
+
+      const recent = runCli(['logs', 'recent', '--limit=1', '--format=json', `--file=${logFile}`]);
+      expect(recent.code).toBe(0);
+      expect(recent.stderr).toBe('');
+      const payload = JSON.parse(recent.stdout) as {
+        schema_version: string;
+        result_count: number;
+        events: Array<{ request_id: string; query_sha256: string }>;
+      };
+      expect(payload.schema_version).toBe('kb.logs.v1');
+      expect(payload.result_count).toBe(1);
+      expect(payload.events).toEqual([
+        expect.objectContaining({ request_id: 'req-cli-2', query_sha256: 'new' }),
+      ]);
+
+      const shown = runCli([
+        'logs',
+        'show',
+        '--query-sha=old',
+        '--format=json',
+        `--file=${logFile}`,
+      ]);
+      expect(shown.code).toBe(0);
+      expect(JSON.parse(shown.stdout).events).toEqual([
+        expect.objectContaining({ request_id: 'req-cli-1', query_sha256: 'old' }),
+      ]);
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
@@ -1211,6 +1586,156 @@ describe('kb capture', () => {
       expect(r.code).toBe(0);
       const after = await fsp.readFile(notePath, 'utf-8');
       expect(after).toContain('\n````\n```inner```\n````\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts common secrets in captured stdout by default', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-redact-');
+    try {
+      const dataPath = path.join(tempDir, 'secrets.txt');
+      await fsp.writeFile(
+        dataPath,
+        [
+          'Authorization: Bearer bearer-token-that-should-not-persist',
+          'Cookie: sessionid=abc123; theme=light',
+          'OPENAI_API_KEY=sk-testtoken000000000000000000',
+          '{"access_token":"json-token-that-should-not-persist"}',
+          'dsn=https://user:pass@example.com/path',
+          'normal cookies and bread baking',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const r = runCli(
+        ['capture', '--kb=project', '--append=snapshots.md', '--', 'cat', dataPath],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      const summary = JSON.parse(r.stdout) as {
+        redaction_summary: { enabled: boolean; total: number; by_type: Record<string, number> };
+      };
+      expect(summary.redaction_summary.enabled).toBe(true);
+      expect(summary.redaction_summary.total).toBe(5);
+      expect(summary.redaction_summary.by_type).toEqual({
+        authorization_header: 1,
+        cookie_header: 1,
+        dotenv_secret: 1,
+        json_secret: 1,
+        credential_url: 1,
+      });
+
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('Authorization: Bearer [REDACTED]');
+      expect(after).toContain('Cookie: [REDACTED]');
+      expect(after).toContain('OPENAI_API_KEY=[REDACTED]');
+      expect(after).toContain('"access_token":"[REDACTED]"');
+      expect(after).toContain('dsn=https://[REDACTED]@example.com/path');
+      expect(after).toContain('normal cookies and bread baking');
+      expect(after).not.toContain('bearer-token-that-should-not-persist');
+      expect(after).not.toContain('sessionid=abc123');
+      expect(after).not.toContain('sk-testtoken000000000000000000');
+      expect(after).not.toContain('json-token-that-should-not-persist');
+      expect(after).not.toContain('user:pass@example.com');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts secrets from the displayed command line by default', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-redact-command-');
+    try {
+      const r = runCli(
+        [
+          'capture',
+          '--kb=project',
+          '--append=snapshots.md',
+          '--',
+          'printf',
+          'Authorization: Bearer command-token-that-should-not-persist\n',
+        ],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('Authorization: Bearer [REDACTED]');
+      expect(after).not.toContain('command-token-that-should-not-persist');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts prefixed secret keys in captured stdout and displayed command lines', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-prefixed-redact-');
+    try {
+      const r = runCli(
+        [
+          'capture',
+          '--kb=project',
+          '--append=snapshots.md',
+          '--',
+          'sh',
+          '-c',
+          'MY_PASSWORD=command-secret printf \'{"DATABASE_PASSWORD":"json-secret"}\\n\'',
+        ],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      const summary = JSON.parse(r.stdout) as {
+        redaction_summary: { enabled: boolean; total: number; by_type: Record<string, number> };
+      };
+      expect(summary.redaction_summary).toEqual({
+        enabled: true,
+        total: 3,
+        by_type: {
+          json_secret: 2,
+          key_value_secret: 1,
+        },
+      });
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('MY_PASSWORD=[REDACTED]');
+      expect(after).toContain('"DATABASE_PASSWORD":"[REDACTED]"');
+      expect(after).not.toContain('command-secret');
+      expect(after).not.toContain('json-secret');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves raw captured stdout when --no-redact is passed', async () => {
+    const { tempDir, rootDir, faissDir, notePath } = await makeKb('kb-cli-capture-no-redact-');
+    try {
+      const r = runCli(
+        [
+          'capture',
+          '--kb=project',
+          '--append=snapshots.md',
+          '--no-redact',
+          '--',
+          'sh',
+          '-c',
+          'MY_PASSWORD=raw-command-secret printf safe-output',
+        ],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+      );
+
+      expect(r.code).toBe(0);
+      const summary = JSON.parse(r.stdout) as {
+        redaction_summary: { enabled: boolean; total: number; by_type: Record<string, number> };
+      };
+      expect(summary.redaction_summary).toEqual({
+        enabled: false,
+        total: 0,
+        by_type: {},
+      });
+      const after = await fsp.readFile(notePath, 'utf-8');
+      expect(after).toContain('MY_PASSWORD=raw-command-secret');
+      expect(after).toContain('safe-output');
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }

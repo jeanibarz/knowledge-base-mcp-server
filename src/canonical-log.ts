@@ -12,6 +12,12 @@ export type CanonicalErrorCategory =
   | 'configuration'
   | 'indexing'
   | 'provider'
+  // RFC 017 — `external` for LLM-side issues that originate outside the
+  // kb-mcp process boundary (e.g. llama-server unreachable, refusals,
+  // malformed responses). Distinct from `provider` (the embedding
+  // provider) and from `unknown` (catch-all) so monitoring can route
+  // these alerts to LLM-runtime ops rather than kb-mcp.
+  | 'external'
   | 'permissions'
   | 'input'
   | 'lock'
@@ -27,6 +33,8 @@ export interface CanonicalLogEvent {
   ts: string;
   request_id: string;
   process: CanonicalProcess;
+  event?: string;
+  level?: 'warn';
   tool?: string;
   cmd?: string;
   model_id?: string;
@@ -45,6 +53,8 @@ export interface CanonicalLogEvent {
   format_ms?: number;
   cache?: CanonicalCacheStatus;
   error?: CanonicalError;
+  recovery_hint?: string;
+  gate?: Record<string, unknown>;
 }
 
 export type CanonicalLogInput = Omit<
@@ -62,6 +72,8 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'ts',
   'request_id',
   'process',
+  'event',
+  'level',
   'tool',
   'cmd',
   'model_id',
@@ -80,6 +92,8 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'format_ms',
   'cache',
   'error',
+  'recovery_hint',
+  'gate',
 ];
 
 export function createCanonicalRequestId(): string {
@@ -104,6 +118,8 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   };
 
   assignIfDefined(event, 'tool', input.tool);
+  assignIfDefined(event, 'event', input.event);
+  assignIfDefined(event, 'level', input.level);
   assignIfDefined(event, 'cmd', input.cmd);
   assignIfDefined(event, 'model_id', input.model_id);
   assignIfDefined(event, 'kb_scope', input.kb_scope);
@@ -120,6 +136,8 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   assignIfDefined(event, 'format_ms', roundNonNegative(input.format_ms));
   assignIfDefined(event, 'cache', input.cache);
   assignIfDefined(event, 'error', input.error);
+  assignIfDefined(event, 'recovery_hint', input.recovery_hint);
+  assignIfDefined(event, 'gate', input.gate);
 
   return event;
 }
@@ -192,6 +210,15 @@ function categoryForKBError(code: KBErrorCode): CanonicalErrorCategory {
       return 'input';
     case 'INTERNAL':
       return 'unknown';
+    // RFC 017 — contextual-retrieval failure taxonomy.
+    case 'PREFACE_LLM_FAILURE':
+      return 'external';
+    case 'PREFACE_SIDECAR_CORRUPT':
+      return 'indexing';
+    case 'REINDEX_LOCK_HELD':
+      return 'lock';
+    case 'REINDEX_BUDGET_EXCEEDED':
+      return 'input';
   }
 }
 
@@ -206,6 +233,10 @@ function isKBErrorCode(code: string): code is KBErrorCode {
     'CORRUPT_INDEX',
     'VALIDATION',
     'INTERNAL',
+    'PREFACE_LLM_FAILURE',
+    'PREFACE_SIDECAR_CORRUPT',
+    'REINDEX_LOCK_HELD',
+    'REINDEX_BUDGET_EXCEEDED',
   ].includes(code);
 }
 
@@ -214,6 +245,7 @@ function normalizeErrorCategory(raw: string): CanonicalErrorCategory {
     'configuration',
     'indexing',
     'provider',
+    'external',
     'permissions',
     'input',
     'lock',

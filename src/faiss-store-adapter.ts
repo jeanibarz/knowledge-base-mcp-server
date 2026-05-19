@@ -1,6 +1,7 @@
-import { FaissStore } from '@langchain/community/vectorstores/faiss';
+import { FaissStore, type FaissLibArgs } from '@langchain/community/vectorstores/faiss';
 import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import type { Document } from '@langchain/core/documents';
+import { embeddingText } from './contextual-preface.js';
 import type { QueryCacheLookupStatus } from './query-cache.js';
 
 type ScoredFaissDocument = [Document, number];
@@ -58,6 +59,25 @@ function getIndexHandle(store: FaissStore): FaissIndexHandle {
   return index as FaissIndexHandle;
 }
 
+/**
+ * RFC 017 §3 — invariant check after every `addVectors` call. The FAISS
+ * native `index.add()` and the in-memory `docstore.add()` are NOT a single
+ * atomic operation in @langchain/community: if `docstore.add` throws
+ * mid-batch (OOM, key collision, etc.), the index has the vectors and the
+ * docstore doesn't. This check catches the divergence so the caller can
+ * refuse to persist the staging store.
+ */
+function assertIndexDocstoreParity(store: FaissStore, label: string): void {
+  const ntotal = getIndexHandle(store).ntotal();
+  const docstoreSize = getDocstoreMap(store).size;
+  if (ntotal !== docstoreSize) {
+    throw new Error(
+      `${label}: FAISS index/docstore divergence after batch — ntotal=${ntotal}, docstore.size=${docstoreSize}. ` +
+        'This indicates a partial addVectors failure; the staging index must not be persisted.',
+    );
+  }
+}
+
 function getDocstoreMap(store: FaissStore): Map<string, Document> {
   assertObject(store, 'FAISS store');
   const docstore = (store as Record<string, unknown>).docstore;
@@ -108,11 +128,32 @@ export class FaissStoreAdapter {
     documents: readonly Document[],
     embeddings: EmbeddingsInterface,
   ): Promise<FaissStoreAdapter> {
-    const store = await FaissStore.fromTexts(
-      documents.map((doc) => doc.pageContent),
-      documents.map((doc) => doc.metadata),
-      embeddings,
-    );
+    // RFC 017 §3 — the embedding-input text MAY differ from the docstore
+    // text. When `metadata.contextual_preface` is present, `embeddingText`
+    // returns `"{preface}\n\n{chunk}"`; otherwise it returns the raw chunk.
+    // We pre-compute embeddings against `embeddingText(doc)` and then store
+    // the documents verbatim via `addVectors` — preserving caller-visible
+    // pageContent byte-identical to today while enriching the vector.
+    const texts = documents.map(embeddingText);
+    const vectors = await embeddings.embedDocuments(texts);
+    if (vectors.length !== documents.length) {
+      throw new Error(
+        `Embedding provider returned ${vectors.length} vector(s) for ${documents.length} document(s)`,
+      );
+    }
+    // `new FaissStore(embeddings, {})` is the documented way to create an
+    // empty store without an index; `addVectors` lazy-initializes the
+    // IndexFlatL2 on first call (see node_modules faiss.js:84-87).
+    // FaissLibArgs has all-optional fields; an empty object yields a store
+    // whose `index` is undefined. `addVectors` lazy-initializes the
+    // IndexFlatL2 on first call (faiss.js:84-87 in node_modules).
+    const store = new FaissStore(embeddings, {} as FaissLibArgs);
+    await store.addVectors(vectors, [...documents]);
+    // Post-batch invariant: the FaissStore.addVectors call must produce a
+    // 1:1 docstore-to-vector ratio. RFC 017 §3 mandates this check to catch
+    // a partial-failure where `index.add()` succeeded but `docstore.add()`
+    // threw mid-batch.
+    assertIndexDocstoreParity(store, 'FaissStoreAdapter.fromDocuments');
     return new FaissStoreAdapter(store);
   }
 
@@ -134,13 +175,21 @@ export class FaissStoreAdapter {
     embeddings: EmbeddingsInterface,
   ): Promise<void> {
     assertEmbeddingsSlot(this.store);
-    const previousEmbeddings = this.store.embeddings;
-    this.store.embeddings = embeddings;
-    try {
-      await this.store.addDocuments([...documents]);
-    } finally {
-      this.store.embeddings = previousEmbeddings;
+    // RFC 017 §3 — embed against `embeddingText(doc)` (preface-prepended
+    // when present), then call `addVectors` with the original documents.
+    // The `embeddings` argument here may be an `IndexingEmbeddingDeduper`
+    // (see FaissIndexManager:1062); it normalizes strings before
+    // delegating, so two chunks with identical text but different prefaces
+    // are now correctly different inputs and produce different vectors.
+    const texts = documents.map(embeddingText);
+    const vectors = await embeddings.embedDocuments(texts);
+    if (vectors.length !== documents.length) {
+      throw new Error(
+        `Embedding provider returned ${vectors.length} vector(s) for ${documents.length} document(s)`,
+      );
     }
+    await this.store.addVectors(vectors, [...documents]);
+    assertIndexDocstoreParity(this.store, 'FaissStoreAdapter.addDocumentsWithEmbeddings');
   }
 
   async similaritySearchUsingBestPath(options: {

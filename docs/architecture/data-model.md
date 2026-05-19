@@ -56,6 +56,19 @@ Written after a successful FAISS save by `writeSidecarHashes` (`src/file-ingest.
 
 The path structure mirrors the source tree under `<kb>/`: a file at `<kb>/a/b/c.md` gets a sidecar at `<kb>/.index/a/b/c.md`. ADR [`0002-per-file-hash-sidecars.md`](./adr/0002-per-file-hash-sidecars.md) covers why this layout was chosen over a single `hashes.json` manifest.
 
+### Pending sidecar commit manifest
+
+`pending-manifest.json` lives in `models/<model_id>/` while an index-mutating `updateIndex` is between FAISS persistence and sidecar persistence. It records the hash sidecars and chunk manifests that must be written for the saved vectors to be considered committed.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `schema_version` | `kb.pending-sidecar-commit.v1` | Parser guard. |
+| `phase` | `save-started` or `save-complete` | Whether the FAISS save has been confirmed. |
+| `pending_hash_writes` | array of `{path, hash}` | Absolute hash sidecar paths plus source sha256. |
+| `pending_chunk_manifest_writes` | array of `{path, manifest}` | Absolute chunk-manifest sidecar paths plus manifest JSON. |
+
+Normal completion removes the manifest after all sidecars are durable. On startup, `save-complete` rolls forward by writing the sidecars and removing the manifest. `save-started` is intentionally conservative: recovery purges the persisted store and stale sidecars so the next update rebuilds instead of risking duplicate vectors or hashes for missing vectors.
+
 ### Model registry
 
 `$FAISS_INDEX_PATH/active.txt` records the active `model_id`; callers can override it with `KB_ACTIVE_MODEL` (`src/active-model.ts:5`, `:26`). Each registered model lives at `$FAISS_INDEX_PATH/models/<model_id>/`, where `<model_id>` is derived from provider and model name (`README.md:102`, `src/active-model.ts:37-43`).

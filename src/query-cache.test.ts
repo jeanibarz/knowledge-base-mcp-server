@@ -7,7 +7,7 @@ import {
   normalizeQueryForCache,
   queryCachePaths,
 } from './query-cache.js';
-import { isQueryCacheEnabled } from './config.js';
+import { isQueryCacheEnabled } from './config/cache.js';
 
 async function tempIndexPath(prefix: string): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));

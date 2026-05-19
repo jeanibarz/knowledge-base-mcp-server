@@ -17,6 +17,9 @@ const originalEnv = {
   REINDEX_TRIGGER_PATH: process.env.REINDEX_TRIGGER_PATH,
   REINDEX_TRIGGER_POLL_MS: process.env.REINDEX_TRIGGER_POLL_MS,
   KB_FS_WATCH: process.env.KB_FS_WATCH,
+  KB_LLM_ENDPOINT: process.env.KB_LLM_ENDPOINT,
+  KB_LLM_CONFIG_DIR: process.env.KB_LLM_CONFIG_DIR,
+  KB_LLM_STATE_DIR: process.env.KB_LLM_STATE_DIR,
 };
 
 const MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
@@ -73,6 +76,16 @@ function persistedSuccessSummary() {
   };
 }
 
+async function healthyLlmProbe(endpoint: string) {
+  return {
+    endpoint,
+    health_url: endpoint.replace(/\/v1\/chat\/completions$/, '/health'),
+    health_ok: true,
+    chat_ok: true,
+    detail: 'health and chat completion succeeded',
+  };
+}
+
 describe('kb doctor', () => {
   const itOnPosix = process.platform === 'win32' ? it.skip : it;
 
@@ -102,6 +115,7 @@ describe('kb doctor', () => {
         packageRoot: tempDir,
         invokedPath: null,
         packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
       });
 
       expect(report.index_security.ownership_check).toBe('checked');
@@ -150,6 +164,7 @@ describe('kb doctor', () => {
         packageRoot: tempDir,
         invokedPath: null,
         packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
       });
 
       expect(report.status).toBe('warn');
@@ -248,6 +263,7 @@ describe('kb doctor', () => {
         packageRoot: tempDir,
         invokedPath: linkedBin,
         packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
         lastIndexUpdateSummary: {
           status: 'success',
           scope: 'global',
@@ -317,6 +333,274 @@ describe('kb doctor', () => {
     }
   });
 
+  it('reports active external LLM profile readiness in JSON and markdown', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-external-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const llmConfigDir = path.join(tempDir, 'llm-config');
+      const llmStateDir = path.join(tempDir, 'llm-state');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      await seedVersionedIndex(modelDir);
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+        KB_LLM_CONFIG_DIR: llmConfigDir,
+        KB_LLM_STATE_DIR: llmStateDir,
+      });
+      const { createExternalProfile, writeActiveProfile, writeProfile } = await import('./llm-profiles.js');
+      const profile = await createExternalProfile(
+        'local-research-agent',
+        'http://127.0.0.1:8080',
+        'local-research-agent',
+      );
+      await writeProfile(profile);
+      await writeActiveProfile(profile.name);
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: async (endpoint) => ({
+          endpoint,
+          health_url: 'http://127.0.0.1:8080/health',
+          health_ok: true,
+          chat_ok: true,
+          detail: 'health and chat completion succeeded',
+        }),
+      });
+
+      expect(report.llm_endpoint).toMatchObject({
+        status: 'ok',
+        endpoint: 'http://127.0.0.1:8080/v1/chat/completions',
+        health_url: 'http://127.0.0.1:8080/health',
+        endpoint_source: 'profile',
+        profile_name: 'local-research-agent',
+        profile_mode: 'external',
+        managed_by: 'local-research-agent',
+        unit_name: null,
+        health_ok: true,
+        chat_ok: true,
+        next_action: null,
+      });
+      expect(report.checks).toContainEqual({
+        name: 'llm_endpoint',
+        status: 'ok',
+        detail: expect.stringContaining('ready; profile=local-research-agent'),
+      });
+      const markdown = formatDoctorMarkdown(report);
+      expect(markdown).toContain('LLM endpoint:');
+      expect(markdown).toContain('source: profile');
+      expect(markdown).toContain('managed_by: local-research-agent');
+      expect(markdown).toContain('chat_ok: yes');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('warns on an unhealthy managed LLM endpoint without starting the service', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-managed-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const llmConfigDir = path.join(tempDir, 'llm-config');
+      const llmStateDir = path.join(tempDir, 'llm-state');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      await seedVersionedIndex(modelDir);
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+        KB_LLM_CONFIG_DIR: llmConfigDir,
+        KB_LLM_STATE_DIR: llmStateDir,
+      });
+      const { createManagedProfile, writeActiveProfile, writeProfile } = await import('./llm-profiles.js');
+      const modelPath = path.join(tempDir, 'model.gguf');
+      await fsp.writeFile(modelPath, 'model-bytes', 'utf-8');
+      const profile = await createManagedProfile({
+        name: 'qwen',
+        runnerBin: '/bin/llama-server',
+        modelPath,
+        port: 8091,
+      });
+      await writeProfile(profile);
+      await writeActiveProfile(profile.name);
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: async (endpoint) => ({
+          endpoint,
+          health_url: 'http://127.0.0.1:8091/health',
+          health_ok: false,
+          chat_ok: false,
+          detail: 'health failed: connect ECONNREFUSED; chat failed: local LLM request failed: connect ECONNREFUSED',
+        }),
+      });
+
+      expect(report.llm_endpoint).toMatchObject({
+        status: 'warn',
+        endpoint: 'http://127.0.0.1:8091/v1/chat/completions',
+        endpoint_source: 'profile',
+        profile_name: 'qwen',
+        profile_mode: 'managed',
+        unit_name: 'kb-llm@qwen.service',
+        managed_by: null,
+        health_ok: false,
+        chat_ok: false,
+      });
+      expect(report.llm_endpoint.next_action).toContain('kb llm start --profile=qwen');
+      expect(report.checks).toContainEqual({
+        name: 'llm_endpoint',
+        status: 'warn',
+        detail: expect.stringContaining('not ready; profile=qwen'),
+      });
+      const markdown = formatDoctorMarkdown(report);
+      expect(markdown).toContain('unit: kb-llm@qwen.service');
+      expect(markdown).toContain('chat_ok: no');
+      expect(markdown).toContain('next_action: Run kb llm start --profile=qwen');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses KB_LLM_ENDPOINT before the active LLM profile', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-env-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const llmConfigDir = path.join(tempDir, 'llm-config');
+      const llmStateDir = path.join(tempDir, 'llm-state');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      await seedVersionedIndex(modelDir);
+
+      const { buildDoctorReport } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+        KB_LLM_CONFIG_DIR: llmConfigDir,
+        KB_LLM_STATE_DIR: llmStateDir,
+        KB_LLM_ENDPOINT: 'http://127.0.0.1:9999',
+      });
+      const { createExternalProfile, writeActiveProfile, writeProfile } = await import('./llm-profiles.js');
+      const profile = await createExternalProfile('active-profile', 'http://127.0.0.1:8080');
+      await writeProfile(profile);
+      await writeActiveProfile(profile.name);
+
+      const probed: string[] = [];
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: async (endpoint) => {
+          probed.push(endpoint);
+          return {
+            endpoint,
+            health_url: 'http://127.0.0.1:9999/health',
+            health_ok: true,
+            chat_ok: false,
+            detail: 'health HTTP 200; chat failed: local LLM returned non-JSON response: Unexpected token',
+          };
+        },
+      });
+
+      expect(probed).toEqual(['http://127.0.0.1:9999/v1/chat/completions']);
+      expect(report.llm_endpoint).toMatchObject({
+        status: 'warn',
+        endpoint_source: 'env',
+        profile_name: 'env',
+        profile_mode: 'external',
+        health_ok: true,
+        chat_ok: false,
+      });
+      expect(report.llm_endpoint.detail).toContain('chat failed');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the production LLM endpoint probe when no test probe is injected', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-default-probe-'));
+    const oldFetch = global.fetch;
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const llmConfigDir = path.join(tempDir, 'llm-config');
+      const llmStateDir = path.join(tempDir, 'llm-state');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      await seedVersionedIndex(modelDir);
+
+      const fetchMock = jest.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/health')) {
+          return new Response('{"status":"ok"}', { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: 'ok' } }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      const { buildDoctorReport } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+        KB_LLM_CONFIG_DIR: llmConfigDir,
+        KB_LLM_STATE_DIR: llmStateDir,
+        KB_LLM_ENDPOINT: '',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+      });
+
+      expect(report.llm_endpoint).toMatchObject({
+        status: 'ok',
+        endpoint_source: 'default',
+        profile_name: 'local-research-agent',
+        profile_mode: 'external',
+        managed_by: 'local-research-agent',
+        endpoint: 'http://127.0.0.1:8080/v1/chat/completions',
+        health_url: 'http://127.0.0.1:8080/health',
+        health_ok: true,
+        chat_ok: true,
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://127.0.0.1:8080/health',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://127.0.0.1:8080/v1/chat/completions',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    } finally {
+      global.fetch = oldFetch;
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('reports reindex-trigger configuration, filesystem state, and freshness in markdown and JSON', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-trigger-'));
     try {
@@ -350,6 +634,7 @@ describe('kb doctor', () => {
         packageRoot: tempDir,
         invokedPath: null,
         packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
       });
 
       expect(report.reindex_trigger).toMatchObject({
@@ -430,6 +715,7 @@ describe('kb doctor', () => {
         packageRoot: tempDir,
         invokedPath: null,
         packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
       });
 
       expect(report.quarantine_counts_by_kb).toEqual({ alpha: 1 });
@@ -473,6 +759,7 @@ describe('kb doctor', () => {
         packageRoot: tempDir,
         invokedPath: null,
         packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
       });
 
       expect(report.last_index_update).toMatchObject({
@@ -522,6 +809,7 @@ describe('kb doctor', () => {
         packageRoot: tempDir,
         invokedPath: null,
         packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
       });
 
       expect(report.checks).toContainEqual({
@@ -563,6 +851,7 @@ describe('kb doctor', () => {
         packageRoot: tempDir,
         invokedPath: null,
         packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
       });
 
       expect(report.status).toBe('error');
@@ -620,6 +909,7 @@ describe('kb doctor', () => {
           packageRoot: tempDir,
           invokedPath: null,
           packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
         });
         expect(report.age_budgets).toEqual({});
         expect(report.age_budget_config_errors).toEqual([]);
@@ -655,6 +945,7 @@ describe('kb doctor', () => {
           packageRoot: tempDir,
           invokedPath: null,
           packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
         });
         expect(report.age_budgets.alpha).toMatchObject({
           configured_hours: 24,
@@ -699,6 +990,7 @@ describe('kb doctor', () => {
           packageRoot: tempDir,
           invokedPath: null,
           packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
         });
         expect(report.age_budgets.alpha).toMatchObject({
           configured_hours: 24,
@@ -729,6 +1021,7 @@ describe('kb doctor', () => {
           packageRoot: tempDir,
           invokedPath: null,
           packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
         });
         expect(report.age_budget_config_errors).toEqual([
           expect.objectContaining({
@@ -771,6 +1064,7 @@ describe('kb doctor', () => {
           packageRoot: tempDir,
           invokedPath: null,
           packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
           providerCallMetrics: new ProviderCallMetrics({ now: () => 0 }),
         });
         expect(report.provider_calls).toEqual({});
@@ -810,6 +1104,7 @@ describe('kb doctor', () => {
           packageRoot: tempDir,
           invokedPath: null,
           packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
           providerCallMetrics: metrics,
         });
         const check = report.checks.find((c) => c.name === 'provider_calls');
@@ -851,6 +1146,7 @@ describe('kb doctor', () => {
           packageRoot: tempDir,
           invokedPath: null,
           packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
           providerCallMetrics: metrics,
         });
         const check = report.checks.find((c) => c.name === 'provider_calls');
@@ -896,6 +1192,7 @@ describe('kb doctor', () => {
           packageRoot: tempDir,
           invokedPath: null,
           packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
         });
 
         expect(report.active_model.provider).toBe('fake');

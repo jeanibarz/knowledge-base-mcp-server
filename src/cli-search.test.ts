@@ -10,7 +10,7 @@ import {
   shouldUsePicker,
   type RunSearchDeps,
 } from './cli-search.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { compactTimingPayload, type TimingPayload } from './timing-core.js';
 import type { ScoredDocument } from './formatter.js';
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
@@ -126,6 +126,35 @@ describe('parseSearchArgs --explain-empty (#328)', () => {
   });
 });
 
+describe('parseSearchArgs --explain (RFC 018 M0c)', () => {
+  it('accepts relevance-gate explanation output', () => {
+    expect(parseSearchArgs(['query', '--explain'])).toMatchObject({
+      explain: true,
+    });
+  });
+});
+
+describe('parseSearchArgs relevance gate (RFC 018)', () => {
+  it('accepts gate overrides and task context inputs', () => {
+    expect(parseSearchArgs([
+      'query',
+      '--gate',
+      '--task-context=answer the deployment question',
+    ])).toMatchObject({
+      gateOverride: 'on',
+      taskContext: 'answer the deployment question',
+    });
+    expect(parseSearchArgs([
+      'query',
+      '--no-gate',
+      '--task-context-file=context.txt',
+    ])).toMatchObject({
+      gateOverride: 'off',
+      taskContextFile: 'context.txt',
+    });
+  });
+});
+
 describe('runSearch timing guard (#331)', () => {
   function makeDeps(): {
     deps: RunSearchDeps;
@@ -206,6 +235,74 @@ describe('runSearch timing guard (#331)', () => {
       freshness_omitted: true,
     });
     expect(payload).not.toHaveProperty('timing');
+  });
+
+  it('includes gate_verdict in JSON output when --gate is used', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([
+      {
+        pageContent: 'deployment rollback',
+        metadata: { source: '/kb/deploy.md', chunkIndex: 0 },
+        score: 0.2,
+      },
+    ] as never);
+
+    const out = await captureSearchOutput(['query', '--gate', '--format=json', '--no-freshness'], deps);
+
+    expect(out.code).toBe(0);
+    const payload = JSON.parse(out.stdout);
+    expect(payload.gate_verdict).toMatchObject({
+      state: 'injected',
+      input_count: 1,
+      output_count: 1,
+      judge: { status: 'skipped' },
+    });
+  });
+
+  it('renders the relevance gate footer in markdown output when --gate is used', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([
+      {
+        pageContent: 'deployment rollback',
+        metadata: { source: '/kb/deploy.md', chunkIndex: 0 },
+        score: 0.2,
+      },
+    ] as never);
+
+    const out = await captureSearchOutput(['query', '--gate', '--no-freshness'], deps);
+
+    expect(out.code).toBe(0);
+    expect(out.stdout).toContain('> _Relevance gate: injected; kept 1/1._');
+  });
+
+  it('renders the relevance gate dropped list when --explain is used', () => {
+    const out = formatDenseSearchMarkdownOutput({
+      results: [],
+      groupBySource: false,
+      staleness: null,
+      refreshed: false,
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: null,
+      explain: true,
+      gateVerdict: {
+        schema_version: 'kb.relevance-gate.v1',
+        state: 'injected',
+        low_confidence: false,
+        input_count: 2,
+        output_count: 1,
+        dropped: [{
+          id: '/kb/a.md#1',
+          stage: 'A2-distribution-knee',
+          reason: 'after score-distribution knee',
+        }],
+        judge: { status: 'skipped', reason: 'task_context absent or too short' },
+        empty_verdict_enabled: false,
+      },
+    });
+
+    expect(out).toContain('> _Relevance gate dropped candidates:_');
+    expect(out).toContain('> - /kb/a.md#1 (A2-distribution-knee): after score-distribution knee');
   });
 });
 

@@ -1,0 +1,76 @@
+# RFC 018 M0 (#369) — grader-calibration set.
+#
+# RFC 018 M0 requires that, if an LLM grades downstream answer quality, the
+# grader's own agreement with human labels is "measured and pre-registered
+# as an admissibility threshold first" — a grader near the documented
+# ~0.44-0.62 noise floor cannot resolve a small effect and disqualifies the
+# run.
+#
+# `kb eval-gate --calibration=<this file>` grades each `answer` below with
+# the same LLM grader used for the run and compares the verdict to
+# `human_label`. The agreement rate is reported; below
+# `admissibility_threshold` the run is flagged INADMISSIBLE.
+#
+# This is a LIVE-mode gate: simulation mode uses an oracle consuming-agent
+# model and has no LLM grader to calibrate. Replace these cases with answers
+# you have personally labelled before a powered (M1) run.
+
+admissibility_threshold: 0.7
+
+cases:
+  - name: faithful answer matching the reference
+    query: how does the index avoid a half-written FAISS store
+    reference_answer: >-
+      Each save writes a new versioned directory and atomically swaps a
+      symlink, so a crash mid-write never leaves a half-written index.
+    answer: >-
+      It saves into a fresh versioned directory and then swaps a symlink in
+      one atomic step, so an interrupted write leaves the previous index
+      intact.
+    human_label: correct
+
+  - name: correct but partial answer
+    query: what does the doctor command report
+    reference_answer: >-
+      kb doctor reports aggregate model, index, and backend health, including
+      reindex-trigger diagnostics and FAISS permission warnings.
+    answer: It reports model and index health.
+    human_label: partial
+
+  - name: confidently wrong answer
+    query: how are dense and lexical results combined
+    reference_answer: >-
+      Dense and BM25 lexical result lists are fused with Reciprocal Rank
+      Fusion at c=60.
+    answer: >-
+      The dense and lexical scores are averaged together and the mean score
+      decides the final ranking.
+    human_label: incorrect
+
+  - name: honest decline when the KB has no answer
+    query: what is the team's parental leave policy
+    reference_answer: >-
+      These research notes contain no HR or leave-policy content; they cannot
+      answer this.
+    answer: I do not have enough information to answer that from these notes.
+    human_label: correct
+
+  - name: hallucinated answer to an unanswerable query
+    query: what is the monthly cost of the hosted retrieval tier
+    reference_answer: >-
+      The knowledge base contains no pricing or billing information; it cannot
+      answer this.
+    answer: The hosted retrieval tier costs 49 dollars per month for the standard plan.
+    human_label: incorrect
+
+  - name: faithful paraphrase of a prose answer
+    query: why does embedding a chunk with surrounding context help recall
+    reference_answer: >-
+      A chunk embedded in isolation loses the document context that
+      disambiguates its pronouns and headings; a short context preface
+      restores the signal a query can match against.
+    answer: >-
+      Embedding a chunk on its own strips the surrounding document, so its
+      pronouns and headings lose meaning; adding a brief context preface puts
+      that signal back so queries can match it.
+    human_label: correct

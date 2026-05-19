@@ -14,6 +14,89 @@ Contract policy:
   command section says otherwise. Human diagnostics, warnings, logger output,
   and argv/runtime errors generally go to stderr.
 
+## `kb help`
+
+Invocation:
+
+```bash
+kb help --format=json
+kb help <command> --format=json
+```
+
+Top-level success envelope:
+
+```json
+{
+  "schema_version": "kb.help.v1",
+  "command": "kb",
+  "usage": ["kb <command> [options]"],
+  "commands": [
+    {
+      "name": "search",
+      "summary": "Semantic search across one or all knowledge bases.",
+      "usage": ["kb search <query> [options]"],
+      "options": [
+        {
+          "flags": ["--format"],
+          "value": "md|json|vimgrep",
+          "description": "Output format."
+        }
+      ],
+      "stability": "stable"
+    }
+  ],
+  "environment": [
+    {
+      "name": "KNOWLEDGE_BASES_ROOT_DIR",
+      "description": "Root directory containing one folder per KB."
+    }
+  ],
+  "exit_codes": [
+    { "code": 0, "description": "success (results found or empty)" }
+  ],
+  "stability": "stable"
+}
+```
+
+Command-specific success envelope:
+
+```json
+{
+  "schema_version": "kb.help.v1",
+  "command": {
+    "name": "search",
+    "summary": "Semantic search across one or all knowledge bases.",
+    "usage": ["kb search <query> [options]"],
+    "options": [],
+    "stability": "stable"
+  }
+}
+```
+
+Stable fields:
+
+- `schema_version`: currently `kb.help.v1`.
+- Top-level `command`: literal `kb`.
+- Top-level `usage`: array of usage lines from the top-level help block.
+- Top-level `commands`: one object per registered command, in CLI help order.
+- Command `name`, `summary`, `usage`, `options`, and `stability`.
+- Option `flags`: array of flag names without value placeholders, such as
+  `--format` and `-h`.
+- Option `value`: string value placeholder when the help text declares one,
+  otherwise `null`.
+- Option `description`: prose description from the command help.
+- Top-level `environment` and `exit_codes`: metadata from the top-level help
+  block.
+- `stability`: currently `stable`; consumers should feature-detect fields and
+  check `schema_version` before assuming compatibility.
+
+Stdout/stderr and exit codes:
+
+- Success JSON is stdout with exit `0`.
+- Unknown command handling matches prose help: stderr diagnostic, empty stdout,
+  exit `2`.
+- `kb help` without `--format=json` keeps the existing human-readable output.
+
 ## `kb search`
 
 Invocation:
@@ -300,8 +383,14 @@ Source and test anchors: `src/cli-remember.ts:381-400`,
 Invocation:
 
 ```bash
-kb capture --kb=<name> --append=<path> [--allow-fail] [--max-bytes=<N>] -- <cmd> [args...]
+kb capture --kb=<name> --append=<path> [--allow-fail] [--max-bytes=<N>] [--no-redact] -- <cmd> [args...]
 ```
+
+Captured stdout and the displayed `$ <cmd>` line are redacted by default before
+they are appended. Common credential surfaces include bearer/basic
+Authorization headers, cookie headers, dotenv-style secret variables,
+credential-bearing URLs, JSON secret fields, and common provider token shapes.
+Pass `--no-redact` only when raw output must be preserved.
 
 Successful captures always print JSON:
 
@@ -313,7 +402,12 @@ Successful captures always print JSON:
   "truncated": false,
   "bytes_elided": 0,
   "exit_code": 0,
-  "refreshed": false
+  "refreshed": false,
+  "redaction_summary": {
+    "enabled": true,
+    "total": 0,
+    "by_type": {}
+  }
 }
 ```
 
@@ -327,6 +421,13 @@ Stable success fields:
 - `exit_code`: captured command exit code. This can be non-zero only when
   `--allow-fail` is used.
 - `refreshed`: boolean matching whether `--refresh` was requested and completed.
+- `redaction_summary`: object describing persisted-content redaction.
+  `enabled` is `false` only when `--no-redact` is passed; `total` is the number
+  of replacements applied across captured stdout and the displayed command
+  line; `by_type` counts replacements by stable detector name. Stable detector
+  names are `credential_url`, `authorization_header`, `cookie_header`,
+  `json_secret`, `dotenv_secret`, `key_value_secret`, `bearer_token`, and
+  `provider_token`.
 
 Stdout/stderr and exit codes:
 
@@ -338,8 +439,66 @@ Stdout/stderr and exit codes:
 - The captured child command inherits stderr, so child stderr is not part of the
   JSON contract and can appear beside `kb capture` diagnostics.
 
-Source and test anchors: `src/cli-capture.ts:204-213`,
-`src/cli-capture.ts:89-125`, `src/cli.test.ts:1063-1247`.
+Source and test anchors: `src/cli-capture.ts`, `src/cli.test.ts`.
+
+## `kb import-url`
+
+Invocation:
+
+```bash
+kb import-url --kb=<name> <url> [--note=<path.md>] [--title=<text>] \
+  [--max-bytes=<N>] [--timeout=<ms>] [--max-redirects=<N>] \
+  [--allow-local-network] [--refresh]
+```
+
+A successful import always prints JSON:
+
+```json
+{
+  "knowledge_base_name": "research",
+  "path": "example-domain.md",
+  "action": "import-url",
+  "source_url": "https://example.com/",
+  "final_url": "https://example.com/",
+  "http_status": 200,
+  "content_type": "text/html",
+  "content_sha256": "fb91d75a6bb430787a61b0aec5e374f580030f2878e1613eab5ca6310f7bbb9a",
+  "byte_count": 528,
+  "refreshed": false
+}
+```
+
+Stable success fields:
+
+- `knowledge_base_name`: target KB name.
+- `path`: KB-relative path of the newly written note.
+- `action`: always `import-url`.
+- `source_url`: the URL requested on the command line.
+- `final_url`: the URL that served the content after any redirects.
+- `http_status`: terminal HTTP status (always `2xx` on success).
+- `content_type`: response content type, parameters stripped.
+- `content_sha256`: SHA-256 of the downloaded response body.
+- `byte_count`: size of the downloaded response body in bytes.
+- `refreshed`: boolean matching whether `--refresh` was requested and completed.
+
+The written note carries a YAML frontmatter provenance block — `title`,
+`source_url`, optional `resolved_url` (only when it differs from `source_url`),
+`fetched_at`, `content_sha256`, `content_type`, `http_status`, `byte_count` —
+followed by the extracted plain text.
+
+Stdout/stderr and exit codes:
+
+- Success JSON is stdout with exit `0`.
+- There is no stable JSON error envelope. Argument, fetch (scheme / SSRF /
+  redirect / size / timeout), extraction, write, and refresh errors print
+  `kb import-url: ...` to stderr.
+- Argument errors exit `2`; runtime/fetch/write errors exit `1`.
+- Private, loopback, and link-local addresses are refused by default; pass
+  `--allow-local-network` to permit them.
+
+Source and test anchors: `src/cli-import-url.ts:283-299`,
+`src/url-snapshot.ts:175-205`, `src/url-snapshot.ts:395-470`,
+`src/cli-import-url.test.ts:132-330`.
 
 ## `kb where`
 
@@ -425,6 +584,20 @@ Report envelope:
     "healthy": true,
     "detail": "Ollama http://localhost:11434 is reachable..."
   },
+  "llm_endpoint": {
+    "status": "ok",
+    "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+    "health_url": "http://127.0.0.1:8080/health",
+    "endpoint_source": "profile",
+    "profile_name": "local-research-agent",
+    "profile_mode": "external",
+    "managed_by": "local-research-agent",
+    "unit_name": null,
+    "health_ok": true,
+    "chat_ok": true,
+    "detail": "ready; profile=local-research-agent; source=profile; ...",
+    "next_action": null
+  },
   "cli": {
     "version": "0.2.2",
     "package_root": "/path/to/package",
@@ -453,6 +626,13 @@ Stable fields:
 - `stale_counts_by_kb`: object keyed by KB name with `modified_files` and
   `new_files`.
 - `backend`: `provider`, `healthy`, and `detail`.
+- `llm_endpoint`: local LLM readiness for `kb ask`. `status` is `ok` or
+  `warn`; failed LLM readiness is a warning because search health can still be
+  usable. `endpoint_source` is `env`, `profile`, `default`, or `unresolved`.
+  `profile_name`, `profile_mode`, `managed_by`, and `unit_name` describe the
+  resolved profile/ownership when known. `health_ok` checks the derived
+  `/health` URL and `chat_ok` checks an OpenAI-compatible chat completion.
+  `next_action` is `null` when ready, otherwise a human-readable repair hint.
 - `cli`: `version`, `package_root`, `invoked_path`, and
   `symlinked_checkout_path`.
 - `git`: either `null` or an object with `branch`, `head`, `origin_main`, and
@@ -470,9 +650,75 @@ Stdout/stderr and exit codes:
   the report with `status: "error"`.
 - Argument errors print `kb doctor: ...` to stderr and exit `2`.
 
-Source and test anchors: `src/cli-doctor.ts:66-99`,
-`src/cli-doctor.ts:114-130`, `src/cli-doctor.ts:149-237`,
-`src/cli-doctor.test.ts:39-180`.
+Source and test anchors: `src/cli-doctor.ts:84-107`,
+`src/cli-doctor.ts:201-214`, `src/cli-doctor.ts:476-483`,
+`src/cli-doctor.ts:926-1045`, `src/cli-doctor.ts:1243-1260`,
+`src/cli-doctor.test.ts:336-602`.
+
+## `kb logs`
+
+Invocation:
+
+```bash
+kb logs recent --format=json [--limit=<n>] [--file=<path>]
+kb logs show --request-id=<id> --format=json [--file=<path>]
+kb logs show --query-sha=<hash> --format=json [--file=<path>]
+```
+
+Report envelope:
+
+```json
+{
+  "schema_version": "kb.logs.v1",
+  "action": "show",
+  "source": "/tmp/kb.log",
+  "filters": { "request_id": "req-1" },
+  "scanned_line_count": 10,
+  "canonical_event_count": 3,
+  "ignored_line_count": 6,
+  "malformed_canonical_line_count": 1,
+  "result_count": 1,
+  "events": [
+    {
+      "ts": "2026-05-18T20:00:00.000Z",
+      "request_id": "req-1",
+      "process": "cli",
+      "cmd": "kb search",
+      "query_sha256": "0123456789abcdef",
+      "took_ms": 42,
+      "timings": { "embed_ms": 10, "faiss_ms": 20, "format_ms": 3 },
+      "cache": "miss",
+      "result_count": 3,
+      "top_sources": ["docs/a.md"],
+      "error": { "code": "PROVIDER_TIMEOUT", "category": "provider" },
+      "recovery_hint": "Run `kb doctor`."
+    }
+  ]
+}
+```
+
+Stable fields:
+
+- `schema_version` is `kb.logs.v1`.
+- `action` is `recent` or `show`.
+- `source` is the resolved log file path. Resolution uses `--file`, then
+  `LOG_FILE`, then existing local default paths.
+- Counts report the scan outcome before filtering.
+- `events[]` contains summaries of `kb-canonical.v1` lines only. Text log
+  lines are ignored. Each event includes `timings`; optional fields are
+  present only when the canonical log line carried them.
+
+Stdout/stderr and exit codes:
+
+- JSON reports are stdout. No matches still exit `0` with `result_count: 0`.
+- If no log file is discoverable, JSON output uses an error envelope with
+  `schema_version: "kb.logs.v1"` and exits `2`.
+- Argument errors print `kb logs: ...` to stderr and exit `2`.
+- File read failures use a JSON error envelope and exit `1`.
+
+Source and test anchors: `src/cli-logs.ts:114-161`,
+`src/cli-logs.ts:222-259`, `src/cli-logs.ts:309-390`,
+`src/cli-logs.test.ts:68-174`.
 
 ## `kb eval`
 

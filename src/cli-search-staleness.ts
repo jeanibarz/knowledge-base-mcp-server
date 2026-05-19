@@ -19,8 +19,10 @@ import {
 import {
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
+} from './config/ingest.js';
+import {
   KNOWLEDGE_BASES_ROOT_DIR,
-} from './config.js';
+} from './config/paths.js';
 import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 

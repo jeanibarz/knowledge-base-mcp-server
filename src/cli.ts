@@ -11,15 +11,20 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { ASK_HELP, runAsk } from './cli-ask.js';
 import { CAPTURE_HELP, runCapture } from './cli-capture.js';
+import { COMPLETION_HELP, runCompletion } from './cli-completion.js';
 import { COMPARE_HELP, runCompare } from './cli-compare.js';
 import { DOCTOR_HELP, runDoctor } from './cli-doctor.js';
 import { EVAL_HELP, runEval } from './cli-eval.js';
+import { EVAL_GATE_HELP, runEvalGate } from './cli-eval-gate.js';
 import { EXPLAIN_HELP, runExplain } from './cli-explain.js';
+import { IMPORT_URL_HELP, runImportUrl } from './cli-import-url.js';
 import { LIST_HELP, runList } from './cli-list.js';
 import { LLM_HELP, runLlm } from './cli-llm.js';
+import { LOGS_HELP, runLogs } from './cli-logs.js';
 import { MODELS_HELP, runModels } from './cli-models.js';
 import { PROMOTE_HELP, runPromote } from './cli-promote.js';
 import { QUARANTINE_HELP, runQuarantine } from './cli-quarantine.js';
+import { REINDEX_HELP, runReindexCli } from './cli-reindex.js';
 import { REMEMBER_HELP, runRemember } from './cli-remember.js';
 import { SEARCH_HELP, runSearch } from './cli-search.js';
 import { SERVE_HELP, runServe } from './cli-serve.js';
@@ -43,6 +48,44 @@ interface Subcommand {
   handler: (rest: string[]) => Promise<number>;
 }
 
+interface HelpManifestOption {
+  flags: string[];
+  value: string | null;
+  description: string;
+}
+
+interface HelpManifestCommand {
+  name: string;
+  summary: string;
+  usage: string[];
+  options: HelpManifestOption[];
+  stability: 'stable';
+}
+
+interface HelpManifestDefinition {
+  name: string;
+  description: string;
+}
+
+interface HelpManifestExitCode {
+  code: number;
+  description: string;
+}
+
+interface HelpArgs {
+  command?: string;
+  format: 'md' | 'json';
+}
+
+const HELP_SCHEMA_VERSION = 'kb.help.v1';
+const NON_OPTION_HELP_SECTIONS = new Set([
+  'Usage:',
+  'Examples:',
+  'Notes:',
+  'Environment:',
+  'Exit codes:',
+]);
+
 const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'list',         summary: 'List available knowledge bases.',                                         help: LIST_HELP,         handler: runList },
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },
@@ -50,10 +93,13 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'ask',          summary: 'Answer from retrieved KB context using a local LLM endpoint.',            help: ASK_HELP,          handler: runAsk },
   { name: 'remember',     summary: 'Suggest, create, or append knowledge-base notes (write path).',          help: REMEMBER_HELP,     handler: runRemember },
   { name: 'capture',      summary: 'Run a command and append its stdout to a KB note as a fenced block.',    help: CAPTURE_HELP,      handler: runCapture },
+  { name: 'import-url',   summary: 'Snapshot a web page or PDF into a KB note with provenance frontmatter.',  help: IMPORT_URL_HELP,   handler: runImportUrl },
   { name: 'compare',      summary: 'Side-by-side rank/score table for two embedding models.',                help: COMPARE_HELP,      handler: runCompare },
   { name: 'doctor',       summary: 'Aggregate model / index / backend health report.',                       help: DOCTOR_HELP,       handler: runDoctor },
+  { name: 'logs',         summary: 'Inspect historical canonical request logs.',                             help: LOGS_HELP,         handler: runLogs },
   { name: 'stats',        summary: 'Read-only index/corpus stats (mirrors the MCP kb_stats payload).',       help: STATS_HELP,        handler: runStats },
   { name: 'eval',         summary: 'Run fixture-driven retrieval checks.',                                   help: EVAL_HELP,         handler: runEval },
+  { name: 'eval-gate',    summary: 'RFC 018 M0 relevance-gate validation harness (downstream answer quality).', help: EVAL_GATE_HELP,  handler: runEvalGate },
   { name: 'explain',      summary: 'Verbose single-query retrieval trace for debugging and bug reports.',   help: EXPLAIN_HELP,      handler: runExplain },
   { name: 'stale-check',  summary: 'Scan markdown notes for path / URL references that no longer resolve.',  help: STALE_CHECK_HELP,  handler: runStaleCheck },
   { name: 'superseded',   summary: 'Scan a KB for obsolete / contradicted / deprecated / stale notes.',      help: SUPERSEDED_HELP,   handler: runSuperseded },
@@ -62,6 +108,8 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'where',        summary: 'Recommend the best KB and file for a given topic.',                      help: WHERE_HELP,        handler: runWhere },
   { name: 'models',       summary: 'Manage embedding models (list, add, set-active, remove).',               help: MODELS_HELP,       handler: runModels },
   { name: 'llm',          summary: 'Configure local LLM endpoints and managed warm model services.',          help: LLM_HELP,          handler: runLlm },
+  { name: 'reindex',      summary: 'Rebuild FAISS indexes (RFC 017 — requires --with-context).',              help: REINDEX_HELP,      handler: runReindexCli },
+  { name: 'completion',   summary: 'Generate shell completions for bash, zsh, or fish.',                      help: COMPLETION_HELP,   handler: runCompletionWithCurrentManifest },
 ];
 
 // ----- Top-level help -------------------------------------------------------
@@ -77,6 +125,7 @@ Usage:
   kb <command> [options]
   kb help [<command>]
   kb <command> --help
+  kb completion bash|zsh|fish
   kb --version
 
 Available commands:
@@ -91,6 +140,8 @@ Environment:
   KB_ACTIVE_MODEL           Override the active model for this process (RFC 013 §4.7).
   KB_DAEMON_URL             URL for \`kb search --daemon\` (default http://127.0.0.1:17799).
   KB_LLM_ENDPOINT           OpenAI-compatible endpoint used by \`kb ask\`.
+  LOG_FILE                  Optional file used by \`kb logs\` and by runtime logging.
+  KB_LOG_FORMAT             text | canonical | both (default both).
   OLLAMA_*, OPENAI_*, HUGGINGFACE_*
                             Provider-specific config; see the provider's docs.
 
@@ -103,6 +154,10 @@ Exit codes:
 }
 
 const HELP = buildTopLevelHelp();
+
+function runCompletionWithCurrentManifest(rest: string[]): Promise<number> {
+  return runCompletion(rest, buildTopLevelHelpManifest().commands);
+}
 
 // ----- Entry point ----------------------------------------------------------
 
@@ -128,16 +183,35 @@ export async function main(argv: string[]): Promise<number> {
 
   // `kb help` and `kb help <command>` mirror `kb --help` and `kb <command> --help`.
   if (sub === 'help') {
-    if (rest.length === 0 || wantsHelp(rest)) {
+    if (wantsHelp(rest)) {
       process.stdout.write(HELP);
       return 0;
     }
-    const target = SUBCOMMANDS.find((s) => s.name === rest[0]);
-    if (!target) {
-      process.stderr.write(`kb help: unknown command '${rest[0]}'\n`);
+    let helpArgs: HelpArgs;
+    try {
+      helpArgs = parseHelpArgs(rest);
+    } catch (err) {
+      process.stderr.write(`kb help: ${(err as Error).message}\n`);
       return 2;
     }
-    process.stdout.write(target.help);
+    if (helpArgs.command === undefined) {
+      if (helpArgs.format === 'json') writeJson(buildTopLevelHelpManifest());
+      else process.stdout.write(HELP);
+      return 0;
+    }
+    const target = SUBCOMMANDS.find((s) => s.name === helpArgs.command);
+    if (!target) {
+      process.stderr.write(`kb help: unknown command '${helpArgs.command}'\n`);
+      return 2;
+    }
+    if (helpArgs.format === 'json') {
+      writeJson({
+        schema_version: HELP_SCHEMA_VERSION,
+        command: buildCommandHelpManifest(target),
+      });
+    } else {
+      process.stdout.write(target.help);
+    }
     return 0;
   }
 
@@ -152,12 +226,256 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (sub === 'completion') {
+    return target.handler(rest);
+  }
+
   return runSubcommandWithCanonicalLog(
     target,
     sub === 'search'
       ? () => runSearchMaybeViaDaemon(rest)
       : () => target.handler(rest),
   );
+}
+
+function parseHelpArgs(rest: readonly string[]): HelpArgs {
+  const out: HelpArgs = { format: 'md' };
+  for (const raw of rest) {
+    if (raw === '--format=json') {
+      out.format = 'json';
+      continue;
+    }
+    if (raw === '--format=md') {
+      out.format = 'md';
+      continue;
+    }
+    if (raw.startsWith('--format=')) {
+      throw new Error(`invalid --format: ${raw}`);
+    }
+    if (raw.startsWith('--')) {
+      throw new Error(`unknown flag: ${raw}`);
+    }
+    if (out.command === undefined) {
+      out.command = raw;
+    }
+  }
+  return out;
+}
+
+function writeJson(payload: unknown): void {
+  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function buildTopLevelHelpManifest() {
+  return {
+    schema_version: HELP_SCHEMA_VERSION,
+    command: 'kb',
+    usage: extractUsageLines(HELP),
+    commands: SUBCOMMANDS.map(buildCommandHelpManifest),
+    environment: extractDefinitionList(HELP, 'Environment:'),
+    exit_codes: extractExitCodes(HELP),
+    stability: 'stable' as const,
+  };
+}
+
+function buildCommandHelpManifest(command: Subcommand): HelpManifestCommand {
+  return {
+    name: command.name,
+    summary: command.summary,
+    usage: extractUsageLines(command.help),
+    options: extractOptions(command.help),
+    stability: 'stable',
+  };
+}
+
+function extractUsageLines(help: string): string[] {
+  const lines = help.split('\n');
+  const usageIndex = lines.findIndex((line) => line.trim() === 'Usage:');
+  if (usageIndex === -1) return [];
+  const usage: string[] = [];
+  for (let i = usageIndex + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') {
+      if (usage.length === 0) continue;
+      const nextContent = lines.slice(i + 1).find((nextLine) => nextLine.trim() !== '');
+      if (nextContent !== undefined && nextContent.startsWith('  ')) continue;
+      break;
+    }
+    if (!line.startsWith('  ')) break;
+    const trimmed = line.trim();
+    if (trimmed.startsWith('#')) {
+      continue;
+    }
+    usage.push(trimmed);
+  }
+  return usage;
+}
+
+function extractOptions(help: string): HelpManifestOption[] {
+  const options: HelpManifestOption[] = [];
+  let current: HelpManifestOption | null = null;
+  let inOptionSection = false;
+  for (const line of help.split('\n')) {
+    if (!line.startsWith(' ') && line.trim().endsWith(':')) {
+      inOptionSection = isOptionMetadataSection(line.trim());
+      current = null;
+      continue;
+    }
+    if (!inOptionSection) {
+      continue;
+    }
+    const optionLine = parseOptionLine(line);
+    if (optionLine !== null) {
+      current = optionLine;
+      options.push(optionLine);
+      continue;
+    }
+    if (current !== null && isContinuationLine(line)) {
+      current.description = appendDescription(current.description, line.trim());
+    } else if (line.trim() === '') {
+      current = null;
+    }
+  }
+  addUsageOptions(options, extractUsageLines(help));
+  return options;
+}
+
+function isOptionMetadataSection(heading: string): boolean {
+  return !NON_OPTION_HELP_SECTIONS.has(heading);
+}
+
+function parseOptionLine(line: string): HelpManifestOption | null {
+  if (!line.startsWith('  ')) return null;
+  const trimmed = line.trimStart();
+  if (!trimmed.startsWith('-')) return null;
+  const match = /^(\S+(?:,\s+\S+)*)\s{2,}(.*)$/.exec(trimmed);
+  const flagSpec = match?.[1] ?? trimmed;
+  const parsedFlags = parseFlagSpec(flagSpec);
+  if (parsedFlags.flags.length === 0) return null;
+  return {
+    flags: parsedFlags.flags,
+    value: parsedFlags.value,
+    description: match?.[2]?.trim() ?? '',
+  };
+}
+
+function parseFlagSpec(flagSpec: string): { flags: string[]; value: string | null } {
+  const flags: string[] = [];
+  let value: string | null = null;
+  for (const rawPart of flagSpec.split(',')) {
+    const part = rawPart.trim();
+    if (part === '') continue;
+    const eqIndex = part.indexOf('=');
+    const flag = eqIndex === -1 ? part : part.slice(0, eqIndex);
+    if (!isHelpFlagToken(flag)) continue;
+    flags.push(flag);
+    if (eqIndex !== -1 && value === null) value = part.slice(eqIndex + 1);
+  }
+  return { flags, value };
+}
+
+function addUsageOptions(options: HelpManifestOption[], usageLines: string[]): void {
+  const seen = new Set(options.flatMap((option) => option.flags));
+  for (const usageLine of usageLines) {
+    for (const flagSpec of usageFlagSpecs(usageLine)) {
+      const parsed = parseFlagSpec(flagSpec);
+      const newFlags = parsed.flags.filter((flag) => !seen.has(flag));
+      if (newFlags.length === 0) continue;
+      for (const flag of newFlags) seen.add(flag);
+      options.push({
+        flags: newFlags,
+        value: parsed.value,
+        description: '',
+      });
+    }
+  }
+}
+
+function usageFlagSpecs(usageLine: string): string[] {
+  const specs: string[] = [];
+  const matches = usageLine.match(/--[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\s\]]+)?/g) ?? [];
+  for (const match of matches) {
+    if (match.includes('|--')) {
+      specs.push(...match.split('|').filter((part) => part.startsWith('--')));
+    } else {
+      specs.push(match);
+    }
+  }
+  return specs;
+}
+
+function isHelpFlagToken(value: string): boolean {
+  return value === '--' || /^--?[A-Za-z0-9][A-Za-z0-9-]*$/.test(value);
+}
+
+function extractDefinitionList(help: string, heading: string): HelpManifestDefinition[] {
+  const lines = help.split('\n');
+  const headingIndex = lines.findIndex((line) => line.trim() === heading);
+  if (headingIndex === -1) return [];
+  const definitions: HelpManifestDefinition[] = [];
+  let current: HelpManifestDefinition[] = [];
+  for (const line of lines.slice(headingIndex + 1)) {
+    if (line.trim() === '') {
+      if (definitions.length > 0) break;
+      continue;
+    }
+    if (!line.startsWith('  ')) break;
+    if (isDefinitionContinuationLine(line) && current.length > 0) {
+      for (const definition of current) {
+        definition.description = appendDescription(definition.description, line.trim());
+      }
+      continue;
+    }
+    const match = /^ {2}(.+?)\s{2,}(.*)$/.exec(line);
+    if (match) {
+      current = pushDefinitions(definitions, match[1], match[2].trim());
+      continue;
+    }
+    current = pushDefinitions(definitions, line.trim(), '');
+  }
+  return definitions;
+}
+
+function pushDefinitions(
+  definitions: HelpManifestDefinition[],
+  namesText: string,
+  description: string,
+): HelpManifestDefinition[] {
+  const current = namesText.split(',').map((name) => ({
+    name: name.trim(),
+    description,
+  })).filter((definition) => definition.name !== '');
+  definitions.push(...current);
+  return current;
+}
+
+function extractExitCodes(help: string): HelpManifestExitCode[] {
+  const lines = help.split('\n');
+  const headingIndex = lines.findIndex((line) => line.trim() === 'Exit codes:');
+  if (headingIndex === -1) return [];
+  const exitCodes: HelpManifestExitCode[] = [];
+  for (const line of lines.slice(headingIndex + 1)) {
+    if (line.trim() === '') {
+      if (exitCodes.length > 0) break;
+      continue;
+    }
+    const match = /^ {2}(\d+)\s{2,}(.*)$/.exec(line);
+    if (!match) break;
+    exitCodes.push({ code: Number(match[1]), description: match[2].trim() });
+  }
+  return exitCodes;
+}
+
+function isContinuationLine(line: string): boolean {
+  return line.startsWith('                        ') && line.trim() !== '';
+}
+
+function isDefinitionContinuationLine(line: string): boolean {
+  return /^ {4,}\S/.test(line);
+}
+
+function appendDescription(description: string, continuation: string): string {
+  return description === '' ? continuation : `${description} ${continuation}`;
 }
 
 async function runSubcommandWithCanonicalLog(

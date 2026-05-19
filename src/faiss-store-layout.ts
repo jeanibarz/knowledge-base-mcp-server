@@ -144,6 +144,25 @@ export async function pruneInactiveIndexVersions(
 
 type FsOperationErrorHandler = (action: string, targetPath: string, error: unknown) => never;
 
+/**
+ * RFC 017 M0c — load a specific `index.vN/` directory directly,
+ * bypassing the `index` symlink. Used by `kb eval --compare-index` to
+ * load two different historical versions of the same model's index for
+ * a side-by-side recall comparison. Read-only (no symlink mutation, no
+ * corruption-repair side effects). Throws if the directory or its
+ * `faiss.index`/`docstore.json` contents are missing or corrupt.
+ */
+export async function loadFaissStoreFromVersionDir(options: {
+  versionDir: string;
+  embeddings: EmbeddingsInterface;
+}): Promise<FaissStore> {
+  const { versionDir, embeddings } = options;
+  if (!(await pathExists(versionDir))) {
+    throw new Error(`loadFromVersionDir: directory not found: ${versionDir}`);
+  }
+  return FaissStore.load(versionDir, embeddings);
+}
+
 export async function loadFaissStoreAtomic(options: {
   modelDir: string;
   modelId: string;
@@ -268,8 +287,21 @@ export async function saveFaissStoreAtomic(options: {
    * that does not have a stable shared root to use).
    */
   casRoot?: string | null;
+  /**
+   * Called immediately after the active `index` symlink has been swapped to
+   * the new version, before best-effort pruning/GC. Callers use this as the
+   * durable commit point for sidecar recovery records.
+   */
+  onCommitted?: () => Promise<void>;
 }): Promise<void> {
-  const { store, modelDir, modelId, swapCounter, casRoot = null } = options;
+  const {
+    store,
+    modelDir,
+    modelId,
+    swapCounter,
+    casRoot = null,
+    onCommitted,
+  } = options;
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
   const currentTarget = await readSymlinkOrNull(symlinkPath);
   const nextVersion = nextVersionAfter(currentTarget);
@@ -296,6 +328,7 @@ export async function saveFaissStoreAtomic(options: {
   );
   await fsp.symlink(nextVersion, tmpLink);
   await fsp.rename(tmpLink, symlinkPath);
+  await onCommitted?.();
   logger.info(
     `atomicSave: ${modelId} ${currentTarget ?? '(none)'} -> ${nextVersion}` +
       (dedup

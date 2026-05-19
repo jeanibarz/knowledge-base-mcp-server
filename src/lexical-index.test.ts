@@ -66,7 +66,9 @@ describe('LexicalIndex', () => {
 
       const persisted = path.join(faissDir, 'lexical', 'docs', 'index.json');
       const raw = JSON.parse(await fsp.readFile(persisted, 'utf-8'));
-      expect(raw.version).toBe(1);
+      // RFC 017 §3 — schema bumped to 2; v1 indexes remain readable but
+      // fresh writes use the new version.
+      expect(raw.version).toBe(2);
       expect(raw.kbName).toBe('docs');
       expect(Object.keys(raw.files).sort()).toEqual(['a.md', 'b.md']);
 
@@ -177,6 +179,75 @@ describe('LexicalIndex', () => {
       await expect(LexicalIndex.load('docs', kbPath)).rejects.toMatchObject({
         code: 'CORRUPT_INDEX',
       });
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // RFC 017 §3 — when `KB_CONTEXTUAL_RETRIEVAL=on` and chunks carry
+  // `metadata.contextual_preface`, BM25 should score against the
+  // preface-prepended `searchText` while still returning the verbatim
+  // `pageContent` to callers. This test exercises both halves of the
+  // contract by injecting prefaces directly into the on-disk index file
+  // and verifying the query path.
+  it('scores BM25 against searchText while returning original pageContent', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-rfc017-'));
+    try {
+      const rootDir = path.join(tmp, 'kbs');
+      const faissDir = path.join(tmp, 'faiss');
+      const kbPath = await seedKb(rootDir, 'docs', { 'a.md': '# A\n\nplaceholder.\n' });
+      const { LexicalIndex } = await freshLexical(rootDir, faissDir);
+
+      // Build a normal v2 index and then hand-edit the on-disk file to
+      // inject a `searchText` that contains a marker absent from
+      // `pageContent`. The query against the marker must surface the
+      // chunk; the returned `pageContent` must be the original verbatim.
+      const idx = await LexicalIndex.load('docs', kbPath);
+      await idx.refresh();
+      await idx.save();
+      const persisted = path.join(faissDir, 'lexical', 'docs', 'index.json');
+      const raw = JSON.parse(await fsp.readFile(persisted, 'utf-8'));
+      const fileKey = Object.keys(raw.files)[0];
+      const firstChunk = raw.files[fileKey].chunks[0];
+      const originalContent = firstChunk.pageContent;
+      firstChunk.searchText = `KEYWORDX preface marker. ${originalContent}`;
+      await fsp.writeFile(persisted, JSON.stringify(raw), 'utf-8');
+
+      // Re-load so the entries Map reflects the edit.
+      const idx2 = await LexicalIndex.load('docs', kbPath);
+      const results = await idx2.query('KEYWORDX', 5);
+
+      expect(results.length).toBeGreaterThan(0);
+      // Caller-visible content must be the ORIGINAL, not the
+      // preface-prepended form.
+      expect(results[0].pageContent).toBe(originalContent);
+      expect(results[0].pageContent.includes('KEYWORDX')).toBe(false);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // RFC 017 §3 — `LexicalIndex.refresh` should populate `searchText` when
+  // chunks carry `contextual_preface` metadata. With the feature flag
+  // off, the field is absent (no waste).
+  it('omits searchText when no preface metadata is on the chunks', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-rfc017-omit-'));
+    try {
+      const rootDir = path.join(tmp, 'kbs');
+      const faissDir = path.join(tmp, 'faiss');
+      const kbPath = await seedKb(rootDir, 'docs', { 'a.md': '# A\n\nplain content.\n' });
+      const { LexicalIndex } = await freshLexical(rootDir, faissDir);
+
+      const idx = await LexicalIndex.load('docs', kbPath);
+      await idx.refresh();
+      await idx.save();
+
+      const persisted = path.join(faissDir, 'lexical', 'docs', 'index.json');
+      const raw = JSON.parse(await fsp.readFile(persisted, 'utf-8'));
+      const fileKey = Object.keys(raw.files)[0];
+      const firstChunk = raw.files[fileKey].chunks[0];
+
+      expect(firstChunk).not.toHaveProperty('searchText');
     } finally {
       await fsp.rm(tmp, { recursive: true, force: true });
     }

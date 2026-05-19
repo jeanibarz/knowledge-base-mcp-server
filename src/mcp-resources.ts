@@ -19,7 +19,7 @@ import {
   type Resource,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { toError } from './error-utils.js';
 import { getFilesRecursively } from './file-utils.js';
 import { listKnowledgeBases, resolveKbPath } from './kb-fs.js';

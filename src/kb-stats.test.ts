@@ -128,7 +128,10 @@ describe('computeKbStats', () => {
     });
 
     expect(Object.keys(payload.knowledge_bases).sort()).toEqual(['alpha', 'beta']);
-    expect(payload.knowledge_bases.alpha).toEqual({
+    // RFC 017 added the additive `contextual_preface` field; use
+    // toMatchObject so the assertion remains agnostic to the new block
+    // (which is verified separately in its own test).
+    expect(payload.knowledge_bases.alpha).toMatchObject({
       file_count: 2,
       chunk_count: 4,
       total_bytes_indexed: 16,

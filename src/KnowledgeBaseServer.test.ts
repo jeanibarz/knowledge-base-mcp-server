@@ -1112,6 +1112,55 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(text.indexOf('**Result 1:**')).toBeLessThan(text.indexOf('**Result 2:**'));
   });
 
+  it('handleRetrieveKnowledge returns dense gate verdicts in structuredContent and markdown', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'Alpha content', metadata: { source: '/kb/a.md', chunkIndex: 0 }, score: 0.2 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'what is alpha',
+      gate: 'on',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('> _Relevance gate: injected; kept 1/1._');
+    expect((result as any).structuredContent.gate_verdict).toMatchObject({
+      state: 'injected',
+      input_count: 1,
+      output_count: 1,
+    });
+  });
+
+  it('handleRetrieveKnowledge returns hybrid gate verdicts in structuredContent and markdown', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Alpha content');
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'Alpha content', metadata: { source: '/kb/a.md', chunkIndex: 0 }, score: 0.2 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'what is alpha',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+      gate: 'on',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('> _Mode: hybrid');
+    expect(result.content[0].text).toContain('> _Relevance gate: injected; kept 2/2._');
+    expect((result as any).structuredContent.gate_verdict).toMatchObject({
+      state: 'injected',
+      input_count: 2,
+      output_count: 2,
+    });
+  });
+
   it('handleRetrieveKnowledge emits one canonical event with redacted query and result fields (#216)', async () => {
     const tempDir = await setRetrieveEnv();
     const logFile = path.join(tempDir, 'canonical.log');

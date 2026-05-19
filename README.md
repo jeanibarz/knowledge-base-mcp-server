@@ -48,20 +48,27 @@ kb search "INDEX_NOT_INITIALIZED" --mode=hybrid              # dense ⨁ BM25 fu
 kb search "src/cli-search.ts" --mode=auto    # opt-in heuristic: hybrid for code/path/error-shaped queries
 kb llm use-endpoint http://127.0.0.1:8080/v1/chat/completions --profile=local-research-agent
 kb ask "what changed in the daemonization notes?" --timing   # retrieval + local LLM answer with timings
+kb ask "what changed?" --kb=work --save-transcript --title="Ask - daemon changes" --yes
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
+kb import-url --kb=research https://example.com/article   # snapshot a URL into a provenance-tagged note
 kb superseded --kb=work       # read-only review for obsolete/contradicted notes
 kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
 kb --help                     # top-level command list
 kb help search                # per-command help (also: kb search --help)
+kb completion bash            # generate a bash shell completion script
 ```
 
-The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, and version context. It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
+The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). The consolidated operator matrix for retrieval flags, defaults, per-call overrides, rollout status, and validation commands lives in [docs/feature-flags.md](docs/feature-flags.md). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, and version context. It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
+
+RFC 018 relevance gating is off by default. Enable it per process with `KB_RELEVANCE_GATE=on`, or per CLI call with `kb search --gate`; bypass an enabled process with `--no-gate` or MCP `gate: "off"`. The judge uses `--task-context=<text>` / `--task-context-file=<path>` or MCP `task_context`, and reads `KB_GATE_LLM_ENDPOINT` / `KB_GATE_LLM_MODEL` (falling back to `KB_LLM_ENDPOINT` / `KB_LLM_MODEL`). Tuning env vars are `KB_GATE_SCORE_FLOOR` (default `0.95`), `KB_GATE_JUDGE_INPUT` (default `10`), `KB_GATE_LLM_TIMEOUT_MS` (default `8000`), and `KB_GATE_MIN_TASK_TOKENS` (default `8`). `KB_GATE_EMPTY_VERDICT` defaults to `off`; turn it on only when you are comfortable letting the gate return no retrieved context.
 
 `kb search --format=vimgrep` prints one quickfix-compatible line per result: `path:line:col:preview`. JSON results include a stable `chunk_id` such as `alpha/docs/deploy.md#L42-L78` when chunk metadata has a KB, path, and line range; chunks without line metadata fall back to `#chunk-N`. Set `KB_EDITOR_URI=vscode`, `cursor`, or `file` to add opt-in absolute-path `editor_uri` fields and markdown `Open` links. The default `KB_EDITOR_URI=none` omits local absolute paths.
 
-`kb remember` is a conservative CLI write path for agent shells. `--suggest` lists likely existing targets from note filenames/headings, does not read stdin or write notes, and may update a small `.index` heading cache. Creates and appends require both `--stdin` and `--yes`; create uses a slugified `.md` filename and refuses overwrites, while append accepts only existing KB-relative paths. Plain EOF appends and `kb capture --append` serialize per target and commit through a temp-file fsync plus atomic rename. Add `--refresh` to re-index the affected KB after a successful write. For machine-readable command shapes, see [`docs/cli-json-contracts.md`](docs/cli-json-contracts.md).
+`kb remember` is a conservative CLI write path for agent shells. `--suggest` lists likely existing targets from note filenames/headings, does not read stdin or write notes, and may update a small `.index` heading cache. Creates and appends require both `--stdin` and `--yes`; create uses a slugified `.md` filename and refuses overwrites, while append accepts only existing KB-relative paths. Plain EOF appends and `kb capture --append` serialize per target and commit through a temp-file fsync plus atomic rename. `kb capture` redacts common credentials from captured stdout and the displayed command line by default; pass `--no-redact` only when raw output is required. Add `--refresh` to re-index the affected KB after a successful write. For machine-readable command shapes, see [`docs/cli-json-contracts.md`](docs/cli-json-contracts.md).
+
+`kb import-url --kb=<name> <url>` snapshots a web page or PDF into one new KB note while preserving provenance. It fetches the URL over http(s), routes HTML and PDF responses through the same loaders the indexer uses, and writes a note whose YAML frontmatter records `source_url`, `fetched_at`, `content_sha256`, `content_type`, `http_status`, and `byte_count`. The fetch is guarded: only http/https schemes are allowed, redirects are followed manually and re-validated per hop (`--max-redirects`, default 5), responses are size-capped (`--max-bytes`, default 8 MiB) and time-bounded (`--timeout`, default 30000 ms), and private/loopback/link-local addresses are refused unless `--allow-local-network` is passed (SSRF guard). The note path defaults to a slug of the page title; pass `--note=<path.md>` to choose it, `--title` to override the title, and `--refresh` to re-index afterwards. It refuses to overwrite an existing note.
 
 `kb superseded --kb=<name>` is a read-only active-forgetting review. It scans markdown frontmatter for explicit contradiction, deprecated/dormant lifecycle status, stale verification dates, and low-confidence active notes, then uses the existing semantic index to add conservative newer-neighbor evidence when available. Use `--format=json` for agent workflows and `--include-clean` when you need a full inventory.
 
@@ -88,11 +95,15 @@ The MCP server (`knowledge-base-mcp-server` bin) is unchanged and still works wi
 
 `kb ask` keeps retrieval deterministic and adds a local OpenAI-compatible chat step on top. It resolves the LLM endpoint from `--endpoint`, `KB_LLM_ENDPOINT`, `--llm-profile`, the active `kb llm` profile, then finally the local-research-agent default on `127.0.0.1:8080`.
 
+Add `--save-transcript --kb=<name> --yes` to persist the generated answer as a new markdown note in that KB. The saved record includes the question, answer, citations, source chunk ids, LLM endpoint/profile/model, retrieval model, and timing metadata when `--timing` is present. `--title=<title>` controls the note title and slug; existing transcript notes are never overwritten.
+
 ```bash
 # Reuse an already-running local-research-agent llama-server.
 kb llm use-endpoint http://127.0.0.1:8080/v1/chat/completions --profile=local-research-agent
 kb llm status
 kb ask "Which notes discuss reboot recovery?" --kb=operating-environment
+kb ask "Which notes discuss reboot recovery?" --kb=operating-environment \
+  --save-transcript --title="Reboot recovery answer" --yes
 
 # Optional managed service for machines that want kb to own the warm model.
 kb llm install --profile=qwen --runner=llama-server \
@@ -249,10 +260,10 @@ Use this path if you want to develop against the repo or pin an unreleased commi
 
     ### Additional Configuration
     
-    *   The server supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`.
+    *   The server supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`. For a complete defaults and validation matrix across retrieval, ingest, diagnostics, and transport flags, see [docs/feature-flags.md](docs/feature-flags.md).
     *   **Single process per `FAISS_INDEX_PATH`.** Only one server process may write to a given `FAISS_INDEX_PATH` at a time. Running multiple processes (e.g. systemd `Restart=on-failure` racing the dying instance, pm2 with multiple replicas, Kubernetes pods sharing a PV, or a stray `kb search --refresh` overlapping the MCP server) against the same index directory can corrupt the FAISS store, hash sidecars, and pending-manifest. A process-level lockfile is the planned long-term fix — see [#44](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/44) for tracking and [`docs/architecture/threat-model.md`](docs/architecture/threat-model.md) for the current concurrency posture.
     *   Logging can be routed to a file by setting `LOG_FILE=/path/to/logs/knowledge-base.log`. Log verbosity defaults to `info` and can be adjusted with `LOG_LEVEL=debug|info|warn|error`.
-    *   **Mutation audit log (opt-in).** Set `KB_MUTATION_AUDIT_LOG=/path/to/kb-mutations.jsonl` to capture an append-only JSONL ledger of KB content writes. Each line records `surface` (`cli.kb-remember` / `cli.kb-capture` / `mcp.add_document` / `mcp.delete_document`), `operation`, `kb`, `relative_path`, `timestamp`, `before_sha256`, `after_sha256`, `write_performed`, `refresh_requested`, `refresh_status`, and per-surface `decision_flags`. Note content is **not** stored; only hashes and metadata. The feature is best-effort — an audit write failure logs a `warn` to stderr but never aborts the primary mutation. KB names and paths are inherent to the records, so treat the audit log with the same sensitivity as the underlying KB directory.
+    *   **Mutation audit log (opt-in).** Set `KB_MUTATION_AUDIT_LOG=/path/to/kb-mutations.jsonl` to capture an append-only JSONL ledger of KB content writes. Each line records `surface` (`cli.kb-remember` / `cli.kb-capture` / `cli.kb-ask` / `mcp.add_document` / `mcp.delete_document`), `operation`, `kb`, `relative_path`, `timestamp`, `before_sha256`, `after_sha256`, `write_performed`, `refresh_requested`, `refresh_status`, and per-surface `decision_flags`. Note content is **not** stored; only hashes and metadata. The feature is best-effort — an audit write failure logs a `warn` to stderr but never aborts the primary mutation. KB names and paths are inherent to the records, so treat the audit log with the same sensitivity as the underlying KB directory.
     *   **Tailor tool descriptions per deployment.** The `retrieve_knowledge` and `list_knowledge_bases` descriptions the agent reads when picking tools can be overridden via `RETRIEVE_KNOWLEDGE_DESCRIPTION` and `LIST_KNOWLEDGE_BASES_DESCRIPTION`. Unset or empty falls back to the built-in defaults. Example:
         ```bash
         RETRIEVE_KNOWLEDGE_DESCRIPTION="Search engineering runbooks, RFCs, and postmortems."
@@ -420,14 +431,14 @@ For a command-oriented runbook covering empty results, stale-index footers, link
 
 ### KB availability smoke check
 
-When `kb search` (or the MCP `retrieve_knowledge` tool) is not returning results, run the read-only `kb doctor` command first — it is the canonical availability check and aggregates the four things that can break a search:
+When `kb search` (or the MCP `retrieve_knowledge` tool) is not returning results, run the read-only `kb doctor` command first — it is the canonical availability check for retrieval and also reports local LLM readiness for `kb ask`:
 
 ```bash
 kb doctor                # human-readable report
 kb doctor --format=json  # machine-readable for agent shells
 ```
 
-The report covers active-model resolution, FAISS index version + mtime, the latest in-process index-update summary, per-KB stale counts, embedding-backend reachability (Ollama / HuggingFace / OpenAI), CLI version, and local git state. The command exits non-zero when any required check fails (active model unresolved, index missing, backend unreachable), so it is safe to use as a precondition gate from scripts.
+The report covers active-model resolution, FAISS index version + mtime, the latest in-process index-update summary, per-KB stale counts, embedding-backend reachability (Ollama / HuggingFace / OpenAI), local LLM endpoint readiness, CLI version, and local git state. The command exits non-zero when any required retrieval check fails (active model unresolved, index missing, backend unreachable); LLM endpoint failures are WARN rows because search can remain healthy while `kb ask` is not ready.
 
 ### Distinguishing search failure modes
 

@@ -343,6 +343,17 @@ export class ReindexTriggerWatcher {
     if (mtimeMs > this.lastMtimeMs) {
       this.lastMtimeMs = mtimeMs;
       this.requestRun();
+      return;
+    }
+
+    // RFC 017 M0b — drain any pending request that was deferred by an
+    // active reindex. A deferral sets `pending=true` without scheduling
+    // `runTrigger`; the next poll that observes no in-flight work and a
+    // pending flag re-checks the deferral state. If the reindex has
+    // finished by now, `requestRun` will proceed normally.
+    if (this.pending && this.inFlight === null) {
+      this.pending = false;
+      this.requestRun();
     }
   }
 
@@ -359,6 +370,18 @@ export class ReindexTriggerWatcher {
       this.pending = true;
       return;
     }
+    // RFC 017 M0b — defer if a `kb reindex --with-context` is in flight.
+    // Cheap synchronous probe (`fs.existsSync`) for the common case (no
+    // reindex running): zero overhead in the happy path. Only when the
+    // run-state file is present do we run the PID-liveness check via
+    // `process.kill(pid, 0)` — also synchronous.
+    if (this.shouldDeferToReindex()) {
+      logger.debug(
+        'ReindexTriggerWatcher: deferring updateIndex — peer reindex is in flight',
+      );
+      this.pending = true;
+      return;
+    }
     this.inFlight = this.runTrigger();
     void this.inFlight.finally(() => {
       this.inFlight = null;
@@ -367,6 +390,49 @@ export class ReindexTriggerWatcher {
         this.requestRun();
       }
     });
+  }
+
+  /**
+   * RFC 017 M0b §5 step 5 — consult `.reindex.run.json` and defer when
+   * a peer reindex is alive. Returns `true` to defer, `false` to proceed.
+   * Synchronous so callers in `requestRun` don't need to await; errors
+   * are non-fatal (we proceed and let the next poll re-check).
+   */
+  private shouldDeferToReindex(): boolean {
+    try {
+      // Lazy require to avoid the reindex-runner module being pulled
+      // into every triggerWatcher consumer's bundle. CJS-style import
+      // is intentional — we only need the helper functions and we don't
+      // want top-level await semantics in this hot path.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const helpers = require('./reindex-runner.js') as {
+        runStateFilePath(): string;
+        isPidAlive(pid: number): boolean;
+      };
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fs = require('fs') as typeof import('fs');
+      const target = helpers.runStateFilePath();
+      let raw: string;
+      try {
+        raw = fs.readFileSync(target, 'utf-8');
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+        return false;
+      }
+      const parsed = JSON.parse(raw) as { pid?: unknown };
+      const pid = typeof parsed.pid === 'number' ? parsed.pid : NaN;
+      return Number.isFinite(pid) && helpers.isPidAlive(pid);
+    } catch (err) {
+      // The file exists but is unreadable / corrupt. Don't block the
+      // watcher — proceed normally; the next poll will re-check, and the
+      // reindex CLI's `checkReindexRunState` does the formal zombie
+      // cleanup at its own startup.
+      logger.warn(
+        `ReindexTriggerWatcher: failed to check reindex run state: ${(err as Error).message}`,
+      );
+      return false;
+    }
   }
 
   private async runTrigger(): Promise<void> {

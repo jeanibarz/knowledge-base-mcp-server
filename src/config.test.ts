@@ -1,22 +1,32 @@
 import {
+  parseKbLargeFilePolicy,
+  parseKbMaxExtractedTextBytes,
+  parseKbMaxFileBytes,
+} from './config/ingest.js';
+import {
+  resolveChunkSize,
+  resolveIndexingBatchSize,
+} from './config/indexing.js';
+import {
+  parseKBLogFormat,
+} from './config/logging.js';
+import {
   isKnownEmbeddingProvider,
   KNOWN_EMBEDDING_PROVIDERS,
   parseEmbeddingProvider,
-  parseKbLargeFilePolicy,
   parseKbFakeDim,
+  UnknownEmbeddingProviderError,
+} from './config/provider.js';
+import {
+  parseKBEditorUri,
+} from './config/retrieval.js';
+import {
   parseKbFsWatchDebounceMs,
   parseKbFsWatchFlag,
-  parseKBLogFormat,
-  parseKbMaxExtractedTextBytes,
-  parseKbMaxFileBytes,
   parseReindexTriggerPollMs,
-  parseKBEditorUri,
   resolveReindexTriggerPath,
   resolveReindexTriggerPollMs,
-  resolveChunkSize,
-  resolveIndexingBatchSize,
-  UnknownEmbeddingProviderError,
-} from './config.js';
+} from './config/watchers.js';
 
 describe('large-file ingest bounds (#285)', () => {
   it('uses conservative defaults for unset or invalid byte caps', () => {

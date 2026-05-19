@@ -59,7 +59,7 @@
 
 import * as path from 'path';
 import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
 
@@ -109,6 +109,12 @@ export interface FuseHybridResultsArgs {
   c?: number;
 }
 
+export interface FuseHybridResultsOutput {
+  results: HybridChunk[];
+  denseDistanceById: Map<string, number>;
+  lexicalHitIds: Set<string>;
+}
+
 /**
  * Pure fusion + identity mapping + result assembly.
  *
@@ -128,10 +134,10 @@ export interface FuseHybridResultsArgs {
  *
  * Returns a fresh array of length ≤ `k`. Inputs are not mutated.
  */
-export function fuseHybridResults(args: FuseHybridResultsArgs): HybridChunk[] {
+export function fuseHybridResultsWithDiagnostics(args: FuseHybridResultsArgs): FuseHybridResultsOutput {
   const { denseResults, lexicalResults, k } = args;
   if (!Number.isFinite(k) || k < 1 || !Number.isInteger(k)) {
-    throw new Error(`fuseHybridResults: invalid k=${k}; expected a positive integer`);
+    throw new Error(`fuseHybridResultsWithDiagnostics: invalid k=${k}; expected a positive integer`);
   }
   const c = args.c ?? HYBRID_RRF_C;
 
@@ -149,12 +155,27 @@ export function fuseHybridResults(args: FuseHybridResultsArgs): HybridChunk[] {
   for (const r of lexicalResults) byId.set(chunkIdFromMetadata(r.metadata), r);
   for (const r of denseResults) byId.set(chunkIdFromMetadata(r.metadata), r);
 
-  const out: HybridChunk[] = [];
+  const denseDistanceById = new Map<string, number>();
+  for (const r of denseResults) {
+    if (typeof r.score === 'number') {
+      denseDistanceById.set(chunkIdFromMetadata(r.metadata), r.score);
+    }
+  }
+  const lexicalHitIds = new Set<string>();
+  for (const r of lexicalResults) {
+    lexicalHitIds.add(chunkIdFromMetadata(r.metadata));
+  }
+
+  const results: HybridChunk[] = [];
   for (const f of fused.slice(0, k)) {
     const chunk = byId.get(f.id);
-    if (chunk) out.push({ ...chunk, score: f.fusedScore });
+    if (chunk) results.push({ ...chunk, score: f.fusedScore });
   }
-  return out;
+  return { results, denseDistanceById, lexicalHitIds };
+}
+
+export function fuseHybridResults(args: FuseHybridResultsArgs): HybridChunk[] {
+  return fuseHybridResultsWithDiagnostics(args).results;
 }
 
 export interface LexicalKb {

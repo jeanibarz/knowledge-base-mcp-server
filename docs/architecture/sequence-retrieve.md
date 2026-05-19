@@ -91,7 +91,7 @@ sequenceDiagram
 
 ### Ordering invariant
 
-One `save()` per `updateIndex` call; hash sidecars are written **after** `save()` completes and use tmp+rename so each is atomic. If the process dies between `save()` and finishing sidecar writes, the un-sidecar'd files are re-embedded on the next call and their vectors are duplicated. RFC 007 §6.2.1 tracks the pending-manifest protocol that will close this gap; the current state is documented at `src/FaissIndexManager.ts:356-377` and in [`state-index.md`](./state-index.md) under **Recovering**.
+One `save()` per index-mutating `updateIndex` call; hash and chunk sidecars are written **after** `save()` completes and use tmp+rename so each sidecar is atomic. Before the save, `updateIndex` writes `$FAISS_INDEX_PATH/models/<model_id>/pending-manifest.json` with the pending sidecar set and phase `save-started`; after the FAISS save succeeds it advances the phase to `save-complete`; after every sidecar is durable it removes the manifest. On the next normal `initialize()`, `save-complete` manifests are rolled forward by finishing the sidecar writes. Ambiguous `save-started` manifests cause the persisted store and stale sidecars to be purged so the next scan rebuilds instead of duplicating vectors.
 
 ### Fallback rebuild edge case
 

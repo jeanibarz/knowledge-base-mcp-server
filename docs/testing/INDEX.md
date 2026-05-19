@@ -65,6 +65,26 @@
 
 ## Search
 
+### TS-CLI-383: Machine-Readable Help Manifest
+**Requirement:** FR-CLI-383
+
+**Test Cases:**
+- `kb help --format=json` shall emit parseable JSON with schema version `kb.help.v1`, top-level usage, environment variables, exit codes, and every registered command.
+- `kb help <command> --format=json` shall emit parseable JSON for the selected command with name, summary, usage, options, and stability metadata.
+- `kb help <command> --format=json` shall preserve wrapped usage blocks without parsing example continuations as option definitions.
+- `kb help --format=<unsupported>` and unknown `kb help` flags shall exit 2 with stderr diagnostics and empty stdout.
+- `kb help <command> --format=json` shall preserve the existing unknown-command stderr error and exit code when the command is not registered.
+- `kb help` without `--format=json` shall preserve the existing human-readable help output.
+
+### TS-ASK-382: Cited Ask Transcript Records
+**Requirement:** FR-ASK-382
+
+**Test Cases:**
+- `parseAskArgs` shall parse `--save-transcript`, `--title=<title>`, and `--yes`.
+- `parseAskArgs` shall reject transcript saves without `--yes` or without a target `--kb=<name>`.
+- `buildAskTranscriptMarkdown` shall include the question, answer, citation paths, source chunk ids, LLM provenance, retrieval metadata, and timing metadata when present.
+- `createAskTranscriptNote` shall create a new slugged markdown note and shall refuse to overwrite an existing transcript note.
+
 ### TS-SUPERSEDED-232: Superseded Memory Review
 **Requirement:** FR-SUPERSEDED-232
 

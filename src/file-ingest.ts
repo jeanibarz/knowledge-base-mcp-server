@@ -24,11 +24,15 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import { Document } from '@langchain/core/documents';
 import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
-import { KNOWLEDGE_BASES_ROOT_DIR, resolveChunkSize } from './config.js';
+import { resolveChunkSize } from './config/indexing.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
+import { isContextualRetrievalEnabled } from './config/contextual-preface.js';
+import { resolveContextualPrefaces, sha256 as contextualPrefaceSha256 } from './contextual-preface.js';
 import { handleFsOperationError } from './error-utils.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
 import { applyExtractedTextLimit } from './loaders.js';
+import { logger } from './logger.js';
 import { withSidecarLock } from './write-lock.js';
 
 export interface PendingSidecarWrite {
@@ -135,7 +139,7 @@ function isChunkManifestEntry(value: unknown): value is ChunkManifestEntry {
   );
 }
 
-function isChunkManifest(value: unknown): value is ChunkManifest {
+export function isChunkManifest(value: unknown): value is ChunkManifest {
   if (!isJsonObject(value)) return false;
   return (
     value.schema_version === CHUNK_MANIFEST_SCHEMA_VERSION &&
@@ -239,7 +243,42 @@ export async function buildChunkDocuments(
     [body],
     [{ source: filePath }],
   );
+
+  // RFC 017 — contextual-retrieval prefaces. Gated off by default; when
+  // enabled, we call the LLM once per chunk (cached) to produce a short
+  // context paragraph that gets prepended for embedding only. The
+  // `pageContent` returned here stays byte-identical; the preface lives
+  // on `metadata.contextual_preface` for `FaissStoreAdapter` and
+  // `LexicalIndex.refresh` to consume via the shared `embeddingText`
+  // helper. When the feature is off, no LLM calls fire and the metadata
+  // field is absent.
+  let prefaces: (string | null)[] = [];
+  if (isContextualRetrievalEnabled() && documents.length > 0) {
+    try {
+      prefaces = await resolveContextualPrefaces({
+        source: filePath,
+        knowledgeBaseName,
+        // documentHash is computed from the SAME buffer the splitter saw
+        // — not re-read from disk — so a concurrent edit cannot pair a
+        // stale hash with fresh chunks at the cache layer.
+        documentHash: contextualPrefaceSha256(body),
+        documentBody: body,
+        chunks: documents.map((doc) => doc.pageContent),
+      });
+    } catch (err) {
+      // resolveContextualPrefaces is engineered to never throw on
+      // LLM-side failure (each chunk returns null instead). A throw here
+      // is unexpected — log and degrade to non-contextual rather than
+      // failing the ingest of this file.
+      logger.warn(
+        `RFC 017: contextual-preface resolution threw unexpectedly for ${filePath}; embedding verbatim: ${(err as Error).message}`,
+      );
+      prefaces = [];
+    }
+  }
+
   for (let i = 0; i < documents.length; i += 1) {
+    const preface = prefaces[i];
     documents[i].metadata = {
       ...documents[i].metadata,
       source: filePath,
@@ -250,6 +289,7 @@ export async function buildChunkDocuments(
       tags,
       ...(liftedFrontmatter !== undefined ? { frontmatter: liftedFrontmatter } : {}),
       ...(pdfPath !== undefined ? { pdf_path: pdfPath } : {}),
+      ...(typeof preface === 'string' && preface.length > 0 ? { contextual_preface: preface } : {}),
     };
   }
   return documents;

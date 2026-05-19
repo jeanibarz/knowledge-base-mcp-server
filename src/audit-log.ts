@@ -15,6 +15,7 @@ import { logger } from './logger.js';
 export type MutationSurface =
   | 'cli.kb-remember'
   | 'cli.kb-capture'
+  | 'cli.kb-ask'
   | 'mcp.add_document'
   | 'mcp.delete_document';
 
@@ -23,6 +24,7 @@ export type MutationOperation =
   | 'append'
   | 'append-section'
   | 'capture'
+  | 'ask-transcript'
   | 'add'
   | 'delete';
 

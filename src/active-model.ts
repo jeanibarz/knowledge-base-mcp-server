@@ -12,13 +12,15 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import {
-  EMBEDDING_PROVIDER,
   FAISS_INDEX_PATH,
+} from './config/paths.js';
+import {
+  EMBEDDING_PROVIDER,
   HUGGINGFACE_MODEL_NAME,
   KB_ACTIVE_MODEL,
   OLLAMA_MODEL,
   OPENAI_MODEL_NAME,
-} from './config.js';
+} from './config/provider.js';
 import { pathExists } from './file-utils.js';
 import { deriveModelId, EmbeddingProvider, isValidModelId, parseModelId } from './model-id.js';
 import { logger } from './logger.js';

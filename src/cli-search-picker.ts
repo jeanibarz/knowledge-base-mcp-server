@@ -11,7 +11,7 @@ import {
   type GroupedRetrievalSource,
   type ScoredDocument,
 } from './formatter.js';
-import { FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI } from './config.js';
+import { FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI } from './config/retrieval.js';
 
 export type PickerView = 'flat' | 'grouped';
 

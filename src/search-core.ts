@@ -11,7 +11,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { resolveFaissIndexBinaryPath } from './active-model.js';
 import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
-import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import type { SearchResultDocument } from './FaissIndexManager.js';
 import type {
   FreshnessScanScope,

@@ -20,6 +20,7 @@ Usage:
 
 Mirrors the MCP \`kb_stats\` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
+Includes process-lifetime relevance-gate counters when the gate has run.
 Strictly read-only — does not refresh the index.
 
 Options:
@@ -154,6 +155,20 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
     `- Server version: ${payload.server.version}`,
     `- Uptime: ${formatInteger(uptimeMs)} ms`,
     '',
+    '## Relevance Gate',
+    '',
+    `- Gated queries: ${formatInteger(payload.relevance_gate.gated_queries)}`,
+    `- Verdicts: injected=${formatInteger(payload.relevance_gate.verdict_injected)}, ` +
+      `no_relevant_context=${formatInteger(payload.relevance_gate.verdict_no_relevant_context)}, ` +
+      `empty_index=${formatInteger(payload.relevance_gate.verdict_empty_index)}`,
+    `- Low confidence rate: ${formatRate(payload.relevance_gate.low_confidence_rate)}`,
+    `- Drop rates: A1=${formatRate(payload.relevance_gate.drop_rate_A1)}, ` +
+      `A2=${formatRate(payload.relevance_gate.drop_rate_A2)}, B=${formatRate(payload.relevance_gate.drop_rate_B)}`,
+    `- Judge degrade rate: ${formatRate(payload.relevance_gate.judge_degrade_rate)} ` +
+      `(window ${formatInteger(payload.relevance_gate.judge_window.degraded)}/` +
+      `${formatInteger(payload.relevance_gate.judge_window.size)}, ` +
+      `warn>${formatRate(payload.relevance_gate.judge_window.warn_threshold)})`,
+    '',
   ].join('\n');
 }
 
@@ -163,6 +178,10 @@ function escapeTableCell(value: string): string {
 
 function formatInteger(value: number): string {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatRate(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function readPackageVersion(): string {
