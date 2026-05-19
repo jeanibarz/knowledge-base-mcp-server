@@ -68,6 +68,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'stats',
       'eval',
       'eval-gate',
+      'feedback',
       'explain',
       'stale-check',
       'superseded',
@@ -104,6 +105,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['stats', 'kb stats'],
     ['eval', 'kb eval'],
     ['eval-gate', 'kb eval-gate'],
+    ['feedback', 'kb feedback'],
     ['explain', 'kb explain'],
     ['stale-check', 'kb stale-check'],
     ['superseded', 'kb superseded'],
@@ -199,6 +201,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'stats',
       'eval',
       'eval-gate',
+      'feedback',
       'explain',
       'stale-check',
       'superseded',
@@ -360,6 +363,60 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(a.code).toBe(0);
     expect(b.code).toBe(0);
     expect(a.stdout).toBe(b.stdout);
+  });
+
+  it('feedback add/list/promote records ledger rows and writes eval fixtures', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-feedback-cli-'));
+    const kbRoot = path.join(tempDir, 'kbs');
+    const fixturePath = path.join(tempDir, 'fixtures', 'feedback.yml');
+    await fsp.mkdir(path.join(kbRoot, 'ops'), { recursive: true });
+    const env = { KNOWLEDGE_BASES_ROOT_DIR: kbRoot };
+
+    const add = runCli([
+      'feedback',
+      'add',
+      '--kb=ops',
+      '--query=rollback',
+      '--source=runbooks/deploy.md',
+      '--relevance=2',
+      '--group=procedure',
+      '--format=json',
+    ], env);
+
+    expect(add.code).toBe(0);
+    const ledger = await fsp.readFile(
+      path.join(kbRoot, 'ops', '.index', 'relevance-feedback.jsonl'),
+      'utf-8',
+    );
+    expect(JSON.parse(ledger.trim())).toMatchObject({
+      kb: 'ops',
+      query: 'rollback',
+      source: 'runbooks/deploy.md',
+      relevance: 2,
+      groups: ['procedure'],
+    });
+
+    const list = runCli(['feedback', 'list', '--kb=ops', '--query=rollback', '--format=json'], env);
+    expect(list.code).toBe(0);
+    const listPayload = JSON.parse(list.stdout) as { entries: Array<{ source: string }> };
+    expect(listPayload.entries).toEqual([
+      expect.objectContaining({ source: 'runbooks/deploy.md' }),
+    ]);
+
+    const promote = runCli([
+      'feedback',
+      'promote',
+      '--kb=ops',
+      '--query=rollback',
+      `--fixture=${fixturePath}`,
+      '--yes',
+      '--format=json',
+    ], env);
+    expect(promote.code).toBe(0);
+    const fixtureText = await fsp.readFile(fixturePath, 'utf-8');
+    expect(fixtureText).toContain('query: rollback');
+    expect(fixtureText).toContain('source: runbooks/deploy.md');
+    expect(fixtureText).toContain('groups:');
   });
 
   it('kb help <command> --format=json emits only the selected command manifest (#383)', () => {
