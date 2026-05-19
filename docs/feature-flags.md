@@ -26,10 +26,19 @@ operator opts in. With no task context it uses the statistical path only; with
 task context it may call an LLM judge. Any judge failure degrades to retrieval
 rather than failing the query.
 
+Task context is a trust boundary — it is concatenated into the judge prompt.
+`KB_GATE_TASK_CONTEXT_MODE` controls how `kb search` treats it: `warn` (the
+default) advises on stderr when `--task-context` argv is long or prompt-like
+(prefer `--task-context-file`) or carries prompt-injection signals; `strict`
+refuses injection-signal-bearing task context with exit code 2; `off` disables
+both checks.
+
 | Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
 |---|---|---:|---|---|---|---|
 | Relevance gate master switch | `KB_RELEVANCE_GATE` | `off` | CLI search and MCP `retrieve_knowledge` | Implemented | `kb search --gate`, `kb search --no-gate`, MCP `gate: "on"\|"off"` | `KB_RELEVANCE_GATE=on kb search "query" --task-context="current task" --timing` |
 | Gate task context | `--task-context`, `--task-context-file`, MCP `task_context` | unset | CLI search and MCP retrieval | Implemented | per call only | `kb search "query" --gate --task-context="current task"` |
+| Gate task-context policy | `KB_GATE_TASK_CONTEXT_MODE` | `warn` | `kb search` task-context input | Implemented | none | `KB_GATE_TASK_CONTEXT_MODE=strict kb search "query" --gate --task-context="current task"` |
+| Gate task-context argv limit | `KB_GATE_TASK_CONTEXT_ARGV_MAX` | `600` | `kb search` task-context policy | Implemented | none | `KB_GATE_TASK_CONTEXT_ARGV_MAX=200 kb search "query" --gate --task-context="current task"` |
 | Gate dense-distance floor | `KB_GATE_SCORE_FLOOR` | `0.95` | Gate stage A1 | Implemented | none | `KB_GATE_SCORE_FLOOR=0.95 kb search "query" --gate --timing` |
 | Gate judge input cap | `KB_GATE_JUDGE_INPUT` | `10` | Gate stage B | Implemented | none | `KB_RELEVANCE_GATE=on KB_GATE_JUDGE_INPUT=5 kb search "query" --task-context="current task"` |
 | Gate LLM timeout | `KB_GATE_LLM_TIMEOUT_MS` | `8000` | Gate stage B | Implemented | none | `KB_GATE_LLM_TIMEOUT_MS=8000 kb search "query" --gate --task-context="current task"` |
