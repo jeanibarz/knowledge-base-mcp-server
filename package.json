@@ -22,6 +22,7 @@
     "dev": "nodemon src/index.ts",
     "dev:cli": "node --enable-source-maps --import tsx scripts/dev-cli.mjs",
     "dev:fixture": "node --enable-source-maps --import tsx scripts/dev-fixture.mjs",
+    "dev:remote": "node --enable-source-maps --import tsx scripts/dev-remote.mjs",
     "dev:setup": "bash scripts/dev-setup.sh"
   },
   "repository": {

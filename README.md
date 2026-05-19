@@ -344,6 +344,21 @@ The wrapper prints the active `KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`,
 embedding provider, and embedding model to stderr before each invocation so
 you can confirm which KB and index a command would touch.
 
+For disposable HTTP/SSE transport debugging without touching your real KB or
+FAISS index, run:
+
+```bash
+npm run dev:remote -- --transport=http
+npm run dev:remote -- --transport=sse
+```
+
+`dev:remote` creates a seeded scratch KB, chooses a free loopback port,
+generates an `MCP_AUTH_TOKEN`, prints curl examples for the selected transport,
+starts the TypeScript server against the scratch state, and removes that state
+when the server exits. Add `--keep` to inspect the generated files afterward,
+or `--print-env` to emit the environment and examples without starting the
+server.
+
 **Switching back to the published npm release** (e.g. to compare behaviour):
 
 ```bash
@@ -423,6 +438,9 @@ Endpoints exposed in this mode:
 - `MCP_TRANSPORT=http`: `POST /mcp` initializes and sends JSON-RPC messages using streamable HTTP. The server returns `Mcp-Session-Id` during initialization; clients must send it on subsequent `GET`, `POST`, and `DELETE /mcp` requests.
 
 All non-health transport endpoints require `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+
+For a disposable remote playground during development, use `npm run dev:remote`
+from the local development section above.
 
 **Security defaults:** the server refuses to start in SSE or streamable HTTP mode without `MCP_AUTH_TOKEN`, binds only to loopback, and uses a constant-time bearer comparison. Operators exposing the endpoint off-host should set `MCP_BIND_ADDR=0.0.0.0` *and* terminate TLS in a reverse proxy — TLS is out of scope for this server. Only one process per `FAISS_INDEX_PATH` is supported (see [`docs/architecture/threat-model.md`](./docs/architecture/threat-model.md)).
 
