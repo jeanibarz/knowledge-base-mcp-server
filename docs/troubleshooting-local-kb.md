@@ -2,6 +2,10 @@
 
 Use this runbook when `kb search` or the MCP `retrieve_knowledge` tool returns no useful results, reports stale index state, or appears to use a different checkout or embedding model than expected.
 
+For service lifecycle, port ownership, local-research-agent/n8n coexistence,
+safe restarts, and linked-checkout update flow, see
+[`docs/operations/local-services.md`](operations/local-services.md).
+
 Start with the read-only health check:
 
 ```bash
