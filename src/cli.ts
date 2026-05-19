@@ -17,6 +17,7 @@ import { DOCTOR_HELP, runDoctor } from './cli-doctor.js';
 import { EVAL_HELP, runEval } from './cli-eval.js';
 import { EVAL_GATE_HELP, runEvalGate } from './cli-eval-gate.js';
 import { EXPLAIN_HELP, runExplain } from './cli-explain.js';
+import { IMPORT_URL_HELP, runImportUrl } from './cli-import-url.js';
 import { LIST_HELP, runList } from './cli-list.js';
 import { LLM_HELP, runLlm } from './cli-llm.js';
 import { LOGS_HELP, runLogs } from './cli-logs.js';
@@ -92,6 +93,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'ask',          summary: 'Answer from retrieved KB context using a local LLM endpoint.',            help: ASK_HELP,          handler: runAsk },
   { name: 'remember',     summary: 'Suggest, create, or append knowledge-base notes (write path).',          help: REMEMBER_HELP,     handler: runRemember },
   { name: 'capture',      summary: 'Run a command and append its stdout to a KB note as a fenced block.',    help: CAPTURE_HELP,      handler: runCapture },
+  { name: 'import-url',   summary: 'Snapshot a web page or PDF into a KB note with provenance frontmatter.',  help: IMPORT_URL_HELP,   handler: runImportUrl },
   { name: 'compare',      summary: 'Side-by-side rank/score table for two embedding models.',                help: COMPARE_HELP,      handler: runCompare },
   { name: 'doctor',       summary: 'Aggregate model / index / backend health report.',                       help: DOCTOR_HELP,       handler: runDoctor },
   { name: 'logs',         summary: 'Inspect historical canonical request logs.',                             help: LOGS_HELP,         handler: runLogs },
