@@ -17,6 +17,7 @@ import { DOCTOR_HELP, runDoctor } from './cli-doctor.js';
 import { EVAL_HELP, runEval } from './cli-eval.js';
 import { EVAL_GATE_HELP, runEvalGate } from './cli-eval-gate.js';
 import { EXPLAIN_HELP, runExplain } from './cli-explain.js';
+import { FEEDBACK_HELP, runFeedback } from './cli-feedback.js';
 import { IMPORT_URL_HELP, runImportUrl } from './cli-import-url.js';
 import { LIST_HELP, runList } from './cli-list.js';
 import { LLM_HELP, runLlm } from './cli-llm.js';
@@ -102,6 +103,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'stats',        summary: 'Read-only index/corpus stats (mirrors the MCP kb_stats payload).',       help: STATS_HELP,        handler: runStats },
   { name: 'eval',         summary: 'Run fixture-driven retrieval checks.',                                   help: EVAL_HELP,         handler: runEval },
   { name: 'eval-gate',    summary: 'RFC 018 M0 relevance-gate validation harness (downstream answer quality).', help: EVAL_GATE_HELP,  handler: runEvalGate },
+  { name: 'feedback',     summary: 'Record relevance judgments and promote them into eval fixtures.',         help: FEEDBACK_HELP,     handler: runFeedback },
   { name: 'explain',      summary: 'Verbose single-query retrieval trace for debugging and bug reports.',   help: EXPLAIN_HELP,      handler: runExplain },
   { name: 'stale-check',  summary: 'Scan markdown notes for path / URL references that no longer resolve.',  help: STALE_CHECK_HELP,  handler: runStaleCheck },
   { name: 'superseded',   summary: 'Scan a KB for obsolete / contradicted / deprecated / stale notes.',      help: SUPERSEDED_HELP,   handler: runSuperseded },
