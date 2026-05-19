@@ -4,7 +4,9 @@ import type { AddressInfo } from 'node:net';
 import {
   DaemonProtocolError,
   daemonUrlFromEnv,
+  fetchDaemonHealth,
   runDaemonCommand,
+  tryFetchDaemonHealth,
   tryRunDaemonCommand,
 } from './daemon-client.js';
 
@@ -65,6 +67,59 @@ describe('daemon client', () => {
       res.end(JSON.stringify({ stdout: 'missing exitCode', stderr: '' }));
     }, async (url) => {
       await expect(runDaemonCommand('search', ['q'], { env: { KB_DAEMON_URL: url.href } }))
+        .rejects.toBeInstanceOf(DaemonProtocolError);
+    });
+  });
+
+  it('reads the daemon lifecycle snapshot from GET /health', async () => {
+    await withServer((req, res) => {
+      expect(req.method).toBe('GET');
+      expect(req.url).toBe('/health');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'ok',
+        pid: 4242,
+        url: 'http://127.0.0.1:17799/',
+        idle_timeout_ms: 300_000,
+        commands: ['search', 'list', 'stats'],
+        uptime_ms: 1234,
+      }));
+    }, async (url) => {
+      await expect(fetchDaemonHealth({ env: { KB_DAEMON_URL: url.href } })).resolves.toEqual({
+        status: 'ok',
+        pid: 4242,
+        url: 'http://127.0.0.1:17799/',
+        idle_timeout_ms: 300_000,
+        commands: ['search', 'list', 'stats'],
+        uptime_ms: 1234,
+      });
+    });
+  });
+
+  it('tolerates an older daemon that only answers { status }', async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+    }, async (url) => {
+      await expect(fetchDaemonHealth({ env: { KB_DAEMON_URL: url.href } }))
+        .resolves.toEqual({ status: 'ok' });
+    });
+  });
+
+  it('returns null from tryFetchDaemonHealth when no daemon is listening', async () => {
+    const result = await tryFetchDaemonHealth({
+      env: { KB_DAEMON_URL: 'http://127.0.0.1:17798' },
+      timeoutMs: 50,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('treats a malformed /health payload as a protocol error', async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ commands: ['search'] }));
+    }, async (url) => {
+      await expect(fetchDaemonHealth({ env: { KB_DAEMON_URL: url.href } }))
         .rejects.toBeInstanceOf(DaemonProtocolError);
     });
   });

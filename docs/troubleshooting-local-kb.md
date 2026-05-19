@@ -22,6 +22,7 @@ kb doctor --format=json
 | `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT`, or backend check is unhealthy | Ollama is down, remote provider is unreachable, or API credentials are missing/invalid | `kb doctor` | Start the backend, fix API keys/env, then retry the search. |
 | `REFRESH_LOCK_BUSY` | Another refresh or model add is already writing the same model index | `kb doctor` | Wait for the writer to finish; retry read-only search without `--refresh` if stale results are acceptable. |
 | `kb` command uses the wrong code after `git pull` | Global bin points at an old npm install or a different `npm link` checkout | `which -a kb` | Inspect the symlinked checkout, rebuild it with `npm run build`, or reinstall the published package. |
+| `kb search --daemon` feels no faster than a plain search | No `kb serve` daemon is running, so each call silently falls back to direct execution | `kb serve status` | Start a daemon with `kb serve`; the fallback notice on stderr names the URL that was tried. |
 
 ## Empty Result Flow
 
@@ -169,6 +170,33 @@ kb search "known phrase" --k=5
 
 If read-only results are acceptable, keep working from the existing index and retry `--refresh` later. If the writer appears stuck, identify the shell, MCP client, or service that started a refresh before removing any lock file manually.
 
+## Warm Daemon (`kb serve`)
+
+`kb serve` starts a localhost-only HTTP daemon that keeps the index warm so
+repeated `kb search --daemon` calls skip cold-start cost. The daemon is
+read-only (search/list/stats), binds loopback only, and exits after its idle
+timeout. `kb serve` itself adds no start/stop supervision — run it under your
+own shell, `tmux`, or a user service.
+
+Use `kb serve status` to inspect lifecycle without starting anything:
+
+```bash
+kb serve status          # human-readable: URL, PID, uptime, idle timeout, commands
+kb serve status --json   # { "reachable": true|false, "url": ..., "daemon": {...} }
+```
+
+Exit codes make it scriptable: `0` a daemon answered, `3` nothing is listening
+at the configured URL, `2` a bad argument or `KB_DAEMON_URL` value.
+
+`kb search --daemon` never fails just because the daemon is down — it prints a
+one-line notice to stderr (`kb search: daemon unavailable at <url>; ran search
+directly ...`) and runs the search in-process. If you expected the warm path,
+that notice and `kb serve status` together tell you whether to start a daemon.
+
+`KB_DAEMON_URL` (default `http://127.0.0.1:17799`) selects the daemon that
+both `kb serve status` and `kb search --daemon` talk to. A `/health` probe
+counts as activity, so polling `kb serve status` also defers the idle timeout.
+
 ## Command Choice
 
 | Need | Command |
@@ -178,6 +206,8 @@ If read-only results are acceptable, keep working from the existing index and re
 | Confirm KB names | `kb list` |
 | Confirm file/chunk counts and index metadata | `kb stats` or `kb stats --kb=<name>` |
 | Search without changing index state | `kb search "query"` |
+| Check whether a warm `kb serve` daemon is running | `kb serve status` |
+| Warm repeated searches through the daemon | `kb serve` then `kb search "query" --daemon` |
 | Refresh a specific KB and then search | `kb search "query" --kb=<name> --refresh` |
 | Refresh all KBs and then search | `kb search "query" --refresh` |
 | Debug code/path/error-code queries | `kb search "query" --mode=hybrid` or `--mode=auto` |

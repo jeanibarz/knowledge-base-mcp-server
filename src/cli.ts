@@ -32,7 +32,7 @@ import { STALE_CHECK_HELP, runStaleCheck } from './cli-stale-check.js';
 import { STATS_HELP, runStats } from './cli-stats.js';
 import { SUPERSEDED_HELP, runSuperseded } from './cli-superseded.js';
 import { WHERE_HELP, runWhere } from './cli-where.js';
-import { tryRunDaemonCommand } from './daemon-client.js';
+import { daemonUrlFromEnv, tryRunDaemonCommand } from './daemon-client.js';
 import { emitCanonicalLog } from './canonical-log.js';
 
 // ----- Subcommand registry --------------------------------------------------
@@ -518,13 +518,29 @@ async function runSearchMaybeViaDaemon(rest: string[]): Promise<number> {
     return runSearch(directRest);
   }
 
+  const startedAt = Date.now();
   const daemonResult = await tryRunDaemonCommand('search', directRest);
   if (daemonResult === null) {
+    // The daemon was unreachable: tell the operator the search still ran,
+    // just directly, and how long the daemon probe cost before falling back.
+    process.stderr.write(
+      `kb search: daemon unavailable${daemonUrlSuffix()}; ran search directly `
+      + `(fell back after ${Date.now() - startedAt}ms)\n`,
+    );
     return runSearch(directRest);
   }
   if (daemonResult.stdout !== '') process.stdout.write(daemonResult.stdout);
   if (daemonResult.stderr !== '') process.stderr.write(daemonResult.stderr);
   return daemonResult.exitCode;
+}
+
+/** ` at <url>` for the fallback notice, or '' when the daemon URL is unset. */
+function daemonUrlSuffix(): string {
+  try {
+    return ` at ${daemonUrlFromEnv().href}`;
+  } catch {
+    return '';
+  }
 }
 
 // ----- version --------------------------------------------------------------

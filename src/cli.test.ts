@@ -606,6 +606,18 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.stderr).not.toContain('unknown flag');
   });
 
+  it('search --daemon prints a stderr fallback notice when the daemon is unreachable', () => {
+    const r = runCli(['search', 'q', '--daemon'], { KB_DAEMON_URL: 'http://127.0.0.1:17798' });
+    expect(r.stderr).toContain('daemon unavailable at http://127.0.0.1:17798/');
+    expect(r.stderr).toMatch(/fell back after \d+ms/);
+  });
+
+  it('serve status exits 3 with a notice when no daemon is reachable', () => {
+    const r = runCli(['serve', 'status'], { KB_DAEMON_URL: 'http://127.0.0.1:17798' });
+    expect(r.code).toBe(3);
+    expect(r.stdout).toContain('no daemon reachable at http://127.0.0.1:17798/');
+  });
+
   it('search with --threshold=auto is accepted by the parser', () => {
     // Parser must accept the literal "auto"; the call still fails downstream
     // (no model registered in this test env) but never with an "invalid
