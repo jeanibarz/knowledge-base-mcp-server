@@ -73,15 +73,15 @@ documented in RFC 017.
 
 ## Reranker
 
-RFC 019 defines the intended cross-encoder reranker surface. These flags are
-documented for rollout planning but are not active behavior until the reranker
-implementation lands.
+RFC 019 defines the optional cross-encoder reranker surface. The reranker runs
+after hybrid dense/BM25 fusion and before the relevance gate. It is fail-soft:
+provider load or scoring failures degrade to the fused order.
 
 | Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
 |---|---|---:|---|---|---|---|
-| Cross-encoder reranker | `KB_RERANK` | `off` | Planned CLI search and MCP retrieval | Planned in RFC 019 | planned `kb search --rerank`, `--no-rerank` | not available until implementation |
-| Reranker model | `KB_RERANK_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Planned reranker provider | Planned in RFC 019 | none | not available until implementation |
-| Rerank candidate count | `KB_RERANK_TOP_N` | `40` | Planned reranker stage | Planned in RFC 019 | none | not available until implementation |
+| Cross-encoder reranker | `KB_RERANK` | `off` | CLI hybrid search, MCP hybrid retrieval, retrieval eval | Implemented, opt-in | `kb search --rerank`, `kb search --no-rerank`, MCP `rerank: "on"\|"off"` | `KB_RERANK=on kb search "query" --mode=hybrid --timing --format=json` |
+| Reranker model | `KB_RERANK_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Local `@huggingface/transformers` provider | Implemented | none | `KB_RERANK=on kb doctor --format=json` |
+| Rerank candidate count | `KB_RERANK_TOP_N` | `40` | Reranker stage | Implemented | none | `KB_RERANK_TOP_N=20 KB_RERANK=on kb search "query" --mode=hybrid --timing` |
 
 ## Output, Diagnostics, and Logging
 

@@ -65,6 +65,17 @@
 
 ## Search
 
+### TS-SEARCH-374: Cross-Encoder Reranker
+**Requirement:** FR-SEARCH-374
+
+**Test Cases:**
+- `resolveRerankerConfig` shall parse `KB_RERANK`, `KB_RERANK_MODEL`, and `KB_RERANK_TOP_N`, with per-call overrides taking precedence.
+- `rerankFusedResults` shall sort the configured top-N candidate block by descending reranker score and preserve the unscored tail after that block.
+- `rerankFusedResults` shall cache repeated query/candidate scores in memory.
+- `rerankFusedResults` shall degrade to the original fused order when the provider throws or returns a wrong-length score array.
+- `formatRetrievalAsJson` shall include `rerank_score` when a retrieval result carries a reranker score.
+- `kb eval` shall compare `KB_RERANK=off` and `KB_RERANK=on` ranked metrics before any default-on rollout.
+
 ### TS-CLI-383: Machine-Readable Help Manifest
 **Requirement:** FR-CLI-383
 

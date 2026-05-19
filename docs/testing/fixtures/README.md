@@ -13,9 +13,10 @@ KB named `dogfood`, then run:
 ```sh
 kb eval docs/testing/fixtures/dogfood-frozen-core.yml --mode=auto
 kb eval docs/testing/fixtures/dogfood-rotating-arena.yml --mode=auto
+KB_RERANK=off kb eval docs/testing/fixtures/rfc-019-reranker-eval.yml --format=json
+KB_RERANK=on kb eval docs/testing/fixtures/rfc-019-reranker-eval.yml --format=json
 ```
 
-Both packs are warning-only for now (`gate: false`). Promote a case to gated use
-only after it is stable across the supported provider matrix and its
-source-of-truth comment still matches the committed corpus.
-
+The listed packs are warning-only for now (`gate: false`). Promote a case to
+gated use only after it is stable across the supported provider matrix and its
+source-of-truth comment still matches the committed corpus or shelf note.

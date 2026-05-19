@@ -99,6 +99,11 @@ import {
 } from './relevance-gate.js';
 import type { RelevanceGateVerdict } from './relevance-gate-schema.js';
 import { chunkIdFromMetadata } from './rrf.js';
+import {
+  applyRerankerIfEnabled,
+  resolveRerankerConfig,
+  type RerankOverride,
+} from './reranker.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
@@ -234,6 +239,7 @@ export class KnowledgeBaseServer {
         search_mode: z.enum(['dense', 'hybrid']).optional().describe('Retrieval mode. "dense" (default) uses FAISS only. "hybrid" fuses FAISS top-N with per-KB BM25 top-N via Reciprocal Rank Fusion. See #206.'),
         task_context: z.string().optional().describe('Optional task context used by the relevance gate judge. Truncated to 2000 characters.'),
         gate: z.enum(['on', 'off']).optional().describe('Per-call relevance gate override. Omit to use KB_RELEVANCE_GATE.'),
+        rerank: z.enum(['on', 'off']).optional().describe('Per-call RFC 019 reranker override for hybrid retrieval. Omit to use KB_RERANK.'),
       },
       async (args) => this.handleRetrieveKnowledge(args)
     );
@@ -510,6 +516,7 @@ export class KnowledgeBaseServer {
     search_mode?: 'dense' | 'hybrid';
     task_context?: string;
     gate?: 'on' | 'off';
+    rerank?: 'on' | 'off';
   }): Promise<CallToolResult> {
     const canonical: Partial<CanonicalLogInput> = {};
     const query: string = args.query;
@@ -522,6 +529,7 @@ export class KnowledgeBaseServer {
     const searchMode: 'dense' | 'hybrid' = args.search_mode ?? 'dense';
     const taskContext = args.task_context;
     const gateOverride: RelevanceGateOverride = args.gate;
+    const rerankOverride: RerankOverride = args.rerank;
     const neighborContext = resolveNeighborContextOptions(args);
 
     return this.withCanonicalTool({
@@ -555,6 +563,7 @@ export class KnowledgeBaseServer {
           canonical,
           taskContext,
           gateOverride,
+          rerankOverride,
         });
       }
 
@@ -702,8 +711,9 @@ export class KnowledgeBaseServer {
     canonical?: Partial<CanonicalLogInput>;
     taskContext?: string;
     gateOverride?: RelevanceGateOverride;
+    rerankOverride?: RerankOverride;
   }): Promise<CallToolResult> {
-    const { query, knowledgeBaseName, modelNameOverride, filters, canonical, taskContext, gateOverride } = input;
+    const { query, knowledgeBaseName, modelNameOverride, filters, canonical, taskContext, gateOverride, rerankOverride } = input;
     const HYBRID_TOP_K = 10;
     const fetchK = hybridFetchK(HYBRID_TOP_K);
 
@@ -751,12 +761,23 @@ export class KnowledgeBaseServer {
         canonical.faiss_ms = denseTiming.faiss_search_ms ?? denseTiming.query_search_ms;
       }
 
+      const rerankConfig = resolveRerankerConfig(process.env, rerankOverride);
       const fusion = fuseHybridResultsWithDiagnostics({
         denseResults,
         lexicalResults,
-        k: HYBRID_TOP_K,
+        k: rerankConfig.enabled ? Math.max(HYBRID_TOP_K, rerankConfig.topN) : HYBRID_TOP_K,
       });
       let ranked = fusion.results;
+      const rerankResult = await applyRerankerIfEnabled({
+        query,
+        results: ranked,
+        k: HYBRID_TOP_K,
+        override: rerankOverride,
+        process: 'mcp',
+        searchMode: 'hybrid',
+        kbScope: knowledgeBaseName ?? null,
+      });
+      ranked = rerankResult.results;
       const gate = await applyRelevanceGate({
         query,
         taskContext,
@@ -788,7 +809,10 @@ export class KnowledgeBaseServer {
         canonical.top_sources = topSourcesForCanonicalLog(ranked);
         canonical.format_ms = Date.now() - formatStartedAt;
       }
-      const header = `> _Mode: hybrid (RRF c=${HYBRID_RRF_C}); dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} (#206 stage 2)._`;
+      const rerankHeader = rerankResult.candidatesIn > 0
+        ? `; rerank ${rerankResult.model}${rerankResult.degraded ? ' degraded' : ''}`
+        : '';
+      const header = `> _Mode: hybrid (RRF c=${HYBRID_RRF_C}); dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length}${rerankHeader} (#206 stage 2)._`;
       responseText = modelNameOverride !== undefined
         ? `> _Model: ${activeModelId}_\n${header}\n\n${responseText}`
         : `${header}\n\n${responseText}`;

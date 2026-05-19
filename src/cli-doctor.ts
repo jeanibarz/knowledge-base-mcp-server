@@ -63,6 +63,7 @@ import {
   resolveProfile,
   type LlmProfile,
 } from './llm-profiles.js';
+import { resolveRerankerConfig } from './config/reranker.js';
 
 /**
  * Issue #210 — error-rate threshold above which the doctor surfaces a
@@ -211,6 +212,14 @@ export interface DoctorReport {
     chat_ok: boolean;
     detail: string;
     next_action: string | null;
+  };
+  reranker: {
+    enabled: boolean;
+    model: string;
+    top_n: number;
+    status: HealthStatus;
+    cache_path: string | null;
+    detail: string;
   };
   cli: {
     version: string;
@@ -482,6 +491,13 @@ export async function buildDoctorReport(
     detail: llmEndpoint.detail,
   });
 
+  const reranker = await readRerankerHealth();
+  checks.push({
+    name: 'reranker',
+    status: reranker.status,
+    detail: reranker.detail,
+  });
+
   const metricsSource = options.providerCallMetrics ?? providerCallMetrics;
   const providerCalls = metricsSource.snapshot();
   // Issue #210 — only emit the row when at least one call has been
@@ -554,6 +570,7 @@ export async function buildDoctorReport(
     incomplete_models: incompleteModels,
     backend,
     llm_endpoint: llmEndpoint,
+    reranker,
     cli,
     git,
     last_index_update: lastIndexUpdate,
@@ -908,6 +925,65 @@ async function countFiles(dir: string): Promise<number> {
   return count;
 }
 
+async function readRerankerHealth(): Promise<DoctorReport['reranker']> {
+  let config;
+  try {
+    config = resolveRerankerConfig();
+  } catch (err) {
+    return {
+      enabled: false,
+      model: '<invalid>',
+      top_n: 0,
+      status: 'error',
+      cache_path: null,
+      detail: (err as Error).message,
+    };
+  }
+
+  if (!config.enabled) {
+    return {
+      enabled: false,
+      model: config.model,
+      top_n: config.topN,
+      status: 'ok',
+      cache_path: null,
+      detail: 'KB_RERANK is off',
+    };
+  }
+
+  const cachePath = await findHuggingFaceModelCachePath(config.model);
+  return {
+    enabled: true,
+    model: config.model,
+    top_n: config.topN,
+    status: cachePath === null ? 'warn' : 'ok',
+    cache_path: cachePath,
+    detail: cachePath === null
+      ? 'reranker model cache not found; first enabled call may download the model or degrade offline'
+      : 'reranker model cache found',
+  };
+}
+
+async function findHuggingFaceModelCachePath(model: string): Promise<string | null> {
+  const hfHome = process.env.HF_HOME || process.env.TRANSFORMERS_CACHE ||
+    (process.env.HOME ? path.join(process.env.HOME, '.cache', 'huggingface') : null);
+  if (hfHome === null) return null;
+  const modelDirName = `models--${model.replace(/\//g, '--')}`;
+  const candidates = [
+    path.join(hfHome, 'hub', modelDirName),
+    path.join(hfHome, modelDirName),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const stat = await fsp.stat(candidate);
+      if (stat.isDirectory()) return candidate;
+    } catch {
+      // best-effort cache probe
+    }
+  }
+  return null;
+}
+
 async function readBackendHealth(
   provider: string | null,
   modelName: string | null,
@@ -1258,6 +1334,13 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   if (report.llm_endpoint.next_action !== null) {
     lines.push(`  next_action: ${report.llm_endpoint.next_action}`);
   }
+  lines.push('Reranker:');
+  lines.push(`  enabled: ${report.reranker.enabled ? 'yes' : 'no'}`);
+  lines.push(`  model: ${report.reranker.model}`);
+  lines.push(`  top_n: ${report.reranker.top_n}`);
+  lines.push(`  status: ${report.reranker.status}`);
+  lines.push(`  cache_path: ${report.reranker.cache_path ?? '<not found>'}`);
+  lines.push(`  detail: ${report.reranker.detail}`);
   lines.push(`kb version: ${report.cli.version}`);
   if (report.cli.symlinked_checkout_path !== null) {
     lines.push(`Linked checkout: ${report.cli.symlinked_checkout_path}`);

@@ -81,6 +81,8 @@ describe('KnowledgeBaseServer handlers', () => {
     HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
     LOG_FILE: process.env.LOG_FILE,
     KB_LOG_FORMAT: process.env.KB_LOG_FORMAT,
+    KB_RERANK: process.env.KB_RERANK,
+    KB_RERANK_TOP_N: process.env.KB_RERANK_TOP_N,
     RETRIEVE_KNOWLEDGE_DESCRIPTION: process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION,
     LIST_KNOWLEDGE_BASES_DESCRIPTION: process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION,
   };
@@ -1159,6 +1161,41 @@ describe('KnowledgeBaseServer handlers', () => {
       input_count: 2,
       output_count: 2,
     });
+  });
+
+  it('handleRetrieveKnowledge reranks hybrid results before returning markdown', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'winner.md'), 'Lexical winner content');
+    process.env.KB_RERANK = 'on';
+    process.env.KB_RERANK_TOP_N = '2';
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'Dense loser content', metadata: { source: '/kb/dense-loser.md', chunkIndex: 0 }, score: 0.2 },
+    ]);
+
+    const server = await freshServer();
+    const { setRerankerFactoryForTests } = await import('./reranker.js');
+    const restoreFactory = setRerankerFactoryForTests(async () => ({
+      id: 'stub-reranker',
+      rerank: async (_query: string, candidates: string[]) =>
+        candidates.map((candidate) => (candidate.includes('Lexical winner') ? 10 : 0)),
+    }));
+    try {
+      const result = await server['handleRetrieveKnowledge']({
+        query: 'winner',
+        knowledge_base_name: 'alpha',
+        search_mode: 'hybrid',
+      });
+
+      expect(result.isError).toBeUndefined();
+      const text = result.content[0].text;
+      expect(text).toContain('rerank stub-reranker');
+      expect(text.indexOf('Lexical winner content')).toBeGreaterThanOrEqual(0);
+      expect(text.indexOf('Lexical winner content')).toBeLessThan(text.indexOf('Dense loser content'));
+    } finally {
+      restoreFactory();
+    }
   });
 
   it('handleRetrieveKnowledge emits one canonical event with redacted query and result fields (#216)', async () => {

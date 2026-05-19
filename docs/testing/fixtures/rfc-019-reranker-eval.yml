@@ -1,0 +1,126 @@
+# RFC 019 M0b — reranker precision canary for the operating-environment shelf.
+#
+# Purpose. Compare `KB_RERANK=off` vs `KB_RERANK=on` under hybrid retrieval:
+#
+#   KB_RERANK=off kb eval docs/testing/fixtures/rfc-019-reranker-eval.yml --format=json
+#   KB_RERANK=on  kb eval docs/testing/fixtures/rfc-019-reranker-eval.yml --format=json
+#
+# This fixture starts from the RFC 017 recall canary queries but adds
+# `relevant_sources` so `kb eval` reports nDCG@10, MRR@10, recall@k, and
+# precision@k for the default-on decision.
+
+gate: false
+mode: hybrid
+
+cases:
+  # author: rfc-019-m0b
+  # source-of-truth: operating-environment/local-research-agent.md
+  # protects: reranker precision for local stack shutdown and GPU release advice
+  - name: rerank - local research agent stop procedure
+    query: how do I stop the local research agent and free GPU memory
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/local-research-agent.md
+    relevant_sources:
+      - source: operating-environment/local-research-agent.md
+        relevance: 3
+    stale_policy: allow_stale
+
+  # author: rfc-019-m0b
+  # source-of-truth: operating-environment/local-research-agent.md
+  # protects: reranker precision for the one-command LRA stack control surface
+  - name: rerank - local research agent wrapper command
+    query: which command starts and stops llama-server ollama and n8n together
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/local-research-agent.md
+    relevant_sources:
+      - source: operating-environment/local-research-agent.md
+        relevance: 3
+    stale_policy: allow_stale
+
+  # author: rfc-019-m0b
+  # source-of-truth: operating-environment/qwen36-hybrid-ssm-blocks-speculative-decoding.md
+  # protects: reranker precision for a hardware/model compatibility gotcha
+  - name: rerank - speculative decoding incompatibility
+    query: why can't I use speculative decoding with the relevance gate model
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/qwen36-hybrid-ssm-blocks-speculative-decoding.md
+    relevant_sources:
+      - source: operating-environment/qwen36-hybrid-ssm-blocks-speculative-decoding.md
+        relevance: 3
+    stale_policy: allow_stale
+
+  # author: rfc-019-m0b
+  # source-of-truth: operating-environment/update-local-kb-cli-from-symlinked-checkout.md
+  # protects: reranker precision for operational CLI refresh procedure retrieval
+  - name: rerank - refresh local kb CLI
+    query: how do I refresh the kb command line tool to the newest build
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/update-local-kb-cli-from-symlinked-checkout.md
+    relevant_sources:
+      - source: operating-environment/update-local-kb-cli-from-symlinked-checkout.md
+        relevance: 3
+    stale_policy: allow_stale
+
+  # author: rfc-019-m0b
+  # source-of-truth: operating-environment/local-research-agent.md
+  # protects: reranker precision for VRAM budget queries deep in the stack note
+  - name: rerank - local stack GPU memory
+    query: how much GPU memory does each model in the local stack consume
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/local-research-agent.md
+    relevant_sources:
+      - source: operating-environment/local-research-agent.md
+        relevance: 3
+    stale_policy: allow_stale
+
+  # author: rfc-019-m0b
+  # source-of-truth: operating-environment/kookr-task-spawning-daemon-oss-registry-state-paths.md
+  # protects: reranker precision for exact operational state-path retrieval
+  - name: rerank - kookr daemon registry state
+    query: where does the kookr task-spawning daemon store its registry state
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/kookr-task-spawning-daemon-oss-registry-state-paths.md
+    relevant_sources:
+      - source: operating-environment/kookr-task-spawning-daemon-oss-registry-state-paths.md
+        relevance: 3
+    stale_policy: allow_stale
+
+  # author: rfc-019-m0b
+  # source-of-truth: operating-environment/bandwidth-surgery.md
+  # protects: reranker precision for GPU co-tenancy experiment context
+  - name: rerank - GPU coexistence experiment
+    query: what experiment has to share the GPU with the always-on research stack
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/bandwidth-surgery.md
+    relevant_sources:
+      - source: operating-environment/bandwidth-surgery.md
+        relevance: 3
+    stale_policy: allow_stale
+
+  # author: rfc-019-m0b
+  # source-of-truth: operating-environment/local-research-agent.md
+  # protects: reranker precision for cron schedule and quiet-window retrieval
+  - name: rerank - arxiv ingestion schedule
+    query: when does the daily arxiv ingestion run and which hours should I avoid heavy GPU work
+    kb: operating-environment
+    k: 10
+    required_sources:
+      - operating-environment/local-research-agent.md
+    relevant_sources:
+      - source: operating-environment/local-research-agent.md
+        relevance: 3
+    stale_policy: allow_stale

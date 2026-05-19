@@ -1,0 +1,123 @@
+import { describe, expect, it, jest } from '@jest/globals';
+
+import {
+  InMemoryRerankScoreCache,
+  rerankFusedResults,
+  scoresFromSequenceClassifierOutput,
+  type Reranker,
+  type RerankableDocument,
+} from './reranker.js';
+
+function doc(source: string, score: number, body = source): RerankableDocument {
+  return {
+    pageContent: body,
+    metadata: { source, chunkIndex: 0 },
+    score,
+  };
+}
+
+function stubReranker(scores: number[]): Reranker {
+  return {
+    id: 'stub-reranker',
+    rerank: jest.fn(async () => scores),
+  };
+}
+
+describe('rerankFusedResults (RFC 019)', () => {
+  it('reranks the topN block by descending cross-encoder score and returns top k', async () => {
+    const reranker = stubReranker([0.10, 0.95, 0.40]);
+    const fused = [doc('a.md', 0.030), doc('b.md', 0.025), doc('c.md', 0.020)];
+
+    const out = await rerankFusedResults({
+      query: 'how do rollbacks work',
+      fused,
+      k: 2,
+      topN: 3,
+      reranker,
+    });
+
+    expect(out.degraded).toBe(false);
+    expect(out.results.map((r) => r.metadata.source)).toEqual(['b.md', 'c.md']);
+    expect(out.results.map((r) => r.rerankScore)).toEqual([0.95, 0.40]);
+    expect(out.results[0].score).toBe(0.025);
+  });
+
+  it('keeps unscored tail candidates after the reranked block in original fused order', async () => {
+    const reranker = stubReranker([0.20, 0.90]);
+    const fused = [
+      doc('a.md', 0.040),
+      doc('b.md', 0.030),
+      doc('c.md', 0.020),
+      doc('d.md', 0.010),
+    ];
+
+    const out = await rerankFusedResults({
+      query: 'query',
+      fused,
+      k: 4,
+      topN: 2,
+      reranker,
+    });
+
+    expect(out.results.map((r) => r.metadata.source)).toEqual(['b.md', 'a.md', 'c.md', 'd.md']);
+    expect(out.results.map((r) => r.rerankScore ?? null)).toEqual([0.90, 0.20, null, null]);
+  });
+
+  it('uses an in-memory cache keyed by normalized query, model id, and candidate content', async () => {
+    const reranker = stubReranker([0.75, 0.25]);
+    const cache = new InMemoryRerankScoreCache({ maxEntries: 10 });
+    const fused = [doc('a.md', 0.020, 'same body'), doc('b.md', 0.010, 'other body')];
+
+    await rerankFusedResults({ query: '  Query   Text ', fused, k: 2, topN: 2, reranker, cache });
+    const second = await rerankFusedResults({ query: 'query text', fused, k: 2, topN: 2, reranker, cache });
+
+    expect(reranker.rerank).toHaveBeenCalledTimes(1);
+    expect(second.cacheHits).toBe(2);
+    expect(second.results.map((r) => r.rerankScore)).toEqual([0.75, 0.25]);
+  });
+
+  it('degrades to the original fused order when the provider fails', async () => {
+    const reranker: Reranker = {
+      id: 'throwing',
+      rerank: jest.fn(async () => {
+        throw new Error('model unavailable');
+      }),
+    };
+    const fused = [doc('a.md', 0.030), doc('b.md', 0.020)];
+
+    const out = await rerankFusedResults({ query: 'q', fused, k: 2, topN: 2, reranker });
+
+    expect(out.degraded).toBe(true);
+    expect(out.degradeReason).toContain('model unavailable');
+    expect(out.results).toEqual(fused);
+  });
+
+  it('degrades to the original fused order when the provider returns the wrong number of scores', async () => {
+    const reranker = stubReranker([0.1]);
+    const fused = [doc('a.md', 0.030), doc('b.md', 0.020)];
+
+    const out = await rerankFusedResults({ query: 'q', fused, k: 2, topN: 2, reranker });
+
+    expect(out.degraded).toBe(true);
+    expect(out.degradeReason).toMatch(/expected 2 scores, got 1/);
+    expect(out.results).toEqual(fused);
+  });
+});
+
+describe('scoresFromSequenceClassifierOutput', () => {
+  it('uses raw logits for one-label MS MARCO cross-encoder models', () => {
+    expect(scoresFromSequenceClassifierOutput({
+      logits: { dims: [3, 1], data: [8.1, -2.4, 0.5] },
+    })).toEqual([8.1, -2.4, 0.5]);
+  });
+
+  it('uses the positive-label softmax probability for two-label classifiers', () => {
+    const scores = scoresFromSequenceClassifierOutput(
+      { logits: { dims: [2, 2], data: [1, 3, 4, 1] } },
+      { label2id: { negative: 0, positive: 1 } },
+    );
+
+    expect(scores[0]).toBeCloseTo(0.8808, 4);
+    expect(scores[1]).toBeCloseTo(0.0474, 4);
+  });
+});

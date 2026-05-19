@@ -10,11 +10,13 @@ import {
   evaluateRetrievalCase,
   formatRetrievalEvalMarkdown,
   normalizeRetrievalEvalFixture,
+  retrieveForRetrievalEvalCase,
   retrievalEvalExitCode,
   resolveRetrievalEvalMode,
   summarizeRetrievalEval,
   type RetrievalEvalCase,
 } from './retrieval-eval.js';
+import { setRerankerFactoryForTests } from './reranker.js';
 
 const FRESH: Staleness = { indexMtime: '2026-05-09T08:00:00.000Z', modifiedFiles: 0, newFiles: 0 };
 const STALE: Staleness = { indexMtime: '2026-05-09T08:00:00.000Z', modifiedFiles: 1, newFiles: 0 };
@@ -308,6 +310,54 @@ describe('resolveRetrievalEvalMode', () => {
       effectiveMode: 'hybrid',
       autoMode: { mode: 'hybrid', reason: 'constant or error-code token' },
     });
+  });
+});
+
+describe('retrieveForRetrievalEvalCase', () => {
+  it('reranks the hybrid runtime path before returning eval results', async () => {
+    const previousRerank = process.env.KB_RERANK;
+    const previousTopN = process.env.KB_RERANK_TOP_N;
+    process.env.KB_RERANK = 'on';
+    process.env.KB_RERANK_TOP_N = '2';
+    const restoreFactory = setRerankerFactoryForTests(async () => ({
+      id: 'stub-reranker',
+      rerank: async (_query, candidates) =>
+        candidates.map((candidate) => (candidate.includes('winner') ? 5 : 0)),
+    }));
+
+    try {
+      const result = await retrieveForRetrievalEvalCase(
+        fixtureCase({ k: 1, query: 'deployment winner' }),
+        {
+          defaultK: 10,
+          defaultThreshold: 2,
+          manager: {
+            similaritySearch: async () => [
+              {
+                pageContent: 'content from /kb/dense-loser.md',
+                metadata: { source: '/kb/dense-loser.md', relativePath: '/kb/dense-loser.md' },
+                score: 0.1,
+              },
+            ],
+          },
+          retrieveLexical: async () => [
+            doc('/kb/lexical-winner.md', 10),
+          ],
+        },
+        'hybrid',
+      );
+
+      expect(result.effectiveMode).toBe('hybrid');
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].metadata.source).toBe('/kb/lexical-winner.md');
+      expect(result.results[0].rerankScore).toBe(5);
+    } finally {
+      restoreFactory();
+      if (previousRerank === undefined) delete process.env.KB_RERANK;
+      else process.env.KB_RERANK = previousRerank;
+      if (previousTopN === undefined) delete process.env.KB_RERANK_TOP_N;
+      else process.env.KB_RERANK_TOP_N = previousTopN;
+    }
   });
 });
 

@@ -14,6 +14,7 @@ import {
   hybridFetchK,
   listLexicalKbs,
 } from './hybrid-retrieval.js';
+import { applyRerankerIfEnabled, resolveRerankerConfig } from './reranker.js';
 
 export type StalePolicy = 'allow_stale' | 'fresh' | 'stale';
 
@@ -171,6 +172,7 @@ export interface RetrievalEvalSearchContext {
   manager: Pick<FaissIndexManager, 'similaritySearch'>;
   defaultK: number;
   defaultThreshold: number;
+  retrieveLexical?: (query: string, k: number, scopedKb?: string) => Promise<ScoredDocument[]>;
 }
 
 export interface RetrievalEvalSearchResult {
@@ -272,7 +274,7 @@ export async function retrieveForRetrievalEvalCase(
   if (mode.effectiveMode === 'dense') {
     results = await retrieveDense(fixtureCase, context);
   } else if (mode.effectiveMode === 'lexical') {
-    results = await retrieveLexical(
+    results = await (context.retrieveLexical ?? retrieveLexical)(
       fixtureCase.query,
       fixtureCase.k ?? context.defaultK,
       fixtureCase.kb,
@@ -573,6 +575,7 @@ async function retrieveHybrid(
 ): Promise<ScoredDocument[]> {
   const k = fixtureCase.k ?? context.defaultK;
   const fetchK = hybridFetchK(k);
+  const retrieveLexicalFn = context.retrieveLexical ?? retrieveLexical;
   const [denseResults, lexicalResults] = await Promise.all([
     context.manager.similaritySearch(
       fixtureCase.query,
@@ -580,13 +583,21 @@ async function retrieveHybrid(
       Number.POSITIVE_INFINITY,
       fixtureCase.kb,
     ),
-    retrieveLexical(fixtureCase.query, fetchK, fixtureCase.kb),
+    retrieveLexicalFn(fixtureCase.query, fetchK, fixtureCase.kb),
   ]);
-  return fuseHybridResults({
+  const rerankConfig = resolveRerankerConfig();
+  const fused = fuseHybridResults({
     denseResults,
     lexicalResults,
-    k,
+    k: rerankConfig.enabled ? Math.max(k, rerankConfig.topN) : k,
   });
+  const reranked = await applyRerankerIfEnabled({
+    query: fixtureCase.query,
+    results: fused,
+    k,
+    searchMode: 'hybrid',
+  });
+  return reranked.results;
 }
 
 function toScoredDocument(result: LexicalSearchResult): ScoredDocument {

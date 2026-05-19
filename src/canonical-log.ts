@@ -54,6 +54,7 @@ export interface CanonicalLogEvent {
   cache?: CanonicalCacheStatus;
   error?: CanonicalError;
   recovery_hint?: string;
+  rerank?: Record<string, unknown>;
   gate?: Record<string, unknown>;
 }
 
@@ -93,6 +94,7 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'cache',
   'error',
   'recovery_hint',
+  'rerank',
   'gate',
 ];
 
@@ -137,6 +139,7 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   assignIfDefined(event, 'cache', input.cache);
   assignIfDefined(event, 'error', input.error);
   assignIfDefined(event, 'recovery_hint', input.recovery_hint);
+  assignIfDefined(event, 'rerank', input.rerank);
   assignIfDefined(event, 'gate', input.gate);
 
   return event;

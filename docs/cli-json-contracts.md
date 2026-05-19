@@ -168,6 +168,9 @@ Optional stable fields:
   only when `KB_EDITOR_URI` is `vscode`, `cursor`, or `file` and the hit has
   enough source metadata. The default `KB_EDITOR_URI=none` omits local absolute
   paths.
+- `results[].rerank_score`: present for hits that were re-scored by the RFC 019
+  reranker. It is a cross-encoder relevance score, not a FAISS distance or RRF
+  score.
 - `auto_threshold`: present with `--threshold=auto`. Shape:
   `{"threshold": number, "knee_index": number|null, "kept": number}`.
 - `timing`: present with `--timing`; keys are elapsed millisecond counters and
@@ -237,14 +240,24 @@ Hybrid success envelope:
     "dense": { "fetched": 0, "model": "ollama__nomic-embed-text-latest" },
     "lexical": { "fetched": 0, "refreshed": 0, "failed": 0 }
   },
-  "rrf": { "c": 60, "fetch_k": 40 }
+  "rrf": { "c": 60, "fetch_k": 40 },
+  "rerank": {
+    "enabled": false,
+    "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+    "candidates": 0,
+    "cache_hits": 0,
+    "degraded": false,
+    "degrade_reason": null
+  }
 }
 ```
 
 Stable hybrid fields are `mode`, `results`, `retrievers.dense.fetched`,
 `retrievers.dense.model`, `retrievers.lexical.fetched`,
 `retrievers.lexical.refreshed`, `retrievers.lexical.failed`, `rrf.c`, and
-`rrf.fetch_k`.
+`rrf.fetch_k`. `rerank.enabled`, `rerank.model`, `rerank.candidates`,
+`rerank.cache_hits`, `rerank.degraded`, and `rerank.degrade_reason` are stable
+when the `rerank` object is present.
 
 Stable error envelope for dense and hybrid JSON mode:
 
@@ -584,6 +597,14 @@ Report envelope:
     "healthy": true,
     "detail": "Ollama http://localhost:11434 is reachable..."
   },
+  "reranker": {
+    "enabled": false,
+    "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+    "top_n": 40,
+    "status": "ok",
+    "cache_path": null,
+    "detail": "KB_RERANK is off"
+  },
   "llm_endpoint": {
     "status": "ok",
     "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
@@ -626,6 +647,9 @@ Stable fields:
 - `stale_counts_by_kb`: object keyed by KB name with `modified_files` and
   `new_files`.
 - `backend`: `provider`, `healthy`, and `detail`.
+- `reranker`: RFC 019 reranker readiness. Stable fields are `enabled`,
+  `model`, `top_n`, `status`, `cache_path`, and `detail`; `cache_path` is
+  `null` when no local Transformers.js cache candidate is known.
 - `llm_endpoint`: local LLM readiness for `kb ask`. `status` is `ok` or
   `warn`; failed LLM readiness is a warning because search health can still be
   usable. `endpoint_source` is `env`, `profile`, `default`, or `unresolved`.

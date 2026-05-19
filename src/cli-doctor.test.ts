@@ -20,10 +20,17 @@ const originalEnv = {
   KB_LLM_ENDPOINT: process.env.KB_LLM_ENDPOINT,
   KB_LLM_CONFIG_DIR: process.env.KB_LLM_CONFIG_DIR,
   KB_LLM_STATE_DIR: process.env.KB_LLM_STATE_DIR,
+  KB_RERANK: process.env.KB_RERANK,
+  KB_RERANK_MODEL: process.env.KB_RERANK_MODEL,
+  KB_RERANK_TOP_N: process.env.KB_RERANK_TOP_N,
+  HF_HOME: process.env.HF_HOME,
+  TRANSFORMERS_CACHE: process.env.TRANSFORMERS_CACHE,
+  HOME: process.env.HOME,
 };
 
 const MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
 const MODEL_NAME = 'BAAI/bge-small-en-v1.5';
+const RERANK_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
 
 afterEach(() => {
   for (const [key, value] of Object.entries(originalEnv)) {
@@ -52,6 +59,15 @@ async function seedVersionedIndex(modelDir: string): Promise<string> {
   await fsp.writeFile(path.join(versionDir, 'faiss.index'), 'fake-index');
   await fsp.symlink('index.v1', path.join(modelDir, 'index'), 'dir');
   return versionDir;
+}
+
+async function seedDoctorBase(tempDir: string): Promise<{ rootDir: string; faissDir: string }> {
+  const rootDir = path.join(tempDir, 'kbs');
+  const faissDir = path.join(tempDir, '.faiss');
+  await fsp.mkdir(rootDir, { recursive: true });
+  const modelDir = await seedRegisteredModel(faissDir);
+  await seedVersionedIndex(modelDir);
+  return { rootDir, faissDir };
 }
 
 function persistedSuccessSummary() {
@@ -1156,6 +1172,181 @@ describe('kb doctor', () => {
         const md = formatDoctorMarkdown(report);
         expect(md).toContain('model=ollama__nomic calls=10 errors=8');
         expect(md).toMatch(/p50=\d+(\.\d+)?ms p95=\d+(\.\d+)?ms p99=\d+(\.\d+)?ms tokens=n\/a, WARN/);
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('reranker health', () => {
+    it('reports the reranker as OK when disabled', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-rerank-off-'));
+      try {
+        const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+          KB_RERANK: 'off',
+          HF_HOME: path.join(tempDir, 'hf'),
+        });
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+        });
+
+        expect(report.reranker).toEqual({
+          enabled: false,
+          model: RERANK_MODEL,
+          top_n: 40,
+          status: 'ok',
+          cache_path: null,
+          detail: 'KB_RERANK is off',
+        });
+        expect(report.checks).toContainEqual({
+          name: 'reranker',
+          status: 'ok',
+          detail: 'KB_RERANK is off',
+        });
+        const markdown = formatDoctorMarkdown(report);
+        expect(markdown).toContain('Reranker:');
+        expect(markdown).toContain('enabled: no');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('reports invalid reranker configuration as an error', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-rerank-invalid-'));
+      try {
+        const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+          KB_RERANK: 'on',
+          KB_RERANK_TOP_N: '0',
+          HF_HOME: path.join(tempDir, 'hf'),
+        });
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+        });
+
+        expect(report.status).toBe('error');
+        expect(report.reranker).toMatchObject({
+          enabled: false,
+          model: '<invalid>',
+          top_n: 0,
+          status: 'error',
+          cache_path: null,
+        });
+        expect(report.reranker.detail).toContain('KB_RERANK_TOP_N');
+        const check = report.checks.find((c) => c.name === 'reranker');
+        expect(check?.status).toBe('error');
+        expect(check?.detail).toContain('KB_RERANK_TOP_N');
+        const markdown = formatDoctorMarkdown(report);
+        expect(markdown).toContain('status: error');
+        expect(markdown).toContain('model: <invalid>');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('warns when enabled and the reranker model cache is missing', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-rerank-cache-missing-'));
+      try {
+        const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+        const hfHome = path.join(tempDir, 'hf');
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+          KB_RERANK: 'on',
+          HF_HOME: hfHome,
+        });
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+        });
+
+        expect(report.status).toBe('warn');
+        expect(report.reranker).toMatchObject({
+          enabled: true,
+          model: RERANK_MODEL,
+          top_n: 40,
+          status: 'warn',
+          cache_path: null,
+        });
+        expect(report.reranker.detail).toContain('cache not found');
+        const check = report.checks.find((c) => c.name === 'reranker');
+        expect(check?.status).toBe('warn');
+        const markdown = formatDoctorMarkdown(report);
+        expect(markdown).toContain('enabled: yes');
+        expect(markdown).toContain('cache_path: <not found>');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('reports OK when enabled and the reranker model cache is present', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-rerank-cache-present-'));
+      try {
+        const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+        const hfHome = path.join(tempDir, 'hf');
+        const modelCachePath = path.join(hfHome, 'hub', 'models--Xenova--ms-marco-MiniLM-L-6-v2');
+        await fsp.mkdir(modelCachePath, { recursive: true });
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+          KB_RERANK: 'on',
+          HF_HOME: hfHome,
+        });
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+        });
+
+        expect(report.reranker).toEqual({
+          enabled: true,
+          model: RERANK_MODEL,
+          top_n: 40,
+          status: 'ok',
+          cache_path: modelCachePath,
+          detail: 'reranker model cache found',
+        });
+        expect(report.checks).toContainEqual({
+          name: 'reranker',
+          status: 'ok',
+          detail: 'reranker model cache found',
+        });
+        const markdown = formatDoctorMarkdown(report);
+        expect(markdown).toContain(`cache_path: ${modelCachePath}`);
       } finally {
         await fsp.rm(tempDir, { recursive: true, force: true });
       }
