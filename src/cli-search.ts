@@ -67,6 +67,12 @@ import {
   RELEVANCE_GATE_SCHEMA_VERSION,
   type RelevanceGateVerdict,
 } from './relevance-gate-schema.js';
+import {
+  inspectTaskContext,
+  resolveTaskContextArgvMax,
+  resolveTaskContextPolicyMode,
+  type TaskContextSource,
+} from './task-context-guard.js';
 import { chunkIdFromMetadata } from './rrf.js';
 import {
   buildEmptyResultGuidance,
@@ -129,9 +135,15 @@ Result tuning:
   --gate                Run the relevance gate for this call even when
                         KB_RELEVANCE_GATE is off.
   --no-gate             Bypass the relevance gate for this call.
-  --task-context=<str>  Task context used by the relevance judge.
+  --task-context=<str>  Task context used by the relevance judge. Prefer
+                        --task-context-file for long or prompt-like text:
+                        argv is exposed in 'ps', shell history, and hooks.
   --task-context-file=<path>
                         Read task context from a UTF-8 file.
+                        KB_GATE_TASK_CONTEXT_MODE=off|warn|strict controls the
+                        policy (default warn): warn advises on argv exposure
+                        and prompt-injection signals; strict refuses task
+                        context carrying injection signals.
 
 Output:
   --format=md|json|vimgrep
@@ -234,11 +246,34 @@ export async function runSearch(
     return 2;
   }
 
+  let taskContextSource: TaskContextSource | null = null;
   if (parsed.taskContextFile !== undefined) {
     try {
       parsed.taskContext = await fsp.readFile(parsed.taskContextFile, 'utf-8');
+      taskContextSource = 'file';
     } catch (err) {
       process.stderr.write(`kb search: could not read --task-context-file: ${(err as Error).message}\n`);
+      return 2;
+    }
+  } else if (parsed.taskContext !== undefined) {
+    taskContextSource = 'argv';
+  }
+
+  // Issue #412 — apply the strict/warn task-context policy before the gate
+  // sees the text. Warnings are stderr-only (stdout/JSON unchanged); strict
+  // mode refuses injection-signal-bearing task context with exit 2.
+  if (parsed.taskContext !== undefined && taskContextSource !== null) {
+    const inspection = inspectTaskContext({
+      text: parsed.taskContext,
+      source: taskContextSource,
+      mode: resolveTaskContextPolicyMode(),
+      argvMax: resolveTaskContextArgvMax(),
+    });
+    for (const warning of inspection.warnings) {
+      process.stderr.write(`kb search: ${warning}\n`);
+    }
+    if (inspection.refused) {
+      process.stderr.write(`kb search: ${inspection.refuseReason}\n`);
       return 2;
     }
   }
