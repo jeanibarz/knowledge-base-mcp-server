@@ -8,6 +8,12 @@
 // process.
 
 import { runReindex, type ReindexResult } from './reindex-runner.js';
+import {
+  computeReindexProgress,
+  reindexProgressFilePath,
+  writeReindexProgress,
+  type ReindexProgress,
+} from './reindex-progress.js';
 import { isContextualRetrievalEnabled } from './config/contextual-preface.js';
 import { logger } from './logger.js';
 
@@ -15,12 +21,13 @@ export const REINDEX_HELP = `kb reindex — rebuild FAISS indexes (RFC 017)
 
 Usage:
   kb reindex --with-context [--kb=<name>...] [--force]
+  kb reindex status [--kb=<name>...] [--format=md|json]
 
-The \`--with-context\` flag is REQUIRED in this milestone (M0b). It
-triggers a full rebuild of every in-scope KB through the contextual-
-retrieval ingest path: per-chunk LLM-generated prefaces are prepended
-for embedding while the docstore content stays byte-identical. The
-\`KB_CONTEXTUAL_RETRIEVAL=on\` environment variable must also be set;
+The \`--with-context\` flag is REQUIRED to run a rebuild in this milestone
+(M0b). It triggers a full rebuild of every in-scope KB through the
+contextual-retrieval ingest path: per-chunk LLM-generated prefaces are
+prepended for embedding while the docstore content stays byte-identical.
+The \`KB_CONTEXTUAL_RETRIEVAL=on\` environment variable must also be set;
 the CLI emits a warning otherwise.
 
 Behavior:
@@ -37,21 +44,36 @@ Behavior:
     sidecar invalidation, error handling, and atomic FAISS swaps come
     for free.
 
+Notes:
+  The \`status\` subcommand reports contextual-preface progress derived
+  from the durable per-source sidecars under
+  \`$FAISS_INDEX_PATH/.contextual-prefaces/\`. Run it after a SIGINT,
+  crash, or host reboot to see which files completed their LLM preface
+  work, which failed, and which still need it. It does not touch the
+  index; it also materializes the rollup to
+  \`$FAISS_INDEX_PATH/.reindex.progress.json\`. To resume an interrupted
+  reindex, re-run \`kb reindex --with-context\`: completed files are
+  served from the sidecar cache and only pending / failed chunks call
+  the LLM.
+
 Options:
-  --with-context        Required in M0b. Required for the CLI to do
-                        anything; without it, exit code 2.
-  --kb=<name>           Limit reindex to this KB. Repeat the flag for
-                        multiple KBs. Default: every registered KB.
+  --with-context        Required to run a rebuild in M0b. Without it
+                        (and without the \`status\` subcommand), exit
+                        code 2.
+  --kb=<name>           Rebuild: limit reindex to this KB (repeat the
+                        flag for several; default: every registered
+                        KB). status: limit the report to this KB.
   --force               Bypass the LRA cron window guard AND the
                         self-runtime-budget guard. Required to start
                         a reindex inside 06:00-10:30 UTC or when the
                         run is estimated to cross that window.
+  --format=md|json      Output format for \`status\` (default: md).
   --help, -h            Show this help.
 
 Exit codes:
-  0   success — index swapped, sidecars persisted
+  0   success — index swapped / status reported
   1   updateIndex reported partial or failed status
-  2   argv / env error (e.g. --kb=<missing>)
+  2   argv / env error (e.g. --kb=<missing>, missing --with-context)
   3   guard blocked the run (inside or crossing the LRA window)
   4   another reindex is already running on the same model
 `;
@@ -91,6 +113,12 @@ function parseReindexArgs(rest: string[]): ReindexArgs {
 }
 
 export async function runReindexCli(rest: string[]): Promise<number> {
+  // `kb reindex status` is a separate read-only subcommand (#407) — it
+  // does not run a rebuild and does not need `--with-context`.
+  if (rest[0] === 'status') {
+    return runReindexStatusCli(rest.slice(1));
+  }
+
   let parsed: ReindexArgs;
   try {
     parsed = parseReindexArgs(rest);
@@ -166,6 +194,171 @@ function formatHumanResult(result: ReindexResult): string {
     );
   }
   return lines.join('\n') + '\n';
+}
+
+// ---------------------------------------------------------------------------
+// `kb reindex status` — contextual-preface progress ledger (#407)
+// ---------------------------------------------------------------------------
+
+interface ReindexStatusArgs {
+  knowledgeBases: string[];
+  format: 'md' | 'json';
+}
+
+function parseReindexStatusArgs(rest: string[]): ReindexStatusArgs {
+  const out: ReindexStatusArgs = { knowledgeBases: [], format: 'md' };
+  for (const arg of rest) {
+    if (arg.startsWith('--kb=')) {
+      const value = arg.slice('--kb='.length);
+      if (value.length === 0) throw new Error('empty --kb=<name> value');
+      out.knowledgeBases.push(value);
+      continue;
+    }
+    if (arg.startsWith('--format=')) {
+      const value = arg.slice('--format='.length);
+      if (value !== 'md' && value !== 'json') {
+        throw new Error(`invalid --format: ${arg} (expected md or json)`);
+      }
+      out.format = value;
+      continue;
+    }
+    throw new Error(`unknown option '${arg}'`);
+  }
+  return out;
+}
+
+/** Test seam: stdout / stderr sinks. Production uses the process streams. */
+export interface ReindexStatusDeps {
+  stdout: (text: string) => void;
+  stderr: (text: string) => void;
+}
+
+const DEFAULT_STATUS_DEPS: ReindexStatusDeps = {
+  stdout: (text) => process.stdout.write(text),
+  stderr: (text) => process.stderr.write(text),
+};
+
+export async function runReindexStatusCli(
+  rest: string[],
+  deps: ReindexStatusDeps = DEFAULT_STATUS_DEPS,
+): Promise<number> {
+  let parsed: ReindexStatusArgs;
+  try {
+    parsed = parseReindexStatusArgs(rest);
+  } catch (err) {
+    deps.stderr(`kb reindex status: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  let progress: ReindexProgress;
+  try {
+    progress = await computeReindexProgress({ knowledgeBases: parsed.knowledgeBases });
+  } catch (err) {
+    deps.stderr(`kb reindex status: ${(err as Error).message}\n`);
+    return 1;
+  }
+
+  // Materialize the durable ledger. Best-effort: a write failure must
+  // not fail the report — the computed snapshot is the primary output.
+  let ledgerPath: string | null = null;
+  try {
+    await writeReindexProgress(progress);
+    ledgerPath = reindexProgressFilePath();
+  } catch (err) {
+    logger.warn(`#407: failed to write reindex progress ledger: ${(err as Error).message}`);
+  }
+
+  if (parsed.format === 'json') {
+    deps.stdout(`${JSON.stringify(progress, null, 2)}\n`);
+  } else {
+    deps.stdout(formatReindexProgressMarkdown(progress, ledgerPath));
+  }
+  return 0;
+}
+
+// Cap the per-KB incomplete-file listing so a large damaged corpus does
+// not flood the terminal; the full list is always in --format=json.
+const MAX_LISTED_INCOMPLETE_FILES = 20;
+
+export function formatReindexProgressMarkdown(
+  progress: ReindexProgress,
+  ledgerPath: string | null,
+): string {
+  const lines: string[] = [];
+  lines.push('kb reindex status — contextual-preface progress');
+  lines.push('');
+
+  if (progress.run_active && progress.run !== null) {
+    lines.push(
+      `Reindex run: IN PROGRESS — PID ${progress.run.pid}, started ${progress.run.started_at}`,
+    );
+    const scope = progress.run.kbs_in_scope;
+    lines.push(`  scope: ${scope.length === 0 ? 'every KB' : scope.join(', ')}`);
+  } else {
+    lines.push('Reindex run: not running');
+  }
+  lines.push('');
+
+  if (progress.kbs.length === 0) {
+    lines.push('No contextual-preface sidecars found.');
+    lines.push('Nothing has been reindexed with KB_CONTEXTUAL_RETRIEVAL=on yet, or the');
+    lines.push('sidecar cache under $FAISS_INDEX_PATH/.contextual-prefaces is empty.');
+  } else {
+    for (const kb of progress.kbs) {
+      lines.push(kb.knowledge_base);
+      lines.push(
+        `  files:  ${kb.files_complete} complete, ${kb.files_incomplete} incomplete, ` +
+          `${kb.files_pending} pending  (${kb.files_indexed} indexed, ` +
+          `${kb.files_with_sidecar} with sidecars)`,
+      );
+      lines.push(`  chunks: ${kb.chunks_resolved} resolved, ${kb.chunks_failed} failed`);
+      const incomplete = kb.files.filter((f) => f.status === 'incomplete');
+      if (incomplete.length > 0) {
+        lines.push('  incomplete files:');
+        for (const file of incomplete.slice(0, MAX_LISTED_INCOMPLETE_FILES)) {
+          const codes =
+            file.error_codes.length > 0 ? `, errors: ${file.error_codes.join('/')}` : '';
+          lines.push(
+            `    - ${file.source}  ` +
+              `(${file.chunks_resolved}/${file.chunks_total} chunks${codes})`,
+          );
+        }
+        if (incomplete.length > MAX_LISTED_INCOMPLETE_FILES) {
+          lines.push(
+            `    … and ${incomplete.length - MAX_LISTED_INCOMPLETE_FILES} ` +
+              'more (see --format=json)',
+          );
+        }
+      }
+      lines.push('');
+    }
+
+    const t = progress.totals;
+    lines.push(
+      `Totals: ${t.knowledge_bases} KB(s) — ${t.files_complete} complete, ` +
+        `${t.files_incomplete} incomplete, ${t.files_pending} pending; ` +
+        `${t.chunks_resolved} chunks resolved, ${t.chunks_failed} failed`,
+    );
+    lines.push('');
+
+    if (t.files_with_sidecar === 0 && t.files_pending === 0) {
+      lines.push('No contextual-preface work is recorded for the reported KB(s).');
+    } else if (t.files_incomplete + t.files_pending === 0) {
+      lines.push('Every sidecar-covered file has a complete set of contextual prefaces.');
+    } else if (progress.run_active) {
+      lines.push('A reindex is in progress; re-run `kb reindex status` to refresh.');
+    } else {
+      lines.push('To resume, re-run `kb reindex --with-context`. Files with complete');
+      lines.push('sidecars are served from the preface cache; only pending and failed');
+      lines.push('chunks call the LLM.');
+    }
+  }
+
+  if (ledgerPath !== null) {
+    lines.push('');
+    lines.push(`Ledger written to ${ledgerPath}`);
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 // Compatibility re-export for the CLI registry (matches the
