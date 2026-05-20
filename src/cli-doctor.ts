@@ -7,6 +7,7 @@ import * as fsp from 'fs/promises';
 import { realpathSync } from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
+import { createServer } from 'net';
 import { promisify } from 'util';
 import {
   ActiveModelResolutionError,
@@ -64,6 +65,14 @@ import {
   type LlmProfile,
 } from './llm-profiles.js';
 import { resolveRerankerConfig } from './config/reranker.js';
+import {
+  loadTransportConfig,
+  type TransportConfig,
+} from './transport-config.js';
+import {
+  daemonUrlFromEnv,
+  fetchDaemonHealth,
+} from './daemon-client.js';
 
 /**
  * Issue #210 — error-rate threshold above which the doctor surfaces a
@@ -81,7 +90,7 @@ const execFileAsync = promisify(execFile);
 export const DOCTOR_HELP = `kb doctor — aggregate model / index / backend health report
 
 Usage:
-  kb doctor [--format=md|json] [--reindex-trigger]
+  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints]
 
 Composes existing read-only checks (env vars, registered models, active
 model, FAISS index presence + mtime, knowledge-base count, embedding
@@ -96,6 +105,9 @@ gate from a script.
 Options:
   --format=md|json      Output format (default: md). \`json\` emits the same
                         underlying report shape for agent shells.
+  --endpoints           Run only configured endpoint preflight checks:
+                        remote MCP bind target, configured kb daemon URL,
+                        embedding endpoint, and configured LLM endpoint.
   --reindex-trigger     Include focused reindex-trigger diagnostics
                         (also included in the aggregate report).
   --help, -h            Show this help.
@@ -103,12 +115,14 @@ Options:
 Examples:
   kb doctor
   kb doctor --format=json
+  kb doctor --endpoints
   kb doctor && kb search "rollback"
 `;
 
 export interface DoctorArgs {
   format: 'md' | 'json';
   reindexTrigger: boolean;
+  endpoints: boolean;
 }
 
 export type HealthStatus = 'ok' | 'warn' | 'error';
@@ -281,6 +295,22 @@ export interface DoctorReport {
   provider_calls: Record<string, ProviderCallSnapshot>;
 }
 
+export interface DoctorEndpointEntry {
+  name: 'mcp_bind' | 'kb_daemon' | 'embedding_backend' | 'llm_endpoint';
+  kind: 'bind' | 'connect';
+  status: HealthStatus;
+  configured: boolean;
+  target: string | null;
+  detail: string;
+  next_action: string | null;
+}
+
+export interface DoctorEndpointsReport {
+  status: HealthStatus;
+  endpoints: DoctorEndpointEntry[];
+  limitation: string;
+}
+
 export interface BuildDoctorReportOptions {
   backendHealthCheck?: BackendHealthCheck;
   packageRoot?: string;
@@ -301,11 +331,28 @@ export interface BuildDoctorReportOptions {
   llmEndpointProbe?: LlmEndpointProbe;
 }
 
+export interface BuildDoctorEndpointsReportOptions {
+  bindAvailabilityCheck?: BindAvailabilityCheck;
+  daemonHealthCheck?: DaemonHealthCheck;
+  embeddingEndpointProbe?: EmbeddingEndpointProbe;
+  llmEndpointProbe?: LlmEndpointProbe;
+}
+
 export type BackendHealthCheck = (
   provider: string,
   modelName: string,
 ) => Promise<{ healthy: boolean; detail: string }>;
 export type LlmEndpointProbe = (endpoint: string) => Promise<LlmProbeResult>;
+export type BindAvailabilityCheck = (
+  host: string,
+  port: number,
+) => Promise<{ available: boolean; detail: string }>;
+export type DaemonHealthCheck = (
+  url: string,
+) => Promise<{ healthy: boolean; detail: string }>;
+export type EmbeddingEndpointProbe = (
+  endpoint: string,
+) => Promise<{ healthy: boolean; detail: string }>;
 
 export async function runDoctor(rest: string[]): Promise<number> {
   let parsed: DoctorArgs;
@@ -314,6 +361,16 @@ export async function runDoctor(rest: string[]): Promise<number> {
   } catch (err) {
     process.stderr.write(`kb doctor: ${(err as Error).message}\n`);
     return 2;
+  }
+
+  if (parsed.endpoints) {
+    const report = await buildDoctorEndpointsReport();
+    if (parsed.format === 'json') {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(formatDoctorEndpointsMarkdown(report));
+    }
+    return report.status === 'error' ? 1 : 0;
   }
 
   const report = await buildDoctorReport();
@@ -326,7 +383,7 @@ export async function runDoctor(rest: string[]): Promise<number> {
 }
 
 export function parseDoctorArgs(rest: string[]): DoctorArgs {
-  const out: DoctorArgs = { format: 'md', reindexTrigger: false };
+  const out: DoctorArgs = { format: 'md', reindexTrigger: false, endpoints: false };
   for (const raw of rest) {
     if (raw.startsWith('--format=')) {
       const value = raw.slice('--format='.length);
@@ -340,10 +397,265 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
       out.reindexTrigger = true;
       continue;
     }
+    if (raw === '--endpoints') {
+      out.endpoints = true;
+      continue;
+    }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
   }
   return out;
+}
+
+export async function buildDoctorEndpointsReport(
+  options: BuildDoctorEndpointsReportOptions = {},
+): Promise<DoctorEndpointsReport> {
+  const endpoints = await Promise.all([
+    readMcpBindEndpoint(options.bindAvailabilityCheck ?? defaultBindAvailabilityCheck),
+    readDaemonEndpoint(options.daemonHealthCheck ?? defaultDaemonHealthCheck),
+    readEmbeddingEndpoint(options.embeddingEndpointProbe ?? defaultEmbeddingEndpointProbe),
+    readConfiguredLlmEndpoint(options.llmEndpointProbe ?? defaultLlmEndpointProbe),
+  ]);
+  return {
+    status: summarizeStatus(endpoints),
+    endpoints,
+    limitation: 'endpoint preflight checks configured kb-owned bind/connect targets only; no process-owner or machine-wide service discovery is attempted',
+  };
+}
+
+async function readMcpBindEndpoint(
+  check: BindAvailabilityCheck,
+): Promise<DoctorEndpointEntry> {
+  let config: TransportConfig;
+  try {
+    config = loadTransportConfig();
+  } catch (err) {
+    return {
+      name: 'mcp_bind',
+      kind: 'bind',
+      status: 'error',
+      configured: Boolean(process.env.MCP_TRANSPORT?.trim()),
+      target: null,
+      detail: `remote MCP transport config invalid: ${(err as Error).message}`,
+      next_action: 'Fix MCP_TRANSPORT, MCP_PORT, MCP_BIND_ADDR, and MCP_AUTH_TOKEN before starting kb serve.',
+    };
+  }
+
+  if (config.transport === 'stdio') {
+    return {
+      name: 'mcp_bind',
+      kind: 'bind',
+      status: 'ok',
+      configured: false,
+      target: null,
+      detail: 'MCP_TRANSPORT=stdio; no remote MCP bind target configured',
+      next_action: null,
+    };
+  }
+
+  const target = `${config.bindAddr}:${config.port}`;
+  try {
+    const result = await check(config.bindAddr, config.port);
+    return {
+      name: 'mcp_bind',
+      kind: 'bind',
+      status: result.available ? 'ok' : 'error',
+      configured: true,
+      target,
+      detail: result.detail,
+      next_action: result.available
+        ? null
+        : `Free ${target} or choose another MCP_BIND_ADDR/MCP_PORT before starting the ${config.transport} transport.`,
+    };
+  } catch (err) {
+    return {
+      name: 'mcp_bind',
+      kind: 'bind',
+      status: 'error',
+      configured: true,
+      target,
+      detail: `bind probe failed: ${(err as Error).message}`,
+      next_action: `Fix MCP_BIND_ADDR/MCP_PORT or choose another bind target before starting the ${config.transport} transport.`,
+    };
+  }
+}
+
+async function readDaemonEndpoint(
+  check: DaemonHealthCheck,
+): Promise<DoctorEndpointEntry> {
+  if (!daemonEndpointConfigured()) {
+    return {
+      name: 'kb_daemon',
+      kind: 'connect',
+      status: 'ok',
+      configured: false,
+      target: null,
+      detail: 'KB_DAEMON_URL/KB_DAEMON_HOST/KB_DAEMON_PORT not configured; daemon clients will use their defaults when requested',
+      next_action: null,
+    };
+  }
+
+  let url: URL;
+  try {
+    url = daemonUrlFromEnv(process.env);
+  } catch (err) {
+    return {
+      name: 'kb_daemon',
+      kind: 'connect',
+      status: 'error',
+      configured: true,
+      target: null,
+      detail: `daemon endpoint config invalid: ${(err as Error).message}`,
+      next_action: 'Fix KB_DAEMON_URL or KB_DAEMON_HOST/KB_DAEMON_PORT.',
+    };
+  }
+
+  const target = url.href;
+  try {
+    const result = await check(target);
+    return {
+      name: 'kb_daemon',
+      kind: 'connect',
+      status: result.healthy ? 'ok' : 'error',
+      configured: true,
+      target,
+      detail: result.detail,
+      next_action: result.healthy
+        ? null
+        : `Start kb serve or fix KB_DAEMON_URL, then retry kb doctor --endpoints.`,
+    };
+  } catch (err) {
+    return {
+      name: 'kb_daemon',
+      kind: 'connect',
+      status: 'error',
+      configured: true,
+      target,
+      detail: `daemon health probe failed: ${(err as Error).message}`,
+      next_action: `Start kb serve or fix KB_DAEMON_URL, then retry kb doctor --endpoints.`,
+    };
+  }
+}
+
+async function readEmbeddingEndpoint(
+  check: EmbeddingEndpointProbe,
+): Promise<DoctorEndpointEntry> {
+  const provider = (process.env.EMBEDDING_PROVIDER || 'huggingface').trim();
+  if (provider !== 'ollama') {
+    return {
+      name: 'embedding_backend',
+      kind: 'connect',
+      status: 'ok',
+      configured: false,
+      target: null,
+      detail: `EMBEDDING_PROVIDER=${provider || 'huggingface'} does not configure a local embedding endpoint for this preflight`,
+      next_action: null,
+    };
+  }
+
+  try {
+    const result = await check(OLLAMA_BASE_URL);
+    return {
+      name: 'embedding_backend',
+      kind: 'connect',
+      status: result.healthy ? 'ok' : 'error',
+      configured: true,
+      target: OLLAMA_BASE_URL,
+      detail: result.detail,
+      next_action: result.healthy
+        ? null
+        : `Start Ollama or fix OLLAMA_BASE_URL=${OLLAMA_BASE_URL}.`,
+    };
+  } catch (err) {
+    return {
+      name: 'embedding_backend',
+      kind: 'connect',
+      status: 'error',
+      configured: true,
+      target: OLLAMA_BASE_URL,
+      detail: `embedding endpoint probe failed: ${(err as Error).message}`,
+      next_action: `Start Ollama or fix OLLAMA_BASE_URL=${OLLAMA_BASE_URL}.`,
+    };
+  }
+}
+
+async function readConfiguredLlmEndpoint(
+  check: LlmEndpointProbe,
+): Promise<DoctorEndpointEntry> {
+  let target: { profile: LlmProfile; source: DoctorReport['llm_endpoint']['endpoint_source'] } | null;
+  try {
+    target = await resolveConfiguredDoctorLlmTarget();
+  } catch (err) {
+    return {
+      name: 'llm_endpoint',
+      kind: 'connect',
+      status: 'warn',
+      configured: true,
+      target: null,
+      detail: `LLM profile resolution failed: ${(err as Error).message}`,
+      next_action: 'Run kb llm status --format=json, then fix or remove the active LLM profile.',
+    };
+  }
+
+  if (target === null) {
+    return {
+      name: 'llm_endpoint',
+      kind: 'connect',
+      status: 'ok',
+      configured: false,
+      target: null,
+      detail: 'KB_LLM_ENDPOINT and active kb llm profile are not configured; default local-research-agent endpoint was not probed',
+      next_action: null,
+    };
+  }
+
+  const { profile, source } = target;
+  try {
+    const probe = await check(profile.endpoint);
+    const status: HealthStatus = probe.health_ok && probe.chat_ok ? 'ok' : 'warn';
+    return {
+      name: 'llm_endpoint',
+      kind: 'connect',
+      status,
+      configured: true,
+      target: probe.endpoint,
+      detail: formatLlmEndpointDetail(profile, source, probe),
+      next_action: status === 'ok' ? null : llmEndpointNextAction(profile, probe),
+    };
+  } catch (err) {
+    return {
+      name: 'llm_endpoint',
+      kind: 'connect',
+      status: 'warn',
+      configured: true,
+      target: profile.endpoint,
+      detail: `LLM endpoint probe failed: ${(err as Error).message}`,
+      next_action: `Run kb llm probe --endpoint=${profile.endpoint} after starting or fixing the local LLM service.`,
+    };
+  }
+}
+
+async function resolveConfiguredDoctorLlmTarget(): Promise<{
+  profile: LlmProfile;
+  source: DoctorReport['llm_endpoint']['endpoint_source'];
+} | null> {
+  if (process.env.KB_LLM_ENDPOINT?.trim()) {
+    return {
+      profile: await createExternalProfile('env', process.env.KB_LLM_ENDPOINT),
+      source: 'env',
+    };
+  }
+  const configured = await resolveProfile();
+  if (configured) return { profile: configured, source: 'profile' };
+  return null;
+}
+
+function daemonEndpointConfigured(): boolean {
+  return Boolean(
+    process.env.KB_DAEMON_URL?.trim()
+    || process.env.KB_DAEMON_HOST?.trim()
+    || process.env.KB_DAEMON_PORT?.trim(),
+  );
 }
 
 export async function buildDoctorReport(
@@ -1088,6 +1400,84 @@ async function defaultLlmEndpointProbe(endpoint: string): Promise<LlmProbeResult
   });
 }
 
+async function defaultBindAvailabilityCheck(
+  host: string,
+  port: number,
+): Promise<{ available: boolean; detail: string }> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    let settled = false;
+    const finish = (result: { available: boolean; detail: string }): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      const message = err.code === 'EADDRINUSE'
+        ? `${host}:${port} is already in use`
+        : `${host}:${port} is not bindable: ${err.message}`;
+      finish({ available: false, detail: message });
+    });
+    server.listen({ host, port }, () => {
+      server.close(() => {
+        finish({ available: true, detail: `${host}:${port} is available for bind` });
+      });
+    });
+  });
+}
+
+async function defaultDaemonHealthCheck(
+  url: string,
+): Promise<{ healthy: boolean; detail: string }> {
+  try {
+    const health = await fetchDaemonHealth({ env: process.env, timeoutMs: 1_000 });
+    return {
+      healthy: true,
+      detail: `kb daemon ${url} responded with status=${health.status}`,
+    };
+  } catch (err) {
+    return {
+      healthy: false,
+      detail: (err as Error).message,
+    };
+  }
+}
+
+async function defaultEmbeddingEndpointProbe(
+  endpoint: string,
+): Promise<{ healthy: boolean; detail: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1_000);
+  try {
+    const tagsUrl = new URL('/api/tags', endpoint);
+    const response = await fetch(tagsUrl, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return {
+        healthy: false,
+        detail: `Ollama ${endpoint} returned HTTP ${response.status}`,
+      };
+    }
+    return {
+      healthy: true,
+      detail: `Ollama ${endpoint} is reachable`,
+    };
+  } catch (err) {
+    const message = (err as Error).name === 'AbortError'
+      ? 'timed out'
+      : (err as Error).message;
+    return {
+      healthy: false,
+      detail: `Ollama ${endpoint} is not reachable: ${message}`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function formatLlmEndpointDetail(
   profile: LlmProfile,
   source: DoctorReport['llm_endpoint']['endpoint_source'],
@@ -1437,6 +1827,26 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   for (const check of report.checks) {
     lines.push(`  ${check.status.toUpperCase().padEnd(5)} ${check.name}: ${check.detail}`);
   }
+  return lines.join('\n') + '\n';
+}
+
+export function formatDoctorEndpointsMarkdown(report: DoctorEndpointsReport): string {
+  const lines: string[] = [];
+  lines.push(`Status: ${report.status.toUpperCase()}`);
+  lines.push('');
+  lines.push('Endpoint preflight:');
+  for (const endpoint of report.endpoints) {
+    const marker = endpoint.status.toUpperCase().padEnd(5);
+    const configured = endpoint.configured ? 'configured' : 'not configured';
+    const target = endpoint.target ?? '<none>';
+    lines.push(`  ${marker} ${endpoint.name}: ${target} (${endpoint.kind}, ${configured})`);
+    lines.push(`        ${endpoint.detail}`);
+    if (endpoint.next_action !== null) {
+      lines.push(`        next_action: ${endpoint.next_action}`);
+    }
+  }
+  lines.push('');
+  lines.push(`Note: ${report.limitation}`);
   return lines.join('\n') + '\n';
 }
 

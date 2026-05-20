@@ -26,6 +26,14 @@ const originalEnv = {
   HF_HOME: process.env.HF_HOME,
   TRANSFORMERS_CACHE: process.env.TRANSFORMERS_CACHE,
   HOME: process.env.HOME,
+  OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL,
+  MCP_TRANSPORT: process.env.MCP_TRANSPORT,
+  MCP_PORT: process.env.MCP_PORT,
+  MCP_BIND_ADDR: process.env.MCP_BIND_ADDR,
+  MCP_AUTH_TOKEN: process.env.MCP_AUTH_TOKEN,
+  KB_DAEMON_URL: process.env.KB_DAEMON_URL,
+  KB_DAEMON_HOST: process.env.KB_DAEMON_HOST,
+  KB_DAEMON_PORT: process.env.KB_DAEMON_PORT,
 };
 
 const MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
@@ -104,6 +112,175 @@ async function healthyLlmProbe(endpoint: string) {
 
 describe('kb doctor', () => {
   const itOnPosix = process.platform === 'win32' ? it.skip : it;
+
+  it('reports configured endpoint preflight checks in JSON and markdown', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-endpoints-'));
+    try {
+      const llmConfigDir = path.join(tempDir, 'llm-config');
+      const llmStateDir = path.join(tempDir, 'llm-state');
+      const { buildDoctorEndpointsReport, formatDoctorEndpointsMarkdown } = await freshDoctor({
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
+        MCP_TRANSPORT: 'http',
+        MCP_PORT: '18765',
+        MCP_BIND_ADDR: '127.0.0.1',
+        MCP_AUTH_TOKEN: 'x'.repeat(32),
+        KB_DAEMON_URL: 'http://127.0.0.1:17799',
+        KB_LLM_ENDPOINT: 'http://127.0.0.1:8080/v1/chat/completions',
+        KB_LLM_CONFIG_DIR: llmConfigDir,
+        KB_LLM_STATE_DIR: llmStateDir,
+      });
+
+      const report = await buildDoctorEndpointsReport({
+        bindAvailabilityCheck: async (host, port) => ({
+          available: true,
+          detail: `${host}:${port} available`,
+        }),
+        daemonHealthCheck: async (url) => ({
+          healthy: true,
+          detail: `daemon ok at ${url}`,
+        }),
+        embeddingEndpointProbe: async (endpoint) => ({
+          healthy: true,
+          detail: `embedding ok at ${endpoint}`,
+        }),
+        llmEndpointProbe: healthyLlmProbe,
+      });
+
+      expect(report.status).toBe('ok');
+      expect(report.endpoints).toEqual([
+        expect.objectContaining({
+          name: 'mcp_bind',
+          status: 'ok',
+          configured: true,
+          target: '127.0.0.1:18765',
+        }),
+        expect.objectContaining({
+          name: 'kb_daemon',
+          status: 'ok',
+          configured: true,
+          target: 'http://127.0.0.1:17799/',
+        }),
+        expect.objectContaining({
+          name: 'embedding_backend',
+          status: 'ok',
+          configured: true,
+          target: 'http://127.0.0.1:11434',
+        }),
+        expect.objectContaining({
+          name: 'llm_endpoint',
+          status: 'ok',
+          configured: true,
+          target: 'http://127.0.0.1:8080/v1/chat/completions',
+        }),
+      ]);
+
+      const markdown = formatDoctorEndpointsMarkdown(report);
+      expect(markdown).toContain('Endpoint preflight:');
+      expect(markdown).toContain('OK    mcp_bind: 127.0.0.1:18765');
+      expect(markdown).toContain('OK    kb_daemon: http://127.0.0.1:17799/');
+      expect(markdown).toContain('OK    embedding_backend: http://127.0.0.1:11434');
+      expect(markdown).toContain('OK    llm_endpoint: http://127.0.0.1:8080/v1/chat/completions');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('marks endpoint preflight errors when configured bind or daemon targets are not ready', async () => {
+    const { buildDoctorEndpointsReport } = await freshDoctor({
+      EMBEDDING_PROVIDER: 'huggingface',
+      OLLAMA_BASE_URL: '',
+      MCP_TRANSPORT: 'sse',
+      MCP_PORT: '18766',
+      MCP_BIND_ADDR: '127.0.0.1',
+      MCP_AUTH_TOKEN: 'x'.repeat(32),
+      KB_DAEMON_URL: 'http://127.0.0.1:17798',
+      KB_LLM_ENDPOINT: '',
+    });
+
+    const report = await buildDoctorEndpointsReport({
+      bindAvailabilityCheck: async () => ({
+        available: false,
+        detail: '127.0.0.1:18766 is already in use',
+      }),
+      daemonHealthCheck: async () => ({
+        healthy: false,
+        detail: 'kb daemon is not reachable',
+      }),
+      llmEndpointProbe: healthyLlmProbe,
+    });
+
+    expect(report.status).toBe('error');
+    expect(report.endpoints).toContainEqual(expect.objectContaining({
+      name: 'mcp_bind',
+      status: 'error',
+      next_action: expect.stringContaining('Free 127.0.0.1:18766'),
+    }));
+    expect(report.endpoints).toContainEqual(expect.objectContaining({
+      name: 'kb_daemon',
+      status: 'error',
+      next_action: expect.stringContaining('Start kb serve'),
+    }));
+    expect(report.endpoints).toContainEqual(expect.objectContaining({
+      name: 'llm_endpoint',
+      status: 'ok',
+      configured: false,
+    }));
+  });
+
+  it('does not probe Ollama when a non-Ollama embedding provider is active', async () => {
+    const { buildDoctorEndpointsReport } = await freshDoctor({
+      EMBEDDING_PROVIDER: 'huggingface',
+      OLLAMA_BASE_URL: 'http://127.0.0.1:9',
+    });
+    const embeddingEndpointProbe = jest.fn(async (endpoint: string) => ({
+      healthy: false,
+      detail: `unexpected probe at ${endpoint}`,
+    }));
+
+    const report = await buildDoctorEndpointsReport({ embeddingEndpointProbe });
+
+    expect(embeddingEndpointProbe).not.toHaveBeenCalled();
+    expect(report.endpoints).toContainEqual(expect.objectContaining({
+      name: 'embedding_backend',
+      status: 'ok',
+      configured: false,
+      target: null,
+    }));
+  });
+
+  it('routes runDoctor --endpoints through the focused JSON report branch', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-endpoints-run-'));
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      const { runDoctor } = await freshDoctor({
+        EMBEDDING_PROVIDER: 'huggingface',
+        OLLAMA_BASE_URL: '',
+        MCP_TRANSPORT: 'stdio',
+        KB_DAEMON_URL: '',
+        KB_DAEMON_HOST: '',
+        KB_DAEMON_PORT: '',
+        KB_LLM_ENDPOINT: '',
+        KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
+        KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+      });
+
+      await expect(runDoctor(['--endpoints', '--format=json'])).resolves.toBe(0);
+
+      const output = stdoutSpy.mock.calls.map((call) => String(call[0])).join('');
+      const parsed = JSON.parse(output) as { status: string; endpoints: Array<{ name: string }> };
+      expect(parsed.status).toBe('ok');
+      expect(parsed.endpoints.map((entry) => entry.name)).toEqual([
+        'mcp_bind',
+        'kb_daemon',
+        'embedding_backend',
+        'llm_endpoint',
+      ]);
+    } finally {
+      stdoutSpy.mockRestore();
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
 
   itOnPosix('reports safe FAISS index permissions without warnings', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-perms-safe-'));
@@ -884,13 +1061,19 @@ describe('kb doctor', () => {
 
   it('parses --format=json and rejects unsupported formats', async () => {
     const { parseDoctorArgs } = await freshDoctor({});
-    expect(parseDoctorArgs(['--format=json'])).toEqual({ format: 'json', reindexTrigger: false });
-    expect(parseDoctorArgs(['--reindex-trigger'])).toEqual({ format: 'md', reindexTrigger: true });
+    expect(parseDoctorArgs(['--format=json'])).toEqual({ format: 'json', reindexTrigger: false, endpoints: false });
+    expect(parseDoctorArgs(['--reindex-trigger'])).toEqual({ format: 'md', reindexTrigger: true, endpoints: false });
+    expect(parseDoctorArgs(['--endpoints', '--format=json'])).toEqual({
+      format: 'json',
+      reindexTrigger: false,
+      endpoints: true,
+    });
     expect(parseDoctorArgs(['--reindex-trigger', '--format=json'])).toEqual({
       format: 'json',
       reindexTrigger: true,
+      endpoints: false,
     });
-    expect(parseDoctorArgs([])).toEqual({ format: 'md', reindexTrigger: false });
+    expect(parseDoctorArgs([])).toEqual({ format: 'md', reindexTrigger: false, endpoints: false });
     expect(() => parseDoctorArgs(['--format=yaml'])).toThrow(/invalid --format/);
   });
 
