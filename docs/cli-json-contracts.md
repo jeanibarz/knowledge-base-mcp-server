@@ -259,6 +259,62 @@ Stable hybrid fields are `mode`, `results`, `retrievers.dense.fetched`,
 `rerank.cache_hits`, `rerank.degraded`, and `rerank.degrade_reason` are stable
 when the `rerank` object is present.
 
+Batch JSONL envelope:
+
+```json
+{
+  "schema_version": "kb.search.batch-jsonl.v1",
+  "line": 1,
+  "ok": true,
+  "exit_code": 0,
+  "query": "deploy",
+  "kb": "work",
+  "requested_mode": "auto",
+  "result": {
+    "results": []
+  }
+}
+```
+
+`kb search --batch-jsonl` reads newline-delimited JSON objects from stdin and
+prints one compact JSON envelope per nonblank input row. Each row must include
+`query`. Supported row overrides are the snake_case or camelCase equivalents of
+the single-query flags: `kb`, `model`, `k`, `threshold`, `mode`, `no_cache`,
+`noCache`, `gate`, `no_gate`, `noGate`, `rerank`, `no_rerank`, `noRerank`,
+`task_context`, `taskContext`, `task_context_file`, `taskContextFile`,
+`group_by_source`, `groupBySource`, `timing`, `freshness`, `no_freshness`,
+`noFreshness`, `explain_empty`, `explainEmpty`, `explain`, `context_before`,
+`contextBefore`, `context_after`, `contextAfter`, `context_window`, and
+`contextWindow`.
+
+Stable batch fields:
+
+- `schema_version`: currently `kb.search.batch-jsonl.v1`.
+- `line`: 1-based JSONL input line number.
+- `ok`: `true` when that row's search exited `0`.
+- `exit_code`: row-level search or parse/build exit code.
+- `query`: input query string when available, otherwise `null` for row-shape
+  failures.
+- `kb`, `model`, and `requested_mode`: present when supplied on the row.
+- `result`: parsed JSON stdout from the row's delegated `kb search
+  --format=json` run when that stdout is valid JSON.
+- `stdout`: raw row stdout when the delegated row output was not valid JSON.
+- `stderr`: row stderr when nonempty.
+- `error.message`: present for row parse/build errors before a row search runs.
+
+Batch stdout/stderr and exit codes:
+
+- Batch stdout is valid JSONL, not one JSON array. Each line is an independent
+  envelope.
+- Process exit code is the maximum row exit code.
+- Parser/runtime diagnostics that happen before row execution are represented
+  as row envelopes. Logger output and canonical CLI logs remain stderr.
+- `--batch-jsonl` rejects top-level `--refresh`, row `refresh`, `--stdin`,
+  and interactive output. Run single-query `kb search --refresh` before
+  batching when the dense index needs updating.
+- Row `mode=lexical`, `mode=hybrid`, and `mode=auto` retain the existing
+  single-query search behavior for auxiliary lexical indexes.
+
 Stable error envelope for dense and hybrid JSON mode:
 
 ```json

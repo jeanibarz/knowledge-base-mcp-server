@@ -154,7 +154,7 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
     expect(record(commandSpecific.command)).toMatchObject({ name: 'search', stability: 'stable' });
   },
   'kb search': (examples) => {
-    expect(examples).toHaveLength(4);
+    expect(examples).toHaveLength(5);
     expect(record(examples[0])).toMatchObject({
       results: expect.any(Array),
       stale: expect.any(Boolean),
@@ -162,7 +162,14 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
     });
     expect(record(examples[1])).toMatchObject({ mode: 'lexical', results: expect.any(Array) });
     expect(record(examples[2])).toMatchObject({ mode: 'hybrid', retrievers: expect.any(Object) });
-    expect(record(record(examples[3]).error)).toMatchObject({
+    expect(record(examples[3])).toMatchObject({
+      schema_version: 'kb.search.batch-jsonl.v1',
+      line: expect.any(Number),
+      ok: expect.any(Boolean),
+      exit_code: expect.any(Number),
+      result: expect.any(Object),
+    });
+    expect(record(record(examples[4]).error)).toMatchObject({
       code: expect.any(String),
       category: expect.any(String),
       message: expect.any(String),

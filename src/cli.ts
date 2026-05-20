@@ -518,7 +518,7 @@ async function runSearchMaybeViaDaemon(rest: string[]): Promise<number> {
   if (daemonIndex === -1) return runSearch(rest);
 
   const directRest = rest.filter((arg) => arg !== '--daemon');
-  if (directRest.includes('--refresh')) {
+  if (directRest.includes('--refresh') || directRest.includes('--batch-jsonl')) {
     return runSearch(directRest);
   }
 

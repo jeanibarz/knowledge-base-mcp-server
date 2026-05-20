@@ -672,6 +672,33 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.stderr).toMatch(/fell back after \d+ms/);
   });
 
+  it('search --batch-jsonl reads stdin through the real CLI dispatch', () => {
+    const r = runCli(['search', '--batch-jsonl'], {}, '{"query":1}\n');
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      schema_version: 'kb.search.batch-jsonl.v1',
+      line: 1,
+      ok: false,
+      exit_code: 2,
+      error: { message: 'row query must be a string' },
+    });
+  });
+
+  it('search --batch-jsonl bypasses daemon routing even when --daemon is present', () => {
+    const r = runCli(
+      ['search', '--batch-jsonl', '--daemon'],
+      { KB_DAEMON_URL: 'http://127.0.0.1:17798' },
+      '{"query":1}\n',
+    );
+    expect(r.code).toBe(2);
+    expect(r.stderr).not.toContain('daemon unavailable');
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      schema_version: 'kb.search.batch-jsonl.v1',
+      line: 1,
+      ok: false,
+    });
+  });
+
   it('serve status exits 3 with a notice when no daemon is reachable', () => {
     const r = runCli(['serve', 'status'], { KB_DAEMON_URL: 'http://127.0.0.1:17798' });
     expect(r.code).toBe(3);

@@ -111,6 +111,7 @@ export const SEARCH_HELP = `kb search — semantic search across knowledge bases
 Usage:
   kb search <query> [options]
   kb search --stdin [options]
+  kb search --batch-jsonl [options] < queries.jsonl
   kb search <query> --refresh [options]
 
 Default is dense (FAISS) similarity search, read-only. \`--refresh\` re-scans
@@ -179,6 +180,14 @@ Indexing:
 
 Input:
   --stdin               Read query from stdin (multi-line safe).
+  --batch-jsonl         Read newline-delimited JSON rows from stdin and emit
+                        one JSON result envelope per row. Each row requires
+                        "query"; common per-row overrides include kb, model,
+                        k, threshold, mode, no_cache, gate, rerank,
+                        task_context, group_by_source, timing, no_freshness,
+                        explain_empty, and explain. Batch mode rejects
+                        --refresh; run single-query --refresh before batching
+                        when the dense index needs updating.
   -i, --interactive     Open an interactive results picker (TTY only; ignored
                         when --format=json or --format=vimgrep is set).
   --help, -h            Show this help.
@@ -190,11 +199,12 @@ Examples:
   kb search "INDEX_NOT_INITIALIZED" --mode=hybrid
   kb search "src/cli.ts" --mode=auto --timing
   kb search --stdin --format=json < query.txt
+  printf '{"query":"deploy","kb":"work"}\n{"query":"rollback","k":3}\n' | kb search --batch-jsonl
 `;
 
 type SearchFormat = 'md' | 'json' | 'vimgrep';
 
-interface SearchArgs {
+export interface SearchArgs {
   query: string | null;
   kb?: string;
   model?: string;
@@ -208,6 +218,7 @@ interface SearchArgs {
   mode: SearchMode;
   timing: boolean;
   interactive: boolean;
+  batchJsonl: boolean;
   noCache: boolean;
   freshness: boolean;
   explainEmpty: boolean;
@@ -248,6 +259,10 @@ export async function runSearch(
   } catch (err) {
     process.stderr.write(`kb search: ${(err as Error).message}\n`);
     return 2;
+  }
+
+  if (parsed.batchJsonl) {
+    return runSearchBatchJsonl(parsed, deps);
   }
 
   if (parsed.stdin && parsed.query === null) {
@@ -580,6 +595,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     mode: 'dense',
     timing: false,
     interactive: false,
+    batchJsonl: false,
     noCache: false,
     freshness: true,
     explainEmpty: false,
@@ -590,6 +606,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--stdin')   { out.stdin = true; continue; }
     if (raw === '--group-by-source') { out.groupBySource = true; continue; }
     if (raw === '--timing') { out.timing = true; continue; }
+    if (raw === '--batch-jsonl') { out.batchJsonl = true; continue; }
     if (raw === '--no-cache') { out.noCache = true; continue; }
     if (raw === '--gate') { out.gateOverride = 'on'; continue; }
     if (raw === '--no-gate') { out.gateOverride = 'off'; continue; }
@@ -1053,6 +1070,399 @@ async function readAllStdin(): Promise<string> {
     process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
     process.stdin.on('error', reject);
   });
+}
+
+type RunSearchLike = (rest: string[], deps: RunSearchDeps) => Promise<number>;
+
+interface BatchJsonlRunResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+interface CapturedOutput {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+async function runSearchBatchJsonl(
+  base: SearchArgs,
+  deps: RunSearchDeps,
+): Promise<number> {
+  const input = await readAllStdin();
+  const result = await runSearchBatchJsonlForText(input, base, deps);
+  if (result.stdout !== '') process.stdout.write(result.stdout);
+  if (result.stderr !== '') process.stderr.write(result.stderr);
+  return result.code;
+}
+
+export async function runSearchBatchJsonlForText(
+  input: string,
+  base: SearchArgs,
+  deps: RunSearchDeps = DEFAULT_RUN_SEARCH_DEPS,
+  runOne: RunSearchLike = runSearch,
+): Promise<BatchJsonlRunResult> {
+  const baseError = validateBatchBaseArgs(base);
+  if (baseError !== null) {
+    return { code: 2, stdout: '', stderr: `kb search: ${baseError}\n` };
+  }
+
+  const cachedDeps = createBatchCachedSearchDeps(deps);
+  const envelopes: string[] = [];
+  let exitCode = 0;
+  for (const row of parseBatchJsonlRows(input)) {
+    if (row.kind === 'blank') continue;
+    if (row.kind === 'error') {
+      exitCode = Math.max(exitCode, 2);
+      envelopes.push(JSON.stringify(buildBatchErrorEnvelope(row.line, 2, row.message)));
+      continue;
+    }
+
+    let rowArgs: string[];
+    try {
+      rowArgs = buildBatchRowSearchArgs(base, row.value);
+    } catch (err) {
+      exitCode = Math.max(exitCode, 2);
+      envelopes.push(JSON.stringify(buildBatchErrorEnvelope(row.line, 2, (err as Error).message)));
+      continue;
+    }
+
+    const captured = await captureProcessOutput(() => runOne(rowArgs, cachedDeps));
+    exitCode = Math.max(exitCode, captured.code);
+    envelopes.push(JSON.stringify(buildBatchRunEnvelope(row.line, row.value, captured)));
+  }
+
+  return {
+    code: exitCode,
+    stdout: envelopes.length === 0 ? '' : `${envelopes.join('\n')}\n`,
+    stderr: '',
+  };
+}
+
+function validateBatchBaseArgs(base: SearchArgs): string | null {
+  if (base.query !== null) return '--batch-jsonl reads queries from JSONL stdin; omit <query>';
+  if (base.stdin) return '--batch-jsonl cannot be combined with --stdin';
+  if (base.refresh) return '--batch-jsonl does not run --refresh; run single-query --refresh before batching';
+  if (base.interactive) return '--batch-jsonl cannot be combined with --interactive';
+  if (base.format === 'vimgrep') return '--batch-jsonl emits JSONL envelopes; --format=vimgrep is not supported';
+  return null;
+}
+
+type ParsedBatchRow =
+  | { kind: 'blank'; line: number }
+  | { kind: 'error'; line: number; message: string }
+  | { kind: 'row'; line: number; value: Record<string, unknown> };
+
+function parseBatchJsonlRows(input: string): ParsedBatchRow[] {
+  const lines = input.split(/\r?\n/);
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines.map((line, index) => {
+    const lineNumber = index + 1;
+    if (line.trim() === '') return { kind: 'blank', line: lineNumber };
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (!isPlainObject(parsed)) {
+        return { kind: 'error', line: lineNumber, message: 'row must be a JSON object' };
+      }
+      return { kind: 'row', line: lineNumber, value: parsed };
+    } catch (err) {
+      return { kind: 'error', line: lineNumber, message: `invalid JSON: ${(err as Error).message}` };
+    }
+  });
+}
+
+function buildBatchRowSearchArgs(base: SearchArgs, row: Record<string, unknown>): string[] {
+  const args: string[] = [];
+  const query = requireStringField(row, 'query');
+  if (query.trim() === '') throw new Error('row query must be non-empty');
+  if (readOptionalString(row, 'format') !== undefined) {
+    throw new Error('row format is not supported; batch rows always run with --format=json');
+  }
+  if (readOptionalBoolean(row, 'refresh') === true) {
+    throw new Error('row refresh is not supported in --batch-jsonl');
+  }
+  if (readOptionalBoolean(row, 'stdin') === true) {
+    throw new Error('row stdin is not supported in --batch-jsonl');
+  }
+  if (readOptionalBoolean(row, 'interactive') === true) {
+    throw new Error('row interactive is not supported in --batch-jsonl');
+  }
+
+  args.push(query);
+  appendOptionalStringArg(args, '--kb=', row, 'kb', base.kb);
+  appendOptionalStringArg(args, '--model=', row, 'model', base.model);
+  appendOptionalIntegerArg(args, '--k=', row, 'k', base.k);
+  appendThresholdArg(args, row, base);
+  appendModeArg(args, row, base.mode);
+  appendOptionalAliasedStringArg(args, '--task-context=', row, 'task_context', 'taskContext', base.taskContext);
+  appendOptionalAliasedStringArg(args, '--task-context-file=', row, 'task_context_file', 'taskContextFile', base.taskContextFile);
+  if (readBatchBoolean(row, 'group_by_source', 'groupBySource', base.groupBySource)) args.push('--group-by-source');
+  if (readBatchBoolean(row, 'timing', 'timing', base.timing)) args.push('--timing');
+  if (readBatchBoolean(row, 'no_cache', 'noCache', base.noCache)) args.push('--no-cache');
+  if (!readBatchBoolean(row, 'freshness', 'freshness', base.freshness)) args.push('--no-freshness');
+  if (readBatchBoolean(row, 'no_freshness', 'noFreshness', false)) {
+    if (!args.includes('--no-freshness')) args.push('--no-freshness');
+  }
+  if (readBatchBoolean(row, 'explain_empty', 'explainEmpty', base.explainEmpty)) args.push('--explain-empty');
+  if (readBatchBoolean(row, 'explain', 'explain', base.explain)) args.push('--explain');
+  appendGateArgs(args, row, base);
+  appendRerankArgs(args, row, base);
+  appendNeighborContextArgs(args, row, base);
+  args.push('--format=json');
+  return args;
+}
+
+function appendThresholdArg(args: string[], row: Record<string, unknown>, base: SearchArgs): void {
+  if (Object.prototype.hasOwnProperty.call(row, 'threshold')) {
+    const value = row.threshold;
+    if (value === 'auto') {
+      args.push('--threshold=auto');
+      return;
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error('row threshold must be a finite number or "auto"');
+    }
+    args.push(`--threshold=${value}`);
+    return;
+  }
+  if (base.thresholdAuto) args.push('--threshold=auto');
+  else if (base.threshold !== undefined) args.push(`--threshold=${base.threshold}`);
+}
+
+function appendModeArg(args: string[], row: Record<string, unknown>, fallback: SearchMode): void {
+  const mode = readOptionalString(row, 'mode') ?? fallback;
+  if (mode !== 'dense' && mode !== 'lexical' && mode !== 'hybrid' && mode !== 'auto') {
+    throw new Error('row mode must be "dense", "lexical", "hybrid", or "auto"');
+  }
+  if (mode !== 'dense') args.push(`--mode=${mode}`);
+}
+
+function appendGateArgs(args: string[], row: Record<string, unknown>, base: SearchArgs): void {
+  const noGate = readBatchBoolean(row, 'no_gate', 'noGate', base.gateOverride === 'off');
+  const gate = readBatchBoolean(row, 'gate', 'gate', base.gateOverride === 'on');
+  if (noGate) args.push('--no-gate');
+  else if (gate) args.push('--gate');
+}
+
+function appendRerankArgs(args: string[], row: Record<string, unknown>, base: SearchArgs): void {
+  const noRerank = readBatchBoolean(row, 'no_rerank', 'noRerank', base.rerankOverride === 'off');
+  const rerank = readBatchBoolean(row, 'rerank', 'rerank', base.rerankOverride === 'on');
+  if (noRerank) args.push('--no-rerank');
+  else if (rerank) args.push('--rerank');
+}
+
+function appendNeighborContextArgs(args: string[], row: Record<string, unknown>, base: SearchArgs): void {
+  const before = readOptionalInteger(row, 'context_before') ?? readOptionalInteger(row, 'contextBefore') ?? base.neighborContext?.before;
+  const after = readOptionalInteger(row, 'context_after') ?? readOptionalInteger(row, 'contextAfter') ?? base.neighborContext?.after;
+  const window = readOptionalInteger(row, 'context_window') ?? readOptionalInteger(row, 'contextWindow');
+  if (window !== undefined) {
+    args.push(`--context-window=${window}`);
+    return;
+  }
+  if (before !== undefined) args.push(`--context-before=${before}`);
+  if (after !== undefined) args.push(`--context-after=${after}`);
+}
+
+function appendOptionalStringArg(
+  args: string[],
+  flag: string,
+  row: Record<string, unknown>,
+  field: string,
+  fallback: string | undefined,
+): void {
+  const value = readOptionalString(row, field) ?? fallback;
+  if (value !== undefined) args.push(`${flag}${value}`);
+}
+
+function appendOptionalAliasedStringArg(
+  args: string[],
+  flag: string,
+  row: Record<string, unknown>,
+  snakeField: string,
+  camelField: string,
+  fallback: string | undefined,
+): void {
+  const value = readOptionalString(row, snakeField)
+    ?? readOptionalString(row, camelField)
+    ?? fallback;
+  if (value !== undefined) args.push(`${flag}${value}`);
+}
+
+function appendOptionalIntegerArg(
+  args: string[],
+  flag: string,
+  row: Record<string, unknown>,
+  field: string,
+  fallback: number,
+): void {
+  const value = readOptionalInteger(row, field) ?? fallback;
+  args.push(`${flag}${value}`);
+}
+
+function requireStringField(row: Record<string, unknown>, field: string): string {
+  const value = row[field];
+  if (typeof value !== 'string') throw new Error(`row ${field} must be a string`);
+  return value;
+}
+
+function readOptionalString(row: Record<string, unknown>, field: string): string | undefined {
+  const value = row[field];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw new Error(`row ${field} must be a string`);
+  return value;
+}
+
+function readOptionalInteger(row: Record<string, unknown>, field: string): number | undefined {
+  const value = row[field];
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value)) throw new Error(`row ${field} must be an integer`);
+  return value as number;
+}
+
+function readOptionalBoolean(row: Record<string, unknown>, field: string): boolean | undefined {
+  const value = row[field];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') throw new Error(`row ${field} must be a boolean`);
+  return value;
+}
+
+function readBatchBoolean(
+  row: Record<string, unknown>,
+  snakeField: string,
+  camelField: string,
+  fallback: boolean,
+): boolean {
+  return readOptionalBoolean(row, snakeField)
+    ?? readOptionalBoolean(row, camelField)
+    ?? fallback;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value);
+}
+
+function createBatchCachedSearchDeps(deps: RunSearchDeps): RunSearchDeps {
+  let bootstrapPromise: Promise<void> | null = null;
+  const modelPromises = new Map<string, Promise<string>>();
+  const managerPromises = new Map<string, Promise<FaissIndexManager>>();
+  const loadPromises = new WeakMap<FaissIndexManager, Promise<void>>();
+
+  return {
+    ...deps,
+    bootstrapLayout: () => {
+      bootstrapPromise ??= deps.bootstrapLayout();
+      return bootstrapPromise;
+    },
+    resolveActiveModel: (input = {}) => {
+      const key = input.explicitOverride ?? '';
+      let promise = modelPromises.get(key);
+      if (promise === undefined) {
+        promise = deps.resolveActiveModel(input);
+        modelPromises.set(key, promise);
+      }
+      return promise;
+    },
+    loadManagerForModel: (activeModelId) => {
+      let promise = managerPromises.get(activeModelId);
+      if (promise === undefined) {
+        promise = deps.loadManagerForModel(activeModelId);
+        managerPromises.set(activeModelId, promise);
+      }
+      return promise;
+    },
+    loadWithJsonRetry: (manager) => {
+      let promise = loadPromises.get(manager);
+      if (promise === undefined) {
+        promise = deps.loadWithJsonRetry(manager);
+        loadPromises.set(manager, promise);
+      }
+      return promise;
+    },
+  };
+}
+
+async function captureProcessOutput(operation: () => Promise<number>): Promise<CapturedOutput> {
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  const originalStderrWrite = process.stderr.write.bind(process.stderr);
+  let stdout = '';
+  let stderr = '';
+  process.stdout.write = ((chunk: unknown, encodingOrCallback?: unknown, callback?: unknown) => {
+    stdout += bufferChunkToString(chunk);
+    invokeWriteCallback(encodingOrCallback, callback);
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: unknown, encodingOrCallback?: unknown, callback?: unknown) => {
+    stderr += bufferChunkToString(chunk);
+    invokeWriteCallback(encodingOrCallback, callback);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const code = await operation();
+    return { code, stdout, stderr };
+  } finally {
+    process.stdout.write = originalStdoutWrite as typeof process.stdout.write;
+    process.stderr.write = originalStderrWrite as typeof process.stderr.write;
+  }
+}
+
+function bufferChunkToString(chunk: unknown): string {
+  if (Buffer.isBuffer(chunk)) return chunk.toString('utf-8');
+  return String(chunk);
+}
+
+function invokeWriteCallback(encodingOrCallback: unknown, callback: unknown): void {
+  if (typeof encodingOrCallback === 'function') {
+    encodingOrCallback();
+  } else if (typeof callback === 'function') {
+    callback();
+  }
+}
+
+function buildBatchRunEnvelope(
+  line: number,
+  row: Record<string, unknown>,
+  captured: CapturedOutput,
+): Record<string, unknown> {
+  const parsedStdout = parseCapturedJson(captured.stdout);
+  return {
+    schema_version: 'kb.search.batch-jsonl.v1',
+    line,
+    ok: captured.code === 0,
+    exit_code: captured.code,
+    query: typeof row.query === 'string' ? row.query : null,
+    ...(typeof row.kb === 'string' ? { kb: row.kb } : {}),
+    ...(typeof row.model === 'string' ? { model: row.model } : {}),
+    ...(typeof row.mode === 'string' ? { requested_mode: row.mode } : {}),
+    ...(parsedStdout.ok ? { result: parsedStdout.value } : { stdout: captured.stdout }),
+    ...(captured.stderr !== '' ? { stderr: captured.stderr } : {}),
+  };
+}
+
+function buildBatchErrorEnvelope(
+  line: number,
+  exitCode: number,
+  message: string,
+): Record<string, unknown> {
+  return {
+    schema_version: 'kb.search.batch-jsonl.v1',
+    line,
+    ok: false,
+    exit_code: exitCode,
+    error: {
+      message,
+    },
+  };
+}
+
+function parseCapturedJson(stdout: string): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: JSON.parse(stdout) };
+  } catch {
+    return { ok: false };
+  }
 }
 
 // -- #206 stage 1 — lexical search dispatch ----------------------------------
