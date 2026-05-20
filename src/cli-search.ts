@@ -111,6 +111,7 @@ export const SEARCH_HELP = `kb search — semantic search across knowledge bases
 Usage:
   kb search <query> [options]
   kb search --stdin [options]
+  kb search --batch-jsonl [options]
   kb search <query> --refresh [options]
 
 Default is dense (FAISS) similarity search, read-only. \`--refresh\` re-scans
@@ -159,6 +160,12 @@ Output:
   --format=md|json|vimgrep
                         Output format (default: md). vimgrep prints
                         path:line:col:preview for editor quickfix flows.
+  --batch-jsonl         Read JSONL rows from stdin and emit one compact JSON
+                        result envelope per row. Each row accepts query plus
+                        optional per-row search option fields such as kb, k,
+                        mode, model, threshold, no_cache, freshness,
+                        group_by_source, task_context, gate, refresh, and
+                        context_window.
   --group-by-source     Collapse repeated chunks from the same source file
                         in markdown output. With \`--format=json\`, adds a
                         \`grouped_results\` field alongside raw results.
@@ -190,6 +197,7 @@ Examples:
   kb search "INDEX_NOT_INITIALIZED" --mode=hybrid
   kb search "src/cli.ts" --mode=auto --timing
   kb search --stdin --format=json < query.txt
+  printf '%s\n' '{"query":"rollback","kb":"ops"}' | kb search --batch-jsonl
 `;
 
 type SearchFormat = 'md' | 'json' | 'vimgrep';
@@ -208,6 +216,7 @@ interface SearchArgs {
   mode: SearchMode;
   timing: boolean;
   interactive: boolean;
+  batchJsonl: boolean;
   noCache: boolean;
   freshness: boolean;
   explainEmpty: boolean;
@@ -224,6 +233,7 @@ export interface RunSearchDeps {
   resolveActiveModel: typeof resolveActiveModel;
   loadManagerForModel: typeof loadManagerForModel;
   loadWithJsonRetry: typeof loadWithJsonRetry;
+  computeStaleness?: typeof computeStaleness;
   listLexicalKbs?: typeof listLexicalKbs;
   runLexicalLeg?: typeof runLexicalLeg;
 }
@@ -233,6 +243,7 @@ const DEFAULT_RUN_SEARCH_DEPS: RunSearchDeps = {
   resolveActiveModel,
   loadManagerForModel,
   loadWithJsonRetry,
+  computeStaleness,
   listLexicalKbs,
   runLexicalLeg,
 };
@@ -251,11 +262,25 @@ export async function runSearch(
   }
 
   if (parsed.stdin && parsed.query === null) {
+    if (parsed.batchJsonl) {
+      process.stderr.write('kb search: --stdin cannot be combined with --batch-jsonl\n');
+      return 2;
+    }
     parsed.query = await readAllStdin();
     if (parsed.query.trim() === '') {
       process.stderr.write('kb search: empty query from stdin\n');
       return 2;
     }
+  } else if (parsed.batchJsonl) {
+    if (parsed.query !== null) {
+      process.stderr.write('kb search: --batch-jsonl reads queries from stdin; do not pass <query>\n');
+      return 2;
+    }
+    if (parsed.interactive) {
+      process.stderr.write('kb search: --interactive cannot be combined with --batch-jsonl\n');
+      return 2;
+    }
+    return runBatchJsonlSearch(parsed, deps, totalStartedAt);
   } else if (parsed.query === null) {
     process.stderr.write('kb search: missing <query> (or use --stdin)\n');
     return 2;
@@ -580,6 +605,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     mode: 'dense',
     timing: false,
     interactive: false,
+    batchJsonl: false,
     noCache: false,
     freshness: true,
     explainEmpty: false,
@@ -599,6 +625,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--explain-empty') { out.explainEmpty = true; continue; }
     if (raw === '--explain') { out.explain = true; continue; }
     if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
+    if (raw === '--batch-jsonl') { out.batchJsonl = true; out.format = 'json'; continue; }
     if (raw.startsWith('--context-before=')) {
       out.neighborContext = {
         ...out.neighborContext,
@@ -787,9 +814,10 @@ async function computeStalenessWithTiming(
   activeModelId: string,
   scopedKb: string | undefined,
   timing: TimingPayload | null,
+  compute: typeof computeStaleness = computeStaleness,
 ): Promise<Staleness> {
   const stalenessStartedAt = nowMs();
-  const staleness = await computeStaleness(activeModelId, scopedKb);
+  const staleness = await compute(activeModelId, scopedKb);
   if (timing) {
     recordFreshnessScanTiming(timing, {
       elapsedMs: elapsedMs(stalenessStartedAt),
@@ -1044,6 +1072,508 @@ async function printRefreshPreflightIfLarge(
     scopedKb,
   });
   maybeWriteRefreshPreflight(estimate, { format });
+}
+
+const BATCH_JSONL_SCHEMA_VERSION = 'kb.search.batch-jsonl.v1';
+
+interface BatchManagerState {
+  manager: FaissIndexManager;
+  loaded: boolean;
+  refreshedScopes: Set<string>;
+}
+
+interface BatchSearchEnvelope {
+  schema_version: typeof BATCH_JSONL_SCHEMA_VERSION;
+  line: number;
+  ok: boolean;
+  query?: string;
+  kb?: string | null;
+  model?: string;
+  mode?: EffectiveSearchMode;
+  result?: Record<string, unknown>;
+  error?: {
+    code: string;
+    category: SearchFailure['category'] | 'input';
+    message: string;
+    next_action: string;
+  };
+}
+
+async function runBatchJsonlSearch(
+  parsed: SearchArgs,
+  deps: RunSearchDeps,
+  totalStartedAt: number,
+): Promise<number> {
+  const input = await readAllStdin();
+  const lines = input.split(/\r?\n/);
+  const activeModelCache = new Map<string, string>();
+  const managers = new Map<string, BatchManagerState>();
+  const stalenessCache = new Map<string, Staleness>();
+  let bootstrapped = false;
+  let exitCode = 0;
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const lineNumber = lineIndex + 1;
+    const line = lines[lineIndex];
+    if (line.trim() === '') continue;
+
+    let row: SearchArgs;
+    try {
+      row = parseBatchJsonlRow(line, lineNumber, parsed);
+    } catch (err) {
+      writeBatchEnvelope(batchInputError(lineNumber, (err as Error).message));
+      exitCode = Math.max(exitCode, 2);
+      continue;
+    }
+
+    const query = row.query as string;
+    const autoModeDecision = row.mode === 'auto'
+      ? resolveAutoSearchMode(query)
+      : null;
+    const effectiveMode: EffectiveSearchMode = autoModeDecision
+      ? autoModeDecision.mode
+      : (row.mode as EffectiveSearchMode);
+    if (effectiveMode !== 'dense') {
+      writeBatchEnvelope(batchInputError(
+        lineNumber,
+        `--batch-jsonl currently supports dense search rows only; row resolved to mode=${effectiveMode}`,
+        query,
+        row.kb,
+      ));
+      exitCode = Math.max(exitCode, 2);
+      continue;
+    }
+    const taskContextCheck = inspectBatchTaskContext(row);
+    for (const warning of taskContextCheck.warnings) {
+      process.stderr.write(`kb search: ${warning}\n`);
+    }
+    if (taskContextCheck.error) {
+      writeBatchEnvelope(batchInputError(lineNumber, taskContextCheck.error, query, row.kb));
+      exitCode = Math.max(exitCode, 2);
+      continue;
+    }
+
+    const timing: TimingPayload | null = row.timing
+      ? {
+          requested_mode: row.mode,
+          effective_mode: effectiveMode,
+        }
+      : null;
+
+    try {
+      if (!bootstrapped) {
+        const startedAt = nowMs();
+        await deps.bootstrapLayout();
+        bootstrapped = true;
+        if (timing) timing.bootstrap_ms = elapsedMs(startedAt);
+      }
+
+      const activeModelId = await resolveBatchActiveModel(row, deps, activeModelCache, timing);
+      const state = await loadBatchManager(activeModelId, deps, managers, timing);
+      const refreshedIndex = await loadBatchIndex(activeModelId, row, deps, state, timing);
+      if (refreshedIndex) invalidateBatchStaleness(activeModelId, stalenessCache);
+
+      const denseTiming: SimilaritySearchTiming = {};
+      const searchStartedAt = nowMs();
+      let results: SearchResultDocument[];
+      let autoThresholdDecision: AutoThresholdDecision | null = null;
+      if (row.thresholdAuto) {
+        const rawResults = await state.manager.similaritySearch(
+          query,
+          row.k,
+          Number.POSITIVE_INFINITY,
+          row.kb,
+          undefined,
+          denseTiming,
+          { noCache: row.noCache },
+        );
+        autoThresholdDecision = computeAutoThreshold(rawResults.map((r) => r.score));
+        results = rawResults.slice(0, autoThresholdDecision.kept);
+      } else {
+        results = await state.manager.similaritySearch(
+          query,
+          row.k,
+          row.threshold,
+          row.kb,
+          undefined,
+          denseTiming,
+          { noCache: row.noCache },
+        );
+      }
+      if (row.neighborContext) {
+        results = state.manager.expandWithNeighborContext(results, row.neighborContext);
+      }
+      if (timing) {
+        timing.dense_search_ms = elapsedMs(searchStartedAt);
+        mergeDenseTiming(timing, denseTiming);
+      }
+
+      const denseDistanceById = new Map<string, number>();
+      for (const result of results) {
+        denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
+      }
+      const gate = await applyRelevanceGate({
+        query,
+        taskContext: row.taskContext,
+        candidates: results,
+        denseDistanceById,
+        gateOverride: row.gateOverride,
+        process: 'cli',
+      });
+      results = gate.results;
+      emitRelevanceGateDecision({
+        process: 'cli',
+        query,
+        kbScope: row.kb ?? null,
+        searchMode: effectiveMode,
+        verdict: gate.verdict,
+        observability: gate.observability,
+      });
+
+      const staleness = row.freshness
+        ? await computeBatchStaleness(activeModelId, row.kb, stalenessCache, timing, deps)
+        : null;
+      const explainEmptyDiagnostics =
+        row.explainEmpty && results.length === 0
+          ? await gatherExplainEmptyDiagnostics({
+              manager: state.manager,
+              query,
+              threshold: row.thresholdAuto ? Number.POSITIVE_INFINITY : row.threshold ?? 2,
+              scopedKb: row.kb,
+              noCache: row.noCache,
+              staleness,
+            })
+          : null;
+      if (timing) timing.total_ms = elapsedMs(totalStartedAt);
+
+      writeBatchEnvelope({
+        schema_version: BATCH_JSONL_SCHEMA_VERSION,
+        line: lineNumber,
+        ok: true,
+        query,
+        kb: row.kb ?? null,
+        model: activeModelId,
+        mode: effectiveMode,
+        result: buildDenseSearchJsonPayload({
+          results,
+          requestedMode: row.mode,
+          effectiveMode,
+          autoModeDecision,
+          groupBySource: row.groupBySource,
+          refreshed: row.refresh,
+          scopedKb: row.kb,
+          query,
+          staleness,
+          autoThresholdDecision,
+          timing,
+          explainEmptyDiagnostics,
+          gateVerdict: gate.verdict,
+        }),
+      });
+    } catch (err) {
+      const failure = classifyKbSearchError(err);
+      writeBatchEnvelope({
+        schema_version: BATCH_JSONL_SCHEMA_VERSION,
+        line: lineNumber,
+        ok: false,
+        query,
+        kb: row.kb ?? null,
+        error: {
+          code: failure.code,
+          category: failure.category,
+          message: failure.message,
+          next_action: failure.next_action,
+        },
+      });
+      exitCode = Math.max(exitCode, exitCodeForFailure(failure));
+    }
+  }
+
+  return exitCode;
+}
+
+async function resolveBatchActiveModel(
+  row: SearchArgs,
+  deps: RunSearchDeps,
+  cache: Map<string, string>,
+  timing: TimingPayload | null,
+): Promise<string> {
+  const cacheKey = row.model ?? '<active>';
+  const cached = cache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const startedAt = nowMs();
+  const activeModelId = await deps.resolveActiveModel({ explicitOverride: row.model });
+  cache.set(cacheKey, activeModelId);
+  if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
+  return activeModelId;
+}
+
+async function loadBatchManager(
+  activeModelId: string,
+  deps: RunSearchDeps,
+  managers: Map<string, BatchManagerState>,
+  timing: TimingPayload | null,
+): Promise<BatchManagerState> {
+  const cached = managers.get(activeModelId);
+  if (cached !== undefined) return cached;
+  const startedAt = nowMs();
+  const manager = await deps.loadManagerForModel(activeModelId);
+  const state = { manager, loaded: false, refreshedScopes: new Set<string>() };
+  managers.set(activeModelId, state);
+  if (timing) timing.manager_load_ms = elapsedMs(startedAt);
+  return state;
+}
+
+async function loadBatchIndex(
+  activeModelId: string,
+  row: SearchArgs,
+  deps: RunSearchDeps,
+  state: BatchManagerState,
+  timing: TimingPayload | null,
+): Promise<boolean> {
+  const startedAt = nowMs();
+  let refreshed = false;
+  if (row.refresh) {
+    const scopeKey = row.kb ?? '<all>';
+    if (!state.refreshedScopes.has(scopeKey)) {
+      await withWriteLock(state.manager.modelDir, async () => {
+        await printRefreshPreflightIfLarge(activeModelId, state.manager, row.kb, row.format);
+        await state.manager.initialize();
+        await state.manager.updateIndex(row.kb, {
+          onProgress: createRefreshProgressReporter(timing),
+        });
+      });
+      state.refreshedScopes.add(scopeKey);
+      state.loaded = true;
+      refreshed = true;
+    }
+  } else if (!state.loaded) {
+    await deps.loadWithJsonRetry(state.manager);
+    state.loaded = true;
+  }
+  if (timing) timing.index_load_ms = elapsedMs(startedAt);
+  return refreshed;
+}
+
+async function computeBatchStaleness(
+  activeModelId: string,
+  scopedKb: string | undefined,
+  cache: Map<string, Staleness>,
+  timing: TimingPayload | null,
+  deps: RunSearchDeps,
+): Promise<Staleness> {
+  const cacheKey = `${activeModelId}\0${scopedKb ?? ''}`;
+  const cached = cache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const staleness = await computeStalenessWithTiming(activeModelId, scopedKb, timing, deps.computeStaleness);
+  cache.set(cacheKey, staleness);
+  return staleness;
+}
+
+function invalidateBatchStaleness(activeModelId: string, cache: Map<string, Staleness>): void {
+  const prefix = `${activeModelId}\0`;
+  for (const key of Array.from(cache.keys())) {
+    if (key.startsWith(prefix)) cache.delete(key);
+  }
+}
+
+function parseBatchJsonlRow(line: string, lineNumber: number, defaults: SearchArgs): SearchArgs {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(line);
+  } catch (err) {
+    throw new Error(`line ${lineNumber}: invalid JSON: ${(err as Error).message}`);
+  }
+  if (!isRecord(raw)) {
+    throw new Error(`line ${lineNumber}: expected a JSON object`);
+  }
+  const query = readBatchString(raw, 'query', lineNumber, true);
+  if (query.trim() === '') {
+    throw new Error(`line ${lineNumber}: query must not be empty`);
+  }
+
+  const row: SearchArgs = {
+    ...defaults,
+    query,
+    stdin: false,
+    batchJsonl: false,
+    interactive: false,
+    format: 'json',
+  };
+  const kb = readBatchString(raw, 'kb', lineNumber, false);
+  if (kb !== undefined) row.kb = kb;
+  const model = readBatchString(raw, 'model', lineNumber, false);
+  if (model !== undefined) row.model = model;
+  const k = readBatchInteger(raw, 'k', lineNumber);
+  if (k !== undefined) {
+    if (k <= 0) throw new Error(`line ${lineNumber}: k must be a positive integer`);
+    row.k = k;
+  }
+  const mode = readBatchString(raw, 'mode', lineNumber, false);
+  if (mode !== undefined) {
+    if (mode !== 'dense' && mode !== 'lexical' && mode !== 'hybrid' && mode !== 'auto') {
+      throw new Error(`line ${lineNumber}: mode must be dense, lexical, hybrid, or auto`);
+    }
+    row.mode = mode;
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'threshold')) {
+    const threshold = raw.threshold;
+    if (threshold === 'auto') {
+      row.thresholdAuto = true;
+      row.threshold = undefined;
+    } else if (typeof threshold === 'number' && Number.isFinite(threshold)) {
+      row.threshold = threshold;
+      row.thresholdAuto = false;
+    } else {
+      throw new Error(`line ${lineNumber}: threshold must be a finite number or "auto"`);
+    }
+  }
+  const noCache = readBatchBoolean(raw, 'no_cache', lineNumber);
+  if (noCache !== undefined) row.noCache = noCache;
+  const refresh = readBatchBoolean(raw, 'refresh', lineNumber);
+  if (refresh !== undefined) row.refresh = refresh;
+  const freshness = readBatchBoolean(raw, 'freshness', lineNumber);
+  if (freshness !== undefined) row.freshness = freshness;
+  const groupBySource = readBatchBoolean(raw, 'group_by_source', lineNumber);
+  if (groupBySource !== undefined) row.groupBySource = groupBySource;
+  const explainEmpty = readBatchBoolean(raw, 'explain_empty', lineNumber);
+  if (explainEmpty !== undefined) row.explainEmpty = explainEmpty;
+  const taskContext = readBatchString(raw, 'task_context', lineNumber, false);
+  if (taskContext !== undefined) row.taskContext = taskContext;
+  const gate = readBatchBoolean(raw, 'gate', lineNumber);
+  if (gate !== undefined) row.gateOverride = gate ? 'on' : 'off';
+  if (Object.prototype.hasOwnProperty.call(raw, 'rerank')) {
+    throw new Error(`line ${lineNumber}: rerank is not supported in batch JSONL dense rows`);
+  }
+
+  const contextWindow = readBatchInteger(raw, 'context_window', lineNumber);
+  const contextBefore = readBatchInteger(raw, 'context_before', lineNumber);
+  const contextAfter = readBatchInteger(raw, 'context_after', lineNumber);
+  if (contextWindow !== undefined) {
+    row.neighborContext = {
+      ...row.neighborContext,
+      before: validateBatchNeighborContext(contextWindow, 'context_window', lineNumber),
+      after: validateBatchNeighborContext(contextWindow, 'context_window', lineNumber),
+    };
+  }
+  if (contextBefore !== undefined) {
+    row.neighborContext = {
+      ...row.neighborContext,
+      before: validateBatchNeighborContext(contextBefore, 'context_before', lineNumber),
+    };
+  }
+  if (contextAfter !== undefined) {
+    row.neighborContext = {
+      ...row.neighborContext,
+      after: validateBatchNeighborContext(contextAfter, 'context_after', lineNumber),
+    };
+  }
+  return row;
+}
+
+function inspectBatchTaskContext(row: SearchArgs): { warnings: string[]; error: string | null } {
+  if (row.taskContext === undefined) return { warnings: [], error: null };
+  const inspection = inspectTaskContext({
+    text: row.taskContext,
+    source: 'file',
+    mode: resolveTaskContextPolicyMode(),
+    argvMax: resolveTaskContextArgvMax(),
+  });
+  return {
+    warnings: inspection.warnings,
+    error: inspection.refused ? inspection.refuseReason : null,
+  };
+}
+
+function batchInputError(
+  line: number,
+  message: string,
+  query?: string,
+  kb?: string,
+): BatchSearchEnvelope {
+  return {
+    schema_version: BATCH_JSONL_SCHEMA_VERSION,
+    line,
+    ok: false,
+    ...(query !== undefined ? { query } : {}),
+    ...(kb !== undefined ? { kb } : {}),
+    error: {
+      code: 'BATCH_ROW_INVALID',
+      category: 'input',
+      message,
+      next_action: 'Fix the JSONL row and retry.',
+    },
+  };
+}
+
+function writeBatchEnvelope(envelope: BatchSearchEnvelope): void {
+  process.stdout.write(`${JSON.stringify(envelope)}\n`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readBatchString(
+  row: Record<string, unknown>,
+  key: string,
+  lineNumber: number,
+  required: true,
+): string;
+function readBatchString(
+  row: Record<string, unknown>,
+  key: string,
+  lineNumber: number,
+  required: false,
+): string | undefined;
+function readBatchString(
+  row: Record<string, unknown>,
+  key: string,
+  lineNumber: number,
+  required: boolean,
+): string | undefined {
+  const value = row[key];
+  if (value === undefined) {
+    if (required) throw new Error(`line ${lineNumber}: missing ${key}`);
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`line ${lineNumber}: ${key} must be a string`);
+  }
+  return value;
+}
+
+function readBatchBoolean(
+  row: Record<string, unknown>,
+  key: string,
+  lineNumber: number,
+): boolean | undefined {
+  const value = row[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    throw new Error(`line ${lineNumber}: ${key} must be a boolean`);
+  }
+  return value;
+}
+
+function readBatchInteger(
+  row: Record<string, unknown>,
+  key: string,
+  lineNumber: number,
+): number | undefined {
+  const value = row[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error(`line ${lineNumber}: ${key} must be an integer`);
+  }
+  return value;
+}
+
+function validateBatchNeighborContext(value: number, key: string, lineNumber: number): number {
+  if (value < 0 || value > MAX_NEIGHBOR_CONTEXT_WINDOW) {
+    throw new Error(`line ${lineNumber}: ${key} must be between 0 and ${MAX_NEIGHBOR_CONTEXT_WINDOW}`);
+  }
+  return value;
 }
 
 async function readAllStdin(): Promise<string> {
