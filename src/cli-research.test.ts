@@ -181,6 +181,27 @@ function fixtureSearchPayload(shelf: string, query: string): Record<string, unkn
   };
 }
 
+function repeatedPassagePayload(shelf: string): Record<string, unknown> {
+  const lines = { from: 10, to: 14 };
+  return {
+    mode: 'hybrid',
+    results: [{
+      score: 0.42,
+      content: 'Repeated passage about agent evaluation and evidence packet readability.',
+      chunk_id: `${shelf}/papers/repeated.md#L${lines.from}-L${lines.to}`,
+      metadata: {
+        knowledgeBase: shelf,
+        relativePath: `${shelf}/papers/repeated.md`,
+        loc: { lines },
+      },
+    }],
+    retrievers: {
+      dense: { fetched: 1, model: 'ollama__nomic-embed-text-latest' },
+      lexical: { fetched: 1, refreshed: 0, failed: 0 },
+    },
+  };
+}
+
 function lineRangeForQuery(query: string): { from: number; to: number } {
   if (query === 'autonomous agents judges') return { from: 20, to: 24 };
   if (query.includes('llm as judge')) return { from: 30, to: 34 };
@@ -376,9 +397,9 @@ describe('kb research CLI', () => {
       expect(packet).toContain('llm-agents/papers/agent-evals.md — 3 passages');
       expect(packet).toContain('llm-as-judge/papers/agent-evals.md — 3 passages');
       expect(packet.match(/papers\/agent-evals\.md — 3 passages/g)).toHaveLength(2);
-      expect(packet).toContain('L10-L14 via "autonomous agents as judges"');
-      expect(packet).toContain('L20-L24 via "autonomous agents judges"');
-      expect(packet).toContain('L30-L34 via "autonomous agents as judges llm as judge llm agents"');
+      expect(packet).toContain('L10-L14 via q1');
+      expect(packet).toContain('L20-L24 via q2');
+      expect(packet).toContain('L30-L34 via q3');
 
       const events = parseJsonl(await fsp.readFile(path.join(runDir, 'events.jsonl'), 'utf-8'));
       expect(events.filter((event) => event.type === 'search_completed')).toHaveLength(6);
@@ -413,6 +434,43 @@ describe('kb research CLI', () => {
         shelf: 'llm-agents',
         k: 5,
       });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('deduplicates repeated packet passages while keeping the ledger lossless', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-research-dedupe-'));
+    const runDir = path.join(tempDir, 'run');
+    const { deps, stdout, stderr } = makeDeps();
+    deps.searchHybrid = jest.fn(async (input: { query: string; shelf: string; k: number }) => ({
+      exitCode: 0,
+      stdout: JSON.stringify(repeatedPassagePayload(input.shelf)),
+      stderr: '',
+      payload: repeatedPassagePayload(input.shelf),
+    }));
+
+    try {
+      const code = await runResearch([
+        'collect',
+        'autonomous agents as judges',
+        '--run-dir',
+        runDir,
+        '--format=json',
+      ], deps);
+
+      expect(code).toBe(0);
+      expect(stderr.join('')).toBe('');
+      expect(JSON.parse(stdout.join('')).status).toBe('complete');
+
+      const ledger = JSON.parse(await fsp.readFile(path.join(runDir, 'ledger.json'), 'utf-8'));
+      expect(ledger.entries).toHaveLength(6);
+
+      const packet = await fsp.readFile(path.join(runDir, 'evidence_packet.md'), 'utf-8');
+      expect(packet).toContain('llm-agents/papers/repeated.md — 1 unique passage, 3 retrieval matches');
+      expect(packet).toContain('llm-as-judge/papers/repeated.md — 1 unique passage, 3 retrieval matches');
+      expect(packet.match(/via q1, q2, q3/g)).toHaveLength(2);
+      expect(packet.match(/Repeated passage about agent evaluation/g)).toHaveLength(2);
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }

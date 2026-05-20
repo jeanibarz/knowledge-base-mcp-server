@@ -108,6 +108,13 @@ interface EvidenceSourceGroup {
   bestScore: number | null;
 }
 
+interface EvidencePassageGroup {
+  entry: LedgerEntry;
+  queryLabels: string[];
+  matchCount: number;
+  bestScore: number | null;
+}
+
 export interface LedgerEntry {
   source_id: string;
   shelf: string;
@@ -910,6 +917,7 @@ function formatCollectMarkdown(summary: CollectResult['summary']): string {
 function formatEvidencePacket(plan: ResearchPlan, ledger: ResearchLedger): string {
   const found = groupEvidenceBySource(ledger.entries).slice(0, 50);
   const sources = uniqueSources(ledger.entries);
+  const queryLabelByText = new Map(plan.queries.map((query) => [query.text, query.id]));
   return [
     '# Evidence Packet',
     '',
@@ -932,14 +940,7 @@ function formatEvidencePacket(plan: ResearchPlan, ledger: ResearchLedger): strin
     '',
     ...(found.length === 0
       ? ['- No evidence found.']
-      : found.map((group, index) => (
-          `${index + 1}. ${group.label} — ${group.entries.length} passage${group.entries.length === 1 ? '' : 's'}, ` +
-          `best score ${formatScore(group.bestScore)}\n\n` +
-          group.entries.slice(0, 3).map((entry) => (
-            `   - ${formatLineRange(entry)} via "${entry.query}": ${entry.excerpt || '(empty excerpt)'}`
-          )).join('\n') +
-          (group.entries.length > 3 ? `\n   - ... ${group.entries.length - 3} more passage(s) from this source` : '')
-        ))),
+      : found.map((group, index) => formatEvidenceSourceGroup(index, group, queryLabelByText))),
     '',
     '## Evidence Gaps',
     '',
@@ -950,6 +951,25 @@ function formatEvidencePacket(plan: ResearchPlan, ledger: ResearchLedger): strin
     ...(sources.length === 0 ? ['- None.'] : sources.map((source) => `- ${source}`)),
     '',
   ].join('\n');
+}
+
+function formatEvidenceSourceGroup(index: number, group: EvidenceSourceGroup, queryLabelByText: Map<string, string>): string {
+  const passages = groupPassagesByIdentity(group.entries, queryLabelByText);
+  const summary = formatPassageSummary(passages.length, group.entries.length);
+  return (
+    `${index + 1}. ${group.label} — ${summary}, best score ${formatScore(group.bestScore)}\n\n` +
+    passages.slice(0, 3).map((passage) => (
+      `   - ${formatLineRange(passage.entry)} via ${passage.queryLabels.join(', ')}: ` +
+      `${passage.entry.excerpt || '(empty excerpt)'}`
+    )).join('\n') +
+    (passages.length > 3 ? `\n   - ... ${passages.length - 3} more unique passage(s) from this source` : '')
+  );
+}
+
+function formatPassageSummary(uniqueCount: number, matchCount: number): string {
+  const uniqueLabel = `${uniqueCount} passage${uniqueCount === 1 ? '' : 's'}`;
+  if (uniqueCount === matchCount) return uniqueLabel;
+  return `${uniqueCount} unique passage${uniqueCount === 1 ? '' : 's'}, ${matchCount} retrieval matches`;
 }
 
 function formatEvidenceGaps(plan: ResearchPlan, ledger: ResearchLedger): string[] {
@@ -1021,6 +1041,40 @@ function groupEvidenceBySource(entries: LedgerEntry[]): EvidenceSourceGroup[] {
     entries: groupedEntries,
     bestScore,
   }));
+}
+
+function groupPassagesByIdentity(entries: LedgerEntry[], queryLabelByText: Map<string, string>): EvidencePassageGroup[] {
+  const groups = new Map<string, EvidencePassageGroup & { seenQueries: Set<string> }>();
+  for (const entry of entries) {
+    const key = `${formatSourceLabel(entry)}\0${entry.excerpt}`;
+    const queryLabel = queryLabelByText.get(entry.query) ?? `"${entry.query}"`;
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        entry,
+        queryLabels: [],
+        matchCount: 0,
+        bestScore: entry.score,
+        seenQueries: new Set<string>(),
+      };
+      groups.set(key, group);
+    }
+    group.matchCount += 1;
+    if (!group.seenQueries.has(queryLabel)) {
+      group.seenQueries.add(queryLabel);
+      group.queryLabels.push(queryLabel);
+    }
+    if (entry.score !== null && (group.bestScore === null || entry.score > group.bestScore)) {
+      group.bestScore = entry.score;
+      group.entry = entry;
+    }
+  }
+  return [...groups.values()]
+    .sort((a, b) => (
+      (b.bestScore ?? Number.NEGATIVE_INFINITY) - (a.bestScore ?? Number.NEGATIVE_INFINITY) ||
+      formatSourceLabel(a.entry).localeCompare(formatSourceLabel(b.entry))
+    ))
+    .map(({ seenQueries: _seenQueries, ...group }) => group);
 }
 
 function formatScore(score: number | null): string {
