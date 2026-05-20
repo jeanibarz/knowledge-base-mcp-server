@@ -5,6 +5,7 @@
 
 import * as fsp from 'fs/promises';
 import { realpathSync } from 'fs';
+import * as net from 'net';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -60,10 +61,20 @@ import { inspectReindexTriggerFilesystem } from './triggerWatcher.js';
 import { deriveHealthUrl, probeLlmEndpoint, type LlmProbeResult } from './llm-client.js';
 import {
   createExternalProfile,
+  readActiveProfileName,
+  readProfile,
   resolveProfile,
   type LlmProfile,
 } from './llm-profiles.js';
 import { resolveRerankerConfig } from './config/reranker.js';
+import {
+  daemonUrlFromEnv,
+  fetchDaemonHealth,
+} from './daemon-client.js';
+import {
+  DEFAULT_MCP_BIND_ADDR,
+  DEFAULT_MCP_PORT,
+} from './transport-config.js';
 
 /**
  * Issue #210 — error-rate threshold above which the doctor surfaces a
@@ -81,7 +92,7 @@ const execFileAsync = promisify(execFile);
 export const DOCTOR_HELP = `kb doctor — aggregate model / index / backend health report
 
 Usage:
-  kb doctor [--format=md|json] [--reindex-trigger]
+  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints]
 
 Composes existing read-only checks (env vars, registered models, active
 model, FAISS index presence + mtime, knowledge-base count, embedding
@@ -98,6 +109,9 @@ Options:
                         underlying report shape for agent shells.
   --reindex-trigger     Include focused reindex-trigger diagnostics
                         (also included in the aggregate report).
+  --endpoints           Check only configured local bind/connect endpoint
+                        readiness (MCP bind target, KB_DAEMON_URL,
+                        Ollama embedding endpoint, and KB_LLM_ENDPOINT/profile).
   --help, -h            Show this help.
 
 Examples:
@@ -109,9 +123,27 @@ Examples:
 export interface DoctorArgs {
   format: 'md' | 'json';
   reindexTrigger: boolean;
+  endpoints: boolean;
 }
 
 export type HealthStatus = 'ok' | 'warn' | 'error';
+export type EndpointHealthStatus = HealthStatus | 'skipped';
+
+export interface EndpointReadinessEntry {
+  name: 'mcp_bind' | 'kb_daemon' | 'embedding_ollama' | 'llm_endpoint';
+  kind: 'bind' | 'http';
+  status: EndpointHealthStatus;
+  configured: boolean;
+  target: string | null;
+  source: 'env' | 'profile' | 'default' | 'not_configured' | 'invalid';
+  detail: string;
+}
+
+export interface EndpointReadinessReport {
+  schema_version: 'kb.doctor.endpoints.v1';
+  status: HealthStatus;
+  endpoints: EndpointReadinessEntry[];
+}
 
 export interface DoctorIndexSecurityEntry {
   name: 'faiss_root' | 'active_file' | 'active_model_dir' | 'active_index_version_dir';
@@ -301,6 +333,11 @@ export interface BuildDoctorReportOptions {
   llmEndpointProbe?: LlmEndpointProbe;
 }
 
+export interface BuildEndpointReadinessReportOptions {
+  fetchImpl?: typeof fetch;
+  llmEndpointProbe?: LlmEndpointProbe;
+}
+
 export type BackendHealthCheck = (
   provider: string,
   modelName: string,
@@ -316,6 +353,16 @@ export async function runDoctor(rest: string[]): Promise<number> {
     return 2;
   }
 
+  if (parsed.endpoints) {
+    const report = await buildEndpointReadinessReport();
+    if (parsed.format === 'json') {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(formatEndpointReadinessMarkdown(report));
+    }
+    return report.status === 'error' ? 1 : 0;
+  }
+
   const report = await buildDoctorReport();
   if (parsed.format === 'json') {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -326,7 +373,7 @@ export async function runDoctor(rest: string[]): Promise<number> {
 }
 
 export function parseDoctorArgs(rest: string[]): DoctorArgs {
-  const out: DoctorArgs = { format: 'md', reindexTrigger: false };
+  const out: DoctorArgs = { format: 'md', reindexTrigger: false, endpoints: false };
   for (const raw of rest) {
     if (raw.startsWith('--format=')) {
       const value = raw.slice('--format='.length);
@@ -340,10 +387,360 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
       out.reindexTrigger = true;
       continue;
     }
+    if (raw === '--endpoints') {
+      out.endpoints = true;
+      continue;
+    }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
   }
   return out;
+}
+
+export async function buildEndpointReadinessReport(
+  options: BuildEndpointReadinessReportOptions = {},
+): Promise<EndpointReadinessReport> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const entries: EndpointReadinessEntry[] = [];
+  entries.push(await readMcpBindEndpointHealth());
+  entries.push(await readKbDaemonEndpointHealth(fetchImpl));
+  entries.push(await readOllamaEndpointHealth(fetchImpl));
+  entries.push(await readConfiguredLlmEndpointHealth(
+    options.llmEndpointProbe ?? ((endpoint) => probeLlmEndpoint(endpoint, fetchImpl, {
+      healthTimeoutMs: DOCTOR_LLM_HEALTH_TIMEOUT_MS,
+      chatTimeoutMs: DOCTOR_LLM_CHAT_TIMEOUT_MS,
+    })),
+  ));
+  return {
+    schema_version: 'kb.doctor.endpoints.v1',
+    status: summarizeEndpointStatus(entries),
+    endpoints: entries,
+  };
+}
+
+async function readMcpBindEndpointHealth(): Promise<EndpointReadinessEntry> {
+  const transport = process.env.MCP_TRANSPORT?.trim() ?? '';
+  if (
+    transport.length > 0 &&
+    transport !== 'stdio' &&
+    transport !== 'http' &&
+    transport !== 'sse'
+  ) {
+    const bindAddr = process.env.MCP_BIND_ADDR?.trim() || DEFAULT_MCP_BIND_ADDR;
+    const port = process.env.MCP_PORT?.trim() || String(DEFAULT_MCP_PORT);
+    return {
+      name: 'mcp_bind',
+      kind: 'bind',
+      status: 'error',
+      configured: true,
+      target: `${bindAddr}:${port}`,
+      source: 'invalid',
+      detail: `invalid MCP_TRANSPORT=${JSON.stringify(transport)}; expected one of stdio|sse|http`,
+    };
+  }
+  const explicitlyConfigured = Boolean(
+    transport === 'http' ||
+    transport === 'sse' ||
+    process.env.MCP_PORT?.trim() ||
+    process.env.MCP_BIND_ADDR?.trim(),
+  );
+  const bindAddr = process.env.MCP_BIND_ADDR?.trim() || DEFAULT_MCP_BIND_ADDR;
+  let port: number;
+  try {
+    port = parseEndpointPort(process.env.MCP_PORT, 'MCP_PORT', DEFAULT_MCP_PORT);
+  } catch (err) {
+    return {
+      name: 'mcp_bind',
+      kind: 'bind',
+      status: 'error',
+      configured: true,
+      target: `${bindAddr}:${process.env.MCP_PORT ?? ''}`,
+      source: 'invalid',
+      detail: (err as Error).message,
+    };
+  }
+  const target = `${bindAddr}:${port}`;
+  if (!explicitlyConfigured) {
+    return {
+      name: 'mcp_bind',
+      kind: 'bind',
+      status: 'skipped',
+      configured: false,
+      target,
+      source: 'not_configured',
+      detail: 'MCP_TRANSPORT is stdio and no MCP_PORT/MCP_BIND_ADDR override is configured',
+    };
+  }
+
+  try {
+    await probeTcpBind(bindAddr, port);
+    return {
+      name: 'mcp_bind',
+      kind: 'bind',
+      status: 'ok',
+      configured: true,
+      target,
+      source: process.env.MCP_PORT?.trim() || process.env.MCP_BIND_ADDR?.trim() ? 'env' : 'default',
+      detail: 'bind target is available',
+    };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    const suffix = code ? `${code}: ${(err as Error).message}` : (err as Error).message;
+    return {
+      name: 'mcp_bind',
+      kind: 'bind',
+      status: 'error',
+      configured: true,
+      target,
+      source: process.env.MCP_PORT?.trim() || process.env.MCP_BIND_ADDR?.trim() ? 'env' : 'default',
+      detail: `bind target is not available: ${suffix}`,
+    };
+  }
+}
+
+async function readKbDaemonEndpointHealth(fetchImpl: typeof fetch): Promise<EndpointReadinessEntry> {
+  if (process.env.KB_DAEMON_URL === undefined || process.env.KB_DAEMON_URL.trim() === '') {
+    return {
+      name: 'kb_daemon',
+      kind: 'http',
+      status: 'skipped',
+      configured: false,
+      target: null,
+      source: 'not_configured',
+      detail: 'KB_DAEMON_URL is not configured',
+    };
+  }
+  let target: string;
+  try {
+    target = new URL('/health', daemonUrlFromEnv(process.env)).href;
+  } catch (err) {
+    return {
+      name: 'kb_daemon',
+      kind: 'http',
+      status: 'error',
+      configured: true,
+      target: process.env.KB_DAEMON_URL,
+      source: 'invalid',
+      detail: `invalid KB_DAEMON_URL: ${(err as Error).message}`,
+    };
+  }
+  try {
+    const health = await fetchDaemonHealth({ env: process.env, fetchImpl, timeoutMs: 1500 });
+    return {
+      name: 'kb_daemon',
+      kind: 'http',
+      status: 'ok',
+      configured: true,
+      target,
+      source: 'env',
+      detail: `daemon health responded with status=${JSON.stringify(health.status)}`,
+    };
+  } catch (err) {
+    return {
+      name: 'kb_daemon',
+      kind: 'http',
+      status: 'error',
+      configured: true,
+      target,
+      source: 'env',
+      detail: `daemon health is not reachable: ${(err as Error).message}`,
+    };
+  }
+}
+
+async function readOllamaEndpointHealth(fetchImpl: typeof fetch): Promise<EndpointReadinessEntry> {
+  const provider = process.env.EMBEDDING_PROVIDER?.trim() || 'huggingface';
+  const configured = provider === 'ollama' || Boolean(process.env.OLLAMA_BASE_URL?.trim());
+  if (!configured) {
+    return {
+      name: 'embedding_ollama',
+      kind: 'http',
+      status: 'skipped',
+      configured: false,
+      target: null,
+      source: 'not_configured',
+      detail: 'EMBEDDING_PROVIDER is not ollama and OLLAMA_BASE_URL is not configured',
+    };
+  }
+  let target: string;
+  try {
+    target = new URL('/api/tags', OLLAMA_BASE_URL).href;
+  } catch (err) {
+    return {
+      name: 'embedding_ollama',
+      kind: 'http',
+      status: 'error',
+      configured: true,
+      target: OLLAMA_BASE_URL,
+      source: 'invalid',
+      detail: `invalid OLLAMA_BASE_URL: ${(err as Error).message}`,
+    };
+  }
+  return probeHttpGet('embedding_ollama', target, 'env', fetchImpl, 'Ollama tags endpoint');
+}
+
+async function readConfiguredLlmEndpointHealth(
+  check: LlmEndpointProbe,
+): Promise<EndpointReadinessEntry> {
+  let target: { profile: LlmProfile; source: EndpointReadinessEntry['source'] } | null = null;
+  try {
+    if (process.env.KB_LLM_ENDPOINT?.trim()) {
+      target = {
+        profile: await createExternalProfile('env', process.env.KB_LLM_ENDPOINT),
+        source: 'env',
+      };
+    } else {
+      const activeProfileName = await readActiveProfileName();
+      if (activeProfileName !== null) {
+        const profile = await readProfile(activeProfileName);
+        if (profile === null) {
+          return {
+            name: 'llm_endpoint',
+            kind: 'http',
+            status: 'error',
+            configured: true,
+            target: null,
+            source: 'invalid',
+            detail: `active LLM profile ${JSON.stringify(activeProfileName)} is configured but profile file is missing`,
+          };
+        }
+        target = { profile, source: 'profile' };
+      }
+    }
+  } catch (err) {
+    return {
+      name: 'llm_endpoint',
+      kind: 'http',
+      status: 'error',
+      configured: true,
+      target: process.env.KB_LLM_ENDPOINT ?? null,
+      source: 'invalid',
+      detail: `LLM endpoint configuration is invalid: ${(err as Error).message}`,
+    };
+  }
+
+  if (target === null) {
+    return {
+      name: 'llm_endpoint',
+      kind: 'http',
+      status: 'skipped',
+      configured: false,
+      target: null,
+      source: 'not_configured',
+      detail: 'KB_LLM_ENDPOINT is not configured and no active LLM profile is set',
+    };
+  }
+
+  try {
+    const probe = await check(target.profile.endpoint);
+    const status: HealthStatus = probe.health_ok && probe.chat_ok ? 'ok' : 'error';
+    return {
+      name: 'llm_endpoint',
+      kind: 'http',
+      status,
+      configured: true,
+      target: probe.endpoint,
+      source: target.source,
+      detail: formatLlmEndpointDetail(target.profile, target.source === 'profile' ? 'profile' : 'env', probe),
+    };
+  } catch (err) {
+    return {
+      name: 'llm_endpoint',
+      kind: 'http',
+      status: 'error',
+      configured: true,
+      target: target.profile.endpoint,
+      source: target.source,
+      detail: `LLM endpoint probe failed: ${(err as Error).message}`,
+    };
+  }
+}
+
+function parseEndpointPort(raw: string | undefined, envVar: string, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`invalid ${envVar}=${JSON.stringify(raw)}; expected integer in [1, 65535]`);
+  }
+  return port;
+}
+
+function probeTcpBind(host: string, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    let settled = false;
+    const finish = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      server.removeAllListeners();
+      if (err) reject(err);
+      else resolve();
+    };
+    server.once('error', finish);
+    server.listen({ host, port }, () => {
+      server.close((err) => finish(err ?? undefined));
+    });
+  });
+}
+
+async function probeHttpGet(
+  name: EndpointReadinessEntry['name'],
+  target: string,
+  source: EndpointReadinessEntry['source'],
+  fetchImpl: typeof fetch,
+  label: string,
+): Promise<EndpointReadinessEntry> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await fetchImpl(target, { method: 'GET', signal: controller.signal });
+    return {
+      name,
+      kind: 'http',
+      status: response.ok ? 'ok' : 'error',
+      configured: true,
+      target,
+      source,
+      detail: response.ok
+        ? `${label} responded with HTTP ${response.status}`
+        : `${label} returned HTTP ${response.status}`,
+    };
+  } catch (err) {
+    const message = (err as Error).name === 'AbortError' ? 'timed out' : (err as Error).message;
+    return {
+      name,
+      kind: 'http',
+      status: 'error',
+      configured: true,
+      target,
+      source,
+      detail: `${label} is not reachable: ${message}`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function summarizeEndpointStatus(entries: EndpointReadinessEntry[]): HealthStatus {
+  if (entries.some((entry) => entry.status === 'error')) return 'error';
+  if (entries.some((entry) => entry.status === 'warn')) return 'warn';
+  return 'ok';
+}
+
+export function formatEndpointReadinessMarkdown(report: EndpointReadinessReport): string {
+  const lines: string[] = [];
+  lines.push(`Status: ${report.status.toUpperCase()}`);
+  lines.push('');
+  lines.push('Endpoint readiness:');
+  for (const entry of report.endpoints) {
+    const target = entry.target ?? '<not configured>';
+    const configured = entry.configured ? 'configured' : 'not configured';
+    lines.push(
+      `  ${entry.status.toUpperCase().padEnd(7)} ${entry.name}: ${target} ` +
+      `(${entry.kind}, ${entry.source}, ${configured}) - ${entry.detail}`,
+    );
+  }
+  return lines.join('\n') + '\n';
 }
 
 export async function buildDoctorReport(

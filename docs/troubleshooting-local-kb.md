@@ -11,9 +11,12 @@ Start with the read-only health check:
 ```bash
 kb doctor
 kb doctor --format=json
+kb doctor --endpoints
 ```
 
 `kb doctor` reports active-model resolution, index path and version, stale file counts, embedding backend health, local LLM endpoint readiness for `kb ask`, CLI package and symlink state, git drift for linked checkouts, and the latest index-update summary. Use it before deleting index files, changing client configuration, or debugging local LLM answers.
+
+Use `kb doctor --endpoints` for the narrower port/URL preflight: MCP bind target availability, configured `KB_DAEMON_URL`, configured Ollama embedding endpoint, and configured `KB_LLM_ENDPOINT` or active LLM profile.
 
 ## Quick Symptom Table
 

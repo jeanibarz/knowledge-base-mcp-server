@@ -213,7 +213,7 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
     expect(record(examples[1])).toEqual({ recommended_kb: null, results: [] });
   },
   'kb doctor': (examples) => {
-    expect(examples).toHaveLength(1);
+    expect(examples).toHaveLength(2);
     expect(record(examples[0])).toMatchObject({
       status: expect.any(String),
       checks: expect.any(Array),
@@ -222,6 +222,19 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
       backend: expect.any(Object),
       cli: expect.any(Object),
       last_index_update: expect.any(Object),
+    });
+    expect(record(examples[1])).toMatchObject({
+      schema_version: 'kb.doctor.endpoints.v1',
+      status: expect.any(String),
+      endpoints: expect.arrayContaining([
+        expect.objectContaining({
+          name: expect.any(String),
+          kind: expect.any(String),
+          status: expect.any(String),
+          configured: expect.any(Boolean),
+          detail: expect.any(String),
+        }),
+      ]),
     });
   },
   'kb logs': (examples) => {
