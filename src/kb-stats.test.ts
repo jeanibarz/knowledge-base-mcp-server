@@ -422,6 +422,52 @@ describe('computeKbStats', () => {
     }
   });
 
+  it('includes remote transport counters only when supplied by the server (issue #430)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-transport-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'alpha'));
+      await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'a');
+
+      const { computeKbStats } = await freshKbStats({
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+
+      const withoutTransport = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+      });
+      expect(withoutTransport.remote_transport).toBeUndefined();
+
+      const remoteTransportStats = {
+        transport: 'sse' as const,
+        sessions_opened: 2,
+        sessions_closed: 1,
+        current_sessions: 1,
+        in_flight_requests: 0,
+        requests_total: 5,
+        response_status_buckets: {
+          '1xx': 0,
+          '2xx': 3,
+          '3xx': 0,
+          '4xx': 2,
+          '5xx': 0,
+        },
+        auth_failures: 1,
+        origin_denials: 1,
+        last_error: null,
+      };
+      const withTransport = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        remoteTransportStats,
+      });
+      expect(withTransport.remote_transport).toEqual(remoteTransportStats);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('respects INGEST_EXCLUDE_PATHS so excluded files do not contribute to file_count or bytes', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-exclude-'));
     await fsp.mkdir(path.join(tempDir, 'alpha'));

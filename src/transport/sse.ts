@@ -38,6 +38,10 @@ export class SseHost extends BaseHttpHost<SSEServerTransport> {
     return 'sse';
   }
 
+  protected get transportKind(): 'sse' {
+    return 'sse';
+  }
+
   protected get bannerLabel(): string {
     return 'SSE';
   }
@@ -107,13 +111,13 @@ export class SseHost extends BaseHttpHost<SSEServerTransport> {
     // recursion. Map delete is idempotent, so multiple onclose firings are
     // harmless.
     transport.onclose = () => {
-      this.sessions.delete(sessionId);
+      this.unregisterSession(sessionId);
     };
-    this.sessions.set(sessionId, { transport, mcp });
+    this.registerSession(sessionId, { transport, mcp });
     try {
       await mcp.connect(transport);
     } catch (err) {
-      this.sessions.delete(sessionId);
+      this.unregisterSession(sessionId);
       throw err;
     }
   }

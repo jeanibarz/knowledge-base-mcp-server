@@ -24,6 +24,14 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import { normalizeOrigin, type TransportConfig } from '../transport-config.js';
 import { logger } from '../logger.js';
+import {
+  emptyResponseStatusBuckets,
+  responseStatusBucket,
+  type RemoteTransportKind,
+  type ResponseStatusBucket,
+  type TransportRuntimeErrorSnapshot,
+  type TransportRuntimeStatsSnapshot,
+} from '../transport-runtime-stats.js';
 
 const HEALTH_ENDPOINT = '/health';
 const SHUTDOWN_DRAIN_DEADLINE_MS = 10_000;
@@ -54,6 +62,14 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
   protected readonly sessions = new Map<string, BaseSessionEntry<TTransport>>();
   protected readonly originAllowList: ReadonlySet<string>;
   private readonly authTokenBuf: Buffer;
+  private sessionsOpened = 0;
+  private sessionsClosed = 0;
+  private requestsTotal = 0;
+  private readonly responseStatusBuckets: Record<ResponseStatusBucket, number> =
+    emptyResponseStatusBuckets();
+  private authFailures = 0;
+  private originDenials = 0;
+  private lastError: TransportRuntimeErrorSnapshot | null = null;
   protected server?: http.Server;
   protected inFlight = 0;
   protected shuttingDown = false;
@@ -77,6 +93,9 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
 
   /** Short tag used in log lines (`sse`, `http`). */
   protected abstract get logPrefix(): string;
+
+  /** Stable transport label used in stats payloads. */
+  protected abstract get transportKind(): RemoteTransportKind;
 
   /** Human-readable transport label used in the start banner. */
   protected abstract get bannerLabel(): string;
@@ -126,6 +145,21 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     return this.sessions.size;
   }
 
+  getRuntimeStats(): TransportRuntimeStatsSnapshot {
+    return {
+      transport: this.transportKind,
+      sessions_opened: this.sessionsOpened,
+      sessions_closed: this.sessionsClosed,
+      current_sessions: this.sessions.size,
+      in_flight_requests: this.inFlight,
+      requests_total: this.requestsTotal,
+      response_status_buckets: { ...this.responseStatusBuckets },
+      auth_failures: this.authFailures,
+      origin_denials: this.originDenials,
+      last_error: this.lastError === null ? null : { ...this.lastError },
+    };
+  }
+
   /**
    * Issue #157 step 4 — fan a logging notification out across every live
    * session. The host owns the iteration so callers never see the session
@@ -165,6 +199,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       } catch {
         // best-effort
       }
+      this.recordTransportError(err);
       logger.warn(`[${this.logPrefix}] clientError: ${err.message}`);
     });
 
@@ -254,6 +289,8 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     const authPresent = Boolean(req.headers.authorization);
 
     const finalize = (status: number) => {
+      this.requestsTotal += 1;
+      this.responseStatusBuckets[responseStatusBucket(status)] += 1;
       this.writeAccessLog({
         ts: new Date(startedAt).toISOString(),
         method,
@@ -267,7 +304,9 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
 
     // 1. CORS preflight short-circuits before auth.
     if (method === 'OPTIONS') {
-      finalize(this.handlePreflight(res, originHeader, normalizedOrigin));
+      const status = this.handlePreflight(res, originHeader, normalizedOrigin);
+      if (status === 403) this.originDenials += 1;
+      finalize(status);
       return;
     }
 
@@ -281,6 +320,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     //    caller and accepted; if Origin is present it must be in the
     //    allow-list (after normalization).
     if (normalizedOrigin !== null && !this.originAllowList.has(normalizedOrigin)) {
+      this.originDenials += 1;
       respond(res, 403, 'Origin not allowed');
       finalize(403);
       return;
@@ -288,6 +328,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
 
     // 4. Bearer-token auth.
     if (!this.verifyBearer(req.headers.authorization)) {
+      this.authFailures += 1;
       res.setHeader('WWW-Authenticate', 'Bearer realm="knowledge-base-mcp"');
       respond(res, 401, 'Unauthorized');
       finalize(401);
@@ -404,7 +445,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
   // ---------------------------------------------------------------------------
 
   protected async closeEntry(sessionId: string, entry: BaseSessionEntry<TTransport>): Promise<void> {
-    this.sessions.delete(sessionId);
+    this.unregisterSession(sessionId);
     try {
       await entry.transport.close();
     } catch (err) {
@@ -415,6 +456,29 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     } catch (err) {
       logger.warn(`[${this.logPrefix}] error closing mcp: ${(err as Error).message}`);
     }
+  }
+
+  protected registerSession(sessionId: string, entry: BaseSessionEntry<TTransport>): void {
+    if (!this.sessions.has(sessionId)) {
+      this.sessionsOpened += 1;
+    }
+    this.sessions.set(sessionId, entry);
+  }
+
+  protected unregisterSession(sessionId: string): BaseSessionEntry<TTransport> | undefined {
+    const entry = this.sessions.get(sessionId);
+    if (entry !== undefined) {
+      this.sessions.delete(sessionId);
+      this.sessionsClosed += 1;
+    }
+    return entry;
+  }
+
+  protected recordTransportError(error: Error): void {
+    this.lastError = {
+      at: new Date().toISOString(),
+      message: error.message,
+    };
   }
 }
 

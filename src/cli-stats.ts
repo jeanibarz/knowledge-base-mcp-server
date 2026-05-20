@@ -176,8 +176,40 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
       `${formatInteger(payload.relevance_gate.judge_window.size)}, ` +
       `warn>${formatRate(payload.relevance_gate.judge_window.warn_threshold)})`,
     '',
+    ...formatRemoteTransportSection(payload),
     ...formatContextualSection(payload),
   ].join('\n');
+}
+
+export function formatRemoteTransportSection(payload: KbStatsPayload): string[] {
+  const stats = payload.remote_transport;
+  if (stats === undefined) return [];
+
+  const buckets = stats.response_status_buckets;
+  const bucketSummary = [
+    `1xx=${formatInteger(buckets['1xx'])}`,
+    `2xx=${formatInteger(buckets['2xx'])}`,
+    `3xx=${formatInteger(buckets['3xx'])}`,
+    `4xx=${formatInteger(buckets['4xx'])}`,
+    `5xx=${formatInteger(buckets['5xx'])}`,
+  ].join(', ');
+  const lastError = stats.last_error === null
+    ? 'none'
+    : `${stats.last_error.at} ${stats.last_error.message}`;
+
+  return [
+    '## Remote Transport',
+    '',
+    `- Mode: ${stats.transport}`,
+    `- Sessions: current=${formatInteger(stats.current_sessions)}, ` +
+      `opened=${formatInteger(stats.sessions_opened)}, closed=${formatInteger(stats.sessions_closed)}`,
+    `- Requests: total=${formatInteger(stats.requests_total)}, ` +
+      `in_flight=${formatInteger(stats.in_flight_requests)}, ${bucketSummary}`,
+    `- Auth failures: ${formatInteger(stats.auth_failures)}`,
+    `- Origin denials: ${formatInteger(stats.origin_denials)}`,
+    `- Last error: ${lastError}`,
+    '',
+  ];
 }
 
 /**

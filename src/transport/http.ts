@@ -41,6 +41,10 @@ export class StreamableHttpHost extends BaseHttpHost<StreamableHTTPServerTranspo
     return 'http';
   }
 
+  protected get transportKind(): 'http' {
+    return 'http';
+  }
+
   protected get bannerLabel(): string {
     return 'streamable HTTP';
   }
@@ -180,15 +184,16 @@ export class StreamableHttpHost extends BaseHttpHost<StreamableHTTPServerTranspo
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId) => {
-        this.sessions.set(sessionId, { transport, mcp });
+        this.registerSession(sessionId, { transport, mcp });
       },
     });
     transport.onclose = () => {
       if (transport.sessionId) {
-        this.sessions.delete(transport.sessionId);
+        this.unregisterSession(transport.sessionId);
       }
     };
     transport.onerror = (error) => {
+      this.recordTransportError(error);
       logger.warn(`[http] transport error: ${error.message}`);
     };
     try {
@@ -196,7 +201,7 @@ export class StreamableHttpHost extends BaseHttpHost<StreamableHTTPServerTranspo
       await transport.handleRequest(req, res, parsedBody);
     } catch (err) {
       if (transport.sessionId) {
-        this.sessions.delete(transport.sessionId);
+        this.unregisterSession(transport.sessionId);
       }
       try {
         await transport.close();
