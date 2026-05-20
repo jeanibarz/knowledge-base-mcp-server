@@ -50,3 +50,41 @@ export async function loadWithJsonRetry(manager: FaissIndexManager): Promise<voi
     throw err;
   }
 }
+
+export interface CapturedProcessOutput {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+export async function captureProcessOutput(
+  fn: () => Promise<number>,
+): Promise<CapturedProcessOutput> {
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+  const originalStdout = process.stdout.write;
+  const originalStderr = process.stderr.write;
+  process.stdout.write = ((chunk: unknown, ...args: unknown[]) => {
+    stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : String(chunk));
+    const callback = args.find((arg): arg is (err?: Error) => void => typeof arg === 'function');
+    if (callback) callback();
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: unknown, ...args: unknown[]) => {
+    stderrChunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : String(chunk));
+    const callback = args.find((arg): arg is (err?: Error) => void => typeof arg === 'function');
+    if (callback) callback();
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const exitCode = await fn();
+    return {
+      exitCode,
+      stdout: stdoutChunks.join(''),
+      stderr: stderrChunks.join(''),
+    };
+  } finally {
+    process.stdout.write = originalStdout;
+    process.stderr.write = originalStderr;
+  }
+}

@@ -2,6 +2,7 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { runList } from './cli-list.js';
 import { runSearch } from './cli-search.js';
+import { captureProcessOutput } from './cli-shared.js';
 import { runStats } from './cli-stats.js';
 import type { DaemonCommand, DaemonRunResult } from './daemon-client.js';
 
@@ -267,36 +268,6 @@ function readBody(req: http.IncomingMessage): Promise<string> {
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
     req.on('error', reject);
   });
-}
-
-async function captureProcessOutput(fn: () => Promise<number>): Promise<DaemonRunResult> {
-  const stdoutChunks: string[] = [];
-  const stderrChunks: string[] = [];
-  const originalStdout = process.stdout.write;
-  const originalStderr = process.stderr.write;
-  process.stdout.write = ((chunk: unknown, ...args: unknown[]) => {
-    stdoutChunks.push(String(chunk));
-    const callback = args.find((arg): arg is (err?: Error) => void => typeof arg === 'function');
-    if (callback) callback();
-    return true;
-  }) as typeof process.stdout.write;
-  process.stderr.write = ((chunk: unknown, ...args: unknown[]) => {
-    stderrChunks.push(String(chunk));
-    const callback = args.find((arg): arg is (err?: Error) => void => typeof arg === 'function');
-    if (callback) callback();
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    const exitCode = await fn();
-    return {
-      exitCode,
-      stdout: stdoutChunks.join(''),
-      stderr: stderrChunks.join(''),
-    };
-  } finally {
-    process.stdout.write = originalStdout;
-    process.stderr.write = originalStderr;
-  }
 }
 
 function assertLoopbackHost(host: string): void {
