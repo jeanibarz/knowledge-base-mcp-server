@@ -27,6 +27,7 @@ import {
 } from './config/paths.js';
 import {
   formatRetrievalAsJson,
+  formatRetrievalAsCompactTable,
   formatRetrievalAsMarkdown,
   formatRetrievalAsVimgrep,
   formatRetrievalEmptyAsMarkdown,
@@ -157,9 +158,12 @@ Result tuning:
                         context carrying injection signals.
 
 Output:
-  --format=md|json|vimgrep
-                        Output format (default: md). vimgrep prints
+  --format=md|json|vimgrep|compact
+                        Output format (default: md). compact prints a
+                        fixed-width scan table; vimgrep prints
                         path:line:col:preview for editor quickfix flows.
+  --view=compact        Alias for --format=compact.
+  --format=table        Alias for --format=compact.
   --batch-jsonl         Read JSONL rows from stdin and emit one compact JSON
                         result envelope per row. Each row accepts query plus
                         optional per-row search option fields such as kb, k,
@@ -187,7 +191,7 @@ Indexing:
 Input:
   --stdin               Read query from stdin (multi-line safe).
   -i, --interactive     Open an interactive results picker (TTY only; ignored
-                        when --format=json or --format=vimgrep is set).
+                        when a structured or compact format is set).
   --help, -h            Show this help.
 
 Examples:
@@ -196,11 +200,12 @@ Examples:
   kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh
   kb search "INDEX_NOT_INITIALIZED" --mode=hybrid
   kb search "src/cli.ts" --mode=auto --timing
+  kb search "rollback" --view=compact --k=20
   kb search --stdin --format=json < query.txt
   printf '%s\n' '{"query":"rollback","kb":"ops"}' | kb search --batch-jsonl
 `;
 
-type SearchFormat = 'md' | 'json' | 'vimgrep';
+export type SearchFormat = 'md' | 'json' | 'vimgrep' | 'compact';
 
 interface SearchArgs {
   query: string | null;
@@ -235,6 +240,7 @@ export interface RunSearchDeps {
   loadWithJsonRetry: typeof loadWithJsonRetry;
   computeStaleness?: typeof computeStaleness;
   listLexicalKbs?: typeof listLexicalKbs;
+  loadLexicalIndex?: typeof LexicalIndex.load;
   runLexicalLeg?: typeof runLexicalLeg;
 }
 
@@ -350,7 +356,7 @@ export async function runSearch(
 
   if (effectiveMode === 'lexical') {
     warnIfRerankIgnored(parsed, effectiveMode);
-    return runLexicalSearch(effectiveParsed, timing, totalStartedAt, autoModeDecision);
+    return runLexicalSearch(effectiveParsed, timing, totalStartedAt, autoModeDecision, deps);
   }
   if (effectiveMode === 'hybrid') {
     return runHybridSearch(effectiveParsed, timing, totalStartedAt, autoModeDecision, deps);
@@ -512,6 +518,15 @@ export async function runSearch(
   } else if (parsed.format === 'vimgrep') {
     const out = formatRetrievalAsVimgrep(results);
     if (out !== '') process.stdout.write(`${out}\n`);
+  } else if (parsed.format === 'compact') {
+    process.stdout.write(formatDenseSearchCompactOutput({
+      results,
+      mode: effectiveMode,
+      staleness,
+      refreshed: parsed.refresh,
+      gateVerdict,
+      timing,
+    }));
   } else {
     process.stdout.write(formatDenseSearchMarkdownOutput({
       results,
@@ -670,8 +685,15 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     }
     if (raw.startsWith('--format=')) {
       const v = raw.slice('--format='.length);
-      if (v !== 'md' && v !== 'json' && v !== 'vimgrep') throw new Error(`invalid --format: ${raw}`);
-      out.format = v; continue;
+      if (v !== 'md' && v !== 'json' && v !== 'vimgrep' && v !== 'compact' && v !== 'table') {
+        throw new Error(`invalid --format: ${raw}`);
+      }
+      out.format = v === 'table' ? 'compact' : v; continue;
+    }
+    if (raw.startsWith('--view=')) {
+      const v = raw.slice('--view='.length);
+      if (v !== 'compact') throw new Error(`invalid --view: ${raw} (expected 'compact')`);
+      out.format = 'compact'; continue;
     }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     if (out.query === null) { out.query = raw; continue; }
@@ -717,13 +739,13 @@ function hasNeighborContext(parsed: SearchArgs): boolean {
 
 /**
  * `--interactive` opens a TTY picker, but only for human-readable output.
- * `--format=json` and `--format=vimgrep` are structured surfaces consumed by
- * agents and editors; if both `-i` and one of those formats are passed, the
- * format wins so agent shells that pass both stay deterministic (#215).
+ * Structured/compact surfaces are consumed by agents, editors, or scan-heavy
+ * terminal workflows; if both `-i` and one of those formats are passed, the
+ * format wins so callers that pass both stay deterministic (#215, #432).
  */
-export function shouldUsePicker(parsed: { interactive: boolean; format: 'md' | 'json' | 'vimgrep' }): boolean {
+export function shouldUsePicker(parsed: { interactive: boolean; format: SearchFormat }): boolean {
   if (!parsed.interactive) return false;
-  if (parsed.format === 'json' || parsed.format === 'vimgrep') return false;
+  if (parsed.format === 'json' || parsed.format === 'vimgrep' || parsed.format === 'compact') return false;
   return true;
 }
 
@@ -1025,6 +1047,38 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
   return output;
 }
 
+export function formatDenseSearchCompactOutput(input: {
+  results: ScoredDocument[];
+  mode: EffectiveSearchMode;
+  staleness: Staleness | null;
+  refreshed: boolean;
+  gateVerdict?: RelevanceGateVerdict;
+  timing: TimingPayload | null;
+  width?: number;
+}): string {
+  let output = `${formatRetrievalAsCompactTable(input.results, {
+    mode: input.mode,
+    gate: compactGateMarker(input.gateVerdict),
+    width: input.width ?? process.stdout.columns,
+  })}\n`;
+  if (input.staleness !== null) {
+    output += `${formatFreshnessFooter(input.staleness, input.refreshed)}\n`;
+  }
+  const gateVerdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
+  if (gateVerdict.state !== 'bypassed') {
+    output += `${formatGateVerdictFooter(gateVerdict)}\n`;
+  }
+  if (input.timing) {
+    output += `${formatTimingFooter('Timing', input.timing)}\n`;
+  }
+  return output;
+}
+
+function compactGateMarker(gateVerdict: RelevanceGateVerdict | undefined): 'bypassed' | 'kept' {
+  if (gateVerdict === undefined || gateVerdict.state === 'bypassed') return 'bypassed';
+  return 'kept';
+}
+
 function defaultBypassedGateVerdict(count: number): RelevanceGateVerdict {
   return {
     schema_version: RELEVANCE_GATE_SCHEMA_VERSION,
@@ -1071,7 +1125,7 @@ async function printRefreshPreflightIfLarge(
     indexMtimeMs,
     scopedKb,
   });
-  maybeWriteRefreshPreflight(estimate, { format });
+  maybeWriteRefreshPreflight(estimate, { format: format === 'compact' ? 'md' : format });
 }
 
 const BATCH_JSONL_SCHEMA_VERSION = 'kb.search.batch-jsonl.v1';
@@ -1600,6 +1654,7 @@ async function runLexicalSearch(
   timing: TimingPayload | null = null,
   totalStartedAt: number = nowMs(),
   autoModeDecision: AutoSearchModeDecision | null = null,
+  deps: RunSearchDeps = DEFAULT_RUN_SEARCH_DEPS,
 ): Promise<number> {
   if (parsed.thresholdAuto || parsed.threshold !== undefined) {
     process.stderr.write('kb search: --threshold/--threshold=auto are dense-only; ignored under --mode=lexical\n');
@@ -1613,7 +1668,7 @@ async function runLexicalSearch(
   let kbs: Array<{ kbName: string; kbPath: string }>;
   try {
     const startedAt = nowMs();
-    kbs = await listLexicalKbs(parsed.kb);
+    kbs = await (deps.listLexicalKbs ?? listLexicalKbs)(parsed.kb);
     if (timing) timing.lexical_kb_list_ms = elapsedMs(startedAt);
   } catch (err) {
     process.stderr.write(`kb search (lexical): could not list KBs: ${(err as Error).message}\n`);
@@ -1629,7 +1684,8 @@ async function runLexicalSearch(
   for (const { kbName, kbPath } of kbs) {
     let index: LexicalIndex;
     try {
-      index = await LexicalIndex.load(kbName, kbPath);
+      const loadLexicalIndex = deps.loadLexicalIndex ?? LexicalIndex.load.bind(LexicalIndex);
+      index = await loadLexicalIndex(kbName, kbPath);
     } catch (err) {
       perKb.push({ kbName, kbPath, refreshSummary: null, hits: [], error: err as Error });
       continue;
@@ -1717,6 +1773,22 @@ async function runLexicalSearch(
   } else if (parsed.format === 'vimgrep') {
     const out = formatRetrievalAsVimgrep(formatted as never);
     if (out !== '') process.stdout.write(`${out}\n`);
+  } else if (parsed.format === 'compact') {
+    if (autoModeDecision) {
+      process.stdout.write(formatAutoModeHeader(autoModeDecision));
+      process.stdout.write('\n\n');
+    }
+    process.stdout.write(`${formatRetrievalAsCompactTable(formatted as never, {
+      mode: 'lexical',
+      gate: 'bypassed',
+      width: process.stdout.columns,
+    })}\n`);
+    const summary = `${perKb.length} KB(s), ${errors.length} error(s)`;
+    process.stdout.write(`> _Lexical status: ${summary}._\n`);
+    if (timing) {
+      process.stdout.write(formatTimingFooter('Timing', timing));
+      process.stdout.write('\n');
+    }
   } else {
     if (autoModeDecision) {
       process.stdout.write(formatAutoModeHeader(autoModeDecision));
@@ -1957,6 +2029,35 @@ async function runHybridSearch(
   } else if (parsed.format === 'vimgrep') {
     const out = formatRetrievalAsVimgrep(ranked as never);
     if (out !== '') process.stdout.write(`${out}\n`);
+  } else if (parsed.format === 'compact') {
+    if (autoModeDecision) {
+      process.stdout.write(formatAutoModeHeader(autoModeDecision));
+      process.stdout.write('\n\n');
+    }
+    process.stdout.write(`${formatRetrievalAsCompactTable(ranked as never, {
+      mode: 'hybrid',
+      gate: compactGateMarker(gateVerdict),
+      width: process.stdout.columns,
+    })}\n`);
+    process.stdout.write(
+      `> _Hybrid status: dense ${denseResults.length}, lexical ${lexicalResults.length}, refreshed ${lexicalResultsRow.refreshed}, failed ${lexicalResultsRow.failed}, RRF c=${HYBRID_RRF_C}._\n`,
+    );
+    if (rerankResult.candidatesIn > 0) {
+      const degraded = rerankResult.degraded ? '; degraded to fused order' : '';
+      process.stdout.write(
+        `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`,
+      );
+    }
+    if (gateVerdict.state !== 'bypassed') {
+      process.stdout.write(`${formatGateVerdictFooter(gateVerdict)}\n`);
+    }
+    if (parsed.explain) {
+      process.stdout.write(`${formatGateDroppedList(gateVerdict)}\n`);
+    }
+    if (timing) {
+      process.stdout.write(formatTimingFooter('Timing', timing));
+      process.stdout.write('\n');
+    }
   } else {
     if (autoModeDecision) {
       process.stdout.write(formatAutoModeHeader(autoModeDecision));

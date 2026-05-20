@@ -229,7 +229,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(search?.options).toEqual(expect.arrayContaining([
       expect.objectContaining({
         flags: ['--format'],
-        value: 'md|json|vimgrep',
+        value: 'md|json|vimgrep|compact',
       }),
       expect.objectContaining({
         flags: ['--help', '-h'],
@@ -314,7 +314,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(fish.stdout).toContain("__fish_seen_subcommand_from completion' -a 'bash zsh fish'");
     expect(fish.stdout).toContain("__fish_seen_subcommand_from logs' -a 'recent show'");
     expect(fish.stdout).toContain("-l 'mode' -a 'dense lexical hybrid auto'");
-    expect(fish.stdout).toContain("-l 'format' -a 'md json vimgrep'");
+    expect(fish.stdout).toContain("-l 'format' -a 'md json vimgrep compact'");
     expect(fish.stdout).toContain("-l 'threshold' -a 'auto'");
     expect(fish.stdout).toContain("-l 'review-status' -a 'approved needs-review'");
   });
@@ -444,7 +444,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       }),
       expect.objectContaining({
         flags: ['--format'],
-        value: 'md|json|vimgrep',
+        value: 'md|json|vimgrep|compact',
       }),
     ]));
     expect(payload.command.stability).toBe('stable');
