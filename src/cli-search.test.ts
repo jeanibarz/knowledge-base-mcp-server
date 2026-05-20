@@ -4,6 +4,7 @@ import { describe, expect, it, jest } from '@jest/globals';
 import {
   buildDenseSearchJsonPayload,
   createRefreshProgressReporter,
+  formatDenseSearchCompactOutput,
   formatDenseSearchMarkdownOutput,
   formatRefreshProgressLine,
   parseSearchArgs,
@@ -15,6 +16,7 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { compactTimingPayload, type TimingPayload } from './timing-core.js';
 import type { ScoredDocument } from './formatter.js';
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
+import type { LexicalIndex } from './lexical-index.js';
 import type { ExplainEmptyDiagnostics, Staleness } from './search-core.js';
 import { setRerankerFactoryForTests } from './reranker.js';
 
@@ -101,8 +103,24 @@ describe('parseSearchArgs output format', () => {
     });
   });
 
+  it('accepts compact search output aliases', () => {
+    expect(parseSearchArgs(['query', '--format=compact'])).toMatchObject({
+      query: 'query',
+      format: 'compact',
+    });
+    expect(parseSearchArgs(['query', '--format=table'])).toMatchObject({
+      query: 'query',
+      format: 'compact',
+    });
+    expect(parseSearchArgs(['query', '--view=compact'])).toMatchObject({
+      query: 'query',
+      format: 'compact',
+    });
+  });
+
   it('still rejects unknown output formats', () => {
     expect(() => parseSearchArgs(['query', '--format=xml'])).toThrow(/invalid --format/);
+    expect(() => parseSearchArgs(['query', '--view=wide'])).toThrow(/invalid --view/);
   });
 
   it('accepts JSONL batch mode and forces JSON envelopes', () => {
@@ -449,6 +467,163 @@ describe('runSearch timing guard (#331)', () => {
       freshness_omitted: true,
     });
     expect(payload).not.toHaveProperty('timing');
+  });
+
+  it('renders compact dense search output without changing retrieval semantics', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([
+      {
+        pageContent: '# Compact heading\n\nLonger body text.',
+        metadata: {
+          source: '/kb/ops/runbooks/compact.md',
+          knowledgeBase: 'ops',
+          relativePath: 'ops/runbooks/compact.md',
+          loc: { lines: { from: 4, to: 9 } },
+          chunkIndex: 0,
+        },
+        score: 0.2,
+      },
+    ] as never);
+
+    const out = await captureSearchOutput(['query', '--view=compact', '--no-freshness'], deps);
+
+    expect(out.code).toBe(0);
+    expect(out.stderr).toBe('');
+    expect(out.stdout).toContain('Rank  Score');
+    expect(out.stdout).toContain('ops');
+    expect(out.stdout).toContain('runbooks/compact.md');
+    expect(out.stdout).toContain('4-9');
+    expect(out.stdout).toContain('dense');
+    expect(out.stdout).toContain('Compact heading');
+    expect(out.stdout).not.toContain('## Semantic Search Results');
+  });
+
+  it('renders compact lexical search output with lexical status', async () => {
+    const lexicalIndex = {
+      numFiles: jest.fn(() => 1),
+      refresh: jest.fn(async () => ({ added: 0, updated: 0, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 })),
+      save: jest.fn(async () => {}),
+      query: jest.fn(async () => [
+        {
+          pageContent: '# Lexical heading\n\nMatched by BM25.',
+          metadata: {
+            source: '/kb/alpha/notes/lexical.md',
+            knowledgeBase: 'alpha',
+            relativePath: 'alpha/notes/lexical.md',
+            loc: { lines: { from: 7, to: 8 } },
+            chunkIndex: 0,
+          },
+          score: 9.25,
+        },
+      ]),
+    } as unknown as LexicalIndex;
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => ({} as FaissIndexManager)),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      loadLexicalIndex: jest.fn(async () => lexicalIndex),
+    };
+
+    const out = await captureSearchOutput(['query', '--mode=lexical', '--view=compact'], deps);
+
+    expect(out.code).toBe(0);
+    expect(out.stderr).toBe('');
+    expect(out.stdout).toContain('Rank  Score');
+    expect(out.stdout).toContain('alpha');
+    expect(out.stdout).toContain('notes/lexical.md');
+    expect(out.stdout).toContain('7-8');
+    expect(out.stdout).toContain('lexical');
+    expect(out.stdout).toContain('Lexical heading');
+    expect(out.stdout).toContain('> _Lexical status: 1 KB(s), 0 error(s)._');
+    expect(out.stdout).not.toContain('## Semantic Search Results');
+    expect(lexicalIndex.query).toHaveBeenCalledWith('query', 10);
+  });
+
+  it('renders compact hybrid search output with hybrid status and rerank footer', async () => {
+    const manager = {
+      modelDir: '/tmp/kb-test-model',
+      initialize: jest.fn(async () => {}),
+      updateIndex: jest.fn(async () => {}),
+      similaritySearch: jest.fn(async (...args: unknown[]) => {
+        const timing = args[5] as SimilaritySearchTiming | undefined;
+        if (timing) timing.faiss_search_ms = 1;
+        return [
+          {
+            pageContent: 'dense candidate',
+            metadata: {
+              source: '/kb/alpha/dense.md',
+              knowledgeBase: 'alpha',
+              relativePath: 'alpha/dense.md',
+              loc: { lines: { from: 1, to: 2 } },
+              chunkIndex: 0,
+            },
+            score: 0.1,
+          },
+        ];
+      }),
+    } as unknown as FaissIndexManager & { similaritySearch: jest.Mock };
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      runLexicalLeg: jest.fn(async () => ({
+        refreshed: 1,
+        failed: 0,
+        hits: [
+          {
+            pageContent: '# Hybrid lexical winner',
+            metadata: {
+              source: '/kb/alpha/lexical.md',
+              knowledgeBase: 'alpha',
+              relativePath: 'alpha/lexical.md',
+              loc: { lines: { from: 9, to: 12 } },
+              chunkIndex: 1,
+            },
+            score: 12,
+          },
+        ],
+      })),
+    };
+    const restoreFactory = setRerankerFactoryForTests(async () => ({
+      id: 'stub-reranker',
+      rerank: async (_query, candidates) =>
+        candidates.map((candidate) => (candidate.includes('winner') ? 10 : 0)),
+    }));
+    const previousRerank = process.env.KB_RERANK;
+    const previousTopN = process.env.KB_RERANK_TOP_N;
+    process.env.KB_RERANK = 'on';
+    process.env.KB_RERANK_TOP_N = '2';
+
+    try {
+      const out = await captureSearchOutput(
+        ['query', '--mode=hybrid', '--view=compact', '--k=1', '--timing', '--no-freshness'],
+        deps,
+      );
+
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('Rank  Score');
+      expect(out.stdout).toContain('hybrid');
+      expect(out.stdout).toContain('Hybrid lexical winner');
+      expect(out.stdout).toContain('9-12');
+      expect(out.stdout).toContain('> _Hybrid status: dense 1, lexical 1, refreshed 1, failed 0, RRF c=60._');
+      expect(out.stdout).toContain('> _Rerank: stub-reranker; rescored 2 candidate(s), cache hits 0._');
+      expect(out.stdout).toContain('> _Timing (hybrid):');
+      expect(out.stdout).not.toContain('## Semantic Search Results');
+      expect(deps.runLexicalLeg).toHaveBeenCalledWith(expect.objectContaining({
+        query: 'query',
+        fetchK: 4,
+      }));
+    } finally {
+      restoreFactory();
+      if (previousRerank === undefined) delete process.env.KB_RERANK;
+      else process.env.KB_RERANK = previousRerank;
+      if (previousTopN === undefined) delete process.env.KB_RERANK_TOP_N;
+      else process.env.KB_RERANK_TOP_N = previousTopN;
+    }
   });
 
   it('includes gate_verdict in JSON output when --gate is used', async () => {
@@ -827,6 +1002,10 @@ describe('shouldUsePicker (#215)', () => {
   it('lets --format=vimgrep override -i so editor quickfix flows stay structured', () => {
     expect(shouldUsePicker({ interactive: true, format: 'vimgrep' })).toBe(false);
   });
+
+  it('lets compact output override -i so scan tables stay deterministic', () => {
+    expect(shouldUsePicker({ interactive: true, format: 'compact' })).toBe(false);
+  });
 });
 
 describe('dense freshness output (#332)', () => {
@@ -944,6 +1123,25 @@ describe('dense freshness output (#332)', () => {
     });
 
     expect(output).toContain(`> _Index up-to-date as of ${MTIME}._`);
+  });
+
+  it('keeps freshness and timing footers available for compact output', () => {
+    const output = formatDenseSearchCompactOutput({
+      results: [{
+        pageContent: 'compact result',
+        metadata: { source: 'ops/doc.md', knowledgeBase: 'ops', chunkIndex: 0 },
+        score: 0.1,
+      } as unknown as ScoredDocument],
+      mode: 'dense',
+      staleness: { indexMtime: MTIME, modifiedFiles: 0, newFiles: 0 },
+      refreshed: false,
+      timing: { total_ms: 5 },
+      width: 120,
+    });
+
+    expect(output).toContain('Rank  Score');
+    expect(output).toContain(`> _Index up-to-date as of ${MTIME}._`);
+    expect(output).toContain('> _Timing: total_ms=5ms._');
   });
 
   it('includes freshness scan metadata in the markdown timing footer', () => {

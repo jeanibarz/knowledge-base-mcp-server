@@ -78,6 +78,12 @@ export interface GroupedRetrievalSource {
   chunks: GroupedRetrievalChunk[];
 }
 
+export interface CompactRetrievalOptions {
+  mode: 'dense' | 'lexical' | 'hybrid';
+  gate: 'bypassed' | 'kept';
+  width?: number;
+}
+
 /**
  * Strips `frontmatter.extras` from a chunk's metadata before wire
  * serialization unless the operator has opted back in via
@@ -309,6 +315,57 @@ export function formatRetrievalAsVimgrep(
     .join('\n');
 }
 
+export function formatRetrievalAsCompactTable(
+  results: ScoredDocument[] | null | undefined,
+  options: CompactRetrievalOptions,
+  extrasVisible = false,
+): string {
+  if (!results || results.length === 0) return '_No matches._';
+  const guardOptions = resolveInjectionGuardOptions();
+  const width = normalizeCompactWidth(options.width);
+  const columns = compactColumnWidths(width);
+  const header = [
+    padCompact('Rank', columns.rank),
+    padCompact('Score', columns.score),
+    padCompact('KB', columns.kb),
+    padCompact('Path', columns.path),
+    padCompact('Lines', columns.lines),
+    padCompact('Mode', columns.mode),
+    padCompact('Gate', columns.gate),
+    padCompact('Preview', columns.preview),
+  ].join('  ');
+  const separator = [
+    '-'.repeat(columns.rank),
+    '-'.repeat(columns.score),
+    '-'.repeat(columns.kb),
+    '-'.repeat(columns.path),
+    '-'.repeat(columns.lines),
+    '-'.repeat(columns.mode),
+    '-'.repeat(columns.gate),
+    '-'.repeat(columns.preview),
+  ].join('  ');
+  const rows = results.map((doc, idx) => {
+    const metadata = sanitizeMetadataForWire(
+      doc.metadata as Record<string, unknown>,
+      extrasVisible,
+    );
+    const guarded = guardRetrievalChunk(doc.pageContent, metadata, guardOptions);
+    const identity = compactIdentity(guarded.metadata, idx);
+    const score = doc.score === undefined ? 'n/a' : formatCompactScore(doc.score);
+    return [
+      padCompact(String(idx + 1), columns.rank),
+      padCompact(score, columns.score),
+      padCompact(identity.kb, columns.kb),
+      padCompact(identity.path, columns.path),
+      padCompact(identity.lines, columns.lines),
+      padCompact(options.mode, columns.mode),
+      padCompact(options.gate, columns.gate),
+      padCompact(compactPreview(guarded.content), columns.preview),
+    ].join('  ');
+  });
+  return [header, separator, ...rows].join('\n');
+}
+
 function getSourcePath(metadata: Record<string, unknown>, idx: number): string {
   const source = metadata.source;
   if (typeof source === 'string' && source.trim() !== '') {
@@ -319,6 +376,124 @@ function getSourcePath(metadata: Record<string, unknown>, idx: number): string {
     return relativePath;
   }
   return `(unknown source ${idx + 1})`;
+}
+
+function normalizeCompactWidth(width: number | undefined): number {
+  if (width === undefined || !Number.isFinite(width)) return 120;
+  return Math.max(88, Math.floor(width));
+}
+
+function compactColumnWidths(width: number): {
+  rank: number;
+  score: number;
+  kb: number;
+  path: number;
+  lines: number;
+  mode: number;
+  gate: number;
+  preview: number;
+} {
+  const fixed = {
+    rank: 4,
+    score: 8,
+    kb: 14,
+    lines: 11,
+    mode: 7,
+    gate: 8,
+  };
+  const gaps = 14;
+  const flexible = Math.max(34, width - Object.values(fixed).reduce((sum, n) => sum + n, 0) - gaps);
+  const path = Math.max(24, Math.min(44, Math.floor(flexible * 0.55)));
+  return {
+    ...fixed,
+    path,
+    preview: Math.max(10, flexible - path),
+  };
+}
+
+function compactIdentity(metadata: Record<string, unknown>, idx: number): { kb: string; path: string; lines: string } {
+  const citation = buildChunkCitation(metadata, 'none');
+  const knowledgeBase = compactKnowledgeBase(metadata, citation?.path);
+  const pathText = citation?.path ?? compactDisplayPath(metadata, idx, knowledgeBase);
+  return {
+    kb: knowledgeBase ?? '-',
+    path: knowledgeBase && pathText.startsWith(`${knowledgeBase}/`)
+      ? pathText.slice(knowledgeBase.length + 1)
+      : pathText,
+    lines: compactLines(metadata),
+  };
+}
+
+function compactKnowledgeBase(metadata: Record<string, unknown>, displayPath: string | undefined): string | null {
+  const kb = metadata.knowledgeBase;
+  if (typeof kb === 'string' && kb.trim() !== '') return kb;
+  const relativePath = metadata.relativePath;
+  if (typeof relativePath === 'string' && relativePath.trim() !== '') {
+    const [head] = relativePath.trim().split(/[\\/]/);
+    if (head) return head;
+  }
+  if (displayPath) {
+    const [head] = displayPath.split('/');
+    if (head) return head;
+  }
+  return null;
+}
+
+function compactDisplayPath(metadata: Record<string, unknown>, idx: number, knowledgeBase: string | null): string {
+  const relativePath = metadata.relativePath;
+  if (typeof relativePath === 'string' && relativePath.trim() !== '') return relativePath.trim();
+  const source = getSourcePath(metadata, idx);
+  if (knowledgeBase && source.startsWith(`${knowledgeBase}/`)) return source;
+  return source;
+}
+
+function compactLines(metadata: Record<string, unknown>): string {
+  const loc = metadata.loc;
+  if (loc && typeof loc === 'object') {
+    const lines = (loc as Record<string, unknown>).lines;
+    if (lines && typeof lines === 'object') {
+      const from = (lines as Record<string, unknown>).from;
+      const to = (lines as Record<string, unknown>).to;
+      if (typeof from === 'number' && Number.isInteger(from) && from > 0) {
+        if (typeof to === 'number' && Number.isInteger(to) && to > 0 && to !== from) {
+          return `${from}-${to}`;
+        }
+        return `${from}`;
+      }
+    }
+  }
+  const chunkIndex = metadata.chunkIndex ?? metadata.chunk_index;
+  if (typeof chunkIndex === 'number' && Number.isInteger(chunkIndex) && chunkIndex >= 0) {
+    return `chunk-${chunkIndex}`;
+  }
+  return '-';
+}
+
+function compactPreview(content: string): string {
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  const heading = lines.find((line) => /^#{1,6}\s+/.test(line));
+  const raw = heading ?? lines[0] ?? '';
+  return raw
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function formatCompactScore(score: number): string {
+  if (!Number.isFinite(score)) return String(score);
+  if (Math.abs(score) >= 100) return score.toFixed(1);
+  if (Math.abs(score) >= 10) return score.toFixed(2);
+  return score.toFixed(3);
+}
+
+function padCompact(value: string, width: number): string {
+  const clean = value.replace(/\s+/g, ' ').trim();
+  if (clean.length <= width) return clean.padEnd(width, ' ');
+  if (width <= 1) return clean.slice(0, width);
+  return `${clean.slice(0, width - 1)}~`;
 }
 
 function getChunkLocation(metadata: Record<string, unknown>): unknown | null {
