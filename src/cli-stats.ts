@@ -162,6 +162,7 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
     `- Server version: ${payload.server.version}`,
     `- Uptime: ${formatInteger(uptimeMs)} ms`,
     '',
+    ...formatDenseCoverageSection(payload),
     '## Relevance Gate',
     '',
     `- Gated queries: ${formatInteger(payload.relevance_gate.gated_queries)}`,
@@ -179,6 +180,41 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
     ...formatRemoteTransportSection(payload),
     ...formatContextualSection(payload),
   ].join('\n');
+}
+
+export function formatDenseCoverageSection(payload: KbStatsPayload): string[] {
+  const emptyDenseShelves = Object.entries(payload.knowledge_bases)
+    .filter(([, row]) => row.file_count > 0 && row.chunk_count === 0)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (emptyDenseShelves.length === 0) return [];
+
+  const lastUpdate = payload.last_index_update;
+  const scopedElsewhere =
+    (lastUpdate.status === 'success' || lastUpdate.status === 'partial') &&
+    lastUpdate.scope !== null &&
+    lastUpdate.scope !== 'global' &&
+    !emptyDenseShelves.some(([name]) => name === lastUpdate.scope);
+  const shelfSummary = emptyDenseShelves
+    .map(([name, row]) => `\`${name}\` (${formatInteger(row.file_count)} file${row.file_count === 1 ? '' : 's'})`)
+    .join(', ');
+  const updateParts = [
+    `status=${lastUpdate.status}`,
+    `scope=${formatIndexUpdateScope(lastUpdate.scope)}`,
+    `chunks_added=${formatInteger(lastUpdate.chunks_added)}`,
+    `finished_at=${lastUpdate.finished_at ?? 'never'}`,
+  ];
+
+  return [
+    '## Dense Coverage',
+    '',
+    `- Knowledge bases with files but 0 dense chunks: ${shelfSummary}.`,
+    `- Last index update: ${updateParts.join(', ')}.`,
+    scopedElsewhere
+      ? '- Interpretation: the latest refresh was scoped outside these knowledge bases, so this is likely index-scope state rather than missing source files.'
+      : '- Interpretation: source files exist on disk, but the active dense index has no chunks for these knowledge bases.',
+    '- Next action: refresh a chosen knowledge base with `kb search "known phrase" --kb=<name> --refresh`; omit `--kb` only when you intend a global refresh.',
+    '',
+  ];
 }
 
 export function formatRemoteTransportSection(payload: KbStatsPayload): string[] {
@@ -269,6 +305,11 @@ function formatInteger(value: number): string {
 
 function formatRate(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatIndexUpdateScope(scope: KbStatsPayload['last_index_update']['scope']): string {
+  if (scope === null) return 'none';
+  return scope === 'global' ? 'global' : `kb:${scope}`;
 }
 
 function readPackageVersion(): string {
