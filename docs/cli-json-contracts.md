@@ -295,6 +295,107 @@ Source and test anchors: `src/cli-search.ts:262-320`,
 `src/formatter.ts:136-213`, `src/cli-search-errors.ts:181-215`,
 `src/formatter.test.ts:133-185`, `src/cli-search-errors.test.ts:121-159`.
 
+## `kb research`
+
+Invocation:
+
+```bash
+kb research plan "<question>" --format=json
+kb research collect "<question>" --run-dir <path> --format=json
+```
+
+`kb research` is read-only. `plan` reads KB descriptions and stats, then
+deterministically selects shelves and queries. `collect` writes a local run
+directory and retrieves evidence using existing hybrid search.
+
+Plan success envelope:
+
+```json
+{
+  "schema_version": "kb-research-plan.v1",
+  "question": "research question",
+  "selected_shelves": [
+    {
+      "name": "llm-agents",
+      "description": "Autonomous LLM agents",
+      "file_count": 4,
+      "chunk_count": 12,
+      "score": 6,
+      "reasons": ["1 shelf-name token match", "shelf has indexed-source files"],
+      "risks": []
+    }
+  ],
+  "queries": [
+    {
+      "id": "q1",
+      "text": "research question",
+      "purpose": "original research question",
+      "shelves": ["llm-agents"]
+    }
+  ],
+  "retrieval": { "mode": "hybrid", "k": 5 },
+  "risks": []
+}
+```
+
+Stable plan fields are `schema_version`, `question`, `selected_shelves`,
+`queries`, `retrieval`, and `risks`. `retrieval.mode` is currently `hybrid`.
+`selected_shelves[].risks` and top-level `risks` include
+`dense_index_empty_coverage` when a selected shelf has files but zero dense
+chunks; collection still uses hybrid search in that case.
+
+Collect summary success envelope:
+
+```json
+{
+  "schema_version": "kb-research-collect-summary.v1",
+  "question": "research question",
+  "run_dir": "/abs/path/to/run",
+  "status": "complete",
+  "artifact_paths": {
+    "run": "/abs/path/to/run/run.json",
+    "plan": "/abs/path/to/run/plan.json",
+    "ledger": "/abs/path/to/run/ledger.json",
+    "evidence_packet": "/abs/path/to/run/evidence_packet.md",
+    "events": "/abs/path/to/run/events.jsonl"
+  },
+  "evidence_count": 3,
+  "risk_count": 0,
+  "search_failure_count": 0
+}
+```
+
+Stable collect summary fields are `schema_version`, `question`, `run_dir`,
+`status`, `artifact_paths`, `evidence_count`, `risk_count`, and
+`search_failure_count`. `status` is `complete` when all hybrid searches
+complete without delegated search failures, and `failed` when at least one
+search failed.
+
+Collect artifacts:
+
+- `run.json`: run metadata with `schema_version`, `question`, `command`,
+  `run_dir`, `started_at`, `finished_at`, `status`, and `artifact_paths`.
+- `plan.json`: the same `kb-research-plan.v1` shape emitted by `plan`.
+- `ledger.json`: `kb-research-ledger.v1` with `question`, `retrieval_mode`,
+  `entries`, `risks`, and `search_failures`.
+- `evidence_packet.md`: markdown packet with Question, Selected Shelves,
+  Queries, Evidence Found, Evidence Gaps, and Sources sections.
+- `events.jsonl`: structured event stream for collection progress.
+
+Ledger entries have stable `source_id`, `shelf`, `relative_path`,
+`line_range`, `query`, `retrieval_mode`, `score`, `excerpt`, `source_kind`,
+`source_generation`, and `risk_flags` fields. `line_range`,
+`relative_path`, `source_kind`, and `source_generation` can be `null` when the
+underlying search metadata does not provide enough information.
+
+Stdout/stderr and exit codes:
+
+- `plan --format=json` writes the plan JSON to stdout and exits `0`.
+- `collect --format=json` writes the summary JSON to stdout after artifacts are
+  written. It exits `0` for `status=complete` and `1` for `status=failed`.
+- Parser errors are stderr and exit `2`.
+- Runtime errors before artifact completion are stderr and exit `1`.
+
 ## `kb remember`
 
 Invocation:

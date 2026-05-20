@@ -28,6 +28,7 @@ import { PROMOTE_HELP, runPromote } from './cli-promote.js';
 import { QUARANTINE_HELP, runQuarantine } from './cli-quarantine.js';
 import { REINDEX_HELP, runReindexCli } from './cli-reindex.js';
 import { REMEMBER_HELP, runRemember } from './cli-remember.js';
+import { RESEARCH_HELP, runResearch } from './cli-research.js';
 import { SEARCH_HELP, runSearch } from './cli-search.js';
 import { SERVE_HELP, runServe } from './cli-serve.js';
 import { STALE_CHECK_HELP, runStaleCheck } from './cli-stale-check.js';
@@ -95,6 +96,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'serve',        summary: 'Run a localhost daemon for warm read-only CLI requests.',                 help: SERVE_HELP,        handler: runServe },
   { name: 'ask',          summary: 'Answer from retrieved KB context using a local LLM endpoint.',            help: ASK_HELP,          handler: runAsk },
   { name: 'remember',     summary: 'Suggest, create, or append knowledge-base notes (write path).',          help: REMEMBER_HELP,     handler: runRemember },
+  { name: 'research',     summary: 'Plan and collect read-only KB evidence packets.',                       help: RESEARCH_HELP,     handler: runResearch },
   { name: 'capture',      summary: 'Run a command and append its stdout to a KB note as a fenced block.',    help: CAPTURE_HELP,      handler: runCapture },
   { name: 'import-url',   summary: 'Snapshot a web page or PDF into a KB note with provenance frontmatter.',  help: IMPORT_URL_HELP,   handler: runImportUrl },
   { name: 'compare',      summary: 'Side-by-side rank/score table for two embedding models.',                help: COMPARE_HELP,      handler: runCompare },

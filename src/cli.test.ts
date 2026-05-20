@@ -60,6 +60,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'serve',
       'ask',
       'remember',
+      'research',
       'capture',
       'import-url',
       'compare',
@@ -97,6 +98,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['serve', 'kb serve'],
     ['ask', 'kb ask'],
     ['remember', 'kb remember'],
+    ['research', 'kb research'],
     ['capture', 'kb capture'],
     ['import-url', 'kb import-url'],
     ['compare', 'kb compare'],
@@ -707,6 +709,12 @@ describe('kb CLI — argv parsing and dispatch', () => {
     const r = runCli(['explain', 'q', '--include-content']);
     expect(r.code).toBe(2);
     expect(r.stderr).toContain('--include-content requires --repro-bundle');
+  });
+
+  it('research without action dispatches to the research handler and exits 2', () => {
+    const r = runCli(['research']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("kb research: expected subcommand 'plan' or 'collect'");
   });
 });
 
