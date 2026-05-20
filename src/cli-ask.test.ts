@@ -483,18 +483,274 @@ describe('ask transcript records', () => {
   });
 });
 
+describe('kb ask grounding fixtures', () => {
+  it('answers from retrieved snippets and preserves citation chunk ids', async () => {
+    const harness = createAskFixtureHarness({
+      results: [
+        retrievalResult(
+          'runbooks/rotation.md',
+          'The on-call rotation handoff starts at 09:00 UTC and requires the incident commander to acknowledge the page.',
+          'ops/runbooks/rotation.md#L4-L8',
+        ),
+      ],
+      answer: ({ userContent }) => {
+        expect(userContent).toContain('runbooks/rotation.md');
+        expect(userContent).toContain('handoff starts at 09:00 UTC');
+        return 'The handoff starts at 09:00 UTC, and the incident commander must acknowledge the page. Source: ops/runbooks/rotation.md.';
+      },
+    });
+
+    try {
+      const { code, stdout, stderr, callChatCompletion } = await harness.run([
+        'When does on-call handoff start?',
+        '--kb=ops',
+        '--format=json',
+      ]);
+
+      expect(code).toBe(0);
+      expect(stderr).toBe('');
+      expect(callChatCompletion).toHaveBeenCalledTimes(1);
+      const messages = callChatCompletion.mock.calls[0]![0].messages;
+      expect(messages[0].content).toContain('Answer only from the provided knowledge-base snippets');
+      expect(messages[0].content).toContain('If the snippets are insufficient, say so');
+      const payload = JSON.parse(stdout) as {
+        answer: string;
+        citations: Array<{ path: string; chunk_id?: string; chunk_ids?: string[] }>;
+        context_packing: { included_chunks: number };
+      };
+      expect(payload.answer).toContain('09:00 UTC');
+      expect(payload.citations).toEqual([
+        {
+          knowledge_base: 'ops',
+          path: 'runbooks/rotation.md',
+          score: 0.1,
+          chunk_id: 'ops/runbooks/rotation.md#L4-L8',
+          chunk_ids: ['ops/runbooks/rotation.md#L4-L8'],
+        },
+      ]);
+      expect(payload.context_packing.included_chunks).toBe(1);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it('prompts the fake LLM to abstain when retrieval returns no snippets', async () => {
+    const harness = createAskFixtureHarness({
+      results: [],
+      answer: ({ userContent }) => {
+        expect(userContent).toContain('(no snippets retrieved)');
+        return 'I do not have enough retrieved context to answer that from the knowledge base.';
+      },
+    });
+
+    try {
+      const { code, stdout, stderr } = await harness.run([
+        'What is the backup database host?',
+        '--format=json',
+      ]);
+
+      expect(code).toBe(0);
+      expect(stderr).toBe('');
+      const payload = JSON.parse(stdout) as {
+        answer: string;
+        citations: unknown[];
+        context_packing: { included_chunks: number; excluded_chunks: number };
+      };
+      expect(payload.answer).toMatch(/do not have enough retrieved context/i);
+      expect(payload.citations).toEqual([]);
+      expect(payload.context_packing).toMatchObject({
+        included_chunks: 0,
+        excluded_chunks: 0,
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it('qualifies the answer when snippets are off-topic', async () => {
+    const harness = createAskFixtureHarness({
+      results: [
+        retrievalResult(
+          'runbooks/dns.md',
+          'DNS cutovers use a 300 second TTL and are announced in the release channel.',
+          'ops/runbooks/dns.md#L1-L5',
+        ),
+      ],
+      answer: ({ question, userContent }) => {
+        expect(question).toContain('backup database host');
+        expect(userContent).toContain('DNS cutovers');
+        expect(userContent).not.toContain('backup database host is');
+        return 'The retrieved snippet is about DNS cutovers, not the backup database host, so I cannot answer from the provided context.';
+      },
+    });
+
+    try {
+      const { code, stdout, stderr } = await harness.run([
+        'What is the backup database host?',
+        '--kb=ops',
+        '--format=json',
+      ]);
+
+      expect(code).toBe(0);
+      expect(stderr).toBe('');
+      const payload = JSON.parse(stdout) as { answer: string; citations: Array<{ path: string }> };
+      expect(payload.answer).toMatch(/cannot answer from the provided context/i);
+      expect(payload.citations.map((citation) => citation.path)).toEqual(['runbooks/dns.md']);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it('saves transcript provenance without leaking excluded snippets', async () => {
+    const harness = createAskFixtureHarness({
+      results: [
+        retrievalResult(
+          'runbooks/rollback.md',
+          'Rollback approval requires the release lead and incident commander. Use the deploy ledger entry as the source of truth. '.repeat(12),
+          'ops/runbooks/rollback.md#L12-L18',
+        ),
+        retrievalResult(
+          'archive/unrelated.md',
+          `${'UNRELATED_PRIVATE_CONTEXT '.repeat(200)}This text must be excluded by the context budget.`,
+          'ops/archive/unrelated.md#L1-L30',
+        ),
+      ],
+      answer: ({ userContent }) => {
+        expect(userContent).toContain('runbooks/rollback.md');
+        expect(userContent).not.toContain('UNRELATED_PRIVATE_CONTEXT');
+        return 'Rollback approval requires the release lead and incident commander. Source: ops/runbooks/rollback.md.';
+      },
+    });
+
+    try {
+      const { code, stdout, stderr, root } = await harness.run([
+        'Who approves rollback?',
+        '--kb=ops',
+        '--context-budget-tokens=120',
+        '--format=json',
+        '--save-transcript',
+        '--title=Rollback approval',
+        '--yes',
+      ]);
+
+      expect(code).toBe(0);
+      expect(stderr).toBe('');
+      const payload = JSON.parse(stdout) as {
+        citations: Array<{ path: string; chunk_ids?: string[] }>;
+        context_packing: { included_chunks: number; excluded_chunks: number };
+        transcript: { path: string };
+      };
+      expect(payload.context_packing).toMatchObject({
+        included_chunks: 1,
+        excluded_chunks: 1,
+      });
+      expect(payload.citations).toHaveLength(1);
+      expect(payload.citations[0]).toMatchObject({
+        path: 'runbooks/rollback.md',
+        chunk_ids: ['ops/runbooks/rollback.md#L12-L18'],
+      });
+      const transcript = await fsp.readFile(path.join(root, 'ops', payload.transcript.path), 'utf-8');
+      expect(transcript).toContain('knowledge_base: "ops"');
+      expect(transcript).toContain('LLM profile: `env`');
+      expect(transcript).toContain('retrieval model: `ollama__nomic-embed-text-latest`');
+      expect(transcript).toContain('chunks `ops/runbooks/rollback.md#L12-L18`');
+      expect(transcript).not.toContain('UNRELATED_PRIVATE_CONTEXT');
+      expect(transcript).not.toContain('archive/unrelated.md');
+    } finally {
+      await harness.cleanup();
+    }
+  });
+});
+
 function retrievalResult(
   relativePath: string,
   content: string,
   chunkId?: string,
 ) {
+  const lineRange = chunkId?.match(/#L(\d+)-L(\d+)$/);
   return {
     score: 0.1,
     content,
     metadata: {
       knowledgeBase: 'ops',
       relativePath,
+      ...(lineRange
+        ? { loc: { lines: { from: Number(lineRange[1]), to: Number(lineRange[2]) } } }
+        : {}),
     },
     ...(chunkId ? { chunk_id: chunkId } : {}),
+  };
+}
+
+interface AskFixtureHarnessOptions {
+  results: ReturnType<typeof retrievalResult>[];
+  answer: (input: { question: string; userContent: string }) => string;
+}
+
+function createAskFixtureHarness(options: AskFixtureHarnessOptions) {
+  const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    stdout.push(String(chunk));
+    return true;
+  });
+  const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+    stderr.push(String(chunk));
+    return true;
+  });
+  let root = '';
+  const manager = {
+    modelDir: path.join(os.tmpdir(), 'kb-ask-fixture-model'),
+    initialize: jest.fn(async () => {}),
+    updateIndex: jest.fn(async () => {}),
+    similaritySearch: jest.fn(async () => options.results.map((result) => ({
+      pageContent: result.content,
+      metadata: result.metadata,
+      score: result.score,
+    }))),
+  };
+  const callChatCompletion = jest.fn(async (call: Parameters<RunAskDeps['callChatCompletion']>[0]) => {
+    const userContent = call.messages.find((message) => message.role === 'user')?.content ?? '';
+    const question = userContent.match(/Question:\n([\s\S]*?)\n\nRetrieved snippets:/)?.[1] ?? '';
+    return {
+      content: options.answer({ question, userContent }),
+      model: 'fake-grounding-llm',
+      raw: { fixture: true },
+    };
+  });
+  const deps: RunAskDeps = {
+    bootstrapLayout: jest.fn(async () => {}),
+    resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+    loadManagerForModel: jest.fn(async () => manager as never),
+    loadWithJsonRetry: jest.fn(async () => {}),
+    withWriteLock: jest.fn(async <T>(_resource: string, action: () => Promise<T>) => action()) as RunAskDeps['withWriteLock'],
+    callChatCompletion,
+    createTranscriptNote: createAskTranscriptNote,
+    knowledgeBasesRootDir: path.join(os.tmpdir(), 'kb-ask-fixture-root'),
+  };
+
+  return {
+    async run(args: string[]) {
+      process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
+      root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ask-fixture-'));
+      await fsp.mkdir(path.join(root, 'ops'), { recursive: true });
+      deps.knowledgeBasesRootDir = root;
+      const code = await runAsk(args, deps);
+      return {
+        code,
+        stdout: stdout.join(''),
+        stderr: stderr.join(''),
+        callChatCompletion,
+        root,
+      };
+    },
+    async cleanup() {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+      if (root !== '') await fsp.rm(root, { recursive: true, force: true });
+    },
   };
 }
