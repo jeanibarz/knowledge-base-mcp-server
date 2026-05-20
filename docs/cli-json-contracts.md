@@ -351,7 +351,9 @@ Stable plan fields are `schema_version`, `question`, `selected_shelves`,
 `queries`, `retrieval`, and `risks`. `retrieval.mode` is currently `hybrid`.
 `selected_shelves[].risks` and top-level `risks` include
 `dense_index_empty_coverage` when a selected shelf has files but zero dense
-chunks; collection still uses hybrid search in that case.
+chunks; collection still uses hybrid search in that case, but evidence from
+that shelf may be lexical-heavy and lower confidence until the index is
+refreshed outside the read-only research command.
 
 Collect summary success envelope:
 
