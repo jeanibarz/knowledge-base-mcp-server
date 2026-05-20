@@ -1,3 +1,4 @@
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { describe, expect, it, jest } from '@jest/globals';
 import {
@@ -103,6 +104,14 @@ describe('parseSearchArgs output format', () => {
   it('still rejects unknown output formats', () => {
     expect(() => parseSearchArgs(['query', '--format=xml'])).toThrow(/invalid --format/);
   });
+
+  it('accepts JSONL batch mode and forces JSON envelopes', () => {
+    expect(parseSearchArgs(['--batch-jsonl'])).toMatchObject({
+      query: null,
+      batchJsonl: true,
+      format: 'json',
+    });
+  });
 });
 
 describe('parseSearchArgs freshness', () => {
@@ -198,6 +207,7 @@ describe('runSearch timing guard (#331)', () => {
   async function captureSearchOutput(
     args: string[],
     deps: RunSearchDeps,
+    stdin?: string,
   ): Promise<{ code: number; stdout: string; stderr: string }> {
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -211,13 +221,205 @@ describe('runSearch timing guard (#331)', () => {
     });
 
     try {
-      const code = await runSearch(args, deps);
+      const pending = runSearch(args, deps);
+      if (stdin !== undefined) {
+        process.nextTick(() => {
+          process.stdin.emit('data', Buffer.from(stdin, 'utf-8'));
+          process.stdin.emit('end');
+        });
+      }
+      const code = await pending;
       return { code, stdout: stdout.join(''), stderr: stderr.join('') };
     } finally {
       stdoutSpy.mockRestore();
       stderrSpy.mockRestore();
     }
   }
+
+  it('runs dense JSONL batch rows while loading the model manager and index once', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch
+      .mockResolvedValueOnce([
+        {
+          pageContent: 'first result',
+          metadata: { source: '/kb/ops/first.md', chunkIndex: 0 },
+          score: 0.11,
+        },
+      ] as never)
+      .mockResolvedValueOnce([
+        {
+          pageContent: 'second result',
+          metadata: { source: '/kb/ops/second.md', chunkIndex: 1 },
+          score: 0.22,
+        },
+      ] as never);
+    const stdin = [
+      JSON.stringify({ query: 'rollback', kb: 'ops', k: 2, no_cache: true }),
+      JSON.stringify({ query: 'deploy', kb: 'ops', k: 3 }),
+      '',
+    ].join('\n');
+
+    const out = await captureSearchOutput(['--batch-jsonl', '--no-freshness'], deps, stdin);
+
+    expect(out.code).toBe(0);
+    expect(out.stderr).toBe('');
+    expect(deps.bootstrapLayout).toHaveBeenCalledTimes(1);
+    expect(deps.resolveActiveModel).toHaveBeenCalledTimes(1);
+    expect(deps.loadManagerForModel).toHaveBeenCalledTimes(1);
+    expect(deps.loadWithJsonRetry).toHaveBeenCalledTimes(1);
+    expect(manager.similaritySearch).toHaveBeenCalledTimes(2);
+    expect(manager.similaritySearch).toHaveBeenNthCalledWith(
+      1,
+      'rollback',
+      2,
+      undefined,
+      'ops',
+      undefined,
+      expect.any(Object),
+      { noCache: true },
+    );
+    expect(manager.similaritySearch).toHaveBeenNthCalledWith(
+      2,
+      'deploy',
+      3,
+      undefined,
+      'ops',
+      undefined,
+      expect.any(Object),
+      { noCache: false },
+    );
+    const envelopes = out.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    expect(envelopes).toHaveLength(2);
+    expect(envelopes[0]).toMatchObject({
+      schema_version: 'kb.search.batch-jsonl.v1',
+      line: 1,
+      ok: true,
+      query: 'rollback',
+      kb: 'ops',
+      model: 'ollama__nomic-embed-text-latest',
+      mode: 'dense',
+      result: {
+        freshness_omitted: true,
+        results: [{ content: 'first result' }],
+      },
+    });
+    expect(envelopes[1]).toMatchObject({
+      line: 2,
+      ok: true,
+      result: {
+        freshness_omitted: true,
+        results: [{ content: 'second result' }],
+      },
+    });
+  });
+
+  it('keeps JSONL batch row failures line-local and continues with later rows', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([] as never);
+    const stdin = [
+      '{not json',
+      JSON.stringify({ query: 'semantic only', mode: 'lexical' }),
+      JSON.stringify({ query: 'valid', freshness: false }),
+      '',
+    ].join('\n');
+
+    const out = await captureSearchOutput(['--batch-jsonl'], deps, stdin);
+
+    expect(out.code).toBe(2);
+    expect(manager.similaritySearch).toHaveBeenCalledTimes(1);
+    const envelopes = out.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    expect(envelopes).toHaveLength(3);
+    expect(envelopes[0]).toMatchObject({
+      line: 1,
+      ok: false,
+      error: { code: 'BATCH_ROW_INVALID' },
+    });
+    expect(envelopes[1]).toMatchObject({
+      line: 2,
+      ok: false,
+      query: 'semantic only',
+      error: {
+        code: 'BATCH_ROW_INVALID',
+        message: expect.stringContaining('dense search rows only'),
+      },
+    });
+    expect(envelopes[2]).toMatchObject({
+      line: 3,
+      ok: true,
+      query: 'valid',
+      result: { freshness_omitted: true },
+    });
+  });
+
+  it('invalidates cached freshness after a JSONL batch row refreshes the index', async () => {
+    const modelDir = await fsp.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'kb-batch-refresh-'));
+    const manager = {
+      modelDir,
+      embeddingProvider: 'fake',
+      modelName: 'bag-256d',
+      initialize: jest.fn(async () => {}),
+      updateIndex: jest.fn(async () => {}),
+      similaritySearch: jest.fn(async () => []),
+    } as unknown as FaissIndexManager & {
+      initialize: jest.Mock;
+      updateIndex: jest.Mock;
+      similaritySearch: jest.Mock;
+    };
+    const computeStaleness = jest
+      .fn<(modelId: string, scopedKb?: string) => Promise<Staleness>>()
+      .mockResolvedValueOnce({
+        indexMtime: '2026-05-01T00:00:00.000Z',
+        modifiedFiles: 2,
+        newFiles: 1,
+        scope: { kb: 'ops', modifiedFiles: 2, newFiles: 1 },
+        global: { modifiedFiles: 2, newFiles: 1 },
+      } as Staleness)
+      .mockResolvedValueOnce({
+        indexMtime: '2026-05-01T00:01:00.000Z',
+        modifiedFiles: 0,
+        newFiles: 0,
+        scope: { kb: 'ops', modifiedFiles: 0, newFiles: 0 },
+        global: { modifiedFiles: 0, newFiles: 0 },
+      } as Staleness);
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'fake__bag-256d'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      computeStaleness,
+    };
+    const stdin = [
+      JSON.stringify({ query: 'before', kb: 'ops' }),
+      JSON.stringify({ query: 'refresh', kb: 'ops', refresh: true }),
+      JSON.stringify({ query: 'after', kb: 'ops' }),
+      '',
+    ].join('\n');
+
+    const out = await captureSearchOutput(['--batch-jsonl'], deps, stdin);
+
+    expect(out.code).toBe(0);
+    expect(manager.updateIndex).toHaveBeenCalledTimes(1);
+    expect(computeStaleness).toHaveBeenCalledTimes(2);
+    const envelopes = out.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    expect(envelopes[0].result).toMatchObject({
+      index_mtime: '2026-05-01T00:00:00.000Z',
+      stale: true,
+      modified_files: 2,
+      new_files: 1,
+    });
+    expect(envelopes[1].result).toMatchObject({
+      index_mtime: '2026-05-01T00:01:00.000Z',
+      stale: false,
+      modified_files: 0,
+      new_files: 0,
+    });
+    expect(envelopes[2].result).toMatchObject({
+      index_mtime: '2026-05-01T00:01:00.000Z',
+      stale: false,
+      modified_files: 0,
+      new_files: 0,
+    });
+  });
 
   it('keeps plain markdown search from dereferencing missing timing metrics', async () => {
     const { deps, manager } = makeDeps();
