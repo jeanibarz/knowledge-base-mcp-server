@@ -302,11 +302,20 @@ Invocation:
 ```bash
 kb research plan "<question>" --format=json
 kb research collect "<question>" --run-dir <path> --format=json
+kb research plan "<question>" --include-kb=<name> --exclude-kb=<name> --max-shelves=<n>
 ```
 
 `kb research` is read-only. `plan` reads KB descriptions and stats, then
 deterministically selects shelves and queries. `collect` writes a local run
 directory and retrieves evidence using existing hybrid search.
+
+Planner controls are deterministic and do not trigger any model calls:
+`--kb=<name>` / `--include-kb=<name>` pins a shelf into the plan,
+`--exclude-kb=<name>` removes a shelf from consideration, and
+`--max-shelves=<n>` limits automatic shelf selection. The planner treats broad
+tokens such as `agent` as insufficient on their own, so domain shelves with
+specific matches rank ahead of operational shelves that only share generic
+wording.
 
 Plan success envelope:
 
@@ -379,7 +388,9 @@ Collect artifacts:
 - `ledger.json`: `kb-research-ledger.v1` with `question`, `retrieval_mode`,
   `entries`, `risks`, and `search_failures`.
 - `evidence_packet.md`: markdown packet with Question, Selected Shelves,
-  Queries, Evidence Found, Evidence Gaps, and Sources sections.
+  Queries, Evidence Found, Evidence Gaps, and Sources sections. Evidence Found
+  is grouped by source file so repeated passages from the same source are
+  easier to scan.
 - `events.jsonl`: structured event stream for collection progress.
 
 Ledger entries have stable `source_id`, `shelf`, `relative_path`,

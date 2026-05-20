@@ -12,8 +12,8 @@ import { computeKbStats, type KbStatsPayload, type KbStatsRow } from './kb-stats
 export const RESEARCH_HELP = `kb research — read-only KB evidence planning and collection
 
 Usage:
-  kb research plan "<question>" [--format=md|json]
-  kb research collect "<question>" --run-dir <path> [--format=md|json]
+  kb research plan "<question>" [--format=md|json] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
+  kb research collect "<question>" --run-dir <path> [--format=md|json] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
 
 The workflow is deterministic: it reads KB descriptions and stats, selects
 likely shelves and queries, then collect uses existing hybrid search. It does
@@ -29,6 +29,10 @@ Options:
   --run-dir=<path>      Same as above.
   --format=md|json      Output format (default: md).
   --k=<int>             Results per query/shelf search during collect (default: 5).
+  --kb=<name>           Include a shelf explicitly (alias for --include-kb).
+  --include-kb=<name>   Include a shelf explicitly; repeatable.
+  --exclude-kb=<name>   Exclude a shelf; repeatable.
+  --max-shelves=<int>   Maximum automatically selected shelves (default: 5).
   --help, -h            Show this help.
 
 Examples:
@@ -46,6 +50,9 @@ interface ResearchArgs {
   format: OutputFormat;
   runDir?: string;
   k: number;
+  includeShelves: string[];
+  excludeShelves: string[];
+  maxShelves: number;
 }
 
 export interface ShelfDescription {
@@ -87,6 +94,18 @@ export interface ResearchPlan {
     k: number;
   };
   risks: ResearchRisk[];
+}
+
+interface ResearchPlanOptions {
+  includeShelves?: string[];
+  excludeShelves?: string[];
+  maxShelves?: number;
+}
+
+interface EvidenceSourceGroup {
+  label: string;
+  entries: LedgerEntry[];
+  bestScore: number | null;
 }
 
 export interface LedgerEntry {
@@ -176,7 +195,7 @@ export async function runResearch(
 
   try {
     if (parsed.action === 'plan') {
-      const plan = await buildResearchPlan(parsed.question, parsed.k, deps);
+      const plan = await buildResearchPlan(parsed.question, parsed.k, deps, researchPlanOptions(parsed));
       deps.stdout(parsed.format === 'json'
         ? `${JSON.stringify(plan, null, 2)}\n`
         : formatPlanMarkdown(plan));
@@ -204,6 +223,9 @@ export function parseResearchArgs(rest: string[]): ResearchArgs {
   let format: OutputFormat = 'md';
   let runDir: string | undefined;
   let k = 5;
+  const includeShelves: string[] = [];
+  const excludeShelves: string[] = [];
+  let maxShelves = 5;
 
   for (let i = 1; i < rest.length; i++) {
     const raw = rest[i];
@@ -233,6 +255,32 @@ export function parseResearchArgs(rest: string[]): ResearchArgs {
       k = value;
       continue;
     }
+    if (raw === '--kb' || raw === '--include-kb' || raw === '--exclude-kb') {
+      const value = rest[++i];
+      if (!value || value.startsWith('--')) throw new Error(`missing value for ${raw}`);
+      if (raw === '--exclude-kb') excludeShelves.push(value);
+      else includeShelves.push(value);
+      continue;
+    }
+    if (raw.startsWith('--kb=') || raw.startsWith('--include-kb=')) {
+      const flag = raw.startsWith('--kb=') ? '--kb' : '--include-kb';
+      const value = raw.slice(`${flag}=`.length).trim();
+      if (value === '') throw new Error(`empty ${flag} value`);
+      includeShelves.push(value);
+      continue;
+    }
+    if (raw.startsWith('--exclude-kb=')) {
+      const value = raw.slice('--exclude-kb='.length).trim();
+      if (value === '') throw new Error('empty --exclude-kb value');
+      excludeShelves.push(value);
+      continue;
+    }
+    if (raw.startsWith('--max-shelves=')) {
+      const value = Number(raw.slice('--max-shelves='.length));
+      if (!Number.isInteger(value) || value <= 0) throw new Error(`invalid --max-shelves: ${raw}`);
+      maxShelves = value;
+      continue;
+    }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     if (question === undefined) {
       question = raw;
@@ -247,6 +295,10 @@ export function parseResearchArgs(rest: string[]): ResearchArgs {
   if (action === 'collect' && (runDir === undefined || runDir.trim() === '')) {
     throw new Error('collect requires --run-dir <path>');
   }
+  const conflicts = intersectNames(includeShelves, excludeShelves);
+  if (conflicts.length > 0) {
+    throw new Error(`cannot include and exclude the same shelf: ${conflicts.join(', ')}`);
+  }
 
   return {
     action,
@@ -254,6 +306,9 @@ export function parseResearchArgs(rest: string[]): ResearchArgs {
     format,
     ...(runDir !== undefined ? { runDir } : {}),
     k,
+    includeShelves: uniqueNames(includeShelves),
+    excludeShelves: uniqueNames(excludeShelves),
+    maxShelves,
   };
 }
 
@@ -261,12 +316,13 @@ export async function buildResearchPlan(
   question: string,
   k: number,
   deps: Pick<ResearchDeps, 'loadShelfDescriptions' | 'loadStats'>,
+  options: ResearchPlanOptions = {},
 ): Promise<ResearchPlan> {
   const [descriptions, stats] = await Promise.all([
     deps.loadShelfDescriptions(),
     deps.loadStats(),
   ]);
-  const selected = selectShelves(question, descriptions, stats.knowledge_bases);
+  const selected = selectShelves(question, descriptions, stats.knowledge_bases, options);
   const risks = selected.flatMap((shelf) => shelf.risks);
   return {
     schema_version: 'kb-research-plan.v1',
@@ -310,7 +366,7 @@ async function collectResearch(args: ResearchArgs, deps: ResearchDeps): Promise<
     run_dir: runDir,
   });
 
-  const plan = await buildResearchPlan(args.question, args.k, deps);
+  const plan = await buildResearchPlan(args.question, args.k, deps, researchPlanOptions(args));
   await appendEvent(eventsPath, {
     type: 'plan_created',
     at: deps.now().toISOString(),
@@ -425,28 +481,55 @@ function selectShelves(
   question: string,
   descriptions: ShelfDescription[],
   statsRows: Record<string, KbStatsRow>,
+  options: ResearchPlanOptions = {},
 ): SelectedShelf[] {
   const questionTokens = tokenize(question);
+  const questionText = canonicalPhrase(question);
+  const maxShelves = options.maxShelves ?? 5;
+  const includeNames = uniqueNames(options.includeShelves ?? []);
+  const excludeNames = new Set(uniqueNames(options.excludeShelves ?? []));
   const byName = new Map(descriptions.map((shelf) => [shelf.name, shelf.description]));
   for (const name of Object.keys(statsRows)) {
     if (!byName.has(name)) byName.set(name, '');
   }
+  const knownNames = new Set(byName.keys());
+  const unknownIncludes = includeNames.filter((name) => !knownNames.has(name));
+  if (unknownIncludes.length > 0) {
+    throw new Error(`unknown shelf in --include-kb/--kb: ${unknownIncludes.join(', ')}`);
+  }
+  const unknownExcludes = [...excludeNames].filter((name) => !knownNames.has(name));
+  if (unknownExcludes.length > 0) {
+    throw new Error(`unknown shelf in --exclude-kb: ${unknownExcludes.join(', ')}`);
+  }
+  const includeSet = new Set(includeNames);
 
   const shelves = [...byName.entries()].map(([name, description]) => {
     const nameTokens = tokenize(name.replace(/[-_]/g, ' '));
     const descriptionTokens = tokenize(description);
-    const nameOverlap = overlap(questionTokens, nameTokens);
-    const descriptionOverlap = overlap(questionTokens, descriptionTokens);
-    const exactNameHit = question.toLowerCase().includes(name.toLowerCase()) ? 1 : 0;
+    const nameMatches = matchedMeaningfulTokens(questionTokens, nameTokens);
+    const compoundNameMatch = matchedCompoundNameTokens(questionTokens, nameTokens);
+    const descriptionMatches = matchedMeaningfulTokens(questionTokens, descriptionTokens);
+    const exactNameHit = questionText.includes(canonicalPhrase(name)) ? 1 : 0;
     const stats = statsRows[name] ?? emptyStatsRow();
+    const explicitlyIncluded = includeSet.has(name);
     const score =
-      exactNameHit * 8 +
-      nameOverlap * 4 +
-      descriptionOverlap * 2;
+      exactNameHit * 12 +
+      compoundNameMatch.score +
+      nameMatches.length * 5 +
+      descriptionMatches.length * 2 +
+      (explicitlyIncluded ? 100 : 0);
     const reasons = [
+      ...(explicitlyIncluded ? ['explicitly included by operator'] : []),
       ...(exactNameHit ? ['question mentions shelf name'] : []),
-      ...(nameOverlap > 0 ? [`${nameOverlap} shelf-name token match${nameOverlap === 1 ? '' : 'es'}`] : []),
-      ...(descriptionOverlap > 0 ? [`${descriptionOverlap} description token match${descriptionOverlap === 1 ? '' : 'es'}`] : []),
+      ...(nameMatches.length > 0
+        ? [`${nameMatches.length} shelf-name token match${nameMatches.length === 1 ? '' : 'es'} (${nameMatches.join(', ')})`]
+        : []),
+      ...(compoundNameMatch.tokens.length > 0
+        ? [`compound shelf-name match (${compoundNameMatch.tokens.join(', ')})`]
+        : []),
+      ...(descriptionMatches.length > 0
+        ? [`${descriptionMatches.length} description token match${descriptionMatches.length === 1 ? '' : 'es'} (${descriptionMatches.join(', ')})`]
+        : []),
       ...(stats.file_count > 0 ? ['shelf has indexed-source files'] : []),
     ];
     const risks = buildShelfRisks(name, stats);
@@ -461,16 +544,19 @@ function selectShelves(
     };
   });
 
-  const relevant = shelves
-    .filter((shelf) => shelf.score > 0 && shelf.file_count > 0)
+  const available = shelves.filter((shelf) => shelf.file_count > 0 && !excludeNames.has(shelf.name));
+  const included = available
+    .filter((shelf) => includeSet.has(shelf.name))
+    .sort(compareShelves);
+  const relevant = available
+    .filter((shelf) => !includeSet.has(shelf.name) && shelf.score >= 2)
     .sort(compareShelves)
-    .slice(0, 5);
-  if (relevant.length > 0) return relevant;
+    .slice(0, maxShelves);
+  if (included.length > 0 || relevant.length > 0) return [...included, ...relevant];
 
-  return shelves
-    .filter((shelf) => shelf.file_count > 0)
+  return available
     .sort(compareShelves)
-    .slice(0, 3);
+    .slice(0, Math.min(maxShelves, 3));
 }
 
 function buildShelfRisks(name: string, stats: KbStatsRow): ResearchRisk[] {
@@ -496,7 +582,7 @@ function compareShelves(a: SelectedShelf, b: SelectedShelf): number {
 
 function buildQueries(question: string, shelves: SelectedShelf[]): ResearchQuery[] {
   const shelfNames = shelves.map((shelf) => shelf.name);
-  const keywords = tokenize(question).slice(0, 8).join(' ');
+  const keywords = tokenizeForQuery(question).slice(0, 8).join(' ');
   const shelfTerms = shelfNames.slice(0, 3).map((name) => name.replace(/[-_]/g, ' ')).join(' ');
   const candidates = [
     { text: question, purpose: 'original research question' },
@@ -524,15 +610,24 @@ function tokenize(value: string): string[] {
   const seen = new Set<string>();
   const tokens: string[] = [];
   for (const raw of value.toLowerCase().match(/[a-z0-9][a-z0-9-]{1,}/g) ?? []) {
-    const token = normalizeToken(raw.replace(/^-+|-+$/g, ''));
-    if (STOP_WORDS.has(token) || seen.has(token)) continue;
-    seen.add(token);
-    tokens.push(token);
+    addSelectionToken(raw.replace(/^-+|-+$/g, ''), seen, tokens);
+    for (const part of raw.split('-')) {
+      addSelectionToken(part.replace(/^-+|-+$/g, ''), seen, tokens);
+    }
   }
   return tokens;
 }
 
+function addSelectionToken(raw: string, seen: Set<string>, tokens: string[]): void {
+  if (raw === '') return;
+  const token = normalizeToken(raw);
+  if (STOP_WORDS.has(token) || seen.has(token)) return;
+  seen.add(token);
+  tokens.push(token);
+}
+
 function normalizeToken(token: string): string {
+  if (token === 'evals' || token === 'evaluations' || token === 'evaluation') return 'eval';
   if (token.length > 4 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
   if (
     token.length > 3 &&
@@ -540,17 +635,77 @@ function normalizeToken(token: string): string {
     !token.endsWith('ss') &&
     !token.endsWith('us') &&
     !token.endsWith('ous') &&
-    !token.endsWith('is')
+    !token.endsWith('is') &&
+    !token.endsWith('ias')
   ) {
     return token.slice(0, -1);
   }
   return token;
 }
 
-function overlap(left: string[], right: string[]): number {
-  const rightSet = new Set(right);
-  return left.filter((token) => rightSet.has(token)).length;
+function tokenizeForQuery(value: string): string[] {
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const raw of value.toLowerCase().match(/[a-z0-9][a-z0-9-]{1,}/g) ?? []) {
+    const token = raw.replace(/^-+|-+$/g, '');
+    if (token === '') continue;
+    const normalized = normalizeToken(token);
+    if (STOP_WORDS.has(normalized) || seen.has(token)) continue;
+    seen.add(token);
+    tokens.push(token);
+  }
+  return tokens;
 }
+
+function matchedMeaningfulTokens(left: string[], right: string[]): string[] {
+  const rightSet = new Set(right);
+  return left.filter((token) => rightSet.has(token) && !BROAD_SELECTION_TOKENS.has(token));
+}
+
+function matchedCompoundNameTokens(questionTokens: string[], nameTokens: string[]): { tokens: string[]; score: number } {
+  const uniqueNameTokens = [...new Set(nameTokens)].filter((token) => !STOP_WORDS.has(token));
+  if (uniqueNameTokens.length < 2) return { tokens: [], score: 0 };
+  const questionSet = new Set(questionTokens);
+  const matched = uniqueNameTokens.filter((token) => questionSet.has(token));
+  if (matched.length !== uniqueNameTokens.length) return { tokens: [], score: 0 };
+  return {
+    tokens: matched,
+    score: matched.includes('llm') ? 10 : 4,
+  };
+}
+
+function canonicalPhrase(value: string): string {
+  return ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ')} `;
+}
+
+function uniqueNames(names: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of names) {
+    const name = raw.trim();
+    if (name === '' || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+function intersectNames(left: string[], right: string[]): string[] {
+  const rightSet = new Set(uniqueNames(right));
+  return uniqueNames(left).filter((name) => rightSet.has(name));
+}
+
+function researchPlanOptions(args: Pick<ResearchArgs, 'includeShelves' | 'excludeShelves' | 'maxShelves'>): ResearchPlanOptions {
+  return {
+    includeShelves: args.includeShelves,
+    excludeShelves: args.excludeShelves,
+    maxShelves: args.maxShelves,
+  };
+}
+
+const BROAD_SELECTION_TOKENS = new Set([
+  'agent', 'llm', 'task', 'lesson', 'job', 'search', 'note', 'notes', 'tool', 'workflow',
+]);
 
 const STOP_WORDS = new Set([
   'about', 'after', 'again', 'against', 'also', 'and', 'approach', 'are', 'as',
@@ -753,7 +908,7 @@ function formatCollectMarkdown(summary: CollectResult['summary']): string {
 }
 
 function formatEvidencePacket(plan: ResearchPlan, ledger: ResearchLedger): string {
-  const found = ledger.entries.slice(0, 50);
+  const found = groupEvidenceBySource(ledger.entries).slice(0, 50);
   const sources = uniqueSources(ledger.entries);
   return [
     '# Evidence Packet',
@@ -777,9 +932,13 @@ function formatEvidencePacket(plan: ResearchPlan, ledger: ResearchLedger): strin
     '',
     ...(found.length === 0
       ? ['- No evidence found.']
-      : found.map((entry, index) => (
-          `${index + 1}. ${formatSourceLabel(entry)} — score ${formatScore(entry.score)}\n\n` +
-          `   ${entry.excerpt || '(empty excerpt)'}`
+      : found.map((group, index) => (
+          `${index + 1}. ${group.label} — ${group.entries.length} passage${group.entries.length === 1 ? '' : 's'}, ` +
+          `best score ${formatScore(group.bestScore)}\n\n` +
+          group.entries.slice(0, 3).map((entry) => (
+            `   - ${formatLineRange(entry)} via "${entry.query}": ${entry.excerpt || '(empty excerpt)'}`
+          )).join('\n') +
+          (group.entries.length > 3 ? `\n   - ... ${group.entries.length - 3} more passage(s) from this source` : '')
         ))),
     '',
     '## Evidence Gaps',
@@ -817,7 +976,7 @@ function uniqueSources(entries: LedgerEntry[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const entry of entries) {
-    const source = formatSourceLabel(entry);
+    const source = formatSourceGroupLabel(entry);
     if (seen.has(source)) continue;
     seen.add(source);
     out.push(source);
@@ -828,6 +987,40 @@ function uniqueSources(entries: LedgerEntry[]): string[] {
 function formatSourceLabel(entry: LedgerEntry): string {
   const range = entry.line_range ? `#L${entry.line_range.from}-L${entry.line_range.to}` : '';
   return `${entry.shelf}/${entry.relative_path ?? 'unknown'}${range}`;
+}
+
+function formatSourceGroupLabel(entry: LedgerEntry): string {
+  return `${entry.shelf}/${entry.relative_path ?? 'unknown'}`;
+}
+
+function formatLineRange(entry: LedgerEntry): string {
+  if (!entry.line_range) return formatSourceLabel(entry);
+  return `L${entry.line_range.from}-L${entry.line_range.to}`;
+}
+
+function groupEvidenceBySource(entries: LedgerEntry[]): EvidenceSourceGroup[] {
+  const groups = new Map<string, { label: string; entries: LedgerEntry[]; bestScore: number | null; seen: Set<string> }>();
+  for (const entry of entries) {
+    const label = formatSourceGroupLabel(entry);
+    const key = label;
+    let group = groups.get(key);
+    if (!group) {
+      group = { label, entries: [], bestScore: null, seen: new Set<string>() };
+      groups.set(key, group);
+    }
+    const dedupeKey = `${formatSourceLabel(entry)}\0${entry.query}\0${entry.excerpt}`;
+    if (group.seen.has(dedupeKey)) continue;
+    group.seen.add(dedupeKey);
+    group.entries.push(entry);
+    if (entry.score !== null && (group.bestScore === null || entry.score > group.bestScore)) {
+      group.bestScore = entry.score;
+    }
+  }
+  return [...groups.values()].map(({ label, entries: groupedEntries, bestScore }) => ({
+    label,
+    entries: groupedEntries,
+    bestScore,
+  }));
 }
 
 function formatScore(score: number | null): string {

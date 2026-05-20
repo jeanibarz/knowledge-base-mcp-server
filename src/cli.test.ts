@@ -195,6 +195,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'serve',
       'ask',
       'remember',
+      'research',
       'capture',
       'import-url',
       'compare',
