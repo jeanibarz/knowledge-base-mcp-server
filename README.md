@@ -432,6 +432,8 @@ export MCP_AUTH_TOKEN="$(openssl rand -base64 32)"   # must be ≥32 characters;
 export MCP_ALLOWED_ORIGINS="http://localhost:5173"   # comma-separated; leave unset to deny all browser origins
 export MCP_PORT=8765                                  # default
 export MCP_BIND_ADDR=127.0.0.1                        # default — loopback only
+export MCP_AUTH_BACKOFF_THRESHOLD=5                   # failed bearer attempts before backoff; 0 disables
+export MCP_AUTH_BACKOFF_MS=30000                      # Retry-After window for auth backoff
 node build/index.js
 ```
 
@@ -442,6 +444,10 @@ Endpoints exposed in this mode:
 - `MCP_TRANSPORT=http`: `POST /mcp` initializes and sends JSON-RPC messages using streamable HTTP. The server returns `Mcp-Session-Id` during initialization; clients must send it on subsequent `GET`, `POST`, and `DELETE /mcp` requests.
 
 All non-health transport endpoints require `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+Repeated bearer failures from the same remote address enter a bounded in-memory
+backoff and return `Retry-After`; valid authentication clears the address state.
+When the server sits behind a reverse proxy, the key is the proxy socket address,
+not `X-Forwarded-For`, so configure proxy-side throttling for internet exposure.
 
 For a disposable remote playground during development, use `npm run dev:remote`
 from the local development section above.

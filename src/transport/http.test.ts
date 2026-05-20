@@ -10,6 +10,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
+import type { AuthBackoffConfig } from '../transport-config.js';
 import { StreamableHttpHost } from './http.js';
 
 const VALID_TOKEN = 'a-very-secret-token-for-test-use-only';
@@ -32,6 +33,7 @@ function freshFactory(): () => McpServer {
 async function startHost(opts: {
   authToken?: string;
   allowedOrigins?: string[];
+  authBackoff?: AuthBackoffConfig;
 }): Promise<{ host: StreamableHttpHost; port: number; stop: () => Promise<void> }> {
   const host = new StreamableHttpHost({
     config: {
@@ -40,6 +42,7 @@ async function startHost(opts: {
       bindAddr: '127.0.0.1',
       authToken: opts.authToken ?? VALID_TOKEN,
       allowedOrigins: opts.allowedOrigins ?? [],
+      authBackoff: opts.authBackoff,
     },
     createMcpServer: freshFactory(),
   });
@@ -163,6 +166,34 @@ describe('StreamableHttpHost — endpoints', () => {
     const res = await request(started.port, { method: 'POST', path: '/mcp' });
     expect(res.statusCode).toBe(401);
     expect(res.headers['www-authenticate']).toMatch(/^Bearer /);
+  });
+
+  it('returns Retry-After when repeated failed auth enters backoff', async () => {
+    const started = await startHost({
+      authBackoff: {
+        failureThreshold: 1,
+        backoffMs: 1_000,
+        maxEntries: 4,
+      },
+    });
+    stop = started.stop;
+
+    const first = await request(started.port, { method: 'POST', path: '/mcp' });
+    expect(first.statusCode).toBe(401);
+    expect(first.headers['retry-after']).toBe('1');
+
+    const blocked = await request(started.port, { method: 'POST', path: '/mcp' });
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.headers['retry-after']).toBe('1');
+    expect(blocked.body).toBe('Too Many Authentication Attempts');
+
+    const authenticated = await request(started.port, {
+      method: 'POST',
+      path: '/mcp',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` },
+    });
+    expect(authenticated.statusCode).toBe(400);
+    expect(authenticated.body).toContain('Parse error');
   });
 
   it('exposes process-lifetime HTTP transport counters', async () => {

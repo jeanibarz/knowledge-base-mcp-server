@@ -18,6 +18,7 @@ import {
   loadTransportConfig,
   TransportConfigError,
   DEFAULT_MCP_PORT,
+  type AuthBackoffConfig,
 } from '../transport-config.js';
 import { SseHost } from './sse.js';
 
@@ -31,6 +32,7 @@ function freshFactory(): () => McpServer {
 async function startHost(opts: {
   authToken?: string;
   allowedOrigins?: string[];
+  authBackoff?: AuthBackoffConfig;
 }): Promise<{ host: SseHost; port: number; stop: () => Promise<void> }> {
   const host = new SseHost({
     config: {
@@ -39,6 +41,7 @@ async function startHost(opts: {
       bindAddr: '127.0.0.1',
       authToken: opts.authToken ?? VALID_TOKEN,
       allowedOrigins: opts.allowedOrigins ?? [],
+      authBackoff: opts.authBackoff,
     },
     createMcpServer: freshFactory(),
   });
@@ -232,6 +235,32 @@ describe('loadTransportConfig validation', () => {
       'http://localhost:8080',
     ]);
   });
+
+  it('parses configurable remote auth backoff settings', () => {
+    process.env.MCP_TRANSPORT = 'sse';
+    process.env.MCP_AUTH_TOKEN = VALID_TOKEN;
+    process.env.MCP_AUTH_BACKOFF_THRESHOLD = '3';
+    process.env.MCP_AUTH_BACKOFF_MS = '2500';
+    process.env.MCP_AUTH_BACKOFF_MAX_ENTRIES = '64';
+
+    expect(loadTransportConfig().authBackoff).toEqual({
+      failureThreshold: 3,
+      backoffMs: 2500,
+      maxEntries: 64,
+    });
+  });
+
+  it.each([
+    ['MCP_AUTH_BACKOFF_THRESHOLD', '-1'],
+    ['MCP_AUTH_BACKOFF_MS', '-1'],
+    ['MCP_AUTH_BACKOFF_MAX_ENTRIES', '0'],
+  ])('rejects invalid remote auth backoff setting %s=%s', (name, value) => {
+    process.env.MCP_TRANSPORT = 'sse';
+    process.env.MCP_AUTH_TOKEN = VALID_TOKEN;
+    process.env[name] = value;
+
+    expect(() => loadTransportConfig()).toThrow(new RegExp(name));
+  });
 });
 
 describe('SseHost — endpoints', () => {
@@ -340,6 +369,77 @@ describe('SseHost — endpoints', () => {
       headers: { Authorization: 'Bearer short' },
     });
     expect(res.statusCode).toBe(401);
+  });
+
+  it('backs off repeated bearer failures by remote address with Retry-After', async () => {
+    const started = await startHost({
+      authBackoff: {
+        failureThreshold: 2,
+        backoffMs: 1_000,
+        maxEntries: 8,
+      },
+    });
+    stop = started.stop;
+
+    const firstFailure = await request(started.port, {
+      path: '/sse',
+      headers: { Authorization: 'Bearer first-wrong-token-with-padding' },
+    });
+    expect(firstFailure.statusCode).toBe(401);
+    expect(firstFailure.headers['retry-after']).toBeUndefined();
+
+    const stream = await openSseStream(started.port, {
+      Authorization: `Bearer ${VALID_TOKEN}`,
+    });
+    stream.close();
+
+    const secondFailure = await request(started.port, {
+      path: '/sse',
+      headers: { Authorization: 'Bearer second-wrong-token-with-padding' },
+    });
+    expect(secondFailure.statusCode).toBe(401);
+    expect(secondFailure.headers['retry-after']).toBeUndefined();
+
+    const thirdFailure = await request(started.port, {
+      path: '/sse',
+      headers: { Authorization: 'Bearer third-wrong-token-with-padding' },
+    });
+    expect(thirdFailure.statusCode).toBe(401);
+    expect(thirdFailure.headers['retry-after']).toBe('1');
+
+    const blocked = await request(started.port, {
+      path: '/sse',
+      headers: { Authorization: 'Bearer fourth-wrong-token-with-padding' },
+    });
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.headers['retry-after']).toBe('1');
+    expect(started.host.getRuntimeStats().auth_failures).toBe(3);
+  });
+
+  it('keeps repeated bearer failures at 401 when auth backoff is disabled', async () => {
+    const started = await startHost({
+      authBackoff: {
+        failureThreshold: 0,
+        backoffMs: 1_000,
+        maxEntries: 8,
+      },
+    });
+    stop = started.stop;
+
+    for (const token of [
+      'first-wrong-token-with-padding',
+      'second-wrong-token-with-padding',
+      'third-wrong-token-with-padding',
+    ]) {
+      const res = await request(started.port, {
+        path: '/sse',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(res.headers['retry-after']).toBeUndefined();
+    }
+
+    expect(started.host.getRuntimeStats().auth_failures).toBe(3);
   });
 
   it('(d) preflight OPTIONS from disallowed origin gets 403', async () => {

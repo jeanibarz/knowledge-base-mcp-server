@@ -22,7 +22,14 @@ import { Buffer } from 'node:buffer';
 import { timingSafeEqual } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import { normalizeOrigin, type TransportConfig } from '../transport-config.js';
+import {
+  DEFAULT_MCP_AUTH_BACKOFF_MAX_ENTRIES,
+  DEFAULT_MCP_AUTH_BACKOFF_MS,
+  DEFAULT_MCP_AUTH_BACKOFF_THRESHOLD,
+  normalizeOrigin,
+  type AuthBackoffConfig,
+  type TransportConfig,
+} from '../transport-config.js';
 import { logger } from '../logger.js';
 import {
   emptyResponseStatusBuckets,
@@ -57,11 +64,19 @@ interface AccessLog {
   auth_present: boolean;
 }
 
+interface AuthFailureState {
+  failures: number;
+  blockedUntilMs: number;
+  lastSeenMs: number;
+}
+
 export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }> {
   protected readonly options: BaseHttpHostOptions;
   protected readonly sessions = new Map<string, BaseSessionEntry<TTransport>>();
   protected readonly originAllowList: ReadonlySet<string>;
   private readonly authTokenBuf: Buffer;
+  private readonly authBackoff: AuthBackoffConfig;
+  private readonly authFailureStates = new Map<string, AuthFailureState>();
   private sessionsOpened = 0;
   private sessionsClosed = 0;
   private requestsTotal = 0;
@@ -85,6 +100,11 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     // empty-string fallback here is defence-in-depth for refactor accidents.
     const token = options.config.authToken ?? '';
     this.authTokenBuf = Buffer.from(token, 'latin1');
+    this.authBackoff = options.config.authBackoff ?? {
+      failureThreshold: DEFAULT_MCP_AUTH_BACKOFF_THRESHOLD,
+      backoffMs: DEFAULT_MCP_AUTH_BACKOFF_MS,
+      maxEntries: DEFAULT_MCP_AUTH_BACKOFF_MAX_ENTRIES,
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -287,6 +307,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     const normalizedOrigin =
       originHeader !== null ? normalizeOrigin(originHeader) : null;
     const authPresent = Boolean(req.headers.authorization);
+    const clientAddress = this.clientAddress(req);
 
     const finalize = (status: number) => {
       this.requestsTotal += 1;
@@ -327,13 +348,26 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     }
 
     // 4. Bearer-token auth.
-    if (!this.verifyBearer(req.headers.authorization)) {
+    const bearerValid = this.verifyBearer(req.headers.authorization);
+    if (!bearerValid) {
+      const activeBackoff = this.activeAuthBackoff(clientAddress, Date.now());
+      if (activeBackoff !== null) {
+        res.setHeader('Retry-After', String(activeBackoff.retryAfterSeconds));
+        respond(res, 429, 'Too Many Authentication Attempts');
+        finalize(429);
+        return;
+      }
       this.authFailures += 1;
+      const backoff = this.recordAuthFailure(clientAddress, Date.now());
+      if (backoff !== null) {
+        res.setHeader('Retry-After', String(backoff.retryAfterSeconds));
+      }
       res.setHeader('WWW-Authenticate', 'Bearer realm="knowledge-base-mcp"');
       respond(res, 401, 'Unauthorized');
       finalize(401);
       return;
     }
+    this.clearAuthFailure(clientAddress);
 
     // 5. Shutdown gate — refuse new dispatch once stop() was called.
     if (this.shuttingDown) {
@@ -429,6 +463,94 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       return timingSafeEqual(provided, this.authTokenBuf);
     } catch {
       return false;
+    }
+  }
+
+  private authBackoffEnabled(): boolean {
+    return this.authBackoff.failureThreshold > 0 && this.authBackoff.backoffMs > 0;
+  }
+
+  private clientAddress(req: http.IncomingMessage): string {
+    return req.socket.remoteAddress ?? 'unknown';
+  }
+
+  private activeAuthBackoff(
+    clientAddress: string,
+    nowMs: number,
+  ): { retryAfterSeconds: number } | null {
+    if (!this.authBackoffEnabled()) {
+      return null;
+    }
+    const state = this.authFailureStates.get(clientAddress);
+    if (state === undefined) {
+      return null;
+    }
+    state.lastSeenMs = nowMs;
+    if (state.blockedUntilMs <= nowMs) {
+      if (state.blockedUntilMs > 0) {
+        state.failures = 0;
+        state.blockedUntilMs = 0;
+      }
+      return null;
+    }
+    return {
+      retryAfterSeconds: Math.max(1, Math.ceil((state.blockedUntilMs - nowMs) / 1000)),
+    };
+  }
+
+  private recordAuthFailure(
+    clientAddress: string,
+    nowMs: number,
+  ): { retryAfterSeconds: number } | null {
+    if (!this.authBackoffEnabled()) {
+      return null;
+    }
+    let state = this.authFailureStates.get(clientAddress);
+    if (state === undefined) {
+      this.evictOldestAuthFailureStateIfNeeded();
+      state = { failures: 0, blockedUntilMs: 0, lastSeenMs: nowMs };
+      this.authFailureStates.set(clientAddress, state);
+    }
+    if (state.blockedUntilMs > 0 && state.blockedUntilMs <= nowMs) {
+      state.failures = 0;
+      state.blockedUntilMs = 0;
+    }
+    state.failures += 1;
+    state.lastSeenMs = nowMs;
+    if (state.failures < this.authBackoff.failureThreshold) {
+      return null;
+    }
+    state.blockedUntilMs = nowMs + this.authBackoff.backoffMs;
+    logger.warn(JSON.stringify({
+      event: 'remote_auth_backoff',
+      transport: this.transportKind,
+      remote_address: clientAddress,
+      failures: state.failures,
+      backoff_ms: this.authBackoff.backoffMs,
+    }));
+    return {
+      retryAfterSeconds: Math.max(1, Math.ceil(this.authBackoff.backoffMs / 1000)),
+    };
+  }
+
+  private clearAuthFailure(clientAddress: string): void {
+    this.authFailureStates.delete(clientAddress);
+  }
+
+  private evictOldestAuthFailureStateIfNeeded(): void {
+    if (this.authFailureStates.size < this.authBackoff.maxEntries) {
+      return;
+    }
+    let oldestAddress: string | null = null;
+    let oldestSeenMs = Number.POSITIVE_INFINITY;
+    for (const [address, state] of this.authFailureStates) {
+      if (state.lastSeenMs < oldestSeenMs) {
+        oldestAddress = address;
+        oldestSeenMs = state.lastSeenMs;
+      }
+    }
+    if (oldestAddress !== null) {
+      this.authFailureStates.delete(oldestAddress);
     }
   }
 
