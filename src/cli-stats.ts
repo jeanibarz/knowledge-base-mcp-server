@@ -27,7 +27,8 @@ Mirrors the MCP \`kb_stats\` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
 Includes process-lifetime relevance-gate counters when the gate has run, and a
 Contextual Retrieval section with per-KB preface coverage and failure counts
-(by error code) when contextual-preface sidecars exist.
+(by error code) when contextual-preface sidecars exist. Remote MCP stats calls
+also include live HTTP/SSE transport counters.
 Strictly read-only — does not refresh the index.
 
 Options:
@@ -176,8 +177,40 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
       `${formatInteger(payload.relevance_gate.judge_window.size)}, ` +
       `warn>${formatRate(payload.relevance_gate.judge_window.warn_threshold)})`,
     '',
+    ...formatTransportSection(payload),
     ...formatContextualSection(payload),
   ].join('\n');
+}
+
+export function formatTransportSection(payload: KbStatsPayload): string[] {
+  const stats = payload.transport;
+  if (stats === undefined) return [];
+
+  const statusBuckets = Object.entries(stats.response_status_buckets)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([bucket, count]) => `${bucket}=${formatInteger(count)}`)
+    .join(', ');
+
+  const lines = [
+    '## Remote Transport',
+    '',
+    `- Mode: ${stats.transport}`,
+    `- Sessions: current=${formatInteger(stats.current_sessions)}, ` +
+      `opened=${formatInteger(stats.sessions_opened)}, closed=${formatInteger(stats.sessions_closed)}`,
+    `- In-flight requests: ${formatInteger(stats.in_flight_requests)}`,
+    `- Response status buckets: ${statusBuckets.length > 0 ? statusBuckets : 'none'}`,
+    `- Auth failures: ${formatInteger(stats.auth_failures)}`,
+    `- Origin denials: ${formatInteger(stats.origin_denials)}`,
+  ];
+  if (stats.last_transport_error !== null) {
+    lines.push(
+      `- Last transport error: ${stats.last_transport_error.at} ${stats.last_transport_error.message}`,
+    );
+  } else {
+    lines.push('- Last transport error: none');
+  }
+  lines.push('');
+  return lines;
 }
 
 /**

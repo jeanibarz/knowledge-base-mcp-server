@@ -1,6 +1,9 @@
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { AddressInfo } from 'node:net';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 const initializeMock = jest.fn();
 const updateIndexMock = jest.fn();
@@ -424,6 +427,96 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(payload.server.version.length).toBeGreaterThan(0);
     expect(typeof payload.server.uptime_ms).toBe('number');
     expect(payload.server.uptime_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it('handleKbStats includes live remote transport counters when running over HTTP (#430)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'aaa');
+
+    const server = await freshServer();
+    server['transportMode'] = 'http';
+    server['httpHost'] = {
+      getRuntimeStats: () => ({
+        transport: 'http',
+        current_sessions: 2,
+        sessions_opened: 5,
+        sessions_closed: 3,
+        in_flight_requests: 1,
+        response_status_buckets: { '2xx': 10, '4xx': 2 },
+        auth_failures: 1,
+        origin_denials: 1,
+        last_transport_error: null,
+      }),
+    } as any;
+
+    const result = await server['handleKbStats']({});
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.transport).toEqual({
+      transport: 'http',
+      current_sessions: 2,
+      sessions_opened: 5,
+      sessions_closed: 3,
+      in_flight_requests: 1,
+      response_status_buckets: { '2xx': 10, '4xx': 2 },
+      auth_failures: 1,
+      origin_denials: 1,
+      last_transport_error: null,
+    });
+  });
+
+  it('HTTP MCP kb_stats returns the live transport snapshot from the active host (#430)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'aaa');
+    getStatsMock.mockReturnValue({
+      totalChunks: 1,
+      chunkCountsByKb: { alpha: 1 },
+      dim: 384,
+    });
+
+    const server = await freshServer();
+    await server['runHttp']({
+      transport: 'http',
+      port: 0,
+      bindAddr: '127.0.0.1',
+      authToken: 'remote-stats-token',
+      allowedOrigins: [],
+    });
+    const httpServer = server['httpHost']['server'];
+    const addr = httpServer.address() as AddressInfo;
+    const client = new Client({ name: 'kb-http-stats-test', version: '0.0.0-test' });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${addr.port}/mcp`),
+      { requestInit: { headers: { Authorization: 'Bearer remote-stats-token' } } },
+    );
+
+    try {
+      await client.connect(transport);
+      const result = await client.callTool({ name: 'kb_stats', arguments: {} });
+
+      expect(result.isError).toBeFalsy();
+      const content = result.content as Array<{ type: string; text?: string }>;
+      const text = content[0].type === 'text' ? content[0].text ?? '' : '';
+      const payload = JSON.parse(text);
+      expect(payload.knowledge_bases.alpha.chunk_count).toBe(1);
+      expect(payload.transport).toMatchObject({
+        transport: 'http',
+        current_sessions: 1,
+        sessions_opened: 1,
+        sessions_closed: 0,
+        auth_failures: 0,
+        origin_denials: 0,
+        last_transport_error: null,
+      });
+      expect(payload.transport.in_flight_requests).toBeGreaterThanOrEqual(0);
+      expect(payload.transport.response_status_buckets['2xx']).toBeGreaterThanOrEqual(1);
+    } finally {
+      await client.close();
+      await server.shutdown();
+    }
   });
 
   it('handleKbStats with knowledge_base_name returns only that KB and asserts chunk_count', async () => {

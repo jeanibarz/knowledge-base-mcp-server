@@ -156,6 +156,18 @@ function openSseStream(
   });
 }
 
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 1000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('condition was not met before timeout');
+}
+
 describe('loadTransportConfig validation', () => {
   const originalEnv = { ...process.env };
   afterEach(() => {
@@ -321,6 +333,45 @@ describe('SseHost — endpoints', () => {
       },
     });
     expect(res.statusCode).toBe(403);
+  });
+
+  it('records SSE session and gate counters in the runtime snapshot (#430)', async () => {
+    const started = await startHost({
+      allowedOrigins: ['http://localhost:5173'],
+    });
+    stop = started.stop;
+
+    await request(started.port, { path: '/sse' });
+    await request(started.port, {
+      path: '/sse',
+      headers: {
+        Origin: 'http://evil.example.com',
+        Authorization: `Bearer ${VALID_TOKEN}`,
+      },
+    });
+    const stream = await openSseStream(started.port, {
+      Authorization: `Bearer ${VALID_TOKEN}`,
+    });
+    expect(started.host.getRuntimeStats()).toMatchObject({
+      transport: 'sse',
+      current_sessions: 1,
+      sessions_opened: 1,
+      sessions_closed: 0,
+      auth_failures: 1,
+      origin_denials: 1,
+      response_status_buckets: {
+        '2xx': 1,
+        '4xx': 2,
+      },
+    });
+
+    stream.close();
+    await waitFor(() => started.host.getRuntimeStats().current_sessions === 0);
+    expect(started.host.getRuntimeStats()).toMatchObject({
+      sessions_opened: 1,
+      sessions_closed: 1,
+      in_flight_requests: 0,
+    });
   });
 
   it('OPTIONS preflight from listed origin gets 204 with CORS headers', async () => {

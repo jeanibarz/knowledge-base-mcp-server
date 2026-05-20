@@ -37,7 +37,7 @@ const UUID_SHAPE =
 export type StreamableHttpHostOptions = BaseHttpHostOptions;
 
 export class StreamableHttpHost extends BaseHttpHost<StreamableHTTPServerTransport> {
-  protected get logPrefix(): string {
+  protected get logPrefix(): 'http' {
     return 'http';
   }
 
@@ -76,6 +76,7 @@ export class StreamableHttpHost extends BaseHttpHost<StreamableHTTPServerTranspo
     try {
       return await this.handleMcpRequest(req, res, method);
     } catch (err) {
+      this.recordTransportError(err as Error);
       logger.error(`[http] error handling ${method} /mcp: ${(err as Error).message}`);
       if (!res.headersSent) {
         respondJsonRpcError(res, 500, -32603, 'Internal Server Error');
@@ -180,15 +181,16 @@ export class StreamableHttpHost extends BaseHttpHost<StreamableHTTPServerTranspo
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId) => {
-        this.sessions.set(sessionId, { transport, mcp });
+        this.registerSession(sessionId, { transport, mcp });
       },
     });
     transport.onclose = () => {
       if (transport.sessionId) {
-        this.sessions.delete(transport.sessionId);
+        this.unregisterSession(transport.sessionId);
       }
     };
     transport.onerror = (error) => {
+      this.recordTransportError(error);
       logger.warn(`[http] transport error: ${error.message}`);
     };
     try {
@@ -196,7 +198,7 @@ export class StreamableHttpHost extends BaseHttpHost<StreamableHTTPServerTranspo
       await transport.handleRequest(req, res, parsedBody);
     } catch (err) {
       if (transport.sessionId) {
-        this.sessions.delete(transport.sessionId);
+        this.unregisterSession(transport.sessionId);
       }
       try {
         await transport.close();

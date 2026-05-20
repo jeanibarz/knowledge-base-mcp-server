@@ -105,6 +105,7 @@ import {
   resolveRerankerConfig,
   type RerankOverride,
 } from './reranker.js';
+import type { TransportRuntimeStats } from './transport-runtime-stats.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
@@ -429,6 +430,7 @@ export class KnowledgeBaseServer {
         knowledgeBaseName: args.knowledge_base_name,
         serverVersion: SERVER_VERSION,
         startedAt: this.startedAt,
+        transportStats: this.currentTransportStats(),
       });
       return {
         content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
@@ -442,6 +444,16 @@ export class KnowledgeBaseServer {
       return { content: [mcpErrorContent(err)], isError: true };
       }
     });
+  }
+
+  private currentTransportStats(): TransportRuntimeStats | undefined {
+    if (this.transportMode === 'sse') {
+      return this.sseHost?.getRuntimeStats();
+    }
+    if (this.transportMode === 'http') {
+      return this.httpHost?.getRuntimeStats();
+    }
+    return undefined;
   }
 
   private async getActiveManagerForMutation(): Promise<FaissIndexManager> {

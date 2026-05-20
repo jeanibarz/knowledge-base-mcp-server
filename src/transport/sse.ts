@@ -34,7 +34,7 @@ const MESSAGES_ENDPOINT = '/messages';
 export type SseHostOptions = BaseHttpHostOptions;
 
 export class SseHost extends BaseHttpHost<SSEServerTransport> {
-  protected get logPrefix(): string {
+  protected get logPrefix(): 'sse' {
     return 'sse';
   }
 
@@ -66,6 +66,7 @@ export class SseHost extends BaseHttpHost<SSEServerTransport> {
         await this.handleSseOpen(req, res);
         return 200;
       } catch (err) {
+        this.recordTransportError(err as Error);
         logger.error(`[sse] error opening stream: ${(err as Error).message}`);
         if (!res.headersSent) {
           respond(res, 500, 'Error establishing SSE stream');
@@ -79,6 +80,7 @@ export class SseHost extends BaseHttpHost<SSEServerTransport> {
       try {
         return await this.handleMessagePost(req, res, url);
       } catch (err) {
+        this.recordTransportError(err as Error);
         logger.error(`[sse] error handling POST /messages: ${(err as Error).message}`);
         if (!res.headersSent) {
           respond(res, 500, 'Internal Server Error');
@@ -107,13 +109,13 @@ export class SseHost extends BaseHttpHost<SSEServerTransport> {
     // recursion. Map delete is idempotent, so multiple onclose firings are
     // harmless.
     transport.onclose = () => {
-      this.sessions.delete(sessionId);
+      this.unregisterSession(sessionId);
     };
-    this.sessions.set(sessionId, { transport, mcp });
+    this.registerSession(sessionId, { transport, mcp });
     try {
       await mcp.connect(transport);
     } catch (err) {
-      this.sessions.delete(sessionId);
+      this.unregisterSession(sessionId);
       throw err;
     }
   }

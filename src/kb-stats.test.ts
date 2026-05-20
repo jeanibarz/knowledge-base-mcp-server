@@ -422,6 +422,40 @@ describe('computeKbStats', () => {
     }
   });
 
+  it('includes active remote transport counters when supplied by the MCP host (#430)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-transport-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'alpha'));
+      await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'a');
+
+      const { computeKbStats } = await freshKbStats({
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+
+      const transportStats = {
+        transport: 'sse' as const,
+        current_sessions: 2,
+        sessions_opened: 5,
+        sessions_closed: 3,
+        in_flight_requests: 1,
+        response_status_buckets: { '2xx': 8, '4xx': 2 },
+        auth_failures: 1,
+        origin_denials: 1,
+        last_transport_error: null,
+      };
+      const payload = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        transportStats,
+      });
+
+      expect(payload.transport).toEqual(transportStats);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('respects INGEST_EXCLUDE_PATHS so excluded files do not contribute to file_count or bytes', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-exclude-'));
     await fsp.mkdir(path.join(tempDir, 'alpha'));

@@ -1,5 +1,10 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import { formatContextualSection, runStats, type RunStatsDeps } from './cli-stats.js';
+import {
+  formatContextualSection,
+  formatTransportSection,
+  runStats,
+  type RunStatsDeps,
+} from './cli-stats.js';
 import type { FaissIndexManager } from './FaissIndexManager.js';
 import type { KbStatsContextualPrefaceBlock, KbStatsPayload } from './kb-stats.js';
 import { KBError } from './errors.js';
@@ -189,6 +194,42 @@ describe('kb stats CLI', () => {
     expect(out).toContain('- Index path: `/tmp/kb-index`');
     expect(out).toContain('## Relevance Gate');
     expect(out).toContain('- Gated queries: 0');
+  });
+
+  it('renders remote transport counters in markdown when present (#430)', async () => {
+    const withTransport = payload();
+    withTransport.transport = {
+      transport: 'http',
+      current_sessions: 1,
+      sessions_opened: 3,
+      sessions_closed: 2,
+      in_flight_requests: 4,
+      response_status_buckets: { '2xx': 7, '4xx': 2 },
+      auth_failures: 1,
+      origin_denials: 1,
+      last_transport_error: {
+        at: '2026-05-20T08:00:00.000Z',
+        message: 'socket hang up',
+      },
+    };
+    const { deps, stdout } = makeDeps({ payload: withTransport });
+
+    const code = await runStats([], deps);
+
+    expect(code).toBe(0);
+    const out = stdout.join('');
+    expect(out).toContain('## Remote Transport');
+    expect(out).toContain('- Mode: http');
+    expect(out).toContain('- Sessions: current=1, opened=3, closed=2');
+    expect(out).toContain('- In-flight requests: 4');
+    expect(out).toContain('- Response status buckets: 2xx=7, 4xx=2');
+    expect(out).toContain('- Auth failures: 1');
+    expect(out).toContain('- Origin denials: 1');
+    expect(out).toContain('- Last transport error: 2026-05-20T08:00:00.000Z socket hang up');
+  });
+
+  it('omits the remote transport markdown section when no host snapshot exists', () => {
+    expect(formatTransportSection(payload())).toEqual([]);
   });
 
   it('renders a Contextual Retrieval section in markdown when sidecars exist (#409)', async () => {

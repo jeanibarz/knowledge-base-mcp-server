@@ -151,6 +151,37 @@ describe('StreamableHttpHost — endpoints', () => {
     expect(res.headers['www-authenticate']).toMatch(/^Bearer /);
   });
 
+  it('records auth, origin, and status-bucket counters in the runtime snapshot (#430)', async () => {
+    const started = await startHost({
+      allowedOrigins: ['http://localhost:5173'],
+    });
+    stop = started.stop;
+
+    await request(started.port, { method: 'POST', path: '/mcp' });
+    await request(started.port, {
+      method: 'POST',
+      path: '/mcp',
+      headers: {
+        Origin: 'http://evil.example.com',
+        Authorization: `Bearer ${VALID_TOKEN}`,
+      },
+    });
+    await request(started.port, { path: '/health' });
+
+    expect(started.host.getRuntimeStats()).toMatchObject({
+      transport: 'http',
+      current_sessions: 0,
+      in_flight_requests: 0,
+      auth_failures: 1,
+      origin_denials: 1,
+      response_status_buckets: {
+        '2xx': 1,
+        '4xx': 2,
+      },
+      last_transport_error: null,
+    });
+  });
+
   it('preflight OPTIONS from listed origin gets streamable HTTP CORS headers', async () => {
     const started = await startHost({
       allowedOrigins: ['http://localhost:5173'],
@@ -251,8 +282,18 @@ describe('StreamableHttpHost — endpoints', () => {
     stop = started.stop;
     const { client } = await connectClient(started.port);
     await waitFor(() => started.host.sessionCount === 1);
+    expect(started.host.getRuntimeStats()).toMatchObject({
+      current_sessions: 1,
+      sessions_opened: 1,
+      sessions_closed: 0,
+    });
     await client.close();
     await waitFor(() => started.host.sessionCount === 0);
+    expect(started.host.getRuntimeStats()).toMatchObject({
+      current_sessions: 0,
+      sessions_opened: 1,
+      sessions_closed: 1,
+    });
   });
 
   // ---------------------------------------------------------------------

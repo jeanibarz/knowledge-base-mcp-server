@@ -30,7 +30,7 @@ export const LIST_MODELS_DESCRIPTION =
 
 // Issue #54 - kb_stats tool description.
 export const DEFAULT_KB_STATS_DESCRIPTION =
-  'Reports observability stats for the knowledge base index: per-KB file_count, chunk_count, total_bytes_indexed and last_updated_at; the active embedding provider/model/dim; the on-disk index_path; and server version/uptime. Pass `knowledge_base_name` to scope to a single KB; omit it to get an entry per registered KB.';
+  'Reports observability stats for the knowledge base index: per-KB file_count, chunk_count, total_bytes_indexed and last_updated_at; the active embedding provider/model/dim; the on-disk index_path; server version/uptime; and, when served over HTTP/SSE, live remote transport counters. Pass `knowledge_base_name` to scope to a single KB; omit it to get an entry per registered KB.';
 export const KB_STATS_DESCRIPTION =
   process.env.KB_STATS_DESCRIPTION && process.env.KB_STATS_DESCRIPTION.length > 0
     ? process.env.KB_STATS_DESCRIPTION
