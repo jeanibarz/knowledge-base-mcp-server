@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'fs/promises';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -26,6 +27,11 @@ const originalEnv = {
   HF_HOME: process.env.HF_HOME,
   TRANSFORMERS_CACHE: process.env.TRANSFORMERS_CACHE,
   HOME: process.env.HOME,
+  MCP_TRANSPORT: process.env.MCP_TRANSPORT,
+  MCP_PORT: process.env.MCP_PORT,
+  MCP_BIND_ADDR: process.env.MCP_BIND_ADDR,
+  KB_DAEMON_URL: process.env.KB_DAEMON_URL,
+  OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL,
 };
 
 const MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
@@ -100,6 +106,38 @@ async function healthyLlmProbe(endpoint: string) {
     chat_ok: true,
     detail: 'health and chat completion succeeded',
   };
+}
+
+function listen(server: net.Server, port = 0, host = '127.0.0.1'): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ port, host }, () => {
+      const address = server.address();
+      if (typeof address === 'object' && address !== null) resolve(address.port);
+      else reject(new Error('server did not report a TCP port'));
+    });
+  });
+}
+
+function closeServer(server: net.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((err) => err ? reject(err) : resolve());
+  });
+}
+
+async function captureStdout(run: () => Promise<number>): Promise<{ code: number; stdout: string }> {
+  let stdout = '';
+  const spy = jest.spyOn(process.stdout, 'write')
+    .mockImplementation((chunk: string | Uint8Array) => {
+      stdout += String(chunk);
+      return true;
+    });
+  try {
+    const code = await run();
+    return { code, stdout };
+  } finally {
+    spy.mockRestore();
+  }
 }
 
 describe('kb doctor', () => {
@@ -882,15 +920,232 @@ describe('kb doctor', () => {
     }
   });
 
-  it('parses --format=json and rejects unsupported formats', async () => {
+  it('reports endpoint readiness for available bind and reachable configured HTTP targets', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-endpoints-ok-'));
+    const reserved = net.createServer();
+    try {
+      const port = await listen(reserved);
+      await closeServer(reserved);
+      const { buildEndpointReadinessReport, formatEndpointReadinessMarkdown } = await freshDoctor({
+        MCP_TRANSPORT: 'http',
+        MCP_BIND_ADDR: '127.0.0.1',
+        MCP_PORT: String(port),
+        KB_DAEMON_URL: 'http://127.0.0.1:17799',
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
+        KB_LLM_ENDPOINT: 'http://127.0.0.1:8080',
+        KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
+        KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+      });
+      const fetchMock = jest.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url === 'http://127.0.0.1:17799/health') {
+          return new Response('{"status":"ok"}', {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url === 'http://127.0.0.1:11434/api/tags') {
+          return new Response('{"models":[]}', { status: 200 });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      });
+
+      const report = await buildEndpointReadinessReport({
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        llmEndpointProbe: healthyLlmProbe,
+      });
+
+      expect(report.status).toBe('ok');
+      expect(report.endpoints).toEqual([
+        expect.objectContaining({
+          name: 'mcp_bind',
+          status: 'ok',
+          configured: true,
+          target: `127.0.0.1:${port}`,
+        }),
+        expect.objectContaining({
+          name: 'kb_daemon',
+          status: 'ok',
+          target: 'http://127.0.0.1:17799/health',
+        }),
+        expect.objectContaining({
+          name: 'embedding_ollama',
+          status: 'ok',
+          target: 'http://127.0.0.1:11434/api/tags',
+        }),
+        expect.objectContaining({
+          name: 'llm_endpoint',
+          status: 'ok',
+          target: 'http://127.0.0.1:8080/v1/chat/completions',
+        }),
+      ]);
+      const markdown = formatEndpointReadinessMarkdown(report);
+      expect(markdown).toContain('Endpoint readiness:');
+      expect(markdown).toContain('OK      mcp_bind');
+      expect(JSON.parse(JSON.stringify(report)).schema_version).toBe('kb.doctor.endpoints.v1');
+    } finally {
+      await closeServer(reserved).catch(() => undefined);
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports endpoint errors for occupied bind targets and malformed endpoint config', async () => {
+    const occupied = net.createServer();
+    try {
+      const port = await listen(occupied);
+      const { buildEndpointReadinessReport } = await freshDoctor({
+        MCP_TRANSPORT: 'sse',
+        MCP_BIND_ADDR: '127.0.0.1',
+        MCP_PORT: String(port),
+        KB_DAEMON_URL: 'not a url',
+        EMBEDDING_PROVIDER: 'huggingface',
+        OLLAMA_BASE_URL: '',
+        KB_LLM_ENDPOINT: '',
+        KB_LLM_CONFIG_DIR: path.join(os.tmpdir(), 'kb-doctor-endpoints-empty-config'),
+        KB_LLM_STATE_DIR: path.join(os.tmpdir(), 'kb-doctor-endpoints-empty-state'),
+      });
+
+      const report = await buildEndpointReadinessReport({
+        llmEndpointProbe: healthyLlmProbe,
+      });
+
+      expect(report.status).toBe('error');
+      expect(report.endpoints).toEqual([
+        expect.objectContaining({
+          name: 'mcp_bind',
+          status: 'error',
+          detail: expect.stringContaining('EADDRINUSE'),
+        }),
+        expect.objectContaining({
+          name: 'kb_daemon',
+          status: 'error',
+          source: 'invalid',
+          detail: expect.stringContaining('invalid KB_DAEMON_URL'),
+        }),
+        expect.objectContaining({
+          name: 'embedding_ollama',
+          status: 'skipped',
+          configured: false,
+        }),
+        expect.objectContaining({
+          name: 'llm_endpoint',
+          status: 'skipped',
+          configured: false,
+        }),
+      ]);
+    } finally {
+      await closeServer(occupied);
+    }
+  });
+
+  it('reports malformed transport and dangling active LLM profile as endpoint errors', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-endpoints-config-errors-'));
+    try {
+      const llmConfigDir = path.join(tempDir, 'llm-config');
+      await fsp.mkdir(llmConfigDir, { recursive: true });
+      await fsp.writeFile(path.join(llmConfigDir, 'active.txt'), 'missing-profile\n');
+
+      const { buildEndpointReadinessReport } = await freshDoctor({
+        MCP_TRANSPORT: 'htp',
+        KB_LLM_CONFIG_DIR: llmConfigDir,
+        KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+        EMBEDDING_PROVIDER: 'huggingface',
+        OLLAMA_BASE_URL: '',
+        KB_LLM_ENDPOINT: '',
+      });
+
+      const report = await buildEndpointReadinessReport({
+        llmEndpointProbe: healthyLlmProbe,
+      });
+
+      expect(report.status).toBe('error');
+      expect(report.endpoints).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'mcp_bind',
+          status: 'error',
+          source: 'invalid',
+          detail: 'invalid MCP_TRANSPORT="htp"; expected one of stdio|sse|http',
+        }),
+        expect.objectContaining({
+          name: 'llm_endpoint',
+          status: 'error',
+          source: 'invalid',
+          detail: 'active LLM profile "missing-profile" is configured but profile file is missing',
+        }),
+      ]));
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes --endpoints through runDoctor with JSON output and exit codes', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-run-endpoints-'));
+    try {
+      const { runDoctor } = await freshDoctor({
+        MCP_TRANSPORT: '',
+        MCP_PORT: '',
+        MCP_BIND_ADDR: '',
+        KB_DAEMON_URL: '',
+        EMBEDDING_PROVIDER: 'huggingface',
+        OLLAMA_BASE_URL: '',
+        KB_LLM_ENDPOINT: '',
+        KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
+        KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+      });
+
+      const ok = await captureStdout(() => runDoctor(['--endpoints', '--format=json']));
+      expect(ok.code).toBe(0);
+      expect(JSON.parse(ok.stdout)).toMatchObject({
+        schema_version: 'kb.doctor.endpoints.v1',
+        status: 'ok',
+        endpoints: expect.arrayContaining([
+          expect.objectContaining({ name: 'mcp_bind', status: 'skipped' }),
+        ]),
+      });
+
+      process.env.MCP_PORT = '0';
+      const error = await captureStdout(() => runDoctor(['--endpoints', '--format=json']));
+      expect(error.code).toBe(1);
+      expect(JSON.parse(error.stdout)).toMatchObject({
+        schema_version: 'kb.doctor.endpoints.v1',
+        status: 'error',
+        endpoints: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'mcp_bind',
+            status: 'error',
+            detail: 'invalid MCP_PORT="0"; expected integer in [1, 65535]',
+          }),
+        ]),
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('parses --format=json, --endpoints, and rejects unsupported formats', async () => {
     const { parseDoctorArgs } = await freshDoctor({});
-    expect(parseDoctorArgs(['--format=json'])).toEqual({ format: 'json', reindexTrigger: false });
-    expect(parseDoctorArgs(['--reindex-trigger'])).toEqual({ format: 'md', reindexTrigger: true });
+    expect(parseDoctorArgs(['--format=json'])).toEqual({
+      format: 'json',
+      reindexTrigger: false,
+      endpoints: false,
+    });
+    expect(parseDoctorArgs(['--reindex-trigger'])).toEqual({
+      format: 'md',
+      reindexTrigger: true,
+      endpoints: false,
+    });
+    expect(parseDoctorArgs(['--endpoints', '--format=json'])).toEqual({
+      format: 'json',
+      reindexTrigger: false,
+      endpoints: true,
+    });
     expect(parseDoctorArgs(['--reindex-trigger', '--format=json'])).toEqual({
       format: 'json',
       reindexTrigger: true,
+      endpoints: false,
     });
-    expect(parseDoctorArgs([])).toEqual({ format: 'md', reindexTrigger: false });
+    expect(parseDoctorArgs([])).toEqual({ format: 'md', reindexTrigger: false, endpoints: false });
     expect(() => parseDoctorArgs(['--format=yaml'])).toThrow(/invalid --format/);
   });
 

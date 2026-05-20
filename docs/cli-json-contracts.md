@@ -568,6 +568,7 @@ Invocation:
 
 ```bash
 kb doctor --format=json
+kb doctor --endpoints --format=json
 ```
 
 Report envelope:
@@ -680,10 +681,37 @@ Stdout/stderr and exit codes:
   the report with `status: "error"`.
 - Argument errors print `kb doctor: ...` to stderr and exit `2`.
 
-Source and test anchors: `src/cli-doctor.ts:84-107`,
-`src/cli-doctor.ts:201-214`, `src/cli-doctor.ts:476-483`,
-`src/cli-doctor.ts:926-1045`, `src/cli-doctor.ts:1243-1260`,
-`src/cli-doctor.test.ts:336-602`.
+`kb doctor --endpoints --format=json` emits the focused endpoint-readiness
+schema instead of the full report:
+
+```json
+{
+  "schema_version": "kb.doctor.endpoints.v1",
+  "status": "ok",
+  "endpoints": [
+    {
+      "name": "mcp_bind",
+      "kind": "bind",
+      "status": "ok",
+      "configured": true,
+      "target": "127.0.0.1:8765",
+      "source": "env",
+      "detail": "bind target is available"
+    }
+  ]
+}
+```
+
+Endpoint rows use `status: "ok" | "warn" | "error" | "skipped"`. The current
+row names are `mcp_bind`, `kb_daemon`, `embedding_ollama`, and
+`llm_endpoint`. Skipped rows mean the relevant endpoint is not configured in
+the current process environment/profile state. The command exits `1` only when
+the focused endpoint report has overall `status: "error"`.
+
+Source and test anchors: `src/cli-doctor.ts:92-146`,
+`src/cli-doctor.ts:347-418`, `src/cli-doctor.ts:421-743`,
+`src/cli-doctor.ts:1365-1452`, `src/cli-doctor.test.ts:923-1120`,
+`src/cli-json-contracts.test.ts:215-237`.
 
 ## `kb logs`
 
