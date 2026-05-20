@@ -472,6 +472,46 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(payload.embedding.dim).toBeNull();
   });
 
+  it('handleKbStats includes remote transport counters when HTTP mode is active (#430)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'aaa');
+
+    const remoteTransportStats = {
+      transport: 'http' as const,
+      sessions_opened: 2,
+      sessions_closed: 1,
+      current_sessions: 1,
+      in_flight_requests: 3,
+      requests_total: 8,
+      response_status_buckets: {
+        '1xx': 0,
+        '2xx': 5,
+        '3xx': 0,
+        '4xx': 2,
+        '5xx': 1,
+      },
+      auth_failures: 1,
+      origin_denials: 1,
+      last_error: {
+        at: '2026-05-20T07:00:00.000Z',
+        message: 'socket parse error',
+      },
+    };
+
+    const server = await freshServer();
+    server['transportMode'] = 'http';
+    server['httpHost'] = {
+      getRuntimeStats: () => remoteTransportStats,
+    } as any;
+
+    const result = await server['handleKbStats']({});
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.remote_transport).toEqual(remoteTransportStats);
+  });
+
   it('handleKbStats with unknown knowledge_base_name returns KB_NOT_FOUND error', async () => {
     const tempDir = await setRetrieveEnv();
     await fsp.mkdir(path.join(tempDir, 'alpha'));

@@ -156,6 +156,18 @@ function openSseStream(
   });
 }
 
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 1000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('condition was not met before timeout');
+}
+
 describe('loadTransportConfig validation', () => {
   const originalEnv = { ...process.env };
   afterEach(() => {
@@ -230,6 +242,45 @@ describe('SseHost — endpoints', () => {
       await stop();
       stop = undefined;
     }
+  });
+
+  it('exposes process-lifetime SSE transport counters', async () => {
+    const started = await startHost({
+      allowedOrigins: ['https://app.example'],
+    });
+    stop = started.stop;
+
+    await request(started.port, { path: '/health' });
+    await request(started.port, { method: 'GET', path: '/sse' });
+    await request(started.port, {
+      method: 'GET',
+      path: '/sse',
+      headers: {
+        Authorization: `Bearer ${VALID_TOKEN}`,
+        Origin: 'https://evil.example',
+      },
+    });
+
+    const stream = await openSseStream(started.port, {
+      Authorization: `Bearer ${VALID_TOKEN}`,
+    });
+    expect(stream.statusCode).toBe(200);
+    expect(stream.sessionId).toBeTruthy();
+    await waitFor(() => started.host.sessionCount === 1);
+    stream.close();
+    await waitFor(() => started.host.sessionCount === 0);
+
+    const stats = started.host.getRuntimeStats();
+    expect(stats.transport).toBe('sse');
+    expect(stats.sessions_opened).toBe(1);
+    expect(stats.sessions_closed).toBe(1);
+    expect(stats.current_sessions).toBe(0);
+    expect(stats.in_flight_requests).toBe(0);
+    expect(stats.requests_total).toBe(4);
+    expect(stats.response_status_buckets['2xx']).toBe(2);
+    expect(stats.response_status_buckets['4xx']).toBe(2);
+    expect(stats.auth_failures).toBe(1);
+    expect(stats.origin_denials).toBe(1);
   });
 
   it('(e) GET /health returns 200 JSON {"status":"ok"} without auth (RFC 008 §6.8: no fingerprinting)', async () => {

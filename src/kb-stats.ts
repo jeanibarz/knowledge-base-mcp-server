@@ -41,6 +41,7 @@ import {
   relevanceGateMetrics,
   type RelevanceGateMetricsSnapshot,
 } from './relevance-gate-metrics.js';
+import type { TransportRuntimeStatsSnapshot } from './transport-runtime-stats.js';
 
 export interface KbStatsRow {
   file_count: number;
@@ -100,6 +101,12 @@ export interface KbStatsPayload {
   provider_calls: Record<string, ProviderCallSnapshot>;
   query_cache: QueryCacheStats;
   relevance_gate: RelevanceGateMetricsSnapshot;
+  /**
+   * Issue #430 — live counters for the optional HTTP/SSE MCP transport.
+   * Omitted for stdio-only processes and for local `kb stats` invocations
+   * that are not serving a remote transport.
+   */
+  remote_transport?: TransportRuntimeStatsSnapshot;
 }
 
 export interface ComputeKbStatsOptions {
@@ -115,6 +122,8 @@ export interface ComputeKbStatsOptions {
    * singleton is read.
    */
   metrics?: ProviderCallMetrics;
+  /** Process-local HTTP/SSE counters, supplied by KnowledgeBaseServer when active. */
+  remoteTransportStats?: TransportRuntimeStatsSnapshot;
 }
 
 /**
@@ -218,6 +227,9 @@ export async function computeKbStats(
     provider_calls: metricsSource.snapshot(),
     query_cache: await queryEmbeddingCache.stats(),
     relevance_gate: relevanceGateMetrics.snapshot(),
+    ...(options.remoteTransportStats !== undefined
+      ? { remote_transport: options.remoteTransportStats }
+      : {}),
   };
 }
 

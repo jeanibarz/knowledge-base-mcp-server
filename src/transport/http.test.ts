@@ -3,6 +3,7 @@
 // Stage 2 of RFC 008 / issue #48: streamable HTTP in stateful mode.
 
 import * as http from 'node:http';
+import * as net from 'node:net';
 import { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -124,6 +125,19 @@ async function waitFor(
   throw new Error('condition was not met before timeout');
 }
 
+function sendMalformedHttpRequest(port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      socket.write('not an HTTP request\r\n\r\n');
+    });
+    socket.on('data', () => {
+      socket.destroy();
+    });
+    socket.on('close', () => resolve());
+    socket.on('error', reject);
+  });
+}
+
 describe('StreamableHttpHost — endpoints', () => {
   let stop: (() => Promise<void>) | undefined;
 
@@ -149,6 +163,58 @@ describe('StreamableHttpHost — endpoints', () => {
     const res = await request(started.port, { method: 'POST', path: '/mcp' });
     expect(res.statusCode).toBe(401);
     expect(res.headers['www-authenticate']).toMatch(/^Bearer /);
+  });
+
+  it('exposes process-lifetime HTTP transport counters', async () => {
+    const started = await startHost({
+      allowedOrigins: ['https://app.example'],
+    });
+    stop = started.stop;
+
+    const initial = started.host.getRuntimeStats();
+    expect(initial).toMatchObject({
+      transport: 'http',
+      sessions_opened: 0,
+      sessions_closed: 0,
+      current_sessions: 0,
+      in_flight_requests: 0,
+      requests_total: 0,
+      auth_failures: 0,
+      origin_denials: 0,
+      last_error: null,
+    });
+
+    await request(started.port, { path: '/health' });
+    await request(started.port, { method: 'POST', path: '/mcp' });
+    await request(started.port, {
+      method: 'POST',
+      path: '/mcp',
+      headers: {
+        Authorization: `Bearer ${VALID_TOKEN}`,
+        Origin: 'https://evil.example',
+      },
+    });
+
+    const { client } = await connectClient(started.port);
+    await waitFor(() => started.host.sessionCount === 1);
+    await client.close();
+    await waitFor(() => started.host.sessionCount === 0);
+
+    await sendMalformedHttpRequest(started.port);
+    await waitFor(() => started.host.getRuntimeStats().last_error !== null);
+
+    const stats = started.host.getRuntimeStats();
+    expect(stats.transport).toBe('http');
+    expect(stats.sessions_opened).toBe(1);
+    expect(stats.sessions_closed).toBe(1);
+    expect(stats.current_sessions).toBe(0);
+    expect(stats.in_flight_requests).toBe(0);
+    expect(stats.requests_total).toBeGreaterThanOrEqual(4);
+    expect(stats.response_status_buckets['2xx']).toBeGreaterThanOrEqual(2);
+    expect(stats.response_status_buckets['4xx']).toBeGreaterThanOrEqual(2);
+    expect(stats.auth_failures).toBe(1);
+    expect(stats.origin_denials).toBe(1);
+    expect(stats.last_error?.message).toEqual(expect.any(String));
   });
 
   it('preflight OPTIONS from listed origin gets streamable HTTP CORS headers', async () => {

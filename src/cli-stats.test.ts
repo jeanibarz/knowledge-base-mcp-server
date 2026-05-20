@@ -1,5 +1,10 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import { formatContextualSection, runStats, type RunStatsDeps } from './cli-stats.js';
+import {
+  formatContextualSection,
+  formatRemoteTransportSection,
+  runStats,
+  type RunStatsDeps,
+} from './cli-stats.js';
 import type { FaissIndexManager } from './FaissIndexManager.js';
 import type { KbStatsContextualPrefaceBlock, KbStatsPayload } from './kb-stats.js';
 import { KBError } from './errors.js';
@@ -189,6 +194,48 @@ describe('kb stats CLI', () => {
     expect(out).toContain('- Index path: `/tmp/kb-index`');
     expect(out).toContain('## Relevance Gate');
     expect(out).toContain('- Gated queries: 0');
+  });
+
+  it('renders a Remote Transport section when HTTP/SSE counters are present (#430)', async () => {
+    const withTransport = payload();
+    withTransport.remote_transport = {
+      transport: 'http',
+      sessions_opened: 3,
+      sessions_closed: 1,
+      current_sessions: 2,
+      in_flight_requests: 4,
+      requests_total: 12,
+      response_status_buckets: {
+        '1xx': 0,
+        '2xx': 8,
+        '3xx': 0,
+        '4xx': 3,
+        '5xx': 1,
+      },
+      auth_failures: 2,
+      origin_denials: 1,
+      last_error: {
+        at: '2026-05-20T07:00:00.000Z',
+        message: 'client socket error',
+      },
+    };
+    const { deps, stdout } = makeDeps({ payload: withTransport });
+
+    const code = await runStats([], deps);
+
+    expect(code).toBe(0);
+    const out = stdout.join('');
+    expect(out).toContain('## Remote Transport');
+    expect(out).toContain('- Mode: http');
+    expect(out).toContain('- Sessions: current=2, opened=3, closed=1');
+    expect(out).toContain('- Requests: total=12, in_flight=4, 1xx=0, 2xx=8, 3xx=0, 4xx=3, 5xx=1');
+    expect(out).toContain('- Auth failures: 2');
+    expect(out).toContain('- Origin denials: 1');
+    expect(out).toContain('- Last error: 2026-05-20T07:00:00.000Z client socket error');
+  });
+
+  it('omits the Remote Transport section for stdio/local stats payloads (#430)', () => {
+    expect(formatRemoteTransportSection(payload())).toEqual([]);
   });
 
   it('renders a Contextual Retrieval section in markdown when sidecars exist (#409)', async () => {
