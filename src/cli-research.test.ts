@@ -32,6 +32,18 @@ function statsPayload(overrides: Partial<KbStatsPayload> = {}): KbStatsPayload {
         total_bytes_indexed: 300,
         last_updated_at: null,
       },
+      'agent-task-lessons': {
+        file_count: 8,
+        chunk_count: 20,
+        total_bytes_indexed: 2000,
+        last_updated_at: null,
+      },
+      'job-search-agents': {
+        file_count: 7,
+        chunk_count: 18,
+        total_bytes_indexed: 1500,
+        last_updated_at: null,
+      },
     },
     quarantined: {},
     embedding: {
@@ -58,6 +70,8 @@ function statsPayload(overrides: Partial<KbStatsPayload> = {}): KbStatsPayload {
       sidecars_written: false,
       failure_count: 0,
       failures: [],
+      warning_count: 0,
+      warnings: [],
     },
     server: {
       version: 'test',
@@ -76,6 +90,23 @@ function statsPayload(overrides: Partial<KbStatsPayload> = {}): KbStatsPayload {
       l1_size: 0,
       disk_size_bytes: 0,
     },
+    relevance_gate: {
+      gated_queries: 0,
+      verdict_injected: 0,
+      verdict_no_relevant_context: 0,
+      verdict_empty_index: 0,
+      low_confidence_rate: 0,
+      drop_rate_A1: 0,
+      drop_rate_A2: 0,
+      drop_rate_B: 0,
+      judge_degrade_rate: 0,
+      judge_window: {
+        size: 0,
+        degraded: 0,
+        rate: 0,
+        warn_threshold: 0.1,
+      },
+    },
     ...overrides,
   };
 }
@@ -83,8 +114,10 @@ function statsPayload(overrides: Partial<KbStatsPayload> = {}): KbStatsPayload {
 function shelfDescriptions(): ShelfDescription[] {
   return [
     { name: 'llm-agents', description: 'Autonomous LLM agents, planning, tool use, and evaluation' },
-    { name: 'llm-as-judge', description: 'LLM judge evals, rubric design, and critic reliability' },
+    { name: 'llm-as-judge', description: 'LLM judge evals, rubric design, bias mitigation, and critic reliability' },
     { name: 'recipes', description: 'Cooking notes and kitchen experiments' },
+    { name: 'agent-task-lessons', description: 'Operational task lessons from coding agent runs' },
+    { name: 'job-search-agents', description: 'Job search agents, applications, and recruiting workflows' },
   ];
 }
 
@@ -108,11 +141,12 @@ function makeDeps(opts: {
           payload: { error: { code: 'INDEX_ERROR', message: 'fixture search failed' } },
         };
       }
+      const payload = opts.searchPayload ?? fixtureSearchPayload(shelf, input.query);
       return {
         exitCode: 0,
-        stdout: JSON.stringify(opts.searchPayload ?? fixtureSearchPayload(shelf)),
+        stdout: JSON.stringify(payload),
         stderr: '',
-        payload: opts.searchPayload ?? fixtureSearchPayload(shelf),
+        payload,
       };
     }),
     now: jest.fn(() => new Date('2026-05-21T09:30:00.000Z')),
@@ -122,17 +156,18 @@ function makeDeps(opts: {
   return { deps, stdout, stderr };
 }
 
-function fixtureSearchPayload(shelf: string): Record<string, unknown> {
+function fixtureSearchPayload(shelf: string, query: string): Record<string, unknown> {
+  const lines = lineRangeForQuery(query);
   return {
     mode: 'hybrid',
     results: [{
       score: 0.42,
       content: 'Agent evaluation evidence with rubric stability and tool-use traces.',
-      chunk_id: `${shelf}/papers/agent-evals.md#L10-L14`,
+      chunk_id: `${shelf}/papers/agent-evals.md#L${lines.from}-L${lines.to}`,
       metadata: {
         knowledgeBase: shelf,
         relativePath: `${shelf}/papers/agent-evals.md`,
-        loc: { lines: { from: 10, to: 14 } },
+        loc: { lines },
         frontmatter: {
           source_kind: 'paper-note',
           source_generation: 'lra',
@@ -146,6 +181,12 @@ function fixtureSearchPayload(shelf: string): Record<string, unknown> {
   };
 }
 
+function lineRangeForQuery(query: string): { from: number; to: number } {
+  if (query === 'autonomous agents judges') return { from: 20, to: 24 };
+  if (query.includes('llm as judge')) return { from: 30, to: 34 };
+  return { from: 10, to: 14 };
+}
+
 describe('kb research CLI', () => {
   it('parses plan and collect arguments', () => {
     expect(parseResearchArgs(['plan', 'agent evals', '--format=json'])).toMatchObject({
@@ -157,10 +198,28 @@ describe('kb research CLI', () => {
       action: 'collect',
       runDir: 'runs/a',
       k: 3,
+      maxShelves: 5,
+    });
+    expect(parseResearchArgs([
+      'plan',
+      'agent evals',
+      '--kb=llm-agents',
+      '--include-kb',
+      'llm-as-judge',
+      '--exclude-kb=recipes',
+      '--max-shelves=2',
+    ])).toMatchObject({
+      includeShelves: ['llm-agents', 'llm-as-judge'],
+      excludeShelves: ['recipes'],
+      maxShelves: 2,
     });
     expect(() => parseResearchArgs(['collect', 'agent evals'])).toThrow('collect requires --run-dir');
     expect(() => parseResearchArgs(['collect', 'agent evals', '--run-dir', '--format=json'])).toThrow(
       'missing value for --run-dir',
+    );
+    expect(() => parseResearchArgs(['plan', 'agent evals', '--max-shelves=0'])).toThrow('invalid --max-shelves');
+    expect(() => parseResearchArgs(['plan', 'agent evals', '--kb=llm-agents', '--exclude-kb=llm-agents'])).toThrow(
+      'cannot include and exclude the same shelf',
     );
   });
 
@@ -177,19 +236,60 @@ describe('kb research CLI', () => {
       retrieval: { mode: 'hybrid', k: 5 },
     });
     expect(first.selected_shelves.map((shelf) => shelf.name)).toEqual([
-      'llm-agents',
       'llm-as-judge',
+      'llm-agents',
     ]);
     expect(first.queries[0]).toMatchObject({
       id: 'q1',
       text: 'autonomous agents as judges and evals',
-      shelves: ['llm-agents', 'llm-as-judge'],
+      shelves: ['llm-as-judge', 'llm-agents'],
     });
     expect(first.risks).toContainEqual(expect.objectContaining({
       code: 'dense_index_empty_coverage',
       shelf: 'llm-as-judge',
     }));
     expect(deps.searchHybrid).not.toHaveBeenCalled();
+  });
+
+  it('ranks specific domain shelves ahead of broad agent shelves', async () => {
+    const { deps } = makeDeps();
+    const prompt = 'end-to-end approach for autonomous research agents and evals, including LLM-as-judge bias mitigation';
+
+    const plan = await buildResearchPlan(prompt, 5, deps);
+
+    expect(plan.selected_shelves.map((shelf) => shelf.name)).toEqual([
+      'llm-as-judge',
+      'llm-agents',
+    ]);
+    expect(plan.selected_shelves.map((shelf) => shelf.name)).not.toContain('agent-task-lessons');
+    expect(plan.selected_shelves.map((shelf) => shelf.name)).not.toContain('job-search-agents');
+    const queryTexts = plan.queries.map((query) => query.text);
+    expect(queryTexts).toEqual(expect.arrayContaining([
+      expect.stringContaining('bias'),
+    ]));
+    expect(queryTexts.every((text) => /\bbias\b/.test(text))).toBe(true);
+    expect(queryTexts.every((text) => !/\bbia\b/.test(text))).toBe(true);
+  });
+
+  it('supports explicit include, exclude, and max-shelves controls', async () => {
+    const { deps } = makeDeps();
+    const prompt = 'end-to-end approach for autonomous research agents and evals, including LLM-as-judge bias mitigation';
+
+    const included = await buildResearchPlan(prompt, 5, deps, {
+      includeShelves: ['agent-task-lessons'],
+      maxShelves: 2,
+    });
+    expect(included.selected_shelves.map((shelf) => shelf.name)).toEqual([
+      'agent-task-lessons',
+      'llm-as-judge',
+      'llm-agents',
+    ]);
+
+    const excluded = await buildResearchPlan(prompt, 5, deps, {
+      excludeShelves: ['llm-as-judge'],
+      maxShelves: 1,
+    });
+    expect(excluded.selected_shelves.map((shelf) => shelf.name)).toEqual(['llm-agents']);
   });
 
   it('prints plan JSON shape without running search', async () => {
@@ -201,7 +301,29 @@ describe('kb research CLI', () => {
     expect(stderr.join('')).toBe('');
     const parsed = JSON.parse(stdout.join(''));
     expect(parsed.schema_version).toBe('kb-research-plan.v1');
-    expect(parsed.selected_shelves[0].name).toBe('llm-agents');
+    expect(parsed.selected_shelves[0].name).toBe('llm-as-judge');
+    expect(deps.searchHybrid).not.toHaveBeenCalled();
+  });
+
+  it('applies explicit shelf controls through the plan command path', async () => {
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await runResearch([
+      'plan',
+      'autonomous agents as judges',
+      '--include-kb=agent-task-lessons',
+      '--exclude-kb=llm-as-judge',
+      '--max-shelves=1',
+      '--format=json',
+    ], deps);
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    const parsed = JSON.parse(stdout.join(''));
+    expect(parsed.selected_shelves.map((shelf: { name: string }) => shelf.name)).toEqual([
+      'agent-task-lessons',
+      'llm-agents',
+    ]);
     expect(deps.searchHybrid).not.toHaveBeenCalled();
   });
 
@@ -231,8 +353,8 @@ describe('kb research CLI', () => {
       expect(ledger.schema_version).toBe('kb-research-ledger.v1');
       expect(ledger.entries).toHaveLength(6);
       expect(ledger.entries[0]).toMatchObject({
-        source_id: 'llm-agents/papers/agent-evals.md#L10-L14',
-        shelf: 'llm-agents',
+        source_id: 'llm-as-judge/papers/agent-evals.md#L10-L14',
+        shelf: 'llm-as-judge',
         relative_path: 'papers/agent-evals.md',
         line_range: { from: 10, to: 14 },
         query: 'autonomous agents as judges',
@@ -251,40 +373,77 @@ describe('kb research CLI', () => {
       expect(packet).toContain('## Evidence Found');
       expect(packet).toContain('## Evidence Gaps');
       expect(packet).toContain('## Sources');
+      expect(packet).toContain('llm-agents/papers/agent-evals.md — 3 passages');
+      expect(packet).toContain('llm-as-judge/papers/agent-evals.md — 3 passages');
+      expect(packet.match(/papers\/agent-evals\.md — 3 passages/g)).toHaveLength(2);
+      expect(packet).toContain('L10-L14 via "autonomous agents as judges"');
+      expect(packet).toContain('L20-L24 via "autonomous agents judges"');
+      expect(packet).toContain('L30-L34 via "autonomous agents as judges llm as judge llm agents"');
 
       const events = parseJsonl(await fsp.readFile(path.join(runDir, 'events.jsonl'), 'utf-8'));
       expect(events.filter((event) => event.type === 'search_completed')).toHaveLength(6);
       expect(deps.searchHybrid).toHaveBeenCalledTimes(6);
       expect(deps.searchHybrid).toHaveBeenNthCalledWith(1, {
         query: 'autonomous agents as judges',
-        shelf: 'llm-agents',
+        shelf: 'llm-as-judge',
         k: 5,
       });
       expect(deps.searchHybrid).toHaveBeenNthCalledWith(2, {
         query: 'autonomous agents as judges',
-        shelf: 'llm-as-judge',
+        shelf: 'llm-agents',
         k: 5,
       });
       expect(deps.searchHybrid).toHaveBeenNthCalledWith(3, {
-        query: 'autonomous agent judge',
-        shelf: 'llm-agents',
+        query: 'autonomous agents judges',
+        shelf: 'llm-as-judge',
         k: 5,
       });
       expect(deps.searchHybrid).toHaveBeenNthCalledWith(4, {
-        query: 'autonomous agent judge',
-        shelf: 'llm-as-judge',
-        k: 5,
-      });
-      expect(deps.searchHybrid).toHaveBeenNthCalledWith(5, {
-        query: 'autonomous agents as judges llm agents llm as judge',
+        query: 'autonomous agents judges',
         shelf: 'llm-agents',
         k: 5,
       });
-      expect(deps.searchHybrid).toHaveBeenNthCalledWith(6, {
-        query: 'autonomous agents as judges llm agents llm as judge',
+      expect(deps.searchHybrid).toHaveBeenNthCalledWith(5, {
+        query: 'autonomous agents as judges llm as judge llm agents',
         shelf: 'llm-as-judge',
         k: 5,
       });
+      expect(deps.searchHybrid).toHaveBeenNthCalledWith(6, {
+        query: 'autonomous agents as judges llm as judge llm agents',
+        shelf: 'llm-agents',
+        k: 5,
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies explicit shelf controls through the collect command path', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-research-controls-'));
+    const runDir = path.join(tempDir, 'run');
+    const { deps, stdout, stderr } = makeDeps();
+
+    try {
+      const code = await runResearch([
+        'collect',
+        'autonomous agents as judges',
+        '--include-kb=agent-task-lessons',
+        '--exclude-kb=llm-as-judge',
+        '--max-shelves=1',
+        '--run-dir',
+        runDir,
+        '--format=json',
+      ], deps);
+
+      expect(code).toBe(0);
+      expect(stderr.join('')).toBe('');
+      const summary = JSON.parse(stdout.join(''));
+      expect(summary.status).toBe('complete');
+      expect(deps.searchHybrid).toHaveBeenCalledTimes(6);
+      const searchedShelves = new Set(
+        (deps.searchHybrid as jest.Mock).mock.calls.map(([input]) => (input as { shelf: string }).shelf),
+      );
+      expect([...searchedShelves]).toEqual(['agent-task-lessons', 'llm-agents']);
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
@@ -311,7 +470,7 @@ describe('kb research CLI', () => {
 
       const ledger = JSON.parse(await fsp.readFile(path.join(runDir, 'ledger.json'), 'utf-8'));
       expect(ledger.search_failures[0]).toMatchObject({
-        shelf: 'llm-agents',
+        shelf: 'llm-as-judge',
         exit_code: 1,
         message: 'fixture search failed',
       });
