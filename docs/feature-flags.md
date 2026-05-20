@@ -127,6 +127,9 @@ provider load or scoring failures degrade to the fused order.
 | Allowed browser origins | `MCP_ALLOWED_ORIGINS` | deny browser origins | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_ALLOWED_ORIGINS=http://localhost:5173 node build/index.js` |
 | HTTP/SSE port | `MCP_PORT` | `8765` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_PORT=8765 node build/index.js` |
 | Bind address | `MCP_BIND_ADDR` | `127.0.0.1` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_BIND_ADDR=127.0.0.1 node build/index.js` |
+| Failed auth backoff threshold | `MCP_AUTH_BACKOFF_THRESHOLD` | `5` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_AUTH_BACKOFF_THRESHOLD=3 node build/index.js` |
+| Failed auth backoff window | `MCP_AUTH_BACKOFF_MS` | `30000` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_AUTH_BACKOFF_MS=60000 node build/index.js` |
+| Failed auth backoff address cap | `MCP_AUTH_BACKOFF_MAX_ENTRIES` | `1024` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_AUTH_BACKOFF_MAX_ENTRIES=2048 node build/index.js` |
 
 ## Rollout Checklist
 

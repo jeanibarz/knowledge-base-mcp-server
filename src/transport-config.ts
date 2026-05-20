@@ -13,6 +13,15 @@ const VALID_TRANSPORTS: readonly McpTransport[] = ['stdio', 'sse', 'http'];
 
 export const DEFAULT_MCP_PORT = 8765;
 export const DEFAULT_MCP_BIND_ADDR = '127.0.0.1';
+export const DEFAULT_MCP_AUTH_BACKOFF_THRESHOLD = 5;
+export const DEFAULT_MCP_AUTH_BACKOFF_MS = 30_000;
+export const DEFAULT_MCP_AUTH_BACKOFF_MAX_ENTRIES = 1024;
+
+export interface AuthBackoffConfig {
+  failureThreshold: number;
+  backoffMs: number;
+  maxEntries: number;
+}
 
 export interface TransportConfig {
   transport: McpTransport;
@@ -20,6 +29,7 @@ export interface TransportConfig {
   bindAddr: string;
   authToken?: string;
   allowedOrigins: string[];
+  authBackoff?: AuthBackoffConfig;
 }
 
 export class TransportConfigError extends Error {
@@ -52,6 +62,40 @@ function parsePort(raw: string | undefined): number {
     );
   }
   return port;
+}
+
+function parseNonNegativeInteger(
+  name: string,
+  raw: string | undefined,
+  defaultValue: number,
+): number {
+  if (raw === undefined || raw === '') {
+    return defaultValue;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new TransportConfigError(
+      `Invalid ${name}='${raw}'; expected non-negative integer`,
+    );
+  }
+  return value;
+}
+
+function parsePositiveInteger(
+  name: string,
+  raw: string | undefined,
+  defaultValue: number,
+): number {
+  if (raw === undefined || raw === '') {
+    return defaultValue;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new TransportConfigError(
+      `Invalid ${name}='${raw}'; expected integer >= 1`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -101,6 +145,23 @@ export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): Trans
     : DEFAULT_MCP_BIND_ADDR;
   const authToken = env.MCP_AUTH_TOKEN;
   const allowedOrigins = parseAllowedOrigins(env.MCP_ALLOWED_ORIGINS);
+  const authBackoff = {
+    failureThreshold: parseNonNegativeInteger(
+      'MCP_AUTH_BACKOFF_THRESHOLD',
+      env.MCP_AUTH_BACKOFF_THRESHOLD,
+      DEFAULT_MCP_AUTH_BACKOFF_THRESHOLD,
+    ),
+    backoffMs: parseNonNegativeInteger(
+      'MCP_AUTH_BACKOFF_MS',
+      env.MCP_AUTH_BACKOFF_MS,
+      DEFAULT_MCP_AUTH_BACKOFF_MS,
+    ),
+    maxEntries: parsePositiveInteger(
+      'MCP_AUTH_BACKOFF_MAX_ENTRIES',
+      env.MCP_AUTH_BACKOFF_MAX_ENTRIES,
+      DEFAULT_MCP_AUTH_BACKOFF_MAX_ENTRIES,
+    ),
+  };
 
   if (transport === 'sse' || transport === 'http') {
     if (!authToken || authToken.length === 0) {
@@ -118,5 +179,5 @@ export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): Trans
     }
   }
 
-  return { transport, port, bindAddr, authToken, allowedOrigins };
+  return { transport, port, bindAddr, authToken, allowedOrigins, authBackoff };
 }
