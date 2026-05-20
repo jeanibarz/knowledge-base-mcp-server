@@ -80,6 +80,8 @@ kb research collect "synthesize an end-to-end approach for autonomous research a
 
 After `collect`, read the generated `evidence_packet.md` and synthesize manually. The run directory also contains `run.json`, `plan.json`, `ledger.json`, and `events.jsonl`; `ledger.json` stays lossless for audit/debug use, while `evidence_packet.md` is the human-scannable packet. The JSON contract and stable artifact fields are documented in [`docs/cli-json-contracts.md`](docs/cli-json-contracts.md#kb-research).
 
+When `plan` reports `dense_index_empty_coverage`, the selected shelf has files but zero dense chunks. `collect` still runs hybrid search, but evidence from that shelf may be lexical-heavy and lower confidence until the index is refreshed outside the read-only research command.
+
 For local day-two operations with Ollama, llama-server, n8n, systemd user
 units, remote MCP transports, or `kb serve`, see the
 [local service operations runbook](docs/operations/local-services.md).
