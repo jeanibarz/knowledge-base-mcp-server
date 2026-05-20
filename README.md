@@ -50,6 +50,8 @@ kb open alpha/docs/deploy.md#L42-L78         # resolve a chunk id / kb:// URI / 
 kb llm use-endpoint http://127.0.0.1:8080/v1/chat/completions --profile=local-research-agent
 kb ask "what changed in the daemonization notes?" --timing   # retrieval + local LLM answer with timings
 kb ask "what changed?" --kb=work --save-transcript --title="Ask - daemon changes" --yes
+kb research plan "autonomous research agents and evals" --format=json
+kb research collect "autonomous research agents and evals" --run-dir runs/agents --format=json
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
@@ -62,6 +64,21 @@ kb completion bash            # generate a bash shell completion script
 ```
 
 The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). The consolidated operator matrix for retrieval flags, defaults, per-call overrides, rollout status, and validation commands lives in [docs/feature-flags.md](docs/feature-flags.md). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, and version context. It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
+
+### Research evidence packets for agents
+
+`kb research` is a read-only workflow for agent shells that need a broad evidence pass before writing an answer, RFC, eval plan, or issue. It does not call an LLM, trigger local-research-agent, refresh indexes, or write KB notes.
+
+Run `plan` first to inspect the deterministic shelf/query plan, then run `collect` with a run directory:
+
+```bash
+kb research plan "synthesize an end-to-end approach for autonomous research agents and evals" --format=json
+kb research collect "synthesize an end-to-end approach for autonomous research agents and evals" \
+  --run-dir /tmp/kb-research-autonomous-agents-evals-20260521 \
+  --format=json
+```
+
+After `collect`, read the generated `evidence_packet.md` and synthesize manually. The run directory also contains `run.json`, `plan.json`, `ledger.json`, and `events.jsonl`; `ledger.json` stays lossless for audit/debug use, while `evidence_packet.md` is the human-scannable packet. The JSON contract and stable artifact fields are documented in [`docs/cli-json-contracts.md`](docs/cli-json-contracts.md#kb-research).
 
 For local day-two operations with Ollama, llama-server, n8n, systemd user
 units, remote MCP transports, or `kb serve`, see the
