@@ -7,6 +7,8 @@ import { EMBEDDING_PROVIDER } from './provider.js';
 const DEFAULT_INDEXING_BATCH_SIZE = 64;
 const DEFAULT_OLLAMA_INDEXING_BATCH_SIZE = 16;
 const MAX_INDEXING_BATCH_SIZE = 512;
+export const KB_INDEX_TYPE_ENV = 'KB_INDEX_TYPE';
+export type FaissIndexType = 'flat' | 'sq8';
 
 export function resolveIndexingBatchSize(
   provider: string = EMBEDDING_PROVIDER,
@@ -26,6 +28,15 @@ export function resolveIndexingBatchSize(
 }
 
 export const INDEXING_BATCH_SIZE: number = resolveIndexingBatchSize();
+
+export function resolveFaissIndexType(
+  raw: string | undefined = process.env[KB_INDEX_TYPE_ENV],
+): FaissIndexType {
+  const normalized = raw?.trim().toLowerCase();
+  if (normalized === undefined || normalized === '') return 'flat';
+  if (normalized === 'flat' || normalized === 'sq8') return normalized;
+  return 'flat';
+}
 
 // ---------------------------------------------------------------------------
 // Chunking configuration (#107 follow-up).

@@ -83,6 +83,19 @@ describe('active-model: writeActiveModelAtomic / robust reader', () => {
     await expect(writeActiveModelAtomic('Invalid Model')).rejects.toThrow(/invalid model_id/i);
   });
 
+  it('stores per-model index type and defaults old models to flat', async () => {
+    jest.resetModules();
+    const { readStoredIndexType, writeIndexTypeAtomic } = await import('./active-model.js');
+    await seedRegistered(faissDir);
+
+    expect(await readStoredIndexType(REGISTERED_ID)).toBe('flat');
+
+    await writeIndexTypeAtomic(REGISTERED_ID, 'sq8');
+    expect(await fsp.readFile(path.join(faissDir, 'models', REGISTERED_ID, 'index-type.txt'), 'utf-8'))
+      .toBe('sq8\n');
+    expect(await readStoredIndexType(REGISTERED_ID)).toBe('sq8');
+  });
+
   it('robust reader strips trailing newline / CRLF', async () => {
     jest.resetModules();
     const { resolveActiveModel } = await import('./active-model.js');

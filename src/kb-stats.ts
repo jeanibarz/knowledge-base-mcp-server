@@ -42,6 +42,7 @@ import {
   type RelevanceGateMetricsSnapshot,
 } from './relevance-gate-metrics.js';
 import type { TransportRuntimeStatsSnapshot } from './transport-runtime-stats.js';
+import type { FaissIndexType } from './config/indexing.js';
 
 export interface KbStatsRow {
   file_count: number;
@@ -87,7 +88,7 @@ export interface KbStatsContextualFailureBlock {
 export interface KbStatsPayload {
   knowledge_bases: Record<string, KbStatsRow>;
   quarantined: Record<string, number>;
-  embedding: { provider: string; model: string; dim: number | null };
+  embedding: { provider: string; model: string; dim: number | null; index_type?: FaissIndexType };
   index_path: string;
   last_index_update: IndexUpdateSummary;
   server: { version: string; uptime_ms: number };
@@ -217,6 +218,7 @@ export async function computeKbStats(
       provider: manager.embeddingProvider,
       model: manager.modelName,
       dim: indexStats.dim,
+      index_type: indexStats.indexType,
     },
     index_path: FAISS_INDEX_PATH,
     last_index_update: lastIndexUpdate,

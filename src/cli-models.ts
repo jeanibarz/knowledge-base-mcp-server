@@ -13,6 +13,7 @@ import {
   writeAddingSentinel,
   writeActiveModelAtomic,
 } from './active-model.js';
+import { resolveFaissIndexType, type FaissIndexType } from './config/indexing.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
@@ -24,7 +25,7 @@ export const MODELS_HELP = `kb models — manage embedding models (RFC 013)
 
 Usage:
   kb models list
-  kb models add <provider> <model> [--yes] [--dry-run] [--recover]
+  kb models add <provider> <model> [--index-type=flat|sq8] [--yes] [--dry-run] [--recover]
   kb models set-active <id>
   kb models remove <id>
 
@@ -57,6 +58,8 @@ Options for \`add\`:
   --recover             When a previous add left a stale .adding sentinel
                         whose writer PID is dead, delete that incomplete
                         model directory before retrying. Requires --yes.
+  --index-type=flat|sq8 Select the FAISS index type for this model. Default
+                        is KB_INDEX_TYPE when set, otherwise flat.
 
 Global:
   --help, -h            Show this help.
@@ -127,10 +130,22 @@ async function runModelsAdd(rest: string[]): Promise<number> {
   let yes = false;
   let dryRun = false;
   let recover = false;
+  let indexType: FaissIndexType = resolveFaissIndexType();
   for (const raw of rest) {
     if (raw === '--yes') { yes = true; continue; }
     if (raw === '--dry-run') { dryRun = true; continue; }
     if (raw === '--recover') { recover = true; continue; }
+    if (raw.startsWith('--index-type=')) {
+      const value = raw.slice('--index-type='.length);
+      const normalized = value.trim().toLowerCase();
+      const parsed = resolveFaissIndexType(value);
+      if (normalized !== parsed) {
+        process.stderr.write(`kb models add: invalid --index-type: ${raw}\n`);
+        return 2;
+      }
+      indexType = parsed;
+      continue;
+    }
     if (raw.startsWith('--')) {
       process.stderr.write(`kb models add: unknown flag: ${raw}\n`);
       return 2;
@@ -221,6 +236,7 @@ async function runModelsAdd(rest: string[]): Promise<number> {
                 : estChunks * 0.3;
   process.stderr.write(
     `Adding model: ${modelId} (provider=${provider}, model=${modelName})\n` +
+    `Index type: ${indexType}\n` +
     `Will embed: ${fileCount} files (~${estChunks} chunks, ~${(totalBytes / 1024).toFixed(0)} KB of text, ~${(estTokens / 1000).toFixed(0)}k tokens)\n` +
     costLine +
     `Estimated wall time: ~${wallSec < 60 ? wallSec.toFixed(0) + ' s' : (wallSec / 60).toFixed(1) + ' min'} (HTTP latency dominated)\n`,
@@ -256,6 +272,7 @@ async function runModelsAdd(rest: string[]): Promise<number> {
       const manager = new FaissIndexManager({
         provider: provider as EmbeddingProvider,
         modelName,
+        indexType,
       });
       await manager.initialize();
       await manager.updateIndex();

@@ -1,5 +1,5 @@
 import { FaissIndexManager } from './FaissIndexManager.js';
-import { parseModelId, readStoredModelName } from './active-model.js';
+import { parseModelId, readStoredIndexType, readStoredModelName } from './active-model.js';
 import type { EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
 
@@ -19,6 +19,7 @@ export async function loadManagerForModel(modelId: string): Promise<FaissIndexMa
   return new FaissIndexManager({
     provider: provider as EmbeddingProvider,
     modelName,
+    indexType: await readStoredIndexType(modelId),
   });
 }
 

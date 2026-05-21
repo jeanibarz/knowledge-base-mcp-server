@@ -192,6 +192,7 @@ describe('kb stats CLI', () => {
     expect(out).toContain('| beta | 1 | 3 | 100 | never |');
     expect(out).toContain('- Provider: ollama');
     expect(out).toContain('- Model: nomic-embed-text:latest');
+    expect(out).toContain('- Index type: flat');
     expect(out).toContain('- Index path: `/tmp/kb-index`');
     expect(out).toContain('## Relevance Gate');
     expect(out).toContain('- Gated queries: 0');
