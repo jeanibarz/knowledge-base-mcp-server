@@ -1130,32 +1130,67 @@ describe('kb doctor', () => {
       reindexTrigger: false,
       endpoints: false,
       integrity: false,
+      bugReport: null,
     });
     expect(parseDoctorArgs(['--reindex-trigger'])).toEqual({
       format: 'md',
       reindexTrigger: true,
       endpoints: false,
       integrity: false,
+      bugReport: null,
     });
     expect(parseDoctorArgs(['--endpoints', '--format=json'])).toEqual({
       format: 'json',
       reindexTrigger: false,
       endpoints: true,
       integrity: false,
+      bugReport: null,
     });
     expect(parseDoctorArgs(['--reindex-trigger', '--format=json'])).toEqual({
       format: 'json',
       reindexTrigger: true,
       endpoints: false,
       integrity: false,
+      bugReport: null,
     });
     expect(parseDoctorArgs([])).toEqual({
       format: 'md',
       reindexTrigger: false,
       endpoints: false,
       integrity: false,
+      bugReport: null,
+    });
+    expect(parseDoctorArgs(['--bug-report=/tmp/out'])).toEqual({
+      format: 'md',
+      reindexTrigger: false,
+      endpoints: false,
+      integrity: false,
+      bugReport: {
+        outputParentDir: '/tmp/out',
+        includeCommand: false,
+        command: undefined,
+      },
+    });
+    expect(parseDoctorArgs([
+      '--bug-report',
+      '--include-command',
+      '--',
+      'node',
+      '-e',
+      'process.exit(1)',
+    ])).toEqual({
+      format: 'md',
+      reindexTrigger: false,
+      endpoints: false,
+      integrity: false,
+      bugReport: {
+        outputParentDir: undefined,
+        includeCommand: true,
+        command: ['node', '-e', 'process.exit(1)'],
+      },
     });
     expect(() => parseDoctorArgs(['--format=yaml'])).toThrow(/invalid --format/);
+    expect(() => parseDoctorArgs(['--bug-report', '--include-command'])).toThrow(/requires/);
   });
 
   describe('age budgets (issue #218)', () => {
