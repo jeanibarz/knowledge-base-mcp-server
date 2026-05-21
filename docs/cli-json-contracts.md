@@ -401,7 +401,8 @@ Collect artifacts:
 - `evidence_packet.md`: markdown packet with Question, Selected Shelves,
   Queries, Evidence Found, Evidence Gaps, and Sources sections. Evidence Found
   is grouped by source file so repeated passages from the same source are
-  easier to scan.
+  easier to scan. Duplicate passages from the same source are shown once with
+  the query ids that retrieved them.
 - `events.jsonl`: structured event stream for collection progress.
 
 Ledger entries have stable `source_id`, `shelf`, `relative_path`,
