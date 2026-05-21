@@ -27,7 +27,9 @@ import {
   resolveRefreshQuiesceMs,
 } from './config/ingest.js';
 import {
+  resolveFaissIndexType,
   resolveIndexingBatchSize,
+  type FaissIndexType,
 } from './config/indexing.js';
 import { casRootForIndexPath } from './docstore-cas.js';
 import {
@@ -35,6 +37,7 @@ import {
   computeLegacyEnvModelSpec,
   modelDir,
   modelNameFilePath,
+  writeIndexTypeAtomic,
 } from './active-model.js';
 import { deriveModelId, EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
@@ -215,6 +218,7 @@ function totalFileCount(
 export interface FaissIndexManagerOptions {
   provider: EmbeddingProvider;
   modelName: string;
+  indexType?: FaissIndexType;
 }
 
 export interface IndexUpdateProgress {
@@ -540,6 +544,7 @@ export class FaissIndexManager {
   readonly modelDir: string;
   readonly modelNameFile: string;
   private readonly indexingBatchSize: number;
+  private readonly indexType: FaissIndexType;
   private lastIndexUpdateSummary: IndexUpdateSummary;
   // Issue #283 — cached metadata sidecar so we don't re-parse the JSONL
   // file on every query. Invalidated whenever updateIndex rewrites it,
@@ -574,6 +579,7 @@ export class FaissIndexManager {
     this.modelDir = modelDir(this.modelId);
     this.modelNameFile = modelNameFilePath(this.modelId);
     this.indexingBatchSize = resolveIndexingBatchSize(this.embeddingProvider);
+    this.indexType = opts?.indexType ?? resolveFaissIndexType();
     this.lastIndexUpdateSummary = createNeverRunIndexUpdateSummary(this.modelId);
 
     // Issue #59 — embeddings are constructed lazily inside initialize() so
@@ -751,6 +757,7 @@ export class FaissIndexManager {
       if (!readOnly) {
         try {
           await writeModelNameAtomic(this.modelNameFile, this.modelName);
+          await writeIndexTypeAtomic(this.modelId, this.indexType);
         } catch (error) {
           handleFsOperationError('persist embedding model metadata in', this.modelNameFile, error);
         }
@@ -1162,6 +1169,7 @@ export class FaissIndexManager {
       modelDir: this.modelDir,
       modelId: this.modelId,
       swapCounter: this.swapCounter,
+      indexType: this.indexType,
       casRoot: casRootForIndexPath(FAISS_INDEX_PATH),
       onCommitted: opts.onCommitted,
     });
@@ -1205,6 +1213,7 @@ export class FaissIndexManager {
         this.faissIndex = await FaissStoreAdapter.fromDocuments(
           batch,
           indexingEmbeddings,
+          { indexType: this.indexType },
         );
         // The store must keep the real client for query embeddings and later
         // operations; the deduper is only an insertion-time wrapper.
@@ -2641,14 +2650,15 @@ export class FaissIndexManager {
     totalChunks: number;
     chunkCountsByKb: Record<string, number>;
     dim: number | null;
+    indexType: FaissIndexType;
   } {
     if (!this.faissIndex) {
-      return { totalChunks: 0, chunkCountsByKb: {}, dim: null };
+      return { totalChunks: 0, chunkCountsByKb: {}, dim: null, indexType: this.indexType };
     }
     const totalChunks = this.faissIndex.totalVectors();
     const dim = this.faissIndex.vectorDimension();
     const chunkCountsByKb = this.faissIndex.chunkCountsByKnowledgeBase();
-    return { totalChunks, chunkCountsByKb, dim };
+    return { totalChunks, chunkCountsByKb, dim, indexType: this.indexType };
   }
 
   private getDocstoreDocuments(): Document[] {

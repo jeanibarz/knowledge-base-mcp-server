@@ -170,6 +170,25 @@ describe('FaissStoreAdapter', () => {
     ).rejects.toThrow(/index\/docstore divergence/);
   });
 
+  it('pre-creates and trains an SQ8 index before adding the first vector batch', async () => {
+    const embeddings = {
+      embedDocuments: jest.fn(async () => [[1, 0], [0, 1]]),
+      embedQuery: jest.fn(),
+    };
+
+    const adapter = await FaissStoreAdapter.fromDocuments(
+      [
+        { pageContent: 'a', metadata: {} },
+        { pageContent: 'b', metadata: {} },
+      ] as never,
+      embeddings as never,
+      { indexType: 'sq8' },
+    );
+
+    expect(adapter.totalVectors()).toBe(2);
+    expect(adapter.vectorDimension()).toBe(2);
+  });
+
   it('uses vector-first search when LangChain exposes it', async () => {
     const vectorSearch = jest.fn(async () => [[{ pageContent: 'hit', metadata: {} }, 0.1]]);
     const getQueryEmbedding = jest.fn(async () => ({

@@ -158,6 +158,7 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
     `- Provider: ${payload.embedding.provider}`,
     `- Model: ${payload.embedding.model}`,
     `- Dimensions: ${dim}`,
+    `- Index type: ${payload.embedding.index_type ?? 'flat'}`,
     `- Index path: \`${payload.index_path}\``,
     `- Server version: ${payload.server.version}`,
     `- Uptime: ${formatInteger(uptimeMs)} ms`,

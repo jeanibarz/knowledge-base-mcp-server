@@ -4,6 +4,7 @@ import {
   parseKbMaxFileBytes,
 } from './config/ingest.js';
 import {
+  resolveFaissIndexType,
   resolveChunkSize,
   resolveIndexingBatchSize,
 } from './config/indexing.js';
@@ -87,6 +88,19 @@ describe('resolveIndexingBatchSize (issue #236 — INDEXING_BATCH_SIZE)', () => 
 
     process.env.INDEXING_BATCH_SIZE = '0';
     expect(resolveIndexingBatchSize('ollama')).toBe(16);
+  });
+});
+
+describe('resolveFaissIndexType (#468 — KB_INDEX_TYPE)', () => {
+  it('defaults to flat for unset, blank, and unknown values', () => {
+    expect(resolveFaissIndexType(undefined)).toBe('flat');
+    expect(resolveFaissIndexType('')).toBe('flat');
+    expect(resolveFaissIndexType('ivfpq')).toBe('flat');
+  });
+
+  it('accepts flat and sq8 case-insensitively', () => {
+    expect(resolveFaissIndexType('flat')).toBe('flat');
+    expect(resolveFaissIndexType(' SQ8 ')).toBe('sq8');
   });
 });
 

@@ -28,6 +28,7 @@ import {
   parseIndexVersionDirName,
   resolveIndexVersionRetention,
 } from './faiss-store-layout.js';
+import { resolveFaissIndexType, type FaissIndexType } from './config/indexing.js';
 
 const ACTIVE_FILE = path.join(FAISS_INDEX_PATH, 'active.txt');
 const MODELS_DIR = path.join(FAISS_INDEX_PATH, 'models');
@@ -180,6 +181,10 @@ async function directorySizeBytes(dir: string): Promise<number> {
 
 export function modelNameFilePath(modelId: string): string {
   return path.join(modelDir(modelId), 'model_name.txt');
+}
+
+export function indexTypeFilePath(modelId: string): string {
+  return path.join(modelDir(modelId), 'index-type.txt');
 }
 
 export function addingSentinelPath(modelId: string): string {
@@ -411,6 +416,22 @@ export async function readStoredModelName(modelId: string): Promise<string | nul
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw err;
   }
+}
+
+export async function readStoredIndexType(modelId: string): Promise<FaissIndexType> {
+  try {
+    return resolveFaissIndexType(await fsp.readFile(indexTypeFilePath(modelId), 'utf-8'));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'flat';
+    throw err;
+  }
+}
+
+export async function writeIndexTypeAtomic(modelId: string, indexType: FaissIndexType): Promise<void> {
+  const target = indexTypeFilePath(modelId);
+  const tmp = `${target}.${process.pid}.tmp`;
+  await fsp.writeFile(tmp, `${indexType}\n`, 'utf-8');
+  await fsp.rename(tmp, target);
 }
 
 /**

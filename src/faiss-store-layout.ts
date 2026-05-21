@@ -8,6 +8,7 @@ import {
   type DedupOutcome,
 } from './docstore-cas.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
+import { resolveFaissIndexType, type FaissIndexType } from './config/indexing.js';
 import { logger } from './logger.js';
 
 export const INDEX_VERSION_RETENTION_ENV = 'KB_INDEX_VERSION_RETENTION';
@@ -22,6 +23,7 @@ export interface IndexIntegrityManifest {
   schema_version: typeof INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION;
   written_at: string;
   model_id: string;
+  index_type: FaissIndexType;
   files: {
     'faiss.index': { sha256: string };
     'docstore.json': { sha256: string };
@@ -291,6 +293,7 @@ export async function saveFaissStoreAtomic(options: {
   modelDir: string;
   modelId: string;
   swapCounter: number;
+  indexType?: FaissIndexType;
   /**
    * RFC 016 — when provided, the per-model `docstore.json` written by
    * `FaissStore.save` is canonicalized and hardlinked to a shared payload
@@ -311,6 +314,7 @@ export async function saveFaissStoreAtomic(options: {
     modelDir,
     modelId,
     swapCounter,
+    indexType = resolveFaissIndexType(),
     casRoot = null,
     onCommitted,
   } = options;
@@ -333,7 +337,7 @@ export async function saveFaissStoreAtomic(options: {
   if (casRoot !== null) {
     dedup = await dedupeDocstoreOnSave({ stagingDir, casRoot, swapCounter });
   }
-  await writeIndexIntegrityManifest(stagingDir, modelId);
+  await writeIndexIntegrityManifest(stagingDir, modelId, indexType);
 
   const tmpLink = path.join(
     modelDir,
@@ -368,11 +372,13 @@ export async function saveFaissStoreAtomic(options: {
 export async function writeIndexIntegrityManifest(
   versionDir: string,
   modelId: string,
+  indexType: FaissIndexType = resolveFaissIndexType(),
 ): Promise<IndexIntegrityManifest> {
   const manifest: IndexIntegrityManifest = {
     schema_version: INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION,
     written_at: new Date().toISOString(),
     model_id: modelId,
+    index_type: indexType,
     files: {
       'faiss.index': {
         sha256: await calculateSHA256(path.join(versionDir, 'faiss.index')),

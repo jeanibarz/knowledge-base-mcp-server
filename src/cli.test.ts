@@ -2219,9 +2219,34 @@ describe('kb search — active-model resolution (RFC 013 §4.7)', () => {
       });
       expect(r.code).toBe(0);
       expect(r.stderr).toContain('Adding model: ollama__nomic-embed-text');
+      expect(r.stderr).toContain('Index type: flat');
       expect(r.stderr).toContain('Will embed:');
       expect(r.stderr).toContain('--dry-run');
       // No directory created.
+      await expect(fsp.access(path.join(faissDir, 'models'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('kb models add accepts an SQ8 index type override', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-add-sq8-dryrun-'));
+    try {
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(faissDir, { recursive: true });
+      const kbDir = path.join(tempDir, 'kb');
+      await fsp.mkdir(path.join(kbDir, 'sample'), { recursive: true });
+      await fsp.writeFile(path.join(kbDir, 'sample', 'doc.md'), '# t\n\nbody');
+
+      const r = runCli(['models', 'add', 'ollama', 'nomic-embed-text', '--index-type=SQ8', '--dry-run'], {
+        KNOWLEDGE_BASES_ROOT_DIR: kbDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_MODEL: 'nomic-embed-text',
+      });
+
+      expect(r.code).toBe(0);
+      expect(r.stderr).toContain('Index type: sq8');
       await expect(fsp.access(path.join(faissDir, 'models'))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
