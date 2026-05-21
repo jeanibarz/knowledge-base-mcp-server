@@ -3,14 +3,17 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  DEFAULT_ASK_CONTEXT_BUDGET_TOKENS,
   buildAskTranscriptMarkdown,
   createAskTranscriptNote,
-  packAskContext,
   parseAskArgs,
   runAsk,
   type RunAskDeps,
 } from './cli-ask.js';
+import {
+  DEFAULT_ASK_CONTEXT_BUDGET_TOKENS,
+  askKnowledge,
+  packAskContext,
+} from './ask-core.js';
 import { callChatCompletion } from './llm-client.js';
 
 describe('parseAskArgs', () => {
@@ -554,6 +557,55 @@ describe('ask transcript records', () => {
 });
 
 describe('kb ask grounding fixtures', () => {
+  it('exposes the transport-neutral ask core for MCP callers', async () => {
+    const harness = createAskFixtureHarness({
+      results: [
+        retrievalResult(
+          'runbooks/rollback.md',
+          'Rollback approval requires the release lead and incident commander.',
+          'ops/runbooks/rollback.md#L12-L18',
+        ),
+      ],
+      answer: ({ question, userContent }) => {
+        expect(question).toBe('Who approves rollback?');
+        expect(userContent).toContain('Task context:\nanswer a rollback approval question');
+        return 'Rollback approval requires the release lead and incident commander.';
+      },
+    });
+
+    try {
+      const result = await askKnowledge({
+        query: 'Who approves rollback?',
+        knowledge_base_name: 'ops',
+        task_context: 'answer a rollback approval question',
+        timing: true,
+      }, {
+        ...harness.deps,
+        loadReadOnlyIndex: harness.deps.loadWithJsonRetry,
+      });
+
+      expect(result.answer).toContain('release lead');
+      expect(result.abstention_reason).toBeNull();
+      expect(result.citations).toEqual([
+        {
+          knowledge_base: 'ops',
+          path: 'runbooks/rollback.md',
+          score: 0.1,
+          chunk_id: 'ops/runbooks/rollback.md#L12-L18',
+          chunk_ids: ['ops/runbooks/rollback.md#L12-L18'],
+        },
+      ]);
+      expect(result.retrieval).toMatchObject({
+        embedding_model: 'ollama__nomic-embed-text-latest',
+        knowledge_base: 'ops',
+        task_context_provided: true,
+      });
+      expect(result.timing).toMatchObject({ context_included_chunks: 1 });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it('answers from retrieved snippets and preserves citation chunk ids', async () => {
     const harness = createAskFixtureHarness({
       results: [
@@ -623,10 +675,12 @@ describe('kb ask grounding fixtures', () => {
       expect(stderr).toBe('');
       const payload = JSON.parse(stdout) as {
         answer: string;
+        abstention_reason: string | null;
         citations: unknown[];
         context_packing: { included_chunks: number; excluded_chunks: number };
       };
       expect(payload.answer).toMatch(/do not have enough retrieved context/i);
+      expect(payload.abstention_reason).toBe('no_retrieved_context');
       expect(payload.citations).toEqual([]);
       expect(payload.context_packing).toMatchObject({
         included_chunks: 0,
@@ -663,8 +717,13 @@ describe('kb ask grounding fixtures', () => {
 
       expect(code).toBe(0);
       expect(stderr).toBe('');
-      const payload = JSON.parse(stdout) as { answer: string; citations: Array<{ path: string }> };
+      const payload = JSON.parse(stdout) as {
+        answer: string;
+        abstention_reason: string | null;
+        citations: Array<{ path: string }>;
+      };
       expect(payload.answer).toMatch(/cannot answer from the provided context/i);
+      expect(payload.abstention_reason).toBe('model_abstained_from_context');
       expect(payload.citations.map((citation) => citation.path)).toEqual(['runbooks/dns.md']);
     } finally {
       await harness.cleanup();
@@ -801,6 +860,7 @@ function createAskFixtureHarness(options: AskFixtureHarnessOptions) {
   };
 
   return {
+    deps,
     async run(args: string[]) {
       process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
       root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ask-fixture-'));

@@ -13,6 +13,13 @@ export const RETRIEVE_KNOWLEDGE_DESCRIPTION =
     ? process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION
     : DEFAULT_RETRIEVE_KNOWLEDGE_DESCRIPTION;
 
+export const DEFAULT_ASK_KNOWLEDGE_DESCRIPTION =
+  'Answers a question from retrieved knowledge-base context using the configured local OpenAI-compatible LLM endpoint. Returns a structured payload with answer, citations, context-packing diagnostics, abstention_reason, LLM provenance, retrieval model, and optional timing. Use retrieve_knowledge when you only need raw chunks.';
+export const ASK_KNOWLEDGE_DESCRIPTION =
+  process.env.ASK_KNOWLEDGE_DESCRIPTION && process.env.ASK_KNOWLEDGE_DESCRIPTION.length > 0
+    ? process.env.ASK_KNOWLEDGE_DESCRIPTION
+    : DEFAULT_ASK_KNOWLEDGE_DESCRIPTION;
+
 export const DEFAULT_LIST_KNOWLEDGE_BASES_DESCRIPTION =
   'Lists the available knowledge bases.';
 export const LIST_KNOWLEDGE_BASES_DESCRIPTION =

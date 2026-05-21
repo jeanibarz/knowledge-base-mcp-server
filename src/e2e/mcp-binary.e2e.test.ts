@@ -54,6 +54,7 @@ const RUN_E2E = process.env.KB_RUN_E2E === '1';
     // forces an intentional update of the assertion.
     expect(toolNames).toEqual([
       'add_document',
+      'ask_knowledge',
       'delete_document',
       'kb_stats',
       'list_knowledge_bases',

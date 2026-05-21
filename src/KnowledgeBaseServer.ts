@@ -27,6 +27,7 @@ import {
 import { ManagerRegistry } from './manager-registry.js';
 import {
   ADD_DOCUMENT_DESCRIPTION,
+  ASK_KNOWLEDGE_DESCRIPTION,
   DELETE_DOCUMENT_DESCRIPTION,
   DIFF_INDEX_DESCRIPTION,
   KB_STATS_DESCRIPTION,
@@ -117,6 +118,8 @@ import {
   type RerankOverride,
 } from './reranker.js';
 import type { TransportRuntimeStatsSnapshot } from './transport-runtime-stats.js';
+import { AskExecutionError, askKnowledge } from './ask-core.js';
+import { callChatCompletion } from './llm-client.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
@@ -124,15 +127,22 @@ const SERVER_VERSION = '0.1.0';
 function mcpErrorContent(error: Error): TextContent {
   const code = error instanceof KBError
     ? error.code
+    : error instanceof AskExecutionError && error.failure !== undefined
+      ? error.failure.code
     : error instanceof RerankerConfigError
       ? error.code
       : 'INTERNAL';
+  const failure = error instanceof AskExecutionError ? error.failure : undefined;
   return {
     type: 'text',
     text: JSON.stringify({
       error: {
         code,
         message: error.message,
+        ...(failure !== undefined ? {
+          category: failure.category,
+          next_action: failure.next_action,
+        } : {}),
       },
     }),
   };
@@ -259,6 +269,23 @@ export class KnowledgeBaseServer {
         rerank: z.enum(['on', 'off']).optional().describe('Per-call RFC 019 reranker override for hybrid retrieval. Omit to use KB_RERANK.'),
       },
       async (args) => this.handleRetrieveKnowledge(args)
+    );
+
+    mcp.tool(
+      'ask_knowledge',
+      ASK_KNOWLEDGE_DESCRIPTION,
+      {
+        query: z.string().describe('Question to answer from retrieved knowledge-base snippets.'),
+        knowledge_base_name: z.string().optional().describe('Name of a single knowledge base to search. If omitted, all available knowledge bases are considered.'),
+        model_name: z.string().optional().describe('Registered embedding model_id to use for retrieval. If omitted, the active model is used.'),
+        llm_profile: z.string().optional().describe('Saved kb llm profile name to use for answer generation.'),
+        k: z.number().int().min(1).max(50).optional().describe('Retrieval top-K before context packing. Default 8.'),
+        context_budget_tokens: z.number().int().min(64).optional().describe('Approximate token budget for snippets sent to the LLM. Default 6000.'),
+        task_context: z.string().optional().describe('Optional task context passed to the answer prompt and relevance gate when enabled.'),
+        gate: z.enum(['on', 'off']).optional().describe('Per-call relevance gate override for retrieved snippets. Omit to keep the ask path ungated.'),
+        timing: z.boolean().optional().describe('Include retrieval, packing, and LLM timing fields. Defaults to true for MCP.'),
+      },
+      async (args) => this.handleAskKnowledge(args)
     );
 
     // RFC 013 M3 §4.5 — list_models surfaces what's registered so an agent
@@ -814,6 +841,65 @@ export class KnowledgeBaseServer {
       return { content: [mcpErrorContent(err)], isError: true };
     }
     }, () => canonical);
+  }
+
+  private async handleAskKnowledge(args: {
+    query: string;
+    knowledge_base_name?: string;
+    model_name?: string;
+    llm_profile?: string;
+    k?: number;
+    context_budget_tokens?: number;
+    task_context?: string;
+    gate?: 'on' | 'off';
+    timing?: boolean;
+  }): Promise<CallToolResult> {
+    return this.withCanonicalTool({
+      tool: 'ask_knowledge',
+      query: args.query,
+      kb_scope: args.knowledge_base_name ?? null,
+      k: args.k ?? 8,
+    }, async () => {
+      try {
+        const payload = await askKnowledge({
+          query: args.query,
+          knowledge_base_name: args.knowledge_base_name,
+          model_name: args.model_name,
+          llm_profile: args.llm_profile,
+          k: args.k,
+          context_budget_tokens: args.context_budget_tokens,
+          task_context: args.task_context,
+          gate: args.gate,
+          timing: args.timing ?? true,
+        }, {
+          bootstrapLayout: FaissIndexManager.bootstrapLayout.bind(FaissIndexManager),
+          resolveActiveModel,
+          loadManagerForModel: (modelId) => this.createReadOnlyManagerForModel(modelId),
+          loadReadOnlyIndex: async () => {},
+          withWriteLock,
+          callChatCompletion,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+          structuredContent: payload as unknown as Record<string, unknown>,
+        };
+      } catch (error: unknown) {
+        const err = toError(error);
+        logger.error('Error answering knowledge question:', err);
+        if (err.stack) {
+          logger.error(err.stack);
+        }
+        return { content: [mcpErrorContent(err)], isError: true };
+      }
+    }, (result) => {
+      const structured = (result as { structuredContent?: unknown }).structuredContent as
+        | { retrieval?: { embedding_model?: string }; citations?: unknown[] }
+        | undefined;
+      return {
+        model_id: structured?.retrieval?.embedding_model,
+        result_count: structured?.citations?.length,
+      };
+    });
   }
 
   /**
