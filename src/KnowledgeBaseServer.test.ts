@@ -1705,6 +1705,7 @@ describe('KnowledgeBaseServer handlers', () => {
     );
     expect(describeOf(server, 'delete_document')).toContain('FAISS does not support vector deletion');
     expect(describeOf(server, 'delete_document')).toContain('orphan vectors');
+    expect(describeOf(server, 'diff_index')).toContain('retrieval-result churn');
   });
 
   it('RETRIEVE_KNOWLEDGE_DESCRIPTION overrides only the retrieve_knowledge description', async () => {

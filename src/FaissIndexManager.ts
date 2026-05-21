@@ -546,6 +546,7 @@ export class FaissIndexManager {
   // and re-checked for staleness on every search via `isSidecarStale`.
   private metadataSidecarCache: { sidecar: MetadataSidecar; loadedAt: number } | null = null;
   private metadataSidecarMissingLogged = false;
+  private metadataSidecarAllowedForLoadedStore = true;
 
   /**
    * RFC 013 §4.9 file table — preferred form: `new FaissIndexManager({provider, modelName})`
@@ -706,6 +707,9 @@ export class FaissIndexManager {
       this.faissIndex = await this.loadAtomic({
         repairCorrupt: opts.strictReadOnly !== true,
       });
+      this.metadataSidecarAllowedForLoadedStore = true;
+      this.metadataSidecarCache = null;
+      this.metadataSidecarMissingLogged = false;
 
       // Issue #90 — sidecar invalidation when this model's FAISS store is gone.
       //
@@ -998,6 +1002,7 @@ export class FaissIndexManager {
     await withSidecarLock(() =>
       writeMetadataSidecar({ sidecarPath, modelId: this.modelId, rows }),
     );
+    this.metadataSidecarAllowedForLoadedStore = true;
     this.metadataSidecarCache = null;
     this.metadataSidecarMissingLogged = false;
   }
@@ -1012,6 +1017,7 @@ export class FaissIndexManager {
    */
   private async loadMetadataSidecar(): Promise<MetadataSidecar | null> {
     if (!this.faissIndex) return null;
+    if (!this.metadataSidecarAllowedForLoadedStore) return null;
     const ntotal = this.faissIndex.totalVectors();
     if (this.metadataSidecarCache !== null) {
       if (!isSidecarStale(this.metadataSidecarCache.sidecar, ntotal)) {
@@ -1093,6 +1099,9 @@ export class FaissIndexManager {
    */
   async reloadPersistedIndex(): Promise<void> {
     this.faissIndex = await this.loadAtomic();
+    this.metadataSidecarAllowedForLoadedStore = true;
+    this.metadataSidecarCache = null;
+    this.metadataSidecarMissingLogged = false;
   }
 
   /**
@@ -1117,6 +1126,14 @@ export class FaissIndexManager {
       embeddings: this.embeddings,
     });
     this.faissIndex = FaissStoreAdapter.fromStore(store);
+    // Metadata sidecars are keyed to the active model directory, not to an
+    // arbitrary historical index.vN directory. Disable the fast-path after a
+    // direct version load so scoped diff/eval searches fall back to
+    // post-filtering the loaded store instead of consulting a sidecar from
+    // the current active index.
+    this.metadataSidecarAllowedForLoadedStore = false;
+    this.metadataSidecarCache = null;
+    this.metadataSidecarMissingLogged = false;
   }
 
   /**
