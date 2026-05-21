@@ -58,6 +58,14 @@ import {
   type HybridChunk,
 } from './hybrid-retrieval.js';
 import {
+  applyAdvancedRetrieval,
+  computeAdvancedCandidateK,
+  filterAdvancedRetrievalMetadata,
+  hasAdvancedRetrieval,
+  type AdvancedRetrievalMetadata,
+  type AdvancedRetrievalPool,
+} from './advanced-retrieval.js';
+import {
   applyRelevanceGate,
   emitRelevanceGateDecision,
   formatGateDroppedList,
@@ -147,6 +155,14 @@ Result tuning:
   --rerank              Run the RFC 019 cross-encoder reranker for this call
                         (currently applies to hybrid retrieval).
   --no-rerank           Bypass the reranker for this call.
+  --diverse             Rerank a bounded dense candidate pool for
+                        source-aware, non-duplicative coverage.
+  --anti-query=<str>    Penalize candidates close to this negative query while
+                        keeping only positive-query-supported candidates.
+                        May be repeated.
+  --plus=<str>          Add another positive query component for exploratory
+                        vector-composition-style retrieval. May be repeated.
+  --minus=<str>         Add another negative query component. May be repeated.
   --task-context=<str>  Task context used by the relevance judge. Prefer
                         --task-context-file for long or prompt-like text:
                         argv is exposed in 'ps', shell history, and hooks.
@@ -200,6 +216,9 @@ Examples:
   kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh
   kb search "INDEX_NOT_INITIALIZED" --mode=hybrid
   kb search "src/cli.ts" --mode=auto --timing
+  kb search "retrieval safety" --diverse --format=json
+  kb search "agent evidence" --anti-query="UI styling" --format=json
+  kb search "queue triage" --plus="slow loop" --minus="frontend layout"
   kb search "rollback" --view=compact --k=20
   kb search --stdin --format=json < query.txt
   printf '%s\n' '{"query":"rollback","kb":"ops"}' | kb search --batch-jsonl
@@ -229,6 +248,10 @@ interface SearchArgs {
   neighborContext?: NeighborContextOptions;
   gateOverride?: RelevanceGateOverride;
   rerankOverride?: RerankOverride;
+  diverse: boolean;
+  antiQueries: string[];
+  plusQueries: string[];
+  minusQueries: string[];
   taskContext?: string;
   taskContextFile?: string;
 }
@@ -280,6 +303,10 @@ export async function runSearch(
   } else if (parsed.batchJsonl) {
     if (parsed.query !== null) {
       process.stderr.write('kb search: --batch-jsonl reads queries from stdin; do not pass <query>\n');
+      return 2;
+    }
+    if (hasAdvancedRetrieval(parsed)) {
+      process.stderr.write('kb search: advanced retrieval operators are not supported with --batch-jsonl\n');
       return 2;
     }
     if (parsed.interactive) {
@@ -347,6 +374,18 @@ export async function runSearch(
     process.stderr.write('kb search: neighbor context expansion is only supported with --mode=dense\n');
     return 2;
   }
+  if (hasAdvancedRetrieval(parsed) && effectiveMode !== 'dense') {
+    process.stderr.write('kb search: advanced retrieval operators are only supported with --mode=dense\n');
+    return 2;
+  }
+  if (hasAdvancedRetrieval(parsed) && parsed.thresholdAuto) {
+    process.stderr.write('kb search: --threshold=auto cannot be combined with advanced retrieval operators\n');
+    return 2;
+  }
+  if (hasAdvancedRetrieval(parsed) && parsed.interactive) {
+    process.stderr.write('kb search: --interactive cannot be combined with advanced retrieval operators\n');
+    return 2;
+  }
 
   if (parsed.explainEmpty && effectiveMode !== 'dense') {
     process.stderr.write(
@@ -409,10 +448,20 @@ export async function runSearch(
 
   let results;
   let autoThresholdDecision: AutoThresholdDecision | null = null;
+  let advancedRetrieval: AdvancedRetrievalMetadata | null = null;
   const denseTiming: SimilaritySearchTiming = {};
   try {
     const startedAt = nowMs();
-    if (parsed.thresholdAuto) {
+    if (hasAdvancedRetrieval(parsed)) {
+      const advanced = await runAdvancedDenseSearch({
+        manager,
+        query,
+        parsed,
+        denseTiming,
+      });
+      results = advanced.results;
+      advancedRetrieval = advanced.metadata;
+    } else if (parsed.thresholdAuto) {
       const rawResults = await manager.similaritySearch(
         query,
         parsed.k,
@@ -461,6 +510,9 @@ export async function runSearch(
       process: 'cli',
     });
     results = gate.results;
+    if (advancedRetrieval !== null) {
+      advancedRetrieval = filterAdvancedRetrievalMetadata(advancedRetrieval, results);
+    }
     gateVerdict = gate.verdict;
     emitRelevanceGateDecision({
       process: 'cli',
@@ -513,6 +565,7 @@ export async function runSearch(
       timing,
       explainEmptyDiagnostics,
       gateVerdict,
+      advancedRetrieval,
     });
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
@@ -541,6 +594,7 @@ export async function runSearch(
       explainEmptyDiagnostics,
       gateVerdict,
       explain: parsed.explain,
+      advancedRetrieval,
     }));
   }
 
@@ -608,6 +662,50 @@ async function listAvailableKbsForDiagnostics(): Promise<string[]> {
 
 const EXPLAIN_EMPTY_PROBE_K = 10;
 
+async function runAdvancedDenseSearch(input: {
+  manager: FaissIndexManager;
+  query: string;
+  parsed: SearchArgs;
+  denseTiming: SimilaritySearchTiming;
+}): Promise<{ results: SearchResultDocument[]; metadata: AdvancedRetrievalMetadata }> {
+  const candidateK = computeAdvancedCandidateK(input.parsed.k);
+  const pools: AdvancedRetrievalPool[] = [];
+  const searchComponent = async (role: AdvancedRetrievalPool['role'], query: string): Promise<void> => {
+    const results = await input.manager.similaritySearch(
+      query,
+      candidateK,
+      input.parsed.threshold,
+      input.parsed.kb,
+      undefined,
+      input.denseTiming,
+      { noCache: input.parsed.noCache },
+    );
+    pools.push({ role, query, results });
+  };
+
+  await searchComponent('primary', input.query);
+  for (const query of input.parsed.plusQueries) {
+    await searchComponent('plus', query);
+  }
+  for (const query of input.parsed.antiQueries) {
+    await searchComponent('anti_query', query);
+  }
+  for (const query of input.parsed.minusQueries) {
+    await searchComponent('minus', query);
+  }
+
+  return applyAdvancedRetrieval(pools, {
+    k: input.parsed.k,
+    candidateK,
+    diverse: input.parsed.diverse,
+    plusQueries: input.parsed.plusQueries,
+    antiQueries: input.parsed.antiQueries,
+    minusQueries: input.parsed.minusQueries,
+    scopedKb: input.parsed.kb,
+    threshold: input.parsed.threshold,
+  });
+}
+
 export function parseSearchArgs(rest: string[]): SearchArgs {
   const out: SearchArgs = {
     query: null,
@@ -625,6 +723,10 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     freshness: true,
     explainEmpty: false,
     explain: false,
+    diverse: false,
+    antiQueries: [],
+    plusQueries: [],
+    minusQueries: [],
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
@@ -639,6 +741,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--no-freshness') { out.freshness = false; continue; }
     if (raw === '--explain-empty') { out.explainEmpty = true; continue; }
     if (raw === '--explain') { out.explain = true; continue; }
+    if (raw === '--diverse') { out.diverse = true; continue; }
     if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
     if (raw === '--batch-jsonl') { out.batchJsonl = true; out.format = 'json'; continue; }
     if (raw.startsWith('--context-before=')) {
@@ -664,6 +767,18 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
     if (raw.startsWith('--task-context=')) { out.taskContext = raw.slice('--task-context='.length); continue; }
     if (raw.startsWith('--task-context-file=')) { out.taskContextFile = raw.slice('--task-context-file='.length); continue; }
+    if (raw.startsWith('--anti-query=')) {
+      out.antiQueries.push(parseNonEmptyComponent(raw, '--anti-query='));
+      continue;
+    }
+    if (raw.startsWith('--plus=')) {
+      out.plusQueries.push(parseNonEmptyComponent(raw, '--plus='));
+      continue;
+    }
+    if (raw.startsWith('--minus=')) {
+      out.minusQueries.push(parseNonEmptyComponent(raw, '--minus='));
+      continue;
+    }
     if (raw.startsWith('--mode=')) {
       const v = raw.slice('--mode='.length);
       if (v !== 'dense' && v !== 'lexical' && v !== 'hybrid' && v !== 'auto') {
@@ -700,6 +815,14 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     throw new Error(`unexpected argument: ${raw}`);
   }
   return out;
+}
+
+function parseNonEmptyComponent(raw: string, prefix: string): string {
+  const value = raw.slice(prefix.length);
+  if (value.trim() === '') {
+    throw new Error(`invalid ${prefix.slice(0, -1)}: value must not be empty`);
+  }
+  return value;
 }
 
 function warnIfRerankIgnored(parsed: SearchArgs, effectiveMode: EffectiveSearchMode): void {
@@ -872,6 +995,7 @@ export interface DenseSearchJsonPayloadInput {
   /** Issue #328 — opt-in deep diagnostics for an empty result set. Ignored when results is non-empty. */
   explainEmptyDiagnostics?: ExplainEmptyDiagnostics | null;
   gateVerdict?: RelevanceGateVerdict;
+  advancedRetrieval?: AdvancedRetrievalMetadata | null;
 }
 
 export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput): Record<string, unknown> {
@@ -906,6 +1030,9 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
     };
   }
   payload.gate_verdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
+  if (input.advancedRetrieval !== undefined && input.advancedRetrieval !== null) {
+    payload.advanced_retrieval = input.advancedRetrieval;
+  }
   if (input.timing) {
     payload.timing = compactTimingPayload(input.timing);
   }
@@ -998,6 +1125,7 @@ export interface DenseSearchMarkdownOutputInput {
   explainEmptyDiagnostics?: ExplainEmptyDiagnostics | null;
   gateVerdict?: RelevanceGateVerdict;
   explain?: boolean;
+  advancedRetrieval?: AdvancedRetrievalMetadata | null;
 }
 
 export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutputInput): string {
@@ -1034,6 +1162,9 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
     // the same suggestion twice (issue #335).
     output += `${formatFreshnessFooter(input.staleness, input.refreshed)}\n`;
   }
+  if (input.advancedRetrieval !== undefined && input.advancedRetrieval !== null) {
+    output += `${formatAdvancedRetrievalFooter(input.advancedRetrieval)}\n`;
+  }
   const gateVerdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
   if (gateVerdict.state !== 'bypassed') {
     output += `${formatGateVerdictFooter(gateVerdict)}\n`;
@@ -1045,6 +1176,17 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
     output += `${formatTimingFooter('Timing', input.timing)}\n`;
   }
   return output;
+}
+
+function formatAdvancedRetrievalFooter(metadata: AdvancedRetrievalMetadata): string {
+  const positives = metadata.query_components
+    .filter((component) => component.role === 'primary' || component.role === 'plus')
+    .length;
+  const negatives = metadata.query_components.length - positives;
+  const scope = metadata.constraints.kb ? `, kb=${metadata.constraints.kb}` : '';
+  return `> _Advanced retrieval: ${metadata.mode}; candidates ${metadata.candidate_pool_k}; ` +
+    `${positives} positive component(s), ${negatives} negative component(s)${scope}; ` +
+    'positive-support constrained._';
 }
 
 export function formatDenseSearchCompactOutput(input: {
@@ -1498,6 +1640,11 @@ function parseBatchJsonlRow(line: string, lineNumber: number, defaults: SearchAr
   if (gate !== undefined) row.gateOverride = gate ? 'on' : 'off';
   if (Object.prototype.hasOwnProperty.call(raw, 'rerank')) {
     throw new Error(`line ${lineNumber}: rerank is not supported in batch JSONL dense rows`);
+  }
+  for (const key of ['diverse', 'anti_query', 'plus', 'minus']) {
+    if (Object.prototype.hasOwnProperty.call(raw, key)) {
+      throw new Error(`line ${lineNumber}: ${key} is not supported in batch JSONL dense rows`);
+    }
   }
 
   const contextWindow = readBatchInteger(raw, 'context_window', lineNumber);
