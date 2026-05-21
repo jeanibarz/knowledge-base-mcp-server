@@ -142,6 +142,17 @@ describe('parseSearchArgs freshness', () => {
   });
 });
 
+describe('parseSearchArgs pager (#471)', () => {
+  it('defaults to env-driven pager resolution', () => {
+    expect(parseSearchArgs(['query'])).toMatchObject({ pager: null });
+  });
+
+  it('accepts explicit pager opt-in and opt-out', () => {
+    expect(parseSearchArgs(['query', '--pager'])).toMatchObject({ pager: true });
+    expect(parseSearchArgs(['query', '--no-pager'])).toMatchObject({ pager: false });
+  });
+});
+
 describe('parseSearchArgs --explain-empty (#328)', () => {
   it('defaults to false so the inline #335 guidance keeps its current behaviour', () => {
     expect(parseSearchArgs(['query'])).toMatchObject({ explainEmpty: false });
@@ -275,6 +286,43 @@ describe('runSearch timing guard (#331)', () => {
       stderrSpy.mockRestore();
     }
   }
+
+  it('routes dense markdown output through the pager writer at the runSearch boundary', async () => {
+    const { deps, manager } = makeDeps();
+    const writeOutput = jest.fn(async () => {});
+    deps.writeOutput = writeOutput;
+    manager.similaritySearch.mockResolvedValueOnce([
+      {
+        pageContent: 'pager result',
+        metadata: { source: '/kb/ops/pager.md', chunkIndex: 0 },
+        score: 0.1,
+      },
+    ] as never);
+    const originalIsTTY = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+
+    try {
+      const out = await captureSearchOutput(['pager query', '--pager', '--no-freshness'], deps);
+
+      expect(out.code).toBe(0);
+      expect(out.stdout).toBe('');
+      expect(writeOutput).toHaveBeenCalledTimes(1);
+      expect(writeOutput).toHaveBeenCalledWith(
+        expect.stringContaining('pager result'),
+        expect.objectContaining({
+          flag: true,
+          format: 'md',
+          stdoutIsTTY: true,
+        }),
+      );
+    } finally {
+      if (originalIsTTY) {
+        Object.defineProperty(process.stdout, 'isTTY', originalIsTTY);
+      } else {
+        delete (process.stdout as { isTTY?: boolean }).isTTY;
+      }
+    }
+  });
 
   it('runs dense JSONL batch rows while loading the model manager and index once', async () => {
     const { deps, manager } = makeDeps();
