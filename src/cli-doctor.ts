@@ -75,6 +75,12 @@ import {
   DEFAULT_MCP_BIND_ADDR,
   DEFAULT_MCP_PORT,
 } from './transport-config.js';
+import {
+  formatIntegrityMarkdown,
+  integrityExitCode,
+  verifyIntegrity,
+  type IntegrityReport,
+} from './cli-verify.js';
 
 /**
  * Issue #210 — error-rate threshold above which the doctor surfaces a
@@ -92,7 +98,7 @@ const execFileAsync = promisify(execFile);
 export const DOCTOR_HELP = `kb doctor — aggregate model / index / backend health report
 
 Usage:
-  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints]
+  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints] [--integrity|--slow]
 
 Composes existing read-only checks (env vars, registered models, active
 model, FAISS index presence + mtime, knowledge-base count, embedding
@@ -112,6 +118,8 @@ Options:
   --endpoints           Check only configured local bind/connect endpoint
                         readiness (MCP bind target, KB_DAEMON_URL,
                         Ollama embedding endpoint, and KB_LLM_ENDPOINT/profile).
+  --integrity           Include slow \`kb verify --integrity\` checks.
+  --slow                Alias for --integrity.
   --help, -h            Show this help.
 
 Examples:
@@ -124,6 +132,7 @@ export interface DoctorArgs {
   format: 'md' | 'json';
   reindexTrigger: boolean;
   endpoints: boolean;
+  integrity: boolean;
 }
 
 export type HealthStatus = 'ok' | 'warn' | 'error';
@@ -311,6 +320,8 @@ export interface DoctorReport {
    * model_id; otherwise it is OK.
    */
   provider_calls: Record<string, ProviderCallSnapshot>;
+  /** Non-null only when kb doctor is invoked with --integrity or --slow. */
+  integrity: IntegrityReport | null;
 }
 
 export interface BuildDoctorReportOptions {
@@ -331,6 +342,8 @@ export interface BuildDoctorReportOptions {
    * short, read-only probe without starting any services.
    */
   llmEndpointProbe?: LlmEndpointProbe;
+  /** Run the slow `kb verify --integrity` audit and fold it into status. */
+  integrity?: boolean;
 }
 
 export interface BuildEndpointReadinessReportOptions {
@@ -363,7 +376,7 @@ export async function runDoctor(rest: string[]): Promise<number> {
     return report.status === 'error' ? 1 : 0;
   }
 
-  const report = await buildDoctorReport();
+  const report = await buildDoctorReport({ integrity: parsed.integrity });
   if (parsed.format === 'json') {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
@@ -373,7 +386,7 @@ export async function runDoctor(rest: string[]): Promise<number> {
 }
 
 export function parseDoctorArgs(rest: string[]): DoctorArgs {
-  const out: DoctorArgs = { format: 'md', reindexTrigger: false, endpoints: false };
+  const out: DoctorArgs = { format: 'md', reindexTrigger: false, endpoints: false, integrity: false };
   for (const raw of rest) {
     if (raw.startsWith('--format=')) {
       const value = raw.slice('--format='.length);
@@ -389,6 +402,10 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
     }
     if (raw === '--endpoints') {
       out.endpoints = true;
+      continue;
+    }
+    if (raw === '--integrity' || raw === '--slow') {
+      out.integrity = true;
       continue;
     }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
@@ -949,6 +966,22 @@ export async function buildDoctorReport(
     detail: formatReindexTriggerCheckDetail(reindexTrigger),
   });
 
+  const integrity = options.integrity === true ? await verifyIntegrity({ modelId: activeModelId }) : null;
+  if (integrity !== null) {
+    const findingCount = integrity.findings.length;
+    checks.push({
+      name: 'integrity',
+      status: integrity.status === 'corruption'
+        ? 'error'
+        : integrity.status === 'drift'
+          ? 'warn'
+          : 'ok',
+      detail: integrity.status === 'clean'
+        ? 'deep integrity audit found no drift'
+        : `${findingCount} integrity finding(s); verify exit code ${integrityExitCode(integrity)}`,
+    });
+  }
+
   const status = summarizeStatus(checks);
   return {
     status,
@@ -973,6 +1006,7 @@ export async function buildDoctorReport(
     last_index_update: lastIndexUpdate,
     reindex_trigger: reindexTrigger,
     provider_calls: providerCalls,
+    integrity,
   };
 }
 
@@ -1747,6 +1781,13 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
       `Git: ${report.git.branch ?? '<unknown>'} ${report.git.head ?? '<unknown>'} ` +
       `vs origin/main ${report.git.origin_main ?? '<unknown>'} (${report.git.relation})`,
     );
+  }
+  if (report.integrity !== null) {
+    lines.push('');
+    lines.push('Integrity:');
+    for (const line of formatIntegrityMarkdown(report.integrity).trimEnd().split('\n')) {
+      lines.push(`  ${line}`);
+    }
   }
   lines.push('');
   lines.push('Stale counts by KB:');

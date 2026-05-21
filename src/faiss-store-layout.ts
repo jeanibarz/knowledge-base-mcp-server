@@ -7,7 +7,7 @@ import {
   gcDocstoreCas,
   type DedupOutcome,
 } from './docstore-cas.js';
-import { pathExists } from './file-utils.js';
+import { calculateSHA256, pathExists } from './file-utils.js';
 import { logger } from './logger.js';
 
 export const INDEX_VERSION_RETENTION_ENV = 'KB_INDEX_VERSION_RETENTION';
@@ -15,6 +15,18 @@ export const DEFAULT_PREVIOUS_INDEX_VERSION_RETENTION = 2;
 const VERSION_DIR_PATTERN = /^index\.v(\d+)$/;
 const SYMLINK_NAME = 'index';
 const LEGACY_INDEX_NAME = 'faiss.index';
+export const INDEX_INTEGRITY_MANIFEST_FILENAME = 'integrity.json';
+export const INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION = 'kb.index-integrity.v1';
+
+export interface IndexIntegrityManifest {
+  schema_version: typeof INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION;
+  written_at: string;
+  model_id: string;
+  files: {
+    'faiss.index': { sha256: string };
+    'docstore.json': { sha256: string };
+  };
+}
 
 export interface IndexVersionPruneResult {
   active: string | null;
@@ -321,6 +333,7 @@ export async function saveFaissStoreAtomic(options: {
   if (casRoot !== null) {
     dedup = await dedupeDocstoreOnSave({ stagingDir, casRoot, swapCounter });
   }
+  await writeIndexIntegrityManifest(stagingDir, modelId);
 
   const tmpLink = path.join(
     modelDir,
@@ -350,6 +363,31 @@ export async function saveFaissStoreAtomic(options: {
       logger.warn(`atomicSave: docstore-cas gc failed: ${(err as Error).message}`);
     });
   }
+}
+
+export async function writeIndexIntegrityManifest(
+  versionDir: string,
+  modelId: string,
+): Promise<IndexIntegrityManifest> {
+  const manifest: IndexIntegrityManifest = {
+    schema_version: INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION,
+    written_at: new Date().toISOString(),
+    model_id: modelId,
+    files: {
+      'faiss.index': {
+        sha256: await calculateSHA256(path.join(versionDir, 'faiss.index')),
+      },
+      'docstore.json': {
+        sha256: await calculateSHA256(path.join(versionDir, 'docstore.json')),
+      },
+    },
+  };
+  await fsp.writeFile(
+    path.join(versionDir, INDEX_INTEGRITY_MANIFEST_FILENAME),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    { encoding: 'utf-8', mode: 0o600 },
+  );
+  return manifest;
 }
 
 export async function resolveActiveIndexFilePath(modelDir: string): Promise<string | null> {

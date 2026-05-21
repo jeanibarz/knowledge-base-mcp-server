@@ -59,6 +59,23 @@
 
 ## Observability
 
+### FR-OBS-467: Deep Index Integrity Verification
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall provide an opt-in `kb verify --integrity` audit that verifies persisted FAISS index versions, integrity manifests, docstore JSON, lexical chunk counts, per-file content-hash sidecars, chunk manifests, retained-version drift, and stale index sentinels without mutating the knowledge base or index.
+**Rationale:** Recovery paths handle known interruption signatures, but operators also need a positive at-rest assertion that index bytes, manifests, sidecars, and source files still agree after crashes, backup restores, cloud-sync drift, or tampering.
+
+**Acceptance Criteria:**
+- [x] Given a saved versioned FAISS index, when integrity verification runs, then the system shall hash `faiss.index` and `docstore.json` and compare those hashes with the version's integrity manifest.
+- [x] Given a malformed docstore, malformed manifest, missing index file, or manifest hash mismatch, when integrity verification runs, then the system shall emit a structured corruption finding and exit with code 2.
+- [x] Given source files whose `.index` content-hash sidecars or chunk manifests are missing, stale, or orphaned, when integrity verification runs, then the system shall emit structured drift findings and exit with code 1 when no corruption exists.
+- [x] Given a lexical index for a knowledge base, when integrity verification runs, then the lexical chunk count shall match the active dense docstore chunk count for that knowledge base.
+- [x] Given `kb doctor --integrity` or `kb doctor --slow`, when the doctor report is built, then the slow integrity audit shall be included in the report and folded into doctor status.
+
+**Linked Tests:** TS-OBS-467
+**Dependencies:** RFC014, NFR-INDEX-358
+
 ### FR-OBS-237: Last Index Update Summary
 **Status:** Implemented
 **Priority:** High

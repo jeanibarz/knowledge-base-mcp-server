@@ -1129,23 +1129,32 @@ describe('kb doctor', () => {
       format: 'json',
       reindexTrigger: false,
       endpoints: false,
+      integrity: false,
     });
     expect(parseDoctorArgs(['--reindex-trigger'])).toEqual({
       format: 'md',
       reindexTrigger: true,
       endpoints: false,
+      integrity: false,
     });
     expect(parseDoctorArgs(['--endpoints', '--format=json'])).toEqual({
       format: 'json',
       reindexTrigger: false,
       endpoints: true,
+      integrity: false,
     });
     expect(parseDoctorArgs(['--reindex-trigger', '--format=json'])).toEqual({
       format: 'json',
       reindexTrigger: true,
       endpoints: false,
+      integrity: false,
     });
-    expect(parseDoctorArgs([])).toEqual({ format: 'md', reindexTrigger: false, endpoints: false });
+    expect(parseDoctorArgs([])).toEqual({
+      format: 'md',
+      reindexTrigger: false,
+      endpoints: false,
+      integrity: false,
+    });
     expect(() => parseDoctorArgs(['--format=yaml'])).toThrow(/invalid --format/);
   });
 

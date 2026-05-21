@@ -43,6 +43,16 @@
 
 ## Observability
 
+### TS-OBS-467: Deep Index Integrity Verification
+**Requirement:** FR-OBS-467
+
+**Test Cases:**
+- `saveFaissStoreAtomic` shall persist a `kb.index-integrity.v1` manifest containing SHA-256 hashes for `faiss.index` and `docstore.json`.
+- `verifyIntegrity` shall return clean status for matching FAISS/docstore hashes, matching source sidecars, valid chunk manifests, and matching lexical/dense chunk counts.
+- `verifyIntegrity` shall classify FAISS or docstore manifest hash mismatches and malformed docstore JSON as corruption.
+- `verifyIntegrity` shall classify missing/stale content-hash sidecars, stale chunk manifests, orphan sidecars, retention drift, and stale sentinels as drift.
+- `kb verify --integrity` and `kb doctor --integrity` shall expose the integrity report in markdown and JSON with the documented exit-code severity mapping.
+
 ### TS-OBS-237: Last Index Update Summary
 **Requirement:** FR-OBS-237
 

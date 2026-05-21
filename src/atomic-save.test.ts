@@ -224,6 +224,17 @@ describe('RFC 014 atomic save — atomicity smoke', () => {
 
     await holdWriteLock(modelDir, () => (mgr as any).atomicSave());
     expect(await fsp.readlink(path.join(modelDir, 'index'))).toBe('index.v0');
+    const integrityManifest = JSON.parse(
+      await fsp.readFile(path.join(modelDir, 'index.v0', 'integrity.json'), 'utf-8'),
+    ) as {
+      schema_version: string;
+      model_id: string;
+      files: Record<string, { sha256: string }>;
+    };
+    expect(integrityManifest.schema_version).toBe('kb.index-integrity.v1');
+    expect(integrityManifest.model_id).toBe(DEFAULT_MODEL_ID);
+    expect(integrityManifest.files['faiss.index'].sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(integrityManifest.files['docstore.json'].sha256).toMatch(/^[0-9a-f]{64}$/);
 
     await holdWriteLock(modelDir, () => (mgr as any).atomicSave());
     expect(await fsp.readlink(path.join(modelDir, 'index'))).toBe('index.v1');

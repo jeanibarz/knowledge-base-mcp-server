@@ -121,7 +121,16 @@ class MockFaissStore {
   }
 
   async save(...args: unknown[]) {
-    return saveMock(...args);
+    const [directory] = args as [string];
+    const result = await saveMock(...args);
+    await fsp.mkdir(directory, { recursive: true });
+    await fsp.writeFile(path.join(directory, 'faiss.index'), `vectors=${this.index._n}\n`, 'utf-8');
+    await fsp.writeFile(
+      path.join(directory, 'docstore.json'),
+      JSON.stringify(Array.from(this.docstore._docs.entries())),
+      'utf-8',
+    );
+    return result;
   }
 
   async similaritySearchWithScore(...args: unknown[]) {
