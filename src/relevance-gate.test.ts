@@ -200,6 +200,52 @@ describe('relevance gate', () => {
     expect(result.verdict.judge.reason).toContain('degraded to A2');
   });
 
+  it('uses KB_LLM_FAKE as an offline Stage B judge without a configured endpoint', async () => {
+    const previousFake = process.env.KB_LLM_FAKE;
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    const previousGateEndpoint = process.env.KB_GATE_LLM_ENDPOINT;
+    const previousLogFormat = process.env.KB_LOG_FORMAT;
+    try {
+      process.env.KB_LLM_FAKE = 'on';
+      process.env.KB_LOG_FORMAT = 'text';
+      delete process.env.KB_LLM_ENDPOINT;
+      delete process.env.KB_GATE_LLM_ENDPOINT;
+
+      const rows = [
+        candidate('/kb/rollback.md', 0, 0.1, 'rollback approval requires the release lead'),
+        candidate('/kb/dns.md', 0, 0.1, 'dns cutovers use a 300 second ttl'),
+      ];
+      const result = await applyRelevanceGate({
+        query: 'offline fake judge rollback approval',
+        taskContext: 'answer a deployment rollback approval question with precise operational context',
+        candidates: rows,
+        gateOverride: 'on',
+      });
+
+      expect(result.results).toEqual([rows[0]]);
+      expect(result.verdict.judge).toMatchObject({
+        status: 'succeeded',
+        model: 'kb-fake-llm',
+      });
+      expect(result.verdict.dropped).toEqual([
+        {
+          id: '/kb/dns.md#0',
+          stage: 'B-judge',
+          reason: 'dns lacks query match',
+        },
+      ]);
+    } finally {
+      if (previousFake === undefined) delete process.env.KB_LLM_FAKE;
+      else process.env.KB_LLM_FAKE = previousFake;
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+      if (previousGateEndpoint === undefined) delete process.env.KB_GATE_LLM_ENDPOINT;
+      else process.env.KB_GATE_LLM_ENDPOINT = previousGateEndpoint;
+      if (previousLogFormat === undefined) delete process.env.KB_LOG_FORMAT;
+      else process.env.KB_LOG_FORMAT = previousLogFormat;
+    }
+  });
+
   it('parses fenced JSON, keeps partial verdicts, and downgrades contentless drops', async () => {
     const rows = [
       candidate('/kb/a.md', 0, 0.1, 'contains timeout retry budget'),

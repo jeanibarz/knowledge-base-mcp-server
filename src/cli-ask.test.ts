@@ -11,6 +11,7 @@ import {
   runAsk,
   type RunAskDeps,
 } from './cli-ask.js';
+import { callChatCompletion } from './llm-client.js';
 
 describe('parseAskArgs', () => {
   it('parses retrieval and LLM options', () => {
@@ -405,6 +406,75 @@ describe('ask transcript records', () => {
       stderrSpy.mockRestore();
       if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
       else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+    }
+  });
+
+  it('answers through KB_LLM_FAKE without KB_LLM_ENDPOINT or a live server', async () => {
+    const previousFake = process.env.KB_LLM_FAKE;
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    const previousLogFormat = process.env.KB_LOG_FORMAT;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+
+    try {
+      process.env.KB_LLM_FAKE = 'on';
+      process.env.KB_LOG_FORMAT = 'text';
+      delete process.env.KB_LLM_ENDPOINT;
+      const manager = {
+        modelDir: '/tmp/kb-ask-model',
+        initialize: jest.fn(async () => {}),
+        updateIndex: jest.fn(async () => {}),
+        similaritySearch: jest.fn(async () => [
+          {
+            pageContent: 'Rollback approval requires the release lead.',
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md' },
+            score: 0.1,
+          },
+        ]),
+      };
+      const deps: RunAskDeps = {
+        bootstrapLayout: jest.fn(async () => {}),
+        resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+        loadManagerForModel: jest.fn(async () => manager as never),
+        loadWithJsonRetry: jest.fn(async () => {}),
+        withWriteLock: jest.fn(async <T>(_resource: string, action: () => Promise<T>) => action()) as RunAskDeps['withWriteLock'],
+        callChatCompletion,
+        createTranscriptNote: createAskTranscriptNote,
+        knowledgeBasesRootDir: '/tmp/kb-ask-root',
+      };
+
+      const code = await runAsk(['Who approves rollback?', '--kb=ops', '--format=json'], deps);
+
+      expect(code).toBe(0);
+      expect(stderr.join('')).toContain('"llm_provider":"fake"');
+      const payload = JSON.parse(stdout.join('')) as {
+        answer: string;
+        llm: { profile: string; source: string; model: string | null; endpoint: string };
+      };
+      expect(payload.answer).toContain('Rollback approval requires the release lead.');
+      expect(payload.llm).toMatchObject({
+        profile: 'fake',
+        source: 'fake',
+        model: 'kb-fake-llm',
+        endpoint: 'mock://kb-llm-fake/v1/chat/completions',
+      });
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (previousFake === undefined) delete process.env.KB_LLM_FAKE;
+      else process.env.KB_LLM_FAKE = previousFake;
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+      if (previousLogFormat === undefined) delete process.env.KB_LOG_FORMAT;
+      else process.env.KB_LOG_FORMAT = previousLogFormat;
     }
   });
 

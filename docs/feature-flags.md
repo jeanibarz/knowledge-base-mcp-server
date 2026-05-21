@@ -17,6 +17,8 @@ verify the active behavior.
 | Query cache memory limit | `KB_QUERY_CACHE_LRU_MAX` | `256` | CLI and MCP retrieval | Implemented | none | `kb doctor --format=json` |
 | Query cache disk budget | `KB_QUERY_CACHE_DISK_MAX_MB` | `64` | CLI and MCP retrieval | Implemented | none | `kb doctor --format=json` |
 | Local LLM endpoint | `KB_LLM_ENDPOINT` | active `kb llm` profile, then local-research-agent default for `kb ask`; unset for contextual ingest unless supplied | `kb ask`, contextual ingest, gate fallback endpoint | Implemented | `kb ask --endpoint=...`, `--llm-profile=...` | `kb llm status` |
+| Fake LLM | `KB_LLM_FAKE` | `off` | `kb ask`, contextual ingest, relevance-gate Stage B | Implemented, dev/test fixture | none | `KB_LLM_FAKE=on kb ask "question" --kb=<name>` |
+| Fake LLM rules | `KB_LLM_FAKE_RULES` | unset | Fake LLM answers, prefaces, judge verdicts | Implemented | none | `KB_LLM_FAKE=on KB_LLM_FAKE_RULES=/path/to/rules.json kb ask "question"` |
 | Gate fallback LLM model id | `KB_LLM_MODEL` | endpoint default | Relevance gate fallback model | Implemented | none | `KB_RELEVANCE_GATE=on KB_LLM_MODEL=<model> kb search "query" --gate --task-context="current task"` |
 | Save generated answer | `kb ask --save-transcript --yes` | off | CLI ask write path | Implemented | `--save-transcript --kb=<name> --yes` | `kb ask "question" --kb=<name> --save-transcript --title="..." --yes` |
 

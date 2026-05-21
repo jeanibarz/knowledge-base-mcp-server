@@ -56,6 +56,7 @@ export interface CanonicalLogEvent {
   recovery_hint?: string;
   rerank?: Record<string, unknown>;
   gate?: Record<string, unknown>;
+  llm_provider?: string;
 }
 
 export type CanonicalLogInput = Omit<
@@ -96,6 +97,7 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'recovery_hint',
   'rerank',
   'gate',
+  'llm_provider',
 ];
 
 export function createCanonicalRequestId(): string {
@@ -141,6 +143,7 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   assignIfDefined(event, 'recovery_hint', input.recovery_hint);
   assignIfDefined(event, 'rerank', input.rerank);
   assignIfDefined(event, 'gate', input.gate);
+  assignIfDefined(event, 'llm_provider', input.llm_provider);
 
   return event;
 }

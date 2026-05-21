@@ -1,3 +1,5 @@
+import { FAKE_LLM_ENDPOINT, isFakeLlmEnabled } from '../llm-fake-stub.js';
+
 export interface RelevanceGateConfig {
   enabled: boolean;
   emptyVerdictEnabled: boolean;
@@ -12,6 +14,7 @@ export interface RelevanceGateConfig {
 export function resolveRelevanceGateConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): RelevanceGateConfig {
+  const fakeLlm = isFakeLlmEnabled(env);
   return {
     enabled: parseOnOff(env.KB_RELEVANCE_GATE, false),
     // RFC 018 M0 (#369) observed a high false-empty rate. Keep the terminal
@@ -20,7 +23,7 @@ export function resolveRelevanceGateConfig(
     scoreFloor: parseFinite(env.KB_GATE_SCORE_FLOOR, 0.95),
     judgeInputLimit: parsePositiveInt(env.KB_GATE_JUDGE_INPUT, 10),
     judgeTimeoutMs: parsePositiveInt(env.KB_GATE_LLM_TIMEOUT_MS, 8000),
-    judgeEndpoint: firstNonEmpty(env.KB_GATE_LLM_ENDPOINT, env.KB_LLM_ENDPOINT),
+    judgeEndpoint: fakeLlm ? FAKE_LLM_ENDPOINT : firstNonEmpty(env.KB_GATE_LLM_ENDPOINT, env.KB_LLM_ENDPOINT),
     judgeModel: firstNonEmpty(env.KB_GATE_LLM_MODEL, env.KB_LLM_MODEL),
     minTaskContextTokens: parsePositiveInt(env.KB_GATE_MIN_TASK_TOKENS, 8),
   };
