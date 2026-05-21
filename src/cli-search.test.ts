@@ -194,6 +194,28 @@ describe('parseSearchArgs reranker (RFC 019)', () => {
   });
 });
 
+describe('parseSearchArgs advanced retrieval operators (#450)', () => {
+  it('accepts additive advanced retrieval flags', () => {
+    expect(parseSearchArgs([
+      'query',
+      '--diverse',
+      '--anti-query=legacy UI',
+      '--plus=slow loop',
+      '--minus=frontend layout',
+    ])).toMatchObject({
+      query: 'query',
+      diverse: true,
+      antiQueries: ['legacy UI'],
+      plusQueries: ['slow loop'],
+      minusQueries: ['frontend layout'],
+    });
+  });
+
+  it('rejects empty advanced retrieval components', () => {
+    expect(() => parseSearchArgs(['query', '--anti-query='])).toThrow(/must not be empty/);
+  });
+});
+
 describe('runSearch timing guard (#331)', () => {
   function makeDeps(): {
     deps: RunSearchDeps;
@@ -337,6 +359,7 @@ describe('runSearch timing guard (#331)', () => {
     const stdin = [
       '{not json',
       JSON.stringify({ query: 'semantic only', mode: 'lexical' }),
+      JSON.stringify({ query: 'advanced only', diverse: true }),
       JSON.stringify({ query: 'valid', freshness: false }),
       '',
     ].join('\n');
@@ -346,7 +369,7 @@ describe('runSearch timing guard (#331)', () => {
     expect(out.code).toBe(2);
     expect(manager.similaritySearch).toHaveBeenCalledTimes(1);
     const envelopes = out.stdout.trim().split('\n').map((line) => JSON.parse(line));
-    expect(envelopes).toHaveLength(3);
+    expect(envelopes).toHaveLength(4);
     expect(envelopes[0]).toMatchObject({
       line: 1,
       ok: false,
@@ -363,6 +386,14 @@ describe('runSearch timing guard (#331)', () => {
     });
     expect(envelopes[2]).toMatchObject({
       line: 3,
+      ok: false,
+      error: {
+        code: 'BATCH_ROW_INVALID',
+        message: expect.stringContaining('diverse is not supported'),
+      },
+    });
+    expect(envelopes[3]).toMatchObject({
+      line: 4,
       ok: true,
       query: 'valid',
       result: { freshness_omitted: true },
@@ -467,6 +498,254 @@ describe('runSearch timing guard (#331)', () => {
       freshness_omitted: true,
     });
     expect(payload).not.toHaveProperty('timing');
+  });
+
+  it('runs diverse search as read-only dense retrieval and emits JSON explanation metadata', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([
+      {
+        pageContent: 'rollback deploy safety runbook',
+        metadata: { source: '/kb/ops/a.md', relativePath: 'ops/a.md', chunkIndex: 0 },
+        score: 0.1,
+      },
+      {
+        pageContent: 'rollback deploy safety checklist',
+        metadata: { source: '/kb/ops/a.md', relativePath: 'ops/a.md', chunkIndex: 1 },
+        score: 0.11,
+      },
+      {
+        pageContent: 'rollback incident escalation evidence',
+        metadata: { source: '/kb/ops/b.md', relativePath: 'ops/b.md', chunkIndex: 0 },
+        score: 0.12,
+      },
+    ] as never);
+
+    const out = await captureSearchOutput([
+      'rollback',
+      '--diverse',
+      '--k=2',
+      '--format=json',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    expect(out.stderr).toBe('');
+    expect(manager.similaritySearch).toHaveBeenCalledTimes(1);
+    expect(manager.similaritySearch).toHaveBeenCalledWith(
+      'rollback',
+      20,
+      undefined,
+      undefined,
+      undefined,
+      expect.any(Object),
+      { noCache: false },
+    );
+    const payload = JSON.parse(out.stdout);
+    expect(payload.results.map((result: { metadata: { relativePath: string } }) => result.metadata.relativePath)).toEqual([
+      'ops/a.md',
+      'ops/b.md',
+    ]);
+    expect(payload.advanced_retrieval).toMatchObject({
+      schema_version: 'kb.search.advanced-retrieval.v1',
+      mode: 'diverse',
+      read_only: true,
+      candidate_pool_k: 20,
+      constraints: {
+        requires_positive_support: true,
+        anti_query_guard: expect.stringContaining('no raw farthest-neighbor search'),
+      },
+      query_components: [
+        { role: 'primary', query: 'rollback', retrieved: 3 },
+      ],
+    });
+    expect(payload.advanced_retrieval.result_signals).toHaveLength(2);
+  });
+
+  it('runs contrastive anti-query search without admitting negative-only candidates', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch
+      .mockResolvedValueOnce([
+        {
+          pageContent: 'agent evidence queue triage',
+          metadata: { source: '/kb/ops/relevant.md', relativePath: 'ops/relevant.md', chunkIndex: 0 },
+          score: 0.2,
+        },
+        {
+          pageContent: 'agent evidence visual component styling',
+          metadata: { source: '/kb/ops/ui.md', relativePath: 'ops/ui.md', chunkIndex: 0 },
+          score: 0.21,
+        },
+      ] as never)
+      .mockResolvedValueOnce([
+        {
+          pageContent: 'visual component css palette',
+          metadata: { source: '/kb/ops/negative-only.md', relativePath: 'ops/negative-only.md', chunkIndex: 0 },
+          score: 0.1,
+        },
+        {
+          pageContent: 'agent evidence visual component styling',
+          metadata: { source: '/kb/ops/ui.md', relativePath: 'ops/ui.md', chunkIndex: 0 },
+          score: 0.11,
+        },
+      ] as never);
+
+    const out = await captureSearchOutput([
+      'agent evidence',
+      '--anti-query=visual component styling',
+      '--k=2',
+      '--format=json',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    expect(manager.similaritySearch).toHaveBeenCalledTimes(2);
+    expect(manager.similaritySearch).toHaveBeenNthCalledWith(
+      2,
+      'visual component styling',
+      20,
+      undefined,
+      undefined,
+      undefined,
+      expect.any(Object),
+      { noCache: false },
+    );
+    const payload = JSON.parse(out.stdout);
+    expect(payload.results.map((result: { metadata: { relativePath: string } }) => result.metadata.relativePath)).toEqual([
+      'ops/relevant.md',
+      'ops/ui.md',
+    ]);
+    expect(JSON.stringify(payload.results)).not.toContain('negative-only.md');
+    expect(payload.advanced_retrieval.mode).toBe('contrastive');
+    expect(payload.advanced_retrieval.query_components.map((component: { role: string }) => component.role)).toEqual([
+      'primary',
+      'anti_query',
+    ]);
+  });
+
+  it('aligns advanced retrieval signals with relevance-gated results', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([
+      {
+        pageContent: 'kept deployment rollback',
+        metadata: { source: '/kb/ops/keep.md', relativePath: 'ops/keep.md', chunkIndex: 0 },
+        score: 0.1,
+      },
+      {
+        pageContent: 'dropped deployment rollback',
+        metadata: { source: '/kb/ops/drop.md', relativePath: 'ops/drop.md', chunkIndex: 0 },
+        score: 2.5,
+      },
+    ] as never);
+
+    const out = await captureSearchOutput([
+      'deployment rollback',
+      '--diverse',
+      '--gate',
+      '--format=json',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    const payload = JSON.parse(out.stdout);
+    expect(payload.results.map((result: { metadata: { relativePath: string } }) => result.metadata.relativePath)).toEqual([
+      'ops/keep.md',
+    ]);
+    expect(payload.advanced_retrieval.result_signals.map((signal: { source: string }) => signal.source)).toEqual([
+      'ops/keep.md',
+    ]);
+    expect(JSON.stringify(payload.advanced_retrieval.result_signals)).not.toContain('ops/drop.md');
+  });
+
+  it('runs composed plus/minus search through the CLI wiring', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch
+      .mockResolvedValueOnce([
+        {
+          pageContent: 'queue debt dispatch triage',
+          metadata: { source: '/kb/ops/queue.md', relativePath: 'ops/queue.md', chunkIndex: 0 },
+          score: 0.1,
+        },
+        {
+          pageContent: 'slow loop queue review debt',
+          metadata: { source: '/kb/ops/slow-loop.md', relativePath: 'ops/slow-loop.md', chunkIndex: 0 },
+          score: 0.3,
+        },
+      ] as never)
+      .mockResolvedValueOnce([
+        {
+          pageContent: 'slow loop queue review debt',
+          metadata: { source: '/kb/ops/slow-loop.md', relativePath: 'ops/slow-loop.md', chunkIndex: 0 },
+          score: 0.05,
+        },
+      ] as never)
+      .mockResolvedValueOnce([
+        {
+          pageContent: 'queue debt frontend layout',
+          metadata: { source: '/kb/ops/queue.md', relativePath: 'ops/queue.md', chunkIndex: 0 },
+          score: 0.05,
+        },
+      ] as never);
+
+    const out = await captureSearchOutput([
+      'queue debt',
+      '--plus=slow loop review',
+      '--minus=frontend layout',
+      '--k=1',
+      '--format=json',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    expect(manager.similaritySearch).toHaveBeenCalledTimes(3);
+    expect(manager.similaritySearch).toHaveBeenNthCalledWith(
+      1,
+      'queue debt',
+      20,
+      undefined,
+      undefined,
+      undefined,
+      expect.any(Object),
+      { noCache: false },
+    );
+    expect(manager.similaritySearch).toHaveBeenNthCalledWith(
+      2,
+      'slow loop review',
+      20,
+      undefined,
+      undefined,
+      undefined,
+      expect.any(Object),
+      { noCache: false },
+    );
+    expect(manager.similaritySearch).toHaveBeenNthCalledWith(
+      3,
+      'frontend layout',
+      20,
+      undefined,
+      undefined,
+      undefined,
+      expect.any(Object),
+      { noCache: false },
+    );
+    const payload = JSON.parse(out.stdout);
+    expect(payload.results.map((result: { metadata: { relativePath: string } }) => result.metadata.relativePath)).toEqual([
+      'ops/slow-loop.md',
+    ]);
+    expect(payload.advanced_retrieval.mode).toBe('composed');
+    expect(payload.advanced_retrieval.query_components.map((component: { role: string }) => component.role)).toEqual([
+      'primary',
+      'plus',
+      'minus',
+    ]);
+  });
+
+  it('rejects advanced operators outside dense mode', async () => {
+    const { deps } = makeDeps();
+
+    const out = await captureSearchOutput(['query', '--mode=hybrid', '--diverse'], deps);
+
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain('advanced retrieval operators are only supported with --mode=dense');
   });
 
   it('renders compact dense search output without changing retrieval semantics', async () => {

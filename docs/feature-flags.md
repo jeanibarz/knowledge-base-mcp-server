@@ -10,6 +10,7 @@ verify the active behavior.
 | Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
 |---|---|---:|---|---|---|---|
 | Retrieval mode | `kb search --mode=dense\|lexical\|hybrid\|auto` | `dense` | CLI search | Implemented | `--mode=...` | `kb search "query" --mode=auto --timing` |
+| Advanced retrieval exploration | `kb search --diverse`, `--anti-query=<text>`, `--plus=<text>`, `--minus=<text>` | off | CLI search | Implemented, opt-in | per-call flags only | `kb search "agent evidence" --diverse --format=json` |
 | Refresh before search | `kb search --refresh` | off | CLI search | Implemented | `--refresh` | `kb search "query" --refresh --timing` |
 | Active embedding model | `KB_ACTIVE_MODEL` | unset, then `${FAISS_INDEX_PATH}/active.txt`, then legacy provider env | CLI and MCP retrieval | Implemented | `--model=<id>` on CLI, `model_name` on MCP `retrieve_knowledge` | `kb models list` |
 | Query embedding cache | `KB_QUERY_CACHE` | on | CLI and MCP retrieval | Implemented | `kb search --no-cache` | `kb doctor --format=json` |
