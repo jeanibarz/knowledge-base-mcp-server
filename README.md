@@ -48,17 +48,20 @@ kb search "query" --explain-empty            # opt-in deep diagnostics when resu
 kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh   # BM25 debug surface (#206 stage 1)
 kb search "INDEX_NOT_INITIALIZED" --mode=hybrid              # dense ⨁ BM25 fused via RRF (#206 stage 2)
 kb search "src/cli-search.ts" --mode=auto    # opt-in heuristic: hybrid for code/path/error-shaped queries
+kb search "agent evidence" --diverse --format=json           # source-aware representative sampling
+kb search "agent evidence" --anti-query="frontend styling"   # contrastive, positive-support constrained
+kb search "queue debt" --plus="slow loop" --minus="UI layout" --format=json
 kb open alpha/docs/deploy.md#L42-L78         # resolve a chunk id / kb:// URI / result path to its source file
 kb llm use-endpoint http://127.0.0.1:8080/v1/chat/completions --profile=local-research-agent
 kb ask "what changed in the daemonization notes?" --timing   # retrieval + local LLM answer with timings
 kb ask "what changed?" --kb=work --save-transcript --title="Ask - daemon changes" --yes
+kb research plan "autonomous research agents and evals" --format=json
+kb research collect "autonomous research agents and evals" --run-dir runs/agents --format=json
 kb remember --suggest --kb=work --title="Quarterly plan"
 printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan" --stdin --yes
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
 kb import-url --kb=research https://example.com/article   # snapshot a URL into a provenance-tagged note
 kb superseded --kb=work       # read-only review for obsolete/contradicted notes
-kb research plan "Compare RAG eval frameworks" --format=json  # deterministic shelf + query plan (#451)
-kb research collect "Compare RAG eval frameworks" --run-dir runs/rag-eval  # writes plan.json/ledger.json/evidence_packet.md/events.jsonl
 kb feedback add --kb=work --query="rollback procedure" --source=runbooks/deploy.md --verdict=relevant
 kb feedback promote --kb=work --query="rollback procedure" --fixture=docs/testing/feedback-fixture.yml --yes  # promote ledger entries into an eval fixture
 kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
@@ -76,7 +79,22 @@ kb help search                # per-command help (also: kb search --help)
 kb completion bash            # generate a bash shell completion script
 ```
 
-The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). The consolidated operator matrix for retrieval flags, defaults, per-call overrides, rollout status, and validation commands lives in [docs/feature-flags.md](docs/feature-flags.md). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, version context, contextual-preface cache/failure counters (when RFC 017 ingest is enabled), and remote-transport request/auth/backoff counters (when the HTTP or SSE transport is active). It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. `--format=compact` collapses each result to a single `score|kb|path:line` line for terse operator listings; `--batch-jsonl` reads `{"query":"…","kb":"…","k":N}` records from stdin and emits one JSON result envelope per line. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
+The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). The consolidated operator matrix for retrieval flags, defaults, per-call overrides, rollout status, and validation commands lives in [docs/feature-flags.md](docs/feature-flags.md). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, version context, contextual-preface cache/failure counters (when RFC 017 ingest is enabled), and remote-transport request/auth/backoff counters (when the HTTP or SSE transport is active). It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Exploration operators stay additive and read-only: `--diverse` reranks a bounded dense candidate pool for source-aware representative coverage; `--anti-query=<text>` penalizes candidates close to a negative query but only among positively supported candidates; `--plus=<text>` and `--minus=<text>` add vector-composition-style positive and negative query components. JSON output includes an `advanced_retrieval` explanation block with mode, constraints, query components, and per-result scoring signals. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. `--format=compact` collapses each result to a single `score|kb|path:line` line for terse operator listings; `--batch-jsonl` reads `{"query":"…","kb":"…","k":N}` records from stdin and emits one JSON result envelope per line. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
+
+### Research evidence packets for agents
+
+`kb research` is a read-only workflow for agent shells that need a broad evidence pass before writing an answer, RFC, eval plan, or issue. It does not call an LLM, trigger local-research-agent, refresh indexes, or write KB notes.
+
+Run `plan` first to inspect the deterministic shelf/query plan, then run `collect` with a run directory:
+
+```bash
+kb research plan "synthesize an end-to-end approach for autonomous research agents and evals" --format=json
+kb research collect "synthesize an end-to-end approach for autonomous research agents and evals" \
+  --run-dir /tmp/kb-research-autonomous-agents-evals-20260521 \
+  --format=json
+```
+
+After `collect`, read the generated `evidence_packet.md` and synthesize manually. The run directory also contains `run.json`, `plan.json`, `ledger.json`, and `events.jsonl`; `ledger.json` stays lossless for audit/debug use, while `evidence_packet.md` is the human-scannable packet. The JSON contract and stable artifact fields are documented in [`docs/cli-json-contracts.md`](docs/cli-json-contracts.md#kb-research); a longer operator walk-through (when to use it, how to read the packet, downstream `kb ask` + `kb feedback` plumbing) lives in [`docs/operations/research-workflow.md`](docs/operations/research-workflow.md).
 
 For local day-two operations with Ollama, llama-server, n8n, systemd user
 units, remote MCP transports, or `kb serve`, see the
@@ -91,8 +109,6 @@ RFC 018 relevance gating is off by default. Enable it per process with `KB_RELEV
 `kb import-url --kb=<name> <url>` snapshots a web page or PDF into one new KB note while preserving provenance. It fetches the URL over http(s), routes HTML and PDF responses through the same loaders the indexer uses, and writes a note whose YAML frontmatter records `source_url`, `fetched_at`, `content_sha256`, `content_type`, `http_status`, and `byte_count`. The fetch is guarded: only http/https schemes are allowed, redirects are followed manually and re-validated per hop (`--max-redirects`, default 5), responses are size-capped (`--max-bytes`, default 8 MiB) and time-bounded (`--timeout`, default 30000 ms), and private/loopback/link-local addresses are refused unless `--allow-local-network` is passed (SSRF guard). The note path defaults to a slug of the page title; pass `--note=<path.md>` to choose it, `--title` to override the title, and `--refresh` to re-index afterwards. It refuses to overwrite an existing note.
 
 `kb superseded --kb=<name>` is a read-only active-forgetting review. It scans markdown frontmatter for explicit contradiction, deprecated/dormant lifecycle status, stale verification dates, and low-confidence active notes, then uses the existing semantic index to add conservative newer-neighbor evidence when available. Use `--format=json` for agent workflows and `--include-clean` when you need a full inventory.
-
-`kb research plan "<question>"` reads KB descriptions and stats, then deterministically selects shelves and queries (no LLM calls). `kb research collect "<question>" --run-dir=<path>` runs the plan over hybrid search and writes a run directory containing `run.json`, `plan.json`, `ledger.json`, `evidence_packet.md` (the human-readable Sources-grouped packet), and `events.jsonl` so an agent can hand one coherent block of evidence to a follow-up `kb ask` or LLM call. See [`docs/operations/research-workflow.md`](docs/operations/research-workflow.md) for the operator walk-through.
 
 `kb feedback add --kb=<name> --query="<text>" --source=<kb-relative-path> --verdict=relevant|irrelevant|stale|misleading [--relevance=0..3] [--chunk-id=<id>]` appends a relevance judgment to the per-KB ledger (`<kb>/.index/relevance-feedback.jsonl`). `kb feedback list --kb=<name>` reviews recent entries, and `kb feedback promote --kb=<name> --query="<text>" --fixture=<path.yml> --yes` materialises every ledger row for a query into a retrieval-eval case so accumulated judgments become regression coverage. See [`docs/operations/feedback-workflow.md`](docs/operations/feedback-workflow.md).
 

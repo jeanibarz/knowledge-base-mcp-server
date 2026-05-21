@@ -3,6 +3,7 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  RESEARCH_HELP,
   buildResearchPlan,
   parseResearchArgs,
   runResearch,
@@ -188,6 +189,12 @@ function lineRangeForQuery(query: string): { from: number; to: number } {
 }
 
 describe('kb research CLI', () => {
+  it('explains dense coverage warnings in command help', () => {
+    expect(RESEARCH_HELP).toContain('dense_index_empty_coverage');
+    expect(RESEARCH_HELP).toContain('lexical-heavy and lower confidence');
+    expect(RESEARCH_HELP).toContain('read-only command');
+  });
+
   it('parses plan and collect arguments', () => {
     expect(parseResearchArgs(['plan', 'agent evals', '--format=json'])).toMatchObject({
       action: 'plan',
@@ -302,6 +309,18 @@ describe('kb research CLI', () => {
     const parsed = JSON.parse(stdout.join(''));
     expect(parsed.schema_version).toBe('kb-research-plan.v1');
     expect(parsed.selected_shelves[0].name).toBe('llm-as-judge');
+    expect(deps.searchHybrid).not.toHaveBeenCalled();
+  });
+
+  it('prints dense coverage confidence guidance in markdown plan output', async () => {
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await runResearch(['plan', 'autonomous agents as judges'], deps);
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    expect(stdout.join('')).toContain('dense_index_empty_coverage');
+    expect(stdout.join('')).toContain('lexical-heavy and lower confidence');
     expect(deps.searchHybrid).not.toHaveBeenCalled();
   });
 
@@ -444,6 +463,28 @@ describe('kb research CLI', () => {
         (deps.searchHybrid as jest.Mock).mock.calls.map(([input]) => (input as { shelf: string }).shelf),
       );
       expect([...searchedShelves]).toEqual(['agent-task-lessons', 'llm-agents']);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints dense coverage confidence guidance in markdown collect output', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-research-md-'));
+    const runDir = path.join(tempDir, 'run');
+    const { deps, stdout, stderr } = makeDeps();
+
+    try {
+      const code = await runResearch([
+        'collect',
+        'autonomous agents as judges',
+        '--run-dir',
+        runDir,
+      ], deps);
+
+      expect(code).toBe(0);
+      expect(stderr.join('')).toBe('');
+      expect(stdout.join('')).toContain('Coverage note: dense-index coverage warnings');
+      expect(stdout.join('')).toContain('lexical-heavy and lower confidence');
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }

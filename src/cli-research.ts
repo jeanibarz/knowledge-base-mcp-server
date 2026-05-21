@@ -19,6 +19,11 @@ The workflow is deterministic: it reads KB descriptions and stats, selects
 likely shelves and queries, then collect uses existing hybrid search. It does
 not call an LLM, trigger local-research-agent, or write KB notes.
 
+If a selected shelf has files but 0 dense chunks, plan reports
+dense_index_empty_coverage. Collect still runs hybrid search, but evidence from
+that shelf may be lexical-heavy and lower confidence until the index is
+refreshed outside this read-only command.
+
 Commands:
   plan                  Print a deterministic retrieval plan.
   collect               Create run artifacts: run.json, plan.json, ledger.json,
@@ -565,7 +570,7 @@ function buildShelfRisks(name: string, stats: KbStatsRow): ResearchRisk[] {
       code: 'dense_index_empty_coverage',
       severity: 'warning',
       shelf: name,
-      message: `${name} has ${stats.file_count} file(s) but 0 dense chunks; collect will still use hybrid search.`,
+      message: `${name} has ${stats.file_count} file(s) but 0 dense chunks; collect will still use hybrid search, but evidence may be lexical-heavy and lower confidence until the index is refreshed.`,
     }];
   }
   return [];
@@ -902,6 +907,9 @@ function formatCollectMarkdown(summary: CollectResult['summary']): string {
     `Run directory: ${summary.run_dir}`,
     `Evidence entries: ${summary.evidence_count}`,
     `Risks: ${summary.risk_count}`,
+    ...(summary.risk_count > 0
+      ? ['Coverage note: dense-index coverage warnings mean evidence may be lexical-heavy and lower confidence; inspect evidence_packet.md for details.']
+      : []),
     `Search failures: ${summary.search_failure_count}`,
     '',
   ].join('\n');

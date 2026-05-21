@@ -106,6 +106,9 @@ kb search "<query>" --format=json [--kb=<name>] [--model=<id>] [--k=<int>]
 kb search "<query>" --format=json --refresh [--kb=<name>]
 kb search --stdin --format=json
 kb search "<query>" --format=json --mode=dense|lexical|hybrid|auto
+kb search "<query>" --format=json --diverse
+kb search "<query>" --format=json --anti-query="<negative query>"
+kb search "<query>" --format=json --plus="<positive query>" --minus="<negative query>"
 KB_EDITOR_URI=cursor kb search "<query>" --format=json
 kb search "<query>" --format=vimgrep
 ```
@@ -171,6 +174,12 @@ Optional stable fields:
 - `results[].rerank_score`: present for hits that were re-scored by the RFC 019
   reranker. It is a cross-encoder relevance score, not a FAISS distance or RRF
   score.
+- `advanced_retrieval`: present when `--diverse`, `--anti-query`, `--plus`, or
+  `--minus` is used. Shape:
+  `{"schema_version":"kb.search.advanced-retrieval.v1","mode":"diverse"|"contrastive"|"composed","read_only":true,"candidate_pool_k":number,"constraints":object,"query_components":array,"scoring":object,"result_signals":array}`.
+  Contrastive and composition modes are constrained to candidates retrieved by
+  the positive query components; negative-only candidates are ignored, so
+  `--anti-query` is not raw farthest-neighbor search.
 - `auto_threshold`: present with `--threshold=auto`. Shape:
   `{"threshold": number, "knee_index": number|null, "kept": number}`.
 - `timing`: present with `--timing`; keys are elapsed millisecond counters and
@@ -351,7 +360,9 @@ Stable plan fields are `schema_version`, `question`, `selected_shelves`,
 `queries`, `retrieval`, and `risks`. `retrieval.mode` is currently `hybrid`.
 `selected_shelves[].risks` and top-level `risks` include
 `dense_index_empty_coverage` when a selected shelf has files but zero dense
-chunks; collection still uses hybrid search in that case.
+chunks; collection still uses hybrid search in that case, but evidence from
+that shelf may be lexical-heavy and lower confidence until the index is
+refreshed outside the read-only research command.
 
 Collect summary success envelope:
 
