@@ -81,6 +81,7 @@ import {
   verifyIntegrity,
   type IntegrityReport,
 } from './cli-verify.js';
+import { createDoctorBugReportBundle } from './cli-bug-report.js';
 
 /**
  * Issue #210 — error-rate threshold above which the doctor surfaces a
@@ -99,6 +100,7 @@ export const DOCTOR_HELP = `kb doctor — aggregate model / index / backend heal
 
 Usage:
   kb doctor [--format=md|json] [--reindex-trigger] [--endpoints] [--integrity|--slow]
+  kb doctor --bug-report[=<dir>] [--include-command -- <cmd> [args...]]
 
 Composes existing read-only checks (env vars, registered models, active
 model, FAISS index presence + mtime, knowledge-base count, embedding
@@ -118,6 +120,13 @@ Options:
   --endpoints           Check only configured local bind/connect endpoint
                         readiness (MCP bind target, KB_DAEMON_URL,
                         Ollama embedding endpoint, and KB_LLM_ENDPOINT/profile).
+  --bug-report[=<dir>]  Write a timestamped redacted support bundle under
+                        <dir> (default: current directory). Includes doctor,
+                        stats, recent canonical logs, runtime metadata, and
+                        a README. Does not include note contents or raw keys.
+  --include-command -- <cmd> [args...]
+                        With --bug-report, run a support command and record
+                        exit code plus redacted stderr tail.
   --integrity           Include slow \`kb verify --integrity\` checks.
   --slow                Alias for --integrity.
   --help, -h            Show this help.
@@ -133,6 +142,11 @@ export interface DoctorArgs {
   reindexTrigger: boolean;
   endpoints: boolean;
   integrity: boolean;
+  bugReport: {
+    outputParentDir?: string;
+    includeCommand: boolean;
+    command?: string[];
+  } | null;
 }
 
 export type HealthStatus = 'ok' | 'warn' | 'error';
@@ -376,6 +390,20 @@ export async function runDoctor(rest: string[]): Promise<number> {
     return report.status === 'error' ? 1 : 0;
   }
 
+  if (parsed.bugReport !== null) {
+    const result = await createDoctorBugReportBundle({
+      outputParentDir: parsed.bugReport.outputParentDir,
+      command: parsed.bugReport.command,
+      buildDoctorReport: () => buildDoctorReport({ integrity: parsed.integrity }),
+    });
+    if (parsed.format === 'json') {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else {
+      process.stdout.write(`Bug report bundle: ${result.bundle_dir}\n`);
+    }
+    return 0;
+  }
+
   const report = await buildDoctorReport({ integrity: parsed.integrity });
   if (parsed.format === 'json') {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -386,8 +414,25 @@ export async function runDoctor(rest: string[]): Promise<number> {
 }
 
 export function parseDoctorArgs(rest: string[]): DoctorArgs {
-  const out: DoctorArgs = { format: 'md', reindexTrigger: false, endpoints: false, integrity: false };
-  for (const raw of rest) {
+  const out: DoctorArgs = {
+    format: 'md',
+    reindexTrigger: false,
+    endpoints: false,
+    integrity: false,
+    bugReport: null,
+  };
+  let sawBugReport = false;
+  for (let i = 0; i < rest.length; i++) {
+    const raw = rest[i];
+    if (raw === '--') {
+      if (out.bugReport?.includeCommand !== true) {
+        throw new Error('unexpected "--"; use --include-command before command arguments');
+      }
+      const command = rest.slice(i + 1);
+      if (command.length === 0) throw new Error('missing command after "--"');
+      out.bugReport.command = command;
+      break;
+    }
     if (raw.startsWith('--format=')) {
       const value = raw.slice('--format='.length);
       if (value !== 'md' && value !== 'json') {
@@ -404,12 +449,42 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
       out.endpoints = true;
       continue;
     }
+    if (raw === '--bug-report' || raw.startsWith('--bug-report=')) {
+      sawBugReport = true;
+      const outputParentDir = raw.includes('=')
+        ? raw.slice('--bug-report='.length)
+        : undefined;
+      if (outputParentDir === '') throw new Error('empty --bug-report value');
+      out.bugReport = {
+        outputParentDir,
+        includeCommand: out.bugReport?.includeCommand ?? false,
+        command: out.bugReport?.command,
+      };
+      continue;
+    }
+    if (raw === '--include-command') {
+      out.bugReport = {
+        outputParentDir: out.bugReport?.outputParentDir,
+        includeCommand: true,
+        command: out.bugReport?.command,
+      };
+      continue;
+    }
     if (raw === '--integrity' || raw === '--slow') {
       out.integrity = true;
       continue;
     }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
+  }
+  if (out.bugReport?.includeCommand === true && out.bugReport.command === undefined) {
+    throw new Error('--include-command requires "--" followed by a command');
+  }
+  if (out.bugReport?.includeCommand === true && !sawBugReport) {
+    throw new Error('--include-command requires --bug-report');
+  }
+  if (out.bugReport !== null && out.endpoints) {
+    throw new Error('--bug-report cannot be combined with --endpoints');
   }
   return out;
 }

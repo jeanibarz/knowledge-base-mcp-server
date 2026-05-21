@@ -693,6 +693,8 @@ Invocation:
 ```bash
 kb doctor --format=json
 kb doctor --endpoints --format=json
+kb doctor --bug-report=/tmp --format=json
+kb doctor --bug-report=/tmp --include-command -- node -e 'process.exit(1)'
 ```
 
 Report envelope:
@@ -804,6 +806,44 @@ Stdout/stderr and exit codes:
 - There is no separate JSON error envelope; failing health checks are encoded in
   the report with `status: "error"`.
 - Argument errors print `kb doctor: ...` to stderr and exit `2`.
+
+`kb doctor --bug-report[=<dir>]` writes a timestamped support bundle directory
+under `<dir>` (default: current directory). The bundle contains:
+
+- `manifest.json`: schema `kb.doctor.bug_report.v1`, created timestamp, file
+  list, bundle path, and aggregate redaction counts.
+- `doctor.json`: redacted aggregate doctor report.
+- `stats.json`: captured `kb stats --format=json` payload or failure metadata.
+- `logs-recent.json`: recent canonical log summaries when a log file is
+  configured.
+- `runtime.json`: Node/package/platform metadata plus redacted relevant
+  environment settings.
+- `README.md`: human-readable explanation of the bundle contents and residual
+  sensitivity.
+- `command.json`: only when `--include-command -- <cmd>` is passed. Records the
+  support command, exit code, duration, stdout byte count, stderr byte count,
+  and redacted stderr tail. It does not persist stdout content.
+
+The command prints the bundle path in markdown mode. With `--format=json`, it
+prints the manifest shape:
+
+```json
+{
+  "schema_version": "kb.doctor.bug_report.v1",
+  "bundle_dir": "/tmp/kb-bug-report-20260522T010203Z",
+  "created_at": "2026-05-22T01:02:03.000Z",
+  "files": ["README.md", "doctor.json", "manifest.json", "runtime.json"],
+  "redaction_summary": {
+    "enabled": true,
+    "total": 1,
+    "by_type": { "provider_token": 1 }
+  }
+}
+```
+
+The bundle intentionally excludes knowledge-base note contents and raw API
+keys. KB names, paths, model names, and log metadata may remain sensitive and
+should be reviewed before public posting.
 
 `kb doctor --endpoints --format=json` emits the focused endpoint-readiness
 schema instead of the full report:
