@@ -392,12 +392,15 @@ describe('FaissIndexManager permission handling', () => {
     KB_CHUNK_SIZE: process.env.KB_CHUNK_SIZE,
     KB_CHUNK_OVERLAP: process.env.KB_CHUNK_OVERLAP,
     KB_REFRESH_QUIESCE_MS: process.env.KB_REFRESH_QUIESCE_MS,
+    KB_INGEST_SECRET_SCAN: process.env.KB_INGEST_SECRET_SCAN,
+    KB_SECRET_SCAN_BYPASS_KBS: process.env.KB_SECRET_SCAN_BYPASS_KBS,
   };
 
 
   beforeEach(() => {
     saveMock.mockReset();
     addDocumentsMock.mockReset();
+    addVectorsMock.mockReset();
     fromTextsMock.mockReset();
     loadMock.mockReset();
     similaritySearchMock.mockReset();
@@ -1506,6 +1509,53 @@ describe('FaissIndexManager permission handling', () => {
     await manager.updateIndex('default');
     expect(fromTextsMock).toHaveBeenCalledTimes(1);
     await expect(listIngestQuarantine(defaultKb)).resolves.toEqual([]);
+  });
+
+  it('quarantines secret-bearing chunks before embedding when ingest secret scan is enabled', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-secret-scan-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'secret.md');
+    await fsp.writeFile(docPath, '# Secret\n\npassword=abcDEF1234567890!\n', 'utf-8');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_INGEST_SECRET_SCAN = 'on';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { listIngestQuarantine } = await import('./ingest-quarantine.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    await manager.updateIndex('default');
+
+    expect(fromTextsMock).not.toHaveBeenCalled();
+    expect(addVectorsMock).not.toHaveBeenCalled();
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'partial',
+      files_scanned: 1,
+      files_changed: 1,
+      files_skipped: 1,
+      chunks_attempted: 0,
+      failure_count: 1,
+      failures: [expect.objectContaining({
+        relative_path: 'secret.md',
+        phase: 'indexing',
+        code: 'KB_INGEST_SECRET_DETECTED',
+      })],
+    });
+    await expect(listIngestQuarantine(defaultKb)).resolves.toEqual([
+      expect.objectContaining({
+        relative_path: 'secret.md',
+        error_category: 'secret_detected',
+        error_code: 'KB_INGEST_SECRET_DETECTED',
+        message: expect.stringContaining('key_value_secret'),
+      }),
+    ]);
   });
 
   it('sanitizes absolute file paths in update failure summaries', async () => {

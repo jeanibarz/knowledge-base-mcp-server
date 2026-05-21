@@ -6,6 +6,11 @@ function parseCommaSeparatedList(raw: string | undefined): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+function parseOnOff(raw: string | undefined): boolean {
+  const normalized = raw?.trim().toLowerCase();
+  return normalized === 'on' || normalized === '1' || normalized === 'true' || normalized === 'yes';
+}
+
 // ---------------------------------------------------------------------------
 // Ingest filter configuration (RFC 011 section5.2.3).
 // Operator-extensible extras; the base allowlist and exclusion rules in
@@ -78,4 +83,22 @@ export function parseRefreshQuiesceMs(raw: string | undefined): number {
 
 export function resolveRefreshQuiesceMs(): number {
   return parseRefreshQuiesceMs(process.env.KB_REFRESH_QUIESCE_MS);
+}
+
+// ---------------------------------------------------------------------------
+// Ingest secret scan (#472).
+// ---------------------------------------------------------------------------
+
+export interface IngestSecretScanOptions {
+  enabled: boolean;
+  bypassKnowledgeBases: string[];
+}
+
+export function resolveIngestSecretScanOptions(
+  env: NodeJS.ProcessEnv = process.env,
+): IngestSecretScanOptions {
+  return {
+    enabled: parseOnOff(env.KB_INGEST_SECRET_SCAN),
+    bypassKnowledgeBases: parseCommaSeparatedList(env.KB_SECRET_SCAN_BYPASS_KBS),
+  };
 }

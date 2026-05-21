@@ -4,6 +4,7 @@ import * as path from 'path';
 import { classifyKbSearchError, type SearchFailureCategory } from './search-errors-core.js';
 import { toError } from './error-utils.js';
 import { assertNoTraversal } from './kb-fs.js';
+import { IngestSecretDetectedError } from './secret-scanner.js';
 import { withSidecarLock } from './write-lock.js';
 
 export const INGEST_QUARANTINE_SCHEMA_VERSION = 'ingest-quarantine.v1';
@@ -14,7 +15,7 @@ export const DEFAULT_INGEST_QUARANTINE_MAX_ENTRIES = 1000;
 const BASE_RETRY_DELAY_MS = 60_000;
 const MAX_RETRY_DELAY_MS = 24 * 60 * 60_000;
 
-export type IngestQuarantineCategory = SearchFailureCategory;
+export type IngestQuarantineCategory = SearchFailureCategory | 'secret_detected';
 
 export interface IngestQuarantineRecord {
   schema_version: typeof INGEST_QUARANTINE_SCHEMA_VERSION;
@@ -201,6 +202,13 @@ function classifyIngestError(error: unknown): {
   code: string;
   message: string;
 } {
+  if (error instanceof IngestSecretDetectedError) {
+    return {
+      category: 'secret_detected',
+      code: error.code,
+      message: error.message,
+    };
+  }
   const classified = classifyKbSearchError(error);
   const fsCode = (error as NodeJS.ErrnoException | undefined)?.code;
   if (typeof fsCode === 'string' && fsCode.length > 0) {
