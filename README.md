@@ -431,12 +431,14 @@ npm install -g @jeanibarz/knowledge-base-mcp-server@latest
 
 > **Writing notes that retrieve well?** See [`docs/authoring-knowledge.md`](docs/authoring-knowledge.md) — six-section guide on chunk-friendly markdown, frontmatter taxonomy that lifts into filters, content-boundary safety, and when to split a KB.
 
-The server exposes two tools:
+The core retrieval tools are:
 
 *   `list_knowledge_bases`: Lists the available knowledge bases.
 *   `retrieve_knowledge`: Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 document chunks are returned with a score below a threshold of 2. A different threshold can optionally be provided using the `threshold` parameter.
 
 You can use these tools through the MCP interface.
+
+The server also exposes MCP resources for clients that want to enumerate and read source documents directly. `resources/list` returns `kb://<knowledge-base>/<encoded-relative-path>` URIs for visible files under `KNOWLEDGE_BASES_ROOT_DIR`, and `resources/read` returns the raw document content as text or a base64 PDF blob. See [`docs/mcp-resources.md`](docs/mcp-resources.md) for client-facing URI, MIME type, and percent-encoding details.
 
 The `retrieve_knowledge` tool performs a semantic search using a FAISS index. The index is automatically updated when the server starts or when a file in a knowledge base is modified.
 
