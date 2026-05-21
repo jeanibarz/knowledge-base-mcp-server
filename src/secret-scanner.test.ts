@@ -65,7 +65,28 @@ describe('ingest secret scanner', () => {
       const secretError = error as IngestSecretDetectedError;
       expect(secretError.categories).toEqual(['bearer_token', 'key_value_secret']);
       expect(secretError.chunkIndexes).toEqual([0, 1]);
+      expect(secretError.locations).toEqual(['chunk']);
       expect(secretError.message).not.toContain('abcDEF');
+    }
+  });
+
+  it('can report frontmatter findings without inventing chunk indexes', () => {
+    try {
+      assertNoIngestSecrets(
+        [{ content: '{"api_key":"AKIA1234567890ABCDEF"}', location: 'frontmatter' }],
+        {
+          relativePath: 'alpha/secret.md',
+          knowledgeBaseName: 'alpha',
+          scanOptions: { enabled: true, bypassKnowledgeBases: [] },
+        },
+      );
+      throw new Error('expected scanner to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(IngestSecretDetectedError);
+      const secretError = error as IngestSecretDetectedError;
+      expect(secretError.categories).toEqual(['aws_access_key']);
+      expect(secretError.chunkIndexes).toEqual([]);
+      expect(secretError.locations).toEqual(['frontmatter']);
     }
   });
 });

@@ -394,6 +394,7 @@ describe('FaissIndexManager permission handling', () => {
     KB_REFRESH_QUIESCE_MS: process.env.KB_REFRESH_QUIESCE_MS,
     KB_INGEST_SECRET_SCAN: process.env.KB_INGEST_SECRET_SCAN,
     KB_SECRET_SCAN_BYPASS_KBS: process.env.KB_SECRET_SCAN_BYPASS_KBS,
+    KB_LOG_FORMAT: process.env.KB_LOG_FORMAT,
   };
 
 
@@ -1515,6 +1516,7 @@ describe('FaissIndexManager permission handling', () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-secret-scan-'));
     const kbDir = path.join(tempDir, 'kb');
     const defaultKb = path.join(kbDir, 'default');
+    const logFile = path.join(tempDir, 'canonical.jsonl');
     await fsp.mkdir(defaultKb, { recursive: true });
     const docPath = path.join(defaultKb, 'secret.md');
     await fsp.writeFile(docPath, '# Secret\n\npassword=abcDEF1234567890!\n', 'utf-8');
@@ -1524,6 +1526,8 @@ describe('FaissIndexManager permission handling', () => {
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_API_KEY = 'test-key';
     process.env.KB_INGEST_SECRET_SCAN = 'on';
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'both';
 
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
@@ -1551,11 +1555,125 @@ describe('FaissIndexManager permission handling', () => {
     await expect(listIngestQuarantine(defaultKb)).resolves.toEqual([
       expect.objectContaining({
         relative_path: 'secret.md',
+        reason: 'secret_detected',
         error_category: 'secret_detected',
         error_code: 'KB_INGEST_SECRET_DETECTED',
         message: expect.stringContaining('key_value_secret'),
       }),
     ]);
+    const canonicalEvents = (await fsp.readFile(logFile, 'utf-8'))
+      .split('\n')
+      .filter((line) => line.startsWith('{'))
+      .map((line) => JSON.parse(line) as { event?: string; secret_scan?: Record<string, unknown> });
+    expect(canonicalEvents).toContainEqual(expect.objectContaining({
+      event: 'secret_detected',
+      secret_scan: expect.objectContaining({
+        categories: expect.arrayContaining(['key_value_secret']),
+        chunk_indexes: [0],
+        locations: ['chunk'],
+      }),
+    }));
+  });
+
+  it('quarantines secret-bearing frontmatter before metadata reaches FAISS', async () => {
+    const awsAccessKey = `AKIA${'1234567890ABCDEF'}`;
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-secret-frontmatter-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(
+      path.join(defaultKb, 'safe.md'),
+      '# Safe\n\nRotate the deployment after the maintenance window.',
+    );
+    await fsp.writeFile(
+      path.join(defaultKb, 'leak.md'),
+      `---\napi_key: ${awsAccessKey}\n---\n# Leak\n\nBody without a token.\n`,
+    );
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_INGEST_SECRET_SCAN = 'on';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { listIngestQuarantine } = await import('./ingest-quarantine.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    await manager.updateIndex('default');
+
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'partial',
+      files_scanned: 2,
+      files_changed: 2,
+      files_skipped: 1,
+      failure_count: 1,
+      failures: [expect.objectContaining({
+        relative_path: 'leak.md',
+        code: 'KB_INGEST_SECRET_DETECTED',
+      })],
+    });
+    const storedDocuments = [
+      ...fromTextsMock.mock.calls.flatMap((call) => call[1] as Array<{ pageContent?: string; metadata?: unknown }>),
+      ...addVectorsMock.mock.calls.flatMap((call) => call[1] as Array<{ pageContent?: string; metadata?: unknown }>),
+    ];
+    expect(JSON.stringify(storedDocuments)).not.toContain(awsAccessKey);
+    await expect(listIngestQuarantine(defaultKb)).resolves.toEqual([
+      expect.objectContaining({
+        reason: 'secret_detected',
+        relative_path: 'leak.md',
+        error_category: 'secret_detected',
+      }),
+    ]);
+  });
+
+  it('leaves secret-bearing files ingestable when the scan is disabled or bypassed', async () => {
+    const awsAccessKey = `AKIA${'1234567890ABCDEF'}`;
+    for (const mode of ['disabled', 'bypassed'] as const) {
+      fromTextsMock.mockClear();
+      addVectorsMock.mockClear();
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), `kb-faiss-secret-${mode}-`));
+      const kbDir = path.join(tempDir, 'kb');
+      const defaultKb = path.join(kbDir, 'default');
+      await fsp.mkdir(defaultKb, { recursive: true });
+      await fsp.writeFile(
+        path.join(defaultKb, 'leak.md'),
+        `# Leak\n\nAWS_ACCESS_KEY_ID=${awsAccessKey}\n`,
+      );
+
+      process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+      process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+      process.env.EMBEDDING_PROVIDER = 'huggingface';
+      process.env.HUGGINGFACE_API_KEY = 'test-key';
+      if (mode === 'disabled') {
+        delete process.env.KB_INGEST_SECRET_SCAN;
+        delete process.env.KB_SECRET_SCAN_BYPASS_KBS;
+      } else {
+        process.env.KB_INGEST_SECRET_SCAN = 'on';
+        process.env.KB_SECRET_SCAN_BYPASS_KBS = 'default';
+      }
+
+      jest.resetModules();
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const { listIngestQuarantine } = await import('./ingest-quarantine.js');
+      const manager = new FaissIndexManager();
+      await manager.initialize();
+
+      await manager.updateIndex('default');
+
+      expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+        status: 'success',
+        files_scanned: 1,
+        files_changed: 1,
+        files_skipped: 0,
+        failure_count: 0,
+      });
+      expect(fromTextsMock.mock.calls.flatMap((call) => call[0] as string[]).join('\n'))
+        .toContain(awsAccessKey);
+      await expect(listIngestQuarantine(defaultKb)).resolves.toEqual([]);
+    }
   });
 
   it('sanitizes absolute file paths in update failure summaries', async () => {

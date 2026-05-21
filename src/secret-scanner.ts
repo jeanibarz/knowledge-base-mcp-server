@@ -11,19 +11,34 @@ export type SecretFindingCategory =
   | 'key_value_secret'
   | 'high_entropy';
 
+export type SecretScanLocation = 'chunk' | 'frontmatter';
+
+export interface SecretScanInput {
+  content: string;
+  chunkIndex?: number;
+  location: SecretScanLocation;
+}
+
 export interface SecretScanFinding {
   category: SecretFindingCategory;
-  chunkIndex: number;
+  chunkIndex?: number;
+  location: SecretScanLocation;
 }
 
 export class IngestSecretDetectedError extends Error {
   readonly code = 'KB_INGEST_SECRET_DETECTED';
   readonly categories: SecretFindingCategory[];
   readonly chunkIndexes: number[];
+  readonly locations: SecretScanLocation[];
 
   constructor(relativePath: string, findings: readonly SecretScanFinding[]) {
     const categories = uniqueSorted(findings.map((finding) => finding.category));
-    const chunkIndexes = uniqueSortedNumbers(findings.map((finding) => finding.chunkIndex));
+    const chunkIndexes = uniqueSortedNumbers(
+      findings.flatMap((finding) => (
+        typeof finding.chunkIndex === 'number' ? [finding.chunkIndex] : []
+      )),
+    );
+    const locations = uniqueSortedStrings(findings.map((finding) => finding.location)) as SecretScanLocation[];
     super(
       `secret-like content detected in ${relativePath} ` +
         `(${categories.join(', ')}); file quarantined before embedding`,
@@ -31,6 +46,7 @@ export class IngestSecretDetectedError extends Error {
     this.name = 'IngestSecretDetectedError';
     this.categories = categories;
     this.chunkIndexes = chunkIndexes;
+    this.locations = locations;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -61,6 +77,7 @@ const MIN_STANDALONE_ENTROPY = 4.2;
 export function detectSecretsInText(
   text: string,
   chunkIndex = 0,
+  location: SecretScanLocation = 'chunk',
 ): SecretScanFinding[] {
   const findings: SecretScanFinding[] = [];
   const seen = new Set<string>();
@@ -72,7 +89,7 @@ export function detectSecretsInText(
       if (entropyCheck === true && shannonEntropy(value) < MIN_SECRET_ENTROPY) {
         continue;
       }
-      addFinding(findings, seen, { category, chunkIndex });
+      addFinding(findings, seen, { category, chunkIndex, location });
       break;
     }
   }
@@ -81,7 +98,7 @@ export function detectSecretsInText(
   for (const match of text.matchAll(HIGH_ENTROPY_TOKEN)) {
     const token = match[0];
     if (looksLikeStandaloneSecret(token) && shannonEntropy(token) >= MIN_STANDALONE_ENTROPY) {
-      addFinding(findings, seen, { category: 'high_entropy', chunkIndex });
+      addFinding(findings, seen, { category: 'high_entropy', chunkIndex, location });
       break;
     }
   }
@@ -90,7 +107,7 @@ export function detectSecretsInText(
 }
 
 export function assertNoIngestSecrets(
-  chunks: ReadonlyArray<string>,
+  chunks: ReadonlyArray<string | SecretScanInput>,
   options: {
     relativePath: string;
     knowledgeBaseName: string;
@@ -102,7 +119,17 @@ export function assertNoIngestSecrets(
     return;
   }
 
-  const findings = chunks.flatMap((chunk, chunkIndex) => detectSecretsInText(chunk, chunkIndex));
+  const findings = chunks.flatMap((chunk, chunkIndex) => {
+    if (typeof chunk === 'string') {
+      return detectSecretsInText(chunk, chunkIndex, 'chunk');
+    }
+    const findingsForInput = detectSecretsInText(chunk.content, chunk.chunkIndex ?? 0, chunk.location);
+    if (chunk.chunkIndex !== undefined) return findingsForInput;
+    return findingsForInput.map((finding) => ({
+      category: finding.category,
+      location: finding.location,
+    }));
+  });
   if (findings.length > 0) {
     throw new IngestSecretDetectedError(options.relativePath, findings);
   }
@@ -138,7 +165,7 @@ function addFinding(
   seen: Set<string>,
   finding: SecretScanFinding,
 ): void {
-  const key = `${finding.category}:${finding.chunkIndex}`;
+  const key = `${finding.category}:${finding.location}:${finding.chunkIndex ?? 'none'}`;
   if (seen.has(key)) return;
   seen.add(key);
   findings.push(finding);
@@ -150,4 +177,8 @@ function uniqueSorted(values: readonly SecretFindingCategory[]): SecretFindingCa
 
 function uniqueSortedNumbers(values: readonly number[]): number[] {
   return Array.from(new Set(values)).sort((a, b) => a - b);
+}
+
+function uniqueSortedStrings(values: readonly string[]): string[] {
+  return Array.from(new Set(values)).sort();
 }

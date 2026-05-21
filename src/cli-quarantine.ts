@@ -13,7 +13,7 @@ import {
 export const QUARANTINE_HELP = `kb quarantine — inspect and manage ingest quarantine entries
 
 Usage:
-  kb quarantine list [--kb=<name>] [--format=md|json]
+  kb quarantine list [--kb=<name>] [--reason=<reason>] [--format=md|json]
   kb quarantine clear --kb=<name> --path=<relative-path>
   kb quarantine clear --kb=<name> --all
   kb quarantine retry --kb=<name> --path=<relative-path>
@@ -22,6 +22,8 @@ Usage:
 Options:
   --kb=<name>           Knowledge base name. Required for mutating commands.
   --path=<rel>          KB-relative quarantined file path.
+  --reason=<reason>     With list, show only entries matching a quarantine
+                        reason such as secret_detected.
   --all                 With clear, remove every entry in the KB.
   --format=md|json      Output format for list (default: md).
   --help, -h            Show this help.
@@ -60,6 +62,7 @@ interface QuarantineArgs {
   action: QuarantineAction;
   kb?: string;
   path?: string;
+  reason?: string;
   all: boolean;
   format: 'md' | 'json';
 }
@@ -78,7 +81,7 @@ export async function runQuarantine(
 
   try {
     if (parsed.action === 'list') {
-      const rows = await listRows(parsed.kb, deps);
+      const rows = await listRows(parsed.kb, parsed.reason, deps);
       if (parsed.format === 'json') {
         deps.stdout(`${JSON.stringify({ entries: rows }, null, 2)}\n`);
       } else {
@@ -151,6 +154,12 @@ export function parseQuarantineArgs(rest: string[]): QuarantineArgs {
       out.path = value;
       continue;
     }
+    if (raw.startsWith('--reason=')) {
+      const value = raw.slice('--reason='.length);
+      if (value === '') throw new Error('empty --reason value');
+      out.reason = value;
+      continue;
+    }
     if (raw === '--all') {
       out.all = true;
       continue;
@@ -167,6 +176,9 @@ export function parseQuarantineArgs(rest: string[]): QuarantineArgs {
   if (out.action !== 'list' && out.format !== 'md') {
     throw new Error('--format is only supported with list');
   }
+  if (out.action !== 'list' && out.reason !== undefined) {
+    throw new Error('--reason is only supported with list');
+  }
   if (out.all && out.path !== undefined) {
     throw new Error('--all and --path cannot be combined');
   }
@@ -178,6 +190,7 @@ export function parseQuarantineArgs(rest: string[]): QuarantineArgs {
 
 async function listRows(
   kb: string | undefined,
+  reason: string | undefined,
   deps: RunQuarantineDeps,
 ): Promise<Array<IngestQuarantineRecord & { kb: string }>> {
   const kbNames = kb === undefined ? await deps.listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR) : [kb];
@@ -186,6 +199,7 @@ async function listRows(
     const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
     const records = await deps.listIngestQuarantine(kbPath);
     for (const record of records) {
+      if (reason !== undefined && (record.reason ?? record.error_code) !== reason) continue;
       rows.push({ kb: kbName, ...record });
     }
   }
@@ -198,12 +212,13 @@ export function formatQuarantineMarkdown(
 ): string {
   if (rows.length === 0) return 'No quarantined ingest files.\n';
   const lines = [
-    '| KB | Path | Category | Code | Retries | Next retry | Ack |',
-    '| --- | --- | --- | --- | ---: | --- | --- |',
+    '| KB | Path | Reason | Category | Code | Retries | Next retry | Ack |',
+    '| --- | --- | --- | --- | --- | ---: | --- | --- |',
   ];
   for (const row of rows) {
     lines.push(
       `| ${escapeCell(row.kb)} | ${escapeCell(row.relative_path)} | ` +
+        `${escapeCell(row.reason ?? '')} | ` +
         `${escapeCell(row.error_category)} | ${escapeCell(row.error_code)} | ` +
         `${row.retry_count} | ${escapeCell(row.next_retry_at)} | ${row.ack ? 'yes' : 'no'} |`,
     );

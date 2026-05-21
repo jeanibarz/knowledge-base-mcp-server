@@ -19,6 +19,7 @@ export type IngestQuarantineCategory = SearchFailureCategory | 'secret_detected'
 
 export interface IngestQuarantineRecord {
   schema_version: typeof INGEST_QUARANTINE_SCHEMA_VERSION;
+  reason?: string;
   relative_path: string;
   source_sha256: string | null;
   error_category: IngestQuarantineCategory;
@@ -77,6 +78,7 @@ export async function recordIngestFailure(options: RecordIngestFailureOptions): 
     const deadLettered = nextRetryCount >= maxRetries;
     const nextRecord: IngestQuarantineRecord = {
       schema_version: INGEST_QUARANTINE_SCHEMA_VERSION,
+      ...(classified.reason !== undefined ? { reason: classified.reason } : {}),
       relative_path: relativePath,
       source_sha256: options.sourceHash ?? existing?.source_sha256 ?? null,
       error_category: classified.category,
@@ -201,12 +203,14 @@ function classifyIngestError(error: unknown): {
   category: IngestQuarantineCategory;
   code: string;
   message: string;
+  reason?: string;
 } {
   if (error instanceof IngestSecretDetectedError) {
     return {
       category: 'secret_detected',
       code: error.code,
       message: error.message,
+      reason: 'secret_detected',
     };
   }
   const classified = classifyKbSearchError(error);

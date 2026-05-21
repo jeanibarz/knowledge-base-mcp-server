@@ -153,6 +153,7 @@ Environment:
   KB_ACTIVE_MODEL           Override the active model for this process (RFC 013 §4.7).
   KB_DAEMON_URL             URL for \`kb search --daemon\` (default http://127.0.0.1:17799).
   KB_PAGER                  Pager command and opt-in for human-readable \`kb search\` output.
+  KB_INGEST_SECRET_SCAN     on to quarantine credential-shaped chunks before embedding.
   KB_LLM_ENDPOINT           OpenAI-compatible endpoint used by \`kb ask\`.
   LOG_FILE                  Optional file used by \`kb logs\` and by runtime logging.
   KB_LOG_FORMAT             text | canonical | both (default both).
