@@ -512,6 +512,48 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(payload.remote_transport).toEqual(remoteTransportStats);
   });
 
+  it('handleMetricsExport renders production stats with remote transport counters', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'aaa');
+
+    getStatsMock.mockReturnValue({
+      totalChunks: 2,
+      chunkCountsByKb: { alpha: 2 },
+      dim: 384,
+    });
+
+    const server = await freshServer();
+    server['transportMode'] = 'http';
+    server['httpHost'] = {
+      getRuntimeStats: () => ({
+        transport: 'http' as const,
+        sessions_opened: 1,
+        sessions_closed: 0,
+        current_sessions: 1,
+        in_flight_requests: 0,
+        requests_total: 3,
+        response_status_buckets: {
+          '1xx': 0,
+          '2xx': 2,
+          '3xx': 0,
+          '4xx': 1,
+          '5xx': 0,
+        },
+        auth_failures: 1,
+        origin_denials: 0,
+        last_error: null,
+      }),
+    } as any;
+
+    const text = await server['handleMetricsExport']();
+
+    expect(text).toContain('kb_knowledge_base_chunks{kb="alpha"} 2');
+    expect(text).toContain('# TYPE kb_remote_transport_requests counter');
+    expect(text).toContain('kb_remote_transport_requests_total 3');
+    expect(text.endsWith('# EOF\n')).toBe(true);
+  });
+
   it('handleKbStats with unknown knowledge_base_name returns KB_NOT_FOUND error', async () => {
     const tempDir = await setRetrieveEnv();
     await fsp.mkdir(path.join(tempDir, 'alpha'));

@@ -104,4 +104,4 @@ The bench harness above measures budgets offline. **At runtime**, the same wall-
 - a regression against the latency budgets above (compare live `provider_calls.<model_id>.latency_ms.p95` to the bench baseline);
 - a sudden error-rate spike from the embedding provider (network blip, expired token, model decommission).
 
-The histogram is bounded — 10 log-spaced latency buckets in [1 ms, 30 s] plus an overflow bucket — and labelled only by `model_id`, so memory cost stays at ~200 bytes per model in the registered set. No on-disk state, no `/metrics` endpoint, no per-query labels.
+The histogram is bounded — 10 log-spaced latency buckets in [1 ms, 30 s] plus an overflow bucket — and labelled only by `model_id`, so memory cost stays at ~200 bytes per model in the registered set. No on-disk state, no per-query labels. `KB_METRICS_EXPORT=on` can additionally expose the bounded live counters through the authenticated `/metrics` endpoint documented in `docs/operations/metrics-export.md`.

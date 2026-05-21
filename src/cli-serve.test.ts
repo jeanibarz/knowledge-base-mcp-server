@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from '@jest/globals';
 import * as http from 'node:http';
-import { parseServeArgs, runServeStatus, startDaemonServer } from './cli-serve.js';
+import {
+  formatStatsRunResultAsOpenMetrics,
+  parseServeArgs,
+  runServeStatus,
+  startDaemonServer,
+} from './cli-serve.js';
 import type { DaemonRunResult } from './daemon-client.js';
+import type { KbStatsPayload } from './kb-stats.js';
 
 interface RawResponse {
   statusCode: number;
@@ -37,6 +43,13 @@ function request(
 }
 
 describe('kb serve daemon', () => {
+  const originalMetricsExport = process.env.KB_METRICS_EXPORT;
+
+  afterEach(() => {
+    if (originalMetricsExport === undefined) delete process.env.KB_METRICS_EXPORT;
+    else process.env.KB_METRICS_EXPORT = originalMetricsExport;
+  });
+
   it('serves health and dispatches read-only commands through handlers', async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const ok = (stdout: string): DaemonRunResult => ({ exitCode: 0, stdout, stderr: '' });
@@ -100,8 +113,123 @@ describe('kb serve daemon', () => {
     }
   });
 
+  it('exposes OpenMetrics text only when KB_METRICS_EXPORT is enabled', async () => {
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      metricsHandler: async () => '# TYPE kb_server_uptime_ms gauge\nkb_server_uptime_ms 1\n# EOF\n',
+    });
+    try {
+      const disabled = await request(daemon.url, { path: '/metrics' });
+      expect(disabled.statusCode).toBe(404);
+
+      process.env.KB_METRICS_EXPORT = 'on';
+      const enabled = await request(daemon.url, { path: '/metrics' });
+      expect(enabled.statusCode).toBe(200);
+      expect(enabled.body).toContain('kb_server_uptime_ms 1');
+    } finally {
+      await daemon.stop();
+    }
+  });
+
   it('keeps serve binding loopback-only', () => {
     expect(() => parseServeArgs(['--host=0.0.0.0'])).toThrow(/non-loopback/);
+  });
+});
+
+describe('kb serve metrics formatting', () => {
+  it('formats the default kb stats daemon result as OpenMetrics text', () => {
+    const payload: KbStatsPayload = {
+      knowledge_bases: {
+        alpha: {
+          file_count: 1,
+          chunk_count: 2,
+          total_bytes_indexed: 3,
+          last_updated_at: null,
+        },
+      },
+      quarantined: {},
+      embedding: {
+        provider: 'huggingface',
+        model: 'BAAI/bge-small-en-v1.5',
+        dim: 384,
+      },
+      index_path: '/tmp/faiss',
+      last_index_update: {
+        status: 'never_run',
+        scope: null,
+        model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+        started_at: null,
+        finished_at: null,
+        duration_ms: null,
+        files_scanned: 0,
+        files_changed: 0,
+        files_unchanged: 0,
+        files_skipped: 0,
+        chunks_attempted: 0,
+        chunks_added: 0,
+        index_mutated: false,
+        saved: false,
+        sidecars_written: false,
+        warning_count: 0,
+        warnings: [],
+        failure_count: 0,
+        failures: [],
+      },
+      server: {
+        version: '0.0.0-test',
+        uptime_ms: 1,
+      },
+      provider_calls: {},
+      query_cache: {
+        hits: 0,
+        misses: 0,
+        hit_ratio: 0,
+        l1_hits: 0,
+        disk_hits: 0,
+        bypasses: 0,
+        writes: 0,
+        corruptions: 0,
+        l1_size: 0,
+        disk_size_bytes: 0,
+      },
+      relevance_gate: {
+        gated_queries: 0,
+        verdict_injected: 0,
+        verdict_no_relevant_context: 0,
+        verdict_empty_index: 0,
+        low_confidence_rate: 0,
+        drop_rate_A1: 0,
+        drop_rate_A2: 0,
+        drop_rate_B: 0,
+        judge_degrade_rate: 0,
+        judge_window: {
+          size: 0,
+          degraded: 0,
+          rate: 0,
+          warn_threshold: 0.1,
+        },
+      },
+    };
+
+    const text = formatStatsRunResultAsOpenMetrics({
+      exitCode: 0,
+      stdout: JSON.stringify(payload),
+      stderr: '',
+    });
+
+    expect(text).toContain('kb_knowledge_base_chunks{kb="alpha"} 2');
+    expect(text).toContain('# TYPE kb_query_cache_hits counter');
+    expect(text).toContain('kb_query_cache_hits_total 0');
+    expect(text.endsWith('# EOF\n')).toBe(true);
+  });
+
+  it('surfaces kb stats failures from the default metrics path', () => {
+    expect(() => formatStatsRunResultAsOpenMetrics({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'stats unavailable\n',
+    })).toThrow('stats unavailable');
   });
 });
 

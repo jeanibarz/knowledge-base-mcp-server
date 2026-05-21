@@ -225,6 +225,14 @@
 - `computeKbStats` shall include a `remote_transport` block with request, auth-failure, and backoff counters when the HTTP or SSE transport is active.
 - The block shall be omitted under stdio transport.
 
+### TS-STATS-469: OpenMetrics Export
+**Requirement:** FR-STATS-469
+
+**Test Cases:**
+- The OpenMetrics formatter shall serialize KB, provider-call, query-cache, relevance-gate, and remote-transport stats with bounded labels and a terminal `# EOF`.
+- `kb serve` shall mount `GET /metrics` only when `KB_METRICS_EXPORT=on`.
+- HTTP and SSE transports shall mount `GET /metrics` behind the existing bearer-token auth gate when `KB_METRICS_EXPORT=on`.
+
 ## Reindex
 
 ### TS-REINDEX-407: Reindex Status Ledger
