@@ -88,6 +88,8 @@ describe('KnowledgeBaseServer handlers', () => {
     ASK_KNOWLEDGE_DESCRIPTION: process.env.ASK_KNOWLEDGE_DESCRIPTION,
     RETRIEVE_KNOWLEDGE_DESCRIPTION: process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION,
     LIST_KNOWLEDGE_BASES_DESCRIPTION: process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION,
+    INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
+    INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
   };
 
   beforeEach(() => {
@@ -979,7 +981,7 @@ describe('KnowledgeBaseServer handlers', () => {
 
   // --- MCP Resources (#49) --------------------------------------------------
 
-  it('resources/list returns kb:// URIs across multiple KBs', async () => {
+  it('resources/list returns kb:// URIs across multiple KBs for ingestable files', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-list-'));
     await fsp.mkdir(path.join(tempDir, 'alpha', 'docs'), { recursive: true });
     await fsp.mkdir(path.join(tempDir, 'beta'), { recursive: true });
@@ -1000,18 +1002,17 @@ describe('KnowledgeBaseServer handlers', () => {
       'kb://alpha/docs/guide.md',
       'kb://alpha/notes.txt',
       'kb://beta/page.html',
-      'kb://beta/paper.pdf',
     ]);
     expect(result.resources.find((resource: { uri: string }) => resource.uri === 'kb://alpha/docs/guide.md')).toMatchObject({
       name: 'docs/guide.md',
       mimeType: 'text/markdown',
     });
-    expect(result.resources.find((resource: { uri: string }) => resource.uri === 'kb://beta/paper.pdf')).toMatchObject({
-      mimeType: 'application/pdf',
-    });
     expect(result.resources.find((resource: { uri: string }) => resource.uri === 'kb://beta/page.html')).toMatchObject({
       mimeType: 'text/html',
     });
+    expect(result.resources.map((resource: { uri: string }) => resource.uri)).not.toContain(
+      'kb://beta/paper.pdf',
+    );
   });
 
   it('resources/read returns markdown text for an existing file', async () => {
@@ -1046,8 +1047,17 @@ describe('KnowledgeBaseServer handlers', () => {
     process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
     process.env.EMBEDDING_PROVIDER = 'huggingface';
     process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.INGEST_EXTRA_EXTENSIONS = '.pdf';
 
     const server = await freshServer();
+    const listResult = await server['handleListResources']();
+    expect(listResult.resources).toContainEqual({
+      uri: 'kb://alpha/paper.pdf',
+      name: 'paper.pdf',
+      description: 'Document in knowledge base "alpha"',
+      mimeType: 'application/pdf',
+    });
+
     const result = await server['handleReadResource']('kb://alpha/paper.pdf');
 
     expect(result.contents).toHaveLength(1);
@@ -1056,6 +1066,56 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(content.mimeType).toBe('application/pdf');
     expect('blob' in content ? content.blob : undefined).toBe(pdfBytes.toString('base64'));
     expect('text' in content ? content.text : undefined).toBeUndefined();
+  });
+
+  it('resources/list and resources/read honor ingest filters and quarantine state', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-ingest-policy-'));
+    const kbPath = path.join(tempDir, 'alpha');
+    await fsp.mkdir(path.join(kbPath, 'docs'), { recursive: true });
+    await fsp.mkdir(path.join(kbPath, 'drafts'), { recursive: true });
+    await fsp.mkdir(path.join(kbPath, 'logs'), { recursive: true });
+    await fsp.writeFile(path.join(kbPath, 'docs', 'guide.md'), '# Guide\n');
+    await fsp.writeFile(path.join(kbPath, 'docs', 'quarantined.md'), '# Broken\n');
+    await fsp.writeFile(path.join(kbPath, 'drafts', 'hidden.md'), '# Draft\n');
+    await fsp.writeFile(path.join(kbPath, 'logs', 'today.md'), '# Logs\n');
+    await fsp.writeFile(path.join(kbPath, 'paper.pdf'), Buffer.from('%PDF-1.4\n'));
+    await fsp.symlink('../docs/guide.md', path.join(kbPath, 'drafts', 'guide-link.md'));
+    const { recordIngestFailure } = await import('./ingest-quarantine.js');
+    await recordIngestFailure({
+      kbPath,
+      relativePath: 'docs/quarantined.md',
+      error: new Error('loader rejected file'),
+    });
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.INGEST_EXCLUDE_PATHS = 'drafts/**';
+
+    const server = await freshServer();
+    const result = await server['handleListResources']();
+    const uris = result.resources.map((resource: { uri: string }) => resource.uri).sort();
+
+    expect(uris).toEqual(['kb://alpha/docs/guide.md']);
+    await expect(server['handleReadResource']('kb://alpha/docs/guide.md')).resolves.toMatchObject({
+      contents: [{ uri: 'kb://alpha/docs/guide.md', text: '# Guide\n' }],
+    });
+    await expect(server['handleReadResource']('kb://alpha/docs/quarantined.md')).rejects.toThrow(
+      /resource quarantined by ingest pipeline: "docs\/quarantined\.md"/,
+    );
+    await expect(server['handleReadResource']('kb://alpha/drafts/hidden.md')).rejects.toThrow(
+      /resource excluded by ingest filters: "drafts\/hidden\.md"/,
+    );
+    await expect(server['handleReadResource']('kb://alpha/drafts/guide-link.md')).rejects.toThrow(
+      /resource excluded by ingest filters: "drafts\/guide-link\.md"/,
+    );
+    await expect(server['handleReadResource']('kb://alpha/logs/today.md')).rejects.toThrow(
+      /resource excluded by ingest filters: "logs\/today\.md"/,
+    );
+    await expect(server['handleReadResource']('kb://alpha/paper.pdf')).rejects.toThrow(
+      /resource excluded by ingest filters: "paper\.pdf"/,
+    );
   });
 
   it('resources/list and resources/read round-trip filenames with reserved URI characters', async () => {

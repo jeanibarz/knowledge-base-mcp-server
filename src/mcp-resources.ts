@@ -19,10 +19,12 @@ import {
   type Resource,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { INGEST_EXCLUDE_PATHS, INGEST_EXTRA_EXTENSIONS } from './config/ingest.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { toError } from './error-utils.js';
-import { getFilesRecursively } from './file-utils.js';
-import { listKnowledgeBases, resolveKbPath } from './kb-fs.js';
+import { filterIngestablePaths } from './ingest-filter.js';
+import { listIngestQuarantine } from './ingest-quarantine.js';
+import { enumerateIngestableKbFiles, listKnowledgeBases, resolveKbPath } from './kb-fs.js';
 import { isValidKbName } from './kb-paths.js';
 
 export function mimeTypeForResource(filePath: string): string {
@@ -121,22 +123,32 @@ export function parseKnowledgeBaseResourceUri(uri: string): { kbName: string; re
 
 /**
  * `resources/list` body. Walks every registered KB under
- * `KNOWLEDGE_BASES_ROOT_DIR` and emits one `Resource` per file with a
- * percent-encoded `kb://` URI and a content-type-by-extension mime hint.
+ * `KNOWLEDGE_BASES_ROOT_DIR` and emits one `Resource` per ingestable,
+ * non-quarantined file with a percent-encoded `kb://` URI and a
+ * content-type-by-extension mime hint.
  */
 export async function listResources(): Promise<ListResourcesResult> {
   const resources: Resource[] = [];
   const knowledgeBases = (await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR)).sort();
+  const enumerations = await enumerateIngestableKbFiles(
+    KNOWLEDGE_BASES_ROOT_DIR,
+    knowledgeBases.filter(isValidKbName),
+    {
+      extraExtensions: INGEST_EXTRA_EXTENSIONS,
+      excludePaths: INGEST_EXCLUDE_PATHS,
+    },
+  );
 
-  for (const kbName of knowledgeBases) {
-    if (!isValidKbName(kbName)) continue;
-    const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
-    const filePaths = (await getFilesRecursively(kbPath)).sort();
-    for (const filePath of filePaths) {
+  for (const { kbName, kbPath, filePaths } of enumerations) {
+    const quarantined = new Set(
+      (await listIngestQuarantine(kbPath)).map((record) => record.relative_path),
+    );
+    for (const filePath of filePaths.sort()) {
       const relativePath = path
         .relative(kbPath, filePath)
         .split(path.sep)
         .join('/');
+      if (quarantined.has(relativePath)) continue;
 
       resources.push({
         uri: buildResourceUri(kbName, relativePath),
@@ -153,17 +165,33 @@ export async function listResources(): Promise<ListResourcesResult> {
 /**
  * `resources/read` body. Parses the `kb://` URI, resolves the document
  * under `KNOWLEDGE_BASES_ROOT_DIR` (which rejects traversal escapes),
- * and returns either a base64 blob (PDF) or UTF-8 text (markdown,
- * HTML, plain text).
+ * rejects files the ingest pipeline would skip or has quarantined, and
+ * returns either a base64 blob (PDF) or UTF-8 text (markdown, HTML,
+ * plain text).
  */
 export async function readResource(uri: string): Promise<ReadResourceResult> {
   const { kbName, relativePath } = parseKnowledgeBaseResourceUri(uri);
+  const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
+  const requestedPath = path.join(kbPath, relativePath);
   const filePath = await resolveKbPath(
     KNOWLEDGE_BASES_ROOT_DIR,
     kbName,
     relativePath,
     { mustExist: true },
   );
+  const ingestable = filterIngestablePaths([requestedPath], kbPath, {
+    extraExtensions: INGEST_EXTRA_EXTENSIONS,
+    excludePaths: INGEST_EXCLUDE_PATHS,
+  });
+  if (ingestable.length === 0) {
+    throw new Error(`resource excluded by ingest filters: ${JSON.stringify(relativePath)}`);
+  }
+
+  const quarantined = await listIngestQuarantine(kbPath);
+  if (quarantined.some((record) => record.relative_path === relativePath)) {
+    throw new Error(`resource quarantined by ingest pipeline: ${JSON.stringify(relativePath)}`);
+  }
+
   const mimeType = mimeTypeForResource(filePath);
 
   if (mimeType === 'application/pdf') {
