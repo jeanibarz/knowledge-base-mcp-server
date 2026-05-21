@@ -3,6 +3,7 @@ export * from './config/ingest.js';
 export * from './config/indexing.js';
 export * from './config/logging.js';
 export * from './config/mcp-descriptions.js';
+export * from './config/metrics-export.js';
 export * from './config/paths.js';
 export * from './config/provider.js';
 export * from './config/retrieval.js';

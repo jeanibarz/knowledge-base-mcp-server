@@ -23,6 +23,10 @@ import { timingSafeEqual } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import {
+  isMetricsExportEnabled,
+  OPENMETRICS_CONTENT_TYPE,
+} from '../config/metrics-export.js';
+import {
   DEFAULT_MCP_AUTH_BACKOFF_MAX_ENTRIES,
   DEFAULT_MCP_AUTH_BACKOFF_MS,
   DEFAULT_MCP_AUTH_BACKOFF_THRESHOLD,
@@ -47,6 +51,7 @@ const SHUTDOWN_POLL_INTERVAL_MS = 50;
 export interface BaseHttpHostOptions {
   config: TransportConfig;
   createMcpServer: () => McpServer;
+  metricsExporter?: () => Promise<string>;
 }
 
 export interface BaseSessionEntry<TTransport> {
@@ -382,7 +387,15 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       this.setCorsResponseHeaders(res, originHeader);
     }
 
-    // 7. Subclass routing.
+    // 7. Optional OpenMetrics route. Kept behind the same auth/origin gates
+    // as MCP routes so KB names and model ids are not exposed accidentally.
+    if (path === '/metrics') {
+      const metricsStatus = await this.handleMetricsExport(method, res);
+      finalize(metricsStatus);
+      return;
+    }
+
+    // 8. Subclass routing.
     const status = await this.handleAuthenticatedRequest(req, res, url);
     finalize(status);
   }
@@ -434,6 +447,44 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       res.end();
     }
     return 200;
+  }
+
+  private async handleMetricsExport(
+    method: string,
+    res: http.ServerResponse,
+  ): Promise<number> {
+    if (!isMetricsExportEnabled() || this.options.metricsExporter === undefined) {
+      respond(res, 404, 'Not Found');
+      return 404;
+    }
+    if (method !== 'GET' && method !== 'HEAD') {
+      res.setHeader('Allow', 'GET, HEAD');
+      respond(res, 405, 'Method Not Allowed');
+      return 405;
+    }
+
+    this.inFlight += 1;
+    try {
+      const body = await this.options.metricsExporter();
+      const buf = Buffer.from(body, 'utf8');
+      res.setHeader('Content-Type', OPENMETRICS_CONTENT_TYPE);
+      res.setHeader('Content-Length', String(buf.length));
+      res.setHeader('Cache-Control', 'no-store');
+      res.writeHead(200);
+      if (method === 'GET') {
+        res.end(buf);
+      } else {
+        res.end();
+      }
+      return 200;
+    } catch (err) {
+      this.recordTransportError(err as Error);
+      logger.warn(`[${this.logPrefix}] metrics export failed: ${(err as Error).message}`);
+      respond(res, 500, 'Metrics unavailable');
+      return 500;
+    } finally {
+      this.inFlight -= 1;
+    }
   }
 
   protected setCorsResponseHeaders(res: http.ServerResponse, origin: string): void {

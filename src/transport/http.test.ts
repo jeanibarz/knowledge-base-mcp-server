@@ -34,6 +34,7 @@ async function startHost(opts: {
   authToken?: string;
   allowedOrigins?: string[];
   authBackoff?: AuthBackoffConfig;
+  metricsExporter?: () => Promise<string>;
 }): Promise<{ host: StreamableHttpHost; port: number; stop: () => Promise<void> }> {
   const host = new StreamableHttpHost({
     config: {
@@ -45,6 +46,7 @@ async function startHost(opts: {
       authBackoff: opts.authBackoff,
     },
     createMcpServer: freshFactory(),
+    metricsExporter: opts.metricsExporter,
   });
   const server = await host.start();
   const addr = server.address() as AddressInfo;
@@ -143,12 +145,15 @@ function sendMalformedHttpRequest(port: number): Promise<void> {
 
 describe('StreamableHttpHost — endpoints', () => {
   let stop: (() => Promise<void>) | undefined;
+  const originalMetricsExport = process.env.KB_METRICS_EXPORT;
 
   afterEach(async () => {
     if (stop) {
       await stop();
       stop = undefined;
     }
+    if (originalMetricsExport === undefined) delete process.env.KB_METRICS_EXPORT;
+    else process.env.KB_METRICS_EXPORT = originalMetricsExport;
   });
 
   it('GET /health returns 200 JSON {"status":"ok"} without auth', async () => {
@@ -158,6 +163,25 @@ describe('StreamableHttpHost — endpoints', () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toMatch(/application\/json/);
     expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
+  });
+
+  it('serves authenticated OpenMetrics text at GET /metrics when enabled', async () => {
+    process.env.KB_METRICS_EXPORT = 'on';
+    const started = await startHost({
+      metricsExporter: async () => '# TYPE kb_server_uptime_ms gauge\nkb_server_uptime_ms 5\n# EOF\n',
+    });
+    stop = started.stop;
+
+    const unauthenticated = await request(started.port, { path: '/metrics' });
+    expect(unauthenticated.statusCode).toBe(401);
+
+    const authenticated = await request(started.port, {
+      path: '/metrics',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` },
+    });
+    expect(authenticated.statusCode).toBe(200);
+    expect(authenticated.headers['content-type']).toMatch(/openmetrics-text/);
+    expect(authenticated.body).toContain('kb_server_uptime_ms 5');
   });
 
   it('request without Authorization gets 401 with WWW-Authenticate', async () => {

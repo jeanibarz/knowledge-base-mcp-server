@@ -95,6 +95,7 @@ import {
   emitCanonicalLog,
   type CanonicalLogInput,
 } from './canonical-log.js';
+import { formatKbStatsOpenMetrics } from './prometheus-export.js';
 import {
   formatDiffIndexMarkdown,
   resolveIndexVersionPath,
@@ -1023,6 +1024,7 @@ export class KnowledgeBaseServer {
     const host = new SseHost({
       config,
       createMcpServer: () => this.buildMcpServer(),
+      metricsExporter: () => this.handleMetricsExport(),
     });
     this.sseHost = host;
     this.installHttpShutdown();
@@ -1039,6 +1041,7 @@ export class KnowledgeBaseServer {
     const host = new StreamableHttpHost({
       config,
       createMcpServer: () => this.buildMcpServer(),
+      metricsExporter: () => this.handleMetricsExport(),
     });
     this.httpHost = host;
     this.installHttpShutdown();
@@ -1053,6 +1056,17 @@ export class KnowledgeBaseServer {
     if (this.transportMode === 'sse') return this.sseHost?.getRuntimeStats();
     if (this.transportMode === 'http') return this.httpHost?.getRuntimeStats();
     return undefined;
+  }
+
+  private async handleMetricsExport(): Promise<string> {
+    const activeModelId = await resolveActiveModel();
+    const manager = await this.managers.getOrCreate(activeModelId);
+    const payload = await computeKbStats(manager, {
+      serverVersion: SERVER_VERSION,
+      startedAt: this.startedAt,
+      remoteTransportStats: this.getRemoteTransportStats(),
+    });
+    return formatKbStatsOpenMetrics(payload);
   }
 
   /**

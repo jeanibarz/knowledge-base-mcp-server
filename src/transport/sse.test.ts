@@ -33,6 +33,7 @@ async function startHost(opts: {
   authToken?: string;
   allowedOrigins?: string[];
   authBackoff?: AuthBackoffConfig;
+  metricsExporter?: () => Promise<string>;
 }): Promise<{ host: SseHost; port: number; stop: () => Promise<void> }> {
   const host = new SseHost({
     config: {
@@ -44,6 +45,7 @@ async function startHost(opts: {
       authBackoff: opts.authBackoff,
     },
     createMcpServer: freshFactory(),
+    metricsExporter: opts.metricsExporter,
   });
   const server = await host.start();
   const addr = server.address() as AddressInfo;
@@ -265,12 +267,15 @@ describe('loadTransportConfig validation', () => {
 
 describe('SseHost — endpoints', () => {
   let stop: (() => Promise<void>) | undefined;
+  const originalMetricsExport = process.env.KB_METRICS_EXPORT;
 
   afterEach(async () => {
     if (stop) {
       await stop();
       stop = undefined;
     }
+    if (originalMetricsExport === undefined) delete process.env.KB_METRICS_EXPORT;
+    else process.env.KB_METRICS_EXPORT = originalMetricsExport;
   });
 
   it('exposes process-lifetime SSE transport counters', async () => {
@@ -310,6 +315,25 @@ describe('SseHost — endpoints', () => {
     expect(stats.response_status_buckets['4xx']).toBe(2);
     expect(stats.auth_failures).toBe(1);
     expect(stats.origin_denials).toBe(1);
+  });
+
+  it('serves authenticated OpenMetrics text at GET /metrics when enabled', async () => {
+    process.env.KB_METRICS_EXPORT = 'on';
+    const started = await startHost({
+      metricsExporter: async () => '# TYPE kb_server_uptime_ms gauge\nkb_server_uptime_ms 8\n# EOF\n',
+    });
+    stop = started.stop;
+
+    const unauthenticated = await request(started.port, { path: '/metrics' });
+    expect(unauthenticated.statusCode).toBe(401);
+
+    const authenticated = await request(started.port, {
+      path: '/metrics',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` },
+    });
+    expect(authenticated.statusCode).toBe(200);
+    expect(authenticated.headers['content-type']).toMatch(/openmetrics-text/);
+    expect(authenticated.body).toContain('kb_server_uptime_ms 8');
   });
 
   it('(e) GET /health returns 200 JSON {"status":"ok"} without auth (RFC 008 §6.8: no fingerprinting)', async () => {

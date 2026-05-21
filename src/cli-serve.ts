@@ -5,12 +5,18 @@ import { runSearch } from './cli-search.js';
 import { captureProcessOutput } from './cli-shared.js';
 import { runStats } from './cli-stats.js';
 import {
+  isMetricsExportEnabled,
+  OPENMETRICS_CONTENT_TYPE,
+} from './config/metrics-export.js';
+import {
   daemonUrlFromEnv,
   tryFetchDaemonHealth,
   type DaemonCommand,
   type DaemonHealth,
   type DaemonRunResult,
 } from './daemon-client.js';
+import { formatKbStatsOpenMetrics } from './prometheus-export.js';
+import type { KbStatsPayload } from './kb-stats.js';
 
 export const SERVE_HELP = `kb serve — resident local daemon for warm CLI reads
 
@@ -38,6 +44,8 @@ Environment:
   KB_DAEMON_URL             Daemon URL queried by \`kb serve status\` and
                             \`kb search --daemon\` (default
                             http://127.0.0.1:17799).
+  KB_METRICS_EXPORT         Set to \`on\` to expose OpenMetrics text at
+                            \`GET /metrics\` on the loopback daemon.
 
 Exit codes:
   0   daemon started, or \`kb serve status\` found a reachable daemon
@@ -63,6 +71,7 @@ export interface DaemonCommandHandlers {
 
 export interface StartDaemonServerOptions extends Partial<ServeArgs> {
   handlers?: DaemonCommandHandlers;
+  metricsHandler?: () => Promise<string>;
 }
 
 export interface ResidentDaemon {
@@ -199,6 +208,7 @@ export async function startDaemonServer(
   };
   assertLoopbackHost(parsed.host);
   const handlers = options.handlers ?? defaultHandlers();
+  const metricsHandler = options.metricsHandler ?? defaultMetricsHandler;
   let idleTimer: NodeJS.Timeout | undefined;
   let queue: Promise<void> = Promise.resolve();
   const startedAt = Date.now();
@@ -220,7 +230,7 @@ export async function startDaemonServer(
 
   const server = http.createServer((req, res) => {
     resetIdleTimer();
-    void handleRequest(req, res, handlers, buildHealth, (job) => {
+    void handleRequest(req, res, handlers, metricsHandler, buildHealth, (job) => {
       queue = queue.then(job, job);
       return queue;
     });
@@ -317,14 +327,20 @@ async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   handlers: DaemonCommandHandlers,
+  metricsHandler: () => Promise<string>,
   buildHealth: () => DaemonHealth,
   enqueue: (job: () => Promise<void>) => Promise<void>,
 ): Promise<void> {
-  if (req.method === 'GET' && req.url === '/health') {
+  const url = new URL(req.url ?? '/', 'http://placeholder');
+  if (req.method === 'GET' && url.pathname === '/health') {
     writeJson(res, 200, buildHealth());
     return;
   }
-  if (req.method !== 'POST' || req.url !== '/v1/run') {
+  if (url.pathname === '/metrics') {
+    await handleMetricsRequest(req, res, metricsHandler, enqueue);
+    return;
+  }
+  if (req.method !== 'POST' || url.pathname !== '/v1/run') {
     writeJson(res, 404, { error: 'not_found' });
     return;
   }
@@ -376,6 +392,54 @@ function readArgs(payload: unknown): string[] | null {
 function writeJson(res: http.ServerResponse, statusCode: number, payload: unknown): void {
   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(`${JSON.stringify(payload)}\n`);
+}
+
+async function handleMetricsRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  metricsHandler: () => Promise<string>,
+  enqueue: (job: () => Promise<void>) => Promise<void>,
+): Promise<void> {
+  if (!isMetricsExportEnabled()) {
+    writeJson(res, 404, { error: 'not_found' });
+    return;
+  }
+  const method = req.method ?? 'GET';
+  if (method !== 'GET' && method !== 'HEAD') {
+    res.setHeader('Allow', 'GET, HEAD');
+    writeJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+
+  await enqueue(async () => {
+    try {
+      const body = await metricsHandler();
+      res.writeHead(200, {
+        'Content-Type': OPENMETRICS_CONTENT_TYPE,
+        'Cache-Control': 'no-store',
+      });
+      if (method === 'GET') res.end(body);
+      else res.end();
+    } catch (err) {
+      writeJson(res, 500, {
+        error: 'metrics_unavailable',
+        message: (err as Error).message,
+      });
+    }
+  });
+}
+
+async function defaultMetricsHandler(): Promise<string> {
+  const result = await defaultHandlers().stats(['--format=json']);
+  return formatStatsRunResultAsOpenMetrics(result);
+}
+
+export function formatStatsRunResultAsOpenMetrics(result: DaemonRunResult): string {
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || 'kb stats failed');
+  }
+  const payload = JSON.parse(result.stdout) as KbStatsPayload;
+  return formatKbStatsOpenMetrics(payload);
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
