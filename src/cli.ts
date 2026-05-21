@@ -35,6 +35,7 @@ import { SERVE_HELP, runServe } from './cli-serve.js';
 import { STALE_CHECK_HELP, runStaleCheck } from './cli-stale-check.js';
 import { STATS_HELP, runStats } from './cli-stats.js';
 import { SUPERSEDED_HELP, runSuperseded } from './cli-superseded.js';
+import { VERIFY_HELP, runVerify } from './cli-verify.js';
 import { WHERE_HELP, runWhere } from './cli-where.js';
 import { daemonUrlFromEnv, tryRunDaemonCommand } from './daemon-client.js';
 import { emitCanonicalLog } from './canonical-log.js';
@@ -113,6 +114,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'superseded',   summary: 'Scan a KB for obsolete / contradicted / deprecated / stale notes.',      help: SUPERSEDED_HELP,   handler: runSuperseded },
   { name: 'promote',      summary: 'Review and update lifecycle frontmatter on a KB note.',                  help: PROMOTE_HELP,      handler: runPromote },
   { name: 'quarantine',   summary: 'Inspect and manage per-file ingest quarantine entries.',                 help: QUARANTINE_HELP,   handler: runQuarantine },
+  { name: 'verify',       summary: 'Run slow integrity checks for persisted indexes and sidecars.',          help: VERIFY_HELP,       handler: runVerify },
   { name: 'where',        summary: 'Recommend the best KB and file for a given topic.',                      help: WHERE_HELP,        handler: runWhere },
   { name: 'models',       summary: 'Manage embedding models (list, add, set-active, remove).',               help: MODELS_HELP,       handler: runModels },
   { name: 'llm',          summary: 'Configure local LLM endpoints and managed warm model services.',          help: LLM_HELP,          handler: runLlm },
