@@ -3,6 +3,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import { Document } from "@langchain/core/documents";
+import { emitCanonicalLog, type CanonicalProcess } from './canonical-log.js';
 import { createEmbeddingsClient, type EmbeddingsClient } from './embedding-provider.js';
 import { handleFsOperationError, toError } from './error-utils.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
@@ -89,6 +90,7 @@ import {
   recordIngestSuccess,
   shouldRetryIngest,
 } from './ingest-quarantine.js';
+import { IngestSecretDetectedError } from './secret-scanner.js';
 
 export { MigrationRefusedError } from './layout-bootstrap.js';
 
@@ -100,6 +102,10 @@ async function writeModelNameAtomic(modelNameFile: string, modelName: string): P
   const tmp = `${modelNameFile}.${process.pid}.tmp`;
   await fsp.writeFile(tmp, modelName, 'utf-8');
   await fsp.rename(tmp, modelNameFile);
+}
+
+function canonicalProcessFromArgv(): CanonicalProcess {
+  return process.argv.some((entry) => /(?:^|[/\\])cli\.(?:js|ts|mjs)$/.test(entry)) ? 'cli' : 'mcp';
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,6 +1299,21 @@ export class FaissIndexManager {
       sourceHash: string | null,
       error: unknown,
     ): Promise<void> => {
+      if (error instanceof IngestSecretDetectedError) {
+        emitCanonicalLog({
+          process: canonicalProcessFromArgv(),
+          event: 'secret_detected',
+          level: 'warn',
+          kb_scope: path.basename(kbPath),
+          top_sources: [relativePath],
+          took_ms: 0,
+          error: { code: error.code, category: 'input' },
+          secret_scan: {
+            categories: error.categories,
+            chunk_indexes: error.chunkIndexes,
+          },
+        });
+      }
       try {
         await recordIngestFailure({
           kbPath,

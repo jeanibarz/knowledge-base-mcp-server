@@ -33,6 +33,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
 import { applyExtractedTextLimit } from './loaders.js';
 import { logger } from './logger.js';
+import { assertNoIngestSecrets } from './secret-scanner.js';
 import { withSidecarLock } from './write-lock.js';
 
 export interface PendingSidecarWrite {
@@ -243,6 +244,11 @@ export async function buildChunkDocuments(
     [body],
     [{ source: filePath }],
   );
+
+  assertNoIngestSecrets(documents.map((document) => document.pageContent), {
+    relativePath,
+    knowledgeBaseName,
+  });
 
   // RFC 017 — contextual-retrieval prefaces. Gated off by default; when
   // enabled, we call the LLM once per chunk (cached) to produce a short
