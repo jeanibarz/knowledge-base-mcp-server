@@ -24,6 +24,7 @@ Use `kb doctor --endpoints` for the narrower port/URL preflight: MCP bind target
 | --- | --- | --- | --- |
 | `kb search` returns zero results for content you know exists | Querying the wrong KB, stale index, or no index yet | `kb doctor` | Confirm `KNOWLEDGE_BASES_ROOT_DIR`, then run `kb search "known phrase" --kb=<name> --refresh`. |
 | Search output footer says the selected KB or global index is stale | Source files changed after the last refresh | `kb stats --kb=<name>` | Run `kb search "known phrase" --kb=<name> --refresh`; omit `--kb` only when you intend to refresh every KB. |
+| `kb research` or `kb stats` shows shelves with files but 0 dense chunks | The active dense index may only cover a scoped refresh, or those shelves have not been refreshed for the active embedding model | `kb stats` or `kb stats --format=json` | Inspect `last_index_update.scope`; refresh one affected shelf with `kb search "known phrase" --kb=<name> --refresh`, or omit `--kb` only for an intentional global refresh. |
 | MCP client returns old results but shell `kb` is fresh | Client process still has an older package/env, or uses `npx` cache | `kb doctor` in the same shell/env as the client when possible | Restart the client, prefer `@latest` in `npx` args, or point the client at the intended linked checkout. |
 | `ACTIVE_MODEL_UNRESOLVED` or doctor shows no active model | `${FAISS_INDEX_PATH}/active.txt` points at a missing model, `KB_ACTIVE_MODEL` is wrong, or no model is registered | `kb models list` | Add or select a model with `kb models add ...` or `kb models set-active <id>`. |
 | `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT`, or backend check is unhealthy | Ollama is down, remote provider is unreachable, or API credentials are missing/invalid | `kb doctor` | Start the backend, fix API keys/env, then retry the search. |
@@ -78,6 +79,30 @@ Use the footer this way:
 | Fresh but result quality is poor | Index freshness is not the problem | Try `--mode=hybrid`, a narrower `--kb`, or a query phrase closer to the document wording. |
 
 Refresh writes index state. Avoid running broad refreshes from multiple shells at the same time.
+
+## Files But Zero Dense Chunks
+
+`file_count` and `chunk_count` answer different questions. `file_count` is the
+number of ingestable source files on disk. `chunk_count` is the number of chunks
+currently present in the active dense index for the active embedding model.
+
+When a shelf has files but `0` dense chunks, read it as an index coverage
+diagnostic, not as proof that the shelf is empty. This commonly happens after a
+scoped refresh: `last_index_update.status` can be `success` while
+`last_index_update.scope` names a different shelf. In that state, read-only
+commands such as `kb research` are correct to report
+`dense_index_empty_coverage` and continue with hybrid/lexical evidence; they do
+not refresh indexes themselves.
+
+Use this sequence:
+
+```bash
+kb stats
+kb stats --format=json
+kb search "known phrase from the affected shelf" --kb=<name> --refresh
+```
+
+Only omit `--kb` when you intentionally want to refresh every registered shelf.
 
 ## Linked Checkout and Global Bin Drift
 

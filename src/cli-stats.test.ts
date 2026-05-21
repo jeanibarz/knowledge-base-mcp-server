@@ -1,5 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import {
+  formatDenseCoverageSection,
   formatContextualSection,
   formatRemoteTransportSection,
   runStats,
@@ -194,6 +195,53 @@ describe('kb stats CLI', () => {
     expect(out).toContain('- Index path: `/tmp/kb-index`');
     expect(out).toContain('## Relevance Gate');
     expect(out).toContain('- Gated queries: 0');
+  });
+
+  it('diagnoses shelves with files but zero dense chunks in markdown stats', async () => {
+    const scoped = payload();
+    scoped.knowledge_bases.beta.chunk_count = 0;
+    scoped.last_index_update = {
+      ...scoped.last_index_update,
+      status: 'success',
+      scope: 'alpha',
+      chunks_added: 4,
+      finished_at: '2026-05-21T09:00:00.000Z',
+    };
+    const { deps, stdout } = makeDeps({ payload: scoped });
+
+    const code = await runStats([], deps);
+
+    expect(code).toBe(0);
+    const out = stdout.join('');
+    expect(out).toContain('## Dense Coverage');
+    expect(out).toContain('Knowledge bases with files but 0 dense chunks: `beta` (1 file).');
+    expect(out).toContain('Last index update: status=success, scope=kb:alpha, chunks_added=4');
+    expect(out).toContain('latest refresh was scoped outside these knowledge bases');
+    expect(out).toContain('likely index-scope state rather than missing source files');
+    expect(out).toContain('kb search "known phrase" --kb=<name> --refresh');
+  });
+
+  it('uses the generic dense coverage interpretation when the latest refresh was not scoped elsewhere', () => {
+    const scoped = payload();
+    scoped.knowledge_bases.beta.chunk_count = 0;
+    scoped.last_index_update = {
+      ...scoped.last_index_update,
+      status: 'success',
+      scope: 'global',
+      chunks_added: 4,
+      finished_at: '2026-05-21T09:00:00.000Z',
+    };
+
+    const lines = formatDenseCoverageSection(scoped);
+
+    expect(lines.join('\n')).toContain(
+      'source files exist on disk, but the active dense index has no chunks for these knowledge bases',
+    );
+    expect(lines.join('\n')).not.toContain('latest refresh was scoped outside');
+  });
+
+  it('omits the dense coverage section when every file-backed shelf has chunks', () => {
+    expect(formatDenseCoverageSection(payload())).toEqual([]);
   });
 
   it('renders a Remote Transport section when HTTP/SSE counters are present (#430)', async () => {
