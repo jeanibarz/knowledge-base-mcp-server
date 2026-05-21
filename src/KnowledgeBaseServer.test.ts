@@ -81,8 +81,11 @@ describe('KnowledgeBaseServer handlers', () => {
     HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
     LOG_FILE: process.env.LOG_FILE,
     KB_LOG_FORMAT: process.env.KB_LOG_FORMAT,
+    KB_LLM_ENDPOINT: process.env.KB_LLM_ENDPOINT,
+    KB_LLM_FAKE: process.env.KB_LLM_FAKE,
     KB_RERANK: process.env.KB_RERANK,
     KB_RERANK_TOP_N: process.env.KB_RERANK_TOP_N,
+    ASK_KNOWLEDGE_DESCRIPTION: process.env.ASK_KNOWLEDGE_DESCRIPTION,
     RETRIEVE_KNOWLEDGE_DESCRIPTION: process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION,
     LIST_KNOWLEDGE_BASES_DESCRIPTION: process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION,
   };
@@ -1360,6 +1363,72 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(text).toContain('Disclaimer:');
   });
 
+  it('handleAskKnowledge returns cited structured local-LLM answers without mutating the index', async () => {
+    await setRetrieveEnv();
+    process.env.KB_LLM_FAKE = 'on';
+    delete process.env.KB_LLM_ENDPOINT;
+    similaritySearchMock.mockResolvedValue([
+      {
+        pageContent: 'Rollback approval requires the release lead.',
+        metadata: {
+          knowledgeBase: 'ops',
+          relativePath: 'runbooks/rollback.md',
+          loc: { lines: { from: 4, to: 8 } },
+        },
+        score: 0.1,
+      },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleAskKnowledge']({
+      query: 'Who approves rollback?',
+      knowledge_base_name: 'ops',
+      task_context: 'answer an incident rollback question',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(updateIndexMock).not.toHaveBeenCalled();
+    expect(initializeMock).toHaveBeenCalledWith({ readOnly: true });
+    expect(reloadPersistedIndexMock).not.toHaveBeenCalled();
+    expect(similaritySearchMock).toHaveBeenCalledWith(
+      'Who approves rollback?',
+      8,
+      undefined,
+      'ops',
+      undefined,
+      expect.any(Object),
+    );
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.answer).toContain('Rollback approval requires the release lead.');
+    expect(payload.abstention_reason).toBeNull();
+    expect(payload.citations).toEqual([
+      {
+        knowledge_base: 'ops',
+        path: 'runbooks/rollback.md',
+        score: 0.1,
+        chunk_id: 'ops/runbooks/rollback.md#L4-L8',
+        chunk_ids: ['ops/runbooks/rollback.md#L4-L8'],
+      },
+    ]);
+    expect(payload.llm).toMatchObject({
+      profile: 'fake',
+      source: 'fake',
+      model: 'kb-fake-llm',
+    });
+    expect(payload.retrieval).toMatchObject({
+      embedding_model: 'huggingface__BAAI-bge-small-en-v1.5',
+      k: 8,
+      knowledge_base: 'ops',
+      task_context_provided: true,
+    });
+    expect(payload.context_packing.included_chunks).toBe(1);
+    expect(payload.timing).toMatchObject({
+      context_included_chunks: 1,
+      context_excluded_chunks: 0,
+    });
+    expect((result as any).structuredContent).toEqual(payload);
+  });
+
   it('handleRetrieveKnowledge forwards knowledge_base_name to updateIndex; passes undefined otherwise', async () => {
     await setRetrieveEnv();
     updateIndexMock.mockResolvedValue(undefined);
@@ -1745,6 +1814,8 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(describeOf(server, 'retrieve_knowledge')).toBe(
       'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
     );
+    expect(describeOf(server, 'ask_knowledge')).toContain('Answers a question from retrieved knowledge-base context');
+    expect(describeOf(server, 'ask_knowledge')).toContain('abstention_reason');
     expect(describeOf(server, 'delete_document')).toContain('FAISS does not support vector deletion');
     expect(describeOf(server, 'delete_document')).toContain('orphan vectors');
     expect(describeOf(server, 'diff_index')).toContain('retrieval-result churn');
