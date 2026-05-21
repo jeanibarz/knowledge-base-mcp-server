@@ -19,6 +19,8 @@ import {
   ActiveModelResolutionError,
   listRegisteredModels,
   modelDir,
+  parseModelId,
+  readStoredModelName,
   resolveActiveModel,
   resolveFaissIndexBinaryPath,
 } from './active-model.js';
@@ -26,6 +28,7 @@ import { ManagerRegistry } from './manager-registry.js';
 import {
   ADD_DOCUMENT_DESCRIPTION,
   DELETE_DOCUMENT_DESCRIPTION,
+  DIFF_INDEX_DESCRIPTION,
   KB_STATS_DESCRIPTION,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   LIST_MODELS_DESCRIPTION,
@@ -48,6 +51,7 @@ import {
 import {
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config/paths.js';
+import type { EmbeddingProvider } from './model-id.js';
 import {
   loadTransportConfig,
   TransportConfigError,
@@ -91,6 +95,12 @@ import {
   emitCanonicalLog,
   type CanonicalLogInput,
 } from './canonical-log.js';
+import {
+  formatDiffIndexMarkdown,
+  resolveIndexVersionPath,
+  runDiffIndex,
+  type DiffIndexQuery,
+} from './diff-index-core.js';
 import {
   applyRelevanceGate,
   emitRelevanceGateDecision,
@@ -273,6 +283,22 @@ export class KnowledgeBaseServer {
     );
 
     mcp.tool(
+      'diff_index',
+      DIFF_INDEX_DESCRIPTION,
+      {
+        before: z.string().describe('BEFORE index version number, relative directory, or absolute version directory.'),
+        after: z.string().describe('AFTER index version number, relative directory, or absolute version directory.'),
+        queries: z.array(z.string()).min(1).describe('Plaintext queries to run against both index versions.'),
+        model_name: z.string().optional().describe('Optional registered embedding model id. If omitted, the active model is used.'),
+        knowledge_base_name: z.string().optional().describe('Optional KB scope applied to every query.'),
+        top_k: z.number().int().min(1).max(100).optional().describe('Top-K results per query. Default 10.'),
+        threshold: z.number().optional().describe('Dense similarity threshold. Default 2.'),
+        format: z.enum(['json', 'markdown']).optional().describe('Response format. Default markdown.'),
+      },
+      async (args) => this.handleDiffIndex(args)
+    );
+
+    mcp.tool(
       'add_document',
       ADD_DOCUMENT_DESCRIPTION,
       {
@@ -444,6 +470,105 @@ export class KnowledgeBaseServer {
       return { content: [mcpErrorContent(err)], isError: true };
       }
     });
+  }
+
+  private async handleDiffIndex(args: {
+    before: string;
+    after: string;
+    queries: string[];
+    model_name?: string;
+    knowledge_base_name?: string;
+    top_k?: number;
+    threshold?: number;
+    format?: 'json' | 'markdown';
+  }): Promise<CallToolResult> {
+    const topK = args.top_k ?? 10;
+    const threshold = args.threshold ?? 2;
+    const queries = args.queries
+      .map((query) => query.trim())
+      .filter((query) => query.length > 0)
+      .map((query): DiffIndexQuery => ({
+        query,
+        ...(args.knowledge_base_name !== undefined ? { kb: args.knowledge_base_name } : {}),
+      }));
+
+    return this.withCanonicalTool({
+      tool: 'diff_index',
+      kb_scope: args.knowledge_base_name ?? null,
+      k: topK,
+      threshold,
+    }, async () => {
+      try {
+        if (queries.length === 0) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: {
+                  code: 'VALIDATION',
+                  message: 'diff_index requires at least one non-empty query',
+                },
+              }),
+            }],
+            isError: true,
+          };
+        }
+
+        let activeModelId: string;
+        try {
+          activeModelId = await resolveActiveModel({ explicitOverride: args.model_name });
+        } catch (err) {
+          if (err instanceof ActiveModelResolutionError) {
+            return {
+              content: [{ type: 'text', text: err.message }],
+              isError: true,
+            };
+          }
+          throw err;
+        }
+
+        const manager = await this.createReadOnlyManagerForModel(activeModelId);
+        const beforePath = resolveIndexVersionPath(args.before, manager.modelDir);
+        const afterPath = resolveIndexVersionPath(args.after, manager.modelDir);
+        const report = await runDiffIndex({
+          manager,
+          before: beforePath,
+          after: afterPath,
+          queries,
+          topK,
+          threshold,
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: args.format === 'json'
+              ? JSON.stringify(report, null, 2)
+              : formatDiffIndexMarkdown(report),
+          }],
+        };
+      } catch (error: unknown) {
+        const err = toError(error);
+        logger.error('Error diffing index versions:', err);
+        if (err.stack) {
+          logger.error(err.stack);
+        }
+        return { content: [mcpErrorContent(err)], isError: true };
+      }
+    });
+  }
+
+  private async createReadOnlyManagerForModel(modelId: string): Promise<FaissIndexManager> {
+    const { provider } = parseModelId(modelId);
+    const modelName = await readStoredModelName(modelId);
+    if (modelName === null) {
+      throw new Error(`model_name.txt missing for "${modelId}" - corrupt model directory`);
+    }
+    const manager = new FaissIndexManager({
+      provider: provider as EmbeddingProvider,
+      modelName,
+    });
+    await manager.initialize({ readOnly: true });
+    return manager;
   }
 
   private async getActiveManagerForMutation(): Promise<FaissIndexManager> {

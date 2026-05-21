@@ -4772,6 +4772,54 @@ describe('FaissIndexManager predicate-pushdown sidecar (#283)', () => {
     expect(timing.sidecar_fast_path).toBe('missing');
   });
 
+  it('ignores the active-model sidecar after loading a historical version directory', async () => {
+    const { manager, tempDir } = await setupManagerWithSidecar({
+      ntotal: 200,
+      rows: Array.from({ length: 200 }, (_, i) => ({
+        docstoreId: String(i),
+        knowledgeBase: 'docs',
+        source: `/kb/docs/file${i}.md`,
+        relativePath: `docs/file${i}.md`,
+        extension: '.md',
+      })),
+    });
+    const versionDir = path.join(tempDir, 'historical', 'index.v1');
+    await fsp.mkdir(versionDir, { recursive: true });
+    await fsp.writeFile(path.join(versionDir, 'faiss.index'), 'mock-index');
+    await fsp.writeFile(path.join(versionDir, 'docstore.json'), '{}');
+
+    await manager.loadFromVersionDir(versionDir);
+    loadedFaissStore(manager).index = {
+      ntotal: () => 200,
+      getDimension: () => 2,
+    };
+
+    const txtHits: Array<[unknown, number]> = Array.from({ length: 6 }, (_, i) => [
+      { pageContent: `t${i}`, metadata: { extension: '.txt', relativePath: `docs/t${i}.txt` } },
+      0.1 + i * 0.01,
+    ]);
+    const pad: Array<[unknown, number]> = Array.from({ length: 14 }, (_, i) => [
+      { pageContent: `m${i}`, metadata: { extension: '.md', relativePath: `docs/m${i}.md` } },
+      0.2 + i * 0.01,
+    ]);
+    similaritySearchMock.mockResolvedValueOnce([...txtHits, ...pad]);
+
+    const timing: Record<string, unknown> = {};
+    const results = await manager.similaritySearch(
+      'q',
+      5,
+      undefined,
+      undefined,
+      { extensions: ['.txt'] },
+      timing,
+    );
+
+    expect(similaritySearchMock).toHaveBeenCalledTimes(1);
+    expect(similaritySearchMock).toHaveBeenCalledWith('q', 20);
+    expect(results).toHaveLength(5);
+    expect(timing.sidecar_fast_path).toBe('missing');
+  });
+
   it('treats an ntotal mismatch as stale and falls through to the ladder for correctness', async () => {
     // Sidecar header says 100 chunks but the live mock store reports 200.
     // The stale signal must drop the fast-path even though the sidecar file

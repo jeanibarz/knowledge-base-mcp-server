@@ -45,3 +45,6 @@ export const DELETE_DOCUMENT_DESCRIPTION =
 
 export const REINDEX_KNOWLEDGE_BASE_DESCRIPTION =
   'Forces the active model to fully rebuild its FAISS index from on-disk files, replacing the in-memory store and clearing orphan vectors left behind by prior delete_document calls. The rebuild always covers every KB because FAISS lacks per-vector deletion; passing knowledge_base_name is accepted (and recorded in the response) but does not narrow the rebuild scope.';
+
+export const DIFF_INDEX_DESCRIPTION =
+  'Compares retrieval-result churn across two persisted FAISS index versions for a list of plaintext queries. Returns rank deltas, top-K membership changes, and stability/churn scores; useful before promoting a new index version.';
