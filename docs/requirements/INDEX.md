@@ -2,6 +2,10 @@
 
 - [Retrieval eval command](retrieval-eval.md)
 - [Reranker](reranker.md)
+- Source RFCs:
+  [RFC 017 contextual retrieval](../rfcs/017-contextual-retrieval.md),
+  [RFC 018 relevance gating](../rfcs/018-context-relevance-gating.md),
+  [RFC 019 cross-encoder reranker](../rfcs/019-cross-encoder-reranker.md)
 
 ## Indexing
 
@@ -178,6 +182,183 @@
 
 **Linked Tests:** TS-SEARCH-192
 **Dependencies:** RFC005
+
+## Relevance Gate (RFC 018)
+
+### FR-GATE-EVAL-369: Gate Validation Harness
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall provide `kb eval-gate` as a fixture-driven harness that measures whether the RFC 018 relevance gate improves downstream answer quality before and after enabling it in production.
+
+**Acceptance Criteria:**
+- [x] Given a valid gate-eval fixture, when `kb eval-gate` runs, then the harness emits a stable report with the three pre-registered numbers (`empty_verdict_fire_rate`, `per_chunk_drop_no_good_answer_delta`, `judge_false_empty_rate`).
+- [x] Given no reachable LLM endpoint, when `kb eval-gate` runs without `--m1`, then the harness falls back to the offline causal model and still produces a report.
+- [x] Given `--m1`, when no endpoint is reachable, then the harness exits non-zero rather than producing a misleading simulated canary report.
+
+**Linked Tests:** TS-GATE-EVAL-369
+**Dependencies:** RFC018
+
+### FR-GATE-379: Stage A Floor and Stage B LLM Judge
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall apply a configurable Stage A statistical floor and an optional Stage B LLM judge to retrieval results when `KB_RELEVANCE_GATE=on` or `--gate` is set, fail-soft on judge failures, and only fire an empty verdict when `KB_GATE_EMPTY_VERDICT=on`.
+
+**Acceptance Criteria:**
+- [x] Given the gate is off, when retrieval runs, then the gate shall not invoke any LLM call and shall not alter the result set.
+- [x] Given Stage A is on, when a candidate scores strictly below `KB_GATE_SCORE_FLOOR`, then it shall be dropped from the gated candidate set.
+- [x] Given Stage B is eligible, when the LLM judge times out or returns an invalid verdict, then the gate shall degrade to retrieval and emit a `gate.degraded` canonical event.
+- [x] Given `KB_GATE_EMPTY_VERDICT=off`, when the gate's terminal verdict is empty, then the search shall return the pre-gate top-k instead of an empty result.
+
+**Linked Tests:** TS-GATE-379
+**Dependencies:** RFC018
+
+### FR-GATE-422: Untrusted Task-Context Policy
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall apply a configurable `KB_GATE_TASK_CONTEXT_MODE` policy to argv-supplied task context that blocks or warns when content is suspicious (long argv, prompt-injection signals).
+
+**Acceptance Criteria:**
+- [x] Given the default `warn` mode, when argv task context is long or carries injection signals, then `kb search` shall log a warning to stderr but continue.
+- [x] Given `strict` mode, when argv task context carries injection signals, then `kb search` shall exit 2.
+- [x] Given `--task-context-file=<path>`, when the file content is large, then the argv-length check shall not apply.
+
+**Linked Tests:** TS-GATE-422
+**Dependencies:** FR-GATE-379
+
+## Research
+
+### FR-RESEARCH-451: Evidence Plan and Collect
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall provide `kb research plan` and `kb research collect` so an agent can split research into a vetted plan step and a single deterministic evidence-collection step.
+
+**Acceptance Criteria:**
+- [x] Given a research question, when `kb research plan` runs, then the system shall return a schema-versioned plan listing the query candidates the collector would run.
+- [x] Given a research plan, when `kb research collect` runs, then the system shall execute the queries, deduplicate hits across query candidates, and return a single ranked evidence packet with stable per-hit fields.
+- [x] Given per-query and total caps, when the collector runs, then the returned packet shall not exceed them.
+
+**Linked Tests:** TS-RESEARCH-451
+**Dependencies:** FR-SEARCH-374
+
+### FR-RESEARCH-452: Planner Selection Tightening
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The research planner shall refuse to propose query candidates that contain prompt-injection signals or fail the minimum-task-token threshold.
+
+**Acceptance Criteria:**
+- [x] Given a question carrying injection signals, when the planner runs, then no candidate referencing the injected text shall appear in the plan envelope.
+- [x] Given a degenerate question, when the planner runs, then non-actionable query candidates shall be omitted with a clear `skipped` reason in the report.
+
+**Linked Tests:** TS-RESEARCH-452
+**Dependencies:** FR-RESEARCH-451
+
+## Feedback
+
+### FR-FEEDBACK-436: Relevance Feedback Ledger
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall record per-KB relevance judgments through `kb feedback add` and let operators promote accumulated judgments for a query into a `kb eval` fixture case via `kb feedback promote`.
+
+**Acceptance Criteria:**
+- [x] Given a relevance judgment, when `kb feedback add` runs, then the system shall append a `relevance-feedback.v1` row to `<kb>/.index/relevance-feedback.jsonl` and return the new entry id.
+- [x] Given recorded judgments, when `kb feedback list` runs, then the system shall return entries sorted by `created_at` descending and honor `--query` and `--limit`.
+- [x] Given recorded judgments, when `kb feedback promote --fixture --yes` runs, then the system shall append one `kb eval` case for the target query to the fixture file.
+- [x] Given `--task-context`, when the ledger row is written, then only the SHA-256 of the task context shall be persisted.
+
+**Linked Tests:** TS-FEEDBACK-436
+**Dependencies:** FR-RETRIEVAL-EVAL
+
+## Logging and Observability
+
+### FR-LOGS-397: Canonical Log Reader
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall provide `kb logs` as a structured reader over `kb-canonical.v1` log lines so operators can retrieve events by request id, query hash, or recency without parsing raw log files by hand.
+
+**Acceptance Criteria:**
+- [x] Given a log file containing canonical events, when `kb logs recent --format=json` runs, then the system shall return the latest events with stable scan counts.
+- [x] Given a request id or query SHA, when `kb logs show` runs with the matching filter, then the system shall return every matching event in chronological order.
+- [x] Given a missing log file, when `kb logs` runs, then the system shall emit a JSON error envelope with `schema_version: "kb.logs.v1"` and exit code 2.
+
+**Linked Tests:** TS-LOGS-397
+**Dependencies:** RFC009
+
+### FR-STATS-419: Contextual Preface Stats
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The `kb_stats` payload shall include `contextual_preface` cache and failure counters when RFC 017 ingest is enabled and shall omit the block otherwise.
+
+**Acceptance Criteria:**
+- [x] Given `KB_CONTEXTUAL_RETRIEVAL=on` and at least one ingest pass, when stats are requested, then the payload shall include `contextual_preface.cache_hits`, `cache_misses`, `failures`, and `last_failure_code`.
+- [x] Given the contextual flag is off, when stats are requested, then the `contextual_preface` block shall be absent and the prior payload shape preserved.
+
+**Linked Tests:** TS-STATS-419
+**Dependencies:** RFC017
+
+### FR-STATS-442: Remote Transport Stats
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The `kb_stats` payload shall include a `remote_transport` counter block when the HTTP or SSE transport is active and shall omit the block under stdio.
+
+**Acceptance Criteria:**
+- [x] Given HTTP or SSE transport, when stats are requested, then the payload shall include `remote_transport.request_count`, `auth_failure_count`, and `backoff_active_count`.
+- [x] Given stdio transport, when stats are requested, then the `remote_transport` block shall be absent.
+
+**Linked Tests:** TS-STATS-442
+**Dependencies:** RFC008
+
+## Reindex
+
+### FR-REINDEX-407: Reindex Status Ledger
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall expose `kb reindex status` as a read-only reader over the `.reindex.run.json` ledger so operators can inspect the current or most recent contextual-reindex pass.
+
+**Acceptance Criteria:**
+- [x] Given an existing `.reindex.run.json`, when `kb reindex status --format=json` runs, then the system shall report `kb_scope`, `model`, `started_at`, `finished_at`, chunk counters, cache hit rate, and any failure code.
+- [x] Given a missing ledger, when the command runs, then the system shall report a clearly-typed "no runs" envelope rather than failing.
+
+**Linked Tests:** TS-REINDEX-407
+**Dependencies:** RFC017
+
+### FR-REINDEX-408: Cache-Aware Reindex Estimate
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The contextual-reindex estimator shall subtract chunks already present in the preface cache from its wall-clock estimate so re-runs after partial failures report realistic remaining work.
+
+**Acceptance Criteria:**
+- [x] Given a populated preface cache, when the estimator runs, then the reported chunk-to-embed count shall exclude cache hits.
+- [x] Given an empty cache, when the estimator runs, then the reported count shall equal the total ingestable chunks.
+
+**Linked Tests:** TS-REINDEX-408
+**Dependencies:** RFC017
+
+## Serve / Daemon
+
+### FR-SERVE-410: Daemon Lifecycle Probe
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall provide `kb serve status` as a read-only probe that reports whether the resident daemon is reachable at the configured `KB_DAEMON_URL` and never starts or stops the daemon itself.
+
+**Acceptance Criteria:**
+- [x] Given a reachable daemon, when the probe runs, then the system shall exit 0 with the daemon's pid, uptime, idle timeout, and command list when supplied by `/health`.
+- [x] Given no daemon is listening, when the probe runs, then the system shall exit 3 with a clear "no daemon at <url>" message.
+- [x] Given a daemon answers with an unusable `/health` payload, when the probe runs, then the system shall exit 1.
+- [x] Given an invalid `KB_DAEMON_URL`, when the probe runs, then the system shall exit 2.
+
+**Linked Tests:** TS-SERVE-410
 
 ## Stats
 

@@ -956,6 +956,255 @@ Source and test anchors: `src/cli-eval.ts:136-142`,
 `src/retrieval-eval.ts:140-153`, `src/retrieval-eval.test.ts:38-74`,
 `src/retrieval-eval.test.ts:140-156`.
 
+## `kb eval-gate`
+
+The RFC 018 relevance-gate validation harness. Two modes, gated by `--m1`:
+
+- **M0 (default)** — "validate before build". Answers each query twice (raw
+  top-k vs. gate-simulated top-k via threshold surgery) and grades both for
+  downstream quality. Live with `--endpoint` (and optionally `--model`), or
+  simulation with `--dry-run` / when no endpoint is reachable.
+- **M1 (`--m1`)** — canary against the real gate (`KB_RELEVANCE_GATE=on`,
+  Stage B judge live). Requires a reachable endpoint. Reports downstream
+  answer quality, recall on known-good fixtures, position-swap probe,
+  `KB_GATE_SCORE_FLOOR` sweep, BM25-veto calibration, and go/no-go.
+
+Invocation:
+
+```bash
+kb eval-gate <fixture.yml|json> --format=json [--endpoint=<url>] [--model=<id>]
+             [--dry-run] [--calibration=<path>] [--out=<path>]
+kb eval-gate <fixture.yml|json> --m1 --format=json --endpoint=<url>
+             [--model=<id>] [--score-floor=<n>] [--floor-sweep=lo:hi:step]
+             [--calibration=<path>] [--out=<path>]
+```
+
+M0 report envelope:
+
+```json
+{
+  "meta": {
+    "fixturePath": "docs/testing/fixtures/rfc-018-gate-eval/queries.yml",
+    "mode": "live",
+    "answererModel": "llama-3.1",
+    "graderModel": "llama-3.1",
+    "generatedAt": "2026-05-21T08:30:00.000Z"
+  },
+  "summary": {
+    "case_count": 24,
+    "kb_names": ["operating-environment"],
+    "has_answer_count": 18,
+    "no_good_answer_count": 6,
+    "no_good_answer_ratio": 0.25,
+    "directional_pass": true,
+    "epsilon": 0.05,
+    "no_good_answer_delta": -0.08,
+    "has_answer_delta": -0.02,
+    "empty_verdict_fire_rate": 0.12,
+    "empty_verdict_fire_count": 3,
+    "per_chunk_drop_no_good_answer_delta": -0.04,
+    "per_chunk_drop_has_answer_delta": -0.01,
+    "answer_present_but_distant_count": 2,
+    "judge_false_empty_count": 0,
+    "judge_false_empty_rate": 0,
+    "grader_admissibility": null
+  },
+  "cases": [
+    {
+      "name": "deployment runbook",
+      "kb": "operating-environment",
+      "bucket": "has_answer",
+      "fixture_class": "in_kb",
+      "gated_verdict": "kept",
+      "empty_fired": false,
+      "conditions": [
+        { "label": "raw", "outcome": "answered_correctly", "passages": 5 },
+        { "label": "gated", "outcome": "answered_correctly", "passages": 3 }
+      ]
+    }
+  ]
+}
+```
+
+Stable fields:
+
+- `meta.mode` is `"live"` or `"simulation"`.
+- `summary.directional_pass` is the pre-registered RFC 018 M0 go/no-go boolean.
+- `summary.empty_verdict_fire_rate`, `summary.per_chunk_drop_no_good_answer_delta`,
+  `summary.judge_false_empty_rate` are the three pre-registered M0 numbers.
+- `cases[].bucket` is `"has_answer"` or `"no_good_answer"`.
+- `cases[].fixture_class` is `"in_kb"`, `"adjacent"`, or `"out_of_kb"`.
+
+The M1 (`--m1`) JSON report has a different shape (canary measurements, sweep
+points, recommendation). See `src/relevance-gate-m1.ts:toM1JsonReport` and
+`docs/rfcs/018-m1-canary-report.md` for the field list.
+
+Stdout/stderr and exit codes:
+
+- JSON report on stdout, plus `--out=<path>` mirrors the report to a file.
+- Exit `0` always for M0 (the harness "runs straight through" by design).
+- Exit `2` for argv/fixture errors and for `--m1` without a reachable endpoint.
+- Exit `1` only for an M1 run that fails after the endpoint probe succeeded.
+
+Source and test anchors: `src/cli-eval-gate.ts:58-138`,
+`src/cli-eval-gate.ts:163-237`, `src/cli-eval-gate.ts:244-303`,
+`src/cli-eval-gate.ts:493-529`, `src/relevance-gate-m1.ts:822-940`,
+`src/cli-json-contracts.test.ts` (eval-gate goldens).
+
+## `kb feedback`
+
+Records and promotes per-KB relevance judgments. The ledger lives in
+`<kb>/.index/relevance-feedback.jsonl`. Promotion converts every ledger row
+for a single query into a `kb eval` fixture case, so accumulated judgments
+become regression coverage.
+
+Invocation:
+
+```bash
+kb feedback add --kb=<name> --query=<text> --source=<rel-path>
+                [--chunk-id=<id>] [--verdict=relevant|irrelevant|stale|misleading]
+                [--relevance=0..3] [--task-context=<text>] [--note=<text>]
+                [--group=<label>]... --format=json
+kb feedback list --kb=<name> [--query=<text>] [--limit=<int>] --format=json
+kb feedback promote --kb=<name> --query=<text> [--name=<case-name>]
+                    [--k=<int>] [--mode=dense|lexical|hybrid|auto] [--gate]
+                    [--fixture=<path> --yes] --format=json
+```
+
+`add` envelope:
+
+```json
+{
+  "ledger_path": "/home/jean/knowledge_bases/work/.index/relevance-feedback.jsonl",
+  "entry": {
+    "id": "01HVT7C0DXFG2MJC9Y4N9YEH3R",
+    "kb": "work",
+    "created_at": "2026-05-21T09:15:00.000Z",
+    "query": "rollback procedure",
+    "source": "runbooks/deploy.md",
+    "chunk_id": "work/runbooks/deploy.md#L42-L78",
+    "verdict": "relevant",
+    "relevance": 3,
+    "task_context_sha256": "0123…",
+    "note": "matches step 3 in deploy.md",
+    "groups": ["runbook"]
+  }
+}
+```
+
+`list` envelope:
+
+```json
+{
+  "ledger_path": "/home/jean/knowledge_bases/work/.index/relevance-feedback.jsonl",
+  "entries": [
+    { "id": "…", "kb": "work", "created_at": "…", "query": "…", "source": "…", "verdict": "relevant", "relevance": 3 }
+  ]
+}
+```
+
+`promote` envelopes:
+
+```json
+{
+  "query": "rollback procedure",
+  "fixture_path": null,
+  "wrote": false,
+  "fixture_yaml": "gate: false\ncases:\n  - name: rollback procedure\n    ...\n"
+}
+```
+
+```json
+{
+  "fixture_path": "docs/testing/feedback-fixture.yml",
+  "wrote": true,
+  "created": false,
+  "case_count": 7
+}
+```
+
+Stable fields:
+
+- Every envelope includes the ledger path; `add` returns the new `entry`.
+- `entry.verdict` is one of `relevant`, `irrelevant`, `stale`, `misleading`.
+- `entry.relevance` is `0..3`. Non-relevant verdicts default to `0`; `relevant`
+  defaults to `3` unless `--relevance` overrides.
+- `entry.task_context_sha256` is present only when `--task-context` was passed;
+  the raw text is never stored.
+- `promote` is read-only without `--fixture --yes`; the preview includes the
+  full `fixture_yaml` so an operator can review before writing.
+- Promote-with-write returns `case_count` (the fixture's case count after the
+  append) and `created` (`true` if the fixture file did not exist).
+
+Stdout/stderr and exit codes:
+
+- Reports on stdout. Errors print `kb feedback: <message>` to stderr.
+- Exit `0` on success.
+- Exit `2` on argv errors and missing KB.
+- Exit `1` on ledger I/O or fixture-write failures.
+
+Source and test anchors: `src/cli-feedback.ts:56-140`,
+`src/cli-feedback.ts:253-326`, `src/feedback-ledger.ts`,
+`src/cli-feedback.test.ts`.
+
+## `kb serve status`
+
+A read-only lifecycle probe for the resident `kb serve` daemon. Queries
+`GET /health` at the configured `KB_DAEMON_URL` (defaults to
+`http://127.0.0.1:17799`) and reports reachability without starting or
+stopping a daemon.
+
+Invocation:
+
+```bash
+kb serve status [--json]
+```
+
+Reachable envelope:
+
+```json
+{
+  "reachable": true,
+  "url": "http://127.0.0.1:17799/",
+  "daemon": {
+    "url": "http://127.0.0.1:17799/",
+    "pid": 41234,
+    "uptime_ms": 124500,
+    "idle_timeout_ms": 300000,
+    "commands": ["search", "list", "stats"]
+  }
+}
+```
+
+Not-reachable envelope:
+
+```json
+{
+  "reachable": false,
+  "url": "http://127.0.0.1:17799/"
+}
+```
+
+Stable fields:
+
+- `reachable`, `url` always present.
+- `daemon.commands` always lists the read-only commands the daemon accepts.
+- `daemon.pid`, `daemon.uptime_ms`, `daemon.idle_timeout_ms` are present when
+  the daemon's `/health` payload supplies them.
+
+Stdout/stderr and exit codes:
+
+- JSON envelope on stdout. The default (non-`--json`) markdown output goes to
+  stdout too.
+- Exit `0` when a daemon is reachable.
+- Exit `2` for invalid arguments or environment (bad `KB_DAEMON_URL`).
+- Exit `3` when no daemon is reachable at the configured URL (this is the
+  "happy idle" state, distinct from errors).
+- Exit `1` when a daemon answered but the `/health` payload was unusable.
+
+Source and test anchors: `src/cli-serve.ts:114-166`,
+`src/daemon-client.ts:46-122`, `src/cli-serve.test.ts:109-180`.
+
 ## `kb list`
 
 Invocation:

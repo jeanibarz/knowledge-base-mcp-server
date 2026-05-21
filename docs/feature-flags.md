@@ -84,6 +84,23 @@ provider load or scoring failures degrade to the fused order.
 | Reranker model | `KB_RERANK_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Local `@huggingface/transformers` provider | Implemented | none | `KB_RERANK=on kb doctor --format=json` |
 | Rerank candidate count | `KB_RERANK_TOP_N` | `40` | Reranker stage | Implemented | none | `KB_RERANK_TOP_N=20 KB_RERANK=on kb search "query" --mode=hybrid --timing` |
 
+## Untrusted Content Hardening
+
+Retrieved chunk text is treated as untrusted by default — the injection guard
+detects prompt-injection signals (system-role markers, instruction overrides,
+bidi controls, zero-width chars, unicode tag chars) and either tags or wraps
+the offending content before it reaches the agent. The default mode is `tag`,
+which adds a metadata signal without altering content. `wrap` and `both`
+additionally fence content with sentinel strings derived from the wrap-open and
+wrap-close vars below.
+
+| Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
+|---|---|---:|---|---|---|---|
+| Untrusted-content guard mode | `KB_INJECTION_GUARD` | `tag` | MCP and CLI retrieval output | Implemented | none | `KB_INJECTION_GUARD=both kb search "query" --format=json` |
+| Guard bypass list | `KB_INJECTION_GUARD_BYPASS_KBS` | empty | Retrieval guard | Implemented | none | `KB_INJECTION_GUARD_BYPASS_KBS=trusted-runbook kb search "query"` |
+| Wrap-open sentinel | `KB_INJECTION_GUARD_WRAP_OPEN` | `<untrusted-doc src="{source}">` | Retrieval guard wrap modes | Implemented | none | `KB_INJECTION_GUARD=wrap KB_INJECTION_GUARD_WRAP_OPEN='<<UNTRUSTED:{source}>>' kb search "query"` |
+| Wrap-close sentinel | `KB_INJECTION_GUARD_WRAP_CLOSE` | `</untrusted-doc>` | Retrieval guard wrap modes | Implemented | none | `KB_INJECTION_GUARD=wrap KB_INJECTION_GUARD_WRAP_CLOSE='<<END>>' kb search "query"` |
+
 ## Output, Diagnostics, and Logging
 
 | Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
@@ -91,9 +108,13 @@ provider load or scoring failures degrade to the fused order.
 | Editor URI links | `KB_EDITOR_URI` | `none` | CLI and MCP retrieval output | Implemented | none | `KB_EDITOR_URI=cursor kb search "query" --format=json` |
 | Frontmatter extras on wire | `FRONTMATTER_EXTRAS_WIRE_VISIBLE` | `false` | MCP and CLI JSON retrieval output | Implemented | none | `FRONTMATTER_EXTRAS_WIRE_VISIBLE=true kb search "query" --format=json` |
 | CLI timing | `--timing` | off | CLI search and ask | Implemented | `--timing` | `kb search "query" --timing` |
+| Compact search output | `kb search --format=compact` | `md` | CLI search | Implemented | `--format=compact` | `kb search "query" --format=compact` |
+| Batch JSONL search input | `kb search --batch-jsonl` | off | CLI search | Implemented | `--batch-jsonl < queries.jsonl` | `printf '{"query":"q1"}\n{"query":"q2"}\n' \| kb search --batch-jsonl` |
 | Canonical log format | `KB_LOG_FORMAT` | `both` | Process logs | Implemented | none | `KB_LOG_FORMAT=canonical kb search "query"` |
+| Verbose MCP server tracing | `KB_LOG_VERBOSE` | unset | `KnowledgeBaseServer` lifecycle logs | Implemented, opt-in | none | `KB_LOG_VERBOSE=1 node build/index.js` |
 | Log level | `LOG_LEVEL` | `info` | Process logs | Implemented | none | `LOG_LEVEL=debug kb doctor` |
 | Log file | `LOG_FILE` | unset | Process logs | Implemented | none | `LOG_FILE=/tmp/kb.log kb doctor` |
+| Canonical log reader | `kb logs show --request-id=<id>` | reads configured canonical log | `kb logs` | Implemented | none | `kb logs recent --limit=20 --format=json` |
 | Mutation audit log | `KB_MUTATION_AUDIT_LOG` | unset | KB write paths | Implemented, opt-in | none | `KB_MUTATION_AUDIT_LOG=/tmp/kb-mutations.jsonl kb remember --kb=<name> --title="..." --stdin --yes` |
 | Tool description overrides | `RETRIEVE_KNOWLEDGE_DESCRIPTION`, `LIST_KNOWLEDGE_BASES_DESCRIPTION`, `LIST_MODELS_DESCRIPTION`, `KB_STATS_DESCRIPTION` | built-in descriptions | MCP server tool metadata | Implemented | none; set before server start | restart MCP server and inspect tool descriptions |
 
@@ -118,6 +139,13 @@ provider load or scoring failures degrade to the fused order.
 | Maximum raw file size | `KB_MAX_FILE_BYTES` | `104857600` | Ingest and refresh | Implemented | none | `KB_MAX_FILE_BYTES=1048576 kb search "query" --refresh` |
 | Maximum extracted text size | `KB_MAX_EXTRACTED_TEXT_BYTES` | `16777216` | Ingest and refresh | Implemented | none | `KB_MAX_EXTRACTED_TEXT_BYTES=1048576 kb search "query" --refresh` |
 | Large-file policy | `KB_LARGE_FILE_POLICY` | `skip` | Ingest and refresh | Implemented | none | `KB_LARGE_FILE_POLICY=error kb search "query" --refresh` |
+| Splitter chunk size | `KB_CHUNK_SIZE` | `1000` | Ingest and refresh | Implemented | none | `KB_CHUNK_SIZE=500 kb search "query" --refresh` |
+| Splitter chunk overlap | `KB_CHUNK_OVERLAP` | `200` (auto-scales as `floor(chunkSize/5)` when only `KB_CHUNK_SIZE` is set) | Ingest and refresh | Implemented | none | `KB_CHUNK_SIZE=500 KB_CHUNK_OVERLAP=100 kb search "query" --refresh` |
+| Indexing batch size | `INDEXING_BATCH_SIZE` | `64` (Ollama: `16`) | Embedding ingest | Implemented | none | `INDEXING_BATCH_SIZE=32 kb search "query" --refresh` |
+| Filesystem watcher | `KB_FS_WATCH` | off | KB root watcher (auto-refresh on file change) | Implemented, opt-in | none | `KB_FS_WATCH=1 node build/index.js` |
+| FS watcher debounce | `KB_FS_WATCH_DEBOUNCE_MS` | `250` | KB root watcher | Implemented | none | `KB_FS_WATCH=1 KB_FS_WATCH_DEBOUNCE_MS=500 node build/index.js` |
+| Index version retention | `KB_INDEX_VERSION_RETENTION` | `2` | FAISS version rotation | Implemented | none | `KB_INDEX_VERSION_RETENTION=4 kb reindex --with-context` |
+| Per-KB age budget | `KB_AGE_BUDGET_HOURS_<KB>` or `KB_AGE_BUDGET_HOURS` (global fallback) | unset | `kb doctor`, search freshness footer | Implemented, opt-in | none | `KB_AGE_BUDGET_HOURS=24 kb doctor --format=json` |
 
 ## Remote Transport
 
@@ -131,6 +159,29 @@ provider load or scoring failures degrade to the fused order.
 | Failed auth backoff threshold | `MCP_AUTH_BACKOFF_THRESHOLD` | `5` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_AUTH_BACKOFF_THRESHOLD=3 node build/index.js` |
 | Failed auth backoff window | `MCP_AUTH_BACKOFF_MS` | `30000` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_AUTH_BACKOFF_MS=60000 node build/index.js` |
 | Failed auth backoff address cap | `MCP_AUTH_BACKOFF_MAX_ENTRIES` | `1024` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_AUTH_BACKOFF_MAX_ENTRIES=2048 node build/index.js` |
+
+## Daemon and CLI Fast-Path
+
+`kb serve` runs a long-lived CLI helper process. CLI commands that opt in (and
+`kb serve status`) reach it over loopback HTTP, avoiding cold-start overhead.
+
+| Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
+|---|---|---:|---|---|---|---|
+| Daemon URL | `KB_DAEMON_URL` | composed from `KB_DAEMON_HOST` (default `127.0.0.1`) and `KB_DAEMON_PORT` (default `17799`) when unset | `kb serve` clients, `kb doctor --endpoints`, `kb serve status` | Implemented | none | `KB_DAEMON_URL=http://127.0.0.1:17799 kb serve status` |
+| Daemon host | `KB_DAEMON_HOST` | `127.0.0.1` | Daemon URL composition | Implemented | none | `KB_DAEMON_HOST=127.0.0.1 KB_DAEMON_PORT=17799 kb serve` |
+| Daemon port | `KB_DAEMON_PORT` | `17799` | Daemon URL composition | Implemented | none | `KB_DAEMON_PORT=18888 kb serve` |
+
+## Managed LLM Profiles
+
+`kb llm` writes profile configuration, lease state, and managed systemd unit
+files under platform-appropriate paths. Operators can redirect any of the three
+without changing source.
+
+| Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
+|---|---|---:|---|---|---|---|
+| LLM profile config dir | `KB_LLM_CONFIG_DIR` | `$XDG_CONFIG_HOME/kb-llm` or `~/.config/kb-llm` | `kb llm` profile files | Implemented | none | `KB_LLM_CONFIG_DIR=/tmp/kb-llm kb llm status` |
+| LLM lease/state dir | `KB_LLM_STATE_DIR` | `$XDG_STATE_HOME/kb-llm` or `~/.local/state/kb-llm` | `kb llm` lease files and managed-runner stdout/stderr | Implemented | none | `KB_LLM_STATE_DIR=/tmp/kb-llm-state kb llm status` |
+| Managed systemd unit dir | `KB_LLM_SYSTEMD_USER_DIR` | `~/.config/systemd/user` | `kb llm install` / `uninstall` for `kb-llm@<profile>.service` | Implemented | none | `KB_LLM_SYSTEMD_USER_DIR=$HOME/.config/systemd/user kb llm install --profile=qwen ...` |
 
 ## Rollout Checklist
 

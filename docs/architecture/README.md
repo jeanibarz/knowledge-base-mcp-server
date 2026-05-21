@@ -22,11 +22,13 @@ If you've never seen this repo before, read top-to-bottom:
 3. [`c4-component.md`](./c4-component.md) — the TypeScript modules inside the server process and CLI, plus how they depend on each other.
 4. [`sequence-retrieve.md`](./sequence-retrieve.md) — `retrieve_knowledge` end-to-end, cold and warm.
 5. [`sequence-reindex.md`](./sequence-reindex.md) — what happens when `EMBEDDING_PROVIDER` or the model env var changes under an existing index.
-6. [`state-index.md`](./state-index.md) — the FAISS-index lifecycle (None → Loading → Loaded → Rebuilding → Recovering).
-7. [`data-model.md`](./data-model.md) — on-disk artifacts and the chunk metadata schema.
-8. [`qa-budgets.md`](./qa-budgets.md) — latency / memory / cost budgets and the current scale ceiling.
-9. [`threat-model.md`](./threat-model.md) — trust boundaries, provider keys, concurrency constraint, path-traversal plan.
-10. [`adr/`](./adr/) — five decisions in MADR 3.0 format (`0001` faiss-over-qdrant, `0002` per-file-hash-sidecars, `0003` stdio-only-transport, `0004` markdown-splitter-default, `0005` auto-rebuild-on-model-change).
+6. [`sequence-research-collect.md`](./sequence-research-collect.md) — `kb research collect` end-to-end: planner, per-shelf hybrid search loop, and atomic artifact writes.
+7. [`sequence-feedback-promote.md`](./sequence-feedback-promote.md) — `kb feedback add` (append to ledger) and `kb feedback promote` (materialise into a `kb eval` fixture).
+8. [`state-index.md`](./state-index.md) — the FAISS-index lifecycle (None → Loading → Loaded → Rebuilding → Recovering).
+9. [`data-model.md`](./data-model.md) — on-disk artifacts and the chunk metadata schema.
+10. [`qa-budgets.md`](./qa-budgets.md) — latency / memory / cost budgets and the current scale ceiling.
+11. [`threat-model.md`](./threat-model.md) — trust boundaries, provider keys, concurrency constraint, path-traversal plan.
+12. [`adr/`](./adr/) — five decisions in MADR 3.0 format (`0001` faiss-over-qdrant, `0002` per-file-hash-sidecars, `0003` stdio-only-transport, `0004` markdown-splitter-default, `0005` auto-rebuild-on-model-change).
 
 ## Conventions
 
