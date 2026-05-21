@@ -1,0 +1,528 @@
+import {
+  DEFAULT_HUGGINGFACE_MODEL_NAME,
+  DEFAULT_OPENAI_MODEL_NAME,
+  KNOWN_EMBEDDING_PROVIDERS,
+} from './provider.js';
+import {
+  DEFAULT_RERANK_MODEL,
+  DEFAULT_RERANK_TOP_N,
+  MAX_RERANK_TOP_N,
+} from './reranker.js';
+
+export type ConfigFindingStatus = 'ok' | 'warn' | 'error';
+export type ConfigValueKind =
+  | 'boolean'
+  | 'csv'
+  | 'dependency'
+  | 'duration'
+  | 'enum'
+  | 'integer'
+  | 'number'
+  | 'path'
+  | 'secret'
+  | 'string'
+  | 'url'
+  | 'unknown';
+
+export interface ConfigFinding {
+  name: string;
+  status: ConfigFindingStatus;
+  kind: ConfigValueKind;
+  source: string;
+  value: string | null;
+  message: string;
+}
+
+export interface ConfigValidateReport {
+  schema_version: 'kb.config-validate.v1';
+  status: ConfigFindingStatus;
+  source: string;
+  checked_at: string;
+  counts: Record<ConfigFindingStatus, number>;
+  findings: ConfigFinding[];
+}
+
+export interface DotEnvParseResult {
+  env: Record<string, string>;
+  errors: ConfigFinding[];
+}
+
+type ConfigSpec =
+  | BaseSpec<'boolean'>
+  | BaseSpec<'csv'>
+  | BaseSpec<'duration'>
+  | BaseSpec<'integer'>
+  | BaseSpec<'number'>
+  | BaseSpec<'path'>
+  | BaseSpec<'secret'>
+  | BaseSpec<'string'>
+  | BaseSpec<'url'>
+  | EnumSpec;
+
+interface BaseSpec<K extends ConfigValueKind> {
+  name: string;
+  kind: K;
+  default?: string;
+  min?: number;
+  max?: number;
+  secret?: boolean;
+  protocols?: string[];
+  booleanValues?: readonly string[];
+  truthyValues?: readonly string[];
+  integerSyntax?: 'number' | 'digits';
+}
+
+interface EnumSpec extends BaseSpec<'enum'> {
+  values: string[];
+}
+
+interface ValidateOptions {
+  source?: string;
+  now?: () => Date;
+}
+
+const STRICT_BOOL_VALUES = ['on', 'off', 'true', 'false', '1', '0'] as const;
+const STRICT_TRUTHY_VALUES = ['on', 'true', '1'] as const;
+const YES_NO_BOOL_VALUES = [...STRICT_BOOL_VALUES, 'yes', 'no'] as const;
+const YES_NO_TRUTHY_VALUES = [...STRICT_TRUTHY_VALUES, 'yes'] as const;
+const QUERY_CACHE_BOOL_VALUES = [...YES_NO_BOOL_VALUES, 'enabled', 'disabled'] as const;
+const CONTROLLED_PREFIXES = [
+  'KB_',
+  'MCP_',
+  'OLLAMA_',
+  'OPENAI_',
+  'HUGGINGFACE_',
+  'FAISS_',
+  'KNOWLEDGE_BASES_',
+  'EMBEDDING_',
+  'INGEST_',
+  'INDEXING_',
+  'REINDEX_',
+  'FRONTMATTER_',
+  'LOG_FILE',
+];
+
+export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
+  { name: 'KNOWLEDGE_BASES_ROOT_DIR', kind: 'path', default: '~/knowledge_bases' },
+  { name: 'FAISS_INDEX_PATH', kind: 'path', default: '$KNOWLEDGE_BASES_ROOT_DIR/.faiss' },
+  { name: 'EMBEDDING_PROVIDER', kind: 'enum', values: [...KNOWN_EMBEDDING_PROVIDERS], default: 'huggingface' },
+  { name: 'KB_ACTIVE_MODEL', kind: 'string' },
+  { name: 'KB_FAKE_DIM', kind: 'integer', default: '256', min: 8, max: 4096 },
+
+  { name: 'HUGGINGFACE_API_KEY', kind: 'secret', secret: true },
+  { name: 'HUGGINGFACE_MODEL_NAME', kind: 'string', default: DEFAULT_HUGGINGFACE_MODEL_NAME },
+  { name: 'HUGGINGFACE_PROVIDER', kind: 'string', default: 'hf-inference' },
+  { name: 'HUGGINGFACE_ENDPOINT_URL', kind: 'url', protocols: ['http:', 'https:'] },
+  { name: 'OLLAMA_BASE_URL', kind: 'url', default: 'http://localhost:11434', protocols: ['http:', 'https:'] },
+  { name: 'OLLAMA_MODEL', kind: 'string', default: 'dengcao/Qwen3-Embedding-0.6B:Q8_0' },
+  { name: 'OPENAI_API_KEY', kind: 'secret', secret: true },
+  { name: 'OPENAI_MODEL_NAME', kind: 'string', default: DEFAULT_OPENAI_MODEL_NAME },
+
+  { name: 'INDEXING_BATCH_SIZE', kind: 'integer', min: 1, max: 512 },
+  { name: 'KB_CHUNK_SIZE', kind: 'integer', min: 1 },
+  { name: 'KB_CHUNK_OVERLAP', kind: 'integer', min: 0 },
+  { name: 'INGEST_EXTRA_EXTENSIONS', kind: 'csv' },
+  { name: 'INGEST_EXCLUDE_PATHS', kind: 'csv' },
+  { name: 'KB_MAX_FILE_BYTES', kind: 'integer', min: 1 },
+  { name: 'KB_MAX_EXTRACTED_TEXT_BYTES', kind: 'integer', min: 1 },
+  { name: 'KB_LARGE_FILE_POLICY', kind: 'enum', values: ['skip', 'truncate', 'error'], default: 'skip' },
+  { name: 'KB_REFRESH_QUIESCE_MS', kind: 'duration', min: 0 },
+
+  { name: 'KB_QUERY_CACHE', kind: 'boolean', default: 'on', booleanValues: QUERY_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'yes', 'enabled'] },
+  { name: 'KB_QUERY_CACHE_LRU_MAX', kind: 'integer', default: '256', min: 0 },
+  { name: 'KB_QUERY_CACHE_DISK_MAX_MB', kind: 'number', default: '64', min: 0.000001 },
+
+  { name: 'KB_CONTEXTUAL_RETRIEVAL', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
+  { name: 'KB_CONTEXTUAL_MAX_TOKENS', kind: 'integer', default: '150', min: 20, max: 1000 },
+  { name: 'KB_LLM_ENDPOINT', kind: 'url', protocols: ['http:', 'https:', 'mock:'] },
+  { name: 'KB_LLM_MODEL', kind: 'string' },
+  { name: 'KB_LLM_FAKE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
+  { name: 'KB_LLM_FAKE_RULES', kind: 'path' },
+  { name: 'KB_LLM_CONFIG_DIR', kind: 'path' },
+  { name: 'KB_LLM_STATE_DIR', kind: 'path' },
+  { name: 'KB_LLM_SYSTEMD_USER_DIR', kind: 'path' },
+
+  { name: 'KB_RELEVANCE_GATE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
+  { name: 'KB_GATE_EMPTY_VERDICT', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
+  { name: 'KB_GATE_SCORE_FLOOR', kind: 'number', default: '0.95', min: 0, max: 1 },
+  { name: 'KB_GATE_JUDGE_INPUT', kind: 'integer', default: '10', min: 1, max: 1000 },
+  { name: 'KB_GATE_LLM_TIMEOUT_MS', kind: 'duration', default: '8000', min: 1 },
+  { name: 'KB_GATE_MIN_TASK_TOKENS', kind: 'integer', default: '8', min: 1 },
+  { name: 'KB_GATE_LLM_ENDPOINT', kind: 'url', protocols: ['http:', 'https:', 'mock:'] },
+  { name: 'KB_GATE_LLM_MODEL', kind: 'string' },
+  { name: 'KB_GATE_TASK_CONTEXT_MODE', kind: 'enum', values: ['off', 'warn', 'strict'], default: 'warn' },
+  { name: 'KB_GATE_TASK_CONTEXT_ARGV_MAX', kind: 'integer', default: '600', min: 1 },
+
+  { name: 'KB_RERANK', kind: 'boolean', default: 'off' },
+  { name: 'KB_RERANK_MODEL', kind: 'string', default: DEFAULT_RERANK_MODEL },
+  { name: 'KB_RERANK_TOP_N', kind: 'integer', default: String(DEFAULT_RERANK_TOP_N), min: 1, max: MAX_RERANK_TOP_N, integerSyntax: 'digits' },
+
+  { name: 'KB_INJECTION_GUARD', kind: 'enum', values: ['off', 'tag', 'wrap', 'both'], default: 'tag' },
+  { name: 'KB_INJECTION_GUARD_BYPASS_KBS', kind: 'csv' },
+  { name: 'KB_INJECTION_GUARD_WRAP_OPEN', kind: 'string' },
+  { name: 'KB_INJECTION_GUARD_WRAP_CLOSE', kind: 'string' },
+  { name: 'KB_EDITOR_URI', kind: 'enum', values: ['vscode', 'cursor', 'file', 'none'], default: 'none' },
+  { name: 'FRONTMATTER_EXTRAS_WIRE_VISIBLE', kind: 'boolean', default: 'false' },
+
+  { name: 'KB_LOG_FORMAT', kind: 'enum', values: ['text', 'canonical', 'both'], default: 'both' },
+  { name: 'LOG_LEVEL', kind: 'enum', values: ['debug', 'info', 'warn', 'error'], default: 'info' },
+  { name: 'LOG_FILE', kind: 'path' },
+  { name: 'KB_LOG_VERBOSE', kind: 'boolean', default: 'off' },
+  { name: 'KB_MUTATION_AUDIT_LOG', kind: 'path' },
+  { name: 'KB_AGE_BUDGET_HOURS', kind: 'integer', min: 1 },
+
+  { name: 'KB_DAEMON_URL', kind: 'url', protocols: ['http:', 'https:'] },
+  { name: 'KB_DAEMON_HOST', kind: 'string', default: '127.0.0.1' },
+  { name: 'KB_DAEMON_PORT', kind: 'integer', default: '17799', min: 1, max: 65535 },
+  { name: 'MCP_TRANSPORT', kind: 'enum', values: ['stdio', 'sse', 'http'], default: 'stdio' },
+  { name: 'MCP_PORT', kind: 'integer', default: '8765', min: 1, max: 65535 },
+  { name: 'MCP_BIND_ADDR', kind: 'string', default: '127.0.0.1' },
+  { name: 'MCP_AUTH_TOKEN', kind: 'secret', secret: true },
+  { name: 'MCP_ALLOWED_ORIGINS', kind: 'csv' },
+  { name: 'MCP_AUTH_BACKOFF_THRESHOLD', kind: 'integer', default: '5', min: 0 },
+  { name: 'MCP_AUTH_BACKOFF_MS', kind: 'duration', default: '30000', min: 0 },
+  { name: 'MCP_AUTH_BACKOFF_MAX_ENTRIES', kind: 'integer', default: '1024', min: 1 },
+
+  { name: 'REINDEX_TRIGGER_PATH', kind: 'path' },
+  { name: 'REINDEX_TRIGGER_POLL_MS', kind: 'duration', default: '5000', min: 0, max: 60000 },
+  { name: 'KB_FS_WATCH', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
+  { name: 'KB_FS_WATCH_DEBOUNCE_MS', kind: 'duration', default: '250', min: 25, max: 60000 },
+  { name: 'KB_INDEX_VERSION_RETENTION', kind: 'integer', default: '2', min: 0, integerSyntax: 'digits' },
+
+  { name: 'RETRIEVE_KNOWLEDGE_DESCRIPTION', kind: 'string' },
+  { name: 'LIST_KNOWLEDGE_BASES_DESCRIPTION', kind: 'string' },
+  { name: 'LIST_MODELS_DESCRIPTION', kind: 'string' },
+  { name: 'KB_STATS_DESCRIPTION', kind: 'string' },
+] as const;
+
+const SCHEMA_BY_NAME = new Map(CONFIG_SCHEMA.map((spec) => [spec.name, spec]));
+
+export function validateConfigEnv(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  options: ValidateOptions = {},
+): ConfigValidateReport {
+  const source = options.source ?? 'process.env';
+  const findings: ConfigFinding[] = [];
+  for (const spec of CONFIG_SCHEMA) {
+    findings.push(validateSpec(spec, env[spec.name], source));
+  }
+  for (const [name, raw] of Object.entries(env).sort(([a], [b]) => a.localeCompare(b))) {
+    if (SCHEMA_BY_NAME.has(name)) continue;
+    const spec = dynamicSpecForName(name);
+    if (spec !== null) findings.push(validateSpec(spec, raw, source));
+  }
+  findings.push(...validateDependencies(env, source));
+  findings.push(...validateUnknownControlledVars(env, source));
+
+  const counts = countFindings(findings);
+  const status: ConfigFindingStatus = counts.error > 0 ? 'error' : counts.warn > 0 ? 'warn' : 'ok';
+  return {
+    schema_version: 'kb.config-validate.v1',
+    status,
+    source,
+    checked_at: (options.now ?? (() => new Date()))().toISOString(),
+    counts,
+    findings,
+  };
+}
+
+export function parseDotEnvText(text: string, source = '.env'): DotEnvParseResult {
+  const env: Record<string, string> = {};
+  const errors: ConfigFinding[] = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const lineNo = i + 1;
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const withoutExport = trimmed.startsWith('export ') ? trimmed.slice('export '.length).trimStart() : trimmed;
+    const eqIndex = withoutExport.indexOf('=');
+    if (eqIndex <= 0) {
+      errors.push({
+        name: `line ${lineNo}`,
+        status: 'error',
+        kind: 'unknown',
+        source,
+        value: rawLine,
+        message: 'expected KEY=VALUE dotenv assignment',
+      });
+      continue;
+    }
+    const key = withoutExport.slice(0, eqIndex).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      errors.push({
+        name: `line ${lineNo}`,
+        status: 'error',
+        kind: 'unknown',
+        source,
+        value: rawLine,
+        message: `invalid dotenv key ${JSON.stringify(key)}`,
+      });
+      continue;
+    }
+    env[key] = parseDotEnvValue(withoutExport.slice(eqIndex + 1));
+  }
+  return { env, errors };
+}
+
+function validateSpec(spec: ConfigSpec, raw: string | undefined, source: string): ConfigFinding {
+  const value = normalizeRaw(raw);
+  const displayValue = displayRawValue(spec, value);
+  if (value === undefined) {
+    return finding(spec.name, 'ok', spec.kind, source, null, spec.default === undefined
+      ? 'unset'
+      : `unset; default ${spec.default} applies`);
+  }
+  if (value === '' && spec.kind !== 'string' && spec.kind !== 'secret') {
+    return finding(spec.name, 'ok', spec.kind, source, displayValue, 'empty; default applies');
+  }
+
+  switch (spec.kind) {
+    case 'boolean':
+      return booleanValuesFor(spec).has(value.toLowerCase())
+        ? finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid boolean')
+        : finding(spec.name, 'error', spec.kind, source, displayValue, `expected boolean ${Array.from(booleanValuesFor(spec)).join('/')}`);
+    case 'enum':
+      return spec.values.includes(value)
+        ? finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid enum value')
+        : finding(spec.name, 'error', spec.kind, source, displayValue, `expected one of: ${spec.values.join(', ')}`);
+    case 'integer':
+    case 'duration':
+      return validateNumberLike(spec, value, displayValue, source, true);
+    case 'number':
+      return validateNumberLike(spec, value, displayValue, source, false);
+    case 'url':
+      return validateUrl(spec, value, displayValue, source);
+    case 'csv':
+      return finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid comma-separated list');
+    case 'path':
+      return finding(spec.name, value === '' ? 'warn' : 'ok', spec.kind, source, displayValue, value === '' ? 'empty path' : 'valid path string');
+    case 'secret':
+      return finding(spec.name, value === '' ? 'warn' : 'ok', spec.kind, source, displayValue, value === '' ? 'empty secret' : 'set');
+    case 'string':
+      return finding(spec.name, 'ok', spec.kind, source, displayValue, value === '' ? 'empty string' : 'set');
+  }
+}
+
+function validateNumberLike(
+  spec: ConfigSpec,
+  value: string,
+  displayValue: string | null,
+  source: string,
+  integer: boolean,
+): ConfigFinding {
+  const parsed = Number(value);
+  if (
+    !Number.isFinite(parsed) ||
+    (integer && (!Number.isInteger(parsed) || (spec.integerSyntax === 'digits' && !/^\d+$/.test(value))))
+  ) {
+    return finding(spec.name, 'error', spec.kind, source, displayValue, integer ? 'expected integer' : 'expected finite number');
+  }
+  if (spec.min !== undefined && parsed < spec.min) {
+    return finding(spec.name, 'error', spec.kind, source, displayValue, `expected value >= ${spec.min}`);
+  }
+  if (spec.max !== undefined && parsed > spec.max) {
+    return finding(spec.name, 'error', spec.kind, source, displayValue, `expected value <= ${spec.max}`);
+  }
+  return finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid number');
+}
+
+function validateUrl(
+  spec: ConfigSpec,
+  value: string,
+  displayValue: string | null,
+  source: string,
+): ConfigFinding {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return finding(spec.name, 'error', spec.kind, source, displayValue, 'expected absolute URL');
+  }
+  const protocols = spec.protocols ?? ['http:', 'https:'];
+  if (!protocols.includes(url.protocol)) {
+    return finding(spec.name, 'error', spec.kind, source, displayValue, `expected URL protocol ${protocols.join('|')}`);
+  }
+  return finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid URL');
+}
+
+function validateDependencies(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  source: string,
+): ConfigFinding[] {
+  const findings: ConfigFinding[] = [];
+  if (isOn('KB_RERANK', env.KB_RERANK) && !isNonEmpty(env.KB_RERANK_MODEL)) {
+    findings.push(finding(
+      'KB_RERANK_MODEL',
+      'warn',
+      'dependency',
+      source,
+      null,
+      'KB_RERANK=on uses the default reranker model because KB_RERANK_MODEL is not set',
+    ));
+  }
+  if (isOn('KB_RELEVANCE_GATE', env.KB_RELEVANCE_GATE) && !isNonEmpty(env.KB_GATE_LLM_ENDPOINT) && !isNonEmpty(env.KB_LLM_ENDPOINT) && !isOn('KB_LLM_FAKE', env.KB_LLM_FAKE)) {
+    findings.push(finding(
+      'KB_RELEVANCE_GATE',
+      'warn',
+      'dependency',
+      source,
+      displayRawValue({ name: 'KB_RELEVANCE_GATE', kind: 'boolean' }, normalizeRaw(env.KB_RELEVANCE_GATE)),
+      'KB_RELEVANCE_GATE=on has no KB_GATE_LLM_ENDPOINT or KB_LLM_ENDPOINT; Stage B will degrade without a judge endpoint',
+    ));
+  }
+  if (isOn('KB_CONTEXTUAL_RETRIEVAL', env.KB_CONTEXTUAL_RETRIEVAL) && !isNonEmpty(env.KB_LLM_ENDPOINT) && !isOn('KB_LLM_FAKE', env.KB_LLM_FAKE)) {
+    findings.push(finding(
+      'KB_CONTEXTUAL_RETRIEVAL',
+      'error',
+      'dependency',
+      source,
+      displayRawValue({ name: 'KB_CONTEXTUAL_RETRIEVAL', kind: 'boolean' }, normalizeRaw(env.KB_CONTEXTUAL_RETRIEVAL)),
+      'KB_CONTEXTUAL_RETRIEVAL=on requires KB_LLM_ENDPOINT or KB_LLM_FAKE=on',
+    ));
+  }
+  const transport = normalizeRaw(env.MCP_TRANSPORT);
+  if (transport === 'http' || transport === 'sse') {
+    const token = normalizeRaw(env.MCP_AUTH_TOKEN);
+    if (!token) {
+      findings.push(finding(
+        'MCP_AUTH_TOKEN',
+        'error',
+        'dependency',
+        source,
+        null,
+        `MCP_TRANSPORT=${transport} requires MCP_AUTH_TOKEN`,
+      ));
+    } else if (token.length < 32) {
+      findings.push(finding(
+        'MCP_AUTH_TOKEN',
+        'error',
+        'dependency',
+        source,
+        '<redacted>',
+        'MCP_AUTH_TOKEN must be at least 32 characters for HTTP/SSE transport',
+      ));
+    }
+  }
+  return findings;
+}
+
+function validateUnknownControlledVars(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  source: string,
+): ConfigFinding[] {
+  const findings: ConfigFinding[] = [];
+  for (const name of Object.keys(env).sort()) {
+    if (SCHEMA_BY_NAME.has(name)) continue;
+    if (dynamicSpecForName(name) !== null) continue;
+    if (!isControlledEnvName(name)) continue;
+    findings.push(finding(
+      name,
+      'warn',
+      'unknown',
+      source,
+      '<set>',
+      'not in kb config schema; check spelling or add it to src/config/schema.ts',
+    ));
+  }
+  return findings;
+}
+
+function dynamicSpecForName(name: string): ConfigSpec | null {
+  if (/^KB_AGE_BUDGET_HOURS_[A-Z0-9_]+$/.test(name)) {
+    return { name, kind: 'integer', min: 1 };
+  }
+  return null;
+}
+
+function finding(
+  name: string,
+  status: ConfigFindingStatus,
+  kind: ConfigValueKind,
+  source: string,
+  value: string | null,
+  message: string,
+): ConfigFinding {
+  return { name, status, kind, source, value, message };
+}
+
+function countFindings(findings: readonly ConfigFinding[]): Record<ConfigFindingStatus, number> {
+  return findings.reduce<Record<ConfigFindingStatus, number>>(
+    (counts, item) => {
+      counts[item.status] += 1;
+      return counts;
+    },
+    { ok: 0, warn: 0, error: 0 },
+  );
+}
+
+function normalizeRaw(raw: string | undefined): string | undefined {
+  return raw === undefined ? undefined : raw.trim();
+}
+
+function isOn(name: string, raw: string | undefined): boolean {
+  const spec = SCHEMA_BY_NAME.get(name);
+  const normalized = normalizeRaw(raw)?.toLowerCase();
+  if (normalized === undefined) return false;
+  const truthy = spec?.kind === 'boolean' ? spec.truthyValues ?? STRICT_TRUTHY_VALUES : STRICT_TRUTHY_VALUES;
+  return truthy.includes(normalized);
+}
+
+function isNonEmpty(raw: string | undefined): boolean {
+  return normalizeRaw(raw) !== undefined && normalizeRaw(raw) !== '';
+}
+
+function displayRawValue(spec: Pick<ConfigSpec, 'kind' | 'name' | 'secret'>, value: string | undefined): string | null {
+  if (value === undefined) return null;
+  if (spec.secret || spec.kind === 'secret' || /TOKEN|KEY|SECRET/.test(spec.name)) {
+    return value === '' ? '' : '<redacted>';
+  }
+  return value;
+}
+
+function booleanValuesFor(spec: Pick<BaseSpec<'boolean'>, 'booleanValues'>): Set<string> {
+  return new Set(spec.booleanValues ?? STRICT_BOOL_VALUES);
+}
+
+function isControlledEnvName(name: string): boolean {
+  return CONTROLLED_PREFIXES.some((prefix) => name === prefix || name.startsWith(prefix));
+}
+
+function parseDotEnvValue(rawValue: string): string {
+  const trimmed = rawValue.trimStart();
+  if (trimmed.startsWith('"')) {
+    return parseQuotedValue(trimmed, '"');
+  }
+  if (trimmed.startsWith("'")) {
+    return parseQuotedValue(trimmed, "'");
+  }
+  return stripInlineComment(trimmed).trimEnd();
+}
+
+function parseQuotedValue(value: string, quote: '"' | "'"): string {
+  let out = '';
+  for (let i = 1; i < value.length; i++) {
+    const char = value[i];
+    if (char === quote) return out;
+    if (quote === '"' && char === '\\' && i + 1 < value.length) {
+      i += 1;
+      const escaped = value[i];
+      if (escaped === 'n') out += '\n';
+      else if (escaped === 'r') out += '\r';
+      else if (escaped === 't') out += '\t';
+      else out += escaped;
+      continue;
+    }
+    out += char;
+  }
+  return out;
+}
+
+function stripInlineComment(value: string): string {
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === '#' && (i === 0 || /\s/.test(value[i - 1]))) {
+      return value.slice(0, i);
+    }
+  }
+  return value;
+}

@@ -59,6 +59,23 @@
 
 ## Observability
 
+### FR-OBS-470: Config Schema Validation
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall provide `kb config validate` to validate known environment variables from the current process environment or a supplied `.env` file against a declarative schema for type, range, enum membership, and static cross-variable dependencies.
+**Rationale:** The KB server is configured primarily through environment variables. Operators need a preflight command that catches typos and inconsistent flag combinations before startup or CI scripts silently fall back to defaults.
+
+**Acceptance Criteria:**
+- [x] Given valid known environment variables, when `kb config validate --format=json` runs, then the system shall emit a `kb.config-validate.v1` report with per-variable `ok` findings and exit 0.
+- [x] Given invalid type, enum, URL, or range values, when validation runs, then the system shall emit per-variable `error` findings and exit 1.
+- [x] Given static dependencies such as HTTP/SSE transport without a usable auth token, relevance gating without any judge endpoint, or contextual retrieval without an LLM endpoint, when validation runs, then the system shall emit dependency findings without probing live endpoints.
+- [x] Given `--file=<path>`, when validation runs, then the system shall parse that `.env` file instead of `process.env` and report the file path as the value source.
+- [x] Given no `--format=json`, when validation runs, then the system shall emit a human-readable markdown table with the same verdicts.
+
+**Linked Tests:** TS-OBS-470
+**Dependencies:** FR-OBS-467, FR-CLI-383
+
 ### FR-OBS-467: Deep Index Integrity Verification
 **Status:** Implemented
 **Priority:** High

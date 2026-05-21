@@ -43,6 +43,16 @@
 
 ## Observability
 
+### TS-OBS-470: Config Schema Validation
+**Requirement:** FR-OBS-470
+
+**Test Cases:**
+- `validateConfigEnv` shall emit `ok` findings for valid known env vars and summarize report counts.
+- `validateConfigEnv` shall emit `error` findings for invalid booleans, enums, numbers, ranges, and URLs.
+- `validateConfigEnv` shall emit static dependency findings for gated features missing their companion endpoint/token settings.
+- `parseDotEnvText` shall parse comments, `export`, quoted values, escapes, and inline comments for `kb config validate --file`.
+- `kb config validate` shall expose JSON and markdown reports and map errors to exit code 1.
+
 ### TS-OBS-467: Deep Index Integrity Verification
 **Requirement:** FR-OBS-467
 
