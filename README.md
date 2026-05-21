@@ -98,7 +98,9 @@ After `collect`, read the generated `evidence_packet.md` and synthesize manually
 
 For local day-two operations with Ollama, llama-server, n8n, systemd user
 units, remote MCP transports, or `kb serve`, see the
-[local service operations runbook](docs/operations/local-services.md).
+[local service operations runbook](docs/operations/local-services.md). For
+active incidents, start with the symptom-keyed
+[incident response runbook](docs/operations/incident-response.md).
 
 RFC 018 relevance gating is off by default. Enable it per process with `KB_RELEVANCE_GATE=on`, or per CLI call with `kb search --gate`; bypass an enabled process with `--no-gate` or MCP `gate: "off"`. The judge uses `--task-context=<text>` / `--task-context-file=<path>` or MCP `task_context`, and reads `KB_GATE_LLM_ENDPOINT` / `KB_GATE_LLM_MODEL` (falling back to `KB_LLM_ENDPOINT` / `KB_LLM_MODEL`). Tuning env vars are `KB_GATE_SCORE_FLOOR` (default `0.95`), `KB_GATE_JUDGE_INPUT` (default `10`), `KB_GATE_LLM_TIMEOUT_MS` (default `8000`), and `KB_GATE_MIN_TASK_TOKENS` (default `8`). `KB_GATE_EMPTY_VERDICT` defaults to `off`; turn it on only when you are comfortable letting the gate return no retrieved context.
 
@@ -503,7 +505,7 @@ from the local development section above.
 
 ## Troubleshooting & Logging
 
-For a command-oriented runbook covering empty results, stale-index footers, linked-checkout/global-bin drift, missing active models, backend availability, and refresh lock contention, see [`docs/troubleshooting-local-kb.md`](docs/troubleshooting-local-kb.md).
+For a command-oriented runbook covering empty results, stale-index footers, linked-checkout/global-bin drift, missing active models, backend availability, and refresh lock contention, see [`docs/troubleshooting-local-kb.md`](docs/troubleshooting-local-kb.md). For operator incidents keyed by symptom, use [`docs/operations/incident-response.md`](docs/operations/incident-response.md).
 
 ### KB availability smoke check
 
