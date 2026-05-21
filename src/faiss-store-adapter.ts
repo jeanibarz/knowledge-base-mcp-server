@@ -1,6 +1,8 @@
 import { FaissStore, type FaissLibArgs } from '@langchain/community/vectorstores/faiss';
 import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import type { Document } from '@langchain/core/documents';
+import type { Index } from 'faiss-node';
+import type { FaissIndexType } from './config/index-type.js';
 import { embeddingText } from './contextual-preface.js';
 import type { QueryCacheLookupStatus } from './query-cache.js';
 
@@ -20,6 +22,8 @@ type FaissStoreWithVectorSearch = FaissStore & {
 type FaissIndexHandle = {
   ntotal: () => number;
   getDimension: () => number;
+  isTrained?: () => boolean;
+  train?: (vectors: number[]) => void;
 };
 
 function describeShape(value: unknown): string {
@@ -57,6 +61,52 @@ function getIndexHandle(store: FaissStore): FaissIndexHandle {
     throw new Error('FAISS store index is missing getDimension()');
   }
   return index as FaissIndexHandle;
+}
+
+function flattenVectors(vectors: readonly number[][]): number[] {
+  return vectors.flatMap((vector) => vector);
+}
+
+async function createIndexForVectors(
+  vectors: readonly number[][],
+  indexType: FaissIndexType,
+): Promise<Index> {
+  const first = vectors[0];
+  if (first === undefined) {
+    throw new Error('Cannot create a FAISS index without at least one vector');
+  }
+  const dimension = first.length;
+  const faissModule = await import('faiss-node') as unknown as
+    typeof import('faiss-node') & { default?: typeof import('faiss-node') };
+  const faiss = faissModule.default ?? faissModule;
+  if (indexType === 'flat') {
+    return new faiss.IndexFlatL2(dimension) as unknown as Index;
+  }
+
+  const index = faiss.Index.fromFactory(
+    dimension,
+    'SQ8',
+    faiss.MetricType.METRIC_L2,
+  );
+  trainIndexIfNeeded(index, vectors, 'FaissStoreAdapter.createIndexForVectors');
+  return index;
+}
+
+function trainIndexIfNeeded(
+  index: FaissIndexHandle,
+  vectors: readonly number[][],
+  label: string,
+): void {
+  if (typeof index.isTrained !== 'function' || index.isTrained()) {
+    return;
+  }
+  if (typeof index.train !== 'function') {
+    throw new Error(`${label}: FAISS index requires training but has no train() method`);
+  }
+  index.train(flattenVectors(vectors));
+  if (!index.isTrained()) {
+    throw new Error(`${label}: FAISS index training did not complete`);
+  }
 }
 
 /**
@@ -127,6 +177,7 @@ export class FaissStoreAdapter {
   static async fromDocuments(
     documents: readonly Document[],
     embeddings: EmbeddingsInterface,
+    options: { indexType?: FaissIndexType } = {},
   ): Promise<FaissStoreAdapter> {
     // RFC 017 §3 — the embedding-input text MAY differ from the docstore
     // text. When `metadata.contextual_preface` is present, `embeddingText`
@@ -141,13 +192,8 @@ export class FaissStoreAdapter {
         `Embedding provider returned ${vectors.length} vector(s) for ${documents.length} document(s)`,
       );
     }
-    // `new FaissStore(embeddings, {})` is the documented way to create an
-    // empty store without an index; `addVectors` lazy-initializes the
-    // IndexFlatL2 on first call (see node_modules faiss.js:84-87).
-    // FaissLibArgs has all-optional fields; an empty object yields a store
-    // whose `index` is undefined. `addVectors` lazy-initializes the
-    // IndexFlatL2 on first call (faiss.js:84-87 in node_modules).
-    const store = new FaissStore(embeddings, {} as FaissLibArgs);
+    const index = await createIndexForVectors(vectors, options.indexType ?? 'flat');
+    const store = new FaissStore(embeddings, { index } as unknown as FaissLibArgs);
     await store.addVectors(vectors, [...documents]);
     // Post-batch invariant: the FaissStore.addVectors call must produce a
     // 1:1 docstore-to-vector ratio. RFC 017 §3 mandates this check to catch
@@ -188,6 +234,11 @@ export class FaissStoreAdapter {
         `Embedding provider returned ${vectors.length} vector(s) for ${documents.length} document(s)`,
       );
     }
+    trainIndexIfNeeded(
+      getIndexHandle(this.store),
+      vectors,
+      'FaissStoreAdapter.addDocumentsWithEmbeddings',
+    );
     await this.store.addVectors(vectors, [...documents]);
     assertIndexDocstoreParity(this.store, 'FaissStoreAdapter.addDocumentsWithEmbeddings');
   }

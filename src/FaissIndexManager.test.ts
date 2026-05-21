@@ -392,6 +392,7 @@ describe('FaissIndexManager permission handling', () => {
     KB_CHUNK_SIZE: process.env.KB_CHUNK_SIZE,
     KB_CHUNK_OVERLAP: process.env.KB_CHUNK_OVERLAP,
     KB_REFRESH_QUIESCE_MS: process.env.KB_REFRESH_QUIESCE_MS,
+    KB_INDEX_TYPE: process.env.KB_INDEX_TYPE,
   };
 
 
@@ -645,6 +646,54 @@ describe('FaissIndexManager permission handling', () => {
     }
     await expect(fsp.stat(pendingManifestPathIn(process.env.FAISS_INDEX_PATH!)))
       .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('persists and reports the active SQ8 index type across reloads (#468)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-sq8-manager-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(
+      path.join(defaultKb, 'doc.md'),
+      '# SQ8\n\nManager-level SQ8 persistence and stats coverage.',
+    );
+
+    const faissDir = path.join(tempDir, '.faiss');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_INDEX_TYPE = 'sq8';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const firstManager = new FaissIndexManager();
+    await firstManager.initialize();
+    await firstManager.updateIndex();
+
+    const integrityManifest = JSON.parse(
+      await fsp.readFile(path.join(versionedIndexPathIn(faissDir), 'integrity.json'), 'utf-8'),
+    ) as { index_type: string };
+    expect(integrityManifest.index_type).toBe('sq8');
+    expect(firstManager.getStats().indexType).toBe('sq8');
+
+    // The reloaded manager deliberately uses the default configured type.
+    // Stats must reflect the active index manifest, not the new process env.
+    process.env.KB_INDEX_TYPE = 'flat';
+    loadMock.mockClear();
+    jest.resetModules();
+    const { FaissIndexManager: ReloadedFaissIndexManager } = await import('./FaissIndexManager.js');
+    const { computeKbStats } = await import('./kb-stats.js');
+    const reloadedManager = new ReloadedFaissIndexManager();
+    await reloadedManager.initialize();
+
+    expect(loadMock).toHaveBeenCalledWith(versionedIndexPathIn(faissDir), expect.anything());
+    expect(reloadedManager.getStats().indexType).toBe('sq8');
+    const statsPayload = await computeKbStats(reloadedManager, {
+      serverVersion: 'test',
+      startedAt: Date.now(),
+    });
+    expect(statsPayload.embedding.index_type).toBe('sq8');
   });
 
   it('recovers a save-complete pending manifest by finishing hash and chunk sidecars', async () => {

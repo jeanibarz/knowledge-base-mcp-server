@@ -126,6 +126,7 @@ wrap-close vars below.
 |---|---|---:|---|---|---|---|
 | KB root | `KNOWLEDGE_BASES_ROOT_DIR` | `$HOME/knowledge_bases` | CLI and MCP | Implemented | none | `kb list` |
 | FAISS index path | `FAISS_INDEX_PATH` | `$KNOWLEDGE_BASES_ROOT_DIR/.faiss` | CLI and MCP | Implemented | none | `kb doctor --format=json` |
+| FAISS index type | `KB_INDEX_TYPE` | `flat` | Ingest and refresh | Implemented, opt-in (`flat` or `sq8`) | none | `KB_INDEX_TYPE=sq8 kb reindex --force && kb stats` |
 | Embedding provider | `EMBEDDING_PROVIDER` | `huggingface` | CLI and MCP retrieval/ingest | Implemented | register/query a model with `kb models` where available | `kb doctor` |
 | Ollama endpoint | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama embedding provider | Implemented | none | `EMBEDDING_PROVIDER=ollama kb doctor` |
 | Ollama embedding model | `OLLAMA_MODEL` | `dengcao/Qwen3-Embedding-0.6B:Q8_0` | Ollama embedding provider | Implemented | active model selection through `kb models` | `EMBEDDING_PROVIDER=ollama kb models list` |

@@ -1,3 +1,4 @@
+import { Document } from '@langchain/core/documents';
 import { FaissStoreAdapter, type FaissSearchTimingSink } from './faiss-store-adapter.js';
 
 function adapterFor(store: Record<string, unknown>): FaissStoreAdapter {
@@ -5,6 +6,37 @@ function adapterFor(store: Record<string, unknown>): FaissStoreAdapter {
 }
 
 describe('FaissStoreAdapter', () => {
+  it('builds a trained SQ8 index and keeps vector search usable (#468)', async () => {
+    const docs = [
+      new Document({ pageContent: 'alpha', metadata: { source: 'alpha.md', knowledgeBase: 'kb' } }),
+      new Document({ pageContent: 'beta', metadata: { source: 'beta.md', knowledgeBase: 'kb' } }),
+      new Document({ pageContent: 'gamma', metadata: { source: 'gamma.md', knowledgeBase: 'kb' } }),
+    ];
+    const embeddings = {
+      embedDocuments: jest.fn(async () => [
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+      ]),
+      embedQuery: jest.fn(async () => [1, 0, 0]),
+    };
+
+    const adapter = await FaissStoreAdapter.fromDocuments(
+      docs,
+      embeddings as never,
+      { indexType: 'sq8' },
+    );
+
+    expect(adapter.totalVectors()).toBe(3);
+    expect(adapter.vectorDimension()).toBe(3);
+    const results = await adapter.similaritySearchUsingBestPath({
+      query: 'alpha',
+      k: 1,
+      getQueryEmbedding: async () => ({ embedding: [1, 0, 0], status: 'miss' }),
+    });
+    expect(results[0]?.[0].metadata.source).toBe('alpha.md');
+  });
+
   it('guards raw index access before reading totals', () => {
     expect(() => adapterFor({}).totalVectors()).toThrow(
       'FAISS store index must be an object; got undefined',

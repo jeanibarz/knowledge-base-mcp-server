@@ -14,6 +14,7 @@ const getStatsMock = jest.fn(() => ({
   totalChunks: 0,
   chunkCountsByKb: {} as Record<string, number>,
   dim: null as number | null,
+  indexType: 'flat' as const,
 }));
 const getLastIndexUpdateSummaryMock = jest.fn(() => ({
   status: 'never_run',
@@ -97,7 +98,12 @@ describe('KnowledgeBaseServer handlers', () => {
     hasLoadedIndexMock.mockReset();
     hasLoadedIndexMock.mockReturnValue(true);
     getStatsMock.mockReset();
-    getStatsMock.mockReturnValue({ totalChunks: 0, chunkCountsByKb: {}, dim: null });
+    getStatsMock.mockReturnValue({
+      totalChunks: 0,
+      chunkCountsByKb: {},
+      dim: null,
+      indexType: 'flat',
+    });
     process.env.KB_LOG_FORMAT = 'text';
     getLastIndexUpdateSummaryMock.mockReset();
     getLastIndexUpdateSummaryMock.mockReturnValue({
@@ -394,6 +400,7 @@ describe('KnowledgeBaseServer handlers', () => {
       totalChunks: 7,
       chunkCountsByKb: { alpha: 4, beta: 3 },
       dim: 384,
+      indexType: 'flat',
     });
 
     const server = await freshServer();
@@ -416,6 +423,7 @@ describe('KnowledgeBaseServer handlers', () => {
       provider: 'huggingface',
       model: 'BAAI/bge-small-en-v1.5',
       dim: 384,
+      index_type: 'flat',
     });
     expect(payload.index_path).toBe(process.env.FAISS_INDEX_PATH);
     expect(payload.last_index_update.status).toBe('never_run');
@@ -439,6 +447,7 @@ describe('KnowledgeBaseServer handlers', () => {
       // there is also a `beta` entry — kb_stats with a name MUST scope.
       chunkCountsByKb: { alpha: 5, beta: 4 },
       dim: 768,
+      indexType: 'flat',
     });
 
     const server = await freshServer();
@@ -462,6 +471,7 @@ describe('KnowledgeBaseServer handlers', () => {
       totalChunks: 0,
       chunkCountsByKb: {},
       dim: null,
+      indexType: 'flat',
     });
 
     const server = await freshServer();

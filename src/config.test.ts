@@ -8,6 +8,10 @@ import {
   resolveIndexingBatchSize,
 } from './config/indexing.js';
 import {
+  parseFaissIndexType,
+  resolveFaissIndexType,
+} from './config/index-type.js';
+import {
   parseKBLogFormat,
 } from './config/logging.js';
 import {
@@ -87,6 +91,30 @@ describe('resolveIndexingBatchSize (issue #236 — INDEXING_BATCH_SIZE)', () => 
 
     process.env.INDEXING_BATCH_SIZE = '0';
     expect(resolveIndexingBatchSize('ollama')).toBe(16);
+  });
+});
+
+describe('resolveFaissIndexType (#468 — KB_INDEX_TYPE)', () => {
+  const saved = process.env.KB_INDEX_TYPE;
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.KB_INDEX_TYPE;
+    else process.env.KB_INDEX_TYPE = saved;
+  });
+
+  it('defaults to the full-precision flat index', () => {
+    delete process.env.KB_INDEX_TYPE;
+    expect(resolveFaissIndexType()).toBe('flat');
+    expect(parseFaissIndexType('')).toBe('flat');
+  });
+
+  it('accepts flat and sq8 case-insensitively', () => {
+    expect(parseFaissIndexType('flat')).toBe('flat');
+    expect(parseFaissIndexType(' SQ8 ')).toBe('sq8');
+  });
+
+  it('rejects unknown index types with an actionable env-var name', () => {
+    expect(() => parseFaissIndexType('pq')).toThrow(/KB_INDEX_TYPE.*flat, sq8/);
   });
 });
 

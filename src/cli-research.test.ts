@@ -51,6 +51,7 @@ function statsPayload(overrides: Partial<KbStatsPayload> = {}): KbStatsPayload {
       provider: 'ollama',
       model: 'nomic-embed-text:latest',
       dim: 768,
+      index_type: 'flat',
     },
     index_path: '/tmp/kb-index',
     last_index_update: {

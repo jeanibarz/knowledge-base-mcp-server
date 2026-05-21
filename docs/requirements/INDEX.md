@@ -57,6 +57,21 @@
 **Linked Tests:** TS-INDEX-281
 **Dependencies:** NFR-INDEX-236
 
+### FR-INDEX-468: SQ8 FAISS Index Type
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall support an opt-in `KB_INDEX_TYPE=sq8` FAISS index build for memory-bound corpora while keeping `flat` as the default.
+
+**Acceptance Criteria:**
+- [x] Given `KB_INDEX_TYPE` is unset, when an index is built, then the system shall use the existing full-precision flat FAISS index.
+- [x] Given `KB_INDEX_TYPE=sq8`, when a new index is built, then the system shall create and train an SQ8 FAISS index before adding vectors.
+- [x] Given an index is saved, then `integrity.json` shall record the active `index_type`.
+- [x] Given a user runs `kb stats`, then the active model's index type shall be visible in JSON and markdown output.
+
+**Linked Tests:** TS-INDEX-468
+**Dependencies:** FAISS versioned index layout, kb stats
+
 ## Observability
 
 ### FR-OBS-467: Deep Index Integrity Verification

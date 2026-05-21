@@ -9,6 +9,11 @@ import {
 } from './docstore-cas.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
 import { logger } from './logger.js';
+import {
+  DEFAULT_FAISS_INDEX_TYPE,
+  parseFaissIndexType,
+  type FaissIndexType,
+} from './config/index-type.js';
 
 export const INDEX_VERSION_RETENTION_ENV = 'KB_INDEX_VERSION_RETENTION';
 export const DEFAULT_PREVIOUS_INDEX_VERSION_RETENTION = 2;
@@ -22,6 +27,7 @@ export interface IndexIntegrityManifest {
   schema_version: typeof INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION;
   written_at: string;
   model_id: string;
+  index_type: FaissIndexType;
   files: {
     'faiss.index': { sha256: string };
     'docstore.json': { sha256: string };
@@ -175,13 +181,18 @@ export async function loadFaissStoreFromVersionDir(options: {
   return FaissStore.load(versionDir, embeddings);
 }
 
+export interface LoadedFaissStoreAtomic {
+  store: FaissStore;
+  versionDir: string | null;
+}
+
 export async function loadFaissStoreAtomic(options: {
   modelDir: string;
   modelId: string;
   embeddings: EmbeddingsInterface;
   handleFsOperationError: FsOperationErrorHandler;
   repairCorrupt?: boolean;
-}): Promise<FaissStore | null> {
+}): Promise<LoadedFaissStoreAtomic | null> {
   const {
     modelDir,
     modelId,
@@ -249,7 +260,7 @@ export async function loadFaissStoreAtomic(options: {
       );
     }
 
-    return store;
+    return { store, versionDir: resolved };
   }
 
   if (await pathExists(legacyPath)) {
@@ -258,7 +269,8 @@ export async function loadFaissStoreAtomic(options: {
         `Loading legacy FAISS index for model ${modelId} from faiss.index/. ` +
           `First save will create versioned layout (${SYMLINK_NAME} -> index.v0).`,
       );
-      return await FaissStore.load(legacyPath, embeddings);
+      const store = await FaissStore.load(legacyPath, embeddings);
+      return { store, versionDir: null };
     } catch (err) {
       if (!repairCorrupt) {
         throw new Error(
@@ -291,6 +303,7 @@ export async function saveFaissStoreAtomic(options: {
   modelDir: string;
   modelId: string;
   swapCounter: number;
+  indexType?: FaissIndexType;
   /**
    * RFC 016 — when provided, the per-model `docstore.json` written by
    * `FaissStore.save` is canonicalized and hardlinked to a shared payload
@@ -311,6 +324,7 @@ export async function saveFaissStoreAtomic(options: {
     modelDir,
     modelId,
     swapCounter,
+    indexType = DEFAULT_FAISS_INDEX_TYPE,
     casRoot = null,
     onCommitted,
   } = options;
@@ -333,7 +347,7 @@ export async function saveFaissStoreAtomic(options: {
   if (casRoot !== null) {
     dedup = await dedupeDocstoreOnSave({ stagingDir, casRoot, swapCounter });
   }
-  await writeIndexIntegrityManifest(stagingDir, modelId);
+  await writeIndexIntegrityManifest(stagingDir, modelId, indexType);
 
   const tmpLink = path.join(
     modelDir,
@@ -368,11 +382,13 @@ export async function saveFaissStoreAtomic(options: {
 export async function writeIndexIntegrityManifest(
   versionDir: string,
   modelId: string,
+  indexType: FaissIndexType = DEFAULT_FAISS_INDEX_TYPE,
 ): Promise<IndexIntegrityManifest> {
   const manifest: IndexIntegrityManifest = {
     schema_version: INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION,
     written_at: new Date().toISOString(),
     model_id: modelId,
+    index_type: indexType,
     files: {
       'faiss.index': {
         sha256: await calculateSHA256(path.join(versionDir, 'faiss.index')),
@@ -388,6 +404,29 @@ export async function writeIndexIntegrityManifest(
     { encoding: 'utf-8', mode: 0o600 },
   );
   return manifest;
+}
+
+export async function readIndexTypeFromVersionDir(
+  versionDir: string,
+): Promise<FaissIndexType> {
+  const manifestPath = path.join(versionDir, INDEX_INTEGRITY_MANIFEST_FILENAME);
+  try {
+    const parsed = JSON.parse(await fsp.readFile(manifestPath, 'utf-8')) as {
+      index_type?: unknown;
+    };
+    return typeof parsed.index_type === 'string'
+      ? parseFaissIndexType(parsed.index_type)
+      : DEFAULT_FAISS_INDEX_TYPE;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      logger.warn(
+        `Could not read FAISS index type from ${manifestPath}; assuming ${DEFAULT_FAISS_INDEX_TYPE}: ` +
+          `${(err as Error).message}`,
+      );
+    }
+    return DEFAULT_FAISS_INDEX_TYPE;
+  }
 }
 
 export async function resolveActiveIndexFilePath(modelDir: string): Promise<string | null> {

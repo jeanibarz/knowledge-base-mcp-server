@@ -41,6 +41,15 @@
 - `normalizeChunkTextForEmbedding` shall collapse insignificant Unicode and whitespace differences before indexing dedupe.
 - `FaissIndexManager.updateIndex` shall call the embedding provider with unique normalized changed-file chunk text while preserving every duplicate source metadata entry in the FAISS insertion path.
 
+### TS-INDEX-468: SQ8 FAISS Index Option
+**Requirement:** FR-INDEX-468
+
+**Test Cases:**
+- `KB_INDEX_TYPE` shall default to `flat`, accept `sq8`, and reject unknown values.
+- `FaissStoreAdapter.fromDocuments` shall create and train an SQ8 FAISS index before adding vectors.
+- `saveFaissStoreAtomic` shall persist the active index type in `integrity.json`.
+- `kb stats` shall expose the active model index type in JSON and markdown output.
+
 ## Observability
 
 ### TS-OBS-467: Deep Index Integrity Verification

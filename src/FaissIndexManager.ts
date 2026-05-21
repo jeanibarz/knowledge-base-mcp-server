@@ -48,9 +48,14 @@ import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import {
   loadFaissStoreAtomic,
   loadFaissStoreFromVersionDir,
+  readIndexTypeFromVersionDir,
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
   saveFaissStoreAtomic,
 } from './faiss-store-layout.js';
+import {
+  resolveFaissIndexType,
+  type FaissIndexType,
+} from './config/index-type.js';
 import {
   freshnessManifestPath,
   readFreshnessManifest,
@@ -540,6 +545,8 @@ export class FaissIndexManager {
   readonly modelDir: string;
   readonly modelNameFile: string;
   private readonly indexingBatchSize: number;
+  private readonly configuredIndexType: FaissIndexType;
+  private activeIndexType: FaissIndexType;
   private lastIndexUpdateSummary: IndexUpdateSummary;
   // Issue #283 — cached metadata sidecar so we don't re-parse the JSONL
   // file on every query. Invalidated whenever updateIndex rewrites it,
@@ -574,6 +581,8 @@ export class FaissIndexManager {
     this.modelDir = modelDir(this.modelId);
     this.modelNameFile = modelNameFilePath(this.modelId);
     this.indexingBatchSize = resolveIndexingBatchSize(this.embeddingProvider);
+    this.configuredIndexType = resolveFaissIndexType();
+    this.activeIndexType = this.configuredIndexType;
     this.lastIndexUpdateSummary = createNeverRunIndexUpdateSummary(this.modelId);
 
     // Issue #59 — embeddings are constructed lazily inside initialize() so
@@ -1082,14 +1091,21 @@ export class FaissIndexManager {
    * file is required — the filesystem is the single source of truth.
    */
   private async loadAtomic(opts: { repairCorrupt?: boolean } = {}): Promise<FaissStoreAdapter | null> {
-    const store = await loadFaissStoreAtomic({
+    const loaded = await loadFaissStoreAtomic({
       modelDir: this.modelDir,
       modelId: this.modelId,
       embeddings: this.embeddings,
       handleFsOperationError,
       repairCorrupt: opts.repairCorrupt,
     });
-    return store === null ? null : FaissStoreAdapter.fromStore(store);
+    if (loaded === null) {
+      this.activeIndexType = this.configuredIndexType;
+      return null;
+    }
+    this.activeIndexType = loaded.versionDir === null
+      ? 'flat'
+      : await readIndexTypeFromVersionDir(loaded.versionDir);
+    return FaissStoreAdapter.fromStore(loaded.store);
   }
 
   /**
@@ -1126,6 +1142,7 @@ export class FaissIndexManager {
       embeddings: this.embeddings,
     });
     this.faissIndex = FaissStoreAdapter.fromStore(store);
+    this.activeIndexType = await readIndexTypeFromVersionDir(versionDir);
     // Metadata sidecars are keyed to the active model directory, not to an
     // arbitrary historical index.vN directory. Disable the fast-path after a
     // direct version load so scoped diff/eval searches fall back to
@@ -1161,6 +1178,7 @@ export class FaissIndexManager {
       store: this.faissStoreForPersistence(),
       modelDir: this.modelDir,
       modelId: this.modelId,
+      indexType: this.activeIndexType,
       swapCounter: this.swapCounter,
       casRoot: casRootForIndexPath(FAISS_INDEX_PATH),
       onCommitted: opts.onCommitted,
@@ -1205,7 +1223,9 @@ export class FaissIndexManager {
         this.faissIndex = await FaissStoreAdapter.fromDocuments(
           batch,
           indexingEmbeddings,
+          { indexType: this.configuredIndexType },
         );
+        this.activeIndexType = this.configuredIndexType;
         // The store must keep the real client for query embeddings and later
         // operations; the deduper is only an insertion-time wrapper.
         this.faissIndex.restoreEmbeddings(this.embeddings);
@@ -2641,14 +2661,20 @@ export class FaissIndexManager {
     totalChunks: number;
     chunkCountsByKb: Record<string, number>;
     dim: number | null;
+    indexType: FaissIndexType;
   } {
     if (!this.faissIndex) {
-      return { totalChunks: 0, chunkCountsByKb: {}, dim: null };
+      return {
+        totalChunks: 0,
+        chunkCountsByKb: {},
+        dim: null,
+        indexType: this.activeIndexType,
+      };
     }
     const totalChunks = this.faissIndex.totalVectors();
     const dim = this.faissIndex.vectorDimension();
     const chunkCountsByKb = this.faissIndex.chunkCountsByKnowledgeBase();
-    return { totalChunks, chunkCountsByKb, dim };
+    return { totalChunks, chunkCountsByKb, dim, indexType: this.activeIndexType };
   }
 
   private getDocstoreDocuments(): Document[] {

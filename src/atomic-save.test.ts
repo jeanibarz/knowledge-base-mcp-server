@@ -229,10 +229,12 @@ describe('RFC 014 atomic save — atomicity smoke', () => {
     ) as {
       schema_version: string;
       model_id: string;
+      index_type: string;
       files: Record<string, { sha256: string }>;
     };
     expect(integrityManifest.schema_version).toBe('kb.index-integrity.v1');
     expect(integrityManifest.model_id).toBe(DEFAULT_MODEL_ID);
+    expect(integrityManifest.index_type).toBe('flat');
     expect(integrityManifest.files['faiss.index'].sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(integrityManifest.files['docstore.json'].sha256).toMatch(/^[0-9a-f]{64}$/);
 
