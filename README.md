@@ -41,6 +41,8 @@ kb list                       # list available knowledge bases
 kb stats                      # read-only index/corpus stats
 kb search "your query"                       # read-only dense search
 kb search "your query" --timing              # include retrieval-stage timings
+kb search "your query" --format=compact      # one-line-per-hit operator table (#446)
+printf '{"query":"q1"}\n{"query":"q2"}\n' | kb search --batch-jsonl  # batched JSONL stdin (#440)
 kb search "query" --refresh                  # also re-scan KB files (write path)
 kb search "query" --explain-empty            # opt-in deep diagnostics when results are empty (#328)
 kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh   # BM25 debug surface (#206 stage 1)
@@ -55,13 +57,26 @@ printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
 kb import-url --kb=research https://example.com/article   # snapshot a URL into a provenance-tagged note
 kb superseded --kb=work       # read-only review for obsolete/contradicted notes
+kb research plan "Compare RAG eval frameworks" --format=json  # deterministic shelf + query plan (#451)
+kb research collect "Compare RAG eval frameworks" --run-dir runs/rag-eval  # writes plan.json/ledger.json/evidence_packet.md/events.jsonl
+kb feedback add --kb=work --query="rollback procedure" --source=runbooks/deploy.md --verdict=relevant
+kb feedback promote --kb=work --query="rollback procedure" --fixture=docs/testing/feedback-fixture.yml --yes  # promote ledger entries into an eval fixture
 kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
+kb eval-gate docs/testing/fixtures/rfc-018-gate-eval/queries.yml  # RFC 018 gate validation harness
+kb reindex --with-context     # rebuild the FAISS index with RFC 017 contextual prefaces
+kb reindex status --format=json  # ledger of recent / in-flight reindex passes (#417)
+kb logs --request-id=<id>     # read canonical request logs by id (#397)
+kb logs --tail=20 --format=json  # most recent canonical log entries
+kb serve                      # start the loopback CLI daemon (warm reads); --port=17799 --idle-timeout-ms=300000
+kb serve status               # daemon liveness + degraded-mode diagnostics (#420)
+kb doctor                     # availability snapshot (index, embedding backend, LLM)
+kb doctor --endpoints         # focused MCP/daemon/Ollama/LLM endpoint preflight
 kb --help                     # top-level command list
 kb help search                # per-command help (also: kb search --help)
 kb completion bash            # generate a bash shell completion script
 ```
 
-The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). The consolidated operator matrix for retrieval flags, defaults, per-call overrides, rollout status, and validation commands lives in [docs/feature-flags.md](docs/feature-flags.md). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, and version context. It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
+The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). The consolidated operator matrix for retrieval flags, defaults, per-call overrides, rollout status, and validation commands lives in [docs/feature-flags.md](docs/feature-flags.md). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, version context, contextual-preface cache/failure counters (when RFC 017 ingest is enabled), and remote-transport request/auth/backoff counters (when the HTTP or SSE transport is active). It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. `--format=compact` collapses each result to a single `score|kb|path:line` line for terse operator listings; `--batch-jsonl` reads `{"query":"…","kb":"…","k":N}` records from stdin and emits one JSON result envelope per line. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
 
 For local day-two operations with Ollama, llama-server, n8n, systemd user
 units, remote MCP transports, or `kb serve`, see the
@@ -76,6 +91,20 @@ RFC 018 relevance gating is off by default. Enable it per process with `KB_RELEV
 `kb import-url --kb=<name> <url>` snapshots a web page or PDF into one new KB note while preserving provenance. It fetches the URL over http(s), routes HTML and PDF responses through the same loaders the indexer uses, and writes a note whose YAML frontmatter records `source_url`, `fetched_at`, `content_sha256`, `content_type`, `http_status`, and `byte_count`. The fetch is guarded: only http/https schemes are allowed, redirects are followed manually and re-validated per hop (`--max-redirects`, default 5), responses are size-capped (`--max-bytes`, default 8 MiB) and time-bounded (`--timeout`, default 30000 ms), and private/loopback/link-local addresses are refused unless `--allow-local-network` is passed (SSRF guard). The note path defaults to a slug of the page title; pass `--note=<path.md>` to choose it, `--title` to override the title, and `--refresh` to re-index afterwards. It refuses to overwrite an existing note.
 
 `kb superseded --kb=<name>` is a read-only active-forgetting review. It scans markdown frontmatter for explicit contradiction, deprecated/dormant lifecycle status, stale verification dates, and low-confidence active notes, then uses the existing semantic index to add conservative newer-neighbor evidence when available. Use `--format=json` for agent workflows and `--include-clean` when you need a full inventory.
+
+`kb research plan "<question>"` reads KB descriptions and stats, then deterministically selects shelves and queries (no LLM calls). `kb research collect "<question>" --run-dir=<path>` runs the plan over hybrid search and writes a run directory containing `run.json`, `plan.json`, `ledger.json`, `evidence_packet.md` (the human-readable Sources-grouped packet), and `events.jsonl` so an agent can hand one coherent block of evidence to a follow-up `kb ask` or LLM call. See [`docs/operations/research-workflow.md`](docs/operations/research-workflow.md) for the operator walk-through.
+
+`kb feedback add --kb=<name> --query="<text>" --source=<kb-relative-path> --verdict=relevant|irrelevant|stale|misleading [--relevance=0..3] [--chunk-id=<id>]` appends a relevance judgment to the per-KB ledger (`<kb>/.index/relevance-feedback.jsonl`). `kb feedback list --kb=<name>` reviews recent entries, and `kb feedback promote --kb=<name> --query="<text>" --fixture=<path.yml> --yes` materialises every ledger row for a query into a retrieval-eval case so accumulated judgments become regression coverage. See [`docs/operations/feedback-workflow.md`](docs/operations/feedback-workflow.md).
+
+`kb eval-gate <fixture.yml>` runs the RFC 018 relevance-gate validation harness end-to-end against a labelled-queries fixture (Stage A statistical floor + optional Stage B LLM judge) and reports per-stage precision, recall, and false-empty rate. Use it when you change `KB_GATE_*` tuning or the judge prompt before promoting changes to production. See [`docs/operations/eval-gate-harness.md`](docs/operations/eval-gate-harness.md).
+
+`kb logs` is the canonical reader for the structured request log emitted under `KB_LOG_FORMAT=canonical` or `both`. Filter by `--request-id=<id>` to pull every line of a specific retrieval, `--query-sha=<hash>` to follow recurring queries, `--since=<ISO|relative>` to scope a time window, and `--tail=<n>` for the most recent entries. `--format=json` produces one line per record for downstream tooling.
+
+`kb serve` runs the loopback CLI daemon used by clients that pass `--daemon` for warm reads. The bare `kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000]` brings it up; `kb serve status [--json]` reports reachability, pid, idle timeout, and supported commands at the configured `KB_DAEMON_URL` (defaults to `http://127.0.0.1:17799`); SIGINT or SIGTERM stops it. CLI commands fall back to direct in-process execution when the daemon is unavailable. See [`docs/operations/daemon-lifecycle.md`](docs/operations/daemon-lifecycle.md).
+
+`kb reindex --with-context` rebuilds the FAISS index with RFC 017 contextual prefaces (requires `KB_CONTEXTUAL_RETRIEVAL=on` and an `KB_LLM_ENDPOINT`). `kb reindex status` reads the `.reindex.run.json` ledger and reports the current or most recent run (kb scope, model, started/finished timestamps, chunks processed, cache hit rate, and any failure code). The `--kb=<name>` flag is a guard/estimator hint only — the rebuild always covers the entire single-index-per-model FAISS layout (see RFC 017 §5).
+
+Retrieved chunks are passed through the **untrusted-content guard** (`KB_INJECTION_GUARD`, default `tag`). The guard scans chunk text for prompt-injection signals — system-role markers, instruction-override phrases, Unicode bidi/zero-width/tag controls — and either annotates metadata (`tag`), fences the content with sentinel strings (`wrap`), or both (`both`). Set `KB_INJECTION_GUARD=off` only on shelves you fully control, or use `KB_INJECTION_GUARD_BYPASS_KBS=trusted-kb,...` to opt specific shelves out without weakening the global default.
 
 `kb eval <fixture.yml|json>` runs retrieval checks from fixtures. Each case can set `query`, optional `kb`, `required_sources`, `forbidden_sources`, `expected_metadata`, `max_duplicate_groups`, `stale_policy`, and `gate`. Failing ungated cases print warnings and exit 0; failing gated cases exit 1 for CI.
 

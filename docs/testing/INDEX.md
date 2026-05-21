@@ -1,6 +1,14 @@
 # Testing
 
 - [Retrieval eval command](retrieval-eval.md)
+- [Retrieval eval methodology](retrieval-eval-methodology.md)
+- [Fixtures](fixtures/README.md)
+- RFC test surfaces:
+  [RFC 017 contextual retrieval](../rfcs/017-contextual-retrieval.md),
+  [RFC 018 relevance gating](../rfcs/018-context-relevance-gating.md)
+  ([M1 canary report](../rfcs/018-m1-canary-report.md)),
+  [RFC 019 cross-encoder reranker](../rfcs/019-cross-encoder-reranker.md)
+  ([M0b reranker report](../rfcs/019-m0b-reranker-report.md))
 
 ## Indexing
 
@@ -112,6 +120,116 @@
 - `computeStaleness` shall count modified and new files in the selected KB separately from other KBs.
 - `computeStaleness` shall preserve global modified and new file counts for unscoped searches.
 - `formatFreshnessFooter` and JSON payload tests shall verify scoped fields remain distinct from global fields.
+
+## Relevance Gate (RFC 018)
+
+### TS-GATE-EVAL-369: M0 Gate Validation Harness
+**Requirement:** FR-GATE-EVAL-369
+
+**Test Cases:**
+- `kb eval-gate` shall parse the gate-eval fixture and emit a stable `kb.eval-gate.v1`-shaped JSON or markdown report.
+- `kb eval-gate --dry-run` and `kb eval-gate` without a reachable endpoint shall fall back to the offline causal model and still produce a report.
+- `kb eval-gate --m1` shall require a reachable endpoint and exit non-zero when no endpoint is configured.
+- The aggregated summary shall include the three pre-registered numbers: `empty_verdict_fire_rate`, `per_chunk_drop_no_good_answer_delta`, `judge_false_empty_rate`.
+
+### TS-GATE-379: Stage A Statistical Floor + Stage B LLM Judge
+**Requirement:** FR-GATE-379
+
+**Test Cases:**
+- `applyRelevanceGate` shall short-circuit when `KB_RELEVANCE_GATE=off` and emit `gate.skipped` canonical events when on.
+- The Stage A floor (`KB_GATE_SCORE_FLOOR`) shall drop candidates strictly below the configured distance.
+- The Stage B LLM judge shall be invoked only when `KB_GATE_LLM_ENDPOINT` (or `KB_LLM_ENDPOINT` fallback) resolves, task context meets `KB_GATE_MIN_TASK_TOKENS`, and Stage A retained ≥ 1 candidate.
+- Judge failures (timeout, non-JSON, bad model id) shall degrade to retrieval rather than failing the search.
+- `KB_GATE_EMPTY_VERDICT=on` shall let the gate return an empty set; the default `off` shall fall back to the pre-gate top-k.
+
+### TS-GATE-422: Untrusted Task-Context Policy
+**Requirement:** FR-GATE-422
+
+**Test Cases:**
+- `KB_GATE_TASK_CONTEXT_MODE=warn` (default) shall log on stderr but accept long or injection-bearing argv task context.
+- `KB_GATE_TASK_CONTEXT_MODE=strict` shall refuse injection-signal-bearing argv task context with exit code 2.
+- `KB_GATE_TASK_CONTEXT_MODE=off` shall apply neither check.
+- `--task-context-file=<path>` shall always bypass the argv length check.
+
+## Research
+
+### TS-RESEARCH-451: Evidence Plan and Collect
+**Requirement:** FR-RESEARCH-451
+
+**Test Cases:**
+- `kb research plan` shall emit a `kb.research.v1` plan envelope with a vetted set of query candidates and `--format=json` validation.
+- `kb research collect` shall execute the plan, deduplicate hits across query candidates, and return a single ranked evidence packet with chunk-id, score, source-query, and KB fields.
+- The collector shall enforce per-query result caps and total-evidence caps via `--max-per-query` and `--max-total`.
+
+### TS-RESEARCH-452: Planner Selection Tightening
+**Requirement:** FR-RESEARCH-452
+
+**Test Cases:**
+- `kb research plan` shall reject queries containing prompt-injection signals and shall not echo them in the plan envelope.
+- The planner shall skip non-actionable / generic queries that fail the minimum-task-token threshold.
+
+## Feedback
+
+### TS-FEEDBACK-436: Relevance Feedback Ledger
+**Requirement:** FR-FEEDBACK-436
+
+**Test Cases:**
+- `kb feedback add` shall append a `relevance-feedback.v1` entry to `<kb>/.index/relevance-feedback.jsonl` with stable id, timestamp, query, source, verdict, and graded relevance.
+- `kb feedback list` shall return entries sorted by `created_at` descending and honor `--query` and `--limit`.
+- `kb feedback promote` shall produce a YAML preview without `--fixture --yes` and shall append a `kb eval` case to the target fixture when both are supplied.
+- The ledger shall store `task_context_sha256` (never the raw text) when `--task-context` is supplied.
+
+## Logging and Observability
+
+### TS-LOGS-397: Canonical Log Reader
+**Requirement:** FR-LOGS-397
+
+**Test Cases:**
+- `kb logs recent --format=json` shall return the latest `kb-canonical.v1` events from the discovered log file.
+- `kb logs show --request-id=<id>` and `--query-sha=<hash>` shall return matching events with stable counts of scanned, ignored, and malformed lines.
+- The reader shall ignore non-canonical text lines and shall not write to stdout when no events match (returns `result_count: 0`).
+- File-resolution order shall be `--file` → `LOG_FILE` → existing local default paths.
+
+### TS-STATS-419: Contextual Preface Stats
+**Requirement:** FR-STATS-419
+
+**Test Cases:**
+- `computeKbStats` shall include `contextual_preface` cache hit/miss/failure counters when RFC 017 ingest is enabled.
+- The block shall be omitted when the contextual-retrieval flag is off, preserving the prior payload shape.
+
+### TS-STATS-442: Remote Transport Stats
+**Requirement:** FR-STATS-442
+
+**Test Cases:**
+- `computeKbStats` shall include a `remote_transport` block with request, auth-failure, and backoff counters when the HTTP or SSE transport is active.
+- The block shall be omitted under stdio transport.
+
+## Reindex
+
+### TS-REINDEX-407: Reindex Status Ledger
+**Requirement:** FR-REINDEX-407
+
+**Test Cases:**
+- `kb reindex status --format=json` shall read the `.reindex.run.json` ledger and report current or most recent runs with `kb_scope`, `model`, timestamps, chunk counters, cache hit-rate, and any failure code.
+- The reader shall report a clearly-typed "no runs" envelope when the ledger is missing rather than failing.
+
+### TS-REINDEX-408: Cache-Aware Estimate
+**Requirement:** FR-REINDEX-408
+
+**Test Cases:**
+- The contextual-reindex estimator shall subtract chunks already present in the preface cache from the total chunk count before producing the wall-clock estimate.
+
+## Serve / Daemon
+
+### TS-SERVE-410: kb serve status
+**Requirement:** FR-SERVE-410
+
+**Test Cases:**
+- `kb serve status` shall query `GET /health` at `KB_DAEMON_URL` and never start or stop a daemon.
+- Reachable daemons shall produce exit code 0 with PID, uptime, idle-timeout, and command-list fields when the `/health` payload supplies them.
+- An unreachable daemon shall produce exit code 3 with a clear "no daemon at <url>" message.
+- A daemon answering with an unusable `/health` payload shall produce exit code 1.
+- Invalid `KB_DAEMON_URL` shall produce exit code 2.
 
 ## Stats
 
