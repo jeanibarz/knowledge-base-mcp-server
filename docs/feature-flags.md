@@ -114,7 +114,7 @@ wrap-close vars below.
 | Verbose MCP server tracing | `KB_LOG_VERBOSE` | unset | `KnowledgeBaseServer` lifecycle logs | Implemented, opt-in | none | `KB_LOG_VERBOSE=1 node build/index.js` |
 | Log level | `LOG_LEVEL` | `info` | Process logs | Implemented | none | `LOG_LEVEL=debug kb doctor` |
 | Log file | `LOG_FILE` | unset | Process logs | Implemented | none | `LOG_FILE=/tmp/kb.log kb doctor` |
-| Canonical log reader | `kb logs --request-id=<id>` | tails active log | `kb logs` | Implemented | none | `kb logs --tail=20 --format=json` |
+| Canonical log reader | `kb logs show --request-id=<id>` | reads configured canonical log | `kb logs` | Implemented | none | `kb logs recent --limit=20 --format=json` |
 | Mutation audit log | `KB_MUTATION_AUDIT_LOG` | unset | KB write paths | Implemented, opt-in | none | `KB_MUTATION_AUDIT_LOG=/tmp/kb-mutations.jsonl kb remember --kb=<name> --title="..." --stdin --yes` |
 | Tool description overrides | `RETRIEVE_KNOWLEDGE_DESCRIPTION`, `LIST_KNOWLEDGE_BASES_DESCRIPTION`, `LIST_MODELS_DESCRIPTION`, `KB_STATS_DESCRIPTION` | built-in descriptions | MCP server tool metadata | Implemented | none; set before server start | restart MCP server and inspect tool descriptions |
 

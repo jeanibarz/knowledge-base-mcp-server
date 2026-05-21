@@ -158,8 +158,8 @@
 
 **Test Cases:**
 - `kb research plan` shall emit a `kb.research.v1` plan envelope with a vetted set of query candidates and `--format=json` validation.
-- `kb research collect` shall execute the plan, deduplicate hits across query candidates, and return a single ranked evidence packet with chunk-id, score, source-query, and KB fields.
-- The collector shall enforce per-query result caps and total-evidence caps via `--max-per-query` and `--max-total`.
+- `kb research collect` shall execute the plan and write `run.json`, `plan.json`, `ledger.json`, `evidence_packet.md`, and `events.jsonl`.
+- The collector shall honor `--k=<int>` as the per-query/shelf retrieval cap, keep `ledger.json` lossless, and group duplicate passages in `evidence_packet.md` with query provenance.
 
 ### TS-RESEARCH-452: Planner Selection Tightening
 **Requirement:** FR-RESEARCH-452

@@ -68,8 +68,8 @@ kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
 kb eval-gate docs/testing/fixtures/rfc-018-gate-eval/queries.yml  # RFC 018 gate validation harness
 kb reindex --with-context     # rebuild the FAISS index with RFC 017 contextual prefaces
 kb reindex status --format=json  # ledger of recent / in-flight reindex passes (#417)
-kb logs --request-id=<id>     # read canonical request logs by id (#397)
-kb logs --tail=20 --format=json  # most recent canonical log entries
+kb logs show --request-id=<id>     # read canonical request logs by id (#397)
+kb logs recent --limit=20 --format=json  # most recent canonical log entries
 kb serve                      # start the loopback CLI daemon (warm reads); --port=17799 --idle-timeout-ms=300000
 kb serve status               # daemon liveness + degraded-mode diagnostics (#420)
 kb doctor                     # availability snapshot (index, embedding backend, LLM)
@@ -114,7 +114,7 @@ RFC 018 relevance gating is off by default. Enable it per process with `KB_RELEV
 
 `kb eval-gate <fixture.yml>` runs the RFC 018 relevance-gate validation harness end-to-end against a labelled-queries fixture (Stage A statistical floor + optional Stage B LLM judge) and reports per-stage precision, recall, and false-empty rate. Use it when you change `KB_GATE_*` tuning or the judge prompt before promoting changes to production. See [`docs/operations/eval-gate-harness.md`](docs/operations/eval-gate-harness.md).
 
-`kb logs` is the canonical reader for the structured request log emitted under `KB_LOG_FORMAT=canonical` or `both`. Filter by `--request-id=<id>` to pull every line of a specific retrieval, `--query-sha=<hash>` to follow recurring queries, `--since=<ISO|relative>` to scope a time window, and `--tail=<n>` for the most recent entries. `--format=json` produces one line per record for downstream tooling.
+`kb logs` is the canonical reader for the structured request log emitted under `KB_LOG_FORMAT=canonical` or `both`. Use `kb logs show --request-id=<id>` to pull every line of a specific retrieval, `kb logs show --query-sha=<hash>` to follow recurring queries, and `kb logs recent --limit=<n>` for the most recent entries. `--format=json` produces one line per record for downstream tooling.
 
 `kb serve` runs the loopback CLI daemon used by clients that pass `--daemon` for warm reads. The bare `kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000]` brings it up; `kb serve status [--json]` reports reachability, pid, idle timeout, and supported commands at the configured `KB_DAEMON_URL` (defaults to `http://127.0.0.1:17799`); SIGINT or SIGTERM stops it. CLI commands fall back to direct in-process execution when the daemon is unavailable. See [`docs/operations/daemon-lifecycle.md`](docs/operations/daemon-lifecycle.md).
 
