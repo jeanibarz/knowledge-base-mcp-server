@@ -1311,6 +1311,7 @@ export class FaissIndexManager {
           secret_scan: {
             categories: error.categories,
             chunk_indexes: error.chunkIndexes,
+            locations: error.locations,
           },
         });
       }

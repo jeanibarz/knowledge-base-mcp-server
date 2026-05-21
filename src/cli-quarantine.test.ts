@@ -25,6 +25,14 @@ function record(relativePath: string, retryCount = 1): IngestQuarantineRecord {
   };
 }
 
+function secretRecord(relativePath: string): IngestQuarantineRecord {
+  return {
+    ...record(relativePath),
+    reason: 'secret_detected',
+    error_code: 'secret_detected',
+  };
+}
+
 function makeDeps(recordsByKb: Record<string, IngestQuarantineRecord[]>): {
   deps: RunQuarantineDeps;
   stdout: string[];
@@ -56,6 +64,10 @@ describe('kb quarantine CLI', () => {
       all: false,
       format: 'json',
     });
+    expect(parseQuarantineArgs(['list', '--reason=secret_detected'])).toMatchObject({
+      action: 'list',
+      reason: 'secret_detected',
+    });
     expect(parseQuarantineArgs(['clear', '--kb=alpha', '--path=bad.md'])).toMatchObject({
       action: 'clear',
       kb: 'alpha',
@@ -64,6 +76,7 @@ describe('kb quarantine CLI', () => {
     expect(() => parseQuarantineArgs([])).toThrow(/missing action/);
     expect(() => parseQuarantineArgs(['retry', '--all'])).toThrow(/--all is only supported/);
     expect(() => parseQuarantineArgs(['ack', '--format=json'])).toThrow(/--format is only supported/);
+    expect(() => parseQuarantineArgs(['clear', '--reason=secret_detected'])).toThrow(/--reason is only supported/);
   });
 
   it('lists quarantined entries across KBs as JSON', async () => {
@@ -83,8 +96,25 @@ describe('kb quarantine CLI', () => {
 
   it('formats markdown list output for operator inspection', () => {
     expect(formatQuarantineMarkdown([{ kb: 'alpha', ...record('bad|name.md') }]))
-      .toContain('| alpha | bad\\|name.md | input | EINVAL | 1 | 2026-05-12T10:02:00.000Z | no |');
+      .toContain('| alpha | bad\\|name.md |  | input | EINVAL | 1 | 2026-05-12T10:02:00.000Z | no |');
     expect(formatQuarantineMarkdown([])).toBe('No quarantined ingest files.\n');
+  });
+
+  it('filters list output by quarantine reason', async () => {
+    const { deps, stdout } = makeDeps({
+      alpha: [record('bad.md'), secretRecord('leak.md')],
+    });
+
+    const code = await runQuarantine(['list', '--kb=alpha', '--reason=secret_detected', '--format=json'], deps);
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout.join('')) as { entries: Array<{ relative_path: string; reason?: string }> };
+    expect(parsed.entries).toEqual([
+      expect.objectContaining({
+        relative_path: 'leak.md',
+        reason: 'secret_detected',
+      }),
+    ]);
   });
 
   it('runs clear, retry, and ack mutations with --kb and --path', async () => {

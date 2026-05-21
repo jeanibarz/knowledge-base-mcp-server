@@ -140,11 +140,11 @@ wrap-close vars below.
 | HuggingFace API key | `HUGGINGFACE_API_KEY` | required for HuggingFace | HuggingFace embedding provider | Implemented | none | `EMBEDDING_PROVIDER=huggingface kb doctor` |
 | Extra ingest extensions | `INGEST_EXTRA_EXTENSIONS` | empty | Ingest and refresh | Implemented | none | `INGEST_EXTRA_EXTENSIONS=.pdf kb search "known phrase" --refresh` |
 | Extra ingest exclusions | `INGEST_EXCLUDE_PATHS` | empty | Ingest and refresh | Implemented | none | `INGEST_EXCLUDE_PATHS="drafts/**" kb search "known phrase" --refresh` |
-| Ingest secret scan | `KB_INGEST_SECRET_SCAN` | `off` | Ingest and refresh | Implemented, opt-in | `KB_SECRET_SCAN_BYPASS_KBS=<csv>` | `KB_INGEST_SECRET_SCAN=on kb search "query" --refresh` |
 | Refresh quiescence guard | `KB_REFRESH_QUIESCE_MS` | `0` | Ingest and refresh | Implemented, opt-in | none | `KB_REFRESH_QUIESCE_MS=1000 kb search "query" --refresh` |
 | Maximum raw file size | `KB_MAX_FILE_BYTES` | `104857600` | Ingest and refresh | Implemented | none | `KB_MAX_FILE_BYTES=1048576 kb search "query" --refresh` |
 | Maximum extracted text size | `KB_MAX_EXTRACTED_TEXT_BYTES` | `16777216` | Ingest and refresh | Implemented | none | `KB_MAX_EXTRACTED_TEXT_BYTES=1048576 kb search "query" --refresh` |
 | Large-file policy | `KB_LARGE_FILE_POLICY` | `skip` | Ingest and refresh | Implemented | none | `KB_LARGE_FILE_POLICY=error kb search "query" --refresh` |
+| Ingest secret scan | `KB_INGEST_SECRET_SCAN` | `off` | Ingest and refresh | Implemented, opt-in; `KB_SECRET_SCAN_BYPASS_KBS=<csv>` bypasses trusted credential-example KBs | none | `KB_INGEST_SECRET_SCAN=on kb search "query" --refresh` then `kb quarantine list --reason=secret_detected` |
 | Splitter chunk size | `KB_CHUNK_SIZE` | `1000` | Ingest and refresh | Implemented | none | `KB_CHUNK_SIZE=500 kb search "query" --refresh` |
 | Splitter chunk overlap | `KB_CHUNK_OVERLAP` | `200` (auto-scales as `floor(chunkSize/5)` when only `KB_CHUNK_SIZE` is set) | Ingest and refresh | Implemented | none | `KB_CHUNK_SIZE=500 KB_CHUNK_OVERLAP=100 kb search "query" --refresh` |
 | Indexing batch size | `INDEXING_BATCH_SIZE` | `64` (Ollama: `16`) | Embedding ingest | Implemented | none | `INDEXING_BATCH_SIZE=32 kb search "query" --refresh` |

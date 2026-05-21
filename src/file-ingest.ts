@@ -33,7 +33,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
 import { applyExtractedTextLimit } from './loaders.js';
 import { logger } from './logger.js';
-import { assertNoIngestSecrets } from './secret-scanner.js';
+import { assertNoIngestSecrets, type SecretScanInput } from './secret-scanner.js';
 import { withSidecarLock } from './write-lock.js';
 
 export interface PendingSidecarWrite {
@@ -245,7 +245,18 @@ export async function buildChunkDocuments(
     [{ source: filePath }],
   );
 
-  assertNoIngestSecrets(documents.map((document) => document.pageContent), {
+  const secretScanInputs: SecretScanInput[] = documents.map((document, chunkIndex) => ({
+    content: document.pageContent,
+    chunkIndex,
+    location: 'chunk',
+  }));
+  if (liftedFrontmatter !== undefined) {
+    secretScanInputs.push({
+      content: JSON.stringify(liftedFrontmatter),
+      location: 'frontmatter',
+    });
+  }
+  assertNoIngestSecrets(secretScanInputs, {
     relativePath,
     knowledgeBaseName,
   });
