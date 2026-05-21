@@ -111,6 +111,7 @@ wrap-close vars below.
 | Frontmatter extras on wire | `FRONTMATTER_EXTRAS_WIRE_VISIBLE` | `false` | MCP and CLI JSON retrieval output | Implemented | none | `FRONTMATTER_EXTRAS_WIRE_VISIBLE=true kb search "query" --format=json` |
 | CLI timing | `--timing` | off | CLI search and ask | Implemented | `--timing` | `kb search "query" --timing` |
 | Compact search output | `kb search --format=compact` | `md` | CLI search | Implemented | `--format=compact` | `kb search "query" --format=compact` |
+| Search pager | `KB_PAGER`, `kb search --pager` | off; `less -R` when enabled without a pager env | CLI search markdown/compact output on TTY stdout | Implemented, opt-in | `--pager`, `--no-pager` | `KB_PAGER='less -R' kb search "query" --pager --k=30` |
 | Batch JSONL search input | `kb search --batch-jsonl` | off | CLI search | Implemented | `--batch-jsonl < queries.jsonl` | `printf '{"query":"q1"}\n{"query":"q2"}\n' \| kb search --batch-jsonl` |
 | Canonical log format | `KB_LOG_FORMAT` | `both` | Process logs | Implemented | none | `KB_LOG_FORMAT=canonical kb search "query"` |
 | Verbose MCP server tracing | `KB_LOG_VERBOSE` | unset | `KnowledgeBaseServer` lifecycle logs | Implemented, opt-in | none | `KB_LOG_VERBOSE=1 node build/index.js` |

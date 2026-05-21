@@ -83,6 +83,7 @@ import {
   type RerankOverride,
   type RerankerConfig,
 } from './reranker.js';
+import { writeMaybePagedOutput, type PagerFlag } from './cli-pager.js';
 import {
   inspectTaskContext,
   resolveTaskContextArgvMax,
@@ -190,6 +191,9 @@ Output:
                         in markdown output. With \`--format=json\`, adds a
                         \`grouped_results\` field alongside raw results.
   --timing              Include elapsed milliseconds for retrieval stages.
+  --pager               Page markdown/compact output through KB_PAGER, PAGER,
+                        or less -R when stdout is a TTY.
+  --no-pager            Disable KB_PAGER for this search.
   --no-freshness        Skip the staleness scan and omit freshness output.
   --explain-empty       Opt-in deep diagnostics for empty results: pre/post
                         filter candidate counts, per-filter drops, scope,
@@ -239,6 +243,7 @@ interface SearchArgs {
   groupBySource: boolean;
   mode: SearchMode;
   timing: boolean;
+  pager: PagerFlag;
   interactive: boolean;
   batchJsonl: boolean;
   noCache: boolean;
@@ -261,6 +266,7 @@ export interface RunSearchDeps {
   resolveActiveModel: typeof resolveActiveModel;
   loadManagerForModel: typeof loadManagerForModel;
   loadWithJsonRetry: typeof loadWithJsonRetry;
+  writeOutput?: typeof writeMaybePagedOutput;
   computeStaleness?: typeof computeStaleness;
   listLexicalKbs?: typeof listLexicalKbs;
   loadLexicalIndex?: typeof LexicalIndex.load;
@@ -572,7 +578,7 @@ export async function runSearch(
     const out = formatRetrievalAsVimgrep(results);
     if (out !== '') process.stdout.write(`${out}\n`);
   } else if (parsed.format === 'compact') {
-    process.stdout.write(formatDenseSearchCompactOutput({
+    await writeSearchOutput(parsed, deps, formatDenseSearchCompactOutput({
       results,
       mode: effectiveMode,
       staleness,
@@ -581,7 +587,7 @@ export async function runSearch(
       timing,
     }));
   } else {
-    process.stdout.write(formatDenseSearchMarkdownOutput({
+    await writeSearchOutput(parsed, deps, formatDenseSearchMarkdownOutput({
       results,
       groupBySource: parsed.groupBySource,
       staleness,
@@ -599,6 +605,21 @@ export async function runSearch(
   }
 
   return 0;
+}
+
+async function writeSearchOutput(
+  parsed: SearchArgs,
+  deps: RunSearchDeps,
+  output: string,
+): Promise<void> {
+  await (deps.writeOutput ?? writeMaybePagedOutput)(output, {
+    flag: parsed.pager,
+    format: parsed.format,
+    env: process.env,
+    stdoutIsTTY: process.stdout.isTTY === true,
+    stdout: process.stdout,
+    stderr: process.stderr,
+  });
 }
 
 /**
@@ -717,6 +738,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     groupBySource: false,
     mode: 'dense',
     timing: false,
+    pager: null,
     interactive: false,
     batchJsonl: false,
     noCache: false,
@@ -733,6 +755,8 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--stdin')   { out.stdin = true; continue; }
     if (raw === '--group-by-source') { out.groupBySource = true; continue; }
     if (raw === '--timing') { out.timing = true; continue; }
+    if (raw === '--pager') { out.pager = true; continue; }
+    if (raw === '--no-pager') { out.pager = false; continue; }
     if (raw === '--no-cache') { out.noCache = true; continue; }
     if (raw === '--gate') { out.gateOverride = 'on'; continue; }
     if (raw === '--no-gate') { out.gateOverride = 'off'; continue; }
@@ -1921,32 +1945,31 @@ async function runLexicalSearch(
     const out = formatRetrievalAsVimgrep(formatted as never);
     if (out !== '') process.stdout.write(`${out}\n`);
   } else if (parsed.format === 'compact') {
+    let output = '';
     if (autoModeDecision) {
-      process.stdout.write(formatAutoModeHeader(autoModeDecision));
-      process.stdout.write('\n\n');
+      output += `${formatAutoModeHeader(autoModeDecision)}\n\n`;
     }
-    process.stdout.write(`${formatRetrievalAsCompactTable(formatted as never, {
+    output += `${formatRetrievalAsCompactTable(formatted as never, {
       mode: 'lexical',
       gate: 'bypassed',
       width: process.stdout.columns,
-    })}\n`);
+    })}\n`;
     const summary = `${perKb.length} KB(s), ${errors.length} error(s)`;
-    process.stdout.write(`> _Lexical status: ${summary}._\n`);
+    output += `> _Lexical status: ${summary}._\n`;
     if (timing) {
-      process.stdout.write(formatTimingFooter('Timing', timing));
-      process.stdout.write('\n');
+      output += `${formatTimingFooter('Timing', timing)}\n`;
     }
+    await writeSearchOutput(parsed, deps, output);
   } else {
+    let output = '';
     if (autoModeDecision) {
-      process.stdout.write(formatAutoModeHeader(autoModeDecision));
-      process.stdout.write('\n\n');
+      output += `${formatAutoModeHeader(autoModeDecision)}\n\n`;
     }
-    process.stdout.write(`> _Mode: lexical (BM25). Stage 1 — debug surface; see #206._\n\n`);
+    output += `> _Mode: lexical (BM25). Stage 1 — debug surface; see #206._\n\n`;
     if (formatted.length === 0) {
-      process.stdout.write(`_No matches._\n\n`);
+      output += `_No matches._\n\n`;
     } else {
-      process.stdout.write(formatRetrievalAsMarkdown(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI));
-      process.stdout.write('\n\n');
+      output += `${formatRetrievalAsMarkdown(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)}\n\n`;
     }
     const summaryLines = perKb.map((r) => {
       if (r.error) return `- ${r.kbName}: error — ${r.error.message}`;
@@ -1959,12 +1982,11 @@ async function runLexicalSearch(
         : '(no refresh this run)';
       return `- ${r.kbName}: ${counts}`;
     });
-    process.stdout.write(`> _Lexical index status:_\n${summaryLines.join('\n')}\n`);
+    output += `> _Lexical index status:_\n${summaryLines.join('\n')}\n`;
     if (timing) {
-      process.stdout.write(`\n`);
-      process.stdout.write(formatTimingFooter('Timing', timing));
-      process.stdout.write('\n');
+      output += `\n${formatTimingFooter('Timing', timing)}\n`;
     }
+    await writeSearchOutput(parsed, deps, output);
   }
 
   return errors.length > 0 ? 1 : 0;
@@ -2177,65 +2199,56 @@ async function runHybridSearch(
     const out = formatRetrievalAsVimgrep(ranked as never);
     if (out !== '') process.stdout.write(`${out}\n`);
   } else if (parsed.format === 'compact') {
+    let output = '';
     if (autoModeDecision) {
-      process.stdout.write(formatAutoModeHeader(autoModeDecision));
-      process.stdout.write('\n\n');
+      output += `${formatAutoModeHeader(autoModeDecision)}\n\n`;
     }
-    process.stdout.write(`${formatRetrievalAsCompactTable(ranked as never, {
+    output += `${formatRetrievalAsCompactTable(ranked as never, {
       mode: 'hybrid',
       gate: compactGateMarker(gateVerdict),
       width: process.stdout.columns,
-    })}\n`);
-    process.stdout.write(
-      `> _Hybrid status: dense ${denseResults.length}, lexical ${lexicalResults.length}, refreshed ${lexicalResultsRow.refreshed}, failed ${lexicalResultsRow.failed}, RRF c=${HYBRID_RRF_C}._\n`,
-    );
+    })}\n`;
+    output += `> _Hybrid status: dense ${denseResults.length}, lexical ${lexicalResults.length}, refreshed ${lexicalResultsRow.refreshed}, failed ${lexicalResultsRow.failed}, RRF c=${HYBRID_RRF_C}._\n`;
     if (rerankResult.candidatesIn > 0) {
       const degraded = rerankResult.degraded ? '; degraded to fused order' : '';
-      process.stdout.write(
-        `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`,
-      );
+      output += `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`;
     }
     if (gateVerdict.state !== 'bypassed') {
-      process.stdout.write(`${formatGateVerdictFooter(gateVerdict)}\n`);
+      output += `${formatGateVerdictFooter(gateVerdict)}\n`;
     }
     if (parsed.explain) {
-      process.stdout.write(`${formatGateDroppedList(gateVerdict)}\n`);
+      output += `${formatGateDroppedList(gateVerdict)}\n`;
     }
     if (timing) {
-      process.stdout.write(formatTimingFooter('Timing', timing));
-      process.stdout.write('\n');
+      output += `${formatTimingFooter('Timing', timing)}\n`;
     }
+    await writeSearchOutput(parsed, deps, output);
   } else {
+    let output = '';
     if (autoModeDecision) {
-      process.stdout.write(formatAutoModeHeader(autoModeDecision));
-      process.stdout.write('\n\n');
+      output += `${formatAutoModeHeader(autoModeDecision)}\n\n`;
     }
-    process.stdout.write(`> _Mode: hybrid (RRF c=${HYBRID_RRF_C}). Stage 2 - dense + lexical; see #206._\n\n`);
+    output += `> _Mode: hybrid (RRF c=${HYBRID_RRF_C}). Stage 2 - dense + lexical; see #206._\n\n`;
     if (ranked.length === 0) {
-      process.stdout.write(`_No matches._\n\n`);
+      output += `_No matches._\n\n`;
     } else {
-      process.stdout.write(formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI));
-      process.stdout.write('\n\n');
+      output += `${formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)}\n\n`;
     }
-    process.stdout.write(
-      `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`,
-    );
+    output += `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`;
     if (rerankResult.candidatesIn > 0) {
       const degraded = rerankResult.degraded ? '; degraded to fused order' : '';
-      process.stdout.write(
-        `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`,
-      );
+      output += `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`;
     }
     if (gateVerdict.state !== 'bypassed') {
-      process.stdout.write(`${formatGateVerdictFooter(gateVerdict)}\n`);
+      output += `${formatGateVerdictFooter(gateVerdict)}\n`;
     }
     if (parsed.explain) {
-      process.stdout.write(`${formatGateDroppedList(gateVerdict)}\n`);
+      output += `${formatGateDroppedList(gateVerdict)}\n`;
     }
     if (timing) {
-      process.stdout.write(formatTimingFooter('Timing', timing));
-      process.stdout.write('\n');
+      output += `${formatTimingFooter('Timing', timing)}\n`;
     }
+    await writeSearchOutput(parsed, deps, output);
   }
 
   return 0;

@@ -31,7 +31,7 @@ import { QUARANTINE_HELP, runQuarantine } from './cli-quarantine.js';
 import { REINDEX_HELP, runReindexCli } from './cli-reindex.js';
 import { REMEMBER_HELP, runRemember } from './cli-remember.js';
 import { RESEARCH_HELP, runResearch } from './cli-research.js';
-import { SEARCH_HELP, runSearch } from './cli-search.js';
+import { SEARCH_HELP, parseSearchArgs, runSearch } from './cli-search.js';
 import { SERVE_HELP, runServe } from './cli-serve.js';
 import { STALE_CHECK_HELP, runStaleCheck } from './cli-stale-check.js';
 import { STATS_HELP, runStats } from './cli-stats.js';
@@ -40,6 +40,7 @@ import { VERIFY_HELP, runVerify } from './cli-verify.js';
 import { WHERE_HELP, runWhere } from './cli-where.js';
 import { daemonUrlFromEnv, tryRunDaemonCommand } from './daemon-client.js';
 import { emitCanonicalLog } from './canonical-log.js';
+import { buildDaemonSearchArgs, resolveSearchPager } from './cli-pager.js';
 
 // ----- Subcommand registry --------------------------------------------------
 
@@ -151,6 +152,7 @@ Environment:
   EMBEDDING_PROVIDER        ollama | openai | huggingface
   KB_ACTIVE_MODEL           Override the active model for this process (RFC 013 §4.7).
   KB_DAEMON_URL             URL for \`kb search --daemon\` (default http://127.0.0.1:17799).
+  KB_PAGER                  Pager command and opt-in for human-readable \`kb search\` output.
   KB_LLM_ENDPOINT           OpenAI-compatible endpoint used by \`kb ask\`.
   LOG_FILE                  Optional file used by \`kb logs\` and by runtime logging.
   KB_LOG_FORMAT             text | canonical | both (default both).
@@ -529,9 +531,12 @@ async function runSearchMaybeViaDaemon(rest: string[]): Promise<number> {
   if (directRest.includes('--refresh')) {
     return runSearch(directRest);
   }
+  if (await shouldRunSearchLocallyForPager(directRest)) {
+    return runSearch(directRest);
+  }
 
   const startedAt = Date.now();
-  const daemonResult = await tryRunDaemonCommand('search', directRest);
+  const daemonResult = await tryRunDaemonCommand('search', buildDaemonSearchArgs(directRest));
   if (daemonResult === null) {
     // The daemon was unreachable: tell the operator the search still ran,
     // just directly, and how long the daemon probe cost before falling back.
@@ -544,6 +549,20 @@ async function runSearchMaybeViaDaemon(rest: string[]): Promise<number> {
   if (daemonResult.stdout !== '') process.stdout.write(daemonResult.stdout);
   if (daemonResult.stderr !== '') process.stderr.write(daemonResult.stderr);
   return daemonResult.exitCode;
+}
+
+async function shouldRunSearchLocallyForPager(rest: string[]): Promise<boolean> {
+  try {
+    const parsed = parseSearchArgs(rest);
+    return await resolveSearchPager({
+      flag: parsed.pager,
+      format: parsed.format,
+      env: process.env,
+      stdoutIsTTY: process.stdout.isTTY === true,
+    }) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /** ` at <url>` for the fallback notice, or '' when the daemon URL is unset. */
