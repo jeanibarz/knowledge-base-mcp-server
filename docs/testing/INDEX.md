@@ -2,6 +2,7 @@
 
 - [Retrieval eval command](retrieval-eval.md)
 - [Retrieval eval methodology](retrieval-eval-methodology.md)
+- [Fake LLM fixture](fake-llm.md)
 - [Fixtures](fixtures/README.md)
 - RFC test surfaces:
   [RFC 017 contextual retrieval](../rfcs/017-contextual-retrieval.md),
@@ -122,6 +123,16 @@
 - `formatFreshnessFooter` and JSON payload tests shall verify scoped fields remain distinct from global fields.
 
 ## Relevance Gate (RFC 018)
+
+### TS-LLM-465: Fake LLM Fixture
+**Requirement:** FR-LLM-465
+
+**Test Cases:**
+- `KB_LLM_FAKE=on` shall route `callChatCompletion` to the in-process fake LLM without invoking `fetch`.
+- The fake LLM shall produce deterministic Stage B relevance judge JSON that preserves the existing judge parser contract.
+- The fake LLM shall generate deterministic contextual prefaces without `KB_LLM_ENDPOINT`.
+- `kb ask` shall resolve a fake LLM target and answer from packed snippets without a live server.
+- `npm run dev:mockllm` shall serve OpenAI-compatible `/v1/chat/completions` and `/health` endpoints.
 
 ### TS-GATE-EVAL-369: M0 Gate Validation Harness
 **Requirement:** FR-GATE-EVAL-369

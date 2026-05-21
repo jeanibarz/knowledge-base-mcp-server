@@ -1,3 +1,5 @@
+import { FAKE_LLM_ENDPOINT, isFakeLlmEnabled } from '../llm-fake-stub.js';
+
 // RFC 017 — Contextual Retrieval at Ingest.
 //
 // Config knobs live here so the rest of the module can read them via a
@@ -27,6 +29,7 @@ export function resolveContextualMaxTokens(): number {
 }
 
 export function resolveContextualLlmEndpoint(): string | null {
+  if (isFakeLlmEnabled()) return FAKE_LLM_ENDPOINT;
   const raw = process.env.KB_LLM_ENDPOINT;
   if (raw === undefined || raw.trim() === '') return null;
   return raw.trim();

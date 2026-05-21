@@ -27,6 +27,7 @@ import { FRONTMATTER_EXTRAS_WIRE_VISIBLE } from './config/retrieval.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
 import { resolveInjectionGuardOptions } from './injection-guard.js';
 import { callChatCompletion } from './llm-client.js';
+import { FAKE_LLM_ENDPOINT, isFakeLlmEnabled } from './llm-fake-stub.js';
 import {
   createExternalProfile,
   resolveProfile,
@@ -89,7 +90,7 @@ interface AskArgs {
 
 interface LlmTarget {
   profile: LlmProfile;
-  source: 'flag' | 'env' | 'profile' | 'default';
+  source: 'flag' | 'env' | 'profile' | 'default' | 'fake';
 }
 
 interface AskCitation {
@@ -490,6 +491,9 @@ export function parseAskArgs(rest: string[]): AskArgs {
 }
 
 async function resolveLlmTarget(args: AskArgs): Promise<LlmTarget> {
+  if (isFakeLlmEnabled()) {
+    return { profile: await createExternalProfile('fake', FAKE_LLM_ENDPOINT, 'kb-fake-llm'), source: 'fake' };
+  }
   if (args.endpoint) {
     return { profile: await createExternalProfile('adhoc', args.endpoint), source: 'flag' };
   }

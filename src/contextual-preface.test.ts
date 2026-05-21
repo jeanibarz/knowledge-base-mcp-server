@@ -39,6 +39,8 @@ beforeEach(async () => {
     KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
     KB_CONTEXTUAL_RETRIEVAL: process.env.KB_CONTEXTUAL_RETRIEVAL,
     KB_LLM_ENDPOINT: process.env.KB_LLM_ENDPOINT,
+    KB_LLM_FAKE: process.env.KB_LLM_FAKE,
+    KB_LOG_FORMAT: process.env.KB_LOG_FORMAT,
     KB_CONTEXTUAL_MAX_TOKENS: process.env.KB_CONTEXTUAL_MAX_TOKENS,
   };
   // Set BEFORE the dynamic import so config/paths.ts reads the right
@@ -104,6 +106,32 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
       chunks: ['c1', 'c2'],
     });
     expect(result).toEqual([null, null]);
+    expect(FETCH_MOCK).not.toHaveBeenCalled();
+  });
+
+  it('generates deterministic prefaces with KB_LLM_FAKE without a real endpoint', async () => {
+    setEnv('KB_LLM_ENDPOINT', undefined);
+    setEnv('KB_LLM_FAKE', 'on');
+    setEnv('KB_LOG_FORMAT', 'text');
+    const { resolveContextualPrefaces } = await loadModule();
+
+    const result = await resolveContextualPrefaces({
+      source: '/tmp/alpha/runbook.md',
+      knowledgeBaseName: 'alpha',
+      documentHash: 'doc-hash-fake',
+      documentBody: [
+        '# Operations Runbook',
+        '',
+        '## Rollback',
+        '',
+        'Rollback approval requires the release lead.',
+      ].join('\n'),
+      chunks: ['Rollback approval requires the release lead.'],
+    });
+
+    expect(result).toEqual([
+      'In section "Rollback", this chunk discusses Rollback approval requires the release lead.',
+    ]);
     expect(FETCH_MOCK).not.toHaveBeenCalled();
   });
 

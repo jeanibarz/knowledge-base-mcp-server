@@ -145,6 +145,8 @@ The MCP server (`knowledge-base-mcp-server` bin) is unchanged and still works wi
 
 `kb ask` keeps retrieval deterministic and adds a local OpenAI-compatible chat step on top. It resolves the LLM endpoint from `--endpoint`, `KB_LLM_ENDPOINT`, `--llm-profile`, the active `kb llm` profile, then finally the local-research-agent default on `127.0.0.1:8080`.
 
+For offline development, set `KB_LLM_FAKE=on` to route `kb ask`, RFC 018 relevance-gate judge calls, and RFC 017 contextual-preface generation to a deterministic in-process fake LLM. Use `npm run dev:mockllm -- --port=18080` when a client needs an OpenAI-compatible localhost endpoint instead. Rules can be customized with `KB_LLM_FAKE_RULES`; see [docs/testing/fake-llm.md](docs/testing/fake-llm.md).
+
 Add `--save-transcript --kb=<name> --yes` to persist the generated answer as a new markdown note in that KB. The saved record includes the question, answer, citations, source chunk ids, LLM endpoint/profile/model, retrieval model, and timing metadata when `--timing` is present. `--title=<title>` controls the note title and slug; existing transcript notes are never overwritten.
 
 ```bash

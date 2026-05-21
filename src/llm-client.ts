@@ -1,3 +1,5 @@
+import { callFakeChatCompletion, isFakeLlmEnabled } from './llm-fake-stub.js';
+
 export interface LlmChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -54,6 +56,10 @@ export async function callChatCompletion(
   options: ChatCompletionOptions,
   fetchImpl: FetchLike = fetch,
 ): Promise<ChatCompletionResult> {
+  if (isFakeLlmEnabled()) {
+    return callFakeChatCompletion(options);
+  }
+
   const endpoint = normalizeChatEndpoint(options.endpoint);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 180_000);
