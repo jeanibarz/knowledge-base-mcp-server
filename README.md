@@ -72,6 +72,7 @@ kb logs show --request-id=<id>     # read canonical request logs by id (#397)
 kb logs recent --limit=20 --format=json  # most recent canonical log entries
 kb serve                      # start the loopback CLI daemon (warm reads); --port=17799 --idle-timeout-ms=300000
 kb serve status               # daemon liveness + degraded-mode diagnostics (#420)
+kb config validate            # static env-var schema validation before startup
 kb doctor                     # availability snapshot (index, embedding backend, LLM)
 kb doctor --endpoints         # focused MCP/daemon/Ollama/LLM endpoint preflight
 kb --help                     # top-level command list

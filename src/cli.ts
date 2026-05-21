@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { ASK_HELP, runAsk } from './cli-ask.js';
 import { CAPTURE_HELP, runCapture } from './cli-capture.js';
 import { COMPLETION_HELP, runCompletion } from './cli-completion.js';
+import { CONFIG_HELP, runConfig } from './cli-config.js';
 import { COMPARE_HELP, runCompare } from './cli-compare.js';
 import { DIFF_INDEX_HELP, runDiffIndexCli } from './cli-diff-index.js';
 import { DOCTOR_HELP, runDoctor } from './cli-doctor.js';
@@ -100,6 +101,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'remember',     summary: 'Suggest, create, or append knowledge-base notes (write path).',          help: REMEMBER_HELP,     handler: runRemember },
   { name: 'research',     summary: 'Plan and collect read-only KB evidence packets.',                       help: RESEARCH_HELP,     handler: runResearch },
   { name: 'capture',      summary: 'Run a command and append its stdout to a KB note as a fenced block.',    help: CAPTURE_HELP,      handler: runCapture },
+  { name: 'config',       summary: 'Validate KB environment configuration.',                                help: CONFIG_HELP,       handler: runConfig },
   { name: 'import-url',   summary: 'Snapshot a web page or PDF into a KB note with provenance frontmatter.',  help: IMPORT_URL_HELP,   handler: runImportUrl },
   { name: 'compare',      summary: 'Side-by-side rank/score table for two embedding models.',                help: COMPARE_HELP,      handler: runCompare },
   { name: 'diff-index',   summary: 'Compare retrieval-result churn across two FAISS index versions.',        help: DIFF_INDEX_HELP,   handler: runDiffIndexCli },

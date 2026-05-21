@@ -7,4 +7,5 @@ export * from './config/metrics-export.js';
 export * from './config/paths.js';
 export * from './config/provider.js';
 export * from './config/retrieval.js';
+export * from './config/schema.js';
 export * from './config/watchers.js';
