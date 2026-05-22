@@ -88,6 +88,12 @@ kb logs show --request-id=req-7e2b --format=json | jq
       "took_ms": 42,
       "timings": { "embed_ms": 10, "faiss_ms": 20, "format_ms": 3 },
       "cache": "miss",
+      "query_cache": {
+        "enabled": true,
+        "outcome": "miss",
+        "model_id": "ollama__nomic-embed-text-latest",
+        "elapsed_ms": 10
+      },
       "result_count": 3,
       "top_sources": ["docs/a.md"]
     }
@@ -107,8 +113,9 @@ kb logs recent --limit=50 --format=json \
 ```
 
 A canonical log line carries everything `kb stats` would summarise *per
-request* — cache state, timings, top sources, error codes, recovery hints —
-so this kind of pull is enough for a quick performance sanity-check.
+request* — cache state, query-cache outcome metadata, timings, top sources,
+error codes, recovery hints — so this kind of pull is enough for a quick
+performance sanity-check.
 
 ## Group repeated queries
 

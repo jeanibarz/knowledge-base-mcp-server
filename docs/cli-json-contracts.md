@@ -136,7 +136,13 @@ Dense success envelope, including the default `--mode=dense`:
   "new_files": 0,
   "global_stale": false,
   "global_modified_files": 0,
-  "global_new_files": 0
+  "global_new_files": 0,
+  "query_cache": {
+    "enabled": true,
+    "outcome": "memory_hit",
+    "model_id": "ollama__nomic-embed-text-latest",
+    "elapsed_ms": 1
+  }
 }
 ```
 
@@ -154,6 +160,11 @@ Stable fields:
   that run.
 - `global_stale`, `global_modified_files`, `global_new_files`: staleness across
   all KBs.
+- `query_cache`: present for dense search when the FAISS vector-search path
+  exposes query-cache telemetry. `outcome` is one of `memory_hit`, `disk_hit`,
+  `miss`, `bypass`, or `disabled`; `model_id` is the embedding model id and
+  `elapsed_ms` is the bounded cache lookup/embedding time. The object never
+  includes raw query text or cache-key material.
 
 Optional stable fields:
 
@@ -183,7 +194,10 @@ Optional stable fields:
 - `auto_threshold`: present with `--threshold=auto`. Shape:
   `{"threshold": number, "knee_index": number|null, "kept": number}`.
 - `timing`: present with `--timing`; keys are elapsed millisecond counters and
-  mode labels. Treat the object as diagnostic, not a compatibility contract.
+  mode labels. Dense query-cache diagnostics use the flat keys
+  `query_cache`, `query_cache_enabled`, `query_cache_model_id`, and
+  `query_cache_elapsed_ms`. Treat the object as diagnostic, not a compatibility
+  contract.
   For dense and hybrid `--refresh` runs, the same diagnostic object may include
   refresh counters such as `refresh_embed_batches`,
   `refresh_embed_batches_total`, `refresh_embed_chunks`,

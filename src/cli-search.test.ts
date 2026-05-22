@@ -10,6 +10,7 @@ import {
   parseSearchArgs,
   runSearch,
   shouldUsePicker,
+  takeLastSearchCanonicalTelemetry,
   type RunSearchDeps,
 } from './cli-search.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
@@ -327,13 +328,24 @@ describe('runSearch timing guard (#331)', () => {
   it('runs dense JSONL batch rows while loading the model manager and index once', async () => {
     const { deps, manager } = makeDeps();
     manager.similaritySearch
-      .mockResolvedValueOnce([
-        {
-          pageContent: 'first result',
-          metadata: { source: '/kb/ops/first.md', chunkIndex: 0 },
-          score: 0.11,
-        },
-      ] as never)
+      .mockImplementationOnce(async (...args: unknown[]) => {
+        const timing = args[5] as SimilaritySearchTiming;
+        timing.embed_query_ms = 3;
+        timing.faiss_search_ms = 4;
+        timing.query_cache_telemetry = {
+          enabled: true,
+          outcome: 'bypass',
+          model_id: 'ollama__nomic-embed-text-latest',
+          elapsed_ms: 3,
+        };
+        return [
+          {
+            pageContent: 'first result',
+            metadata: { source: '/kb/ops/first.md', chunkIndex: 0 },
+            score: 0.11,
+          },
+        ] as never;
+      })
       .mockResolvedValueOnce([
         {
           pageContent: 'second result',
@@ -347,7 +359,7 @@ describe('runSearch timing guard (#331)', () => {
       '',
     ].join('\n');
 
-    const out = await captureSearchOutput(['--batch-jsonl', '--no-freshness'], deps, stdin);
+    const out = await captureSearchOutput(['--batch-jsonl', '--timing', '--no-freshness'], deps, stdin);
 
     expect(out.code).toBe(0);
     expect(out.stderr).toBe('');
@@ -388,6 +400,18 @@ describe('runSearch timing guard (#331)', () => {
       mode: 'dense',
       result: {
         freshness_omitted: true,
+        query_cache: {
+          enabled: true,
+          outcome: 'bypass',
+          model_id: 'ollama__nomic-embed-text-latest',
+          elapsed_ms: 3,
+        },
+        timing: {
+          query_cache: 'bypass',
+          query_cache_enabled: true,
+          query_cache_model_id: 'ollama__nomic-embed-text-latest',
+          query_cache_elapsed_ms: 3,
+        },
         results: [{ content: 'first result' }],
       },
     });
@@ -546,6 +570,79 @@ describe('runSearch timing guard (#331)', () => {
       freshness_omitted: true,
     });
     expect(payload).not.toHaveProperty('timing');
+  });
+
+  it('exposes query-cache telemetry in dense JSON, timing, and canonical metadata', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockImplementationOnce(async (...args: unknown[]) => {
+      const denseTiming = args[5] as SimilaritySearchTiming;
+      denseTiming.embed_query_ms = 4;
+      denseTiming.faiss_search_ms = 6;
+      denseTiming.query_cache_telemetry = {
+        enabled: true,
+        outcome: 'memory_hit',
+        model_id: 'ollama__nomic-embed-text-latest',
+        elapsed_ms: 2,
+      };
+      return [{
+        pageContent: 'cached result',
+        metadata: { source: '/kb/ops/cache.md', relativePath: 'ops/cache.md', chunkIndex: 0 },
+        score: 0.12,
+      }] as never;
+    });
+
+    const out = await captureSearchOutput(['cache query', '--format=json', '--timing', '--no-freshness'], deps);
+
+    expect(out.code).toBe(0);
+    const payload = JSON.parse(out.stdout);
+    expect(payload.query_cache).toEqual({
+      enabled: true,
+      outcome: 'memory_hit',
+      model_id: 'ollama__nomic-embed-text-latest',
+      elapsed_ms: 2,
+    });
+    expect(payload.timing).toMatchObject({
+      query_cache: 'memory_hit',
+      query_cache_enabled: true,
+      query_cache_model_id: 'ollama__nomic-embed-text-latest',
+      query_cache_elapsed_ms: 2,
+    });
+    expect(takeLastSearchCanonicalTelemetry()).toMatchObject({
+      cache: 'memory_hit',
+      query_cache: payload.query_cache,
+      result_count: 1,
+      top_sources: ['/kb/ops/cache.md'],
+    });
+  });
+
+  it('records the computed threshold in canonical metadata for --threshold=auto', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([
+      {
+        pageContent: 'first',
+        metadata: { source: '/kb/ops/first.md', relativePath: 'ops/first.md', chunkIndex: 0 },
+        score: 0.1,
+      },
+      {
+        pageContent: 'second',
+        metadata: { source: '/kb/ops/second.md', relativePath: 'ops/second.md', chunkIndex: 1 },
+        score: 0.2,
+      },
+    ] as never);
+
+    const out = await captureSearchOutput([
+      'auto threshold',
+      '--threshold=auto',
+      '--format=json',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    expect(JSON.parse(out.stdout).auto_threshold).toMatchObject({ threshold: 0.2 });
+    expect(takeLastSearchCanonicalTelemetry()).toMatchObject({
+      threshold: 0.2,
+      result_count: 2,
+    });
   });
 
   it('runs diverse search as read-only dense retrieval and emits JSON explanation metadata', async () => {

@@ -16,7 +16,15 @@ import { isValidModelId } from './model-id.js';
 
 export const QUERY_CACHE_SCHEMA_VERSION = 'kb-query-cache.v1';
 
-export type QueryCacheLookupStatus = 'hit_l1' | 'hit_disk' | 'miss' | 'bypass';
+export type QueryCacheLookupStatus = 'hit_l1' | 'hit_disk' | 'miss' | 'bypass' | 'disabled';
+export type QueryCacheOutcome = 'memory_hit' | 'disk_hit' | 'miss' | 'bypass' | 'disabled';
+
+export interface QueryCacheTelemetry {
+  enabled: boolean;
+  outcome: QueryCacheOutcome;
+  model_id: string;
+  elapsed_ms: number;
+}
 
 export interface QueryCacheStats {
   hits: number;
@@ -34,6 +42,7 @@ export interface QueryCacheStats {
 interface QueryCacheRecord {
   embedding: number[];
   status: QueryCacheLookupStatus;
+  telemetry: QueryCacheTelemetry;
 }
 
 export interface QueryCacheOptions {
@@ -111,9 +120,31 @@ export class QueryEmbeddingCache {
     bypass?: boolean;
     embed: () => Promise<number[]>;
   }): Promise<QueryCacheRecord> {
-    if (args.bypass === true || !this.enabled) {
+    const startedAt = Date.now();
+    const record = (
+      embedding: number[],
+      status: QueryCacheLookupStatus,
+      outcome: QueryCacheOutcome,
+      enabled: boolean = this.enabled,
+    ): QueryCacheRecord => ({
+      embedding,
+      status,
+      telemetry: {
+        enabled,
+        outcome,
+        model_id: args.modelId,
+        elapsed_ms: Date.now() - startedAt,
+      },
+    });
+
+    if (!this.enabled) {
       this.bypasses += 1;
-      return { embedding: await args.embed(), status: 'bypass' };
+      return record(await args.embed(), 'disabled', 'disabled', false);
+    }
+
+    if (args.bypass === true) {
+      this.bypasses += 1;
+      return record(await args.embed(), 'bypass', 'bypass');
     }
 
     const paths = queryCachePaths({
@@ -125,14 +156,14 @@ export class QueryEmbeddingCache {
     const memoryHit = this.l1.get(paths.cacheKey);
     if (memoryHit !== null) {
       this.hitsL1 += 1;
-      return { embedding: memoryHit, status: 'hit_l1' };
+      return record(memoryHit, 'hit_l1', 'memory_hit');
     }
 
     const diskHit = await this.readDisk(paths);
     if (diskHit !== null) {
       this.hitsDisk += 1;
       this.l1.set(paths.cacheKey, diskHit);
-      return { embedding: diskHit.slice(), status: 'hit_disk' };
+      return record(diskHit.slice(), 'hit_disk', 'disk_hit');
     }
 
     this.misses += 1;
@@ -146,7 +177,7 @@ export class QueryEmbeddingCache {
     } catch (err) {
       logger.warn(`query embedding cache write skipped for ${args.modelId}: ${(err as Error).message}`);
     }
-    return { embedding: stableEmbedding, status: 'miss' };
+    return record(stableEmbedding, 'miss', 'miss');
   }
 
   async stats(): Promise<QueryCacheStats> {

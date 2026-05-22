@@ -807,6 +807,8 @@ export class KnowledgeBaseServer {
       canonical.top_sources = topSourcesForCanonicalLog(similaritySearchResults);
       canonical.embed_ms = timing.embed_query_ms;
       canonical.faiss_ms = timing.faiss_search_ms ?? timing.query_search_ms;
+      canonical.cache = timing.query_cache_telemetry?.outcome;
+      canonical.query_cache = timing.query_cache_telemetry;
 
       // Build a nicely formatted markdown response including the similarity score.
       const formatStartedAt = Date.now();

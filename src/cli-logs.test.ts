@@ -91,7 +91,17 @@ describe('runLogs', () => {
     const { deps, stdout, stderr } = depsFor({
       '/repo/kb.log': [
         canonical({ request_id: 'req-1', query_sha256: 'old' }),
-        canonical({ request_id: 'req-2', query_sha256: 'new', result_count: 3 }),
+        canonical({
+          request_id: 'req-2',
+          query_sha256: 'new',
+          result_count: 3,
+          query_cache: {
+            enabled: true,
+            outcome: 'disk_hit',
+            model_id: 'fake__model',
+            elapsed_ms: 2,
+          },
+        }),
       ].join('\n'),
     }, { LOG_FILE: './kb.log' });
 
@@ -103,13 +113,28 @@ describe('runLogs', () => {
       schema_version: string;
       source: string;
       result_count: number;
-      events: Array<{ request_id: string; query_sha256: string; result_count?: number }>;
+      events: Array<{
+        request_id: string;
+        query_sha256: string;
+        result_count?: number;
+        query_cache?: unknown;
+      }>;
     };
     expect(payload.schema_version).toBe('kb.logs.v1');
     expect(payload.source).toBe('/repo/kb.log');
     expect(payload.result_count).toBe(1);
     expect(payload.events).toEqual([
-      expect.objectContaining({ request_id: 'req-2', query_sha256: 'new', result_count: 3 }),
+      expect.objectContaining({
+        request_id: 'req-2',
+        query_sha256: 'new',
+        result_count: 3,
+        query_cache: {
+          enabled: true,
+          outcome: 'disk_hit',
+          model_id: 'fake__model',
+          elapsed_ms: 2,
+        },
+      }),
     ]);
   });
 

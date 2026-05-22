@@ -33,6 +33,13 @@ describe('canonical log line schema (#216)', () => {
       tool: 'retrieve_knowledge',
       took_ms: 5,
       top_sources: ['a.md', 'b.md', 'c.md', 'd.md'],
+      cache: 'memory_hit',
+      query_cache: {
+        enabled: true,
+        outcome: 'memory_hit',
+        model_id: 'fake__model',
+        elapsed_ms: 1,
+      },
     });
 
     const json = stableCanonicalJson(event);
@@ -44,9 +51,17 @@ describe('canonical log line schema (#216)', () => {
       tool: 'retrieve_knowledge',
       top_sources: ['a.md', 'b.md', 'c.md'],
       took_ms: 5,
+      cache: 'memory_hit',
+      query_cache: {
+        enabled: true,
+        outcome: 'memory_hit',
+        model_id: 'fake__model',
+        elapsed_ms: 1,
+      },
     });
     expect(json.indexOf('"schema_version"')).toBeLessThan(json.indexOf('"request_id"'));
     expect(json.indexOf('"top_sources"')).toBeLessThan(json.indexOf('"took_ms"'));
+    expect(json.indexOf('"cache"')).toBeLessThan(json.indexOf('"query_cache"'));
   });
 
   it('extracts error code and category from MCP tool error payloads', () => {

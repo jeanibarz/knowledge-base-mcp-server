@@ -115,6 +115,8 @@ import {
   type SearchMode,
   type Staleness,
 } from './search-core.js';
+import { hashQuery, type CanonicalLogInput } from './canonical-log.js';
+import type { QueryCacheTelemetry } from './query-cache.js';
 
 export const SEARCH_HELP = `kb search — semantic search across knowledge bases
 
@@ -230,6 +232,17 @@ Examples:
 
 export type SearchFormat = 'md' | 'json' | 'vimgrep' | 'compact';
 
+let lastSearchCanonicalTelemetry: Partial<CanonicalLogInput> | null = null;
+
+// `cli.ts` wraps `runSearch()` with canonical logging and drains this after
+// the command returns. Keep only redacted query fields here because daemon
+// handlers can call `runSearch()` directly without that wrapper.
+export function takeLastSearchCanonicalTelemetry(): Partial<CanonicalLogInput> | null {
+  const out = lastSearchCanonicalTelemetry;
+  lastSearchCanonicalTelemetry = null;
+  return out;
+}
+
 interface SearchArgs {
   query: string | null;
   kb?: string;
@@ -287,6 +300,7 @@ export async function runSearch(
   rest: string[],
   deps: RunSearchDeps = DEFAULT_RUN_SEARCH_DEPS,
 ): Promise<number> {
+  lastSearchCanonicalTelemetry = null;
   const totalStartedAt = nowMs();
   let parsed: SearchArgs;
   try {
@@ -551,6 +565,16 @@ export async function runSearch(
       : null;
 
   if (timing) timing.total_ms = elapsedMs(totalStartedAt);
+  recordDenseSearchCanonicalTelemetry({
+    query,
+    activeModelId,
+    scopedKb: parsed.kb,
+    k: parsed.k,
+    threshold: parsed.thresholdAuto ? autoThresholdDecision?.threshold : parsed.threshold,
+    searchMode: effectiveMode,
+    results,
+    denseTiming,
+  });
 
   if (shouldUsePicker(parsed)) {
     return runPicker({ results: results as ScoredDocument[] });
@@ -572,6 +596,7 @@ export async function runSearch(
       explainEmptyDiagnostics,
       gateVerdict,
       advancedRetrieval,
+      queryCache: denseTiming.query_cache_telemetry,
     });
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
@@ -644,7 +669,7 @@ async function gatherExplainEmptyDiagnostics(input: {
   const allKbs = await listAvailableKbsForDiagnostics();
   return buildExplainEmptyDiagnostics({
     rawCandidates,
-    threshold: input.threshold,
+    threshold: input.threshold ?? 2,
     scopedKb: input.scopedKb,
     allKbs,
     staleness: input.staleness,
@@ -976,7 +1001,54 @@ function mergeDenseTiming(target: TimingPayload, source: SimilaritySearchTiming)
   if (source.post_filter_ms !== undefined) target.post_filter_ms = source.post_filter_ms;
   if (source.total_ms !== undefined) target.dense_total_ms = source.total_ms;
   if (source.fetch_k !== undefined) target.fetch_k = source.fetch_k;
-  if (source.query_cache !== undefined) target.query_cache = source.query_cache;
+  if (source.query_cache_telemetry !== undefined) {
+    target.query_cache = source.query_cache_telemetry.outcome;
+    target.query_cache_enabled = source.query_cache_telemetry.enabled;
+    target.query_cache_model_id = source.query_cache_telemetry.model_id;
+    target.query_cache_elapsed_ms = source.query_cache_telemetry.elapsed_ms;
+  } else if (source.query_cache !== undefined) {
+    target.query_cache = source.query_cache;
+  }
+}
+
+function recordDenseSearchCanonicalTelemetry(input: {
+  query: string;
+  activeModelId: string;
+  scopedKb: string | undefined;
+  k: number;
+  threshold: number | undefined;
+  searchMode: EffectiveSearchMode;
+  results: ScoredDocument[];
+  denseTiming: SimilaritySearchTiming;
+}): void {
+  const queryCache = input.denseTiming.query_cache_telemetry;
+  lastSearchCanonicalTelemetry = {
+    query_sha256: hashQuery(input.query),
+    query_len_chars: input.query.length,
+    model_id: input.activeModelId,
+    kb_scope: input.scopedKb ?? null,
+    k: input.k,
+    threshold: input.threshold,
+    search_mode: input.searchMode,
+    result_count: input.results.length,
+    top_score: input.results[0]?.score,
+    top_sources: topSourcesForCanonicalLog(input.results),
+    embed_ms: input.denseTiming.embed_query_ms,
+    faiss_ms: input.denseTiming.faiss_search_ms ?? input.denseTiming.query_search_ms,
+    cache: queryCache?.outcome,
+    query_cache: queryCache,
+  };
+}
+
+function topSourcesForCanonicalLog(results: readonly ScoredDocument[]): string[] {
+  const out: string[] = [];
+  for (const result of results) {
+    const source = (result.metadata as Record<string, unknown>).source;
+    if (typeof source !== 'string') continue;
+    out.push(source);
+    if (out.length >= 3) break;
+  }
+  return out;
 }
 
 async function computeStalenessWithTiming(
@@ -1020,6 +1092,7 @@ export interface DenseSearchJsonPayloadInput {
   explainEmptyDiagnostics?: ExplainEmptyDiagnostics | null;
   gateVerdict?: RelevanceGateVerdict;
   advancedRetrieval?: AdvancedRetrievalMetadata | null;
+  queryCache?: QueryCacheTelemetry;
 }
 
 export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput): Record<string, unknown> {
@@ -1056,6 +1129,9 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
   payload.gate_verdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
   if (input.advancedRetrieval !== undefined && input.advancedRetrieval !== null) {
     payload.advanced_retrieval = input.advancedRetrieval;
+  }
+  if (input.queryCache !== undefined) {
+    payload.query_cache = input.queryCache;
   }
   if (input.timing) {
     payload.timing = compactTimingPayload(input.timing);
@@ -1488,6 +1564,7 @@ async function runBatchJsonlSearch(
           timing,
           explainEmptyDiagnostics,
           gateVerdict: gate.verdict,
+          queryCache: denseTiming.query_cache_telemetry,
         }),
       });
     } catch (err) {

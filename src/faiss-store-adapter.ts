@@ -3,7 +3,7 @@ import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import type { Document } from '@langchain/core/documents';
 import { embeddingText } from './contextual-preface.js';
 import { resolveFaissIndexType, type FaissIndexType } from './config/indexing.js';
-import type { QueryCacheLookupStatus } from './query-cache.js';
+import type { QueryCacheLookupStatus, QueryCacheTelemetry } from './query-cache.js';
 
 type ScoredFaissDocument = [Document, number];
 
@@ -137,6 +137,7 @@ function getVectorSearch(store: FaissStore): FaissStoreWithVectorSearch['similar
 export interface FaissSearchTimingSink {
   embed_query_ms?: number;
   query_cache?: QueryCacheLookupStatus | 'unavailable';
+  query_cache_telemetry?: QueryCacheTelemetry;
   faiss_search_ms?: number;
   query_search_ms?: number;
 }
@@ -144,6 +145,7 @@ export interface FaissSearchTimingSink {
 export interface QueryEmbeddingLookup {
   embedding: number[];
   status: QueryCacheLookupStatus;
+  telemetry: QueryCacheTelemetry;
 }
 
 /**
@@ -252,6 +254,9 @@ export class FaissStoreAdapter {
       }
       if (options.timing.query_cache === undefined) {
         options.timing.query_cache = cached.status;
+      }
+      if (options.timing.query_cache_telemetry === undefined) {
+        options.timing.query_cache_telemetry = cached.telemetry;
       }
     }
 

@@ -88,6 +88,7 @@ interface CanonicalLogSummary {
     format_ms?: number;
   };
   cache?: string;
+  query_cache?: unknown;
   result_count?: number;
   top_score?: number;
   top_sources?: string[];
@@ -355,6 +356,7 @@ function summarizeEvent(event: CanonicalLogRecord): CanonicalLogSummary {
       format_ms: numberField(event.format_ms),
     },
     cache: stringField(event.cache),
+    query_cache: event.query_cache,
     result_count: numberField(event.result_count),
     top_score: numberField(event.top_score),
     top_sources: stringArrayField(event.top_sources),
