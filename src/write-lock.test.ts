@@ -28,21 +28,28 @@ describe('withWriteLock', () => {
 
   it('acquires the lock, runs fn, releases', async () => {
     jest.resetModules();
-    const { withWriteLock } = await import('./write-lock.js');
+    const { withWriteLock, writeLockOwnerPathFor } = await import('./write-lock.js');
 
-    let observed: { lockedDuringFn: boolean } = { lockedDuringFn: false };
+    let observed: { lockedDuringFn: boolean; ownerPid: number | null } = {
+      lockedDuringFn: false,
+      ownerPid: null,
+    };
     const result = await withWriteLock(tempDir, async () => {
       // Lock dir should exist while fn runs.
       observed.lockedDuringFn = await fsp
         .stat(lockPath)
         .then(() => true)
         .catch(() => false);
+      const owner = JSON.parse(await fsp.readFile(writeLockOwnerPathFor(tempDir), 'utf-8')) as { pid: number };
+      observed.ownerPid = owner.pid;
       return 'value';
     });
     expect(result).toBe('value');
     expect(observed.lockedDuringFn).toBe(true);
+    expect(observed.ownerPid).toBe(process.pid);
     // Lock released after fn.
     await expect(fsp.stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(writeLockOwnerPathFor(tempDir))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('serializes concurrent callers (second waits for the first)', async () => {

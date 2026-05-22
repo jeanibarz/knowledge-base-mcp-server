@@ -707,6 +707,7 @@ Invocation:
 ```bash
 kb doctor --format=json
 kb doctor --endpoints --format=json
+kb doctor --locks --format=json
 kb doctor --bug-report=/tmp --format=json
 kb doctor --bug-report=/tmp --include-command -- node -e 'process.exit(1)'
 ```
@@ -820,6 +821,71 @@ Stdout/stderr and exit codes:
 - There is no separate JSON error envelope; failing health checks are encoded in
   the report with `status: "error"`.
 - Argument errors print `kb doctor: ...` to stderr and exit `2`.
+
+`kb doctor --locks --format=json` emits a focused lock report without running
+the aggregate backend/index checks:
+
+```json
+{
+  "schema_version": "kb.doctor.locks.v1",
+  "status": "warn",
+  "faiss_index_path": "/path/to/.faiss",
+  "models_root": "/path/to/.faiss/models",
+  "generated_at": "2026-05-22T00:00:00.000Z",
+  "stale_threshold_ms": 10000,
+  "summary": {
+    "total": 1,
+    "held": 0,
+    "stale_suspected": 1,
+    "unknown": 0
+  },
+  "locks": [
+    {
+      "kind": "model_write",
+      "model_id": "ollama__nomic-embed-text-latest",
+      "model_name": "nomic-embed-text:latest",
+      "resource_path": "/path/to/.faiss/models/ollama__nomic-embed-text-latest",
+      "lock_path": "/path/to/.faiss/models/ollama__nomic-embed-text-latest/.kb-write.lock",
+      "owner_path": "/path/to/.faiss/models/ollama__nomic-embed-text-latest/.kb-write.lock.owner.json",
+      "present": true,
+      "lock_kind": "directory",
+      "mtime": "2026-05-22T00:00:00.000Z",
+      "age_ms": 60000,
+      "stale_threshold_ms": 10000,
+      "stale_suspected": true,
+      "owner": {
+        "pid": 12345,
+        "live": false,
+        "command": "kb search --refresh docs",
+        "cwd": "/workspace",
+        "hostname": "host",
+        "started_at": "2026-05-22T00:00:00.000Z",
+        "source": "metadata",
+        "detail": null
+      },
+      "status": "stale",
+      "next_action": "The recorded owner PID is no longer live; verify no writer is running before removing the lock path.",
+      "warnings": []
+    }
+  ]
+}
+```
+
+Stable lock-report fields:
+
+- `schema_version`: currently `kb.doctor.locks.v1`.
+- `status`: `ok`, `warn`, or `error`. Suspected stale locks are `warn`;
+  unreadable or malformed lock paths are `error`.
+- `summary`: counts scanned model dirs, actively held locks, suspected stale
+  locks, and unknown lock states.
+- `locks[]`: one `model_write` entry per model directory. `present` and
+  `lock_kind` describe the lock path; `age_ms` is the lock heartbeat age;
+  `stale_suspected` is true when the heartbeat is older than the stale
+  threshold or the recorded owner PID is dead.
+- `owner`: best-effort owner metadata. New write locks record PID, command,
+  cwd, hostname, and start time beside the lock; older locks may report
+  `source: "none"`.
+- `next_action`: conservative guidance. The command never deletes locks.
 
 `kb doctor --bug-report[=<dir>]` writes a timestamped support bundle directory
 under `<dir>` (default: current directory). The bundle contains:
