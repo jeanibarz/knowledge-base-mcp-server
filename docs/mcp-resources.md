@@ -5,14 +5,14 @@ The server exposes MCP resources for clients that want to enumerate and read sou
 | Surface | Use it for | What it returns |
 | --- | --- | --- |
 | `retrieve_knowledge` | Dense semantic or hybrid dense+BM25 search over indexed chunks. | Ranked markdown snippets with source metadata. |
-| `resources/list` | Discovering addressable files under the configured knowledge-base root. | One `kb://` URI per visible file. |
+| `resources/list` | Discovering addressable files under the configured knowledge-base root. | One `kb://` URI per ingestable, non-quarantined file. |
 | `resources/read` | Reading a known source document by URI. | The raw file content as text or a base64 blob. |
 
 Use resources when a client already knows which document it needs, or when it wants to let a user browse/read files. Use `retrieve_knowledge` when the client needs retrieval by meaning, keywords, filters, or ranking.
 
 ## Resource Listing
 
-`resources/list` walks every non-hidden knowledge base under `KNOWLEDGE_BASES_ROOT_DIR` and returns every non-hidden file below each knowledge base. Dot-prefixed files and directories are skipped, including `.index`, `.faiss`, and user-created draft folders.
+`resources/list` walks every non-hidden knowledge base under `KNOWLEDGE_BASES_ROOT_DIR` and returns files that match the same ingest eligibility policy used by refresh/search indexing. Dot-prefixed files and directories are skipped, including `.index`, `.faiss`, and user-created draft folders. Built-in ingest exclusions, `INGEST_EXTRA_EXTENSIONS`, `INGEST_EXCLUDE_PATHS`, and per-KB ingest quarantine entries are also honored, so clients do not browse files the index would currently skip.
 
 Example response shape:
 
@@ -26,10 +26,10 @@ Example response shape:
       "mimeType": "text/markdown"
     },
     {
-      "uri": "kb://research/papers/contextual-retrieval.pdf",
-      "name": "papers/contextual-retrieval.pdf",
+      "uri": "kb://research/notes/contextual-retrieval.html",
+      "name": "notes/contextual-retrieval.html",
       "description": "Document in knowledge base \"research\"",
-      "mimeType": "application/pdf"
+      "mimeType": "text/html"
     }
   ]
 }
@@ -50,7 +50,7 @@ Examples:
 ```text
 kb://work/runbooks/deploy.md
 kb://agent-task-lessons/reviews/pr%20%23123.md
-kb://research/papers/attention%20%26%20retrieval.pdf
+kb://research/notes/attention%20%26%20retrieval.html
 ```
 
 Rules:
@@ -87,7 +87,7 @@ const uri = `kb://${kbName}/${relativePath
 }
 ```
 
-PDF files are returned as base64 blobs:
+PDF files are returned as base64 blobs when `.pdf` is opted into ingest with `INGEST_EXTRA_EXTENSIONS=.pdf`:
 
 ```json
 {
@@ -107,7 +107,7 @@ MIME type mapping is intentionally small and extension-based:
 | --- | --- | --- |
 | `.md`, `.markdown` | `text/markdown` | `text` |
 | `.html`, `.htm` | `text/html` | `text` |
-| `.pdf` | `application/pdf` | `blob` |
+| `.pdf` when allowed by ingest config | `application/pdf` | `blob` |
 | `.txt` and other extensions | `text/plain` | `text` |
 
 ## Security and Client Behavior
