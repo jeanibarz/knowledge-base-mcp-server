@@ -97,6 +97,10 @@ describe('buildChunkDocuments → metadata-sidecar contract (#283)', () => {
       '  - oncall',
       'title: On-call runbook',
       'status: active',
+      'kb_policy:',
+      '  no_llm_context: true',
+      '  resource_read: local_only',
+      '  sensitivity: internal',
       '---',
       '',
       '# On-call runbook',
@@ -120,7 +124,15 @@ describe('buildChunkDocuments → metadata-sidecar contract (#283)', () => {
       relativePath: expectedRelativePath,
       extension: '.md',
       tags: expect.arrayContaining(['ops', 'oncall']),
-      frontmatter: expect.objectContaining({ title: 'On-call runbook', status: 'active' }),
+      frontmatter: expect.objectContaining({
+        title: 'On-call runbook',
+        status: 'active',
+        kb_policy: {
+          no_llm_context: true,
+          resource_read: 'local_only',
+          sensitivity: 'internal',
+        },
+      }),
     }));
 
     const row = buildSidecarRowFromDocument('vec-0', first);

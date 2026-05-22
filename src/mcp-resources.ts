@@ -25,6 +25,7 @@ import { INGEST_EXCLUDE_PATHS, INGEST_EXTRA_EXTENSIONS } from './config/ingest.j
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { toError } from './error-utils.js';
 import { getFilesRecursively } from './file-utils.js';
+import { parseFrontmatter } from './frontmatter.js';
 import { filterIngestablePaths } from './ingest-filter.js';
 import { listIngestQuarantine } from './ingest-quarantine.js';
 import {
@@ -34,6 +35,12 @@ import {
   resolveKbPath,
 } from './kb-fs.js';
 import { isValidKbName } from './kb-paths.js';
+import {
+  decideResourceRead,
+  normalizeKbSensitivityPolicy,
+  resolveResourceReadAccess,
+  type KbResourceReadAccess,
+} from './sensitivity-policy.js';
 
 export interface ListResourcesOptions {
   cursor?: string;
@@ -43,6 +50,10 @@ export interface ListResourcesOptions {
   prefix?: string;
   limit?: number;
   pageSize?: number;
+}
+
+export interface ReadResourceOptions {
+  access?: KbResourceReadAccess;
 }
 
 interface NormalizedListResourcesOptions {
@@ -457,7 +468,10 @@ export function listResourceTemplates(): ListResourceTemplatesResult {
  * returns either a base64 blob (PDF) or UTF-8 text (markdown, HTML,
  * plain text).
  */
-export async function readResource(uri: string): Promise<ReadResourceResult> {
+export async function readResource(
+  uri: string,
+  options: ReadResourceOptions = {},
+): Promise<ReadResourceResult> {
   const { kbName, relativePath } = parseKnowledgeBaseResourceUri(uri);
   const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
   const requestedPath = path.join(kbPath, relativePath);
@@ -490,9 +504,31 @@ export async function readResource(uri: string): Promise<ReadResourceResult> {
   }
 
   const text = await fsp.readFile(filePath, 'utf-8');
+  assertResourceReadPolicy({
+    text,
+    relativePath,
+    access: options.access ?? resolveResourceReadAccess(),
+  });
+
   return {
     contents: [{ uri, mimeType, text }],
   };
+}
+
+function assertResourceReadPolicy(input: {
+  text: string;
+  relativePath: string;
+  access: KbResourceReadAccess;
+}): void {
+  const parsed = parseFrontmatter(input.text);
+  const policy = normalizeKbSensitivityPolicy(parsed.frontmatter.kb_policy);
+  const decision = decideResourceRead(policy, input.access);
+  if (decision.allowed) return;
+
+  const detail = decision.reason === 'resource_read_local_only'
+    ? 'resource is marked local_only and the MCP transport is remote'
+    : 'resource is marked deny';
+  throw new Error(`resource blocked by kb_policy.resource_read: ${JSON.stringify(input.relativePath)} (${detail})`);
 }
 
 /**

@@ -150,6 +150,37 @@ describe('packAskContext', () => {
       else process.env.KB_INJECTION_GUARD_WRAP_CLOSE = previousClose;
     }
   });
+
+  it('excludes no_llm_context chunks before prompt packing and reports the policy count', () => {
+    const packed = packAskContext([
+      retrievalResult('public.md', 'public deployment context'),
+      {
+        ...retrievalResult('sensitive.md', 'DO_NOT_SEND_TO_LLM private context'),
+        metadata: {
+          knowledgeBase: 'ops',
+          relativePath: 'sensitive.md',
+          frontmatter: {
+            kb_policy: {
+              no_llm_context: true,
+              sensitivity: 'confidential',
+            },
+          },
+        },
+      },
+    ], 600);
+
+    expect(packed.payload).toMatchObject({
+      included_chunks: 1,
+      excluded_chunks: 1,
+      policy_filtered_chunks: 1,
+    });
+    expect(packed.payload.chunks[1]).toMatchObject({
+      status: 'excluded',
+      excluded_reason: 'policy_no_llm_context',
+      path: 'sensitive.md',
+    });
+    expect(packed.included.map((snippet) => snippet.text).join('\n')).not.toContain('DO_NOT_SEND_TO_LLM');
+  });
 });
 
 describe('ask transcript records', () => {
@@ -789,13 +820,158 @@ describe('kb ask grounding fixtures', () => {
       await harness.cleanup();
     }
   });
+
+  it('does not send no_llm_context snippets to the answer LLM', async () => {
+    const harness = createAskFixtureHarness({
+      results: [
+        retrievalResult(
+          'runbooks/public.md',
+          'Rollback approval requires the release lead.',
+          'ops/runbooks/public.md#L1-L3',
+        ),
+        {
+          ...retrievalResult(
+            'runbooks/private.md',
+            'PRIVATE_ESCALATION_PHONE must never enter LLM context.',
+            'ops/runbooks/private.md#L4-L6',
+          ),
+          metadata: {
+            knowledgeBase: 'ops',
+            relativePath: 'runbooks/private.md',
+            frontmatter: { kb_policy: { no_llm_context: true } },
+          },
+        },
+      ],
+      answer: ({ userContent }) => {
+        expect(userContent).toContain('runbooks/public.md');
+        expect(userContent).not.toContain('PRIVATE_ESCALATION_PHONE');
+        expect(userContent).not.toContain('runbooks/private.md');
+        return 'Rollback approval requires the release lead.';
+      },
+    });
+
+    try {
+      const { code, stdout, stderr } = await harness.run([
+        'Who approves rollback?',
+        '--kb=ops',
+        '--format=json',
+      ]);
+
+      expect(code).toBe(0);
+      expect(stderr).toBe('');
+      const payload = JSON.parse(stdout) as {
+        citations: Array<{ path: string }>;
+        context_packing: {
+          included_chunks: number;
+          excluded_chunks: number;
+          policy_filtered_chunks: number;
+          chunks: Array<{ path: string; excluded_reason?: string }>;
+        };
+      };
+      expect(payload.citations.map((citation) => citation.path)).toEqual(['runbooks/public.md']);
+      expect(payload.context_packing).toMatchObject({
+        included_chunks: 1,
+        excluded_chunks: 1,
+        policy_filtered_chunks: 1,
+      });
+      expect(payload.context_packing.chunks[1]).toMatchObject({
+        path: 'runbooks/private.md',
+        excluded_reason: 'policy_no_llm_context',
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it('hydrates no_llm_context from source files when indexed metadata is stale', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ask-policy-source-'));
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    try {
+      process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
+      const privatePath = path.join(root, 'ops', 'private.md');
+      await fsp.mkdir(path.dirname(privatePath), { recursive: true });
+      await fsp.writeFile(privatePath, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: true',
+        '---',
+        '# Private',
+        '',
+        'PRIVATE_ESCALATION_PHONE must never enter LLM context.',
+      ].join('\n'), 'utf-8');
+
+      const manager = {
+        modelDir: path.join(root, '.faiss', 'models', 'ollama__nomic'),
+        similaritySearch: jest.fn(async () => [
+          {
+            pageContent: 'Rollback approval requires the release lead.',
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/public.md' },
+            score: 0.1,
+          },
+          {
+            pageContent: 'PRIVATE_ESCALATION_PHONE must never enter LLM context.',
+            metadata: {
+              knowledgeBase: 'ops',
+              relativePath: 'private.md',
+              source: privatePath,
+            },
+            score: 0.2,
+          },
+        ]),
+      };
+      const callChatCompletion = jest.fn(async (call: Parameters<RunAskDeps['callChatCompletion']>[0]) => {
+        const userContent = call.messages.find((message) => message.role === 'user')?.content ?? '';
+        expect(userContent).toContain('runbooks/public.md');
+        expect(userContent).not.toContain('PRIVATE_ESCALATION_PHONE');
+        expect(userContent).not.toContain('private.md');
+        return {
+          content: 'Rollback approval requires the release lead.',
+          model: 'fake-grounding-llm',
+          raw: { fixture: true },
+        };
+      });
+
+      const result = await askKnowledge({
+        query: 'Who approves rollback?',
+        knowledge_base_name: 'ops',
+      }, {
+        bootstrapLayout: jest.fn(async () => {}),
+        resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+        loadManagerForModel: jest.fn(async () => manager as never),
+        loadReadOnlyIndex: jest.fn(async () => {}),
+        withWriteLock: jest.fn(async <T>(_resource: string, action: () => Promise<T>) => action()) as RunAskDeps['withWriteLock'],
+        callChatCompletion,
+      });
+
+      expect(result.context_packing).toMatchObject({
+        included_chunks: 1,
+        excluded_chunks: 1,
+        policy_filtered_chunks: 1,
+      });
+      expect(result.context_packing.chunks[1]).toMatchObject({
+        path: 'private.md',
+        excluded_reason: 'policy_no_llm_context',
+      });
+      expect(result.citations.map((citation) => citation.path)).toEqual(['runbooks/public.md']);
+      expect(callChatCompletion).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function retrievalResult(
   relativePath: string,
   content: string,
   chunkId?: string,
-) {
+): {
+  score: number;
+  content: string;
+  metadata: Record<string, unknown>;
+  chunk_id?: string;
+} {
   const lineRange = chunkId?.match(/#L(\d+)-L(\d+)$/);
   return {
     score: 0.1,

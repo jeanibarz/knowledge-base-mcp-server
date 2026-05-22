@@ -1,7 +1,10 @@
+import * as fsp from 'fs/promises';
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
+import type { SearchResultDocument } from './FaissIndexManager.js';
 import type { resolveActiveModel } from './active-model.js';
 import { FRONTMATTER_EXTRAS_WIRE_VISIBLE } from './config/retrieval.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
+import { parseFrontmatter } from './frontmatter.js';
 import { resolveInjectionGuardOptions } from './injection-guard.js';
 import { FAKE_LLM_ENDPOINT, isFakeLlmEnabled } from './llm-fake-stub.js';
 import {
@@ -27,6 +30,11 @@ import {
   nowMs,
   type TimingPayload,
 } from './timing-core.js';
+import {
+  excludesLlmContext,
+  normalizeKbSensitivityPolicy,
+  sensitivityPolicyFromMetadata,
+} from './sensitivity-policy.js';
 
 export const DEFAULT_ASK_CONTEXT_BUDGET_TOKENS = 6000;
 export const MIN_ASK_CONTEXT_BUDGET_TOKENS = 64;
@@ -90,6 +98,7 @@ export interface AskRetrievalPayload {
 export interface AskPackedChunkPayload {
   index: number;
   status: 'included' | 'excluded';
+  excluded_reason?: 'token_budget' | 'policy_no_llm_context';
   estimated_tokens: number;
   included_tokens: number;
   truncated: boolean;
@@ -104,6 +113,7 @@ export interface AskContextPackingPayload {
   included_chunks: number;
   excluded_chunks: number;
   truncated_chunks: number;
+  policy_filtered_chunks: number;
   chunks: AskPackedChunkPayload[];
 }
 
@@ -217,20 +227,28 @@ export async function executeAsk(
       undefined,
       timing ? denseTiming : undefined,
     );
+    results = await hydrateSensitivityPoliciesFromSource(results);
     if (args.gate !== undefined || args.taskContext !== undefined) {
       const denseDistanceById = new Map<string, number>();
-      for (const result of results) {
+      const policyExcluded = results.filter((result) =>
+        excludesLlmContext(result.metadata as Record<string, unknown>),
+      );
+      let gateCandidates = results.filter((result) =>
+        !excludesLlmContext(result.metadata as Record<string, unknown>),
+      );
+      for (const result of gateCandidates) {
         denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
       }
       const gate = await applyRelevanceGate({
         query: args.question,
         taskContext: args.taskContext,
-        candidates: results,
+        candidates: gateCandidates,
         denseDistanceById,
         gateOverride: args.gate,
         process: 'mcp',
       });
-      results = gate.results;
+      gateCandidates = gate.results;
+      results = [...gateCandidates, ...policyExcluded];
       emitRelevanceGateDecision({
         process: 'mcp',
         query: args.question,
@@ -323,6 +341,55 @@ export async function executeAsk(
   };
 }
 
+async function hydrateSensitivityPoliciesFromSource(
+  results: SearchResultDocument[],
+): Promise<SearchResultDocument[]> {
+  const policyBySource = new Map<string, ReturnType<typeof normalizeKbSensitivityPolicy>>();
+
+  return Promise.all(results.map(async (result) => {
+    const metadata = result.metadata as Record<string, unknown>;
+    if (sensitivityPolicyFromMetadata(metadata) !== undefined) {
+      return result;
+    }
+
+    const source = metadata.source;
+    if (typeof source !== 'string' || source.length === 0) {
+      return result;
+    }
+
+    let policy = policyBySource.get(source);
+    if (!policyBySource.has(source)) {
+      try {
+        const content = await fsp.readFile(source, 'utf-8');
+        policy = normalizeKbSensitivityPolicy(parseFrontmatter(content).frontmatter.kb_policy);
+      } catch {
+        policy = undefined;
+      }
+      policyBySource.set(source, policy);
+    }
+
+    if (policy === undefined) {
+      return result;
+    }
+
+    const frontmatter = metadata.frontmatter;
+    const frontmatterObject =
+      frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter)
+        ? frontmatter as Record<string, unknown>
+        : {};
+    return {
+      ...result,
+      metadata: {
+        ...metadata,
+        frontmatter: {
+          ...frontmatterObject,
+          kb_policy: policy,
+        },
+      },
+    };
+  }));
+}
+
 async function resolveLlmTarget(args: Pick<AskExecutionArgs, 'endpoint' | 'llmProfile'>): Promise<LlmTarget> {
   if (isFakeLlmEnabled()) {
     return { profile: await createExternalProfile('fake', FAKE_LLM_ENDPOINT, 'kb-fake-llm'), source: 'fake' };
@@ -371,8 +438,30 @@ export function packAskContext(
   let estimatedTokens = 0;
   let excludedChunks = 0;
   let truncatedChunks = 0;
+  let policyFilteredChunks = 0;
 
   retrieval.forEach((result, index) => {
+    const pathValue = stringMetadata(result.metadata, 'relativePath')
+      ?? stringMetadata(result.metadata, 'source')
+      ?? '(unknown source)';
+    const policyExcluded = excludesLlmContext(result.metadata);
+    if (policyExcluded) {
+      excludedChunks++;
+      policyFilteredChunks++;
+      chunks.push({
+        index: index + 1,
+        status: 'excluded',
+        excluded_reason: 'policy_no_llm_context',
+        estimated_tokens: 0,
+        included_tokens: 0,
+        truncated: false,
+        knowledge_base: stringMetadata(result.metadata, 'knowledgeBase'),
+        path: pathValue,
+        ...(result.chunk_id ? { chunk_id: result.chunk_id } : {}),
+      });
+      return;
+    }
+
     const fullSnippet = buildAskSnippet(result, index + 1, result.content);
     const fullTokens = estimateTokens(fullSnippet);
     const separatorTokens = included.length === 0 ? 0 : estimateTokens(ASK_SNIPPET_SEPARATOR);
@@ -403,12 +492,10 @@ export function packAskContext(
       }
     }
 
-    const pathValue = stringMetadata(result.metadata, 'relativePath')
-      ?? stringMetadata(result.metadata, 'source')
-      ?? '(unknown source)';
     const chunkPayload: AskPackedChunkPayload = {
       index: index + 1,
       status: snippetText === null ? 'excluded' : 'included',
+      ...(snippetText === null ? { excluded_reason: 'token_budget' as const } : {}),
       estimated_tokens: fullTokens,
       included_tokens: includedTokens,
       truncated,
@@ -439,6 +526,7 @@ export function packAskContext(
       included_chunks: included.length,
       excluded_chunks: excludedChunks,
       truncated_chunks: truncatedChunks,
+      policy_filtered_chunks: policyFilteredChunks,
       chunks,
     },
   };

@@ -2,6 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { logger } from './logger.js';
+import {
+  normalizeKbSensitivityPolicy,
+  type KbSensitivityPolicy,
+} from './sensitivity-policy.js';
 
 // -----------------------------------------------------------------------------
 // RFC 011 §5.4 — whitelisted frontmatter lift + sibling PDF detection.
@@ -51,6 +55,7 @@ export interface LiftedFrontmatter {
   tier?: string;
   confidence?: number;
   last_verified_at?: string;
+  kb_policy?: KbSensitivityPolicy;
   /** Other string-valued frontmatter keys (e.g. workflow-specific additions). */
   extras?: Record<string, string>;
 }
@@ -124,6 +129,17 @@ export function liftFrontmatter(
         hasAny = true;
       } else {
         logger.debug(`Dropping non-string-list frontmatter key "contradicted_by" from ${filePath}`);
+      }
+      continue;
+    }
+
+    if (key === 'kb_policy') {
+      const parsed = normalizeKbSensitivityPolicy(value);
+      if (parsed !== undefined) {
+        lifted.kb_policy = parsed;
+        hasAny = true;
+      } else {
+        logger.debug(`Dropping invalid frontmatter key "kb_policy" from ${filePath}`);
       }
       continue;
     }

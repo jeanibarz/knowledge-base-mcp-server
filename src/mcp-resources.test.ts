@@ -1,11 +1,15 @@
-import { describe, expect, it } from '@jest/globals';
+import { afterEach, describe, expect, it } from '@jest/globals';
+import * as fsp from 'fs/promises';
+import * as path from 'path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ListResourceTemplatesRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import {
   buildResourceUri,
   listResourceTemplates,
   mimeTypeForResource,
   parseKnowledgeBaseResourceUri,
+  readResource,
   registerResources,
 } from './mcp-resources.js';
 
@@ -150,5 +154,71 @@ describe('listResourceTemplates', () => {
     await expect(Promise.resolve(registered!.handler())).resolves.toEqual(
       listResourceTemplates(),
     );
+  });
+});
+
+describe('readResource sensitivity policy', () => {
+  const kbName = `resource-policy-${process.pid}`;
+  const kbDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
+
+  afterEach(async () => {
+    await fsp.rm(kbDir, { recursive: true, force: true });
+  });
+
+  it('blocks resource_read=deny for local and remote reads', async () => {
+    await fsp.mkdir(kbDir, { recursive: true });
+    await fsp.writeFile(path.join(kbDir, 'deny.md'), [
+      '---',
+      'kb_policy:',
+      '  resource_read: deny',
+      '---',
+      '# Private',
+    ].join('\n'), 'utf-8');
+
+    await expect(readResource(buildResourceUri(kbName, 'deny.md'), { access: 'local' }))
+      .rejects.toThrow(/resource blocked by kb_policy\.resource_read/);
+    await expect(readResource(buildResourceUri(kbName, 'deny.md'), { access: 'remote' }))
+      .rejects.toThrow(/resource blocked by kb_policy\.resource_read/);
+  });
+
+  it('allows local_only resources locally but blocks them over remote MCP transports', async () => {
+    await fsp.mkdir(kbDir, { recursive: true });
+    await fsp.writeFile(path.join(kbDir, 'local.md'), [
+      '---',
+      'kb_policy:',
+      '  resource_read: local_only',
+      '---',
+      '# Local',
+      '',
+      'Operator-only note.',
+    ].join('\n'), 'utf-8');
+
+    await expect(readResource(buildResourceUri(kbName, 'local.md'), { access: 'local' }))
+      .resolves.toMatchObject({
+        contents: [{ text: expect.stringContaining('Operator-only note.') }],
+      });
+    await expect(readResource(buildResourceUri(kbName, 'local.md'), { access: 'remote' }))
+      .rejects.toThrow(/local_only/);
+  });
+
+  it('derives remote resource access from MCP_TRANSPORT by default', async () => {
+    const previousTransport = process.env.MCP_TRANSPORT;
+    try {
+      await fsp.mkdir(kbDir, { recursive: true });
+      await fsp.writeFile(path.join(kbDir, 'transport.md'), [
+        '---',
+        'kb_policy:',
+        '  resource_read: local_only',
+        '---',
+        '# Remote',
+      ].join('\n'), 'utf-8');
+
+      process.env.MCP_TRANSPORT = 'http';
+      await expect(readResource(buildResourceUri(kbName, 'transport.md')))
+        .rejects.toThrow(/local_only/);
+    } finally {
+      if (previousTransport === undefined) delete process.env.MCP_TRANSPORT;
+      else process.env.MCP_TRANSPORT = previousTransport;
+    }
   });
 });

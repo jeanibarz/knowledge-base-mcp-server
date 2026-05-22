@@ -97,6 +97,19 @@ const uri = `kb://${kbName}/${relativePath
 }
 ```
 
+Markdown resources can opt into a frontmatter read policy:
+
+```yaml
+---
+kb_policy:
+  resource_read: local_only # allow | local_only | deny
+---
+```
+
+`deny` blocks `resources/read` for every transport. `local_only` allows the
+default stdio/local server but blocks HTTP/SSE reads (`MCP_TRANSPORT=http` or
+`sse`). This is a local authoring policy, not multi-user authorization.
+
 PDF files are returned as base64 blobs when `.pdf` is opted into ingest with `INGEST_EXTRA_EXTENSIONS=.pdf`:
 
 ```json
@@ -123,5 +136,10 @@ MIME type mapping is intentionally small and extension-based:
 ## Security and Client Behavior
 
 Resources expose raw source documents under `KNOWLEDGE_BASES_ROOT_DIR`. They do not apply semantic retrieval thresholds, relevance gating, chunk packing, or search filters. Clients should treat returned document text as untrusted content when the KB contains material from outside the local user's trust boundary.
+
+`resources/read` does apply `kb_policy.resource_read` from Markdown
+frontmatter. `resources/list` may still reveal the existence and path of a
+policy-protected document; use ingest exclusions for documents that should not
+be discoverable as resources at all.
 
 For normal agent retrieval, prefer `retrieve_knowledge`. For explicit document browsing, file previews, citation expansion, or "open this source" actions, use `resources/list` and `resources/read`.
