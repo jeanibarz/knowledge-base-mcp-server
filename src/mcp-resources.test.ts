@@ -1,8 +1,12 @@
 import { describe, expect, it } from '@jest/globals';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { ListResourceTemplatesRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   buildResourceUri,
+  listResourceTemplates,
   mimeTypeForResource,
   parseKnowledgeBaseResourceUri,
+  registerResources,
 } from './mcp-resources.js';
 
 // Issue #157 step 2 — direct tests for the pure URI/MIME helpers extracted
@@ -111,5 +115,40 @@ describe('parseKnowledgeBaseResourceUri', () => {
     const uri = buildResourceUri('alpha', `issues/${filename}`);
     const parsed = parseKnowledgeBaseResourceUri(uri);
     expect(parsed.relativePath).toBe(`issues/${filename}`);
+  });
+});
+
+describe('listResourceTemplates', () => {
+  it('advertises the kb:// document URI template', () => {
+    expect(listResourceTemplates()).toEqual({
+      resourceTemplates: [
+        expect.objectContaining({
+          uriTemplate: 'kb://{kb}/{path}',
+          name: 'kb-document',
+        }),
+      ],
+    });
+  });
+
+  it('registers the resources/templates/list handler with the template response', async () => {
+    const handlers: Array<{ schema: unknown; handler: () => unknown }> = [];
+    const mcp = {
+      server: {
+        registerCapabilities: () => undefined,
+        setRequestHandler: (schema: unknown, handler: () => unknown) => {
+          handlers.push({ schema, handler });
+        },
+      },
+    };
+
+    registerResources(mcp as unknown as McpServer);
+
+    const registered = handlers.find(
+      (entry) => entry.schema === ListResourceTemplatesRequestSchema,
+    );
+    expect(registered).toBeDefined();
+    await expect(Promise.resolve(registered!.handler())).resolves.toEqual(
+      listResourceTemplates(),
+    );
   });
 });

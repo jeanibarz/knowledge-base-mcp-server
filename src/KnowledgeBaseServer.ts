@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import {
   type CallToolResult,
+  type ListResourcesRequest,
   type ListResourcesResult,
   type ReadResourceResult,
   type TextContent,
@@ -392,8 +393,10 @@ export class KnowledgeBaseServer {
   // handler bodies. These remain on the class as thin delegates so the
   // existing private-method test surface (KnowledgeBaseServer.test.ts) keeps
   // working without re-plumbing.
-  private async handleListResources(): Promise<ListResourcesResult> {
-    return listResources();
+  private async handleListResources(
+    params?: ListResourcesRequest['params'],
+  ): Promise<ListResourcesResult> {
+    return listResources(params);
   }
 
   private async handleReadResource(uri: string): Promise<ReadResourceResult> {

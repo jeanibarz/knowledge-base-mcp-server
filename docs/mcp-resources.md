@@ -5,7 +5,7 @@ The server exposes MCP resources for clients that want to enumerate and read sou
 | Surface | Use it for | What it returns |
 | --- | --- | --- |
 | `retrieve_knowledge` | Dense semantic or hybrid dense+BM25 search over indexed chunks. | Ranked markdown snippets with source metadata. |
-| `resources/list` | Discovering addressable files under the configured knowledge-base root. | One `kb://` URI per ingestable, non-quarantined file. |
+| `resources/list` | Discovering addressable files under the configured knowledge-base root. | One `kb://` URI per ingestable, non-quarantined file, with optional pagination. |
 | `resources/read` | Reading a known source document by URI. | The raw file content as text or a base64 blob. |
 
 Use resources when a client already knows which document it needs, or when it wants to let a user browse/read files. Use `retrieve_knowledge` when the client needs retrieval by meaning, keywords, filters, or ranking.
@@ -14,7 +14,16 @@ Use resources when a client already knows which document it needs, or when it wa
 
 `resources/list` walks every non-hidden knowledge base under `KNOWLEDGE_BASES_ROOT_DIR` and returns files that match the same ingest eligibility policy used by refresh/search indexing. Dot-prefixed files and directories are skipped, including `.index`, `.faiss`, and user-created draft folders. Built-in ingest exclusions, `INGEST_EXTRA_EXTENSIONS`, `INGEST_EXCLUDE_PATHS`, and per-KB ingest quarantine entries are also honored, so clients do not browse files the index would currently skip.
 
-Example response shape:
+The no-parameter request remains backward-compatible: it returns the full concrete resource list and no cursor. Clients browsing large roots can pass these optional params:
+
+| Param | Meaning |
+| --- | --- |
+| `cursor` | Standard MCP pagination cursor returned as `nextCursor`; it is opaque and includes the original filters and page size. |
+| `limit` or `pageSize` | Positive integer page size. Values above 1000 are capped to 1000. |
+| `kbName` | Restrict listing to one knowledge base. `knowledgeBase` and `knowledge_base_name` are accepted aliases. |
+| `prefix` | Restrict listing to KB-relative paths beginning with this prefix, such as `runbooks/` or `notes/2026-`. |
+
+Paginated response shape:
 
 ```json
 {
@@ -31,11 +40,12 @@ Example response shape:
       "description": "Document in knowledge base \"research\"",
       "mimeType": "text/html"
     }
-  ]
+  ],
+  "nextCursor": "kbres1.eyJ2IjoxLCJvZmZzZXQiOjEwMDAsInByZWZpeCI6IiIsImxpbWl0IjoxMDAwfQ"
 }
 ```
 
-The server also handles `resources/templates/list`, returning an empty `resourceTemplates` array. There are no URI templates today; clients should use the concrete URIs returned by `resources/list` or by retrieval citations.
+The server also handles `resources/templates/list`, returning a `kb://{kb}/{path}` URI template for clients that support templated discovery. Clients can use the template, concrete URIs returned by `resources/list`, or retrieval citations.
 
 ## `kb://` URI Format
 
