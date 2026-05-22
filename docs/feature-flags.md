@@ -21,6 +21,7 @@ verify the active behavior.
 | Fake LLM rules | `KB_LLM_FAKE_RULES` | unset | Fake LLM answers, prefaces, judge verdicts | Implemented | none | `KB_LLM_FAKE=on KB_LLM_FAKE_RULES=/path/to/rules.json kb ask "question"` |
 | Gate fallback LLM model id | `KB_LLM_MODEL` | endpoint default | Relevance gate fallback model | Implemented | none | `KB_RELEVANCE_GATE=on KB_LLM_MODEL=<model> kb search "query" --gate --task-context="current task"` |
 | Save generated answer | `kb ask --save-transcript --yes` | off | CLI ask write path | Implemented | `--save-transcript --kb=<name> --yes` | `kb ask "question" --kb=<name> --save-transcript --title="..." --yes` |
+| Frontmatter sensitivity policy | `kb_policy.no_llm_context`, `kb_policy.resource_read`, `kb_policy.sensitivity` | unset | `kb ask`, MCP `ask_knowledge`, MCP `resources/read` | Implemented, author-controlled | per-document frontmatter | add `kb_policy: { no_llm_context: true }` and run `kb ask ... --format=json` |
 
 ## Relevance Gate
 

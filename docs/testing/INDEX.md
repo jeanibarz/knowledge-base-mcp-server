@@ -154,6 +154,16 @@
 - `kb ask` shall resolve a fake LLM target and answer from packed snippets without a live server.
 - `npm run dev:mockllm` shall serve OpenAI-compatible `/v1/chat/completions` and `/health` endpoints.
 
+### TS-POLICY-494: Frontmatter Sensitivity Policy
+**Requirement:** FR-POLICY-494
+
+**Test Cases:**
+- Ingest shall lift typed `kb_policy.no_llm_context`, `kb_policy.resource_read`, and `kb_policy.sensitivity` frontmatter into chunk metadata.
+- `kb ask` and MCP `ask_knowledge` shall exclude chunks marked `frontmatter.kb_policy.no_llm_context: true` from LLM prompt context and report `context_packing.policy_filtered_chunks`.
+- `kb ask` and MCP `ask_knowledge` shall hydrate current source-file `kb_policy` frontmatter before LLM prompt packing so stale indexes do not leak newly marked sensitive notes.
+- `resources/read` shall reject Markdown resources with `kb_policy.resource_read: deny`.
+- `resources/read` shall reject `kb_policy.resource_read: local_only` when the MCP transport is HTTP/SSE and allow it for local stdio reads.
+
 ### TS-GATE-EVAL-369: M0 Gate Validation Harness
 **Requirement:** FR-GATE-EVAL-369
 
