@@ -254,6 +254,10 @@ describe('kb CLI — argv parsing and dispatch', () => {
         value: '<name>',
       }),
       expect.objectContaining({
+        flags: ['--runner-arg'],
+        value: '<arg>',
+      }),
+      expect.objectContaining({
         flags: ['--all'],
         value: null,
       }),
@@ -564,6 +568,31 @@ describe('kb CLI — argv parsing and dispatch', () => {
     const r = runCli(['notacommand']);
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("unknown subcommand 'notacommand'");
+    expect(r.stderr).not.toContain('Did you mean');
+  });
+
+  it('unknown subcommand suggests the nearest registered command', () => {
+    const r = runCli(['serach']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("unknown subcommand 'serach'");
+    expect(r.stderr).toContain('Did you mean kb search?');
+    expect(r.stderr).toContain('Available commands:');
+  });
+
+  it('kb help unknown command suggests the nearest registered command', () => {
+    const r = runCli(['help', 'docter']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("unknown command 'docter'");
+    expect(r.stderr).toContain('Did you mean kb help doctor?');
+    expect(r.stdout).toBe('');
+  });
+
+  it('unknown long flags suggest the nearest flag for that subcommand', () => {
+    const r = runCli(['search', 'rollback', '--formt=json']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('kb search: unknown flag: --formt=json');
+    expect(r.stderr).toContain('Did you mean --format?');
+    expect(r.stdout).toBe('');
   });
 
   it('search without query (and no --stdin) exits 2', () => {
@@ -722,6 +751,12 @@ describe('kb CLI — argv parsing and dispatch', () => {
     const r = runCli(['search', 'q', '--zzz=1']);
     expect(r.code).toBe(2);
     expect(r.stderr).toContain('unknown flag');
+    expect(r.stderr).not.toContain('Did you mean');
+  });
+
+  it('search accepts dash-prefixed queries as positional input', () => {
+    const r = runCli(['search', '-x', '--format=json']);
+    expect(r.stderr).not.toContain('unknown flag: -x');
   });
 
   it('search with invalid --threshold exits 2', () => {
