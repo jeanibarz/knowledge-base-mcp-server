@@ -196,6 +196,8 @@ Output:
   --pager               Page markdown/compact output through KB_PAGER, PAGER,
                         or less -R when stdout is a TTY.
   --no-pager            Disable KB_PAGER for this search.
+  --daemon              Use the local read-only daemon when available; falls
+                        back to direct search when unreachable.
   --no-freshness        Skip the staleness scan and omit freshness output.
   --explain-empty       Opt-in deep diagnostics for empty results: pre/post
                         filter candidate counts, per-filter drops, scope,

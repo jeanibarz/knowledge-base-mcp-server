@@ -26,7 +26,7 @@ Usage:
   kb llm status [--profile=<name>] [--format=md|json]
   kb llm probe [--endpoint=<url>]
   kb llm use-endpoint <url> [--profile=<name>]
-  kb llm install --profile=<name> --runner=llama-server --bin=<path> --model=<gguf-path> [--port=8091] [--ctx=32768] [--ngl=99] [--start]
+  kb llm install --profile=<name> --runner=llama-server --bin=<path> --model=<gguf-path> [--port=8091] [--ctx=32768] [--ngl=99] [--runner-arg=<arg>] [--start]
   kb llm start [--profile=<name>]
   kb llm stop [--profile=<name>]
   kb llm restart [--profile=<name>]

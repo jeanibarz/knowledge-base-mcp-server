@@ -180,6 +180,16 @@ function wantsHelp(args: readonly string[]): boolean {
   return args.some((a) => a === '--help' || a === '-h');
 }
 
+interface ClosestSuggestion {
+  value: string;
+  distance: number;
+}
+
+interface UnknownFlagSuggestion {
+  raw: string;
+  suggestion: string;
+}
+
 export async function main(argv: string[]): Promise<number> {
   // Strip the conventional argv[0]/argv[1] before delegating.
   const args = argv.slice(2);
@@ -216,7 +226,9 @@ export async function main(argv: string[]): Promise<number> {
     }
     const target = SUBCOMMANDS.find((s) => s.name === helpArgs.command);
     if (!target) {
-      process.stderr.write(`kb help: unknown command '${helpArgs.command}'\n`);
+      process.stderr.write(
+        `kb help: unknown command '${helpArgs.command}'\n${formatCommandSuggestion(helpArgs.command, 'help')}`,
+      );
       return 2;
     }
     if (helpArgs.format === 'json') {
@@ -232,7 +244,7 @@ export async function main(argv: string[]): Promise<number> {
 
   const target = SUBCOMMANDS.find((s) => s.name === sub);
   if (!target) {
-    process.stderr.write(`kb: unknown subcommand '${sub}'\n${HELP}`);
+    process.stderr.write(`kb: unknown subcommand '${sub}'\n${formatCommandSuggestion(sub, 'run')}${HELP}`);
     return 2;
   }
 
@@ -245,12 +257,95 @@ export async function main(argv: string[]): Promise<number> {
     return target.handler(rest);
   }
 
-  return runSubcommandWithCanonicalLog(
-    target,
-    sub === 'search'
+  const unknownFlag = findUnknownFlag(rest, buildCommandHelpManifest(target).options);
+  const operation = unknownFlag !== null
+    ? async () => {
+        process.stderr.write(formatUnknownFlagMessage(target.name, unknownFlag));
+        return 2;
+      }
+    : sub === 'search'
       ? () => runSearchMaybeViaDaemon(rest)
-      : () => target.handler(rest),
-  );
+      : () => target.handler(rest);
+  return runSubcommandWithCanonicalLog(target, operation);
+}
+
+function formatCommandSuggestion(input: string, mode: 'help' | 'run'): string {
+  const suggestion = closestSuggestion(input, SUBCOMMANDS.map((command) => command.name));
+  if (suggestion === undefined) return '';
+  const command = mode === 'help' ? `kb help ${suggestion.value}` : `kb ${suggestion.value}`;
+  return `Did you mean ${command}?\n`;
+}
+
+function findUnknownFlag(
+  args: readonly string[],
+  options: readonly HelpManifestOption[],
+): UnknownFlagSuggestion | null {
+  const validFlags = new Set(options.flatMap((option) => option.flags));
+  const candidates = [...validFlags].filter((flag) => flag !== '--');
+
+  for (const raw of args) {
+    if (raw === '--') return null;
+    const flag = flagNameFromArg(raw);
+    if (flag === null || validFlags.has(flag)) continue;
+    const suggestion = closestSuggestion(flag, candidates)?.value;
+    if (suggestion === undefined) continue;
+    return {
+      raw,
+      suggestion,
+    };
+  }
+  return null;
+}
+
+function flagNameFromArg(raw: string): string | null {
+  if (!raw.startsWith('--')) return null;
+  const eqIndex = raw.indexOf('=');
+  return eqIndex === -1 ? raw : raw.slice(0, eqIndex);
+}
+
+function formatUnknownFlagMessage(command: string, unknown: UnknownFlagSuggestion): string {
+  return `kb ${command}: unknown flag: ${unknown.raw}\nDid you mean ${unknown.suggestion}?\n`;
+}
+
+function closestSuggestion(input: string, candidates: readonly string[]): ClosestSuggestion | undefined {
+  let best: ClosestSuggestion | undefined;
+  for (const candidate of candidates) {
+    const distance = levenshteinDistance(input, candidate);
+    if (
+      best === undefined
+      || distance < best.distance
+      || (distance === best.distance && candidate.length < best.value.length)
+      || (distance === best.distance && candidate.length === best.value.length && candidate < best.value)
+    ) {
+      best = { value: candidate, distance };
+    }
+  }
+  if (best === undefined || best.distance > suggestionDistanceThreshold(input)) return undefined;
+  return best;
+}
+
+function suggestionDistanceThreshold(input: string): number {
+  return Math.max(1, Math.floor(input.length / 3));
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const dp = Array.from({ length: rows }, () => new Array<number>(cols).fill(0));
+  for (let i = 0; i < rows; i++) dp[i][0] = i;
+  for (let j = 0; j < cols; j++) dp[0][j] = j;
+
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + substitutionCost,
+      );
+    }
+  }
+  return dp[a.length][b.length];
 }
 
 function parseHelpArgs(rest: readonly string[]): HelpArgs {
