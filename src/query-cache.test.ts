@@ -29,6 +29,29 @@ describe('query embedding cache (#214)', () => {
         },
       });
       expect(miss.status).toBe('miss');
+      expect(miss.telemetry).toMatchObject({
+        enabled: true,
+        outcome: 'miss',
+        model_id: 'fake__one',
+      });
+      expect(typeof miss.telemetry.elapsed_ms).toBe('number');
+      expect(calls).toBe(1);
+
+      const memoryHit = await first.getOrCompute({
+        modelId: 'fake__one',
+        query: 'hello world',
+        embed: async () => {
+          calls += 1;
+          return [8, 8, 8];
+        },
+      });
+      expect(memoryHit.status).toBe('hit_l1');
+      expect(memoryHit.telemetry).toMatchObject({
+        enabled: true,
+        outcome: 'memory_hit',
+        model_id: 'fake__one',
+      });
+      expect(memoryHit.embedding).toEqual([1.25, 2.5, 3.75]);
       expect(calls).toBe(1);
 
       const second = new QueryEmbeddingCache({ indexPath, lruMax: 8 });
@@ -41,6 +64,7 @@ describe('query embedding cache (#214)', () => {
         },
       });
       expect(hit.status).toBe('hit_disk');
+      expect(hit.telemetry.outcome).toBe('disk_hit');
       expect(hit.embedding).toEqual([1.25, 2.5, 3.75]);
       expect(calls).toBe(1);
     } finally {
@@ -81,6 +105,7 @@ describe('query embedding cache (#214)', () => {
         embed: async () => [9],
       });
       expect(again.status).toBe('hit_disk');
+      expect(again.telemetry.outcome).toBe('disk_hit');
       expect(again.embedding).toEqual([1]);
       const stats = await cache.stats();
       expect(stats.l1_size).toBe(1);
@@ -140,6 +165,11 @@ describe('query embedding cache (#214)', () => {
         },
       });
       expect(bypassed.status).toBe('bypass');
+      expect(bypassed.telemetry).toMatchObject({
+        enabled: true,
+        outcome: 'bypass',
+        model_id: 'fake__one',
+      });
       expect(bypassed.embedding).toEqual([7]);
       expect(calls).toBe(1);
       expect((await cache.stats()).bypasses).toBe(1);
@@ -161,7 +191,7 @@ describe('query embedding cache (#214)', () => {
     try {
       let calls = 0;
       const cache = new QueryEmbeddingCache({ indexPath, enabled: false, lruMax: 8 });
-      await cache.getOrCompute({
+      const first = await cache.getOrCompute({
         modelId: 'fake__one',
         query: 'env off',
         embed: async () => {
@@ -169,13 +199,19 @@ describe('query embedding cache (#214)', () => {
           return [1];
         },
       });
-      await cache.getOrCompute({
+      const second = await cache.getOrCompute({
         modelId: 'fake__one',
         query: 'env off',
         embed: async () => {
           calls += 1;
           return [2];
         },
+      });
+      expect(first.status).toBe('disabled');
+      expect(second.telemetry).toMatchObject({
+        enabled: false,
+        outcome: 'disabled',
+        model_id: 'fake__one',
       });
       expect(calls).toBe(2);
       const stats = await cache.stats();

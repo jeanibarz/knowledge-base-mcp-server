@@ -82,7 +82,7 @@ import {
   type MetadataSidecar,
   type MetadataSidecarRow,
 } from './metadata-sidecar.js';
-import { queryEmbeddingCache, type QueryCacheLookupStatus } from './query-cache.js';
+import { queryEmbeddingCache, type QueryCacheLookupStatus, type QueryCacheTelemetry } from './query-cache.js';
 import { withSidecarLock } from './write-lock.js';
 import { FaissStoreAdapter } from './faiss-store-adapter.js';
 import {
@@ -314,6 +314,7 @@ export interface SimilaritySearchTiming {
   total_ms?: number;
   fetch_k?: number;
   query_cache?: QueryCacheLookupStatus | 'unavailable';
+  query_cache_telemetry?: QueryCacheTelemetry;
   /**
    * Issue #283 — outcome of the metadata-sidecar predicate-pushdown
    * fast-path. `unused` means the active filter did not benefit from the

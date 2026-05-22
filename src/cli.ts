@@ -31,7 +31,7 @@ import { QUARANTINE_HELP, runQuarantine } from './cli-quarantine.js';
 import { REINDEX_HELP, runReindexCli } from './cli-reindex.js';
 import { REMEMBER_HELP, runRemember } from './cli-remember.js';
 import { RESEARCH_HELP, runResearch } from './cli-research.js';
-import { SEARCH_HELP, parseSearchArgs, runSearch } from './cli-search.js';
+import { SEARCH_HELP, parseSearchArgs, runSearch, takeLastSearchCanonicalTelemetry } from './cli-search.js';
 import { SERVE_HELP, runServe } from './cli-serve.js';
 import { STALE_CHECK_HELP, runStaleCheck } from './cli-stale-check.js';
 import { STATS_HELP, runStats } from './cli-stats.js';
@@ -500,9 +500,13 @@ async function runSubcommandWithCanonicalLog(
   const startedAt = Date.now();
   try {
     const code = await operation();
+    const searchExtra = target.name === 'search'
+      ? takeLastSearchCanonicalTelemetry() ?? {}
+      : {};
     emitCanonicalLog({
       process: 'cli',
       cmd: `kb ${target.name}`,
+      ...searchExtra,
       took_ms: Date.now() - startedAt,
       error: code === 0 ? undefined : {
         code: `EXIT_${code}`,

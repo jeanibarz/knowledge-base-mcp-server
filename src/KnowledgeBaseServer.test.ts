@@ -1,6 +1,7 @@
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import type { SimilaritySearchTiming } from './FaissIndexManager.js';
 
 const initializeMock = jest.fn();
 const updateIndexMock = jest.fn();
@@ -1340,10 +1341,21 @@ describe('KnowledgeBaseServer handlers', () => {
     // Raw scores are chosen so the 2-decimal rounding in the handler
     // (score.toFixed(2)) produces a visibly different string than the raw
     // value — a regression that drops toFixed(2) would leak the raw digits.
-    similaritySearchMock.mockResolvedValue([
-      { pageContent: 'Alpha content', metadata: { source: '/kb/a.md' }, score: 0.129876 },
-      { pageContent: 'Beta content', metadata: { source: '/kb/b.md' }, score: 0.34567 },
-    ]);
+    similaritySearchMock.mockImplementation(async (...args: unknown[]) => {
+      const timing = args[5] as SimilaritySearchTiming;
+      timing.embed_query_ms = 3;
+      timing.faiss_search_ms = 5;
+      timing.query_cache_telemetry = {
+        enabled: true,
+        outcome: 'disk_hit',
+        model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+        elapsed_ms: 2,
+      };
+      return [
+        { pageContent: 'Alpha content', metadata: { source: '/kb/a.md' }, score: 0.129876 },
+        { pageContent: 'Beta content', metadata: { source: '/kb/b.md' }, score: 0.34567 },
+      ];
+    });
 
     const server = await freshServer();
     const result = await server['handleRetrieveKnowledge']({ query: 'what is alpha' });
@@ -1487,10 +1499,21 @@ describe('KnowledgeBaseServer handlers', () => {
     process.env.LOG_FILE = logFile;
     process.env.KB_LOG_FORMAT = 'canonical';
     updateIndexMock.mockResolvedValue(undefined);
-    similaritySearchMock.mockResolvedValue([
-      { pageContent: 'Alpha content', metadata: { source: '/kb/a.md' }, score: 0.129876 },
-      { pageContent: 'Beta content', metadata: { source: '/kb/b.md' }, score: 0.34567 },
-    ]);
+    similaritySearchMock.mockImplementation(async (...args: unknown[]) => {
+      const timing = args[5] as SimilaritySearchTiming;
+      timing.embed_query_ms = 3;
+      timing.faiss_search_ms = 5;
+      timing.query_cache_telemetry = {
+        enabled: true,
+        outcome: 'disk_hit',
+        model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+        elapsed_ms: 2,
+      };
+      return [
+        { pageContent: 'Alpha content', metadata: { source: '/kb/a.md' }, score: 0.129876 },
+        { pageContent: 'Beta content', metadata: { source: '/kb/b.md' }, score: 0.34567 },
+      ];
+    });
 
     const server = await freshServer();
     const result = await server['handleRetrieveKnowledge']({
@@ -1514,6 +1537,13 @@ describe('KnowledgeBaseServer handlers', () => {
       result_count: 2,
       top_score: 0.129876,
       top_sources: ['/kb/a.md', '/kb/b.md'],
+      cache: 'disk_hit',
+      query_cache: {
+        enabled: true,
+        outcome: 'disk_hit',
+        model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+        elapsed_ms: 2,
+      },
     });
     expect(events[0].query_sha256).toMatch(/^[a-f0-9]{16}$/);
     expect(JSON.stringify(events[0])).not.toContain('raw private query');

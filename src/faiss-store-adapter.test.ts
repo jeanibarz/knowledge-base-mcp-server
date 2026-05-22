@@ -194,6 +194,12 @@ describe('FaissStoreAdapter', () => {
     const getQueryEmbedding = jest.fn(async () => ({
       embedding: [1, 2, 3],
       status: 'miss' as const,
+      telemetry: {
+        enabled: true,
+        outcome: 'miss' as const,
+        model_id: 'fake__model',
+        elapsed_ms: 4,
+      },
     }));
     const timing: FaissSearchTimingSink = {};
 
@@ -211,6 +217,12 @@ describe('FaissStoreAdapter', () => {
     expect(vectorSearch).toHaveBeenCalledWith([1, 2, 3], 5);
     expect(results[0][0].pageContent).toBe('hit');
     expect(timing.query_cache).toBe('miss');
+    expect(timing.query_cache_telemetry).toEqual({
+      enabled: true,
+      outcome: 'miss',
+      model_id: 'fake__model',
+      elapsed_ms: 4,
+    });
     expect(typeof timing.embed_query_ms).toBe('number');
     expect(typeof timing.faiss_search_ms).toBe('number');
   });

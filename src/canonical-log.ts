@@ -2,11 +2,12 @@ import { createHash, randomBytes } from 'crypto';
 import { logger } from './logger.js';
 import { KBError, type KBErrorCode } from './errors.js';
 import { ActiveModelResolutionError } from './active-model.js';
+import type { QueryCacheOutcome, QueryCacheTelemetry } from './query-cache.js';
 
 export const CANONICAL_SCHEMA_VERSION = 'kb-canonical.v1';
 
 export type CanonicalProcess = 'mcp' | 'cli';
-export type CanonicalCacheStatus = 'hit_l1' | 'hit_disk' | 'miss';
+export type CanonicalCacheStatus = QueryCacheOutcome;
 export type CanonicalSearchMode = 'dense' | 'lexical' | 'hybrid' | 'auto';
 export type CanonicalErrorCategory =
   | 'configuration'
@@ -52,6 +53,7 @@ export interface CanonicalLogEvent {
   faiss_ms?: number;
   format_ms?: number;
   cache?: CanonicalCacheStatus;
+  query_cache?: QueryCacheTelemetry;
   error?: CanonicalError;
   recovery_hint?: string;
   rerank?: Record<string, unknown>;
@@ -94,6 +96,7 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'faiss_ms',
   'format_ms',
   'cache',
+  'query_cache',
   'error',
   'recovery_hint',
   'rerank',
@@ -141,6 +144,7 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   assignIfDefined(event, 'faiss_ms', roundNonNegative(input.faiss_ms));
   assignIfDefined(event, 'format_ms', roundNonNegative(input.format_ms));
   assignIfDefined(event, 'cache', input.cache);
+  assignIfDefined(event, 'query_cache', input.query_cache);
   assignIfDefined(event, 'error', input.error);
   assignIfDefined(event, 'recovery_hint', input.recovery_hint);
   assignIfDefined(event, 'rerank', input.rerank);

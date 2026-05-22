@@ -603,6 +603,64 @@ describe('kb CLI — argv parsing and dispatch', () => {
     }
   });
 
+  it('emits query-cache telemetry on the top-level kb search canonical event', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-search-cache-log-'));
+    const logFile = path.join(tempDir, 'canonical.log');
+    const kbRoot = path.join(tempDir, 'kb');
+    const faissDir = path.join(tempDir, '.faiss');
+    const modelId = 'fake__bag-256d';
+
+    try {
+      await fsp.mkdir(path.join(kbRoot, 'ops'), { recursive: true });
+      await fsp.writeFile(path.join(kbRoot, 'ops', 'cache.md'), 'alpha cache telemetry runbook\n');
+      await fsp.mkdir(path.join(faissDir, 'models', modelId), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', modelId, 'model_name.txt'), 'bag-256d');
+      await fsp.writeFile(path.join(faissDir, 'active.txt'), modelId);
+
+      const r = runCli([
+        'search',
+        'alpha cache',
+        '--refresh',
+        '--format=json',
+        '--timing',
+        '--no-freshness',
+      ], {
+        KNOWLEDGE_BASES_ROOT_DIR: kbRoot,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'fake',
+        KB_FAKE_DIM: '32',
+        KB_LOG_FORMAT: 'canonical',
+        LOG_FILE: logFile,
+      });
+
+      expect(r.code).toBe(0);
+      const payload = JSON.parse(r.stdout);
+      expect(payload.query_cache).toMatchObject({
+        enabled: true,
+        outcome: 'miss',
+        model_id: modelId,
+      });
+      const events = (await fsp.readFile(logFile, 'utf-8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      const searchEvent = events.find((event) => event.cmd === 'kb search');
+      expect(searchEvent).toMatchObject({
+        process: 'cli',
+        cmd: 'kb search',
+        cache: 'miss',
+        query_cache: {
+          enabled: true,
+          outcome: 'miss',
+          model_id: modelId,
+        },
+      });
+      expect(JSON.stringify(searchEvent)).not.toContain('alpha cache');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('dispatches kb logs through the built CLI with default deps (#387)', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-logs-'));
     const logFile = path.join(tempDir, 'canonical.log');
