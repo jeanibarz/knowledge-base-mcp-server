@@ -12,10 +12,13 @@
 // concurrent operations on different models.
 
 import * as fsp from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
 import { FAISS_INDEX_PATH } from './config/paths.js';
 import { logger } from './logger.js';
+
+export const WRITE_LOCK_STALE_MS = 10_000;
 
 const WRITE_LOCK_OPTS_BASE: Omit<properLockfile.LockOptions, 'lockfilePath'> = {
   // Heartbeat keeps the lock alive across long-running updateIndex calls
@@ -24,13 +27,24 @@ const WRITE_LOCK_OPTS_BASE: Omit<properLockfile.LockOptions, 'lockfilePath'> = {
   // false-positive as stale at the 10s default and another writer could
   // acquire.
   update: 5000,
-  stale: 10_000,
+  stale: WRITE_LOCK_STALE_MS,
   // Brief retry budget for fast-path contention (MCP and CLI both want
   // the lock for ~280 ms). Slow-path (model-switch re-embed) callers will
   // exhaust this and error with a clear message — that's the documented
   // RFC 012 §4.8.3 slow-path behavior.
   retries: { retries: 5, factor: 1.5, minTimeout: 100, maxTimeout: 1000 },
 };
+
+export const WRITE_LOCK_OWNER_SCHEMA_VERSION = 'kb.write-lock-owner.v1';
+
+export interface WriteLockOwnerMetadata {
+  schema_version: typeof WRITE_LOCK_OWNER_SCHEMA_VERSION;
+  pid: number;
+  command: string;
+  cwd: string | null;
+  hostname: string;
+  started_at: string;
+}
 
 const SIDECAR_LOCK_OPTS_BASE: Omit<properLockfile.LockOptions, 'lockfilePath'> = {
   stale: 30_000,
@@ -78,6 +92,7 @@ export async function withWriteLock<T>(resource: string, fn: () => Promise<T>): 
   await fsp.mkdir(resource, { recursive: true });
 
   const lockfilePath = path.join(resource, '.kb-write.lock');
+  const ownerPath = writeLockOwnerPathFor(resource);
   let release: () => Promise<void>;
   try {
     release = await properLockfile.lock(resource, {
@@ -94,9 +109,15 @@ export async function withWriteLock<T>(resource: string, fn: () => Promise<T>): 
     }
     throw err;
   }
+  await writeLockOwnerMetadata(ownerPath);
   try {
     return await fn();
   } finally {
+    try {
+      await fsp.rm(ownerPath, { force: true });
+    } catch (err) {
+      logger.warn(`Error removing write lock owner metadata: ${(err as Error).message}`);
+    }
     try {
       await release();
     } catch (err) {
@@ -112,6 +133,34 @@ export async function withWriteLock<T>(resource: string, fn: () => Promise<T>): 
  */
 export function writeLockPathFor(resource: string): string {
   return path.join(resource, '.kb-write.lock');
+}
+
+export function writeLockOwnerPathFor(resource: string): string {
+  return path.join(resource, '.kb-write.lock.owner.json');
+}
+
+async function writeLockOwnerMetadata(ownerPath: string): Promise<void> {
+  const metadata: WriteLockOwnerMetadata = {
+    schema_version: WRITE_LOCK_OWNER_SCHEMA_VERSION,
+    pid: process.pid,
+    command: process.argv.join(' '),
+    cwd: safeCwd(),
+    hostname: os.hostname(),
+    started_at: new Date().toISOString(),
+  };
+  try {
+    await fsp.writeFile(ownerPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf-8');
+  } catch (err) {
+    logger.warn(`Error writing write lock owner metadata: ${(err as Error).message}`);
+  }
+}
+
+function safeCwd(): string | null {
+  try {
+    return process.cwd();
+  } catch {
+    return null;
+  }
 }
 
 /**

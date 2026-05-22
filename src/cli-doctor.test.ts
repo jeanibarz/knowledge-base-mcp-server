@@ -389,6 +389,72 @@ describe('kb doctor', () => {
     }
   });
 
+  it('reports stale model write locks with owner metadata and recovery guidance', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-locks-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      const lockPath = path.join(modelDir, '.kb-write.lock');
+      const ownerPath = path.join(modelDir, '.kb-write.lock.owner.json');
+      await fsp.mkdir(lockPath);
+      await fsp.writeFile(ownerPath, JSON.stringify({
+        schema_version: 'kb.write-lock-owner.v1',
+        pid: 999999999,
+        command: 'kb search --refresh stale',
+        cwd: tempDir,
+        hostname: 'test-host',
+        started_at: '2026-05-22T00:00:00.000Z',
+      }));
+      const oldMs = Date.now() - 60_000;
+      await fsp.utimes(lockPath, oldMs / 1000, oldMs / 1000);
+
+      const { buildDoctorLocksReport, formatDoctorLocksMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+      });
+
+      const report = await buildDoctorLocksReport();
+
+      expect(report).toMatchObject({
+        schema_version: 'kb.doctor.locks.v1',
+        status: 'warn',
+        summary: {
+          total: 1,
+          held: 0,
+          stale_suspected: 1,
+          unknown: 0,
+        },
+      });
+      expect(report.locks).toEqual([
+        expect.objectContaining({
+          model_id: MODEL_ID,
+          model_name: MODEL_NAME,
+          present: true,
+          lock_kind: 'directory',
+          stale_suspected: true,
+          status: 'stale',
+          owner: expect.objectContaining({
+            pid: 999999999,
+            live: false,
+            command: 'kb search --refresh stale',
+            source: 'metadata',
+          }),
+          next_action: expect.stringContaining('recorded owner PID is no longer live'),
+        }),
+      ]);
+      const markdown = formatDoctorLocksMarkdown(report);
+      expect(markdown).toContain('Status: WARN');
+      expect(markdown).toContain('STALE huggingface__BAAI-bge-small-en-v1.5');
+      expect(markdown).toContain('owner: pid=999999999, live=no');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('reports active external LLM profile readiness in JSON and markdown', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-external-'));
     try {
@@ -1123,12 +1189,40 @@ describe('kb doctor', () => {
     }
   });
 
-  it('parses --format=json, --endpoints, and rejects unsupported formats', async () => {
+  it('routes --locks through runDoctor with JSON output', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-run-locks-'));
+    try {
+      const { runDoctor } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: path.join(tempDir, 'kbs'),
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+      });
+
+      const ok = await captureStdout(() => runDoctor(['--locks', '--format=json']));
+      expect(ok.code).toBe(0);
+      expect(JSON.parse(ok.stdout)).toMatchObject({
+        schema_version: 'kb.doctor.locks.v1',
+        status: 'ok',
+        summary: {
+          total: 0,
+          held: 0,
+          stale_suspected: 0,
+          unknown: 0,
+        },
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('parses --format=json, --endpoints, --locks, and rejects unsupported formats', async () => {
     const { parseDoctorArgs } = await freshDoctor({});
     expect(parseDoctorArgs(['--format=json'])).toEqual({
       format: 'json',
       reindexTrigger: false,
       endpoints: false,
+      locks: false,
       integrity: false,
       bugReport: null,
     });
@@ -1136,6 +1230,7 @@ describe('kb doctor', () => {
       format: 'md',
       reindexTrigger: true,
       endpoints: false,
+      locks: false,
       integrity: false,
       bugReport: null,
     });
@@ -1143,6 +1238,15 @@ describe('kb doctor', () => {
       format: 'json',
       reindexTrigger: false,
       endpoints: true,
+      locks: false,
+      integrity: false,
+      bugReport: null,
+    });
+    expect(parseDoctorArgs(['--locks', '--format=json'])).toEqual({
+      format: 'json',
+      reindexTrigger: false,
+      endpoints: false,
+      locks: true,
       integrity: false,
       bugReport: null,
     });
@@ -1150,6 +1254,7 @@ describe('kb doctor', () => {
       format: 'json',
       reindexTrigger: true,
       endpoints: false,
+      locks: false,
       integrity: false,
       bugReport: null,
     });
@@ -1157,6 +1262,7 @@ describe('kb doctor', () => {
       format: 'md',
       reindexTrigger: false,
       endpoints: false,
+      locks: false,
       integrity: false,
       bugReport: null,
     });
@@ -1164,6 +1270,7 @@ describe('kb doctor', () => {
       format: 'md',
       reindexTrigger: false,
       endpoints: false,
+      locks: false,
       integrity: false,
       bugReport: {
         outputParentDir: '/tmp/out',
@@ -1182,6 +1289,7 @@ describe('kb doctor', () => {
       format: 'md',
       reindexTrigger: false,
       endpoints: false,
+      locks: false,
       integrity: false,
       bugReport: {
         outputParentDir: undefined,
@@ -1191,6 +1299,7 @@ describe('kb doctor', () => {
     });
     expect(() => parseDoctorArgs(['--format=yaml'])).toThrow(/invalid --format/);
     expect(() => parseDoctorArgs(['--bug-report', '--include-command'])).toThrow(/requires/);
+    expect(() => parseDoctorArgs(['--endpoints', '--locks'])).toThrow(/cannot be combined/);
   });
 
   describe('age budgets (issue #218)', () => {

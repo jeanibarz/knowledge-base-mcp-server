@@ -12,12 +12,15 @@ Start with the read-only health check:
 kb doctor
 kb doctor --format=json
 kb doctor --endpoints
+kb doctor --locks
 kb doctor --bug-report=/tmp
 ```
 
 `kb doctor` reports active-model resolution, index path and version, stale file counts, embedding backend health, local LLM endpoint readiness for `kb ask`, CLI package and symlink state, git drift for linked checkouts, and the latest index-update summary. Use it before deleting index files, changing client configuration, or debugging local LLM answers.
 
 Use `kb doctor --endpoints` for the narrower port/URL preflight: MCP bind target availability, configured `KB_DAEMON_URL`, configured Ollama embedding endpoint, and configured `KB_LLM_ENDPOINT` or active LLM profile.
+
+Use `kb doctor --locks` for write-lock contention. It reports per-model lock path, age, recorded owner PID/command when available, whether that PID is still live, stale suspicion, and the next safe action. It never removes lock files.
 
 Use `kb doctor --bug-report[=<dir>]` when preparing an issue-ready diagnostic bundle. The command writes a timestamped directory with redacted doctor/stats/log/runtime JSON plus a README, without note contents or raw API keys.
 
@@ -199,7 +202,7 @@ After fixing env for an MCP client, restart that client so the child process rec
 When you see `REFRESH_LOCK_BUSY`:
 
 ```bash
-kb doctor
+kb doctor --locks
 kb search "known phrase" --k=5
 ```
 

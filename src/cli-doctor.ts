@@ -13,6 +13,7 @@ import {
   ActiveModelResolutionError,
   listIncompleteModelStates,
   listRegisteredModels,
+  modelsRoot,
   parseModelId,
   readModelIndexStorage,
   resolveActiveModel,
@@ -82,6 +83,13 @@ import {
   type IntegrityReport,
 } from './cli-verify.js';
 import { createDoctorBugReportBundle } from './cli-bug-report.js';
+import {
+  WRITE_LOCK_OWNER_SCHEMA_VERSION,
+  WRITE_LOCK_STALE_MS,
+  writeLockOwnerPathFor,
+  writeLockPathFor,
+  type WriteLockOwnerMetadata,
+} from './write-lock.js';
 
 /**
  * Issue #210 — error-rate threshold above which the doctor surfaces a
@@ -99,7 +107,7 @@ const execFileAsync = promisify(execFile);
 export const DOCTOR_HELP = `kb doctor — aggregate model / index / backend health report
 
 Usage:
-  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints] [--integrity|--slow]
+  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints] [--locks] [--integrity|--slow]
   kb doctor --bug-report[=<dir>] [--include-command -- <cmd> [args...]]
 
 Composes existing read-only checks (env vars, registered models, active
@@ -120,6 +128,8 @@ Options:
   --endpoints           Check only configured local bind/connect endpoint
                         readiness (MCP bind target, KB_DAEMON_URL,
                         Ollama embedding endpoint, and KB_LLM_ENDPOINT/profile).
+  --locks               Check only FAISS/model write-lock paths, including
+                        owner metadata when available and stale-lock guidance.
   --bug-report[=<dir>]  Write a timestamped redacted support bundle under
                         <dir> (default: current directory). Includes doctor,
                         stats, recent canonical logs, runtime metadata, and
@@ -141,6 +151,7 @@ export interface DoctorArgs {
   format: 'md' | 'json';
   reindexTrigger: boolean;
   endpoints: boolean;
+  locks: boolean;
   integrity: boolean;
   bugReport: {
     outputParentDir?: string;
@@ -166,6 +177,52 @@ export interface EndpointReadinessReport {
   schema_version: 'kb.doctor.endpoints.v1';
   status: HealthStatus;
   endpoints: EndpointReadinessEntry[];
+}
+
+export interface DoctorLockOwner {
+  pid: number | null;
+  live: boolean | null;
+  command: string | null;
+  cwd: string | null;
+  hostname: string | null;
+  started_at: string | null;
+  source: 'metadata' | 'none' | 'invalid';
+  detail: string | null;
+}
+
+export interface DoctorLockEntry {
+  kind: 'model_write';
+  model_id: string;
+  model_name: string | null;
+  resource_path: string;
+  lock_path: string;
+  owner_path: string;
+  present: boolean;
+  lock_kind: 'directory' | 'file' | 'other' | 'missing' | 'unknown';
+  mtime: string | null;
+  age_ms: number | null;
+  stale_threshold_ms: number;
+  stale_suspected: boolean;
+  owner: DoctorLockOwner;
+  status: 'ok' | 'held' | 'stale' | 'unknown';
+  next_action: string;
+  warnings: string[];
+}
+
+export interface DoctorLocksReport {
+  schema_version: 'kb.doctor.locks.v1';
+  status: HealthStatus;
+  faiss_index_path: string;
+  models_root: string;
+  generated_at: string;
+  stale_threshold_ms: number;
+  locks: DoctorLockEntry[];
+  summary: {
+    total: number;
+    held: number;
+    stale_suspected: number;
+    unknown: number;
+  };
 }
 
 export interface DoctorIndexSecurityEntry {
@@ -390,6 +447,16 @@ export async function runDoctor(rest: string[]): Promise<number> {
     return report.status === 'error' ? 1 : 0;
   }
 
+  if (parsed.locks) {
+    const report = await buildDoctorLocksReport();
+    if (parsed.format === 'json') {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(formatDoctorLocksMarkdown(report));
+    }
+    return report.status === 'error' ? 1 : 0;
+  }
+
   if (parsed.bugReport !== null) {
     const result = await createDoctorBugReportBundle({
       outputParentDir: parsed.bugReport.outputParentDir,
@@ -418,6 +485,7 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
     format: 'md',
     reindexTrigger: false,
     endpoints: false,
+    locks: false,
     integrity: false,
     bugReport: null,
   };
@@ -447,6 +515,10 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
     }
     if (raw === '--endpoints') {
       out.endpoints = true;
+      continue;
+    }
+    if (raw === '--locks') {
+      out.locks = true;
       continue;
     }
     if (raw === '--bug-report' || raw.startsWith('--bug-report=')) {
@@ -485,6 +557,12 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
   }
   if (out.bugReport !== null && out.endpoints) {
     throw new Error('--bug-report cannot be combined with --endpoints');
+  }
+  if (out.bugReport !== null && out.locks) {
+    throw new Error('--bug-report cannot be combined with --locks');
+  }
+  if (out.endpoints && out.locks) {
+    throw new Error('--endpoints cannot be combined with --locks');
   }
   return out;
 }
@@ -831,6 +909,275 @@ export function formatEndpointReadinessMarkdown(report: EndpointReadinessReport)
       `  ${entry.status.toUpperCase().padEnd(7)} ${entry.name}: ${target} ` +
       `(${entry.kind}, ${entry.source}, ${configured}) - ${entry.detail}`,
     );
+  }
+  return lines.join('\n') + '\n';
+}
+
+export async function buildDoctorLocksReport(): Promise<DoctorLocksReport> {
+  const generatedAt = new Date();
+  const modelRows = await listDoctorLockModelRows();
+  const locks = await Promise.all(modelRows.map((row) => readDoctorModelWriteLock(row, generatedAt)));
+  const summary = {
+    total: locks.length,
+    held: locks.filter((entry) => entry.status === 'held').length,
+    stale_suspected: locks.filter((entry) => entry.stale_suspected).length,
+    unknown: locks.filter((entry) => entry.status === 'unknown').length,
+  };
+  const status: HealthStatus = summary.unknown > 0
+    ? 'error'
+    : summary.stale_suspected > 0
+      ? 'warn'
+      : 'ok';
+  return {
+    schema_version: 'kb.doctor.locks.v1',
+    status,
+    faiss_index_path: FAISS_INDEX_PATH,
+    models_root: modelsRoot(),
+    generated_at: generatedAt.toISOString(),
+    stale_threshold_ms: WRITE_LOCK_STALE_MS,
+    locks,
+    summary,
+  };
+}
+
+async function listDoctorLockModelRows(): Promise<Array<{
+  model_id: string;
+  model_name: string | null;
+  resource_path: string;
+}>> {
+  const byId = new Map<string, { model_id: string; model_name: string | null; resource_path: string }>();
+  try {
+    for (const model of await listRegisteredModels()) {
+      byId.set(model.model_id, {
+        model_id: model.model_id,
+        model_name: model.model_name,
+        resource_path: path.join(modelsRoot(), model.model_id),
+      });
+    }
+  } catch {
+    // Fall back to the filesystem walk below.
+  }
+
+  try {
+    const entries = await fsp.readdir(modelsRoot(), { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (byId.has(entry.name)) continue;
+      byId.set(entry.name, {
+        model_id: entry.name,
+        model_name: null,
+        resource_path: path.join(modelsRoot(), entry.name),
+      });
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+
+  return [...byId.values()].sort((a, b) => a.model_id.localeCompare(b.model_id));
+}
+
+async function readDoctorModelWriteLock(
+  row: { model_id: string; model_name: string | null; resource_path: string },
+  now: Date,
+): Promise<DoctorLockEntry> {
+  const lockPath = writeLockPathFor(row.resource_path);
+  const ownerPath = writeLockOwnerPathFor(row.resource_path);
+  const warnings: string[] = [];
+  let present = false;
+  let lockKind: DoctorLockEntry['lock_kind'] = 'missing';
+  let mtime: string | null = null;
+  let ageMs: number | null = null;
+
+  try {
+    const st = await fsp.lstat(lockPath);
+    present = true;
+    lockKind = st.isDirectory() ? 'directory' : st.isFile() ? 'file' : 'other';
+    mtime = new Date(st.mtimeMs).toISOString();
+    ageMs = Math.max(0, now.getTime() - st.mtimeMs);
+    if (lockKind !== 'directory') {
+      warnings.push(`unexpected lock path kind: ${lockKind}`);
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      lockKind = 'unknown';
+      warnings.push(`stat_failed: ${(err as Error).message}`);
+    }
+  }
+
+  const owner = present ? await readDoctorLockOwner(ownerPath) : emptyDoctorLockOwner();
+  if (owner.source === 'invalid' && owner.detail !== null) {
+    warnings.push(owner.detail);
+  }
+
+  const ownerDead = owner.pid !== null && owner.live === false;
+  const heartbeatStale = ageMs !== null && ageMs > WRITE_LOCK_STALE_MS;
+  const staleSuspected = present && (ownerDead || (heartbeatStale && owner.live !== true));
+  const status: DoctorLockEntry['status'] = !present
+    ? 'ok'
+    : lockKind !== 'directory'
+      ? 'unknown'
+      : staleSuspected
+        ? 'stale'
+        : 'held';
+
+  return {
+    kind: 'model_write',
+    model_id: row.model_id,
+    model_name: row.model_name,
+    resource_path: row.resource_path,
+    lock_path: lockPath,
+    owner_path: ownerPath,
+    present,
+    lock_kind: lockKind,
+    mtime,
+    age_ms: ageMs === null ? null : Math.round(ageMs),
+    stale_threshold_ms: WRITE_LOCK_STALE_MS,
+    stale_suspected: staleSuspected,
+    owner,
+    status,
+    next_action: formatDoctorLockNextAction(status, owner, heartbeatStale),
+    warnings,
+  };
+}
+
+async function readDoctorLockOwner(ownerPath: string): Promise<DoctorLockOwner> {
+  let raw: string;
+  try {
+    raw = await fsp.readFile(ownerPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return emptyDoctorLockOwner();
+    return {
+      ...emptyDoctorLockOwner(),
+      source: 'invalid',
+      detail: `owner metadata read failed: ${(err as Error).message}`,
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      ...emptyDoctorLockOwner(),
+      source: 'invalid',
+      detail: 'owner metadata is not valid JSON',
+    };
+  }
+  if (!isWriteLockOwnerMetadata(parsed)) {
+    return {
+      ...emptyDoctorLockOwner(),
+      source: 'invalid',
+      detail: `owner metadata does not match ${WRITE_LOCK_OWNER_SCHEMA_VERSION}`,
+    };
+  }
+
+  return {
+    pid: parsed.pid,
+    live: isPidLive(parsed.pid),
+    command: parsed.command,
+    cwd: parsed.cwd,
+    hostname: parsed.hostname,
+    started_at: parsed.started_at,
+    source: 'metadata',
+    detail: null,
+  };
+}
+
+function isWriteLockOwnerMetadata(value: unknown): value is WriteLockOwnerMetadata {
+  if (value === null || typeof value !== 'object') return false;
+  const candidate = value as Partial<WriteLockOwnerMetadata>;
+  return candidate.schema_version === WRITE_LOCK_OWNER_SCHEMA_VERSION
+    && Number.isSafeInteger(candidate.pid)
+    && typeof candidate.pid === 'number'
+    && candidate.pid > 0
+    && typeof candidate.command === 'string'
+    && (candidate.cwd === null || typeof candidate.cwd === 'string')
+    && typeof candidate.hostname === 'string'
+    && typeof candidate.started_at === 'string'
+    && !Number.isNaN(Date.parse(candidate.started_at));
+}
+
+function emptyDoctorLockOwner(): DoctorLockOwner {
+  return {
+    pid: null,
+    live: null,
+    command: null,
+    cwd: null,
+    hostname: null,
+    started_at: null,
+    source: 'none',
+    detail: null,
+  };
+}
+
+function isPidLive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function formatDoctorLockNextAction(
+  status: DoctorLockEntry['status'],
+  owner: DoctorLockOwner,
+  heartbeatStale: boolean,
+): string {
+  if (status === 'ok') return 'No write lock is present for this model.';
+  if (status === 'unknown') {
+    return 'Inspect the lock path before retrying; do not remove it until its type and owner are understood.';
+  }
+  if (status === 'stale') {
+    if (owner.pid !== null && owner.live === false) {
+      return 'The recorded owner PID is no longer live; verify no writer is running before removing the lock path.';
+    }
+    return 'The lock heartbeat is older than the stale threshold; verify no writer is running before removing the lock path.';
+  }
+  if (owner.pid !== null && owner.live === true) {
+    return 'A writer appears active; wait for it to finish or inspect the recorded command before restarting services.';
+  }
+  if (heartbeatStale) {
+    return 'The heartbeat is old but no owner is known; inspect running kb processes before removing the lock path.';
+  }
+  return 'A write lock is present; wait and retry before considering manual recovery.';
+}
+
+export function formatDoctorLocksMarkdown(report: DoctorLocksReport): string {
+  const lines: string[] = [];
+  lines.push(`Status: ${report.status.toUpperCase()}`);
+  lines.push(`FAISS index path: ${report.faiss_index_path}`);
+  lines.push(`Models root: ${report.models_root}`);
+  lines.push(
+    `Summary: ${report.summary.held} held, ` +
+    `${report.summary.stale_suspected} stale suspected, ` +
+    `${report.summary.unknown} unknown across ${report.summary.total} model(s)`,
+  );
+  lines.push('');
+  lines.push('Write locks:');
+  if (report.locks.length === 0) {
+    lines.push('  (no model directories found)');
+  } else {
+    for (const entry of report.locks) {
+      const modelName = entry.model_name === null ? '' : ` (${entry.model_name})`;
+      const age = entry.age_ms === null ? 'n/a' : `${entry.age_ms}ms`;
+      lines.push(`  ${entry.status.toUpperCase()} ${entry.model_id}${modelName}`);
+      lines.push(`    lock: ${entry.lock_path}`);
+      lines.push(`    present: ${entry.present ? 'yes' : 'no'}, kind: ${entry.lock_kind}, age: ${age}`);
+      if (entry.owner.pid !== null) {
+        lines.push(
+          `    owner: pid=${entry.owner.pid}, live=${formatNullableBoolean(entry.owner.live)}, ` +
+          `source=${entry.owner.source}, command=${entry.owner.command ?? '<unknown>'}`,
+        );
+      } else {
+        lines.push(`    owner: ${entry.owner.source}`);
+      }
+      if (entry.warnings.length > 0) {
+        for (const warning of entry.warnings) lines.push(`    WARN ${warning}`);
+      }
+      lines.push(`    next: ${entry.next_action}`);
+    }
   }
   return lines.join('\n') + '\n';
 }
