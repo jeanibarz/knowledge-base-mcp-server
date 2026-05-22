@@ -1015,6 +1015,118 @@ describe('KnowledgeBaseServer handlers', () => {
     );
   });
 
+  it('resources/list supports KB and prefix filters with cursor pagination', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-page-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha', 'docs'), { recursive: true });
+    await fsp.mkdir(path.join(tempDir, 'alpha', 'notes'), { recursive: true });
+    await fsp.mkdir(path.join(tempDir, 'beta', 'docs'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'docs', 'guide.md'), '# Guide\n');
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'docs', 'glossary.md'), '# Glossary\n');
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'docs', 'plan.md'), '# Plan\n');
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'notes', 'general.md'), '# General\n');
+    await fsp.writeFile(path.join(tempDir, 'beta', 'docs', 'guide.md'), '# Beta\n');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const firstPage = await server['handleListResources']({
+      kbName: 'alpha',
+      prefix: 'docs/g',
+      limit: 1,
+    });
+
+    expect(firstPage.resources.map((resource: { uri: string }) => resource.uri)).toEqual([
+      'kb://alpha/docs/glossary.md',
+    ]);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await server['handleListResources']({ cursor: firstPage.nextCursor });
+
+    expect(secondPage.resources.map((resource: { uri: string }) => resource.uri)).toEqual([
+      'kb://alpha/docs/guide.md',
+    ]);
+    expect(secondPage.nextCursor).toBeUndefined();
+  });
+
+  it('resources/list keeps full listing as the no-parameter default', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-default-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha', 'docs'), { recursive: true });
+    await fsp.mkdir(path.join(tempDir, 'beta', 'docs'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'docs', 'a.md'), '# A\n');
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'docs', 'b.md'), '# B\n');
+    await fsp.writeFile(path.join(tempDir, 'beta', 'docs', 'c.md'), '# C\n');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const result = await server['handleListResources']();
+
+    expect(result.resources.map((resource: { uri: string }) => resource.uri).sort()).toEqual([
+      'kb://alpha/docs/a.md',
+      'kb://alpha/docs/b.md',
+      'kb://beta/docs/c.md',
+    ]);
+    expect(result.nextCursor).toBeUndefined();
+  });
+
+  it('resources/list paginates the unfiltered listing across KB boundaries', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-unfiltered-page-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha', 'docs'), { recursive: true });
+    await fsp.mkdir(path.join(tempDir, 'beta', 'docs'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'docs', 'a.md'), '# A\n');
+    await fsp.writeFile(path.join(tempDir, 'beta', 'docs', 'b.md'), '# B\n');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const firstPage = await server['handleListResources']({ limit: 1 });
+
+    expect(firstPage.resources.map((resource: { uri: string }) => resource.uri)).toEqual([
+      'kb://alpha/docs/a.md',
+    ]);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await server['handleListResources']({ cursor: firstPage.nextCursor });
+
+    expect(secondPage.resources.map((resource: { uri: string }) => resource.uri)).toEqual([
+      'kb://beta/docs/b.md',
+    ]);
+    expect(secondPage.nextCursor).toBeUndefined();
+  });
+
+  it('resources/list rejects client-forged cursors with unsafe filters', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-forged-cursor-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'safe.md'), '# Safe\n');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const forgedCursor = `kbres1.${Buffer.from(JSON.stringify({
+      v: 1,
+      offset: 0,
+      kbName: '../outside',
+      prefix: '',
+      limit: 10,
+    }), 'utf-8').toString('base64url')}`;
+
+    await expect(server['handleListResources']({ cursor: forgedCursor })).rejects.toThrow(
+      /invalid resources\/list cursor/,
+    );
+  });
+
   it('resources/read returns markdown text for an existing file', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-resources-read-'));
     await fsp.mkdir(path.join(tempDir, 'alpha', 'docs'), { recursive: true });
