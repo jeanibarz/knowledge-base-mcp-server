@@ -27,6 +27,7 @@ import {
   largeCorpusQueryLines,
   type LargeCorpusCache,
 } from '../fixtures/large-corpus.js';
+import { logCompareToMlflow } from '../observability/mlflow.js';
 // Type duplicated locally rather than imported from src/ — tsconfig.bench.json's
 // rootDir scopes types to the benchmarks/ tree (src/ files are out of scope even
 // for type-only imports). All src-side runtime values are loaded via dynamic
@@ -234,16 +235,19 @@ async function main(): Promise<void> {
   const jsonPath = path.join(outDir, `${outBase}.json`);
 
   await fsp.writeFile(htmlPath, html, 'utf-8');
-  await fsp.writeFile(jsonPath, JSON.stringify({
+  const compareJson = {
     modelA: { id: modelA.id, provider: modelA.provider, name: modelA.name },
     modelB: { id: modelB.id, provider: modelB.provider, name: modelB.name },
+    fixture: { profile: flags.fixture, chunks: reportA.scenarios.cold_index.chunks },
     reportA,
     reportB,
     crossModel,
     goldenQuality,
     cost,
     generatedAt: new Date().toISOString(),
-  }, null, 2) + '\n', 'utf-8');
+  };
+  await fsp.writeFile(jsonPath, JSON.stringify(compareJson, null, 2) + '\n', 'utf-8');
+  await logCompareToMlflow({ compareJson, jsonPath, htmlPath, repoRoot });
 
   // Cleanup orchestrator tmpdir on success; preserve on failure for debugging.
   try {

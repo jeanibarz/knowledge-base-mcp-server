@@ -215,6 +215,99 @@ benchmarks/results/compare-<id_a>-vs-<id_b>-<utc-stamp>.json  ← merged input +
 
 The HTML has six sections: summary table (with per-axis winner column), latency-distribution charts (single-query + batch p99 by concurrency), throughput-vs-concurrency line chart, on-disk storage stacked bar, query-level detail (collapsible top-5 per model with overlap highlighting), and a rule-based recommendation panel (fixed thresholds documented inline so a skeptical reader can disagree explicitly). Disclaimers section makes the "your-KB selection guidance, NOT MTEB" framing explicit.
 
+## Optional experiment tracking — MLflow
+
+The benchmark JSON and HTML files remain the canonical artifacts. MLflow is an
+optional side effect, enabled only when `BENCH_MLFLOW_*` is set. The normal
+`npm run bench` and `npm run bench:compare` paths do not import Python or
+require the `mlflow` package.
+
+Install the optional Python package when you want tracking:
+
+```bash
+python3 -m pip install mlflow
+```
+
+Log a plain benchmark run to a local MLflow store:
+
+```bash
+BENCH_PROVIDER=stub \
+BENCH_MLFLOW_URI=file:///tmp/kb-mlruns \
+BENCH_MLFLOW_EXPERIMENT=kb-benchmarks \
+npm run bench
+```
+
+Log a compare run with tags:
+
+```bash
+BENCH_MLFLOW_URI=http://127.0.0.1:5000 \
+BENCH_MLFLOW_EXPERIMENT=kb-compare \
+BENCH_MLFLOW_TAGS=suite=large,owner=local \
+npm run bench:compare -- \
+  --models=ollama__nomic-embed-text-latest,huggingface__BAAI-bge-small-en-v1.5 \
+  --fixture=large \
+  --yes
+```
+
+MLflow receives flattened params/metrics plus the benchmark artifacts:
+
+- `npm run bench`: the JSON report.
+- `npm run bench:compare`: the merged JSON and self-contained HTML report.
+
+Supported environment variables:
+
+| Variable | Meaning |
+|----------|---------|
+| `BENCH_MLFLOW_URI` | Tracking URI passed to `mlflow.set_tracking_uri`, e.g. `file:///tmp/kb-mlruns` or `http://host:5000`. |
+| `BENCH_MLFLOW_EXPERIMENT` | Experiment name. Defaults to `kb-benchmarks` when any MLflow env is set. |
+| `BENCH_MLFLOW_RUN_NAME` | Optional run name. |
+| `BENCH_MLFLOW_TAGS` | Comma-separated `key=value` tags. |
+| `BENCH_MLFLOW_PYTHON` | Python interpreter to use. Defaults to `python3`. |
+
+If MLflow env is set but the optional package is missing, the run fails with a
+setup message rather than silently dropping requested tracking.
+
+## Optional tuning — Optuna
+
+Optuna is also optional. The runner proposes environment-variable values,
+executes a benchmark command, reads the JSON artifact printed by that command,
+and optimizes the metric dot-path you name. It does not change the benchmark
+contract and it does not run unless invoked explicitly.
+
+Install the optional Python package:
+
+```bash
+python3 -m pip install optuna
+```
+
+Example: minimize warm-query p95 while sweeping fixture chunk size:
+
+```bash
+npm run bench:tune -- \
+  --trials=20 \
+  --direction=minimize \
+  --metric=scenarios.warm_query.p95_ms \
+  --param-int=BENCH_FIXTURE_CHUNK_CHARS=256:1536:128 \
+  -- npm run bench
+```
+
+Persist a study so repeated runs resume:
+
+```bash
+npm run bench:tune -- \
+  --storage=sqlite:///benchmarks/results/kb-optuna.db \
+  --study-name=chunk-size-latency \
+  --trials=50 \
+  --direction=minimize \
+  --metric=scenarios.warm_query.p95_ms \
+  --param-int=BENCH_FIXTURE_CHUNK_CHARS=256:1536:128 \
+  --param-int=BENCH_FIXTURE_CHUNKS_PER_FILE=3:10 \
+  -- npm run bench
+```
+
+You can combine Optuna with MLflow by exporting `BENCH_MLFLOW_*` before running
+`bench:tune`; each trial benchmark logs normally.
+
 ### Auto-clamping fixture chunk size to fit short-context models (#107)
 
 Before driving the bench legs, the orchestrator probes each model's `num_ctx`

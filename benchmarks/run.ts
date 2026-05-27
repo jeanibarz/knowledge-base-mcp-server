@@ -12,6 +12,7 @@ import { runMemoryScenario } from './scenarios/memory.js';
 import { runRetrievalQualityScenario } from './scenarios/retrieval-quality.js';
 import { runWarmQueryScenario } from './scenarios/warm-query.js';
 import { ensureDirectory, gitSha, resultFileName, writeJsonFile } from './utils.js';
+import { logBenchmarkToMlflow } from './observability/mlflow.js';
 
 const provider = parseProvider(process.env.BENCH_PROVIDER);
 const repoRoot = process.cwd();
@@ -117,6 +118,7 @@ async function main(): Promise<void> {
   };
 
   await writeJsonFile(outputPath, report);
+  await logBenchmarkToMlflow({ report, reportPath: outputPath, repoRoot });
   process.stdout.write(`${outputPath}\n`);
 }
 
