@@ -26,6 +26,49 @@ Optional environment variables:
 - `BENCH_CLI_SEARCH_REPETITIONS` sets the per-variant repetition count for `cli_search`. Defaults to 5.
 - `BENCH_CLI_SEARCH_PROFILE=matrix` expands `cli_search` from the compact default profile to a broader local matrix across retrieval modes, scopes, formats, grouping, query shapes, and `k` values.
 
+## BEIR/SciFact local retrieval benchmark
+
+`bench:beir` runs a reproducible local BEIR benchmark, starting with SciFact
+test. It downloads the BEIR zip to a cache, expands `corpus.jsonl`,
+`queries.jsonl`, and `qrels/test.tsv`, converts the corpus into a temporary
+KB root, runs the selected `kb` retrieval primitive, and writes three
+artifacts:
+
+- metrics JSON with `nDCG@10`, `MAP@100`, `Recall@10`, `Recall@100`, latency
+  percentiles, git SHA, dataset checksum/source URL, command, runtime, and
+  chunking metadata
+- a TREC-format run file for external scoring tools
+- a short Markdown report
+
+Lexical mode requires no provider credentials:
+
+```bash
+npm run bench:beir -- \
+  --dataset=scifact \
+  --split=test \
+  --mode=lexical \
+  --output-dir=/tmp/kb-beir-scifact
+```
+
+For a fast deterministic smoke test, limit the query set:
+
+```bash
+npm run bench:beir -- \
+  --dataset=scifact \
+  --split=test \
+  --mode=lexical \
+  --max-queries=3 \
+  --output-dir=/tmp/kb-beir-scifact-smoke
+```
+
+The runner uses `LexicalIndex` chunk BM25 and collapses chunk hits to BEIR
+document IDs by max chunk score before writing TREC rows. That collapse is
+benchmark-only; normal `kb search --mode=lexical` behavior remains chunk-level.
+Reports should be described as a **local BEIR/SciFact benchmark**, not an
+official BEIR leaderboard result. Optional MLflow logging is not required for
+the JSON/TREC artifacts and can be layered in by the separate bench
+observability hook.
+
 ## Result file naming
 
 Reports are written to `benchmarks/results/` with this naming pattern:
