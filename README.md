@@ -46,6 +46,7 @@ printf '{"query":"q1"}\n{"query":"q2"}\n' | kb search --batch-jsonl  # batched J
 kb search "query" --refresh                  # also re-scan KB files (write path)
 kb search "query" --explain-empty            # opt-in deep diagnostics when results are empty (#328)
 kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh   # BM25 debug surface (#206 stage 1)
+kb search "retrieval benchmarks" --mode=lexical --lexical-unit=source  # source-level BM25
 kb search "INDEX_NOT_INITIALIZED" --mode=hybrid              # dense ⨁ BM25 fused via RRF (#206 stage 2)
 kb search "src/cli-search.ts" --mode=auto    # opt-in heuristic: hybrid for code/path/error-shaped queries
 kb search "agent evidence" --diverse --format=json           # source-aware representative sampling
@@ -150,21 +151,23 @@ The MCP server (`knowledge-base-mcp-server` bin) is unchanged and still works wi
 
 ### Local retrieval benchmarks
 
-Use `npm run bench:beir` to run a local BEIR/SciFact benchmark with
-credential-free lexical retrieval:
+Use `npm run bench:beir` to run a local BEIR benchmark with credential-free
+lexical retrieval:
 
 ```bash
-npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --output-dir=/tmp/kb-beir-scifact
+npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --lexical-unit=source --output-dir=/tmp/kb-beir-scifact
 ```
 
 The runner builds a temporary KB root, emits metrics JSON plus a TREC run file,
 and records reproduction metadata such as git SHA, command, dataset checksum,
 runtime versions, chunking config, and latency percentiles. These are local
 benchmark artifacts, not official BEIR leaderboard submissions; the current
-lexical path is scored at document level by benchmark-only chunk collapse while
-normal `kb search --mode=lexical` remains chunk-level. See
+lexical source path is scored at document level and is also available in the
+CLI via `kb search --mode=lexical --lexical-unit=source`. See
 [benchmarks/README.md](benchmarks/README.md#beirscifact-local-retrieval-benchmark)
-for smoke-test commands and caveats.
+for smoke-test commands and caveats, and
+[benchmarks/results/README.md](benchmarks/results/README.md) for the archived
+SciFact run.
 
 Optuna tuning is optional and only runs when explicitly invoked. A SciFact
 example that sweeps lexical chunking and writes a replayable best-config file:

@@ -67,10 +67,13 @@ describe('BEIR benchmark runner', () => {
             totalChunks: 2,
           }),
           save: async () => undefined,
-          query: async () => [{
-            metadata: { source: path.join(kbPath, alphaFile) },
-            score: 42,
-          }],
+          query: async (_query, _k, options) => {
+            expect(options).toMatchObject({ unit: 'source', candidateK: 10 });
+            return [{
+              metadata: { source: path.join(kbPath, alphaFile) },
+              score: 42,
+            }];
+          },
           numChunks: () => 2,
           numFiles: () => 2,
         };
@@ -81,9 +84,17 @@ describe('BEIR benchmark runner', () => {
       git_sha: string;
       metrics: { ndcgAt10: number; mapAt100: number; recallAt10: number; recallAt100: number };
       dataset: { corpus_documents: number; queries_evaluated: number };
+      command: string;
+      ranking: { unit: string; implementation: string; trec_run: string };
     };
     expect(json.git_sha).toBe('test-sha');
     expect(json.dataset).toMatchObject({ corpus_documents: 2, queries_evaluated: 1 });
+    expect(json.command).toContain('--lexical-unit=source');
+    expect(json.ranking).toMatchObject({
+      unit: 'source',
+      implementation: 'LexicalIndex source BM25 over whole files, returning one representative chunk per source',
+      trec_run: path.join(outputDir, 'kb-tiny-lexical-source-run.trec'),
+    });
     expect(json.metrics).toMatchObject({
       ndcgAt10: 1,
       mapAt100: 1,
@@ -91,11 +102,11 @@ describe('BEIR benchmark runner', () => {
       recallAt100: 1,
     });
     await expect(fsp.readFile(result.trecPath, 'utf-8')).resolves.toBe(
-      'q1 Q0 doc-alpha 1 42.000000 kb-tiny-lexical-docrank\n',
+      'q1 Q0 doc-alpha 1 42.000000 kb-tiny-lexical-source\n',
     );
-    await expect(fsp.readFile(result.reportPath, 'utf-8')).resolves.toContain(
-      'This is a local BEIR benchmark run, not an official leaderboard submission.',
-    );
+    const report = await fsp.readFile(result.reportPath, 'utf-8');
+    expect(report).toContain('This is a local BEIR benchmark run, not an official leaderboard submission.');
+    expect(report).toContain('--lexical-unit=source');
     await expect(fsp.stat(workspaceRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
@@ -133,6 +144,7 @@ describe('BEIR benchmark runner', () => {
         dataset_dir: path.join(root, 'tiny-dataset'),
         split: 'dev',
         mode: 'lexical',
+        lexical_unit: 'chunk',
         output_dir: path.join(root, 'out-from-config'),
         workspace_root: path.join(root, 'kb-beir-workspace-from-config'),
         k: 7,
@@ -153,6 +165,7 @@ describe('BEIR benchmark runner', () => {
         datasetDir: path.join(root, 'tiny-dataset'),
         split: 'dev',
         mode: 'lexical',
+        lexicalUnit: 'chunk',
         outputDir: path.join(root, 'out-from-config'),
         workspaceRoot: path.join(root, 'kb-beir-workspace-from-config'),
         k: 5,

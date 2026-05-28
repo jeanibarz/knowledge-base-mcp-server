@@ -21,15 +21,29 @@ import { durationMs, ensureDirectory, gitSha, resetDirectory, writeJsonFile } fr
 const execFileAsync = promisify(execFile);
 
 const DATASET_URLS: Record<string, string> = {
+  arguana: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/arguana.zip',
+  'climate-fever': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/climate-fever.zip',
+  'dbpedia-entity': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/dbpedia-entity.zip',
+  fever: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/fever.zip',
+  fiqa: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/fiqa.zip',
+  hotpotqa: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/hotpotqa.zip',
+  nfcorpus: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip',
+  nq: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nq.zip',
+  quora: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/quora.zip',
   scifact: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip',
+  scidocs: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scidocs.zip',
+  'trec-covid': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/trec-covid.zip',
+  'webis-touche2020': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/webis-touche2020.zip',
 };
 
 const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v1';
+type LexicalUnit = 'chunk' | 'source';
 
 interface Args {
   dataset: string;
   split: string;
   mode: 'lexical';
+  lexicalUnit: LexicalUnit;
   outputDir: string;
   cacheDir: string;
   workspaceRoot: string;
@@ -45,6 +59,8 @@ type BeirConfigKey =
   | 'dataset'
   | 'split'
   | 'mode'
+  | 'lexical_unit'
+  | 'lexicalUnit'
   | 'output_dir'
   | 'outputDir'
   | 'cache_dir'
@@ -84,7 +100,7 @@ interface CorpusPreparation {
 export interface LexicalIndexLike {
   refresh(): Promise<{ added: number; updated: number; removed: number; failed: number; totalFiles: number; totalChunks: number }>;
   save(): Promise<void>;
-  query(query: string, k: number): Promise<Array<{ metadata: Record<string, unknown>; score: number }>>;
+  query(query: string, k: number, options?: { unit?: LexicalUnit; candidateK?: number }): Promise<Array<{ metadata: Record<string, unknown>; score: number }>>;
   numChunks(): number;
   numFiles(): number;
 }
@@ -112,7 +128,7 @@ interface BeirBenchmarkReport {
   };
   mode: Args['mode'];
   ranking: {
-    unit: 'document';
+    unit: LexicalUnit;
     implementation: string;
     trec_run: string;
     k: number;
@@ -204,7 +220,11 @@ export async function runBeirBenchmark(
 
   for (const query of selectedQueries) {
     const started = process.hrtime.bigint();
-    const chunks = await lexicalIndex.query(query.text, args.chunkK);
+    const fetchK = args.lexicalUnit === 'source' ? args.k : args.chunkK;
+    const chunks = await lexicalIndex.query(query.text, fetchK, {
+      unit: args.lexicalUnit,
+      candidateK: args.chunkK,
+    });
     const latency = durationMs(started, process.hrtime.bigint());
     latenciesMs.push(latency);
     const ranking = collapseChunksToDocuments(chunks, prepared.docIdByRelativePath, args.k);
@@ -215,7 +235,7 @@ export async function runBeirBenchmark(
     }
   }
 
-  const runTag = `kb-${args.dataset}-${args.mode}-docrank`;
+  const runTag = `kb-${args.dataset}-${args.mode}-${args.lexicalUnit}`;
   const trecPath = path.join(args.outputDir, `${runTag}-run.trec`);
   const jsonPath = path.join(args.outputDir, `${runTag}-results.json`);
   const reportPath = path.join(args.outputDir, `${runTag}-report.md`);
@@ -225,7 +245,7 @@ export async function runBeirBenchmark(
     schema_version: BENCHMARK_SCHEMA_VERSION,
     generated_at: dependencies.now().toISOString(),
     git_sha: await dependencies.gitSha(process.cwd()),
-    command: ['node', ...process.argv.slice(1)].join(' '),
+    command: formatBenchmarkCommand(args),
     dataset: {
       name: args.dataset,
       split: args.split,
@@ -238,9 +258,11 @@ export async function runBeirBenchmark(
     },
     mode: args.mode,
     ranking: {
-      unit: 'document',
-      implementation: 'LexicalIndex chunk BM25 collapsed by BEIR document id using max chunk score',
-      trec_run: trecPath,
+      unit: args.lexicalUnit,
+      implementation: args.lexicalUnit === 'source'
+        ? 'LexicalIndex source BM25 over whole files, returning one representative chunk per source'
+        : 'LexicalIndex chunk BM25 collapsed by BEIR document id using max chunk score',
+      trec_run: portablePath(trecPath),
       k: args.k,
       chunk_candidate_k: args.chunkK,
     },
@@ -266,13 +288,13 @@ export async function runBeirBenchmark(
     caveats: [
       'This is a local BEIR/SciFact benchmark, not an official leaderboard submission.',
       'Lexical mode requires no provider credentials.',
-      'Scores are document-level after benchmark-only chunk collapse; normal kb search lexical output remains chunk-level.',
+      'Scores are document-level for BEIR qrels; source ranking is the same public lexical unit exposed by kb search --lexical-unit=source.',
       'MLflow logging is not required for JSON/TREC artifacts; optional logging is expected to come from the bench observability hook.',
     ],
   };
 
   await writeJsonFile(jsonPath, report);
-  await fsp.writeFile(reportPath, formatMarkdownReport(report, trecPath, jsonPath), 'utf-8');
+  await fsp.writeFile(reportPath, formatMarkdownReport(report, portablePath(trecPath), portablePath(jsonPath)), 'utf-8');
 
   if (!args.keepWorkspace) {
     await fsp.rm(args.workspaceRoot, { recursive: true, force: true });
@@ -287,6 +309,7 @@ export function parseArgs(argv: string[]): Args {
     dataset: 'scifact',
     split: 'test',
     mode: 'lexical',
+    lexicalUnit: 'source',
     outputDir: path.join(repoRoot, 'benchmarks', 'results'),
     cacheDir: process.env.BEIR_CACHE_DIR ?? path.join(os.tmpdir(), 'kb-beir-cache'),
     workspaceRoot: path.join(os.tmpdir(), `kb-beir-${process.pid}-${Date.now()}`),
@@ -328,6 +351,8 @@ export function parseArgs(argv: string[]): Args {
       const mode = readValue();
       if (mode !== 'lexical') throw new Error('BEIR benchmark currently supports --mode=lexical only');
       args.mode = mode;
+    } else if (flag === '--lexical-unit') {
+      args.lexicalUnit = parseLexicalUnit(readValue(), '--lexical-unit');
     } else if (flag === '--dataset-dir') {
       args.datasetDir = path.resolve(readValue());
     } else if (flag === '--dataset-url') {
@@ -418,6 +443,8 @@ function applyBeirConfig(args: Args, beir: Partial<Record<BeirConfigKey, unknown
       const mode = parseStringConfig(value, 'beir.mode');
       if (mode !== 'lexical') throw new Error('BEIR benchmark currently supports mode=lexical only');
       args.mode = mode;
+    } else if (key === 'lexical_unit' || key === 'lexicalUnit') {
+      args.lexicalUnit = parseLexicalUnit(parseStringConfig(value, `beir.${key}`), `beir.${key}`);
     } else if (key === 'output_dir' || key === 'outputDir') {
       args.outputDir = path.resolve(parseStringConfig(value, `beir.${key}`));
     } else if (key === 'cache_dir' || key === 'cacheDir') {
@@ -707,6 +734,32 @@ function yamlScalar(value: string): string {
   return JSON.stringify(value);
 }
 
+function formatBenchmarkCommand(args: Args): string {
+  const parts = [
+    'node',
+    'build/benchmarks/beir/run.js',
+    `--dataset=${args.dataset}`,
+    `--split=${args.split}`,
+    `--mode=${args.mode}`,
+    `--lexical-unit=${args.lexicalUnit}`,
+    `--output-dir=${portablePath(args.outputDir)}`,
+  ];
+  if (args.datasetDir !== undefined) parts.push(`--dataset-dir=${portablePath(args.datasetDir)}`);
+  if (args.datasetUrl !== undefined) parts.push(`--dataset-url=${args.datasetUrl}`);
+  if (args.k !== 100) parts.push(`--k=${args.k}`);
+  if (args.chunkK !== 1000) parts.push(`--chunk-k=${args.chunkK}`);
+  if (args.maxQueries !== undefined) parts.push(`--max-queries=${args.maxQueries}`);
+  if (args.keepWorkspace) parts.push('--keep-workspace');
+  return parts.join(' ');
+}
+
+function portablePath(filePath: string): string {
+  const relative = path.relative(process.cwd(), filePath);
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
+    ? relative
+    : filePath;
+}
+
 function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jsonPath: string): string {
   const { dataset, latency, metrics } = report;
   return [
@@ -733,10 +786,10 @@ function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jso
     '## Reproduce',
     '',
     '```bash',
-    'npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --output-dir=/tmp/kb-beir-scifact',
+    report.command,
     '```',
     '',
-    'Lexical mode requires no provider credentials. The runner builds a temporary KB corpus and collapses chunk hits to BEIR document IDs for scoring.',
+    'Lexical mode requires no provider credentials. The runner builds a temporary KB corpus and maps kb lexical hits to BEIR document IDs for scoring.',
     '',
   ].join('\n');
 }
@@ -749,6 +802,11 @@ function parsePositiveInteger(raw: string, flag: string): number {
   return parsed;
 }
 
+function parseLexicalUnit(raw: string, label: string): LexicalUnit {
+  if (raw === 'chunk' || raw === 'source') return raw;
+  throw new Error(`${label} must be chunk or source`);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -757,13 +815,14 @@ function helpText(): string {
   return `kb BEIR benchmark runner
 
 Usage:
-  npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --output-dir=/tmp/kb-beir-scifact
+  npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --lexical-unit=source --output-dir=/tmp/kb-beir-scifact
 
 Options:
-  --dataset=<name>       BEIR dataset name. Built-in: scifact.
+  --dataset=<name>       BEIR dataset name. Built-ins: ${Object.keys(DATASET_URLS).sort().join(', ')}.
   --config=<path>        JSON config with env overrides and BEIR runner args.
   --split=<name>         Qrels split under qrels/<split>.tsv. Default: test.
   --mode=lexical         Retrieval mode. Lexical is credential-free.
+  --lexical-unit=<unit>  chunk or source. source maps to kb search --lexical-unit=source. Default: source.
   --dataset-dir=<path>   Existing BEIR directory with corpus.jsonl, queries.jsonl, qrels/.
   --dataset-url=<url>    Zip URL for a custom BEIR-shaped dataset.
   --output-dir=<path>    Directory for metrics JSON, TREC, and Markdown report.

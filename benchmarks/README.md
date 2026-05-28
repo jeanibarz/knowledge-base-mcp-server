@@ -28,11 +28,11 @@ Optional environment variables:
 
 ## BEIR/SciFact local retrieval benchmark
 
-`bench:beir` runs a reproducible local BEIR benchmark, starting with SciFact
-test. It downloads the BEIR zip to a cache, expands `corpus.jsonl`,
-`queries.jsonl`, and `qrels/test.tsv`, converts the corpus into a temporary
-KB root, runs the selected `kb` retrieval primitive, and writes three
-artifacts:
+`bench:beir` runs a reproducible local BEIR benchmark, with built-in dataset
+URLs for SciFact, NFCorpus, FiQA, TREC-COVID, HotpotQA, NQ, and other BEIR
+corpora. It downloads the BEIR zip to a cache, expands `corpus.jsonl`,
+`queries.jsonl`, and `qrels/<split>.tsv`, converts the corpus into a temporary
+KB root, runs the selected `kb` retrieval primitive, and writes three artifacts:
 
 - metrics JSON with `nDCG@10`, `MAP@100`, `Recall@10`, `Recall@100`, latency
   percentiles, git SHA, dataset checksum/source URL, command, runtime, and
@@ -47,6 +47,7 @@ npm run bench:beir -- \
   --dataset=scifact \
   --split=test \
   --mode=lexical \
+  --lexical-unit=source \
   --output-dir=/tmp/kb-beir-scifact
 ```
 
@@ -57,13 +58,15 @@ npm run bench:beir -- \
   --dataset=scifact \
   --split=test \
   --mode=lexical \
+  --lexical-unit=source \
   --max-queries=3 \
   --output-dir=/tmp/kb-beir-scifact-smoke
 ```
 
-The runner uses `LexicalIndex` chunk BM25 and collapses chunk hits to BEIR
-document IDs by max chunk score before writing TREC rows. That collapse is
-benchmark-only; normal `kb search --mode=lexical` behavior remains chunk-level.
+The default `--lexical-unit=source` path ranks whole source files with the same
+BM25 scorer exposed by `kb search --mode=lexical --lexical-unit=source`, then
+returns one representative chunk per source. Use `--lexical-unit=chunk` when you
+need parity with chunk-level lexical search and max-score document collapse.
 Reports should be described as a **local BEIR/SciFact benchmark**, not an
 official BEIR leaderboard result. Optional MLflow logging is not required for
 the JSON/TREC artifacts and can be layered in by the separate bench

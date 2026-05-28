@@ -960,9 +960,47 @@ describe('runSearch timing guard (#331)', () => {
     expect(out.stdout).toContain('7-8');
     expect(out.stdout).toContain('lexical');
     expect(out.stdout).toContain('Lexical heading');
-    expect(out.stdout).toContain('> _Lexical status: 1 KB(s), 0 error(s)._');
+    expect(out.stdout).toContain('> _Lexical status: 1 KB(s), 0 error(s), unit=chunk._');
     expect(out.stdout).not.toContain('## Semantic Search Results');
-    expect(lexicalIndex.query).toHaveBeenCalledWith('query', 10);
+    expect(lexicalIndex.query).toHaveBeenCalledWith('query', 10, { unit: 'chunk' });
+  });
+
+  it('wires --lexical-unit=source through lexical search JSON output', async () => {
+    const lexicalIndex = {
+      numFiles: () => 1,
+      refresh: jest.fn(),
+      save: jest.fn(),
+      query: jest.fn(async () => [
+        {
+          pageContent: 'Source-ranked chunk',
+          metadata: {
+            source: '/kb/alpha/source.md',
+            knowledgeBase: 'alpha',
+            relativePath: 'alpha/source.md',
+            chunkIndex: 0,
+          },
+          score: 8.5,
+        },
+      ]),
+    } as unknown as LexicalIndex;
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => ({} as FaissIndexManager)),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      loadLexicalIndex: jest.fn(async () => lexicalIndex),
+    };
+
+    const out = await captureSearchOutput(
+      ['query', '--mode=lexical', '--lexical-unit=source', '--format=json'],
+      deps,
+    );
+
+    expect(out.code).toBe(0);
+    const payload = JSON.parse(out.stdout) as { lexical: { unit: string } };
+    expect(payload.lexical.unit).toBe('source');
+    expect(lexicalIndex.query).toHaveBeenCalledWith('query', 10, { unit: 'source' });
   });
 
   it('renders compact hybrid search output with hybrid status and rerank footer', async () => {
@@ -1033,13 +1071,14 @@ describe('runSearch timing guard (#331)', () => {
       expect(out.stdout).toContain('hybrid');
       expect(out.stdout).toContain('Hybrid lexical winner');
       expect(out.stdout).toContain('9-12');
-      expect(out.stdout).toContain('> _Hybrid status: dense 1, lexical 1, refreshed 1, failed 0, RRF c=60._');
+      expect(out.stdout).toContain('> _Hybrid status: dense 1, lexical 1 (chunk), refreshed 1, failed 0, RRF c=60._');
       expect(out.stdout).toContain('> _Rerank: stub-reranker; rescored 2 candidate(s), cache hits 0._');
       expect(out.stdout).toContain('> _Timing (hybrid):');
       expect(out.stdout).not.toContain('## Semantic Search Results');
       expect(deps.runLexicalLeg).toHaveBeenCalledWith(expect.objectContaining({
         query: 'query',
         fetchK: 4,
+        rankingUnit: 'chunk',
       }));
     } finally {
       restoreFactory();
@@ -1048,6 +1087,40 @@ describe('runSearch timing guard (#331)', () => {
       if (previousTopN === undefined) delete process.env.KB_RERANK_TOP_N;
       else process.env.KB_RERANK_TOP_N = previousTopN;
     }
+  });
+
+  it('wires --lexical-unit=source through hybrid lexical leg', async () => {
+    const manager = {
+      modelDir: '/tmp/kb-test-model',
+      initialize: jest.fn(async () => {}),
+      updateIndex: jest.fn(async () => {}),
+      similaritySearch: jest.fn(async () => []),
+    } as unknown as FaissIndexManager;
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      runLexicalLeg: jest.fn(async () => ({
+        refreshed: 0,
+        failed: 0,
+        hits: [],
+      })),
+    };
+
+    const out = await captureSearchOutput(
+      ['query', '--mode=hybrid', '--lexical-unit=source', '--format=json', '--no-freshness'],
+      deps,
+    );
+
+    expect(out.code).toBe(0);
+    const payload = JSON.parse(out.stdout) as { retrievers: { lexical: { unit: string } } };
+    expect(payload.retrievers.lexical.unit).toBe('source');
+    expect(deps.runLexicalLeg).toHaveBeenCalledWith(expect.objectContaining({
+      query: 'query',
+      rankingUnit: 'source',
+    }));
   });
 
   it('includes gate_verdict in JSON output when --gate is used', async () => {

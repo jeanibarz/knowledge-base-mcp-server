@@ -31,8 +31,7 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { Document } from '@langchain/core/documents';
-import { BM25Retriever } from '@langchain/community/retrievers/bm25';
+import type { Document } from '@langchain/core/documents';
 import { FAISS_INDEX_PATH } from './config/paths.js';
 import { INGEST_EXCLUDE_PATHS, INGEST_EXTRA_EXTENSIONS } from './config/ingest.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
@@ -43,6 +42,7 @@ import { enumerateIngestableKbFiles } from './kb-fs.js';
 import { loadFile } from './loaders.js';
 import { logger } from './logger.js';
 import { toError } from './error-utils.js';
+import { LexicalBm25Ranker, type LexicalBm25Record } from './lexical-bm25.js';
 
 // RFC 017 §3 — schema v2 splits BM25 scoring text from caller-output
 // text. v1 (pre-RFC-017) stored `pageContent` as both. v2 adds an
@@ -93,6 +93,26 @@ export interface LexicalSearchResult {
   score: number;
 }
 
+export type LexicalRankingUnit = 'chunk' | 'source';
+
+export interface LexicalQueryOptions {
+  /**
+   * `chunk` ranks individual chunks and preserves the original debug surface.
+   * `source` ranks a whole source file, then returns the best matching chunk
+   * from each winning source. The source unit is useful for document-style
+   * retrieval and for avoiding duplicate chunks from one file consuming top-k.
+   */
+  unit?: LexicalRankingUnit;
+  /**
+   * Candidate chunks to inspect when `unit=source` selects a representative
+   * chunk. Defaults to `max(k * 4, k)`.
+   */
+  candidateK?: number;
+}
+
+type ChunkRecordItem = { relPath: string; chunk: SerializedDocument };
+type SourceRecordItem = { relPath: string; firstChunk: SerializedDocument };
+
 function lexicalRootDir(): string {
   return path.join(FAISS_INDEX_PATH, 'lexical');
 }
@@ -128,6 +148,8 @@ export class LexicalIndex {
     public readonly kbName: string,
     public readonly kbPath: string,
     private entries: Map<string, FileEntry>,
+    private chunkRankerCache: LexicalBm25Ranker<ChunkRecordItem> | null = null,
+    private sourceRankerCache: LexicalBm25Ranker<SourceRecordItem> | null = null,
   ) {}
 
   static async load(kbName: string, kbPath: string): Promise<LexicalIndex> {
@@ -295,6 +317,8 @@ export class LexicalIndex {
       chunkCount += entry.chunks.length;
     }
     summary.totalChunks = chunkCount;
+    this.chunkRankerCache = null;
+    this.sourceRankerCache = null;
     return summary;
   }
 
@@ -321,56 +345,17 @@ export class LexicalIndex {
   }
 
   /**
-   * BM25 top-k. Reconstructs a flat `Document[]` from the per-file entries
-   * and instantiates a fresh `BM25Retriever`. The retriever recomputes
-   * scores from scratch on every call (LangChain BM25 is non-incremental),
-   * so cost scales O(N chunks × query terms). For stage 1 this is
-   * acceptable; future optimization (precomputed inverted index) is
-   * deliberately out of scope per #206 §"Out of scope for this RFC".
-   *
-   * Case folding. `BM25Retriever.preprocessFunc` lowercases the query but
-   * NOT the documents (verified in
-   * `node_modules/@langchain/community/dist/retrievers/bm25.js`), so a
-   * case-mismatched exact-token query — which is the whole point of
-   * shipping BM25 — never matches. We compensate by lowercasing the
-   * pageContent we feed to BM25 while keeping the original chunk for
-   * output. An `_orig_idx` metadata stamp threads the mapping. Tokenizer
-   * tuning (stemming, camelCase splitting) is deferred per #206 risks.
+   * BM25 top-k over the persisted lexical index. `unit=chunk` ranks each
+   * chunk independently. `unit=source` ranks each source file as a document
+   * and returns one representative chunk per source, which avoids duplicate
+   * chunks wasting the top-k budget for document-shaped retrieval.
    */
-  async query(query: string, k: number): Promise<LexicalSearchResult[]> {
-    const originals: SerializedDocument[] = [];
-    const flat: Document[] = [];
-    for (const entry of this.entries.values()) {
-      for (const chunk of entry.chunks) {
-        const idx = originals.length;
-        originals.push(chunk);
-        // RFC 017 §3 — BM25 scores against `searchText` when present
-        // (preface-prepended), otherwise against `pageContent`. The
-        // output path always returns the original `pageContent`, threaded
-        // via the `_orig_idx` mapping.
-        const scoringText = chunk.searchText ?? chunk.pageContent;
-        flat.push(new Document({
-          pageContent: scoringText.toLowerCase(),
-          metadata: { _orig_idx: idx },
-        }));
-      }
-    }
-    if (flat.length === 0 || k <= 0) {
-      return [];
-    }
-
-    const retriever = BM25Retriever.fromDocuments(flat, { k, includeScore: true });
-    const docs = await retriever.invoke(query);
-    return docs.map((doc) => {
-      const meta = (doc.metadata ?? {}) as Record<string, unknown> & { bm25Score?: number; _orig_idx?: number };
-      const origIdx = typeof meta._orig_idx === 'number' ? meta._orig_idx : 0;
-      const orig = originals[origIdx];
-      return {
-        pageContent: orig.pageContent,
-        metadata: orig.metadata,
-        score: typeof meta.bm25Score === 'number' ? meta.bm25Score : 0,
-      };
-    });
+  async query(query: string, k: number, options: LexicalQueryOptions = {}): Promise<LexicalSearchResult[]> {
+    if (k <= 0 || this.entries.size === 0) return [];
+    const unit = options.unit ?? 'chunk';
+    return unit === 'source'
+      ? this.querySources(query, k, options.candidateK)
+      : this.queryChunks(query, k);
   }
 
   numFiles(): number {
@@ -382,4 +367,85 @@ export class LexicalIndex {
     for (const entry of this.entries.values()) n += entry.chunks.length;
     return n;
   }
+
+  private queryChunks(query: string, k: number): LexicalSearchResult[] {
+    const ranked = this.chunkRanker().query(query, k);
+    return ranked.map(({ item, score }) => ({
+      pageContent: item.chunk.pageContent,
+      metadata: item.chunk.metadata,
+      score,
+    }));
+  }
+
+  private querySources(query: string, k: number, candidateK: number | undefined): LexicalSearchResult[] {
+    const rankedSources = this.sourceRanker().query(query, k);
+    if (rankedSources.length === 0) return [];
+
+    const chunkCandidateK = Math.max(candidateK ?? k * 4, k, this.numChunks());
+    const rankedChunks = this.chunkRanker().query(query, chunkCandidateK);
+    const bestChunkByRelPath = new Map<string, SerializedDocument>();
+    for (const { item } of rankedChunks) {
+      if (!bestChunkByRelPath.has(item.relPath)) {
+        bestChunkByRelPath.set(item.relPath, item.chunk);
+      }
+    }
+
+    return rankedSources.map(({ item, score }) => {
+      const chunk = bestChunkByRelPath.get(item.relPath) ?? item.firstChunk;
+      return {
+        pageContent: chunk.pageContent,
+        metadata: {
+          ...chunk.metadata,
+          lexicalRankingUnit: 'source',
+          lexicalSourceScore: score,
+        },
+        score,
+      };
+    });
+  }
+
+  private chunkRanker(): LexicalBm25Ranker<ChunkRecordItem> {
+    this.chunkRankerCache ??= LexicalBm25Ranker.fromRecords(this.chunkRecords());
+    return this.chunkRankerCache;
+  }
+
+  private sourceRanker(): LexicalBm25Ranker<SourceRecordItem> {
+    this.sourceRankerCache ??= LexicalBm25Ranker.fromRecords(this.sourceRecords());
+    return this.sourceRankerCache;
+  }
+
+  private chunkRecords(): Array<LexicalBm25Record<ChunkRecordItem>> {
+    const records: Array<LexicalBm25Record<ChunkRecordItem>> = [];
+    for (const [relPath, entry] of this.entries) {
+      for (const chunk of entry.chunks) {
+        records.push({
+          item: { relPath, chunk },
+          title: titleFromMetadata(chunk.metadata) ?? path.basename(relPath, path.extname(relPath)),
+          text: chunk.searchText ?? chunk.pageContent,
+        });
+      }
+    }
+    return records;
+  }
+
+  private sourceRecords(): Array<LexicalBm25Record<SourceRecordItem>> {
+    const records: Array<LexicalBm25Record<SourceRecordItem>> = [];
+    for (const [relPath, entry] of this.entries) {
+      const firstChunk = entry.chunks[0];
+      if (firstChunk === undefined) continue;
+      records.push({
+        item: { relPath, firstChunk },
+        title: titleFromMetadata(firstChunk.metadata) ?? path.basename(relPath, path.extname(relPath)),
+        text: entry.chunks.map((chunk) => chunk.searchText ?? chunk.pageContent).join('\n\n'),
+      });
+    }
+    return records;
+  }
+}
+
+function titleFromMetadata(metadata: Record<string, unknown>): string | undefined {
+  const frontmatter = metadata.frontmatter;
+  if (!isPlainObject(frontmatter)) return undefined;
+  const title = frontmatter.title;
+  return typeof title === 'string' && title.trim() !== '' ? title : undefined;
 }
