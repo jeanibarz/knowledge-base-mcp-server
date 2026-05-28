@@ -15,20 +15,37 @@ import {
   type RankedDocument,
   type QueryMetric,
 } from './metrics.js';
+import { DocumentBm25Ranker, type BeirDocument } from './document-bm25.js';
 import { durationMs, ensureDirectory, gitSha, resetDirectory, writeJsonFile } from '../utils.js';
 
 const execFileAsync = promisify(execFile);
 
 const DATASET_URLS: Record<string, string> = {
+  arguana: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/arguana.zip',
+  'climate-fever': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/climate-fever.zip',
+  'dbpedia-entity': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/dbpedia-entity.zip',
+  fever: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/fever.zip',
+  fiqa: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/fiqa.zip',
+  hotpotqa: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/hotpotqa.zip',
+  nfcorpus: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip',
+  nq: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nq.zip',
+  quora: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/quora.zip',
   scifact: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip',
+  scidocs: 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scidocs.zip',
+  'trec-covid': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/trec-covid.zip',
+  'webis-touche2020': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/webis-touche2020.zip',
 };
 
 const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v1';
+const DEFAULT_BM25_K1 = 0.6;
+const DEFAULT_BM25_B = 0.9;
+const DEFAULT_TITLE_WEIGHT = 1;
 
 interface Args {
   dataset: string;
   split: string;
   mode: 'lexical';
+  lexicalUnit: 'document' | 'chunk';
   outputDir: string;
   cacheDir: string;
   workspaceRoot: string;
@@ -36,11 +53,14 @@ interface Args {
   datasetUrl?: string;
   k: number;
   chunkK: number;
+  bm25K1: number;
+  bm25B: number;
+  titleWeight: number;
   maxQueries?: number;
   keepWorkspace: boolean;
 }
 
-interface BeirCorpusRow {
+interface BeirCorpusRow extends BeirDocument {
   _id: string;
   title?: string;
   text?: string;
@@ -55,7 +75,6 @@ interface CorpusPreparation {
   kbName: string;
   kbPath: string;
   docIdByRelativePath: Map<string, string>;
-  documents: number;
 }
 
 export interface LexicalIndexLike {
@@ -91,9 +110,16 @@ interface BeirBenchmarkReport {
   ranking: {
     unit: 'document';
     implementation: string;
+    lexical_unit: Args['lexicalUnit'];
     trec_run: string;
     k: number;
     chunk_candidate_k: number;
+    bm25?: {
+      k1: number;
+      b: number;
+      title_weight: number;
+      tokenizer: string;
+    };
   };
   chunking: {
     KB_CHUNK_SIZE: string | null;
@@ -154,26 +180,58 @@ export async function runBeirBenchmark(
   await resetDirectory(args.workspaceRoot);
 
   const dataset = await ensureDataset(args);
+  const corpus = await readJsonlFile<BeirCorpusRow>(path.join(dataset.datasetDir, 'corpus.jsonl'));
   const queries = await readJsonlFile<BeirQueryRow>(path.join(dataset.datasetDir, 'queries.jsonl'));
   const qrelsPath = path.join(dataset.datasetDir, 'qrels', `${args.split}.tsv`);
   const qrels = parseQrelsTsv(await fsp.readFile(qrelsPath, 'utf-8'));
   const selectedQueries = selectQueries(queries, qrels, args.maxQueries);
 
-  const knowledgeBasesRootDir = path.join(args.workspaceRoot, 'knowledge-bases');
-  const faissIndexPath = path.join(args.workspaceRoot, '.faiss');
-  const prepared = await prepareCorpus({
-    datasetName: args.dataset,
-    datasetDir: dataset.datasetDir,
-    knowledgeBasesRootDir,
-  });
+  let refresh: Awaited<ReturnType<LexicalIndexLike['refresh']>>;
+  let indexMs = 0;
+  let files = corpus.length;
+  let chunks = corpus.length;
+  let queryDocuments: (query: BeirQueryRow) => Promise<RankedDocument[]>;
 
-  configureBenchmarkEnvironment(knowledgeBasesRootDir, faissIndexPath);
-  await dependencies.silenceServerLogger(path.join(process.cwd(), 'build'));
-  const lexicalIndex = await dependencies.loadLexicalIndex(path.join(process.cwd(), 'build'), prepared.kbName, prepared.kbPath);
-  const indexStarted = process.hrtime.bigint();
-  const refresh = await lexicalIndex.refresh();
-  await lexicalIndex.save();
-  const indexMs = durationMs(indexStarted, process.hrtime.bigint());
+  if (args.lexicalUnit === 'document') {
+    const indexStarted = process.hrtime.bigint();
+    const ranker = DocumentBm25Ranker.fromCorpus(corpus, {
+      k1: args.bm25K1,
+      b: args.bm25B,
+      titleWeight: args.titleWeight,
+    });
+    indexMs = durationMs(indexStarted, process.hrtime.bigint());
+    refresh = {
+      added: corpus.length,
+      updated: 0,
+      removed: 0,
+      failed: 0,
+      totalFiles: corpus.length,
+      totalChunks: corpus.length,
+    };
+    queryDocuments = async (query) => ranker.query(query.text, args.k);
+  } else {
+    const knowledgeBasesRootDir = path.join(args.workspaceRoot, 'knowledge-bases');
+    const faissIndexPath = path.join(args.workspaceRoot, '.faiss');
+    const prepared = await prepareCorpus({
+      datasetName: args.dataset,
+      corpus,
+      knowledgeBasesRootDir,
+    });
+
+    configureBenchmarkEnvironment(knowledgeBasesRootDir, faissIndexPath);
+    await dependencies.silenceServerLogger(path.join(process.cwd(), 'build'));
+    const lexicalIndex = await dependencies.loadLexicalIndex(path.join(process.cwd(), 'build'), prepared.kbName, prepared.kbPath);
+    const indexStarted = process.hrtime.bigint();
+    refresh = await lexicalIndex.refresh();
+    await lexicalIndex.save();
+    indexMs = durationMs(indexStarted, process.hrtime.bigint());
+    files = lexicalIndex.numFiles();
+    chunks = lexicalIndex.numChunks();
+    queryDocuments = async (query) => {
+      const chunkResults = await lexicalIndex.query(query.text, args.chunkK);
+      return collapseChunksToDocuments(chunkResults, prepared.docIdByRelativePath, args.k);
+    };
+  }
 
   const queryRows: Array<{ queryId: string; ranking: RankedDocument[] }> = [];
   const perQuery: QueryMetric[] = [];
@@ -181,10 +239,9 @@ export async function runBeirBenchmark(
 
   for (const query of selectedQueries) {
     const started = process.hrtime.bigint();
-    const chunks = await lexicalIndex.query(query.text, args.chunkK);
+    const ranking = await queryDocuments(query);
     const latency = durationMs(started, process.hrtime.bigint());
     latenciesMs.push(latency);
-    const ranking = collapseChunksToDocuments(chunks, prepared.docIdByRelativePath, args.k);
     queryRows.push({ queryId: query._id, ranking });
     const scored = scoreQuery(query._id, ranking, qrels);
     if (scored !== null) {
@@ -192,7 +249,7 @@ export async function runBeirBenchmark(
     }
   }
 
-  const runTag = `kb-${args.dataset}-${args.mode}-docrank`;
+  const runTag = `kb-${args.dataset}-${args.mode}-${args.lexicalUnit}-docrank`;
   const trecPath = path.join(args.outputDir, `${runTag}-run.trec`);
   const jsonPath = path.join(args.outputDir, `${runTag}-results.json`);
   const reportPath = path.join(args.outputDir, `${runTag}-report.md`);
@@ -208,7 +265,7 @@ export async function runBeirBenchmark(
       split: args.split,
       source_url: dataset.sourceUrl,
       checksum_sha256: dataset.checksumSha256,
-      corpus_documents: prepared.documents,
+      corpus_documents: corpus.length,
       queries_total: queries.length,
       qrels_queries: qrels.byQuery.size,
       queries_evaluated: selectedQueries.length,
@@ -216,10 +273,19 @@ export async function runBeirBenchmark(
     mode: args.mode,
     ranking: {
       unit: 'document',
-      implementation: 'LexicalIndex chunk BM25 collapsed by BEIR document id using max chunk score',
+      implementation: args.lexicalUnit === 'document'
+        ? 'Benchmark-only document-level BM25 over BEIR title+text fields'
+        : 'LexicalIndex chunk BM25 collapsed by BEIR document id using max chunk score',
+      lexical_unit: args.lexicalUnit,
       trec_run: trecPath,
       k: args.k,
       chunk_candidate_k: args.chunkK,
+      bm25: args.lexicalUnit === 'document' ? {
+        k1: args.bm25K1,
+        b: args.bm25B,
+        title_weight: args.titleWeight,
+        tokenizer: 'lowercase regex /[a-z0-9]+/',
+      } : undefined,
     },
     chunking: {
       KB_CHUNK_SIZE: process.env.KB_CHUNK_SIZE ?? null,
@@ -234,16 +300,18 @@ export async function runBeirBenchmark(
     indexing: {
       ms: Number(indexMs.toFixed(3)),
       refresh,
-      files: lexicalIndex.numFiles(),
-      chunks: lexicalIndex.numChunks(),
+      files,
+      chunks,
     },
     metrics: aggregateQueryMetrics(perQuery),
     latency: summarizeLatencies(latenciesMs),
     per_query: perQuery,
     caveats: [
-      'This is a local BEIR/SciFact benchmark, not an official leaderboard submission.',
+      `This is a local BEIR/${args.dataset} benchmark, not an official leaderboard submission.`,
       'Lexical mode requires no provider credentials.',
-      'Scores are document-level after benchmark-only chunk collapse; normal kb search lexical output remains chunk-level.',
+      args.lexicalUnit === 'document'
+        ? 'Document lexical unit is benchmark-only and does not change normal kb search --mode=lexical behavior.'
+        : 'Scores are document-level after benchmark-only chunk collapse; normal kb search lexical output remains chunk-level.',
       'MLflow logging is not required for JSON/TREC artifacts; optional logging is expected to come from the bench observability hook.',
     ],
   };
@@ -264,11 +332,15 @@ export function parseArgs(argv: string[]): Args {
     dataset: 'scifact',
     split: 'test',
     mode: 'lexical',
+    lexicalUnit: 'document',
     outputDir: path.join(repoRoot, 'benchmarks', 'results'),
     cacheDir: process.env.BEIR_CACHE_DIR ?? path.join(os.tmpdir(), 'kb-beir-cache'),
     workspaceRoot: path.join(os.tmpdir(), `kb-beir-${process.pid}-${Date.now()}`),
     k: 100,
     chunkK: 1000,
+    bm25K1: DEFAULT_BM25_K1,
+    bm25B: DEFAULT_BM25_B,
+    titleWeight: DEFAULT_TITLE_WEIGHT,
     keepWorkspace: false,
   };
 
@@ -293,6 +365,12 @@ export function parseArgs(argv: string[]): Args {
       const mode = readValue();
       if (mode !== 'lexical') throw new Error('BEIR benchmark currently supports --mode=lexical only');
       args.mode = mode;
+    } else if (flag === '--lexical-unit') {
+      const unit = readValue();
+      if (unit !== 'document' && unit !== 'chunk') {
+        throw new Error('--lexical-unit must be document or chunk');
+      }
+      args.lexicalUnit = unit;
     } else if (flag === '--dataset-dir') {
       args.datasetDir = path.resolve(readValue());
     } else if (flag === '--dataset-url') {
@@ -307,6 +385,12 @@ export function parseArgs(argv: string[]): Args {
       args.k = parsePositiveInteger(readValue(), '--k');
     } else if (flag === '--chunk-k') {
       args.chunkK = parsePositiveInteger(readValue(), '--chunk-k');
+    } else if (flag === '--bm25-k1') {
+      args.bm25K1 = parsePositiveNumber(readValue(), '--bm25-k1');
+    } else if (flag === '--bm25-b') {
+      args.bm25B = parseUnitInterval(readValue(), '--bm25-b');
+    } else if (flag === '--title-weight') {
+      args.titleWeight = parsePositiveInteger(readValue(), '--title-weight');
     } else if (flag === '--max-queries') {
       args.maxQueries = parsePositiveInteger(readValue(), '--max-queries');
     } else if (flag === '--keep-workspace') {
@@ -320,7 +404,7 @@ export function parseArgs(argv: string[]): Args {
   }
 
   if (!Object.hasOwn(DATASET_URLS, args.dataset) && args.datasetDir === undefined && args.datasetUrl === undefined) {
-    throw new Error(`unsupported dataset "${args.dataset}"; pass --dataset-dir or --dataset-url for custom BEIR data`);
+    throw new Error(`unsupported dataset "${args.dataset}"; built-in datasets: ${builtInDatasets()}; pass --dataset-dir or --dataset-url for custom BEIR data`);
   }
   args.chunkK = Math.max(args.chunkK, args.k);
   return args;
@@ -404,16 +488,15 @@ function isAncestorPath(parent: string, child: string): boolean {
 
 async function prepareCorpus(options: {
   datasetName: string;
-  datasetDir: string;
+  corpus: readonly BeirCorpusRow[];
   knowledgeBasesRootDir: string;
 }): Promise<CorpusPreparation> {
   const kbName = options.datasetName;
   const kbPath = path.join(options.knowledgeBasesRootDir, kbName);
   await resetDirectory(kbPath);
-  const corpus = await readJsonlFile<BeirCorpusRow>(path.join(options.datasetDir, 'corpus.jsonl'));
   const docIdByRelativePath = new Map<string, string>();
   let index = 0;
-  for (const row of corpus) {
+  for (const row of options.corpus) {
     const fileName = safeDocFileName(row._id, index);
     const relativePath = `${kbName}/${fileName}`;
     docIdByRelativePath.set(relativePath, row._id);
@@ -430,7 +513,7 @@ async function prepareCorpus(options: {
     await fsp.writeFile(path.join(kbPath, fileName), body, 'utf-8');
     index += 1;
   }
-  return { kbName, kbPath, docIdByRelativePath, documents: corpus.length };
+  return { kbName, kbPath, docIdByRelativePath };
 }
 
 function selectQueries(queries: readonly BeirQueryRow[], qrels: Qrels, maxQueries?: number): BeirQueryRow[] {
@@ -601,10 +684,12 @@ function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jso
     '## Reproduce',
     '',
     '```bash',
-    'npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --output-dir=/tmp/kb-beir-scifact',
+    `npm run bench:beir -- --dataset=${dataset.name} --split=${dataset.split} --mode=${report.mode} --lexical-unit=${report.ranking.lexical_unit} --output-dir=/tmp/kb-beir-${dataset.name}`,
     '```',
     '',
-    'Lexical mode requires no provider credentials. The runner builds a temporary KB corpus and collapses chunk hits to BEIR document IDs for scoring.',
+    report.ranking.lexical_unit === 'document'
+      ? 'Lexical document mode requires no provider credentials and scores BEIR title+text as documents.'
+      : 'Lexical chunk mode requires no provider credentials. The runner builds a temporary KB corpus and collapses chunk hits to BEIR document IDs for scoring.',
     '',
   ].join('\n');
 }
@@ -615,6 +700,26 @@ function parsePositiveInteger(raw: string, flag: string): number {
     throw new Error(`${flag} must be a positive integer`);
   }
   return parsed;
+}
+
+function parsePositiveNumber(raw: string, flag: string): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${flag} must be a positive number`);
+  }
+  return parsed;
+}
+
+function parseUnitInterval(raw: string, flag: string): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`${flag} must be a number between 0 and 1`);
+  }
+  return parsed;
+}
+
+function builtInDatasets(): string {
+  return Object.keys(DATASET_URLS).sort().join(', ');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -628,9 +733,10 @@ Usage:
   npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --output-dir=/tmp/kb-beir-scifact
 
 Options:
-  --dataset=<name>       BEIR dataset name. Built-in: scifact.
+  --dataset=<name>       BEIR dataset name. See built-in list below.
   --split=<name>         Qrels split under qrels/<split>.tsv. Default: test.
   --mode=lexical         Retrieval mode. Lexical is credential-free.
+  --lexical-unit=<unit>  document (default) or chunk. Document is benchmark-only BM25.
   --dataset-dir=<path>   Existing BEIR directory with corpus.jsonl, queries.jsonl, qrels/.
   --dataset-url=<url>    Zip URL for a custom BEIR-shaped dataset.
   --output-dir=<path>    Directory for metrics JSON, TREC, and Markdown report.
@@ -638,8 +744,14 @@ Options:
   --workspace-root=<p>   Temporary KB/index workspace. Removed unless --keep-workspace.
   --k=<n>                Document run depth. Default: 100.
   --chunk-k=<n>          Lexical chunk candidates before doc collapse. Default: 1000.
+  --bm25-k1=<n>          Document BM25 k1. Default: ${DEFAULT_BM25_K1}.
+  --bm25-b=<n>           Document BM25 b in [0,1]. Default: ${DEFAULT_BM25_B}.
+  --title-weight=<n>     Document BM25 title repetition weight. Default: ${DEFAULT_TITLE_WEIGHT}.
   --max-queries=<n>      Deterministic smoke-test subset.
   --keep-workspace       Keep the temporary KB/index workspace for inspection.
+
+Built-in datasets:
+  ${builtInDatasets()}
 `;
 }
 

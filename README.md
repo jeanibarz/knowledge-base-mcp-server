@@ -150,20 +150,21 @@ The MCP server (`knowledge-base-mcp-server` bin) is unchanged and still works wi
 
 ### Local retrieval benchmarks
 
-Use `npm run bench:beir` to run a local BEIR/SciFact benchmark with
+Use `npm run bench:beir` to run a local BEIR document-ranking benchmark with
 credential-free lexical retrieval:
 
 ```bash
-npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --output-dir=/tmp/kb-beir-scifact
+npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --lexical-unit=document --output-dir=/tmp/kb-beir-scifact
 ```
 
-The runner builds a temporary KB root, emits metrics JSON plus a TREC run file,
-and records reproduction metadata such as git SHA, command, dataset checksum,
-runtime versions, chunking config, and latency percentiles. These are local
-benchmark artifacts, not official BEIR leaderboard submissions; the current
-lexical path is scored at document level by benchmark-only chunk collapse while
+The default document lexical unit uses benchmark-only BM25 over BEIR title+text
+fields. Use `--lexical-unit=chunk` to reproduce the normal temporary-KB
+LexicalIndex path with document-id collapse. The runner emits metrics JSON plus
+a TREC run file and records reproduction metadata such as git SHA, command,
+dataset checksum, runtime versions, chunking config, and latency percentiles.
+These are local benchmark artifacts, not official BEIR leaderboard submissions;
 normal `kb search --mode=lexical` remains chunk-level. See
-[benchmarks/README.md](benchmarks/README.md#beirscifact-local-retrieval-benchmark)
+[benchmarks/README.md](benchmarks/README.md#beir-local-retrieval-benchmark)
 for smoke-test commands and caveats.
 
 ### Local LLM answers (RFC 015)
