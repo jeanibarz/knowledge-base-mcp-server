@@ -48,7 +48,7 @@ import {
   recordRefreshProgressTiming,
   type TimingPayload,
 } from './timing-core.js';
-import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
+import { LexicalIndex, type LexicalRankingUnit, type LexicalSearchResult } from './lexical-index.js';
 import {
   HYBRID_RRF_C,
   fuseHybridResultsWithDiagnostics,
@@ -146,6 +146,10 @@ Result tuning:
   --mode=dense|lexical|hybrid|auto
                         Retrieval mode (default: dense). \`hybrid\` fuses
                         dense + BM25 via reciprocal rank fusion (#206).
+  --lexical-unit=chunk|source
+                        BM25 ranking unit for lexical and hybrid modes.
+                        chunk ranks each chunk; source ranks each source file
+                        and returns its best matching chunk (default: chunk).
   --context-before=<n>  Include up to n preceding chunks from the same source
                         around each dense semantic match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
   --context-after=<n>   Include up to n following chunks from the same source
@@ -222,6 +226,7 @@ Examples:
   kb search "rollback procedure"
   kb search "deploy" --kb=work --k=5
   kb search "INDEX_NOT_INITIALIZED" --mode=lexical --refresh
+  kb search "retrieval benchmarks" --mode=lexical --lexical-unit=source
   kb search "INDEX_NOT_INITIALIZED" --mode=hybrid
   kb search "src/cli.ts" --mode=auto --timing
   kb search "retrieval safety" --diverse --format=json
@@ -274,6 +279,7 @@ interface SearchArgs {
   minusQueries: string[];
   taskContext?: string;
   taskContextFile?: string;
+  lexicalUnit: LexicalRankingUnit;
 }
 
 export interface RunSearchDeps {
@@ -776,6 +782,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     antiQueries: [],
     plusQueries: [],
     minusQueries: [],
+    lexicalUnit: 'chunk',
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
@@ -836,6 +843,13 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
         throw new Error(`invalid --mode: ${raw} (expected 'dense', 'lexical', 'hybrid', or 'auto')`);
       }
       out.mode = v; continue;
+    }
+    if (raw.startsWith('--lexical-unit=')) {
+      const v = raw.slice('--lexical-unit='.length);
+      if (v !== 'chunk' && v !== 'source') {
+        throw new Error(`invalid --lexical-unit: ${raw} (expected 'chunk' or 'source')`);
+      }
+      out.lexicalUnit = v; continue;
     }
     if (raw.startsWith('--threshold=')) {
       const v = raw.slice('--threshold='.length);
@@ -1954,7 +1968,7 @@ async function runLexicalSearch(
 
     let hits: LexicalSearchResult[];
     try {
-      hits = await index.query(query, parsed.k);
+      hits = await index.query(query, parsed.k, { unit: parsed.lexicalUnit });
     } catch (err) {
       perKb.push({ kbName, kbPath, refreshSummary, hits: [], error: err as Error });
       continue;
@@ -2017,6 +2031,7 @@ async function runLexicalSearch(
           : null,
         error: r.error ? r.error.message : null,
       })),
+      lexical: { unit: parsed.lexicalUnit },
       ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
@@ -2033,7 +2048,7 @@ async function runLexicalSearch(
       gate: 'bypassed',
       width: process.stdout.columns,
     })}\n`;
-    const summary = `${perKb.length} KB(s), ${errors.length} error(s)`;
+    const summary = `${perKb.length} KB(s), ${errors.length} error(s), unit=${parsed.lexicalUnit}`;
     output += `> _Lexical status: ${summary}._\n`;
     if (timing) {
       output += `${formatTimingFooter('Timing', timing)}\n`;
@@ -2044,7 +2059,7 @@ async function runLexicalSearch(
     if (autoModeDecision) {
       output += `${formatAutoModeHeader(autoModeDecision)}\n\n`;
     }
-    output += `> _Mode: lexical (BM25). Stage 1 — debug surface; see #206._\n\n`;
+    output += `> _Mode: lexical (BM25, unit=${parsed.lexicalUnit}). Stage 1 — debug surface; see #206._\n\n`;
     if (formatted.length === 0) {
       output += `_No matches._\n\n`;
     } else {
@@ -2170,6 +2185,7 @@ async function runHybridSearch(
     query,
     fetchK,
     refresh: parsed.refresh ? 'always' : 'when-empty',
+    rankingUnit: parsed.lexicalUnit,
     onError: (kbName, err) => {
       process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${err.message}\n`);
     },
@@ -2259,7 +2275,12 @@ async function runHybridSearch(
       results: formatRetrievalAsJson(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI),
       retrievers: {
         dense: { fetched: denseResults.length, model: activeModelId },
-        lexical: { fetched: lexicalResults.length, refreshed: lexicalResultsRow.refreshed, failed: lexicalResultsRow.failed },
+        lexical: {
+          fetched: lexicalResults.length,
+          refreshed: lexicalResultsRow.refreshed,
+          failed: lexicalResultsRow.failed,
+          unit: parsed.lexicalUnit,
+        },
       },
       rrf: { c: HYBRID_RRF_C, fetch_k: fetchK },
       rerank: {
@@ -2287,7 +2308,7 @@ async function runHybridSearch(
       gate: compactGateMarker(gateVerdict),
       width: process.stdout.columns,
     })}\n`;
-    output += `> _Hybrid status: dense ${denseResults.length}, lexical ${lexicalResults.length}, refreshed ${lexicalResultsRow.refreshed}, failed ${lexicalResultsRow.failed}, RRF c=${HYBRID_RRF_C}._\n`;
+    output += `> _Hybrid status: dense ${denseResults.length}, lexical ${lexicalResults.length} (${parsed.lexicalUnit}), refreshed ${lexicalResultsRow.refreshed}, failed ${lexicalResultsRow.failed}, RRF c=${HYBRID_RRF_C}._\n`;
     if (rerankResult.candidatesIn > 0) {
       const degraded = rerankResult.degraded ? '; degraded to fused order' : '';
       output += `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`;
@@ -2313,7 +2334,7 @@ async function runHybridSearch(
     } else {
       output += `${formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)}\n\n`;
     }
-    output += `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`;
+    output += `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} with unit=${parsed.lexicalUnit} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`;
     if (rerankResult.candidatesIn > 0) {
       const degraded = rerankResult.degraded ? '; degraded to fused order' : '';
       output += `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`;

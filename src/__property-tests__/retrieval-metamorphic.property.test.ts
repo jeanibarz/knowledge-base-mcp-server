@@ -126,6 +126,19 @@ async function seedKb(rootDir: string, kbName: string, files: Record<string, str
   return kbPath;
 }
 
+interface ControlledLexicalIndex {
+  entries: Map<string, {
+    sha256: string;
+    chunks: Array<{
+      pageContent: string;
+      metadata: Record<string, unknown>;
+      searchText?: string;
+    }>;
+  }>;
+  chunkRankerCache: unknown | null;
+  sourceRankerCache: unknown | null;
+}
+
 describe('retrieval metamorphic invariants — property tests (issue #495)', () => {
   it('filter narrowing never introduces out-of-filter results', () => {
     fc.assert(
@@ -305,6 +318,87 @@ describe('retrieval metamorphic invariants — property tests (issue #495)', () 
       expect(
         fused.some((chunk) => chunk.metadata.relativePath === 'docs/errors.md'),
       ).toBe(true);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('lexical source ranking returns one representative chunk per source', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'retrieval-source-unit-'));
+    try {
+      const rootDir = path.join(tmp, 'kbs');
+      const faissDir = path.join(tmp, 'faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const kbPath = await seedKb(rootDir, 'docs', {
+        'alpha.md': [
+          '---',
+          'title: Alpha incident response',
+          '---',
+          '',
+          '# Alpha',
+          '',
+          'alpha duplicate marker',
+          '',
+          'alpha duplicate marker',
+        ].join('\n'),
+        'beta.md': [
+          '---',
+          'title: Beta runbook',
+          '---',
+          '',
+          '# Beta',
+          '',
+          'alpha duplicate marker appears once',
+        ].join('\n'),
+      });
+
+      const { LexicalIndex } = await freshLexical(rootDir, faissDir);
+      const idx = await LexicalIndex.load('docs', kbPath);
+      await idx.refresh();
+
+      const lexical = await idx.query('alpha incident response', 2, { unit: 'source' });
+
+      expect(lexical).toHaveLength(2);
+      expect(lexical.map((hit) => hit.metadata.relativePath)).toEqual([
+        'docs/alpha.md',
+        'docs/beta.md',
+      ]);
+      expect(lexical[0]?.metadata.lexicalRankingUnit).toBe('source');
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('lexical source ranking returns the best matching chunk from a winning source', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'retrieval-source-representative-'));
+    try {
+      const rootDir = path.join(tmp, 'kbs');
+      const faissDir = path.join(tmp, 'faiss');
+      const kbPath = await seedKb(rootDir, 'docs', {});
+
+      const { LexicalIndex } = await freshLexical(rootDir, faissDir);
+      const idx = await LexicalIndex.load('docs', kbPath);
+      const controlled = idx as unknown as ControlledLexicalIndex;
+      controlled.entries.set('source.md', {
+        sha256: 'sha',
+        chunks: [
+          {
+            pageContent: 'unrelated opening chunk',
+            metadata: { source: path.join(kbPath, 'source.md'), relativePath: 'docs/source.md', chunkIndex: 0 },
+          },
+          {
+            pageContent: 'target marker lives here',
+            metadata: { source: path.join(kbPath, 'source.md'), relativePath: 'docs/source.md', chunkIndex: 1 },
+          },
+        ],
+      });
+      controlled.chunkRankerCache = null;
+      controlled.sourceRankerCache = null;
+
+      const lexical = await idx.query('target marker', 1, { unit: 'source', candidateK: 1 });
+
+      expect(lexical[0]?.pageContent).toBe('target marker lives here');
+      expect(lexical[0]?.metadata.chunkIndex).toBe(1);
     } finally {
       await fsp.rm(tmp, { recursive: true, force: true });
     }

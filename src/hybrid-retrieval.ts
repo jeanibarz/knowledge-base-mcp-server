@@ -58,7 +58,7 @@
 // ever moves.
 
 import * as path from 'path';
-import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
+import { LexicalIndex, type LexicalRankingUnit, type LexicalSearchResult } from './lexical-index.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
@@ -218,6 +218,7 @@ export interface LexicalLegOptions {
    * in the returned `refreshed`.
    */
   refresh: LexicalRefreshPolicy;
+  rankingUnit?: LexicalRankingUnit;
   /**
    * Called when a per-KB load/refresh/query throws. Per-KB failures are not
    * fatal — the leg continues with the remaining KBs. The hook lets each
@@ -268,7 +269,7 @@ export async function runLexicalLeg(opts: LexicalLegOptions): Promise<LexicalLeg
         await idx.save();
         refreshed += 1;
       }
-      const hits = await idx.query(opts.query, opts.fetchK);
+      const hits = await idx.query(opts.query, opts.fetchK, { unit: opts.rankingUnit ?? 'chunk' });
       for (const h of hits) all.push(h);
     } catch (err) {
       failed += 1;
