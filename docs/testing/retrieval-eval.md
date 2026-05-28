@@ -53,3 +53,10 @@ alpha-nDCG@k. Cases without judgments preserve the original binary pass/fail
 output shape, plus the source diversity diagnostics.
 
 For authoring guidance, see [Retrieval eval fixture methodology](retrieval-eval-methodology.md).
+
+### TS-RETRIEVAL-EVAL-509: Replayable Benchmark Tuning
+
+The benchmark tuning tests cover:
+
+- `benchmarks/beir/run.test.ts` verifies that `--config` applies BEIR runner arguments and retrieval environment overrides from JSON.
+- `benchmarks/optuna_tune_test.py` verifies replay-config generation and replay execution without importing Optuna.

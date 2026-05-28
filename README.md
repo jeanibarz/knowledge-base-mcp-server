@@ -166,6 +166,27 @@ normal `kb search --mode=lexical` remains chunk-level. See
 [benchmarks/README.md](benchmarks/README.md#beirscifact-local-retrieval-benchmark)
 for smoke-test commands and caveats.
 
+Optuna tuning is optional and only runs when explicitly invoked. A SciFact
+example that sweeps lexical chunking and writes a replayable best-config file:
+
+```bash
+npm run bench:tune -- \
+  --trials=12 \
+  --direction=maximize \
+  --metric=metrics.ndcgAt10 \
+  --study-name=scifact-lexical \
+  --best-config-out=/tmp/kb-scifact-lexical-best.json \
+  --param-int=KB_CHUNK_SIZE=256:1024:128 \
+  --param-int=KB_CHUNK_OVERLAP=0:128:32 \
+  -- npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --max-queries=25 --output-dir=/tmp/kb-scifact-tune
+```
+
+Replay the best trial without importing Optuna:
+
+```bash
+npm run bench:tune -- --replay-config=/tmp/kb-scifact-lexical-best.json
+```
+
 ### Local LLM answers (RFC 015)
 
 `kb ask` keeps retrieval deterministic and adds a local OpenAI-compatible chat step on top. It resolves the LLM endpoint from `--endpoint`, `KB_LLM_ENDPOINT`, `--llm-profile`, the active `kb llm` profile, then finally the local-research-agent default on `127.0.0.1:8080`.

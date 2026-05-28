@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -39,6 +40,28 @@ interface Args {
   maxQueries?: number;
   keepWorkspace: boolean;
 }
+
+type BeirConfigKey =
+  | 'dataset'
+  | 'split'
+  | 'mode'
+  | 'output_dir'
+  | 'outputDir'
+  | 'cache_dir'
+  | 'cacheDir'
+  | 'workspace_root'
+  | 'workspaceRoot'
+  | 'dataset_dir'
+  | 'datasetDir'
+  | 'dataset_url'
+  | 'datasetUrl'
+  | 'k'
+  | 'chunk_k'
+  | 'chunkK'
+  | 'max_queries'
+  | 'maxQueries'
+  | 'keep_workspace'
+  | 'keepWorkspace';
 
 interface BeirCorpusRow {
   _id: string;
@@ -275,6 +298,18 @@ export function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     const [flag, inlineValue] = token.includes('=') ? token.split(/=(.*)/s, 2) : [token, undefined];
+    if (flag !== '--config') continue;
+    const configPath = inlineValue ?? argv[i + 1];
+    if (configPath === undefined || configPath.startsWith('--')) {
+      throw new Error('--config requires a value');
+    }
+    applyBenchmarkConfig(args, path.resolve(configPath));
+    if (inlineValue === undefined) i += 1;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    const [flag, inlineValue] = token.includes('=') ? token.split(/=(.*)/s, 2) : [token, undefined];
     const readValue = (): string => {
       if (inlineValue !== undefined) return inlineValue;
       i += 1;
@@ -311,6 +346,8 @@ export function parseArgs(argv: string[]): Args {
       args.maxQueries = parsePositiveInteger(readValue(), '--max-queries');
     } else if (flag === '--keep-workspace') {
       args.keepWorkspace = true;
+    } else if (flag === '--config') {
+      if (inlineValue === undefined) i += 1;
     } else if (flag === '--help' || flag === '-h') {
       process.stdout.write(helpText());
       process.exit(0);
@@ -324,6 +361,101 @@ export function parseArgs(argv: string[]): Args {
   }
   args.chunkK = Math.max(args.chunkK, args.k);
   return args;
+}
+
+function applyBenchmarkConfig(args: Args, configPath: string): void {
+  const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as unknown;
+  if (!isRecord(parsed)) {
+    throw new Error(`benchmark config ${configPath} must contain a JSON object`);
+  }
+  if (
+    parsed.schema_version !== undefined &&
+    parsed.schema_version !== 'kb.beir-config.v1' &&
+    parsed.schema_version !== 'kb.benchmark-replay-config.v1'
+  ) {
+    throw new Error(`unsupported benchmark config schema_version: ${String(parsed.schema_version)}`);
+  }
+
+  if (parsed.env !== undefined) {
+    if (!isRecord(parsed.env)) {
+      throw new Error(`benchmark config ${configPath} env must be a JSON object`);
+    }
+    applyEnvironmentConfig(parsed.env);
+  }
+
+  if (parsed.beir !== undefined) {
+    if (!isRecord(parsed.beir)) {
+      throw new Error(`benchmark config ${configPath} beir must be a JSON object`);
+    }
+    applyBeirConfig(args, parsed.beir as Partial<Record<BeirConfigKey, unknown>>);
+  }
+}
+
+function applyEnvironmentConfig(envConfig: Record<string, unknown>): void {
+  for (const [name, value] of Object.entries(envConfig)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error(`invalid environment variable name in benchmark config: ${name}`);
+    }
+    if (value === null) {
+      delete process.env[name];
+    } else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      process.env[name] = String(value);
+    } else {
+      throw new Error(`benchmark config env.${name} must be string, number, boolean, or null`);
+    }
+  }
+}
+
+function applyBeirConfig(args: Args, beir: Partial<Record<BeirConfigKey, unknown>>): void {
+  for (const key of Object.keys(beir) as BeirConfigKey[]) {
+    const value = beir[key];
+    if (value === undefined) continue;
+    if (key === 'dataset') {
+      args.dataset = parseStringConfig(value, 'beir.dataset');
+    } else if (key === 'split') {
+      args.split = parseStringConfig(value, 'beir.split');
+    } else if (key === 'mode') {
+      const mode = parseStringConfig(value, 'beir.mode');
+      if (mode !== 'lexical') throw new Error('BEIR benchmark currently supports mode=lexical only');
+      args.mode = mode;
+    } else if (key === 'output_dir' || key === 'outputDir') {
+      args.outputDir = path.resolve(parseStringConfig(value, `beir.${key}`));
+    } else if (key === 'cache_dir' || key === 'cacheDir') {
+      args.cacheDir = path.resolve(parseStringConfig(value, `beir.${key}`));
+    } else if (key === 'workspace_root' || key === 'workspaceRoot') {
+      args.workspaceRoot = path.resolve(parseStringConfig(value, `beir.${key}`));
+    } else if (key === 'dataset_dir' || key === 'datasetDir') {
+      args.datasetDir = path.resolve(parseStringConfig(value, `beir.${key}`));
+    } else if (key === 'dataset_url' || key === 'datasetUrl') {
+      args.datasetUrl = parseStringConfig(value, `beir.${key}`);
+    } else if (key === 'k') {
+      args.k = parsePositiveIntegerConfig(value, 'beir.k');
+    } else if (key === 'chunk_k' || key === 'chunkK') {
+      args.chunkK = parsePositiveIntegerConfig(value, `beir.${key}`);
+    } else if (key === 'max_queries' || key === 'maxQueries') {
+      args.maxQueries = parsePositiveIntegerConfig(value, `beir.${key}`);
+    } else if (key === 'keep_workspace' || key === 'keepWorkspace') {
+      if (typeof value !== 'boolean') throw new Error(`beir.${key} must be a boolean`);
+      args.keepWorkspace = value;
+    } else {
+      throw new Error(`unknown BEIR benchmark config key: ${key}`);
+    }
+  }
+}
+
+function parseStringConfig(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  return value;
+}
+
+function parsePositiveIntegerConfig(value: unknown, label: string): number {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${label} must be a positive integer`);
+    return value;
+  }
+  return parsePositiveInteger(parseStringConfig(value, label), label);
 }
 
 async function ensureDataset(args: Args): Promise<{ datasetDir: string; sourceUrl: string | null; checksumSha256: string }> {
@@ -629,6 +761,7 @@ Usage:
 
 Options:
   --dataset=<name>       BEIR dataset name. Built-in: scifact.
+  --config=<path>        JSON config with env overrides and BEIR runner args.
   --split=<name>         Qrels split under qrels/<split>.tsv. Default: test.
   --mode=lexical         Retrieval mode. Lexical is credential-free.
   --dataset-dir=<path>   Existing BEIR directory with corpus.jsonl, queries.jsonl, qrels/.

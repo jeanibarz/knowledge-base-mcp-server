@@ -351,6 +351,50 @@ npm run bench:tune -- \
 You can combine Optuna with MLflow by exporting `BENCH_MLFLOW_*` before running
 `bench:tune`; each trial benchmark logs normally.
 
+Tune BEIR/SciFact lexical chunking against `nDCG@10`:
+
+```bash
+npm run bench:tune -- \
+  --trials=12 \
+  --direction=maximize \
+  --metric=metrics.ndcgAt10 \
+  --study-name=scifact-lexical \
+  --best-config-out=/tmp/kb-scifact-lexical-best.json \
+  --param-int=KB_CHUNK_SIZE=256:1024:128 \
+  --param-int=KB_CHUNK_OVERLAP=0:128:32 \
+  -- npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --max-queries=25 --output-dir=/tmp/kb-scifact-tune
+```
+
+The tuner writes a replay config containing the benchmark command and best-trial
+environment values. Replaying does not require Optuna:
+
+```bash
+npm run bench:tune -- --replay-config=/tmp/kb-scifact-lexical-best.json
+```
+
+`bench:beir` also accepts JSON config directly:
+
+```json
+{
+  "schema_version": "kb.beir-config.v1",
+  "env": {
+    "KB_CHUNK_SIZE": 512,
+    "KB_CHUNK_OVERLAP": 64
+  },
+  "beir": {
+    "dataset": "scifact",
+    "split": "test",
+    "mode": "lexical",
+    "k": 100,
+    "chunk_k": 1000
+  }
+}
+```
+
+```bash
+npm run bench:beir -- --config=/tmp/kb-beir-config.json --output-dir=/tmp/kb-beir-replay
+```
+
 ### Auto-clamping fixture chunk size to fit short-context models (#107)
 
 Before driving the bench legs, the orchestrator probes each model's `num_ctx`
