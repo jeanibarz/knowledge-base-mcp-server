@@ -87,6 +87,9 @@ not an official BEIR leaderboard result. Optional MLflow logging is not
 required for the JSON/TREC artifacts and can be layered in by the separate
 bench observability hook.
 
+The public-facing result summary and archived SciFact lexical artifacts live in
+[benchmarks/results/README.md](results/README.md).
+
 ## Result file naming
 
 Reports are written to `benchmarks/results/` with this naming pattern:
