@@ -148,6 +148,24 @@ cases:
 
 The MCP server (`knowledge-base-mcp-server` bin) is unchanged and still works with all the configurations in [docs/clients.md](docs/clients.md). The CLI is additive.
 
+### Local retrieval benchmarks
+
+Use `npm run bench:beir` to run a local BEIR/SciFact benchmark with
+credential-free lexical retrieval:
+
+```bash
+npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --output-dir=/tmp/kb-beir-scifact
+```
+
+The runner builds a temporary KB root, emits metrics JSON plus a TREC run file,
+and records reproduction metadata such as git SHA, command, dataset checksum,
+runtime versions, chunking config, and latency percentiles. These are local
+benchmark artifacts, not official BEIR leaderboard submissions; the current
+lexical path is scored at document level by benchmark-only chunk collapse while
+normal `kb search --mode=lexical` remains chunk-level. See
+[benchmarks/README.md](benchmarks/README.md#beirscifact-local-retrieval-benchmark)
+for smoke-test commands and caveats.
+
 ### Local LLM answers (RFC 015)
 
 `kb ask` keeps retrieval deterministic and adds a local OpenAI-compatible chat step on top. It resolves the LLM endpoint from `--endpoint`, `KB_LLM_ENDPOINT`, `--llm-profile`, the active `kb llm` profile, then finally the local-research-agent default on `127.0.0.1:8080`.
