@@ -22,12 +22,16 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 def main() -> int:
     args = parse_args()
+
+    if args.replay_config is not None:
+        return run_replay_config(Path(args.replay_config)).returncode
 
     try:
         import optuna  # type: ignore
@@ -41,6 +45,9 @@ def main() -> int:
 
     if not args.command:
         print("bench:optuna: missing benchmark command after `--`", file=sys.stderr)
+        return 2
+    if args.metric is None:
+        print("bench:optuna: --metric is required unless --replay-config is used", file=sys.stderr)
         return 2
 
     study = optuna.create_study(
@@ -89,10 +96,12 @@ def main() -> int:
         return value
 
     study.optimize(objective, n_trials=args.trials)
+    best_config_path = write_replay_config(study, args)
     print(f"study: {study.study_name}")
     print(f"best_trial: {study.best_trial.number}")
     print(f"best_value: {study.best_value}")
     print(f"best_params: {json.dumps(study.best_params, sort_keys=True)}")
+    print(f"best_config: {best_config_path}")
     return 0
 
 
@@ -102,9 +111,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--trials", type=int, default=20)
     parser.add_argument("--direction", choices=["minimize", "maximize"], default="maximize")
-    parser.add_argument("--metric", required=True, help="Dot path in benchmark JSON, e.g. scenarios.warm_query.p95_ms")
+    parser.add_argument("--metric", help="Dot path in benchmark JSON, e.g. scenarios.warm_query.p95_ms")
     parser.add_argument("--study-name", default="kb-bench")
     parser.add_argument("--storage", help="Optuna storage URL, e.g. sqlite:///benchmarks/results/optuna.db")
+    parser.add_argument("--best-config-out", help="Replay config path. Defaults to benchmarks/results/<study-name>-best-config.json")
+    parser.add_argument("--replay-config", help="Run a generated replay config without importing Optuna")
     parser.add_argument("--param-int", action="append", default=[], metavar="NAME=LOW:HIGH[:STEP]")
     parser.add_argument("--param-float", action="append", default=[], metavar="NAME=LOW:HIGH")
     parser.add_argument("--param-categorical", action="append", default=[], metavar="NAME=A,B,C")
@@ -113,6 +124,53 @@ def parse_args() -> argparse.Namespace:
     if parsed.command and parsed.command[0] == "--":
         parsed.command = parsed.command[1:]
     return parsed
+
+
+def build_replay_config(study: Any, args: argparse.Namespace) -> dict[str, Any]:
+    best_trial = study.best_trial
+    env = {str(name): str(value) for name, value in best_trial.params.items()}
+    return {
+        "schema_version": "kb.benchmark-replay-config.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "study_name": args.study_name,
+        "direction": args.direction,
+        "metric": args.metric,
+        "best_trial": best_trial.number,
+        "best_value": study.best_value,
+        "command": list(args.command),
+        "env": env,
+        "params": dict(best_trial.params),
+    }
+
+
+def write_replay_config(study: Any, args: argparse.Namespace) -> Path:
+    output_path = Path(args.best_config_out) if args.best_config_out else default_best_config_path(args.study_name)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(build_replay_config(study, args), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return output_path
+
+
+def default_best_config_path(study_name: str) -> Path:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", study_name).strip("-") or "kb-bench"
+    return Path("benchmarks") / "results" / f"{safe_name}-best-config.json"
+
+
+def run_replay_config(config_path: Path) -> subprocess.CompletedProcess[str]:
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        raise ValueError("replay config must contain a JSON object")
+    if config.get("schema_version") != "kb.benchmark-replay-config.v1":
+        raise ValueError("replay config schema_version must be kb.benchmark-replay-config.v1")
+    command = config.get("command")
+    if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
+        raise ValueError("replay config command must be a non-empty string array")
+    env_config = config.get("env", {})
+    if not isinstance(env_config, dict) or not all(isinstance(name, str) and isinstance(value, str) for name, value in env_config.items()):
+        raise ValueError("replay config env must be an object of string values")
+
+    env = os.environ.copy()
+    env.update(env_config)
+    return subprocess.run(command, env=env, text=True, check=False)
 
 
 def parse_int_spec(spec: str) -> tuple[str, int, int, int]:

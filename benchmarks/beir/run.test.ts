@@ -116,4 +116,57 @@ describe('BEIR benchmark runner', () => {
       silenceServerLogger: async () => undefined,
     })).rejects.toThrow('--workspace-root must not be the repository root or one of its parents');
   });
+
+  it('applies BEIR runner arguments and retrieval environment from a JSON config file', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-beir-config-test-'));
+    const configPath = path.join(root, 'beir-config.json');
+    const previousChunkSize = process.env.KB_CHUNK_SIZE;
+    const previousChunkOverlap = process.env.KB_CHUNK_OVERLAP;
+    await fsp.writeFile(configPath, JSON.stringify({
+      schema_version: 'kb.beir-config.v1',
+      env: {
+        KB_CHUNK_SIZE: 384,
+        KB_CHUNK_OVERLAP: '48',
+      },
+      beir: {
+        dataset: 'tiny',
+        dataset_dir: path.join(root, 'tiny-dataset'),
+        split: 'dev',
+        mode: 'lexical',
+        output_dir: path.join(root, 'out-from-config'),
+        workspace_root: path.join(root, 'kb-beir-workspace-from-config'),
+        k: 7,
+        chunk_k: 11,
+        max_queries: 2,
+        keep_workspace: true,
+      },
+    }), 'utf-8');
+
+    try {
+      const args = parseArgs([
+        `--config=${configPath}`,
+        '--k=5',
+      ]);
+
+      expect(args).toMatchObject({
+        dataset: 'tiny',
+        datasetDir: path.join(root, 'tiny-dataset'),
+        split: 'dev',
+        mode: 'lexical',
+        outputDir: path.join(root, 'out-from-config'),
+        workspaceRoot: path.join(root, 'kb-beir-workspace-from-config'),
+        k: 5,
+        chunkK: 11,
+        maxQueries: 2,
+        keepWorkspace: true,
+      });
+      expect(process.env.KB_CHUNK_SIZE).toBe('384');
+      expect(process.env.KB_CHUNK_OVERLAP).toBe('48');
+    } finally {
+      if (previousChunkSize === undefined) delete process.env.KB_CHUNK_SIZE;
+      else process.env.KB_CHUNK_SIZE = previousChunkSize;
+      if (previousChunkOverlap === undefined) delete process.env.KB_CHUNK_OVERLAP;
+      else process.env.KB_CHUNK_OVERLAP = previousChunkOverlap;
+    }
+  });
 });
