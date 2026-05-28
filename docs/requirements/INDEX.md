@@ -308,6 +308,25 @@
 **Linked Tests:** TS-FEEDBACK-436
 **Dependencies:** FR-RETRIEVAL-EVAL
 
+## Benchmarks
+
+### FR-BENCH-508: BEIR Document-Level Lexical Benchmark
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The BEIR benchmark runner shall provide a credential-free document-level lexical BM25 ranking path for BEIR-shaped corpora while preserving the existing chunk-collapsed LexicalIndex benchmark path as an explicit option.
+**Rationale:** BEIR scores document rankings, while normal `kb search --mode=lexical` returns chunks. A benchmark-only document ranker lets maintainers compare `kb` lexical behavior against standard BEIR BM25 references without changing operator-facing search behavior.
+
+**Acceptance Criteria:**
+- [x] Given `npm run bench:beir -- --dataset=scifact --mode=lexical`, when the runner executes, then it shall default to document-level BM25 scoring over BEIR title and text fields and emit document-level TREC rows.
+- [x] Given `--lexical-unit=chunk`, when the runner executes, then it shall use the existing temporary-KB LexicalIndex path and collapse chunk hits to BEIR document ids.
+- [x] Given the report JSON, then it shall record the lexical unit, BM25 parameters for document mode, document-level scoring caveats, and the dataset/run metadata needed for reproduction.
+- [x] Given SciFact test with document lexical defaults, then nDCG@10 shall meet or exceed 0.64 and Recall@100 shall not regress below 0.835.
+- [x] Given an additional built-in BEIR dataset such as `nfcorpus`, when no custom dataset path is supplied, then argument validation shall accept the dataset name and resolve its standard BEIR download URL.
+
+**Linked Tests:** TS-BENCH-508
+**Dependencies:** FR-RETRIEVAL-EVAL
+
 ## Logging and Observability
 
 ### FR-LOGS-397: Canonical Log Reader

@@ -26,13 +26,13 @@ Optional environment variables:
 - `BENCH_CLI_SEARCH_REPETITIONS` sets the per-variant repetition count for `cli_search`. Defaults to 5.
 - `BENCH_CLI_SEARCH_PROFILE=matrix` expands `cli_search` from the compact default profile to a broader local matrix across retrieval modes, scopes, formats, grouping, query shapes, and `k` values.
 
-## BEIR/SciFact local retrieval benchmark
+## BEIR local retrieval benchmark
 
 `bench:beir` runs a reproducible local BEIR benchmark, starting with SciFact
-test. It downloads the BEIR zip to a cache, expands `corpus.jsonl`,
-`queries.jsonl`, and `qrels/test.tsv`, converts the corpus into a temporary
-KB root, runs the selected `kb` retrieval primitive, and writes three
-artifacts:
+test and accepting several standard BEIR dataset names such as `nfcorpus`,
+`fiqa`, `trec-covid`, `nq`, and `hotpotqa`. It downloads the BEIR zip to a
+cache, expands `corpus.jsonl`, `queries.jsonl`, and `qrels/test.tsv`, runs the
+selected lexical ranking path, and writes three artifacts:
 
 - metrics JSON with `nDCG@10`, `MAP@100`, `Recall@10`, `Recall@100`, latency
   percentiles, git SHA, dataset checksum/source URL, command, runtime, and
@@ -40,14 +40,31 @@ artifacts:
 - a TREC-format run file for external scoring tools
 - a short Markdown report
 
-Lexical mode requires no provider credentials:
+Lexical mode requires no provider credentials. By default the runner uses a
+benchmark-only document-level BM25 ranker over BEIR title+text fields, because
+BEIR evaluates document rankings while normal `kb search --mode=lexical`
+returns chunks:
 
 ```bash
 npm run bench:beir -- \
   --dataset=scifact \
   --split=test \
   --mode=lexical \
+  --lexical-unit=document \
   --output-dir=/tmp/kb-beir-scifact
+```
+
+To reproduce the original `kb` chunk lexical path, use `--lexical-unit=chunk`.
+That path builds a temporary KB, runs `LexicalIndex` chunk BM25, and collapses
+chunk hits to BEIR document IDs by max chunk score before writing TREC rows:
+
+```bash
+npm run bench:beir -- \
+  --dataset=scifact \
+  --split=test \
+  --mode=lexical \
+  --lexical-unit=chunk \
+  --output-dir=/tmp/kb-beir-scifact-chunk
 ```
 
 For a fast deterministic smoke test, limit the query set:
@@ -57,17 +74,18 @@ npm run bench:beir -- \
   --dataset=scifact \
   --split=test \
   --mode=lexical \
+  --lexical-unit=document \
   --max-queries=3 \
   --output-dir=/tmp/kb-beir-scifact-smoke
 ```
 
-The runner uses `LexicalIndex` chunk BM25 and collapses chunk hits to BEIR
-document IDs by max chunk score before writing TREC rows. That collapse is
-benchmark-only; normal `kb search --mode=lexical` behavior remains chunk-level.
-Reports should be described as a **local BEIR/SciFact benchmark**, not an
-official BEIR leaderboard result. Optional MLflow logging is not required for
-the JSON/TREC artifacts and can be layered in by the separate bench
-observability hook.
+Document lexical mode records its BM25 parameters (`k1=0.6`, `b=0.9`, title
+weight `1`) and tokenizer in the JSON report. Both lexical units are
+benchmark-only interpretations; normal `kb search --mode=lexical` behavior
+remains chunk-level. Reports should be described as a **local BEIR benchmark**,
+not an official BEIR leaderboard result. Optional MLflow logging is not
+required for the JSON/TREC artifacts and can be layered in by the separate
+bench observability hook.
 
 ## Result file naming
 

@@ -220,6 +220,17 @@
 - `kb feedback promote` shall produce a YAML preview without `--fixture --yes` and shall append a `kb eval` case to the target fixture when both are supplied.
 - The ledger shall store `task_context_sha256` (never the raw text) when `--task-context` is supplied.
 
+## Benchmarks
+
+### TS-BENCH-508: BEIR Document-Level Lexical Benchmark
+**Requirement:** FR-BENCH-508
+
+**Test Cases:**
+- `bench:beir` shall default to document-level BM25 and shall not load the chunk LexicalIndex path for document mode.
+- `bench:beir --lexical-unit=chunk` shall preserve the existing temporary-KB LexicalIndex path and chunk-to-document collapse behavior.
+- The document BM25 ranker shall tokenize case-insensitively with punctuation splitting and rank matching BEIR documents by BM25 score.
+- `parseArgs` shall accept additional built-in BEIR datasets such as `nfcorpus` and shall list supported names for unknown datasets.
+
 ## Logging and Observability
 
 ### TS-LOGS-397: Canonical Log Reader
