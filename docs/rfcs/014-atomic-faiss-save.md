@@ -1,5 +1,9 @@
 # RFC 014 — Atomic FAISS Save
 
+<!-- anchor-check: off -->
+
+> Historical RFC: source anchors in this proposal refer to code at drafting time and are not maintained as current-main anchors.
+
 **Status:** Draft (lifts RFC 013 §11 N4)
 **Depends on:** RFC 013 (per-model layout, write locks, instance advisory)
 **Unblocks:** removal of single-instance enforcement (`src/instance-lock.ts`) — separate follow-up PR
