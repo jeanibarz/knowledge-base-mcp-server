@@ -1,7 +1,13 @@
-# CLI JSON Output Contracts
+# Selected CLI JSON Output Contracts
 
-This page records the stable JSON shapes for agent-facing `kb` commands. It is
-for shell agents that branch on fields, not for humans reading examples.
+This page records stable JSON shapes for the agent-facing `kb` commands whose
+machine-readable contracts have been explicitly documented. It is for shell
+agents that branch on fields, not for humans reading examples.
+
+The `kb` CLI has more implemented commands than this page currently enumerates.
+For commands not listed below, treat JSON output as command-local until a
+section is added here. Use `kb help --format=json` to discover the current
+command registry.
 
 Contract policy:
 
