@@ -1,5 +1,9 @@
 # RFC 002 — AI assistant skills bundled with the repo for setup & troubleshooting
 
+<!-- anchor-check: off -->
+
+> Historical RFC: source anchors in this proposal refer to code at drafting time and are not maintained as current-main anchors.
+
 - **Status:** Draft — awaiting approval
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`

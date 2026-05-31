@@ -1,6 +1,6 @@
 # 0003 — stdio-only MCP transport (for now)
 
-- **Status:** Accepted (provisional — see RFC 008 for the remote-transport design)
+- **Status:** Superseded by RFC 008 implementation; stdio remains the default
 - **Date:** 2026-04-24 (back-documented)
 - **Deciders:** Repo owner
 
@@ -24,7 +24,13 @@ MCP supports multiple transports: stdio (pipe-based, one client per process), SS
 
 ## Decision Outcome
 
-**Option 1 — stdio only.** Implemented at `src/KnowledgeBaseServer.ts:126-127` via `StdioServerTransport`. Remote transport is explicitly a follow-up; RFC 008 captures that design.
+**Original outcome: option 1 — stdio only.** That was the correct initial
+shipping posture.
+
+**Current outcome:** stdio remains the default, and RFC 008 has since added
+opt-in SSE and streamable HTTP transports. Remote modes require
+`MCP_AUTH_TOKEN`, reject wildcard browser origins, bind to loopback by default,
+and share the same MCP tool registration path.
 
 ## Pros and Cons
 
@@ -34,11 +40,14 @@ MCP supports multiple transports: stdio (pipe-based, one client per process), SS
 - Small attack surface — no open ports, no listener thread.
 
 **Cons:**
-- No multi-client support. One server = one client.
-- No way to run the server on one host and query from another (the natural "shared team knowledge base" shape).
-- Any future remote transport must be retrofitted through `McpServer.connect(...)` (`src/KnowledgeBaseServer.ts:127`) in a way that doesn't regress the stdio path.
+- Stdio still has one-client-per-process semantics.
+- HTTP/SSE modes add a network listener and therefore require the auth/origin
+  posture described in the threat model.
+- TLS termination and general internet-facing rate limiting remain out of scope
+  for this server.
 
 ## More Information
 
-- RFC 008 is the design for remote transport; this ADR is **not** a rejection of remote, only a decision to defer.
-- The SIGINT handler at `src/KnowledgeBaseServer.ts:27-30` assumes stdio lifecycle — it tears down the MCP server on receipt. Remote transport will likely keep the same handler with different implications for client reconnection; the future RFC covers that.
+- RFC 008 is now implemented in `src/transport-config.ts`,
+  `src/transport/sse.ts`, `src/transport/http.ts`, and
+  `src/transport/base-http-host.ts`.

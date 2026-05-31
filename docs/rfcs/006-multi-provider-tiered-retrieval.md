@@ -1,5 +1,9 @@
 # RFC 006 — Multi-provider embedding fusion and fast-vs-quality retrieval tiers
 
+<!-- anchor-check: off -->
+
+> Historical RFC: source anchors in this proposal refer to code at drafting time and are not maintained as current-main anchors.
+
 - **Status:** Draft — awaiting approval
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`

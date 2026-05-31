@@ -1,6 +1,6 @@
 # 0004 — `MarkdownTextSplitter` as the only splitter
 
-- **Status:** Accepted (interim — recursive-character fallback is a follow-up)
+- **Status:** Superseded by recursive-character fallback and chunk-size flags
 - **Date:** 2026-04-24 (back-documented)
 - **Deciders:** Repo owner
 
@@ -24,24 +24,28 @@ Source files must be chunked before embedding. The splitter choice controls chun
 
 ## Decision Outcome
 
-**Option 1.** `src/FaissIndexManager.ts:261-275` (and the fallback rebuild's mirror at `:317-332`) branches on `.md` extension:
+**Original outcome: option 1.** Markdown used `MarkdownTextSplitter`; other
+files were single documents.
 
-- `.md` → `MarkdownTextSplitter({ chunkSize: 1000, chunkOverlap: 200, keepSeparator: false })` creates multiple documents preserving markdown structure.
-- Anything else → one `Document` wrapping the whole file.
+**Current outcome:** `src/file-ingest.ts` builds chunks for every ingestable file.
+Markdown still uses `MarkdownTextSplitter`, while non-markdown text extracted
+from `.txt`, `.rst`, `.html`, `.pdf` when explicitly enabled, and operator-added
+extensions uses `RecursiveCharacterTextSplitter`. `KB_CHUNK_SIZE` and
+`KB_CHUNK_OVERLAP` control the shared chunking constants.
 
 ## Pros and Cons
 
 **Pros:**
-- Correct markdown structure preservation for the dominant case (headings, lists, code fences split cleanly).
-- No config surface; no foot-guns for new users.
-- Non-`.md` files still work — just as a single chunk. Small text files will be fine; large non-markdown files will produce one huge vector that reduces retrieval quality.
+- Correct markdown structure preservation for the dominant case.
+- Large non-markdown files are split instead of becoming one huge vector.
+- Operators can tune chunk size/overlap without forking.
 
 **Cons:**
-- Large non-markdown files (e.g. `.txt` transcripts, `.org` notes, code files) get a single document, which is wrong for retrieval. A `RecursiveCharacterTextSplitter` fallback would be the obvious fix.
-- No way to override the chunk size / overlap without forking.
-- Duplicated splitter construction between the changed-file branch and the fallback branch (`:261-267` vs `:319-323`). A refactor could hoist it to a helper.
+- Chunking is now a broader ingest concern rather than a markdown-only decision;
+  future splitter changes should update `src/file-ingest.ts` and
+  `docs/feature-flags.md` together.
 
 ## More Information
 
-- The recursive-character fallback for non-markdown files is a known follow-up; capturing it here so future maintainers see it is an intentional deferral, not an oversight.
+- The recursive-character fallback for non-markdown files has landed.
 - RFC 006 discusses retrieval quality more broadly; the splitter question can move inside that umbrella if the tiered retrieval work lands first.

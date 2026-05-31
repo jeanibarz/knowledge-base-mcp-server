@@ -1,6 +1,6 @@
 # 0001 — FAISS (embedded) over a standalone vector DB
 
-- **Status:** Accepted
+- **Status:** Accepted; concurrency and layout notes superseded by RFC 013/014
 - **Date:** 2026-04-24 (back-documented)
 - **Deciders:** Repo owner
 
@@ -25,22 +25,33 @@ The server needs a vector store. It must persist across restarts, survive the us
 
 ## Decision Outcome
 
-**Option 1 — embedded FAISS.** Used via `FaissStore` (`src/FaissIndexManager.ts:7`) and persisted to `$FAISS_INDEX_PATH/faiss.index` (`:351`).
+**Option 1 — embedded FAISS.** The implementation still uses FAISS through the
+LangChain community store and `faiss-node`, wrapped by local layout and adapter
+helpers.
+
+Current layout note: the original root-level `$FAISS_INDEX_PATH/faiss.index`
+description is historical. Current saves are per model under
+`$FAISS_INDEX_PATH/models/<model_id>/index -> index.vN/`, with a legacy
+`faiss.index/` read fallback.
 
 ## Pros and Cons
 
 **Pros:**
 - No daemon, no port, no Docker. `npm install && npm start` works.
-- Index is just a file — `rm -rf` is safe reset; `tar` is safe backup.
+- Index state is still local files on disk. Operators can remove derived model
+  indexes to force rebuilds from source content.
 - First-class LangChain integration (`FaissStore.fromTexts`, `addDocuments`, `similaritySearchWithScore`).
 
 **Cons:**
 - Docstore is pickle-serialized (`pickleparser@0.2.1`, `package.json:27`). Loading an attacker-controlled index directory is code-execution-shaped — see [`../threat-model.md`](../threat-model.md).
-- No native support for concurrent writers; one process per `$FAISS_INDEX_PATH` (issue #44, [`../threat-model.md`](../threat-model.md)).
+- FAISS itself still has no native concurrent writer support, but this project
+  now serializes writes with per-model locks and uses versioned atomic saves.
 - Index files are platform-endian; fixtures cannot be shared across architectures (flagged in RFC 007 §8).
 - Deletions are not supported natively (faiss-node) — orphan vectors accumulate until a full rebuild.
 
 ## More Information
 
-- RFC 006 (multi-provider tiered retrieval) and RFC 007 (architecture/perf) both assume FAISS; neither proposes replacing it.
+- RFC 006 (multi-provider tiered retrieval), RFC 007 (architecture/perf), RFC
+  013 (multi-model layout), and RFC 014 (atomic save) all keep the embedded
+  FAISS decision.
 - A future RFC may swap the docstore format away from pickle to close the trust-boundary risk without abandoning the embedded-index model.

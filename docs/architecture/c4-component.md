@@ -19,7 +19,7 @@ flowchart TB
 
   subgraph server["MCP runtime"]
     KBS["KnowledgeBaseServer.ts:191-790<br/>tools, resources, transports, warmup"]
-    SSE["transport/sse.ts:52-418<br/>SSE host and session dispatch"]
+    SSE["transport/sse.ts<br/>SSE host and session dispatch"]
     Watcher["triggerWatcher.ts:41-209<br/>polling reindex trigger"]
   end
 
@@ -36,13 +36,13 @@ flowchart TB
     ModelId["model-id.ts:8-66<br/>model id parsing and validation"]
     KbFs["kb-fs.ts:11-90<br/>KB listing and document path resolution"]
     FileUtils["file-utils.ts:6-46<br/>SHA256 and recursive walk"]
-    IngestFilter["ingest-filter.ts:31-237<br/>ingestable path rules"]
-    KbPaths["kb-paths.ts:13-104<br/>KB name and safe path validation"]
+    IngestFilter["ingest-filter.ts<br/>ingestable path rules"]
+    KbPaths["kb-paths.ts<br/>KB name validation"]
     Frontmatter["frontmatter.ts:16-83<br/>YAML frontmatter parsing"]
     ErrorUtils["error-utils.ts:1-23<br/>unknown-to-Error coercion"]
   end
 
-  Config["config.ts:5-280<br/>env-derived runtime config"]
+  Config["config/*.ts<br/>env-derived runtime config"]
   Logger["logger.ts:14-74<br/>stderr logger + optional file mirror"]
   Errors["errors.ts:1-23<br/>typed KB errors"]
   OllamaErr["ollama-error.ts:34-108<br/>Ollama retry/error translation"]
@@ -133,15 +133,15 @@ flowchart TB
 | Model id helpers | `src/model-id.ts:8-66` | Validates and derives provider-qualified model ids. | Used by active-model, CLI, FAISS manager, and cost estimates. |
 | KB filesystem helpers | `src/kb-fs.ts:11-90` | Lists KB directories and resolves exposed MCP resource document paths. | Used by CLI, MCP server, and FAISS manager. |
 | File utilities | `src/file-utils.ts:6-46` | SHA256 hashing and recursive, dotfile-skipping file walks. | Used by CLI handlers and FAISS manager. |
-| Ingest filter | `src/ingest-filter.ts:31-237` | Applies corpus inclusion/exclusion rules and public skipped-filename patterns. | Used by CLI handlers, MCP server, and FAISS manager. |
-| KB path validation | `src/kb-paths.ts:13-104` | Validates KB names and resolves user document paths without traversal or symlink escape. | Used by MCP server and KB FS. |
+| Ingest filter | `src/ingest-filter.ts` | Applies corpus inclusion/exclusion rules and public skipped-filename patterns. | Used by CLI handlers, MCP server, and FAISS manager. |
+| KB path validation | `src/kb-paths.ts` | Validates KB names. Document path resolution without traversal or symlink escape lives in `src/kb-fs.ts` and `src/mcp-resources.ts`. | Used by MCP server, resources, and KB FS. |
 | Frontmatter parser | `src/frontmatter.ts:16-83` | Parses bounded FAILSAFE YAML frontmatter into tags/body/raw object. | Used by FAISS manager chunk metadata shaping. |
 | Error utilities | `src/error-utils.ts:1-23` | Converts unknown thrown values into stable `Error` instances at catch boundaries. | Used by MCP server and FAISS manager. |
-| Config | `src/config.ts:5-280` | Reads env-derived runtime config at module load and validates SSE transport settings on startup. | Used by most runtime modules. |
+| Config | `src/config/*.ts`, `src/transport-config.ts` | Reads env-derived runtime config at module load; validates MCP transport settings at startup. | Used by most runtime modules. |
 | Formatter | `src/formatter.ts:25-88` | Sanitizes metadata and formats retrieval results as markdown/JSON. | Used by CLI and MCP server. |
 | Loaders | `src/loaders.ts:28-101` | Routes file loading by extension for plain text, PDF, and HTML. | Used by FAISS manager. |
 | Write lock | `src/write-lock.ts:17-72` | Serializes write paths with `proper-lockfile`. | Used by CLI and MCP server. |
-| SSE host | `src/transport/sse.ts:52-418` | Hosts MCP-over-SSE sessions with auth/origin checks and per-session `McpServer` instances. | Used by `KnowledgeBaseServer.runSse()`. |
+| SSE host | `src/transport/sse.ts` | Hosts MCP-over-SSE sessions with auth/origin checks and per-session `McpServer` instances. | Used by `KnowledgeBaseServer.runSse()`. |
 | Trigger watcher | `src/triggerWatcher.ts:41-209` | Polls a trigger file and requests reindexing when mtime changes. | Used by `KnowledgeBaseServer.startTriggerWatcher()`. |
 | Logger | `src/logger.ts:14-74` | Writes logs to stderr and optional `LOG_FILE`, preserving stdout for JSON-RPC/CLI output. | Imported by runtime modules. |
 | Error taxonomy | `src/errors.ts:1-23` | Defines `KBError` codes for operator-facing failure paths. | Used by FAISS manager, MCP server, and Ollama error translation. |
@@ -151,11 +151,15 @@ flowchart TB
 
 ### Request path
 
-`retrieve_knowledge` is registered in `src/KnowledgeBaseServer.ts:267-285`. At request time, `handleRetrieveKnowledge` resolves the active or explicit model at `src/KnowledgeBaseServer.ts:557-572`, runs `manager.updateIndex()` under the per-model write lock at `src/KnowledgeBaseServer.ts:574-577`, queries `manager.similaritySearch()` at `src/KnowledgeBaseServer.ts:579-586`, then formats results through `formatRetrievalAsMarkdown()` at `src/KnowledgeBaseServer.ts:589-602`.
+`retrieve_knowledge` is registered in `src/KnowledgeBaseServer.ts`. At request
+time, `handleRetrieveKnowledge` resolves the active or explicit model, runs
+`manager.updateIndex()` under the per-model write lock, queries
+`manager.similaritySearch()` or the hybrid search path, then formats results
+through `formatRetrievalAsMarkdown()`.
 
 ### Startup path
 
-`src/index.ts:8` calls `server.run()`. `KnowledgeBaseServer.run()` loads transport config at `src/KnowledgeBaseServer.ts:619-631`, bootstraps the FAISS layout at `src/KnowledgeBaseServer.ts:633-646`, then starts either stdio at `src/KnowledgeBaseServer.ts:664-671` or SSE at `src/KnowledgeBaseServer.ts:673-686`. Active-manager warmup is best-effort and starts after transport connect at `src/KnowledgeBaseServer.ts:694-731`.
+`src/index.ts:8` calls `server.run()`. `KnowledgeBaseServer.run()` loads transport config, bootstraps the FAISS layout, then starts stdio, SSE, or streamable HTTP. Active-manager warmup is best-effort and starts after transport connect.
 
 ### Model layout path
 
@@ -163,7 +167,12 @@ flowchart TB
 
 ### Index persistence path
 
-`FaissIndexManager.initialize()` creates embeddings lazily and loads the current store at `src/FaissIndexManager.ts:656-700`. The manager delegates versioned persistence to `loadFaissStoreAtomic()` at `src/faiss-store-layout.ts:72-162` and `saveFaissStoreAtomic()` at `src/faiss-store-layout.ts:164-193`; those helpers prefer the RFC 014 symlink layout, fall back to legacy `faiss.index/`, write a new `index.vN/`, atomically swap the `index` symlink, and garbage-collect old versions.
+`FaissIndexManager.initialize()` creates embeddings lazily and loads the current
+store. The manager delegates versioned persistence to
+`loadFaissStoreAtomic()` and `saveFaissStoreAtomic()` in
+`src/faiss-store-layout.ts`; those helpers prefer the RFC 014 symlink layout,
+fall back to legacy `faiss.index/`, write a new `index.vN/`, atomically swap the
+`index` symlink, and garbage-collect old versions.
 
 ### CLI path
 
@@ -178,4 +187,4 @@ flowchart TB
 - **`active-model.ts` is the model layout authority.** New code should not reconstruct `models/<id>/` paths independently.
 - **FAISS store layout is not embedded in the manager.** Versioned index load/save behavior belongs in `faiss-store-layout.ts`; `FaissIndexManager` remains the ingest/search orchestrator.
 - **Shared helpers are domain-scoped.** Prefer `file-utils.ts`, `ingest-filter.ts`, `kb-paths.ts`, `frontmatter.ts`, and `error-utils.ts` over reintroducing broad utility barrels.
-- **Config is read at module load except transport validation.** `loadTransportConfig()` is the explicit startup validation boundary at `src/config.ts:255-280`.
+- **Config is read at module load except transport validation.** `loadTransportConfig()` in `src/transport-config.ts` is the explicit startup validation boundary for MCP transport settings.

@@ -1,5 +1,9 @@
 # RFC 011 — arxiv-backend: operational KB for the local-research-agent ingestion pipeline
 
+<!-- anchor-check: off -->
+
+> Historical RFC: source anchors in this proposal refer to code at drafting time and are not maintained as current-main anchors.
+
 - **Status:** Draft — awaiting approval
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`

@@ -402,7 +402,8 @@ and there is remaining work.
    ```
 
 4. Remember that `--kb=<name>` is a guard and estimator hint for contextual
-   reindex; the rebuild still covers the single global FAISS index.
+   reindex; the forced rebuild still covers the active model's full FAISS index,
+   not just one KB.
 
 **Escalate**
 

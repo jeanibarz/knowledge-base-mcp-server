@@ -9,11 +9,11 @@
 
 **Acceptance Criteria:**
 
-- [ ] Given a fixture case with required sources, when `kb eval` runs the query, then the case fails if any required source is missing.
-- [ ] Given a fixture case with forbidden sources, when a forbidden source appears in the results, then the case fails.
-- [ ] Given a fixture case with a duplicate-source budget, when the number of repeated-source groups exceeds the budget, then the case fails.
-- [ ] Given a fixture case without gate behavior, when the case fails, then the command reports the failure as a warning and exits 0.
-- [ ] Given a fixture case with gate behavior, when the case fails, then the command exits nonzero.
+- [x] Given a fixture case with required sources, when `kb eval` runs the query, then the case fails if any required source is missing.
+- [x] Given a fixture case with forbidden sources, when a forbidden source appears in the results, then the case fails.
+- [x] Given a fixture case with a duplicate-source budget, when the number of repeated-source groups exceeds the budget, then the case fails.
+- [x] Given a fixture case without gate behavior, when the case fails, then the command reports the failure as a warning and exits 0.
+- [x] Given a fixture case with gate behavior, when the case fails, then the command exits nonzero.
 
 **Linked Tests:** TS-RETRIEVAL-EVAL-001
 
