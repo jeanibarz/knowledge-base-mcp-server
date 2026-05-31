@@ -52,7 +52,8 @@ This guard is a boundary cue, not a guarantee. Pattern matching cannot eliminate
 
 ## 3. Embedding-provider keys
 
-Three env vars are read at construction time (`src/FaissIndexManager.ts:98-121`, `src/config.ts:37-41`):
+Provider env vars are resolved through the provider/config modules when a
+manager initializes its embedding client:
 
 | Variable                  | Provider    | Leak surface                                           |
 | ------------------------- | ----------- | ------------------------------------------------------ |
@@ -76,21 +77,23 @@ Query text and knowledge-base chunks leave the machine over TLS to the configure
 
 ## 5. Path-traversal (path-taking tools and `kb://` resources)
 
-Three exposed surfaces now accept client-supplied paths into `$KNOWLEDGE_BASES_ROOT_DIR`. All of them route the candidate through the same `resolveKbPath` validator (`src/kb-fs.ts:216-274`) so the guard chain is implemented once:
+Exposed mutation/resource surfaces that accept client-supplied paths into
+`$KNOWLEDGE_BASES_ROOT_DIR` route candidates through shared KB path helpers, so
+the guard chain is implemented once:
 
-1. **Lexical guards** — empty path, embedded null byte, and `..` traversal are rejected before any I/O (`src/kb-fs.ts:223-235`).
-2. **KB-name validation** — `knowledge_base_name` must match `isValidKbName` (`src/kb-paths.ts:12-20`); the resolved KB directory must exist as a real directory under `KNOWLEDGE_BASES_ROOT_DIR`.
-3. **Lexical inside-or-equal check** — the resolved candidate is required to live under the KB root before any `realpath` call (`src/kb-fs.ts:243-249`).
-4. **`realpath` check** — when the target (or its nearest existing ancestor in `mustExist:false` mode) resolves through symlinks, the realpath must still be inside the KB realpath (`src/kb-fs.ts:251-260`). Symlink jailbreaks fail closed.
+1. **Lexical guards** — empty path, embedded null byte, and `..` traversal are rejected before any I/O.
+2. **KB-name validation** — `knowledge_base_name` must match `isValidKbName`; the resolved KB directory must exist as a real directory under `KNOWLEDGE_BASES_ROOT_DIR`.
+3. **Lexical inside-or-equal check** — the resolved candidate is required to live under the KB root before any `realpath` call.
+4. **`realpath` check** — when the target or nearest existing ancestor resolves through symlinks, the realpath must still be inside the KB realpath. Symlink jailbreaks fail closed.
 
 The current path-taking surfaces are:
 
 | Surface | Where the path comes in | mustExist | Notes |
 | --- | --- | --- | --- |
-| `add_document` | `path` arg, joined with `knowledge_base_name` | `false` | Snapshots existing content first; index update failure rolls the file write back (`src/KnowledgeBaseServer.ts:501-568`). |
-| `delete_document` | `path` arg, joined with `knowledge_base_name` | `false` | Removes the source file and its hash sidecar; FAISS orphan vectors persist until `reindex_knowledge_base` (`src/KnowledgeBaseServer.ts:570-624`). |
+| `add_document` | `path` arg, joined with `knowledge_base_name` | `false` | Snapshots existing content first; index update failure rolls the file write back. |
+| `delete_document` | `path` arg, joined with `knowledge_base_name` | `false` | Removes the source file and its hash sidecar; FAISS orphan vectors persist until a forced rebuild. |
 | `reindex_knowledge_base` | optional `knowledge_base_name` only — no per-file path | n/a | Resolves the KB directory to validate the name; the rebuild is global (no per-vector deletion in this server). |
-| `resources/read` for `kb://<kb>/<rel-path>` | URI authority + path | `true` | URI parser additionally rejects `%2F` / `%5C` and `..` segments before per-segment `decodeURIComponent` (`src/mcp-resources.ts:59-120`). PDFs are returned as base64 blobs; everything else as UTF-8 text. |
+| `resources/read` for `kb://<kb>/<rel-path>` | URI authority + path | `true` | URI parser additionally rejects encoded slash/backslash and `..` segments before per-segment decoding. PDFs are returned as base64 blobs; everything else as UTF-8 text. |
 
 `list_knowledge_bases` continues to read `KNOWLEDGE_BASES_ROOT_DIR` directly without taking any client path. `retrieve_knowledge` takes only `query`, optional `knowledge_base_name`, optional numeric filters, and never writes based on the name.
 
@@ -130,9 +133,9 @@ Setting `KB_MUTATION_AUDIT_LOG` (`src/audit-log.ts`) opts into an append-only JS
 
 This page is verified against the following source files and README sections. If one of these moves or its cited lines drift, refresh this doc rather than letting the claim go stale.
 
-- Path validation (write tools + resources): `src/kb-fs.ts:216-274`, `src/kb-paths.ts:12-20`, `src/mcp-resources.ts:59-120`.
-- Write-tool surfaces: `src/KnowledgeBaseServer.ts:501-661`.
-- `resources/read` body: `src/mcp-resources.ts:153-180`.
+- Path validation (write tools + resources): `src/kb-fs.ts`, `src/kb-paths.ts`, `src/mcp-resources.ts`.
+- Write-tool surfaces: `src/KnowledgeBaseServer.ts`, `src/mcp-document-mutations.ts`.
+- `resources/read` body: `src/mcp-resources.ts`.
 - Per-model write lock + atomic save: `src/write-lock.ts`, `src/faiss-store-layout.ts:58-179`.
 - Transport config + bearer / origin gates: `src/transport-config.ts:14-122`, `src/transport/base-http-host.ts`.
 - Remote transport hosts: `src/transport/sse.ts:1-139`, `src/transport/http.ts:1-220`.

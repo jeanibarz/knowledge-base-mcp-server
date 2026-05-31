@@ -1,78 +1,98 @@
-# C4 — Container
+# C4 - Container
 
-Zooming one level in from [`c4-context.md`](./c4-context.md). The system is the server process plus two on-disk stores with **different lifecycles**. They are independent containers: the server can be restarted without touching either; either can be deleted or relocated independently of the other; `model_name.txt` links the two across restarts.
+Zooming one level in from [`c4-context.md`](./c4-context.md). The current system
+has two executable containers in this package (`build/index.js` and
+`build/cli.js`) plus persistent stores under the KB root and FAISS root. The MCP
+server and CLI share the same model registry and index layout.
 
 ## Diagram
 
 ```mermaid
 flowchart LR
-  subgraph client_side["MCP client process"]
-    Client["Client SDK<br/>StdioClientTransport"]
+  subgraph clients["Clients"]
+    McpClient["MCP client<br/>stdio or HTTP/SSE"]
+    Shell["Shell / editor / automation"]
   end
 
-  subgraph server_container["Server container — Node.js ≥16, single process"]
-    direction TB
-    Transport["StdioServerTransport<br/>src/KnowledgeBaseServer.ts:126-127"]
-    McpServer["McpServer (SDK)<br/>src/KnowledgeBaseServer.ts:19-22<br/>exposes list_knowledge_bases, retrieve_knowledge"]
-    Indexer["FaissIndexManager (in-memory)<br/>holds faissIndex + embeddings client<br/>src/FaissIndexManager.ts:80-131"]
-    Logger["logger<br/>stderr + optional LOG_FILE<br/>src/logger.ts:16,18-49"]
+  subgraph package["This package"]
+    Server["MCP server<br/>src/KnowledgeBaseServer.ts"]
+    Cli["kb CLI<br/>src/cli.ts + cli-*.ts"]
+    Daemon["kb serve daemon<br/>src/cli-serve.ts"]
   end
 
-  subgraph kbs_store["Container: Knowledge-base source tree<br/>$KNOWLEDGE_BASES_ROOT_DIR"]
-    Docs[("&lt;kb&gt;/**.md, .txt (user-authored)")]
-    Hashes[("&lt;kb&gt;/.index/**/&lt;basename&gt;<br/>one sha256 per source file")]
+  subgraph kbs_store["Knowledge-base source tree<br/>$KNOWLEDGE_BASES_ROOT_DIR"]
+    Source[("User-authored files")]
+    KbIndex[(".index/<br/>hash sidecars, chunk manifests,<br/>quarantine, feedback")]
   end
 
-  subgraph faiss_store["Container: FAISS index store<br/>$FAISS_INDEX_PATH"]
-    FaissFiles[("faiss.index + docstore.json<br/>written by FaissStore.save")]
-    ModelFile[("model_name.txt<br/>src/FaissIndexManager.ts:25")]
+  subgraph faiss_store["FAISS/model store<br/>$FAISS_INDEX_PATH"]
+    Active[("active.txt")]
+    Models[("models/<model_id>/")]
+    Versioned[("index -> index.vN/<br/>faiss.index + docstore.json")]
+    Cache[("cache/queries/<model_id>/")]
   end
 
-  subgraph provider_box["Container: Embedding provider (external)"]
-    HF["HuggingFace router<br/>router.huggingface.co/...<br/>src/config.ts:29-34"]
-    OAI["OpenAI API"]
-    Ollama["Ollama (local HTTP)<br/>OLLAMA_BASE_URL"]
+  subgraph services["External/local services"]
+    Embeddings["Embedding provider"]
+    Llm["Optional LLM endpoint"]
   end
 
-  Client == "JSON-RPC / stdio" ==> Transport
-  Transport --> McpServer
-  McpServer -- "updateIndex / similaritySearch" --> Indexer
-  Indexer -- "readdir, sha256, readFile" --> Docs
-  Indexer -- "read/write sidecar" --> Hashes
-  Indexer -- "FaissStore.load/save" --> FaissFiles
-  Indexer -- "read/write model name" --> ModelFile
-  Indexer -- "embedDocuments / embedQuery" --> HF & OAI & Ollama
-  McpServer -.-> Logger
-  Indexer -.-> Logger
+  McpClient --> Server
+  Shell --> Cli
+  Cli --> Daemon
+  Server --> Source
+  Server --> KbIndex
+  Cli --> Source
+  Cli --> KbIndex
+  Server --> Active
+  Server --> Models
+  Server --> Versioned
+  Server --> Cache
+  Cli --> Active
+  Cli --> Models
+  Cli --> Versioned
+  Cli --> Cache
+  Server --> Embeddings
+  Cli --> Embeddings
+  Server --> Llm
+  Cli --> Llm
 ```
 
 ## Containers
 
-| Container                           | Tech                              | Lifecycle                                                                 | Persistence        |
-| ----------------------------------- | --------------------------------- | ------------------------------------------------------------------------- | ------------------ |
-| Server process                      | Node.js ≥16, TypeScript strict    | Launched per MCP client session; SIGINT triggers graceful shutdown (`src/KnowledgeBaseServer.ts:27-30`). | None (pure in-memory aside from two stores below). |
-| Knowledge-base source tree          | Plain files on local FS           | User-authored, long-lived. Server only reads content; writes `.index/` sidecars next to sources. | User's responsibility. |
-| FAISS index store                   | `faiss.index` + pickled docstore + `model_name.txt` | Written incrementally by this server. Wiped + rebuilt when the model changes (`src/FaissIndexManager.ts:153-164`). | Survives restarts; safe to delete (will rebuild from source tree on next call). |
-| Embedding provider                  | Remote HTTP or local HTTP daemon  | External; one per configured `EMBEDDING_PROVIDER` (`src/config.ts:12`).   | N/A.               |
+| Container | Tech | Lifecycle | Persistence |
+| --- | --- | --- | --- |
+| MCP server | Node.js >=20, TypeScript output | Launched by an MCP client over stdio, or by an operator/supervisor for HTTP/SSE mode. | In-memory managers only; durable state is in the stores below. |
+| `kb` CLI | Node.js command binary | Fresh process per command, except when a command opts into `kb serve` for warm reads. | Writes only through explicit write commands or refresh/reindex flows. |
+| `kb serve` daemon | Loopback HTTP helper | Foreground process or user service; optional. | Keeps warm in-memory state; durable state remains in the stores. |
+| Knowledge-base source tree | Plain files | User-owned, long-lived content. | Source files plus `.index/` sidecars. |
+| FAISS/model store | `active.txt`, `models/<id>/`, versioned FAISS dirs, cache | Server-owned local state; safe to delete when the operator wants a rebuild. | Active model, model metadata, FAISS index versions, query cache, update summaries. |
+| Embedding provider | Local or remote HTTP/client library | External service selected by provider/model config. | N/A. |
+| Optional LLM endpoint | OpenAI-compatible chat endpoint | External or `kb llm` managed profile. | Profile config/state is outside the FAISS store; see the data model. |
 
-## Why the two stores are separate containers
+## Why The Stores Are Separate
 
-They **look** like one thing — both are directories on the user's disk — but they have different owners, different lifecycles, and different risk profiles:
+- `$KNOWLEDGE_BASES_ROOT_DIR` is owned by the user. It contains durable notes and
+  per-KB operational sidecars.
+- `$FAISS_INDEX_PATH` is owned by the server. It contains derived indexes,
+  model-selection state, query cache entries, and persisted diagnostics.
+- Deleting `$FAISS_INDEX_PATH` removes derived retrieval state only; the next
+  refresh/rebuild can reconstruct vectors from the source tree.
+- Deleting a KB source directory removes user content and cannot be reconstructed
+  from FAISS.
 
-- `$KNOWLEDGE_BASES_ROOT_DIR` is **owned by the user** (the user writes the markdown). The server only writes sidecars into `.index/` subdirs.
-- `$FAISS_INDEX_PATH` is **owned by the server** (every file here is either written by `FaissStore.save()` or by `initialize()` itself, `src/FaissIndexManager.ts:181`). Users must not drop files into it from other sources — see [`threat-model.md`](./threat-model.md) on `pickleparser` deserialization.
-- Deleting `$FAISS_INDEX_PATH` is a safe no-op: next `retrieve_knowledge` call rebuilds it from the source tree via the fallback path at `src/FaissIndexManager.ts:302-346`.
-- Deleting `$KNOWLEDGE_BASES_ROOT_DIR` makes queries return `_No similar results found._` on the next call (and the scan at `src/FaissIndexManager.ts:209` will find no KBs).
+## Cross-Container Links
 
-## Cross-container links
+| Link | Direction | Source of truth |
+| --- | --- | --- |
+| Active model selection | CLI/MCP read `active.txt`; model commands write it. | `src/active-model.ts` |
+| Per-model FAISS persistence | Managers load/save versioned `models/<id>/index.vN/` directories. | `src/faiss-store-layout.ts`, `src/FaissIndexManager.ts` |
+| Source freshness | Refresh compares source hashes with `<kb>/.index/` sidecars and chunk manifests. | `src/file-ingest.ts`, `src/FaissIndexManager.ts` |
+| Query cache | Retrieval can reuse query embeddings from memory or `$FAISS_INDEX_PATH/cache/queries/`. | `src/query-cache.ts` |
+| Remote MCP runtime stats | HTTP/SSE hosts expose counters to `kb_stats` while active. | `src/transport-runtime-stats.ts`, `src/KnowledgeBaseServer.ts` |
 
-| Link                                             | Direction | Anchored at                                                          |
-| ------------------------------------------------ | --------- | -------------------------------------------------------------------- |
-| `KNOWLEDGE_BASES_ROOT_DIR` → per-file sha256 sidecar inside `.index/` | write     | `src/FaissIndexManager.ts:230-231, :362-377`                         |
-| `FAISS_INDEX_PATH/model_name.txt` → model guard  | read/write | `src/FaissIndexManager.ts:143-164, :181`                             |
-| `FAISS_INDEX_PATH/faiss.index` → in-memory `faissIndex` | load/save | `src/FaissIndexManager.ts:166-177, :348-355`                         |
+## Out Of Scope
 
-## Out of scope
-
-- How requests are routed *inside* the server process — see [`c4-component.md`](./c4-component.md).
-- Retrieval vs indexing sequences — see [`sequence-retrieve.md`](./sequence-retrieve.md) and [`sequence-reindex.md`](./sequence-reindex.md).
+- Request-level sequences; see [`sequence-retrieve.md`](./sequence-retrieve.md).
+- Forced rebuild and model selection flows; see [`sequence-reindex.md`](./sequence-reindex.md).
+- Security posture; see [`threat-model.md`](./threat-model.md).

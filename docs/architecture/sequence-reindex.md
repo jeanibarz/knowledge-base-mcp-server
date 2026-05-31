@@ -1,87 +1,94 @@
-# Sequence — model-change reindex
+# Sequence - reindex and model selection
 
-What happens when the user changes `EMBEDDING_PROVIDER`, `HUGGINGFACE_MODEL_NAME`, `OLLAMA_MODEL`, or `OPENAI_MODEL_NAME` with an existing index on disk. The triggering comparison is at `src/FaissIndexManager.ts:153`; the teardown at `:154-164`; the reconstruction at `src/FaissIndexManager.ts:302-346` on the next `updateIndex` call.
+This page replaces the earlier "model-change wipes the index" description. The
+current system uses RFC 013 multi-model layout: a provider/model pair maps to a
+stable `model_id`, each model has its own directory, and changing the active
+model selects a different directory instead of deleting the previous one.
 
-This is a **destructive** path — the old `faiss.index` is deleted, then rebuilt from source markdown using the new model. ADR [`0005-auto-rebuild-on-model-change.md`](./adr/0005-auto-rebuild-on-model-change.md) explains why the current code wipes rather than refuses, and why that choice is debatable.
-
-## Diagram
+## Model Add And Activation
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant Entry as index.ts:5
-  participant Server as KnowledgeBaseServer
+  participant Op as Operator
+  participant Cli as kb models
+  participant Active as active-model.ts
   participant FIM as FaissIndexManager
-  participant Store as $FAISS_INDEX_PATH
-  participant FS as $KNOWLEDGE_BASES_ROOT_DIR
-  participant Provider as Embedding provider<br/>(NEW model)
+  participant Lock as withWriteLock(modelDir)
+  participant Store as $FAISS_INDEX_PATH/models/<id>
+  participant Provider as Embedding provider
+  participant FS as KB source tree
 
-  Note over Entry,Provider: User changed OLLAMA_MODEL<br/>and restarted the server
-  Entry->>Server: new KnowledgeBaseServer().run()
-  Server->>FIM: new FaissIndexManager()<br/>:86-131
-  Note over FIM: constructor picks new model<br/>from config.ts env vars
-
-  Server->>Server: McpServer.connect(stdio)<br/>:126-127
-  Note over Server: MCP handshake completes<br/>BEFORE initialize() runs
-
-  Server->>FIM: initialize()<br/>:133-194
-  FIM->>Store: pathExists(FAISS_INDEX_PATH)<br/>:135
-  FIM->>Store: readFile(model_name.txt)<br/>:146-148
-  Store-->>FIM: "old-model-name"
-
-  alt stored != current (MISMATCH)
-    Note over FIM: warn: "Model name has changed..."<br/>:154
-    FIM->>Store: unlink(faiss.index)<br/>:157
-    Note over FIM: this.faissIndex = null<br/>:163
-  end
-
-  FIM->>Store: pathExists(faiss.index)
-  Note over FIM,Store: file just deleted → branch at :174-177
-  Note over FIM: faissIndex stays null
-
-  FIM->>Store: writeFile(model_name.txt, NEW-model)<br/>:181
-  Note over FIM: initialize() returns
-
-  Note over Server,Provider: Time passes — first retrieve_knowledge request arrives
-
-  Server->>FIM: updateIndex(kb?)<br/>:202-389
-  loop for each file in each KB
-    FIM->>FS: sha256 + read sidecar
-    Note over FIM: sidecars still reflect OLD-model<br/>content (hash of source file, not embedding)
-    Note over FIM: hashes match → NOT re-embedded<br/>via the changed-file branch
-  end
-
-  Note over FIM: indexMutated==false, faissIndex==null,<br/>anyFileProcessed==true → fallback branch
-  rect rgba(255, 235, 200, 0.6)
-    Note over FIM,Provider: Fallback rebuild from all files<br/>:302-346
-    FIM->>FS: re-walk every KB (second pass)
-    loop for each file
-      FIM->>FS: readFile + split
-    end
-    FIM->>Provider: embedDocuments([...all chunks, new model])
-    Provider-->>FIM: new vectors
-    FIM->>Store: FaissStore.fromTexts(all)<br/>:338-343
-  end
-  FIM->>Store: faissIndex.save(faiss.index)<br/>:348-355
-  par tmp+rename sidecars (unchanged hashes)
-    FIM->>FS: overwrite sidecar (.tmp → rename)
-  end
+  Op->>Cli: kb models add <provider> <model>
+  Cli->>Active: derive model_id and create .adding sentinel
+  Cli->>FIM: new FaissIndexManager({provider, modelName})
+  Cli->>Lock: acquire lock for models/<id>
+  Lock->>FIM: initialize()
+  FIM->>Store: create model dir + model_name.txt + index-type.txt
+  Lock->>FIM: updateIndex(undefined, force/build)
+  FIM->>FS: enumerate, load, split files
+  FIM->>Provider: embed chunks in bounded batches
+  FIM->>Store: save index.vN and atomically swap index
+  FIM->>FS: write hash/chunk sidecars
+  Cli->>Active: remove .adding; optionally write active.txt
+  Cli-->>Op: model registered
 ```
 
-## Why the fallback runs
+Activation is a small metadata write:
 
-The sha256 sidecars are hashes of the **source file content**, not of the embedding — so changing the embedding model does **not** invalidate them (`src/file-utils.ts:6-11`). On the first call after a model change:
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Op as Operator
+  participant Cli as kb models set-active
+  participant Active as active-model.ts
+  participant Store as $FAISS_INDEX_PATH
 
-- Every file's hash matches its sidecar, so the changed-file branch at `src/FaissIndexManager.ts:250-293` is skipped.
-- But `this.faissIndex` is still `null` (cleared by the model-change block at `:163`, not replaced by the `FaissStore.load` branch at `:166-177` because `faiss.index` no longer exists).
-- The combination — "some files scanned AND `faissIndex === null`" — triggers the fallback at `src/FaissIndexManager.ts:302-346`, which unconditionally re-embeds every file.
+  Op->>Cli: kb models set-active <model_id>
+  Cli->>Active: validate registered model
+  Active->>Store: atomic write active.txt
+  Cli-->>Op: active model changed
+```
 
-That fallback is also what recovers from a user manually deleting `$FAISS_INDEX_PATH/faiss.index`.
+The previously active model directory remains on disk. Operators can switch back
+without re-embedding unless they removed that model or its index.
 
-## Cost
+## Forced Reindex
 
-Proportional to `total_chunks × per_chunk_embedding_latency` plus one `save()`. RFC 007 §5.2 measured 10 761 ms for 100 files / 500 chunks against a 20 ms/chunk stub; real providers range from 50 to 200 ms/chunk — see [`qa-budgets.md`](./qa-budgets.md).
+`kb reindex --with-context`, `kb search --refresh`, and MCP
+`reindex_knowledge_base` all eventually call `FaissIndexManager.updateIndex`.
+When `force` is true, the rebuild is global for the active model even if the
+caller supplied a KB name. FAISS deletion is not supported in this server, so a
+"scoped force rebuild" would either duplicate old vectors or drop other KBs.
 
-## Partial-model switch (e.g. wrong provider env)
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Caller as CLI or MCP caller
+  participant Active as active-model.ts
+  participant Lock as withWriteLock(modelDir)
+  participant FIM as FaissIndexManager
+  participant Store as models/<active_id>
+  participant FS as KB source tree
 
-If the user sets `EMBEDDING_PROVIDER=openai` but forgets `OPENAI_API_KEY`, construction throws at `src/FaissIndexManager.ts:100` before `initialize()` runs — so the on-disk index is **not** touched. Same for HuggingFace at `:112`. The `.faiss/` directory survives, and reverting the env on the next start restores the prior behaviour with no rebuild cost.
+  Caller->>Active: resolveActiveModel()
+  Active-->>Caller: active model_id
+  Caller->>Lock: acquire active model write lock
+  Lock->>FIM: updateIndex(kb?, {force:true})
+  FIM->>FIM: upgrade scoped force to global rebuild
+  FIM->>FS: enumerate all ingestable files
+  FIM->>Store: build new versioned FAISS store
+  FIM->>FS: rewrite sidecars and manifests
+  Lock-->>Caller: release
+```
+
+## Recovery And Safety
+
+- `.adding` sentinels hide incomplete model directories from `list_models` and
+  let `kb models` report interrupted additions.
+- Pending sidecar commit manifests recover crashes between FAISS persistence and
+  sidecar persistence.
+- Versioned saves write a new `index.vN/` directory and atomically swap the
+  `index` symlink, so readers pin one coherent version.
+- The old destructive model-switch path described by ADR 0005 is superseded by
+  side-by-side model directories.

@@ -6,7 +6,7 @@ Every artifact that survives a process restart lives under either `$KNOWLEDGE_BA
 
 ```mermaid
 flowchart LR
-  subgraph kbs["$KNOWLEDGE_BASES_ROOT_DIR<br/>src/config.ts"]
+  subgraph kbs["$KNOWLEDGE_BASES_ROOT_DIR<br/>src/config/paths.ts"]
     direction TB
     subgraph kb1["&lt;kb_name&gt;/  (user-authored)"]
       Source["*.md, *.txt, *.pdf, *.html<br/>plus configured extra extensions"]
@@ -17,25 +17,33 @@ flowchart LR
     kb2["&lt;other_kb&gt;/"]
   end
 
-  subgraph faiss["$FAISS_INDEX_PATH<br/>src/config.ts"]
+  subgraph faiss["$FAISS_INDEX_PATH<br/>src/config/paths.ts"]
     direction TB
     Active["active.txt<br/>active model_id"]
     Models["models/"]
     ModelDir["&lt;model_id&gt;/<br/>provider__filesystem-safe-slug"]
-    ModelName["model_name.txt<br/>configured embedding model name"]
-    IndexLink["index<br/>symlink to index.vN"]
-    Version["index.vN/"]
-    Faiss["faiss.index<br/>faiss-node binary vector index"]
-    Docs["docstore.json<br/>LangChain docstore sibling"]
-    Legacy["faiss.index/<br/>legacy layout, read fallback"]
+      ModelName["model_name.txt<br/>configured embedding model name"]
+      IndexType["index-type.txt<br/>flat or sq8"]
+      LastUpdate["last-index-update.json<br/>latest update summary"]
+      MetadataSidecar["metadata-sidecar.jsonl<br/>filter fast-path rows"]
+      IndexLink["index<br/>symlink to index.vN"]
+      Version["index.vN/"]
+      Faiss["faiss.index<br/>faiss-node binary vector index"]
+      Docs["docstore.json<br/>LangChain docstore sibling"]
+      QueryCache["cache/queries/&lt;model_id&gt;/<br/>query embedding cache"]
+      Legacy["faiss.index/<br/>legacy layout, read fallback"]
 
     Active --> ModelDir
     Models --> ModelDir
     ModelDir --> ModelName
+    ModelDir --> IndexType
+    ModelDir --> LastUpdate
+    ModelDir --> MetadataSidecar
     ModelDir --> IndexLink
     IndexLink --> Version
     Version --> Faiss
     Version --> Docs
+    ModelDir --> QueryCache
     ModelDir -.pre-RFC-014.-> Legacy
   end
 ```
@@ -101,6 +109,41 @@ models/<model_id>/
 
 The pre-RFC-014 layout is `models/<model_id>/faiss.index/{faiss.index,docstore.json}`. The loader still falls back to it when the `index` symlink is absent (`src/faiss-store-layout.ts:122-142`). The first successful save under the new layout writes `index.vN/` and leaves the legacy directory untouched as downgrade/rollback slack (`src/FaissIndexManager.ts:765-770`). When both layouts are present, `kb models list` can surface a downgrade hazard derived directly from filesystem state (`src/active-model.ts:129-185`).
 
+### Query embedding cache
+
+`$FAISS_INDEX_PATH/cache/queries/<model_id>/` stores optional query-vector cache
+entries. Each query key is a SHA-256 over schema version, `model_id`, and the
+normalized query. The vector is stored as `<sha>.f32`; metadata is stored as
+`<sha>.meta.json`. The cache is a latency/cost optimization only: corrupt or
+incomplete entries are removed and treated as misses. Operators can disable it
+with `KB_QUERY_CACHE=off` or per-call CLI flags where supported.
+
+### Model sidecar files
+
+Each model directory can also contain:
+
+- `index-type.txt` — index creation type such as `flat` or `sq8`.
+- `last-index-update.json` — latest sanitized `updateIndex` summary for fresh
+  process stats and doctor reports.
+- `metadata-sidecar.jsonl` — per-doc metadata rows used to speed filtered search
+  before falling back to post-filter overfetch.
+- `pending-manifest.json` — crash-recovery manifest between FAISS save and
+  sidecar commit.
+- `.adding` — temporary sentinel while `kb models add` is in progress.
+
+### Other durable operator artifacts
+
+Not every durable artifact belongs under the two retrieval stores:
+
+- `kb research collect --run-dir=<path>` writes `run.json`, `plan.json`,
+  `ledger.json`, `events.jsonl`, and `evidence_packet.md` to the operator-chosen
+  run directory.
+- `KB_MUTATION_AUDIT_LOG=<path>` writes an append-only mutation audit JSONL file
+  outside the KB and FAISS roots when configured.
+- `kb llm` profile and managed-service state live under configurable user config,
+  state, and systemd directories (`KB_LLM_CONFIG_DIR`, `KB_LLM_STATE_DIR`,
+  `KB_LLM_SYSTEMD_USER_DIR`).
+
 ## In-memory: chunk metadata schema
 
 `FaissIndexManager.updateIndex` uses one chunk builder for changed-file indexing and full-rebuild fallback (`src/FaissIndexManager.ts:705-709`, `:748-752`). `buildChunkDocuments` splits markdown with `MarkdownTextSplitter`, other ingested extensions with `RecursiveCharacterTextSplitter`, strips YAML frontmatter from page content, and attaches the metadata below to every emitted `Document` (`src/file-ingest.ts:37-104`).
@@ -143,9 +186,13 @@ For markdown chunks only, `detectSiblingPdfPath` looks for a same-stem PDF in th
 
 ## Not persisted
 
-- Query text is not written to disk by the retrieval path; it flows to the embedding provider for the request and then is discarded.
+- Raw query text is not written to disk by the retrieval path. Query-cache keys
+  are hashes of normalized query text, model id, and schema version; cache values
+  are vectors, not raw queries.
 - Embedding provider keys (`HUGGINGFACE_API_KEY`, `OPENAI_API_KEY`) are held in `process.env` for the life of the process. They are not written to sidecars, model registry files, or FAISS docstore metadata.
-- There is no cache, queue, or scratch directory outside `$KNOWLEDGE_BASES_ROOT_DIR` and `$FAISS_INDEX_PATH`.
+- Retrieval itself has no queue. Operator workflows such as `kb research`,
+  mutation audit logging, and `kb llm` profiles write outside the retrieval
+  stores only when the operator selects or enables those surfaces.
 
 ## Checked against
 
@@ -154,6 +201,8 @@ This page is verified against the following source files. If one of these files 
 - Chunk metadata wire shape: `src/file-ingest.ts:37-104`.
 - Frontmatter whitelist + sanitisation: `src/frontmatter-lift.ts:19-218`, `src/formatter.ts:34-90`.
 - Atomic FAISS save / pinned load / version retention: `src/faiss-store-layout.ts`.
+- Query embedding cache: `src/query-cache.ts`.
+- Model registry, model sidecars, incomplete-add sentinel: `src/active-model.ts`.
 - Sidecar write path: `src/file-ingest.ts:118-144`, `src/FaissIndexManager.ts:782-793`.
 - Active-model resolution: `src/active-model.ts:5-26`, `:259-330`.
 - Per-model directory and `model_name.txt`: `src/active-model.ts:107-127`, `src/FaissIndexManager.ts:327-334`.

@@ -1,104 +1,84 @@
-# Sequence — `retrieve_knowledge`
+# Sequence - `retrieve_knowledge`
 
-End-to-end flow for the `retrieve_knowledge` tool. The handler lives at `src/KnowledgeBaseServer.ts:74-122` and always runs two steps in order: refresh the index (`updateIndex` at `src/FaissIndexManager.ts:202-389`), then query it (`similaritySearch` at `src/FaissIndexManager.ts:394-408`).
+End-to-end flow for the MCP `retrieve_knowledge` tool. The handler resolves the
+active or requested model, refreshes the selected model's index under a
+per-model write lock, runs dense or hybrid retrieval, optionally applies the
+relevance gate and reranker, and returns formatted markdown.
 
-There are two paths through the same handler, distinguished by **whether the in-memory `faissIndex` is already populated when the request arrives**. Both land at the same `similaritySearch` call.
-
-## Warm path — index loaded, all hashes match
-
-This is the cheap case: every file's on-disk sha matches the sidecar, so no embedding calls happen.
-
-```mermaid
-sequenceDiagram
-  autonumber
-  participant Client as MCP client
-  participant Server as KnowledgeBaseServer<br/>:74-122
-  participant FIM as FaissIndexManager
-  participant FS as $KNOWLEDGE_BASES_ROOT_DIR
-  participant Faiss as faissIndex (in-memory)
-  participant Provider as Embedding provider
-
-  Client->>Server: tools/call retrieve_knowledge<br/>{query, knowledge_base_name?, threshold?}
-  Server->>FIM: updateIndex(knowledge_base_name?)<br/>:202-389
-  FIM->>FS: readdir + getFilesRecursively<br/>:209, :223
-  loop for each file
-    FIM->>FS: readFile + sha256<br/>file-utils.ts:6-11
-    FIM->>FS: read sidecar hash<br/>:242-247
-    Note over FIM: hashes match → skip branch<br/>:294-296
-  end
-  Note over FIM,Faiss: indexMutated == false → no save
-  Server->>FIM: similaritySearch(query, 10, threshold)<br/>:394-408
-  FIM->>Provider: embedQuery(query)
-  Provider-->>FIM: query vector
-  FIM->>Faiss: similaritySearchWithScore(vec, 10, filter)
-  Faiss-->>FIM: [(doc, score), ...]
-  FIM-->>Server: ScoredDocument[]
-  Server-->>Client: markdown-formatted results
-```
-
-**Cost profile.** No embedding batches for documents, no FAISS save, no sidecar writes. The scan is O(files-across-selected-KBs) with one `stat` + `readFile` + sha256 + sidecar-read per file. See [`qa-budgets.md`](./qa-budgets.md) for the ~85 ms warm floor measured in RFC 007 §5.3.
-
-## Cold path — no persisted index (or first-touch files)
-
-Either `initialize()` found no `faiss.index` on disk (`src/FaissIndexManager.ts:174-177`), so `this.faissIndex` is `null` at request time, **or** some file hashes don't match. Both land in the same branch: changed chunks are embedded, `faissIndex` is built or extended, then persisted once.
+## Dense Path
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant Client as MCP client
-  participant Server as KnowledgeBaseServer<br/>:74-122
+  participant Server as KnowledgeBaseServer
+  participant Active as active-model.ts
+  participant Lock as withWriteLock(modelDir)
   participant FIM as FaissIndexManager
-  participant FS as $KNOWLEDGE_BASES_ROOT_DIR
-  participant Faiss as faissIndex (in-memory)
-  participant Store as $FAISS_INDEX_PATH
+  participant FS as KB source tree
+  participant Store as models/<model_id>/index
   participant Provider as Embedding provider
+  participant Formatter as formatter.ts
 
-  Client->>Server: tools/call retrieve_knowledge
-  Server->>FIM: updateIndex(knowledge_base_name?)<br/>:202-389
-  FIM->>FS: readdir KBs + recursive file walk<br/>:209, :223
-  loop for each file with mismatched/absent hash
-    FIM->>FS: readFile<br/>:253-258
-    alt *.md
-      FIM->>FIM: MarkdownTextSplitter.createDocuments<br/>:261-267
-    else other ext
-      FIM->>FIM: new Document({pageContent, metadata: {source}})<br/>:268-275
-    end
-    alt faissIndex == null (first chunk)
-      FIM->>Provider: embedDocuments(chunks)
-      FIM->>Faiss: FaissStore.fromTexts(...)<br/>:278-284
-    else index exists
-      FIM->>Provider: embedDocuments(chunks)
-      FIM->>Faiss: addDocuments(chunks)<br/>:285-287
-    end
-    Note over FIM: pendingHashWrites.push({path, hash})<br/>:289
+  Client->>Server: tools/call retrieve_knowledge {query, model_name?, filters?}
+  Server->>Active: resolveActiveModel(explicitOverride?)
+  Active-->>Server: model_id
+  Server->>FIM: managers.getOrCreate(model_id)
+  Server->>Lock: acquire per-model write lock
+  Lock->>FIM: updateIndex(kb?)
+  FIM->>FS: enumerate ingestable files + read hashes/manifests
+  alt changed files or missing index
+    FIM->>FS: load and split files
+    FIM->>Provider: embed changed/rebuild chunks in bounded batches
+    FIM->>Store: save index.vN and atomically swap index symlink
+    FIM->>FS: write hash + chunk sidecars after save
+  else all current
+    FIM-->>Lock: no save
   end
-  opt faissIndex still null && any file scanned
-    FIM->>FS: re-walk all KBs<br/>:302-337<br/>(fallback rebuild from every file)
-    FIM->>Provider: embedDocuments(all chunks)
-    FIM->>Faiss: FaissStore.fromTexts(all)<br/>:338-345
-  end
-  FIM->>Store: faissIndex.save(FAISS_INDEX_PATH/faiss.index)<br/>:348-355
-  par write hash sidecars (tmp + rename)
-    FIM->>FS: writeFile <sidecar>.tmp + rename<br/>:362-377
-  end
-  Server->>FIM: similaritySearch(query, 10, threshold)<br/>:394-408
-  FIM->>Provider: embedQuery(query)
-  FIM->>Faiss: similaritySearchWithScore(vec, 10, filter)
-  Faiss-->>FIM: [(doc, score), ...]
-  FIM-->>Server: ScoredDocument[]
-  Server-->>Client: markdown-formatted results
+  Lock-->>Server: release
+  Server->>FIM: similaritySearch(query, k=10, threshold, filters)
+  FIM->>Provider: embedQuery(query) or query-cache hit
+  FIM->>Store: FAISS search
+  FIM-->>Server: scored documents
+  Server->>Server: apply relevance gate when enabled
+  Server->>Formatter: formatRetrievalAsMarkdown(results)
+  Server-->>Client: markdown + structured gate verdict
 ```
 
-### Ordering invariant
+## Hybrid Path
 
-One `save()` per index-mutating `updateIndex` call; hash and chunk sidecars are written **after** `save()` completes and use tmp+rename so each sidecar is atomic. Before the save, `updateIndex` writes `$FAISS_INDEX_PATH/models/<model_id>/pending-manifest.json` with the pending sidecar set and phase `save-started`; after the FAISS save succeeds it advances the phase to `save-complete`; after every sidecar is durable it removes the manifest. On the next normal `initialize()`, `save-complete` manifests are rolled forward by finishing the sidecar writes. Ambiguous `save-started` manifests cause the persisted store and stale sidecars to be purged so the next scan rebuilds instead of duplicating vectors.
+When `search_mode: "hybrid"` is passed, the server still refreshes the dense
+index first. It then runs:
 
-### Fallback rebuild edge case
+- a dense FAISS leg against the selected model;
+- a lexical BM25 leg over the same KB scope;
+- Reciprocal Rank Fusion with `c=60`;
+- optional cross-encoder reranking when enabled;
+- the relevance gate when enabled.
 
-If the hash-scan phase embedded nothing (e.g. first call after a fresh restart with a `faiss.index` that failed to load, or an index-less directory that also has stale sidecar state) but files exist, the branch at `src/FaissIndexManager.ts:302-346` re-walks every KB and embeds **all** chunks unconditionally. This is the path that makes cold starts slow on large KBs — see [`qa-budgets.md`](./qa-budgets.md) for the 10 761 ms measurement at 100 files / 500 chunks.
+Hybrid currently rejects neighbor-context expansion because context expansion is
+implemented against dense semantic matches only.
 
-## Error paths (not drawn)
+## Key Invariants
 
-- Permission error during save/sidecar → `handleFsOperationError` at `src/FaissIndexManager.ts:50-78` marks the error `__alreadyLogged` and rethrows. The tool handler catches it at `src/KnowledgeBaseServer.ts:114-121` and returns `{ isError: true }`.
-- `similaritySearch` called when `faissIndex` is still `null` (e.g. empty `$KNOWLEDGE_BASES_ROOT_DIR`) → throws `"FAISS index is not initialized"` from `src/FaissIndexManager.ts:395-397`; the same handler converts it to `isError: true`.
-- Provider call failure → unwound through the `throw error` at `src/FaissIndexManager.ts:380-388`; same handler path.
+- **Model resolution is per call.** `model_name` overrides the active model only
+  for that request; otherwise `KB_ACTIVE_MODEL`, `active.txt`, then legacy env
+  fallback are used.
+- **Writes are per-model locked.** Refreshes for one model do not block reads or
+  additions for another model unless they share the same model directory.
+- **FAISS saves are versioned.** The active store is `models/<model_id>/index`,
+  a symlink to an `index.vN/` directory containing `faiss.index` and
+  `docstore.json`.
+- **Sidecars are committed after FAISS.** Pending sidecar manifests make crashes
+  between index save and sidecar write recoverable on the next initialize.
+- **Default CLI search differs from MCP retrieval.** `kb search` is read-only
+  unless `--refresh` is passed; MCP `retrieve_knowledge` preserves the historical
+  refresh-before-query behavior.
+
+## Error Paths
+
+- Missing or corrupt active model resolution returns an MCP `isError` result.
+- Provider, index, and validation failures are mapped to structured KB error
+  payloads where possible.
+- Relevance-gate or reranker provider failures degrade to the retrieval baseline
+  unless the specific feature documents a stricter mode.

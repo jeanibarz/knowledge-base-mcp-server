@@ -1,92 +1,75 @@
-# State — FAISS index lifecycle
+# State - FAISS index lifecycle
 
-Lifecycle of the in-memory `this.faissIndex: FaissStore | null` field and its on-disk counterpart under `$FAISS_INDEX_PATH/models/<model_id>/`. The diagram describes observable states from the caller's perspective: the field is either `null` or a loaded FAISS store; the lifecycle enriches that single bit with the reason for its current value.
+Lifecycle of a single `FaissIndexManager` instance for one `model_id`. The
+manager owns one in-memory FAISS adapter and one model directory under
+`$FAISS_INDEX_PATH/models/<model_id>/`.
 
 ## Diagram
 
 ```mermaid
 stateDiagram-v2
-  [*] --> None: process start<br/>before initialize()
+  [*] --> Constructed: new FaissIndexManager({provider, modelName})
 
-  state "None" as None
-  note left of None
-    faissIndex = null
-    model directory may or may not exist
-    FaissIndexManager.initialize()
+  state "Constructed" as Constructed
+  note right of Constructed
+    model_id, modelDir, modelNameFile
+    are derived; embeddings are not
+    loaded until initialize().
   end note
 
-  None --> Loading: initialize() sees a versioned<br/>or legacy FAISS store on disk
+  Constructed --> Initializing: initialize()
+  Initializing --> Loaded: active versioned or legacy store loads
+  Initializing --> Empty: no store exists
+  Initializing --> Recovering: pending-manifest.json exists
+  Initializing --> Failed: provider/config/load failure
 
-  state "Loading" as Loading
-  note right of Loading
-    FaissStore.load(path, embeddings)
-    loadFaissStoreAtomic()
-    (may throw → handleFsOperationError)
-  end note
+  Recovering --> Loaded: save-complete manifest rolls sidecars forward
+  Recovering --> Empty: save-started manifest purges ambiguous store
 
-  Loading --> Loaded: load() resolves
-  Loading --> None: load() fails → re-thrown; next init retries
+  Empty --> Building: updateIndex() finds ingestable chunks
+  Loaded --> Updating: updateIndex() finds append-safe changed chunks
+  Loaded --> Rebuilding: force reindex, missing freshness manifest, or non-append-safe chunk drift
 
-  None --> Rebuilding: force reindex or freshness manifest mismatch
-  Loaded --> Rebuilding: force reindex or freshness manifest mismatch
+  Building --> Loaded: first index version saved
+  Updating --> Loaded: new docs added + index.vN saved
+  Updating --> Loaded: metadata-only sidecars advanced
+  Updating --> Failed: save/sidecar/provider failure
+  Rebuilding --> Loaded: global rebuild saved
+  Rebuilding --> Loaded: rebuild deferred; prior persisted store reloaded
+  Rebuilding --> Empty: persisted store purged and no replacement was saved
 
-  state "Rebuilding" as Rebuilding
-  note right of Rebuilding
-    faissIndex = null
-    persisted index store removed
-    updateIndex() embeds from current files
-  end note
-
-  Rebuilding --> None: persisted store purged
-
-  None --> Loaded: updateIndex fallback rebuild
-  None --> Loaded: first updateIndex call with changed files
-
-  state "Loaded" as Loaded
-  note left of Loaded
-    faissIndex wraps a FaissStore
-    models/<model_id>/index -> index.vN
-    ready to answer similaritySearch
-  end note
-
-  Loaded --> Loaded: updateIndex with new / changed files<br/>add documents + atomicSave()
-  Loaded --> Loaded: updateIndex with all-matching hashes<br/>(no-op save path)
-
-  Loaded --> Recovering: initialize() sees pending-manifest.json<br/>phase=save-complete
-  Recovering --> Loaded: finish pending sidecar writes
-  Recovering --> None: phase=save-started<br/>purge persisted store + sidecars
-
-  state "Recovering" as Recovering
-  note right of Recovering
-    pending-manifest.json records
-    hash + chunk sidecars that
-    must match the saved vectors
-  end note
-
-  Loaded --> [*]: SIGINT → McpServer.close()<br/>src/KnowledgeBaseServer.ts:27-30
+  Loaded --> Loaded: updateIndex() all hashes current; no save
+  Failed --> [*]
+  Loaded --> [*]: process exit
+  Empty --> [*]: process exit
 ```
 
-## Transition triggers
+## Transition Triggers
 
-| From → To                     | Trigger                                                                                   | Anchor                                             |
-| ----------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `[*]` → `None`                | Process start; constructor runs but does not load a FAISS store.                          | `FaissIndexManager.constructor`                    |
-| `None` → `Loading`            | `initialize()` asks the atomic loader for the active versioned or legacy FAISS store.     | `FaissIndexManager.initialize`, `loadFaissStoreAtomic` |
-| `Loading` → `Loaded`          | `FaissStore.load` resolves.                                                               | `loadFaissStoreAtomic`                             |
-| `Loading` → `None`            | `FaissStore.load` rejects (permission / corrupt / incompatible). Error propagated or repaired to null depending on read-only mode. | `loadFaissStoreAtomic` |
-| `None` → `Rebuilding`         | Forced reindex, freshness-manifest mismatch, or ambiguous pending sidecar commit requires a full rebuild. | `FaissIndexManager.updateIndex`, `recoverPendingSidecarCommit` |
-| `Rebuilding` → `None`         | Persisted store and stale sidecars are purged; next `updateIndex` embeds from source files. | `purgePersistedIndexStore`, `purgeStaleSidecars` |
-| `None` → `Loaded` (build)     | Changed-file branch creates the in-memory store from pending documents.                  | `addDocumentsToIndex`                              |
-| `None` → `Loaded` (fallback)  | All hashes match but `faissIndex` was null → full rebuild from every file.                | `FaissIndexManager.updateIndex`                    |
-| `Loaded` → `Loaded` (delta)   | Subsequent `updateIndex` with new/changed files; add documents and one atomic save.       | `addDocumentsToIndex`, `atomicSave`                |
-| `Loaded` → `Recovering`       | `initialize()` detects a `save-complete` `pending-manifest.json` on disk.                | `src/FaissIndexManager.ts`, `src/pending-sidecar-commit.ts` |
-| `Recovering` → `None`         | `initialize()` detects an ambiguous `save-started` manifest and purges persisted store + sidecars for a rebuild. | `src/FaissIndexManager.ts`, `src/pending-sidecar-commit.ts` |
-| `Loaded` → `[*]`              | SIGINT handler closes the MCP server.                                                     | `src/KnowledgeBaseServer.ts:27-30`                 |
+| From -> To | Trigger | Source of truth |
+| --- | --- | --- |
+| `Constructed -> Initializing` | `initialize()` creates the embedding client and model directory as needed. | `src/FaissIndexManager.ts` |
+| `Initializing -> Loaded` | `loadFaissStoreAtomic` loads `index -> index.vN/` or legacy `faiss.index/`. | `src/faiss-store-layout.ts` |
+| `Initializing -> Empty` | No persisted store exists for the model. | `src/FaissIndexManager.ts` |
+| `Initializing -> Recovering` | Pending sidecar commit manifest exists. | `src/pending-sidecar-commit.ts` |
+| `Empty -> Building` | First refresh finds chunks for a model with no loaded index. | `src/FaissIndexManager.ts` |
+| `Loaded -> Updating` | Changed files can be appended without deleting stale vectors. | `src/file-ingest.ts`, `src/FaissIndexManager.ts` |
+| `Loaded -> Rebuilding` | Force reindex, stale freshness manifest, missing chunk manifest, or chunk drift that cannot be append-only. | `src/FaissIndexManager.ts`, `src/freshness-manifest.ts` |
+| `Building/Updating/Rebuilding -> Loaded` | Versioned atomic save commits, sidecars/manifests are written, and freshness manifest is updated. | `src/faiss-store-layout.ts`, `src/file-ingest.ts` |
+| `Rebuilding -> Loaded` | Rebuild is deferred because quiescence checks saw a changing file; previous persisted index is reloaded. | `src/FaissIndexManager.ts` |
 
 ## Invariants
 
-- **`model_name.txt` is written only in `initialize()`**. Consequence: between a successful rebuild and the subsequent save in `updateIndex`, a crash can leave a model metadata file without an active `index` symlink, which is the scenario the `None → Loaded (fallback)` transition handles.
-- **`faissIndex === null` and a persisted store exists** is possible after an interrupted or failed rebuild until recovery purges the store or a later `updateIndex` rebuilds from source files.
-- **`Loaded → Loaded` with all hashes matching does NOT write** (`indexMutated` stays `false`, so the save/sidecar block is skipped).
-- **A `save-complete` pending manifest is a roll-forward record.** The saved FAISS store is assumed durable enough to claim the sidecars, so recovery finishes hash and chunk manifest writes before loading the store.
-- **A `save-started` pending manifest is ambiguous.** The process may have crashed before or after the symlink swap. Recovery chooses a rebuild by deleting the persisted store and stale sidecars instead of writing sidecars for vectors that may not be present.
+- **The lifecycle is per model.** A different provider/model pair gets a
+  different `model_id` and therefore a different manager/store.
+- **`active.txt` is outside this state machine.** It selects which model is the
+  default, but it does not mutate an existing model directory.
+- **Versioned save is the persistence boundary.** Readers resolve the active
+  `index` symlink once and load a coherent `faiss.index` plus `docstore.json`.
+- **Sidecars lag FAISS only with a recovery record.** If FAISS save completes
+  before sidecars are written, `pending-manifest.json` lets the next initialize
+  roll forward.
+- **Force is global for the active model.** A scoped force rebuild is upgraded to
+  a global rebuild because FAISS vector deletion is unsupported here.
+- **Read-only commands can load without repair.** Strict read-only audit paths do
+  not create or mutate model directories.

@@ -479,12 +479,19 @@ npm install -g @jeanibarz/knowledge-base-mcp-server@latest
 
 > **Writing notes that retrieve well?** See [`docs/authoring-knowledge.md`](docs/authoring-knowledge.md) — six-section guide on chunk-friendly markdown, frontmatter taxonomy that lifts into filters, content-boundary safety, and when to split a KB.
 
-The core retrieval tools are:
+The MCP server exposes the current tool set registered by `src/KnowledgeBaseServer.ts`:
 
 *   `list_knowledge_bases`: Lists the available knowledge bases.
 *   `retrieve_knowledge`: Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 document chunks are returned with a score below a threshold of 2. A different threshold can optionally be provided using the `threshold` parameter.
+*   `ask_knowledge`: Retrieves KB snippets and asks a configured local/OpenAI-compatible LLM to answer with citations.
+*   `list_models`: Lists registered embedding models and the active model.
+*   `kb_stats`: Returns read-only corpus, index, model, cache, and transport statistics.
+*   `diff_index`: Compares retrieval results across two persisted FAISS index versions.
+*   `add_document`: Writes a text document into a KB through the guarded MCP mutation path.
+*   `delete_document`: Deletes a KB-relative document through the guarded MCP mutation path.
+*   `reindex_knowledge_base`: Forces a global FAISS rebuild, optionally validating a named KB before the rebuild.
 
-You can use these tools through the MCP interface.
+You can use these tools through the MCP interface. The `kb` CLI covers the shell-oriented surfaces shown above.
 
 The server also exposes MCP resources for clients that want to enumerate and read source documents directly. `resources/list` returns `kb://<knowledge-base>/<encoded-relative-path>` URIs for ingestable, non-quarantined files under `KNOWLEDGE_BASES_ROOT_DIR`, and `resources/read` returns the raw document content as text or, when `.pdf` is opted into ingest, a base64 PDF blob. See [`docs/mcp-resources.md`](docs/mcp-resources.md) for client-facing URI, MIME type, and percent-encoding details.
 
@@ -555,7 +562,7 @@ not `X-Forwarded-For`, so configure proxy-side throttling for internet exposure.
 For a disposable remote playground during development, use `npm run dev:remote`
 from the local development section above.
 
-**Security defaults:** the server refuses to start in SSE or streamable HTTP mode without `MCP_AUTH_TOKEN`, binds only to loopback, and uses a constant-time bearer comparison. Operators exposing the endpoint off-host should set `MCP_BIND_ADDR=0.0.0.0` *and* terminate TLS in a reverse proxy — TLS is out of scope for this server. Only one process per `FAISS_INDEX_PATH` is supported (see [`docs/architecture/threat-model.md`](./docs/architecture/threat-model.md)).
+**Security defaults:** the server refuses to start in SSE or streamable HTTP mode without `MCP_AUTH_TOKEN`, binds only to loopback, and uses a constant-time bearer comparison. Operators exposing the endpoint off-host should set `MCP_BIND_ADDR=0.0.0.0` *and* terminate TLS in a reverse proxy — TLS is out of scope for this server. Multiple MCP/CLI processes may share a `FAISS_INDEX_PATH`; mutating paths serialize through per-model locks and versioned atomic saves (see [`docs/architecture/threat-model.md`](./docs/architecture/threat-model.md)).
 
 ## Troubleshooting & Logging
 

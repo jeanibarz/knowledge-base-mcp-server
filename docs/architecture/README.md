@@ -20,15 +20,15 @@ If you've never seen this repo before, read top-to-bottom:
 1. [`c4-context.md`](./c4-context.md) — one page. Who talks to the server, what it touches on disk, where the trust boundaries are.
 2. [`c4-container.md`](./c4-container.md) — the process and its two on-disk stores (`FAISS_INDEX_PATH`, `KNOWLEDGE_BASES_ROOT_DIR`) as independent containers with different lifecycles.
 3. [`c4-component.md`](./c4-component.md) — the TypeScript modules inside the server process and CLI, plus how they depend on each other.
-4. [`sequence-retrieve.md`](./sequence-retrieve.md) — `retrieve_knowledge` end-to-end, cold and warm.
-5. [`sequence-reindex.md`](./sequence-reindex.md) — what happens when `EMBEDDING_PROVIDER` or the model env var changes under an existing index.
+4. [`sequence-retrieve.md`](./sequence-retrieve.md) — `retrieve_knowledge` end-to-end, including dense/hybrid retrieval, refresh, cache, gate, and reranker behavior.
+5. [`sequence-reindex.md`](./sequence-reindex.md) — forced rebuild and model-selection behavior under the current multi-model layout.
 6. [`sequence-research-collect.md`](./sequence-research-collect.md) — `kb research collect` end-to-end: planner, per-shelf hybrid search loop, and atomic artifact writes.
 7. [`sequence-feedback-promote.md`](./sequence-feedback-promote.md) — `kb feedback add` (append to ledger) and `kb feedback promote` (materialise into a `kb eval` fixture).
-8. [`state-index.md`](./state-index.md) — the FAISS-index lifecycle (None → Loading → Loaded → Rebuilding → Recovering).
+8. [`state-index.md`](./state-index.md) — the per-model FAISS-index lifecycle from construction through load, build, update, rebuild, recovery, and failure.
 9. [`data-model.md`](./data-model.md) — on-disk artifacts and the chunk metadata schema.
 10. [`qa-budgets.md`](./qa-budgets.md) — latency / memory / cost budgets and the current scale ceiling.
-11. [`threat-model.md`](./threat-model.md) — trust boundaries, provider keys, concurrency constraint, path-traversal plan.
-12. [`adr/`](./adr/) — five decisions in MADR 3.0 format (`0001` faiss-over-qdrant, `0002` per-file-hash-sidecars, `0003` stdio-only-transport, `0004` markdown-splitter-default, `0005` auto-rebuild-on-model-change).
+11. [`threat-model.md`](./threat-model.md) — trust boundaries, provider keys, remote transport posture, path validation, and concurrency behavior.
+12. [`adr/`](./adr/) — accepted decisions plus superseded historical decisions. Older ADRs remain useful context, but each file should say when a later RFC or implementation changed the active behavior.
 
 ## Conventions
 
@@ -41,5 +41,5 @@ If you've never seen this repo before, read top-to-bottom:
 ## What this folder does NOT contain
 
 - **Proposals** — they go in `docs/rfcs/`.
-- **API reference** — the MCP tool surface is registered in `src/KnowledgeBaseServer.ts:260-307` and described one level up, in the repo root `README.md`.
-- **Runbooks or agent skills** — designed in `docs/rfcs/002-ai-skills-setup.md`; until that lands, agent-facing guidance lives in the repo root `CLAUDE.md`.
+- **API reference** — the MCP tool surface is registered in `src/KnowledgeBaseServer.ts` and described one level up, in the repo root `README.md`.
+- **Runbooks or agent skills** — operational runbooks live under `docs/operations/`; agent-facing repo guidance lives in the repo root `CLAUDE.md`.
