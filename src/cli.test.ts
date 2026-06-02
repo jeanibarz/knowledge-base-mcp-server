@@ -57,6 +57,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'list',
       'search',
       'open',
+      'related',
       'serve',
       'ask',
       'remember',
@@ -98,6 +99,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['list', 'kb list'],
     ['search', 'kb search'],
     ['open', 'kb open'],
+    ['related', 'kb related'],
     ['serve', 'kb serve'],
     ['ask', 'kb ask'],
     ['remember', 'kb remember'],
@@ -142,6 +144,13 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('kb — knowledge-base CLI');
     expect(r.stdout).toContain('Available commands:');
+  });
+
+  it('dispatches kb related through the built CLI', () => {
+    const r = runCli(['related', 'alpha/docs/deploy.md']);
+    expect(r.code).toBe(2);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('kb related: expected a chunk id or kb:// URI');
   });
 
   it('kb help --format=json emits a stable command manifest (#383)', () => {
@@ -197,6 +206,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'list',
       'search',
       'open',
+      'related',
       'serve',
       'ask',
       'remember',

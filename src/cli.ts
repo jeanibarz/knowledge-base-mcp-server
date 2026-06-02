@@ -28,6 +28,7 @@ import { MODELS_HELP, runModels } from './cli-models.js';
 import { OPEN_HELP, runOpen } from './cli-open.js';
 import { PROMOTE_HELP, runPromote } from './cli-promote.js';
 import { QUARANTINE_HELP, runQuarantine } from './cli-quarantine.js';
+import { RELATED_HELP, runRelated } from './cli-related.js';
 import { REINDEX_HELP, runReindexCli } from './cli-reindex.js';
 import { REMEMBER_HELP, runRemember } from './cli-remember.js';
 import { RESEARCH_HELP, runResearch } from './cli-research.js';
@@ -97,6 +98,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'list',         summary: 'List available knowledge bases.',                                         help: LIST_HELP,         handler: runList },
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },
   { name: 'open',         summary: 'Resolve a chunk id / kb:// URI / result path to its source file.',        help: OPEN_HELP,         handler: runOpen },
+  { name: 'related',      summary: 'Find chunks related to an existing chunk id or kb:// URI.',               help: RELATED_HELP,      handler: runRelated },
   { name: 'serve',        summary: 'Run a localhost daemon for warm read-only CLI requests.',                 help: SERVE_HELP,        handler: runServe },
   { name: 'ask',          summary: 'Answer from retrieved KB context using a local LLM endpoint.',            help: ASK_HELP,          handler: runAsk },
   { name: 'remember',     summary: 'Suggest, create, or append knowledge-base notes (write path).',          help: REMEMBER_HELP,     handler: runRemember },
