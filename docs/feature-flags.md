@@ -10,6 +10,7 @@ verify the active behavior.
 | Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
 |---|---|---:|---|---|---|---|
 | Retrieval mode | `kb search --mode=dense\|lexical\|hybrid\|auto` | `dense` | CLI search | Implemented | `--mode=...` | `kb search "query" --mode=auto --timing` |
+| Neighbor context windows | `kb search --context-before=<n>`, `--context-after=<n>`, `--context-window=<n>` | off | CLI dense search | Implemented, opt-in | per-call flags only | `kb search "runbook rollback" --context-window=1` |
 | Advanced retrieval exploration | `kb search --diverse`, `--anti-query=<text>`, `--plus=<text>`, `--minus=<text>` | off | CLI search | Implemented, opt-in | per-call flags only | `kb search "agent evidence" --diverse --format=json` |
 | Refresh before search | `kb search --refresh` | off | CLI search | Implemented | `--refresh` | `kb search "query" --refresh --timing` |
 | Active embedding model | `KB_ACTIVE_MODEL` | unset, then `${FAISS_INDEX_PATH}/active.txt`, then legacy provider env | CLI and MCP retrieval | Implemented | `--model=<id>` on CLI, `model_name` on MCP `retrieve_knowledge` | `kb models list` |
@@ -22,6 +23,11 @@ verify the active behavior.
 | Gate fallback LLM model id | `KB_LLM_MODEL` | endpoint default | Relevance gate fallback model | Implemented | none | `KB_RELEVANCE_GATE=on KB_LLM_MODEL=<model> kb search "query" --gate --task-context="current task"` |
 | Save generated answer | `kb ask --save-transcript --yes` | off | CLI ask write path | Implemented | `--save-transcript --kb=<name> --yes` | `kb ask "question" --kb=<name> --save-transcript --title="..." --yes` |
 | Frontmatter sensitivity policy | `kb_policy.no_llm_context`, `kb_policy.resource_read`, `kb_policy.sensitivity` | unset | `kb ask`, MCP `ask_knowledge`, MCP `resources/read` | Implemented, author-controlled | per-document frontmatter | add `kb_policy: { no_llm_context: true }` and run `kb ask ... --format=json` |
+
+Neighbor context windows are dense-only. They expand the returned context after
+ranking and do not make neighboring chunks influence the dense score. See
+[Neighbor Context Search Windows](search-neighbor-context.md) for examples,
+markdown/JSON output shape, and when wider windows dilute results.
 
 ## Relevance Gate
 

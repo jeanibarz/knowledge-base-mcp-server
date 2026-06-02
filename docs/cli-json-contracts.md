@@ -115,6 +115,7 @@ kb search "<query>" --format=json --mode=dense|lexical|hybrid|auto
 kb search "<query>" --format=json --diverse
 kb search "<query>" --format=json --anti-query="<negative query>"
 kb search "<query>" --format=json --plus="<positive query>" --minus="<negative query>"
+kb search "<query>" --format=json --context-window=1
 KB_EDITOR_URI=cursor kb search "<query>" --format=json
 kb search "<query>" --format=vimgrep
 ```
@@ -191,6 +192,14 @@ Optional stable fields:
 - `results[].rerank_score`: present for hits that were re-scored by the RFC 019
   reranker. It is a cross-encoder relevance score, not a FAISS distance or RRF
   score.
+- `results[].match_type`, `results[].semantic_match`, `results[].context_chunks`,
+  and `results[].context_truncated`: present when dense-only neighbor context
+  expansion is requested with `--context-before`, `--context-after`, or
+  `--context-window`. The ranked hit is marked as `match_type: "semantic"` and
+  `semantic_match: true`; neighbor chunks are attached under `context_chunks[]`
+  with `match_type: "context"`, `semantic_match: false`, `direction`,
+  `distance`, `content`, `metadata`, and optional `chunk_id` / `editor_uri`.
+  See [`docs/search-neighbor-context.md`](search-neighbor-context.md).
 - `advanced_retrieval`: present when `--diverse`, `--anti-query`, `--plus`, or
   `--minus` is used. Shape:
   `{"schema_version":"kb.search.advanced-retrieval.v1","mode":"diverse"|"contrastive"|"composed","read_only":true,"candidate_pool_k":number,"constraints":object,"query_components":array,"scoring":object,"result_signals":array}`.
