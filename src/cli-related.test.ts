@@ -61,6 +61,10 @@ describe('runRelated', () => {
       relativePath: 'alpha/docs/deploy.md',
       loc: { lines: { from: 1, to: 4 } },
       chunkIndex: 0,
+      frontmatter: {
+        status: 'active',
+        extras: { private_note: 'do not emit' },
+      },
     });
     const related = doc('adjacent deploy note', {
       knowledgeBase: 'alpha',
@@ -99,11 +103,12 @@ describe('runRelated', () => {
         { noCache: false },
       );
       const payload = JSON.parse(String(stdoutSpy.mock.calls[0][0])) as {
-        seed: { chunk_id: string };
+        seed: { chunk_id: string; metadata: { frontmatter?: Record<string, unknown> } };
         scoped_kb: string;
         results: Array<{ chunk_id: string; content: string }>;
       };
       expect(payload.seed.chunk_id).toBe('alpha/docs/deploy.md#L1-L4');
+      expect(payload.seed.metadata.frontmatter).toEqual({ status: 'active' });
       expect(payload.scoped_kb).toBe('alpha');
       expect(payload.results).toEqual([
         expect.objectContaining({

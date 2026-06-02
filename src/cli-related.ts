@@ -13,6 +13,7 @@ import {
 import {
   formatRetrievalAsJson,
   formatRetrievalAsMarkdown,
+  type ScoredDocument,
 } from './formatter.js';
 import { classifyKbSearchError, exitCodeForFailure, formatKbSearchFailureJson, formatKbSearchFailureStderr } from './search-errors-core.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
@@ -125,13 +126,22 @@ export async function runRelated(
       : excludeSeed(rawResults, seed).slice(0, parsed.k);
 
     if (parsed.format === 'json') {
+      const [formattedSeed] = formatRetrievalAsJson(
+        [seed as ScoredDocument],
+        FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+        KB_EDITOR_URI,
+      );
+      const { score: _seedScore, ...seedPayload } = formattedSeed ?? {
+        content: seed.pageContent,
+        metadata: seedMetadata,
+        chunk_id: buildChunkId(seedMetadata) ?? undefined,
+      };
+      void _seedScore;
       process.stdout.write(`${JSON.stringify({
         schema_version: 'kb.related.v1',
         seed: {
           target: parsed.target,
-          chunk_id: buildChunkId(seedMetadata),
-          content: seed.pageContent,
-          metadata: seedMetadata,
+          ...seedPayload,
         },
         scoped_kb: scopedKb ?? null,
         include_self: parsed.includeSelf,

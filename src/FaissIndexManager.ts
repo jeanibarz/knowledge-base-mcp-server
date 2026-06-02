@@ -2804,6 +2804,9 @@ function documentMatchesReference(doc: Document, reference: ChunkReference): boo
   if (reference.lineFrom !== undefined || reference.chunkIndex !== undefined) {
     return false;
   }
+  // Some resource-style handles point at a whole document rather than a
+  // concrete chunk range. In that case, fall back to the indexed metadata path
+  // and return the first chunk for that document instead of guessing a range.
   return metadataPathMatchesReference(metadata, reference);
 }
 

@@ -4572,7 +4572,7 @@ describe('FaissIndexManager progressive overfetch (#229)', () => {
   });
 });
 
-describe('FaissIndexManager neighbor context expansion', () => {
+describe('FaissIndexManager.findChunkByReference', () => {
   it('finds an indexed chunk by public chunk id or kb:// URI', async () => {
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
@@ -4610,7 +4610,9 @@ describe('FaissIndexManager neighbor context expansion', () => {
     expect(manager.findChunkByReference(parseChunkReference('kb://alpha/docs/deploy.md'))?.pageContent)
       .toBe('first chunk');
   });
+});
 
+describe('FaissIndexManager neighbor context expansion', () => {
   it('adds adjacent chunks from the same source while keeping the semantic match distinct', async () => {
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
