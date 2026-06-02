@@ -128,3 +128,9 @@ The server now supports `--mode=dense | lexical | hybrid` (CLI) and `search_mode
 - **Names that hybrid wins on** are exact-token, low-frequency strings: filenames, RFC numbers, error codes (`INDEX_NOT_INITIALIZED`), env var names, model ids, tool names. Use them in the body when you want them findable verbatim.
 - **Names that dense wins on** are paraphrases of headings: "how to roll back a deployment" finds the H2 "Rollback procedure" even if the body never says "rollback". Headings still matter.
 - **Hybrid is byte-equal to dense** if the lexical leg has nothing to say (no exact-token hit), so default `--mode=hybrid` for human shell use is reasonable; agents should keep `dense` unless they specifically want exact-token recall.
+- **Neighbor context windows** (`kb search --context-window=1`) can recover the
+  paragraph before or after a dense match in a long note, but only after the
+  dense result has already been ranked. They work best when each source file is
+  one coherent topic. If a large window is required to understand a result,
+  split or retitle the note instead. See
+  [`docs/search-neighbor-context.md`](search-neighbor-context.md).
