@@ -20,6 +20,8 @@
     "bench:tune": "python3 benchmarks/optuna_tune.py",
     "docs:check-anchors": "node scripts/check-doc-anchors.mjs",
     "test": "jest --runInBand",
+    "test:watch": "jest --watch --runInBand",
+    "test:file": "jest --runInBand --runTestsByPath",
     "test:chaos": "jest --runInBand --testMatch '**/tests/chaos/scenarios/**/*.test.ts'",
     "start": "node build/index.js",
     "dev": "nodemon src/index.ts",

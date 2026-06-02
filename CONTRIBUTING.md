@@ -30,6 +30,17 @@ Please use the [Feature Request issue template](./.github/ISSUE_TEMPLATE/feature
 - Add tests for new features.
 - Update documentation as needed.
 
+## Local Test Iteration
+
+Use `npm test` before opening a PR; it stays the CI-parity command and runs the full Jest suite serially.
+
+For focused local work:
+
+- `npm run test:file -- src/cli-search.test.ts` runs one or more explicit test files with Jest's `--runTestsByPath` filter.
+- `npm run test:watch -- src/cli-search.test.ts` starts Jest watch mode while accepting the same Jest path or name filters you would pass manually.
+
+Treat watch mode as local-only. It expects an interactive terminal and should not be used in automation.
+
 ## Spinning Off Follow-Up Issues
 
 If you notice an obvious-but-out-of-scope bug or improvement while working, do not silently absorb it into the current PR. Open a tracking issue with the **What / Where (file:line) / Why / Suggested fix** format and link it in the PR's **Follow-ups** section.
