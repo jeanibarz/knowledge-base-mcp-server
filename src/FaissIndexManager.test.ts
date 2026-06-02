@@ -4573,6 +4573,44 @@ describe('FaissIndexManager progressive overfetch (#229)', () => {
 });
 
 describe('FaissIndexManager neighbor context expansion', () => {
+  it('finds an indexed chunk by public chunk id or kb:// URI', async () => {
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { parseChunkReference } = await import('./chunk-id.js');
+    const manager = new FaissIndexManager({
+      provider: 'huggingface',
+      modelName: 'BAAI/bge-small-en-v1.5',
+    });
+    const docs = new Map([
+      ['0', {
+        pageContent: 'first chunk',
+        metadata: {
+          knowledgeBase: 'alpha',
+          relativePath: 'alpha/docs/deploy.md',
+          loc: { lines: { from: 1, to: 4 } },
+          chunkIndex: 0,
+        },
+      }],
+      ['1', {
+        pageContent: 'second chunk',
+        metadata: {
+          knowledgeBase: 'alpha',
+          relativePath: 'alpha/docs/deploy.md',
+          loc: { lines: { from: 5, to: 8 } },
+          chunkIndex: 1,
+        },
+      }],
+    ]);
+    await setLoadedFaissStore(manager, { docstore: { _docs: docs } });
+
+    expect(manager.findChunkByReference(parseChunkReference('alpha/docs/deploy.md#L5-L8'))?.pageContent)
+      .toBe('second chunk');
+    expect(manager.findChunkByReference(parseChunkReference('kb://alpha/docs/deploy.md#L1-L4'))?.pageContent)
+      .toBe('first chunk');
+    expect(manager.findChunkByReference(parseChunkReference('kb://alpha/docs/deploy.md'))?.pageContent)
+      .toBe('first chunk');
+  });
+
   it('adds adjacent chunks from the same source while keeping the semantic match distinct', async () => {
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');

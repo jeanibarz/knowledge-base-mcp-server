@@ -1373,6 +1373,74 @@ Stdout/stderr and exit codes:
 Source and test anchors: `src/cli-list.ts:53-101`,
 `src/cli.test.ts:1328-1385`.
 
+## `kb related`
+
+Invocation:
+
+```bash
+kb related alpha/docs/deploy.md#L42-L78 --format=json
+kb related kb://alpha/docs/deploy.md#L42-L78 --format=json --k=5
+```
+
+`kb related` resolves a public chunk id or `kb://` URI to an indexed seed
+chunk, runs dense search using the seed chunk text, and excludes the seed
+chunk by default. Unless `--all-kbs` or `--kb=<name>` is supplied, related
+search is scoped to the seed chunk's knowledge base.
+
+Success envelope:
+
+```json
+{
+  "schema_version": "kb.related.v1",
+  "seed": {
+    "target": "alpha/docs/deploy.md#L42-L78",
+    "chunk_id": "alpha/docs/deploy.md#L42-L78",
+    "content": "seed chunk text",
+    "metadata": {
+      "relativePath": "alpha/docs/deploy.md",
+      "knowledgeBase": "alpha"
+    }
+  },
+  "scoped_kb": "alpha",
+  "include_self": false,
+  "results": [
+    {
+      "score": 0.42,
+      "content": "related chunk text",
+      "metadata": {
+        "relativePath": "alpha/docs/rollback.md",
+        "knowledgeBase": "alpha"
+      },
+      "chunk_id": "alpha/docs/rollback.md#L10-L16"
+    }
+  ]
+}
+```
+
+Stable fields:
+
+- `schema_version`: currently `kb.related.v1`.
+- `seed.target`: the reference exactly as supplied.
+- `seed.chunk_id`: stable chunk handle for the indexed seed chunk.
+- `seed.content` and `seed.metadata`: the seed chunk used as the dense query.
+- `scoped_kb`: the effective KB scope, or `null` with `--all-kbs`.
+- `include_self`: whether the seed chunk was kept in `results`.
+- `results`: retrieval hits with the same stable per-result shape as
+  `kb search --format=json`.
+
+Stdout/stderr and exit codes:
+
+- Success JSON is stdout with exit `0`.
+- Search/index/model failures use the same JSON failure envelope as
+  `kb search --format=json`.
+- Argument errors and missing seed matches print `kb related: ...` to stderr.
+- Exit `2` for missing/invalid arguments, env, or model-resolution errors.
+- Exit `1` for runtime/index errors or a well-formed handle that does not
+  match any indexed chunk.
+
+Source and test anchors: `src/cli-related.ts`, `src/FaissIndexManager.ts::findChunkByReference`,
+`src/cli-related.test.ts`, `src/FaissIndexManager.test.ts`.
+
 ## `kb open`
 
 Invocation:

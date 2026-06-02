@@ -71,6 +71,11 @@ import {
   type SimilaritySearchFilters,
 } from './search-filters.js';
 import {
+  buildChunkCitation,
+  parseChunkReference,
+  type ChunkReference,
+} from './chunk-id.js';
+import {
   METADATA_SIDECAR_FILENAME,
   buildSidecarRowFromDocument,
   deleteMetadataSidecar,
@@ -2654,6 +2659,19 @@ export class FaissIndexManager {
     });
   }
 
+  findChunkByReference(reference: ChunkReference): Document | null {
+    if (!this.faissIndex) {
+      throw new KBError('INDEX_NOT_INITIALIZED', 'FAISS index is not initialized');
+    }
+    const docs = this.getDocstoreDocuments();
+    for (const doc of docs) {
+      if (documentMatchesReference(doc, reference)) {
+        return { ...doc };
+      }
+    }
+    return null;
+  }
+
   /**
    * Issue #54 — observability snapshot for the kb_stats MCP tool.
    *
@@ -2761,4 +2779,50 @@ function chunkIdentity(doc: Document): {
 
 function chunkKey(knowledgeBase: string, source: string, chunkIndex: number): string {
   return `${knowledgeBase}\u0000${source}\u0000${chunkIndex}`;
+}
+
+function documentMatchesReference(doc: Document, reference: ChunkReference): boolean {
+  const metadata = doc.metadata as Record<string, unknown> | undefined;
+  if (!metadata) return false;
+  const citation = buildChunkCitation(metadata, 'none');
+  if (citation !== null) {
+    try {
+      const docReference = parseChunkReference(citation.chunk_id);
+      if (!sameReferencePath(docReference, reference)) return false;
+      if (reference.chunkIndex !== undefined) {
+        return docReference.chunkIndex === reference.chunkIndex;
+      }
+      if (reference.lineFrom !== undefined) {
+        return docReference.lineFrom === reference.lineFrom
+          && docReference.lineTo === reference.lineTo;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (reference.lineFrom !== undefined || reference.chunkIndex !== undefined) {
+    return false;
+  }
+  return metadataPathMatchesReference(metadata, reference);
+}
+
+function sameReferencePath(a: ChunkReference, b: ChunkReference): boolean {
+  return a.knowledgeBase === b.knowledgeBase && a.kbRelativePath === b.kbRelativePath;
+}
+
+function metadataPathMatchesReference(
+  metadata: Record<string, unknown>,
+  reference: ChunkReference,
+): boolean {
+  const knowledgeBase = metadata.knowledgeBase;
+  if (typeof knowledgeBase !== 'string' || knowledgeBase !== reference.knowledgeBase) {
+    return false;
+  }
+  const relativePath = metadata.relativePath;
+  if (typeof relativePath === 'string') {
+    return relativePath === reference.displayPath
+      || relativePath === reference.kbRelativePath;
+  }
+  return false;
 }
