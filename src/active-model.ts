@@ -41,6 +41,10 @@ export function modelsRoot(): string {
   return MODELS_DIR;
 }
 
+export function activeModelFilePath(): string {
+  return ACTIVE_FILE;
+}
+
 export function modelDir(modelId: string): string {
   if (!isValidModelId(modelId)) {
     // Hard fail BEFORE path.join — round-1 failure F12 (path-traversal).

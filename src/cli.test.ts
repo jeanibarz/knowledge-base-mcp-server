@@ -2286,6 +2286,268 @@ describe('kb search — active-model resolution (RFC 013 §4.7)', () => {
     }
   });
 
+  it('kb models list --format=json still emits text, not a JSON contract', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-models-list-json-'));
+    try {
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(faissDir, { recursive: true });
+
+      const r = runCli(['models', 'list', '--format=json'], {
+        KNOWLEDGE_BASES_ROOT_DIR: path.join(tempDir, 'kb'),
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('(no models registered');
+      expect(() => JSON.parse(r.stdout)).toThrow();
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('kb models gc requires --dry-run because v1 does not delete', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-models-gc-required-'));
+    try {
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(faissDir, { recursive: true });
+
+      const r = runCli(['models', 'gc'], {
+        KNOWLEDGE_BASES_ROOT_DIR: path.join(tempDir, 'kb'),
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain('dry-run only');
+      expect(r.stderr).toContain('--dry-run');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('kb models gc --dry-run plans active, inactive, incomplete, and hazard states as JSON', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-models-gc-json-'));
+    try {
+      const faissDir = path.join(tempDir, '.faiss');
+      const activeByFile = 'huggingface__BAAI-bge-small-en-v1.5';
+      const activeByEnv = 'ollama__nomic-embed-text-latest';
+      const inactiveHazard = 'openai__text-embedding-3-small';
+      const incomplete = 'ollama__stale-partial';
+      for (const [id, name] of [
+        [activeByFile, 'BAAI/bge-small-en-v1.5'],
+        [activeByEnv, 'nomic-embed-text:latest'],
+        [inactiveHazard, 'text-embedding-3-small'],
+      ] as const) {
+        await fsp.mkdir(path.join(faissDir, 'models', id), { recursive: true });
+        await fsp.writeFile(path.join(faissDir, 'models', id, 'model_name.txt'), name);
+        await fsp.writeFile(path.join(faissDir, 'models', id, 'payload.bin'), 'payload');
+      }
+      await fsp.mkdir(path.join(faissDir, 'models', inactiveHazard, 'index.v1'), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', inactiveHazard, 'index.v1', 'faiss.index'), 'index');
+      await fsp.symlink('index.v1', path.join(faissDir, 'models', inactiveHazard, 'index'));
+      await fsp.mkdir(path.join(faissDir, 'models', inactiveHazard, 'faiss.index'), { recursive: true });
+
+      await fsp.mkdir(path.join(faissDir, 'models', incomplete), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', incomplete, '.adding'), '999999999\n');
+      await fsp.writeFile(path.join(faissDir, 'models', incomplete, 'partial.bin'), 'partial');
+      await fsp.writeFile(path.join(faissDir, 'active.txt'), `${activeByFile}\n`);
+
+      const r = runCli(['models', 'gc', '--dry-run', '--format=json'], {
+        KNOWLEDGE_BASES_ROOT_DIR: path.join(tempDir, 'kb'),
+        FAISS_INDEX_PATH: faissDir,
+        KB_ACTIVE_MODEL: activeByEnv,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      expect(r.code).toBe(0);
+      expect(r.stderr).toBe('');
+      const payload = JSON.parse(r.stdout) as {
+        schema_version: string;
+        dry_run: boolean;
+        models_root: string;
+        active_file: { model_id: string | null; status: string };
+        active_env_model_id: string | null;
+        total_bytes: number;
+        reclaimable_bytes: number;
+        models: Array<{
+          model_id: string;
+          provider: string | null;
+          model_name: string | null;
+          registered: boolean;
+          active_by_file: boolean;
+          active_by_env: boolean;
+          incomplete_status: string | null;
+          incomplete_detail: string | null;
+          hazards: string[];
+          proposed_action: string;
+          bytes: number;
+        }>;
+      };
+
+      expect(payload.schema_version).toBe('kb.models.gc.v1');
+      expect(payload.dry_run).toBe(true);
+      expect(payload.models_root).toBe(path.join(faissDir, 'models'));
+      expect(payload.active_file).toEqual({ status: 'valid', model_id: activeByFile });
+      expect(payload.active_env_model_id).toBe(activeByEnv);
+
+      const byId = new Map(payload.models.map((model) => [model.model_id, model]));
+      expect(byId.get(activeByFile)).toMatchObject({
+        provider: 'huggingface',
+        model_name: 'BAAI/bge-small-en-v1.5',
+        registered: true,
+        active_by_file: true,
+        active_by_env: false,
+        proposed_action: 'keep-active',
+      });
+      expect(byId.get(activeByEnv)).toMatchObject({
+        provider: 'ollama',
+        model_name: 'nomic-embed-text:latest',
+        registered: true,
+        active_by_file: false,
+        active_by_env: true,
+        proposed_action: 'keep-active',
+      });
+      expect(byId.get(inactiveHazard)?.proposed_action).toBe('would-remove');
+      expect(byId.get(inactiveHazard)?.hazards).toContain('downgrade-hazard');
+      expect(byId.get(incomplete)).toMatchObject({
+        provider: 'ollama',
+        model_name: null,
+        registered: false,
+        incomplete_status: 'stale_interrupted',
+        incomplete_detail: 'previous kb models add writer pid 999999999 is no longer running',
+        proposed_action: 'review-incomplete',
+      });
+      expect(byId.get(incomplete)?.hazards).toContain('incomplete-stale_interrupted');
+      expect(payload.total_bytes).toBe(payload.models.reduce((sum, model) => sum + model.bytes, 0));
+      expect(payload.reclaimable_bytes).toBe(byId.get(inactiveHazard)?.bytes);
+
+      for (const id of [activeByFile, activeByEnv, inactiveHazard, incomplete]) {
+        await expect(fsp.access(path.join(faissDir, 'models', id))).resolves.toBeUndefined();
+      }
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('kb models gc --dry-run maps active-file fallbacks and incomplete states', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-models-gc-edges-'));
+    try {
+      const faissDir = path.join(tempDir, '.faiss');
+      const legacyActive = 'ollama__nomic-embed-text';
+      const liveIncomplete = 'ollama__live-partial';
+      const unknownIncomplete = 'ollama__unknown-partial';
+      await fsp.mkdir(path.join(faissDir, 'models', legacyActive), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', legacyActive, 'model_name.txt'), 'nomic-embed-text');
+      await fsp.mkdir(path.join(faissDir, 'models', liveIncomplete), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', liveIncomplete, '.adding'), `${process.pid}\n`);
+      await fsp.mkdir(path.join(faissDir, 'models', unknownIncomplete), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', unknownIncomplete, 'partial.bin'), 'partial');
+
+      const env = {
+        KNOWLEDGE_BASES_ROOT_DIR: path.join(tempDir, 'kb'),
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_MODEL: 'nomic-embed-text',
+      };
+      const absent = runCli(['models', 'gc', '--dry-run', '--format=json'], env);
+      expect(absent.code).toBe(0);
+      const absentPayload = JSON.parse(absent.stdout) as {
+        active_file: { status: string; model_id: string | null };
+        active_env_model_id: string | null;
+        models: Array<{
+          model_id: string;
+          active_by_env: boolean;
+          incomplete_status: string | null;
+          proposed_action: string;
+        }>;
+      };
+      const absentById = new Map(absentPayload.models.map((model) => [model.model_id, model]));
+      expect(absentPayload.active_file).toEqual({ status: 'absent', model_id: null });
+      expect(absentPayload.active_env_model_id).toBe(legacyActive);
+      expect(absentById.get(legacyActive)).toMatchObject({
+        active_by_env: true,
+        proposed_action: 'keep-active',
+      });
+      expect(absentById.get(liveIncomplete)).toMatchObject({
+        incomplete_status: 'in_progress',
+        proposed_action: 'keep-in-progress',
+      });
+      expect(absentById.get(unknownIncomplete)).toMatchObject({
+        incomplete_status: 'unknown',
+        proposed_action: 'inspect-incomplete',
+      });
+
+      await fsp.writeFile(path.join(faissDir, 'active.txt'), '\n');
+      const empty = runCli(['models', 'gc', '--dry-run', '--format=json'], env);
+      expect(empty.code).toBe(0);
+      const emptyPayload = JSON.parse(empty.stdout) as {
+        active_file: { status: string; model_id: string | null };
+        active_env_model_id: string | null;
+      };
+      expect(emptyPayload.active_file).toEqual({ status: 'empty', model_id: null });
+      expect(emptyPayload.active_env_model_id).toBe(legacyActive);
+
+      await fsp.writeFile(path.join(faissDir, 'active.txt'), '../bad\n');
+      const malformed = runCli(['models', 'gc', '--dry-run', '--format=json'], env);
+      expect(malformed.code).toBe(0);
+      const malformedPayload = JSON.parse(malformed.stdout) as {
+        active_file: { status: string; model_id: string | null };
+        active_env_model_id: string | null;
+      };
+      expect(malformedPayload.active_file).toEqual({ status: 'malformed', model_id: null });
+      expect(malformedPayload.active_env_model_id).toBeNull();
+
+      const whitespaceEnv = runCli(['models', 'gc', '--dry-run', '--format=json'], {
+        ...env,
+        KB_ACTIVE_MODEL: '   ',
+      });
+      expect(whitespaceEnv.code).toBe(0);
+      const whitespacePayload = JSON.parse(whitespaceEnv.stdout) as {
+        active_env_model_id: string | null;
+        models: Array<{ model_id: string; active_by_env: boolean; proposed_action: string }>;
+      };
+      const whitespaceById = new Map(whitespacePayload.models.map((model) => [model.model_id, model]));
+      expect(whitespacePayload.active_env_model_id).toBe('   ');
+      expect(whitespaceById.get(legacyActive)).toMatchObject({
+        active_by_env: false,
+        proposed_action: 'would-remove',
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('kb models gc --dry-run prints a text plan without deleting', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-models-gc-text-'));
+    try {
+      const faissDir = path.join(tempDir, '.faiss');
+      const id = 'ollama__nomic-embed-text';
+      await fsp.mkdir(path.join(faissDir, 'models', id), { recursive: true });
+      await fsp.writeFile(path.join(faissDir, 'models', id, 'model_name.txt'), 'nomic-embed-text');
+
+      const r = runCli(['models', 'gc', '--dry-run'], {
+        KNOWLEDGE_BASES_ROOT_DIR: path.join(tempDir, 'kb'),
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_MODEL: 'nomic-embed-text',
+      });
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('Model cleanup dry-run');
+      expect(r.stdout).toContain(id);
+      expect(r.stdout).toContain('keep-active');
+      expect(r.stdout).toContain('active-by-env');
+      expect(r.stdout).toContain('Dry run only: no files were deleted.');
+      await expect(fsp.access(path.join(faissDir, 'models', id))).resolves.toBeUndefined();
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('kb models add exits 2 in non-TTY context without --yes (round-1 failure F9)', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-add-noyes-'));
     try {

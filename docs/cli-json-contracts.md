@@ -1555,6 +1555,81 @@ Source and test anchors: `src/cli-models.ts:20-64`,
 `src/cli-models.ts:88-117`, `src/active-model.ts:129-166`,
 `src/cli.test.ts:1463-1505`.
 
+## `kb models gc --dry-run --format=json`
+
+Invocation:
+
+```bash
+kb models gc --dry-run --format=json
+```
+
+Output schema:
+
+```json
+{
+  "schema_version": "kb.models.gc.v1",
+  "dry_run": true,
+  "models_root": "/path/to/.faiss/models",
+  "active_file": {
+    "status": "valid",
+    "model_id": "ollama__nomic-embed-text"
+  },
+  "active_env_model_id": null,
+  "total_bytes": 4096,
+  "reclaimable_bytes": 1024,
+  "models": [
+    {
+      "model_id": "openai__text-embedding-3-small",
+      "provider": "openai",
+      "model_name": "text-embedding-3-small",
+      "registered": true,
+      "active_by_file": false,
+      "active_by_env": false,
+      "incomplete_status": null,
+      "incomplete_detail": null,
+      "bytes": 1024,
+      "hazards": ["downgrade-hazard"],
+      "proposed_action": "would-remove"
+    }
+  ]
+}
+```
+
+Stable fields:
+
+- `schema_version`: currently `kb.models.gc.v1`.
+- `dry_run`: always `true`; v1 never deletes model directories.
+- `active_file.status`: one of `absent`, `empty`, `malformed`, or `valid`.
+- `active_env_model_id`: `KB_ACTIVE_MODEL` when set; otherwise the
+  legacy provider/model env-derived candidate when `active.txt` is absent or
+  empty; otherwise `null`.
+- `total_bytes`: summed size of valid model-id directories under
+  `$FAISS_INDEX_PATH/models`.
+- `reclaimable_bytes`: summed size for entries whose `proposed_action` is
+  `would-remove`.
+- `models[].model_id`: valid model directory id under `$FAISS_INDEX_PATH/models`.
+- `models[].provider`: provider parsed from the model id or incomplete sentinel.
+- `models[].model_name`: stored or sentinel model name when available.
+- `models[].registered`: whether the directory satisfies the registered-model
+  predicate.
+- `models[].active_by_file`: whether `active.txt` names this model id.
+- `models[].active_by_env`: whether `KB_ACTIVE_MODEL` or legacy env fallback
+  selects this model id.
+- `models[].incomplete_status`: `.adding`/incomplete-state classification when
+  present, otherwise `null`.
+- `models[].incomplete_detail`: human-readable incomplete-state detail when
+  present, otherwise `null`.
+- `models[].bytes`: recursive byte size of the model directory.
+- `models[].proposed_action`: one of `keep-active`, `keep-in-progress`,
+  `review-incomplete`, `inspect-incomplete`, or `would-remove`.
+- `models[].hazards`: zero or more of `active-by-file`, `active-by-env`,
+  `downgrade-hazard`, or `incomplete-<status>`. `active-by-env` covers both
+  explicit `KB_ACTIVE_MODEL` selection and legacy env fallback when active-file
+  resolution falls through.
+
+`kb models gc` exits `2` unless `--dry-run` is present. Human-readable dry-run
+output is text; use `--format=json` for machine consumption.
+
 ## `kb reindex status`
 
 Invocation:

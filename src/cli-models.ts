@@ -1,19 +1,26 @@
 import * as fsp from 'fs/promises';
+import * as path from 'path';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,
+  activeModelFilePath,
   addingSentinelPath,
   buildAddingSentinelMetadata,
   classifyIncompleteModelState,
+  computeLegacyEnvDerivedId,
   isRegisteredModel,
+  isValidModelId,
   listRegisteredModels,
   modelDir,
+  modelsRoot,
   parseModelId,
+  readStoredModelName,
   resolveActiveModel,
   writeAddingSentinel,
   writeActiveModelAtomic,
 } from './active-model.js';
 import { resolveFaissIndexType, type FaissIndexType } from './config/indexing.js';
+import { KB_ACTIVE_MODEL } from './config/provider.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
@@ -28,6 +35,7 @@ Usage:
   kb models add <provider> <model> [--index-type=flat|sq8] [--yes] [--dry-run] [--recover]
   kb models set-active <id>
   kb models remove <id>
+  kb models gc --dry-run [--format=json]
 
 Each model gets its own per-model FAISS index under
 \`\${FAISS_INDEX_PATH}/models/<id>/\`. The active model is the default for
@@ -51,6 +59,10 @@ Verbs:
                         without an explicit \`--model=\` use the new active id.
   remove <id>           Delete the per-model index directory. Forces a
                         rebuild on the next \`kb models add <same id>\`.
+  gc --dry-run          Plan inactive model directory cleanup without
+                        deleting anything. Reports active-by-file/env
+                        protection, incomplete state, byte size, downgrade
+                        hazards, and the proposed action.
 
 Options for \`add\`:
   --yes                 Skip the cost-estimate confirmation prompt.
@@ -61,6 +73,10 @@ Options for \`add\`:
   --index-type=flat|sq8 Select the FAISS index type for this model. Default
                         is KB_INDEX_TYPE when set, otherwise flat.
 
+Options for \`gc\`:
+  --dry-run             Required. Print the cleanup plan; never delete.
+  --format=json         Emit a stable JSON payload instead of text.
+
 Global:
   --help, -h            Show this help.
 
@@ -69,13 +85,15 @@ Examples:
   kb models add ollama nomic-embed-text
   kb models add openai text-embedding-3-small --dry-run
   kb models set-active openai__text-embedding-3-small
+  kb models gc --dry-run
+  kb models gc --dry-run --format=json
   kb models remove ollama__nomic-embed-text
 `;
 
 export async function runModels(rest: string[]): Promise<number> {
   const verb = rest[0];
   if (!verb) {
-    process.stderr.write('kb models: missing subcommand (list, add, set-active, remove)\n');
+    process.stderr.write('kb models: missing subcommand (list, add, set-active, remove, gc)\n');
     return 2;
   }
   try {
@@ -89,6 +107,7 @@ export async function runModels(rest: string[]): Promise<number> {
   if (verb === 'add') return runModelsAdd(rest.slice(1));
   if (verb === 'set-active') return runModelsSetActive(rest.slice(1));
   if (verb === 'remove') return runModelsRemove(rest.slice(1));
+  if (verb === 'gc') return runModelsGc(rest.slice(1));
 
   process.stderr.write(`kb models: unknown verb '${verb}'\n`);
   return 2;
@@ -406,6 +425,245 @@ async function runModelsRemove(rest: string[]): Promise<number> {
   await fsp.rm(dir, { recursive: true, force: true });
   process.stderr.write(`Removed ${id}.\n`);
   return 0;
+}
+
+type ModelsGcFormat = 'text' | 'json';
+
+const MODELS_GC_SCHEMA_VERSION = 'kb.models.gc.v1';
+
+interface ActiveFileSnapshot {
+  model_id: string | null;
+  status: 'absent' | 'empty' | 'malformed' | 'valid';
+}
+
+interface ModelsGcPlanEntry {
+  model_id: string;
+  provider: string | null;
+  model_name: string | null;
+  registered: boolean;
+  active_by_file: boolean;
+  active_by_env: boolean;
+  incomplete_status: string | null;
+  incomplete_detail: string | null;
+  bytes: number;
+  hazards: string[];
+  proposed_action: 'keep-active' | 'keep-in-progress' | 'review-incomplete' | 'inspect-incomplete' | 'would-remove';
+}
+
+interface ModelsGcPlan {
+  schema_version: typeof MODELS_GC_SCHEMA_VERSION;
+  dry_run: true;
+  models_root: string;
+  active_file: ActiveFileSnapshot;
+  active_env_model_id: string | null;
+  total_bytes: number;
+  reclaimable_bytes: number;
+  models: ModelsGcPlanEntry[];
+}
+
+async function runModelsGc(rest: string[]): Promise<number> {
+  let dryRun = false;
+  let format: ModelsGcFormat = 'text';
+  for (const raw of rest) {
+    if (raw === '--dry-run') {
+      dryRun = true;
+      continue;
+    }
+    if (raw === '--format=json') {
+      format = 'json';
+      continue;
+    }
+    if (raw === '--format=text') {
+      format = 'text';
+      continue;
+    }
+    if (raw.startsWith('--format=')) {
+      process.stderr.write(`kb models gc: invalid --format: ${raw}\n`);
+      return 2;
+    }
+    if (raw.startsWith('--')) {
+      process.stderr.write(`kb models gc: unknown flag: ${raw}\n`);
+      return 2;
+    }
+    process.stderr.write('kb models gc: does not accept positional arguments\n');
+    return 2;
+  }
+
+  if (!dryRun) {
+    process.stderr.write('kb models gc: v1 is dry-run only; pass --dry-run to print the cleanup plan.\n');
+    return 2;
+  }
+
+  const plan = await buildModelsGcPlan();
+  if (format === 'json') {
+    process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
+  } else {
+    process.stdout.write(formatModelsGcPlan(plan));
+  }
+  return 0;
+}
+
+async function buildModelsGcPlan(): Promise<ModelsGcPlan> {
+  const activeFile = await readActiveFileSnapshot();
+  const activeEnvModelId = resolveActiveEnvCandidate(activeFile);
+  const registeredModels = new Map((await listRegisteredModels()).map((m) => [m.model_id, m]));
+  const entries = await listValidModelDirectoryNames();
+  const models: ModelsGcPlanEntry[] = [];
+
+  for (const modelId of entries) {
+    const registered = registeredModels.get(modelId) ?? null;
+    const incomplete = await classifyIncompleteModelState(modelId);
+    const storedName = registered?.model_name ?? incomplete?.model_name ?? await readStoredModelName(modelId);
+    const provider = registered?.provider ?? incomplete?.provider ?? parseModelId(modelId).provider;
+    const bytes = await directorySizeBytes(modelDir(modelId));
+    const activeByFile = activeFile.model_id === modelId;
+    const activeByEnv = activeEnvModelId === modelId;
+    const hazards: string[] = [];
+    if (registered?.downgrade_hazard) hazards.push('downgrade-hazard');
+    if (incomplete !== null) hazards.push(`incomplete-${incomplete.status}`);
+    if (activeByFile) hazards.push('active-by-file');
+    if (activeByEnv) hazards.push('active-by-env');
+
+    models.push({
+      model_id: modelId,
+      provider,
+      model_name: storedName,
+      registered: registered !== null,
+      active_by_file: activeByFile,
+      active_by_env: activeByEnv,
+      incomplete_status: incomplete?.status ?? null,
+      incomplete_detail: incomplete?.detail ?? null,
+      bytes,
+      hazards,
+      proposed_action: proposeModelsGcAction({ activeByFile, activeByEnv, incompleteStatus: incomplete?.status ?? null }),
+    });
+  }
+
+  models.sort((a, b) => a.model_id.localeCompare(b.model_id));
+  return {
+    schema_version: MODELS_GC_SCHEMA_VERSION,
+    dry_run: true,
+    models_root: modelsRoot(),
+    active_file: activeFile,
+    active_env_model_id: activeEnvModelId,
+    total_bytes: models.reduce((sum, m) => sum + m.bytes, 0),
+    reclaimable_bytes: models
+      .filter((m) => m.proposed_action === 'would-remove')
+      .reduce((sum, m) => sum + m.bytes, 0),
+    models,
+  };
+}
+
+function resolveActiveEnvCandidate(activeFile: ActiveFileSnapshot): string | null {
+  if (KB_ACTIVE_MODEL !== '') return KB_ACTIVE_MODEL;
+  if (activeFile.status === 'absent' || activeFile.status === 'empty') {
+    return computeLegacyEnvDerivedId();
+  }
+  return null;
+}
+
+async function listValidModelDirectoryNames(): Promise<string[]> {
+  let entries: Array<import('fs').Dirent>;
+  try {
+    entries = await fsp.readdir(modelsRoot(), { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+  return entries
+    .filter((entry) => entry.isDirectory() && isValidModelId(entry.name))
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+async function readActiveFileSnapshot(): Promise<ActiveFileSnapshot> {
+  let raw: string;
+  try {
+    raw = await fsp.readFile(activeModelFilePath(), 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'absent', model_id: null };
+    throw err;
+  }
+  const normalized = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+  const trimmed = normalized.replace(/\r/g, '').trim();
+  if (trimmed === '') return { status: 'empty', model_id: null };
+  if (!isValidModelId(trimmed)) return { status: 'malformed', model_id: null };
+  return { status: 'valid', model_id: trimmed };
+}
+
+function proposeModelsGcAction(args: {
+  activeByFile: boolean;
+  activeByEnv: boolean;
+  incompleteStatus: string | null;
+}): ModelsGcPlanEntry['proposed_action'] {
+  if (args.activeByFile || args.activeByEnv) return 'keep-active';
+  if (args.incompleteStatus === 'in_progress') return 'keep-in-progress';
+  if (args.incompleteStatus === 'stale_interrupted') return 'review-incomplete';
+  if (args.incompleteStatus !== null) return 'inspect-incomplete';
+  return 'would-remove';
+}
+
+function formatModelsGcPlan(plan: ModelsGcPlan): string {
+  const lines: string[] = [];
+  lines.push(`Model cleanup dry-run (${plan.models.length} model director${plan.models.length === 1 ? 'y' : 'ies'})`);
+  lines.push(`Models root: ${plan.models_root}`);
+  lines.push(`Active by file: ${plan.active_file.model_id ?? `<${plan.active_file.status}>`}`);
+  lines.push(`Active by env: ${plan.active_env_model_id ?? '<unset>'}`);
+  lines.push(`Total size: ${formatBytes(plan.total_bytes)}; would reclaim: ${formatBytes(plan.reclaimable_bytes)}`);
+  if (plan.models.length === 0) {
+    lines.push('(no model directories found)');
+    return `${lines.join('\n')}\n`;
+  }
+  const idWidth = Math.max(8, ...plan.models.map((m) => m.model_id.length));
+  const actionWidth = Math.max(14, ...plan.models.map((m) => m.proposed_action.length));
+  for (const model of plan.models) {
+    const flags = model.hazards.length > 0 ? ` [${model.hazards.join(',')}]` : '';
+    lines.push(
+      `${model.model_id.padEnd(idWidth)}  ${model.proposed_action.padEnd(actionWidth)}  ${formatBytes(model.bytes).padStart(9)}${flags}`,
+    );
+    if (model.incomplete_detail !== null) {
+      lines.push(`  incomplete: ${model.incomplete_detail}`);
+    }
+  }
+  lines.push('Dry run only: no files were deleted.');
+  return `${lines.join('\n')}\n`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  let value = bytes / 1024;
+  let unit = units[0];
+  for (let i = 1; i < units.length && value >= 1024; i += 1) {
+    value /= 1024;
+    unit = units[i];
+  }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
+}
+
+async function directorySizeBytes(dir: string): Promise<number> {
+  let total = 0;
+  let entries: Array<import('fs').Dirent>;
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 0;
+    throw err;
+  }
+  for (const entry of entries) {
+    const child = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += await directorySizeBytes(child);
+    } else if (entry.isFile()) {
+      try {
+        total += (await fsp.stat(child)).size;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
+  }
+  return total;
 }
 
 async function readConfirmation(): Promise<string> {
