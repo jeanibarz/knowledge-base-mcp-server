@@ -38,7 +38,12 @@ import {
   resolveReindexTriggerPath,
   resolveReindexTriggerPollMs,
 } from './config/watchers.js';
-import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
+import {
+  aggregateEnumerationDiagnostics,
+  enumerateIngestableKbFiles,
+  listKnowledgeBases,
+  type KbFilesystemEnumerationDiagnostics,
+} from './kb-fs.js';
 import {
   createNeverRunIndexUpdateSummary,
   FaissIndexManager,
@@ -270,6 +275,9 @@ export interface DoctorReport {
     entries: DoctorIndexSecurityEntry[];
   };
   stale_counts_by_kb: Record<string, { modified_files: number; new_files: number }>;
+  filesystem: {
+    enumeration_failures: KbFilesystemEnumerationDiagnostics;
+  };
   quarantine_counts_by_kb: Record<string, number>;
   /**
    * Per-KB time-based age budget status (issue #218). Only KBs that have
@@ -1228,18 +1236,25 @@ export async function buildDoctorReport(
       : `${indexSecurityWarningCount} FAISS index boundary permission warning(s)`,
   });
 
-  const staleCounts = await computeStaleCountsByKb(
+  const staleResult = await computeStaleCountsByKb(
     activeModelId,
     index.mtime === null ? null : Date.parse(index.mtime),
   );
+  const staleCounts = staleResult.stale_counts_by_kb;
   const staleTotal = Object.values(staleCounts)
     .reduce((sum, row) => sum + row.modified_files + row.new_files, 0);
+  const enumerationFailureCount = staleResult.filesystem.enumeration_failures.failure_count;
   checks.push({
     name: 'staleness',
-    status: staleTotal === 0 ? 'ok' : 'warn',
-    detail: staleTotal === 0
-      ? 'no modified or new ingestable files detected'
-      : `${staleTotal} modified/new ingestable file(s) detected`,
+    status: staleTotal === 0 && enumerationFailureCount === 0 ? 'ok' : 'warn',
+    detail: [
+      staleTotal === 0
+        ? 'no modified or new ingestable files detected'
+        : `${staleTotal} modified/new ingestable file(s) detected`,
+      ...(enumerationFailureCount === 0
+        ? []
+        : [`${enumerationFailureCount} filesystem enumeration failure(s)`]),
+    ].join('; '),
   });
 
   const quarantineCounts = await computeQuarantineCountsByKb(Object.keys(staleCounts));
@@ -1416,6 +1431,7 @@ export async function buildDoctorReport(
     index,
     index_security: indexSecurity,
     stale_counts_by_kb: staleCounts,
+    filesystem: staleResult.filesystem,
     quarantine_counts_by_kb: quarantineCounts,
     age_budgets: ageBudgetResult.byKb,
     age_budget_config_errors: ageBudgetResult.configErrors,
@@ -1653,12 +1669,20 @@ function formatMode(mode: number): string {
 async function computeStaleCountsByKb(
   activeModelId: string | null,
   indexMtimeMs: number | null,
-): Promise<DoctorReport['stale_counts_by_kb']> {
+): Promise<{
+  stale_counts_by_kb: DoctorReport['stale_counts_by_kb'];
+  filesystem: DoctorReport['filesystem'];
+}> {
   let kbs: string[];
   try {
     kbs = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
   } catch {
-    return {};
+    return {
+      stale_counts_by_kb: {},
+      filesystem: {
+        enumeration_failures: { failure_count: 0, failures: [] },
+      },
+    };
   }
 
   const enumerations = await enumerateIngestableKbFiles(
@@ -1669,6 +1693,7 @@ async function computeStaleCountsByKb(
       excludePaths: INGEST_EXCLUDE_PATHS,
     },
   );
+  const enumerationFailures = aggregateEnumerationDiagnostics(enumerations);
 
   const out: DoctorReport['stale_counts_by_kb'] = {};
   for (const { kbName, kbPath, filePaths } of enumerations) {
@@ -1688,7 +1713,12 @@ async function computeStaleCountsByKb(
       : Math.max(0, filePaths.length - sidecarCount);
     out[kbName] = { modified_files: modified, new_files: added };
   }
-  return out;
+  return {
+    stale_counts_by_kb: out,
+    filesystem: {
+      enumeration_failures: enumerationFailures,
+    },
+  };
 }
 
 async function computeQuarantineCountsByKb(
@@ -2220,6 +2250,18 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
     for (const name of names) {
       const row = report.stale_counts_by_kb[name];
       lines.push(`  ${name}: ${row.modified_files} modified, ${row.new_files} new`);
+    }
+  }
+  lines.push('');
+  lines.push('Filesystem enumeration:');
+  const enumerationFailures = report.filesystem.enumeration_failures;
+  if (enumerationFailures.failure_count === 0) {
+    lines.push('  0 failures');
+  } else {
+    lines.push(`  ${enumerationFailures.failure_count} failure(s); stale counts may be partial`);
+    for (const failure of enumerationFailures.failures) {
+      const code = failure.code === null ? 'unknown' : failure.code;
+      lines.push(`  ${failure.kbName}: ${failure.path} (${code}) ${failure.message}`);
     }
   }
   lines.push('');

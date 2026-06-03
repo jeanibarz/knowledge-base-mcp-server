@@ -272,7 +272,7 @@ export type IndexUpdateSummaryStatus = 'success' | 'partial' | 'failed' | 'never
 
 export interface IndexUpdateFailureSummary {
   relative_path: string | null;
-  phase: 'load' | 'indexing' | 'save' | 'sidecar' | 'unknown';
+  phase: 'enumeration' | 'load' | 'indexing' | 'save' | 'sidecar' | 'unknown';
   code: string | null;
   message: string;
 }
@@ -457,6 +457,7 @@ function parseSummaryStatus(value: unknown): IndexUpdateSummaryStatus | null {
 function parseFailurePhase(value: unknown): IndexUpdateFailureSummary['phase'] {
   if (
     value === 'load' ||
+    value === 'enumeration' ||
     value === 'indexing' ||
     value === 'save' ||
     value === 'sidecar' ||
@@ -1487,14 +1488,29 @@ export class FaissIndexManager {
         }
         return true;
       });
-      const knowledgeBaseFiles = (await enumerateIngestableKbFiles(
+      const enumerations = await enumerateIngestableKbFiles(
         KNOWLEDGE_BASES_ROOT_DIR,
         ingestableKbNames,
         {
           extraExtensions: INGEST_EXTRA_EXTENSIONS,
           excludePaths: INGEST_EXCLUDE_PATHS,
         },
-      )).map((entry) => ({
+      );
+      for (const entry of enumerations) {
+        if (entry.diagnostics.failure_count === 0) continue;
+        runSummary.failure_count += entry.diagnostics.failure_count;
+        for (const failure of entry.diagnostics.failures) {
+          if (runSummary.failures.length >= MAX_INDEX_UPDATE_FAILURES) break;
+          const relativePath = path.relative(KNOWLEDGE_BASES_ROOT_DIR, failure.path);
+          runSummary.failures.push({
+            relative_path: relativePath,
+            phase: 'enumeration',
+            code: failure.code,
+            message: sanitizeFailureMessage(failure.message, relativePath, failure.path),
+          });
+        }
+      }
+      const knowledgeBaseFiles = enumerations.map((entry) => ({
         knowledgeBaseName: entry.kbName,
         knowledgeBasePath: entry.kbPath,
         filePaths: entry.filePaths,
@@ -2349,7 +2365,7 @@ export class FaissIndexManager {
           await this.purgePersistedIndexStore(
             forceReindex ? 'force_reindex' : 'ingest_filter_changed',
           );
-        } else if (activeIndexFilePath !== null) {
+        } else if (activeIndexFilePath !== null && runSummary.failure_count === 0) {
           const indexStat = await fsp.stat(activeIndexFilePath);
           await writeFreshnessManifest({
             modelId: this.modelId,

@@ -1291,6 +1291,83 @@ describe('FaissIndexManager permission handling', () => {
     });
   });
 
+  it('records enumeration failures in update summaries without writing a freshness manifest', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-enum-summary-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    const blockedDir = path.join(defaultKb, 'blocked');
+    const docPath = path.join(defaultKb, 'doc.md');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(docPath, '# Title\n\nSome content for embeddings.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const actualKbFs = jest.requireActual<typeof import('./kb-fs.js')>('./kb-fs.js');
+    jest.doMock('./kb-fs.js', () => ({
+      ...actualKbFs,
+      enumerateIngestableKbFiles: jest.fn(async () => [{
+        kbName: 'default',
+        kbPath: defaultKb,
+        filePaths: [docPath],
+        diagnostics: {
+          failure_count: 1,
+          failures: [{
+            path: blockedDir,
+            code: 'EACCES',
+            message: `EACCES: permission denied, scandir '${blockedDir}'`,
+          }],
+        },
+      }]),
+    }));
+
+    try {
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const { freshnessManifestPath } = await import('./freshness-manifest.js');
+      const manager = new FaissIndexManager();
+      await manager.initialize();
+      await manager.updateIndex('default');
+
+      expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+        status: 'partial',
+        scope: 'default',
+        files_scanned: 1,
+        files_changed: 1,
+        saved: true,
+        failure_count: 1,
+        failures: [expect.objectContaining({
+          relative_path: path.join('default', 'blocked'),
+          phase: 'enumeration',
+          code: 'EACCES',
+          message: expect.stringContaining(path.join('default', 'blocked')),
+        })],
+      });
+      const persistedPartialSummary = JSON.parse(
+        await fsp.readFile(lastIndexUpdatePathIn(process.env.FAISS_INDEX_PATH!), 'utf-8'),
+      );
+      expect(persistedPartialSummary.summary).toMatchObject({
+        status: 'partial',
+        scope: 'default',
+        failure_count: 1,
+        failures: [expect.objectContaining({
+          relative_path: path.join('default', 'blocked'),
+          phase: 'enumeration',
+          code: 'EACCES',
+        })],
+      });
+      await expect(
+        fsp.stat(freshnessManifestPath(modelDirIn(process.env.FAISS_INDEX_PATH!))),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      jest.dontMock('./kb-fs.js');
+      jest.resetModules();
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('defers files inside the refresh quiescence window and indexes them on a later pass', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-quiesce-'));
     const kbDir = path.join(tempDir, 'kb');

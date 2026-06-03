@@ -24,7 +24,12 @@ import {
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config/paths.js';
 import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
-import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
+import {
+  aggregateEnumerationDiagnostics,
+  enumerateIngestableKbFiles,
+  listKnowledgeBases,
+  type KbFilesystemEnumerationFailure,
+} from './kb-fs.js';
 
 export const REFRESH_PREFLIGHT_FILE_THRESHOLD = 100;
 export const REFRESH_PREFLIGHT_BYTE_THRESHOLD = 100 * 1024 * 1024;
@@ -72,6 +77,7 @@ export interface RefreshPreflightKbEstimate {
   staleFiles: number;
   estimatedBytes: number;
   stalePdfFiles: number;
+  enumerationFailures: number;
 }
 
 export interface RefreshPreflightEstimate {
@@ -88,6 +94,8 @@ export interface RefreshPreflightEstimate {
   estimatedBytes: number;
   estimatedChunks: null;
   stalePdfFiles: number;
+  enumerationFailures: number;
+  enumerationFailureSamples: KbFilesystemEnumerationFailure[];
   kbs: RefreshPreflightKbEstimate[];
   topKbs: RefreshPreflightKbEstimate[];
 }
@@ -116,9 +124,10 @@ export async function buildRefreshPreflightEstimate(
     extraExtensions: INGEST_EXTRA_EXTENSIONS,
     excludePaths: INGEST_EXCLUDE_PATHS,
   });
+  const enumerationFailures = aggregateEnumerationDiagnostics(enumerations);
 
   const kbs: RefreshPreflightKbEstimate[] = [];
-  for (const { kbName, kbPath, filePaths } of enumerations) {
+  for (const { kbName, kbPath, filePaths, diagnostics } of enumerations) {
     const fileEstimates = await mapBounded(
       filePaths,
       resolveFsConcurrency(),
@@ -132,6 +141,7 @@ export async function buildRefreshPreflightEstimate(
         staleFiles: acc.staleFiles + (file.kind === 'fresh' ? 0 : 1),
         estimatedBytes: acc.estimatedBytes + file.estimatedBytes,
         stalePdfFiles: acc.stalePdfFiles + (file.isPdf && file.kind !== 'fresh' ? 1 : 0),
+        enumerationFailures: acc.enumerationFailures,
       }),
       {
         kb: kbName,
@@ -140,6 +150,7 @@ export async function buildRefreshPreflightEstimate(
         staleFiles: 0,
         estimatedBytes: 0,
         stalePdfFiles: 0,
+        enumerationFailures: diagnostics.failure_count,
       },
     );
     if (row.staleFiles > 0) kbs.push(row);
@@ -159,8 +170,16 @@ export async function buildRefreshPreflightEstimate(
       staleFiles: acc.staleFiles + row.staleFiles,
       estimatedBytes: acc.estimatedBytes + row.estimatedBytes,
       stalePdfFiles: acc.stalePdfFiles + row.stalePdfFiles,
+      enumerationFailures: acc.enumerationFailures + row.enumerationFailures,
     }),
-    { modifiedFiles: 0, newFiles: 0, staleFiles: 0, estimatedBytes: 0, stalePdfFiles: 0 },
+    {
+      modifiedFiles: 0,
+      newFiles: 0,
+      staleFiles: 0,
+      estimatedBytes: 0,
+      stalePdfFiles: 0,
+      enumerationFailures: 0,
+    },
   );
 
   return {
@@ -180,6 +199,8 @@ export async function buildRefreshPreflightEstimate(
     estimatedBytes: totals.estimatedBytes,
     estimatedChunks: null,
     stalePdfFiles: totals.stalePdfFiles,
+    enumerationFailures: enumerationFailures.failure_count,
+    enumerationFailureSamples: enumerationFailures.failures,
     kbs,
     topKbs,
   };
@@ -192,7 +213,7 @@ export function maybeWriteRefreshPreflight(
     write?: (text: string) => void;
   } = {},
 ): boolean {
-  if (!estimate.exceedsThreshold) return false;
+  if (!estimate.exceedsThreshold && estimate.enumerationFailures === 0) return false;
   const write = options.write ?? ((text: string) => process.stderr.write(text));
   write(formatRefreshPreflightEstimate(estimate));
   return true;
@@ -234,6 +255,16 @@ export function formatRefreshPreflightEstimate(
   }
   if (estimate.stalePdfFiles > 0) {
     lines.push('- PDFs are excluded by default; if you opted them in, use `INGEST_EXCLUDE_PATHS=pdfs/**` to skip bulky PDF subtrees for this run.');
+  }
+  if (estimate.enumerationFailures > 0) {
+    lines.push(
+      `- Filesystem enumeration warning: ${estimate.enumerationFailures} failure(s); ` +
+        'changed/new counts may be partial.',
+    );
+    for (const failure of estimate.enumerationFailureSamples) {
+      const code = failure.code === null ? 'unknown' : failure.code;
+      lines.push(`  - ${failure.kbName}: ${failure.path} (${code}) ${failure.message}`);
+    }
   }
   lines.push('- This preflight is informational: TTY and non-TTY runs continue without prompting.');
   return `${lines.join('\n')}\n`;

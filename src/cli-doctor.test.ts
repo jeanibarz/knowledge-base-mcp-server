@@ -3,6 +3,7 @@ import * as fsp from 'fs/promises';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import type { IndexUpdateSummary } from './FaissIndexManager.js';
 
 const originalEnv = {
   KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
@@ -76,7 +77,7 @@ async function seedDoctorBase(tempDir: string): Promise<{ rootDir: string; faiss
   return { rootDir, faissDir };
 }
 
-function persistedSuccessSummary() {
+function persistedSuccessSummary(): IndexUpdateSummary {
   return {
     status: 'success',
     scope: 'global',
@@ -93,6 +94,8 @@ function persistedSuccessSummary() {
     index_mutated: true,
     saved: true,
     sidecars_written: true,
+    warning_count: 0,
+    warnings: [],
     failure_count: 0,
     failures: [],
   };
@@ -385,6 +388,56 @@ describe('kb doctor', () => {
       expect(json.quarantine_counts_by_kb.alpha).toBe(0);
       expect(json.last_index_update.saved).toBe(true);
     } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('warns when stale-count filesystem enumeration is partial', async () => {
+    if (process.platform === 'win32') return;
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-enum-failure-'));
+    const blockedDir = path.join(tempDir, 'kbs', 'alpha', 'blocked');
+    try {
+      const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+      await fsp.mkdir(path.join(rootDir, 'alpha'), { recursive: true });
+      await fsp.writeFile(path.join(rootDir, 'alpha', 'ok.md'), 'ok');
+      await fsp.mkdir(blockedDir, { recursive: true });
+      await fsp.chmod(blockedDir, 0o000);
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+        lastIndexUpdateSummary: persistedSuccessSummary(),
+      });
+
+      const stalenessCheck = report.checks.find((check) => check.name === 'staleness');
+      expect(stalenessCheck).toMatchObject({
+        status: 'warn',
+        detail: expect.stringContaining('1 filesystem enumeration failure(s)'),
+      });
+      expect(report.filesystem.enumeration_failures.failure_count).toBe(1);
+      expect(report.filesystem.enumeration_failures.failures[0]).toMatchObject({
+        kbName: 'alpha',
+        path: blockedDir,
+        code: 'EACCES',
+      });
+
+      const markdown = formatDoctorMarkdown(report);
+      expect(markdown).toContain('Filesystem enumeration:');
+      expect(markdown).toContain('1 failure(s); stale counts may be partial');
+      expect(markdown).toContain('alpha:');
+    } finally {
+      await fsp.chmod(blockedDir, 0o700).catch(() => undefined);
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
   });

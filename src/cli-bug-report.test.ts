@@ -29,6 +29,9 @@ function minimalDoctorReport(): DoctorReport {
       entries: [],
     },
     stale_counts_by_kb: {},
+    filesystem: {
+      enumeration_failures: { failure_count: 0, failures: [] },
+    },
     quarantine_counts_by_kb: {},
     age_budgets: {},
     age_budget_config_errors: [],

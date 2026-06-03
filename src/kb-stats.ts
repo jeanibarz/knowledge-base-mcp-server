@@ -28,7 +28,12 @@ import {
 } from './config/ingest.js';
 import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import { KBError } from './errors.js';
-import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
+import {
+  aggregateEnumerationDiagnostics,
+  enumerateIngestableKbFiles,
+  listKnowledgeBases,
+  type KbFilesystemEnumerationDiagnostics,
+} from './kb-fs.js';
 import { logger } from './logger.js';
 import {
   providerCallMetrics,
@@ -88,6 +93,9 @@ export interface KbStatsContextualFailureBlock {
 export interface KbStatsPayload {
   knowledge_bases: Record<string, KbStatsRow>;
   quarantined: Record<string, number>;
+  filesystem: {
+    enumeration_failures: KbFilesystemEnumerationDiagnostics;
+  };
   embedding: { provider: string; model: string; dim: number | null; index_type?: FaissIndexType };
   index_path: string;
   last_index_update: IndexUpdateSummary;
@@ -174,6 +182,7 @@ export async function computeKbStats(
 
   const knowledge_bases: Record<string, KbStatsRow> = {};
   const quarantined: Record<string, number> = {};
+  const enumerationFailures = aggregateEnumerationDiagnostics(enumerations);
   const fsConcurrency = resolveFsConcurrency();
   for (const { kbName, kbPath, filePaths } of enumerations) {
     const byteCounts = await mapBounded(filePaths, fsConcurrency, async (filePath) => {
@@ -214,6 +223,9 @@ export async function computeKbStats(
   return {
     knowledge_bases,
     quarantined,
+    filesystem: {
+      enumeration_failures: enumerationFailures,
+    },
     embedding: {
       provider: manager.embeddingProvider,
       model: manager.modelName,

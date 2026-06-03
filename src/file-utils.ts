@@ -5,6 +5,24 @@ import { logger } from './logger.js';
 
 type FsError = NodeJS.ErrnoException & { code?: string };
 
+export interface FilesystemEnumerationFailure {
+  path: string;
+  code: string | null;
+  message: string;
+}
+
+export interface FilesystemEnumerationDiagnostics {
+  failure_count: number;
+  failures: FilesystemEnumerationFailure[];
+}
+
+export interface RecursiveFileEnumeration {
+  files: string[];
+  diagnostics: FilesystemEnumerationDiagnostics;
+}
+
+export const DEFAULT_ENUMERATION_FAILURE_SAMPLE_LIMIT = 5;
+
 /**
  * Issue #160 step 1 — single home for "does this path exist?".
  *
@@ -43,7 +61,19 @@ export async function calculateSHA256(filePath: string): Promise<string> {
  * @returns Array of file paths
  */
 export async function getFilesRecursively(dirPath: string): Promise<string[]> {
+  return (await getFilesRecursivelyWithDiagnostics(dirPath)).files;
+}
+
+export async function getFilesRecursivelyWithDiagnostics(
+  dirPath: string,
+  options: { failureSampleLimit?: number } = {},
+): Promise<RecursiveFileEnumeration> {
   const files: string[] = [];
+  const sampleLimit = options.failureSampleLimit ?? DEFAULT_ENUMERATION_FAILURE_SAMPLE_LIMIT;
+  const diagnostics: FilesystemEnumerationDiagnostics = {
+    failure_count: 0,
+    failures: [],
+  };
 
   async function traverse(currentPath: string): Promise<void> {
     try {
@@ -64,10 +94,19 @@ export async function getFilesRecursively(dirPath: string): Promise<string[]> {
         }
       }
     } catch (error) {
+      diagnostics.failure_count += 1;
+      if (diagnostics.failures.length < sampleLimit) {
+        const err = error as NodeJS.ErrnoException;
+        diagnostics.failures.push({
+          path: currentPath,
+          code: typeof err.code === 'string' ? err.code : null,
+          message: err.message,
+        });
+      }
       logger.error(`Error traversing directory ${currentPath}:`, error);
     }
   }
 
   await traverse(dirPath);
-  return files;
+  return { files, diagnostics };
 }

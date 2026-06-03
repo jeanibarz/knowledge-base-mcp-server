@@ -27,6 +27,34 @@ describe('formatFreshnessFooter', () => {
     expect(formatFreshnessFooter(s, true)).toBe(`> _Index refreshed at ${MTIME}._`);
   });
 
+  it('keeps filesystem enumeration warnings visible in the freshness footer', () => {
+    const s: Staleness = {
+      indexMtime: MTIME,
+      modifiedFiles: 0,
+      newFiles: 0,
+      scan: {
+        scope: 'global',
+        source: 'filesystem',
+        filesScanned: 1,
+        globalFiles: 1,
+        kbsScanned: 1,
+        enumerationFailures: 1,
+        enumerationFailureSamples: [{
+          kbName: 'alpha',
+          path: '/tmp/kbs/alpha/blocked',
+          code: 'EACCES',
+          message: 'permission denied',
+        }],
+      },
+    };
+
+    expect(formatFreshnessFooter(s, false)).toBe(
+      `> _Index up-to-date as of ${MTIME}._\n` +
+      '> _Filesystem enumeration warning: 1 failure(s) while scanning KB files; ' +
+      'freshness counts may be partial. First sample: alpha:/tmp/kbs/alpha/blocked (EACCES)._',
+    );
+  });
+
   it('reports up-to-date when neither modified nor new files exist', () => {
     const s: Staleness = { indexMtime: MTIME, modifiedFiles: 0, newFiles: 0 };
     expect(formatFreshnessFooter(s, false)).toBe(`> _Index up-to-date as of ${MTIME}._`);
