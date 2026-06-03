@@ -20,6 +20,7 @@ export interface PickerState {
   grouped: GroupedRetrievalSource[];
   view: PickerView;
   focusIndex: number;
+  selectedFlatIndexes: Set<number>;
   showHelp: boolean;
 }
 
@@ -47,6 +48,7 @@ export function createPickerState(results: ScoredDocument[]): PickerState {
     grouped: groupRetrievalBySource(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI),
     view: 'flat',
     focusIndex: 0,
+    selectedFlatIndexes: new Set<number>(),
     showHelp: false,
   };
 }
@@ -73,7 +75,7 @@ export function renderPickerFrame(state: PickerState, opts: PickerRenderOptions)
     for (let i = start; i < end; i += 1) {
       const focused = i === state.focusIndex;
       const row = state.view === 'flat'
-        ? renderFlatRow(state.results[i], i)
+        ? renderFlatRow(state.results[i], i, state.selectedFlatIndexes.has(i))
         : renderGroupedRow(state.grouped[i], i);
       lines.push(renderRow(row, focused, opts));
     }
@@ -84,7 +86,7 @@ export function renderPickerFrame(state: PickerState, opts: PickerRenderOptions)
     for (const helpLine of helpLines) lines.push(helpLine);
   } else {
     lines.push('');
-    lines.push(renderFooterHint(opts));
+    lines.push(renderFooterHint(state, opts));
   }
 
   return lines.join('\n');
@@ -99,6 +101,18 @@ export function applyKey(state: PickerState, key: PickerKey): { state: PickerSta
   if (name === 'return') {
     if (count === 0) return { state, action: { type: 'exit' } };
     return { state, action: { type: 'select', view: state.view, index: state.focusIndex } };
+  }
+  if (name === 'space' || seq === ' ') {
+    if (state.view !== 'flat' || count === 0) {
+      return { state, action: { type: 'continue' } };
+    }
+    const selectedFlatIndexes = new Set(state.selectedFlatIndexes);
+    if (selectedFlatIndexes.has(state.focusIndex)) {
+      selectedFlatIndexes.delete(state.focusIndex);
+    } else {
+      selectedFlatIndexes.add(state.focusIndex);
+    }
+    return { state: { ...state, selectedFlatIndexes }, action: { type: 'continue' } };
   }
   if (name === 'escape' || seq === 'q' || seq === 'Q') {
     return { state, action: { type: 'exit' } };
@@ -131,10 +145,14 @@ export function applyKey(state: PickerState, key: PickerKey): { state: PickerSta
 }
 
 export function formatSelection(state: PickerState, action: { view: PickerView; index: number }): string {
+  const selectedDocs = selectedDocumentsInResultOrder(state);
+  if (selectedDocs.length > 0) {
+    return `${formatRetrievalAsMarkdown(selectedDocs, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)}\n`;
+  }
   if (action.view === 'flat') {
-    const doc = state.results[action.index];
-    if (!doc) return '';
-    return `${formatRetrievalAsMarkdown([doc], FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)}\n`;
+    const docs = [state.results[action.index]].filter((doc): doc is ScoredDocument => doc !== undefined);
+    if (docs.length === 0) return '';
+    return `${formatRetrievalAsMarkdown(docs, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)}\n`;
   }
   const group = state.grouped[action.index];
   if (!group) return '';
@@ -233,11 +251,17 @@ function renderHeader(state: PickerState, count: number, _opts: PickerRenderOpti
   const plural = count === 1 ? noun : `${noun}s`;
   const viewTag = state.view === 'flat' ? 'flat' : 'grouped';
   const position = count === 0 ? '0/0' : `${state.focusIndex + 1}/${count}`;
-  return `kb search · ${count} ${plural} · view=${viewTag} · ${position}`;
+  const selected = state.selectedFlatIndexes.size;
+  const selectedText = selected > 0 ? ` · selected=${selected}` : '';
+  return `kb search · ${count} ${plural} · view=${viewTag} · ${position}${selectedText}`;
 }
 
-function renderFooterHint(_opts: PickerRenderOptions): string {
-  return '[j/k] move  [Enter] open  [Tab] toggle view  [?] help  [q] quit';
+function renderFooterHint(state: PickerState, _opts: PickerRenderOptions): string {
+  if (state.view === 'grouped') {
+    const enter = state.selectedFlatIndexes.size > 0 ? '[Enter] print marks' : '[Enter] print source';
+    return `[j/k] move  ${enter}  [Tab] toggle view  [?] help  [q] quit`;
+  }
+  return '[j/k] move  [Space] mark  [Enter] print  [Tab] toggle view  [?] help  [q] quit';
 }
 
 function helpBodyLines(): string[] {
@@ -247,20 +271,22 @@ function helpBodyLines(): string[] {
     '  k / Up       previous result',
     '  g            jump to top',
     '  G            jump to bottom',
+    '  Space        mark / unmark focused chunk in flat view',
     '  Tab          toggle flat / grouped-by-source view',
-    '  Enter        print focused chunk to stdout and exit',
+    '  Enter        print marked chunks, or focused row/source if none are marked',
     '  ?            toggle this help',
     '  q / Esc      quit (no output)',
   ];
 }
 
-function renderFlatRow(doc: ScoredDocument | undefined, _idx: number): string {
+function renderFlatRow(doc: ScoredDocument | undefined, _idx: number, selected: boolean): string {
   if (!doc) return '(missing result)';
   const metadata = (doc.metadata ?? {}) as Record<string, unknown>;
   const score = doc.score === undefined ? 'n/a' : doc.score.toFixed(2);
   const source = pickSourceLabel(metadata);
   const preview = previewText(doc.pageContent);
-  return `[${score}] ${source} — ${preview}`;
+  const selectedMark = selected ? '[x]' : '[ ]';
+  return `${selectedMark} [${score}] ${source} — ${preview}`;
 }
 
 function renderGroupedRow(group: GroupedRetrievalSource | undefined, _idx: number): string {
@@ -288,4 +314,12 @@ function pickSourceLabel(metadata: Record<string, unknown>): string {
 
 function previewText(content: string): string {
   return content.replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+function selectedDocumentsInResultOrder(state: PickerState): ScoredDocument[] {
+  return Array.from(state.selectedFlatIndexes)
+    .filter((idx) => idx >= 0 && idx < state.results.length)
+    .sort((a, b) => a - b)
+    .map((idx) => state.results[idx])
+    .filter((doc): doc is ScoredDocument => doc !== undefined);
 }
