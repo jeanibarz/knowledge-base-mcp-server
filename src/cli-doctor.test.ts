@@ -38,6 +38,8 @@ const originalEnv = {
 
 const MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
 const MODEL_NAME = 'BAAI/bge-small-en-v1.5';
+const OLLAMA_MODEL_ID = 'ollama__nomic-embed-text-latest';
+const OLLAMA_MODEL_NAME = 'nomic-embed-text:latest';
 const RERANK_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
 
 afterEach(() => {
@@ -414,6 +416,68 @@ describe('kb doctor', () => {
       expect(json.quarantine_counts_by_kb.alpha).toBe(0);
       expect(json.last_index_update.saved).toBe(true);
     } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('marks Ollama backend unhealthy when the active embedding model is missing', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-ollama-missing-model-'));
+    const oldFetch = global.fetch;
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const modelDir = path.join(faissDir, 'models', OLLAMA_MODEL_ID);
+      await fsp.mkdir(rootDir, { recursive: true });
+      await fsp.mkdir(modelDir, { recursive: true });
+      await fsp.writeFile(path.join(modelDir, 'model_name.txt'), OLLAMA_MODEL_NAME);
+      await fsp.writeFile(path.join(faissDir, 'active.txt'), OLLAMA_MODEL_ID);
+      await seedVersionedIndex(modelDir);
+
+      const fetchMock = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        expect(String(input)).toBe('http://127.0.0.1:11434/api/embed');
+        expect(init?.method).toBe('POST');
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          model: OLLAMA_MODEL_NAME,
+          input: expect.stringContaining('kb doctor'),
+        });
+        return new Response(JSON.stringify({
+          error: `model "${OLLAMA_MODEL_NAME}" not found, try pulling it first`,
+        }), { status: 404 });
+      });
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'ollama',
+        OLLAMA_MODEL: OLLAMA_MODEL_NAME,
+        OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
+      });
+
+      const report = await buildDoctorReport({
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+        lastIndexUpdateSummary: persistedSuccessSummary(),
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(report.status).toBe('error');
+      expect(report.backend).toMatchObject({
+        provider: 'ollama',
+        healthy: false,
+      });
+      expect(report.backend.detail).toContain('failed embedding probe');
+      expect(report.backend.detail).toContain('model "nomic-embed-text:latest" not found');
+      expect(report.checks).toContainEqual({
+        name: 'backend',
+        status: 'error',
+        detail: report.backend.detail,
+      });
+      expect(formatDoctorMarkdown(report)).toMatch(/ERROR\s+backend:/);
+    } finally {
+      global.fetch = oldFetch;
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
   });

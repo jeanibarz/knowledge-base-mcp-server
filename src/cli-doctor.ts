@@ -123,9 +123,10 @@ Usage:
 
 Composes existing read-only checks (env vars, registered models, active
 model, FAISS index presence + mtime, knowledge-base count, embedding
-backend reachability, and local LLM endpoint readiness for kb ask) into
-a single status report. Does NOT load the FAISS store, embed documents,
-or start managed LLM services.
+backend readiness, and local LLM endpoint readiness for kb ask) into
+a single status report. Does NOT load the FAISS store, embed KB documents,
+or start managed LLM services; backend checks may perform a tiny
+model-specific smoke embedding.
 
 Report status is one of \`ok\`, \`warn\`, or \`error\`. The exit code is non-zero
 when any required check fails, so \`kb doctor && kb search ...\` is a safe
@@ -2161,16 +2162,28 @@ async function defaultBackendHealthCheck(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);
     try {
-      const res = await fetch(new URL('/api/tags', OLLAMA_BASE_URL), {
+      const res = await fetch(new URL('/api/embed', OLLAMA_BASE_URL), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelName,
+          input: 'kb doctor backend smoke test',
+        }),
         signal: controller.signal,
       });
-      if (!res.ok) return { healthy: false, detail: `Ollama ${OLLAMA_BASE_URL} returned HTTP ${res.status}` };
-      return { healthy: true, detail: `Ollama ${OLLAMA_BASE_URL} is reachable for ${modelName}` };
+      if (!res.ok) {
+        return {
+          healthy: false,
+          detail: `Ollama ${OLLAMA_BASE_URL} failed embedding probe for ${modelName}: ` +
+            `HTTP ${res.status}${await formatOllamaResponseDetail(res)}`,
+        };
+      }
+      return { healthy: true, detail: `Ollama ${OLLAMA_BASE_URL} embedded smoke query with ${modelName}` };
     } catch (err) {
       const message = (err as Error).name === 'AbortError'
         ? 'timed out'
         : (err as Error).message;
-      return { healthy: false, detail: `Ollama ${OLLAMA_BASE_URL} is not reachable: ${message}` };
+      return { healthy: false, detail: `Ollama ${OLLAMA_BASE_URL} embedding probe failed: ${message}` };
     } finally {
       clearTimeout(timeout);
     }
@@ -2193,6 +2206,26 @@ async function defaultBackendHealthCheck(
   }
 
   return { healthy: false, detail: `unsupported provider: ${provider}` };
+}
+
+async function formatOllamaResponseDetail(res: Response): Promise<string> {
+  let text: string;
+  try {
+    text = await res.text();
+  } catch {
+    return '';
+  }
+  const trimmed = text.trim();
+  if (trimmed === '') return '';
+  try {
+    const parsed = JSON.parse(trimmed) as { error?: unknown };
+    if (typeof parsed.error === 'string' && parsed.error.trim() !== '') {
+      return `: ${parsed.error.trim().slice(0, 300)}`;
+    }
+  } catch {
+    // Fall through to plain text below.
+  }
+  return `: ${trimmed.slice(0, 300)}`;
 }
 
 function summarizeStatus(checks: DoctorReport['checks']): HealthStatus {
