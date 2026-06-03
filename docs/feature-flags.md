@@ -150,6 +150,7 @@ wrap-close vars below.
 | Refresh quiescence guard | `KB_REFRESH_QUIESCE_MS` | `0` | Ingest and refresh | Implemented, opt-in | none | `KB_REFRESH_QUIESCE_MS=1000 kb search "query" --refresh` |
 | Maximum raw file size | `KB_MAX_FILE_BYTES` | `104857600` | Ingest and refresh | Implemented | none | `KB_MAX_FILE_BYTES=1048576 kb search "query" --refresh` |
 | Maximum extracted text size | `KB_MAX_EXTRACTED_TEXT_BYTES` | `16777216` | Ingest and refresh | Implemented | none | `KB_MAX_EXTRACTED_TEXT_BYTES=1048576 kb search "query" --refresh` |
+| Extracted text cache pruning | `kb cache extracted-text --max-age-days=<n>`, `--max-size-mb=<n>`, `--dry-run`, `--yes` | dry-run | CLI cache, `kb doctor` inventory | Implemented, read-only by default | per-call flags only | `kb cache extracted-text --max-age-days=30 --max-size-mb=512` |
 | Large-file policy | `KB_LARGE_FILE_POLICY` | `skip` | Ingest and refresh | Implemented | none | `KB_LARGE_FILE_POLICY=error kb search "query" --refresh` |
 | Ingest secret scan | `KB_INGEST_SECRET_SCAN` | `off` | Ingest and refresh | Implemented, opt-in; `KB_SECRET_SCAN_BYPASS_KBS=<csv>` bypasses trusted credential-example KBs | none | `KB_INGEST_SECRET_SCAN=on kb search "query" --refresh` then `kb quarantine list --reason=secret_detected` |
 | Splitter chunk size | `KB_CHUNK_SIZE` | `1000` | Ingest and refresh | Implemented | none | `KB_CHUNK_SIZE=500 kb search "query" --refresh` |

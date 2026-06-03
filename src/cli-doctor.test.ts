@@ -33,6 +33,7 @@ const originalEnv = {
   MCP_BIND_ADDR: process.env.MCP_BIND_ADDR,
   KB_DAEMON_URL: process.env.KB_DAEMON_URL,
   OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL,
+  EXTRACTION_TEXT_CACHE_DIR: process.env.EXTRACTION_TEXT_CACHE_DIR,
 };
 
 const MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
@@ -273,6 +274,7 @@ describe('kb doctor', () => {
     try {
       const rootDir = path.join(tempDir, 'kbs');
       const faissDir = path.join(tempDir, '.faiss');
+      const extractionCacheDir = path.join(faissDir, 'extracted-text');
       await fsp.mkdir(path.join(rootDir, 'alpha', '.index'), { recursive: true });
       await fsp.mkdir(path.join(rootDir, 'beta', '.index'), { recursive: true });
       const alphaOld = path.join(rootDir, 'alpha', 'old.md');
@@ -283,6 +285,10 @@ describe('kb doctor', () => {
       await fsp.writeFile(betaUnsided, 'beta');
       await fsp.writeFile(path.join(rootDir, 'alpha', '.index', 'old.md'), 'hash');
       await fsp.writeFile(path.join(rootDir, 'alpha', '.index', 'newer.md'), 'hash');
+      await fsp.mkdir(extractionCacheDir, { recursive: true });
+      const extractionCacheEntry = path.join(extractionCacheDir, `${'c'.repeat(64)}.txt`);
+      await fsp.writeFile(extractionCacheEntry, 'cached extracted text');
+      await fsp.writeFile(path.join(extractionCacheDir, 'README.txt'), 'ignored');
 
       const modelDir = await seedRegisteredModel(faissDir);
       const inactiveVersionDir = path.join(modelDir, 'index.v2');
@@ -301,6 +307,7 @@ describe('kb doctor', () => {
       await fsp.utimes(alphaOld, oldMs / 1000, oldMs / 1000);
       await fsp.utimes(alphaNewer, newerMs / 1000, newerMs / 1000);
       await fsp.utimes(betaUnsided, oldMs / 1000, oldMs / 1000);
+      await fsp.utimes(extractionCacheEntry, oldMs / 1000, oldMs / 1000);
       await fsp.mkdir(path.join(tempDir, 'build'), { recursive: true });
       await fsp.writeFile(path.join(tempDir, 'build', 'cli.js'), '#!/usr/bin/env node\n');
       const linkedBin = path.join(tempDir, 'kb-linked');
@@ -313,6 +320,7 @@ describe('kb doctor', () => {
         HUGGINGFACE_MODEL_NAME: MODEL_NAME,
         HUGGINGFACE_API_KEY: 'test-key',
         KB_INDEX_VERSION_RETENTION: '2',
+        EXTRACTION_TEXT_CACHE_DIR: extractionCacheDir,
       });
 
       const report = await buildDoctorReport({
@@ -359,6 +367,21 @@ describe('kb doctor', () => {
         total_version_bytes: Buffer.byteLength('fake-index') + Buffer.byteLength('old-index'),
         retention_previous_versions: 2,
       });
+      expect(report.extraction_cache).toMatchObject({
+        cache_dir: extractionCacheDir,
+        exists: true,
+        entry_count: 1,
+        total_bytes: Buffer.byteLength('cached extracted text'),
+        oldest_mtime: new Date(oldMs).toISOString(),
+        newest_mtime: new Date(oldMs).toISOString(),
+        ignored_entry_count: 1,
+        error_count: 0,
+      });
+      expect(report.checks).toContainEqual({
+        name: 'extraction_cache',
+        status: 'ok',
+        detail: expect.stringContaining('1 cache entry'),
+      });
       expect(report.backend).toMatchObject({ healthy: true, detail: 'backend ok' });
       expect(report.last_index_update).toMatchObject({
         status: 'success',
@@ -378,6 +401,9 @@ describe('kb doctor', () => {
       expect(markdown).toContain('Last index update: success (global, 1000ms, 1 changed, 1 unchanged, 0 skipped)');
       expect(markdown).toContain('Index storage:');
       expect(markdown).toContain('inactive across 1 retained inactive version(s); retention=2');
+      expect(markdown).toContain('Extracted-text cache:');
+      expect(markdown).toContain(`path: ${extractionCacheDir}`);
+      expect(markdown).toContain('entries: 1, bytes=21 B, exists=yes');
       expect(markdown).toContain('alpha: 1 modified, 0 new');
       expect(markdown).toContain('beta: 0 modified, 1 new');
       expect(markdown).toContain('Ingest quarantine by KB:\n  alpha: 0 quarantined\n  beta: 0 quarantined');

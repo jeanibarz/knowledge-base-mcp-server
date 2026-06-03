@@ -19,7 +19,10 @@ import {
   computeExtractionCacheKey,
   defaultExtractionCacheDir,
   EXTRACTION_CACHE_SCHEMA_VERSION,
+  applyExtractionCachePrune,
+  inventoryExtractionCache,
   loadWithExtractionCache,
+  planExtractionCachePrune,
   readCachedExtraction,
   writeCachedExtraction,
 } from './extraction-cache.js';
@@ -383,5 +386,126 @@ describe('loadWithExtractionCache', () => {
 
     expect(text).toBe('cold-path text');
     expect(parse).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('extracted-text cache inventory and pruning', () => {
+  let cacheDir = '';
+  const now = new Date('2026-06-03T12:00:00.000Z');
+
+  beforeEach(async () => {
+    cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-extract-cache-prune-'));
+  });
+
+  afterEach(async () => {
+    await fsp.rm(cacheDir, { recursive: true, force: true });
+  });
+
+  async function writeEntry(hex: string, body: string, mtime: Date): Promise<string> {
+    const filename = `${hex.repeat(64).slice(0, 64)}.txt`;
+    const filePath = path.join(cacheDir, filename);
+    await fsp.writeFile(filePath, body);
+    await fsp.utimes(filePath, mtime, mtime);
+    return filename;
+  }
+
+  it('inventories only expected cache files and reports ignored siblings', async () => {
+    const filename = await writeEntry('a', 'cached text', new Date('2026-06-01T00:00:00.000Z'));
+    await fsp.writeFile(path.join(cacheDir, 'readme.txt'), 'not a cache key');
+
+    const inventory = await inventoryExtractionCache(cacheDir, now);
+
+    expect(inventory.exists).toBe(true);
+    expect(inventory.entries).toEqual([
+      expect.objectContaining({
+        filename,
+        size_bytes: Buffer.byteLength('cached text'),
+        mtime: '2026-06-01T00:00:00.000Z',
+      }),
+    ]);
+    expect(inventory.summary).toMatchObject({
+      entry_count: 1,
+      total_bytes: Buffer.byteLength('cached text'),
+      ignored_entry_count: 1,
+      error_count: 0,
+    });
+    expect(inventory.ignored_entries).toEqual([
+      { filename: 'readme.txt', reason: 'not_cache_file' },
+    ]);
+  });
+
+  it('plans age pruning without touching files', async () => {
+    const oldName = await writeEntry('a', 'old', new Date('2026-05-01T00:00:00.000Z'));
+    const freshName = await writeEntry('b', 'fresh', new Date('2026-06-02T00:00:00.000Z'));
+
+    const plan = await planExtractionCachePrune({
+      cacheDir,
+      maxAgeDays: 14,
+      now,
+    });
+
+    expect(plan.summary).toMatchObject({
+      prunable_count: 1,
+      prunable_bytes: Buffer.byteLength('old'),
+      kept_count: 1,
+      kept_bytes: Buffer.byteLength('fresh'),
+      age_prunable_count: 1,
+      size_prunable_count: 0,
+    });
+    expect(plan.prunable_entries).toEqual([
+      expect.objectContaining({ filename: oldName, reasons: ['age'] }),
+    ]);
+    expect(plan.kept_entries).toEqual([
+      expect.objectContaining({ filename: freshName }),
+    ]);
+    expect(await fsp.readdir(cacheDir)).toHaveLength(2);
+  });
+
+  it('plans size pruning from oldest entries until the budget is met', async () => {
+    const oldest = await writeEntry('a', 'aaaa', new Date('2026-05-01T00:00:00.000Z'));
+    const middle = await writeEntry('b', 'bbbb', new Date('2026-05-02T00:00:00.000Z'));
+    const newest = await writeEntry('c', 'cccc', new Date('2026-05-03T00:00:00.000Z'));
+
+    const plan = await planExtractionCachePrune({
+      cacheDir,
+      maxSizeBytes: 8,
+      now,
+    });
+
+    expect(plan.prunable_entries).toEqual([
+      expect.objectContaining({ filename: oldest, reasons: ['size'] }),
+    ]);
+    expect(plan.kept_entries.map((entry) => entry.filename)).toEqual([middle, newest]);
+    expect(plan.summary).toMatchObject({
+      prunable_count: 1,
+      prunable_bytes: 4,
+      kept_bytes: 8,
+      size_prunable_count: 1,
+    });
+  });
+
+  it('applies a plan only to planned cache files', async () => {
+    const oldName = await writeEntry('a', 'old', new Date('2026-05-01T00:00:00.000Z'));
+    const freshName = await writeEntry('b', 'fresh', new Date('2026-06-02T00:00:00.000Z'));
+    await fsp.writeFile(path.join(cacheDir, 'notes.txt'), 'ignored');
+    const plan = await planExtractionCachePrune({
+      cacheDir,
+      maxAgeDays: 14,
+      now,
+    });
+
+    const result = await applyExtractionCachePrune(plan);
+
+    expect(result.summary).toEqual({
+      deleted_count: 1,
+      deleted_bytes: Buffer.byteLength('old'),
+      failed_count: 0,
+    });
+    expect(result.deleted_entries).toEqual([
+      expect.objectContaining({ filename: oldName }),
+    ]);
+    await expect(fsp.stat(path.join(cacheDir, oldName))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(path.join(cacheDir, freshName))).resolves.toBeDefined();
+    await expect(fsp.stat(path.join(cacheDir, 'notes.txt'))).resolves.toBeDefined();
   });
 });
