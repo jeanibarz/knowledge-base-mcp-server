@@ -13,6 +13,7 @@ kb doctor
 kb doctor --format=json
 kb doctor --endpoints
 kb doctor --locks
+kb doctor --kb-symlinks
 kb doctor --bug-report=/tmp
 ```
 
@@ -21,6 +22,8 @@ kb doctor --bug-report=/tmp
 Use `kb doctor --endpoints` for the narrower port/URL preflight: MCP bind target availability, configured `KB_DAEMON_URL`, configured Ollama embedding endpoint, and configured `KB_LLM_ENDPOINT` or active LLM profile.
 
 Use `kb doctor --locks` for write-lock contention. It reports per-model lock path, age, recorded owner PID/command when available, whether that PID is still live, stale suspicion, and the next safe action. It never removes lock files.
+
+Use `kb doctor --kb-symlinks` for KB content-root symlink audits. It uses `lstat`, does not follow symlink directories, and reports inside-root, escaping, broken, and loop/error targets with capped examples.
 
 Use `kb doctor --bug-report[=<dir>]` when preparing an issue-ready diagnostic bundle. The command writes a timestamped directory with redacted doctor/stats/log/runtime JSON plus a README, without note contents or raw API keys.
 

@@ -79,6 +79,7 @@ kb config validate            # static env-var schema validation before startup
 kb doctor                     # availability snapshot (index, embedding backend, LLM)
 kb doctor --endpoints         # focused MCP/daemon/Ollama/LLM endpoint preflight
 kb doctor --locks             # write-lock owner and stale-lock diagnosis
+kb doctor --kb-symlinks       # inventory KB-root symlinks and escaping targets
 kb doctor --bug-report=/tmp   # write a redacted support bundle for issue reports
 kb --help                     # top-level command list
 kb help search                # per-command help (also: kb search --help)
@@ -579,6 +580,7 @@ kb doctor                # human-readable report
 kb doctor --format=json  # machine-readable for agent shells
 kb doctor --endpoints    # focused bind/connect endpoint preflight
 kb doctor --locks        # model write-lock owner/stale diagnosis
+kb doctor --kb-symlinks  # KB-root symlink inventory and target classification
 kb doctor --bug-report=/tmp  # redacted support bundle directory
 ```
 
@@ -587,6 +589,8 @@ The report covers active-model resolution, FAISS index version + mtime, the late
 Use `kb doctor --endpoints` when you only need configured local endpoint readiness before starting or wiring clients. It checks MCP bind address/port availability, configured `KB_DAEMON_URL` health, configured Ollama embedding reachability, and configured `KB_LLM_ENDPOINT` or active LLM profile readiness without loading the full index health report.
 
 Use `kb doctor --locks` when refresh or model writes report lock contention. It scans per-model `.kb-write.lock` paths, reports lock age, recorded owner PID/command for new locks, stale suspicion, and conservative next actions without deleting any lock file.
+
+Use `kb doctor --kb-symlinks` when auditing KB content roots. It scans with `lstat`, does not follow symlink directories, and classifies symlink targets as inside-root, escaping, broken, or loop/error with capped examples.
 
 Use `kb doctor --bug-report[=<dir>]` when opening an issue or handing diagnostics to another operator. It writes a timestamped directory containing redacted `doctor.json`, `stats.json`, recent canonical log summaries, runtime/env metadata, and a README. The bundle does not include note contents or raw API keys; KB names, paths, model names, and log metadata can still be sensitive.
 
