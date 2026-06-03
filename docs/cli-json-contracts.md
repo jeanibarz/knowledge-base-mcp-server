@@ -732,6 +732,7 @@ Invocation:
 kb doctor --format=json
 kb doctor --endpoints --format=json
 kb doctor --locks --format=json
+kb doctor --kb-symlinks --format=json
 kb doctor --bug-report=/tmp --format=json
 kb doctor --bug-report=/tmp --include-command -- node -e 'process.exit(1)'
 ```
@@ -925,6 +926,56 @@ Stable lock-report fields:
   cwd, hostname, and start time beside the lock; older locks may report
   `source: "none"`.
 - `next_action`: conservative guidance. The command never deletes locks.
+
+`kb doctor --kb-symlinks --format=json` emits a focused KB-root symlink
+inventory without running the aggregate backend/index checks:
+
+```json
+{
+  "schema_version": "kb.doctor.kb_symlinks.v1",
+  "status": "warn",
+  "inventory": {
+    "root_dir": "/path/to/kbs",
+    "root_realpath": "/path/to/kbs",
+    "summary": {
+      "total": 3,
+      "inside_root": 1,
+      "escaping": 1,
+      "broken": 1,
+      "loop_or_error": 0,
+      "scan_error_count": 0,
+      "sample_limit": 5
+    },
+    "symlinks": [
+      {
+        "kbName": "project",
+        "path": "/path/to/kbs/project/outside.md",
+        "relative_path": "project/outside.md",
+        "link_target": "/tmp/outside.md",
+        "resolved_target": "/tmp/outside.md",
+        "classification": "escaping",
+        "error_code": null,
+        "error_message": null
+      }
+    ],
+    "scan_errors": []
+  }
+}
+```
+
+Stable KB symlink report fields:
+
+- `schema_version`: currently `kb.doctor.kb_symlinks.v1`.
+- `status`: `ok` when no symlinks or only inside-root symlinks are found,
+  `warn` when escaping, broken, or loop/error symlinks are found, and `error`
+  when directory scanning itself fails.
+- `inventory.summary`: total symlink count, per-classification counts,
+  scan-error count, and the capped example `sample_limit`.
+- `inventory.symlinks[]`: capped examples discovered with `lstat`. Symlink
+  directories are reported as symlinks and are not followed. `classification`
+  is `inside_root`, `escaping`, `broken`, or `loop_or_error`.
+- `inventory.scan_errors[]`: capped directory or `lstat` failures with `path`,
+  `code`, and `message`.
 
 `kb doctor --bug-report[=<dir>]` writes a timestamped support bundle directory
 under `<dir>` (default: current directory). The bundle contains:

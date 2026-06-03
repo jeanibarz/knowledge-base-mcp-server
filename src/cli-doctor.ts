@@ -41,8 +41,10 @@ import {
 import {
   aggregateEnumerationDiagnostics,
   enumerateIngestableKbFiles,
+  inventoryKbSymlinks,
   listKnowledgeBases,
   type KbFilesystemEnumerationDiagnostics,
+  type KbSymlinkInventory,
 } from './kb-fs.js';
 import {
   createNeverRunIndexUpdateSummary,
@@ -116,7 +118,7 @@ const execFileAsync = promisify(execFile);
 export const DOCTOR_HELP = `kb doctor — aggregate model / index / backend health report
 
 Usage:
-  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints] [--locks] [--integrity|--slow]
+  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints] [--locks] [--kb-symlinks] [--integrity|--slow]
   kb doctor --bug-report[=<dir>] [--include-command -- <cmd> [args...]]
 
 Composes existing read-only checks (env vars, registered models, active
@@ -139,6 +141,9 @@ Options:
                         Ollama embedding endpoint, and KB_LLM_ENDPOINT/profile).
   --locks               Check only FAISS/model write-lock paths, including
                         owner metadata when available and stale-lock guidance.
+  --kb-symlinks         Inventory symlinks under KB roots without following
+                        symlink directories; classifies inside-root, escaping,
+                        broken, and loop/error targets.
   --bug-report[=<dir>]  Write a timestamped redacted support bundle under
                         <dir> (default: current directory). Includes doctor,
                         stats, recent canonical logs, runtime metadata, and
@@ -154,6 +159,7 @@ Examples:
   kb doctor
   kb doctor --format=json
   kb doctor && kb search "rollback"
+  kb doctor --kb-symlinks
 `;
 
 export interface DoctorArgs {
@@ -161,6 +167,7 @@ export interface DoctorArgs {
   reindexTrigger: boolean;
   endpoints: boolean;
   locks: boolean;
+  kbSymlinks: boolean;
   integrity: boolean;
   bugReport: {
     outputParentDir?: string;
@@ -232,6 +239,12 @@ export interface DoctorLocksReport {
     stale_suspected: number;
     unknown: number;
   };
+}
+
+export interface DoctorKbSymlinksReport {
+  schema_version: 'kb.doctor.kb_symlinks.v1';
+  status: HealthStatus;
+  inventory: KbSymlinkInventory;
 }
 
 export interface DoctorIndexSecurityEntry {
@@ -480,6 +493,16 @@ export async function runDoctor(rest: string[]): Promise<number> {
     return report.status === 'error' ? 1 : 0;
   }
 
+  if (parsed.kbSymlinks) {
+    const report = await buildDoctorKbSymlinksReport();
+    if (parsed.format === 'json') {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(formatDoctorKbSymlinksMarkdown(report));
+    }
+    return report.status === 'error' ? 1 : 0;
+  }
+
   if (parsed.bugReport !== null) {
     const result = await createDoctorBugReportBundle({
       outputParentDir: parsed.bugReport.outputParentDir,
@@ -509,6 +532,7 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
     reindexTrigger: false,
     endpoints: false,
     locks: false,
+    kbSymlinks: false,
     integrity: false,
     bugReport: null,
   };
@@ -542,6 +566,10 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
     }
     if (raw === '--locks') {
       out.locks = true;
+      continue;
+    }
+    if (raw === '--kb-symlinks') {
+      out.kbSymlinks = true;
       continue;
     }
     if (raw === '--bug-report' || raw.startsWith('--bug-report=')) {
@@ -584,8 +612,16 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
   if (out.bugReport !== null && out.locks) {
     throw new Error('--bug-report cannot be combined with --locks');
   }
-  if (out.endpoints && out.locks) {
-    throw new Error('--endpoints cannot be combined with --locks');
+  if (out.bugReport !== null && out.kbSymlinks) {
+    throw new Error('--bug-report cannot be combined with --kb-symlinks');
+  }
+  const focused = [
+    out.endpoints ? '--endpoints' : null,
+    out.locks ? '--locks' : null,
+    out.kbSymlinks ? '--kb-symlinks' : null,
+  ].filter((flag): flag is string => flag !== null);
+  if (focused.length > 1) {
+    throw new Error(`${focused.join(' and ')} cannot be combined`);
   }
   return out;
 }
@@ -1200,6 +1236,59 @@ export function formatDoctorLocksMarkdown(report: DoctorLocksReport): string {
         for (const warning of entry.warnings) lines.push(`    WARN ${warning}`);
       }
       lines.push(`    next: ${entry.next_action}`);
+    }
+  }
+  return lines.join('\n') + '\n';
+}
+
+export async function buildDoctorKbSymlinksReport(): Promise<DoctorKbSymlinksReport> {
+  const inventory = await inventoryKbSymlinks(KNOWLEDGE_BASES_ROOT_DIR);
+  const status: HealthStatus = inventory.summary.scan_error_count > 0
+    ? 'error'
+    : inventory.summary.escaping > 0 ||
+      inventory.summary.broken > 0 ||
+      inventory.summary.loop_or_error > 0
+      ? 'warn'
+      : 'ok';
+  return {
+    schema_version: 'kb.doctor.kb_symlinks.v1',
+    status,
+    inventory,
+  };
+}
+
+export function formatDoctorKbSymlinksMarkdown(report: DoctorKbSymlinksReport): string {
+  const lines: string[] = [];
+  const summary = report.inventory.summary;
+  lines.push(`Status: ${report.status.toUpperCase()}`);
+  lines.push(`KB root: ${report.inventory.root_dir}`);
+  lines.push(`KB root realpath: ${report.inventory.root_realpath ?? '<unresolved>'}`);
+  lines.push(
+    `Symlinks: ${summary.total} total, ${summary.inside_root} inside-root, ` +
+      `${summary.escaping} escaping, ${summary.broken} broken, ` +
+      `${summary.loop_or_error} loop/error`,
+  );
+  if (summary.scan_error_count > 0) {
+    lines.push(`Scan errors: ${summary.scan_error_count}`);
+    for (const error of report.inventory.scan_errors) {
+      const code = error.code ?? 'unknown';
+      lines.push(`  ERROR ${error.path} (${code}) ${error.message}`);
+    }
+  }
+  if (report.inventory.symlinks.length === 0) {
+    lines.push('Examples: (none)');
+  } else {
+    lines.push(`Examples (capped at ${summary.sample_limit}):`);
+    for (const link of report.inventory.symlinks) {
+      const resolved = link.resolved_target ?? '<unresolved>';
+      const target = link.link_target ?? '<unreadable>';
+      const error = link.error_message === null
+        ? ''
+        : `; ${link.error_code ?? 'unknown'} ${link.error_message}`;
+      lines.push(
+        `  ${link.classification} ${link.relative_path} -> ${target} ` +
+          `(resolved=${resolved}${error})`,
+      );
     }
   }
   return lines.join('\n') + '\n';

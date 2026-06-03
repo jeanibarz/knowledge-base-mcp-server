@@ -213,7 +213,7 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
     expect(record(examples[1])).toEqual({ recommended_kb: null, results: [] });
   },
   'kb doctor': (examples) => {
-    expect(examples).toHaveLength(4);
+    expect(examples).toHaveLength(5);
     expect(record(examples[0])).toMatchObject({
       status: expect.any(String),
       checks: expect.any(Array),
@@ -238,13 +238,30 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
       locks: expect.any(Array),
     });
     expect(record(examples[2])).toMatchObject({
+      schema_version: 'kb.doctor.kb_symlinks.v1',
+      status: expect.any(String),
+      inventory: expect.objectContaining({
+        root_dir: expect.any(String),
+        summary: expect.objectContaining({
+          total: expect.any(Number),
+          inside_root: expect.any(Number),
+          escaping: expect.any(Number),
+          broken: expect.any(Number),
+          loop_or_error: expect.any(Number),
+          scan_error_count: expect.any(Number),
+        }),
+        symlinks: expect.any(Array),
+        scan_errors: expect.any(Array),
+      }),
+    });
+    expect(record(examples[3])).toMatchObject({
       schema_version: 'kb.doctor.bug_report.v1',
       bundle_dir: expect.any(String),
       created_at: expect.any(String),
       files: expect.any(Array),
       redaction_summary: expect.any(Object),
     });
-    expect(record(examples[3])).toMatchObject({
+    expect(record(examples[4])).toMatchObject({
       schema_version: 'kb.doctor.endpoints.v1',
       status: expect.any(String),
       endpoints: expect.arrayContaining([

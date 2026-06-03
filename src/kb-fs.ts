@@ -77,6 +77,41 @@ export interface KbFilesystemEnumerationDiagnostics {
   failures: KbFilesystemEnumerationFailure[];
 }
 
+export type KbSymlinkClassification = 'inside_root' | 'escaping' | 'broken' | 'loop_or_error';
+
+export interface KbSymlinkInventoryEntry {
+  kbName: string;
+  path: string;
+  relative_path: string;
+  link_target: string | null;
+  resolved_target: string | null;
+  classification: KbSymlinkClassification;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface KbSymlinkScanError {
+  path: string;
+  code: string | null;
+  message: string;
+}
+
+export interface KbSymlinkInventory {
+  root_dir: string;
+  root_realpath: string | null;
+  summary: {
+    total: number;
+    inside_root: number;
+    escaping: number;
+    broken: number;
+    loop_or_error: number;
+    scan_error_count: number;
+    sample_limit: number;
+  };
+  symlinks: KbSymlinkInventoryEntry[];
+  scan_errors: KbSymlinkScanError[];
+}
+
 export interface EnumerateIngestableKbFilesOptions {
   extraExtensions?: readonly string[];
   excludePaths?: readonly string[];
@@ -138,6 +173,150 @@ export function aggregateEnumerationDiagnostics(
     }
   }
   return { failure_count: failureCount, failures };
+}
+
+export async function inventoryKbSymlinks(
+  rootDir: string,
+  options: { sampleLimit?: number } = {},
+): Promise<KbSymlinkInventory> {
+  const sampleLimit = options.sampleLimit ?? DEFAULT_ENUMERATION_FAILURE_SAMPLE_LIMIT;
+  const summary: KbSymlinkInventory['summary'] = {
+    total: 0,
+    inside_root: 0,
+    escaping: 0,
+    broken: 0,
+    loop_or_error: 0,
+    scan_error_count: 0,
+    sample_limit: sampleLimit,
+  };
+  const symlinks: KbSymlinkInventoryEntry[] = [];
+  const scanErrors: KbSymlinkScanError[] = [];
+  let rootRealpath: string | null = null;
+
+  try {
+    rootRealpath = await fsp.realpath(rootDir);
+  } catch (error: unknown) {
+    recordScanError(rootDir, error);
+    return {
+      root_dir: rootDir,
+      root_realpath: null,
+      summary,
+      symlinks,
+      scan_errors: scanErrors,
+    };
+  }
+
+  async function scanDirectory(currentPath: string, kbName: string): Promise<void> {
+    let names: string[];
+    try {
+      names = await fsp.readdir(currentPath);
+    } catch (error: unknown) {
+      recordScanError(currentPath, error);
+      return;
+    }
+
+    for (const name of names) {
+      const childPath = path.join(currentPath, name);
+      let st: import('fs').Stats;
+      try {
+        st = await fsp.lstat(childPath);
+      } catch (error: unknown) {
+        recordScanError(childPath, error);
+        continue;
+      }
+      if (st.isSymbolicLink()) {
+        await recordSymlink(childPath, kbName);
+        continue;
+      }
+      if (st.isDirectory()) {
+        await scanDirectory(childPath, kbName);
+      }
+    }
+  }
+
+  async function recordSymlink(linkPath: string, kbName: string): Promise<void> {
+    summary.total += 1;
+    const relativePath = path.relative(rootDir, linkPath);
+    const linkTarget = await readLinkTarget(linkPath);
+    let resolvedTarget: string | null = null;
+    let classification: KbSymlinkClassification = 'loop_or_error';
+    let errorCode: string | null = null;
+    let errorMessage: string | null = null;
+
+    try {
+      resolvedTarget = await fsp.realpath(linkPath);
+      classification = isInsideOrEqual(rootRealpath!, resolvedTarget) ? 'inside_root' : 'escaping';
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
+      errorCode = typeof err.code === 'string' ? err.code : null;
+      errorMessage = err.message;
+      classification = errorCode === 'ENOENT' || errorCode === 'ENOTDIR'
+        ? 'broken'
+        : 'loop_or_error';
+    }
+
+    summary[classification] += 1;
+    if (symlinks.length < sampleLimit) {
+      symlinks.push({
+        kbName,
+        path: linkPath,
+        relative_path: relativePath,
+        link_target: linkTarget,
+        resolved_target: resolvedTarget,
+        classification,
+        error_code: errorCode,
+        error_message: errorMessage,
+      });
+    }
+  }
+
+  function recordScanError(targetPath: string, error: unknown): void {
+    summary.scan_error_count += 1;
+    if (scanErrors.length >= sampleLimit) return;
+    const err = error as NodeJS.ErrnoException;
+    scanErrors.push({
+      path: targetPath,
+      code: typeof err.code === 'string' ? err.code : null,
+      message: err.message,
+    });
+  }
+
+  const rootEntries = await fsp.readdir(rootDir).catch((error: unknown) => {
+    recordScanError(rootDir, error);
+    return [];
+  });
+  for (const name of rootEntries) {
+    if (name.startsWith('.')) continue;
+    const entryPath = path.join(rootDir, name);
+    let st: import('fs').Stats;
+    try {
+      st = await fsp.lstat(entryPath);
+    } catch (error: unknown) {
+      recordScanError(entryPath, error);
+      continue;
+    }
+    if (st.isSymbolicLink()) {
+      await recordSymlink(entryPath, name);
+    } else if (st.isDirectory()) {
+      await scanDirectory(entryPath, name);
+    }
+  }
+
+  return {
+    root_dir: rootDir,
+    root_realpath: rootRealpath,
+    summary,
+    symlinks,
+    scan_errors: scanErrors,
+  };
+}
+
+async function readLinkTarget(linkPath: string): Promise<string | null> {
+  try {
+    return await fsp.readlink(linkPath);
+  } catch {
+    return null;
+  }
 }
 
 const KB_DESCRIPTION_MAX_LEN = 80;

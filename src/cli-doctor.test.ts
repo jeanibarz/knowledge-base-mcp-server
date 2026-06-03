@@ -1295,13 +1295,144 @@ describe('kb doctor', () => {
     }
   });
 
-  it('parses --format=json, --endpoints, --locks, and rejects unsupported formats', async () => {
+  itOnPosix('routes --kb-symlinks through runDoctor with JSON output', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-run-kb-symlinks-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const alphaDir = path.join(rootDir, 'alpha');
+      const betaDir = path.join(rootDir, 'beta');
+      const outsideDir = path.join(tempDir, 'outside');
+      await fsp.mkdir(alphaDir, { recursive: true });
+      await fsp.mkdir(betaDir, { recursive: true });
+      await fsp.mkdir(outsideDir, { recursive: true });
+      await fsp.writeFile(path.join(betaDir, 'inside.md'), 'inside');
+      await fsp.writeFile(path.join(outsideDir, 'outside.md'), 'outside');
+      await fsp.symlink(path.join(betaDir, 'inside.md'), path.join(alphaDir, 'inside-link.md'));
+      await fsp.symlink(path.join(outsideDir, 'outside.md'), path.join(alphaDir, 'outside-link.md'));
+      await fsp.symlink(path.join(alphaDir, 'missing.md'), path.join(alphaDir, 'broken-link.md'));
+      await fsp.symlink('loop-b', path.join(alphaDir, 'loop-a'));
+      await fsp.symlink('loop-a', path.join(alphaDir, 'loop-b'));
+
+      const { runDoctor } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+      });
+
+      const ok = await captureStdout(() => runDoctor(['--kb-symlinks', '--format=json']));
+      expect(ok.code).toBe(0);
+      const report = JSON.parse(ok.stdout);
+      expect(report.schema_version).toBe('kb.doctor.kb_symlinks.v1');
+      expect(report.status).toBe('warn');
+      expect(report.inventory.summary).toEqual({
+        total: 5,
+        inside_root: 1,
+        escaping: 1,
+        broken: 1,
+        loop_or_error: 2,
+        scan_error_count: 0,
+        sample_limit: 5,
+      });
+      expect(report.inventory.symlinks).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kbName: 'alpha',
+          relative_path: path.join('alpha', 'inside-link.md'),
+          classification: 'inside_root',
+        }),
+        expect.objectContaining({
+          relative_path: path.join('alpha', 'outside-link.md'),
+          classification: 'escaping',
+        }),
+        expect.objectContaining({
+          relative_path: path.join('alpha', 'broken-link.md'),
+          classification: 'broken',
+          error_code: 'ENOENT',
+        }),
+        expect.objectContaining({
+          relative_path: path.join('alpha', 'loop-a'),
+          classification: 'loop_or_error',
+          error_code: 'ELOOP',
+        }),
+      ]));
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes --kb-symlinks scan errors through runDoctor with JSON output and exit codes', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-run-kb-symlinks-error-'));
+    try {
+      const missingRoot = path.join(tempDir, 'missing-kbs');
+      const { runDoctor } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: missingRoot,
+      });
+
+      const error = await captureStdout(() => runDoctor(['--kb-symlinks', '--format=json']));
+      expect(error.code).toBe(1);
+      expect(JSON.parse(error.stdout)).toMatchObject({
+        schema_version: 'kb.doctor.kb_symlinks.v1',
+        status: 'error',
+        inventory: {
+          root_dir: missingRoot,
+          root_realpath: null,
+          summary: expect.objectContaining({
+            total: 0,
+            scan_error_count: 1,
+          }),
+          scan_errors: [
+            expect.objectContaining({
+              path: missingRoot,
+              code: 'ENOENT',
+            }),
+          ],
+        },
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  itOnPosix('formats --kb-symlinks markdown without following symlink directories', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-md-kb-symlinks-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const alphaDir = path.join(rootDir, 'alpha');
+      const outsideDir = path.join(tempDir, 'outside');
+      await fsp.mkdir(alphaDir, { recursive: true });
+      await fsp.mkdir(path.join(outsideDir, 'nested'), { recursive: true });
+      await fsp.writeFile(path.join(outsideDir, 'nested', 'secret.md'), 'outside');
+      await fsp.symlink(outsideDir, path.join(alphaDir, 'outside-dir'));
+
+      const { buildDoctorKbSymlinksReport, formatDoctorKbSymlinksMarkdown, runDoctor } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+      });
+
+      const report = await buildDoctorKbSymlinksReport();
+      expect(report.inventory.summary).toMatchObject({
+        total: 1,
+        escaping: 1,
+      });
+      const markdown = formatDoctorKbSymlinksMarkdown(report);
+      expect(markdown).toContain('Symlinks: 1 total, 0 inside-root, 1 escaping');
+      expect(markdown).toContain(`${path.join('alpha', 'outside-dir')} ->`);
+      expect(markdown).not.toContain('secret.md');
+
+      const routed = await captureStdout(() => runDoctor(['--kb-symlinks']));
+      expect(routed.code).toBe(0);
+      expect(routed.stdout).toContain('Symlinks: 1 total, 0 inside-root, 1 escaping');
+      expect(routed.stdout).toContain(`${path.join('alpha', 'outside-dir')} ->`);
+      expect(routed.stdout).not.toContain('secret.md');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('parses --format=json, --endpoints, --locks, --kb-symlinks, and rejects unsupported formats', async () => {
     const { parseDoctorArgs } = await freshDoctor({});
     expect(parseDoctorArgs(['--format=json'])).toEqual({
       format: 'json',
       reindexTrigger: false,
       endpoints: false,
       locks: false,
+      kbSymlinks: false,
       integrity: false,
       bugReport: null,
     });
@@ -1310,6 +1441,7 @@ describe('kb doctor', () => {
       reindexTrigger: true,
       endpoints: false,
       locks: false,
+      kbSymlinks: false,
       integrity: false,
       bugReport: null,
     });
@@ -1318,6 +1450,7 @@ describe('kb doctor', () => {
       reindexTrigger: false,
       endpoints: true,
       locks: false,
+      kbSymlinks: false,
       integrity: false,
       bugReport: null,
     });
@@ -1326,6 +1459,16 @@ describe('kb doctor', () => {
       reindexTrigger: false,
       endpoints: false,
       locks: true,
+      kbSymlinks: false,
+      integrity: false,
+      bugReport: null,
+    });
+    expect(parseDoctorArgs(['--kb-symlinks', '--format=json'])).toEqual({
+      format: 'json',
+      reindexTrigger: false,
+      endpoints: false,
+      locks: false,
+      kbSymlinks: true,
       integrity: false,
       bugReport: null,
     });
@@ -1334,6 +1477,7 @@ describe('kb doctor', () => {
       reindexTrigger: true,
       endpoints: false,
       locks: false,
+      kbSymlinks: false,
       integrity: false,
       bugReport: null,
     });
@@ -1342,6 +1486,7 @@ describe('kb doctor', () => {
       reindexTrigger: false,
       endpoints: false,
       locks: false,
+      kbSymlinks: false,
       integrity: false,
       bugReport: null,
     });
@@ -1350,6 +1495,7 @@ describe('kb doctor', () => {
       reindexTrigger: false,
       endpoints: false,
       locks: false,
+      kbSymlinks: false,
       integrity: false,
       bugReport: {
         outputParentDir: '/tmp/out',
@@ -1369,6 +1515,7 @@ describe('kb doctor', () => {
       reindexTrigger: false,
       endpoints: false,
       locks: false,
+      kbSymlinks: false,
       integrity: false,
       bugReport: {
         outputParentDir: undefined,
@@ -1379,6 +1526,7 @@ describe('kb doctor', () => {
     expect(() => parseDoctorArgs(['--format=yaml'])).toThrow(/invalid --format/);
     expect(() => parseDoctorArgs(['--bug-report', '--include-command'])).toThrow(/requires/);
     expect(() => parseDoctorArgs(['--endpoints', '--locks'])).toThrow(/cannot be combined/);
+    expect(() => parseDoctorArgs(['--locks', '--kb-symlinks'])).toThrow(/cannot be combined/);
   });
 
   describe('age budgets (issue #218)', () => {
