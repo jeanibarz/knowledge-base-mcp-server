@@ -9,11 +9,9 @@
 // Cline) all launch this exact entrypoint over stdio — these helpers let
 // Jest exercise the same surface.
 //
-// The harness is intentionally embedder-free: it covers tools whose
-// handlers do not construct an embeddings client (`tools/list`,
-// `list_knowledge_bases`, `list_models`). Adding a deterministic stub
-// embedder so `retrieve_knowledge` / `kb_stats` can be wired end-to-end
-// is a follow-up (see issue body §"Stage 2") and is out of scope for v0.
+// By default the harness remains embedder-free for lightweight tool tests.
+// Retrieval tests can opt into a temp active model registration plus the fake
+// provider so embedder-dependent handlers run without network or user state.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -29,6 +27,13 @@ export interface KnowledgeBaseSpec {
   files: Record<string, string>;
 }
 
+export interface ActiveModelSpec {
+  /** Registered model_id, e.g. "fake__parity-32d". */
+  modelId: string;
+  /** Contents of models/<modelId>/model_name.txt. */
+  modelName: string;
+}
+
 export interface StartHarnessOptions {
   /**
    * Knowledge bases to materialise under the temp `KNOWLEDGE_BASES_ROOT_DIR`.
@@ -36,6 +41,12 @@ export interface StartHarnessOptions {
    * the files to write inside that KB.
    */
   knowledgeBases?: Record<string, KnowledgeBaseSpec>;
+  /**
+   * Optional active model registration written before the binary starts.
+   * Retrieval E2E tests use this with the fake provider so both CLI and MCP
+   * resolve the same deterministic model from active.txt without network.
+   */
+  activeModel?: ActiveModelSpec;
   /**
    * Extra environment variables passed to the spawned binary. Override or
    * augment the harness defaults; if absent, the child runs with a
@@ -81,6 +92,17 @@ async function writeKnowledgeBases(
       await fsp.writeFile(absPath, content, 'utf-8');
     }
   }
+}
+
+async function writeActiveModel(
+  faissIndexPath: string,
+  activeModel: ActiveModelSpec | undefined,
+): Promise<void> {
+  if (!activeModel) return;
+  const modelDir = path.join(faissIndexPath, 'models', activeModel.modelId);
+  await fsp.mkdir(modelDir, { recursive: true });
+  await fsp.writeFile(path.join(modelDir, 'model_name.txt'), activeModel.modelName, 'utf-8');
+  await fsp.writeFile(path.join(faissIndexPath, 'active.txt'), activeModel.modelId, 'utf-8');
 }
 
 function buildChildEnv(
@@ -132,6 +154,7 @@ export async function startMcpBinaryHarness(
   await fsp.mkdir(knowledgeBasesRootDir, { recursive: true });
   await fsp.mkdir(faissIndexPath, { recursive: true });
   await writeKnowledgeBases(knowledgeBasesRootDir, opts.knowledgeBases);
+  await writeActiveModel(faissIndexPath, opts.activeModel);
 
   const env = buildChildEnv(knowledgeBasesRootDir, faissIndexPath, opts.extraEnv);
 
