@@ -44,6 +44,9 @@ function samplePayload(): KbStatsPayload {
     quarantined: {
       'ops\\team"a\nline': 1,
     },
+    filesystem: {
+      enumeration_failures: { failure_count: 0, failures: [] },
+    },
     embedding: {
       provider: 'ollama',
       model: 'nomic-embed-text:latest',

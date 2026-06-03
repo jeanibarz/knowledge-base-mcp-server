@@ -18,7 +18,12 @@ import type {
   FreshnessScanSource,
 } from './timing-core.js';
 import { readFreshnessManifest } from './freshness-manifest.js';
-import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
+import {
+  aggregateEnumerationDiagnostics,
+  enumerateIngestableKbFiles,
+  listKnowledgeBases,
+  type KbFilesystemEnumerationFailure,
+} from './kb-fs.js';
 
 // -- Search mode -------------------------------------------------------------
 
@@ -147,6 +152,8 @@ export interface StalenessScanStats {
   globalFiles: number;
   scopedFiles?: number;
   kbsScanned: number;
+  enumerationFailures: number;
+  enumerationFailureSamples: KbFilesystemEnumerationFailure[];
 }
 
 export async function computeStaleness(modelId: string, scopedKb?: string): Promise<Staleness> {
@@ -180,6 +187,7 @@ export async function computeStaleness(modelId: string, scopedKb?: string): Prom
   }
 
   const enumerations = await enumerateIngestableKbFiles(KNOWLEDGE_BASES_ROOT_DIR, kbs);
+  const enumerationFailures = aggregateEnumerationDiagnostics(enumerations);
   const global = await countStaleness(enumerations, indexMtimeMs);
   const globalFiles = countEnumeratedFiles(enumerations);
   if (!scopedKb) {
@@ -193,6 +201,7 @@ export async function computeStaleness(modelId: string, scopedKb?: string): Prom
         globalFiles,
         scopedFiles: undefined,
         kbsScanned: enumerations.length,
+        enumerationFailures,
       }),
     };
   }
@@ -212,6 +221,7 @@ export async function computeStaleness(modelId: string, scopedKb?: string): Prom
       globalFiles,
       scopedFiles,
       kbsScanned: enumerations.length,
+      enumerationFailures,
     }),
   };
 }
@@ -276,6 +286,7 @@ function emptyStaleness(indexMtime: string | null, scopedKb?: string): Staleness
     globalFiles: 0,
     scopedFiles: scopedKb ? 0 : undefined,
     kbsScanned: 0,
+    enumerationFailures: { failure_count: 0, failures: [] },
   });
   if (!scopedKb) return { indexMtime, modifiedFiles: 0, newFiles: 0, scan };
   return {
@@ -314,6 +325,7 @@ function stalenessFromManifest(
         globalFiles,
         scopedFiles: undefined,
         kbsScanned: Object.keys(manifest.kbs).length,
+        enumerationFailures: { failure_count: 0, failures: [] },
       }),
     };
   }
@@ -337,6 +349,7 @@ function stalenessFromManifest(
       globalFiles,
       scopedFiles: scopedEntry.file_count,
       kbsScanned: 1,
+      enumerationFailures: { failure_count: 0, failures: [] },
     }),
   };
 }
@@ -347,6 +360,10 @@ function buildStalenessScanStats(input: {
   globalFiles: number;
   scopedFiles: number | undefined;
   kbsScanned: number;
+  enumerationFailures: {
+    failure_count: number;
+    failures: KbFilesystemEnumerationFailure[];
+  };
 }): StalenessScanStats {
   const scope: FreshnessScanScope = input.scopedKb ? 'scoped' : 'global';
   const filesScanned = scope === 'scoped'
@@ -359,6 +376,8 @@ function buildStalenessScanStats(input: {
     globalFiles: input.globalFiles,
     ...(input.scopedFiles !== undefined ? { scopedFiles: input.scopedFiles } : {}),
     kbsScanned: input.kbsScanned,
+    enumerationFailures: input.enumerationFailures.failure_count,
+    enumerationFailureSamples: input.enumerationFailures.failures,
   };
 }
 
@@ -367,28 +386,52 @@ export function hasStaleCounts(counts: StalenessCounts): boolean {
 }
 
 export function formatFreshnessFooter(s: Staleness, refreshed: boolean): string {
+  const enumerationWarning = formatEnumerationFailureFreshnessWarning(s.scan);
   if (s.indexMtime === null) {
-    return `> _Index not yet built. Run \`kb search --refresh\` to create it._`;
-  }
-  if (s.scope) {
-    return formatScopedFreshnessFooter(s, refreshed);
-  }
-  if (refreshed) {
-    return `> _Index refreshed at ${s.indexMtime}._`;
-  }
-  if (s.modifiedFiles === 0 && s.newFiles === 0) {
-    return `> _Index up-to-date as of ${s.indexMtime}._`;
-  }
-  if (s.modifiedFiles === 0) {
-    return (
-      `> _${s.newFiles} new file(s) since ${s.indexMtime}; ` +
-      `run \`kb search --refresh\` to include them._`
+    return appendFreshnessWarning(
+      `> _Index not yet built. Run \`kb search --refresh\` to create it._`,
+      enumerationWarning,
     );
   }
-  return (
+  if (s.scope) {
+    return appendFreshnessWarning(formatScopedFreshnessFooter(s, refreshed), enumerationWarning);
+  }
+  if (refreshed) {
+    return appendFreshnessWarning(`> _Index refreshed at ${s.indexMtime}._`, enumerationWarning);
+  }
+  if (s.modifiedFiles === 0 && s.newFiles === 0) {
+    return appendFreshnessWarning(
+      `> _Index up-to-date as of ${s.indexMtime}._`,
+      enumerationWarning,
+    );
+  }
+  if (s.modifiedFiles === 0) {
+    return appendFreshnessWarning(
+      `> _${s.newFiles} new file(s) since ${s.indexMtime}; ` +
+      `run \`kb search --refresh\` to include them._`,
+      enumerationWarning,
+    );
+  }
+  return appendFreshnessWarning(
     `> _Index may be stale: ${s.modifiedFiles} modified, ${s.newFiles} new ` +
-    `file(s) since ${s.indexMtime}. Run \`kb search --refresh\` to update._`
+    `file(s) since ${s.indexMtime}. Run \`kb search --refresh\` to update._`,
+    enumerationWarning,
   );
+}
+
+function appendFreshnessWarning(base: string, warning: string | null): string {
+  return warning === null ? base : `${base}\n${warning}`;
+}
+
+function formatEnumerationFailureFreshnessWarning(scan: StalenessScanStats | undefined): string | null {
+  if (scan === undefined || scan.enumerationFailures === 0) return null;
+  const sample = scan.enumerationFailureSamples[0];
+  const sampleText = sample === undefined
+    ? ''
+    : ` First sample: ${sample.kbName}:${sample.path}` +
+      `${sample.code === null ? '' : ` (${sample.code})`}.`;
+  return `> _Filesystem enumeration warning: ${scan.enumerationFailures} failure(s) ` +
+    `while scanning KB files; freshness counts may be partial.${sampleText}_`;
 }
 
 function formatScopedFreshnessFooter(s: Staleness, refreshed: boolean): string {

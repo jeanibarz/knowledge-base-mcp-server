@@ -2,6 +2,7 @@ import { describe, expect, it, jest } from '@jest/globals';
 import {
   formatDenseCoverageSection,
   formatContextualSection,
+  formatFilesystemSection,
   formatRemoteTransportSection,
   runStats,
   type RunStatsDeps,
@@ -29,6 +30,9 @@ function payload(): KbStatsPayload {
     quarantined: {
       beta: 0,
       alpha: 0,
+    },
+    filesystem: {
+      enumeration_failures: { failure_count: 0, failures: [] },
     },
     embedding: {
       provider: 'ollama',
@@ -329,6 +333,27 @@ describe('kb stats CLI', () => {
     expect(lines).toContain('## Contextual Retrieval');
     expect(lines).toContain('- Feature flag: disabled');
     expect(lines).toContain('- No contextual-preface sidecars on disk yet.');
+  });
+
+  it('renders filesystem enumeration failures when present', () => {
+    const p = payload();
+    p.filesystem.enumeration_failures = {
+      failure_count: 2,
+      failures: [{
+        kbName: 'alpha',
+        path: '/tmp/kbs/alpha/private',
+        code: 'EACCES',
+        message: 'permission denied',
+      }],
+    };
+
+    expect(formatFilesystemSection(p)).toEqual([
+      '## Filesystem',
+      '',
+      '- Enumeration failures: 2',
+      '- alpha: /tmp/kbs/alpha/private (EACCES) permission denied',
+      '',
+    ]);
   });
 
   it('returns exit 2 for argv errors', async () => {

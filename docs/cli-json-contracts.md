@@ -237,6 +237,10 @@ Refresh preflight:
   top KBs by stale bytes/files, the active provider/model, provider class
   (`local` or `paid`), `--kb=<name>` scoping suggestions, and PDF exclusion
   guidance when stale PDFs are present.
+- If the preflight filesystem walk cannot read one or more directories, stderr
+  also includes a filesystem enumeration warning with the total failure count
+  and capped sample paths. Changed/new counts should be treated as partial in
+  that case.
 - `mode`, `requested_mode`, `auto_mode`: present when `--mode=auto` is used.
   `mode` is the selected effective mode; `auto_mode` has `mode` and `reason`.
 
@@ -749,6 +753,12 @@ Report envelope:
   "stale_counts_by_kb": {
     "project": { "modified_files": 0, "new_files": 0 }
   },
+  "filesystem": {
+    "enumeration_failures": {
+      "failure_count": 0,
+      "failures": []
+    }
+  },
   "backend": {
     "provider": "ollama",
     "healthy": true,
@@ -803,6 +813,11 @@ Stable fields:
 - `index`: `path`, `binary_path`, `version`, and `mtime`.
 - `stale_counts_by_kb`: object keyed by KB name with `modified_files` and
   `new_files`.
+- `filesystem.enumeration_failures`: aggregate diagnostics for KB filesystem
+  walks used by staleness/freshness checks. `failure_count` is the total number
+  of failed directory reads; `failures[]` is a capped sample with `kbName`,
+  `path`, `code`, and `message`. Non-zero counts mean stale/new-file counts may
+  be partial.
 - `backend`: `provider`, `healthy`, and `detail`.
 - `reranker`: RFC 019 reranker readiness. Stable fields are `enabled`,
   `model`, `top_n`, `status`, `cache_path`, and `detail`; `cache_path` is
@@ -828,6 +843,10 @@ Stable fields:
   stable `code`, `message`, and may include numeric `mtime_age_ms` and
   `quiesce_ms`. Stable codes are `KB_REFRESH_NOT_QUIESCENT` and
   `KB_REFRESH_FILE_CHANGED_DURING_SCAN`.
+  Filesystem enumeration failures during refresh are reported as additive
+  `failure_count` / `failures[]` entries with `phase: "enumeration"` and make
+  the summary `status: "partial"` rather than silently treating skipped
+  directories as absent.
 
 Stdout/stderr and exit codes:
 

@@ -1,5 +1,6 @@
 import {
   getFilesRecursively,
+  getFilesRecursivelyWithDiagnostics,
 } from './file-utils.js';
 import {
   assertValidKbName,
@@ -111,6 +112,42 @@ describe('getFilesRecursively', () => {
     const files = await getFilesRecursively('error_dir');
 
     expect(files).toEqual([]);
+  });
+
+  it('reports traversal failures while returning readable files', async () => {
+    mockReaddir.mockImplementation(async (dirPath: fs.PathLike): Promise<fs.Dirent[]> => {
+      const dir = dirPath.toString();
+      if (dir === 'test_dir') {
+        return [
+          { name: 'ok.md', isDirectory: () => false, isFile: () => true },
+          { name: 'blocked', isDirectory: () => true, isFile: () => false },
+          { name: 'loop', isDirectory: () => true, isFile: () => false },
+        ] as fs.Dirent[];
+      }
+      if (dir === path.join('test_dir', 'blocked')) {
+        const err = new Error('permission denied') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      if (dir === path.join('test_dir', 'loop')) {
+        const err = new Error('too many symbolic links') as NodeJS.ErrnoException;
+        err.code = 'ELOOP';
+        throw err;
+      }
+      return [] as fs.Dirent[];
+    });
+
+    const result = await getFilesRecursivelyWithDiagnostics('test_dir', {
+      failureSampleLimit: 1,
+    });
+
+    expect(result.files).toEqual([path.join('test_dir', 'ok.md')]);
+    expect(result.diagnostics.failure_count).toBe(2);
+    expect(result.diagnostics.failures).toEqual([{
+      path: path.join('test_dir', 'blocked'),
+      code: 'EACCES',
+      message: 'permission denied',
+    }]);
   });
 });
 

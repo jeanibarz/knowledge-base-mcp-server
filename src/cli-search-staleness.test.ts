@@ -286,6 +286,43 @@ describe('refresh preflight estimate (issue #318)', () => {
     }
   });
 
+  it('surfaces filesystem enumeration failures in refresh preflight estimates', async () => {
+    if (process.platform === 'win32') return;
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-refresh-preflight-enum-failure-'));
+    const blockedDir = path.join(tempDir, 'kbs', 'alpha', 'blocked');
+    try {
+      const kbRoot = path.join(tempDir, 'kbs');
+      const alpha = path.join(kbRoot, 'alpha');
+      await fsp.mkdir(blockedDir, { recursive: true });
+      await fsp.writeFile(path.join(alpha, 'ok.md'), 'ok\n', 'utf-8');
+      await fsp.chmod(blockedDir, 0o000);
+
+      const estimate = await buildRefreshPreflightEstimate({
+        kbRootDir: kbRoot,
+        indexMtimeMs: null,
+        activeModel: {
+          modelId: 'ollama__nomic-embed-text-latest',
+          provider: 'ollama',
+          modelName: 'nomic-embed-text:latest',
+        },
+      });
+      const text = formatRefreshPreflightEstimate(estimate);
+
+      expect(estimate.enumerationFailures).toBe(1);
+      expect(estimate.enumerationFailureSamples[0]).toMatchObject({
+        kbName: 'alpha',
+        path: blockedDir,
+        code: 'EACCES',
+      });
+      expect(text).toContain('Filesystem enumeration warning: 1 failure(s)');
+      expect(text).toContain('changed/new counts may be partial');
+    } finally {
+      await fsp.chmod(blockedDir, 0o700).catch(() => undefined);
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('writes preflight text to stderr even for JSON output mode', async () => {
     const estimate = {
       activeModel: {
@@ -304,6 +341,8 @@ describe('refresh preflight estimate (issue #318)', () => {
       estimatedBytes: 1,
       estimatedChunks: null,
       stalePdfFiles: 0,
+      enumerationFailures: 0,
+      enumerationFailureSamples: [],
       kbs: [{
         kb: 'alpha',
         modifiedFiles: 0,
@@ -311,6 +350,7 @@ describe('refresh preflight estimate (issue #318)', () => {
         staleFiles: REFRESH_PREFLIGHT_FILE_THRESHOLD + 1,
         estimatedBytes: 1,
         stalePdfFiles: 0,
+        enumerationFailures: 0,
       }],
       topKbs: [{
         kb: 'alpha',
@@ -319,6 +359,7 @@ describe('refresh preflight estimate (issue #318)', () => {
         staleFiles: REFRESH_PREFLIGHT_FILE_THRESHOLD + 1,
         estimatedBytes: 1,
         stalePdfFiles: 0,
+        enumerationFailures: 0,
       }],
     };
     const stderr: string[] = [];
@@ -332,6 +373,40 @@ describe('refresh preflight estimate (issue #318)', () => {
 
     expect(stderr.join('')).toContain('kb search refresh preflight');
     expect(JSON.parse(stdout.join(''))).toEqual({ results: [] });
+  });
+
+  it('writes preflight warnings when enumeration fails below stale thresholds', () => {
+    const estimate = {
+      activeModel: {
+        modelId: 'ollama__nomic-embed-text-latest',
+        provider: 'ollama',
+        modelName: 'nomic-embed-text:latest',
+        providerClass: 'local' as const,
+      },
+      scopedKb: undefined,
+      thresholdFiles: REFRESH_PREFLIGHT_FILE_THRESHOLD,
+      thresholdBytes: REFRESH_PREFLIGHT_BYTE_THRESHOLD,
+      exceedsThreshold: false,
+      totalModifiedFiles: 0,
+      totalNewFiles: 0,
+      totalStaleFiles: 0,
+      estimatedBytes: 0,
+      estimatedChunks: null,
+      stalePdfFiles: 0,
+      enumerationFailures: 1,
+      enumerationFailureSamples: [{
+        kbName: 'alpha',
+        path: '/tmp/kbs/alpha/blocked',
+        code: 'EACCES',
+        message: 'permission denied',
+      }],
+      kbs: [],
+      topKbs: [],
+    };
+    const stderr: string[] = [];
+
+    expect(maybeWriteRefreshPreflight(estimate, { write: (text) => stderr.push(text) })).toBe(true);
+    expect(stderr.join('')).toContain('Filesystem enumeration warning: 1 failure(s)');
   });
 });
 

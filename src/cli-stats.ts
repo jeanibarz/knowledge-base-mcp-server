@@ -25,9 +25,10 @@ Usage:
 
 Mirrors the MCP \`kb_stats\` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
-Includes process-lifetime relevance-gate counters when the gate has run, and a
-Contextual Retrieval section with per-KB preface coverage and failure counts
-(by error code) when contextual-preface sidecars exist.
+Includes filesystem enumeration diagnostics, process-lifetime relevance-gate
+counters when the gate has run, and a Contextual Retrieval section with per-KB
+preface coverage and failure counts (by error code) when contextual-preface
+sidecars exist.
 Strictly read-only — does not refresh the index.
 
 Options:
@@ -163,6 +164,7 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
     `- Server version: ${payload.server.version}`,
     `- Uptime: ${formatInteger(uptimeMs)} ms`,
     '',
+    ...formatFilesystemSection(payload),
     ...formatDenseCoverageSection(payload),
     '## Relevance Gate',
     '',
@@ -181,6 +183,25 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
     ...formatRemoteTransportSection(payload),
     ...formatContextualSection(payload),
   ].join('\n');
+}
+
+export function formatFilesystemSection(payload: KbStatsPayload): string[] {
+  const diagnostics = payload.filesystem.enumeration_failures;
+  if (diagnostics.failure_count === 0) return [];
+
+  const lines = [
+    '## Filesystem',
+    '',
+    `- Enumeration failures: ${formatInteger(diagnostics.failure_count)}`,
+  ];
+  for (const failure of diagnostics.failures) {
+    const code = failure.code === null ? 'unknown' : failure.code;
+    lines.push(
+      `- ${escapeTableCell(failure.kbName)}: ${failure.path} (${code}) ${failure.message}`,
+    );
+  }
+  lines.push('');
+  return lines;
 }
 
 export function formatDenseCoverageSection(payload: KbStatsPayload): string[] {

@@ -571,7 +571,20 @@ describe('enumerateIngestableKbFiles', () => {
       const { enumerateIngestableKbFiles } = await import('./kb-fs.js');
       const out = await enumerateIngestableKbFiles(tempDir, ['ghost']);
       // getFilesRecursively logs and returns [] on ENOENT — caller-stable.
-      expect(out).toEqual([{ kbName: 'ghost', kbPath: path.join(tempDir, 'ghost'), filePaths: [] }]);
+      expect(out).toHaveLength(1);
+      expect(out[0]).toMatchObject({
+        kbName: 'ghost',
+        kbPath: path.join(tempDir, 'ghost'),
+        filePaths: [],
+        diagnostics: {
+          failure_count: 1,
+          failures: [{
+            path: path.join(tempDir, 'ghost'),
+            code: 'ENOENT',
+            message: expect.stringContaining('no such file or directory'),
+          }],
+        },
+      });
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }

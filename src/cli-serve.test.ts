@@ -149,6 +149,9 @@ describe('kb serve metrics formatting', () => {
         },
       },
       quarantined: {},
+      filesystem: {
+        enumeration_failures: { failure_count: 0, failures: [] },
+      },
       embedding: {
         provider: 'huggingface',
         model: 'BAAI/bge-small-en-v1.5',

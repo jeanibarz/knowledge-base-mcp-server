@@ -47,6 +47,9 @@ function statsPayload(overrides: Partial<KbStatsPayload> = {}): KbStatsPayload {
       },
     },
     quarantined: {},
+    filesystem: {
+      enumeration_failures: { failure_count: 0, failures: [] },
+    },
     embedding: {
       provider: 'ollama',
       model: 'nomic-embed-text:latest',

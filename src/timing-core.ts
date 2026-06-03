@@ -13,6 +13,7 @@ export interface FreshnessScanTimingInput {
   globalFiles: number;
   scopedFiles?: number;
   kbsScanned: number;
+  enumerationFailures?: number;
 }
 
 export interface RefreshProgressTimingInput {
@@ -77,6 +78,9 @@ export function recordFreshnessScanTiming(
     timing.freshness_scan_scoped_files = scan.scopedFiles;
   }
   timing.freshness_scan_kbs = scan.kbsScanned;
+  if (scan.enumerationFailures !== undefined) {
+    timing.freshness_scan_enumeration_failures = scan.enumerationFailures;
+  }
 }
 
 export function recordRefreshProgressTiming(

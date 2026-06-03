@@ -7,7 +7,11 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { KBError } from './errors.js';
-import { getFilesRecursively } from './file-utils.js';
+import {
+  DEFAULT_ENUMERATION_FAILURE_SAMPLE_LIMIT,
+  getFilesRecursivelyWithDiagnostics,
+  type FilesystemEnumerationDiagnostics,
+} from './file-utils.js';
 import { filterIngestablePaths } from './ingest-filter.js';
 
 /**
@@ -58,6 +62,19 @@ export interface KbFileEnumeration {
   kbName: string;
   kbPath: string;
   filePaths: string[];
+  diagnostics: FilesystemEnumerationDiagnostics;
+}
+
+export interface KbFilesystemEnumerationFailure {
+  kbName: string;
+  path: string;
+  code: string | null;
+  message: string;
+}
+
+export interface KbFilesystemEnumerationDiagnostics {
+  failure_count: number;
+  failures: KbFilesystemEnumerationFailure[];
 }
 
 export interface EnumerateIngestableKbFilesOptions {
@@ -89,11 +106,38 @@ export async function enumerateIngestableKbFiles(
   const result: KbFileEnumeration[] = [];
   for (const kbName of kbNames) {
     const kbPath = path.join(rootDir, kbName);
-    const candidates = await getFilesRecursively(kbPath);
+    const enumeration = await getFilesRecursivelyWithDiagnostics(kbPath);
+    const candidates = enumeration.files;
     const filePaths = filterIngestablePaths(candidates, kbPath, filterOpts);
-    result.push({ kbName, kbPath, filePaths });
+    result.push({
+      kbName,
+      kbPath,
+      filePaths,
+      diagnostics: enumeration.diagnostics,
+    });
   }
   return result;
+}
+
+export function aggregateEnumerationDiagnostics(
+  enumerations: readonly KbFileEnumeration[],
+  sampleLimit = DEFAULT_ENUMERATION_FAILURE_SAMPLE_LIMIT,
+): KbFilesystemEnumerationDiagnostics {
+  const failures: KbFilesystemEnumerationFailure[] = [];
+  let failureCount = 0;
+  for (const entry of enumerations) {
+    failureCount += entry.diagnostics.failure_count;
+    for (const failure of entry.diagnostics.failures) {
+      if (failures.length >= sampleLimit) break;
+      failures.push({
+        kbName: entry.kbName,
+        path: failure.path,
+        code: failure.code,
+        message: failure.message,
+      });
+    }
+  }
+  return { failure_count: failureCount, failures };
 }
 
 const KB_DESCRIPTION_MAX_LEN = 80;
@@ -341,4 +385,3 @@ export async function resolveKnowledgeBaseDir(
   }
   return kbDir;
 }
-
