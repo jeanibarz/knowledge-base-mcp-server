@@ -39,6 +39,7 @@ describe('createPickerState', () => {
     const s = makeState();
     expect(s.view).toBe('flat');
     expect(s.focusIndex).toBe(0);
+    expect(s.selectedFlatIndexes.size).toBe(0);
     expect(s.showHelp).toBe(false);
     expect(pickerItemCount(s)).toBe(3);
   });
@@ -131,6 +132,26 @@ describe('applyKey navigation', () => {
     expect(r.action).toEqual({ type: 'select', view: 'flat', index: 1 });
   });
 
+  it('Space marks and unmarks the focused flat row', () => {
+    let s = makeState();
+    s = applyKey(s, { sequence: 'j' }).state;
+
+    s = applyKey(s, { name: 'space' }).state;
+    expect(Array.from(s.selectedFlatIndexes)).toEqual([1]);
+
+    s = applyKey(s, { sequence: ' ' }).state;
+    expect(Array.from(s.selectedFlatIndexes)).toEqual([]);
+  });
+
+  it('Space is a no-op in grouped view', () => {
+    let s = makeState();
+    s = applyKey(s, { name: 'space' }).state;
+    s = applyKey(s, { name: 'tab' }).state;
+    const r = applyKey(s, { name: 'space' });
+    expect(r.action).toEqual({ type: 'continue' });
+    expect(Array.from(r.state.selectedFlatIndexes)).toEqual([0]);
+  });
+
   it('Enter on an empty result list exits with no selection', () => {
     const s = createPickerState([]);
     const r = applyKey(s, { name: 'return' });
@@ -151,6 +172,25 @@ describe('renderPickerFrame', () => {
     expect(out).toMatch(/3 chunks/);
     expect(out).toMatch(/view=flat/);
     expect(out).toMatch(/1\/3/);
+  });
+
+  it('shows selected count when flat rows are marked', () => {
+    let s = makeState();
+    s = applyKey(s, { name: 'space' }).state;
+    s = applyKey(s, { sequence: 'j' }).state;
+    s = applyKey(s, { name: 'space' }).state;
+
+    const out = renderPickerFrame(s, RENDER_OPTS);
+    expect(out).toMatch(/selected=2/);
+  });
+
+  it('renders marked and unmarked flat row markers', () => {
+    let s = makeState();
+    s = applyKey(s, { name: 'space' }).state;
+
+    const out = renderPickerFrame(s, RENDER_OPTS);
+    expect(out).toMatch(/\[x\] \[0\.21\] .*alpha content about rollback/);
+    expect(out).toMatch(/\[ \] \[0\.28\] .*bravo content about deploy/);
   });
 
   it('renders one row per result and marks the focused row', () => {
@@ -181,14 +221,25 @@ describe('renderPickerFrame', () => {
     const out = renderPickerFrame(s, RENDER_OPTS);
     expect(out).toMatch(/Keys:/);
     expect(out).toMatch(/j \/ Down/);
-    expect(out).toMatch(/print focused chunk to stdout/);
+    expect(out).toMatch(/Space\s+mark \/ unmark focused chunk/);
+    expect(out).toMatch(/print marked chunks/);
   });
 
   it('shows a short footer hint when help is collapsed', () => {
     const out = renderPickerFrame(makeState(), RENDER_OPTS);
-    expect(out).toMatch(/\[Enter\] open/);
+    expect(out).toMatch(/\[Space\] mark/);
+    expect(out).toMatch(/\[Enter\] print/);
     expect(out).toMatch(/\[Tab\] toggle view/);
     expect(out).not.toMatch(/Keys:/);
+  });
+
+  it('uses grouped footer copy that does not advertise Space marking', () => {
+    let s = makeState();
+    s = applyKey(s, { name: 'tab' }).state;
+
+    const out = renderPickerFrame(s, RENDER_OPTS);
+    expect(out).toMatch(/\[Enter\] print source/);
+    expect(out).not.toMatch(/\[Space\] mark/);
   });
 
   it('reports "(no results)" when the picker received an empty list', () => {
@@ -227,6 +278,33 @@ describe('formatSelection', () => {
     expect(out).toMatch(/Semantic Search Results/);
     expect(out).toMatch(/bravo content about deploy/);
     expect(out).not.toMatch(/alpha content/);
+  });
+
+  it('emits marked flat chunks in stable result order', () => {
+    let s = makeState();
+    s.focusIndex = 2;
+    s = applyKey(s, { name: 'space' }).state;
+    s.focusIndex = 0;
+    s = applyKey(s, { name: 'space' }).state;
+
+    const out = formatSelection(s, { view: 'flat', index: 1 });
+    expect(out).toMatch(/alpha content about rollback/);
+    expect(out).toMatch(/alpha content take two/);
+    expect(out).not.toMatch(/bravo content about deploy/);
+    expect(out.indexOf('alpha content about rollback')).toBeLessThan(out.indexOf('alpha content take two'));
+  });
+
+  it('emits marked flat chunks after switching to grouped view', () => {
+    let s = makeState();
+    s = applyKey(s, { name: 'space' }).state;
+    s = applyKey(s, { sequence: 'j' }).state;
+    s = applyKey(s, { name: 'space' }).state;
+    s = applyKey(s, { name: 'tab' }).state;
+
+    const out = formatSelection(s, { view: 'grouped', index: 0 });
+    expect(out).toMatch(/alpha content about rollback/);
+    expect(out).toMatch(/bravo content about deploy/);
+    expect(out).not.toMatch(/alpha content take two/);
   });
 
   it('emits all chunks of the focused source in grouped view', () => {
