@@ -316,6 +316,7 @@ export interface SimilaritySearchTiming {
   faiss_search_ms?: number;
   query_search_ms?: number;
   post_filter_ms?: number;
+  post_filter_kept?: number;
   total_ms?: number;
   fetch_k?: number;
   query_cache?: QueryCacheLookupStatus | 'unavailable';
@@ -2543,6 +2544,7 @@ export class FaissIndexManager {
           timing.sidecar_fast_path = 'short_circuit';
           timing.fetch_k = 0;
           timing.post_filter_ms = 0;
+          timing.post_filter_kept = 0;
           timing.total_ms = Date.now() - totalStartedAt;
         }
         return [];
@@ -2563,6 +2565,7 @@ export class FaissIndexManager {
           if (timing) {
             timing.fetch_k = fastFetchK;
             timing.post_filter_ms = cumulativePostFilterMs;
+            timing.post_filter_kept = filtered.length;
             timing.sidecar_fast_path = 'hit';
             timing.total_ms = Date.now() - totalStartedAt;
           }
@@ -2595,6 +2598,7 @@ export class FaissIndexManager {
     if (timing) {
       timing.fetch_k = lastFetchK;
       timing.post_filter_ms = cumulativePostFilterMs;
+      timing.post_filter_kept = filtered.length;
       timing.total_ms = Date.now() - totalStartedAt;
     }
 

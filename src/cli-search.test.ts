@@ -615,6 +615,175 @@ describe('runSearch timing guard (#331)', () => {
     });
   });
 
+  it('exposes aggregate filter diagnostics for non-empty scoped JSON searches with --timing', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockImplementationOnce(async (...args: unknown[]) => {
+      const denseTiming = args[5] as SimilaritySearchTiming;
+      denseTiming.faiss_search_ms = 6;
+      denseTiming.fetch_k = 20;
+      denseTiming.post_filter_ms = 3;
+      denseTiming.post_filter_kept = 6;
+      denseTiming.sidecar_candidates = 42;
+      denseTiming.sidecar_fast_path = 'hit';
+      return [{
+        pageContent: 'scoped runbook',
+        metadata: { source: '/kb/ops/runbook.md', relativePath: 'ops/runbook.md', chunkIndex: 0 },
+        score: 0.12,
+      }] as never;
+    });
+
+    const out = await captureSearchOutput([
+      'runbook',
+      '--kb=ops',
+      '--format=json',
+      '--timing',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    expect(manager.similaritySearch.mock.calls[0][3]).toBe('ops');
+    const payload = JSON.parse(out.stdout);
+    expect(payload.filter_diagnostics).toEqual({
+      schema_version: 'kb.search.filter-diagnostics.v1',
+      fetch_k: 20,
+      sidecar_candidates: 42,
+      sidecar_fast_path: 'hit',
+      post_filter_kept: 6,
+      post_filter_ms: 3,
+    });
+    expect(payload.timing).toMatchObject({
+      fetch_k: 20,
+      sidecar_candidates: 42,
+      sidecar_fast_path: 'hit',
+      post_filter_kept: 6,
+      post_filter_ms: 3,
+    });
+  });
+
+  it('omits filter diagnostics when an unscoped successful search has no filter counters', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([{
+      pageContent: 'ordinary result',
+      metadata: { source: '/kb/ops/plain.md', relativePath: 'ops/plain.md', chunkIndex: 0 },
+      score: 0.12,
+    }] as never);
+
+    const out = await captureSearchOutput([
+      'plain',
+      '--format=json',
+      '--timing',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    expect(JSON.parse(out.stdout)).not.toHaveProperty('filter_diagnostics');
+  });
+
+  it('renders filter diagnostics in markdown when provided', () => {
+    const output = formatDenseSearchMarkdownOutput({
+      results: [{
+        pageContent: 'hit',
+        metadata: { source: '/kb/ops/runbook.md', relativePath: 'ops/runbook.md', chunkIndex: 0 },
+        score: 0.1,
+      } as ScoredDocument],
+      groupBySource: false,
+      staleness: null,
+      refreshed: false,
+      scopedKb: 'ops',
+      autoModeDecision: null,
+      autoThresholdDecision: null,
+      timing: { fetch_k: 20, post_filter_kept: 6 },
+      filterDiagnostics: {
+        schemaVersion: 'kb.search.filter-diagnostics.v1',
+        fetchK: 20,
+        sidecarCandidates: 42,
+        sidecarFastPath: 'hit',
+        postFilterKept: 6,
+        postFilterMs: 3,
+      },
+    });
+
+    expect(output).toContain('> _Filter diagnostics:');
+    expect(output).toContain('fetch_k=20');
+    expect(output).toContain('sidecar_candidates=42');
+    expect(output).toContain('post_filter_kept=6');
+    expect(output).toContain('post_filter_ms=3ms');
+  });
+
+  it('renders filter diagnostics in compact output when provided', () => {
+    const output = formatDenseSearchCompactOutput({
+      results: [{
+        pageContent: 'hit',
+        metadata: { source: '/kb/ops/runbook.md', relativePath: 'ops/runbook.md', chunkIndex: 0 },
+        score: 0.1,
+      } as ScoredDocument],
+      mode: 'dense',
+      staleness: null,
+      refreshed: false,
+      timing: { fetch_k: 20, post_filter_kept: 6 },
+      filterDiagnostics: {
+        schemaVersion: 'kb.search.filter-diagnostics.v1',
+        fetchK: 20,
+        sidecarCandidates: 42,
+        sidecarFastPath: 'hit',
+        postFilterKept: 6,
+        postFilterMs: 3,
+      },
+      width: 120,
+    });
+
+    expect(output).toContain('> _Filter diagnostics:');
+    expect(output).toContain('fetch_k=20');
+    expect(output).toContain('post_filter_kept=6');
+  });
+
+  it('omits filter diagnostics for advanced retrieval because component counters are not aggregate', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch
+      .mockImplementationOnce(async (...args: unknown[]) => {
+        const denseTiming = args[5] as SimilaritySearchTiming;
+        denseTiming.fetch_k = 20;
+        denseTiming.post_filter_ms = 2;
+        denseTiming.post_filter_kept = 4;
+        denseTiming.sidecar_candidates = 10;
+        return [{
+          pageContent: 'primary result',
+          metadata: { source: '/kb/ops/primary.md', relativePath: 'ops/primary.md', chunkIndex: 0 },
+          score: 0.1,
+        }] as never;
+      })
+      .mockImplementationOnce(async (...args: unknown[]) => {
+        const denseTiming = args[5] as SimilaritySearchTiming;
+        denseTiming.fetch_k = 40;
+        denseTiming.post_filter_ms = 5;
+        denseTiming.post_filter_kept = 2;
+        denseTiming.sidecar_candidates = 3;
+        return [{
+          pageContent: 'plus result',
+          metadata: { source: '/kb/ops/plus.md', relativePath: 'ops/plus.md', chunkIndex: 0 },
+          score: 0.05,
+        }] as never;
+      });
+
+    const out = await captureSearchOutput([
+      'primary',
+      '--plus=plus',
+      '--kb=ops',
+      '--format=json',
+      '--timing',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    const payload = JSON.parse(out.stdout);
+    expect(payload).not.toHaveProperty('filter_diagnostics');
+    expect(payload.timing).toMatchObject({
+      fetch_k: 40,
+      sidecar_candidates: 3,
+      post_filter_kept: 2,
+    });
+  });
+
   it('records the computed threshold in canonical metadata for --threshold=auto', async () => {
     const { deps, manager } = makeDeps();
     manager.similaritySearch.mockResolvedValueOnce([
