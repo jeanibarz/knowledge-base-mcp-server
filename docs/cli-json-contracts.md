@@ -212,7 +212,12 @@ Optional stable fields:
   mode labels. Dense query-cache diagnostics use the flat keys
   `query_cache`, `query_cache_enabled`, `query_cache_model_id`, and
   `query_cache_elapsed_ms`. Treat the object as diagnostic, not a compatibility
-  contract.
+  contract. For non-empty filtered dense searches, aggregate selectivity
+  counters such as `fetch_k`, `sidecar_candidates`, `sidecar_fast_path`,
+  `post_filter_kept`, and `post_filter_ms` may appear.
+- `filter_diagnostics`: present with `--timing` for non-empty filtered dense
+  searches when aggregate selectivity counters are available. Shape:
+  `{"schema_version":"kb.search.filter-diagnostics.v1","fetch_k":number|null,"sidecar_candidates":number|null,"sidecar_fast_path":string|null,"post_filter_kept":number|null,"post_filter_ms":number|null}`.
   For dense and hybrid `--refresh` runs, the same diagnostic object may include
   refresh counters such as `refresh_embed_batches`,
   `refresh_embed_batches_total`, `refresh_embed_chunks`,

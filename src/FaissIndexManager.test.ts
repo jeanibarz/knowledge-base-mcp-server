@@ -4906,6 +4906,7 @@ describe('FaissIndexManager predicate-pushdown sidecar (#283)', () => {
     expect(similaritySearchMock).not.toHaveBeenCalled();
     expect(timing.sidecar_fast_path).toBe('short_circuit');
     expect(timing.sidecar_candidates).toBe(0);
+    expect(timing.post_filter_kept).toBe(0);
   });
 
   it('runs a single FAISS search at the targeted fetchK when the filter is highly selective', async () => {
@@ -4964,6 +4965,7 @@ describe('FaissIndexManager predicate-pushdown sidecar (#283)', () => {
     // The fast-path requested far less than ntotal (which the post-filter
     // ladder would walk up to in the worst case).
     const callArgs = similaritySearchMock.mock.calls[0];
+    expect(timing.post_filter_kept).toBe((callArgs[1] as number) / 2);
     expect(callArgs[1]).toBeLessThan(10_000);
   });
 
@@ -5015,6 +5017,7 @@ describe('FaissIndexManager predicate-pushdown sidecar (#283)', () => {
     expect(similaritySearchMock).toHaveBeenCalledWith('q', 20);
     expect(results).toHaveLength(5);
     expect(timing.sidecar_fast_path).toBe('unused');
+    expect(timing.post_filter_kept).toBe(6);
   });
 
   it('falls back to the post-filter ladder when the sidecar is missing entirely', async () => {

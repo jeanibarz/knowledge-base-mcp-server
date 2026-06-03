@@ -197,6 +197,8 @@ Output:
                         in markdown output. With \`--format=json\`, adds a
                         \`grouped_results\` field alongside raw results.
   --timing              Include elapsed milliseconds for retrieval stages.
+                        For non-empty filtered dense searches, also surfaces
+                        aggregate filter selectivity counters.
   --pager               Page markdown/compact output through KB_PAGER, PAGER,
                         or less -R when stdout is a TTY.
   --no-pager            Disable KB_PAGER for this search.
@@ -554,6 +556,14 @@ export async function runSearch(
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
 
+  const filterDiagnostics =
+    timing && results.length > 0
+      ? buildFilterSelectivityDiagnostics({
+          parsed,
+          denseTiming,
+        })
+      : null;
+
   const staleness = parsed.freshness
     ? await computeStalenessWithTiming(activeModelId, parsed.kb, timing)
     : null;
@@ -601,6 +611,7 @@ export async function runSearch(
       staleness,
       autoThresholdDecision,
       timing,
+      filterDiagnostics,
       explainEmptyDiagnostics,
       gateVerdict,
       advancedRetrieval,
@@ -618,6 +629,7 @@ export async function runSearch(
       refreshed: parsed.refresh,
       gateVerdict,
       timing,
+      filterDiagnostics,
     }));
   } else {
     await writeSearchOutput(parsed, deps, formatDenseSearchMarkdownOutput({
@@ -630,6 +642,7 @@ export async function runSearch(
       autoModeDecision,
       autoThresholdDecision,
       timing,
+      filterDiagnostics,
       explainEmptyDiagnostics,
       gateVerdict,
       explain: parsed.explain,
@@ -1015,8 +1028,11 @@ function mergeDenseTiming(target: TimingPayload, source: SimilaritySearchTiming)
   if (source.faiss_search_ms !== undefined) target.faiss_search_ms = source.faiss_search_ms;
   if (source.query_search_ms !== undefined) target.query_search_ms = source.query_search_ms;
   if (source.post_filter_ms !== undefined) target.post_filter_ms = source.post_filter_ms;
+  if (source.post_filter_kept !== undefined) target.post_filter_kept = source.post_filter_kept;
   if (source.total_ms !== undefined) target.dense_total_ms = source.total_ms;
   if (source.fetch_k !== undefined) target.fetch_k = source.fetch_k;
+  if (source.sidecar_candidates !== undefined) target.sidecar_candidates = source.sidecar_candidates;
+  if (source.sidecar_fast_path !== undefined) target.sidecar_fast_path = source.sidecar_fast_path;
   if (source.query_cache_telemetry !== undefined) {
     target.query_cache = source.query_cache_telemetry.outcome;
     target.query_cache_enabled = source.query_cache_telemetry.enabled;
@@ -1025,6 +1041,43 @@ function mergeDenseTiming(target: TimingPayload, source: SimilaritySearchTiming)
   } else if (source.query_cache !== undefined) {
     target.query_cache = source.query_cache;
   }
+}
+
+export interface FilterSelectivityDiagnostics {
+  schemaVersion: 'kb.search.filter-diagnostics.v1';
+  fetchK: number | null;
+  sidecarCandidates: number | null;
+  sidecarFastPath: SimilaritySearchTiming['sidecar_fast_path'] | null;
+  postFilterKept: number | null;
+  postFilterMs: number | null;
+}
+
+function buildFilterSelectivityDiagnostics(input: {
+  parsed: SearchArgs;
+  denseTiming: SimilaritySearchTiming;
+}): FilterSelectivityDiagnostics | null {
+  if (!input.parsed.timing) return null;
+  if (hasAdvancedRetrieval(input.parsed)) return null;
+  if (!hasFilterSelectivitySurface(input.parsed, input.denseTiming)) return null;
+  return {
+    schemaVersion: 'kb.search.filter-diagnostics.v1',
+    fetchK: input.denseTiming.fetch_k ?? null,
+    sidecarCandidates: input.denseTiming.sidecar_candidates ?? null,
+    sidecarFastPath: input.denseTiming.sidecar_fast_path ?? null,
+    postFilterKept: input.denseTiming.post_filter_kept ?? null,
+    postFilterMs: input.denseTiming.post_filter_ms ?? null,
+  };
+}
+
+function hasFilterSelectivitySurface(
+  parsed: SearchArgs,
+  denseTiming: SimilaritySearchTiming,
+): boolean {
+  return (
+    typeof parsed.kb === 'string' && parsed.kb.length > 0
+  ) || denseTiming.sidecar_candidates !== undefined
+    || denseTiming.sidecar_fast_path !== undefined
+    || denseTiming.post_filter_kept !== undefined;
 }
 
 function recordDenseSearchCanonicalTelemetry(input: {
@@ -1104,6 +1157,7 @@ export interface DenseSearchJsonPayloadInput {
   staleness: Staleness | null;
   autoThresholdDecision: AutoThresholdDecision | null;
   timing: TimingPayload | null;
+  filterDiagnostics?: FilterSelectivityDiagnostics | null;
   /** Issue #328 — opt-in deep diagnostics for an empty result set. Ignored when results is non-empty. */
   explainEmptyDiagnostics?: ExplainEmptyDiagnostics | null;
   gateVerdict?: RelevanceGateVerdict;
@@ -1134,6 +1188,9 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
   }
   if (input.results.length === 0 && input.explainEmptyDiagnostics) {
     payload.empty_result_diagnostics = explainEmptyDiagnosticsToJson(input.explainEmptyDiagnostics);
+  }
+  if (input.results.length > 0 && input.filterDiagnostics) {
+    payload.filter_diagnostics = filterSelectivityDiagnosticsToJson(input.filterDiagnostics);
   }
   if (input.autoThresholdDecision !== null) {
     payload.auto_threshold = {
@@ -1237,6 +1294,7 @@ export interface DenseSearchMarkdownOutputInput {
   autoModeDecision: AutoSearchModeDecision | null;
   autoThresholdDecision: AutoThresholdDecision | null;
   timing: TimingPayload | null;
+  filterDiagnostics?: FilterSelectivityDiagnostics | null;
   /** Issue #328 — opt-in deep diagnostics block, rendered only when results is empty. */
   explainEmptyDiagnostics?: ExplainEmptyDiagnostics | null;
   gateVerdict?: RelevanceGateVerdict;
@@ -1281,6 +1339,9 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
   if (input.advancedRetrieval !== undefined && input.advancedRetrieval !== null) {
     output += `${formatAdvancedRetrievalFooter(input.advancedRetrieval)}\n`;
   }
+  if (input.results.length > 0 && input.filterDiagnostics) {
+    output += `${formatFilterSelectivityDiagnosticsFooter(input.filterDiagnostics)}\n`;
+  }
   const gateVerdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
   if (gateVerdict.state !== 'bypassed') {
     output += `${formatGateVerdictFooter(gateVerdict)}\n`;
@@ -1312,6 +1373,7 @@ export function formatDenseSearchCompactOutput(input: {
   refreshed: boolean;
   gateVerdict?: RelevanceGateVerdict;
   timing: TimingPayload | null;
+  filterDiagnostics?: FilterSelectivityDiagnostics | null;
   width?: number;
 }): string {
   let output = `${formatRetrievalAsCompactTable(input.results, {
@@ -1326,6 +1388,9 @@ export function formatDenseSearchCompactOutput(input: {
   if (gateVerdict.state !== 'bypassed') {
     output += `${formatGateVerdictFooter(gateVerdict)}\n`;
   }
+  if (input.results.length > 0 && input.filterDiagnostics) {
+    output += `${formatFilterSelectivityDiagnosticsFooter(input.filterDiagnostics)}\n`;
+  }
   if (input.timing) {
     output += `${formatTimingFooter('Timing', input.timing)}\n`;
   }
@@ -1335,6 +1400,40 @@ export function formatDenseSearchCompactOutput(input: {
 function compactGateMarker(gateVerdict: RelevanceGateVerdict | undefined): 'bypassed' | 'kept' {
   if (gateVerdict === undefined || gateVerdict.state === 'bypassed') return 'bypassed';
   return 'kept';
+}
+
+function filterSelectivityDiagnosticsToJson(
+  diagnostics: FilterSelectivityDiagnostics,
+): Record<string, unknown> {
+  return {
+    schema_version: diagnostics.schemaVersion,
+    fetch_k: diagnostics.fetchK,
+    sidecar_candidates: diagnostics.sidecarCandidates,
+    sidecar_fast_path: diagnostics.sidecarFastPath,
+    post_filter_kept: diagnostics.postFilterKept,
+    post_filter_ms: diagnostics.postFilterMs,
+  };
+}
+
+function formatFilterSelectivityDiagnosticsFooter(
+  diagnostics: FilterSelectivityDiagnostics,
+): string {
+  const fields = [
+    ['fetch_k', diagnostics.fetchK],
+    ['sidecar_candidates', diagnostics.sidecarCandidates],
+    ['sidecar_fast_path', diagnostics.sidecarFastPath],
+    ['post_filter_kept', diagnostics.postFilterKept],
+    ['post_filter_ms', diagnostics.postFilterMs],
+  ]
+    .filter((entry): entry is [string, string | number] => entry[1] !== null)
+    .map(([key, value]) => `${key}=${formatFilterDiagnosticValue(key, value)}`);
+  const body = fields.length > 0 ? fields.join(', ') : 'no aggregate counters';
+  return `> _Filter diagnostics: ${body}._`;
+}
+
+function formatFilterDiagnosticValue(key: string, value: string | number): string {
+  if (typeof value === 'number' && key.endsWith('_ms')) return `${Math.round(value)}ms`;
+  return String(value);
 }
 
 function defaultBypassedGateVerdict(count: number): RelevanceGateVerdict {

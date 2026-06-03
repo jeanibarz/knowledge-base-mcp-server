@@ -116,7 +116,7 @@ wrap-close vars below.
 |---|---|---:|---|---|---|---|
 | Editor URI links | `KB_EDITOR_URI` | `none` | CLI and MCP retrieval output | Implemented | none | `KB_EDITOR_URI=cursor kb search "query" --format=json` |
 | Frontmatter extras on wire | `FRONTMATTER_EXTRAS_WIRE_VISIBLE` | `false` | MCP and CLI JSON retrieval output | Implemented | none | `FRONTMATTER_EXTRAS_WIRE_VISIBLE=true kb search "query" --format=json` |
-| CLI timing | `--timing` | off | CLI search and ask | Implemented | `--timing` | `kb search "query" --timing` |
+| CLI timing | `--timing` | off | CLI search and ask; aggregate filter selectivity diagnostics for non-empty filtered dense search | Implemented | `--timing` | `kb search "query" --timing` |
 | Compact search output | `kb search --format=compact` | `md` | CLI search | Implemented | `--format=compact` | `kb search "query" --format=compact` |
 | Search pager | `KB_PAGER`, `kb search --pager` | off; `less -R` when enabled without a pager env | CLI search markdown/compact output on TTY stdout | Implemented, opt-in | `--pager`, `--no-pager` | `KB_PAGER='less -R' kb search "query" --pager --k=30` |
 | Batch JSONL search input | `kb search --batch-jsonl` | off | CLI search | Implemented | `--batch-jsonl < queries.jsonl` | `printf '{"query":"q1"}\n{"query":"q2"}\n' \| kb search --batch-jsonl` |
