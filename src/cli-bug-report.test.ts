@@ -28,6 +28,17 @@ function minimalDoctorReport(): DoctorReport {
       ownership_check: 'checked',
       entries: [],
     },
+    extraction_cache: {
+      cache_dir: '/tmp/faiss/extracted-text',
+      exists: false,
+      entry_count: 0,
+      total_bytes: 0,
+      oldest_mtime: null,
+      newest_mtime: null,
+      ignored_entry_count: 0,
+      error_count: 0,
+      errors: [],
+    },
     stale_counts_by_kb: {},
     filesystem: {
       enumeration_failures: { failure_count: 0, failures: [] },

@@ -63,6 +63,10 @@ import {
   type ProviderCallSnapshot,
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
+import {
+  inventoryExtractionCache,
+  type ExtractionCacheInventory,
+} from './extraction-cache.js';
 import { inspectReindexTriggerFilesystem } from './triggerWatcher.js';
 import { deriveHealthUrl, probeLlmEndpoint, type LlmProbeResult } from './llm-client.js';
 import {
@@ -273,6 +277,17 @@ export interface DoctorReport {
     permission_check: 'checked' | 'skipped';
     ownership_check: 'checked' | 'skipped';
     entries: DoctorIndexSecurityEntry[];
+  };
+  extraction_cache: {
+    cache_dir: string;
+    exists: boolean;
+    entry_count: number;
+    total_bytes: number;
+    oldest_mtime: string | null;
+    newest_mtime: string | null;
+    ignored_entry_count: number;
+    error_count: number;
+    errors: ExtractionCacheInventory['errors'];
   };
   stale_counts_by_kb: Record<string, { modified_files: number; new_files: number }>;
   filesystem: {
@@ -1235,6 +1250,12 @@ export async function buildDoctorReport(
       ? 'FAISS index boundary permissions look safe'
       : `${indexSecurityWarningCount} FAISS index boundary permission warning(s)`,
   });
+  const extractionCache = await readExtractionCacheHealth();
+  checks.push({
+    name: 'extraction_cache',
+    status: extractionCache.error_count > 0 ? 'warn' : 'ok',
+    detail: formatExtractionCacheCheckDetail(extractionCache),
+  });
 
   const staleResult = await computeStaleCountsByKb(
     activeModelId,
@@ -1430,6 +1451,7 @@ export async function buildDoctorReport(
     },
     index,
     index_security: indexSecurity,
+    extraction_cache: extractionCache,
     stale_counts_by_kb: staleCounts,
     filesystem: staleResult.filesystem,
     quarantine_counts_by_kb: quarantineCounts,
@@ -1601,6 +1623,35 @@ async function readIndexSecurity(
     ownership_check: expectedUid === null ? 'skipped' : 'checked',
     entries,
   };
+}
+
+async function readExtractionCacheHealth(): Promise<DoctorReport['extraction_cache']> {
+  const inventory = await inventoryExtractionCache();
+  return {
+    cache_dir: inventory.cache_dir,
+    exists: inventory.exists,
+    entry_count: inventory.summary.entry_count,
+    total_bytes: inventory.summary.total_bytes,
+    oldest_mtime: inventory.summary.oldest_mtime,
+    newest_mtime: inventory.summary.newest_mtime,
+    ignored_entry_count: inventory.summary.ignored_entry_count,
+    error_count: inventory.summary.error_count,
+    errors: inventory.errors,
+  };
+}
+
+function formatExtractionCacheCheckDetail(
+  report: DoctorReport['extraction_cache'],
+): string {
+  const presence = report.exists ? 'present' : 'not present';
+  const ignored = report.ignored_entry_count === 0
+    ? ''
+    : `; ${report.ignored_entry_count} non-cache entr${report.ignored_entry_count === 1 ? 'y' : 'ies'} ignored`;
+  const errors = report.error_count === 0
+    ? ''
+    : `; ${report.error_count} inventory error(s)`;
+  return `${presence}; ${report.entry_count} cache entr${report.entry_count === 1 ? 'y' : 'ies'}, ` +
+    `${formatBytes(report.total_bytes)}${ignored}${errors}`;
 }
 
 async function statIndexSecurityEntry(
@@ -2151,6 +2202,25 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
       `${report.index.storage.inactive_version_count} retained inactive version(s); ` +
       `retention=${report.index.storage.retention_previous_versions})`,
   );
+  lines.push('Extracted-text cache:');
+  lines.push(`  path: ${report.extraction_cache.cache_dir}`);
+  lines.push(
+    `  entries: ${report.extraction_cache.entry_count}, ` +
+    `bytes=${formatBytes(report.extraction_cache.total_bytes)}, ` +
+    `exists=${report.extraction_cache.exists ? 'yes' : 'no'}`,
+  );
+  lines.push(
+    `  oldest: ${report.extraction_cache.oldest_mtime ?? 'n/a'}, ` +
+    `newest: ${report.extraction_cache.newest_mtime ?? 'n/a'}`,
+  );
+  lines.push(`  ignored non-cache entries: ${report.extraction_cache.ignored_entry_count}`);
+  if (report.extraction_cache.errors.length === 0) {
+    lines.push('  errors: (none)');
+  } else {
+    for (const err of report.extraction_cache.errors) {
+      lines.push(`  ERROR ${err.path}: ${err.message}`);
+    }
+  }
   lines.push('FAISS index security:');
   for (const entry of report.index_security.entries) {
     const mode = entry.mode_octal === null ? 'mode=n/a' : `mode=${entry.mode_octal}`;

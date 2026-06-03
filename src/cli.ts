@@ -10,6 +10,7 @@ import { readFileSync, realpathSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { ASK_HELP, runAsk } from './cli-ask.js';
+import { CACHE_HELP, runCache } from './cli-cache.js';
 import { CAPTURE_HELP, runCapture } from './cli-capture.js';
 import { COMPLETION_HELP, runCompletion } from './cli-completion.js';
 import { CONFIG_HELP, runConfig } from './cli-config.js';
@@ -99,6 +100,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },
   { name: 'open',         summary: 'Resolve a chunk id / kb:// URI / result path to its source file.',        help: OPEN_HELP,         handler: runOpen },
   { name: 'related',      summary: 'Find chunks related to an existing chunk id or kb:// URI.',               help: RELATED_HELP,      handler: runRelated },
+  { name: 'cache',        summary: 'Inspect and prune local cache surfaces.',                                help: CACHE_HELP,        handler: runCache },
   { name: 'serve',        summary: 'Run a localhost daemon for warm read-only CLI requests.',                 help: SERVE_HELP,        handler: runServe },
   { name: 'ask',          summary: 'Answer from retrieved KB context using a local LLM endpoint.',            help: ASK_HELP,          handler: runAsk },
   { name: 'remember',     summary: 'Suggest, create, or append knowledge-base notes (write path).',          help: REMEMBER_HELP,     handler: runRemember },

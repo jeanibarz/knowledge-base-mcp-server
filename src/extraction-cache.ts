@@ -27,6 +27,7 @@
 // or a full disk degrades to "no cache" rather than failing the ingest.
 
 import { createHash } from 'crypto';
+import type { Stats } from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { FAISS_INDEX_PATH } from './config/paths.js';
@@ -159,6 +160,94 @@ export interface CachedLoadOptions {
   cacheDir?: string;
 }
 
+export interface ExtractionCacheEntry {
+  filename: string;
+  path: string;
+  size_bytes: number;
+  mtime: string;
+  mtime_ms: number;
+}
+
+export interface ExtractionCacheInventory {
+  schema_version: 'kb.extraction-cache.inventory.v1';
+  cache_dir: string;
+  generated_at: string;
+  exists: boolean;
+  entries: ExtractionCacheEntry[];
+  ignored_entries: Array<{
+    filename: string;
+    reason: 'not_cache_file' | 'not_file';
+  }>;
+  errors: Array<{
+    path: string;
+    message: string;
+    code: string | null;
+  }>;
+  summary: {
+    entry_count: number;
+    total_bytes: number;
+    oldest_mtime: string | null;
+    newest_mtime: string | null;
+    ignored_entry_count: number;
+    error_count: number;
+  };
+}
+
+export interface ExtractionCachePruneOptions {
+  cacheDir?: string;
+  maxAgeDays?: number;
+  maxSizeBytes?: number;
+  now?: Date;
+}
+
+export interface ExtractionCachePruneEntry extends ExtractionCacheEntry {
+  reasons: Array<'age' | 'size'>;
+}
+
+export interface ExtractionCachePrunePlan {
+  schema_version: 'kb.extraction-cache.prune-plan.v1';
+  dry_run: true;
+  cache_dir: string;
+  generated_at: string;
+  limits: {
+    max_age_days: number | null;
+    max_size_bytes: number | null;
+  };
+  inventory: ExtractionCacheInventory['summary'];
+  prunable_entries: ExtractionCachePruneEntry[];
+  kept_entries: ExtractionCacheEntry[];
+  summary: {
+    prunable_count: number;
+    prunable_bytes: number;
+    kept_count: number;
+    kept_bytes: number;
+    age_prunable_count: number;
+    size_prunable_count: number;
+  };
+}
+
+export interface ExtractionCachePruneApplyResult {
+  schema_version: 'kb.extraction-cache.prune-apply.v1';
+  dry_run: false;
+  cache_dir: string;
+  generated_at: string;
+  plan: ExtractionCachePrunePlan;
+  deleted_entries: ExtractionCachePruneEntry[];
+  failed_entries: Array<{
+    filename: string;
+    path: string;
+    message: string;
+    code: string | null;
+  }>;
+  summary: {
+    deleted_count: number;
+    deleted_bytes: number;
+    failed_count: number;
+  };
+}
+
+const EXTRACTION_CACHE_FILE_RE = /^[a-f0-9]{64}\.txt$/;
+
 /**
  * Read `filePath`, look up the extraction cache by content hash, and either
  * return the cached text or invoke `parse` on the file bytes and store the
@@ -190,4 +279,249 @@ export async function loadWithExtractionCache(opts: CachedLoadOptions): Promise<
   const text = await opts.parse(buffer);
   await writeCachedExtraction(cacheDir, cacheKey, text);
   return text;
+}
+
+export async function inventoryExtractionCache(
+  cacheDir = defaultExtractionCacheDir(),
+  now = new Date(),
+): Promise<ExtractionCacheInventory> {
+  const entries: ExtractionCacheEntry[] = [];
+  const ignoredEntries: ExtractionCacheInventory['ignored_entries'] = [];
+  const errors: ExtractionCacheInventory['errors'] = [];
+
+  let dirents: Array<import('fs').Dirent>;
+  try {
+    dirents = await fsp.readdir(cacheDir, { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? null;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return emptyExtractionCacheInventory(cacheDir, now, false);
+    }
+    return {
+      ...emptyExtractionCacheInventory(cacheDir, now, true),
+      errors: [{
+        path: cacheDir,
+        message: (err as Error).message,
+        code,
+      }],
+      summary: {
+        entry_count: 0,
+        total_bytes: 0,
+        oldest_mtime: null,
+        newest_mtime: null,
+        ignored_entry_count: 0,
+        error_count: 1,
+      },
+    };
+  }
+
+  for (const dirent of dirents) {
+    const childPath = path.join(cacheDir, dirent.name);
+    if (!EXTRACTION_CACHE_FILE_RE.test(dirent.name)) {
+      ignoredEntries.push({
+        filename: dirent.name,
+        reason: dirent.isFile() ? 'not_cache_file' : 'not_file',
+      });
+      continue;
+    }
+    if (!dirent.isFile()) {
+      ignoredEntries.push({ filename: dirent.name, reason: 'not_file' });
+      continue;
+    }
+    try {
+      entries.push(extractionCacheEntryFromStat(dirent.name, childPath, await fsp.stat(childPath)));
+    } catch (err) {
+      errors.push({
+        path: childPath,
+        message: (err as Error).message,
+        code: (err as NodeJS.ErrnoException).code ?? null,
+      });
+    }
+  }
+
+  entries.sort(compareExtractionCacheEntries);
+  return {
+    schema_version: 'kb.extraction-cache.inventory.v1',
+    cache_dir: cacheDir,
+    generated_at: now.toISOString(),
+    exists: true,
+    entries,
+    ignored_entries: ignoredEntries.sort((a, b) => a.filename.localeCompare(b.filename)),
+    errors,
+    summary: summarizeExtractionCacheInventory(entries, ignoredEntries.length, errors.length),
+  };
+}
+
+export async function planExtractionCachePrune(
+  options: ExtractionCachePruneOptions = {},
+): Promise<ExtractionCachePrunePlan> {
+  const now = options.now ?? new Date();
+  const inventory = await inventoryExtractionCache(options.cacheDir, now);
+  const reasonByFilename = new Map<string, Set<'age' | 'size'>>();
+  const ageCutoffMs = options.maxAgeDays === undefined
+    ? null
+    : now.getTime() - options.maxAgeDays * 24 * 60 * 60 * 1000;
+
+  if (ageCutoffMs !== null) {
+    for (const entry of inventory.entries) {
+      if (entry.mtime_ms <= ageCutoffMs) addPruneReason(reasonByFilename, entry.filename, 'age');
+    }
+  }
+
+  if (options.maxSizeBytes !== undefined) {
+    let keptBytes = inventory.summary.total_bytes;
+    for (const entry of inventory.entries) {
+      if (keptBytes <= options.maxSizeBytes) break;
+      addPruneReason(reasonByFilename, entry.filename, 'size');
+      keptBytes -= entry.size_bytes;
+    }
+  }
+
+  const prunableEntries: ExtractionCachePruneEntry[] = [];
+  const keptEntries: ExtractionCacheEntry[] = [];
+  for (const entry of inventory.entries) {
+    const reasons = reasonByFilename.get(entry.filename);
+    if (reasons === undefined) {
+      keptEntries.push(entry);
+    } else {
+      prunableEntries.push({
+        ...entry,
+        reasons: [...reasons].sort(),
+      });
+    }
+  }
+
+  const prunableBytes = sumEntryBytes(prunableEntries);
+  return {
+    schema_version: 'kb.extraction-cache.prune-plan.v1',
+    dry_run: true,
+    cache_dir: inventory.cache_dir,
+    generated_at: now.toISOString(),
+    limits: {
+      max_age_days: options.maxAgeDays ?? null,
+      max_size_bytes: options.maxSizeBytes ?? null,
+    },
+    inventory: inventory.summary,
+    prunable_entries: prunableEntries,
+    kept_entries: keptEntries,
+    summary: {
+      prunable_count: prunableEntries.length,
+      prunable_bytes: prunableBytes,
+      kept_count: keptEntries.length,
+      kept_bytes: inventory.summary.total_bytes - prunableBytes,
+      age_prunable_count: prunableEntries.filter((entry) => entry.reasons.includes('age')).length,
+      size_prunable_count: prunableEntries.filter((entry) => entry.reasons.includes('size')).length,
+    },
+  };
+}
+
+export async function applyExtractionCachePrune(
+  plan: ExtractionCachePrunePlan,
+): Promise<ExtractionCachePruneApplyResult> {
+  const deletedEntries: ExtractionCachePruneEntry[] = [];
+  const failedEntries: ExtractionCachePruneApplyResult['failed_entries'] = [];
+  for (const entry of plan.prunable_entries) {
+    try {
+      await fsp.unlink(entry.path);
+      deletedEntries.push(entry);
+    } catch (err) {
+      failedEntries.push({
+        filename: entry.filename,
+        path: entry.path,
+        message: (err as Error).message,
+        code: (err as NodeJS.ErrnoException).code ?? null,
+      });
+    }
+  }
+  return {
+    schema_version: 'kb.extraction-cache.prune-apply.v1',
+    dry_run: false,
+    cache_dir: plan.cache_dir,
+    generated_at: new Date().toISOString(),
+    plan,
+    deleted_entries: deletedEntries,
+    failed_entries: failedEntries,
+    summary: {
+      deleted_count: deletedEntries.length,
+      deleted_bytes: sumEntryBytes(deletedEntries),
+      failed_count: failedEntries.length,
+    },
+  };
+}
+
+function emptyExtractionCacheInventory(
+  cacheDir: string,
+  now: Date,
+  exists: boolean,
+): ExtractionCacheInventory {
+  return {
+    schema_version: 'kb.extraction-cache.inventory.v1',
+    cache_dir: cacheDir,
+    generated_at: now.toISOString(),
+    exists,
+    entries: [],
+    ignored_entries: [],
+    errors: [],
+    summary: {
+      entry_count: 0,
+      total_bytes: 0,
+      oldest_mtime: null,
+      newest_mtime: null,
+      ignored_entry_count: 0,
+      error_count: 0,
+    },
+  };
+}
+
+function extractionCacheEntryFromStat(
+  filename: string,
+  entryPath: string,
+  stat: Stats,
+): ExtractionCacheEntry {
+  return {
+    filename,
+    path: entryPath,
+    size_bytes: stat.size,
+    mtime: new Date(stat.mtimeMs).toISOString(),
+    mtime_ms: stat.mtimeMs,
+  };
+}
+
+function summarizeExtractionCacheInventory(
+  entries: readonly ExtractionCacheEntry[],
+  ignoredEntryCount: number,
+  errorCount: number,
+): ExtractionCacheInventory['summary'] {
+  return {
+    entry_count: entries.length,
+    total_bytes: sumEntryBytes(entries),
+    oldest_mtime: entries[0]?.mtime ?? null,
+    newest_mtime: entries[entries.length - 1]?.mtime ?? null,
+    ignored_entry_count: ignoredEntryCount,
+    error_count: errorCount,
+  };
+}
+
+function compareExtractionCacheEntries(
+  a: ExtractionCacheEntry,
+  b: ExtractionCacheEntry,
+): number {
+  return a.mtime_ms - b.mtime_ms || a.filename.localeCompare(b.filename);
+}
+
+function addPruneReason(
+  reasonByFilename: Map<string, Set<'age' | 'size'>>,
+  filename: string,
+  reason: 'age' | 'size',
+): void {
+  const existing = reasonByFilename.get(filename);
+  if (existing !== undefined) {
+    existing.add(reason);
+    return;
+  }
+  reasonByFilename.set(filename, new Set([reason]));
+}
+
+function sumEntryBytes(entries: readonly Pick<ExtractionCacheEntry, 'size_bytes'>[]): number {
+  return entries.reduce((sum, entry) => sum + entry.size_bytes, 0);
 }
