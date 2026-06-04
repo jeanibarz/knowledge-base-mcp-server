@@ -1,4 +1,5 @@
 import { callFakeChatCompletion, isFakeLlmEnabled } from './llm-fake-stub.js';
+import { resolveLlmProvider } from './config/llm-provider.js';
 
 export interface LlmChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -11,6 +12,16 @@ export interface ChatCompletionOptions {
   messages: LlmChatMessage[];
   temperature?: number;
   timeoutMs?: number;
+  /**
+   * Bearer API key for hosted providers (e.g. OpenRouter). When omitted it is
+   * resolved from the environment via {@link resolveLlmProvider}. Sent as
+   * `Authorization: Bearer <key>` and never logged.
+   */
+  apiKey?: string;
+  /** OpenRouter `X-Title` attribution header (only sent when an apiKey is set). */
+  appTitle?: string;
+  /** OpenRouter `HTTP-Referer` attribution header (only sent when an apiKey is set). */
+  httpReferer?: string;
 }
 
 export interface ChatCompletionResult {
@@ -61,21 +72,39 @@ export async function callChatCompletion(
   }
 
   const endpoint = normalizeChatEndpoint(options.endpoint);
+  // Resolve auth/model from the environment when the caller did not pass them
+  // explicitly, so every call site (contextual prefaces, the gate judge, the
+  // probe) picks up the OpenRouter provider switch centrally.
+  const provider = resolveLlmProvider();
+  const apiKey = options.apiKey ?? provider.apiKey;
+  const remote = apiKey !== undefined;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 180_000);
-  const payload = {
-    model: options.model ?? 'local-model',
+  const payload: Record<string, unknown> = {
+    model: options.model ?? provider.model ?? 'local-model',
     messages: options.messages,
     temperature: options.temperature ?? 0.2,
     stream: false,
-    chat_template_kwargs: { enable_thinking: false },
   };
+  // `chat_template_kwargs` is a llama.cpp / vLLM extension; hosted providers
+  // (OpenRouter) reject or ignore unknown body fields, so only send it locally.
+  if (!remote) {
+    payload.chat_template_kwargs = { enable_thinking: false };
+  }
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey !== undefined) {
+    headers.Authorization = `Bearer ${apiKey}`;
+    headers['X-Title'] = options.appTitle ?? provider.appTitle;
+    const referer = options.httpReferer ?? provider.httpReferer;
+    if (referer !== undefined) headers['HTTP-Referer'] = referer;
+  }
 
   let response: Response;
   try {
     response = await fetchImpl(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -115,18 +144,27 @@ export async function probeLlmEndpoint(
 ): Promise<LlmProbeResult> {
   const chatEndpoint = normalizeChatEndpoint(endpoint);
   const healthUrl = deriveHealthUrl(chatEndpoint);
+  // Hosted providers (OpenRouter) expose no `/health` route; a GET there 404s.
+  // Skip the health probe for remote providers and judge readiness by the chat
+  // call alone.
+  const remote = resolveLlmProvider().remote;
   let healthOk = false;
   let healthDetail = '';
-  try {
-    const health = await fetchImpl(healthUrl, {
-      method: 'GET',
-      signal: AbortSignal.timeout(options.healthTimeoutMs ?? 3_000),
-    });
-    healthOk = health.ok;
-    healthDetail = `health HTTP ${health.status}`;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    healthDetail = `health failed: ${msg}`;
+  if (remote) {
+    healthOk = true;
+    healthDetail = 'remote provider (health check skipped)';
+  } else {
+    try {
+      const health = await fetchImpl(healthUrl, {
+        method: 'GET',
+        signal: AbortSignal.timeout(options.healthTimeoutMs ?? 3_000),
+      });
+      healthOk = health.ok;
+      healthDetail = `health HTTP ${health.status}`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      healthDetail = `health failed: ${msg}`;
+    }
   }
 
   try {
@@ -144,7 +182,9 @@ export async function probeLlmEndpoint(
       health_url: healthUrl,
       health_ok: healthOk,
       chat_ok: true,
-      detail: healthOk ? 'health and chat completion succeeded' : `chat completion succeeded; ${healthDetail}`,
+      detail: remote
+        ? `chat completion succeeded; ${healthDetail}`
+        : (healthOk ? 'health and chat completion succeeded' : `chat completion succeeded; ${healthDetail}`),
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
