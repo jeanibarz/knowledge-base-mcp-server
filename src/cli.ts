@@ -6,9 +6,10 @@
 // and is intercepted here BEFORE delegating to the handler. That way every
 // subcommand answers `--help` / `-h` consistently (stdout, exit 0).
 
-import { readFileSync, realpathSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { parseDotEnvText } from './config/schema.js';
 import { ASK_HELP, runAsk } from './cli-ask.js';
 import { CACHE_HELP, runCache } from './cli-cache.js';
 import { CAPTURE_HELP, runCapture } from './cli-capture.js';
@@ -194,7 +195,26 @@ interface UnknownFlagSuggestion {
   suggestion: string;
 }
 
+// Load the package-root `.env` (gitignored) so a kb-local file can hold
+// secrets like KB_OPENROUTER_API_KEY — consistent with how local-research-agent
+// and kookr load their own `.env`. Real process-env values always win, so this
+// only fills variables that are otherwise unset. Failures are non-fatal.
+function loadKbDotEnv(): void {
+  try {
+    const here = fileURLToPath(import.meta.url);
+    const envPath = path.join(path.dirname(here), '..', '.env');
+    if (!existsSync(envPath)) return;
+    const { env } = parseDotEnvText(readFileSync(envPath, 'utf-8'), envPath);
+    for (const [key, value] of Object.entries(env)) {
+      if (process.env[key] === undefined) process.env[key] = value;
+    }
+  } catch {
+    // A malformed or unreadable .env must never block the CLI.
+  }
+}
+
 export async function main(argv: string[]): Promise<number> {
+  loadKbDotEnv();
   // Strip the conventional argv[0]/argv[1] before delegating.
   const args = argv.slice(2);
 

@@ -28,6 +28,21 @@ export function resolveContextualMaxTokens(): number {
   return Math.min(1000, Math.max(20, Math.floor(parsed)));
 }
 
+// Preface LLM calls are issued with bounded concurrency per source file
+// (RFC 017). Each chunk is an independent (document, chunk) call, so they
+// parallelize cleanly; the dominant cost is network round-trips to the LLM.
+// Default 10 — safe for hosted providers (OpenRouter/DeepSeek) and a ~10x
+// speedup over the original serial loop. Set to 1 to restore serial behavior.
+const DEFAULT_CONTEXTUAL_CONCURRENCY = 10;
+
+export function resolveContextualConcurrency(): number {
+  const raw = process.env.KB_CONTEXTUAL_CONCURRENCY;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_CONTEXTUAL_CONCURRENCY;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_CONTEXTUAL_CONCURRENCY;
+  return Math.min(64, Math.floor(parsed));
+}
+
 export function resolveContextualLlmEndpoint(): string | null {
   if (isFakeLlmEnabled()) return FAKE_LLM_ENDPOINT;
   const raw = process.env.KB_LLM_ENDPOINT;
