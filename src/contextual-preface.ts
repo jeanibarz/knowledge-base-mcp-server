@@ -39,9 +39,11 @@ import {
   CONTEXTUAL_RETRY_LIMIT,
   ContextualErrorCode,
   isContextualRetrievalEnabled,
+  resolveContextualConcurrency,
   resolveContextualLlmEndpoint,
   resolveContextualMaxTokens,
 } from './config/contextual-preface.js';
+import { mapBounded } from './bounded-concurrency.js';
 import { resolveChunkSize } from './config/indexing.js';
 import { FAISS_INDEX_PATH } from './config/paths.js';
 import { KBError } from './errors.js';
@@ -136,16 +138,18 @@ export async function resolveContextualPrefaces(
   const nowMs = Date.now();
   const resolved: (string | null)[] = new Array(args.chunks.length);
   const newEntries: SidecarChunkEntry[] = new Array(args.chunks.length);
-  let consecutiveTimeouts = 0;
   let modelSeen: string | null = existing?.model ?? null;
   let cacheHits = 0;
   let llmCalls = 0;
   let failures = 0;
   const startedAt = Date.now();
 
+  // Pass 1 (sequential, no LLM): resolve cache hits, not-yet-elapsed cached
+  // failures, and document-truncation failures. Collect the chunks that still
+  // need an LLM call so pass 2 can issue them with bounded concurrency.
+  const pending: { index: number; chunkHash: string }[] = [];
   for (let i = 0; i < args.chunks.length; i += 1) {
-    const chunkText = args.chunks[i];
-    const chunkHash = sha256(chunkText);
+    const chunkHash = sha256(args.chunks[i]);
 
     const cached: SidecarChunkEntry | undefined = existing?.chunks[i];
     const cacheValid =
@@ -178,8 +182,7 @@ export async function resolveContextualPrefaces(
     }
 
     // Document-truncation case: no point calling the LLM with a chunk that
-    // can never be fully situated. Record the failure, schedule no retry,
-    // continue.
+    // can never be fully situated. Record the failure, schedule no retry.
     if (docWasTruncated) {
       newEntries[i] = makeFailureEntry(i, chunkHash, 'truncated_doc');
       resolved[i] = null;
@@ -187,59 +190,56 @@ export async function resolveContextualPrefaces(
       continue;
     }
 
-    // Cache miss → LLM call (with retry budget).
-    let result: LlmCallResult;
+    pending.push({ index: i, chunkHash });
+  }
+
+  // Pass 2 (bounded-concurrent LLM): issue preface calls for the remaining
+  // chunks, up to KB_CONTEXTUAL_CONCURRENCY at a time. The per-file circuit
+  // breaker is preserved in concurrent form: once timeouts reach the limit we
+  // stop issuing *new* calls (mapBounded pulls lazily, so not-yet-started
+  // chunks short-circuit) and mark the rest `llm_unreachable` without hitting
+  // the endpoint — so a dead LLM is not hammered once per remaining chunk.
+  let timeouts = 0;
+  let breakerTripped = false;
+  await mapBounded(pending, resolveContextualConcurrency(), async ({ index: i, chunkHash }) => {
+    if (breakerTripped) {
+      newEntries[i] = makeFailureEntry(i, chunkHash, 'llm_unreachable');
+      resolved[i] = null;
+      failures += 1;
+      return;
+    }
     try {
-      result = await callPrefaceLlm({
+      const result = await callPrefaceLlm({
         endpoint,
         documentBody: truncatedDoc,
-        chunkText,
+        chunkText: args.chunks[i],
       });
+      if (result.model !== null) modelSeen = result.model;
+      newEntries[i] = {
+        chunk_index: i,
+        chunk_hash: chunkHash,
+        preface: result.preface,
+        generated_at: new Date().toISOString(),
+      };
+      resolved[i] = result.preface;
+      llmCalls += 1;
     } catch (err) {
-      // Consecutive-timeout circuit breaker (per-file scope in M0a). When
-      // tripped, mark the current chunk plus all remaining chunks as
-      // `llm_unreachable` failures and break out of the loop. The M0b CLI
-      // wraps this in a per-run breaker that can also abort the whole
-      // reindex; in M0a the per-file degradation is the right blast radius.
-      const wasTimeout = isTimeoutError(err);
-      if (wasTimeout) {
-        consecutiveTimeouts += 1;
-      } else {
-        consecutiveTimeouts = 0;
-      }
       const errorCode = classifyLlmError(err);
       newEntries[i] = makeFailureEntry(i, chunkHash, errorCode);
       resolved[i] = null;
       failures += 1;
       llmCalls += 1;
-
-      if (consecutiveTimeouts >= CONTEXTUAL_CONSECUTIVE_TIMEOUT_LIMIT) {
-        logger.warn(
-          `RFC 017: circuit breaker tripped for ${args.source} after ${CONTEXTUAL_CONSECUTIVE_TIMEOUT_LIMIT} consecutive LLM timeouts; remaining ${args.chunks.length - i - 1} chunks will be marked failed without LLM calls`,
-        );
-        for (let j = i + 1; j < args.chunks.length; j += 1) {
-          newEntries[j] = makeFailureEntry(j, sha256(args.chunks[j]), 'llm_unreachable');
-          resolved[j] = null;
-          failures += 1;
+      if (isTimeoutError(err)) {
+        timeouts += 1;
+        if (timeouts >= CONTEXTUAL_CONSECUTIVE_TIMEOUT_LIMIT && !breakerTripped) {
+          breakerTripped = true;
+          logger.warn(
+            `RFC 017: circuit breaker tripped for ${args.source} after ${CONTEXTUAL_CONSECUTIVE_TIMEOUT_LIMIT} LLM timeouts; remaining chunks will be marked failed without further LLM calls`,
+          );
         }
-        break;
       }
-
-      continue;
     }
-
-    // Success.
-    consecutiveTimeouts = 0;
-    if (result.model !== null) modelSeen = result.model;
-    newEntries[i] = {
-      chunk_index: i,
-      chunk_hash: chunkHash,
-      preface: result.preface,
-      generated_at: new Date().toISOString(),
-    };
-    resolved[i] = result.preface;
-    llmCalls += 1;
-  }
+  });
 
   // Persist sidecar atomically under withSidecarLock.
   try {
@@ -792,8 +792,13 @@ async function callPrefaceLlm(args: {
     } catch (err) {
       lastError = err;
       if (attempt < CONTEXTUAL_RETRY_LIMIT) {
-        // 1s + jitter backoff.
-        await delay(1_000 + Math.random() * 500);
+        // Honor a server-advised Retry-After (e.g. OpenRouter 429), capped at
+        // 60s; otherwise a 1s + jitter backoff.
+        const retryAfterMs =
+          err instanceof LlmClientError && err.retryAfterMs !== undefined
+            ? Math.min(err.retryAfterMs, 60_000)
+            : 1_000 + Math.random() * 500;
+        await delay(retryAfterMs);
       }
     }
   }

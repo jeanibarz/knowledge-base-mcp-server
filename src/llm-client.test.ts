@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from '@jest/globals';
 import {
   callChatCompletion,
   deriveHealthUrl,
+  LlmClientError,
   normalizeChatEndpoint,
+  parseRetryAfterMs,
   probeLlmEndpoint,
 } from './llm-client.js';
 
@@ -129,6 +131,35 @@ describe('llm-client', () => {
     expect(result.detail).toContain('health check skipped');
     const urls = (fetchMock.mock.calls as unknown as Array<[string, RequestInit]>).map((c) => c[0]);
     expect(urls.some((u) => u.endsWith('/health'))).toBe(false);
+  });
+
+  it('parses Retry-After as delta-seconds and HTTP-date', () => {
+    expect(parseRetryAfterMs('5')).toBe(5000);
+    expect(parseRetryAfterMs('')).toBeUndefined();
+    expect(parseRetryAfterMs(null)).toBeUndefined();
+    expect(parseRetryAfterMs('garbage')).toBeUndefined();
+    const now = 1_000_000;
+    const httpDate = new Date(now + 30_000).toUTCString();
+    expect(parseRetryAfterMs(httpDate, now)).toBe(30_000);
+  });
+
+  it('surfaces HTTP status and Retry-After on a 429', async () => {
+    delete process.env.KB_LLM_FAKE;
+    delete process.env.KB_LLM_PROVIDER;
+    const fetchMock = jest.fn(async () => new Response(
+      JSON.stringify({ error: { message: 'rate limited' } }),
+      { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '7' } },
+    ));
+
+    await expect(callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+    }, fetchMock as unknown as typeof fetch)).rejects.toMatchObject({
+      name: 'LlmClientError',
+      status: 429,
+      retryAfterMs: 7000,
+    });
+    expect(LlmClientError).toBeDefined();
   });
 
   it('probes health and chat completion', async () => {

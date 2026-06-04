@@ -44,13 +44,37 @@ export interface LlmProbeOptions {
 }
 
 export class LlmClientError extends Error {
-  constructor(message: string) {
+  /** HTTP status when the failure came from a non-ok response. */
+  readonly status?: number;
+  /** Server-advised backoff in ms, parsed from a `Retry-After` header. */
+  readonly retryAfterMs?: number;
+
+  constructor(message: string, opts?: { status?: number; retryAfterMs?: number }) {
     super(message);
     this.name = 'LlmClientError';
+    if (opts?.status !== undefined) this.status = opts.status;
+    if (opts?.retryAfterMs !== undefined) this.retryAfterMs = opts.retryAfterMs;
   }
 }
 
 type FetchLike = typeof fetch;
+
+/**
+ * Parse an HTTP `Retry-After` header (delta-seconds or an HTTP-date) into ms.
+ * Returns undefined when absent or unparseable.
+ */
+export function parseRetryAfterMs(
+  header: string | null | undefined,
+  nowMs: number = Date.now(),
+): number | undefined {
+  if (header === null || header === undefined) return undefined;
+  const trimmed = header.trim();
+  if (trimmed === '') return undefined;
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - nowMs);
+  return undefined;
+}
 
 export function normalizeChatEndpoint(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, '');
@@ -124,7 +148,11 @@ export async function callChatCompletion(
   }
 
   if (!response.ok) {
-    throw new LlmClientError(`local LLM returned HTTP ${response.status}: ${extractErrorMessage(data)}`);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
+    throw new LlmClientError(
+      `local LLM returned HTTP ${response.status}: ${extractErrorMessage(data)}`,
+      { status: response.status, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    );
   }
 
   const content = extractAssistantContent(data);
