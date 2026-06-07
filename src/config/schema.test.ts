@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { parseDotEnvText, validateConfigEnv } from './schema.js';
+import { CONFIG_SCHEMA, parseDotEnvText, showConfigEnv, validateConfigEnv } from './schema.js';
 
 describe('config schema validation (FR-OBS-470)', () => {
   it('emits ok findings and counts for valid known environment variables', () => {
@@ -67,6 +67,22 @@ describe('config schema validation (FR-OBS-470)', () => {
     ]));
   });
 
+  it('matches the runtime KB_INDEX_TYPE parser for case-insensitive values', () => {
+    const validation = validateConfigEnv({
+      KB_INDEX_TYPE: ' SQ8 ',
+    });
+    const show = showConfigEnv({
+      KB_INDEX_TYPE: ' SQ8 ',
+    });
+
+    expect(validation.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'KB_INDEX_TYPE', status: 'ok', value: 'sq8' }),
+    ]));
+    expect(show.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'KB_INDEX_TYPE', value: 'sq8', source: 'env' }),
+    ]));
+  });
+
   it('emits static dependency findings without probing live endpoints', () => {
     const report = validateConfigEnv({
       KB_RELEVANCE_GATE: 'on',
@@ -113,5 +129,90 @@ describe('config schema validation (FR-OBS-470)', () => {
       EMPTY: '',
     });
     expect(parsed.errors).toEqual([]);
+  });
+
+  it('emits effective config entries with env/default provenance', () => {
+    const report = showConfigEnv({
+      EMBEDDING_PROVIDER: 'ollama',
+      KNOWLEDGE_BASES_ROOT_DIR: '/tmp/kbs',
+      HUGGINGFACE_API_KEY: 'hf_secret',
+    });
+
+    expect(report.schema_version).toBe('kb.config-show.v1');
+    expect(report.entries.map((entry) => entry.name)).toEqual(CONFIG_SCHEMA.map((spec) => spec.name));
+    expect(report.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'KNOWLEDGE_BASES_ROOT_DIR',
+        value: '/tmp/kbs',
+        source: 'env',
+        redacted: false,
+      }),
+      expect.objectContaining({
+        name: 'FAISS_INDEX_PATH',
+        value: '/tmp/kbs/.faiss',
+        source: 'default',
+        redacted: false,
+      }),
+      expect.objectContaining({
+        name: 'INDEXING_BATCH_SIZE',
+        value: '16',
+        source: 'default',
+        redacted: false,
+      }),
+      expect.objectContaining({
+        name: 'HUGGINGFACE_API_KEY',
+        value: '<redacted>',
+        source: 'env',
+        redacted: true,
+      }),
+      expect.objectContaining({
+        name: 'KB_CONTEXTUAL_MAX_TOKENS',
+        value: '150',
+        source: 'default',
+        redacted: false,
+      }),
+      expect.objectContaining({
+        name: 'KB_INGEST_SECRET_SCAN',
+        value: 'off',
+        source: 'default',
+        redacted: false,
+      }),
+    ]));
+  });
+
+  it('uses runtime defaults for empty string values that runtime treats as unset', () => {
+    const report = showConfigEnv({
+      HUGGINGFACE_MODEL_NAME: '',
+    });
+
+    expect(report.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'HUGGINGFACE_MODEL_NAME',
+        value: 'BAAI/bge-small-en-v1.5',
+        source: 'default',
+      }),
+      expect.objectContaining({
+        name: 'HUGGINGFACE_ENDPOINT_URL',
+        value: 'https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5/pipeline/feature-extraction',
+        source: 'default',
+      }),
+    ]));
+  });
+
+  it('filters effective config entries to non-default values', () => {
+    const report = showConfigEnv({
+      KB_RELEVANCE_GATE: 'on',
+      KB_QUERY_CACHE: '',
+    }, { nonDefaultOnly: true });
+
+    expect(report.entries).toEqual([
+      {
+        name: 'KB_RELEVANCE_GATE',
+        kind: 'boolean',
+        value: 'on',
+        source: 'env',
+        redacted: false,
+      },
+    ]);
   });
 });

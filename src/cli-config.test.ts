@@ -4,7 +4,12 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { formatConfigValidateMarkdown, parseConfigArgs, runConfig } from './cli-config.js';
+import {
+  formatConfigShowMarkdown,
+  formatConfigValidateMarkdown,
+  parseConfigArgs,
+  runConfig,
+} from './cli-config.js';
 
 const ORIGINAL_ENV = { ...process.env };
 const cliPath = path.join(process.cwd(), 'build', 'cli.js');
@@ -40,10 +45,12 @@ describe('kb config validate (FR-OBS-470)', () => {
       action: 'validate',
       file: '.env',
       format: 'json',
+      nonDefaultOnly: false,
     });
-    expect(parseConfigArgs(['validate'])).toEqual({ action: 'validate', format: 'md' });
+    expect(parseConfigArgs(['validate'])).toEqual({ action: 'validate', format: 'md', nonDefaultOnly: false });
     expect(() => parseConfigArgs(['unknown'])).toThrow(/unknown action/);
     expect(() => parseConfigArgs(['validate', '--format=yaml'])).toThrow(/invalid --format/);
+    expect(() => parseConfigArgs(['validate', '--non-default-only'])).toThrow(/only supported by show/);
   });
 
   it('writes JSON and exits 0 when the supplied dotenv file is valid', async () => {
@@ -86,6 +93,7 @@ describe('kb config validate (FR-OBS-470)', () => {
     });
     expect(help.status).toBe(0);
     expect(help.stdout).toContain('kb config validate');
+    expect(help.stdout).toContain('kb config show');
 
     const result = spawnSync('node', [cliPath, 'config', 'validate', '--format=json'], {
       env: { PATH: ORIGINAL_ENV.PATH ?? '', KB_LOG_FORMAT: 'text', KB_RERANK: 'maybe' },
@@ -123,5 +131,139 @@ describe('kb config validate (FR-OBS-470)', () => {
 
     expect(markdown).toContain('status: warn');
     expect(markdown).toContain('| KB_RELEVANCE_GATE | warn | dependency | on |');
+  });
+});
+
+describe('kb config show (#545)', () => {
+  it('parses the show action and supported flags', () => {
+    expect(parseConfigArgs(['show'])).toEqual({
+      action: 'show',
+      format: 'md',
+      nonDefaultOnly: false,
+    });
+    expect(parseConfigArgs(['show', '--format=json', '--non-default-only'])).toEqual({
+      action: 'show',
+      format: 'json',
+      nonDefaultOnly: true,
+    });
+    expect(() => parseConfigArgs(['show', '--format=text'])).toThrow(/invalid --format/);
+    expect(() => parseConfigArgs(['show', '--file=.env'])).toThrow(/only supported by validate/);
+  });
+
+  it('writes JSON with resolved values, sources, and redacted secrets', async () => {
+    process.env = {
+      PATH: ORIGINAL_ENV.PATH ?? '',
+      KNOWLEDGE_BASES_ROOT_DIR: '/tmp/kbs',
+      KB_RELEVANCE_GATE: 'on',
+      OPENAI_API_KEY: 'sk-proj-test-secret',
+      MCP_AUTH_TOKEN: 'a'.repeat(32),
+    };
+
+    await expect(runConfig(['show', '--format=json'])).resolves.toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.schema_version).toBe('kb.config-show.v1');
+    expect(parsed.entries).toEqual(expect.arrayContaining([
+      {
+        name: 'KNOWLEDGE_BASES_ROOT_DIR',
+        kind: 'path',
+        value: '/tmp/kbs',
+        source: 'env',
+        redacted: false,
+      },
+      {
+        name: 'FAISS_INDEX_PATH',
+        kind: 'path',
+        value: '/tmp/kbs/.faiss',
+        source: 'default',
+        redacted: false,
+      },
+      {
+        name: 'KB_RELEVANCE_GATE',
+        kind: 'boolean',
+        value: 'on',
+        source: 'env',
+        redacted: false,
+      },
+      {
+        name: 'OPENAI_API_KEY',
+        kind: 'secret',
+        value: '<redacted>',
+        source: 'env',
+        redacted: true,
+      },
+      {
+        name: 'MCP_AUTH_TOKEN',
+        kind: 'secret',
+        value: '<redacted>',
+        source: 'env',
+        redacted: true,
+      },
+    ]));
+    expect(stderr).toBe('');
+  });
+
+  it('is reachable through the top-level kb dispatcher', () => {
+    const result = spawnSync('node', [cliPath, 'config', 'show', '--format=json', '--non-default-only'], {
+      env: { PATH: ORIGINAL_ENV.PATH ?? '', KB_LOG_FORMAT: 'text', KB_RELEVANCE_GATE: 'on' },
+      encoding: 'utf-8',
+    });
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed).toMatchObject({
+      schema_version: 'kb.config-show.v1',
+    });
+    expect(parsed.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'KB_RELEVANCE_GATE',
+        kind: 'boolean',
+        value: 'on',
+        source: 'env',
+        redacted: false,
+      }),
+    ]));
+  });
+
+  it('filters JSON output to env-sourced values with --non-default-only', async () => {
+    process.env = {
+      PATH: ORIGINAL_ENV.PATH ?? '',
+      KB_RELEVANCE_GATE: 'on',
+    };
+
+    await expect(runConfig(['show', '--format=json', '--non-default-only'])).resolves.toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.entries).toEqual([
+      {
+        name: 'KB_RELEVANCE_GATE',
+        kind: 'boolean',
+        value: 'on',
+        source: 'env',
+        redacted: false,
+      },
+    ]);
+  });
+
+  it('renders deterministic markdown entries', () => {
+    const markdown = formatConfigShowMarkdown({
+      schema_version: 'kb.config-show.v1',
+      entries: [
+        {
+          name: 'KB_RELEVANCE_GATE',
+          kind: 'boolean',
+          value: 'on',
+          source: 'env',
+          redacted: false,
+        },
+      ],
+    });
+
+    expect(markdown).toBe([
+      '# kb config show',
+      '',
+      '| Variable | Source | Kind | Value |',
+      '| --- | --- | --- | --- |',
+      '| KB_RELEVANCE_GATE | env | boolean | on |',
+      '',
+    ].join('\n'));
   });
 });

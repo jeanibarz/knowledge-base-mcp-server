@@ -4,8 +4,8 @@ import { EMBEDDING_PROVIDER } from './provider.js';
 // Indexing batch configuration (RFC 007 section6.2 / issue #236).
 // ---------------------------------------------------------------------------
 
-const DEFAULT_INDEXING_BATCH_SIZE = 64;
-const DEFAULT_OLLAMA_INDEXING_BATCH_SIZE = 16;
+export const DEFAULT_INDEXING_BATCH_SIZE = 64;
+export const DEFAULT_OLLAMA_INDEXING_BATCH_SIZE = 16;
 const MAX_INDEXING_BATCH_SIZE = 512;
 export const KB_INDEX_TYPE_ENV = 'KB_INDEX_TYPE';
 export type FaissIndexType = 'flat' | 'sq8';
@@ -13,9 +13,7 @@ export type FaissIndexType = 'flat' | 'sq8';
 export function resolveIndexingBatchSize(
   provider: string = EMBEDDING_PROVIDER,
 ): number {
-  const defaultForProvider = provider === 'ollama'
-    ? DEFAULT_OLLAMA_INDEXING_BATCH_SIZE
-    : DEFAULT_INDEXING_BATCH_SIZE;
+  const defaultForProvider = defaultIndexingBatchSize(provider);
   const raw = process.env.INDEXING_BATCH_SIZE;
   if (raw === undefined || raw.trim() === '') {
     return defaultForProvider;
@@ -28,6 +26,12 @@ export function resolveIndexingBatchSize(
 }
 
 export const INDEXING_BATCH_SIZE: number = resolveIndexingBatchSize();
+
+export function defaultIndexingBatchSize(provider: string): number {
+  return provider === 'ollama'
+    ? DEFAULT_OLLAMA_INDEXING_BATCH_SIZE
+    : DEFAULT_INDEXING_BATCH_SIZE;
+}
 
 export function resolveFaissIndexType(
   raw: string | undefined = process.env[KB_INDEX_TYPE_ENV],
