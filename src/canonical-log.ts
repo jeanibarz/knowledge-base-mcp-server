@@ -3,6 +3,7 @@ import { logger } from './logger.js';
 import { KBError, type KBErrorCode } from './errors.js';
 import { ActiveModelResolutionError } from './active-model.js';
 import type { QueryCacheOutcome, QueryCacheTelemetry } from './query-cache.js';
+import { readKBSlowQueryMs } from './config/logging.js';
 
 export const CANONICAL_SCHEMA_VERSION = 'kb-canonical.v1';
 
@@ -36,6 +37,7 @@ export interface CanonicalLogEvent {
   process: CanonicalProcess;
   event?: string;
   level?: 'warn';
+  slow?: true;
   tool?: string;
   cmd?: string;
   model_id?: string;
@@ -64,7 +66,7 @@ export interface CanonicalLogEvent {
 
 export type CanonicalLogInput = Omit<
   CanonicalLogEvent,
-  'schema_version' | 'ts' | 'request_id' | 'query_sha256'
+  'schema_version' | 'ts' | 'request_id' | 'query_sha256' | 'slow'
 > & {
   request_id?: string;
   ts?: string;
@@ -79,6 +81,7 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'process',
   'event',
   'level',
+  'slow',
   'tool',
   'cmd',
   'model_id',
@@ -125,6 +128,12 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
     process: input.process,
     took_ms: Math.max(0, Math.round(input.took_ms)),
   };
+
+  const slowQueryMs = readKBSlowQueryMs();
+  if (slowQueryMs !== undefined && event.took_ms > slowQueryMs) {
+    event.level = 'warn';
+    event.slow = true;
+  }
 
   assignIfDefined(event, 'tool', input.tool);
   assignIfDefined(event, 'event', input.event);

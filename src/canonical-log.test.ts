@@ -5,8 +5,16 @@ import {
   normalizeCanonicalEvent,
   stableCanonicalJson,
 } from './canonical-log.js';
+import { parseKBSlowQueryMs } from './config/logging.js';
 
 describe('canonical log line schema (#216)', () => {
+  const originalSlowQueryMs = process.env.KB_SLOW_QUERY_MS;
+
+  afterEach(() => {
+    if (originalSlowQueryMs === undefined) delete process.env.KB_SLOW_QUERY_MS;
+    else process.env.KB_SLOW_QUERY_MS = originalSlowQueryMs;
+  });
+
   it('pins schema version and redacts raw queries to a stable sha256 prefix', () => {
     const query = '  rollback   procedure  ';
     const event = normalizeCanonicalEvent({
@@ -74,5 +82,59 @@ describe('canonical log line schema (#216)', () => {
     });
 
     expect(error).toEqual({ code: 'PROVIDER_TIMEOUT', category: 'provider' });
+  });
+
+  it('parses KB_SLOW_QUERY_MS as a disabled-by-default positive millisecond threshold', () => {
+    expect(parseKBSlowQueryMs(undefined)).toBeUndefined();
+    expect(parseKBSlowQueryMs('')).toBeUndefined();
+    expect(parseKBSlowQueryMs('0')).toBeUndefined();
+    expect(parseKBSlowQueryMs('-1')).toBeUndefined();
+    expect(parseKBSlowQueryMs('nope')).toBeUndefined();
+    expect(parseKBSlowQueryMs(' 99.6 ')).toBe(100);
+  });
+
+  it('marks canonical events as slow warn events when took_ms exceeds KB_SLOW_QUERY_MS', () => {
+    process.env.KB_SLOW_QUERY_MS = '100';
+
+    const event = normalizeCanonicalEvent({
+      request_id: 'req-slow',
+      ts: '2026-05-12T00:00:00.000Z',
+      process: 'mcp',
+      tool: 'retrieve_knowledge',
+      took_ms: 101,
+    });
+
+    expect(event.slow).toBe(true);
+    expect(event.level).toBe('warn');
+  });
+
+  it('does not mark events at or below the slow-query threshold', () => {
+    process.env.KB_SLOW_QUERY_MS = '100';
+
+    const event = normalizeCanonicalEvent({
+      request_id: 'req-fast',
+      ts: '2026-05-12T00:00:00.000Z',
+      process: 'mcp',
+      tool: 'retrieve_knowledge',
+      took_ms: 100,
+    });
+
+    expect(event.slow).toBeUndefined();
+    expect(event.level).toBeUndefined();
+  });
+
+  it('does not mark slow-looking events when KB_SLOW_QUERY_MS is disabled', () => {
+    delete process.env.KB_SLOW_QUERY_MS;
+
+    const event = normalizeCanonicalEvent({
+      request_id: 'req-disabled',
+      ts: '2026-05-12T00:00:00.000Z',
+      process: 'mcp',
+      tool: 'retrieve_knowledge',
+      took_ms: 10_000,
+    });
+
+    expect(event.slow).toBeUndefined();
+    expect(event.level).toBeUndefined();
   });
 });
