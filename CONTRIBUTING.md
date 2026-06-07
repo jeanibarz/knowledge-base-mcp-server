@@ -7,7 +7,7 @@ Thank you for your interest in contributing! Please read [`CLAUDE.md`](./CLAUDE.
 1. Check open [RFCs](./docs/rfcs/) for in-flight design discussions.
 2. Fork the repository and create a feature branch (`git checkout -b feat/amazing-feature`).
 3. Make your changes, following the conventions below.
-4. Ensure tests pass: `npm test`
+4. Ensure the local CI-parity gate passes: `npm run check`
 5. If your change affects performance, run the benchmark harness: `BENCH_PROVIDER=stub npm run bench`
 6. Commit using **conventional commits** — `feat:`, `fix(scope):`, `docs:`, `chore:` (see `git log` for prior style).
 7. Push to the branch and open a Pull Request using the PR template.
@@ -32,7 +32,9 @@ Please use the [Feature Request issue template](./.github/ISSUE_TEMPLATE/feature
 
 ## Local Test Iteration
 
-Use `npm test` before opening a PR; it stays the CI-parity command and runs the full Jest suite serially.
+Use `npm run check` before opening a PR; it runs the TypeScript build, full Jest suite, and documentation anchor verifier.
+
+Use `npm test` for faster Jest-only iteration; it runs the full Jest suite serially.
 
 For focused local work:
 
