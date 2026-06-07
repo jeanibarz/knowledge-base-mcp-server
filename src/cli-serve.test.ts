@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it } from '@jest/globals';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import * as http from 'node:http';
 import {
+  createDaemonCommandHandlers,
   formatStatsRunResultAsOpenMetrics,
   parseServeArgs,
   runServeStatus,
@@ -8,6 +9,8 @@ import {
 } from './cli-serve.js';
 import type { DaemonRunResult } from './daemon-client.js';
 import type { KbStatsPayload } from './kb-stats.js';
+import type { RunSearchDeps } from './cli-search.js';
+import type { LexicalIndex } from './lexical-index.js';
 
 interface RawResponse {
   statusCode: number;
@@ -111,6 +114,24 @@ describe('kb serve daemon', () => {
     } finally {
       await daemon.stop();
     }
+  });
+
+  it('injects a cached lexical loader into daemon-served search', async () => {
+    const lexicalIndex = { numFiles: () => 1 } as unknown as LexicalIndex;
+    const lexicalIndexLoader = jest.fn(async () => lexicalIndex);
+    const runSearchImpl = jest.fn(async (_args: string[], deps: RunSearchDeps = {} as RunSearchDeps) => {
+      await expect(deps.loadLexicalIndex?.('alpha', '/kb/alpha')).resolves.toBe(lexicalIndex);
+      return 0;
+    });
+    const handlers = createDaemonCommandHandlers({ lexicalIndexLoader, runSearchImpl });
+
+    const result = await handlers.search(['query', '--mode=hybrid']);
+
+    expect(result).toEqual({ exitCode: 0, stdout: '', stderr: '' });
+    expect(runSearchImpl).toHaveBeenCalledWith(['query', '--mode=hybrid'], expect.objectContaining({
+      loadLexicalIndex: lexicalIndexLoader,
+    }));
+    expect(lexicalIndexLoader).toHaveBeenCalledWith('alpha', '/kb/alpha');
   });
 
   it('exposes OpenMetrics text only when KB_METRICS_EXPORT is enabled', async () => {

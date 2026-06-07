@@ -1,7 +1,7 @@
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { runList } from './cli-list.js';
-import { runSearch } from './cli-search.js';
+import { createRunSearchDeps, runSearch, type RunSearchDeps } from './cli-search.js';
 import { captureProcessOutput } from './cli-shared.js';
 import { runStats } from './cli-stats.js';
 import {
@@ -17,6 +17,8 @@ import {
 } from './daemon-client.js';
 import { formatKbStatsOpenMetrics } from './prometheus-export.js';
 import type { KbStatsPayload } from './kb-stats.js';
+import { LexicalIndexCache } from './lexical-index-cache.js';
+import type { LexicalIndex } from './lexical-index.js';
 
 export const SERVE_HELP = `kb serve — resident local daemon for warm CLI reads
 
@@ -72,6 +74,13 @@ export interface DaemonCommandHandlers {
 export interface StartDaemonServerOptions extends Partial<ServeArgs> {
   handlers?: DaemonCommandHandlers;
   metricsHandler?: () => Promise<string>;
+}
+
+export interface DaemonCommandHandlerOptions {
+  lexicalIndexLoader?: (kbName: string, kbPath: string) => Promise<LexicalIndex>;
+  runSearchImpl?: typeof runSearch;
+  runListImpl?: typeof runList;
+  runStatsImpl?: typeof runStats;
 }
 
 export interface ResidentDaemon {
@@ -207,7 +216,7 @@ export async function startDaemonServer(
     idleTimeoutMs: options.idleTimeoutMs ?? DEFAULT_SERVE_ARGS.idleTimeoutMs,
   };
   assertLoopbackHost(parsed.host);
-  const handlers = options.handlers ?? defaultHandlers();
+  const handlers = options.handlers ?? createDaemonCommandHandlers();
   const metricsHandler = options.metricsHandler ?? defaultMetricsHandler;
   let idleTimer: NodeJS.Timeout | undefined;
   let queue: Promise<void> = Promise.resolve();
@@ -315,11 +324,17 @@ export function parseServeArgs(rest: string[]): ServeArgs {
   return out;
 }
 
-function defaultHandlers(): DaemonCommandHandlers {
+export function createDaemonCommandHandlers(options: DaemonCommandHandlerOptions = {}): DaemonCommandHandlers {
+  const cache = new LexicalIndexCache();
+  const loadLexicalIndex = options.lexicalIndexLoader ?? cache.load.bind(cache);
+  const searchDeps: RunSearchDeps = createRunSearchDeps({ loadLexicalIndex });
+  const runSearchImpl = options.runSearchImpl ?? runSearch;
+  const runListImpl = options.runListImpl ?? runList;
+  const runStatsImpl = options.runStatsImpl ?? runStats;
   return {
-    search: async (args) => captureProcessOutput(() => runSearch(args)),
-    list: async (args) => captureProcessOutput(() => runList(args)),
-    stats: async (args) => captureProcessOutput(() => runStats(args)),
+    search: async (args) => captureProcessOutput(() => runSearchImpl(args, searchDeps)),
+    list: async (args) => captureProcessOutput(() => runListImpl(args)),
+    stats: async (args) => captureProcessOutput(() => runStatsImpl(args)),
   };
 }
 
@@ -430,7 +445,7 @@ async function handleMetricsRequest(
 }
 
 async function defaultMetricsHandler(): Promise<string> {
-  const result = await defaultHandlers().stats(['--format=json']);
+  const result = await createDaemonCommandHandlers().stats(['--format=json']);
   return formatStatsRunResultAsOpenMetrics(result);
 }
 
