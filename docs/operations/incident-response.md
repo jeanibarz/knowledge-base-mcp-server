@@ -8,6 +8,10 @@ mitigation, then escalate only when the state is still unsafe or unexplained.
 Keep the first pass read-only. Capture the command output before deleting
 index files, clearing quarantine entries, or removing lock files.
 
+For code-first triage, use the operator taxonomy in
+[`docs/reference/error-codes.md`](../reference/error-codes.md). This runbook is
+symptom-first and links deeper procedures for the same failure modes.
+
 ## Quick Reference
 
 | Symptom | First confirmation | Primary mitigation | Deeper runbook |
