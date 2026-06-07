@@ -14,8 +14,12 @@
 // provider so embedder-dependent handlers run without network or user state.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { spawn, type ChildProcess } from 'child_process';
 import * as fsp from 'fs/promises';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -78,6 +82,31 @@ export interface E2eHarness {
   shutdown(): Promise<void>;
 }
 
+export type RemoteMcpTransport = 'http' | 'sse';
+
+export interface RemoteHarnessOptions extends StartHarnessOptions {
+  transport: RemoteMcpTransport;
+  /**
+   * Bearer token used by the remote transport. Defaults to a deterministic
+   * 32+ char test token so remote startup satisfies transport-config guards
+   * without depending on developer shell secrets.
+   */
+  authToken?: string;
+  /**
+   * Maximum time to wait for the spawned HTTP/SSE process to answer /health
+   * before failing the test. Defaults to 15s to absorb CI cold starts.
+   */
+  readinessTimeoutMs?: number;
+}
+
+export interface RemoteE2eHarness extends E2eHarness {
+  transport: RemoteMcpTransport;
+  authToken: string;
+  port: number;
+  baseUrl: URL;
+  mcpUrl: URL;
+}
+
 async function writeKnowledgeBases(
   rootDir: string,
   knowledgeBases: Record<string, KnowledgeBaseSpec> | undefined,
@@ -133,6 +162,23 @@ function buildChildEnv(
   };
 }
 
+async function createTempHarnessTree(
+  opts: StartHarnessOptions,
+): Promise<{
+  tmpRoot: string;
+  knowledgeBasesRootDir: string;
+  faissIndexPath: string;
+}> {
+  const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-e2e-'));
+  const knowledgeBasesRootDir = path.join(tmpRoot, 'kb');
+  const faissIndexPath = path.join(tmpRoot, 'faiss');
+  await fsp.mkdir(knowledgeBasesRootDir, { recursive: true });
+  await fsp.mkdir(faissIndexPath, { recursive: true });
+  await writeKnowledgeBases(knowledgeBasesRootDir, opts.knowledgeBases);
+  await writeActiveModel(faissIndexPath, opts.activeModel);
+  return { tmpRoot, knowledgeBasesRootDir, faissIndexPath };
+}
+
 /**
  * Boots `build/index.js` as a child process and returns a connected MCP
  * `Client`. Caller must `await harness.shutdown()` (typically from
@@ -148,13 +194,8 @@ export async function startMcpBinaryHarness(
 ): Promise<E2eHarness> {
   await assertServerBinaryBuilt();
 
-  const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-e2e-'));
-  const knowledgeBasesRootDir = path.join(tmpRoot, 'kb');
-  const faissIndexPath = path.join(tmpRoot, 'faiss');
-  await fsp.mkdir(knowledgeBasesRootDir, { recursive: true });
-  await fsp.mkdir(faissIndexPath, { recursive: true });
-  await writeKnowledgeBases(knowledgeBasesRootDir, opts.knowledgeBases);
-  await writeActiveModel(faissIndexPath, opts.activeModel);
+  const { tmpRoot, knowledgeBasesRootDir, faissIndexPath } =
+    await createTempHarnessTree(opts);
 
   const env = buildChildEnv(knowledgeBasesRootDir, faissIndexPath, opts.extraEnv);
 
@@ -200,6 +241,170 @@ export async function startMcpBinaryHarness(
     faissIndexPath,
     shutdown,
   };
+}
+
+export async function startRemoteMcpBinaryHarness(
+  opts: RemoteHarnessOptions,
+): Promise<RemoteE2eHarness> {
+  await assertServerBinaryBuilt();
+
+  const { tmpRoot, knowledgeBasesRootDir, faissIndexPath } =
+    await createTempHarnessTree(opts);
+  const port = await getAvailablePort('127.0.0.1');
+  const authToken = opts.authToken ?? 'kb-e2e-remote-token-000000000000000000';
+  const baseUrl = new URL(`http://127.0.0.1:${port}`);
+  const mcpUrl = new URL(opts.transport === 'http' ? '/mcp' : '/sse', baseUrl);
+  const requestTimeoutMs = opts.requestTimeoutMs ?? 60_000;
+
+  const env = buildChildEnv(knowledgeBasesRootDir, faissIndexPath, {
+    MCP_TRANSPORT: opts.transport,
+    MCP_PORT: String(port),
+    MCP_BIND_ADDR: '127.0.0.1',
+    MCP_AUTH_TOKEN: authToken,
+    MCP_AUTH_BACKOFF_THRESHOLD: '0',
+    ...(opts.extraEnv ?? {}),
+  });
+
+  const child = spawn(process.execPath, [SERVER_BINARY], {
+    cwd: REPO_ROOT,
+    env,
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  const stderrChunks: string[] = [];
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (chunk: string) => {
+    stderrChunks.push(chunk);
+    process.stderr.write(chunk);
+  });
+
+  const cleanupTempTree = async (): Promise<void> => {
+    try {
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup; the OS will reap /tmp eventually.
+    }
+  };
+
+  try {
+    await waitForRemoteHealth(
+      new URL('/health', baseUrl),
+      child,
+      stderrChunks,
+      opts.readinessTimeoutMs ?? 15_000,
+    );
+  } catch (err) {
+    await terminateChild(child);
+    await cleanupTempTree();
+    throw err;
+  }
+
+  const client = new Client({
+    name: 'kb-e2e-remote-test-client',
+    version: '0.0.0-test',
+  });
+
+  const authHeaders = { Authorization: `Bearer ${authToken}` };
+  const transport = opts.transport === 'http'
+    ? new StreamableHTTPClientTransport(mcpUrl, {
+        requestInit: { headers: authHeaders },
+      })
+    : new SSEClientTransport(mcpUrl, {
+        requestInit: { headers: authHeaders },
+      });
+
+  try {
+    await client.connect(transport, { timeout: requestTimeoutMs });
+  } catch (err) {
+    await terminateChild(child);
+    await cleanupTempTree();
+    throw err;
+  }
+
+  let shutdownCompleted = false;
+  const shutdown = async (): Promise<void> => {
+    if (shutdownCompleted) return;
+    shutdownCompleted = true;
+    try {
+      await client.close();
+    } catch {
+      // The remote child may already be terminating; cleanup continues below.
+    }
+    await terminateChild(child);
+    await cleanupTempTree();
+  };
+
+  return {
+    client,
+    knowledgeBasesRootDir,
+    faissIndexPath,
+    transport: opts.transport,
+    authToken,
+    port,
+    baseUrl,
+    mcpUrl,
+    shutdown,
+  };
+}
+
+async function getAvailablePort(host: string): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, host, () => resolve());
+  });
+  const address = server.address();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (address === null || typeof address === 'string') {
+    throw new Error(`Unable to allocate an ephemeral ${host} port`);
+  }
+  return address.port;
+}
+
+async function waitForRemoteHealth(
+  url: URL,
+  child: ChildProcess,
+  stderrChunks: string[],
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(
+        `Remote MCP child exited before readiness (code=${child.exitCode}). stderr:\n${stderrChunks.join('')}`,
+      );
+    }
+    try {
+      const response = await fetch(url);
+      if (response.ok) return;
+      lastError = new Error(`GET ${url.href} returned ${response.status}`);
+    } catch (err) {
+      lastError = err;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(
+    `Timed out waiting ${timeoutMs}ms for remote MCP health at ${url.href}: ` +
+      `${lastError instanceof Error ? lastError.message : String(lastError)}\n` +
+      `stderr:\n${stderrChunks.join('')}`,
+  );
+}
+
+async function terminateChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise<void>((resolve) => {
+    child.once('exit', () => resolve());
+  });
+  child.kill('SIGTERM');
+  const timeout = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+      }
+      resolve();
+    }, 2_000);
+  });
+  await Promise.race([exited, timeout]);
 }
 
 async function assertServerBinaryBuilt(): Promise<void> {
