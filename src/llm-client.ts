@@ -12,6 +12,8 @@ export interface ChatCompletionOptions {
   messages: LlmChatMessage[];
   temperature?: number;
   timeoutMs?: number;
+  /** Retry policy for transient provider/network failures. Set to false to disable. */
+  retry?: false | LlmRetryOptions;
   /**
    * Bearer API key for hosted providers (e.g. OpenRouter). When omitted it is
    * resolved from the environment via {@link resolveLlmProvider}. Sent as
@@ -43,21 +45,54 @@ export interface LlmProbeOptions {
   chatTimeoutMs?: number;
 }
 
+export interface LlmRetryOptions {
+  /** Additional attempts after the initial request. Defaults to KB_LLM_MAX_RETRIES or 2. */
+  maxRetries?: number;
+  /** Base exponential backoff delay before jitter. */
+  baseDelayMs?: number;
+  /** Per-retry cap before jitter. */
+  maxDelayMs?: number;
+  /** Cap across all retry sleeps for one chat completion call. */
+  maxTotalDelayMs?: number;
+  /** Injectable for deterministic tests. Defaults to Math.random. */
+  random?: () => number;
+  /** Injectable for deterministic tests. Defaults to setTimeout-backed sleep. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
 export class LlmClientError extends Error {
   /** HTTP status when the failure came from a non-ok response. */
   readonly status?: number;
   /** Server-advised backoff in ms, parsed from a `Retry-After` header. */
   readonly retryAfterMs?: number;
+  /** Whether this error class is safe to retry inside the shared LLM client. */
+  readonly transient?: boolean;
 
-  constructor(message: string, opts?: { status?: number; retryAfterMs?: number }) {
+  constructor(message: string, opts?: { status?: number; retryAfterMs?: number; transient?: boolean }) {
     super(message);
     this.name = 'LlmClientError';
     if (opts?.status !== undefined) this.status = opts.status;
     if (opts?.retryAfterMs !== undefined) this.retryAfterMs = opts.retryAfterMs;
+    if (opts?.transient !== undefined) this.transient = opts.transient;
   }
 }
 
 type FetchLike = typeof fetch;
+
+interface ResolvedRetryPolicy {
+  maxRetries: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  maxTotalDelayMs: number;
+  random: () => number;
+  sleep: (ms: number) => Promise<void>;
+}
+
+const DEFAULT_LLM_MAX_RETRIES = 2;
+const MAX_LLM_MAX_RETRIES = 5;
+const DEFAULT_LLM_RETRY_BASE_DELAY_MS = 250;
+const DEFAULT_LLM_RETRY_MAX_DELAY_MS = 2_000;
+const DEFAULT_LLM_RETRY_MAX_TOTAL_DELAY_MS = 5_000;
 
 /**
  * Parse an HTTP `Retry-After` header (delta-seconds or an HTTP-date) into ms.
@@ -102,8 +137,6 @@ export async function callChatCompletion(
   const provider = resolveLlmProvider();
   const apiKey = options.apiKey ?? provider.apiKey;
   const remote = apiKey !== undefined;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 180_000);
   const payload: Record<string, unknown> = {
     model: options.model ?? provider.model ?? 'local-model',
     messages: options.messages,
@@ -124,7 +157,40 @@ export async function callChatCompletion(
     if (referer !== undefined) headers['HTTP-Referer'] = referer;
   }
 
+  const retryPolicy = resolveRetryPolicy(options.retry);
+  let totalRetryDelayMs = 0;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await callChatCompletionOnce(endpoint, payload, headers, options.timeoutMs, fetchImpl);
+    } catch (err) {
+      if (
+        !(err instanceof LlmClientError) ||
+        retryPolicy === null ||
+        attempt >= retryPolicy.maxRetries ||
+        !isTransientLlmClientError(err)
+      ) {
+        throw err;
+      }
+
+      const remainingDelayMs = retryPolicy.maxTotalDelayMs - totalRetryDelayMs;
+      if (remainingDelayMs <= 0) throw err;
+      const delayMs = Math.min(computeRetryDelayMs(err, attempt, retryPolicy), remainingDelayMs);
+      totalRetryDelayMs += delayMs;
+      await retryPolicy.sleep(delayMs);
+    }
+  }
+}
+
+async function callChatCompletionOnce(
+  endpoint: string,
+  payload: Record<string, unknown>,
+  headers: Record<string, string>,
+  timeoutMs: number | undefined,
+  fetchImpl: FetchLike,
+): Promise<ChatCompletionResult> {
   let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs ?? 180_000);
   try {
     response = await fetchImpl(endpoint, {
       method: 'POST',
@@ -135,34 +201,112 @@ export async function callChatCompletion(
   } catch (err) {
     clearTimeout(timeout);
     const msg = err instanceof Error ? err.message : String(err);
-    throw new LlmClientError(`local LLM request failed: ${msg}`);
+    throw new LlmClientError(`local LLM request failed: ${msg}`, { transient: true });
   }
   clearTimeout(timeout);
 
-  let data: unknown;
-  try {
-    data = await response.json();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new LlmClientError(`local LLM returned non-JSON response: ${msg}`);
-  }
+  const body = await readResponseBody(response);
 
   if (!response.ok) {
     const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
+    const message = body.ok
+      ? extractErrorMessage(body.data)
+      : body.text ?? body.errorMessage;
     throw new LlmClientError(
-      `local LLM returned HTTP ${response.status}: ${extractErrorMessage(data)}`,
+      `local LLM returned HTTP ${response.status}: ${message}`,
       { status: response.status, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
     );
   }
 
+  if (!body.ok) {
+    throw new LlmClientError(`local LLM returned non-JSON response: ${body.errorMessage}`, { transient: false });
+  }
+
+  const data = body.data;
   const content = extractAssistantContent(data);
   if (content === null || content.trim() === '') {
-    throw new LlmClientError('local LLM response did not contain choices[0].message.content');
+    throw new LlmClientError('local LLM response did not contain choices[0].message.content', { transient: false });
   }
   const model = typeof (data as { model?: unknown }).model === 'string'
     ? (data as { model: string }).model
     : null;
   return { content: content.trim(), model, raw: data };
+}
+
+async function readResponseBody(response: Response): Promise<
+  | { ok: true; data: unknown }
+  | { ok: false; text?: string; errorMessage: string }
+> {
+  let raw: string;
+  try {
+    raw = await response.text();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, errorMessage: msg };
+  }
+  try {
+    return { ok: true, data: JSON.parse(raw) as unknown };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, text: raw, errorMessage: msg };
+  }
+}
+
+function resolveRetryPolicy(options: ChatCompletionOptions['retry']): ResolvedRetryPolicy | null {
+  if (options === false) return null;
+  const maxRetries = boundedInteger(
+    options?.maxRetries,
+    boundedInteger(envInteger('KB_LLM_MAX_RETRIES'), DEFAULT_LLM_MAX_RETRIES, 0, MAX_LLM_MAX_RETRIES),
+    0,
+    MAX_LLM_MAX_RETRIES,
+  );
+  if (maxRetries === 0) return null;
+  return {
+    maxRetries,
+    baseDelayMs: boundedInteger(options?.baseDelayMs, DEFAULT_LLM_RETRY_BASE_DELAY_MS, 0, 60_000),
+    maxDelayMs: boundedInteger(options?.maxDelayMs, DEFAULT_LLM_RETRY_MAX_DELAY_MS, 0, 60_000),
+    maxTotalDelayMs: boundedInteger(options?.maxTotalDelayMs, DEFAULT_LLM_RETRY_MAX_TOTAL_DELAY_MS, 0, 60_000),
+    random: options?.random ?? Math.random,
+    sleep: options?.sleep ?? sleep,
+  };
+}
+
+function envInteger(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (raw === undefined || raw === '') return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+function isTransientLlmClientError(err: LlmClientError): boolean {
+  if (err.transient !== undefined) return err.transient;
+  if (err.status === undefined) return false;
+  return err.status === 408 || err.status === 429 || err.status >= 500;
+}
+
+function computeRetryDelayMs(
+  err: LlmClientError,
+  retryIndex: number,
+  policy: ResolvedRetryPolicy,
+): number {
+  if (err.retryAfterMs !== undefined) return Math.max(0, err.retryAfterMs);
+  const exponentialCap = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** retryIndex);
+  return Math.floor(exponentialCap * clampUnitInterval(policy.random()));
+}
+
+function clampUnitInterval(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function probeLlmEndpoint(

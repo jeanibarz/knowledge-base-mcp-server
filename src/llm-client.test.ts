@@ -12,6 +12,7 @@ describe('llm-client', () => {
   const SAVED_KEYS = [
     'KB_LLM_FAKE', 'KB_LOG_FORMAT', 'KB_LLM_PROVIDER', 'KB_OPENROUTER_API_KEY',
     'OPENROUTER_API_KEY', 'KB_LLM_MODEL', 'KB_LLM_APP_TITLE', 'KB_LLM_HTTP_REFERER',
+    'KB_LLM_MAX_RETRIES',
   ] as const;
   const saved: Record<string, string | undefined> = {};
   for (const k of SAVED_KEYS) saved[k] = process.env[k];
@@ -44,6 +45,119 @@ describe('llm-client', () => {
     expect(result.model).toBe('local-model');
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
     expect(calls[0][0]).toBe('http://127.0.0.1:8080/v1/chat/completions');
+  });
+
+  it('retries a transient network failure and returns the later success', async () => {
+    const delays: number[] = [];
+    const fetchMock = jest.fn()
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        model: 'local-model',
+        choices: [{ message: { content: ' recovered ' } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+      retry: {
+        maxRetries: 2,
+        baseDelayMs: 100,
+        maxDelayMs: 1_000,
+        maxTotalDelayMs: 1_000,
+        random: () => 0.5,
+        sleep: async (ms) => { delays.push(ms); },
+      },
+    }, fetchMock as unknown as typeof fetch);
+
+    expect(result.content).toBe('recovered');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(delays).toEqual([50]);
+  });
+
+  it('does not retry terminal auth failures', async () => {
+    const delays: number[] = [];
+    const fetchMock = jest.fn(async () => new Response(
+      JSON.stringify({ error: { message: 'bad key' } }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } },
+    ));
+
+    await expect(callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+      retry: {
+        maxRetries: 2,
+        sleep: async (ms) => { delays.push(ms); },
+      },
+    }, fetchMock as unknown as typeof fetch)).rejects.toMatchObject({
+      name: 'LlmClientError',
+      status: 401,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(delays).toEqual([]);
+  });
+
+  it('surfaces the final transient error after the retry budget is exhausted', async () => {
+    const delays: number[] = [];
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: { message: 'warming up' } }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } },
+      ))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: { message: 'still down' } }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } },
+      ));
+
+    await expect(callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+      retry: {
+        maxRetries: 1,
+        baseDelayMs: 100,
+        maxDelayMs: 1_000,
+        maxTotalDelayMs: 1_000,
+        random: () => 1,
+        sleep: async (ms) => { delays.push(ms); },
+      },
+    }, fetchMock as unknown as typeof fetch)).rejects.toMatchObject({
+      name: 'LlmClientError',
+      status: 503,
+      message: expect.stringContaining('still down'),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(delays).toEqual([100]);
+  });
+
+  it('honors Retry-After for retry delay while capping total wait', async () => {
+    const delays: number[] = [];
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: { message: 'rate limited' } }),
+        { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '7' } },
+      ))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        model: 'local-model',
+        choices: [{ message: { content: 'ok' } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+      retry: {
+        maxRetries: 1,
+        baseDelayMs: 100,
+        maxDelayMs: 100,
+        maxTotalDelayMs: 2_500,
+        random: () => 0,
+        sleep: async (ms) => { delays.push(ms); },
+      },
+    }, fetchMock as unknown as typeof fetch);
+
+    expect(result.content).toBe('ok');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(delays).toEqual([2_500]);
   });
 
   it('uses the in-process fake LLM and skips fetch when KB_LLM_FAKE is on', async () => {
@@ -154,6 +268,7 @@ describe('llm-client', () => {
     await expect(callChatCompletion({
       endpoint: 'http://127.0.0.1:8080',
       messages: [{ role: 'user', content: 'q' }],
+      retry: false,
     }, fetchMock as unknown as typeof fetch)).rejects.toMatchObject({
       name: 'LlmClientError',
       status: 429,
