@@ -2,8 +2,10 @@ import * as fsp from 'node:fs/promises';
 
 import {
   parseDotEnvText,
+  showConfigEnv,
   validateConfigEnv,
   type ConfigFinding,
+  type ConfigShowReport,
   type ConfigValidateReport,
 } from './config/schema.js';
 
@@ -11,14 +13,19 @@ export const CONFIG_HELP = `kb config — inspect and validate KB configuration
 
 Usage:
   kb config validate [--file=.env] [--format=md|json]
+  kb config show [--format=md|json] [--non-default-only]
 
 Validates known environment variables against the static KB config schema:
 type, enum membership, numeric ranges, URL syntax, and cross-variable
 dependencies. The command is read-only and does not probe live endpoints.
 
+Shows the effective value and source for every known configuration variable.
+Secrets such as API keys and MCP_AUTH_TOKEN are redacted.
+
 Options:
   --file=<path>             Parse this dotenv file instead of process.env.
   --format=md|json          Output format (default: md).
+  --non-default-only        For show, print only values supplied by env.
   --help, -h                Show this help.
 
 Exit codes:
@@ -28,9 +35,10 @@ Exit codes:
 `;
 
 export interface ConfigArgs {
-  action: 'validate';
+  action: 'validate' | 'show';
   file?: string;
   format: 'md' | 'json';
+  nonDefaultOnly: boolean;
 }
 
 export async function runConfig(rest: string[]): Promise<number> {
@@ -40,6 +48,16 @@ export async function runConfig(rest: string[]): Promise<number> {
   } catch (err) {
     process.stderr.write(`kb config: ${(err as Error).message}\n`);
     return 2;
+  }
+
+  if (parsed.action === 'show') {
+    const report = showConfigEnv(process.env, { nonDefaultOnly: parsed.nonDefaultOnly });
+    if (parsed.format === 'json') {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(formatConfigShowMarkdown(report));
+    }
+    return 0;
   }
 
   let env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env;
@@ -76,13 +94,13 @@ export async function runConfig(rest: string[]): Promise<number> {
 
 export function parseConfigArgs(rest: readonly string[]): ConfigArgs {
   if (rest.length === 0) {
-    throw new Error('expected action: validate');
+    throw new Error('expected action: validate or show');
   }
   const [action, ...args] = rest;
-  if (action !== 'validate') {
+  if (action !== 'validate' && action !== 'show') {
     throw new Error(`unknown action: ${action}`);
   }
-  const out: ConfigArgs = { action: 'validate', format: 'md' };
+  const out: ConfigArgs = { action, format: 'md', nonDefaultOnly: false };
   for (const raw of args) {
     if (raw === '--format=json') {
       out.format = 'json';
@@ -98,7 +116,13 @@ export function parseConfigArgs(rest: readonly string[]): ConfigArgs {
     if (raw.startsWith('--file=')) {
       const value = raw.slice('--file='.length);
       if (value.trim() === '') throw new Error('--file requires a path');
+      if (action !== 'validate') throw new Error('--file is only supported by validate');
       out.file = value;
+      continue;
+    }
+    if (raw === '--non-default-only') {
+      if (action !== 'show') throw new Error('--non-default-only is only supported by show');
+      out.nonDefaultOnly = true;
       continue;
     }
     throw new Error(`unknown flag: ${raw}`);
@@ -128,6 +152,25 @@ export function formatConfigValidateMarkdown(report: ConfigValidateReport): stri
       finding.message,
       '',
     ].map(escapeMarkdownTableCell).join(' | '));
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+export function formatConfigShowMarkdown(report: ConfigShowReport): string {
+  const lines = [
+    '# kb config show',
+    '',
+    '| Variable | Source | Kind | Value |',
+    '| --- | --- | --- | --- |',
+  ];
+  for (const entry of report.entries) {
+    const cells = [
+      entry.name,
+      entry.source,
+      entry.kind,
+      entry.value ?? '',
+    ].map(escapeMarkdownTableCell);
+    lines.push(`| ${cells.join(' | ')} |`);
   }
   return `${lines.join('\n')}\n`;
 }

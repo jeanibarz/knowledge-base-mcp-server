@@ -1,3 +1,20 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+import {
+  DEFAULT_ASK_KNOWLEDGE_DESCRIPTION,
+  DEFAULT_KB_STATS_DESCRIPTION,
+  DEFAULT_LIST_KNOWLEDGE_BASES_DESCRIPTION,
+  DEFAULT_LIST_MODELS_DESCRIPTION,
+  DEFAULT_RETRIEVE_KNOWLEDGE_DESCRIPTION,
+} from './mcp-descriptions.js';
+import {
+  defaultFaissIndexPath,
+  resolveKnowledgeBasesRootDir,
+} from './paths.js';
+import {
+  defaultIndexingBatchSize,
+} from './indexing.js';
 import {
   DEFAULT_HUGGINGFACE_MODEL_NAME,
   DEFAULT_OPENAI_MODEL_NAME,
@@ -42,6 +59,21 @@ export interface ConfigValidateReport {
   findings: ConfigFinding[];
 }
 
+export type ConfigValueSource = 'env' | 'default';
+
+export interface ConfigShowEntry {
+  name: string;
+  kind: ConfigValueKind;
+  value: string | null;
+  source: ConfigValueSource;
+  redacted: boolean;
+}
+
+export interface ConfigShowReport {
+  schema_version: 'kb.config-show.v1';
+  entries: ConfigShowEntry[];
+}
+
 export interface DotEnvParseResult {
   env: Record<string, string>;
   errors: ConfigFinding[];
@@ -63,6 +95,9 @@ interface BaseSpec<K extends ConfigValueKind> {
   name: string;
   kind: K;
   default?: string;
+  defaultValue?: (env: NodeJS.ProcessEnv | Record<string, string | undefined>) => string | null;
+  emptyUsesDefault?: boolean;
+  normalize?: (value: string) => string;
   min?: number;
   max?: number;
   secret?: boolean;
@@ -103,30 +138,33 @@ const CONTROLLED_PREFIXES = [
 ];
 
 export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
-  { name: 'KNOWLEDGE_BASES_ROOT_DIR', kind: 'path', default: '~/knowledge_bases' },
-  { name: 'FAISS_INDEX_PATH', kind: 'path', default: '$KNOWLEDGE_BASES_ROOT_DIR/.faiss' },
+  { name: 'KNOWLEDGE_BASES_ROOT_DIR', kind: 'path', defaultValue: (env) => resolveKnowledgeBasesRootDir(env.KNOWLEDGE_BASES_ROOT_DIR) },
+  { name: 'FAISS_INDEX_PATH', kind: 'path', defaultValue: (env) => defaultFaissIndexPath(effectiveStringValue(env, 'KNOWLEDGE_BASES_ROOT_DIR', resolveKnowledgeBasesRootDir(undefined))) },
+  { name: 'KB_INDEX_TYPE', kind: 'enum', values: ['flat', 'sq8'], default: 'flat', normalize: lowercase },
   { name: 'EMBEDDING_PROVIDER', kind: 'enum', values: [...KNOWN_EMBEDDING_PROVIDERS], default: 'huggingface' },
   { name: 'KB_ACTIVE_MODEL', kind: 'string' },
   { name: 'KB_FAKE_DIM', kind: 'integer', default: '256', min: 8, max: 4096 },
 
   { name: 'HUGGINGFACE_API_KEY', kind: 'secret', secret: true },
-  { name: 'HUGGINGFACE_MODEL_NAME', kind: 'string', default: DEFAULT_HUGGINGFACE_MODEL_NAME },
-  { name: 'HUGGINGFACE_PROVIDER', kind: 'string', default: 'hf-inference' },
-  { name: 'HUGGINGFACE_ENDPOINT_URL', kind: 'url', protocols: ['http:', 'https:'] },
+  { name: 'HUGGINGFACE_MODEL_NAME', kind: 'string', default: DEFAULT_HUGGINGFACE_MODEL_NAME, emptyUsesDefault: true },
+  { name: 'HUGGINGFACE_PROVIDER', kind: 'string', default: 'hf-inference', emptyUsesDefault: true },
+  { name: 'HUGGINGFACE_ENDPOINT_URL', kind: 'url', defaultValue: (env) => `https://router.huggingface.co/hf-inference/models/${effectiveValue(env, 'HUGGINGFACE_MODEL_NAME')}/pipeline/feature-extraction`, protocols: ['http:', 'https:'] },
   { name: 'OLLAMA_BASE_URL', kind: 'url', default: 'http://localhost:11434', protocols: ['http:', 'https:'] },
-  { name: 'OLLAMA_MODEL', kind: 'string', default: 'dengcao/Qwen3-Embedding-0.6B:Q8_0' },
+  { name: 'OLLAMA_MODEL', kind: 'string', default: 'dengcao/Qwen3-Embedding-0.6B:Q8_0', emptyUsesDefault: true },
   { name: 'OPENAI_API_KEY', kind: 'secret', secret: true },
-  { name: 'OPENAI_MODEL_NAME', kind: 'string', default: DEFAULT_OPENAI_MODEL_NAME },
+  { name: 'OPENAI_MODEL_NAME', kind: 'string', default: DEFAULT_OPENAI_MODEL_NAME, emptyUsesDefault: true },
 
-  { name: 'INDEXING_BATCH_SIZE', kind: 'integer', min: 1, max: 512 },
-  { name: 'KB_CHUNK_SIZE', kind: 'integer', min: 1 },
-  { name: 'KB_CHUNK_OVERLAP', kind: 'integer', min: 0 },
-  { name: 'INGEST_EXTRA_EXTENSIONS', kind: 'csv' },
-  { name: 'INGEST_EXCLUDE_PATHS', kind: 'csv' },
-  { name: 'KB_MAX_FILE_BYTES', kind: 'integer', min: 1 },
-  { name: 'KB_MAX_EXTRACTED_TEXT_BYTES', kind: 'integer', min: 1 },
+  { name: 'INDEXING_BATCH_SIZE', kind: 'integer', defaultValue: (env) => String(defaultIndexingBatchSize(effectiveStringValue(env, 'EMBEDDING_PROVIDER', 'huggingface'))), min: 1, max: 512 },
+  { name: 'KB_CHUNK_SIZE', kind: 'integer', default: '1000', min: 1 },
+  { name: 'KB_CHUNK_OVERLAP', kind: 'integer', defaultValue: (env) => defaultChunkOverlap(env), min: 0 },
+  { name: 'INGEST_EXTRA_EXTENSIONS', kind: 'csv', default: '' },
+  { name: 'INGEST_EXCLUDE_PATHS', kind: 'csv', default: '' },
+  { name: 'KB_MAX_FILE_BYTES', kind: 'integer', default: String(100 * 1024 * 1024), min: 1 },
+  { name: 'KB_MAX_EXTRACTED_TEXT_BYTES', kind: 'integer', default: String(16 * 1024 * 1024), min: 1 },
   { name: 'KB_LARGE_FILE_POLICY', kind: 'enum', values: ['skip', 'truncate', 'error'], default: 'skip' },
-  { name: 'KB_REFRESH_QUIESCE_MS', kind: 'duration', min: 0 },
+  { name: 'KB_REFRESH_QUIESCE_MS', kind: 'duration', default: '0', min: 0 },
+  { name: 'KB_INGEST_SECRET_SCAN', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
+  { name: 'KB_SECRET_SCAN_BYPASS_KBS', kind: 'csv', default: '' },
 
   { name: 'KB_QUERY_CACHE', kind: 'boolean', default: 'on', booleanValues: QUERY_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'yes', 'enabled'] },
   { name: 'KB_QUERY_CACHE_LRU_MAX', kind: 'integer', default: '256', min: 0 },
@@ -140,13 +178,13 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_LLM_PROVIDER', kind: 'enum', values: ['local', 'openrouter'], default: 'local' },
   { name: 'KB_OPENROUTER_API_KEY', kind: 'secret', secret: true },
   { name: 'OPENROUTER_API_KEY', kind: 'secret', secret: true },
-  { name: 'KB_LLM_APP_TITLE', kind: 'string', default: 'knowledge-base-mcp' },
+  { name: 'KB_LLM_APP_TITLE', kind: 'string', default: 'knowledge-base-mcp', emptyUsesDefault: true },
   { name: 'KB_LLM_HTTP_REFERER', kind: 'string' },
   { name: 'KB_LLM_FAKE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_LLM_FAKE_RULES', kind: 'path' },
-  { name: 'KB_LLM_CONFIG_DIR', kind: 'path' },
-  { name: 'KB_LLM_STATE_DIR', kind: 'path' },
-  { name: 'KB_LLM_SYSTEMD_USER_DIR', kind: 'path' },
+  { name: 'KB_LLM_CONFIG_DIR', kind: 'path', defaultValue: (env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'kb', 'llm') },
+  { name: 'KB_LLM_STATE_DIR', kind: 'path', defaultValue: (env) => path.join(env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'kb', 'llm') },
+  { name: 'KB_LLM_SYSTEMD_USER_DIR', kind: 'path', defaultValue: (env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user') },
 
   { name: 'KB_RELEVANCE_GATE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_GATE_EMPTY_VERDICT', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
@@ -174,11 +212,13 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'LOG_LEVEL', kind: 'enum', values: ['debug', 'info', 'warn', 'error'], default: 'info' },
   { name: 'LOG_FILE', kind: 'path' },
   { name: 'KB_LOG_VERBOSE', kind: 'boolean', default: 'off' },
+  { name: 'KB_SLOW_QUERY_MS', kind: 'duration', min: 1 },
+  { name: 'KB_METRICS_EXPORT', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_MUTATION_AUDIT_LOG', kind: 'path' },
   { name: 'KB_AGE_BUDGET_HOURS', kind: 'integer', min: 1 },
 
   { name: 'KB_DAEMON_URL', kind: 'url', protocols: ['http:', 'https:'] },
-  { name: 'KB_DAEMON_HOST', kind: 'string', default: '127.0.0.1' },
+  { name: 'KB_DAEMON_HOST', kind: 'string', default: '127.0.0.1', emptyUsesDefault: true },
   { name: 'KB_DAEMON_PORT', kind: 'integer', default: '17799', min: 1, max: 65535 },
   { name: 'MCP_TRANSPORT', kind: 'enum', values: ['stdio', 'sse', 'http'], default: 'stdio' },
   { name: 'MCP_PORT', kind: 'integer', default: '8765', min: 1, max: 65535 },
@@ -189,16 +229,17 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'MCP_AUTH_BACKOFF_MS', kind: 'duration', default: '30000', min: 0 },
   { name: 'MCP_AUTH_BACKOFF_MAX_ENTRIES', kind: 'integer', default: '1024', min: 1 },
 
-  { name: 'REINDEX_TRIGGER_PATH', kind: 'path' },
+  { name: 'REINDEX_TRIGGER_PATH', kind: 'path', defaultValue: (env) => path.join(effectiveStringValue(env, 'KNOWLEDGE_BASES_ROOT_DIR', resolveKnowledgeBasesRootDir(undefined)), '.reindex-trigger') },
   { name: 'REINDEX_TRIGGER_POLL_MS', kind: 'duration', default: '5000', min: 0, max: 60000 },
   { name: 'KB_FS_WATCH', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_FS_WATCH_DEBOUNCE_MS', kind: 'duration', default: '250', min: 25, max: 60000 },
   { name: 'KB_INDEX_VERSION_RETENTION', kind: 'integer', default: '2', min: 0, integerSyntax: 'digits' },
 
-  { name: 'RETRIEVE_KNOWLEDGE_DESCRIPTION', kind: 'string' },
-  { name: 'LIST_KNOWLEDGE_BASES_DESCRIPTION', kind: 'string' },
-  { name: 'LIST_MODELS_DESCRIPTION', kind: 'string' },
-  { name: 'KB_STATS_DESCRIPTION', kind: 'string' },
+  { name: 'RETRIEVE_KNOWLEDGE_DESCRIPTION', kind: 'string', default: DEFAULT_RETRIEVE_KNOWLEDGE_DESCRIPTION, emptyUsesDefault: true },
+  { name: 'ASK_KNOWLEDGE_DESCRIPTION', kind: 'string', default: DEFAULT_ASK_KNOWLEDGE_DESCRIPTION, emptyUsesDefault: true },
+  { name: 'LIST_KNOWLEDGE_BASES_DESCRIPTION', kind: 'string', default: DEFAULT_LIST_KNOWLEDGE_BASES_DESCRIPTION, emptyUsesDefault: true },
+  { name: 'LIST_MODELS_DESCRIPTION', kind: 'string', default: DEFAULT_LIST_MODELS_DESCRIPTION, emptyUsesDefault: true },
+  { name: 'KB_STATS_DESCRIPTION', kind: 'string', default: DEFAULT_KB_STATS_DESCRIPTION, emptyUsesDefault: true },
 ] as const;
 
 const SCHEMA_BY_NAME = new Map(CONFIG_SCHEMA.map((spec) => [spec.name, spec]));
@@ -210,12 +251,12 @@ export function validateConfigEnv(
   const source = options.source ?? 'process.env';
   const findings: ConfigFinding[] = [];
   for (const spec of CONFIG_SCHEMA) {
-    findings.push(validateSpec(spec, env[spec.name], source));
+    findings.push(validateSpec(spec, env[spec.name], source, env));
   }
   for (const [name, raw] of Object.entries(env).sort(([a], [b]) => a.localeCompare(b))) {
     if (SCHEMA_BY_NAME.has(name)) continue;
     const spec = dynamicSpecForName(name);
-    if (spec !== null) findings.push(validateSpec(spec, raw, source));
+    if (spec !== null) findings.push(validateSpec(spec, raw, source, env));
   }
   findings.push(...validateDependencies(env, source));
   findings.push(...validateUnknownControlledVars(env, source));
@@ -229,6 +270,20 @@ export function validateConfigEnv(
     checked_at: (options.now ?? (() => new Date()))().toISOString(),
     counts,
     findings,
+  };
+}
+
+export function showConfigEnv(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  options: { nonDefaultOnly?: boolean } = {},
+): ConfigShowReport {
+  const entries = CONFIG_SCHEMA
+    .map((spec) => showSpec(spec, env))
+    .filter((entry) => !options.nonDefaultOnly || entry.source !== 'default');
+
+  return {
+    schema_version: 'kb.config-show.v1',
+    entries,
   };
 }
 
@@ -271,15 +326,21 @@ export function parseDotEnvText(text: string, source = '.env'): DotEnvParseResul
   return { env, errors };
 }
 
-function validateSpec(spec: ConfigSpec, raw: string | undefined, source: string): ConfigFinding {
-  const value = normalizeRaw(raw);
+function validateSpec(
+  spec: ConfigSpec,
+  raw: string | undefined,
+  source: string,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): ConfigFinding {
+  const value = normalizeSpecValue(spec, normalizeRaw(raw));
   const displayValue = displayRawValue(spec, value);
+  const defaultValue = defaultForSpec(spec, env);
   if (value === undefined) {
-    return finding(spec.name, 'ok', spec.kind, source, null, spec.default === undefined
+    return finding(spec.name, 'ok', spec.kind, source, null, defaultValue === null
       ? 'unset'
-      : `unset; default ${spec.default} applies`);
+      : `unset; default ${defaultValue} applies`);
   }
-  if (value === '' && spec.kind !== 'string' && spec.kind !== 'secret') {
+  if (value === '' && usesDefaultForEmpty(spec)) {
     return finding(spec.name, 'ok', spec.kind, source, displayValue, 'empty; default applies');
   }
 
@@ -308,6 +369,21 @@ function validateSpec(spec: ConfigSpec, raw: string | undefined, source: string)
     case 'string':
       return finding(spec.name, 'ok', spec.kind, source, displayValue, value === '' ? 'empty string' : 'set');
   }
+}
+
+function showSpec(
+  spec: ConfigSpec,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): ConfigShowEntry {
+  const value = effectiveValue(env, spec.name);
+  const redacted = isSecretSpec(spec) && value !== null && value !== '';
+  return {
+    name: spec.name,
+    kind: spec.kind,
+    value: redacted ? '<redacted>' : value,
+    source: sourceForSpec(spec, env),
+    redacted,
+  };
 }
 
 function validateNumberLike(
@@ -466,6 +542,65 @@ function normalizeRaw(raw: string | undefined): string | undefined {
   return raw === undefined ? undefined : raw.trim();
 }
 
+function effectiveValue(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  name: string,
+): string | null {
+  const spec = SCHEMA_BY_NAME.get(name);
+  if (spec === undefined) return null;
+  const value = normalizeSpecValue(spec, normalizeRaw(env[name]));
+  if (value === undefined) return defaultForSpec(spec, env);
+  if (value === '' && usesDefaultForEmpty(spec)) {
+    return defaultForSpec(spec, env);
+  }
+  return value;
+}
+
+function effectiveStringValue(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  name: string,
+  fallback: string,
+): string {
+  return effectiveValue(env, name) ?? fallback;
+}
+
+function sourceForSpec(
+  spec: ConfigSpec,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): ConfigValueSource {
+  const value = normalizeSpecValue(spec, normalizeRaw(env[spec.name]));
+  if (value === undefined) return 'default';
+  if (value === '' && usesDefaultForEmpty(spec)) return 'default';
+  return 'env';
+}
+
+function defaultForSpec(
+  spec: ConfigSpec,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): string | null {
+  if (spec.defaultValue !== undefined) return spec.defaultValue(env);
+  return spec.default ?? null;
+}
+
+function defaultChunkOverlap(env: NodeJS.ProcessEnv | Record<string, string | undefined>): string {
+  const size = Number(effectiveValue(env, 'KB_CHUNK_SIZE'));
+  if (!Number.isFinite(size) || size <= 0 || Math.floor(size) === 1000) return '200';
+  return String(Math.floor(Math.floor(size) / 5));
+}
+
+function normalizeSpecValue(spec: ConfigSpec, value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return spec.normalize?.(value) ?? value;
+}
+
+function usesDefaultForEmpty(spec: ConfigSpec): boolean {
+  return spec.emptyUsesDefault === true || (spec.kind !== 'string' && spec.kind !== 'secret');
+}
+
+function lowercase(value: string): string {
+  return value.toLowerCase();
+}
+
 function isOn(name: string, raw: string | undefined): boolean {
   const spec = SCHEMA_BY_NAME.get(name);
   const normalized = normalizeRaw(raw)?.toLowerCase();
@@ -480,10 +615,16 @@ function isNonEmpty(raw: string | undefined): boolean {
 
 function displayRawValue(spec: Pick<ConfigSpec, 'kind' | 'name' | 'secret'>, value: string | undefined): string | null {
   if (value === undefined) return null;
-  if (spec.secret || spec.kind === 'secret' || /TOKEN|KEY|SECRET/.test(spec.name)) {
+  if (isSecretSpec(spec)) {
     return value === '' ? '' : '<redacted>';
   }
   return value;
+}
+
+function isSecretSpec(spec: Pick<ConfigSpec, 'kind' | 'name' | 'secret'>): boolean {
+  return Boolean(spec.secret)
+    || spec.kind === 'secret'
+    || /(?:^|_)(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|REFRESH_TOKEN|SESSION_TOKEN|PRIVATE_KEY|CLIENT_SECRET|SECRET|PASSWORD|PASSWD|COOKIE)$/.test(spec.name);
 }
 
 function booleanValuesFor(spec: Pick<BaseSpec<'boolean'>, 'booleanValues'>): Set<string> {
