@@ -13,6 +13,7 @@ import { parseDotEnvText } from './config/schema.js';
 import { ASK_HELP, runAsk } from './cli-ask.js';
 import { CACHE_HELP, runCache } from './cli-cache.js';
 import { CAPTURE_HELP, runCapture } from './cli-capture.js';
+import { CITE_HELP, runCite } from './cli-cite.js';
 import { COMPLETION_HELP, runCompletion } from './cli-completion.js';
 import { CONFIG_HELP, runConfig } from './cli-config.js';
 import { COMPARE_HELP, runCompare } from './cli-compare.js';
@@ -100,6 +101,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'list',         summary: 'List available knowledge bases.',                                         help: LIST_HELP,         handler: runList },
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },
   { name: 'open',         summary: 'Resolve a chunk id / kb:// URI / result path to its source file.',        help: OPEN_HELP,         handler: runOpen },
+  { name: 'cite',         summary: 'Export BibTeX or CSL-JSON from note frontmatter.',                       help: CITE_HELP,         handler: runCite },
   { name: 'related',      summary: 'Find chunks related to an existing chunk id or kb:// URI.',               help: RELATED_HELP,      handler: runRelated },
   { name: 'cache',        summary: 'Inspect and prune local cache surfaces.',                                help: CACHE_HELP,        handler: runCache },
   { name: 'serve',        summary: 'Run a localhost daemon for warm read-only CLI requests.',                 help: SERVE_HELP,        handler: runServe },

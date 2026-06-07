@@ -57,6 +57,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'list',
       'search',
       'open',
+      'cite',
       'related',
       'cache',
       'serve',
@@ -100,6 +101,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['list', 'kb list'],
     ['search', 'kb search'],
     ['open', 'kb open'],
+    ['cite', 'kb cite'],
     ['related', 'kb related'],
     ['cache', 'kb cache'],
     ['serve', 'kb serve'],
@@ -208,6 +210,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
       'list',
       'search',
       'open',
+      'cite',
       'related',
       'cache',
       'serve',
@@ -290,6 +293,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(r.stdout).toContain('help');
     expect(r.stdout).toContain('list');
     expect(r.stdout).toContain('search');
+    expect(r.stdout).toContain('cite');
     expect(r.stdout).toContain('reindex');
     expect(r.stdout).toContain('completion');
     expect(r.stdout).toContain('bash');
