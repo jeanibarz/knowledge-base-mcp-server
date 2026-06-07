@@ -33,6 +33,7 @@ import {
   formatRetrievalEmptyAsMarkdown,
   formatRetrievalGroupedBySourceAsMarkdown,
   groupRetrievalBySource,
+  type RetrievalHighlightOptions,
   type ScoredDocument,
 } from './formatter.js';
 import { runPicker } from './cli-search-picker.js';
@@ -202,6 +203,11 @@ Output:
   --pager               Page markdown/compact output through KB_PAGER, PAGER,
                         or less -R when stdout is a TTY.
   --no-pager            Disable KB_PAGER for this search.
+  --highlight=auto|always|never
+                        Highlight query terms in markdown snippets with ANSI
+                        emphasis. auto uses ANSI only on a TTY (default);
+                        always also works through pipes; never disables it.
+  --no-highlight        Alias for --highlight=never.
   --daemon              Use the local read-only daemon when available; falls
                         back to direct search when unreachable.
   --no-freshness        Skip the staleness scan and omit freshness output.
@@ -240,6 +246,7 @@ Examples:
 `;
 
 export type SearchFormat = 'md' | 'json' | 'vimgrep' | 'compact';
+export type SearchHighlightMode = 'auto' | 'always' | 'never';
 
 let lastSearchCanonicalTelemetry: Partial<CanonicalLogInput> | null = null;
 
@@ -270,6 +277,7 @@ interface SearchArgs {
   batchJsonl: boolean;
   noCache: boolean;
   freshness: boolean;
+  highlight: SearchHighlightMode;
   explainEmpty: boolean;
   explain: boolean;
   neighborContext?: NeighborContextOptions;
@@ -647,6 +655,7 @@ export async function runSearch(
       gateVerdict,
       explain: parsed.explain,
       advancedRetrieval,
+      highlight: buildSearchHighlightOptions(parsed, query),
     }));
   }
 
@@ -789,6 +798,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     batchJsonl: false,
     noCache: false,
     freshness: true,
+    highlight: 'auto',
     explainEmpty: false,
     explain: false,
     diverse: false,
@@ -805,6 +815,8 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--pager') { out.pager = true; continue; }
     if (raw === '--no-pager') { out.pager = false; continue; }
     if (raw === '--no-cache') { out.noCache = true; continue; }
+    if (raw === '--highlight') { out.highlight = 'always'; continue; }
+    if (raw === '--no-highlight') { out.highlight = 'never'; continue; }
     if (raw === '--gate') { out.gateOverride = 'on'; continue; }
     if (raw === '--no-gate') { out.gateOverride = 'off'; continue; }
     if (raw === '--rerank') { out.rerankOverride = 'on'; continue; }
@@ -883,6 +895,13 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
       }
       out.format = v === 'table' ? 'compact' : v; continue;
     }
+    if (raw.startsWith('--highlight=')) {
+      const v = raw.slice('--highlight='.length);
+      if (v !== 'auto' && v !== 'always' && v !== 'never') {
+        throw new Error(`invalid --highlight: ${raw} (expected 'auto', 'always', or 'never')`);
+      }
+      out.highlight = v; continue;
+    }
     if (raw.startsWith('--view=')) {
       const v = raw.slice('--view='.length);
       if (v !== 'compact') throw new Error(`invalid --view: ${raw} (expected 'compact')`);
@@ -901,6 +920,47 @@ function parseNonEmptyComponent(raw: string, prefix: string): string {
     throw new Error(`invalid ${prefix.slice(0, -1)}: value must not be empty`);
   }
   return value;
+}
+
+function buildSearchHighlightOptions(
+  parsed: SearchArgs,
+  query: string,
+): RetrievalHighlightOptions | undefined {
+  if (!shouldHighlightSearchOutput(parsed, process.env, process.stdout.isTTY === true)) {
+    return undefined;
+  }
+  const terms = extractSearchHighlightTerms(query);
+  return terms.length === 0 ? undefined : { terms };
+}
+
+export function shouldHighlightSearchOutput(
+  parsed: { format: SearchFormat; highlight: SearchHighlightMode },
+  env: NodeJS.ProcessEnv = process.env,
+  stdoutIsTTY: boolean = process.stdout.isTTY === true,
+): boolean {
+  if (parsed.format !== 'md') return false;
+  if (parsed.highlight === 'never') return false;
+  if (env.NO_COLOR !== undefined) return false;
+  if (parsed.highlight === 'always') return true;
+  return stdoutIsTTY;
+}
+
+export function extractSearchHighlightTerms(query: string): string[] {
+  const terms = query
+    .normalize('NFKC')
+    .match(/[\p{L}\p{N}_./:@+-]+/gu) ?? [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const term of terms) {
+    const trimmed = term.trim();
+    if (trimmed === '') continue;
+    if (!/[\p{L}\p{N}]/u.test(trimmed)) continue;
+    const key = trimmed.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out.sort((left, right) => right.length - left.length);
 }
 
 function warnIfRerankIgnored(parsed: SearchArgs, effectiveMode: EffectiveSearchMode): void {
@@ -1300,6 +1360,7 @@ export interface DenseSearchMarkdownOutputInput {
   gateVerdict?: RelevanceGateVerdict;
   explain?: boolean;
   advancedRetrieval?: AdvancedRetrievalMetadata | null;
+  highlight?: RetrievalHighlightOptions;
 }
 
 export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutputInput): string {
@@ -1322,9 +1383,19 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
   if (input.results.length === 0 && inlineEmptyGuidance !== null) {
     md = formatRetrievalEmptyAsMarkdown(inlineEmptyGuidance);
   } else if (input.groupBySource) {
-    md = formatRetrievalGroupedBySourceAsMarkdown(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
+    md = formatRetrievalGroupedBySourceAsMarkdown(
+      input.results,
+      FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+      KB_EDITOR_URI,
+      input.highlight,
+    );
   } else {
-    md = formatRetrievalAsMarkdown(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI);
+    md = formatRetrievalAsMarkdown(
+      input.results,
+      FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+      KB_EDITOR_URI,
+      input.highlight,
+    );
   }
   output += `${md}\n\n`;
   if (input.results.length === 0 && input.explainEmptyDiagnostics) {
@@ -2162,7 +2233,12 @@ async function runLexicalSearch(
     if (formatted.length === 0) {
       output += `_No matches._\n\n`;
     } else {
-      output += `${formatRetrievalAsMarkdown(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)}\n\n`;
+      output += `${formatRetrievalAsMarkdown(
+        formatted as never,
+        FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+        KB_EDITOR_URI,
+        buildSearchHighlightOptions(parsed, query),
+      )}\n\n`;
     }
     const summaryLines = perKb.map((r) => {
       if (r.error) return `- ${r.kbName}: error — ${r.error.message}`;
@@ -2431,7 +2507,12 @@ async function runHybridSearch(
     if (ranked.length === 0) {
       output += `_No matches._\n\n`;
     } else {
-      output += `${formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI)}\n\n`;
+      output += `${formatRetrievalAsMarkdown(
+        ranked as never,
+        FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+        KB_EDITOR_URI,
+        buildSearchHighlightOptions(parsed, query),
+      )}\n\n`;
     }
     output += `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} with unit=${parsed.lexicalUnit} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`;
     if (rerankResult.candidatesIn > 0) {
