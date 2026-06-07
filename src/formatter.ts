@@ -84,6 +84,13 @@ export interface CompactRetrievalOptions {
   width?: number;
 }
 
+export interface RetrievalHighlightOptions {
+  terms: readonly string[];
+}
+
+const ANSI_BOLD = '\x1b[1m';
+const ANSI_BOLD_OFF = '\x1b[22m';
+
 /**
  * Strips `frontmatter.extras` from a chunk's metadata before wire
  * serialization unless the operator has opted back in via
@@ -140,6 +147,7 @@ export function formatRetrievalAsMarkdown(
   results: ScoredDocument[] | null | undefined,
   extrasVisible: boolean,
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
+  highlight?: RetrievalHighlightOptions,
 ): string {
   if (!results || results.length === 0) {
     return formatRetrievalEmptyAsMarkdown();
@@ -156,13 +164,13 @@ export function formatRetrievalAsMarkdown(
         extrasVisible,
       );
       const guarded = guardRetrievalChunk(doc.pageContent, sanitizedMetadata, guardOptions);
-      const content = guarded.content.trim();
+      const content = applyRetrievalHighlight(guarded.content.trim(), highlight);
       const citation = buildChunkCitation(guarded.metadata, editorUriMode);
       const metadata = JSON.stringify(guarded.metadata, null, 2);
       const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
       const signals = getShieldSignals(doc.pageContent, sanitizedMetadata, guardOptions);
       const shieldFooter = formatInjectionMarkdown(signals);
-      const contextText = formatContextChunksAsMarkdown(doc, extrasVisible, editorUriMode);
+      const contextText = formatContextChunksAsMarkdown(doc, extrasVisible, editorUriMode, highlight);
       return `${resultHeader}\n\n${scoreText}${content}\n\n${shieldFooter}${formatSourceBlock(metadata, citation)}${contextText}`;
     })
     .join('\n\n---\n\n');
@@ -173,6 +181,7 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
   results: ScoredDocument[] | null | undefined,
   extrasVisible: boolean,
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
+  highlight?: RetrievalHighlightOptions,
 ): string {
   const grouped = groupRetrievalBySource(results, extrasVisible, editorUriMode);
   if (grouped.length === 0) {
@@ -187,8 +196,9 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
           const openText = chunk.editor_uri ? `\n   **Open:** ${chunk.editor_uri}` : '';
           const shieldText = formatInjectionGrouped(chunk.injection_signals);
           const typeText = chunk.match_type ? `\n   **Type:** ${chunk.match_type}` : '';
-          const contextText = formatJsonContextChunksForGroupedMarkdown(chunk.context_chunks);
-          return `${chunkIdx + 1}. **Score:** ${scoreText}${typeText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(chunk.content.trim())}${shieldText}${contextText}`;
+          const content = applyRetrievalHighlight(chunk.content.trim(), highlight);
+          const contextText = formatJsonContextChunksForGroupedMarkdown(chunk.context_chunks, highlight);
+          return `${chunkIdx + 1}. **Score:** ${scoreText}${typeText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(content)}${shieldText}${contextText}`;
         })
         .join('\n\n');
       return (
@@ -200,6 +210,36 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
     })
     .join('\n\n---\n\n');
   return `${SEMANTIC_SEARCH_HEADER}\n\n${formattedResults}${SEMANTIC_SEARCH_DISCLAIMER}`;
+}
+
+export function highlightQueryTerms(text: string, terms: readonly string[]): string {
+  const normalizedTerms = normalizeHighlightTerms(terms);
+  if (normalizedTerms.length === 0 || text === '') return text;
+  const pattern = normalizedTerms.map(escapeRegex).join('|');
+  return text.replace(new RegExp(pattern, 'giu'), (match) => `${ANSI_BOLD}${match}${ANSI_BOLD_OFF}`);
+}
+
+function applyRetrievalHighlight(text: string, highlight: RetrievalHighlightOptions | undefined): string {
+  return highlight ? highlightQueryTerms(text, highlight.terms) : text;
+}
+
+function normalizeHighlightTerms(terms: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const rawTerm of terms) {
+    const term = rawTerm.trim();
+    if (term === '') continue;
+    if (!/[\p{L}\p{N}]/u.test(term)) continue;
+    const key = term.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(term);
+  }
+  return normalized.sort((left, right) => right.length - left.length);
+}
+
+function escapeRegex(term: string): string {
+  return term.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
 }
 
 /**
@@ -581,6 +621,7 @@ function formatContextChunksAsMarkdown(
   doc: ScoredDocument,
   extrasVisible: boolean,
   editorUriMode: KBEditorUriMode,
+  highlight: RetrievalHighlightOptions | undefined,
 ): string {
   if (!doc.contextChunks || doc.contextChunks.length === 0) {
     return doc.contextTruncated ? '\n\n**Context chunks:** truncated by response cap.' : '';
@@ -598,9 +639,10 @@ function formatContextChunksAsMarkdown(
       const openText = citation?.editor_uri ? `\n   **Open:** ${citation.editor_uri}` : '';
       const sourceText = citation ? `\n   **Source:** ${citation.chunk_id}` : '';
       const shieldText = formatInjectionContext(signals);
+      const content = applyRetrievalHighlight(guarded.content.trim(), highlight);
       return (
         `- **Context (${chunk.contextDirection}, distance ${chunk.contextDistance}):**${sourceText}${openText}\n\n` +
-        `  ${indentListContent(guarded.content.trim())}${shieldText}`
+        `  ${indentListContent(content)}${shieldText}`
       );
     })
     .join('\n\n');
@@ -638,13 +680,17 @@ function formatContextChunksAsJson(
 
 function formatJsonContextChunksForGroupedMarkdown(
   chunks: RetrievalJsonContextChunk[] | undefined,
+  highlight: RetrievalHighlightOptions | undefined,
 ): string {
   if (!chunks || chunks.length === 0) return '';
   const lines = chunks
-    .map((chunk) => (
-      `   - **Context (${chunk.direction}, distance ${chunk.distance}):**\n\n` +
-      `     ${indentListContent(chunk.content.trim())}${formatInjectionGrouped(chunk.injection_signals)}`
-    ))
+    .map((chunk) => {
+      const content = applyRetrievalHighlight(chunk.content.trim(), highlight);
+      return (
+        `   - **Context (${chunk.direction}, distance ${chunk.distance}):**\n\n` +
+        `     ${indentListContent(content)}${formatInjectionGrouped(chunk.injection_signals)}`
+      );
+    })
     .join('\n\n');
   return `\n\n   **Context chunks:**\n\n${lines}`;
 }

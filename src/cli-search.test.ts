@@ -131,6 +131,14 @@ describe('parseSearchArgs output format', () => {
       format: 'json',
     });
   });
+
+  it('accepts search highlight controls', () => {
+    expect(parseSearchArgs(['query'])).toMatchObject({ highlight: 'auto' });
+    expect(parseSearchArgs(['query', '--highlight=always'])).toMatchObject({ highlight: 'always' });
+    expect(parseSearchArgs(['query', '--highlight'])).toMatchObject({ highlight: 'always' });
+    expect(parseSearchArgs(['query', '--no-highlight'])).toMatchObject({ highlight: 'never' });
+    expect(() => parseSearchArgs(['query', '--highlight=sometimes'])).toThrow(/invalid --highlight/);
+  });
 });
 
 describe('parseSearchArgs freshness', () => {
@@ -288,6 +296,41 @@ describe('runSearch timing guard (#331)', () => {
     }
   }
 
+  async function withStdoutTTY<T>(
+    stdoutIsTTY: boolean | undefined,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const descriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', {
+      configurable: true,
+      value: stdoutIsTTY,
+    });
+    try {
+      return await run();
+    } finally {
+      if (descriptor) {
+        Object.defineProperty(process.stdout, 'isTTY', descriptor);
+      } else {
+        delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+      }
+    }
+  }
+
+  async function withNoColor<T>(
+    value: string | undefined,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const previous = process.env.NO_COLOR;
+    if (value === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = value;
+    try {
+      return await run();
+    } finally {
+      if (previous === undefined) delete process.env.NO_COLOR;
+      else process.env.NO_COLOR = previous;
+    }
+  }
+
   it('routes dense markdown output through the pager writer at the runSearch boundary', async () => {
     const { deps, manager } = makeDeps();
     const writeOutput = jest.fn(async () => {});
@@ -303,7 +346,7 @@ describe('runSearch timing guard (#331)', () => {
     Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
 
     try {
-      const out = await captureSearchOutput(['pager query', '--pager', '--no-freshness'], deps);
+      const out = await captureSearchOutput(['pager query', '--pager', '--no-highlight', '--no-freshness'], deps);
 
       expect(out.code).toBe(0);
       expect(out.stdout).toBe('');
@@ -570,6 +613,93 @@ describe('runSearch timing guard (#331)', () => {
       freshness_omitted: true,
     });
     expect(payload).not.toHaveProperty('timing');
+  });
+
+  it('highlights query terms in markdown output when stdout is a TTY', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([{
+      pageContent: 'Rollback plan for deployment',
+      metadata: { source: '/kb/ops/rollback.md', chunkIndex: 0 },
+      score: 0.12,
+    }] as never);
+
+    const out = await withNoColor(undefined, () =>
+      withStdoutTTY(true, () => captureSearchOutput(['rollback', '--no-freshness'], deps)),
+    );
+
+    expect(out.code).toBe(0);
+    expect(out.stdout).toContain('\x1b[1mRollback\x1b[22m plan');
+  });
+
+  it('suppresses markdown highlighting when NO_COLOR is set', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([{
+      pageContent: 'Rollback plan',
+      metadata: { source: '/kb/ops/rollback.md', chunkIndex: 0 },
+      score: 0.12,
+    }] as never);
+
+    const out = await withNoColor('1', () =>
+      withStdoutTTY(true, () => captureSearchOutput(['rollback', '--no-freshness'], deps)),
+    );
+
+    expect(out.code).toBe(0);
+    expect(out.stdout).toContain('Rollback plan');
+    expect(out.stdout).not.toContain('\x1b[');
+  });
+
+  it('suppresses markdown highlighting with --no-highlight', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([{
+      pageContent: 'Rollback plan',
+      metadata: { source: '/kb/ops/rollback.md', chunkIndex: 0 },
+      score: 0.12,
+    }] as never);
+
+    const out = await withNoColor(undefined, () =>
+      withStdoutTTY(true, () => captureSearchOutput(['rollback', '--no-highlight', '--no-freshness'], deps)),
+    );
+
+    expect(out.code).toBe(0);
+    expect(out.stdout).toContain('Rollback plan');
+    expect(out.stdout).not.toContain('\x1b[');
+  });
+
+  it('forces markdown highlighting with --highlight=always when stdout is not a TTY', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([{
+      pageContent: 'Use C++ and foo.bar in the runbook',
+      metadata: { source: '/kb/ops/code.md', chunkIndex: 0 },
+      score: 0.12,
+    }] as never);
+
+    const out = await withNoColor(undefined, () =>
+      withStdoutTTY(false, () =>
+        captureSearchOutput(['C++ foo.bar', '--highlight=always', '--no-freshness'], deps),
+      ),
+    );
+
+    expect(out.code).toBe(0);
+    expect(out.stdout).toContain('Use \x1b[1mC++\x1b[22m and \x1b[1mfoo.bar\x1b[22m');
+  });
+
+  it('keeps JSON output unhighlighted even with --highlight=always', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([{
+      pageContent: 'Rollback plan',
+      metadata: { source: '/kb/ops/rollback.md', chunkIndex: 0 },
+      score: 0.12,
+    }] as never);
+
+    const out = await withNoColor(undefined, () =>
+      withStdoutTTY(true, () =>
+        captureSearchOutput(['rollback', '--format=json', '--highlight=always', '--no-freshness'], deps),
+      ),
+    );
+
+    expect(out.code).toBe(0);
+    expect(out.stdout).not.toContain('\x1b[');
+    expect(JSON.parse(out.stdout).results[0].content).toBe('Rollback plan');
   });
 
   it('exposes query-cache telemetry in dense JSON, timing, and canonical metadata', async () => {

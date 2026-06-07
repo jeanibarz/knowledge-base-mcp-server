@@ -7,6 +7,7 @@ import {
   formatRetrievalGroupedBySourceAsMarkdown,
   formatRetrievalAsMarkdown,
   groupRetrievalBySource,
+  highlightQueryTerms,
   sanitizeMetadataForWire,
   ScoredDocument,
 } from './formatter.js';
@@ -200,6 +201,34 @@ describe('formatRetrievalAsMarkdown', () => {
     expect(out).toContain('**Context chunks:**');
     expect(out).toContain('**Context (before, distance 1):**');
     expect(out).toContain('previous chunk');
+  });
+
+  it('highlights configured terms only in rendered markdown content', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'Deploy rollback procedure',
+      metadata: { source: 'rollback.md' },
+      score: 0.42,
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsMarkdown([doc], false, 'none', { terms: ['rollback'] });
+
+    expect(out).toContain(`Deploy \x1b[1mrollback\x1b[22m procedure`);
+    expect(out).toContain('"source": "rollback.md"');
+    expect(out).not.toContain('"source": "\\u001b');
+  });
+});
+
+describe('highlightQueryTerms', () => {
+  it('escapes regex-special terms and matches case-insensitively', () => {
+    expect(highlightQueryTerms('Use C++ with foo.bar and c++.', ['C++', 'foo.bar'])).toBe(
+      'Use \x1b[1mC++\x1b[22m with \x1b[1mfoo.bar\x1b[22m and \x1b[1mc++\x1b[22m.',
+    );
+  });
+
+  it('handles overlapping terms without nested ANSI escapes', () => {
+    expect(highlightQueryTerms('rollback roll', ['roll', 'rollback'])).toBe(
+      '\x1b[1mrollback\x1b[22m \x1b[1mroll\x1b[22m',
+    );
   });
 });
 
