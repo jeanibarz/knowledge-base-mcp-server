@@ -1271,6 +1271,7 @@ describe('runSearch timing guard (#331)', () => {
       loadManagerForModel: jest.fn(async () => manager),
       loadWithJsonRetry: jest.fn(async () => {}),
       listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      loadLexicalIndex: jest.fn(async () => ({ numFiles: () => 1 } as unknown as LexicalIndex)),
       runLexicalLeg: jest.fn(async () => ({
         refreshed: 0,
         failed: 0,
@@ -1289,7 +1290,52 @@ describe('runSearch timing guard (#331)', () => {
     expect(deps.runLexicalLeg).toHaveBeenCalledWith(expect.objectContaining({
       query: 'query',
       rankingUnit: 'source',
+      loadIndex: deps.loadLexicalIndex,
     }));
+  });
+
+  it('runs the hybrid lexical leg through an injected lexical index loader', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch = jest.fn(async (...args: unknown[]) => {
+      const timing = args[5] as SimilaritySearchTiming | undefined;
+      if (timing) timing.faiss_search_ms = 1;
+      return [];
+    });
+    const lexicalIndex = {
+      numFiles: jest.fn(() => 1),
+      refresh: jest.fn(async () => ({ added: 0, updated: 0, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 })),
+      save: jest.fn(async () => {}),
+      query: jest.fn(async () => [
+        {
+          pageContent: 'Warm lexical result',
+          metadata: {
+            source: '/kb/alpha/warm.md',
+            knowledgeBase: 'alpha',
+            relativePath: 'alpha/warm.md',
+            chunkIndex: 0,
+          },
+          score: 7,
+        },
+      ]),
+    } as unknown as LexicalIndex;
+    deps.listLexicalKbs = jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]);
+    deps.loadLexicalIndex = jest.fn(async () => lexicalIndex);
+
+    const out = await captureSearchOutput(
+      ['query', '--mode=hybrid', '--format=json', '--k=1', '--no-freshness'],
+      deps,
+    );
+
+    expect(out.code).toBe(0);
+    const payload = JSON.parse(out.stdout) as {
+      results: Array<{ content: string; metadata: { relativePath: string } }>;
+      retrievers: { lexical: { fetched: number; refreshed: number; failed: number } };
+    };
+    expect(deps.loadLexicalIndex).toHaveBeenCalledWith('alpha', '/kb/alpha');
+    expect(lexicalIndex.query).toHaveBeenCalledWith('query', 4, { unit: 'chunk' });
+    expect(lexicalIndex.refresh).not.toHaveBeenCalled();
+    expect(payload.retrievers.lexical).toMatchObject({ fetched: 1, refreshed: 0, failed: 0 });
+    expect(payload.results[0]?.metadata.relativePath).toBe('alpha/warm.md');
   });
 
   it('includes gate_verdict in JSON output when --gate is used', async () => {

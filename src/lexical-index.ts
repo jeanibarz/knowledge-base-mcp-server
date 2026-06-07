@@ -121,7 +121,7 @@ function lexicalKbDir(kbName: string): string {
   return path.join(lexicalRootDir(), kbName);
 }
 
-function lexicalIndexFilePath(kbName: string): string {
+export function lexicalIndexFilePath(kbName: string): string {
   return path.join(lexicalKbDir(kbName), 'index.json');
 }
 

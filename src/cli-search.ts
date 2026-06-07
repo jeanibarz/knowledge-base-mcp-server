@@ -306,6 +306,10 @@ const DEFAULT_RUN_SEARCH_DEPS: RunSearchDeps = {
   runLexicalLeg,
 };
 
+export function createRunSearchDeps(overrides: Partial<RunSearchDeps> = {}): RunSearchDeps {
+  return { ...DEFAULT_RUN_SEARCH_DEPS, ...overrides };
+}
+
 export async function runSearch(
   rest: string[],
   deps: RunSearchDeps = DEFAULT_RUN_SEARCH_DEPS,
@@ -2285,6 +2289,7 @@ async function runHybridSearch(
     fetchK,
     refresh: parsed.refresh ? 'always' : 'when-empty',
     rankingUnit: parsed.lexicalUnit,
+    loadIndex: deps.loadLexicalIndex,
     onError: (kbName, err) => {
       process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${err.message}\n`);
     },
