@@ -8,6 +8,11 @@ import {
   type LexicalIndexLike,
 } from './run.js';
 
+// Lexical-mode runs must never reach the dense/hybrid backend loader.
+const failingSearchBackend = async (): Promise<never> => {
+  throw new Error('loadSearchBackend should not be called for lexical mode');
+};
+
 async function writeTinyBeirDataset(root: string): Promise<string> {
   const datasetDir = path.join(root, 'tiny');
   await fsp.mkdir(path.join(datasetDir, 'qrels'), { recursive: true });
@@ -51,6 +56,7 @@ describe('BEIR benchmark runner', () => {
       now: () => new Date('2026-05-27T12:00:00.000Z'),
       pythonVersion: async () => 'Python 3.test',
       silenceServerLogger: async () => undefined,
+      loadSearchBackend: failingSearchBackend,
       loadLexicalIndex: async (_buildRoot, _kbName, kbPath): Promise<LexicalIndexLike> => {
         const files = await fsp.readdir(kbPath);
         const alphaFile = files.find((file) => file.includes('doc-alpha'));
@@ -122,6 +128,7 @@ describe('BEIR benchmark runner', () => {
       loadLexicalIndex: async () => {
         throw new Error('should not load lexical index');
       },
+      loadSearchBackend: failingSearchBackend,
       now: () => new Date('2026-05-27T12:00:00.000Z'),
       pythonVersion: async () => null,
       silenceServerLogger: async () => undefined,
