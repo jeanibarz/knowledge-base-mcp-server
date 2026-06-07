@@ -346,7 +346,7 @@ describe('runSearch timing guard (#331)', () => {
     Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
 
     try {
-      const out = await captureSearchOutput(['pager query', '--pager', '--no-freshness'], deps);
+      const out = await captureSearchOutput(['pager query', '--pager', '--no-highlight', '--no-freshness'], deps);
 
       expect(out.code).toBe(0);
       expect(out.stdout).toBe('');
