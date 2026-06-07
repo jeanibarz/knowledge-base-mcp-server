@@ -48,16 +48,25 @@ describe('parseLogsArgs', () => {
       format: 'json',
       file: './kb.log',
       limit: 5,
+      slow: false,
     });
     expect(parseLogsArgs(['show', '--request-id=req-1'])).toEqual({
       action: 'show',
       format: 'md',
       limit: 20,
+      slow: false,
       requestId: 'req-1',
     });
     expect(parseLogsArgs(['show', '--query-sha=abc123'])).toMatchObject({
       action: 'show',
       querySha: 'abc123',
+    });
+    expect(parseLogsArgs(['--slow', '--min-ms', '250'])).toEqual({
+      action: 'recent',
+      format: 'md',
+      limit: 20,
+      slow: true,
+      minMs: 250,
     });
   });
 
@@ -66,6 +75,7 @@ describe('parseLogsArgs', () => {
     expect(() => parseLogsArgs(['show', '--request-id=a', '--query-sha=b'])).toThrow(/exactly one/);
     expect(() => parseLogsArgs(['recent', '--request-id=a'])).toThrow(/recent does not accept/);
     expect(() => parseLogsArgs(['recent', '--limit=0'])).toThrow(/between 1 and 500/);
+    expect(() => parseLogsArgs(['recent', '--slow', '--min-ms=0'])).toThrow(/at least 1/);
   });
 });
 
@@ -136,6 +146,53 @@ describe('runLogs', () => {
         },
       }),
     ]);
+  });
+
+  it('filters recent events to slow canonical markers with kb logs --slow', async () => {
+    const { deps, stdout, stderr } = depsFor({
+      '/repo/kb.log': [
+        canonical({ request_id: 'req-fast', query_sha256: 'fast', took_ms: 20 }),
+        canonical({ request_id: 'req-slow', query_sha256: 'slow', took_ms: 200, slow: true }),
+        canonical({ request_id: 'req-unmarked', query_sha256: 'unmarked', took_ms: 400 }),
+      ].join('\n'),
+    }, { LOG_FILE: './kb.log' });
+
+    const code = await runLogs(['--slow', '--format=json'], deps);
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    const payload = JSON.parse(stdout.join('')) as {
+      filters: { slow?: true };
+      slow_event_count: number;
+      result_count: number;
+      events: Array<{ request_id: string; query_sha256?: string; slow?: true }>;
+    };
+    expect(payload.filters).toEqual({ slow: true });
+    expect(payload.slow_event_count).toBe(1);
+    expect(payload.result_count).toBe(1);
+    expect(payload.events).toEqual([
+      expect.objectContaining({ request_id: 'req-slow', query_sha256: 'slow', slow: true }),
+    ]);
+  });
+
+  it('filters slow view by minimum took_ms when --min-ms is supplied', async () => {
+    const { deps, stdout } = depsFor({
+      '/repo/kb.log': [
+        canonical({ request_id: 'req-100', took_ms: 100, slow: true }),
+        canonical({ request_id: 'req-250', took_ms: 250 }),
+        canonical({ request_id: 'req-400', took_ms: 400, slow: true }),
+      ].join('\n'),
+    }, { LOG_FILE: './kb.log' });
+
+    const code = await runLogs(['recent', '--slow', '--min-ms=250', '--format=json'], deps);
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(stdout.join('')) as {
+      filters: { slow?: true; min_ms?: number };
+      events: Array<{ request_id: string }>;
+    };
+    expect(payload.filters).toEqual({ slow: true, min_ms: 250 });
+    expect(payload.events.map((event) => event.request_id)).toEqual(['req-250', 'req-400']);
   });
 
   it('shows request details with timings, sources, gate, rerank, and recovery hints in markdown', async () => {
