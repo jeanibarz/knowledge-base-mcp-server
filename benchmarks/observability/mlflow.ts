@@ -35,6 +35,66 @@ export interface MlflowCompareInput {
   repoRoot: string;
 }
 
+// RFC 020 §7 — the reproducibility ledger. A BEIR run is an MLflow run logged
+// with the git SHA, the full retrieval env (model IDs, RRF c, rerank model/topN,
+// chunk size/overlap, contextual on/off), the per-dataset metrics, the latency
+// percentiles, and the TREC run-file artifact. The shapes below are the subset
+// of `BeirBenchmarkReport` / `MatrixReport` the ledger consumes — declared
+// structurally so this module stays decoupled from the benchmark runner.
+export interface BeirLedgerReport {
+  git_sha: string;
+  command?: string;
+  dataset: { name: string; split: string; corpus_documents?: number; queries_evaluated: number };
+  mode: string;
+  embedding: { provider: string; model: string } | null;
+  rerank: { enabled: boolean; model: string; topN: number } | null;
+  contextual: { enabled: boolean } | null;
+  chunking: { KB_CHUNK_SIZE: string | null; KB_CHUNK_OVERLAP: string | null };
+  metrics: {
+    ndcgAt10: number;
+    mapAt100: number;
+    precisionAt10: number;
+    recallAt10: number;
+    recallAt100: number;
+  };
+  latency: { p50Ms: number; p95Ms: number; p99Ms: number; meanMs: number };
+}
+
+export interface MlflowBeirRunInput {
+  report: BeirLedgerReport;
+  jsonPath: string;
+  trecPath: string;
+  repoRoot: string;
+}
+
+export interface MatrixLedgerReport {
+  git_sha: string;
+  modes: string[];
+  datasets: string[];
+  env: Record<string, string | null>;
+  perMode: Array<{
+    mode: string;
+    datasetsEvaluated: number;
+    datasetsRequested: number;
+    multiDomainMeanNdcgAt10: number | null;
+    multiDomainMeanPrecisionAt10: number | null;
+    multiDomainMeanRecallAt10: number | null;
+  }>;
+  generalization: {
+    modes: Array<{
+      mode: string;
+      deltaG: { deltaG: number | null; seenMeanNdcgAt10: number | null; unseenMeanNdcgAt10: number | null };
+    }>;
+  };
+}
+
+export interface MlflowBeirMatrixInput {
+  report: MatrixLedgerReport;
+  jsonPath: string;
+  markdownPath: string;
+  repoRoot: string;
+}
+
 const DEFAULT_EXPERIMENT = 'kb-benchmarks';
 
 export function readMlflowConfig(env: NodeJS.ProcessEnv = process.env): MlflowConfig | undefined {
@@ -104,6 +164,100 @@ export async function logCompareToMlflow(
     metrics,
     artifacts: [input.jsonPath, input.htmlPath],
   }, input.repoRoot, config.python);
+}
+
+/**
+ * Build the MLflow payload for one BEIR run (RFC 020 §7). Pure + exported so the
+ * ledger contract is unit-testable without spawning Python: params carry the
+ * commit + full retrieval env; metrics carry per-dataset quality + latency
+ * percentiles; artifacts are the metrics JSON and the TREC run file.
+ */
+export function beirRunMlflowPayload(input: MlflowBeirRunInput, config: MlflowConfig): MlflowPayload {
+  const { report } = input;
+  return {
+    ...basePayload(config),
+    params: flattenParams({
+      kind: 'beir',
+      git_sha: report.git_sha,
+      dataset: report.dataset.name,
+      split: report.dataset.split,
+      mode: report.mode,
+      provider: report.embedding?.provider ?? 'none',
+      model: report.embedding?.model ?? 'none',
+      rerank_enabled: report.rerank?.enabled ?? false,
+      rerank_model: report.rerank?.model ?? 'none',
+      rerank_top_n: report.rerank?.topN ?? 0,
+      contextual: report.contextual?.enabled ?? false,
+      chunk_size: report.chunking.KB_CHUNK_SIZE ?? 'default',
+      chunk_overlap: report.chunking.KB_CHUNK_OVERLAP ?? 'default',
+    }),
+    metrics: flattenMetrics({
+      ndcg_at_10: report.metrics.ndcgAt10,
+      map_at_100: report.metrics.mapAt100,
+      precision_at_10: report.metrics.precisionAt10,
+      recall_at_10: report.metrics.recallAt10,
+      recall_at_100: report.metrics.recallAt100,
+      queries_evaluated: report.dataset.queries_evaluated,
+      latency_p50_ms: report.latency.p50Ms,
+      latency_p95_ms: report.latency.p95Ms,
+      latency_p99_ms: report.latency.p99Ms,
+      latency_mean_ms: report.latency.meanMs,
+    }),
+    artifacts: [input.jsonPath, input.trecPath],
+  };
+}
+
+export async function logBeirRunToMlflow(
+  input: MlflowBeirRunInput,
+  config = readMlflowConfig(),
+): Promise<void> {
+  if (!config) return;
+  await runMlflowLogger(beirRunMlflowPayload(input, config), input.repoRoot, config.python);
+}
+
+/**
+ * Build the MLflow payload for a full-matrix sweep (RFC 020 §2/§6/§7): one row
+ * per mode for the headline multi-domain mean nDCG@10, plus the Δ_g generality
+ * gap. Pure + exported for the same testability reason as the per-run builder.
+ */
+export function beirMatrixMlflowPayload(input: MlflowBeirMatrixInput, config: MlflowConfig): MlflowPayload {
+  const { report } = input;
+  const metrics: Record<string, unknown> = {};
+  for (const summary of report.perMode) {
+    const key = sanitizeKeySegment(summary.mode);
+    metrics[`headline.${key}.mean_ndcg_at_10`] = summary.multiDomainMeanNdcgAt10 ?? undefined;
+    metrics[`headline.${key}.mean_precision_at_10`] = summary.multiDomainMeanPrecisionAt10 ?? undefined;
+    metrics[`headline.${key}.mean_recall_at_10`] = summary.multiDomainMeanRecallAt10 ?? undefined;
+    metrics[`headline.${key}.datasets_evaluated`] = summary.datasetsEvaluated;
+  }
+  for (const modeGen of report.generalization.modes) {
+    const key = sanitizeKeySegment(modeGen.mode);
+    if (modeGen.deltaG.deltaG !== null) metrics[`delta_g.${key}`] = modeGen.deltaG.deltaG;
+  }
+  return {
+    ...basePayload(config),
+    params: flattenParams({
+      kind: 'beir-matrix',
+      git_sha: report.git_sha,
+      modes: report.modes,
+      datasets: report.datasets,
+      ...report.env,
+    }),
+    metrics: flattenMetrics(metrics),
+    artifacts: [input.jsonPath, input.markdownPath],
+  };
+}
+
+export async function logBeirMatrixToMlflow(
+  input: MlflowBeirMatrixInput,
+  config = readMlflowConfig(),
+): Promise<void> {
+  if (!config) return;
+  await runMlflowLogger(beirMatrixMlflowPayload(input, config), input.repoRoot, config.python);
+}
+
+function sanitizeKeySegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9]+/g, '_');
 }
 
 export function flattenMetrics(value: unknown, prefix = ''): Record<string, number> {
