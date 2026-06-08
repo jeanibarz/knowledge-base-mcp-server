@@ -33,6 +33,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
 import { applyExtractedTextLimit } from './loaders.js';
 import { logger } from './logger.js';
+import { buildRetrievalViewDocuments, resolveRetrievalViews } from './retrieval-views.js';
 import { assertNoIngestSecrets, type SecretScanInput } from './secret-scanner.js';
 import { withSidecarLock } from './write-lock.js';
 
@@ -309,7 +310,7 @@ export async function buildChunkDocuments(
       ...(typeof preface === 'string' && preface.length > 0 ? { contextual_preface: preface } : {}),
     };
   }
-  return documents;
+  return buildRetrievalViewDocuments(documents, resolveRetrievalViews());
 }
 
 /**

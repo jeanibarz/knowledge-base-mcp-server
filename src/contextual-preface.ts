@@ -49,6 +49,7 @@ import { FAISS_INDEX_PATH } from './config/paths.js';
 import { KBError } from './errors.js';
 import { callChatCompletion, LlmClientError } from './llm-client.js';
 import { logger } from './logger.js';
+import { retrievalViewText } from './retrieval-views.js';
 import { withSidecarLock } from './write-lock.js';
 
 export const GENERATOR_VERSION = 'contextual-preface.v1';
@@ -78,6 +79,8 @@ const EMBEDDING_TEMPLATE_SEPARATOR = '\n\n';
  * on), not on a global flag in this helper.
  */
 export function embeddingText(doc: Document): string {
+  const viewText = retrievalViewText(doc);
+  if (viewText !== null) return viewText;
   const preface = (doc.metadata as { contextual_preface?: unknown } | undefined)?.contextual_preface;
   if (typeof preface !== 'string' || preface.length === 0) return doc.pageContent;
   return `${preface}${EMBEDDING_TEMPLATE_SEPARATOR}${doc.pageContent}`;

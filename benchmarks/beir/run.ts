@@ -102,6 +102,7 @@ interface Args {
   // `runBeirBenchmark` so a `--config` env block can still set them.
   provider?: string;
   model?: string;
+  retrievalViews?: string;
   outputDir: string;
   cacheDir: string;
   workspaceRoot: string;
@@ -121,6 +122,8 @@ type BeirConfigKey =
   | 'lexicalUnit'
   | 'provider'
   | 'model'
+  | 'retrieval_views'
+  | 'retrievalViews'
   | 'output_dir'
   | 'outputDir'
   | 'cache_dir'
@@ -218,6 +221,7 @@ export interface LoadSearchBackendInput {
   provider: string;
   modelName: string;
   kbName: string;
+  retrievalViews?: string;
 }
 
 interface BeirBenchmarkReport {
@@ -514,6 +518,7 @@ async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcom
     provider: spec.provider,
     modelName: spec.model,
     kbName: prepared.kbName,
+    retrievalViews: args.retrievalViews,
   });
 
   const indexStarted = process.hrtime.bigint();
@@ -618,6 +623,17 @@ function applyStageEnvironment(mode: BeirMode): () => void {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+  };
+}
+
+function applyRetrievalViewsEnvironment(retrievalViews: string | undefined): () => void {
+  const previous = process.env.KB_RETRIEVAL_VIEWS;
+  if (retrievalViews !== undefined && retrievalViews.trim() !== '') {
+    process.env.KB_RETRIEVAL_VIEWS = retrievalViews;
+  }
+  return () => {
+    if (previous === undefined) delete process.env.KB_RETRIEVAL_VIEWS;
+    else process.env.KB_RETRIEVAL_VIEWS = previous;
   };
 }
 
@@ -732,7 +748,7 @@ function buildCaveats(args: Args): string[] {
 // under `benchmarks/` rootDir without a static cross-tree import).
 interface FaissManagerLike {
   initialize(): Promise<void>;
-  updateIndex(specificKnowledgeBase?: string): Promise<void>;
+  updateIndex(specificKnowledgeBase?: string, options?: { force?: boolean }): Promise<void>;
   getLastIndexUpdateSummary(): { files_scanned: number; chunks_added: number };
   similaritySearch(
     query: string,
@@ -777,7 +793,12 @@ async function loadSearchBackend(input: LoadSearchBackendInput): Promise<BeirSea
       ? 'src/FaissIndexManager.similaritySearch (production dense path) via retrieval-eval.retrieveForRetrievalEvalCase'
       : 'src/hybrid-retrieval RRF fusion (production hybrid path) via retrieval-eval.retrieveForRetrievalEvalCase',
     prepare: async () => {
-      await manager.updateIndex();
+      const restoreViews = applyRetrievalViewsEnvironment(input.retrievalViews);
+      try {
+        await manager.updateIndex(undefined, { force: input.retrievalViews !== undefined });
+      } finally {
+        restoreViews();
+      }
       const summary = manager.getLastIndexUpdateSummary();
       return { files: summary.files_scanned, chunks: summary.chunks_added };
     },
@@ -793,6 +814,7 @@ async function loadSearchBackend(input: LoadSearchBackendInput): Promise<BeirSea
           forbiddenSources: [],
           expectedMetadata: [],
           stalePolicy: 'allow_stale',
+          ...(input.retrievalViews !== undefined ? { retrievalViews: input.retrievalViews } : {}),
         },
         { manager, defaultK: fetchK, defaultThreshold: Number.POSITIVE_INFINITY },
         input.mode,
@@ -857,6 +879,8 @@ export function parseArgs(argv: string[]): Args {
       args.provider = readValue();
     } else if (flag === '--model') {
       args.model = readValue();
+    } else if (flag === '--retrieval-views') {
+      args.retrievalViews = readValue();
     } else if (flag === '--dataset-dir') {
       args.datasetDir = path.resolve(readValue());
     } else if (flag === '--dataset-url') {
@@ -951,6 +975,8 @@ function applyBeirConfig(args: Args, beir: Partial<Record<BeirConfigKey, unknown
       args.provider = parseStringConfig(value, 'beir.provider');
     } else if (key === 'model') {
       args.model = parseStringConfig(value, 'beir.model');
+    } else if (key === 'retrieval_views' || key === 'retrievalViews') {
+      args.retrievalViews = parseStringConfig(value, `beir.${key}`);
     } else if (key === 'output_dir' || key === 'outputDir') {
       args.outputDir = path.resolve(parseStringConfig(value, `beir.${key}`));
     } else if (key === 'cache_dir' || key === 'cacheDir') {
@@ -1361,6 +1387,8 @@ Options:
                          fake is deterministic + network-free (self-test only).
   --model=<name>         Embedding model for dense/hybrid. Default: the provider
                          model env var (OLLAMA_MODEL / OPENAI_MODEL_NAME / ...).
+  --retrieval-views=<v>  Opt-in multi-view retrieval views for dense/hybrid
+                         runs, e.g. passage,section,metadata,summary or all.
   --dataset-dir=<path>   Existing BEIR directory with corpus.jsonl, queries.jsonl, qrels/.
   --dataset-url=<url>    Zip URL for a custom BEIR-shaped dataset.
   --output-dir=<path>    Directory for metrics JSON, TREC, and Markdown report.

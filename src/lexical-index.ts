@@ -43,6 +43,13 @@ import { loadFile } from './loaders.js';
 import { logger } from './logger.js';
 import { toError } from './error-utils.js';
 import { LexicalBm25Ranker, type LexicalBm25Record } from './lexical-bm25.js';
+import {
+  collapseRetrievalViewResults,
+  formatRetrievalViews,
+  resolveRetrievalViews,
+  shouldKeepForRetrievalViews,
+  type RetrievalViewKind,
+} from './retrieval-views.js';
 
 // RFC 017 §3 — schema v2 splits BM25 scoring text from caller-output
 // text. v1 (pre-RFC-017) stored `pageContent` as both. v2 adds an
@@ -68,6 +75,7 @@ interface SerializedDocument {
 
 interface FileEntry {
   sha256: string;
+  retrievalViews?: string;
   chunks: SerializedDocument[];
 }
 
@@ -108,6 +116,7 @@ export interface LexicalQueryOptions {
    * chunk. Defaults to `max(k * 4, k)`.
    */
   candidateK?: number;
+  retrievalViews?: RetrievalViewKind[];
 }
 
 type ChunkRecordItem = { relPath: string; chunk: SerializedDocument };
@@ -148,8 +157,8 @@ export class LexicalIndex {
     public readonly kbName: string,
     public readonly kbPath: string,
     private entries: Map<string, FileEntry>,
-    private chunkRankerCache: LexicalBm25Ranker<ChunkRecordItem> | null = null,
-    private sourceRankerCache: LexicalBm25Ranker<SourceRecordItem> | null = null,
+    private chunkRankerCache: Map<string, LexicalBm25Ranker<ChunkRecordItem>> = new Map(),
+    private sourceRankerCache: Map<string, LexicalBm25Ranker<SourceRecordItem>> = new Map(),
   ) {}
 
   static async load(kbName: string, kbPath: string): Promise<LexicalIndex> {
@@ -242,6 +251,7 @@ export class LexicalIndex {
     );
     const filePaths = enumeration[0]?.filePaths ?? [];
     const seen = new Set<string>();
+    const retrievalViewsKey = formatRetrievalViews(resolveRetrievalViews());
 
     for (const absPath of filePaths) {
       const relPath = path.relative(this.kbPath, absPath).split(path.sep).join('/');
@@ -257,7 +267,7 @@ export class LexicalIndex {
       }
 
       const existing = this.entries.get(relPath);
-      if (existing && existing.sha256 === sha) {
+      if (existing && existing.sha256 === sha && (existing.retrievalViews ?? '') === retrievalViewsKey) {
         continue;
       }
 
@@ -296,7 +306,7 @@ export class LexicalIndex {
         }
         return entry;
       });
-      this.entries.set(relPath, { sha256: sha, chunks: serialized });
+      this.entries.set(relPath, { sha256: sha, retrievalViews: retrievalViewsKey, chunks: serialized });
       if (existing) {
         summary.updated += 1;
       } else {
@@ -317,8 +327,8 @@ export class LexicalIndex {
       chunkCount += entry.chunks.length;
     }
     summary.totalChunks = chunkCount;
-    this.chunkRankerCache = null;
-    this.sourceRankerCache = null;
+    this.chunkRankerCache.clear();
+    this.sourceRankerCache.clear();
     return summary;
   }
 
@@ -354,8 +364,8 @@ export class LexicalIndex {
     if (k <= 0 || this.entries.size === 0) return [];
     const unit = options.unit ?? 'chunk';
     return unit === 'source'
-      ? this.querySources(query, k, options.candidateK)
-      : this.queryChunks(query, k);
+      ? this.querySources(query, k, options)
+      : this.queryChunks(query, k, options);
   }
 
   numFiles(): number {
@@ -368,21 +378,28 @@ export class LexicalIndex {
     return n;
   }
 
-  private queryChunks(query: string, k: number): LexicalSearchResult[] {
-    const ranked = this.chunkRanker().query(query, k);
-    return ranked.map(({ item, score }) => ({
+  private queryChunks(query: string, k: number, options: LexicalQueryOptions): LexicalSearchResult[] {
+    const candidateK = options.retrievalViews !== undefined && options.retrievalViews.length > 0
+      ? Math.max(k * Math.max(4, options.retrievalViews.length + 1), k)
+      : k;
+    const ranked = this.chunkRanker(options.retrievalViews).query(query, candidateK);
+    const hits = ranked.map(({ item, score }) => ({
       pageContent: item.chunk.pageContent,
       metadata: item.chunk.metadata,
       score,
     }));
+    const collapsed = options.retrievalViews !== undefined && options.retrievalViews.length > 0
+      ? collapseRetrievalViewResults(hits, { scoreDirection: 'higher' })
+      : hits;
+    return collapsed.slice(0, k);
   }
 
-  private querySources(query: string, k: number, candidateK: number | undefined): LexicalSearchResult[] {
-    const rankedSources = this.sourceRanker().query(query, k);
+  private querySources(query: string, k: number, options: LexicalQueryOptions): LexicalSearchResult[] {
+    const rankedSources = this.sourceRanker(options.retrievalViews).query(query, k);
     if (rankedSources.length === 0) return [];
 
-    const chunkCandidateK = Math.max(candidateK ?? k * 4, k, this.numChunks());
-    const rankedChunks = this.chunkRanker().query(query, chunkCandidateK);
+    const chunkCandidateK = Math.max(options.candidateK ?? k * 4, k, this.numChunks());
+    const rankedChunks = this.chunkRanker(options.retrievalViews).query(query, chunkCandidateK);
     const bestChunkByRelPath = new Map<string, SerializedDocument>();
     for (const { item } of rankedChunks) {
       if (!bestChunkByRelPath.has(item.relPath)) {
@@ -404,20 +421,31 @@ export class LexicalIndex {
     });
   }
 
-  private chunkRanker(): LexicalBm25Ranker<ChunkRecordItem> {
-    this.chunkRankerCache ??= LexicalBm25Ranker.fromRecords(this.chunkRecords());
-    return this.chunkRankerCache;
+  private chunkRanker(retrievalViews?: readonly RetrievalViewKind[]): LexicalBm25Ranker<ChunkRecordItem> {
+    const key = retrievalViewCacheKey(retrievalViews);
+    let ranker = this.chunkRankerCache.get(key);
+    if (ranker === undefined) {
+      ranker = LexicalBm25Ranker.fromRecords(this.chunkRecords(retrievalViews));
+      this.chunkRankerCache.set(key, ranker);
+    }
+    return ranker;
   }
 
-  private sourceRanker(): LexicalBm25Ranker<SourceRecordItem> {
-    this.sourceRankerCache ??= LexicalBm25Ranker.fromRecords(this.sourceRecords());
-    return this.sourceRankerCache;
+  private sourceRanker(retrievalViews?: readonly RetrievalViewKind[]): LexicalBm25Ranker<SourceRecordItem> {
+    const key = retrievalViewCacheKey(retrievalViews);
+    let ranker = this.sourceRankerCache.get(key);
+    if (ranker === undefined) {
+      ranker = LexicalBm25Ranker.fromRecords(this.sourceRecords(retrievalViews));
+      this.sourceRankerCache.set(key, ranker);
+    }
+    return ranker;
   }
 
-  private chunkRecords(): Array<LexicalBm25Record<ChunkRecordItem>> {
+  private chunkRecords(retrievalViews?: readonly RetrievalViewKind[]): Array<LexicalBm25Record<ChunkRecordItem>> {
     const records: Array<LexicalBm25Record<ChunkRecordItem>> = [];
     for (const [relPath, entry] of this.entries) {
       for (const chunk of entry.chunks) {
+        if (!shouldKeepForRetrievalViews({ metadata: chunk.metadata }, retrievalViews)) continue;
         records.push({
           item: { relPath, chunk },
           title: titleFromMetadata(chunk.metadata) ?? path.basename(relPath, path.extname(relPath)),
@@ -428,19 +456,26 @@ export class LexicalIndex {
     return records;
   }
 
-  private sourceRecords(): Array<LexicalBm25Record<SourceRecordItem>> {
+  private sourceRecords(retrievalViews?: readonly RetrievalViewKind[]): Array<LexicalBm25Record<SourceRecordItem>> {
     const records: Array<LexicalBm25Record<SourceRecordItem>> = [];
     for (const [relPath, entry] of this.entries) {
-      const firstChunk = entry.chunks[0];
+      const chunks = entry.chunks.filter((chunk) => shouldKeepForRetrievalViews({ metadata: chunk.metadata }, retrievalViews));
+      const firstChunk = chunks[0];
       if (firstChunk === undefined) continue;
       records.push({
         item: { relPath, firstChunk },
         title: titleFromMetadata(firstChunk.metadata) ?? path.basename(relPath, path.extname(relPath)),
-        text: entry.chunks.map((chunk) => chunk.searchText ?? chunk.pageContent).join('\n\n'),
+        text: chunks.map((chunk) => chunk.searchText ?? chunk.pageContent).join('\n\n'),
       });
     }
     return records;
   }
+}
+
+function retrievalViewCacheKey(retrievalViews: readonly RetrievalViewKind[] | undefined): string {
+  return retrievalViews === undefined || retrievalViews.length === 0
+    ? 'default'
+    : `views:${retrievalViews.join(',')}`;
 }
 
 function titleFromMetadata(metadata: Record<string, unknown>): string | undefined {
