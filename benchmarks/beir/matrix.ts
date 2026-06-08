@@ -61,6 +61,9 @@ const MATRIX_MODES: readonly BeirMode[] = [
   'hybrid+late',
   'hybrid+rerank',
   'hybrid+rerank+contextual',
+  'hybrid+listwise-rerank',
+  'hybrid+hard-negative-rerank',
+  'hybrid+adaptive-rerank',
 ];
 
 // RFC 020 §7 reproducibility ledger — the full retrieval env recorded with the
