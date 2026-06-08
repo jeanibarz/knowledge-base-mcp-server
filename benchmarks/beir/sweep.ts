@@ -323,9 +323,17 @@ function parseNonNegativeInt(raw: string, flag: string): number {
   return parsed;
 }
 
+const SWEEP_MODES: readonly BeirMode[] = [
+  'lexical',
+  'dense',
+  'hybrid',
+  'hybrid+rerank',
+  'hybrid+rerank+contextual',
+];
+
 function parseSweepMode(raw: string): BeirMode {
-  if (raw === 'lexical' || raw === 'dense' || raw === 'hybrid') return raw;
-  throw new Error('--mode must be one of: lexical, dense, hybrid');
+  if ((SWEEP_MODES as readonly string[]).includes(raw)) return raw as BeirMode;
+  throw new Error(`--mode must be one of: ${SWEEP_MODES.join(', ')}`);
 }
 
 function sweepHelpText(): string {

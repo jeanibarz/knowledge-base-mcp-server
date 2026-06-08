@@ -36,24 +36,61 @@ const DATASET_URLS: Record<string, string> = {
   'webis-touche2020': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/webis-touche2020.zip',
 };
 
-// v2 (RFC 020 M0): added `dense`/`hybrid` modes (driven by the production
-// `src/` retrieval paths), precision@10 in the metric set, and the
-// `embedding` provenance block. v1 was lexical-only.
-const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v2';
+// v3 (RFC 020 M1): added `hybrid+rerank` / `hybrid+rerank+contextual` modes
+// (driven by the production `src/reranker.ts` cross-encoder and the RFC 017
+// contextual-preface ingest path) plus the `rerank` / `contextual` provenance
+// blocks. v2 added `dense`/`hybrid` + precision@10 + `embedding`; v1 was
+// lexical-only.
+const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v3';
 type LexicalUnit = 'chunk' | 'source';
 // RFC 020 §1 — the retrieval-mode space the runner can score. `lexical` is
-// credential-free (BM25 only); `dense` and `hybrid` drive the production
-// embedding + RRF paths in `src/` and therefore require an embedding provider.
-export type BeirMode = 'lexical' | 'dense' | 'hybrid';
-const BEIR_MODES: readonly BeirMode[] = ['lexical', 'dense', 'hybrid'];
+// credential-free (BM25 only); the rest drive the production embedding + RRF +
+// cross-encoder + contextual-preface paths in `src/` and therefore require an
+// embedding provider (and, for `+contextual`, an LLM endpoint at ingest).
+export type BeirMode =
+  | 'lexical'
+  | 'dense'
+  | 'hybrid'
+  | 'hybrid+rerank'
+  | 'hybrid+rerank+contextual';
+const BEIR_MODES: readonly BeirMode[] = [
+  'lexical',
+  'dense',
+  'hybrid',
+  'hybrid+rerank',
+  'hybrid+rerank+contextual',
+];
 
 function isBeirMode(value: string): value is BeirMode {
   return (BEIR_MODES as readonly string[]).includes(value);
 }
 
-function isDenseMode(mode: BeirMode): mode is 'dense' | 'hybrid' {
-  return mode === 'dense' || mode === 'hybrid';
+// Every non-lexical mode drives an embedding provider and the dense backend.
+function usesEmbeddingProvider(mode: BeirMode): boolean {
+  return mode !== 'lexical';
 }
+
+// The production `SearchMode` a BeirMode maps onto. The rerank/contextual
+// variants all retrieve through the hybrid RRF path; reranking is enabled via
+// the production `KB_RERANK` config and contextual prefaces via the production
+// `KB_CONTEXTUAL_RETRIEVAL` ingest path — never a benchmark-only reimplementation.
+function beirSearchMode(mode: BeirMode): 'dense' | 'hybrid' {
+  return mode === 'dense' ? 'dense' : 'hybrid';
+}
+
+function modeEnablesRerank(mode: BeirMode): boolean {
+  return mode === 'hybrid+rerank' || mode === 'hybrid+rerank+contextual';
+}
+
+function modeEnablesContextual(mode: BeirMode): boolean {
+  return mode === 'hybrid+rerank+contextual';
+}
+
+// Mirrors `src/config/reranker.ts` defaults. Recorded as provenance only; the
+// runner does not re-implement the reranker — it flips the production
+// `KB_RERANK` flag and the shipped hybrid path drives `src/reranker.ts`.
+const DEFAULT_RERANK_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
+const DEFAULT_RERANK_TOP_N = 40;
 
 interface Args {
   dataset: string;
@@ -206,6 +243,20 @@ interface BeirBenchmarkReport {
     provider: string;
     model: string;
   } | null;
+  // Cross-encoder rerank provenance (RFC 020 §3/§7 — baselines record the exact
+  // rerank model + topN). Present (enabled true) only for `hybrid+rerank[...]`
+  // modes; `enabled: false` for plain hybrid/dense; null for lexical.
+  rerank: {
+    enabled: boolean;
+    model: string;
+    topN: number;
+  } | null;
+  // RFC 017 contextual-preface provenance. `enabled` true only for
+  // `hybrid+rerank+contextual`; the prefaces are generated at ingest by the
+  // production `buildChunkDocuments` path and embedded into chunk + BM25 text.
+  contextual: {
+    enabled: boolean;
+  } | null;
   ranking: {
     unit: LexicalUnit;
     implementation: string;
@@ -294,10 +345,22 @@ export async function runBeirBenchmark(
   configureBenchmarkEnvironment(knowledgeBasesRootDir, faissIndexPath);
   await dependencies.silenceServerLogger(buildRoot);
 
-  const retrieval = isDenseMode(args.mode)
-    ? await runDenseRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies })
-    : await runLexicalRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies });
+  // RFC 020 §1 — flip the production stage flags (`KB_RERANK`,
+  // `KB_CONTEXTUAL_RETRIEVAL`) deterministically per mode so each run is
+  // self-contained even inside the in-process sweep/baseline loops, and restore
+  // them afterwards. The shipped hybrid path reads these via the production
+  // config resolvers, so the rerank/contextual stages run through `src/`.
+  const restoreStageEnv = applyStageEnvironment(args.mode);
+  let retrieval: RetrievalOutcome;
+  try {
+    retrieval = usesEmbeddingProvider(args.mode)
+      ? await runDenseRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies })
+      : await runLexicalRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies });
+  } finally {
+    restoreStageEnv();
+  }
   const { queryRows, perQuery, latenciesMs, indexMs, indexing, ranking: rankingMeta, embedding } = retrieval;
+  const stages = resolveStageProvenance(args.mode);
 
   const runTag = `kb-${args.dataset}-${args.mode}-${rankingMeta.unit}`;
   const trecPath = path.join(args.outputDir, `${runTag}-run.trec`);
@@ -322,6 +385,8 @@ export async function runBeirBenchmark(
     },
     mode: args.mode,
     embedding,
+    rerank: stages.rerank,
+    contextual: stages.contextual,
     ranking: {
       unit: rankingMeta.unit,
       implementation: rankingMeta.implementation,
@@ -427,13 +492,25 @@ async function runLexicalRetrieval(input: RetrievalInput): Promise<RetrievalOutc
 
 async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcome> {
   const { args, prepared, qrels, selectedQueries, buildRoot, dependencies } = input;
-  if (!isDenseMode(args.mode)) {
+  if (!usesEmbeddingProvider(args.mode)) {
     throw new Error(`runDenseRetrieval called for non-dense mode ${args.mode}`);
+  }
+  // RFC 020 §1 — "+contextual" prefaces are generated at ingest by the LLM; a
+  // missing endpoint must fail loudly, not silently degrade to a non-contextual
+  // run that would mislabel its number (mirrors the no-provider check above).
+  if (modeEnablesContextual(args.mode) && !contextualEndpointConfigured()) {
+    throw new Error(
+      `BEIR --mode=${args.mode} needs an LLM endpoint to generate RFC 017 contextual prefaces at ingest, ` +
+        'but none is configured. Set KB_LLM_ENDPOINT (e.g. a local Ollama/OpenAI-compatible chat endpoint), ' +
+        'or set KB_LLM_FAKE=on for a deterministic, network-free self-test.',
+    );
   }
   const spec = resolveEmbeddingSpec(args);
   const backend = await dependencies.loadSearchBackend({
     buildRoot,
-    mode: args.mode,
+    // The production retrieval mode (dense vs hybrid RRF). Rerank/contextual are
+    // layered on by the stage flags, not by a distinct retrieval entrypoint.
+    mode: beirSearchMode(args.mode),
     provider: spec.provider,
     modelName: spec.model,
     kbName: prepared.kbName,
@@ -464,8 +541,83 @@ async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcom
     latenciesMs,
     indexMs,
     indexing: { files: prep.files, chunks: prep.chunks },
-    ranking: { unit: 'chunk', implementation: backend.implementation },
+    ranking: { unit: 'chunk', implementation: describeImplementation(backend.implementation, args.mode) },
     embedding: { provider: spec.provider, model: spec.model },
+  };
+}
+
+// Append the active stage(s) to the backend's base implementation string so the
+// report names the exact production paths exercised (RFC 020 §1).
+function describeImplementation(base: string, mode: BeirMode): string {
+  const stages: string[] = [];
+  if (modeEnablesRerank(mode)) {
+    stages.push('+ src/reranker.ts cross-encoder rerank (production KB_RERANK path)');
+  }
+  if (modeEnablesContextual(mode)) {
+    stages.push('+ RFC 017 contextual prefaces at ingest (production buildChunkDocuments path)');
+  }
+  return stages.length === 0 ? base : `${base} ${stages.join(' ')}`;
+}
+
+// Read-only mirror of `src/config/contextual-preface.ts`
+// `resolveContextualLlmEndpoint`: an endpoint exists when the fake LLM is on or
+// KB_LLM_ENDPOINT is non-empty. Replicated locally so the runner module stays
+// free of any static `src/` import (the env vars it reads are the same).
+function contextualEndpointConfigured(): boolean {
+  const fake = (process.env.KB_LLM_FAKE ?? '').trim().toLowerCase();
+  if (fake === 'on' || fake === 'true' || fake === '1' || fake === 'yes') return true;
+  return (process.env.KB_LLM_ENDPOINT ?? '').trim() !== '';
+}
+
+interface StageProvenance {
+  rerank: BeirBenchmarkReport['rerank'];
+  contextual: BeirBenchmarkReport['contextual'];
+}
+
+// Provenance blocks recorded on the report. Derived from the mode (not from a
+// post-hoc env read) so the record is stable regardless of resolution order.
+function resolveStageProvenance(mode: BeirMode): StageProvenance {
+  if (!usesEmbeddingProvider(mode)) {
+    return { rerank: null, contextual: null };
+  }
+  const rerankEnabled = modeEnablesRerank(mode);
+  return {
+    rerank: {
+      enabled: rerankEnabled,
+      model: process.env.KB_RERANK_MODEL?.trim() || DEFAULT_RERANK_MODEL,
+      topN: rerankEnabled ? parseRerankTopNEnv(process.env.KB_RERANK_TOP_N) : DEFAULT_RERANK_TOP_N,
+    },
+    contextual: { enabled: modeEnablesContextual(mode) },
+  };
+}
+
+function parseRerankTopNEnv(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_RERANK_TOP_N;
+  const value = Number(raw.trim());
+  return Number.isInteger(value) && value > 0 ? value : DEFAULT_RERANK_TOP_N;
+}
+
+/**
+ * Flip the production stage flags for the requested mode and return a restore
+ * closure. The shipped hybrid path reads `KB_RERANK` (search-time rerank) and
+ * the ingest path reads `KB_CONTEXTUAL_RETRIEVAL` (preface generation); setting
+ * them explicitly — ON for the stage's modes, OFF otherwise — makes each run
+ * self-contained even when several modes run in one process (sweep/baseline).
+ */
+function applyStageEnvironment(mode: BeirMode): () => void {
+  const previous: Record<string, string | undefined> = {
+    KB_RERANK: process.env.KB_RERANK,
+    KB_CONTEXTUAL_RETRIEVAL: process.env.KB_CONTEXTUAL_RETRIEVAL,
+  };
+  if (usesEmbeddingProvider(mode)) {
+    process.env.KB_RERANK = modeEnablesRerank(mode) ? 'on' : 'off';
+    process.env.KB_CONTEXTUAL_RETRIEVAL = modeEnablesContextual(mode) ? 'on' : 'off';
+  }
+  return () => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   };
 }
 
@@ -558,6 +710,18 @@ function buildCaveats(args: Args): string[] {
       'Dense/hybrid require a real embedding provider; the fake provider is deterministic but has no ' +
         'semantic geometry, so fake-provider numbers are self-test smoke only — never a quality baseline.',
     );
+    if (modeEnablesRerank(args.mode)) {
+      caveats.push(
+        'Rerank is the production src/reranker.ts cross-encoder (enabled via KB_RERANK); the default ' +
+          'transformers.js model downloads on first use, so a rerank run needs network or a cached model.',
+      );
+    }
+    if (modeEnablesContextual(args.mode)) {
+      caveats.push(
+        'Contextual prefaces are the RFC 017 ingest path (KB_CONTEXTUAL_RETRIEVAL); each chunk costs an ' +
+          'LLM call at index time, cached in the sidecar. The fake LLM (KB_LLM_FAKE=on) is self-test only.',
+      );
+    }
   }
   return caveats;
 }
@@ -1084,7 +1248,7 @@ function formatBenchmarkCommand(args: Args): string {
     `--split=${args.split}`,
     `--mode=${args.mode}`,
   ];
-  if (isDenseMode(args.mode)) {
+  if (usesEmbeddingProvider(args.mode)) {
     if (args.provider !== undefined) parts.push(`--provider=${args.provider}`);
     if (args.model !== undefined) parts.push(`--model=${args.model}`);
   } else {
@@ -1109,9 +1273,12 @@ function portablePath(filePath: string): string {
 
 function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jsonPath: string): string {
   const { dataset, latency, metrics } = report;
+  const stageSuffix = report.rerank?.enabled
+    ? `, rerank: ${report.rerank.model} topN=${report.rerank.topN}${report.contextual?.enabled ? ', contextual: on' : ''}`
+    : '';
   const modeLine = report.embedding === null
     ? `- Mode: ${report.mode} (${report.ranking.unit})`
-    : `- Mode: ${report.mode} (provider: ${report.embedding.provider}, model: ${report.embedding.model})`;
+    : `- Mode: ${report.mode} (provider: ${report.embedding.provider}, model: ${report.embedding.model}${stageSuffix})`;
   return [
     `# BEIR/${dataset.name} local benchmark`,
     '',
@@ -1183,6 +1350,10 @@ Options:
   --mode=<mode>          Retrieval mode: ${BEIR_MODES.join(', ')}. Default: lexical.
                          lexical is credential-free (BM25). dense/hybrid drive
                          the production src/ retrieval path and need a provider.
+                         hybrid+rerank adds the src/reranker.ts cross-encoder
+                         (KB_RERANK); hybrid+rerank+contextual also enables the
+                         RFC 017 contextual-preface ingest path and needs an LLM
+                         endpoint (KB_LLM_ENDPOINT, or KB_LLM_FAKE=on for tests).
   --lexical-unit=<unit>  chunk or source. source maps to kb search --lexical-unit=source. Default: source.
                          (lexical mode only.)
   --provider=<name>      Embedding provider for dense/hybrid (ollama, openai,

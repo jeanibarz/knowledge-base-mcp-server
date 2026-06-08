@@ -152,9 +152,17 @@ export function parseBaselineArgs(argv: string[]): BaselineOptions {
   return options;
 }
 
+const BASELINE_MODES: readonly BeirMode[] = [
+  'lexical',
+  'dense',
+  'hybrid',
+  'hybrid+rerank',
+  'hybrid+rerank+contextual',
+];
+
 function parseMode(raw: string): BeirMode {
-  if (raw === 'lexical' || raw === 'dense' || raw === 'hybrid') return raw;
-  throw new Error('--modes entries must be one of: lexical, dense, hybrid');
+  if ((BASELINE_MODES as readonly string[]).includes(raw)) return raw as BeirMode;
+  throw new Error(`--modes entries must be one of: ${BASELINE_MODES.join(', ')}`);
 }
 
 function baselineHelpText(): string {
