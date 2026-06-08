@@ -256,6 +256,129 @@ export async function logBeirMatrixToMlflow(
   await runMlflowLogger(beirMatrixMlflowPayload(input, config), input.repoRoot, config.python);
 }
 
+// RFC 020 §5/§7 (M4) — e2e RAG eval ledger. A scorecard run records the panel
+// composition (each judge family), the self-consistency K, the calibration
+// method, the per-judge bias coefficients, and the routing/correctness numbers,
+// so a cross-run comparison is only ever made within the same eval config (§5
+// provenance). Structurally typed to stay decoupled from the scorecard module.
+export interface RagEvalLedgerReport {
+  git_sha: string;
+  datasets: string[];
+  config: {
+    provider: string | null;
+    embeddingModel: string | null;
+    answererModel: string | null;
+    tier2Families: { entailment: string | null; semantic: string | null };
+  };
+  panel: { distinctFamilies: number; selfConsistencyK: number; calibrationMethod: string | null };
+  tier1: { exactMatch: number; tokenF1: number; contextRecall: number | null; contextPrecision: number | null };
+  routing: { items: number; tier1Decided: number; tier2Decided: number; tier3Decided: number; tier3Abstained: number; pending: number };
+  correctness: { scored: number; correct: number; accuracy: number | null };
+  panelConfidence: { meanSelfConsistency: number | null; meanCalibratedConfidence: number | null; abstentionRate: number | null };
+  biasProfiles: Array<{ judge: string; family: string; biasCoefficient: number; positionBias: number; dropped: boolean }>;
+}
+
+export interface MlflowRagEvalInput {
+  report: RagEvalLedgerReport;
+  jsonPath: string;
+  markdownPath: string;
+  repoRoot: string;
+}
+
+/**
+ * Build the MLflow payload for one e2e RAG eval scorecard (RFC 020 §5/§7). Pure
+ * + exported so the ledger contract is unit-testable without spawning Python:
+ * params carry the commit + panel/grader config; metrics carry the tier-1
+ * deterministic scores, the routing counts, correctness, panel confidence, and
+ * each judge's probe-measured bias coefficient.
+ */
+export function ragEvalMlflowPayload(input: MlflowRagEvalInput, config: MlflowConfig): MlflowPayload {
+  const { report } = input;
+  const biasMetrics: Record<string, unknown> = {};
+  for (const profile of report.biasProfiles) {
+    const key = sanitizeKeySegment(profile.judge);
+    biasMetrics[`bias.${key}.coefficient`] = profile.biasCoefficient;
+    biasMetrics[`bias.${key}.position`] = profile.positionBias;
+  }
+  return {
+    ...basePayload(config),
+    params: flattenParams({
+      kind: 'rag-eval',
+      git_sha: report.git_sha,
+      datasets: report.datasets,
+      provider: report.config.provider ?? 'none',
+      embedding_model: report.config.embeddingModel ?? 'none',
+      answerer_model: report.config.answererModel ?? 'none',
+      nli_family: report.config.tier2Families.entailment ?? 'none',
+      semantic_family: report.config.tier2Families.semantic ?? 'none',
+      panel_families: report.panel.distinctFamilies,
+      self_consistency_k: report.panel.selfConsistencyK,
+      calibration: report.panel.calibrationMethod ?? 'none',
+      dropped_judges: report.biasProfiles.filter((p) => p.dropped).map((p) => p.judge),
+    }),
+    metrics: flattenMetrics({
+      tier1: report.tier1,
+      routing: report.routing,
+      correctness: { scored: report.correctness.scored, correct: report.correctness.correct, accuracy: report.correctness.accuracy ?? undefined },
+      panel_confidence: {
+        mean_self_consistency: report.panelConfidence.meanSelfConsistency ?? undefined,
+        mean_calibrated_confidence: report.panelConfidence.meanCalibratedConfidence ?? undefined,
+        abstention_rate: report.panelConfidence.abstentionRate ?? undefined,
+      },
+      ...biasMetrics,
+    }),
+    artifacts: [input.jsonPath, input.markdownPath],
+  };
+}
+
+export async function logRagEvalToMlflow(input: MlflowRagEvalInput, config = readMlflowConfig()): Promise<void> {
+  if (!config) return;
+  await runMlflowLogger(ragEvalMlflowPayload(input, config), input.repoRoot, config.python);
+}
+
+// RFC 020 §8/§7 (M4) — MTEB submission ledger. Records the kb model, the
+// canonical MTEB id, the mteb version, and the per-task + mean main scores so a
+// public leaderboard claim is reproducible from commit + env.
+export interface MtebLedgerReport {
+  git_sha: string;
+  kb_model: string;
+  mteb_model_id: string;
+  mteb_version: string | null;
+  meanMainScore: number | null;
+  tasks: Array<{ task: string; mainScore: number }>;
+}
+
+export interface MlflowMtebInput {
+  report: MtebLedgerReport;
+  jsonPath: string;
+  markdownPath: string;
+  repoRoot: string;
+}
+
+export function mtebMlflowPayload(input: MlflowMtebInput, config: MlflowConfig): MlflowPayload {
+  const { report } = input;
+  const taskMetrics: Record<string, unknown> = {};
+  for (const task of report.tasks) taskMetrics[`task.${sanitizeKeySegment(task.task)}.main_score`] = task.mainScore;
+  return {
+    ...basePayload(config),
+    params: flattenParams({
+      kind: 'mteb',
+      git_sha: report.git_sha,
+      kb_model: report.kb_model,
+      mteb_model_id: report.mteb_model_id,
+      mteb_version: report.mteb_version ?? 'none',
+      tasks: report.tasks.length,
+    }),
+    metrics: flattenMetrics({ mean_main_score: report.meanMainScore ?? undefined, ...taskMetrics }),
+    artifacts: [input.jsonPath, input.markdownPath],
+  };
+}
+
+export async function logMtebToMlflow(input: MlflowMtebInput, config = readMlflowConfig()): Promise<void> {
+  if (!config) return;
+  await runMlflowLogger(mtebMlflowPayload(input, config), input.repoRoot, config.python);
+}
+
 function sanitizeKeySegment(value: string): string {
   return value.replace(/[^A-Za-z0-9]+/g, '_');
 }
