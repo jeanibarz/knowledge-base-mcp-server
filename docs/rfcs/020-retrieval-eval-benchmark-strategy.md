@@ -186,6 +186,46 @@ Each item below is gated by §3/§5 and (for the large ones) deferred to its own
 | **M4** | End-to-end RAG eval, **fully human-label-free** (Tier 1 gold-answer/supporting-fact metrics → Tier 2 NLI/semantic → Tier 3 multi-judge panel w/ unsupervised self-consistency calibration → Tier 4 automated bias probes — §5); **MTEB** submission of active embedding model | e2e scorecard recorded on held-out gold-bearing QA; panel self-consistency confidence + per-judge probe-measured bias coefficients reported (no human labels); MTEB result obtained for the default model |
 | **M5** | First Tier-1 technique adjudicated through the full harness | A ship/no-ship decision backed by §3 significance + §5 e2e veto (+ per-domain gate for reranker changes) |
 
+### M4 implementation note
+
+The four-tier cascade lands under `benchmarks/rag-eval/` and the MTEB submission
+under `benchmarks/mteb/` + `benchmarks/mteb_submit.py`:
+
+- **Tier 1 — deterministic reference metrics** (`benchmarks/rag-eval/reference.ts`):
+  SQuAD-normalized exact-match + token-F1 against gold answers, and context
+  recall/precision against gold supporting facts. No model in the loop.
+- **Tier 2 — automated model metrics** (`benchmarks/rag-eval/model-metrics.ts`):
+  an injected NLI/entailment model scores faithfulness claim-by-claim; an injected
+  BERTScore/COMET model scores open-ended text. Deterministic token-overlap stubs
+  make the tier hermetic in tests.
+- **Tier 3 — multi-judge panel** (`benchmarks/rag-eval/panel.ts`,
+  `benchmarks/rag-eval/judges.ts`, `benchmarks/rag-eval/calibration.ts`): ≥3
+  distinct judge families over the existing provider abstraction, majority/mean
+  aggregation, double-query A/B–B/A ordering + multi-dimensional rubric,
+  self-consistency confidence distilled into an **unsupervised** isotonic/ridge
+  calibrator, low-confidence items abstain.
+- **Tier 4 — automated bias probes** (`benchmarks/rag-eval/bias-probes.ts`):
+  position (A↔B flip-rate), verbosity (filler-padding drift), self-preference
+  (judge-on-self vs -on-other); per-judge coefficients subtracted, over-threshold
+  judges dropped. No human in the loop.
+- **Cascade + scorecard** (`benchmarks/rag-eval/cascade.ts`,
+  `benchmarks/rag-eval/scorecard.ts`): deterministic-first routing; the scorecard
+  records panel composition, self-consistency K, calibration method, and per-judge
+  bias coefficients (§7 provenance). Unwired tiers leave items *pending* — never a
+  fabricated score. Runner: `npm run bench:rag-eval` (`--fake` is a hermetic
+  self-test).
+- **MTEB** (`benchmarks/mteb_submit.py`, `benchmarks/mteb/registry.ts`,
+  `benchmarks/mteb/result.ts`, `benchmarks/mteb/run.ts`): the Python helper runs
+  the official `mteb` package against the active embedding model
+  (`Qwen/Qwen3-Embedding-0.6B`, RFC 013 default); the TS side records the per-task
+  + mean main scores and logs the §7 ledger. `npm run bench:mteb:submit` then
+  `npm run bench:mteb`.
+
+A fully-populated run needs the gold-QA datasets, an NLI checkpoint + a
+BERTScore/COMET model, ≥3 live judge families, and the `mteb` package with the
+embedding model served; where those are unavailable the machinery + unit tests
+ship and the scorecard self-describes which tiers ran.
+
 ## Evidence base & provenance
 
 This RFC was reviewed against the project's own knowledge bases via a six-domain `kb-scout` survey (eval/benchmarks, dense/fusion, rerank/late-interaction, chunking, e2e/generalization, and human-label-free judge reliability). Two provenance facts must travel with the document:

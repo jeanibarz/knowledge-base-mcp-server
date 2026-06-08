@@ -4,6 +4,10 @@ import {
   flattenMetrics,
   flattenParams,
   logBeirRunToMlflow,
+  logMtebToMlflow,
+  logRagEvalToMlflow,
+  mtebMlflowPayload,
+  ragEvalMlflowPayload,
   readMlflowConfig,
   type MlflowConfig,
 } from './mlflow.js';
@@ -148,5 +152,92 @@ describe('BEIR ledger (RFC 020 §7)', () => {
     expect(payload.metrics['headline.hybrid.mean_ndcg_at_10']).toBe(0.70);
     expect(payload.metrics['delta_g.hybrid']).toBe(0.1);
     expect(payload.artifacts).toEqual(['/tmp/matrix.json', '/tmp/matrix.md']);
+  });
+});
+
+describe('RAG eval ledger (RFC 020 §5/§7)', () => {
+  const config: MlflowConfig = { experimentName: 'kb-rag-eval', tags: {}, python: 'python3' };
+
+  it('builds a payload with panel config params and bias-coefficient metrics', () => {
+    const payload = ragEvalMlflowPayload({
+      report: {
+        git_sha: 'beef',
+        datasets: ['nq', 'hotpotqa'],
+        config: { provider: 'ollama', embeddingModel: 'nomic', answererModel: 'deepseek', tier2Families: { entailment: 'nli', semantic: 'bertscore' } },
+        panel: { distinctFamilies: 3, selfConsistencyK: 5, calibrationMethod: 'isotonic' },
+        tier1: { exactMatch: 0.6, tokenF1: 0.7, contextRecall: 0.8, contextPrecision: 0.5 },
+        routing: { items: 10, tier1Decided: 6, tier2Decided: 2, tier3Decided: 1, tier3Abstained: 1, pending: 0 },
+        correctness: { scored: 9, correct: 7, accuracy: 0.778 },
+        panelConfidence: { meanSelfConsistency: 0.9, meanCalibratedConfidence: 0.85, abstentionRate: 0.1 },
+        biasProfiles: [
+          { judge: 'deepseek-judge', family: 'deepseek', biasCoefficient: 0.05, positionBias: 0.02, dropped: false },
+          { judge: 'biased-judge', family: 'x', biasCoefficient: 0.2, positionBias: 0.3, dropped: true },
+        ],
+      },
+      jsonPath: '/tmp/rag.json',
+      markdownPath: '/tmp/rag.md',
+      repoRoot: '/repo',
+    }, config);
+
+    expect(payload.params).toMatchObject({
+      kind: 'rag-eval',
+      git_sha: 'beef',
+      datasets: 'nq,hotpotqa',
+      self_consistency_k: '5',
+      calibration: 'isotonic',
+      dropped_judges: 'biased-judge',
+    });
+    expect(payload.metrics['tier1.exactMatch']).toBe(0.6);
+    expect(payload.metrics['correctness.accuracy']).toBeCloseTo(0.778, 5);
+    expect(payload.metrics['bias.deepseek_judge.coefficient']).toBe(0.05);
+    expect(payload.metrics['bias.biased_judge.position']).toBe(0.3);
+    expect(payload.artifacts).toEqual(['/tmp/rag.json', '/tmp/rag.md']);
+  });
+
+  it('logging is a no-op when MLflow is unconfigured', async () => {
+    await expect(logRagEvalToMlflow({
+      report: {
+        git_sha: 'x', datasets: [], config: { provider: null, embeddingModel: null, answererModel: null, tier2Families: { entailment: null, semantic: null } },
+        panel: { distinctFamilies: 0, selfConsistencyK: 5, calibrationMethod: null },
+        tier1: { exactMatch: 0, tokenF1: 0, contextRecall: null, contextPrecision: null },
+        routing: { items: 0, tier1Decided: 0, tier2Decided: 0, tier3Decided: 0, tier3Abstained: 0, pending: 0 },
+        correctness: { scored: 0, correct: 0, accuracy: null },
+        panelConfidence: { meanSelfConsistency: null, meanCalibratedConfidence: null, abstentionRate: null },
+        biasProfiles: [],
+      },
+      jsonPath: '/tmp/a.json', markdownPath: '/tmp/a.md', repoRoot: '/repo',
+    }, undefined)).resolves.toBeUndefined();
+  });
+});
+
+describe('MTEB ledger (RFC 020 §8/§7)', () => {
+  const config: MlflowConfig = { experimentName: 'kb-mteb', tags: {}, python: 'python3' };
+
+  it('builds a payload with the kb/MTEB model ids and per-task main scores', () => {
+    const payload = mtebMlflowPayload({
+      report: {
+        git_sha: 'd00d',
+        kb_model: 'dengcao/Qwen3-Embedding-0.6B:Q8_0',
+        mteb_model_id: 'Qwen/Qwen3-Embedding-0.6B',
+        mteb_version: '1.14.0',
+        meanMainScore: 0.55,
+        tasks: [{ task: 'SciFact', mainScore: 0.75 }, { task: 'NFCorpus', mainScore: 0.35 }],
+      },
+      jsonPath: '/tmp/mteb.json',
+      markdownPath: '/tmp/mteb.md',
+      repoRoot: '/repo',
+    }, config);
+
+    expect(payload.params).toMatchObject({ kind: 'mteb', mteb_model_id: 'Qwen/Qwen3-Embedding-0.6B', mteb_version: '1.14.0', tasks: '2' });
+    expect(payload.metrics.mean_main_score).toBe(0.55);
+    expect(payload.metrics['task.SciFact.main_score']).toBe(0.75);
+    expect(payload.artifacts).toEqual(['/tmp/mteb.json', '/tmp/mteb.md']);
+  });
+
+  it('logging is a no-op when MLflow is unconfigured', async () => {
+    await expect(logMtebToMlflow({
+      report: { git_sha: 'x', kb_model: 'm', mteb_model_id: 'id', mteb_version: null, meanMainScore: null, tasks: [] },
+      jsonPath: '/tmp/a.json', markdownPath: '/tmp/a.md', repoRoot: '/repo',
+    }, undefined)).resolves.toBeUndefined();
   });
 });
