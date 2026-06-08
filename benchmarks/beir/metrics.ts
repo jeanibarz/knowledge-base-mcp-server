@@ -13,6 +13,12 @@ export interface QueryMetric {
   retrieved: number;
   ndcgAt10: number;
   mapAt100: number;
+  // RFC 020 M0 — precision@10 is recorded alongside nDCG@10 because the
+  // chunk-size sweep needs it: an oversized chunk can still hit the qrel
+  // document (keeping nDCG/recall high) while diluting the fraction of the
+  // top-10 that is actually relevant. Precision is what exposes that
+  // chunk-boundary ↔ qrel-span mismatch.
+  precisionAt10: number;
   recallAt10: number;
   recallAt100: number;
 }
@@ -21,6 +27,7 @@ export interface AggregateMetrics {
   judgedQueries: number;
   ndcgAt10: number;
   mapAt100: number;
+  precisionAt10: number;
   recallAt10: number;
   recallAt100: number;
 }
@@ -82,6 +89,7 @@ export function scoreQuery(
     retrieved: uniqueRanking.length,
     ndcgAt10: roundMetric(ndcgAt(uniqueRanking, relevanceByDoc, 10)),
     mapAt100: roundMetric(averagePrecisionAt(uniqueRanking, relevantDocIds, 100)),
+    precisionAt10: roundMetric(precisionAt(uniqueRanking, relevantDocIds, 10)),
     recallAt10: roundMetric(recallAt(uniqueRanking, relevantDocIds, 10)),
     recallAt100: roundMetric(recallAt(uniqueRanking, relevantDocIds, 100)),
   };
@@ -92,6 +100,7 @@ export function aggregateQueryMetrics(metrics: readonly QueryMetric[]): Aggregat
     judgedQueries: metrics.length,
     ndcgAt10: roundMetric(mean(metrics.map((metric) => metric.ndcgAt10))),
     mapAt100: roundMetric(mean(metrics.map((metric) => metric.mapAt100))),
+    precisionAt10: roundMetric(mean(metrics.map((metric) => metric.precisionAt10))),
     recallAt10: roundMetric(mean(metrics.map((metric) => metric.recallAt10))),
     recallAt100: roundMetric(mean(metrics.map((metric) => metric.recallAt100))),
   };
@@ -139,6 +148,18 @@ function recallAt(ranking: readonly RankedDocument[], relevantDocIds: Set<string
     if (relevantDocIds.has(item.docId)) hits += 1;
   }
   return hits / relevantDocIds.size;
+}
+
+// Precision@k — fraction of the top-k retrieved documents that are relevant.
+// The denominator is the cutoff `k`, not the number of results returned, so a
+// short ranking is penalised for the empty slots (standard BEIR convention).
+function precisionAt(ranking: readonly RankedDocument[], relevantDocIds: Set<string>, k: number): number {
+  if (k <= 0) return 0;
+  let hits = 0;
+  for (const item of ranking.slice(0, k)) {
+    if (relevantDocIds.has(item.docId)) hits += 1;
+  }
+  return hits / k;
 }
 
 function averagePrecisionAt(

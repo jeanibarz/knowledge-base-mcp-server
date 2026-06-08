@@ -33,6 +33,8 @@ describe('BEIR benchmark metrics', () => {
     expect(scored?.mapAt100).toBeCloseTo(0.833333, 6);
     expect(scored?.ndcgAt10).toBeCloseTo(0.688529, 6);
     expect(scored?.ndcgAt10).toBeLessThan(1);
+    // 2 of the top-10 slots are relevant (d2, d1) over a cutoff of 10 -> 0.2.
+    expect(scored?.precisionAt10).toBeCloseTo(0.2, 6);
   });
 
   it('aggregates query metrics and latency percentiles deterministically', () => {
@@ -43,6 +45,7 @@ describe('BEIR benchmark metrics', () => {
         retrieved: 1,
         ndcgAt10: 1,
         mapAt100: 1,
+        precisionAt10: 0.1,
         recallAt10: 1,
         recallAt100: 1,
       },
@@ -52,6 +55,7 @@ describe('BEIR benchmark metrics', () => {
         retrieved: 1,
         ndcgAt10: 0.5,
         mapAt100: 0.25,
+        precisionAt10: 0.2,
         recallAt10: 0.5,
         recallAt100: 0.5,
       },
@@ -61,6 +65,7 @@ describe('BEIR benchmark metrics', () => {
       judgedQueries: 2,
       ndcgAt10: 0.75,
       mapAt100: 0.625,
+      precisionAt10: 0.15,
       recallAt10: 0.75,
       recallAt100: 0.75,
     });

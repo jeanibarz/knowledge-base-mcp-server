@@ -1,0 +1,76 @@
+{
+  "schema_version": "kb.beir-chunk-sweep.v1",
+  "generated_at": "2026-06-08T00:31:28.242886Z",
+  "git_sha": "199f352",
+  "mode": "dense",
+  "provider": "ollama",
+  "model": "nomic-embed-text",
+  "datasets": [
+    "scifact",
+    "nfcorpus"
+  ],
+  "chunk_sizes": [
+    500,
+    1000,
+    2000
+  ],
+  "chunk_overlaps": [
+    200
+  ],
+  "points": [
+    {
+      "dataset": "scifact",
+      "chunkSize": 500,
+      "chunkOverlap": 200,
+      "ndcgAt10": 0.499675,
+      "precisionAt10": 0.072667,
+      "recallAt10": 0.637389,
+      "queriesEvaluated": 300
+    },
+    {
+      "dataset": "scifact",
+      "chunkSize": 1000,
+      "chunkOverlap": 200,
+      "ndcgAt10": 0.491414,
+      "precisionAt10": 0.069333,
+      "recallAt10": 0.610722,
+      "queriesEvaluated": 300
+    },
+    {
+      "dataset": "scifact",
+      "chunkSize": 2000,
+      "chunkOverlap": 200,
+      "ndcgAt10": 0.520217,
+      "precisionAt10": 0.073333,
+      "recallAt10": 0.652389,
+      "queriesEvaluated": 300
+    },
+    {
+      "dataset": "nfcorpus",
+      "chunkSize": 500,
+      "chunkOverlap": 200,
+      "ndcgAt10": 0.184193,
+      "precisionAt10": 0.13096,
+      "recallAt10": 0.094771,
+      "queriesEvaluated": 323
+    },
+    {
+      "dataset": "nfcorpus",
+      "chunkSize": 1000,
+      "chunkOverlap": 200,
+      "ndcgAt10": 0.179858,
+      "precisionAt10": 0.126935,
+      "recallAt10": 0.094631,
+      "queriesEvaluated": 323
+    },
+    {
+      "dataset": "nfcorpus",
+      "chunkSize": 2000,
+      "chunkOverlap": 200,
+      "ndcgAt10": 0.18223,
+      "precisionAt10": 0.125387,
+      "recallAt10": 0.092259,
+      "queriesEvaluated": 323
+    }
+  ]
+}

@@ -36,14 +36,35 @@ const DATASET_URLS: Record<string, string> = {
   'webis-touche2020': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/webis-touche2020.zip',
 };
 
-const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v1';
+// v2 (RFC 020 M0): added `dense`/`hybrid` modes (driven by the production
+// `src/` retrieval paths), precision@10 in the metric set, and the
+// `embedding` provenance block. v1 was lexical-only.
+const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v2';
 type LexicalUnit = 'chunk' | 'source';
+// RFC 020 §1 — the retrieval-mode space the runner can score. `lexical` is
+// credential-free (BM25 only); `dense` and `hybrid` drive the production
+// embedding + RRF paths in `src/` and therefore require an embedding provider.
+export type BeirMode = 'lexical' | 'dense' | 'hybrid';
+const BEIR_MODES: readonly BeirMode[] = ['lexical', 'dense', 'hybrid'];
+
+function isBeirMode(value: string): value is BeirMode {
+  return (BEIR_MODES as readonly string[]).includes(value);
+}
+
+function isDenseMode(mode: BeirMode): mode is 'dense' | 'hybrid' {
+  return mode === 'dense' || mode === 'hybrid';
+}
 
 interface Args {
   dataset: string;
   split: string;
-  mode: 'lexical';
+  mode: BeirMode;
   lexicalUnit: LexicalUnit;
+  // Embedding provider/model for `dense`/`hybrid`. `provider` defaults to
+  // `EMBEDDING_PROVIDER`; resolution + the fail-loud check happen in
+  // `runBeirBenchmark` so a `--config` env block can still set them.
+  provider?: string;
+  model?: string;
   outputDir: string;
   cacheDir: string;
   workspaceRoot: string;
@@ -61,6 +82,8 @@ type BeirConfigKey =
   | 'mode'
   | 'lexical_unit'
   | 'lexicalUnit'
+  | 'provider'
+  | 'model'
   | 'output_dir'
   | 'outputDir'
   | 'cache_dir'
@@ -111,6 +134,55 @@ interface LexicalIndexModule {
   };
 }
 
+// -- Dense / hybrid retrieval backend ---------------------------------------
+//
+// RFC 020 §1 (failure mode "benchmark-only retrieval path drifts from
+// production"): the dense and hybrid modes MUST exercise the same retrieval
+// code the product ships. This backend is a thin port over the production
+// `src/` entrypoints — `FaissIndexManager.similaritySearch` (dense) and the
+// `retrieval-eval` orchestrator's hybrid RRF fusion (`src/hybrid-retrieval`),
+// both reached through `retrieveForRetrievalEvalCase`. The runner never
+// re-implements ranking; it only materializes the corpus, builds the index
+// via `updateIndex`, maps hits back to BEIR doc ids, and scores against qrels.
+
+export interface BeirRankedChunk {
+  metadata: Record<string, unknown>;
+  /**
+   * The leg-native score (dense distance or fused RRF score). The runner does
+   * NOT rank on this value — `collapseRankedChunksToDocuments` preserves the
+   * order the production path already returned, because dense scores are
+   * distances (lower = better) while RRF scores are higher = better. It is
+   * kept only for diagnostics.
+   */
+  score: number;
+}
+
+export interface BeirSearchBackendPrepareResult {
+  files: number;
+  chunks: number;
+}
+
+export interface BeirSearchBackend {
+  /** Build/refresh the production index for the materialized corpus KB. */
+  prepare(): Promise<BeirSearchBackendPrepareResult>;
+  /**
+   * Retrieve ranked chunks for a query through the production retrieval path.
+   * Results are returned best-first; `fetchK` is the chunk-level depth (before
+   * collapsing chunks to BEIR documents).
+   */
+  search(query: string, fetchK: number): Promise<BeirRankedChunk[]>;
+  /** Human-readable description of the production entrypoint exercised. */
+  implementation: string;
+}
+
+export interface LoadSearchBackendInput {
+  buildRoot: string;
+  mode: 'dense' | 'hybrid';
+  provider: string;
+  modelName: string;
+  kbName: string;
+}
+
 interface BeirBenchmarkReport {
   schema_version: typeof BENCHMARK_SCHEMA_VERSION;
   generated_at: string;
@@ -127,6 +199,13 @@ interface BeirBenchmarkReport {
     queries_evaluated: number;
   };
   mode: Args['mode'];
+  // Embedding provenance for dense/hybrid runs; null for credential-free
+  // lexical runs. Recorded so committed baselines are tagged with the exact
+  // (provider, model) that produced them (RFC 020 §4).
+  embedding: {
+    provider: string;
+    model: string;
+  } | null;
   ranking: {
     unit: LexicalUnit;
     implementation: string;
@@ -146,7 +225,10 @@ interface BeirBenchmarkReport {
   };
   indexing: {
     ms: number;
-    refresh: Awaited<ReturnType<LexicalIndexLike['refresh']>>;
+    // Present only for lexical runs (the LexicalIndex refresh summary). Dense
+    // and hybrid runs build the FAISS index via FaissIndexManager.updateIndex
+    // and report files/chunks without the lexical refresh shape.
+    refresh?: Awaited<ReturnType<LexicalIndexLike['refresh']>>;
     files: number;
     chunks: number;
   };
@@ -163,9 +245,10 @@ export interface BeirBenchmarkRunResult {
   report: BeirBenchmarkReport;
 }
 
-interface RunDependencies {
+export interface RunDependencies {
   gitSha(repoRoot: string): Promise<string>;
   loadLexicalIndex(buildRoot: string, kbName: string, kbPath: string): Promise<LexicalIndexLike>;
+  loadSearchBackend(input: LoadSearchBackendInput): Promise<BeirSearchBackend>;
   now(): Date;
   pythonVersion(): Promise<string | null>;
   silenceServerLogger(buildRoot: string): Promise<void>;
@@ -174,6 +257,7 @@ interface RunDependencies {
 const defaultRunDependencies: RunDependencies = {
   gitSha,
   loadLexicalIndex,
+  loadSearchBackend,
   now: () => new Date(),
   pythonVersion,
   silenceServerLogger,
@@ -206,36 +290,16 @@ export async function runBeirBenchmark(
     knowledgeBasesRootDir,
   });
 
+  const buildRoot = path.join(process.cwd(), 'build');
   configureBenchmarkEnvironment(knowledgeBasesRootDir, faissIndexPath);
-  await dependencies.silenceServerLogger(path.join(process.cwd(), 'build'));
-  const lexicalIndex = await dependencies.loadLexicalIndex(path.join(process.cwd(), 'build'), prepared.kbName, prepared.kbPath);
-  const indexStarted = process.hrtime.bigint();
-  const refresh = await lexicalIndex.refresh();
-  await lexicalIndex.save();
-  const indexMs = durationMs(indexStarted, process.hrtime.bigint());
+  await dependencies.silenceServerLogger(buildRoot);
 
-  const queryRows: Array<{ queryId: string; ranking: RankedDocument[] }> = [];
-  const perQuery: QueryMetric[] = [];
-  const latenciesMs: number[] = [];
+  const retrieval = isDenseMode(args.mode)
+    ? await runDenseRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies })
+    : await runLexicalRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies });
+  const { queryRows, perQuery, latenciesMs, indexMs, indexing, ranking: rankingMeta, embedding } = retrieval;
 
-  for (const query of selectedQueries) {
-    const started = process.hrtime.bigint();
-    const fetchK = args.lexicalUnit === 'source' ? args.k : args.chunkK;
-    const chunks = await lexicalIndex.query(query.text, fetchK, {
-      unit: args.lexicalUnit,
-      candidateK: args.chunkK,
-    });
-    const latency = durationMs(started, process.hrtime.bigint());
-    latenciesMs.push(latency);
-    const ranking = collapseChunksToDocuments(chunks, prepared.docIdByRelativePath, args.k);
-    queryRows.push({ queryId: query._id, ranking });
-    const scored = scoreQuery(query._id, ranking, qrels);
-    if (scored !== null) {
-      perQuery.push(scored);
-    }
-  }
-
-  const runTag = `kb-${args.dataset}-${args.mode}-${args.lexicalUnit}`;
+  const runTag = `kb-${args.dataset}-${args.mode}-${rankingMeta.unit}`;
   const trecPath = path.join(args.outputDir, `${runTag}-run.trec`);
   const jsonPath = path.join(args.outputDir, `${runTag}-results.json`);
   const reportPath = path.join(args.outputDir, `${runTag}-report.md`);
@@ -257,11 +321,10 @@ export async function runBeirBenchmark(
       queries_evaluated: selectedQueries.length,
     },
     mode: args.mode,
+    embedding,
     ranking: {
-      unit: args.lexicalUnit,
-      implementation: args.lexicalUnit === 'source'
-        ? 'LexicalIndex source BM25 over whole files, returning one representative chunk per source'
-        : 'LexicalIndex chunk BM25 collapsed by BEIR document id using max chunk score',
+      unit: rankingMeta.unit,
+      implementation: rankingMeta.implementation,
       trec_run: portablePath(trecPath),
       k: args.k,
       chunk_candidate_k: args.chunkK,
@@ -278,19 +341,14 @@ export async function runBeirBenchmark(
     },
     indexing: {
       ms: Number(indexMs.toFixed(3)),
-      refresh,
-      files: lexicalIndex.numFiles(),
-      chunks: lexicalIndex.numChunks(),
+      ...(indexing.refresh !== undefined ? { refresh: indexing.refresh } : {}),
+      files: indexing.files,
+      chunks: indexing.chunks,
     },
     metrics: aggregateQueryMetrics(perQuery),
     latency: summarizeLatencies(latenciesMs),
     per_query: perQuery,
-    caveats: [
-      'This is a local BEIR/SciFact benchmark, not an official leaderboard submission.',
-      'Lexical mode requires no provider credentials.',
-      'Scores are document-level for BEIR qrels; source ranking is the same public lexical unit exposed by kb search --lexical-unit=source.',
-      'MLflow logging is not required for JSON/TREC artifacts; optional logging is expected to come from the bench observability hook.',
-    ],
+    caveats: buildCaveats(args),
   };
 
   await writeJsonFile(jsonPath, report);
@@ -301,6 +359,286 @@ export async function runBeirBenchmark(
   }
 
   return { jsonPath, trecPath, reportPath, report };
+}
+
+interface RetrievalOutcome {
+  queryRows: Array<{ queryId: string; ranking: RankedDocument[] }>;
+  perQuery: QueryMetric[];
+  latenciesMs: number[];
+  indexMs: number;
+  indexing: {
+    refresh?: Awaited<ReturnType<LexicalIndexLike['refresh']>>;
+    files: number;
+    chunks: number;
+  };
+  ranking: { unit: LexicalUnit; implementation: string };
+  embedding: BeirBenchmarkReport['embedding'];
+}
+
+interface RetrievalInput {
+  args: Args;
+  prepared: CorpusPreparation;
+  qrels: Qrels;
+  selectedQueries: BeirQueryRow[];
+  buildRoot: string;
+  dependencies: RunDependencies;
+}
+
+async function runLexicalRetrieval(input: RetrievalInput): Promise<RetrievalOutcome> {
+  const { args, prepared, qrels, selectedQueries, buildRoot, dependencies } = input;
+  const lexicalIndex = await dependencies.loadLexicalIndex(buildRoot, prepared.kbName, prepared.kbPath);
+  const indexStarted = process.hrtime.bigint();
+  const refresh = await lexicalIndex.refresh();
+  await lexicalIndex.save();
+  const indexMs = durationMs(indexStarted, process.hrtime.bigint());
+
+  const queryRows: Array<{ queryId: string; ranking: RankedDocument[] }> = [];
+  const perQuery: QueryMetric[] = [];
+  const latenciesMs: number[] = [];
+  for (const query of selectedQueries) {
+    const started = process.hrtime.bigint();
+    const fetchK = args.lexicalUnit === 'source' ? args.k : args.chunkK;
+    const chunks = await lexicalIndex.query(query.text, fetchK, {
+      unit: args.lexicalUnit,
+      candidateK: args.chunkK,
+    });
+    latenciesMs.push(durationMs(started, process.hrtime.bigint()));
+    const ranking = collapseChunksToDocuments(chunks, prepared.docIdByRelativePath, args.k);
+    queryRows.push({ queryId: query._id, ranking });
+    const scored = scoreQuery(query._id, ranking, qrels);
+    if (scored !== null) perQuery.push(scored);
+  }
+
+  return {
+    queryRows,
+    perQuery,
+    latenciesMs,
+    indexMs,
+    indexing: { refresh, files: lexicalIndex.numFiles(), chunks: lexicalIndex.numChunks() },
+    ranking: {
+      unit: args.lexicalUnit,
+      implementation: args.lexicalUnit === 'source'
+        ? 'LexicalIndex source BM25 over whole files, returning one representative chunk per source'
+        : 'LexicalIndex chunk BM25 collapsed by BEIR document id using max chunk score',
+    },
+    embedding: null,
+  };
+}
+
+async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcome> {
+  const { args, prepared, qrels, selectedQueries, buildRoot, dependencies } = input;
+  if (!isDenseMode(args.mode)) {
+    throw new Error(`runDenseRetrieval called for non-dense mode ${args.mode}`);
+  }
+  const spec = resolveEmbeddingSpec(args);
+  const backend = await dependencies.loadSearchBackend({
+    buildRoot,
+    mode: args.mode,
+    provider: spec.provider,
+    modelName: spec.model,
+    kbName: prepared.kbName,
+  });
+
+  const indexStarted = process.hrtime.bigint();
+  const prep = await backend.prepare();
+  const indexMs = durationMs(indexStarted, process.hrtime.bigint());
+
+  const queryRows: Array<{ queryId: string; ranking: RankedDocument[] }> = [];
+  const perQuery: QueryMetric[] = [];
+  const latenciesMs: number[] = [];
+  for (const query of selectedQueries) {
+    const started = process.hrtime.bigint();
+    // Fetch at chunk depth, then collapse to BEIR documents. The production
+    // path returns chunks best-first; collapse preserves that order.
+    const chunks = await backend.search(query.text, args.chunkK);
+    latenciesMs.push(durationMs(started, process.hrtime.bigint()));
+    const ranking = collapseRankedChunksToDocuments(chunks, prepared.docIdByRelativePath, args.k);
+    queryRows.push({ queryId: query._id, ranking });
+    const scored = scoreQuery(query._id, ranking, qrels);
+    if (scored !== null) perQuery.push(scored);
+  }
+
+  return {
+    queryRows,
+    perQuery,
+    latenciesMs,
+    indexMs,
+    indexing: { files: prep.files, chunks: prep.chunks },
+    ranking: { unit: 'chunk', implementation: backend.implementation },
+    embedding: { provider: spec.provider, model: spec.model },
+  };
+}
+
+/**
+ * Resolve the embedding provider/model for a dense/hybrid run, failing loudly
+ * (RFC 020 §1 — "mode availability is reported, not silently skipped"). The
+ * provider comes from `--provider` or `EMBEDDING_PROVIDER`; the model from
+ * `--model` or the provider's model env var. `fake` is the deterministic,
+ * network-free provider for hermetic self-tests.
+ */
+export function resolveEmbeddingSpec(args: Args): { provider: string; model: string } {
+  const provider = (args.provider ?? process.env.EMBEDDING_PROVIDER ?? '').trim();
+  if (provider === '') {
+    throw new Error(
+      `BEIR --mode=${args.mode} requires an embedding provider, but none is configured. ` +
+        'Set EMBEDDING_PROVIDER (e.g. "ollama" for a local daemon), pass --provider, ' +
+        'or use --provider=fake for a hermetic, network-free self-test. ' +
+        '(`kb doctor` reports the active provider and its health.)',
+    );
+  }
+  const model = (args.model ?? defaultModelForProvider(provider)).trim();
+  if (model === '') {
+    throw new Error(
+      `BEIR --mode=${args.mode} with provider "${provider}" requires an embedding model, ` +
+        'but none is configured. Pass --model or set the provider model env var ' +
+        '(OLLAMA_MODEL / OPENAI_MODEL_NAME / HUGGINGFACE_MODEL_NAME).',
+    );
+  }
+  return { provider, model };
+}
+
+function defaultModelForProvider(provider: string): string {
+  switch (provider) {
+    case 'fake':
+      return process.env.KB_FAKE_MODEL ?? 'fake-embeddings';
+    case 'ollama':
+      return process.env.OLLAMA_MODEL ?? '';
+    case 'openai':
+      return process.env.OPENAI_MODEL_NAME ?? '';
+    case 'huggingface':
+      return process.env.HUGGINGFACE_MODEL_NAME ?? '';
+    default:
+      return '';
+  }
+}
+
+/**
+ * Collapse ranked chunks to BEIR documents while PRESERVING retrieval order.
+ *
+ * Unlike the lexical `collapseChunksToDocuments` (which maxes a BM25 score per
+ * document), this keeps each document's first (best) appearance in the
+ * already-ranked chunk list and assigns a strictly decreasing rank score. This
+ * is mode-agnostic on purpose: dense scores are distances (lower = better)
+ * while hybrid RRF scores are higher = better, so re-sorting by the raw score
+ * would invert dense rankings. The decreasing rank score keeps external
+ * `trec_eval` reproducing the same order the production path returned.
+ */
+function collapseRankedChunksToDocuments(
+  chunks: ReadonlyArray<BeirRankedChunk>,
+  docIdByRelativePath: Map<string, string>,
+  k: number,
+): RankedDocument[] {
+  const seen = new Set<string>();
+  const docIds: string[] = [];
+  for (const chunk of chunks) {
+    const docId = docIdFromMetadata(chunk.metadata, docIdByRelativePath);
+    if (docId === null || seen.has(docId)) continue;
+    seen.add(docId);
+    docIds.push(docId);
+    if (docIds.length >= k) break;
+  }
+  return docIds.map((docId, index) => ({ docId, score: docIds.length - index }));
+}
+
+function buildCaveats(args: Args): string[] {
+  const caveats = [
+    'This is a local BEIR benchmark, not an official leaderboard submission.',
+    'Scores are document-level for BEIR qrels.',
+    'MLflow logging is not required for JSON/TREC artifacts; optional logging is expected to come from the bench observability hook.',
+  ];
+  if (args.mode === 'lexical') {
+    caveats.push('Lexical mode requires no provider credentials.');
+    caveats.push('Source ranking is the same public lexical unit exposed by kb search --lexical-unit=source.');
+  } else {
+    caveats.push(
+      'Dense/hybrid retrieval is driven by the production src/ paths ' +
+        '(FaissIndexManager.similaritySearch + src/hybrid-retrieval RRF), not a benchmark-only reimplementation.',
+    );
+    caveats.push(
+      'Dense/hybrid require a real embedding provider; the fake provider is deterministic but has no ' +
+        'semantic geometry, so fake-provider numbers are self-test smoke only — never a quality baseline.',
+    );
+  }
+  return caveats;
+}
+
+// Default dense/hybrid backend: a thin port over the production src/ retrieval
+// entrypoints, loaded from the compiled `build/` tree at runtime (the same
+// dynamic-import seam the lexical leg uses, which keeps this benchmark module
+// under `benchmarks/` rootDir without a static cross-tree import).
+interface FaissManagerLike {
+  initialize(): Promise<void>;
+  updateIndex(specificKnowledgeBase?: string): Promise<void>;
+  getLastIndexUpdateSummary(): { files_scanned: number; chunks_added: number };
+  similaritySearch(
+    query: string,
+    k: number,
+    threshold?: number,
+    knowledgeBaseName?: string,
+  ): Promise<Array<{ metadata: Record<string, unknown>; score?: number }>>;
+}
+
+interface FaissIndexManagerModule {
+  FaissIndexManager: {
+    new (opts: { provider: string; modelName: string }): FaissManagerLike;
+    bootstrapLayout(): Promise<void>;
+  };
+}
+
+interface RetrievalEvalModule {
+  retrieveForRetrievalEvalCase(
+    fixtureCase: Record<string, unknown>,
+    context: {
+      manager: Pick<FaissManagerLike, 'similaritySearch'>;
+      defaultK: number;
+      defaultThreshold: number;
+    },
+    requestedMode: string,
+  ): Promise<{ results: Array<{ metadata: Record<string, unknown>; score?: number }> }>;
+}
+
+async function loadSearchBackend(input: LoadSearchBackendInput): Promise<BeirSearchBackend> {
+  const fimUrl = pathToFileURL(path.join(input.buildRoot, 'FaissIndexManager.js')).href;
+  const evalUrl = pathToFileURL(path.join(input.buildRoot, 'retrieval-eval.js')).href;
+  const fimModule = (await import(fimUrl)) as FaissIndexManagerModule;
+  const evalModule = (await import(evalUrl)) as RetrievalEvalModule;
+
+  const { FaissIndexManager } = fimModule;
+  await FaissIndexManager.bootstrapLayout();
+  const manager = new FaissIndexManager({ provider: input.provider, modelName: input.modelName });
+  await manager.initialize();
+
+  return {
+    implementation: input.mode === 'dense'
+      ? 'src/FaissIndexManager.similaritySearch (production dense path) via retrieval-eval.retrieveForRetrievalEvalCase'
+      : 'src/hybrid-retrieval RRF fusion (production hybrid path) via retrieval-eval.retrieveForRetrievalEvalCase',
+    prepare: async () => {
+      await manager.updateIndex();
+      const summary = manager.getLastIndexUpdateSummary();
+      return { files: summary.files_scanned, chunks: summary.chunks_added };
+    },
+    search: async (query, fetchK) => {
+      const result = await evalModule.retrieveForRetrievalEvalCase(
+        {
+          name: 'beir',
+          query,
+          kb: input.kbName,
+          k: fetchK,
+          threshold: Number.POSITIVE_INFINITY,
+          requiredSources: [],
+          forbiddenSources: [],
+          expectedMetadata: [],
+          stalePolicy: 'allow_stale',
+        },
+        { manager, defaultK: fetchK, defaultThreshold: Number.POSITIVE_INFINITY },
+        input.mode,
+      );
+      return result.results.map((r) => ({
+        metadata: r.metadata,
+        score: typeof r.score === 'number' ? r.score : 0,
+      }));
+    },
+  };
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -348,11 +686,13 @@ export function parseArgs(argv: string[]): Args {
     } else if (flag === '--split') {
       args.split = readValue();
     } else if (flag === '--mode') {
-      const mode = readValue();
-      if (mode !== 'lexical') throw new Error('BEIR benchmark currently supports --mode=lexical only');
-      args.mode = mode;
+      args.mode = parseMode(readValue(), '--mode');
     } else if (flag === '--lexical-unit') {
       args.lexicalUnit = parseLexicalUnit(readValue(), '--lexical-unit');
+    } else if (flag === '--provider') {
+      args.provider = readValue();
+    } else if (flag === '--model') {
+      args.model = readValue();
     } else if (flag === '--dataset-dir') {
       args.datasetDir = path.resolve(readValue());
     } else if (flag === '--dataset-url') {
@@ -440,11 +780,13 @@ function applyBeirConfig(args: Args, beir: Partial<Record<BeirConfigKey, unknown
     } else if (key === 'split') {
       args.split = parseStringConfig(value, 'beir.split');
     } else if (key === 'mode') {
-      const mode = parseStringConfig(value, 'beir.mode');
-      if (mode !== 'lexical') throw new Error('BEIR benchmark currently supports mode=lexical only');
-      args.mode = mode;
+      args.mode = parseMode(parseStringConfig(value, 'beir.mode'), 'beir.mode');
     } else if (key === 'lexical_unit' || key === 'lexicalUnit') {
       args.lexicalUnit = parseLexicalUnit(parseStringConfig(value, `beir.${key}`), `beir.${key}`);
+    } else if (key === 'provider') {
+      args.provider = parseStringConfig(value, 'beir.provider');
+    } else if (key === 'model') {
+      args.model = parseStringConfig(value, 'beir.model');
     } else if (key === 'output_dir' || key === 'outputDir') {
       args.outputDir = path.resolve(parseStringConfig(value, `beir.${key}`));
     } else if (key === 'cache_dir' || key === 'cacheDir') {
@@ -741,9 +1083,14 @@ function formatBenchmarkCommand(args: Args): string {
     `--dataset=${args.dataset}`,
     `--split=${args.split}`,
     `--mode=${args.mode}`,
-    `--lexical-unit=${args.lexicalUnit}`,
-    `--output-dir=${portablePath(args.outputDir)}`,
   ];
+  if (isDenseMode(args.mode)) {
+    if (args.provider !== undefined) parts.push(`--provider=${args.provider}`);
+    if (args.model !== undefined) parts.push(`--model=${args.model}`);
+  } else {
+    parts.push(`--lexical-unit=${args.lexicalUnit}`);
+  }
+  parts.push(`--output-dir=${portablePath(args.outputDir)}`);
   if (args.datasetDir !== undefined) parts.push(`--dataset-dir=${portablePath(args.datasetDir)}`);
   if (args.datasetUrl !== undefined) parts.push(`--dataset-url=${args.datasetUrl}`);
   if (args.k !== 100) parts.push(`--k=${args.k}`);
@@ -762,6 +1109,9 @@ function portablePath(filePath: string): string {
 
 function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jsonPath: string): string {
   const { dataset, latency, metrics } = report;
+  const modeLine = report.embedding === null
+    ? `- Mode: ${report.mode} (${report.ranking.unit})`
+    : `- Mode: ${report.mode} (provider: ${report.embedding.provider}, model: ${report.embedding.model})`;
   return [
     `# BEIR/${dataset.name} local benchmark`,
     '',
@@ -770,9 +1120,11 @@ function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jso
     '## Results',
     '',
     `- Dataset: ${dataset.name} ${dataset.split}`,
+    modeLine,
     `- Corpus documents: ${dataset.corpus_documents}`,
     `- Queries evaluated: ${dataset.queries_evaluated}`,
     `- nDCG@10: ${metrics.ndcgAt10}`,
+    `- precision@10: ${metrics.precisionAt10}`,
     `- MAP@100: ${metrics.mapAt100}`,
     `- Recall@10: ${metrics.recallAt10}`,
     `- Recall@100: ${metrics.recallAt100}`,
@@ -789,7 +1141,9 @@ function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jso
     report.command,
     '```',
     '',
-    'Lexical mode requires no provider credentials. The runner builds a temporary KB corpus and maps kb lexical hits to BEIR document IDs for scoring.',
+    report.embedding === null
+      ? 'Lexical mode requires no provider credentials. The runner builds a temporary KB corpus and maps kb lexical hits to BEIR document IDs for scoring.'
+      : 'Dense/hybrid modes drive the production src/ retrieval path (FaissIndexManager + src/hybrid-retrieval RRF). The runner builds a temporary KB corpus, indexes it with the configured embedding provider, and maps kb hits to BEIR document IDs for scoring.',
     '',
   ].join('\n');
 }
@@ -807,6 +1161,11 @@ function parseLexicalUnit(raw: string, label: string): LexicalUnit {
   throw new Error(`${label} must be chunk or source`);
 }
 
+function parseMode(raw: string, label: string): BeirMode {
+  if (isBeirMode(raw)) return raw;
+  throw new Error(`${label} must be one of: ${BEIR_MODES.join(', ')}`);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -821,8 +1180,16 @@ Options:
   --dataset=<name>       BEIR dataset name. Built-ins: ${Object.keys(DATASET_URLS).sort().join(', ')}.
   --config=<path>        JSON config with env overrides and BEIR runner args.
   --split=<name>         Qrels split under qrels/<split>.tsv. Default: test.
-  --mode=lexical         Retrieval mode. Lexical is credential-free.
+  --mode=<mode>          Retrieval mode: ${BEIR_MODES.join(', ')}. Default: lexical.
+                         lexical is credential-free (BM25). dense/hybrid drive
+                         the production src/ retrieval path and need a provider.
   --lexical-unit=<unit>  chunk or source. source maps to kb search --lexical-unit=source. Default: source.
+                         (lexical mode only.)
+  --provider=<name>      Embedding provider for dense/hybrid (ollama, openai,
+                         huggingface, or fake). Default: $EMBEDDING_PROVIDER.
+                         fake is deterministic + network-free (self-test only).
+  --model=<name>         Embedding model for dense/hybrid. Default: the provider
+                         model env var (OLLAMA_MODEL / OPENAI_MODEL_NAME / ...).
   --dataset-dir=<path>   Existing BEIR directory with corpus.jsonl, queries.jsonl, qrels/.
   --dataset-url=<url>    Zip URL for a custom BEIR-shaped dataset.
   --output-dir=<path>    Directory for metrics JSON, TREC, and Markdown report.
