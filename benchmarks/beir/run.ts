@@ -16,6 +16,11 @@ import {
   type RankedDocument,
   type QueryMetric,
 } from './metrics.js';
+import {
+  LateInteractionIndex,
+  type LateInteractionDocument,
+  type LateInteractionResourceReport,
+} from './late-interaction.js';
 import { durationMs, ensureDirectory, gitSha, resetDirectory, writeJsonFile } from '../utils.js';
 
 const execFileAsync = promisify(execFile);
@@ -36,29 +41,35 @@ const DATASET_URLS: Record<string, string> = {
   'webis-touche2020': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/webis-touche2020.zip',
 };
 
-// v4 (retrieval frontier #577): added optional query-decomposition summary and
-// per-query trace artifacts. v3 added `hybrid+rerank` / `hybrid+rerank+contextual`
+// v5 (retrieval frontier #578): added benchmark-only late-interaction
+// standalone and hybrid candidate-rerank modes. v4 added optional
+// query-decomposition summary and per-query trace artifacts. v3 added
+// `hybrid+rerank` / `hybrid+rerank+contextual`
 // modes plus `rerank` / `contextual` provenance blocks. v2 added `dense`/`hybrid`
 // + precision@10 + `embedding`; v1 was lexical-only.
-const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v4';
+const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v5';
 type LexicalUnit = 'chunk' | 'source';
 // RFC 020 §1 — the retrieval-mode space the runner can score. `lexical` is
-// credential-free (BM25 only); the rest drive the production embedding + RRF +
-// cross-encoder + contextual-preface paths in `src/` and therefore require an
-// embedding provider. `hybrid+decompose` uses bounded rule-based query loops,
-// and `+contextual` additionally needs an LLM endpoint at ingest.
+// credential-free (BM25 only), and `late` is a credential-free benchmark-only
+// MaxSim prototype; the rest drive the production embedding + RRF +
+// cross-encoder/contextual-preface paths in `src/` and therefore require an
+// embedding provider.
 export type BeirMode =
   | 'lexical'
+  | 'late'
   | 'dense'
   | 'hybrid'
   | 'hybrid+decompose'
+  | 'hybrid+late'
   | 'hybrid+rerank'
   | 'hybrid+rerank+contextual';
 const BEIR_MODES: readonly BeirMode[] = [
   'lexical',
+  'late',
   'dense',
   'hybrid',
   'hybrid+decompose',
+  'hybrid+late',
   'hybrid+rerank',
   'hybrid+rerank+contextual',
 ];
@@ -67,9 +78,9 @@ function isBeirMode(value: string): value is BeirMode {
   return (BEIR_MODES as readonly string[]).includes(value);
 }
 
-// Every non-lexical mode drives an embedding provider and the dense backend.
+// Every non-lexical/non-late mode drives an embedding provider and the dense backend.
 function usesEmbeddingProvider(mode: BeirMode): boolean {
-  return mode !== 'lexical';
+  return mode !== 'lexical' && mode !== 'late';
 }
 
 // The production `SearchMode` a BeirMode maps onto. The rerank/contextual
@@ -78,6 +89,10 @@ function usesEmbeddingProvider(mode: BeirMode): boolean {
 // `KB_CONTEXTUAL_RETRIEVAL` ingest path — never a benchmark-only reimplementation.
 function beirSearchMode(mode: BeirMode): 'dense' | 'hybrid' {
   return mode === 'dense' ? 'dense' : 'hybrid';
+}
+
+function modeEnablesLateInteraction(mode: BeirMode): boolean {
+  return mode === 'late' || mode === 'hybrid+late';
 }
 
 function modeEnablesRerank(mode: BeirMode): boolean {
@@ -271,6 +286,9 @@ interface BeirBenchmarkReport {
   contextual: {
     enabled: boolean;
   } | null;
+  // Benchmark-only late-interaction provenance for issue #578. Present for
+  // `late` standalone and `hybrid+late` candidate rerank modes; null otherwise.
+  late_interaction: LateInteractionResourceReport | null;
   ranking: {
     unit: LexicalUnit;
     implementation: string;
@@ -382,13 +400,26 @@ export async function runBeirBenchmark(
   const restoreStageEnv = applyStageEnvironment(args.mode);
   let retrieval: RetrievalOutcome;
   try {
-    retrieval = usesEmbeddingProvider(args.mode)
-      ? await runDenseRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies })
-      : await runLexicalRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies });
+    retrieval = args.mode === 'late'
+      ? await runLateInteractionRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies })
+      : usesEmbeddingProvider(args.mode)
+        ? await runDenseRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies })
+        : await runLexicalRetrieval({ args, prepared, qrels, selectedQueries, buildRoot, dependencies });
   } finally {
     restoreStageEnv();
   }
-  const { queryRows, perQuery, candidatePerQuery, decompositionTraces, latenciesMs, indexMs, indexing, ranking: rankingMeta, embedding } = retrieval;
+  const {
+    queryRows,
+    perQuery,
+    candidatePerQuery,
+    decompositionTraces,
+    latenciesMs,
+    indexMs,
+    indexing,
+    ranking: rankingMeta,
+    embedding,
+    lateInteraction,
+  } = retrieval;
   const stages = resolveStageProvenance(args.mode);
 
   const runTag = `kb-${args.dataset}-${args.mode}-${rankingMeta.unit}`;
@@ -427,6 +458,7 @@ export async function runBeirBenchmark(
     embedding,
     rerank: stages.rerank,
     contextual: stages.contextual,
+    late_interaction: lateInteraction ?? null,
     ranking: {
       unit: rankingMeta.unit,
       implementation: rankingMeta.implementation,
@@ -499,6 +531,7 @@ interface RetrievalOutcome {
   };
   ranking: { unit: LexicalUnit; implementation: string };
   embedding: BeirBenchmarkReport['embedding'];
+  lateInteraction?: LateInteractionResourceReport;
 }
 
 interface QueryDecompositionRuntime {
@@ -607,12 +640,16 @@ async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcom
 
   const indexStarted = process.hrtime.bigint();
   const prep = await backend.prepare();
+  const lateIndex = modeEnablesLateInteraction(args.mode)
+    ? await LateInteractionIndex.fromKnowledgeBase(prepared.kbName, prepared.kbPath)
+    : null;
   const indexMs = durationMs(indexStarted, process.hrtime.bigint());
 
   const queryRows: Array<{ queryId: string; ranking: RankedDocument[] }> = [];
   const perQuery: QueryMetric[] = [];
   const candidatePerQuery: QueryMetric[] = [];
   const decompositionTraces: Array<{ query_id: string; trace: Record<string, unknown> }> = [];
+  const candidateTextCache = new Map<string, string>();
   const decompositionRuntime = modeEnablesDecompose(args.mode)
     ? await (dependencies.loadQueryDecompositionRuntime ?? loadQueryDecompositionRuntime)(buildRoot)
     : null;
@@ -630,13 +667,22 @@ async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcom
           k: args.candidatePoolK ?? args.chunkK,
           traceSink: (trace) => decompositionTraces.push({ query_id: query._id, trace }),
         });
+    const rankedChunks = lateIndex === null
+      ? chunks
+      : await rerankBeirChunksWithLateInteraction({
+          query: query.text,
+          chunks,
+          lateIndex,
+          prepared,
+          textCache: candidateTextCache,
+        });
     latenciesMs.push(durationMs(started, process.hrtime.bigint()));
-    const ranking = collapseRankedChunksToDocuments(chunks, prepared.docIdByRelativePath, args.k);
+    const ranking = collapseRankedChunksToDocuments(rankedChunks, prepared.docIdByRelativePath, args.k);
     queryRows.push({ queryId: query._id, ranking });
     const scored = scoreQuery(query._id, ranking, qrels);
     if (scored !== null) perQuery.push(scored);
     if (args.candidatePoolK !== undefined) {
-      const candidateRanking = collapseRankedChunksToDocuments(chunks, prepared.docIdByRelativePath, 100);
+      const candidateRanking = collapseRankedChunksToDocuments(rankedChunks, prepared.docIdByRelativePath, 100);
       const candidateScored = scoreQuery(query._id, candidateRanking, qrels);
       if (candidateScored !== null) candidatePerQuery.push(candidateScored);
     }
@@ -652,6 +698,51 @@ async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcom
     indexing: { files: prep.files, chunks: prep.chunks },
     ranking: { unit: 'chunk', implementation: describeImplementation(backend.implementation, args.mode) },
     embedding: { provider: spec.provider, model: spec.model },
+    ...(lateIndex !== null
+      ? { lateInteraction: lateIndex.resourceReport('rerank', `${beirSearchMode(args.mode)} top-${args.candidatePoolK ?? args.chunkK} candidates`) }
+      : {}),
+  };
+}
+
+async function runLateInteractionRetrieval(input: RetrievalInput): Promise<RetrievalOutcome> {
+  const { args, prepared, qrels, selectedQueries } = input;
+  const indexStarted = process.hrtime.bigint();
+  const lateIndex = await LateInteractionIndex.fromKnowledgeBase(prepared.kbName, prepared.kbPath);
+  const indexMs = durationMs(indexStarted, process.hrtime.bigint());
+
+  const queryRows: Array<{ queryId: string; ranking: RankedDocument[] }> = [];
+  const perQuery: QueryMetric[] = [];
+  const candidatePerQuery: QueryMetric[] = [];
+  const latenciesMs: number[] = [];
+  for (const query of selectedQueries) {
+    const started = process.hrtime.bigint();
+    const fetchK = args.candidatePoolK ?? args.k;
+    const hits = lateIndex.search(query.text, Math.max(fetchK, args.k));
+    latenciesMs.push(durationMs(started, process.hrtime.bigint()));
+    const ranking = collapseChunksToDocuments(hits, prepared.docIdByRelativePath, args.k);
+    queryRows.push({ queryId: query._id, ranking });
+    const scored = scoreQuery(query._id, ranking, qrels);
+    if (scored !== null) perQuery.push(scored);
+    if (args.candidatePoolK !== undefined) {
+      const candidateRanking = collapseChunksToDocuments(hits, prepared.docIdByRelativePath, 100);
+      const candidateScored = scoreQuery(query._id, candidateRanking, qrels);
+      if (candidateScored !== null) candidatePerQuery.push(candidateScored);
+    }
+  }
+
+  return {
+    queryRows,
+    perQuery,
+    ...(args.candidatePoolK !== undefined ? { candidatePerQuery } : {}),
+    latenciesMs,
+    indexMs,
+    indexing: { files: prepared.documents, chunks: prepared.documents },
+    ranking: {
+      unit: 'source',
+      implementation: 'benchmarks/beir/late-interaction.ts standalone MaxSim over BEIR document Markdown',
+    },
+    embedding: null,
+    lateInteraction: lateIndex.resourceReport('standalone', null),
   };
 }
 
@@ -661,6 +752,9 @@ function describeImplementation(base: string, mode: BeirMode): string {
   const stages: string[] = [];
   if (modeEnablesDecompose(mode)) {
     stages.push('+ src/query-decomposition.ts bounded rule provider (per-query trace persisted)');
+  }
+  if (mode === 'hybrid+late') {
+    stages.push('+ benchmarks/beir/late-interaction.ts ColBERT-style MaxSim candidate rerank (benchmark-only)');
   }
   if (modeEnablesRerank(mode)) {
     stages.push('+ src/reranker.ts cross-encoder rerank (production KB_RERANK path)');
@@ -704,6 +798,66 @@ async function runBeirDecomposedSearch(input: {
     metadata: chunk.metadata,
     score: typeof chunk.score === 'number' ? chunk.score : 0,
   }));
+}
+
+async function rerankBeirChunksWithLateInteraction(input: {
+  query: string;
+  chunks: readonly BeirRankedChunk[];
+  lateIndex: LateInteractionIndex;
+  prepared: CorpusPreparation;
+  textCache: Map<string, string>;
+}): Promise<BeirRankedChunk[]> {
+  const candidates = await Promise.all(input.chunks.map((chunk, index) =>
+    lateDocumentFromChunk(chunk, index, input.prepared, input.textCache),
+  ));
+  const hits = input.lateIndex.rerank(input.query, candidates, candidates.length);
+  return hits.map((hit) => ({
+    ...(typeof hit.text === 'string' ? { pageContent: hit.text } : {}),
+    metadata: hit.metadata,
+    score: hit.score,
+  }));
+}
+
+async function lateDocumentFromChunk(
+  chunk: BeirRankedChunk,
+  index: number,
+  prepared: CorpusPreparation,
+  textCache: Map<string, string>,
+): Promise<LateInteractionDocument> {
+  const relativePath = typeof chunk.metadata.relativePath === 'string' ? chunk.metadata.relativePath : null;
+  const chunkIndex = typeof chunk.metadata.chunkIndex === 'number' ? chunk.metadata.chunkIndex : index;
+  const id = relativePath === null ? `candidate-${index}` : `${relativePath}#${chunkIndex}`;
+  const fallbackText = await resolveChunkText(chunk, prepared, textCache);
+  return {
+    id,
+    text: fallbackText,
+    metadata: chunk.metadata,
+  };
+}
+
+async function resolveChunkText(
+  chunk: BeirRankedChunk,
+  prepared: CorpusPreparation,
+  textCache: Map<string, string>,
+): Promise<string> {
+  if (typeof chunk.pageContent === 'string' && chunk.pageContent.trim() !== '') return chunk.pageContent;
+  const relativePath = typeof chunk.metadata.relativePath === 'string' ? chunk.metadata.relativePath : null;
+  if (relativePath !== null) {
+    const cached = textCache.get(relativePath);
+    if (cached !== undefined) return cached;
+    const prefix = `${prepared.kbName}/`;
+    const pathInsideKb = relativePath.startsWith(prefix) ? relativePath.slice(prefix.length) : relativePath;
+    const fullPath = path.join(prepared.kbPath, pathInsideKb);
+    try {
+      const text = await fsp.readFile(fullPath, 'utf-8');
+      textCache.set(relativePath, text);
+      return text;
+    } catch {
+      // Keep benchmark reranking robust for custom injected backends that only
+      // provide metadata; an empty text candidate will naturally score low.
+    }
+  }
+  return '';
 }
 
 async function loadQueryDecompositionRuntime(buildRoot: string): Promise<QueryDecompositionRuntime> {
@@ -884,6 +1038,12 @@ function buildCaveats(args: Args): string[] {
   if (args.mode === 'lexical') {
     caveats.push('Lexical mode requires no provider credentials.');
     caveats.push('Source ranking is the same public lexical unit exposed by kb search --lexical-unit=source.');
+  } else if (args.mode === 'late') {
+    caveats.push('Late mode is benchmark-only and requires no provider credentials.');
+    caveats.push(
+      'This prototype uses hashed token/character-ngram vectors with ColBERT-style MaxSim; ' +
+        'it is a runnable architecture spike, not a trained ColBERTv2 quality claim.',
+    );
   } else {
     caveats.push(
       'Dense/hybrid retrieval is driven by the production src/ paths ' +
@@ -909,6 +1069,12 @@ function buildCaveats(args: Args): string[] {
       caveats.push(
         'Query decomposition is opt-in and bounded; traces are persisted per query. ' +
           'The rule provider is deterministic and intended as a baseline before local-LLM evaluation.',
+      );
+    }
+    if (modeEnablesLateInteraction(args.mode)) {
+      caveats.push(
+        'Hybrid+late first retrieves candidates through the existing production hybrid path, then reorders those ' +
+          'candidates with the benchmark-only MaxSim adapter. It does not change production search defaults.',
       );
     }
   }
@@ -1458,7 +1624,7 @@ function formatBenchmarkCommand(args: Args): string {
   if (usesEmbeddingProvider(args.mode)) {
     if (args.provider !== undefined) parts.push(`--provider=${args.provider}`);
     if (args.model !== undefined) parts.push(`--model=${args.model}`);
-  } else {
+  } else if (args.mode === 'lexical') {
     parts.push(`--lexical-unit=${args.lexicalUnit}`);
   }
   parts.push(`--output-dir=${portablePath(args.outputDir)}`);
@@ -1515,6 +1681,16 @@ function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jso
             `mean retrieval calls=${report.query_decomposition.retrieval_calls_mean}`,
         ]
       : []),
+    ...(report.late_interaction !== null
+      ? [
+          `- Late interaction: ${report.late_interaction.mode}, model=${report.late_interaction.model}, ` +
+            `vectors=${report.late_interaction.token_vectors}, ` +
+            `index~${report.late_interaction.index_size_bytes_estimate} bytes, ` +
+            `build ${report.late_interaction.build_ms} ms`,
+          `- Late interaction resources: CPU=${report.late_interaction.cpu_requirement}; ` +
+            `GPU=${report.late_interaction.gpu_requirement}`,
+        ]
+      : []),
     `- Query latency: p50 ${latency.p50Ms} ms, p95 ${latency.p95Ms} ms, p99 ${latency.p99Ms} ms`,
     '',
     '## Artifacts',
@@ -1531,9 +1707,11 @@ function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jso
     report.command,
     '```',
     '',
-    report.embedding === null
+    report.mode === 'lexical'
       ? 'Lexical mode requires no provider credentials. The runner builds a temporary KB corpus and maps kb lexical hits to BEIR document IDs for scoring.'
-      : 'Dense/hybrid modes drive the production src/ retrieval path (FaissIndexManager + src/hybrid-retrieval RRF). The runner builds a temporary KB corpus, indexes it with the configured embedding provider, and maps kb hits to BEIR document IDs for scoring.',
+      : report.mode === 'late'
+        ? 'Late mode requires no provider credentials. The runner builds a temporary KB corpus, indexes per-document token vectors in the benchmark adapter, and maps MaxSim hits to BEIR document IDs for scoring.'
+        : 'Dense/hybrid modes drive the production src/ retrieval path (FaissIndexManager + src/hybrid-retrieval RRF). The runner builds a temporary KB corpus, indexes it with the configured embedding provider, and maps kb hits to BEIR document IDs for scoring.',
     '',
   ].join('\n');
 }
@@ -1571,10 +1749,15 @@ Options:
   --config=<path>        JSON config with env overrides and BEIR runner args.
   --split=<name>         Qrels split under qrels/<split>.tsv. Default: test.
   --mode=<mode>          Retrieval mode: ${BEIR_MODES.join(', ')}. Default: lexical.
-                         lexical is credential-free (BM25). dense/hybrid drive
-                         the production src/ retrieval path and need a provider.
+                         lexical is credential-free (BM25). late is a
+                         credential-free benchmark-only MaxSim prototype.
+                         dense/hybrid drive the production src/ retrieval path
+                         and need a provider.
                          hybrid+decompose adds bounded rule-based query loops and
                          persists per-query traces.
+                         hybrid+late retrieves production hybrid candidates,
+                         then reorders them with the benchmark-only MaxSim
+                         adapter.
                          hybrid+rerank adds the src/reranker.ts cross-encoder
                          (KB_RERANK); hybrid+rerank+contextual also enables the
                          RFC 017 contextual-preface ingest path and needs an LLM

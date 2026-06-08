@@ -55,8 +55,10 @@ const DEFAULT_MATRIX_MODES: readonly BeirMode[] = ['lexical', 'hybrid'];
 
 const MATRIX_MODES: readonly BeirMode[] = [
   'lexical',
+  'late',
   'dense',
   'hybrid',
+  'hybrid+late',
   'hybrid+rerank',
   'hybrid+rerank+contextual',
 ];
@@ -332,7 +334,7 @@ function buildBeirArgv(options: MatrixOptions, dataset: string, mode: BeirMode):
     `--cache-dir=${options.cacheDir}`,
     `--workspace-root=${options.workspaceRoot}`,
   ];
-  if (mode !== 'lexical') {
+  if (mode !== 'lexical' && mode !== 'late') {
     if (options.provider !== undefined) argv.push(`--provider=${options.provider}`);
     if (options.model !== undefined) argv.push(`--model=${options.model}`);
     if (options.retrievalViews !== undefined) argv.push(`--retrieval-views=${options.retrievalViews}`);
