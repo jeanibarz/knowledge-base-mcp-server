@@ -4,3 +4,6 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .env
+
+# RFC 020 real-run intermediate TREC files (large; per-query results.json is the kept artifact)
+benchmarks/results/**/*.trec
