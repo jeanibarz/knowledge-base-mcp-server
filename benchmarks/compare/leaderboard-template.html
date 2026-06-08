@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>{{TITLE}}</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --fg: #222;
+    --muted: #666;
+    --rule: #ddd;
+    --best-bg: #e7f7ec;
+    --warn-bg: #fdecec;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    margin: 0 auto;
+    padding: 24px;
+    max-width: 1080px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px 0; }
+  h2 { font-size: 16px; margin: 32px 0 8px 0; padding-bottom: 4px; border-bottom: 1px solid var(--rule); }
+  .meta { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .meta code { background: #eef; padding: 1px 4px; border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 8px; }
+  th, td { border-bottom: 1px solid var(--rule); padding: 6px 10px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: #f2f2f2; font-weight: 600; }
+  td.best { background: var(--best-bg); font-weight: 600; }
+  td.warn { background: var(--warn-bg); }
+  code { background: #eef; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  .note { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>{{TITLE}}</h1>
+<div class="meta">{{META}}</div>
+
+<h2>Headline — multi-domain mean nDCG@10 by run × mode</h2>
+<p class="note">Each cell is the per-mode mean nDCG@10 across the datasets that run evaluated (the headline metric, RFC 020 §2). Best per mode is highlighted.</p>
+<table>
+<thead>{{HEADLINE_HEAD}}</thead>
+<tbody>{{HEADLINE_ROWS}}</tbody>
+</table>
+
+<h2>Generalization gap — Δ_g by run × mode</h2>
+<p class="note">Δ_g = (seen − unseen) / seen (RFC 020 §6). Higher = worse on held-out domains (overfitting direction); the lowest Δ_g per mode is highlighted.</p>
+<table>
+<thead>{{DELTAG_HEAD}}</thead>
+<tbody>{{DELTAG_ROWS}}</tbody>
+</table>
+
+<h2>Run provenance (commit + env)</h2>
+<p class="note">A public ranking claim is only credible if reproducible from commit + env (RFC 020 §7).</p>
+<table>
+<thead><tr><th>Run</th><th>commit</th><th>generated</th><th>embedding</th><th>RRF c</th><th>rerank</th><th>chunk</th><th>contextual</th></tr></thead>
+<tbody>{{PROVENANCE_ROWS}}</tbody>
+</table>
+
+<p class="note">Local BEIR reproductions, not official leaderboard submissions.</p>
+</body>
+</html>

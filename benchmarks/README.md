@@ -140,6 +140,46 @@ A non-significant dip is **reported, not failed** (matching the future CI gate
 in RFC 020 §4); pass `--fail-on-regression` to exit non-zero on a significant
 regression verdict.
 
+## Full BEIR matrix — `bench:beir:matrix` (RFC 020 M2)
+
+The **headline** deliverable. `bench:beir:matrix` sweeps the retrieval pipeline
+over the `(dataset × mode)` matrix from the dataset registry
+(`benchmarks/beir/registry.ts`) and reports, per mode, the **multi-domain mean
+nDCG@10** — the metric the field quotes and the one §2/§6 call anti-overfitting
+(averaging across domains lowers anything that overfits a single corpus). It also
+emits the per-domain breakdown and **Δ_g = (seen − unseen) / seen** between the
+tuned datasets and a reserved unseen-generality set, plus a per-dataset
+contamination note. Every cell is wired into the MLflow ledger (RFC 020 §7).
+
+```bash
+# Full auto-downloadable matrix, all shipped modes (Ollama running):
+npm run bench:beir:matrix -- --provider=ollama --model=nomic-embed-text \
+  --modes=lexical,dense,hybrid,hybrid+rerank,hybrid+rerank+contextual
+
+# A tuned+unseen slice that still yields a real Δ_g, fewer datasets:
+npm run bench:beir:matrix -- --provider=ollama --model=nomic-embed-text \
+  --datasets=scifact,nfcorpus,fiqa,arguana,scidocs,webis-touche2020 \
+  --modes=lexical,hybrid
+```
+
+Output: `benchmarks/results/beir/matrix/beir-matrix.{json,md}`. Missing or failed
+cells (e.g. an uncached dataset) are recorded and **excluded from the mean** —
+the report never fabricates a number for a dataset that did not run. See
+`benchmarks/results/beir/matrix/README.md` for the headline status.
+
+## Cross-run leaderboard — `bench:beir:leaderboard` (RFC 020 §7)
+
+Turns the recorded matrix runs into the human-facing leaderboard view: a
+self-contained HTML page ranking runs by the per-mode multi-domain mean nDCG@10,
+showing Δ_g, and recording the commit + env for each run (the reproducibility
+contract a public ranking claim rests on).
+
+```bash
+npm run bench:beir:leaderboard -- \
+  --inputs=run1/beir-matrix.json,run2/beir-matrix.json \
+  --output=benchmarks/results/beir/leaderboard.html
+```
+
 ## Result file naming
 
 Reports are written to `benchmarks/results/` with this naming pattern:
