@@ -72,6 +72,74 @@ official BEIR leaderboard result. Optional MLflow logging is not required for
 the JSON/TREC artifacts and can be layered in by the separate bench
 observability hook.
 
+### Retrieval modes (RFC 020 M0/M1)
+
+`--mode` selects the retrieval-mode space the runner scores, each driving the
+**production `src/` path** — never a benchmark-only reimplementation:
+
+| Mode | Path exercised | Needs |
+| --- | --- | --- |
+| `lexical` | `LexicalIndex` BM25 | nothing (credential-free) |
+| `dense` | `FaissIndexManager.similaritySearch` | embedding provider |
+| `hybrid` | `+ src/hybrid-retrieval` RRF fusion | embedding provider |
+| `hybrid+rerank` | `+ src/reranker.ts` cross-encoder (`KB_RERANK`) | provider + rerank model |
+| `hybrid+rerank+contextual` | `+ RFC 017 contextual prefaces at ingest` (`KB_CONTEXTUAL_RETRIEVAL`) | provider + rerank model + LLM endpoint |
+
+The runner flips `KB_RERANK` / `KB_CONTEXTUAL_RETRIEVAL` per mode and restores
+them afterwards, so each run is self-contained even inside the sweep/baseline
+loops. The rerank model downloads on first use (transformers.js); the contextual
+stage costs one cached LLM call per chunk at ingest. `+contextual` fails loudly
+when no LLM endpoint is configured (set `KB_LLM_ENDPOINT`, or `KB_LLM_FAKE=on`
+for a deterministic, network-free self-test). The `rerank` / `contextual`
+provenance blocks in the report JSON record the exact model + topN + on/off.
+
+```bash
+# Each enabled stage's contribution, on the CI subset, via a real provider:
+npm run bench:beir -- --dataset=scifact --mode=hybrid                 --provider=ollama --model=nomic-embed-text --output-dir=/tmp/kb-beir
+npm run bench:beir -- --dataset=scifact --mode=hybrid+rerank          --provider=ollama --model=nomic-embed-text --output-dir=/tmp/kb-beir
+npm run bench:beir -- --dataset=scifact --mode=hybrid+rerank+contextual --provider=ollama --model=nomic-embed-text --output-dir=/tmp/kb-beir
+```
+
+## Significance comparator — `bench:beir:significance` (RFC 020 §3)
+
+A run-to-run delta is not evidence on its own. `bench:beir:significance` takes
+two BEIR run reports (the `per_query[].ndcgAt10` vectors), pairs them by query
+id over the same query set, and reports a **paired bootstrap** (10k resamples)
+CI on the mean ΔnDCG@10, a **paired t-test** p-value, and a verdict —
+`improvement` / `regression` / `no-significant-change` — at α = 0.05. It mirrors
+the `budget-diff` CLI shape and is fully deterministic (seeded bootstrap).
+
+```bash
+# One stage's contribution on one dataset:
+npm run bench:beir:significance -- \
+  --baseline /tmp/kb-beir/kb-scifact-hybrid-chunk-results.json \
+  --current  /tmp/kb-beir/kb-scifact-hybrid+rerank-chunk-results.json \
+  --label "hybrid -> hybrid+rerank"
+```
+
+Two corrections guard against false positives:
+
+- **Multiple-comparison correction** (`--correction bonferroni|holm`) across a
+  sweep family — a `--family <manifest.json>` of `{label, baseline, current}`
+  comparisons. Reporting every delta at α = 0.05 inflates the family-wise error
+  rate; Bonferroni/Holm control it.
+- **Wild-cluster bootstrap-t** (`--cluster-by-dataset`) for when queries cluster
+  by dataset/domain (the BEIR matrix does — per-query results within a dataset
+  are not independent). Comma-separate multiple dataset run files for one
+  "current"/"baseline"; each file's `dataset.name` becomes a cluster. The
+  cluster-aware p-value resamples whole datasets; the reported CI is the bounded
+  cluster-robust Wald-t interval (the percentile-t interval is numerically
+  unstable with BEIR's handful of clusters).
+
+```bash
+# Multi-domain stage contribution with wild-cluster + Holm correction:
+npm run bench:beir:significance -- --family /tmp/stage-contributions.json --correction holm
+```
+
+A non-significant dip is **reported, not failed** (matching the future CI gate
+in RFC 020 §4); pass `--fail-on-regression` to exit non-zero on a significant
+regression verdict.
+
 ## Result file naming
 
 Reports are written to `benchmarks/results/` with this naming pattern:
