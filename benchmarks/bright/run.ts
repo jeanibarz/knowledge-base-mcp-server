@@ -166,7 +166,14 @@ function buildBeirArgv(options: BrightRunOptions, task: string, datasetDir: stri
   return argv;
 }
 
-const BRIGHT_MODES: readonly BeirMode[] = ['lexical', 'dense', 'hybrid', 'hybrid+rerank', 'hybrid+rerank+contextual'];
+const BRIGHT_MODES: readonly BeirMode[] = [
+  'lexical',
+  'dense',
+  'hybrid',
+  'hybrid+decompose',
+  'hybrid+rerank',
+  'hybrid+rerank+contextual',
+];
 
 export function parseBrightArgs(argv: string[]): BrightRunOptions {
   const repoRoot = process.cwd();

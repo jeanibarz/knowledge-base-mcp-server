@@ -228,6 +228,36 @@ describe('parseSearchArgs high-recall candidates (#576)', () => {
   });
 });
 
+describe('parseSearchArgs query decomposition (#577)', () => {
+  it('accepts bounded decomposition controls', () => {
+    expect(parseSearchArgs([
+      'query',
+      '--mode=hybrid',
+      '--decompose',
+      '--decompose-provider=llm',
+      '--decompose-max-subqueries=5',
+      '--decompose-max-iterations=4',
+      '--decompose-max-candidates=120',
+      '--decompose-timeout-ms=1500',
+    ])).toMatchObject({
+      mode: 'hybrid',
+      decompose: true,
+      decomposeProvider: 'llm',
+      decomposeBudget: {
+        maxSubqueries: 5,
+        maxIterations: 4,
+        maxTotalCandidates: 120,
+        timeoutMs: 1500,
+      },
+    });
+  });
+
+  it('rejects malformed decomposition controls', () => {
+    expect(() => parseSearchArgs(['query', '--decompose-provider=remote'])).toThrow(/invalid --decompose-provider/);
+    expect(() => parseSearchArgs(['query', '--decompose-max-subqueries=0'])).toThrow(/invalid --decompose-max-subqueries/);
+  });
+});
+
 describe('parseSearchArgs advanced retrieval operators (#450)', () => {
   it('accepts additive advanced retrieval flags', () => {
     expect(parseSearchArgs([
@@ -1215,6 +1245,15 @@ describe('runSearch timing guard (#331)', () => {
     expect(out.stderr).toContain('--candidate-pool-k is only supported with --mode=hybrid');
   });
 
+  it('rejects query decomposition outside hybrid mode', async () => {
+    const { deps } = makeDeps();
+
+    const out = await captureSearchOutput(['query', '--mode=dense', '--decompose'], deps);
+
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain('--decompose is only supported with --mode=hybrid');
+  });
+
   it('renders compact dense search output without changing retrieval semantics', async () => {
     const { deps, manager } = makeDeps();
     manager.similaritySearch.mockResolvedValueOnce([
@@ -1594,6 +1633,101 @@ describe('runSearch timing guard (#331)', () => {
       if (previousTopN === undefined) delete process.env.KB_RERANK_TOP_N;
       else process.env.KB_RERANK_TOP_N = previousTopN;
     }
+  });
+
+  it('runs opt-in hybrid query decomposition and emits the JSON trace', async () => {
+    const originalQuery = 'Which kinase regulates MAPK and where is it expressed?';
+    const manager = {
+      modelDir: '/tmp/kb-test-model',
+      initialize: jest.fn(async () => {}),
+      updateIndex: jest.fn(async () => {}),
+      similaritySearch: jest.fn(async (query: string) => {
+        if (query === originalQuery) {
+          return [
+            {
+              pageContent: 'Broad overview without the needed evidence.',
+              metadata: { source: '/kb/broad.md', chunkIndex: 0 },
+              score: 0.5,
+            },
+            {
+              pageContent: 'Another broad overview without the needed evidence.',
+              metadata: { source: '/kb/broad.md', chunkIndex: 1 },
+              score: 0.6,
+            },
+          ];
+        }
+        if (query.includes('kinase')) {
+          return [
+            {
+              pageContent: 'ERK kinase regulates the MAPK pathway.',
+              metadata: { source: '/kb/kinase.md', chunkIndex: 0 },
+              score: 0.1,
+            },
+          ];
+        }
+        if (query.includes('expressed')) {
+          return [
+            {
+              pageContent: 'ERK is expressed in epithelial tissue.',
+              metadata: { source: '/kb/expression.md', chunkIndex: 0 },
+              score: 0.1,
+            },
+          ];
+        }
+        return [];
+      }),
+    } as unknown as FaissIndexManager & { similaritySearch: jest.Mock };
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      runLexicalLeg: jest.fn(async () => ({
+        refreshed: 0,
+        failed: 0,
+        hits: [],
+      })),
+    };
+
+    const out = await captureSearchOutput(
+      [
+        originalQuery,
+        '--mode=hybrid',
+        '--decompose',
+        '--decompose-max-candidates=6',
+        '--k=2',
+        '--format=json',
+        '--no-freshness',
+      ],
+      deps,
+    );
+
+    expect(out.code).toBe(0);
+    expect(manager.similaritySearch).toHaveBeenCalledTimes(3);
+    expect(deps.runLexicalLeg).toHaveBeenCalledTimes(3);
+    const payload = JSON.parse(out.stdout) as {
+      results: Array<{ content: string }>;
+      query_decomposition: {
+        retrieval_calls: number;
+        stop_reason: string;
+        evidence_groups: Array<{ id: string; first_seen_subquery: string }>;
+      };
+    };
+    expect(payload.results.map((result) => result.content)).toEqual([
+      'ERK kinase regulates the MAPK pathway.',
+      'ERK is expressed in epithelial tissue.',
+    ]);
+    expect(payload.query_decomposition).toMatchObject({
+      retrieval_calls: 3,
+      stop_reason: 'sufficient',
+    });
+    expect(payload.query_decomposition.evidence_groups.map((entry) => entry.id)).toEqual([
+      '/kb/broad.md#0',
+      '/kb/broad.md#1',
+      '/kb/kinase.md#0',
+      '/kb/expression.md#0',
+    ]);
   });
 
   it('includes gate_verdict in JSON output when --gate is used', async () => {
