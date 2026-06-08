@@ -15,6 +15,33 @@ reproducibility contract). Baseline updates are an **explicit, reviewed commit**
 (`chore(bench): update BEIR baseline`), never automatic — the same discipline as
 the latency budget baselines.
 
+## The CI quality gate (RFC 020 §4, M3)
+
+`benchmarks/beir/quality-gate.ts` is the quality sibling of the latency
+`budget-diff` gate. On a PR touching retrieval code, the
+`retrieval-quality-gate.yml` workflow re-runs the CI-subset sweep hermetically
+(lexical always; dense via the deterministic `fake` provider) and compares the
+fresh nDCG@10 against these committed baselines. A `(dataset × mode)` cell FAILS
+**only** when nDCG@10 drops below `baseline − tolerance` (relative %, with an
+absolute floor) **and** the drop is statistically significant per
+`benchmarks/significance.ts`. A non-significant dip is reported, not failed.
+
+The gate compares *like-for-like*: a cell whose baseline was produced by a
+different embedding provider than the current run (e.g. a real `ollama` baseline
+vs a hermetic `fake` run) is SKIPPED, not failed. So the CI-subset gate enforces
+on the provider-independent `lexical` BM25 baselines (deterministic), while the
+`fake`-provider dense cells need a matching `fake` baseline to be enforced.
+
+### `gate-fixture-*.json` — the hermetic gate baselines
+
+`gate-fixture-lexical.json` and `gate-fixture-dense.json` are recorded on the
+vendored fixture corpus at `benchmarks/beir/fixtures/gate/gate-fixture` (12 docs,
+10 queries). Both run fully offline — lexical BM25 and dense via the `fake`
+provider — so the gate has an always-available, network-free, deterministic cell
+that genuinely fails the build if a retrieval change makes the fixture nDCG@10
+regress significantly. These are plumbing baselines, not quality baselines (the
+`fake` provider has no semantic geometry).
+
 ## Recorded SciFact baselines (test split, 300 judged queries)
 
 Embedding: **`ollama / nomic-embed-text`** (the project's shipped local model),

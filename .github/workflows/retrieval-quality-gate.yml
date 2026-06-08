@@ -1,0 +1,88 @@
+name: Retrieval quality gate
+
+# RFC 020 §4 (milestone M3) — the quality sibling of the latency budget gate.
+# On every PR that touches retrieval code, re-run the CI-subset sweep hermetically
+# (lexical always; dense via the deterministic `fake` provider) and fail the build
+# only on a quality regression that BOTH clears the tolerance AND is statistically
+# significant (a non-significant dip is reported, not failed — avoids flaky gates).
+#
+# Baseline updates are an explicit, reviewed commit (chore(bench): update BEIR
+# baseline) — never written by this workflow.
+
+on:
+  pull_request:
+    paths:
+      - 'src/search-core.ts'
+      - 'src/hybrid-retrieval.ts'
+      - 'src/reranker.ts'
+      - 'src/lexical-*.ts'
+      - 'src/FaissIndexManager.ts'
+      - 'src/faiss-*.ts'
+      - 'src/chunk-id.ts'
+      - 'src/config/indexing.ts'
+      - 'src/config/reranker.ts'
+      - 'benchmarks/beir/**'
+      - 'benchmarks/significance.ts'
+      - 'benchmarks/results/beir/baseline/**'
+      - '.github/workflows/retrieval-quality-gate.yml'
+  workflow_dispatch:
+    inputs:
+      enforce:
+        description: Fail the job on a significant nDCG@10 regression.
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: |
+          npm run build
+          npx tsc -p tsconfig.bench.json
+
+      # The hermetic gate: lexical BM25 + dense via the deterministic `fake`
+      # provider over the vendored fixture corpus. No network, no credentials —
+      # always runs, and genuinely fails the build if a retrieval change makes
+      # the fixture nDCG@10 regress significantly. This is the enforced gate.
+      - name: Quality gate — hermetic fixture (enforced)
+        env:
+          BENCH_QUALITY_GATE_FAIL: ${{ (github.event_name == 'workflow_dispatch' && inputs.enforce == false) && '0' || '1' }}
+        run: |
+          node build/benchmarks/beir/quality-gate.js \
+            --datasets=gate-fixture \
+            --modes=lexical,dense \
+            --provider=fake \
+            --dataset-dir=benchmarks/beir/fixtures/gate \
+            --workspace-root="${RUNNER_TEMP}/kb-beir-gate-ws" \
+            --output-dir="${RUNNER_TEMP}/kb-beir-gate-out" \
+            --fail-on-regression
+
+      # The CI-subset gate against the committed BEIR baselines. Lexical BM25 is
+      # provider-independent and deterministic; dense uses `fake`. Cells with no
+      # committed baseline, a provider mismatch, or an undownloadable dataset are
+      # reported as SKIP — never a build failure — so the gate is robust on a
+      # network-restricted runner. Enforced: a real, significant regression fails.
+      - name: Quality gate — CI subset (best-effort, enforced on what it can measure)
+        env:
+          BENCH_QUALITY_GATE_FAIL: ${{ (github.event_name == 'workflow_dispatch' && inputs.enforce == false) && '0' || '1' }}
+        run: |
+          node build/benchmarks/beir/quality-gate.js \
+            --modes=lexical,dense \
+            --provider=fake \
+            --workspace-root="${RUNNER_TEMP}/kb-beir-gate-ci-ws" \
+            --output-dir="${RUNNER_TEMP}/kb-beir-gate-ci-out" \
+            --fail-on-regression
