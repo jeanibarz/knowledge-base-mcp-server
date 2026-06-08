@@ -180,6 +180,45 @@ npm run bench:beir:leaderboard -- \
   --output=benchmarks/results/beir/leaderboard.html
 ```
 
+## CI quality gate — `bench:beir:quality-gate` (RFC 020 §4, M3)
+
+The quality sibling of the latency `budget-diff` gate. On a PR touching retrieval
+code, the `retrieval-quality-gate.yml` workflow re-runs the CI-subset sweep
+hermetically (lexical always; dense via the deterministic `fake` provider) and
+compares fresh nDCG@10 against the committed `(dataset × mode)` baselines under
+`benchmarks/results/beir/baseline/`. A cell FAILS **only** when nDCG@10 drops
+below `baseline − tolerance` (relative %, with an absolute floor) **and** the drop
+is statistically significant per `bench:beir:significance`; a non-significant dip
+is reported, not failed (anti-flake). Baseline updates are an explicit, reviewed
+commit — never automatic.
+
+```bash
+# Hermetic self-test on the vendored fixture corpus (no network, no credentials):
+npm run bench:beir:quality-gate -- \
+  --datasets=gate-fixture --modes=lexical,dense --provider=fake \
+  --dataset-dir=benchmarks/beir/fixtures/gate --fail-on-regression
+
+# CI-subset gate against committed baselines (lexical is provider-independent):
+npm run bench:beir:quality-gate -- --modes=lexical,dense --provider=fake
+```
+
+A cell with no committed baseline, a provider mismatch, or an undownloadable
+dataset is reported as SKIP — never a build failure — so the gate is robust on a
+network-restricted runner. See `benchmarks/results/beir/baseline/README.md`.
+
+## BRIGHT reasoning-intensive retrieval — `bench:bright` (RFC 020 §8, M3)
+
+BRIGHT runs through the **same runner seam** as BEIR (only the qrels/format
+adapter differs). It records `hybrid+rerank` vs `dense` nDCG@10 per task — the
+comparison BRIGHT exists to expose, since rerank helps most on reasoning-intensive
+retrieval. See `benchmarks/bright/README.md` for the data-conversion recipe and
+the `excluded_ids` scope note.
+
+```bash
+npm run bench:bright -- --bright-dir=bright-data --tasks=biology,economics \
+    --modes=dense,hybrid+rerank --provider=ollama --model=nomic-embed-text
+```
+
 ## Result file naming
 
 Reports are written to `benchmarks/results/` with this naming pattern:

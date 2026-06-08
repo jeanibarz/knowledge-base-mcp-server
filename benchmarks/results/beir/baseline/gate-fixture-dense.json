@@ -1,0 +1,175 @@
+{
+  "schema_version": "kb.beir-benchmark.v3",
+  "generated_at": "2026-06-08T03:34:43.979Z",
+  "git_sha": "e72bf26",
+  "command": "node build/benchmarks/beir/run.js --dataset=gate-fixture --split=test --mode=dense --provider=fake --output-dir=benchmarks/results/beir/baseline --dataset-dir=benchmarks/beir/fixtures/gate/gate-fixture",
+  "dataset": {
+    "name": "gate-fixture",
+    "split": "test",
+    "source_url": null,
+    "checksum_sha256": "bc6fd056fd82a635a8da545e86a2d11bc22016871d2cb10600a9afd26192cff0",
+    "corpus_documents": 12,
+    "queries_total": 10,
+    "qrels_queries": 10,
+    "queries_evaluated": 10
+  },
+  "mode": "dense",
+  "embedding": {
+    "provider": "fake",
+    "model": "fake-embeddings"
+  },
+  "rerank": {
+    "enabled": false,
+    "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+    "topN": 40
+  },
+  "contextual": {
+    "enabled": false
+  },
+  "ranking": {
+    "unit": "chunk",
+    "implementation": "src/FaissIndexManager.similaritySearch (production dense path) via retrieval-eval.retrieveForRetrievalEvalCase",
+    "trec_run": "benchmarks/results/beir/baseline/gate-fixture-dense-run.trec",
+    "k": 100,
+    "chunk_candidate_k": 1000
+  },
+  "chunking": {
+    "KB_CHUNK_SIZE": null,
+    "KB_CHUNK_OVERLAP": null
+  },
+  "runtime": {
+    "node_version": "v24.11.1",
+    "python_version": "Python 3.10.12",
+    "os": "linux",
+    "arch": "x64"
+  },
+  "indexing": {
+    "ms": 199.669,
+    "files": 12,
+    "chunks": 12
+  },
+  "metrics": {
+    "judgedQueries": 10,
+    "ndcgAt10": 1,
+    "mapAt100": 1,
+    "precisionAt10": 0.1,
+    "recallAt10": 1,
+    "recallAt100": 1
+  },
+  "latency": {
+    "queries": 10,
+    "p50Ms": 4.463736,
+    "p95Ms": 11.352402,
+    "p99Ms": 11.352402,
+    "meanMs": 5.501911
+  },
+  "per_query": [
+    {
+      "queryId": "q1",
+      "relevant": 1,
+      "retrieved": 12,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "q2",
+      "relevant": 1,
+      "retrieved": 12,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "q3",
+      "relevant": 1,
+      "retrieved": 12,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "q4",
+      "relevant": 1,
+      "retrieved": 12,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "q5",
+      "relevant": 1,
+      "retrieved": 12,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "q6",
+      "relevant": 1,
+      "retrieved": 12,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "q7",
+      "relevant": 1,
+      "retrieved": 12,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "q8",
+      "relevant": 1,
+      "retrieved": 12,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "q9",
+      "relevant": 1,
+      "retrieved": 12,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "q10",
+      "relevant": 1,
+      "retrieved": 12,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    }
+  ],
+  "caveats": [
+    "This is a local BEIR benchmark, not an official leaderboard submission.",
+    "Scores are document-level for BEIR qrels.",
+    "MLflow logging is not required for JSON/TREC artifacts; optional logging is expected to come from the bench observability hook.",
+    "Dense/hybrid retrieval is driven by the production src/ paths (FaissIndexManager.similaritySearch + src/hybrid-retrieval RRF), not a benchmark-only reimplementation.",
+    "Dense/hybrid require a real embedding provider; the fake provider is deterministic but has no semantic geometry, so fake-provider numbers are self-test smoke only \u2014 never a quality baseline."
+  ]
+}
