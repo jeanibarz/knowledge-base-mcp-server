@@ -200,6 +200,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_RERANK', kind: 'boolean', default: 'off' },
   { name: 'KB_RERANK_MODEL', kind: 'string', default: DEFAULT_RERANK_MODEL },
   { name: 'KB_RERANK_TOP_N', kind: 'integer', default: String(DEFAULT_RERANK_TOP_N), min: 1, max: MAX_RERANK_TOP_N, integerSyntax: 'digits' },
+  { name: 'KB_RERANK_SKIP_DOMAINS', kind: 'csv' },
 
   { name: 'KB_INJECTION_GUARD', kind: 'enum', values: ['off', 'tag', 'wrap', 'both'], default: 'tag' },
   { name: 'KB_INJECTION_GUARD_BYPASS_KBS', kind: 'csv' },

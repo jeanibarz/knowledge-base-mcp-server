@@ -2384,7 +2384,7 @@ async function runHybridSearch(
   const fusionStartedAt = nowMs();
   let rerankConfig: RerankerConfig;
   try {
-    rerankConfig = resolveRerankerConfig(process.env, parsed.rerankOverride);
+    rerankConfig = resolveRerankerConfig(process.env, parsed.rerankOverride, parsed.kb ?? null);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }

@@ -985,7 +985,7 @@ export class KnowledgeBaseServer {
         canonical.faiss_ms = denseTiming.faiss_search_ms ?? denseTiming.query_search_ms;
       }
 
-      const rerankConfig = resolveRerankerConfig(process.env, rerankOverride);
+      const rerankConfig = resolveRerankerConfig(process.env, rerankOverride, knowledgeBaseName ?? null);
       const fusion = fuseHybridResultsWithDiagnostics({
         denseResults,
         lexicalResults,
