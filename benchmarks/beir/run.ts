@@ -110,6 +110,7 @@ interface Args {
   datasetUrl?: string;
   k: number;
   chunkK: number;
+  candidatePoolK?: number;
   maxQueries?: number;
   keepWorkspace: boolean;
 }
@@ -137,6 +138,8 @@ type BeirConfigKey =
   | 'k'
   | 'chunk_k'
   | 'chunkK'
+  | 'candidate_pool_k'
+  | 'candidatePoolK'
   | 'max_queries'
   | 'maxQueries'
   | 'keep_workspace'
@@ -288,6 +291,13 @@ interface BeirBenchmarkReport {
     chunks: number;
   };
   metrics: ReturnType<typeof aggregateQueryMetrics>;
+  high_recall_candidates?: {
+    schema_version: 'kb.beir.high-recall-candidates.v1';
+    candidate_pool_k: number;
+    final_k: number;
+    candidate_recall_at100: number;
+    candidate_metrics: ReturnType<typeof aggregateQueryMetrics>;
+  };
   latency: ReturnType<typeof summarizeLatencies>;
   per_query: QueryMetric[];
   caveats: string[];
@@ -363,7 +373,7 @@ export async function runBeirBenchmark(
   } finally {
     restoreStageEnv();
   }
-  const { queryRows, perQuery, latenciesMs, indexMs, indexing, ranking: rankingMeta, embedding } = retrieval;
+  const { queryRows, perQuery, candidatePerQuery, latenciesMs, indexMs, indexing, ranking: rankingMeta, embedding } = retrieval;
   const stages = resolveStageProvenance(args.mode);
 
   const runTag = `kb-${args.dataset}-${args.mode}-${rankingMeta.unit}`;
@@ -415,6 +425,17 @@ export async function runBeirBenchmark(
       chunks: indexing.chunks,
     },
     metrics: aggregateQueryMetrics(perQuery),
+    ...(candidatePerQuery !== undefined && args.candidatePoolK !== undefined
+      ? {
+          high_recall_candidates: {
+            schema_version: 'kb.beir.high-recall-candidates.v1',
+            candidate_pool_k: args.candidatePoolK,
+            final_k: args.k,
+            candidate_recall_at100: aggregateQueryMetrics(candidatePerQuery).recallAt100,
+            candidate_metrics: aggregateQueryMetrics(candidatePerQuery),
+          },
+        }
+      : {}),
     latency: summarizeLatencies(latenciesMs),
     per_query: perQuery,
     caveats: buildCaveats(args),
@@ -433,6 +454,7 @@ export async function runBeirBenchmark(
 interface RetrievalOutcome {
   queryRows: Array<{ queryId: string; ranking: RankedDocument[] }>;
   perQuery: QueryMetric[];
+  candidatePerQuery?: QueryMetric[];
   latenciesMs: number[];
   indexMs: number;
   indexing: {
@@ -463,24 +485,31 @@ async function runLexicalRetrieval(input: RetrievalInput): Promise<RetrievalOutc
 
   const queryRows: Array<{ queryId: string; ranking: RankedDocument[] }> = [];
   const perQuery: QueryMetric[] = [];
+  const candidatePerQuery: QueryMetric[] = [];
   const latenciesMs: number[] = [];
   for (const query of selectedQueries) {
     const started = process.hrtime.bigint();
-    const fetchK = args.lexicalUnit === 'source' ? args.k : args.chunkK;
+    const fetchK = args.candidatePoolK ?? (args.lexicalUnit === 'source' ? args.k : args.chunkK);
     const chunks = await lexicalIndex.query(query.text, fetchK, {
       unit: args.lexicalUnit,
-      candidateK: args.chunkK,
+      candidateK: args.candidatePoolK ?? args.chunkK,
     });
     latenciesMs.push(durationMs(started, process.hrtime.bigint()));
     const ranking = collapseChunksToDocuments(chunks, prepared.docIdByRelativePath, args.k);
     queryRows.push({ queryId: query._id, ranking });
     const scored = scoreQuery(query._id, ranking, qrels);
     if (scored !== null) perQuery.push(scored);
+    if (args.candidatePoolK !== undefined) {
+      const candidateRanking = collapseChunksToDocuments(chunks, prepared.docIdByRelativePath, 100);
+      const candidateScored = scoreQuery(query._id, candidateRanking, qrels);
+      if (candidateScored !== null) candidatePerQuery.push(candidateScored);
+    }
   }
 
   return {
     queryRows,
     perQuery,
+    ...(args.candidatePoolK !== undefined ? { candidatePerQuery } : {}),
     latenciesMs,
     indexMs,
     indexing: { refresh, files: lexicalIndex.numFiles(), chunks: lexicalIndex.numChunks() },
@@ -527,22 +556,29 @@ async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcom
 
   const queryRows: Array<{ queryId: string; ranking: RankedDocument[] }> = [];
   const perQuery: QueryMetric[] = [];
+  const candidatePerQuery: QueryMetric[] = [];
   const latenciesMs: number[] = [];
   for (const query of selectedQueries) {
     const started = process.hrtime.bigint();
     // Fetch at chunk depth, then collapse to BEIR documents. The production
     // path returns chunks best-first; collapse preserves that order.
-    const chunks = await backend.search(query.text, args.chunkK);
+    const chunks = await backend.search(query.text, args.candidatePoolK ?? args.chunkK);
     latenciesMs.push(durationMs(started, process.hrtime.bigint()));
     const ranking = collapseRankedChunksToDocuments(chunks, prepared.docIdByRelativePath, args.k);
     queryRows.push({ queryId: query._id, ranking });
     const scored = scoreQuery(query._id, ranking, qrels);
     if (scored !== null) perQuery.push(scored);
+    if (args.candidatePoolK !== undefined) {
+      const candidateRanking = collapseRankedChunksToDocuments(chunks, prepared.docIdByRelativePath, 100);
+      const candidateScored = scoreQuery(query._id, candidateRanking, qrels);
+      if (candidateScored !== null) candidatePerQuery.push(candidateScored);
+    }
   }
 
   return {
     queryRows,
     perQuery,
+    ...(args.candidatePoolK !== undefined ? { candidatePerQuery } : {}),
     latenciesMs,
     indexMs,
     indexing: { files: prep.files, chunks: prep.chunks },
@@ -895,6 +931,8 @@ export function parseArgs(argv: string[]): Args {
       args.k = parsePositiveInteger(readValue(), '--k');
     } else if (flag === '--chunk-k') {
       args.chunkK = parsePositiveInteger(readValue(), '--chunk-k');
+    } else if (flag === '--candidate-pool-k') {
+      args.candidatePoolK = parsePositiveInteger(readValue(), '--candidate-pool-k');
     } else if (flag === '--max-queries') {
       args.maxQueries = parsePositiveInteger(readValue(), '--max-queries');
     } else if (flag === '--keep-workspace') {
@@ -913,6 +951,9 @@ export function parseArgs(argv: string[]): Args {
     throw new Error(`unsupported dataset "${args.dataset}"; pass --dataset-dir or --dataset-url for custom BEIR data`);
   }
   args.chunkK = Math.max(args.chunkK, args.k);
+  if (args.candidatePoolK !== undefined && args.candidatePoolK < args.k) {
+    throw new Error(`--candidate-pool-k must be >= --k (got ${args.candidatePoolK} < ${args.k})`);
+  }
   return args;
 }
 
@@ -991,6 +1032,8 @@ function applyBeirConfig(args: Args, beir: Partial<Record<BeirConfigKey, unknown
       args.k = parsePositiveIntegerConfig(value, 'beir.k');
     } else if (key === 'chunk_k' || key === 'chunkK') {
       args.chunkK = parsePositiveIntegerConfig(value, `beir.${key}`);
+    } else if (key === 'candidate_pool_k' || key === 'candidatePoolK') {
+      args.candidatePoolK = parsePositiveIntegerConfig(value, `beir.${key}`);
     } else if (key === 'max_queries' || key === 'maxQueries') {
       args.maxQueries = parsePositiveIntegerConfig(value, `beir.${key}`);
     } else if (key === 'keep_workspace' || key === 'keepWorkspace') {
@@ -1285,6 +1328,7 @@ function formatBenchmarkCommand(args: Args): string {
   if (args.datasetUrl !== undefined) parts.push(`--dataset-url=${args.datasetUrl}`);
   if (args.k !== 100) parts.push(`--k=${args.k}`);
   if (args.chunkK !== 1000) parts.push(`--chunk-k=${args.chunkK}`);
+  if (args.candidatePoolK !== undefined) parts.push(`--candidate-pool-k=${args.candidatePoolK}`);
   if (args.maxQueries !== undefined) parts.push(`--max-queries=${args.maxQueries}`);
   if (args.keepWorkspace) parts.push('--keep-workspace');
   return parts.join(' ');
@@ -1321,6 +1365,12 @@ function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jso
     `- MAP@100: ${metrics.mapAt100}`,
     `- Recall@10: ${metrics.recallAt10}`,
     `- Recall@100: ${metrics.recallAt100}`,
+    ...(report.high_recall_candidates !== undefined
+      ? [
+          `- Candidate Recall@100: ${report.high_recall_candidates.candidate_recall_at100} ` +
+            `(pool=${report.high_recall_candidates.candidate_pool_k}, final k=${report.high_recall_candidates.final_k})`,
+        ]
+      : []),
     `- Query latency: p50 ${latency.p50Ms} ms, p95 ${latency.p95Ms} ms, p99 ${latency.p99Ms} ms`,
     '',
     '## Artifacts',
@@ -1396,6 +1446,9 @@ Options:
   --workspace-root=<p>   Temporary KB/index workspace. Removed unless --keep-workspace.
   --k=<n>                Document run depth. Default: 100.
   --chunk-k=<n>          Lexical chunk candidates before doc collapse. Default: 1000.
+  --candidate-pool-k=<n> Opt-in high-recall candidate pool depth independent
+                         of --k. Reports candidate Recall@100 before final
+                         document top-k scoring. Must be >= --k.
   --max-queries=<n>      Deterministic smoke-test subset.
   --keep-workspace       Keep the temporary KB/index workspace for inspection.
 `;

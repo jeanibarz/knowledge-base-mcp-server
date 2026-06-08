@@ -59,6 +59,12 @@ import {
   type HybridChunk,
 } from './hybrid-retrieval.js';
 import {
+  applyHighRecallCandidateFilters,
+  highRecallDiagnosticsToJson,
+  resolveCandidatePoolK,
+  type HighRecallFilterDiagnostics,
+} from './high-recall-candidates.js';
+import {
   applyAdvancedRetrieval,
   computeAdvancedCandidateK,
   filterAdvancedRetrievalMetadata,
@@ -150,6 +156,10 @@ Result tuning:
   --threshold=<float>   Max similarity score; lower = closer match (default 2).
   --threshold=auto      Pick a knee-based cutoff from the top-K score curve.
   --k=<int>             Top-K results (default 10).
+  --candidate-pool-k=<int>
+                        Hybrid-only opt-in: fetch and fuse this many dense and
+                        lexical candidates before cheap duplicate/anchor/source
+                        filters and final top-k/rerank.
   --mode=dense|lexical|hybrid|auto
                         Retrieval mode (default: dense). \`hybrid\` fuses
                         dense + BM25 via reciprocal rank fusion (#206).
@@ -302,6 +312,7 @@ interface SearchArgs {
   taskContextFile?: string;
   lexicalUnit: LexicalRankingUnit;
   retrievalViews?: RetrievalViewKind[];
+  candidatePoolK?: number;
 }
 
 export interface RunSearchDeps {
@@ -427,6 +438,18 @@ export async function runSearch(
   if (hasNeighborContext(parsed) && effectiveMode !== 'dense') {
     process.stderr.write('kb search: neighbor context expansion is only supported with --mode=dense\n');
     return 2;
+  }
+  if (parsed.candidatePoolK !== undefined && effectiveMode !== 'hybrid') {
+    process.stderr.write('kb search: --candidate-pool-k is only supported with --mode=hybrid\n');
+    return 2;
+  }
+  if (parsed.candidatePoolK !== undefined) {
+    try {
+      resolveCandidatePoolK(parsed.k, parsed.candidatePoolK);
+    } catch (err) {
+      process.stderr.write(`kb search: ${(err as Error).message}\n`);
+      return 2;
+    }
   }
   if (hasAdvancedRetrieval(parsed) && effectiveMode !== 'dense') {
     process.stderr.write('kb search: advanced retrieval operators are only supported with --mode=dense\n');
@@ -936,6 +959,11 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
       const n = Number(raw.slice('--k='.length));
       if (!Number.isInteger(n) || n <= 0) throw new Error(`invalid --k: ${raw}`);
       out.k = n; continue;
+    }
+    if (raw.startsWith('--candidate-pool-k=')) {
+      const n = Number(raw.slice('--candidate-pool-k='.length));
+      if (!Number.isInteger(n) || n <= 0) throw new Error(`invalid --candidate-pool-k: ${raw}`);
+      out.candidatePoolK = n; continue;
     }
     if (raw.startsWith('--format=')) {
       const v = raw.slice('--format='.length);
@@ -1557,6 +1585,18 @@ function formatFilterSelectivityDiagnosticsFooter(
 function formatFilterDiagnosticValue(key: string, value: string | number): string {
   if (typeof value === 'number' && key.endsWith('_ms')) return `${Math.round(value)}ms`;
   return String(value);
+}
+
+function formatHighRecallDiagnosticsFooter(diagnostics: HighRecallFilterDiagnostics): string {
+  const removed = Object.entries(diagnostics.reasonCounts)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(', ');
+  const removedText = removed === '' ? 'no removals' : removed;
+  const relaxed = diagnostics.anchorFilterRelaxed ? '; anchor filter relaxed' : '';
+  return `> _High-recall candidates: pool=${diagnostics.candidatePoolK}, ` +
+    `pre=${diagnostics.preFilterCount}, post=${diagnostics.postFilterCount}, ` +
+    `${removedText}, neighbor_matches=${diagnostics.neighborExpansionMatches}${relaxed}._`;
 }
 
 function defaultBypassedGateVerdict(count: number): RelevanceGateVerdict {
@@ -2336,7 +2376,9 @@ async function runHybridSearch(
   }
 
   const query = parsed.query as string;
-  const fetchK = hybridFetchK(parsed.k);
+  const candidatePoolK = resolveCandidatePoolK(parsed.k, parsed.candidatePoolK);
+  const highRecallEnabled = candidatePoolK !== null;
+  const fetchK = candidatePoolK ?? hybridFetchK(parsed.k);
 
   // -- dense leg -----------------------------------------------------------
   let densePromise: Promise<HybridChunk[]>;
@@ -2448,13 +2490,30 @@ async function runHybridSearch(
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
-  const fusionK = rerankConfig.enabled ? Math.max(parsed.k, rerankConfig.topN) : parsed.k;
+  const fusionK = highRecallEnabled
+    ? fetchK
+    : rerankConfig.enabled ? Math.max(parsed.k, rerankConfig.topN) : parsed.k;
   const fusion = fuseHybridResultsWithDiagnostics({
     denseResults,
     lexicalResults,
     k: fusionK,
   });
   let ranked = fusion.results;
+  let highRecallDiagnostics: HighRecallFilterDiagnostics | null = null;
+  if (highRecallEnabled) {
+    const highRecallStartedAt = nowMs();
+    const highRecall = applyHighRecallCandidateFilters({
+      query,
+      candidates: ranked,
+      k: parsed.k,
+      candidatePoolK: fetchK,
+      denseDistanceById: fusion.denseDistanceById,
+      lexicalHitIds: fusion.lexicalHitIds,
+    });
+    ranked = highRecall.results;
+    highRecallDiagnostics = highRecall.diagnostics;
+    if (timing) timing.high_recall_filter_ms = elapsedMs(highRecallStartedAt);
+  }
   if (timing) timing.fusion_ms = elapsedMs(fusionStartedAt);
   const rerankResult = await applyRerankerIfEnabled({
     query,
@@ -2523,6 +2582,9 @@ async function runHybridSearch(
         },
       },
       rrf: { c: HYBRID_RRF_C, fetch_k: fetchK },
+      ...(highRecallDiagnostics !== null
+        ? { high_recall: highRecallDiagnosticsToJson(highRecallDiagnostics) }
+        : {}),
       ...(retrievalViewsJson(parsed.retrievalViews) !== null
         ? { retrieval_views: retrievalViewsJson(parsed.retrievalViews) }
         : {}),
@@ -2552,6 +2614,9 @@ async function runHybridSearch(
       width: process.stdout.columns,
     })}\n`;
     output += `> _Hybrid status: dense ${denseResults.length}, lexical ${lexicalResults.length} (${parsed.lexicalUnit}), refreshed ${lexicalResultsRow.refreshed}, failed ${lexicalResultsRow.failed}, RRF c=${HYBRID_RRF_C}._\n`;
+    if (highRecallDiagnostics !== null) {
+      output += `${formatHighRecallDiagnosticsFooter(highRecallDiagnostics)}\n`;
+    }
     if (rerankResult.candidatesIn > 0) {
       const degraded = rerankResult.degraded ? '; degraded to fused order' : '';
       output += `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`;
@@ -2583,6 +2648,9 @@ async function runHybridSearch(
       )}\n\n`;
     }
     output += `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} with unit=${parsed.lexicalUnit} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`;
+    if (highRecallDiagnostics !== null) {
+      output += `${formatHighRecallDiagnosticsFooter(highRecallDiagnostics)}\n`;
+    }
     if (rerankResult.candidatesIn > 0) {
       const degraded = rerankResult.degraded ? '; degraded to fused order' : '';
       output += `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`;

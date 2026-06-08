@@ -214,6 +214,20 @@ describe('parseSearchArgs reranker (RFC 019)', () => {
   });
 });
 
+describe('parseSearchArgs high-recall candidates (#576)', () => {
+  it('accepts the hybrid candidate-pool control', () => {
+    expect(parseSearchArgs(['query', '--mode=hybrid', '--candidate-pool-k=200'])).toMatchObject({
+      mode: 'hybrid',
+      candidatePoolK: 200,
+    });
+  });
+
+  it('rejects malformed candidate-pool controls', () => {
+    expect(() => parseSearchArgs(['query', '--candidate-pool-k=0'])).toThrow(/invalid --candidate-pool-k/);
+    expect(() => parseSearchArgs(['query', '--candidate-pool-k=nope'])).toThrow(/invalid --candidate-pool-k/);
+  });
+});
+
 describe('parseSearchArgs advanced retrieval operators (#450)', () => {
   it('accepts additive advanced retrieval flags', () => {
     expect(parseSearchArgs([
@@ -1192,6 +1206,15 @@ describe('runSearch timing guard (#331)', () => {
     expect(out.stderr).toContain('advanced retrieval operators are only supported with --mode=dense');
   });
 
+  it('rejects candidate-pool controls outside hybrid mode', async () => {
+    const { deps } = makeDeps();
+
+    const out = await captureSearchOutput(['query', '--mode=dense', '--candidate-pool-k=20'], deps);
+
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain('--candidate-pool-k is only supported with --mode=hybrid');
+  });
+
   it('renders compact dense search output without changing retrieval semantics', async () => {
     const { deps, manager } = makeDeps();
     manager.similaritySearch.mockResolvedValueOnce([
@@ -1466,6 +1489,111 @@ describe('runSearch timing guard (#331)', () => {
     expect(lexicalIndex.refresh).not.toHaveBeenCalled();
     expect(payload.retrievers.lexical).toMatchObject({ fetched: 1, refreshed: 0, failed: 0 });
     expect(payload.results[0]?.metadata.relativePath).toBe('alpha/warm.md');
+  });
+
+  it('uses --candidate-pool-k to filter a wide hybrid pool before rerank and JSON output', async () => {
+    const manager = {
+      modelDir: '/tmp/kb-test-model',
+      initialize: jest.fn(async () => {}),
+      updateIndex: jest.fn(async () => {}),
+      similaritySearch: jest.fn(async () => [
+        {
+          pageContent: 'dense alpha kinase pathway evidence',
+          metadata: { source: '/kb/a.md', chunkIndex: 0 },
+          score: 0.1,
+        },
+        {
+          pageContent: 'dense alpha kinase pathway evidence',
+          metadata: { source: '/kb/a.md', chunkIndex: 1 },
+          score: 0.2,
+        },
+        {
+          pageContent: 'unanchored weather note',
+          metadata: { source: '/kb/weather.md', chunkIndex: 0 },
+          score: 0.3,
+        },
+      ]),
+    } as unknown as FaissIndexManager & { similaritySearch: jest.Mock };
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      runLexicalLeg: jest.fn(async () => ({
+        refreshed: 0,
+        failed: 0,
+        hits: [
+          {
+            pageContent: 'lexical kinase pathway winner',
+            metadata: { source: '/kb/lexical.md', chunkIndex: 0 },
+            score: 9,
+          },
+        ],
+      })),
+    };
+    const restoreFactory = setRerankerFactoryForTests(async () => ({
+      id: 'stub-reranker',
+      rerank: async (_query, candidates) =>
+        candidates.map((candidate) => (candidate.includes('winner') ? 10 : 1)),
+    }));
+    const previousRerank = process.env.KB_RERANK;
+    const previousTopN = process.env.KB_RERANK_TOP_N;
+    process.env.KB_RERANK = 'on';
+    process.env.KB_RERANK_TOP_N = '10';
+
+    try {
+      const out = await captureSearchOutput(
+        [
+          'kinase pathway',
+          '--mode=hybrid',
+          '--candidate-pool-k=4',
+          '--k=2',
+          '--format=json',
+          '--timing',
+          '--no-freshness',
+        ],
+        deps,
+      );
+
+      expect(out.code).toBe(0);
+      expect(manager.similaritySearch).toHaveBeenCalledWith(
+        'kinase pathway',
+        4,
+        Number.POSITIVE_INFINITY,
+        undefined,
+        undefined,
+        expect.any(Object),
+        { noCache: false },
+      );
+      expect(deps.runLexicalLeg).toHaveBeenCalledWith(expect.objectContaining({
+        query: 'kinase pathway',
+        fetchK: 4,
+      }));
+      const payload = JSON.parse(out.stdout);
+      expect(payload.high_recall).toMatchObject({
+        schema_version: 'kb.search.high-recall-candidates.v1',
+        candidate_pool_k: 4,
+        final_k: 2,
+        pre_filter_count: 4,
+        reason_counts: {
+          duplicate_collapse: 1,
+          anchor_filter: 1,
+        },
+      });
+      expect(payload.rerank.candidates).toBe(2);
+      expect(payload.results.map((result: { content: string }) => result.content)).toEqual([
+        'lexical kinase pathway winner',
+        'dense alpha kinase pathway evidence',
+      ]);
+      expect(payload.timing.high_recall_filter_ms).toEqual(expect.any(Number));
+    } finally {
+      restoreFactory();
+      if (previousRerank === undefined) delete process.env.KB_RERANK;
+      else process.env.KB_RERANK = previousRerank;
+      if (previousTopN === undefined) delete process.env.KB_RERANK_TOP_N;
+      else process.env.KB_RERANK_TOP_N = previousTopN;
+    }
   });
 
   it('includes gate_verdict in JSON output when --gate is used', async () => {

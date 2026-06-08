@@ -423,6 +423,7 @@ export class LexicalIndex {
 
   private chunkRanker(retrievalViews?: readonly RetrievalViewKind[]): LexicalBm25Ranker<ChunkRecordItem> {
     const key = retrievalViewCacheKey(retrievalViews);
+    this.chunkRankerCache ??= new Map();
     let ranker = this.chunkRankerCache.get(key);
     if (ranker === undefined) {
       ranker = LexicalBm25Ranker.fromRecords(this.chunkRecords(retrievalViews));
@@ -433,6 +434,7 @@ export class LexicalIndex {
 
   private sourceRanker(retrievalViews?: readonly RetrievalViewKind[]): LexicalBm25Ranker<SourceRecordItem> {
     const key = retrievalViewCacheKey(retrievalViews);
+    this.sourceRankerCache ??= new Map();
     let ranker = this.sourceRankerCache.get(key);
     if (ranker === undefined) {
       ranker = LexicalBm25Ranker.fromRecords(this.sourceRecords(retrievalViews));

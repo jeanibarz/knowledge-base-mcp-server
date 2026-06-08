@@ -306,6 +306,13 @@ Stable hybrid fields are `mode`, `results`, `retrievers.dense.fetched`,
 `rerank.cache_hits`, `rerank.degraded`, and `rerank.degrade_reason` are stable
 when the `rerank` object is present.
 
+When `kb search --mode=hybrid --candidate-pool-k=<n> --format=json` is used,
+the payload also includes `high_recall` with schema version
+`kb.search.high-recall-candidates.v1`. Stable child fields are
+`candidate_pool_k`, `final_k`, `pre_filter_count`, `post_filter_count`,
+`reason_counts`, `collapsed_groups[]`, `removed[]`, `recall_candidates`,
+`anchor_filter_relaxed`, and `neighbor_expansion_matches`.
+
 Stable error envelope for dense and hybrid JSON mode:
 
 ```json

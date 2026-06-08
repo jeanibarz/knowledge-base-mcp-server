@@ -49,6 +49,7 @@ describe('BEIR benchmark runner', () => {
       `--workspace-root=${workspaceRoot}`,
       '--k=10',
       '--chunk-k=10',
+      '--candidate-pool-k=10',
     ]);
 
     const result = await runBeirBenchmark(args, {
@@ -89,6 +90,12 @@ describe('BEIR benchmark runner', () => {
     const json = JSON.parse(await fsp.readFile(result.jsonPath, 'utf-8')) as {
       git_sha: string;
       metrics: { ndcgAt10: number; mapAt100: number; recallAt10: number; recallAt100: number };
+      high_recall_candidates: {
+        schema_version: string;
+        candidate_pool_k: number;
+        final_k: number;
+        candidate_recall_at100: number;
+      };
       dataset: { corpus_documents: number; queries_evaluated: number };
       command: string;
       ranking: { unit: string; implementation: string; trec_run: string };
@@ -96,6 +103,7 @@ describe('BEIR benchmark runner', () => {
     expect(json.git_sha).toBe('test-sha');
     expect(json.dataset).toMatchObject({ corpus_documents: 2, queries_evaluated: 1 });
     expect(json.command).toContain('--lexical-unit=source');
+    expect(json.command).toContain('--candidate-pool-k=10');
     expect(json.ranking).toMatchObject({
       unit: 'source',
       implementation: 'LexicalIndex source BM25 over whole files, returning one representative chunk per source',
@@ -107,12 +115,19 @@ describe('BEIR benchmark runner', () => {
       recallAt10: 1,
       recallAt100: 1,
     });
+    expect(json.high_recall_candidates).toMatchObject({
+      schema_version: 'kb.beir.high-recall-candidates.v1',
+      candidate_pool_k: 10,
+      final_k: 10,
+      candidate_recall_at100: 1,
+    });
     await expect(fsp.readFile(result.trecPath, 'utf-8')).resolves.toBe(
       'q1 Q0 doc-alpha 1 42.000000 kb-tiny-lexical-source\n',
     );
     const report = await fsp.readFile(result.reportPath, 'utf-8');
     expect(report).toContain('This is a local BEIR benchmark run, not an official leaderboard submission.');
     expect(report).toContain('--lexical-unit=source');
+    expect(report).toContain('Candidate Recall@100: 1 (pool=10, final k=10)');
     await expect(fsp.stat(workspaceRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
