@@ -84,6 +84,7 @@ describe('captureRetrievalEnv', () => {
       chunk_size: '1000',
       chunk_overlap: '200',
       contextual: 'off',
+      retrieval_views: null,
     });
   });
 
@@ -121,13 +122,14 @@ describe('parseMatrixArgs', () => {
   it('parses overrides incl. --fail-fast', () => {
     const options = parseMatrixArgs([
       '--datasets=scifact,arguana', '--modes=lexical,hybrid,hybrid+rerank',
-      '--provider=ollama', '--model=nomic-embed-text', '--fail-fast',
+      '--provider=ollama', '--model=nomic-embed-text', '--retrieval-views=section,metadata', '--fail-fast',
     ]);
     expect(options).toMatchObject({
       datasets: ['scifact', 'arguana'],
       modes: ['lexical', 'hybrid', 'hybrid+rerank'],
       provider: 'ollama',
       model: 'nomic-embed-text',
+      retrievalViews: 'section,metadata',
       continueOnError: false,
     });
   });
@@ -215,6 +217,36 @@ describe('runBeirMatrix', () => {
     // Failed runs are NOT logged to the ledger.
     expect(loggedRuns).toEqual(['scifact:hybrid', 'fiqa:hybrid']);
 
+    await fsp.rm(root, { recursive: true, force: true });
+  });
+
+  it('forwards retrieval view flags to non-lexical BEIR cells', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-beir-matrix-views-'));
+    const seenArgv: string[][] = [];
+    const { deps } = stubDeps({
+      runBenchmark: async (argv) => {
+        seenArgv.push(argv);
+        const dataset = argv.find((a) => a.startsWith('--dataset='))?.split('=')[1] ?? 'unknown';
+        const mode = argv.find((a) => a.startsWith('--mode='))?.split('=')[1] ?? 'lexical';
+        return stubResult(dataset, mode);
+      },
+    });
+
+    await runBeirMatrix({
+      datasets: ['scifact'],
+      modes: ['lexical', 'hybrid'],
+      provider: 'fake',
+      model: 'fake-embeddings',
+      retrievalViews: 'section,metadata',
+      split: 'test',
+      outputDir: path.join(root, 'out'),
+      cacheDir: path.join(root, 'cache'),
+      workspaceRoot: path.join(root, 'ws'),
+      continueOnError: true,
+    }, deps);
+
+    expect(seenArgv.find((argv) => argv.includes('--mode=lexical'))).not.toContain('--retrieval-views=section,metadata');
+    expect(seenArgv.find((argv) => argv.includes('--mode=hybrid'))).toContain('--retrieval-views=section,metadata');
     await fsp.rm(root, { recursive: true, force: true });
   });
 

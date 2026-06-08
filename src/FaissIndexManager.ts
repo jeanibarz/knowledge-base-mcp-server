@@ -96,6 +96,12 @@ import {
   shouldRetryIngest,
 } from './ingest-quarantine.js';
 import { IngestSecretDetectedError } from './secret-scanner.js';
+import {
+  collapseRetrievalViewResults,
+  isRetrievalViewDocument,
+  shouldKeepForRetrievalViews,
+  type RetrievalViewKind,
+} from './retrieval-views.js';
 
 export { MigrationRefusedError } from './layout-bootstrap.js';
 
@@ -356,6 +362,11 @@ export interface SearchResultDocument extends Document {
   semanticMatch?: true;
   contextChunks?: NeighborContextChunk[];
   contextTruncated?: boolean;
+}
+
+export interface SimilaritySearchOptions {
+  noCache?: boolean;
+  retrievalViews?: RetrievalViewKind[];
 }
 
 const MAX_INDEX_UPDATE_FAILURES = 10;
@@ -2457,7 +2468,7 @@ export class FaissIndexManager {
     knowledgeBaseName?: string,
     filters?: SimilaritySearchFilters,
     timing?: SimilaritySearchTiming,
-    opts: { noCache?: boolean } = {},
+    opts: SimilaritySearchOptions = {},
   ): Promise<SearchResultDocument[]> {
     const totalStartedAt = Date.now();
     if (!this.faissIndex) {
@@ -2499,22 +2510,49 @@ export class FaissIndexManager {
         getQueryEmbedding,
       });
     };
+    const ntotal = this.faissIndex.totalVectors();
+    const hasViewDocuments = this.getDocstoreDocuments().some(isRetrievalViewDocument);
+    const viewFetchMultiplier = opts.retrievalViews !== undefined && opts.retrievalViews.length > 0
+      ? Math.max(4, opts.retrievalViews.length + 1)
+      : (hasViewDocuments ? 4 : 1);
+    const searchK = Math.min(ntotal, Math.max(k, k * viewFetchMultiplier));
+    const shapeResults = (rows: ScoredDocument[]): SearchResultDocument[] => {
+      const viewFiltered = rows
+        .filter(([doc]) => shouldKeepForRetrievalViews(doc, opts.retrievalViews))
+        .map(([doc, score]) => ({ ...doc, score }));
+      const shaped = opts.retrievalViews !== undefined && opts.retrievalViews.length > 0
+        ? collapseRetrievalViewResults(viewFiltered)
+        : viewFiltered;
+      return shaped.slice(0, k);
+    };
+    const hasViewFiltering = hasViewDocuments || (opts.retrievalViews !== undefined && opts.retrievalViews.length > 0);
 
     if (!postFilter.requiresOverfetch) {
       // No scope or metadata filter — FAISS top-k is already the final result
       // set (threshold is a cheap drop-in post-filter). One call.
-      if (timing) timing.fetch_k = k;
-      const resultsWithScore = await runFaissSearch(k);
-      const postFilterStartedAt = Date.now();
-      const filtered = postFilter.apply(resultsWithScore);
+      const fetchSizes = hasViewFiltering ? progressiveFetchSizes(k, ntotal) : [k];
+      let lastFetchK = k;
+      let cumulativePostFilterMs = 0;
+      let filtered: ScoredDocument[] = [];
+      let shaped: SearchResultDocument[] = [];
+      for (const fetchK of fetchSizes) {
+        lastFetchK = fetchK;
+        const resultsWithScore = await runFaissSearch(fetchK);
+        const postFilterStartedAt = Date.now();
+        filtered = postFilter.apply(resultsWithScore);
+        cumulativePostFilterMs += Date.now() - postFilterStartedAt;
+        shaped = shapeResults(filtered);
+        if (shaped.length >= k) break;
+        if (resultsWithScore.length < fetchK) break;
+      }
       if (timing) {
-        timing.post_filter_ms = Date.now() - postFilterStartedAt;
+        timing.fetch_k = lastFetchK;
+        timing.post_filter_ms = cumulativePostFilterMs;
+        timing.post_filter_kept = filtered.length;
         timing.total_ms = Date.now() - totalStartedAt;
       }
-      return filtered.slice(0, k).map(([doc, score]) => ({ ...doc, score }));
+      return shaped;
     }
-
-    const ntotal = this.faissIndex.totalVectors();
 
     // Issue #283 — predicate-pushdown fast-path. When a metadata-aware
     // filter is active and the per-model sidecar matches the live docstore
@@ -2550,7 +2588,7 @@ export class FaissIndexManager {
         return [];
       }
       const fastFetchK = recommendFastPathFetchK({
-        k,
+        k: searchK,
         candidates: candidates.length,
         ntotal,
       });
@@ -2559,8 +2597,10 @@ export class FaissIndexManager {
         const postFilterStartedAt = Date.now();
         filtered = postFilter.apply(resultsWithScore);
         cumulativePostFilterMs += Date.now() - postFilterStartedAt;
+        const shaped = shapeResults(filtered);
         const fastPathSatisfied =
-          filtered.length >= k || resultsWithScore.length < fastFetchK;
+          (hasViewFiltering ? shaped.length >= k : filtered.length >= searchK) ||
+          resultsWithScore.length < fastFetchK;
         if (fastPathSatisfied) {
           if (timing) {
             timing.fetch_k = fastFetchK;
@@ -2569,7 +2609,7 @@ export class FaissIndexManager {
             timing.sidecar_fast_path = 'hit';
             timing.total_ms = Date.now() - totalStartedAt;
           }
-          return filtered.slice(0, k).map(([doc, score]) => ({ ...doc, score }));
+          return shaped;
         }
         if (timing) timing.sidecar_fast_path = 'miss_underflow';
       } else if (timing) {
@@ -2584,15 +2624,17 @@ export class FaissIndexManager {
     // already returned its entire docstore (raw length below the requested
     // window ⇒ ntotal exhausted). Worst case ends at `ntotal` and matches
     // the pre-#229 cost; common filtered queries terminate at the first rung.
-    const fetchSizes = progressiveFetchSizes(k, ntotal);
-    let lastFetchK = k;
+    const fetchSizes = progressiveFetchSizes(searchK, ntotal);
+    let lastFetchK = searchK;
+    let shaped: SearchResultDocument[] = [];
     for (const fetchK of fetchSizes) {
       lastFetchK = fetchK;
       const resultsWithScore = await runFaissSearch(fetchK);
       const postFilterStartedAt = Date.now();
       filtered = postFilter.apply(resultsWithScore);
       cumulativePostFilterMs += Date.now() - postFilterStartedAt;
-      if (filtered.length >= k) break;
+      shaped = shapeResults(filtered);
+      if (hasViewFiltering ? shaped.length >= k : filtered.length >= searchK) break;
       if (resultsWithScore.length < fetchK) break;
     }
     if (timing) {
@@ -2602,7 +2644,7 @@ export class FaissIndexManager {
       timing.total_ms = Date.now() - totalStartedAt;
     }
 
-    return filtered.slice(0, k).map(([doc, score]) => ({ ...doc, score }));
+    return shaped.length > 0 ? shaped : shapeResults(filtered);
   }
 
   expandWithNeighborContext(

@@ -15,6 +15,13 @@ import {
   listLexicalKbs,
 } from './hybrid-retrieval.js';
 import { applyRerankerIfEnabled, resolveRerankerConfig } from './reranker.js';
+import {
+  KB_RETRIEVAL_VIEWS_ENV,
+  RETRIEVAL_VIEW_KINDS,
+  formatRetrievalViews,
+  parseRetrievalViews,
+  type RetrievalViewKind,
+} from './retrieval-views.js';
 
 export type StalePolicy = 'allow_stale' | 'fresh' | 'stale';
 
@@ -95,6 +102,7 @@ export interface RetrievalEvalCase {
   k?: number;
   threshold?: number;
   mode?: SearchMode;
+  retrievalViews?: RetrievalViewKind[];
   gate?: boolean;
   requiredSources: string[];
   forbiddenSources: string[];
@@ -118,6 +126,8 @@ export interface RetrievalEvalCaseInput {
   k?: number;
   threshold?: number;
   mode?: SearchMode;
+  retrieval_views?: string;
+  retrievalViews?: string;
   gate?: boolean;
   required_sources?: string[];
   forbidden_sources?: string[];
@@ -172,7 +182,12 @@ export interface RetrievalEvalSearchContext {
   manager: Pick<FaissIndexManager, 'similaritySearch'>;
   defaultK: number;
   defaultThreshold: number;
-  retrieveLexical?: (query: string, k: number, scopedKb?: string) => Promise<ScoredDocument[]>;
+  retrieveLexical?: (
+    query: string,
+    k: number,
+    scopedKb?: string,
+    retrievalViews?: RetrievalViewKind[],
+  ) => Promise<ScoredDocument[]>;
 }
 
 export interface RetrievalEvalSearchResult {
@@ -278,6 +293,7 @@ export async function retrieveForRetrievalEvalCase(
       fixtureCase.query,
       fixtureCase.k ?? context.defaultK,
       fixtureCase.kb,
+      retrievalViewsForCase(fixtureCase),
     );
   } else {
     results = await retrieveHybrid(fixtureCase, context);
@@ -456,6 +472,8 @@ function normalizeCase(raw: unknown, caseNumber: number): RetrievalEvalCase {
   const k = readOptionalPositiveInteger(raw, 'k');
   const threshold = readOptionalPositiveNumber(raw, 'threshold');
   const gate = readOptionalBoolean(raw, 'gate');
+  const retrievalViewsRaw = readOptionalString(raw, 'retrieval_views') ?? readOptionalString(raw, 'retrievalViews');
+  const retrievalViews = retrievalViewsRaw === undefined ? undefined : parseRetrievalViews(retrievalViewsRaw);
   const maxDuplicateGroups = readOptionalNonNegativeInteger(raw, 'max_duplicate_groups');
   const relevanceJudgments = normalizeRelevanceJudgments(raw, caseNumber);
   const expectedGateVerdict = normalizeExpectedGateVerdict(raw.expected_gate_verdict, caseNumber);
@@ -466,6 +484,7 @@ function normalizeCase(raw: unknown, caseNumber: number): RetrievalEvalCase {
     ...(k !== undefined ? { k } : {}),
     ...(threshold !== undefined ? { threshold } : {}),
     ...readOptionalSearchMode(raw, 'mode', `case ${caseNumber}`),
+    ...(retrievalViews !== undefined && retrievalViews.length > 0 ? { retrievalViews } : {}),
     ...(gate !== undefined ? { gate } : {}),
     requiredSources: readOptionalStringArray(raw, 'required_sources') ?? [],
     forbiddenSources: readOptionalStringArray(raw, 'forbidden_sources') ?? [],
@@ -535,11 +554,15 @@ async function retrieveDense(
   fixtureCase: RetrievalEvalCase,
   context: RetrievalEvalSearchContext,
 ): Promise<ScoredDocument[]> {
+  const retrievalViews = retrievalViewsForCase(fixtureCase);
   return context.manager.similaritySearch(
     fixtureCase.query,
     fixtureCase.k ?? context.defaultK,
     fixtureCase.threshold ?? context.defaultThreshold,
     fixtureCase.kb,
+    undefined,
+    undefined,
+    { retrievalViews },
   );
 }
 
@@ -547,6 +570,7 @@ async function retrieveLexical(
   query: string,
   k: number,
   scopedKb?: string,
+  retrievalViews?: RetrievalViewKind[],
 ): Promise<ScoredDocument[]> {
   const kbs = await listLexicalKbs(scopedKb);
   // The eval runner is strict about scope: a missing scoped KB is a fixture
@@ -560,10 +584,10 @@ async function retrieveLexical(
   for (const { kbName, kbPath } of kbs) {
     const index = await LexicalIndex.load(kbName, kbPath);
     if (index.numFiles() === 0) {
-      await index.refresh();
+      await withRetrievalViewsForEvalIngest(retrievalViews, () => index.refresh());
       await index.save();
     }
-    merged.push(...await index.query(query, k));
+    merged.push(...await index.query(query, k, { retrievalViews }));
   }
   merged.sort((a, b) => b.score - a.score);
   return merged.slice(0, k).map(toScoredDocument);
@@ -576,14 +600,18 @@ async function retrieveHybrid(
   const k = fixtureCase.k ?? context.defaultK;
   const fetchK = hybridFetchK(k);
   const retrieveLexicalFn = context.retrieveLexical ?? retrieveLexical;
+  const retrievalViews = retrievalViewsForCase(fixtureCase);
   const [denseResults, lexicalResults] = await Promise.all([
     context.manager.similaritySearch(
       fixtureCase.query,
       fetchK,
       Number.POSITIVE_INFINITY,
       fixtureCase.kb,
+      undefined,
+      undefined,
+      { retrievalViews },
     ),
-    retrieveLexicalFn(fixtureCase.query, fetchK, fixtureCase.kb),
+    retrieveLexicalFn(fixtureCase.query, fetchK, fixtureCase.kb, retrievalViews),
   ]);
   // Pass the scoped KB so the RFC 020 §9 skip-rerank fallback (per-domain gate)
   // is honored here too, and the fused candidate depth matches the real config.
@@ -602,6 +630,38 @@ async function retrieveHybrid(
     kbScope: fixtureCase.kb ?? null,
   });
   return reranked.results;
+}
+
+function retrievalViewsForCase(fixtureCase: RetrievalEvalCase): RetrievalViewKind[] | undefined {
+  const raw = (fixtureCase as RetrievalEvalCase & { retrieval_views?: unknown }).retrievalViews
+    ?? (fixtureCase as RetrievalEvalCase & { retrieval_views?: unknown }).retrieval_views;
+  if (raw === undefined) return undefined;
+  if (Array.isArray(raw)) return raw.filter((value): value is RetrievalViewKind =>
+    typeof value === 'string' && (RETRIEVAL_VIEW_KINDS as readonly string[]).includes(value),
+  );
+  if (typeof raw === 'string') {
+    const parsed = parseRetrievalViews(raw);
+    return parsed.length > 0 ? parsed : undefined;
+  }
+  return undefined;
+}
+
+async function withRetrievalViewsForEvalIngest<T>(
+  views: readonly RetrievalViewKind[] | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (views === undefined || views.length === 0) return fn();
+  const previous = process.env[KB_RETRIEVAL_VIEWS_ENV];
+  process.env[KB_RETRIEVAL_VIEWS_ENV] = formatRetrievalViews(views);
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[KB_RETRIEVAL_VIEWS_ENV];
+    } else {
+      process.env[KB_RETRIEVAL_VIEWS_ENV] = previous;
+    }
+  }
 }
 
 function toScoredDocument(result: LexicalSearchResult): ScoredDocument {

@@ -118,6 +118,12 @@ import {
 } from './search-core.js';
 import { hashQuery, type CanonicalLogInput } from './canonical-log.js';
 import type { QueryCacheTelemetry } from './query-cache.js';
+import {
+  KB_RETRIEVAL_VIEWS_ENV,
+  formatRetrievalViews,
+  parseRetrievalViews,
+  type RetrievalViewKind,
+} from './retrieval-views.js';
 
 export const SEARCH_HELP = `kb search — semantic search across knowledge bases
 
@@ -151,6 +157,11 @@ Result tuning:
                         BM25 ranking unit for lexical and hybrid modes.
                         chunk ranks each chunk; source ranks each source file
                         and returns its best matching chunk (default: chunk).
+  --retrieval-views=<csv>
+                        Opt in to multi-view retrieval over a view-enriched
+                        index. Values: passage,section,metadata,summary,all.
+                        Requires --refresh or KB_RETRIEVAL_VIEWS at ingest time
+                        to create section/metadata/summary view records.
   --context-before=<n>  Include up to n preceding chunks from the same source
                         around each dense semantic match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
   --context-after=<n>   Include up to n following chunks from the same source
@@ -290,6 +301,7 @@ interface SearchArgs {
   taskContext?: string;
   taskContextFile?: string;
   lexicalUnit: LexicalRankingUnit;
+  retrievalViews?: RetrievalViewKind[];
 }
 
 export interface RunSearchDeps {
@@ -476,9 +488,12 @@ export async function runSearch(
       await withWriteLock(manager.modelDir, async () => {
         await printRefreshPreflightIfLarge(activeModelId, manager, parsed.kb, parsed.format);
         await manager.initialize();
-        await manager.updateIndex(parsed.kb, {
-          onProgress: createRefreshProgressReporter(timing),
-        });
+        await withRetrievalViewsForIngest(parsed.retrievalViews, () =>
+          manager.updateIndex(parsed.kb, {
+            onProgress: createRefreshProgressReporter(timing),
+            force: parsed.retrievalViews !== undefined,
+          }),
+        );
       });
     } else {
       await deps.loadWithJsonRetry(manager);
@@ -511,7 +526,7 @@ export async function runSearch(
         parsed.kb,
         undefined,
         denseTiming,
-        { noCache: parsed.noCache },
+        { noCache: parsed.noCache, retrievalViews: parsed.retrievalViews },
       );
       autoThresholdDecision = computeAutoThreshold(rawResults.map((r) => r.score));
       results = rawResults.slice(0, autoThresholdDecision.kept);
@@ -523,7 +538,7 @@ export async function runSearch(
         parsed.kb,
         undefined,
         denseTiming,
-        { noCache: parsed.noCache },
+        { noCache: parsed.noCache, retrievalViews: parsed.retrievalViews },
       );
     }
     if (parsed.neighborContext) {
@@ -628,6 +643,7 @@ export async function runSearch(
       gateVerdict,
       advancedRetrieval,
       queryCache: denseTiming.query_cache_telemetry,
+      retrievalViews: parsed.retrievalViews,
     });
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
@@ -679,6 +695,30 @@ async function writeSearchOutput(
     stdout: process.stdout,
     stderr: process.stderr,
   });
+}
+
+async function withRetrievalViewsForIngest<T>(
+  views: readonly RetrievalViewKind[] | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (views === undefined || views.length === 0) return fn();
+  const previous = process.env[KB_RETRIEVAL_VIEWS_ENV];
+  process.env[KB_RETRIEVAL_VIEWS_ENV] = formatRetrievalViews(views);
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[KB_RETRIEVAL_VIEWS_ENV];
+    } else {
+      process.env[KB_RETRIEVAL_VIEWS_ENV] = previous;
+    }
+  }
+}
+
+function retrievalViewsJson(views: readonly RetrievalViewKind[] | undefined): Record<string, unknown> | null {
+  return views !== undefined && views.length > 0
+    ? { enabled: true, views, collapsed: true }
+    : null;
 }
 
 /**
@@ -758,7 +798,7 @@ async function runAdvancedDenseSearch(input: {
       input.parsed.kb,
       undefined,
       input.denseTiming,
-      { noCache: input.parsed.noCache },
+      { noCache: input.parsed.noCache, retrievalViews: input.parsed.retrievalViews },
     );
     pools.push({ role, query, results });
   };
@@ -879,6 +919,11 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
         throw new Error(`invalid --lexical-unit: ${raw} (expected 'chunk' or 'source')`);
       }
       out.lexicalUnit = v; continue;
+    }
+    if (raw.startsWith('--retrieval-views=')) {
+      out.retrievalViews = parseRetrievalViews(raw.slice('--retrieval-views='.length));
+      if (out.retrievalViews.length === 0) out.retrievalViews = undefined;
+      continue;
     }
     if (raw.startsWith('--threshold=')) {
       const v = raw.slice('--threshold='.length);
@@ -1227,6 +1272,7 @@ export interface DenseSearchJsonPayloadInput {
   gateVerdict?: RelevanceGateVerdict;
   advancedRetrieval?: AdvancedRetrievalMetadata | null;
   queryCache?: QueryCacheTelemetry;
+  retrievalViews?: RetrievalViewKind[];
 }
 
 export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput): Record<string, unknown> {
@@ -1270,6 +1316,8 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
   if (input.queryCache !== undefined) {
     payload.query_cache = input.queryCache;
   }
+  const retrievalViews = retrievalViewsJson(input.retrievalViews);
+  if (retrievalViews !== null) payload.retrieval_views = retrievalViews;
   if (input.timing) {
     payload.timing = compactTimingPayload(input.timing);
   }
@@ -2132,7 +2180,7 @@ async function runLexicalSearch(
     let refreshSummary: LexicalKbResult['refreshSummary'] = null;
     if (parsed.refresh || index.numFiles() === 0) {
       try {
-        refreshSummary = await index.refresh();
+        refreshSummary = await withRetrievalViewsForIngest(parsed.retrievalViews, () => index.refresh());
         await index.save();
       } catch (err) {
         perKb.push({ kbName, kbPath, refreshSummary: null, hits: [], error: err as Error });
@@ -2142,7 +2190,10 @@ async function runLexicalSearch(
 
     let hits: LexicalSearchResult[];
     try {
-      hits = await index.query(query, parsed.k, { unit: parsed.lexicalUnit });
+      hits = await index.query(query, parsed.k, {
+        unit: parsed.lexicalUnit,
+        retrievalViews: parsed.retrievalViews,
+      });
     } catch (err) {
       perKb.push({ kbName, kbPath, refreshSummary, hits: [], error: err as Error });
       continue;
@@ -2206,6 +2257,9 @@ async function runLexicalSearch(
         error: r.error ? r.error.message : null,
       })),
       lexical: { unit: parsed.lexicalUnit },
+      ...(retrievalViewsJson(parsed.retrievalViews) !== null
+        ? { retrieval_views: retrievalViewsJson(parsed.retrievalViews) }
+        : {}),
       ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
@@ -2312,9 +2366,12 @@ async function runHybridSearch(
       await withWriteLock(manager.modelDir, async () => {
         await printRefreshPreflightIfLarge(activeModelId, manager, parsed.kb, parsed.format);
         await manager.initialize();
-        await manager.updateIndex(parsed.kb, {
-          onProgress: createRefreshProgressReporter(timing),
-        });
+        await withRetrievalViewsForIngest(parsed.retrievalViews, () =>
+          manager.updateIndex(parsed.kb, {
+            onProgress: createRefreshProgressReporter(timing),
+            force: parsed.retrievalViews !== undefined,
+          }),
+        );
       });
     } else {
       await deps.loadWithJsonRetry(manager);
@@ -2333,7 +2390,7 @@ async function runHybridSearch(
       parsed.kb,
       undefined,
       denseTiming,
-      { noCache: parsed.noCache },
+      { noCache: parsed.noCache, retrievalViews: parsed.retrievalViews },
     )
     .then((rs) => {
       if (timing) {
@@ -2359,17 +2416,20 @@ async function runHybridSearch(
   }
 
   const lexicalStartedAt = nowMs();
-  const lexicalPromise = (deps.runLexicalLeg ?? runLexicalLeg)({
-    kbs: lexicalKbs,
-    query,
-    fetchK,
-    refresh: parsed.refresh ? 'always' : 'when-empty',
-    rankingUnit: parsed.lexicalUnit,
-    loadIndex: deps.loadLexicalIndex,
-    onError: (kbName, err) => {
-      process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${err.message}\n`);
-    },
-  }).then((row) => {
+  const lexicalPromise = withRetrievalViewsForIngest(parsed.retrievalViews, () =>
+    (deps.runLexicalLeg ?? runLexicalLeg)({
+      kbs: lexicalKbs,
+      query,
+      fetchK,
+      refresh: parsed.refresh ? 'always' : 'when-empty',
+      rankingUnit: parsed.lexicalUnit,
+      retrievalViews: parsed.retrievalViews,
+      loadIndex: deps.loadLexicalIndex,
+      onError: (kbName, err) => {
+        process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${err.message}\n`);
+      },
+    }),
+  ).then((row) => {
     if (timing) timing.lexical_search_ms = elapsedMs(lexicalStartedAt);
     return row;
   });
@@ -2463,6 +2523,9 @@ async function runHybridSearch(
         },
       },
       rrf: { c: HYBRID_RRF_C, fetch_k: fetchK },
+      ...(retrievalViewsJson(parsed.retrievalViews) !== null
+        ? { retrieval_views: retrievalViewsJson(parsed.retrievalViews) }
+        : {}),
       rerank: {
         enabled: rerankResult.candidatesIn > 0,
         model: rerankResult.model,
