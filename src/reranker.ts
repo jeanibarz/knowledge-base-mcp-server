@@ -4,8 +4,11 @@ import { emitCanonicalLog, type CanonicalProcess, type CanonicalSearchMode } fro
 import {
   DEFAULT_RERANK_MODEL,
   DEFAULT_RERANK_TOP_N,
+  isRerankSkippedForDomain,
+  normalizeRerankDomain,
   parseRerankFlag,
   parseRerankTopN,
+  parseSkipRerankDomains,
   resolveRerankerConfig,
   RerankerConfigError,
   type RerankOverride,
@@ -16,8 +19,11 @@ import { logger } from './logger.js';
 export {
   DEFAULT_RERANK_MODEL,
   DEFAULT_RERANK_TOP_N,
+  isRerankSkippedForDomain,
+  normalizeRerankDomain,
   parseRerankFlag,
   parseRerankTopN,
+  parseSkipRerankDomains,
   resolveRerankerConfig,
   RerankerConfigError,
   type RerankOverride,
@@ -130,8 +136,13 @@ export async function getDefaultReranker(config: RerankerConfig): Promise<Rerank
 export async function applyRerankerIfEnabled<T extends RerankableDocument>(
   input: ApplyRerankerInput<T>,
 ): Promise<RerankFusedResultsOutput<T>> {
-  const config = input.config ?? resolveRerankerConfig(process.env, input.override);
-  if (!config.enabled) {
+  const config = input.config ?? resolveRerankerConfig(process.env, input.override, input.kbScope ?? undefined);
+  // RFC 020 §9 skip-rerank fallback, enforced here as the single execution seam
+  // so it holds even when a caller resolved `config` without the domain: a KB on
+  // KB_RERANK_SKIP_DOMAINS is never reranked. Treated as a disable (not a
+  // degrade) — the cross-encoder simply does not run for this corpus.
+  const skippedForDomain = input.kbScope != null && isRerankSkippedForDomain(process.env, input.kbScope);
+  if (!config.enabled || skippedForDomain) {
     return {
       results: input.results.slice(0, input.k),
       degraded: false,

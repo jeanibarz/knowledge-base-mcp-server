@@ -92,6 +92,7 @@ provider load or scoring failures degrade to the fused order.
 | Cross-encoder reranker | `KB_RERANK` | `off` | CLI hybrid search, MCP hybrid retrieval, retrieval eval | Implemented, opt-in | `kb search --rerank`, `kb search --no-rerank`, MCP `rerank: "on"\|"off"` | `KB_RERANK=on kb search "query" --mode=hybrid --timing --format=json` |
 | Reranker model | `KB_RERANK_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Local `@huggingface/transformers` provider | Implemented | none | `KB_RERANK=on kb doctor --format=json` |
 | Rerank candidate count | `KB_RERANK_TOP_N` | `40` | Reranker stage | Implemented | none | `KB_RERANK_TOP_N=20 KB_RERANK=on kb search "query" --mode=hybrid --timing` |
+| Skip-rerank fallback (per-domain gate) | `KB_RERANK_SKIP_DOMAINS` | _(empty)_ | Reranker stage (CLI/MCP/eval) | Implemented | none | `KB_RERANK=on KB_RERANK_SKIP_DOMAINS=code,skills kb search "query" --kb code --mode=hybrid --timing` |
 
 ## Untrusted Content Hardening
 

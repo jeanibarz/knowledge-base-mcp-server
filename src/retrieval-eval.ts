@@ -585,7 +585,9 @@ async function retrieveHybrid(
     ),
     retrieveLexicalFn(fixtureCase.query, fetchK, fixtureCase.kb),
   ]);
-  const rerankConfig = resolveRerankerConfig();
+  // Pass the scoped KB so the RFC 020 §9 skip-rerank fallback (per-domain gate)
+  // is honored here too, and the fused candidate depth matches the real config.
+  const rerankConfig = resolveRerankerConfig(process.env, undefined, fixtureCase.kb);
   const fused = fuseHybridResults({
     denseResults,
     lexicalResults,
@@ -595,7 +597,9 @@ async function retrieveHybrid(
     query: fixtureCase.query,
     results: fused,
     k,
+    config: rerankConfig,
     searchMode: 'hybrid',
+    kbScope: fixtureCase.kb ?? null,
   });
   return reranked.results;
 }
