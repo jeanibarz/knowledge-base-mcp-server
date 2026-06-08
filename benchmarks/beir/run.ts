@@ -21,6 +21,15 @@ import {
   type LateInteractionDocument,
   type LateInteractionResourceReport,
 } from './late-interaction.js';
+import {
+  isBenchmarkRerankerMode,
+  rerankWithBenchmarkReranker,
+  summarizeBenchmarkRerankerReports,
+  RERANKER_BAKEOFF_TOP_N,
+  type BenchmarkRerankerMode,
+  type BenchmarkRerankerQueryReport,
+  type BenchmarkRerankerSummary,
+} from './reranker-bakeoff-rerankers.js';
 import { durationMs, ensureDirectory, gitSha, resetDirectory, writeJsonFile } from '../utils.js';
 
 const execFileAsync = promisify(execFile);
@@ -41,13 +50,15 @@ const DATASET_URLS: Record<string, string> = {
   'webis-touche2020': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/webis-touche2020.zip',
 };
 
-// v5 (retrieval frontier #578): added benchmark-only late-interaction
+// v6 (retrieval frontier #579): added benchmark-only listwise, hard-negative,
+// and adaptive rerank bakeoff modes. v5 (retrieval frontier #578): added
+// benchmark-only late-interaction
 // standalone and hybrid candidate-rerank modes. v4 added optional
 // query-decomposition summary and per-query trace artifacts. v3 added
 // `hybrid+rerank` / `hybrid+rerank+contextual`
 // modes plus `rerank` / `contextual` provenance blocks. v2 added `dense`/`hybrid`
 // + precision@10 + `embedding`; v1 was lexical-only.
-const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v5';
+const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v6';
 type LexicalUnit = 'chunk' | 'source';
 // RFC 020 §1 — the retrieval-mode space the runner can score. `lexical` is
 // credential-free (BM25 only), and `late` is a credential-free benchmark-only
@@ -62,7 +73,10 @@ export type BeirMode =
   | 'hybrid+decompose'
   | 'hybrid+late'
   | 'hybrid+rerank'
-  | 'hybrid+rerank+contextual';
+  | 'hybrid+rerank+contextual'
+  | 'hybrid+listwise-rerank'
+  | 'hybrid+hard-negative-rerank'
+  | 'hybrid+adaptive-rerank';
 const BEIR_MODES: readonly BeirMode[] = [
   'lexical',
   'late',
@@ -72,6 +86,9 @@ const BEIR_MODES: readonly BeirMode[] = [
   'hybrid+late',
   'hybrid+rerank',
   'hybrid+rerank+contextual',
+  'hybrid+listwise-rerank',
+  'hybrid+hard-negative-rerank',
+  'hybrid+adaptive-rerank',
 ];
 
 function isBeirMode(value: string): value is BeirMode {
@@ -105,6 +122,10 @@ function modeEnablesContextual(mode: BeirMode): boolean {
 
 function modeEnablesDecompose(mode: BeirMode): boolean {
   return mode === 'hybrid+decompose';
+}
+
+function modeEnablesBenchmarkReranker(mode: BeirMode): boolean {
+  return isBenchmarkRerankerMode(mode);
 }
 
 // Mirrors `src/config/reranker.ts` defaults. Recorded as provenance only; the
@@ -289,6 +310,9 @@ interface BeirBenchmarkReport {
   // Benchmark-only late-interaction provenance for issue #578. Present for
   // `late` standalone and `hybrid+late` candidate rerank modes; null otherwise.
   late_interaction: LateInteractionResourceReport | null;
+  // Benchmark-only reranker upgrade provenance for issue #579. Present for the
+  // listwise, hard-negative, and adaptive rerank bakeoff modes; null otherwise.
+  reranker_bakeoff: BenchmarkRerankerSummary | null;
   ranking: {
     unit: LexicalUnit;
     implementation: string;
@@ -419,6 +443,7 @@ export async function runBeirBenchmark(
     ranking: rankingMeta,
     embedding,
     lateInteraction,
+    rerankerBakeoff,
   } = retrieval;
   const stages = resolveStageProvenance(args.mode);
 
@@ -459,6 +484,7 @@ export async function runBeirBenchmark(
     rerank: stages.rerank,
     contextual: stages.contextual,
     late_interaction: lateInteraction ?? null,
+    reranker_bakeoff: rerankerBakeoff ?? null,
     ranking: {
       unit: rankingMeta.unit,
       implementation: rankingMeta.implementation,
@@ -532,6 +558,7 @@ interface RetrievalOutcome {
   ranking: { unit: LexicalUnit; implementation: string };
   embedding: BeirBenchmarkReport['embedding'];
   lateInteraction?: LateInteractionResourceReport;
+  rerankerBakeoff?: BenchmarkRerankerSummary;
 }
 
 interface QueryDecompositionRuntime {
@@ -654,6 +681,7 @@ async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcom
     ? await (dependencies.loadQueryDecompositionRuntime ?? loadQueryDecompositionRuntime)(buildRoot)
     : null;
   const latenciesMs: number[] = [];
+  const benchmarkRerankReports: BenchmarkRerankerQueryReport[] = [];
   for (const query of selectedQueries) {
     const started = process.hrtime.bigint();
     // Fetch at chunk depth, then collapse to BEIR documents. The production
@@ -667,11 +695,21 @@ async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcom
           k: args.candidatePoolK ?? args.chunkK,
           traceSink: (trace) => decompositionTraces.push({ query_id: query._id, trace }),
         });
-    const rankedChunks = lateIndex === null
+    const benchmarkReranked = !modeEnablesBenchmarkReranker(args.mode)
       ? chunks
-      : await rerankBeirChunksWithLateInteraction({
+      : await rerankBeirChunksWithBenchmarkReranker({
+          mode: args.mode as BenchmarkRerankerMode,
           query: query.text,
           chunks,
+          prepared,
+          textCache: candidateTextCache,
+          reportSink: (report) => benchmarkRerankReports.push(report),
+        });
+    const rankedChunks = lateIndex === null
+      ? benchmarkReranked
+      : await rerankBeirChunksWithLateInteraction({
+          query: query.text,
+          chunks: benchmarkReranked,
           lateIndex,
           prepared,
           textCache: candidateTextCache,
@@ -698,6 +736,9 @@ async function runDenseRetrieval(input: RetrievalInput): Promise<RetrievalOutcom
     indexing: { files: prep.files, chunks: prep.chunks },
     ranking: { unit: 'chunk', implementation: describeImplementation(backend.implementation, args.mode) },
     embedding: { provider: spec.provider, model: spec.model },
+    ...(benchmarkRerankReports.length > 0
+      ? { rerankerBakeoff: summarizeBenchmarkRerankerReports(benchmarkRerankReports) ?? undefined }
+      : {}),
     ...(lateIndex !== null
       ? { lateInteraction: lateIndex.resourceReport('rerank', `${beirSearchMode(args.mode)} top-${args.candidatePoolK ?? args.chunkK} candidates`) }
       : {}),
@@ -759,10 +800,40 @@ function describeImplementation(base: string, mode: BeirMode): string {
   if (modeEnablesRerank(mode)) {
     stages.push('+ src/reranker.ts cross-encoder rerank (production KB_RERANK path)');
   }
+  if (modeEnablesBenchmarkReranker(mode)) {
+    stages.push('+ benchmarks/beir/reranker-bakeoff-rerankers.ts benchmark-only rerank provider');
+  }
   if (modeEnablesContextual(mode)) {
     stages.push('+ RFC 017 contextual prefaces at ingest (production buildChunkDocuments path)');
   }
   return stages.length === 0 ? base : `${base} ${stages.join(' ')}`;
+}
+
+async function rerankBeirChunksWithBenchmarkReranker(input: {
+  mode: BenchmarkRerankerMode;
+  query: string;
+  chunks: readonly BeirRankedChunk[];
+  prepared: CorpusPreparation;
+  textCache: Map<string, string>;
+  reportSink(report: BenchmarkRerankerQueryReport): void;
+}): Promise<BeirRankedChunk[]> {
+  const candidates = await Promise.all(input.chunks.map(async (chunk) => ({
+    pageContent: await resolveChunkText(chunk, input.prepared, input.textCache),
+    metadata: chunk.metadata,
+    score: chunk.score,
+  })));
+  const out = rerankWithBenchmarkReranker({
+    mode: input.mode,
+    query: input.query,
+    candidates,
+    topN: RERANKER_BAKEOFF_TOP_N,
+  });
+  input.reportSink(out.report);
+  return out.results.map((result) => ({
+    ...(typeof result.pageContent === 'string' ? { pageContent: result.pageContent } : {}),
+    metadata: result.metadata,
+    score: result.score,
+  }));
 }
 
 async function runBeirDecomposedSearch(input: {
@@ -1070,6 +1141,17 @@ function buildCaveats(args: Args): string[] {
         'Query decomposition is opt-in and bounded; traces are persisted per query. ' +
           'The rule provider is deterministic and intended as a baseline before local-LLM evaluation.',
       );
+    }
+    if (modeEnablesBenchmarkReranker(args.mode)) {
+      caveats.push(
+        'Issue #579 benchmark reranker modes are experimental and benchmark-only: they reorder top-50 ' +
+          'production hybrid candidates with deterministic local scorers and do not change production search defaults.',
+      );
+      if (args.mode === 'hybrid+adaptive-rerank') {
+        caveats.push(
+          'Adaptive rerank mode records skipped queries when the candidate list has a clear lexical-confidence winner.',
+        );
+      }
     }
     if (modeEnablesLateInteraction(args.mode)) {
       caveats.push(
@@ -1691,6 +1773,16 @@ function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jso
             `GPU=${report.late_interaction.gpu_requirement}`,
         ]
       : []),
+    ...(report.reranker_bakeoff !== null
+      ? [
+          `- Reranker bakeoff: ${report.reranker_bakeoff.strategy}, model=${report.reranker_bakeoff.model}, ` +
+            `topN=${report.reranker_bakeoff.top_n}`,
+          `- Reranker candidates: mean in=${report.reranker_bakeoff.mean_candidates_in}, ` +
+            `mean reranked=${report.reranker_bakeoff.mean_candidates_reranked}, ` +
+            `skipped queries=${report.reranker_bakeoff.skipped_queries}/${report.reranker_bakeoff.queries}, ` +
+            `mean rerank latency=${report.reranker_bakeoff.mean_latency_ms} ms`,
+        ]
+      : []),
     `- Query latency: p50 ${latency.p50Ms} ms, p95 ${latency.p95Ms} ms, p99 ${latency.p99Ms} ms`,
     '',
     '## Artifacts',
@@ -1762,6 +1854,9 @@ Options:
                          (KB_RERANK); hybrid+rerank+contextual also enables the
                          RFC 017 contextual-preface ingest path and needs an LLM
                          endpoint (KB_LLM_ENDPOINT, or KB_LLM_FAKE=on for tests).
+                         hybrid+listwise-rerank, hybrid+hard-negative-rerank,
+                         and hybrid+adaptive-rerank are issue #579 benchmark-only
+                         top-50 reranker bakeoff modes.
   --lexical-unit=<unit>  chunk or source. source maps to kb search --lexical-unit=source. Default: source.
                          (lexical mode only.)
   --provider=<name>      Embedding provider for dense/hybrid (ollama, openai,
