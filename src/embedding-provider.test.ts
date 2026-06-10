@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 const originalEnv = {
   EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
   KB_FAKE_DIM: process.env.KB_FAKE_DIM,
+  KB_EMBEDDING_TASK_PREFIXES: process.env.KB_EMBEDDING_TASK_PREFIXES,
   HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
 };
@@ -128,6 +129,135 @@ describe('createEmbeddingsClient — fake arm (issue #204)', () => {
     await expect(
       createEmbeddingsClient({ provider: 'fake', modelName: 'anything' }),
     ).resolves.toBeDefined();
+  });
+});
+
+describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () => {
+  it('maps the nomic-embed-text family to search_query/search_document prefixes', async () => {
+    const { embeddingTaskPrefixesFor } = await loadFresh({ KB_EMBEDDING_TASK_PREFIXES: undefined });
+    const expected = { query: 'search_query: ', document: 'search_document: ' };
+    expect(embeddingTaskPrefixesFor('ollama', 'nomic-embed-text')).toEqual(expected);
+    expect(embeddingTaskPrefixesFor('ollama', 'nomic-embed-text:latest')).toEqual(expected);
+    expect(embeddingTaskPrefixesFor('ollama', 'nomic-embed-text:v1.5')).toEqual(expected);
+    expect(embeddingTaskPrefixesFor('ollama', 'nomic-embed-text-v2-moe')).toEqual(expected);
+    expect(embeddingTaskPrefixesFor('huggingface', 'nomic-ai/nomic-embed-text-v1.5')).toEqual(expected);
+  });
+
+  it('returns null for models outside the nomic-embed-text family', async () => {
+    const { embeddingTaskPrefixesFor } = await loadFresh({ KB_EMBEDDING_TASK_PREFIXES: undefined });
+    expect(embeddingTaskPrefixesFor('ollama', 'dengcao/Qwen3-Embedding-0.6B:Q8_0')).toBeNull();
+    expect(embeddingTaskPrefixesFor('ollama', 'mxbai-embed-large')).toBeNull();
+    expect(embeddingTaskPrefixesFor('huggingface', 'BAAI/bge-small-en-v1.5')).toBeNull();
+    expect(embeddingTaskPrefixesFor('openai', 'text-embedding-3-small')).toBeNull();
+    // Guard against a substring match inside an unrelated org/model path.
+    expect(embeddingTaskPrefixesFor('ollama', 'my-nomic-embed-text-clone')).toBeNull();
+  });
+
+  it('never prefixes the fake provider', async () => {
+    const { embeddingTaskPrefixesFor } = await loadFresh({ KB_EMBEDDING_TASK_PREFIXES: undefined });
+    expect(embeddingTaskPrefixesFor('fake', 'nomic-embed-text')).toBeNull();
+  });
+
+  it('honors the KB_EMBEDDING_TASK_PREFIXES kill switch', async () => {
+    for (const off of ['0', 'false', 'off', 'no']) {
+      const { embeddingTaskPrefixesFor } = await loadFresh({ KB_EMBEDDING_TASK_PREFIXES: off });
+      expect(embeddingTaskPrefixesFor('ollama', 'nomic-embed-text')).toBeNull();
+    }
+    const { embeddingTaskPrefixesFor } = await loadFresh({ KB_EMBEDDING_TASK_PREFIXES: 'on' });
+    expect(embeddingTaskPrefixesFor('ollama', 'nomic-embed-text')).not.toBeNull();
+  });
+
+  it('TaskPrefixedEmbeddings prepends the document prefix per text and preserves order', async () => {
+    const { TaskPrefixedEmbeddings } = await loadFresh({});
+    const seen: string[][] = [];
+    const inner = {
+      async embedDocuments(texts: string[]): Promise<number[][]> {
+        seen.push(texts);
+        return texts.map((_, index) => [index]);
+      },
+      async embedQuery(): Promise<number[]> {
+        throw new Error('embedQuery must not be used for documents');
+      },
+    };
+    const wrapped = new TaskPrefixedEmbeddings(inner, {
+      query: 'search_query: ',
+      document: 'search_document: ',
+    });
+    const vectors = await wrapped.embedDocuments(['alpha', 'beta']);
+    expect(seen).toEqual([['search_document: alpha', 'search_document: beta']]);
+    expect(vectors).toEqual([[0], [1]]);
+  });
+
+  it('TaskPrefixedEmbeddings prepends the query prefix on embedQuery', async () => {
+    const { TaskPrefixedEmbeddings } = await loadFresh({});
+    const seen: string[] = [];
+    const inner = {
+      async embedDocuments(): Promise<number[][]> {
+        throw new Error('embedDocuments must not be used for queries');
+      },
+      async embedQuery(text: string): Promise<number[]> {
+        seen.push(text);
+        return [42];
+      },
+    };
+    const wrapped = new TaskPrefixedEmbeddings(inner, {
+      query: 'search_query: ',
+      document: 'search_document: ',
+    });
+    await expect(wrapped.embedQuery('what is faiss?')).resolves.toEqual([42]);
+    expect(seen).toEqual(['search_query: what is faiss?']);
+  });
+
+  it('createEmbeddingsClient wraps the ollama nomic arm in TaskPrefixedEmbeddings', async () => {
+    const { createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
+      KB_EMBEDDING_TASK_PREFIXES: undefined,
+    });
+    // Construction only — OllamaEmbeddings does not touch the network here.
+    const client = await createEmbeddingsClient({ provider: 'ollama', modelName: 'nomic-embed-text' });
+    expect(client).toBeInstanceOf(TaskPrefixedEmbeddings);
+  });
+
+  it('createEmbeddingsClient leaves other ollama models unwrapped', async () => {
+    const { createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
+      KB_EMBEDDING_TASK_PREFIXES: undefined,
+    });
+    const client = await createEmbeddingsClient({
+      provider: 'ollama',
+      modelName: 'dengcao/Qwen3-Embedding-0.6B:Q8_0',
+    });
+    expect(client).not.toBeInstanceOf(TaskPrefixedEmbeddings);
+  });
+
+  it('createEmbeddingsClient leaves nomic unwrapped when the kill switch is off', async () => {
+    const { createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
+      KB_EMBEDDING_TASK_PREFIXES: 'off',
+    });
+    const client = await createEmbeddingsClient({ provider: 'ollama', modelName: 'nomic-embed-text' });
+    expect(client).not.toBeInstanceOf(TaskPrefixedEmbeddings);
+  });
+
+  it('telemetry records calls made through the prefix wrapper (issue #210 interaction)', async () => {
+    const { createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
+      KB_EMBEDDING_TASK_PREFIXES: undefined,
+    });
+    const { ProviderCallMetrics } = await import('./metrics.js');
+    const metrics = new ProviderCallMetrics({ now: () => 0 });
+    const client = await createEmbeddingsClient({
+      provider: 'ollama',
+      modelName: 'nomic-embed-text',
+      modelId: 'ollama__nomic-embed-text',
+      metrics,
+    });
+    expect(client).toBeInstanceOf(TaskPrefixedEmbeddings);
+    // Stub the inner provider so no network is involved; the instrumented
+    // surface is the wrapper, so the counter must still tick.
+    const wrapper = client as InstanceType<typeof TaskPrefixedEmbeddings> & {
+      embedQuery(text: string): Promise<number[]>;
+    };
+    const inner = (wrapper as unknown as { inner: { embedQuery(text: string): Promise<number[]> } }).inner;
+    inner.embedQuery = async () => [1];
+    await wrapper.embedQuery('hello');
+    expect(metrics.snapshot()['ollama__nomic-embed-text'].count).toBe(1);
   });
 });
 

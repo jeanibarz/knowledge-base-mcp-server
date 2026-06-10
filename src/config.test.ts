@@ -15,6 +15,7 @@ import {
   isKnownEmbeddingProvider,
   KNOWN_EMBEDDING_PROVIDERS,
   parseEmbeddingProvider,
+  parseEmbeddingTaskPrefixes,
   parseKbFakeDim,
   UnknownEmbeddingProviderError,
 } from './config/provider.js';
@@ -393,5 +394,26 @@ describe('parseKbFakeDim (#204 — KB_FAKE_DIM)', () => {
     expect(parseKbFakeDim('not-a-number')).toBe(256);
     expect(parseKbFakeDim('0')).toBe(256);
     expect(parseKbFakeDim('-50')).toBe(256);
+  });
+});
+
+describe('parseEmbeddingTaskPrefixes (#567 — KB_EMBEDDING_TASK_PREFIXES)', () => {
+  it('defaults to on when unset or blank', () => {
+    expect(parseEmbeddingTaskPrefixes(undefined)).toBe(true);
+    expect(parseEmbeddingTaskPrefixes('')).toBe(true);
+    expect(parseEmbeddingTaskPrefixes('   ')).toBe(true);
+  });
+
+  it('recognizes the off spellings case-insensitively', () => {
+    expect(parseEmbeddingTaskPrefixes('0')).toBe(false);
+    expect(parseEmbeddingTaskPrefixes('false')).toBe(false);
+    expect(parseEmbeddingTaskPrefixes('OFF')).toBe(false);
+    expect(parseEmbeddingTaskPrefixes(' No ')).toBe(false);
+  });
+
+  it('treats any other value as on', () => {
+    expect(parseEmbeddingTaskPrefixes('on')).toBe(true);
+    expect(parseEmbeddingTaskPrefixes('1')).toBe(true);
+    expect(parseEmbeddingTaskPrefixes('yes')).toBe(true);
   });
 });
