@@ -226,7 +226,7 @@ External profiles are reuse-only: `kb llm stop`, `restart`, `uninstall`, and `re
 
 ### Comparing embedding models (RFC 013)
 
-Once on 0.3.0, you can keep multiple embedding models side-by-side and query each by id. Useful for retrieval-quality A/B without losing the previous model:
+The CLI can keep multiple embedding models side-by-side and query each by id. Useful for retrieval-quality A/B without losing the previous model:
 
 ```bash
 # List registered models. The * marks the active one.
@@ -253,7 +253,7 @@ kb models remove huggingface__BAAI-bge-small-en-v1.5
 
 `<model_id>` is `<provider>__<filesystem-safe-slug>`, derived deterministically from `(provider, model_name)` as typed (e.g. `OLLAMA_MODEL=nomic-embed-text:latest` → `ollama__nomic-embed-text-latest`). On-disk layout: each model lives at `${FAISS_INDEX_PATH}/models/<id>/`. The active model is recorded in `${FAISS_INDEX_PATH}/active.txt` and overridable per-process via `KB_ACTIVE_MODEL`. See [`docs/rfcs/013-multimodel-support.md`](docs/rfcs/013-multimodel-support.md) for the full design.
 
-**Migration from 0.2.x → 0.3.0** is automatic on first server (or `kb`) start: the existing single-model index is moved into `${FAISS_INDEX_PATH}/models/<derived_id>/` and `active.txt` is written. Atomic, ~12 ms measured. **Before upgrading**, fully exit any AI client (Claude Code, Cursor, Continue, Cline) that has the MCP server loaded — the migration acquires the single-instance PID advisory before any rename, so it cannot run while a 0.2.x MCP child is still using the directory. Keep a backup of the previous `${FAISS_INDEX_PATH}` if you need rollback safety before upgrading.
+**Migration from the legacy single-model layout** is automatic on first server (or `kb`) start: the existing single-model index is moved into `${FAISS_INDEX_PATH}/models/<derived_id>/` and `active.txt` is written. Cross-process starts coordinate the migration with `${FAISS_INDEX_PATH}/.kb-migration.lock`; MCP and CLI processes no longer rely on a long-lived single-instance PID advisory. Keep a backup of the previous `${FAISS_INDEX_PATH}` if you need rollback safety before upgrading from an older checkout.
 
 **MCP surface** — `retrieve_knowledge` gains an optional `model_name` argument; a new `list_models` tool returns the registered models; `kb_stats` reports the latest in-process `updateIndex` summary under `last_index_update` alongside the static index counts. Tools that don't pass `model_name` keep working unchanged (wire format is byte-equal to 0.2.x).
 
@@ -314,7 +314,7 @@ Use this path if you want to develop against the repo or pin an unreleased commi
 
 3.  **Configure environment variables:**
 
-    This server supports three embedding providers: **Ollama** (recommended for reliability), **OpenAI** and **HuggingFace** (fallback option).
+    This server supports three production embedding providers: **Ollama** (recommended for reliability), **OpenAI** and **HuggingFace** (fallback option). A deterministic `EMBEDDING_PROVIDER=fake` backend also exists for tests and offline fixtures; it is not suitable for deployed retrieval quality.
 
     ### Option 1: Ollama Configuration (Recommended)
     
@@ -370,13 +370,16 @@ Use this path if you want to develop against the repo or pin an unreleased commi
     ### Additional Configuration
     
     *   The server supports the `FAISS_INDEX_PATH` environment variable to specify the path to the FAISS index. If not set, it will default to `$HOME/knowledge_bases/.faiss`. For a complete defaults and validation matrix across retrieval, ingest, diagnostics, and transport flags, see [docs/feature-flags.md](docs/feature-flags.md).
-    *   **Single process per `FAISS_INDEX_PATH`.** Only one server process may write to a given `FAISS_INDEX_PATH` at a time. Running multiple processes (e.g. systemd `Restart=on-failure` racing the dying instance, pm2 with multiple replicas, Kubernetes pods sharing a PV, or a stray `kb search --refresh` overlapping the MCP server) against the same index directory can corrupt the FAISS store, hash sidecars, and pending-manifest. A process-level lockfile is the planned long-term fix — see [#44](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/44) for tracking and [`docs/architecture/threat-model.md`](docs/architecture/threat-model.md) for the current concurrency posture.
+    *   **Shared `FAISS_INDEX_PATH` coordination.** Multiple MCP/CLI processes may share a trusted `FAISS_INDEX_PATH`; mutating paths serialize through per-model write locks and versioned atomic saves. Keep the index directory trusted and local — do not mount it on a shared filesystem writable by untrusted peers. See [`docs/architecture/threat-model.md`](docs/architecture/threat-model.md) for the current concurrency posture.
     *   Logging can be routed to a file by setting `LOG_FILE=/path/to/logs/knowledge-base.log`. Log verbosity defaults to `info` and can be adjusted with `LOG_LEVEL=debug|info|warn|error`.
     *   **Mutation audit log (opt-in).** Set `KB_MUTATION_AUDIT_LOG=/path/to/kb-mutations.jsonl` to capture an append-only JSONL ledger of KB content writes. Each line records `surface` (`cli.kb-remember` / `cli.kb-capture` / `cli.kb-ask` / `mcp.add_document` / `mcp.delete_document`), `operation`, `kb`, `relative_path`, `timestamp`, `before_sha256`, `after_sha256`, `write_performed`, `refresh_requested`, `refresh_status`, and per-surface `decision_flags`. Note content is **not** stored; only hashes and metadata. The feature is best-effort — an audit write failure logs a `warn` to stderr but never aborts the primary mutation. KB names and paths are inherent to the records, so treat the audit log with the same sensitivity as the underlying KB directory.
-    *   **Tailor tool descriptions per deployment.** The `retrieve_knowledge` and `list_knowledge_bases` descriptions the agent reads when picking tools can be overridden via `RETRIEVE_KNOWLEDGE_DESCRIPTION` and `LIST_KNOWLEDGE_BASES_DESCRIPTION`. Unset or empty falls back to the built-in defaults. Example:
+    *   **Tailor tool descriptions per deployment.** The model-facing MCP tool descriptions can be overridden before server start via `RETRIEVE_KNOWLEDGE_DESCRIPTION`, `ASK_KNOWLEDGE_DESCRIPTION`, `LIST_KNOWLEDGE_BASES_DESCRIPTION`, `LIST_MODELS_DESCRIPTION`, and `KB_STATS_DESCRIPTION`. Unset or empty falls back to the built-in defaults. Example:
         ```bash
         RETRIEVE_KNOWLEDGE_DESCRIPTION="Search engineering runbooks, RFCs, and postmortems."
+        ASK_KNOWLEDGE_DESCRIPTION="Answer from engineering runbooks with citations."
         LIST_KNOWLEDGE_BASES_DESCRIPTION="List available engineering knowledge bases."
+        LIST_MODELS_DESCRIPTION="List embedding models registered for engineering retrieval."
+        KB_STATS_DESCRIPTION="Report engineering KB index and transport health."
         ```
     *   **Ingest filter overrides (RFC 011 M1).** The server embeds only files whose extension is in `{.md, .markdown, .txt, .rst, .html, .htm}` and excludes PDFs, workflow sidecars (`_seen.jsonl`, `_index.jsonl`), log / staging subtrees (`logs/`, `tmp/`, `_tmp/`), and OS turds (`.DS_Store`, `Thumbs.db`, `desktop.ini`). To extend the allowlist or add more exclusions:
         ```bash
@@ -403,7 +406,7 @@ Use this path if you want to develop against the repo or pin an unreleased commi
     *   Create subdirectories within the `KNOWLEDGE_BASES_ROOT_DIR` for each knowledge base (e.g., `company`, `it_support`, `onboarding`).
     *   Place text files (e.g., `.txt`, `.md`) containing the knowledge base content within these subdirectories.
 
-*   The server recursively reads all text files (e.g., `.txt`, `.md`) within the specified knowledge base subdirectories.
+*   The server recursively reads ingestable files within the specified knowledge base subdirectories: the base allowlist is `.md`, `.markdown`, `.txt`, `.rst`, `.html`, and `.htm`, plus any extensions added with `INGEST_EXTRA_EXTENSIONS`.
 *   The server skips hidden files and directories (those starting with a `.`).
 *   For each file, the server calculates the SHA256 hash and stores it in a file with the same name in a hidden `.index` subdirectory. This hash is used to determine if the file has been modified since the last indexing.
 *   File content is split into chunks before indexing: `.md` files use `MarkdownTextSplitter` (heading-aware), and every other text file uses `RecursiveCharacterTextSplitter`. Both splitters share the same `chunkSize: 1000, chunkOverlap: 200` defaults, so a large `.txt`, `.rst`, or source file produces many chunks rather than a single embedding.
@@ -619,4 +622,4 @@ Exit codes mirror the CLI's existing convention — `2` for configuration and in
 
 ## Security
 
-The server is designed to run as a **local tool**: one user, one machine, one trusted terminal. Two trust boundaries matter in practice. The `$FAISS_INDEX_PATH` directory is a **code-execution boundary** — `FaissStore.load` deserialises the docstore via `pickleparser`, so the directory must only contain files written by this server (no untrusted backups, no shared-write mounts). The `$KNOWLEDGE_BASES_ROOT_DIR` tree is a **content boundary** — its contents are embedded and returned verbatim to the MCP client, so markdown from untrusted sources is a prompt-injection risk for downstream agents. Additionally, only **one server process per `FAISS_INDEX_PATH`** is supported today; running multiple processes against the same index will corrupt it. Full discussion, including provider-key handling and the planned concurrency lockfile, is in [`docs/architecture/threat-model.md`](./docs/architecture/threat-model.md).
+The server is designed to run as a **local tool**: one user, one machine, one trusted terminal. Two trust boundaries matter in practice. The `$FAISS_INDEX_PATH` directory is a **code-execution boundary** — `FaissStore.load` deserialises the docstore via `pickleparser`, so the directory must only contain files written by this server (no untrusted backups, no shared-write mounts). The `$KNOWLEDGE_BASES_ROOT_DIR` tree is a **content boundary** — its contents are embedded and returned verbatim to the MCP client, so markdown from untrusted sources is a prompt-injection risk for downstream agents. Multiple MCP/CLI processes may share a trusted `FAISS_INDEX_PATH`; writes are coordinated by per-model locks and atomic save. Full discussion, including provider-key handling and concurrency, is in [`docs/architecture/threat-model.md`](./docs/architecture/threat-model.md).
