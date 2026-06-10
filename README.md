@@ -9,7 +9,9 @@ This MCP server provides tools for listing and retrieving content from different
 
 ### Demo
 
-Live demo recording coming soon ([tracking #40](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/40)).
+![kb CLI demo — list knowledge bases, ask a natural-language question, get scored markdown results](docs/assets/demo.svg)
+
+Real output, no mock data: the capture drives the `kb` CLI against a small knowledge base seeded from this repo's own `docs/`, indexed with the default Ollama embedding model. Regenerate it with [`docs/assets/record-demo.sh`](docs/assets/record-demo.sh).
 
 [![smithery badge](https://smithery.ai/badge/@jeanibarz/knowledge-base-mcp-server)](https://smithery.ai/server/@jeanibarz/knowledge-base-mcp-server)
 
