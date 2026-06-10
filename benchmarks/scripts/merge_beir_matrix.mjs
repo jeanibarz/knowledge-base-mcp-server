@@ -44,6 +44,12 @@ assertRegistryInvariants();
 // lexical and late run at source granularity, everything else at chunk.
 const unitFor = (mode) => (mode === 'lexical' || mode === 'late' ? 'source' : 'chunk');
 
+const describeReadError = (error) => {
+  if (error && typeof error === 'object' && 'code' in error) return String(error.code);
+  if (error instanceof Error) return error.message;
+  return String(error);
+};
+
 async function readCell(dataset, mode) {
   const base = `kb-${dataset}-${mode}-${unitFor(mode)}`;
   const jsonPath = path.join(outputDir, `${base}-results.json`);
@@ -68,7 +74,7 @@ async function readCell(dataset, mode) {
       latencyP99Ms: 0,
       jsonPath: null,
       trecPath: null,
-      error: `cell artifact missing or unreadable: ${path.relative(repoRoot, jsonPath)} (${error.message})`,
+      error: `cell artifact missing or unreadable: ${path.relative(repoRoot, jsonPath)} (${describeReadError(error)})`,
     };
   }
   const m = report.metrics;
