@@ -25,6 +25,7 @@ import { createReadStream } from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { resolveLargeFileLimits, type KBLargeFilePolicy } from './config/ingest.js';
+import { resolveChunkSize } from './config/indexing.js';
 import { loadWithExtractionCache } from './extraction-cache.js';
 
 /** Loader contract: filePath in, plain text out. Throws on parse failure. */
@@ -40,6 +41,8 @@ const PDF_LOADER_NAME = 'pdf-parse';
 const PDF_LOADER_VERSION = 1;
 const HTML_LOADER_NAME = 'html-to-text';
 const HTML_LOADER_VERSION = 1;
+const DELIMITED_TABLE_LOADER_NAME = 'delimited-table';
+const DELIMITED_TABLE_LOADER_VERSION = 1;
 
 export type LargeFileLimitKind = 'file_bytes' | 'extracted_text_bytes';
 
@@ -185,6 +188,222 @@ async function loadText(filePath: string): Promise<string> {
   }
   const maxReadBytes = Math.min(size, limits.maxFileBytes, limits.maxExtractedTextBytes);
   return readUtf8Prefix(filePath, maxReadBytes);
+}
+
+type Delimiter = ',' | '\t';
+
+interface DelimitedRecord {
+  fields: string[];
+}
+
+interface FormattedRow {
+  rowNumber: number;
+  text: string;
+}
+
+function isBlankRecord(fields: readonly string[]): boolean {
+  return fields.every((field) => field.trim() === '');
+}
+
+function pushDelimitedRecord(
+  records: DelimitedRecord[],
+  fields: string[],
+  field: string,
+): void {
+  const recordFields = [...fields, field];
+  if (!isBlankRecord(recordFields)) {
+    records.push({ fields: recordFields });
+  }
+}
+
+function parseDelimitedRecords(text: string, delimiter: Delimiter): DelimitedRecord[] {
+  const records: DelimitedRecord[] = [];
+  let fields: string[] = [];
+  let field = '';
+  let inQuotes = false;
+  let sawRecordContent = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (inQuotes) {
+      if (char === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
+        continue;
+      }
+      if (char === '\r') {
+        if (text[i + 1] === '\n') i += 1;
+        field += '\n';
+        sawRecordContent = true;
+        continue;
+      }
+      field += char;
+      sawRecordContent = true;
+      continue;
+    }
+
+    if (char === '"' && field.length === 0) {
+      inQuotes = true;
+      sawRecordContent = true;
+      continue;
+    }
+    if (char === delimiter) {
+      fields.push(field);
+      field = '';
+      sawRecordContent = true;
+      continue;
+    }
+    if (char === '\n' || char === '\r') {
+      pushDelimitedRecord(records, fields, field);
+      fields = [];
+      field = '';
+      sawRecordContent = false;
+      if (char === '\r' && text[i + 1] === '\n') i += 1;
+      continue;
+    }
+    field += char;
+    sawRecordContent = true;
+  }
+
+  if (sawRecordContent || fields.length > 0 || field.length > 0) {
+    pushDelimitedRecord(records, fields, field);
+  }
+  return records;
+}
+
+function normalizeTableCell(value: string): string {
+  return value
+    .replace(/\r\n?/g, '\n')
+    .replace(/\n+/g, ' / ')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+function normalizeColumnNames(records: readonly DelimitedRecord[]): string[] {
+  const header = records[0]?.fields ?? [];
+  const width = records.reduce(
+    (max, record) => Math.max(max, record.fields.length),
+    header.length,
+  );
+  const columns: string[] = [];
+  for (let i = 0; i < width; i += 1) {
+    columns.push(normalizeTableCell(header[i] ?? '') || `column_${i + 1}`);
+  }
+  return columns;
+}
+
+function formatDelimitedRow(
+  rowNumber: number,
+  fields: readonly string[],
+  columns: readonly string[],
+): FormattedRow {
+  const cells = columns.map((column, index) => (
+    `${column}=${normalizeTableCell(fields[index] ?? '')}`
+  ));
+  return {
+    rowNumber,
+    text: `row ${rowNumber}: ${cells.join(' | ')}`,
+  };
+}
+
+function formatDelimitedGroup(
+  filePath: string,
+  columns: readonly string[],
+  rows: readonly FormattedRow[],
+): string {
+  const rowRange = rows.length === 0
+    ? 'none'
+    : `${rows[0].rowNumber}-${rows[rows.length - 1].rowNumber}`;
+  return [
+    `source_path: ${path.basename(filePath)}`,
+    `rows: ${rowRange}`,
+    `columns: ${columns.join(' | ')}`,
+    '',
+    ...rows.map((row) => row.text),
+  ].join('\n').trimEnd();
+}
+
+function formatDelimitedTable(
+  raw: string,
+  delimiter: Delimiter,
+  filePath: string,
+  targetChars: number,
+): string {
+  const records = parseDelimitedRecords(raw, delimiter);
+  if (records.length === 0) return '';
+
+  const columns = normalizeColumnNames(records);
+  const rows = records
+    .slice(1)
+    .map((record, index) => formatDelimitedRow(index + 1, record.fields, columns));
+  if (rows.length === 0) {
+    return formatDelimitedGroup(filePath, columns, []);
+  }
+
+  const groups: string[] = [];
+  let currentRows: FormattedRow[] = [];
+  const groupHeaderLength = formatDelimitedGroup(filePath, columns, []).length;
+  let currentLength = groupHeaderLength;
+
+  for (const row of rows) {
+    const separatorLength = currentRows.length === 0 ? 0 : 1;
+    const projectedLength = currentLength + separatorLength + row.text.length;
+    if (currentRows.length > 0 && projectedLength > targetChars) {
+      groups.push(formatDelimitedGroup(filePath, columns, currentRows));
+      currentRows = [];
+      currentLength = groupHeaderLength;
+    }
+    currentRows.push(row);
+    currentLength += (currentRows.length === 1 ? 0 : 1) + row.text.length;
+  }
+
+  if (currentRows.length > 0) {
+    groups.push(formatDelimitedGroup(filePath, columns, currentRows));
+  }
+  return groups.join('\n\n');
+}
+
+async function loadDelimitedTable(filePath: string, delimiter: Delimiter): Promise<string> {
+  const limits = resolveLargeFileLimits();
+  const size = await statSize(filePath);
+  const { chunkSize } = resolveChunkSize();
+
+  if (limits.policy === 'truncate') {
+    const raw = await readUtf8Prefix(
+      filePath,
+      Math.min(size, limits.maxFileBytes, limits.maxExtractedTextBytes),
+    );
+    return applyExtractedTextLimit(
+      filePath,
+      formatDelimitedTable(raw, delimiter, filePath, chunkSize),
+    );
+  }
+
+  enforceFileSizeLimit(filePath, size, limits);
+  const text = await loadWithExtractionCache({
+    filePath,
+    loaderName: `${DELIMITED_TABLE_LOADER_NAME}:${chunkSize}`,
+    loaderVersion: DELIMITED_TABLE_LOADER_VERSION,
+    parse: async (buffer) => formatDelimitedTable(
+      buffer.toString('utf-8'),
+      delimiter,
+      filePath,
+      chunkSize,
+    ),
+  });
+  return applyExtractedTextLimit(filePath, text);
+}
+
+function loadCsv(filePath: string): Promise<string> {
+  return loadDelimitedTable(filePath, ',');
+}
+
+function loadTsv(filePath: string): Promise<string> {
+  return loadDelimitedTable(filePath, '\t');
 }
 
 // Reentrancy depth for `silencePdfjsConsole` — pdf-parse calls can interleave
@@ -333,14 +552,17 @@ async function loadHtml(filePath: string): Promise<string> {
  * fall back to {@link loadText} (read-as-UTF-8); the loader registry only
  * needs an entry when the file format is binary or structured enough that
  * a naive UTF-8 read would be wrong (PDF bytes → U+FFFD noise; HTML →
- * embedded markup tags). Plain-text formats (`.md`, `.txt`, `.json`, `.yaml`,
- * any extension the operator opts into via `INGEST_EXTRA_EXTENSIONS`) ride
- * the default text loader without needing to be enumerated here.
+ * embedded markup tags; CSV/TSV rows → chunks without column context).
+ * Plain-text formats (`.md`, `.txt`, `.json`, `.yaml`, any extension the
+ * operator opts into via `INGEST_EXTRA_EXTENSIONS`) ride the default text
+ * loader without needing to be enumerated here.
  */
 export const LOADERS: Readonly<Record<string, Loader>> = Object.freeze({
   '.pdf': loadPdf,
   '.html': loadHtml,
   '.htm': loadHtml,
+  '.csv': loadCsv,
+  '.tsv': loadTsv,
 });
 
 /** Lowercased dot-prefixed extensions with a non-text loader registered. */

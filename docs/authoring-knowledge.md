@@ -30,6 +30,8 @@ What the splitter does **not** know:
 
 If a note is fundamentally a list (e.g. "all known error codes"), prefer many small files over one big list — search results return chunks, not files, and a 200-row list returned as 6 overlapping chunks reads worse than 30 single-row files.
 
+CSV and TSV files are still opt-in (`INGEST_EXTRA_EXTENSIONS=".csv,.tsv"`), but once ingested their loader groups rows with repeated column headers. Use a real header row and keep rows reasonably narrow; each retrieved group will carry the column names beside the row values.
+
 ## 3. Frontmatter taxonomy
 
 YAML frontmatter at the top of `.md` files is parsed (`src/frontmatter.ts`) and a **whitelisted** subset is **lifted** onto every chunk's metadata (`src/frontmatter-lift.ts:20-34`). The whitelist today:
