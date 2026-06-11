@@ -52,7 +52,7 @@ import { logger } from './logger.js';
 import { retrievalViewText } from './retrieval-views.js';
 import { withSidecarLock } from './write-lock.js';
 
-export const GENERATOR_VERSION = 'contextual-preface.v1';
+export const GENERATOR_VERSION = 'contextual-preface.v2';
 const SIDECAR_SCHEMA_VERSION = 'contextual-preface.sidecar.v1';
 const SIDECAR_ROOT_DIRNAME = '.contextual-prefaces';
 
@@ -151,8 +151,13 @@ export async function resolveContextualPrefaces(
   // failures, and document-truncation failures. Collect the chunks that still
   // need an LLM call so pass 2 can issue them with bounded concurrency.
   const pending: { index: number; chunkHash: string }[] = [];
+  let nextChunkSearchFrom = 0;
   for (let i = 0; i < args.chunks.length; i += 1) {
     const chunkHash = sha256(args.chunks[i]);
+    const chunkSpan = docWasTruncated
+      ? findChunkDocumentSpan(args.documentBody, args.chunks[i], nextChunkSearchFrom)
+      : null;
+    if (chunkSpan !== null) nextChunkSearchFrom = chunkSpan.start + 1;
 
     const cached: SidecarChunkEntry | undefined = existing?.chunks[i];
     const cacheValid =
@@ -184,9 +189,10 @@ export async function resolveContextualPrefaces(
       }
     }
 
-    // Document-truncation case: no point calling the LLM with a chunk that
-    // can never be fully situated. Record the failure, schedule no retry.
-    if (docWasTruncated) {
+    // Oversized-document case: the LLM sees only the leading document prefix.
+    // Chunks fully inside that prefix can still be situated; chunks outside it
+    // cannot, so keep recording those as non-retryable truncation failures.
+    if (docWasTruncated && (chunkSpan === null || chunkSpan.end > CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS)) {
       newEntries[i] = makeFailureEntry(i, chunkHash, 'truncated_doc');
       resolved[i] = null;
       failures += 1;
@@ -879,6 +885,28 @@ function isTimeoutError(err: unknown): boolean {
 
 export function sha256(value: string): string {
   return crypto.createHash('sha256').update(value, 'utf-8').digest('hex');
+}
+
+function findChunkDocumentSpan(
+  documentBody: string,
+  chunkText: string,
+  searchFrom: number,
+): { start: number; end: number } | null {
+  if (chunkText.length === 0) return null;
+  const start = documentBody.indexOf(chunkText, searchFrom);
+  if (start === -1) return null;
+  const end = start + chunkText.length;
+  if (end <= CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS) {
+    // If the same text also occurs beyond the prefix, we cannot prove which
+    // occurrence this chunk represents from text alone. Fail closed rather than
+    // caching a preface for a chunk the LLM may not actually see in context.
+    let nextStart = documentBody.indexOf(chunkText, start + 1);
+    while (nextStart !== -1) {
+      if (nextStart + chunkText.length > CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS) return null;
+      nextStart = documentBody.indexOf(chunkText, nextStart + 1);
+    }
+  }
+  return { start, end };
 }
 
 function parseIsoToMs(iso: string): number | null {
