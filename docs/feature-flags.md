@@ -147,6 +147,7 @@ wrap-close vars below.
 | HuggingFace router provider | `HUGGINGFACE_PROVIDER` | `hf-inference` | HuggingFace embedding provider | Implemented | none | `EMBEDDING_PROVIDER=huggingface kb doctor` |
 | HuggingFace endpoint URL | `HUGGINGFACE_ENDPOINT_URL` | router URL for the selected model | HuggingFace embedding provider | Implemented | none | `HUGGINGFACE_ENDPOINT_URL=<url> kb doctor` |
 | HuggingFace API key | `HUGGINGFACE_API_KEY` | required for HuggingFace | HuggingFace embedding provider | Implemented | none | `EMBEDDING_PROVIDER=huggingface kb doctor` |
+| MCP ingest tool surface | `KB_INGEST_ENABLED` | `on` | MCP `add_document`, `delete_document`, and `reindex_knowledge_base` tool registration | Implemented | none | `KB_INGEST_ENABLED=false node build/index.js` then inspect `tools/list` |
 | Extra ingest extensions | `INGEST_EXTRA_EXTENSIONS` | empty | Ingest and refresh | Implemented | none | `INGEST_EXTRA_EXTENSIONS=.pdf kb search "known phrase" --refresh` |
 | Extra ingest exclusions | `INGEST_EXCLUDE_PATHS` | empty | Ingest and refresh | Implemented | none | `INGEST_EXCLUDE_PATHS="drafts/**" kb search "known phrase" --refresh` |
 | Refresh quiescence guard | `KB_REFRESH_QUIESCE_MS` | `0` | Ingest and refresh | Implemented, opt-in | none | `KB_REFRESH_QUIESCE_MS=1000 kb search "query" --refresh` |

@@ -11,6 +11,11 @@ function parseOnOff(raw: string | undefined): boolean {
   return normalized === 'on' || normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
 
+function parseDefaultOn(raw: string | undefined): boolean {
+  if (raw === undefined || raw.trim() === '') return true;
+  return parseOnOff(raw);
+}
+
 // ---------------------------------------------------------------------------
 // Ingest filter configuration (RFC 011 section5.2.3).
 // Operator-extensible extras; the base allowlist and exclusion rules in
@@ -24,6 +29,8 @@ export const INGEST_EXTRA_EXTENSIONS: readonly string[] = parseCommaSeparatedLis
 export const INGEST_EXCLUDE_PATHS: readonly string[] = parseCommaSeparatedList(
   process.env.INGEST_EXCLUDE_PATHS,
 );
+
+export const KB_INGEST_ENABLED: boolean = parseDefaultOn(process.env.KB_INGEST_ENABLED);
 
 // ---------------------------------------------------------------------------
 // Large-file ingest bounds (#285).
