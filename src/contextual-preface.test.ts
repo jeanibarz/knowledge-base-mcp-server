@@ -11,6 +11,8 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
+import { CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS } from './config/contextual-preface.js';
+
 const FETCH_MOCK = jest.fn();
 
 // The contextual-preface module is loaded dynamically per-test so it
@@ -198,6 +200,127 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     FETCH_MOCK.mockClear();
     await resolveContextualPrefaces({ ...base, documentHash: 'h2' });
     expect(FETCH_MOCK).toHaveBeenCalledTimes(1);
+  });
+
+  it('generates prefaces for oversized-document chunks that fit in the context prefix', async () => {
+    FETCH_MOCK.mockImplementation(async () => llmResponse('oversized preface'));
+    const { GENERATOR_VERSION, resolveContextualPrefaces, sidecarPathFor } = await loadModule();
+    const source = '/tmp/alpha/oversized.md';
+    const inWindowChunk = 'in-window chunk';
+    const boundaryChunk = 'boundary chunk';
+    const outOfWindowChunk = 'out-of-window chunk';
+    const firstOffset = 100;
+    const boundaryStart = CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS - boundaryChunk.length;
+    const documentBody = [
+      'a'.repeat(firstOffset),
+      inWindowChunk,
+      'b'.repeat(boundaryStart - firstOffset - inWindowChunk.length),
+      boundaryChunk,
+      outOfWindowChunk,
+    ].join('');
+
+    expect(documentBody.indexOf(boundaryChunk) + boundaryChunk.length)
+      .toBe(CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS);
+    expect(documentBody.length).toBeGreaterThan(CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS);
+
+    const result = await resolveContextualPrefaces({
+      source,
+      knowledgeBaseName: 'alpha',
+      documentHash: 'oversized-doc-hash',
+      documentBody,
+      chunks: [inWindowChunk, boundaryChunk, outOfWindowChunk],
+    });
+
+    expect(result).toEqual(['oversized preface', 'oversized preface', null]);
+    expect(FETCH_MOCK).toHaveBeenCalledTimes(2);
+    for (const call of FETCH_MOCK.mock.calls) {
+      const body = JSON.parse((call[1] as RequestInit).body as string) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      const userMessage = body.messages.find((message) => message.role === 'user')?.content ?? '';
+      expect(userMessage).toContain(boundaryChunk);
+      expect(userMessage).not.toContain(outOfWindowChunk);
+    }
+
+    const parsed = JSON.parse(await fsp.readFile(sidecarPathFor(source, 'alpha'), 'utf-8'));
+    expect(parsed.generator).toBe(GENERATOR_VERSION);
+    expect(parsed.chunks[0]).toMatchObject({ preface: 'oversized preface' });
+    expect(parsed.chunks[1]).toMatchObject({ preface: 'oversized preface' });
+    expect(parsed.chunks[2]).toMatchObject({ preface: null, error_code: 'truncated_doc' });
+  });
+
+  it('records truncated_doc for repeated chunk text that also occurs beyond the context prefix', async () => {
+    FETCH_MOCK.mockImplementation(async () => llmResponse('should not be used'));
+    const { resolveContextualPrefaces, sidecarPathFor } = await loadModule();
+    const source = '/tmp/alpha/repeated-oversized.md';
+    const repeatedChunk = 'ambiguous repeated chunk';
+    const documentBody = [
+      repeatedChunk,
+      'x'.repeat(CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS - repeatedChunk.length),
+      repeatedChunk,
+    ].join('');
+
+    const result = await resolveContextualPrefaces({
+      source,
+      knowledgeBaseName: 'alpha',
+      documentHash: 'repeated-oversized-doc-hash',
+      documentBody,
+      chunks: [repeatedChunk],
+    });
+
+    expect(result).toEqual([null]);
+    expect(FETCH_MOCK).not.toHaveBeenCalled();
+
+    const parsed = JSON.parse(await fsp.readFile(sidecarPathFor(source, 'alpha'), 'utf-8'));
+    expect(parsed.chunks[0]).toMatchObject({ preface: null, error_code: 'truncated_doc' });
+  });
+
+  it('invalidates old v1 truncated_doc entries so in-prefix chunks self-heal', async () => {
+    FETCH_MOCK.mockImplementation(async () => llmResponse('recovered preface'));
+    const { GENERATOR_VERSION, resolveContextualPrefaces, sha256, sidecarPathFor } = await loadModule();
+    const source = '/tmp/alpha/stale-oversized.md';
+    const chunk = 'recoverable in-prefix chunk';
+    const documentBody = `${chunk}${'x'.repeat(CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS)}`;
+    const sidecarPath = sidecarPathFor(source, 'alpha');
+    await fsp.mkdir(path.dirname(sidecarPath), { recursive: true });
+    await fsp.writeFile(
+      sidecarPath,
+      JSON.stringify({
+        schema_version: 'contextual-preface.sidecar.v1',
+        source,
+        knowledge_base: 'alpha',
+        document_hash: 'stale-doc-hash',
+        generator: 'contextual-preface.v1',
+        model: 'old-model',
+        chunk_size: 1000,
+        chunk_overlap: 200,
+        chunks: [{
+          chunk_index: 0,
+          chunk_hash: sha256(chunk),
+          preface: null,
+          error_code: 'truncated_doc',
+          next_retry_after: '275760-09-13T00:00:00.000Z',
+        }],
+      }),
+      'utf-8',
+    );
+
+    const result = await resolveContextualPrefaces({
+      source,
+      knowledgeBaseName: 'alpha',
+      documentHash: 'stale-doc-hash',
+      documentBody,
+      chunks: [chunk],
+    });
+
+    expect(result).toEqual(['recovered preface']);
+    expect(FETCH_MOCK).toHaveBeenCalledTimes(1);
+
+    const parsed = JSON.parse(await fsp.readFile(sidecarPath, 'utf-8'));
+    expect(parsed.generator).toBe(GENERATOR_VERSION);
+    expect(parsed.chunks[0]).toMatchObject({ preface: 'recovered preface' });
+    expect(parsed.chunks[0].error_code).toBeUndefined();
+    expect(parsed.chunks[0].next_retry_after).toBeUndefined();
   });
 
   it('records a failure entry with next_retry_after when the LLM errors', async () => {
