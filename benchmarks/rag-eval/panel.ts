@@ -119,9 +119,22 @@ export async function gradePanelItem(
     const overallSamples: number[] = [];
     let count = 0;
     let positionFlips = 0;
+    let gradedSamples = 0;
     for (let sample = 0; sample < samples; sample += 1) {
-      const ab = await judge.grade({ ...item, order: 'AB', sample });
-      const ba = await judge.grade({ ...item, order: 'BA', sample });
+      // A single malformed/empty judge reply (e.g. a local model returning no
+      // `choices[0].message.content`, or a transient provider blip) must not
+      // crash the whole panel — skip that sample for this judge. A judge with
+      // zero usable samples is dropped below (it abstains; never a fabricated
+      // score).
+      let ab;
+      let ba;
+      try {
+        ab = await judge.grade({ ...item, order: 'AB', sample });
+        ba = await judge.grade({ ...item, order: 'BA', sample });
+      } catch {
+        continue;
+      }
+      gradedSamples += 1;
       for (const verdict of [ab, ba]) {
         for (const dimension of RUBRIC_DIMENSIONS) dimensionSums[dimension] += verdict.dimensions[dimension];
         overallSamples.push(rubricOverall(verdict.dimensions));
@@ -139,9 +152,11 @@ export async function gradePanelItem(
       meanDimensions,
       rawOverall,
       adjustedOverall,
-      positionFlipRate: roundUnit(samples === 0 ? 0 : positionFlips / samples),
+      positionFlipRate: roundUnit(gradedSamples === 0 ? 0 : positionFlips / gradedSamples),
       selfConsistencyAgreement: agreementFraction(overallSamples, passThreshold),
-      dropped: droppedJudges.has(judge.name),
+      // A judge that produced no usable grade contributes nothing (abstains),
+      // in addition to any externally-dropped judges.
+      dropped: droppedJudges.has(judge.name) || count === 0,
     });
   }
 

@@ -1,0 +1,23 @@
+{
+  "kb_model": "dengcao/Qwen3-Embedding-0.6B:Q8_0",
+  "mean_main_score": 0.487265,
+  "mteb_model_id": "dengcao/Qwen3-Embedding-0.6B:Q8_0",
+  "mteb_version": "1.19.10",
+  "schema_version": "kb.mteb-result.v1",
+  "tasks": [
+    {
+      "main_score": 0.29701,
+      "metric": "main_score",
+      "split": "test",
+      "task": "NFCorpus",
+      "task_type": "unknown"
+    },
+    {
+      "main_score": 0.67752,
+      "metric": "main_score",
+      "split": "test",
+      "task": "SciFact",
+      "task_type": "unknown"
+    }
+  ]
+}

@@ -155,6 +155,14 @@ interface Args {
   candidatePoolK?: number;
   maxQueries?: number;
   keepWorkspace: boolean;
+  // RFC 020 — persistent contextual-preface sidecar cache. The per-run
+  // workspace (and `<workspace>/.faiss/.contextual-prefaces` inside it) is
+  // reset on entry and removed on exit, so without this every `+contextual`
+  // cell re-pays one LLM call per chunk. Prefaces depend only on the chunk
+  // text and the LLM (never the embedding model), so seeding/persisting the
+  // sidecars across runs is sound. Cache hits additionally require a stable
+  // `--workspace-root`: sidecar filenames embed the absolute source path.
+  prefaceCacheDir?: string;
 }
 
 type BeirConfigKey =
@@ -185,7 +193,9 @@ type BeirConfigKey =
   | 'max_queries'
   | 'maxQueries'
   | 'keep_workspace'
-  | 'keepWorkspace';
+  | 'keepWorkspace'
+  | 'preface_cache_dir'
+  | 'prefaceCacheDir';
 
 interface BeirCorpusRow {
   _id: string;
@@ -416,6 +426,10 @@ export async function runBeirBenchmark(
   configureBenchmarkEnvironment(knowledgeBasesRootDir, faissIndexPath);
   await dependencies.silenceServerLogger(buildRoot);
 
+  if (args.prefaceCacheDir !== undefined && modeEnablesContextual(args.mode)) {
+    await seedPrefaceCache(args.prefaceCacheDir, faissIndexPath);
+  }
+
   // RFC 020 §1 — flip the production stage flags (`KB_RERANK`,
   // `KB_CONTEXTUAL_RETRIEVAL`) deterministically per mode so each run is
   // self-contained even inside the in-process sweep/baseline loops, and restore
@@ -535,6 +549,10 @@ export async function runBeirBenchmark(
 
   await writeJsonFile(jsonPath, report);
   await fsp.writeFile(reportPath, formatMarkdownReport(report, portablePath(trecPath), portablePath(jsonPath)), 'utf-8');
+
+  if (args.prefaceCacheDir !== undefined && modeEnablesContextual(args.mode)) {
+    await persistPrefaceCache(faissIndexPath, args.prefaceCacheDir);
+  }
 
   if (!args.keepWorkspace) {
     await fsp.rm(args.workspaceRoot, { recursive: true, force: true });
@@ -1313,6 +1331,8 @@ export function parseArgs(argv: string[]): Args {
       args.cacheDir = path.resolve(readValue());
     } else if (flag === '--workspace-root') {
       args.workspaceRoot = path.resolve(readValue());
+    } else if (flag === '--preface-cache-dir') {
+      args.prefaceCacheDir = path.resolve(readValue());
     } else if (flag === '--k') {
       args.k = parsePositiveInteger(readValue(), '--k');
     } else if (flag === '--chunk-k') {
@@ -1422,6 +1442,8 @@ function applyBeirConfig(args: Args, beir: Partial<Record<BeirConfigKey, unknown
       args.candidatePoolK = parsePositiveIntegerConfig(value, `beir.${key}`);
     } else if (key === 'max_queries' || key === 'maxQueries') {
       args.maxQueries = parsePositiveIntegerConfig(value, `beir.${key}`);
+    } else if (key === 'preface_cache_dir' || key === 'prefaceCacheDir') {
+      args.prefaceCacheDir = path.resolve(parseStringConfig(value, `beir.${key}`));
     } else if (key === 'keep_workspace' || key === 'keepWorkspace') {
       if (typeof value !== 'boolean') throw new Error(`beir.${key} must be a boolean`);
       args.keepWorkspace = value;
@@ -1610,6 +1632,32 @@ async function silenceServerLogger(buildRoot: string): Promise<void> {
   loggerModule.logger.warn = () => undefined;
 }
 
+// Seed the per-run sidecar directory from the persistent preface cache, and
+// persist it back after the run. Plain recursive copies: sidecar files are
+// self-validating (document hash + chunk size/overlap + generator version),
+// so a stale entry is ignored by `resolveContextualPrefaces`, never misused.
+export async function seedPrefaceCache(prefaceCacheDir: string, faissIndexPath: string): Promise<void> {
+  try {
+    await fsp.access(prefaceCacheDir);
+  } catch {
+    return; // first run — nothing to seed
+  }
+  const target = path.join(faissIndexPath, '.contextual-prefaces');
+  await fsp.mkdir(target, { recursive: true });
+  await fsp.cp(prefaceCacheDir, target, { recursive: true, force: true });
+}
+
+export async function persistPrefaceCache(faissIndexPath: string, prefaceCacheDir: string): Promise<void> {
+  const source = path.join(faissIndexPath, '.contextual-prefaces');
+  try {
+    await fsp.access(source);
+  } catch {
+    return; // contextual ingest produced no sidecars
+  }
+  await fsp.mkdir(prefaceCacheDir, { recursive: true });
+  await fsp.cp(source, prefaceCacheDir, { recursive: true, force: true });
+}
+
 function configureBenchmarkEnvironment(knowledgeBasesRootDir: string, faissIndexPath: string): void {
   process.env.KNOWLEDGE_BASES_ROOT_DIR = knowledgeBasesRootDir;
   process.env.FAISS_INDEX_PATH = faissIndexPath;
@@ -1717,6 +1765,7 @@ function formatBenchmarkCommand(args: Args): string {
   if (args.candidatePoolK !== undefined) parts.push(`--candidate-pool-k=${args.candidatePoolK}`);
   if (args.maxQueries !== undefined) parts.push(`--max-queries=${args.maxQueries}`);
   if (args.keepWorkspace) parts.push('--keep-workspace');
+  if (args.prefaceCacheDir !== undefined) parts.push(`--preface-cache-dir=${portablePath(args.prefaceCacheDir)}`);
   return parts.join(' ');
 }
 
@@ -1878,6 +1927,13 @@ Options:
                          document top-k scoring. Must be >= --k.
   --max-queries=<n>      Deterministic smoke-test subset.
   --keep-workspace       Keep the temporary KB/index workspace for inspection.
+  --preface-cache-dir=<p> Persistent RFC 017 contextual-preface sidecar cache.
+                         Seeded into the run workspace before ingest and
+                         persisted back after, so repeated +contextual runs
+                         (and other embedding models — prefaces are
+                         embedding-model-agnostic) skip already-generated
+                         LLM prefaces. Needs a stable --workspace-root to
+                         hit (sidecar names embed absolute source paths).
 `;
 }
 

@@ -60,7 +60,24 @@ def main() -> int:
     except ModuleNotFoundError:
         print(
             "MTEB submission requested, but the optional Python package is not installed. "
-            "Install it with `python3 -m pip install mteb` (and the model backend you need).",
+            "Install it with `python3 -m pip install 'mteb<2'` (and the model backend you need).",
+            file=sys.stderr,
+        )
+        return 2
+
+    # This runner targets the mteb 1.x encoder API (`encode(sentences, **kwargs)`
+    # + `mteb.MTEB(tasks=...)`). mteb 2.x replaced it with a DataLoader-based
+    # `EncoderProtocol` (encode over `DataLoader[BatchedInput]`, plus required
+    # `mteb_model_meta`/`similarity` members) that the lightweight
+    # `KbEndpointEncoder` below does not implement — under 2.x the evaluator
+    # raises "expects a SearchInterface, Encoder, or CrossEncoder". Fail loudly
+    # with the pin rather than silently mis-evaluating.
+    _mteb_major = int((getattr(mteb, "__version__", "1") or "1").split(".", 1)[0])
+    if _mteb_major >= 2:
+        print(
+            f"mteb_submit: installed mteb {mteb.__version__} uses the 2.x EncoderProtocol, "
+            "incompatible with this runner's kb-endpoint encoder. Pin with "
+            "`python3 -m pip install 'mteb<2'`.",
             file=sys.stderr,
         )
         return 2
@@ -115,6 +132,14 @@ class KbEndpointEncoder:
         self.model_id = model_id
         self.api_key = api_key
 
+    # Char budget per input. Short-context embedders (e.g. Ollama
+    # nomic-embed-text, 2048 tokens) return HTTP 400 on inputs that exceed their
+    # context, and the served endpoint does not truncate for us — so clamp
+    # client-side. ~8000 chars ≈ 2000 tokens keeps the whole document for the
+    # vast majority of BEIR passages while staying under the tightest context we
+    # rank; long-context models (qwen3, 32k) are unaffected in practice.
+    MAX_INPUT_CHARS = 8000
+
     def encode(self, sentences: list[str], **_: Any) -> Any:
         import numpy as np  # type: ignore
         import urllib.request
@@ -122,7 +147,9 @@ class KbEndpointEncoder:
         vectors: list[list[float]] = []
         batch_size = 32
         for start in range(0, len(sentences), batch_size):
-            batch = sentences[start : start + batch_size]
+            # Replace empties with a single space (the endpoint rejects "") and
+            # truncate over-long inputs to the per-model char budget.
+            batch = [(s[: self.MAX_INPUT_CHARS] or " ") for s in sentences[start : start + batch_size]]
             payload = json.dumps({"model": self.model_id, "input": batch}).encode("utf-8")
             headers = {"Content-Type": "application/json"}
             if self.api_key:
