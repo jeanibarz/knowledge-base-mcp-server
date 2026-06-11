@@ -13,6 +13,7 @@ import {
   HUGGINGFACE_ENDPOINT_URL,
   HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
   HUGGINGFACE_PROVIDER,
+  KB_EMBEDDING_TASK_PREFIXES,
   KB_FAKE_DIM,
   OLLAMA_BASE_URL,
 } from './config/provider.js';
@@ -42,11 +43,73 @@ export class FakeEmbeddings {
   }
 }
 
+/**
+ * Issue #567 — per-role task prefixes for embedding models trained with
+ * instruction prefixes. The nomic-embed-text family (v1, v1.5, v2-moe)
+ * requires `search_document: <text>` at index time and
+ * `search_query: <text>` at query time; embedding both roles raw lands
+ * them in the wrong region of the embedding space (SciFact dense nDCG@10
+ * 0.491 vs 0.669 source-BM25 in the BEIR harness).
+ */
+export interface EmbeddingTaskPrefixes {
+  query: string;
+  document: string;
+}
+
+const NOMIC_TASK_PREFIXES: EmbeddingTaskPrefixes = {
+  query: 'search_query: ',
+  document: 'search_document: ',
+};
+
+/**
+ * @internal exported for tests. Returns the per-role prefixes a model
+ * requires, or `null` for models that take raw text. Matched on the
+ * model-name stem so Ollama tags (`:latest`, `:v1.5`) and HF-style org
+ * paths (`nomic-ai/nomic-embed-text-v1.5`) are covered, and gated on
+ * `KB_EMBEDDING_TASK_PREFIXES` so an operator can defer the change while
+ * a pre-#567 index (built without prefixes) is still in service.
+ */
+export function embeddingTaskPrefixesFor(
+  provider: EmbeddingProvider | 'fake',
+  modelName: string,
+): EmbeddingTaskPrefixes | null {
+  if (!KB_EMBEDDING_TASK_PREFIXES) return null;
+  // The fake provider is a hash bag — a prefix would only shift tokens.
+  if (provider === 'fake') return null;
+  if (/(^|\/)nomic-embed-text/.test(modelName)) return NOMIC_TASK_PREFIXES;
+  return null;
+}
+
+/**
+ * Issue #567 — wraps a provider client so every document/query embed call
+ * carries its role prefix. Kept as a delegating wrapper (not a patch of the
+ * inner client) so `instrumentEmbeddingsClient` can instrument it like any
+ * other client and the inner provider stays untouched.
+ */
+export class TaskPrefixedEmbeddings {
+  constructor(
+    private readonly inner: {
+      embedDocuments(texts: string[]): Promise<number[][]>;
+      embedQuery(text: string): Promise<number[]>;
+    },
+    readonly prefixes: EmbeddingTaskPrefixes,
+  ) {}
+
+  async embedDocuments(texts: string[]): Promise<number[][]> {
+    return this.inner.embedDocuments(texts.map((text) => this.prefixes.document + text));
+  }
+
+  async embedQuery(text: string): Promise<number[]> {
+    return this.inner.embedQuery(this.prefixes.query + text);
+  }
+}
+
 export type EmbeddingsClient =
   | HuggingFaceInferenceEmbeddings
   | OllamaEmbeddings
   | OpenAIEmbeddings
-  | FakeEmbeddings;
+  | FakeEmbeddings
+  | TaskPrefixedEmbeddings;
 
 export interface CreateEmbeddingsOptions {
   // Issue #204 — `'fake'` is accepted at the factory boundary but is not in
@@ -82,7 +145,19 @@ export async function createEmbeddingsClient(
 ): Promise<EmbeddingsClient> {
   const { provider, modelName } = options;
 
-  const client = await constructEmbeddingsClient({ provider, modelName });
+  const rawClient = await constructEmbeddingsClient({ provider, modelName });
+  // Issue #567 — apply per-role task prefixes before telemetry so the
+  // instrumented surface is the one production code actually calls.
+  const prefixes = embeddingTaskPrefixesFor(provider, modelName);
+  let client: EmbeddingsClient = rawClient;
+  if (prefixes !== null) {
+    logger.info(
+      `Applying embedding task prefixes for ${modelName} `
+      + `(documents: "${prefixes.document}", queries: "${prefixes.query}") — `
+      + 'indexes built without prefixes (pre-#567) need a reindex',
+    );
+    client = new TaskPrefixedEmbeddings(rawClient, prefixes);
+  }
   if (options.modelId !== undefined) {
     // Issue #210 — wrap once with the per-model_id telemetry collector.
     // The wrap is idempotent so a second `initialize()` (e.g.

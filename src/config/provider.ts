@@ -101,6 +101,20 @@ function huggingFaceRouterUrl(model: string): string {
 export const HUGGINGFACE_ENDPOINT_URL = HUGGINGFACE_ENDPOINT_URL_OVERRIDE
   || huggingFaceRouterUrl(HUGGINGFACE_MODEL_NAME);
 
+// Issue #567 — kill switch for per-role embedding task prefixes (the
+// nomic-embed-text family needs `search_document: ` / `search_query: `).
+// Default on. Set to `0`/`false`/`off`/`no` to keep querying an index that
+// was built without prefixes (pre-#567) until it can be reindexed — mixing
+// prefixed queries with unprefixed document vectors is worse than neither.
+export function parseEmbeddingTaskPrefixes(raw: string | undefined): boolean {
+  const normalized = (raw ?? '').trim().toLowerCase();
+  if (normalized === '') return true;
+  return !['0', 'false', 'off', 'no'].includes(normalized);
+}
+
+export const KB_EMBEDDING_TASK_PREFIXES: boolean =
+  parseEmbeddingTaskPrefixes(process.env.KB_EMBEDDING_TASK_PREFIXES);
+
 // Ollama configuration
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'dengcao/Qwen3-Embedding-0.6B:Q8_0';
