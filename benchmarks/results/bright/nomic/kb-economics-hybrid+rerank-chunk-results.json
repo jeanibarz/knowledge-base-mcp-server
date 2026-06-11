@@ -1,0 +1,1108 @@
+{
+  "schema_version": "kb.beir-benchmark.v6",
+  "generated_at": "2026-06-11T12:16:26.556Z",
+  "git_sha": "abe8012",
+  "command": "node build/benchmarks/beir/run.js --dataset=economics --split=test --mode=hybrid+rerank --provider=ollama --model=nomic-embed-text --output-dir=benchmarks/results/bright/nomic --dataset-dir=/tmp/kb-bright-datasets-3657609/economics",
+  "dataset": {
+    "name": "economics",
+    "split": "test",
+    "source_url": null,
+    "checksum_sha256": "6379d2814417d24179ee38b2020a5ea92acb6c84024bd69d1233bafdd42accfc",
+    "corpus_documents": 50220,
+    "queries_total": 103,
+    "qrels_queries": 103,
+    "queries_evaluated": 103
+  },
+  "mode": "hybrid+rerank",
+  "embedding": {
+    "provider": "ollama",
+    "model": "nomic-embed-text"
+  },
+  "rerank": {
+    "enabled": true,
+    "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+    "topN": 40
+  },
+  "contextual": {
+    "enabled": false
+  },
+  "late_interaction": null,
+  "reranker_bakeoff": null,
+  "ranking": {
+    "unit": "chunk",
+    "implementation": "src/hybrid-retrieval RRF fusion (production hybrid path) via retrieval-eval.retrieveForRetrievalEvalCase + src/reranker.ts cross-encoder rerank (production KB_RERANK path)",
+    "trec_run": "benchmarks/results/bright/nomic/kb-economics-hybrid+rerank-chunk-run.trec",
+    "k": 100,
+    "chunk_candidate_k": 1000
+  },
+  "chunking": {
+    "KB_CHUNK_SIZE": null,
+    "KB_CHUNK_OVERLAP": null
+  },
+  "runtime": {
+    "node_version": "v24.11.1",
+    "python_version": "Python 3.10.12",
+    "os": "linux",
+    "arch": "x64"
+  },
+  "indexing": {
+    "ms": 1480110.537,
+    "files": 50220,
+    "chunks": 66441
+  },
+  "metrics": {
+    "judgedQueries": 103,
+    "ndcgAt10": 0.126332,
+    "mapAt100": 0.117791,
+    "precisionAt10": 0.06699,
+    "recallAt10": 0.121169,
+    "recallAt100": 0.551728
+  },
+  "latency": {
+    "queries": 103,
+    "p50Ms": 5892.73568,
+    "p95Ms": 7175.52093,
+    "p99Ms": 7329.476653,
+    "meanMs": 6384.743438
+  },
+  "per_query": [
+    {
+      "queryId": "0",
+      "relevant": 7,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.001701,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.142857
+    },
+    {
+      "queryId": "1",
+      "relevant": 6,
+      "retrieved": 100,
+      "ndcgAt10": 0.087472,
+      "mapAt100": 0.057392,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.166667,
+      "recallAt100": 0.833333
+    },
+    {
+      "queryId": "2",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.031393,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.666667
+    },
+    {
+      "queryId": "3",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.066667,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "4",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "5",
+      "relevant": 10,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.011528,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.3
+    },
+    {
+      "queryId": "6",
+      "relevant": 9,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "7",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.017241,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.5
+    },
+    {
+      "queryId": "8",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.058415,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "9",
+      "relevant": 7,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.014199,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.285714
+    },
+    {
+      "queryId": "10",
+      "relevant": 7,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.02779,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.571429
+    },
+    {
+      "queryId": "11",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.007813,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.5
+    },
+    {
+      "queryId": "12",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "13",
+      "relevant": 8,
+      "retrieved": 100,
+      "ndcgAt10": 0.0901,
+      "mapAt100": 0.023493,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.125,
+      "recallAt100": 0.25
+    },
+    {
+      "queryId": "14",
+      "relevant": 5,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "15",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.020408,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "16",
+      "relevant": 5,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.009216,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.4
+    },
+    {
+      "queryId": "17",
+      "relevant": 11,
+      "retrieved": 100,
+      "ndcgAt10": 0.413128,
+      "mapAt100": 0.341925,
+      "precisionAt10": 0.4,
+      "recallAt10": 0.363636,
+      "recallAt100": 0.909091
+    },
+    {
+      "queryId": "18",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "19",
+      "relevant": 6,
+      "retrieved": 100,
+      "ndcgAt10": 0.087472,
+      "mapAt100": 0.016667,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.166667,
+      "recallAt100": 0.166667
+    },
+    {
+      "queryId": "20",
+      "relevant": 7,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.130111,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "21",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.018357,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.666667
+    },
+    {
+      "queryId": "22",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.071429,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "23",
+      "relevant": 65,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.090159,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.4
+    },
+    {
+      "queryId": "24",
+      "relevant": 5,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.004651,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.2
+    },
+    {
+      "queryId": "25",
+      "relevant": 57,
+      "retrieved": 100,
+      "ndcgAt10": 0.546257,
+      "mapAt100": 0.49412,
+      "precisionAt10": 0.7,
+      "recallAt10": 0.122807,
+      "recallAt100": 0.719298
+    },
+    {
+      "queryId": "26",
+      "relevant": 24,
+      "retrieved": 100,
+      "ndcgAt10": 0.926636,
+      "mapAt100": 0.504159,
+      "precisionAt10": 0.9,
+      "recallAt10": 0.375,
+      "recallAt100": 0.666667
+    },
+    {
+      "queryId": "27",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "28",
+      "relevant": 12,
+      "retrieved": 100,
+      "ndcgAt10": 0.330138,
+      "mapAt100": 0.180988,
+      "precisionAt10": 0.2,
+      "recallAt10": 0.166667,
+      "recallAt100": 0.583333
+    },
+    {
+      "queryId": "29",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0.234639,
+      "mapAt100": 0.141414,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.333333,
+      "recallAt100": 0.666667
+    },
+    {
+      "queryId": "30",
+      "relevant": 10,
+      "retrieved": 100,
+      "ndcgAt10": 0.202483,
+      "mapAt100": 0.140642,
+      "precisionAt10": 0.2,
+      "recallAt10": 0.2,
+      "recallAt100": 0.8
+    },
+    {
+      "queryId": "31",
+      "relevant": 5,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.00339,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.2
+    },
+    {
+      "queryId": "32",
+      "relevant": 11,
+      "retrieved": 100,
+      "ndcgAt10": 0.220092,
+      "mapAt100": 0.130939,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.090909,
+      "recallAt100": 0.545455
+    },
+    {
+      "queryId": "33",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "34",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "35",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "36",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "37",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "38",
+      "relevant": 4,
+      "retrieved": 100,
+      "ndcgAt10": 0.19519,
+      "mapAt100": 0.182681,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.25,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "39",
+      "relevant": 6,
+      "retrieved": 100,
+      "ndcgAt10": 0.151301,
+      "mapAt100": 0.179233,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.166667,
+      "recallAt100": 0.833333
+    },
+    {
+      "queryId": "40",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "41",
+      "relevant": 7,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.047349,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.571429
+    },
+    {
+      "queryId": "42",
+      "relevant": 4,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.023796,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.5
+    },
+    {
+      "queryId": "43",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.045455,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "44",
+      "relevant": 14,
+      "retrieved": 100,
+      "ndcgAt10": 0.142795,
+      "mapAt100": 0.063504,
+      "precisionAt10": 0.2,
+      "recallAt10": 0.142857,
+      "recallAt100": 0.428571
+    },
+    {
+      "queryId": "45",
+      "relevant": 4,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.002809,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.25
+    },
+    {
+      "queryId": "46",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.074076,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "47",
+      "relevant": 30,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.048806,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.433333
+    },
+    {
+      "queryId": "48",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.008772,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.333333
+    },
+    {
+      "queryId": "49",
+      "relevant": 39,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.21698,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.74359
+    },
+    {
+      "queryId": "50",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "51",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.613147,
+      "mapAt100": 0.515873,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "52",
+      "relevant": 4,
+      "retrieved": 100,
+      "ndcgAt10": 0.235996,
+      "mapAt100": 0.12895,
+      "precisionAt10": 0.2,
+      "recallAt10": 0.5,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "53",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.018519,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "54",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.027162,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "55",
+      "relevant": 8,
+      "retrieved": 100,
+      "ndcgAt10": 0.409822,
+      "mapAt100": 0.257779,
+      "precisionAt10": 0.4,
+      "recallAt10": 0.5,
+      "recallAt100": 0.75
+    },
+    {
+      "queryId": "56",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "57",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.022222,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.666667
+    },
+    {
+      "queryId": "58",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.015385,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "59",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.027778,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "60",
+      "relevant": 4,
+      "retrieved": 100,
+      "ndcgAt10": 0.420202,
+      "mapAt100": 0.32381,
+      "precisionAt10": 0.3,
+      "recallAt10": 0.75,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "61",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "62",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.041733,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "63",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "64",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "65",
+      "relevant": 46,
+      "retrieved": 100,
+      "ndcgAt10": 0.535254,
+      "mapAt100": 0.198694,
+      "precisionAt10": 0.4,
+      "recallAt10": 0.086957,
+      "recallAt100": 0.5
+    },
+    {
+      "queryId": "66",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.060714,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "67",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.032258,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "68",
+      "relevant": 7,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.003106,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.142857
+    },
+    {
+      "queryId": "69",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.026316,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "70",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.184576,
+      "mapAt100": 0.138889,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "71",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "72",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.029412,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "73",
+      "relevant": 18,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.103965,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.777778
+    },
+    {
+      "queryId": "74",
+      "relevant": 5,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.064103,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.6
+    },
+    {
+      "queryId": "75",
+      "relevant": 4,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.156044,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "76",
+      "relevant": 21,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "77",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "78",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.008065,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.5
+    },
+    {
+      "queryId": "79",
+      "relevant": 85,
+      "retrieved": 100,
+      "ndcgAt10": 0.728086,
+      "mapAt100": 0.424816,
+      "precisionAt10": 0.7,
+      "recallAt10": 0.082353,
+      "recallAt100": 0.635294
+    },
+    {
+      "queryId": "80",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.035714,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "81",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.030303,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "82",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "83",
+      "relevant": 26,
+      "retrieved": 100,
+      "ndcgAt10": 0.467122,
+      "mapAt100": 0.221051,
+      "precisionAt10": 0.4,
+      "recallAt10": 0.153846,
+      "recallAt100": 0.615385
+    },
+    {
+      "queryId": "84",
+      "relevant": 10,
+      "retrieved": 100,
+      "ndcgAt10": 0.224006,
+      "mapAt100": 0.113628,
+      "precisionAt10": 0.2,
+      "recallAt10": 0.2,
+      "recallAt100": 0.4
+    },
+    {
+      "queryId": "85",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.03125,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "86",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "87",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "88",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0.5,
+      "mapAt100": 0.333333,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "89",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.043478,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "90",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "91",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.010753,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "92",
+      "relevant": 27,
+      "retrieved": 100,
+      "ndcgAt10": 0.066254,
+      "mapAt100": 0.263529,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.037037,
+      "recallAt100": 0.740741
+    },
+    {
+      "queryId": "93",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.613147,
+      "mapAt100": 0.5,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 0.5
+    },
+    {
+      "queryId": "94",
+      "relevant": 11,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.004785,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.090909
+    },
+    {
+      "queryId": "95",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "96",
+      "relevant": 36,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.182034,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.75
+    },
+    {
+      "queryId": "97",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "98",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.026316,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "99",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "100",
+      "relevant": 11,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.001057,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.090909
+    },
+    {
+      "queryId": "101",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "102",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    }
+  ],
+  "caveats": [
+    "This is a local BEIR benchmark, not an official leaderboard submission.",
+    "Scores are document-level for BEIR qrels.",
+    "MLflow logging is not required for JSON/TREC artifacts; optional logging is expected to come from the bench observability hook.",
+    "Dense/hybrid retrieval is driven by the production src/ paths (FaissIndexManager.similaritySearch + src/hybrid-retrieval RRF), not a benchmark-only reimplementation.",
+    "Dense/hybrid require a real embedding provider; the fake provider is deterministic but has no semantic geometry, so fake-provider numbers are self-test smoke only — never a quality baseline.",
+    "Rerank is the production src/reranker.ts cross-encoder (enabled via KB_RERANK); the default transformers.js model downloads on first use, so a rerank run needs network or a cached model."
+  ]
+}

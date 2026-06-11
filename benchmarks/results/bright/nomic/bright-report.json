@@ -1,0 +1,55 @@
+{
+  "schema_version": "kb.bright-report.v1",
+  "generated_at": "2026-06-11T12:16:31.961Z",
+  "git_sha": "abe8012",
+  "provider": "ollama",
+  "model": "nomic-embed-text",
+  "split": "test",
+  "tasks": [
+    "biology",
+    "economics"
+  ],
+  "modes": [
+    "dense",
+    "hybrid+rerank"
+  ],
+  "points": [
+    {
+      "task": "biology",
+      "mode": "dense",
+      "ndcgAt10": 0.176666,
+      "precisionAt10": 0.078641,
+      "recallAt10": 0.225285,
+      "queriesEvaluated": 103
+    },
+    {
+      "task": "biology",
+      "mode": "hybrid+rerank",
+      "ndcgAt10": 0.132179,
+      "precisionAt10": 0.063107,
+      "recallAt10": 0.168004,
+      "queriesEvaluated": 103
+    },
+    {
+      "task": "economics",
+      "mode": "dense",
+      "ndcgAt10": 0.118458,
+      "precisionAt10": 0.061165,
+      "recallAt10": 0.135734,
+      "queriesEvaluated": 103
+    },
+    {
+      "task": "economics",
+      "mode": "hybrid+rerank",
+      "ndcgAt10": 0.126332,
+      "precisionAt10": 0.06699,
+      "recallAt10": 0.121169,
+      "queriesEvaluated": 103
+    }
+  ],
+  "caveats": [
+    "Local BRIGHT reproduction, not an official BRIGHT leaderboard submission.",
+    "Per-query excluded_ids are recorded for provenance but not subtracted from the ranking (doc-level scoring is global), so numbers may run slightly optimistic vs the official harness.",
+    "Dense/hybrid retrieval is driven by the production src/ paths, not a benchmark-only reimplementation."
+  ]
+}
