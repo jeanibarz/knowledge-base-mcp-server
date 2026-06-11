@@ -4,8 +4,8 @@ Local BEIR matrix run, not an official leaderboard submission. The headline
 is the per-mode **multi-domain mean nDCG@10** — averaging across domains is
 the anti-overfitting metric (RFC 020 §2/§6).
 
-- Generated: 2026-06-10T21:29:22.812Z
-- Commit: `b94ef76`
+- Generated: 2026-06-11T18:23:42.947Z
+- Commit: `a4fe7de`
 - Embedding: ollama / nomic-embed-text
 - RRF c=60, rerank=Xenova/ms-marco-MiniLM-L-6-v2 topN=40, chunk=1000/200, contextual=off
 
@@ -14,20 +14,22 @@ the anti-overfitting metric (RFC 020 §2/§6).
 | Mode | datasets | mean nDCG@10 | mean P@10 | mean R@10 |
 | --- | ---: | ---: | ---: | ---: |
 | lexical | 5/5 | 0.3372 | 0.1023 | 0.4184 |
-| late | 2/5 | 0.4226 | 0.1305 | 0.4192 |
 | dense | 5/5 | 0.2547 | 0.0715 | 0.3425 |
 | hybrid | 5/5 | 0.3204 | 0.0953 | 0.4246 |
 | hybrid+rerank | 5/5 | 0.3762 | 0.1136 | 0.4555 |
+| late | 2/5 | 0.4226 | 0.1305 | 0.4192 |
+| hybrid+late | 5/5 | 0.2853 | 0.0862 | 0.3522 |
+| hybrid+rerank+contextual | 3/5 | 0.4579 | 0.1310 | 0.5656 |
 
 ## Per-(dataset × mode) nDCG@10
 
-| dataset | lexical | late | dense | hybrid | hybrid+rerank |
-| --- | --- | --- | --- | --- | --- |
-| scifact | 0.6690 | 0.5892 | 0.4914 | 0.6109 | 0.7052 |
-| nfcorpus | 0.3025 | 0.2560 | 0.1799 | 0.2487 | 0.3290 |
-| fiqa | 0.2282 | ERR | 0.2235 | 0.2526 | 0.3492 |
-| arguana | 0.3329 | ERR | 0.3231 | 0.3783 | 0.3322 |
-| scidocs | 0.1537 | ERR | 0.0559 | 0.1113 | 0.1655 |
+| dataset | lexical | dense | hybrid | hybrid+rerank | late | hybrid+late | hybrid+rerank+contextual |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| scifact | 0.6690 | 0.4914 | 0.6109 | 0.7052 | 0.5892 | 0.5965 | 0.7049 |
+| nfcorpus | 0.3025 | 0.1799 | 0.2487 | 0.3290 | 0.2560 | 0.2609 | 0.3346 |
+| fiqa | 0.2282 | 0.2235 | 0.2526 | 0.3492 | ERR | 0.1731 | ERR |
+| arguana | 0.3329 | 0.3231 | 0.3783 | 0.3322 | ERR | 0.2782 | 0.3343 |
+| scidocs | 0.1537 | 0.0559 | 0.1113 | 0.1655 | ERR | 0.1179 | ERR |
 
 ## Per-domain breakdown & Δ_g (generalization, §6)
 
@@ -36,10 +38,12 @@ the anti-overfitting metric (RFC 020 §2/§6).
 | Mode | seen mean nDCG@10 | unseen mean nDCG@10 | Δ_g |
 | --- | ---: | ---: | ---: |
 | lexical | 0.3999 | 0.2433 | +39.16% |
-| late | 0.4226 | n/a | n/a |
 | dense | 0.2982 | 0.1895 | +36.46% |
 | hybrid | 0.3707 | 0.2448 | +33.97% |
 | hybrid+rerank | 0.4611 | 0.2488 | +46.04% |
+| late | 0.4226 | n/a | n/a |
+| hybrid+late | 0.3435 | 0.1981 | +42.34% |
+| hybrid+rerank+contextual | 0.5197 | 0.3343 | +35.67% |
 
 ### lexical — per-domain
 
@@ -50,13 +54,6 @@ the anti-overfitting metric (RFC 020 §2/§6).
 | finance | fiqa | 0.2282 | 0.0631 |
 | scientific citation | scidocs | 0.1537 | 0.0780 |
 | scientific fact-checking | scifact | 0.6690 | 0.0870 |
-
-### late — per-domain
-
-| Domain | datasets | mean nDCG@10 | mean P@10 |
-| --- | --- | ---: | ---: |
-| bio-medical | nfcorpus | 0.2560 | 0.1839 |
-| scientific fact-checking | scifact | 0.5892 | 0.0770 |
 
 ### dense — per-domain
 
@@ -88,6 +85,31 @@ the anti-overfitting metric (RFC 020 §2/§6).
 | scientific citation | scidocs | 0.1655 | 0.0856 |
 | scientific fact-checking | scifact | 0.7052 | 0.0930 |
 
+### late — per-domain
+
+| Domain | datasets | mean nDCG@10 | mean P@10 |
+| --- | --- | ---: | ---: |
+| bio-medical | nfcorpus | 0.2560 | 0.1839 |
+| scientific fact-checking | scifact | 0.5892 | 0.0770 |
+
+### hybrid+late — per-domain
+
+| Domain | datasets | mean nDCG@10 | mean P@10 |
+| --- | --- | ---: | ---: |
+| argument retrieval | arguana | 0.2782 | 0.0569 |
+| bio-medical | nfcorpus | 0.2609 | 0.1879 |
+| finance | fiqa | 0.1731 | 0.0478 |
+| scientific citation | scidocs | 0.1179 | 0.0598 |
+| scientific fact-checking | scifact | 0.5965 | 0.0787 |
+
+### hybrid+rerank+contextual — per-domain
+
+| Domain | datasets | mean nDCG@10 | mean P@10 |
+| --- | --- | ---: | ---: |
+| argument retrieval | arguana | 0.3343 | 0.0706 |
+| bio-medical | nfcorpus | 0.3346 | 0.2291 |
+| scientific fact-checking | scifact | 0.7049 | 0.0933 |
+
 ## Contamination notes (§6.6)
 
 | Dataset | known-in-pretraining | qrels | note |
@@ -103,3 +125,5 @@ the anti-overfitting metric (RFC 020 §2/§6).
 - `fiqa × late`: cell artifact missing or unreadable: benchmarks/results/beir/matrix/nomic-v2/kb-fiqa-late-source-results.json (ENOENT)
 - `arguana × late`: cell artifact missing or unreadable: benchmarks/results/beir/matrix/nomic-v2/kb-arguana-late-source-results.json (ENOENT)
 - `scidocs × late`: cell artifact missing or unreadable: benchmarks/results/beir/matrix/nomic-v2/kb-scidocs-late-source-results.json (ENOENT)
+- `fiqa × hybrid+rerank+contextual`: cell artifact missing or unreadable: benchmarks/results/beir/matrix/nomic-v2/kb-fiqa-hybrid+rerank+contextual-chunk-results.json (ENOENT)
+- `scidocs × hybrid+rerank+contextual`: cell artifact missing or unreadable: benchmarks/results/beir/matrix/nomic-v2/kb-scidocs-hybrid+rerank+contextual-chunk-results.json (ENOENT)
