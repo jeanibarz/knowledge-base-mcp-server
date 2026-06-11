@@ -60,7 +60,24 @@ def main() -> int:
     except ModuleNotFoundError:
         print(
             "MTEB submission requested, but the optional Python package is not installed. "
-            "Install it with `python3 -m pip install mteb` (and the model backend you need).",
+            "Install it with `python3 -m pip install 'mteb<2'` (and the model backend you need).",
+            file=sys.stderr,
+        )
+        return 2
+
+    # This runner targets the mteb 1.x encoder API (`encode(sentences, **kwargs)`
+    # + `mteb.MTEB(tasks=...)`). mteb 2.x replaced it with a DataLoader-based
+    # `EncoderProtocol` (encode over `DataLoader[BatchedInput]`, plus required
+    # `mteb_model_meta`/`similarity` members) that the lightweight
+    # `KbEndpointEncoder` below does not implement — under 2.x the evaluator
+    # raises "expects a SearchInterface, Encoder, or CrossEncoder". Fail loudly
+    # with the pin rather than silently mis-evaluating.
+    _mteb_major = int((getattr(mteb, "__version__", "1") or "1").split(".", 1)[0])
+    if _mteb_major >= 2:
+        print(
+            f"mteb_submit: installed mteb {mteb.__version__} uses the 2.x EncoderProtocol, "
+            "incompatible with this runner's kb-endpoint encoder. Pin with "
+            "`python3 -m pip install 'mteb<2'`.",
             file=sys.stderr,
         )
         return 2
