@@ -132,6 +132,14 @@ class KbEndpointEncoder:
         self.model_id = model_id
         self.api_key = api_key
 
+    # Char budget per input. Short-context embedders (e.g. Ollama
+    # nomic-embed-text, 2048 tokens) return HTTP 400 on inputs that exceed their
+    # context, and the served endpoint does not truncate for us — so clamp
+    # client-side. ~8000 chars ≈ 2000 tokens keeps the whole document for the
+    # vast majority of BEIR passages while staying under the tightest context we
+    # rank; long-context models (qwen3, 32k) are unaffected in practice.
+    MAX_INPUT_CHARS = 8000
+
     def encode(self, sentences: list[str], **_: Any) -> Any:
         import numpy as np  # type: ignore
         import urllib.request
@@ -139,7 +147,9 @@ class KbEndpointEncoder:
         vectors: list[list[float]] = []
         batch_size = 32
         for start in range(0, len(sentences), batch_size):
-            batch = sentences[start : start + batch_size]
+            # Replace empties with a single space (the endpoint rejects "") and
+            # truncate over-long inputs to the per-model char budget.
+            batch = [(s[: self.MAX_INPUT_CHARS] or " ") for s in sentences[start : start + batch_size]]
             payload = json.dumps({"model": self.model_id, "input": batch}).encode("utf-8")
             headers = {"Content-Type": "application/json"}
             if self.api_key:
