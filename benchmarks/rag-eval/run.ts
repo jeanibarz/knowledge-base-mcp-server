@@ -59,6 +59,13 @@ export interface RagEvalOptions {
   fake: boolean;
   outputDir: string;
   buildRoot: string;
+  // Tier 1 routing thresholds (token-F1). Items at/above tier1HighF1 are
+  // decided correct deterministically; at/below tier1LowF1 decided incorrect;
+  // in between escalate. For verbose system answers vs terse gold (e.g.
+  // HotpotQA), token-F1 is uninformative, so a low tier1LowF1 sends the residue
+  // to the judge panel instead of auto-failing it. Default: cascade defaults.
+  tier1LowF1?: number;
+  tier1HighF1?: number;
 }
 
 export interface RagEvalDependencies {
@@ -102,7 +109,13 @@ export async function runRagEval(
 
   // --- Build the cascade config (which tiers are wired). ---
   const tier3Build = await dependencies.buildJudges(options);
+  const cascadeThresholds = {
+    samples: options.samples,
+    ...(options.tier1LowF1 !== undefined ? { tier1LowF1: options.tier1LowF1 } : {}),
+    ...(options.tier1HighF1 !== undefined ? { tier1HighF1: options.tier1HighF1 } : {}),
+  };
   const cascadeConfig: CascadeConfig = {
+    thresholds: cascadeThresholds,
     ...(buildTier2(options) !== null ? { tier2: buildTier2(options) as Tier2Config } : {}),
     ...(tier3Build !== null
       ? { tier3: { judges: tier3Build.judges, probes: tier3Build.probes, panelOptions: { samples: options.samples } } satisfies Tier3Config }
@@ -345,6 +358,10 @@ export function parseRagEvalArgs(argv: string[]): RagEvalOptions {
       options.samples = parsePositiveInt(readValue(), '--samples');
     } else if (flag === '--max-items') {
       options.maxItems = parsePositiveInt(readValue(), '--max-items');
+    } else if (flag === '--tier1-low-f1') {
+      options.tier1LowF1 = parseUnitInterval(readValue(), '--tier1-low-f1');
+    } else if (flag === '--tier1-high-f1') {
+      options.tier1HighF1 = parseUnitInterval(readValue(), '--tier1-high-f1');
     } else if (flag === '--output-dir') {
       options.outputDir = path.resolve(readValue());
     } else if (flag === '--build-root') {
@@ -371,6 +388,17 @@ function parseDataset(raw: string): string {
 function parsePositiveInt(raw: string, flag: string): number {
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${flag} must be a positive integer`);
+  return parsed;
+}
+
+// Token-F1 threshold. Accepts [-1, 1]: a negative low threshold disables
+// Tier 1's deterministic "incorrect" decision so the residue routes to the
+// judge panel instead of being auto-failed.
+function parseUnitInterval(raw: string, flag: string): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < -1 || parsed > 1) {
+    throw new Error(`${flag} must be a number in [-1, 1]`);
+  }
   return parsed;
 }
 

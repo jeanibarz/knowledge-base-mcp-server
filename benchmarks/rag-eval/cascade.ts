@@ -162,10 +162,20 @@ export async function runCascade(
   }
 
   // --- Tier 2: NLI + semantic on the residue (when wired). ---
-  const tier3Residue: Array<{ item: GoldQaItem; answer: RagAnswer; reference: ReferenceScore; tier2: Tier2Detail }> = [];
+  const tier3Residue: Array<{ item: GoldQaItem; answer: RagAnswer; reference: ReferenceScore; tier2?: Tier2Detail }> = [];
   for (const entry of tier2Residue) {
     if (config.tier2 === undefined) {
-      decisions.push(pendingDecision(entry.item, entry.reference, 'Tier 2 models (NLI/semantic) not configured'));
+      // Tier 2 (NLI/semantic checkpoints) is environment-heavy and often
+      // unavailable. When it is unwired but the live judge panel (Tier 3) IS
+      // configured, route the residue straight to the judges rather than
+      // stranding it `pending` — a "deterministic Tier 1 + judge panel"
+      // operational mode. Without Tier 3 either, the item is pending as before
+      // (no fabricated verdict).
+      if (config.tier3 !== undefined) {
+        tier3Residue.push({ item: entry.item, answer: entry.answer, reference: entry.reference });
+      } else {
+        decisions.push(pendingDecision(entry.item, entry.reference, 'Tier 2 models (NLI/semantic) not configured'));
+      }
       continue;
     }
     const faithfulness = (await faithfulnessScore(entry.answer.answer, entry.answer.contexts, config.tier2.entailment)).faithfulness;
