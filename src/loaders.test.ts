@@ -60,9 +60,9 @@ jest.mock('pdf-parse/lib/pdf-parse.js', () => ({
 }));
 
 describe('LOADERS registry', () => {
-  it('registers PDF and HTML extensions only (text formats fall through to default)', () => {
+  it('registers structured loader extensions (text formats fall through to default)', () => {
     expect(SUPPORTED_LOADER_EXTENSIONS).toEqual(
-      expect.arrayContaining(['.pdf', '.html', '.htm']),
+      expect.arrayContaining(['.pdf', '.html', '.htm', '.csv', '.tsv']),
     );
     // Plain-text formats deliberately ride the default text loader so any
     // INGEST_EXTRA_EXTENSIONS opt-in (e.g. `.json`) just works.
@@ -116,6 +116,85 @@ describe('getLoader / loadFile dispatch', () => {
     const lower = getLoader('/tmp/lower.pdf');
     expect(upper).toBe(lower);
     expect(upper).toBe(LOADERS['.pdf']);
+  });
+});
+
+describe('CSV/TSV loader — header-context row groups', () => {
+  let tempDir = '';
+  let priorCacheDir: string | undefined;
+  let priorChunkSize: string | undefined;
+
+  beforeEach(async () => {
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-loaders-tabular-'));
+    priorCacheDir = process.env.EXTRACTION_TEXT_CACHE_DIR;
+    priorChunkSize = process.env.KB_CHUNK_SIZE;
+    process.env.EXTRACTION_TEXT_CACHE_DIR = path.join(tempDir, 'extraction-cache');
+    process.env.KB_CHUNK_SIZE = '180';
+  });
+
+  afterEach(async () => {
+    if (priorCacheDir === undefined) delete process.env.EXTRACTION_TEXT_CACHE_DIR;
+    else process.env.EXTRACTION_TEXT_CACHE_DIR = priorCacheDir;
+    if (priorChunkSize === undefined) delete process.env.KB_CHUNK_SIZE;
+    else process.env.KB_CHUNK_SIZE = priorChunkSize;
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('routes `.csv` through a loader that repeats column headers for each row group', async () => {
+    const filePath = path.join(tempDir, 'incidents.csv');
+    await fsp.writeFile(
+      filePath,
+      [
+        'id,title,owner,notes',
+        '1,Parser,Ada,"quoted, comma"',
+        '2,Ops,Ben,plain',
+        '3,Docs,Cy,last',
+      ].join('\n'),
+    );
+
+    const text = await loadFile(filePath);
+
+    expect(getLoader(filePath)).toBe(LOADERS['.csv']);
+    expect(text).toContain('source_path: incidents.csv');
+    expect(text).toContain('columns: id | title | owner | notes');
+    expect(text).toContain('row 1: id=1 | title=Parser | owner=Ada | notes=quoted, comma');
+    expect(text).toContain('row 3: id=3 | title=Docs | owner=Cy | notes=last');
+    expect(text.match(/^columns: id \| title \| owner \| notes$/gm)?.length).toBeGreaterThan(1);
+  });
+
+  it('parses escaped quotes and multiline quoted CSV fields into searchable row text', async () => {
+    const filePath = path.join(tempDir, 'quotes.csv');
+    await fsp.writeFile(
+      filePath,
+      'id,note\n1,"hello, ""Ada"""\n2,"first line\nsecond line"\n',
+    );
+
+    const text = await loadFile(filePath);
+
+    expect(text).toContain('row 1: id=1 | note=hello, "Ada"');
+    expect(text).toContain('row 2: id=2 | note=first line / second line');
+  });
+
+  it('routes `.tsv` through the same header-context formatter with tab delimiters', async () => {
+    const filePath = path.join(tempDir, 'owners.tsv');
+    await fsp.writeFile(filePath, 'id\tname\tnote\n1\tAda\talpha,beta\n');
+
+    const text = await loadFile(filePath);
+
+    expect(getLoader(filePath)).toBe(LOADERS['.tsv']);
+    expect(text).toContain('columns: id | name | note');
+    expect(text).toContain('row 1: id=1 | name=Ada | note=alpha,beta');
+  });
+
+  it('keeps ragged rows retrievable by assigning fallback column names', async () => {
+    const filePath = path.join(tempDir, 'ragged.csv');
+    await fsp.writeFile(filePath, 'a,b\n1\n2,three,extra\n');
+
+    const text = await loadFile(filePath);
+
+    expect(text).toContain('columns: a | b | column_3');
+    expect(text).toContain('row 1: a=1 | b= | column_3=');
+    expect(text).toContain('row 2: a=2 | b=three | column_3=extra');
   });
 });
 
