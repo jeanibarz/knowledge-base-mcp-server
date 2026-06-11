@@ -98,8 +98,13 @@ def main() -> int:
             qid = str(item["id"])
             question = item["question"]
             try:
+                # The KB index is built once by `kb models add` (registration)
+                # before this script runs, so a per-run refresh would needlessly
+                # re-embed the whole corpus. Opt in via RAGQA_REFRESH_FIRST=1
+                # only when the registered index is known stale.
+                refresh_first = os.environ.get("RAGQA_REFRESH_FIRST") == "1" and idx == 0
                 res = run_ask(args.cli, question, args.kb, args.endpoint,
-                              args.answerer_model, env, refresh=(idx == 0), k=args.k)
+                              args.answerer_model, env, refresh=refresh_first, k=args.k)
             except Exception as e:  # noqa: BLE001 — record + continue, never fabricate
                 errors += 1
                 print(f"[warn] {qid}: {e}", file=sys.stderr)
