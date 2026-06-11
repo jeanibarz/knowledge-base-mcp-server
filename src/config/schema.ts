@@ -171,6 +171,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_QUERY_CACHE_DISK_MAX_MB', kind: 'number', default: '64', min: 0.000001 },
 
   { name: 'KB_CONTEXTUAL_RETRIEVAL', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
+  { name: 'KB_RETRIEVAL_VIEWS', kind: 'csv', default: '' },
   { name: 'KB_CONTEXTUAL_MAX_TOKENS', kind: 'integer', default: '150', min: 20, max: 1000 },
   { name: 'KB_CONTEXTUAL_CONCURRENCY', kind: 'integer', default: '10', min: 1, max: 64 },
   { name: 'KB_LLM_ENDPOINT', kind: 'url', protocols: ['http:', 'https:', 'mock:'] },

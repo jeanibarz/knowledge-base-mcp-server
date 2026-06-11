@@ -73,6 +73,11 @@ export const DEFAULT_C = 60;
  * `chunkIndex` for every chunk it emits, so the fallback is defense-in-depth.
  */
 export function chunkIdFromMetadata(meta: Record<string, unknown>): string {
+  const view = meta.retrieval_view;
+  if (typeof view === 'object' && view !== null && !Array.isArray(view)) {
+    const canonicalId = (view as Record<string, unknown>).canonical_id;
+    if (typeof canonicalId === 'string' && canonicalId.length > 0) return canonicalId;
+  }
   const source = typeof meta.source === 'string' ? meta.source : null;
   const chunkIndex = typeof meta.chunkIndex === 'number' ? meta.chunkIndex : null;
   if (source !== null && chunkIndex !== null) return `${source}#${chunkIndex}`;

@@ -144,22 +144,30 @@ async function measurePositionBias(judge: Judge, probes: readonly ProbeItem[], s
   let pairs = 0;
   for (const probe of probes) {
     for (let sample = 0; sample < samples; sample += 1) {
-      const ab = await judge.grade({
-        question: probe.question,
-        candidate: probe.goldAnswer,
-        reference: probe.goldAnswer,
-        contexts: probe.contexts,
-        order: 'AB',
-        sample,
-      });
-      const ba = await judge.grade({
-        question: probe.question,
-        candidate: probe.goldAnswer,
-        reference: probe.goldAnswer,
-        contexts: probe.contexts,
-        order: 'BA',
-        sample,
-      });
+      // A transient malformed judge reply must not crash bias measurement —
+      // skip the sample (it just doesn't count toward the probe).
+      let ab;
+      let ba;
+      try {
+        ab = await judge.grade({
+          question: probe.question,
+          candidate: probe.goldAnswer,
+          reference: probe.goldAnswer,
+          contexts: probe.contexts,
+          order: 'AB',
+          sample,
+        });
+        ba = await judge.grade({
+          question: probe.question,
+          candidate: probe.goldAnswer,
+          reference: probe.goldAnswer,
+          contexts: probe.contexts,
+          order: 'BA',
+          sample,
+        });
+      } catch {
+        continue;
+      }
       if (ab.preferredCandidate !== ba.preferredCandidate) flips += 1;
       pairs += 1;
     }
@@ -177,9 +185,13 @@ async function measureVerbosityBias(
   const drifts: number[] = [];
   for (const probe of probes) {
     for (let sample = 0; sample < samples; sample += 1) {
-      const plain = await scoreCandidate(judge, probe, probe.goldAnswer, sample);
-      const padded = await scoreCandidate(judge, probe, probe.goldAnswer + filler, sample);
-      drifts.push(padded - plain);
+      try {
+        const plain = await scoreCandidate(judge, probe, probe.goldAnswer, sample);
+        const padded = await scoreCandidate(judge, probe, probe.goldAnswer + filler, sample);
+        drifts.push(padded - plain);
+      } catch {
+        continue;
+      }
     }
   }
   return meanSigned(drifts);
@@ -192,8 +204,14 @@ async function measureSelfPreferenceBias(judge: Judge, probes: readonly ProbeIte
     if (probe.otherFamilyAnswer === undefined) continue;
     const judgingOwn = probe.selfFamily === judge.family;
     for (let sample = 0; sample < samples; sample += 1) {
-      const selfScore = await scoreCandidate(judge, probe, probe.goldAnswer, sample);
-      const otherScore = await scoreCandidate(judge, probe, probe.otherFamilyAnswer, sample);
+      let selfScore;
+      let otherScore;
+      try {
+        selfScore = await scoreCandidate(judge, probe, probe.goldAnswer, sample);
+        otherScore = await scoreCandidate(judge, probe, probe.otherFamilyAnswer, sample);
+      } catch {
+        continue;
+      }
       // The gap only counts as self-preference when the judge is grading an
       // answer attributed to its OWN family; otherwise the two answers are just
       // two equally-gold strings and any gap is noise, not self-preference.

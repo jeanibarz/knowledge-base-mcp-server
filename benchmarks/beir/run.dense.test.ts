@@ -188,6 +188,79 @@ describe('BEIR runner dense/hybrid modes', () => {
     await fsp.rm(root, { recursive: true, force: true });
   });
 
+  it('persists query decomposition traces for hybrid+decompose runs', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-beir-decompose-'));
+    const datasetDir = await writeTinyBeirDataset(root);
+    const search = jest.fn(async (query: string, _fetchK: number) => {
+      const kbDir = path.join(process.env.KNOWLEDGE_BASES_ROOT_DIR ?? '', 'tiny');
+      const files = await fsp.readdir(kbDir);
+      const alpha = files.find((f) => f.includes('doc-alpha'));
+      const beta = files.find((f) => f.includes('doc-beta'));
+      return query.includes('tomato')
+        ? [{ metadata: { relativePath: `tiny/${beta}` }, score: 0.5 }]
+        : [{ metadata: { relativePath: `tiny/${alpha}` }, score: 0.9 }];
+    });
+    const loadSearchBackend = jest.fn(async (input: LoadSearchBackendInput): Promise<BeirSearchBackend> => {
+      expect(input.mode).toBe('hybrid');
+      return {
+        implementation: 'spy hybrid backend',
+        prepare: async () => ({ files: 2, chunks: 2 }),
+        search,
+      };
+    });
+    const args = parseArgs([
+      '--dataset=tiny',
+      `--dataset-dir=${datasetDir}`,
+      '--mode=hybrid+decompose',
+      '--provider=fake',
+      `--output-dir=${path.join(root, 'out')}`,
+      `--workspace-root=${path.join(root, 'kb-beir-ws')}`,
+      '--k=10',
+      '--chunk-k=20',
+    ]);
+
+    const result = await runBeirBenchmark(args, {
+      ...baseDeps,
+      loadSearchBackend,
+      loadQueryDecompositionRuntime: async () => ({
+        createRuleBasedQueryDecomposer: () => ({ name: 'rule' }),
+        defaultQueryDecompositionBudget: (overrides?: Record<string, number>) => overrides ?? {},
+        queryDecompositionTraceToJson: (trace: unknown) => trace as Record<string, unknown>,
+        runQueryDecomposition: async (options) => {
+          const first = await options.retrieveSubquery(options.query, 20);
+          const second = await options.retrieveSubquery('tomato soup', 20);
+          return {
+            results: [...first, ...second],
+            trace: {
+              schema_version: 'kb.search.query-decomposition.v1',
+              provider: 'rule',
+              stop_reason: 'sufficient',
+              retrieval_calls: 2,
+            },
+          };
+        },
+      }),
+    });
+
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(result.report.mode).toBe('hybrid+decompose');
+    expect(result.report.query_decomposition).toMatchObject({
+      schema_version: 'kb.beir.query-decomposition.v1',
+      provider: 'rule',
+      retrieval_calls_mean: 2,
+      stop_reasons: { sufficient: 1 },
+    });
+    const tracePath = result.report.query_decomposition?.trace_path;
+    expect(tracePath).toBeDefined();
+    const traceJson = JSON.parse(await fsp.readFile(tracePath as string, 'utf-8')) as {
+      traces: Array<{ query_id: string; trace: { stop_reason: string; retrieval_calls: number } }>;
+    };
+    expect(traceJson.traces).toEqual([
+      { query_id: 'q1', trace: expect.objectContaining({ stop_reason: 'sufficient', retrieval_calls: 2 }) },
+    ]);
+    await fsp.rm(root, { recursive: true, force: true });
+  });
+
   // Hermetic end-to-end run over the PRODUCTION src/ retrieval path with the
   // deterministic fake provider. Proves dense + hybrid both work through the
   // shipped code and that the runner invokes retrieveForRetrievalEvalCase.

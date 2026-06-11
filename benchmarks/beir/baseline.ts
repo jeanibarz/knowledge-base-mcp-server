@@ -94,7 +94,7 @@ function buildBeirArgv(options: BaselineOptions, dataset: string, mode: BeirMode
     `--cache-dir=${options.cacheDir}`,
     `--workspace-root=${options.workspaceRoot}`,
   ];
-  if (mode !== 'lexical') {
+  if (mode !== 'lexical' && mode !== 'late') {
     if (options.provider !== undefined) argv.push(`--provider=${options.provider}`);
     if (options.model !== undefined) argv.push(`--model=${options.model}`);
   }
@@ -154,8 +154,10 @@ export function parseBaselineArgs(argv: string[]): BaselineOptions {
 
 const BASELINE_MODES: readonly BeirMode[] = [
   'lexical',
+  'late',
   'dense',
   'hybrid',
+  'hybrid+late',
   'hybrid+rerank',
   'hybrid+rerank+contextual',
 ];
@@ -174,7 +176,8 @@ Usage:
 
 Options:
   --datasets=<a,b,c>   CI subset. Default: scifact,nfcorpus,fiqa.
-  --modes=<...>        Comma list of lexical|dense|hybrid. Default: lexical,hybrid.
+  --modes=<...>        Comma list of lexical|late|dense|hybrid|hybrid+late|hybrid+rerank|hybrid+rerank+contextual.
+                       Default: lexical,hybrid.
   --provider=<name>    Embedding provider for dense/hybrid. Default: $EMBEDDING_PROVIDER.
   --model=<name>       Embedding model. Real model required for dense/hybrid.
   --split=<name>       Qrels split. Default: test.

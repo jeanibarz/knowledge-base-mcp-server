@@ -306,6 +306,24 @@ Stable hybrid fields are `mode`, `results`, `retrievers.dense.fetched`,
 `rerank.cache_hits`, `rerank.degraded`, and `rerank.degrade_reason` are stable
 when the `rerank` object is present.
 
+When `kb search --mode=hybrid --candidate-pool-k=<n> --format=json` is used,
+the payload also includes `high_recall` with schema version
+`kb.search.high-recall-candidates.v1`. Stable child fields are
+`candidate_pool_k`, `final_k`, `pre_filter_count`, `post_filter_count`,
+`reason_counts`, `collapsed_groups[]`, `removed[]`, `recall_candidates`,
+`anchor_filter_relaxed`, and `neighbor_expansion_matches`.
+
+When `kb search --mode=hybrid --decompose --format=json` is used, the payload
+also includes `query_decomposition` with schema version
+`kb.search.query-decomposition.v1`. Stable child fields are `provider`,
+`original_query`, `budgets`, `subqueries[]`, `evidence_groups[]`,
+`missing_aspects`, `stop_reason`, `retrieval_calls`, and `elapsed_ms`.
+`subqueries[]` records the episodic search history for each iteration.
+`evidence_groups[]` records the canonical chunks found so far after
+deduplication, including `first_seen_subquery` and `retriever_query_count`.
+Stop reasons are one of `sufficient`, `exhausted_subqueries`,
+`max_iterations`, `max_subqueries`, `max_total_candidates`, or `timeout`.
+
 Stable error envelope for dense and hybrid JSON mode:
 
 ```json

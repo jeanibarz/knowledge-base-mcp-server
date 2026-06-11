@@ -57,6 +57,21 @@ describe('gradePanelItem', () => {
     // Dropped judge excluded from the contributing count.
     expect(raw.contributingJudges).toBe(2);
   });
+
+  it('tolerates a judge whose calls throw — it abstains, the panel still scores', async () => {
+    const flaky: Judge = {
+      name: 'flaky',
+      family: 'delta',
+      grade: () => Promise.reject(new Error('local LLM response did not contain choices[0].message.content')),
+    };
+    const judges = [...panel(), flaky];
+    const raw = await gradePanelItem(goodItem, judges, { samples: 2 });
+    // The throwing judge produced no usable grade → dropped (abstains), but the
+    // call did not reject and the other three judges still contributed.
+    expect(raw.perJudge.find((j) => j.judge === 'flaky')?.dropped).toBe(true);
+    expect(raw.contributingJudges).toBe(3);
+    expect(Number.isFinite(raw.panelMeanOverall)).toBe(true);
+  });
 });
 
 describe('calibratePanel', () => {

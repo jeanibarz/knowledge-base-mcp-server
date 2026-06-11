@@ -55,10 +55,15 @@ const DEFAULT_MATRIX_MODES: readonly BeirMode[] = ['lexical', 'hybrid'];
 
 const MATRIX_MODES: readonly BeirMode[] = [
   'lexical',
+  'late',
   'dense',
   'hybrid',
+  'hybrid+late',
   'hybrid+rerank',
   'hybrid+rerank+contextual',
+  'hybrid+listwise-rerank',
+  'hybrid+hard-negative-rerank',
+  'hybrid+adaptive-rerank',
 ];
 
 // RFC 020 §7 reproducibility ledger — the full retrieval env recorded with the
@@ -74,6 +79,7 @@ export interface RetrievalEnvSnapshot {
   chunk_size: string;
   chunk_overlap: string;
   contextual: 'on' | 'off';
+  retrieval_views: string | null;
 }
 
 const PRODUCTION_RRF_C = '60';
@@ -96,6 +102,7 @@ export function captureRetrievalEnv(
     chunk_size: nonEmpty(env.KB_CHUNK_SIZE) ?? PRODUCTION_CHUNK_SIZE,
     chunk_overlap: nonEmpty(env.KB_CHUNK_OVERLAP) ?? PRODUCTION_CHUNK_OVERLAP,
     contextual: isOn(env.KB_CONTEXTUAL_RETRIEVAL) ? 'on' : 'off',
+    retrieval_views: nonEmpty(env.KB_RETRIEVAL_VIEWS) ?? null,
   };
 }
 
@@ -149,6 +156,7 @@ export interface MatrixOptions {
   modes: BeirMode[];
   provider?: string;
   model?: string;
+  retrievalViews?: string;
   split: string;
   outputDir: string;
   cacheDir: string;
@@ -329,9 +337,10 @@ function buildBeirArgv(options: MatrixOptions, dataset: string, mode: BeirMode):
     `--cache-dir=${options.cacheDir}`,
     `--workspace-root=${options.workspaceRoot}`,
   ];
-  if (mode !== 'lexical') {
+  if (mode !== 'lexical' && mode !== 'late') {
     if (options.provider !== undefined) argv.push(`--provider=${options.provider}`);
     if (options.model !== undefined) argv.push(`--model=${options.model}`);
+    if (options.retrievalViews !== undefined) argv.push(`--retrieval-views=${options.retrievalViews}`);
   }
   if (options.maxQueries !== undefined) argv.push(`--max-queries=${options.maxQueries}`);
   return argv;
@@ -494,6 +503,8 @@ export function parseMatrixArgs(argv: string[]): MatrixOptions {
       options.provider = readValue();
     } else if (flag === '--model') {
       options.model = readValue();
+    } else if (flag === '--retrieval-views') {
+      options.retrievalViews = readValue();
     } else if (flag === '--split') {
       options.split = readValue();
     } else if (flag === '--output-dir') {
@@ -546,6 +557,7 @@ Options:
   --modes=<...>        Comma list of ${MATRIX_MODES.join('|')}. Default: lexical,hybrid.
   --provider=<name>    Embedding provider for non-lexical modes. Default: $EMBEDDING_PROVIDER.
   --model=<name>       Embedding model. Real model required for meaningful numbers.
+  --retrieval-views=<v> Opt-in multi-view retrieval views for non-lexical modes.
   --split=<name>       Qrels split. Default: test.
   --output-dir=<path>  Matrix report directory.
   --max-queries=<n>    Deterministic subset for a quick smoke.

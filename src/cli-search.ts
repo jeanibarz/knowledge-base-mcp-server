@@ -57,7 +57,14 @@ import {
   listLexicalKbs,
   runLexicalLeg,
   type HybridChunk,
+  type LexicalLegResult,
 } from './hybrid-retrieval.js';
+import {
+  applyHighRecallCandidateFilters,
+  highRecallDiagnosticsToJson,
+  resolveCandidatePoolK,
+  type HighRecallFilterDiagnostics,
+} from './high-recall-candidates.js';
 import {
   applyAdvancedRetrieval,
   computeAdvancedCandidateK,
@@ -118,6 +125,22 @@ import {
 } from './search-core.js';
 import { hashQuery, type CanonicalLogInput } from './canonical-log.js';
 import type { QueryCacheTelemetry } from './query-cache.js';
+import {
+  KB_RETRIEVAL_VIEWS_ENV,
+  formatRetrievalViews,
+  parseRetrievalViews,
+  type RetrievalViewKind,
+} from './retrieval-views.js';
+import {
+  createLocalLlmQueryDecomposer,
+  createRuleBasedQueryDecomposer,
+  defaultQueryDecompositionBudget,
+  queryDecompositionTraceToJson,
+  runQueryDecomposition,
+  type QueryDecompositionBudget,
+  type QueryDecompositionProvider,
+  type QueryDecompositionTrace,
+} from './query-decomposition.js';
 
 export const SEARCH_HELP = `kb search — semantic search across knowledge bases
 
@@ -144,6 +167,22 @@ Result tuning:
   --threshold=<float>   Max similarity score; lower = closer match (default 2).
   --threshold=auto      Pick a knee-based cutoff from the top-K score curve.
   --k=<int>             Top-K results (default 10).
+  --candidate-pool-k=<int>
+                        Hybrid-only opt-in: fetch and fuse this many dense and
+                        lexical candidates before cheap duplicate/anchor/source
+                        filters and final top-k/rerank.
+  --decompose           Hybrid-only opt-in: decompose a multi-hop query into
+                        bounded subqueries, retrieve evidence per subquery,
+                        and emit a query_decomposition trace in JSON.
+  --decompose-provider=rule|llm
+                        Decomposition provider (default: rule). llm uses
+                        KB_DECOMPOSE_LLM_ENDPOINT or KB_LLM_ENDPOINT and
+                        falls back to rule on provider failure.
+  --decompose-max-subqueries=<int>
+  --decompose-max-iterations=<int>
+  --decompose-max-candidates=<int>
+  --decompose-timeout-ms=<int>
+                        Explicit budgets for --decompose.
   --mode=dense|lexical|hybrid|auto
                         Retrieval mode (default: dense). \`hybrid\` fuses
                         dense + BM25 via reciprocal rank fusion (#206).
@@ -151,6 +190,11 @@ Result tuning:
                         BM25 ranking unit for lexical and hybrid modes.
                         chunk ranks each chunk; source ranks each source file
                         and returns its best matching chunk (default: chunk).
+  --retrieval-views=<csv>
+                        Opt in to multi-view retrieval over a view-enriched
+                        index. Values: passage,section,metadata,summary,all.
+                        Requires --refresh or KB_RETRIEVAL_VIEWS at ingest time
+                        to create section/metadata/summary view records.
   --context-before=<n>  Include up to n preceding chunks from the same source
                         around each dense semantic match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
   --context-after=<n>   Include up to n following chunks from the same source
@@ -290,6 +334,11 @@ interface SearchArgs {
   taskContext?: string;
   taskContextFile?: string;
   lexicalUnit: LexicalRankingUnit;
+  retrievalViews?: RetrievalViewKind[];
+  candidatePoolK?: number;
+  decompose: boolean;
+  decomposeProvider: 'rule' | 'llm';
+  decomposeBudget: Partial<QueryDecompositionBudget>;
 }
 
 export interface RunSearchDeps {
@@ -416,6 +465,22 @@ export async function runSearch(
     process.stderr.write('kb search: neighbor context expansion is only supported with --mode=dense\n');
     return 2;
   }
+  if (parsed.candidatePoolK !== undefined && effectiveMode !== 'hybrid') {
+    process.stderr.write('kb search: --candidate-pool-k is only supported with --mode=hybrid\n');
+    return 2;
+  }
+  if (parsed.decompose && effectiveMode !== 'hybrid') {
+    process.stderr.write('kb search: --decompose is only supported with --mode=hybrid\n');
+    return 2;
+  }
+  if (parsed.candidatePoolK !== undefined) {
+    try {
+      resolveCandidatePoolK(parsed.k, parsed.candidatePoolK);
+    } catch (err) {
+      process.stderr.write(`kb search: ${(err as Error).message}\n`);
+      return 2;
+    }
+  }
   if (hasAdvancedRetrieval(parsed) && effectiveMode !== 'dense') {
     process.stderr.write('kb search: advanced retrieval operators are only supported with --mode=dense\n');
     return 2;
@@ -476,9 +541,12 @@ export async function runSearch(
       await withWriteLock(manager.modelDir, async () => {
         await printRefreshPreflightIfLarge(activeModelId, manager, parsed.kb, parsed.format);
         await manager.initialize();
-        await manager.updateIndex(parsed.kb, {
-          onProgress: createRefreshProgressReporter(timing),
-        });
+        await withRetrievalViewsForIngest(parsed.retrievalViews, () =>
+          manager.updateIndex(parsed.kb, {
+            onProgress: createRefreshProgressReporter(timing),
+            force: parsed.retrievalViews !== undefined,
+          }),
+        );
       });
     } else {
       await deps.loadWithJsonRetry(manager);
@@ -511,7 +579,7 @@ export async function runSearch(
         parsed.kb,
         undefined,
         denseTiming,
-        { noCache: parsed.noCache },
+        { noCache: parsed.noCache, retrievalViews: parsed.retrievalViews },
       );
       autoThresholdDecision = computeAutoThreshold(rawResults.map((r) => r.score));
       results = rawResults.slice(0, autoThresholdDecision.kept);
@@ -523,7 +591,7 @@ export async function runSearch(
         parsed.kb,
         undefined,
         denseTiming,
-        { noCache: parsed.noCache },
+        { noCache: parsed.noCache, retrievalViews: parsed.retrievalViews },
       );
     }
     if (parsed.neighborContext) {
@@ -628,6 +696,7 @@ export async function runSearch(
       gateVerdict,
       advancedRetrieval,
       queryCache: denseTiming.query_cache_telemetry,
+      retrievalViews: parsed.retrievalViews,
     });
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
@@ -679,6 +748,30 @@ async function writeSearchOutput(
     stdout: process.stdout,
     stderr: process.stderr,
   });
+}
+
+async function withRetrievalViewsForIngest<T>(
+  views: readonly RetrievalViewKind[] | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (views === undefined || views.length === 0) return fn();
+  const previous = process.env[KB_RETRIEVAL_VIEWS_ENV];
+  process.env[KB_RETRIEVAL_VIEWS_ENV] = formatRetrievalViews(views);
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[KB_RETRIEVAL_VIEWS_ENV];
+    } else {
+      process.env[KB_RETRIEVAL_VIEWS_ENV] = previous;
+    }
+  }
+}
+
+function retrievalViewsJson(views: readonly RetrievalViewKind[] | undefined): Record<string, unknown> | null {
+  return views !== undefined && views.length > 0
+    ? { enabled: true, views, collapsed: true }
+    : null;
 }
 
 /**
@@ -758,7 +851,7 @@ async function runAdvancedDenseSearch(input: {
       input.parsed.kb,
       undefined,
       input.denseTiming,
-      { noCache: input.parsed.noCache },
+      { noCache: input.parsed.noCache, retrievalViews: input.parsed.retrievalViews },
     );
     pools.push({ role, query, results });
   };
@@ -810,6 +903,9 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     plusQueries: [],
     minusQueries: [],
     lexicalUnit: 'chunk',
+    decompose: false,
+    decomposeProvider: 'rule',
+    decomposeBudget: {},
   };
   for (const raw of rest) {
     if (raw === '--refresh') { out.refresh = true; continue; }
@@ -829,6 +925,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--explain-empty') { out.explainEmpty = true; continue; }
     if (raw === '--explain') { out.explain = true; continue; }
     if (raw === '--diverse') { out.diverse = true; continue; }
+    if (raw === '--decompose') { out.decompose = true; continue; }
     if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
     if (raw === '--batch-jsonl') { out.batchJsonl = true; out.format = 'json'; continue; }
     if (raw.startsWith('--context-before=')) {
@@ -880,6 +977,35 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
       }
       out.lexicalUnit = v; continue;
     }
+    if (raw.startsWith('--retrieval-views=')) {
+      out.retrievalViews = parseRetrievalViews(raw.slice('--retrieval-views='.length));
+      if (out.retrievalViews.length === 0) out.retrievalViews = undefined;
+      continue;
+    }
+    if (raw.startsWith('--decompose-provider=')) {
+      const v = raw.slice('--decompose-provider='.length);
+      if (v !== 'rule' && v !== 'llm') {
+        throw new Error(`invalid --decompose-provider: ${raw} (expected 'rule' or 'llm')`);
+      }
+      out.decomposeProvider = v;
+      continue;
+    }
+    if (raw.startsWith('--decompose-max-subqueries=')) {
+      out.decomposeBudget.maxSubqueries = parsePositiveFlag(raw, '--decompose-max-subqueries=');
+      continue;
+    }
+    if (raw.startsWith('--decompose-max-iterations=')) {
+      out.decomposeBudget.maxIterations = parsePositiveFlag(raw, '--decompose-max-iterations=');
+      continue;
+    }
+    if (raw.startsWith('--decompose-max-candidates=')) {
+      out.decomposeBudget.maxTotalCandidates = parsePositiveFlag(raw, '--decompose-max-candidates=');
+      continue;
+    }
+    if (raw.startsWith('--decompose-timeout-ms=')) {
+      out.decomposeBudget.timeoutMs = parsePositiveFlag(raw, '--decompose-timeout-ms=');
+      continue;
+    }
     if (raw.startsWith('--threshold=')) {
       const v = raw.slice('--threshold='.length);
       if (v === 'auto') { out.thresholdAuto = true; continue; }
@@ -891,6 +1017,11 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
       const n = Number(raw.slice('--k='.length));
       if (!Number.isInteger(n) || n <= 0) throw new Error(`invalid --k: ${raw}`);
       out.k = n; continue;
+    }
+    if (raw.startsWith('--candidate-pool-k=')) {
+      const n = Number(raw.slice('--candidate-pool-k='.length));
+      if (!Number.isInteger(n) || n <= 0) throw new Error(`invalid --candidate-pool-k: ${raw}`);
+      out.candidatePoolK = n; continue;
     }
     if (raw.startsWith('--format=')) {
       const v = raw.slice('--format='.length);
@@ -924,6 +1055,14 @@ function parseNonEmptyComponent(raw: string, prefix: string): string {
     throw new Error(`invalid ${prefix.slice(0, -1)}: value must not be empty`);
   }
   return value;
+}
+
+function parsePositiveFlag(raw: string, prefix: string): number {
+  const n = Number(raw.slice(prefix.length));
+  if (!Number.isSafeInteger(n) || n <= 0) {
+    throw new Error(`invalid ${prefix.slice(0, -1)}: ${raw} (expected positive integer)`);
+  }
+  return n;
 }
 
 function buildSearchHighlightOptions(
@@ -1227,6 +1366,7 @@ export interface DenseSearchJsonPayloadInput {
   gateVerdict?: RelevanceGateVerdict;
   advancedRetrieval?: AdvancedRetrievalMetadata | null;
   queryCache?: QueryCacheTelemetry;
+  retrievalViews?: RetrievalViewKind[];
 }
 
 export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput): Record<string, unknown> {
@@ -1270,6 +1410,8 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
   if (input.queryCache !== undefined) {
     payload.query_cache = input.queryCache;
   }
+  const retrievalViews = retrievalViewsJson(input.retrievalViews);
+  if (retrievalViews !== null) payload.retrieval_views = retrievalViews;
   if (input.timing) {
     payload.timing = compactTimingPayload(input.timing);
   }
@@ -1509,6 +1651,43 @@ function formatFilterSelectivityDiagnosticsFooter(
 function formatFilterDiagnosticValue(key: string, value: string | number): string {
   if (typeof value === 'number' && key.endsWith('_ms')) return `${Math.round(value)}ms`;
   return String(value);
+}
+
+function addTimingMs(timing: TimingPayload, key: string, elapsed: number): void {
+  const previous = timing[key];
+  timing[key] = (typeof previous === 'number' ? previous : 0) + elapsed;
+}
+
+function formatHighRecallDiagnosticsFooter(diagnostics: HighRecallFilterDiagnostics): string {
+  const removed = Object.entries(diagnostics.reasonCounts)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(', ');
+  const removedText = removed === '' ? 'no removals' : removed;
+  const relaxed = diagnostics.anchorFilterRelaxed ? '; anchor filter relaxed' : '';
+  return `> _High-recall candidates: pool=${diagnostics.candidatePoolK}, ` +
+    `pre=${diagnostics.preFilterCount}, post=${diagnostics.postFilterCount}, ` +
+    `${removedText}, neighbor_matches=${diagnostics.neighborExpansionMatches}${relaxed}._`;
+}
+
+function formatQueryDecompositionFooter(trace: QueryDecompositionTrace): string {
+  const missing = trace.missingAspects.length === 0
+    ? ''
+    : `, missing=${trace.missingAspects.length}`;
+  return `> _Query decomposition: provider=${trace.provider}, ` +
+    `calls=${trace.retrievalCalls}, evidence=${trace.evidence.length}, ` +
+    `stop=${trace.stopReason}${missing}._`;
+}
+
+function createQueryDecompositionProvider(
+  parsed: SearchArgs,
+  budget: QueryDecompositionBudget,
+): QueryDecompositionProvider {
+  const fallback = createRuleBasedQueryDecomposer();
+  if (parsed.decomposeProvider === 'llm') {
+    return createLocalLlmQueryDecomposer(fallback, { timeoutMs: budget.timeoutMs });
+  }
+  return fallback;
 }
 
 function defaultBypassedGateVerdict(count: number): RelevanceGateVerdict {
@@ -2132,7 +2311,7 @@ async function runLexicalSearch(
     let refreshSummary: LexicalKbResult['refreshSummary'] = null;
     if (parsed.refresh || index.numFiles() === 0) {
       try {
-        refreshSummary = await index.refresh();
+        refreshSummary = await withRetrievalViewsForIngest(parsed.retrievalViews, () => index.refresh());
         await index.save();
       } catch (err) {
         perKb.push({ kbName, kbPath, refreshSummary: null, hits: [], error: err as Error });
@@ -2142,7 +2321,10 @@ async function runLexicalSearch(
 
     let hits: LexicalSearchResult[];
     try {
-      hits = await index.query(query, parsed.k, { unit: parsed.lexicalUnit });
+      hits = await index.query(query, parsed.k, {
+        unit: parsed.lexicalUnit,
+        retrievalViews: parsed.retrievalViews,
+      });
     } catch (err) {
       perKb.push({ kbName, kbPath, refreshSummary, hits: [], error: err as Error });
       continue;
@@ -2206,6 +2388,9 @@ async function runLexicalSearch(
         error: r.error ? r.error.message : null,
       })),
       lexical: { unit: parsed.lexicalUnit },
+      ...(retrievalViewsJson(parsed.retrievalViews) !== null
+        ? { retrieval_views: retrievalViewsJson(parsed.retrievalViews) }
+        : {}),
       ...(timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
@@ -2282,11 +2467,10 @@ async function runHybridSearch(
   }
 
   const query = parsed.query as string;
-  const fetchK = hybridFetchK(parsed.k);
+  const candidatePoolK = resolveCandidatePoolK(parsed.k, parsed.candidatePoolK);
+  const highRecallEnabled = candidatePoolK !== null;
+  const fetchK = candidatePoolK ?? hybridFetchK(parsed.k);
 
-  // -- dense leg -----------------------------------------------------------
-  let densePromise: Promise<HybridChunk[]>;
-  let denseError: Error | null = null;
   let activeModelId: string | null = null;
   try {
     let startedAt = nowMs();
@@ -2312,9 +2496,12 @@ async function runHybridSearch(
       await withWriteLock(manager.modelDir, async () => {
         await printRefreshPreflightIfLarge(activeModelId, manager, parsed.kb, parsed.format);
         await manager.initialize();
-        await manager.updateIndex(parsed.kb, {
-          onProgress: createRefreshProgressReporter(timing),
-        });
+        await withRetrievalViewsForIngest(parsed.retrievalViews, () =>
+          manager.updateIndex(parsed.kb, {
+            onProgress: createRefreshProgressReporter(timing),
+            force: parsed.retrievalViews !== undefined,
+          }),
+        );
       });
     } else {
       await deps.loadWithJsonRetry(manager);
@@ -2323,30 +2510,6 @@ async function runHybridSearch(
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
-  const denseTiming: SimilaritySearchTiming = {};
-  const denseStartedAt = nowMs();
-  densePromise = manager
-    .similaritySearch(
-      query,
-      fetchK,
-      Number.POSITIVE_INFINITY,
-      parsed.kb,
-      undefined,
-      denseTiming,
-      { noCache: parsed.noCache },
-    )
-    .then((rs) => {
-      if (timing) {
-        timing.dense_search_ms = elapsedMs(denseStartedAt);
-        mergeDenseTiming(timing, denseTiming);
-      }
-      return rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score }));
-    })
-    .catch((err) => {
-      denseError = err as Error;
-      return [];
-    });
-
   // -- lexical leg ---------------------------------------------------------
   let lexicalKbs: Array<{ kbName: string; kbPath: string }>;
   try {
@@ -2358,50 +2521,177 @@ async function runHybridSearch(
     return 1;
   }
 
-  const lexicalStartedAt = nowMs();
-  const lexicalPromise = (deps.runLexicalLeg ?? runLexicalLeg)({
-    kbs: lexicalKbs,
-    query,
-    fetchK,
-    refresh: parsed.refresh ? 'always' : 'when-empty',
-    rankingUnit: parsed.lexicalUnit,
-    loadIndex: deps.loadLexicalIndex,
-    onError: (kbName, err) => {
-      process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${err.message}\n`);
-    },
-  }).then((row) => {
-    if (timing) timing.lexical_search_ms = elapsedMs(lexicalStartedAt);
-    return row;
-  });
+  let rerankConfig: RerankerConfig | null = null;
+  const getRerankConfig = (): RerankerConfig => {
+    if (rerankConfig === null) {
+      rerankConfig = resolveRerankerConfig(process.env, parsed.rerankOverride, parsed.kb ?? null);
+    }
+    return rerankConfig;
+  };
+  const retrieveHybridCandidates = async (subquery: string, outputK = parsed.k): Promise<{
+    denseResults: HybridChunk[];
+    lexicalResults: LexicalSearchResult[];
+    lexicalResultsRow: LexicalLegResult;
+    denseDistanceById: Map<string, number>;
+    lexicalHitIds: Set<string>;
+    ranked: HybridChunk[];
+    highRecallDiagnostics: HighRecallFilterDiagnostics | null;
+  }> => {
+    const denseTiming: SimilaritySearchTiming = {};
+    let denseError: Error | null = null;
+    const denseStartedAt = nowMs();
+    const densePromise = manager
+      .similaritySearch(
+        subquery,
+        fetchK,
+        Number.POSITIVE_INFINITY,
+        parsed.kb,
+        undefined,
+        denseTiming,
+        { noCache: parsed.noCache, retrievalViews: parsed.retrievalViews },
+      )
+      .then((rs) => {
+        if (timing) {
+          addTimingMs(timing, 'dense_search_ms', elapsedMs(denseStartedAt));
+          mergeDenseTiming(timing, denseTiming);
+        }
+        return rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score }));
+      })
+      .catch((err) => {
+        denseError = err as Error;
+        return [];
+      });
 
-  const [denseResults, lexicalResultsRow] = await Promise.all([densePromise, lexicalPromise]);
-  if (denseError) {
-    return reportFailure(classifyKbSearchError(denseError), parsed.format);
-  }
-  const lexicalResults = lexicalResultsRow.hits;
+    const lexicalStartedAt = nowMs();
+    const lexicalPromise = withRetrievalViewsForIngest(parsed.retrievalViews, () =>
+      (deps.runLexicalLeg ?? runLexicalLeg)({
+        kbs: lexicalKbs,
+        query: subquery,
+        fetchK,
+        refresh: parsed.refresh ? 'always' : 'when-empty',
+        rankingUnit: parsed.lexicalUnit,
+        retrievalViews: parsed.retrievalViews,
+        loadIndex: deps.loadLexicalIndex,
+        onError: (kbName, err) => {
+          process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${err.message}\n`);
+        },
+      }),
+    ).then((row) => {
+      if (timing) addTimingMs(timing, 'lexical_search_ms', elapsedMs(lexicalStartedAt));
+      return row;
+    });
 
-  // -- fuse ----------------------------------------------------------------
-  const fusionStartedAt = nowMs();
-  let rerankConfig: RerankerConfig;
+    const [denseResults, lexicalResultsRow] = await Promise.all([densePromise, lexicalPromise]);
+    if (denseError) {
+      throw denseError;
+    }
+    const lexicalResults = lexicalResultsRow.hits;
+    const resolvedRerankConfig = getRerankConfig();
+    const fusionK = highRecallEnabled
+      ? fetchK
+      : resolvedRerankConfig.enabled ? Math.max(outputK, resolvedRerankConfig.topN) : outputK;
+    const fusionStartedAt = nowMs();
+    const fusion = fuseHybridResultsWithDiagnostics({
+      denseResults,
+      lexicalResults,
+      k: fusionK,
+    });
+    let ranked = fusion.results;
+    let highRecallDiagnostics: HighRecallFilterDiagnostics | null = null;
+    if (highRecallEnabled) {
+      const highRecallStartedAt = nowMs();
+      const highRecall = applyHighRecallCandidateFilters({
+        query: subquery,
+        candidates: ranked,
+        k: outputK,
+        candidatePoolK: fetchK,
+        denseDistanceById: fusion.denseDistanceById,
+        lexicalHitIds: fusion.lexicalHitIds,
+      });
+      ranked = highRecall.results;
+      highRecallDiagnostics = highRecall.diagnostics;
+      if (timing) addTimingMs(timing, 'high_recall_filter_ms', elapsedMs(highRecallStartedAt));
+    }
+    if (timing) addTimingMs(timing, 'fusion_ms', elapsedMs(fusionStartedAt));
+    return {
+      denseResults,
+      lexicalResults,
+      lexicalResultsRow,
+      denseDistanceById: fusion.denseDistanceById,
+      lexicalHitIds: fusion.lexicalHitIds,
+      ranked,
+      highRecallDiagnostics,
+    };
+  };
+
+  let denseResults: HybridChunk[];
+  let lexicalResultsRow: LexicalLegResult;
+  let lexicalResults: LexicalSearchResult[];
+  let ranked: HybridChunk[];
+  let denseDistanceById: Map<string, number>;
+  let lexicalHitIds: Set<string>;
+  let highRecallDiagnostics: HighRecallFilterDiagnostics | null = null;
+  let decompositionTrace: QueryDecompositionTrace | null = null;
+
   try {
-    rerankConfig = resolveRerankerConfig(process.env, parsed.rerankOverride, parsed.kb ?? null);
+    if (parsed.decompose) {
+      const aggregateDense: HybridChunk[] = [];
+      const aggregateLexical: LexicalSearchResult[] = [];
+      const aggregateDenseDistanceById = new Map<string, number>();
+      const aggregateLexicalHitIds = new Set<string>();
+      let refreshed = 0;
+      let failed = 0;
+      const budget = defaultQueryDecompositionBudget(parsed.decomposeBudget);
+      const provider = createQueryDecompositionProvider(parsed, budget);
+      const decomposition = await runQueryDecomposition({
+        query,
+        k: budget.maxTotalCandidates,
+        budget,
+        provider,
+        retrieveSubquery: async (subquery, remainingCandidateBudget) => {
+          const run = await retrieveHybridCandidates(subquery, remainingCandidateBudget);
+          aggregateDense.push(...run.denseResults);
+          aggregateLexical.push(...run.lexicalResults);
+          refreshed += run.lexicalResultsRow.refreshed;
+          failed += run.lexicalResultsRow.failed;
+          for (const [id, distance] of run.denseDistanceById) aggregateDenseDistanceById.set(id, distance);
+          for (const id of run.lexicalHitIds) aggregateLexicalHitIds.add(id);
+          return run.ranked;
+        },
+      });
+      denseResults = aggregateDense;
+      lexicalResults = aggregateLexical;
+      lexicalResultsRow = { hits: aggregateLexical, refreshed, failed };
+      denseDistanceById = aggregateDenseDistanceById;
+      lexicalHitIds = aggregateLexicalHitIds;
+      ranked = decomposition.results;
+      decompositionTrace = decomposition.trace;
+    } else {
+      const run = await retrieveHybridCandidates(query);
+      denseResults = run.denseResults;
+      lexicalResults = run.lexicalResults;
+      lexicalResultsRow = run.lexicalResultsRow;
+      denseDistanceById = run.denseDistanceById;
+      lexicalHitIds = run.lexicalHitIds;
+      ranked = run.ranked;
+      highRecallDiagnostics = run.highRecallDiagnostics;
+    }
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
-  const fusionK = rerankConfig.enabled ? Math.max(parsed.k, rerankConfig.topN) : parsed.k;
-  const fusion = fuseHybridResultsWithDiagnostics({
-    denseResults,
-    lexicalResults,
-    k: fusionK,
-  });
-  let ranked = fusion.results;
-  if (timing) timing.fusion_ms = elapsedMs(fusionStartedAt);
+
+  let resolvedRerankConfig: RerankerConfig;
+  try {
+    resolvedRerankConfig = getRerankConfig();
+  } catch (err) {
+    return reportFailure(classifyKbSearchError(err), parsed.format);
+  }
   const rerankResult = await applyRerankerIfEnabled({
     query,
     results: ranked,
     k: parsed.k,
     override: parsed.rerankOverride,
-    config: rerankConfig,
+    config: resolvedRerankConfig,
     process: 'cli',
     searchMode: 'hybrid',
     kbScope: parsed.kb ?? null,
@@ -2423,8 +2713,8 @@ async function runHybridSearch(
       query,
       taskContext: parsed.taskContext,
       candidates: ranked,
-      denseDistanceById: fusion.denseDistanceById,
-      lexicalHitIds: fusion.lexicalHitIds,
+      denseDistanceById,
+      lexicalHitIds,
       gateOverride: parsed.gateOverride,
       process: 'cli',
     });
@@ -2441,6 +2731,7 @@ async function runHybridSearch(
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
+  ranked = ranked.slice(0, parsed.k);
 
   if (shouldUsePicker(parsed)) {
     return runPicker({ results: ranked as ScoredDocument[] });
@@ -2463,6 +2754,15 @@ async function runHybridSearch(
         },
       },
       rrf: { c: HYBRID_RRF_C, fetch_k: fetchK },
+      ...(highRecallDiagnostics !== null
+        ? { high_recall: highRecallDiagnosticsToJson(highRecallDiagnostics) }
+        : {}),
+      ...(decompositionTrace !== null
+        ? { query_decomposition: queryDecompositionTraceToJson(decompositionTrace) }
+        : {}),
+      ...(retrievalViewsJson(parsed.retrievalViews) !== null
+        ? { retrieval_views: retrievalViewsJson(parsed.retrievalViews) }
+        : {}),
       rerank: {
         enabled: rerankResult.candidatesIn > 0,
         model: rerankResult.model,
@@ -2489,6 +2789,12 @@ async function runHybridSearch(
       width: process.stdout.columns,
     })}\n`;
     output += `> _Hybrid status: dense ${denseResults.length}, lexical ${lexicalResults.length} (${parsed.lexicalUnit}), refreshed ${lexicalResultsRow.refreshed}, failed ${lexicalResultsRow.failed}, RRF c=${HYBRID_RRF_C}._\n`;
+    if (highRecallDiagnostics !== null) {
+      output += `${formatHighRecallDiagnosticsFooter(highRecallDiagnostics)}\n`;
+    }
+    if (decompositionTrace !== null) {
+      output += `${formatQueryDecompositionFooter(decompositionTrace)}\n`;
+    }
     if (rerankResult.candidatesIn > 0) {
       const degraded = rerankResult.degraded ? '; degraded to fused order' : '';
       output += `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`;
@@ -2520,6 +2826,12 @@ async function runHybridSearch(
       )}\n\n`;
     }
     output += `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} with unit=${parsed.lexicalUnit} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`;
+    if (highRecallDiagnostics !== null) {
+      output += `${formatHighRecallDiagnosticsFooter(highRecallDiagnostics)}\n`;
+    }
+    if (decompositionTrace !== null) {
+      output += `${formatQueryDecompositionFooter(decompositionTrace)}\n`;
+    }
     if (rerankResult.candidatesIn > 0) {
       const degraded = rerankResult.degraded ? '; degraded to fused order' : '';
       output += `> _Rerank: ${rerankResult.model}; rescored ${rerankResult.candidatesIn} candidate(s), cache hits ${rerankResult.cacheHits}${degraded}._\n`;

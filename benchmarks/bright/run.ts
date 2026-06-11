@@ -47,6 +47,7 @@ export interface BrightRunOptions {
   brightDir?: string;
   provider?: string;
   model?: string;
+  retrievalViews?: string;
   split: string;
   outputDir: string;
   datasetsDir: string;
@@ -159,12 +160,20 @@ function buildBeirArgv(options: BrightRunOptions, task: string, datasetDir: stri
   if (mode !== 'lexical') {
     if (options.provider !== undefined) argv.push(`--provider=${options.provider}`);
     if (options.model !== undefined) argv.push(`--model=${options.model}`);
+    if (options.retrievalViews !== undefined) argv.push(`--retrieval-views=${options.retrievalViews}`);
   }
   if (options.maxQueries !== undefined) argv.push(`--max-queries=${options.maxQueries}`);
   return argv;
 }
 
-const BRIGHT_MODES: readonly BeirMode[] = ['lexical', 'dense', 'hybrid', 'hybrid+rerank', 'hybrid+rerank+contextual'];
+const BRIGHT_MODES: readonly BeirMode[] = [
+  'lexical',
+  'dense',
+  'hybrid',
+  'hybrid+decompose',
+  'hybrid+rerank',
+  'hybrid+rerank+contextual',
+];
 
 export function parseBrightArgs(argv: string[]): BrightRunOptions {
   const repoRoot = process.cwd();
@@ -198,6 +207,8 @@ export function parseBrightArgs(argv: string[]): BrightRunOptions {
       options.provider = readValue();
     } else if (flag === '--model') {
       options.model = readValue();
+    } else if (flag === '--retrieval-views') {
+      options.retrievalViews = readValue();
     } else if (flag === '--split') {
       options.split = readValue();
     } else if (flag === '--output-dir') {
@@ -252,6 +263,7 @@ Options:
   --bright-dir=<p>     Directory of converted BRIGHT tasks. Required for a real run.
   --provider=<name>    Embedding provider for dense/hybrid. Default: $EMBEDDING_PROVIDER.
   --model=<name>       Embedding model. Real model required — fake is plumbing only.
+  --retrieval-views=<v> Opt-in multi-view retrieval views for dense/hybrid.
   --split=<name>       Qrels split written by the adapter. Default: test.
   --output-dir=<p>     Report dir. Default: benchmarks/results/bright.
   --max-queries=<n>    Deterministic subset for a quick smoke.

@@ -162,10 +162,20 @@ export async function runCascade(
   }
 
   // --- Tier 2: NLI + semantic on the residue (when wired). ---
-  const tier3Residue: Array<{ item: GoldQaItem; answer: RagAnswer; reference: ReferenceScore; tier2: Tier2Detail }> = [];
+  const tier3Residue: Array<{ item: GoldQaItem; answer: RagAnswer; reference: ReferenceScore; tier2?: Tier2Detail }> = [];
   for (const entry of tier2Residue) {
     if (config.tier2 === undefined) {
-      decisions.push(pendingDecision(entry.item, entry.reference, 'Tier 2 models (NLI/semantic) not configured'));
+      // Tier 2 (NLI/semantic checkpoints) is environment-heavy and often
+      // unavailable. When it is unwired but the live judge panel (Tier 3) IS
+      // configured, route the residue straight to the judges rather than
+      // stranding it `pending` — a "deterministic Tier 1 + judge panel"
+      // operational mode. Without Tier 3 either, the item is pending as before
+      // (no fabricated verdict).
+      if (config.tier3 !== undefined) {
+        tier3Residue.push({ item: entry.item, answer: entry.answer, reference: entry.reference });
+      } else {
+        decisions.push(pendingDecision(entry.item, entry.reference, 'Tier 2 models (NLI/semantic) not configured'));
+      }
       continue;
     }
     const faithfulness = (await faithfulnessScore(entry.answer.answer, entry.answer.contexts, config.tier2.entailment)).faithfulness;
@@ -192,20 +202,25 @@ export async function runCascade(
     const probe = await probePanelBias(config.tier3.judges, config.tier3.probes, config.tier3.probeOptions);
     biasProfiles = probe.profiles;
 
-    const rawItems = [];
-    for (const entry of tier3Residue) {
-      rawItems.push(await gradePanelItem(
-        {
-          id: entry.item.id,
-          question: entry.item.question,
-          candidate: entry.answer.answer,
-          reference: entry.item.goldAnswers[0] ?? '',
-          contexts: entry.answer.contexts.map((ctx) => ctx.text),
-        },
-        config.tier3.judges,
-        { ...config.tier3.panelOptions, biasCoefficients: probe.biasCoefficients, droppedJudges: probe.droppedJudges },
-      ));
-    }
+    // Judge calls are independent and network-bound, so grade items with
+    // bounded concurrency instead of strictly serially — a 150-item panel with
+    // self-consistency K and A/B+B/A ordering is thousands of sequential ~7s
+    // calls otherwise (hours). Concurrency is capped (default 4, override via
+    // KB_RAGEVAL_PANEL_CONCURRENCY) to respect provider rate limits; result
+    // order is preserved so calibration sees a stable sequence.
+    const tier3 = config.tier3;
+    const panelConcurrency = readPanelConcurrency();
+    const rawItems = await mapBoundedOrdered(tier3Residue, panelConcurrency, (entry) => gradePanelItem(
+      {
+        id: entry.item.id,
+        question: entry.item.question,
+        candidate: entry.answer.answer,
+        reference: entry.item.goldAnswers[0] ?? '',
+        contexts: entry.answer.contexts.map((ctx) => ctx.text),
+      },
+      tier3.judges,
+      { ...tier3.panelOptions, biasCoefficients: probe.biasCoefficients, droppedJudges: probe.droppedJudges },
+    ));
     const calibrated = calibratePanel(rawItems, config.tier3.calibrateOptions);
     panelItems = calibrated.items;
     panelCalibration = calibrated.summary.calibration;
@@ -296,4 +311,34 @@ function assembleOutcome(
     panelItems,
     panelCalibration,
   };
+}
+
+// --- Bounded-concurrency helper (self-contained; the panel's only parallelism
+// need). Preserves input order in the output so downstream calibration sees a
+// stable sequence regardless of completion order. ---
+function readPanelConcurrency(): number {
+  const raw = process.env.KB_RAGEVAL_PANEL_CONCURRENCY;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) return 4;
+  return Math.min(Math.floor(parsed), 16);
+}
+
+async function mapBoundedOrdered<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length || 1);
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }

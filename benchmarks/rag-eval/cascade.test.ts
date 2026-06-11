@@ -87,4 +87,25 @@ describe('runCascade', () => {
     expect(long?.decidedBy).toBe('pending');
     expect(long?.pendingReason).toMatch(/no system answer/);
   });
+
+  it('routes the residue to the judge panel when Tier 2 is unwired but Tier 3 is (judge-direct)', async () => {
+    // Tier 3 configured, Tier 2 omitted: the long-form residue must reach the
+    // panel rather than being stranded pending.
+    const config: CascadeConfig = { tier3: fullConfig().tier3 };
+    const outcome = await runCascade(items, answers, config);
+    const long = outcome.decisions.find((d) => d.id === 'longform');
+    expect(long?.decidedBy).toBe('tier3');
+    expect(outcome.tier3Decided + outcome.tier3Abstained).toBe(1);
+    expect(outcome.pending).toBe(0);
+    expect(outcome.biasProfiles.length).toBe(3);
+  });
+
+  it('tier1LowF1 below the F1 floor sends would-be-incorrect items to the panel', async () => {
+    // With the default low threshold the "wrong" short answer is decided
+    // incorrect at Tier 1; a negative low threshold disables that so it
+    // escalates to the judge panel instead.
+    const config: CascadeConfig = { thresholds: { tier1LowF1: -1 }, tier3: fullConfig().tier3 };
+    const outcome = await runCascade(items, answers, config);
+    expect(outcome.decisions.find((d) => d.id === 'wrong')?.decidedBy).toBe('tier3');
+  });
 });
