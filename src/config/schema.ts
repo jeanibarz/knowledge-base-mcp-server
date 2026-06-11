@@ -163,6 +163,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_MAX_EXTRACTED_TEXT_BYTES', kind: 'integer', default: String(16 * 1024 * 1024), min: 1 },
   { name: 'KB_LARGE_FILE_POLICY', kind: 'enum', values: ['skip', 'truncate', 'error'], default: 'skip' },
   { name: 'KB_REFRESH_QUIESCE_MS', kind: 'duration', default: '0', min: 0 },
+  { name: 'KB_INGEST_ENABLED', kind: 'boolean', default: 'on', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_INGEST_SECRET_SCAN', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_SECRET_SCAN_BYPASS_KBS', kind: 'csv', default: '' },
 

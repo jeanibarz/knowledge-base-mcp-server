@@ -72,7 +72,7 @@ jest.mock('./FaissIndexManager.js', () => ({
 
 // Each KnowledgeBaseServer constructor registers a SIGINT listener; the
 // default cap of 10 would warn once we cross it across the suite.
-process.setMaxListeners(50);
+process.setMaxListeners(100);
 
 describe('KnowledgeBaseServer handlers', () => {
   const originalEnv = {
@@ -89,6 +89,7 @@ describe('KnowledgeBaseServer handlers', () => {
     ASK_KNOWLEDGE_DESCRIPTION: process.env.ASK_KNOWLEDGE_DESCRIPTION,
     RETRIEVE_KNOWLEDGE_DESCRIPTION: process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION,
     LIST_KNOWLEDGE_BASES_DESCRIPTION: process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION,
+    KB_INGEST_ENABLED: process.env.KB_INGEST_ENABLED,
     INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
     INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
   };
@@ -2002,6 +2003,45 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(registered[toolName]).toBeDefined();
     return registered[toolName].description ?? '';
   }
+
+  function registeredToolNames(server: any): string[] {
+    const registered = server['mcp']._registeredTools as Record<string, unknown>;
+    expect(registered).toBeDefined();
+    return Object.keys(registered);
+  }
+
+  it('KB_INGEST_ENABLED=false hides MCP ingest tools while preserving read tools and resources', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'note.md'), '# Alpha\n');
+
+    delete process.env.KB_INGEST_ENABLED;
+    const defaultServer = await freshServer();
+    expect(registeredToolNames(defaultServer)).toEqual(expect.arrayContaining([
+      'add_document',
+      'delete_document',
+      'reindex_knowledge_base',
+    ]));
+
+    process.env.KB_INGEST_ENABLED = 'false';
+    const readOnlyServer = await freshServer();
+    const tools = registeredToolNames(readOnlyServer);
+
+    expect(tools).toEqual(expect.arrayContaining([
+      'list_knowledge_bases',
+      'retrieve_knowledge',
+      'ask_knowledge',
+      'list_models',
+      'kb_stats',
+      'diff_index',
+    ]));
+    expect(tools).not.toContain('add_document');
+    expect(tools).not.toContain('delete_document');
+    expect(tools).not.toContain('reindex_knowledge_base');
+
+    const resources = await readOnlyServer['handleListResources']();
+    expect(resources.resources.map((resource: { uri: string }) => resource.uri)).toContain('kb://alpha/note.md');
+  });
 
   it('with neither override env set, tool descriptions match the legacy hard-coded strings', async () => {
     delete process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION;

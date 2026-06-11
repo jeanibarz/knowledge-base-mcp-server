@@ -95,6 +95,12 @@ The current path-taking surfaces are:
 | `reindex_knowledge_base` | optional `knowledge_base_name` only — no per-file path | n/a | Resolves the KB directory to validate the name; the rebuild is global (no per-vector deletion in this server). |
 | `resources/read` for `kb://<kb>/<rel-path>` | URI authority + path | `true` | URI parser additionally rejects encoded slash/backslash and `..` segments before per-segment decoding. PDFs are returned as base64 blobs; everything else as UTF-8 text. |
 
+Set `KB_INGEST_ENABLED=false` to run the MCP server without the ingest write
+tool surface: `add_document`, `delete_document`, and `reindex_knowledge_base`
+are not registered and do not appear in `tools/list`. Read-side tools and
+Resources continue to work. The flag gates MCP tool availability only; it does
+not restrict CLI commands or direct filesystem writes.
+
 `list_knowledge_bases` continues to read `KNOWLEDGE_BASES_ROOT_DIR` directly without taking any client path. `retrieve_knowledge` takes only `query`, optional `knowledge_base_name`, optional numeric filters, and never writes based on the name.
 
 **Requirement.** The KB root and every per-KB directory must not contain symlinks pointing outside `KNOWLEDGE_BASES_ROOT_DIR`. The realpath check would catch a jailbreak attempt at request time, but symlinks-out-of-root represent operator-side trust intent. Treat the KB root the way you'd treat a static-content directory served to anonymous callers — own every entry, even the symlink targets.

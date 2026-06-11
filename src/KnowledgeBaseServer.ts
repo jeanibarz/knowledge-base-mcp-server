@@ -43,6 +43,7 @@ import {
 import {
   INGEST_EXCLUDE_PATHS,
   INGEST_EXTRA_EXTENSIONS,
+  KB_INGEST_ENABLED,
 } from './config/ingest.js';
 import {
   KB_FS_WATCH,
@@ -327,38 +328,40 @@ export class KnowledgeBaseServer {
       async (args) => this.handleDiffIndex(args)
     );
 
-    mcp.tool(
-      'add_document',
-      ADD_DOCUMENT_DESCRIPTION,
-      {
-        knowledge_base_name: z.string().describe('The name of the knowledge base to write into.'),
-        path: z.string().describe('KB-relative document path to create or overwrite. Parent directories are created as needed.'),
-        content: z.string().describe('UTF-8 text content to write.'),
-      },
-      async (args) => this.handleAddDocument(args)
-    );
+    if (KB_INGEST_ENABLED) {
+      mcp.tool(
+        'add_document',
+        ADD_DOCUMENT_DESCRIPTION,
+        {
+          knowledge_base_name: z.string().describe('The name of the knowledge base to write into.'),
+          path: z.string().describe('KB-relative document path to create or overwrite. Parent directories are created as needed.'),
+          content: z.string().describe('UTF-8 text content to write.'),
+        },
+        async (args) => this.handleAddDocument(args)
+      );
 
-    mcp.tool(
-      'delete_document',
-      DELETE_DOCUMENT_DESCRIPTION,
-      {
-        knowledge_base_name: z.string().describe('The name of the knowledge base to delete from.'),
-        path: z.string().describe('KB-relative document path to delete.'),
-      },
-      async (args) => this.handleDeleteDocument(args)
-    );
+      mcp.tool(
+        'delete_document',
+        DELETE_DOCUMENT_DESCRIPTION,
+        {
+          knowledge_base_name: z.string().describe('The name of the knowledge base to delete from.'),
+          path: z.string().describe('KB-relative document path to delete.'),
+        },
+        async (args) => this.handleDeleteDocument(args)
+      );
 
-    mcp.tool(
-      'reindex_knowledge_base',
-      REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
-      {
-        knowledge_base_name: z
-          .string()
-          .optional()
-          .describe('Name of a single KB to force re-index. If omitted, every registered KB is re-indexed.'),
-      },
-      async (args) => this.handleReindexKnowledgeBase(args)
-    );
+      mcp.tool(
+        'reindex_knowledge_base',
+        REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
+        {
+          knowledge_base_name: z
+            .string()
+            .optional()
+            .describe('Name of a single KB to force re-index. If omitted, every registered KB is re-indexed.'),
+        },
+        async (args) => this.handleReindexKnowledgeBase(args)
+      );
+    }
   }
 
   private async withCanonicalTool<T extends CallToolResult>(
