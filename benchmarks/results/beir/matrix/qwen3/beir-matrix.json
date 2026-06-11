@@ -1,13 +1,14 @@
 {
   "schema_version": "kb.beir-matrix.v1",
-  "generated_at": "2026-06-11T03:46:24.706Z",
-  "git_sha": "477bc5c",
+  "generated_at": "2026-06-11T12:39:11.898Z",
+  "git_sha": "869d527",
   "modes": [
     "lexical",
     "dense",
     "hybrid",
     "hybrid+rerank",
     "late",
+    "hybrid+late",
     "hybrid+rerank+contextual"
   ],
   "datasets": [
@@ -460,6 +461,91 @@
     {
       "dataset": "scifact",
       "domain": "scientific fact-checking",
+      "mode": "hybrid+late",
+      "status": "ok",
+      "ndcgAt10": 0.59552,
+      "precisionAt10": 0.078333,
+      "mapAt100": 0.560047,
+      "recallAt10": 0.716667,
+      "recallAt100": 0.871,
+      "queriesEvaluated": 300,
+      "latencyP50Ms": 1904.615265,
+      "latencyP95Ms": 3153.718062,
+      "latencyP99Ms": 3725.795739,
+      "jsonPath": "benchmarks/results/beir/matrix/qwen3/kb-scifact-hybrid+late-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/qwen3/kb-scifact-hybrid+late-chunk-run.trec"
+    },
+    {
+      "dataset": "nfcorpus",
+      "domain": "bio-medical",
+      "mode": "hybrid+late",
+      "status": "ok",
+      "ndcgAt10": 0.260626,
+      "precisionAt10": 0.187616,
+      "mapAt100": 0.119122,
+      "recallAt10": 0.126272,
+      "recallAt100": 0.251564,
+      "queriesEvaluated": 323,
+      "latencyP50Ms": 1117.456327,
+      "latencyP95Ms": 2191.364157,
+      "latencyP99Ms": 2757.970177,
+      "jsonPath": "benchmarks/results/beir/matrix/qwen3/kb-nfcorpus-hybrid+late-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/qwen3/kb-nfcorpus-hybrid+late-chunk-run.trec"
+    },
+    {
+      "dataset": "fiqa",
+      "domain": "finance",
+      "mode": "hybrid+late",
+      "status": "ok",
+      "ndcgAt10": 0.174139,
+      "precisionAt10": 0.048148,
+      "mapAt100": 0.138802,
+      "recallAt10": 0.226855,
+      "recallAt100": 0.463564,
+      "queriesEvaluated": 648,
+      "latencyP50Ms": 7481.238524,
+      "latencyP95Ms": 17836.134296,
+      "latencyP99Ms": 25422.859305,
+      "jsonPath": "benchmarks/results/beir/matrix/qwen3/kb-fiqa-hybrid+late-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/qwen3/kb-fiqa-hybrid+late-chunk-run.trec"
+    },
+    {
+      "dataset": "arguana",
+      "domain": "argument retrieval",
+      "mode": "hybrid+late",
+      "status": "ok",
+      "ndcgAt10": 0.278218,
+      "precisionAt10": 0.056899,
+      "mapAt100": 0.196807,
+      "recallAt10": 0.56899,
+      "recallAt100": 0.815789,
+      "queriesEvaluated": 1406,
+      "latencyP50Ms": 6143.859967,
+      "latencyP95Ms": 13216.515608,
+      "latencyP99Ms": 21773.106406,
+      "jsonPath": "benchmarks/results/beir/matrix/qwen3/kb-arguana-hybrid+late-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/qwen3/kb-arguana-hybrid+late-chunk-run.trec"
+    },
+    {
+      "dataset": "scidocs",
+      "domain": "scientific citation",
+      "mode": "hybrid+late",
+      "status": "ok",
+      "ndcgAt10": 0.11823,
+      "precisionAt10": 0.0601,
+      "mapAt100": 0.08061,
+      "recallAt10": 0.12215,
+      "recallAt100": 0.320983,
+      "queriesEvaluated": 1000,
+      "latencyP50Ms": 4096.709972,
+      "latencyP95Ms": 6203.154233,
+      "latencyP99Ms": 6917.594485,
+      "jsonPath": "benchmarks/results/beir/matrix/qwen3/kb-scidocs-hybrid+late-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/qwen3/kb-scidocs-hybrid+late-chunk-run.trec"
+    },
+    {
+      "dataset": "scifact",
+      "domain": "scientific fact-checking",
       "mode": "hybrid+rerank+contextual",
       "status": "ok",
       "ndcgAt10": 0.714422,
@@ -513,19 +599,18 @@
       "dataset": "arguana",
       "domain": "argument retrieval",
       "mode": "hybrid+rerank+contextual",
-      "status": "error",
-      "ndcgAt10": 0,
-      "precisionAt10": 0,
-      "mapAt100": 0,
-      "recallAt10": 0,
-      "recallAt100": 0,
-      "queriesEvaluated": 0,
-      "latencyP50Ms": 0,
-      "latencyP95Ms": 0,
-      "latencyP99Ms": 0,
-      "jsonPath": null,
-      "trecPath": null,
-      "error": "cell artifact missing or unreadable: benchmarks/results/beir/matrix/qwen3/kb-arguana-hybrid+rerank+contextual-chunk-results.json (ENOENT)"
+      "status": "ok",
+      "ndcgAt10": 0.339153,
+      "precisionAt10": 0.072048,
+      "mapAt100": 0.23594,
+      "recallAt10": 0.720484,
+      "recallAt100": 0.987198,
+      "queriesEvaluated": 1406,
+      "latencyP50Ms": 6801.797552,
+      "latencyP95Ms": 8872.255157,
+      "latencyP99Ms": 10040.156873,
+      "jsonPath": "benchmarks/results/beir/matrix/qwen3/kb-arguana-hybrid+rerank+contextual-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/qwen3/kb-arguana-hybrid+rerank+contextual-chunk-run.trec"
     },
     {
       "dataset": "scidocs",
@@ -588,12 +673,20 @@
       "multiDomainMeanRecallAt10": 0.419207
     },
     {
-      "mode": "hybrid+rerank+contextual",
-      "datasetsEvaluated": 2,
+      "mode": "hybrid+late",
+      "datasetsEvaluated": 5,
       "datasetsRequested": 5,
-      "multiDomainMeanNdcgAt10": 0.540525,
-      "multiDomainMeanPrecisionAt10": 0.179091,
-      "multiDomainMeanRecallAt10": 0.511588
+      "multiDomainMeanNdcgAt10": 0.285347,
+      "multiDomainMeanPrecisionAt10": 0.086219,
+      "multiDomainMeanRecallAt10": 0.352187
+    },
+    {
+      "mode": "hybrid+rerank+contextual",
+      "datasetsEvaluated": 3,
+      "datasetsRequested": 5,
+      "multiDomainMeanNdcgAt10": 0.473401,
+      "multiDomainMeanPrecisionAt10": 0.14341,
+      "multiDomainMeanRecallAt10": 0.58122
     }
   ],
   "generalization": {
@@ -893,8 +986,82 @@
         }
       },
       {
+        "mode": "hybrid+late",
+        "domains": [
+          {
+            "domain": "argument retrieval",
+            "datasets": [
+              "arguana"
+            ],
+            "meanNdcgAt10": 0.278218,
+            "meanPrecisionAt10": 0.056899,
+            "queriesEvaluated": 1406
+          },
+          {
+            "domain": "bio-medical",
+            "datasets": [
+              "nfcorpus"
+            ],
+            "meanNdcgAt10": 0.260626,
+            "meanPrecisionAt10": 0.187616,
+            "queriesEvaluated": 323
+          },
+          {
+            "domain": "finance",
+            "datasets": [
+              "fiqa"
+            ],
+            "meanNdcgAt10": 0.174139,
+            "meanPrecisionAt10": 0.048148,
+            "queriesEvaluated": 648
+          },
+          {
+            "domain": "scientific citation",
+            "datasets": [
+              "scidocs"
+            ],
+            "meanNdcgAt10": 0.11823,
+            "meanPrecisionAt10": 0.0601,
+            "queriesEvaluated": 1000
+          },
+          {
+            "domain": "scientific fact-checking",
+            "datasets": [
+              "scifact"
+            ],
+            "meanNdcgAt10": 0.59552,
+            "meanPrecisionAt10": 0.078333,
+            "queriesEvaluated": 300
+          }
+        ],
+        "deltaG": {
+          "mode": "hybrid+late",
+          "seenDatasets": [
+            "fiqa",
+            "nfcorpus",
+            "scifact"
+          ],
+          "unseenDatasets": [
+            "arguana",
+            "scidocs"
+          ],
+          "seenMeanNdcgAt10": 0.343428,
+          "unseenMeanNdcgAt10": 0.198224,
+          "deltaG": 0.422808
+        }
+      },
+      {
         "mode": "hybrid+rerank+contextual",
         "domains": [
+          {
+            "domain": "argument retrieval",
+            "datasets": [
+              "arguana"
+            ],
+            "meanNdcgAt10": 0.339153,
+            "meanPrecisionAt10": 0.072048,
+            "queriesEvaluated": 1406
+          },
           {
             "domain": "bio-medical",
             "datasets": [
@@ -920,10 +1087,12 @@
             "nfcorpus",
             "scifact"
           ],
-          "unseenDatasets": [],
+          "unseenDatasets": [
+            "arguana"
+          ],
           "seenMeanNdcgAt10": 0.540525,
-          "unseenMeanNdcgAt10": null,
-          "deltaG": null
+          "unseenMeanNdcgAt10": 0.339153,
+          "deltaG": 0.372549
         }
       }
     ],
