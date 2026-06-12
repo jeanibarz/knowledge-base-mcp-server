@@ -1,16 +1,8 @@
 // `kb restore` — validate a backup, stage it, then atomically swap the index symlink.
 
+import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import {
-  addingSentinelPath,
-  modelDir,
-} from './active-model.js';
-import { FAISS_INDEX_PATH } from './config/paths.js';
-import { parseIndexVersionDirName } from './faiss-store-layout.js';
-import { PENDING_SIDECAR_COMMIT_FILENAME } from './pending-sidecar-commit.js';
-import { calculateSHA256, pathExists } from './file-utils.js';
-import { withWriteLock } from './write-lock.js';
 import {
   manifestFileRel,
   manifestVersionRel,
@@ -19,6 +11,8 @@ import {
   validateBackupDirectory,
   type BackupManifest,
 } from './cli-backup.js';
+
+const PENDING_SIDECAR_COMMIT_FILENAME = 'pending-manifest.json';
 
 export const RESTORE_HELP = `kb restore — restore a checksum-validated index directory snapshot
 
@@ -90,8 +84,11 @@ export function parseRestoreArgs(rest: readonly string[]): RestoreArgs {
 }
 
 export async function restoreBackup(args: RestoreArgs): Promise<RestoreResult> {
+  const { FAISS_INDEX_PATH } = await import('./config/paths.js');
+  const { modelDir } = await import('./active-model.js');
+  const { withWriteLock } = await import('./write-lock.js');
   const fromDir = path.resolve(args.fromDir);
-  assertSafeRestoreSource(fromDir);
+  assertSafeRestoreSource(fromDir, FAISS_INDEX_PATH);
 
   // Validation before touching live state catches checksum mismatch and
   // partial backups without creating lock directories or staging files.
@@ -136,14 +133,15 @@ export async function restoreBackup(args: RestoreArgs): Promise<RestoreResult> {
   }
 }
 
-function assertSafeRestoreSource(fromDir: string): void {
-  const faissRoot = path.resolve(FAISS_INDEX_PATH);
+function assertSafeRestoreSource(fromDir: string, faissIndexPath: string): void {
+  const faissRoot = path.resolve(faissIndexPath);
   if (fromDir === faissRoot || fromDir.startsWith(`${faissRoot}${path.sep}`)) {
     throw new Error(`unsafe restore source: --from must be outside $FAISS_INDEX_PATH (${faissRoot})`);
   }
 }
 
 async function assertSafeLiveDestination(modelId: string): Promise<void> {
+  const { addingSentinelPath, modelDir } = await import('./active-model.js');
   if (await pathExists(addingSentinelPath(modelId))) {
     throw new Error(`unsafe restore destination: model ${modelId} has an .adding sentinel`);
   }
@@ -225,4 +223,27 @@ async function nextAvailableIndexVersion(modelDirPath: string): Promise<string> 
     if (parsed !== null) max = Math.max(max, parsed);
   }
   return `index.v${max + 1}`;
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fsp.stat(target);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+    throw err;
+  }
+}
+
+async function calculateSHA256(filePath: string): Promise<string> {
+  const fileBuffer = await fsp.readFile(filePath);
+  return crypto.createHash('sha256').update(fileBuffer).digest('hex');
+}
+
+function parseIndexVersionDirName(name: string): number | null {
+  const match = /^index\.v(\d+)$/.exec(name);
+  if (!match) return null;
+  const n = parseInt(match[1], 10);
+  return Number.isFinite(n) ? n : null;
 }
