@@ -11,6 +11,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { parseDotEnvText } from './config/schema.js';
 import { ASK_HELP, runAsk } from './cli-ask.js';
+import { BACKUP_HELP, runBackup } from './cli-backup.js';
 import { CACHE_HELP, runCache } from './cli-cache.js';
 import { CAPTURE_HELP, runCapture } from './cli-capture.js';
 import { CITE_HELP, runCite } from './cli-cite.js';
@@ -35,6 +36,7 @@ import { RELATED_HELP, runRelated } from './cli-related.js';
 import { REINDEX_HELP, runReindexCli } from './cli-reindex.js';
 import { REMEMBER_HELP, runRemember } from './cli-remember.js';
 import { RESEARCH_HELP, runResearch } from './cli-research.js';
+import { RESTORE_HELP, runRestore } from './cli-restore.js';
 import { SEARCH_HELP, parseSearchArgs, runSearch, takeLastSearchCanonicalTelemetry } from './cli-search.js';
 import { SERVE_HELP, runServe } from './cli-serve.js';
 import { STALE_CHECK_HELP, runStaleCheck } from './cli-stale-check.js';
@@ -103,6 +105,8 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'open',         summary: 'Resolve a chunk id / kb:// URI / result path to its source file.',        help: OPEN_HELP,         handler: runOpen },
   { name: 'cite',         summary: 'Export BibTeX or CSL-JSON from note frontmatter.',                       help: CITE_HELP,         handler: runCite },
   { name: 'related',      summary: 'Find chunks related to an existing chunk id or kb:// URI.',               help: RELATED_HELP,      handler: runRelated },
+  { name: 'backup',       summary: 'Create a checksum-validated active index snapshot.',                      help: BACKUP_HELP,       handler: runBackup },
+  { name: 'restore',      summary: 'Validate and restore an index snapshot with an atomic swap.',             help: RESTORE_HELP,      handler: runRestore },
   { name: 'cache',        summary: 'Inspect and prune local cache surfaces.',                                help: CACHE_HELP,        handler: runCache },
   { name: 'serve',        summary: 'Run a localhost daemon for warm read-only CLI requests.',                 help: SERVE_HELP,        handler: runServe },
   { name: 'ask',          summary: 'Answer from retrieved KB context using a local LLM endpoint.',            help: ASK_HELP,          handler: runAsk },

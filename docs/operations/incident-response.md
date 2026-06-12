@@ -23,6 +23,7 @@ symptom-first and links deeper procedures for the same failure modes.
 | `kb serve` refuses connections | `kb serve status --json` | Start or restart only the warm CLI daemon | [`daemon-lifecycle.md`](daemon-lifecycle.md) |
 | Quarantine count is growing | `kb quarantine list --format=json` | Fix or acknowledge specific files, then retry ingest | [`ADR 0008`](../architecture/adr/0008-ingest-quarantine-jsonl-vs-sqlite.md) |
 | Reindex appears stuck | `kb reindex status --format=json` | Inspect `.reindex.run.json` liveness and current progress | [`feature-flags.md`](../feature-flags.md#contextual-retrieval-at-ingest) |
+| Index rollback or relocation is needed | `kb verify --integrity` and backup manifest checks | Restore a checksum-validated `kb backup` snapshot while readers are stopped | [Backup and Restore](#backup-and-restore) |
 
 ## Evidence Checklist
 
@@ -50,6 +51,56 @@ printed a request id. Canonical events use the `kb-canonical.v1` fields
 documented in [`logs-reader.md`](logs-reader.md): `cmd`, `kb_scope`,
 `result_count`, `took_ms`, `embed_ms`, `faiss_ms`, `error.code`,
 `error.category`, `recovery_hint`, `gate`, and `llm_provider`.
+
+## Backup and Restore
+
+Use `kb backup` before risky local maintenance, host relocation, or manual
+index surgery. The v1 backup format is a directory snapshot for one model's
+active `index.vN` plus model sidecars and `backup-manifest.json` checksums.
+
+**Create a backup**
+
+```bash
+kb verify --integrity
+kb backup --output=/safe/path/kb-backup-$(date +%Y%m%d-%H%M%S)
+```
+
+The output directory must not already exist and must be outside
+`$FAISS_INDEX_PATH`. Keep the directory intact; `kb restore` refuses missing
+files, manifest path escapes, and SHA-256 mismatches.
+
+**Restore a backup**
+
+1. Stop long-running readers and writers first. V1 restore is offline/local:
+   it does not hot-reload `kb serve` or other processes that already loaded
+   an index.
+2. Confirm the backup before changing live state:
+
+   ```bash
+   kb restore --from=/safe/path/kb-backup-20260612-120000
+   kb verify --integrity
+   ```
+
+`kb restore` validates `backup-manifest.json` and all listed checksums before
+touching the live store. It then stages the snapshot into a new `index.vN`
+directory under the backup's model id and atomically swaps the model's `index`
+symlink. Existing retained versions remain on disk until normal pruning.
+
+If the restored model is not the process's active model, run:
+
+```bash
+kb models set-active <model_id>
+```
+
+**Refusals**
+
+- Checksum mismatch: discard or recopy the backup; do not edit the manifest to
+  match tampered bytes.
+- Partial backup: recreate the backup from a healthy source or rebuild the
+  index from source notes.
+- Unsafe destination/source: choose a path outside `$FAISS_INDEX_PATH`.
+- Active writer or incomplete model state: wait for the writer or recover the
+  model before retrying.
 
 ## Search Returns 0 Results for Known Content
 
