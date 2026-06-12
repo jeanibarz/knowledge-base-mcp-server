@@ -1608,6 +1608,32 @@ describe('KnowledgeBaseServer handlers', () => {
     expect((result as any).structuredContent?.degraded).toBeUndefined();
   });
 
+  it('handleRetrieveKnowledge does not degrade hybrid retrieval when request filters are present', async () => {
+    const tempDir = await setRetrieveEnv();
+    process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR = 'on';
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Hybrid lexical fallback content');
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const { searchLatencyMetrics } = await import('./metrics.js');
+    searchLatencyMetrics.reset();
+    const { KBError } = await import('./errors.js');
+    similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_TIMEOUT', 'embedding provider timed out'));
+
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'hybrid fallback',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+      tags: ['ops'],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_TIMEOUT');
+    expect((result as any).structuredContent?.degraded).toBeUndefined();
+    expect(searchLatencyMetrics.snapshot().degraded).toEqual({});
+  });
+
   it('handleRetrieveKnowledge degrades hybrid retrieval to lexical-only when opted in', async () => {
     const tempDir = await setRetrieveEnv();
     const logFile = path.join(tempDir, 'canonical.log');

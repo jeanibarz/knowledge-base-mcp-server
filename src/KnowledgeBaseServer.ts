@@ -1119,6 +1119,7 @@ export class KnowledgeBaseServer {
         if (
           !KB_DENSE_DEGRADE_ON_PROVIDER_ERROR ||
           reason === null ||
+          hasRetrievalFilters(filters) ||
           kbs.length === 0 ||
           lexicalLegResult.failed >= kbs.length
         ) {
