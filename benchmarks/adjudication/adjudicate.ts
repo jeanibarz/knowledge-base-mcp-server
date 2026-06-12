@@ -154,9 +154,10 @@ export function adjudicateRerank(input: AdjudicateRerankInput): RerankAdjudicati
   const family = compareFamily(comparisons, correction, alpha);
 
   // 2. Per-domain gate (§9): enable rerank only where it is a *significant*
-  //    improvement; skip everywhere else (regression OR no-significant-change),
-  //    because the cross-encoder costs latency and the KB survey shows it can
-  //    silently degrade high-precision/lexical corpora.
+  //    improvement; skip everywhere else (regression, no-significant-change, or
+  //    inconclusive-below-noise-floor), because the cross-encoder costs latency
+  //    and the KB survey shows it can silently degrade high-precision/lexical
+  //    corpora.
   const domains: DomainAdjudication[] = family.comparisons.map((comparison, index) => {
     const evidence = input.domains[index];
     const verdict = comparison.correctedVerdict;

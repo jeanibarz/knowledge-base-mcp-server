@@ -78,12 +78,12 @@ describe('evaluateGateComparison', () => {
     expect(summarizeGateRows([row]).worstStatus).toBe('fail');
   });
 
-  it('does NOT fail a non-significant dip below tolerance (reported, not failed)', () => {
+  it('marks a below-tolerance dip under the noise floor as inconclusive, not failed', () => {
     const n = 60;
     const base = baselineVector(n);
     // Mixed-sign per-query deltas: the mean is slightly negative (a dip) but the
     // spread is wide, so the drop is not statistically significant. With a zero
-    // tolerance it is below the band, yet the gate must WARN, not FAIL.
+    // tolerance it is below the band, yet the gate must be inconclusive, not FAIL.
     const current = report({
       ndcg: base.map((v, i) => clamp01(v + (i % 2 === 0 ? -0.4 : 0.36))),
     });
@@ -97,9 +97,10 @@ describe('evaluateGateComparison', () => {
 
     expect(row.belowTolerance).toBe(true);
     expect(row.significant).toBe(false);
-    expect(row.status).toBe('warn');
+    expect(row.status).toBe('inconclusive-below-noise-floor');
     expect(row.status).not.toBe('fail');
     expect(summarizeGateRows([row]).worstStatus).not.toBe('fail');
+    expect(row.noiseFloorPassed).toBe(false);
   });
 
   it('PASSES a dip that stays within tolerance even if measurable', () => {
@@ -163,8 +164,9 @@ describe('summarizeGateRows + renderGateMarkdown', () => {
       baselineLabel: 'benchmarks/results/beir/baseline',
     });
     expect(markdown).toContain('## Retrieval quality gate');
-    expect(markdown).toContain('| Status | Dataset | Mode | Baseline | Current | Δ nDCG@10 | Tolerance | Significance | Verdict |');
+    expect(markdown).toContain('| Status | Dataset | Mode | Baseline | Current | Δ nDCG@10 | Tolerance | MDE | 2×SE | Significance | Verdict |');
     expect(markdown).toContain('Overall: FAIL');
+    expect(markdown).toContain('Noise floor: MDE=2×bounded SE and delta must exceed 2×paired SE');
     expect(markdown).toContain('enforcing FAIL rows');
   });
 });
@@ -276,8 +278,16 @@ describe('parseQualityGateArgs', () => {
     expect(options.thresholds.relativeTolerance).toBeCloseTo(0.03, 6);
     expect(options.thresholds.absoluteTolerance).toBeCloseTo(0.005, 6);
     expect(options.thresholds.alpha).toBeCloseTo(0.01, 6);
+    expect(options.thresholds.minimumDetectableEffectMultiplier).toBe(2);
+    expect(options.thresholds.standardErrorMultiplier).toBe(2);
     expect(options.modes).toEqual(['lexical']);
     expect(options.enforceFailures).toBe(true);
+  });
+
+  it('parses explicit MDE and paired-SE multipliers', () => {
+    const options = parseQualityGateArgs(['--mde-multiplier=3', '--se-multiplier=2.5'], {});
+    expect(options.thresholds.minimumDetectableEffectMultiplier).toBe(3);
+    expect(options.thresholds.standardErrorMultiplier).toBe(2.5);
   });
 });
 

@@ -90,6 +90,11 @@ describe('BEIR benchmark runner', () => {
     const json = JSON.parse(await fsp.readFile(result.jsonPath, 'utf-8')) as {
       git_sha: string;
       metrics: { ndcgAt10: number; mapAt100: number; recallAt10: number; recallAt100: number };
+      metrics_uncertainty: {
+        schema_version: string;
+        observations: number;
+        metrics: { ndcgAt10: { standard_error: number; ci_low: number; ci_high: number; minimum_detectable_effect: number } };
+      };
       high_recall_candidates: {
         schema_version: string;
         candidate_pool_k: number;
@@ -115,6 +120,16 @@ describe('BEIR benchmark runner', () => {
       recallAt10: 1,
       recallAt100: 1,
     });
+    expect(json.metrics_uncertainty).toMatchObject({
+      schema_version: 'kb.beir.metric-uncertainty.v1',
+      observations: 1,
+    });
+    expect(json.metrics_uncertainty.metrics.ndcgAt10).toMatchObject({
+      standard_error: 0,
+      ci_low: 1,
+      ci_high: 1,
+      minimum_detectable_effect: 0,
+    });
     expect(json.high_recall_candidates).toMatchObject({
       schema_version: 'kb.beir.high-recall-candidates.v1',
       candidate_pool_k: 10,
@@ -128,6 +143,7 @@ describe('BEIR benchmark runner', () => {
     expect(report).toContain('This is a local BEIR benchmark run, not an official leaderboard submission.');
     expect(report).toContain('--lexical-unit=source');
     expect(report).toContain('Candidate Recall@100: 1 (pool=10, final k=10)');
+    expect(report).toContain('nDCG@10 uncertainty: SE=0, CI[1, 1], MDE=0');
     await expect(fsp.stat(workspaceRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 

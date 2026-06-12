@@ -89,7 +89,8 @@ Output is one row per `(dataset × mode)` and a per-mode mean across datasets. T
 Per-query metrics are already computed (`QueryMetric` in `benchmarks/beir/metrics.ts`). Add a comparator that takes two run files (per-query nDCG@10 vectors over the same query set) and reports:
 
 - **Paired bootstrap** (10k resamples) confidence interval on the mean delta, and a **paired t-test** p-value.
-- A verdict: `improvement` / `regression` / `no-significant-change` at α = 0.05.
+- A stated **minimum detectable effect (MDE)** for each metric/corpus, derived from the evaluated query count. For bounded recall-like metrics use the binomial approximation `SE = sqrt(p(1-p)/n)` and `MDE = 2 * SE`; paired comparisons also report the empirical paired-delta SE.
+- A verdict: `improvement` / `regression` / `no-significant-change` / `inconclusive-below-noise-floor` at α = 0.05. A delta is actionable only when its absolute value exceeds both the stated MDE and `2 * paired SE`; otherwise the comparator is inconclusive even if the point estimate looks favorable.
 - **Multiple-comparison correction.** A sweep compares many configs at once; reporting each delta at α = 0.05 inflates false positives. Apply **Bonferroni** (or Holm) correction across the comparison family. The risk is concrete, not theoretical: in the KB survey, a study of ranking comparisons found a naive binomial test marked all 4 primary comparisons significant, while a corrected **wild-cluster bootstrap** left only 1 surviving Bonferroni (`[KB: llm-as-judge/2605.27789]`). We adopt the wild-cluster variant when queries cluster by dataset/domain (the BEIR matrix does), since per-query results within a dataset are not independent.
 - **Noisy-label correction for the §5 LLM-grader leg.** Bootstrap over LLM-graded labels (not human qrels) is biased: an AI-generated-label study measured naive-bootstrap CI coverage as low as **15%** vs the nominal 95%, fixed by a coupled-label bootstrap with variance correction (`[KB: labor-market-intel/2604.23770]`). The §5 e2e comparator therefore uses the bias-corrected variant; the §3 BEIR comparator (human qrels) keeps the plain paired bootstrap.
 
@@ -100,7 +101,7 @@ This is the arbiter for every roadmap decision and for the gate's "is this a rea
 Mirror the latency `budget-diff` gate for quality:
 
 - A committed **baseline** under `benchmarks/results/beir/baseline/` per `(dataset × mode)` for the CI subset (§2), tagged with the commit + env that produced it.
-- On every PR touching retrieval code (`src/search-core.ts`, `src/hybrid-retrieval.ts`, `src/reranker.ts`, `src/lexical-*.ts`, `src/faiss-*.ts`, chunking config), CI runs the CI-subset sweep (lexical + dense via `fake`/Ollama as available) and fails if **nDCG@10 drops below `baseline − tolerance`** on any subset dataset, where the drop is **statistically significant** per §3 (a non-significant dip is reported, not failed — avoids flaky gates).
+- On every PR touching retrieval code (`src/search-core.ts`, `src/hybrid-retrieval.ts`, `src/reranker.ts`, `src/lexical-*.ts`, `src/faiss-*.ts`, chunking config), CI runs the CI-subset sweep (lexical + dense via `fake`/Ollama as available) and fails if **nDCG@10 drops below `baseline − tolerance`** on any subset dataset, where the drop is **statistically significant** per §3 and clears the MDE/`2 * SE` noise floor. A below-tolerance dip below that floor is reported as `inconclusive-below-noise-floor`, not pass or fail — avoids flaky gates and prevents accepting noise as signal.
 - Baseline updates are an explicit, reviewed commit (`chore(bench): update BEIR baseline`), never automatic — the same discipline as latency baselines.
 
 The gate runs the credential-free path (lexical always; dense via `fake` provider for determinism) so it is hermetic. Full-provider sweeps are a manual/release job, not per-PR.
@@ -136,6 +137,7 @@ The product promise is *general knowledge research*. The program is structured s
 1. **Tune on dev, report on test.** Hyperparameter search (RRF `c`, rerank `topN`, chunk size, fetch multiplier) runs on dev splits only via the existing Optuna integration (`bench:tune`), pointed at BEIR dev. Reported numbers are test-split. A config tuned on test is a defect.
 2. **Headline = multi-domain mean.** Per §2, the quoted number is the average across the BEIR matrix. This is the anti-overfitting metric by construction.
 3. **The e2e RAG eval (§5) is a hard veto.** No retrieval change ships if it regresses faithfulness/answer-correctness on the held-out product eval.
+   The veto must use the same MDE/`2 * SE` noise-floor contract for aggregate scorecard metrics: below-floor deltas are inconclusive, not pass/fail evidence.
 4. **Zero-shot only, until proven otherwise.** BEIR and BRIGHT are zero-shot benchmarks; we run them zero-shot. Any future domain adaptation / fine-tuning is gated behind a separate RFC that must report zero-shot BEIR *and* e2e RAG numbers side-by-side with the adapted numbers.
 
 Per the KB survey, the four checks above are necessary but **not sufficient** — "tune on dev, report on test" still permits *within-zero-shot* overfitting (tuning on BEIR dev for the express purpose of climbing BEIR test). Practitioners harden this with explicit structural probes (`[KB: llm-generalization/2605.16819]`, `[KB: llm-generalization/2605.11518]`):
@@ -184,7 +186,7 @@ Each item below is gated by §3/§5 and (for the large ones) deferred to its own
 | **M2** | Full BEIR matrix sweep + MLflow ledger + `compare/` leaderboard view; **BEIR headline** report; per-domain breakdown + Δ_g vs unseen-generality set (§6) | Multi-domain mean nDCG@10 for the shipped pipeline recorded and reproducible from commit+env; Δ_g reported |
 | **M3** | CI quality gate live; **BRIGHT** adapter + report | Gate fails a seeded regression in test; BRIGHT nDCG recorded for hybrid+rerank vs dense baseline |
 | **M4** | End-to-end RAG eval, **fully human-label-free** (Tier 1 gold-answer/supporting-fact metrics → Tier 2 NLI/semantic → Tier 3 multi-judge panel w/ unsupervised self-consistency calibration → Tier 4 automated bias probes — §5); **MTEB** submission of active embedding model | e2e scorecard recorded on held-out gold-bearing QA; panel self-consistency confidence + per-judge probe-measured bias coefficients reported (no human labels); MTEB result obtained for the default model |
-| **M5** | First Tier-1 technique adjudicated through the full harness | A ship/no-ship decision backed by §3 significance + §5 e2e veto (+ per-domain gate for reranker changes) |
+| **M5** | First Tier-1 technique adjudicated through the full harness | A ship/no-ship decision backed by §3 significance, stated MDE, observed delta vs `2 * SE`, and §5 e2e veto (+ per-domain gate for reranker changes) |
 
 ### M4 implementation note
 

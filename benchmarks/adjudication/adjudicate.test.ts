@@ -39,7 +39,7 @@ function regressingDomain(domain: string): DomainEvidence {
   };
 }
 
-/** A domain whose per-query deltas cancel → no significant change. */
+/** A domain whose per-query deltas cancel below the noise floor. */
 function flatDomain(domain: string): DomainEvidence {
   return {
     domain,
@@ -77,12 +77,12 @@ describe('adjudicateRerank — per-domain gate + e2e veto (RFC 020 §3/§5/§9)'
       KB_RERANK_SKIP_DOMAINS: 'code,skills',
     });
     // The improving domain rejects the null after family correction; the flat
-    // one does not.
+    // one is below the MDE/2x-SE noise floor and remains skipped.
     const byDomain = Object.fromEntries(result.domains.map((d) => [d.domain, d]));
     expect(byDomain.scifact.verdict).toBe('improvement');
     expect(byDomain.scifact.action).toBe('enable');
     expect(byDomain.code.verdict).toBe('regression');
-    expect(byDomain.skills.verdict).toBe('no-significant-change');
+    expect(byDomain.skills.verdict).toBe('inconclusive-below-noise-floor');
     expect(byDomain.skills.action).toBe('skip');
   });
 
