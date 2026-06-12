@@ -8,6 +8,8 @@
 // per-query labels. RFC 008 §6.8 capped `/health` at `{status:"ok"}`, so
 // runtime histograms live on the existing `kb_stats` MCP tool surface.
 
+import type { SearchLatencyStage } from './timing-core.js';
+
 /**
  * Fixed log-spaced latency bucket upper bounds, in milliseconds. 10 bucket
  * cap (issue #210 spec) — one per decade-ish step from sub-millisecond
@@ -54,6 +56,38 @@ interface MetricsState {
   startedAtMs: number;
 }
 
+interface HistogramState {
+  buckets: number[];
+  count: number;
+  sumMs: number;
+  startedAtMs: number;
+}
+
+export interface LatencyHistogramSnapshot {
+  buckets: number[];
+  count: number;
+  sum_ms: number;
+  since_started_at: string;
+}
+
+export type SearchLatencyMode = 'dense' | 'lexical' | 'hybrid' | 'auto' | 'unknown';
+export type SearchLatencyStatus = 'success' | 'error';
+
+export interface SearchLatencyRecord {
+  mode: SearchLatencyMode;
+  status: SearchLatencyStatus;
+  totalMs: number;
+  stageDurationsMs?: Partial<Record<SearchLatencyStage, number>>;
+}
+
+export interface SearchLatencyMetricsSnapshot {
+  requests: Partial<Record<SearchLatencyMode, Partial<Record<SearchLatencyStatus, LatencyHistogramSnapshot>>>>;
+  stages: Partial<Record<
+    SearchLatencyMode,
+    Partial<Record<SearchLatencyStage, Partial<Record<SearchLatencyStatus, LatencyHistogramSnapshot>>>>
+  >>;
+}
+
 function emptyState(now: number): MetricsState {
   return {
     buckets: new Array<number>(LATENCY_BUCKET_BOUNDS_MS.length + 1).fill(0),
@@ -62,6 +96,31 @@ function emptyState(now: number): MetricsState {
     tokensInSum: 0,
     tokensReported: false,
     startedAtMs: now,
+  };
+}
+
+function emptyHistogramState(now: number): HistogramState {
+  return {
+    buckets: new Array<number>(LATENCY_BUCKET_BOUNDS_MS.length + 1).fill(0),
+    count: 0,
+    sumMs: 0,
+    startedAtMs: now,
+  };
+}
+
+function recordHistogramSample(state: HistogramState, latencyMs: number): void {
+  const safe = !Number.isFinite(latencyMs) || latencyMs < 0 ? 0 : latencyMs;
+  state.count += 1;
+  state.sumMs += safe;
+  state.buckets[bucketIndexForLatency(safe)] += 1;
+}
+
+function snapshotHistogram(state: HistogramState): LatencyHistogramSnapshot {
+  return {
+    buckets: [...state.buckets],
+    count: state.count,
+    sum_ms: roundLatency(state.sumMs),
+    since_started_at: new Date(state.startedAtMs).toISOString(),
   };
 }
 
@@ -199,6 +258,80 @@ export class ProviderCallMetrics {
 }
 
 /**
+ * Process-lifetime search request latency registry for daemon-scrapeable
+ * search paths. Labels are intentionally bounded to mode/status/stage:
+ * no query text, KB name, path, request id, or error message is recorded.
+ */
+export class SearchLatencyMetrics {
+  private readonly requestStates = new Map<string, HistogramState>();
+  private readonly stageStates = new Map<string, HistogramState>();
+  private readonly now: () => number;
+
+  constructor(options: { now?: () => number } = {}) {
+    this.now = options.now ?? Date.now;
+  }
+
+  record(sample: SearchLatencyRecord): void {
+    const requestState = this.getRequestState(sample.mode, sample.status);
+    recordHistogramSample(requestState, sample.totalMs);
+
+    for (const [stage, value] of Object.entries(sample.stageDurationsMs ?? {}) as Array<[SearchLatencyStage, number]>) {
+      if (typeof value !== 'number') continue;
+      const stageState = this.getStageState(sample.mode, stage, sample.status);
+      recordHistogramSample(stageState, value);
+    }
+  }
+
+  snapshot(): SearchLatencyMetricsSnapshot {
+    const requests: SearchLatencyMetricsSnapshot['requests'] = {};
+    for (const [key, state] of this.requestStates.entries()) {
+      const [mode, status] = key.split('|') as [SearchLatencyMode, SearchLatencyStatus];
+      requests[mode] ??= {};
+      requests[mode]![status] = snapshotHistogram(state);
+    }
+
+    const stages: SearchLatencyMetricsSnapshot['stages'] = {};
+    for (const [key, state] of this.stageStates.entries()) {
+      const [mode, stage, status] = key.split('|') as [SearchLatencyMode, SearchLatencyStage, SearchLatencyStatus];
+      stages[mode] ??= {};
+      stages[mode]![stage] ??= {};
+      stages[mode]![stage]![status] = snapshotHistogram(state);
+    }
+
+    return { requests, stages };
+  }
+
+  reset(): void {
+    this.requestStates.clear();
+    this.stageStates.clear();
+  }
+
+  private getRequestState(mode: SearchLatencyMode, status: SearchLatencyStatus): HistogramState {
+    const key = `${mode}|${status}`;
+    let state = this.requestStates.get(key);
+    if (state === undefined) {
+      state = emptyHistogramState(this.now());
+      this.requestStates.set(key, state);
+    }
+    return state;
+  }
+
+  private getStageState(
+    mode: SearchLatencyMode,
+    stage: SearchLatencyStage,
+    status: SearchLatencyStatus,
+  ): HistogramState {
+    const key = `${mode}|${stage}|${status}`;
+    let state = this.stageStates.get(key);
+    if (state === undefined) {
+      state = emptyHistogramState(this.now());
+      this.stageStates.set(key, state);
+    }
+    return state;
+  }
+}
+
+/**
  * Round a latency to 3 significant decimal places. The histogram
  * resolution is bounded by bucket width, so reporting full
  * floating-point precision overstates accuracy; one decimal in
@@ -213,6 +346,8 @@ function roundLatency(latencyMs: number): number {
  * fresh `ProviderCallMetrics` or call `reset()` between cases.
  */
 export const providerCallMetrics = new ProviderCallMetrics();
+
+export const searchLatencyMetrics = new SearchLatencyMetrics();
 
 /**
  * Wrap a langchain-shaped embeddings client so every `embedQuery` /

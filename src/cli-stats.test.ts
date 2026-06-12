@@ -69,6 +69,10 @@ function payload(): KbStatsPayload {
     // per-model provider call telemetry. Empty `{}` matches a fresh
     // process where the active provider has not been called yet.
     provider_calls: {},
+    search_latency: {
+      requests: {},
+      stages: {},
+    },
     query_cache: {
       hits: 0,
       misses: 0,

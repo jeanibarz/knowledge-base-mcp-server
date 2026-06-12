@@ -99,6 +99,11 @@ import {
   type CanonicalLogInput,
 } from './canonical-log.js';
 import { formatKbStatsOpenMetrics } from './prometheus-export.js';
+import { searchLatencyMetrics } from './metrics.js';
+import {
+  searchStageDurationsFromTiming,
+  type TimingPayload,
+} from './timing-core.js';
 import {
   formatDiffIndexMarkdown,
   resolveIndexVersionPath,
@@ -685,6 +690,7 @@ export class KnowledgeBaseServer {
     rerank?: 'on' | 'off';
   }): Promise<CallToolResult> {
     const canonical: Partial<CanonicalLogInput> = {};
+    const requestStartedAt = Date.now();
     const query: string = args.query;
     const knowledgeBaseName: string | undefined = args.knowledge_base_name;
     const threshold: number | undefined = args.threshold;
@@ -708,6 +714,11 @@ export class KnowledgeBaseServer {
     }, async () => {
       if (searchMode === 'hybrid') {
         if (hasNeighborContext(neighborContext)) {
+          searchLatencyMetrics.record({
+            mode: 'hybrid',
+            status: 'error',
+            totalMs: Date.now() - requestStartedAt,
+          });
           return {
             content: [{
               type: 'text',
@@ -747,6 +758,11 @@ export class KnowledgeBaseServer {
         activeModelId = await resolveActiveModel({ explicitOverride: modelNameOverride });
       } catch (err) {
         if (err instanceof ActiveModelResolutionError) {
+          searchLatencyMetrics.record({
+            mode: 'dense',
+            status: 'error',
+            totalMs: Date.now() - requestStartedAt,
+          });
           return {
             content: [{ type: 'text', text: err.message }],
             isError: true,
@@ -784,6 +800,7 @@ export class KnowledgeBaseServer {
       for (const result of similaritySearchResults) {
         denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
       }
+      const gateStartedAt = Date.now();
       const gate = await applyRelevanceGate({
         query,
         taskContext,
@@ -792,6 +809,7 @@ export class KnowledgeBaseServer {
         gateOverride,
         process: 'mcp',
       });
+      const gateMs = Date.now() - gateStartedAt;
       similaritySearchResults = gate.results;
       emitRelevanceGateDecision({
         process: 'mcp',
@@ -823,6 +841,20 @@ export class KnowledgeBaseServer {
         responseText = `${responseText}\n\n${formatGateVerdictFooter(gate.verdict)}`;
       }
       canonical.format_ms = Date.now() - formatStartedAt;
+      const stageTiming: TimingPayload = {
+        embed_query_ms: timing.embed_query_ms,
+        faiss_search_ms: timing.faiss_search_ms,
+        query_search_ms: timing.query_search_ms,
+        post_filter_ms: timing.post_filter_ms,
+        gate_ms: gateMs,
+        format_ms: canonical.format_ms,
+      };
+      searchLatencyMetrics.record({
+        mode: 'dense',
+        status: 'success',
+        totalMs: Date.now() - requestStartedAt,
+        stageDurationsMs: searchStageDurationsFromTiming(stageTiming),
+      });
 
       // RFC 013 M3 §4.5 + round-1 minimalist F5 — emit `model_id` on the
       // response envelope (NOT per-chunk) so an agent comparing two models
@@ -842,6 +874,11 @@ export class KnowledgeBaseServer {
       return withGateVerdict({ content: [content] }, gate.verdict);
     } catch (error: unknown) {
       const err = toError(error);
+      searchLatencyMetrics.record({
+        mode: 'dense',
+        status: 'error',
+        totalMs: Date.now() - requestStartedAt,
+      });
       logger.error('Error retrieving knowledge:', err);
       if (err.stack) {
         logger.error(err.stack);
@@ -943,6 +980,7 @@ export class KnowledgeBaseServer {
     const { query, knowledgeBaseName, modelNameOverride, filters, canonical, taskContext, gateOverride, rerankOverride } = input;
     const HYBRID_TOP_K = 10;
     const fetchK = hybridFetchK(HYBRID_TOP_K);
+    const requestStartedAt = Date.now();
 
     try {
       let activeModelId: string;
@@ -950,6 +988,11 @@ export class KnowledgeBaseServer {
         activeModelId = await resolveActiveModel({ explicitOverride: modelNameOverride });
       } catch (err) {
         if (err instanceof ActiveModelResolutionError) {
+          searchLatencyMetrics.record({
+            mode: 'hybrid',
+            status: 'error',
+            totalMs: Date.now() - requestStartedAt,
+          });
           return { content: [{ type: 'text', text: err.message }], isError: true };
         }
         throw err;
@@ -972,6 +1015,8 @@ export class KnowledgeBaseServer {
         ? [knowledgeBaseName]
         : await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
       const kbs = kbNames.map((kbName) => ({ kbName, kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName) }));
+      let lexicalSearchMs = 0;
+      const lexicalStartedAt = Date.now();
       const lexicalPromise = runLexicalLeg({
         kbs,
         query,
@@ -980,7 +1025,10 @@ export class KnowledgeBaseServer {
         onError: (kbName, err) => {
           logger.warn(`hybrid: lexical leg failed for KB "${kbName}": ${err.message}`);
         },
-      }).then((res) => res.hits);
+      }).then((res) => {
+        lexicalSearchMs = Date.now() - lexicalStartedAt;
+        return res.hits;
+      });
 
       const [denseResults, lexicalResults] = await Promise.all([densePromise, lexicalPromise]);
       if (canonical) {
@@ -989,12 +1037,15 @@ export class KnowledgeBaseServer {
       }
 
       const rerankConfig = resolveRerankerConfig(process.env, rerankOverride, knowledgeBaseName ?? null);
+      const fusionStartedAt = Date.now();
       const fusion = fuseHybridResultsWithDiagnostics({
         denseResults,
         lexicalResults,
         k: rerankConfig.enabled ? Math.max(HYBRID_TOP_K, rerankConfig.topN) : HYBRID_TOP_K,
       });
+      const fusionMs = Date.now() - fusionStartedAt;
       let ranked = fusion.results;
+      const rerankStartedAt = Date.now();
       const rerankResult = await applyRerankerIfEnabled({
         query,
         results: ranked,
@@ -1005,7 +1056,9 @@ export class KnowledgeBaseServer {
         searchMode: 'hybrid',
         kbScope: knowledgeBaseName ?? null,
       });
+      const rerankMs = rerankResult.tookMs ?? Date.now() - rerankStartedAt;
       ranked = rerankResult.results;
+      const gateStartedAt = Date.now();
       const gate = await applyRelevanceGate({
         query,
         taskContext,
@@ -1015,6 +1068,7 @@ export class KnowledgeBaseServer {
         gateOverride,
         process: 'mcp',
       });
+      const gateMs = Date.now() - gateStartedAt;
       ranked = gate.results;
       emitRelevanceGateDecision({
         process: 'mcp',
@@ -1037,6 +1091,24 @@ export class KnowledgeBaseServer {
         canonical.top_sources = topSourcesForCanonicalLog(ranked);
         canonical.format_ms = Date.now() - formatStartedAt;
       }
+      const stageTiming: TimingPayload = {
+        dense_search_ms: denseTiming.total_ms,
+        embed_query_ms: denseTiming.embed_query_ms,
+        faiss_search_ms: denseTiming.faiss_search_ms,
+        query_search_ms: denseTiming.query_search_ms,
+        post_filter_ms: denseTiming.post_filter_ms,
+        lexical_search_ms: lexicalSearchMs,
+        fusion_ms: fusionMs,
+        rerank_ms: rerankMs,
+        gate_ms: gateMs,
+        format_ms: canonical?.format_ms,
+      };
+      searchLatencyMetrics.record({
+        mode: 'hybrid',
+        status: 'success',
+        totalMs: Date.now() - requestStartedAt,
+        stageDurationsMs: searchStageDurationsFromTiming(stageTiming),
+      });
       const rerankHeader = rerankResult.candidatesIn > 0
         ? `; rerank ${rerankResult.model}${rerankResult.degraded ? ' degraded' : ''}`
         : '';
@@ -1049,6 +1121,11 @@ export class KnowledgeBaseServer {
       return withGateVerdict({ content: [content] }, gate.verdict);
     } catch (error: unknown) {
       const err = toError(error);
+      searchLatencyMetrics.record({
+        mode: 'hybrid',
+        status: 'error',
+        totalMs: Date.now() - requestStartedAt,
+      });
       logger.error('Error retrieving knowledge (hybrid):', err);
       if (err.stack) logger.error(err.stack);
       return { content: [mcpErrorContent(err)], isError: true };
