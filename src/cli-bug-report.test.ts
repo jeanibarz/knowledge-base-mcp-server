@@ -15,6 +15,8 @@ function minimalDoctorReport(): DoctorReport {
       binary_path: null,
       version: null,
       mtime: null,
+      type: null,
+      factory: null,
       storage: {
         active_version_bytes: null,
         inactive_version_count: 0,
@@ -131,6 +133,7 @@ function minimalDoctorReport(): DoctorReport {
       limitation: 'test',
     },
     provider_calls: {},
+    dense_search_latency: null,
     integrity: null,
   };
 }

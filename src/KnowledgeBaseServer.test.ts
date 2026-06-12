@@ -423,6 +423,8 @@ describe('KnowledgeBaseServer handlers', () => {
       provider: 'huggingface',
       model: 'BAAI/bge-small-en-v1.5',
       dim: 384,
+      index_type: 'flat',
+      index_factory: 'Flat',
     });
     expect(payload.index_path).toBe(process.env.FAISS_INDEX_PATH);
     expect(payload.last_index_update.status).toBe('never_run');
