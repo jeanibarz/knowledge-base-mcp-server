@@ -24,6 +24,7 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('kb_search_request_duration_ms_bucket{le="+Inf",mode="dense",status="success"} 1');
     expect(text).toContain('kb_search_request_duration_ms_sum{mode="dense",status="success"} 80');
     expect(text).toContain('kb_search_request_duration_ms_count{mode="dense",status="success"} 1');
+    expect(text).toContain('kb_search_degraded_total{mode="hybrid",reason="provider_timeout"} 2');
     expect(text).toContain('# TYPE kb_search_stage_duration_ms histogram');
     expect(text).toContain('kb_search_stage_duration_ms_bucket{le="30",mode="dense",stage="embed_query",status="success"} 1');
     expect(text).toContain('kb_search_stage_duration_ms_sum{mode="dense",stage="embed_query",status="success"} 12');
@@ -115,6 +116,11 @@ function samplePayload(): KbStatsPayload {
           embed_query: {
             success: histogramSnapshot(12),
           },
+        },
+      },
+      degraded: {
+        hybrid: {
+          provider_timeout: 2,
         },
       },
     },

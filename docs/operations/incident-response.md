@@ -18,7 +18,7 @@ symptom-first and links deeper procedures for the same failure modes.
 | --- | --- | --- | --- |
 | Search returns 0 results for known content | `kb logs recent --format=json` and `kb stats` | Refresh the affected KB or bypass gate/rerank to bisect | [`docs/troubleshooting-local-kb.md`](../troubleshooting-local-kb.md) |
 | FAISS write lock is busy | Search error category `lock` or code `REFRESH_LOCK_BUSY` | Wait for the writer; keep using read-only search | [`local-services.md`](local-services.md#refresh-and-reindex-discipline) |
-| Embedding provider is degraded | `kb doctor --format=json` backend row or provider error codes | Start/fix the backend, then retry | [`local-services.md`](local-services.md#daily-health-check) |
+| Embedding provider is degraded | `kb doctor --format=json` backend row, provider error codes, or `degraded: true` retrieval events | Start/fix the backend; optionally enable MCP lexical degradation during the incident | [`local-services.md`](local-services.md#daily-health-check) |
 | LLM judge is unreachable | Gate canonical event has `gate.degraded: true` | Let fail-soft retrieval continue; fix judge endpoint before changing gate defaults | [`eval-gate-harness.md`](eval-gate-harness.md) |
 | `kb serve` refuses connections | `kb serve status --json` | Start or restart only the warm CLI daemon | [`daemon-lifecycle.md`](daemon-lifecycle.md) |
 | Quarantine count is growing | `kb quarantine list --format=json` | Fix or acknowledge specific files, then retry ingest | [`ADR 0008`](../architecture/adr/0008-ingest-quarantine-jsonl-vs-sqlite.md) |
@@ -229,7 +229,21 @@ kb logs recent --limit=50 --format=json \
 ```
 
 Look for `backend.healthy: false`, `PROVIDER_UNAVAILABLE`,
-`PROVIDER_TIMEOUT`, or `PROVIDER_AUTH`.
+`PROVIDER_TIMEOUT`, or `PROVIDER_AUTH`. If
+`KB_DENSE_DEGRADE_ON_PROVIDER_ERROR=on` is enabled for the MCP server, also
+check whether searches succeeded with `degraded: true` and bounded
+`degrade_reason` values:
+
+```bash
+kb logs recent --limit=50 --format=json \
+  | jq '.events[]
+        | select(.tool == "retrieve_knowledge" and .degraded == true)
+        | {ts, request_id, process, tool, search_mode, degraded, degrade_reason, result_count}'
+```
+
+The opt-in degradation path is lexical-only and only applies to
+`PROVIDER_UNAVAILABLE` / `PROVIDER_TIMEOUT`. `PROVIDER_AUTH`, active-model,
+validation, and index errors should still fail closed.
 
 **Mitigate**
 
@@ -248,7 +262,19 @@ Look for `backend.healthy: false`, `PROVIDER_UNAVAILABLE`,
    kb search "known phrase" --k=5
    ```
 
-4. If a refresh failed mid-run, inspect `kb doctor` and `kb stats` before
+4. For MCP agents that must continue read-only retrieval while a local
+   embedding daemon is down, temporarily start the MCP server with lexical
+   degradation enabled:
+
+   ```bash
+   export KB_DENSE_DEGRADE_ON_PROVIDER_ERROR=on
+   ```
+
+   Confirm degraded responses through canonical logs or `/metrics`
+   (`kb_search_degraded_total{mode,reason}`), and remove the flag after the
+   provider is healthy.
+
+5. If a refresh failed mid-run, inspect `kb doctor` and `kb stats` before
    starting a broad refresh.
 
 **Escalate**

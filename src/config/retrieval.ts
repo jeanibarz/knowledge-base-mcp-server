@@ -25,3 +25,19 @@ export function parseKBEditorUri(raw: string | undefined): KBEditorUriMode {
 }
 
 export const KB_EDITOR_URI: KBEditorUriMode = parseKBEditorUri(process.env.KB_EDITOR_URI);
+
+// ---------------------------------------------------------------------------
+// Dense-provider degradation (#595).
+// ---------------------------------------------------------------------------
+
+export function parseDenseDegradeOnProviderError(raw: string | undefined): boolean {
+  return raw?.trim().toLowerCase() === 'on';
+}
+
+/**
+ * Off by default: dense and hybrid retrieval fail closed unless the operator
+ * explicitly accepts lexical-only degradation during transient provider
+ * outages.
+ */
+export const KB_DENSE_DEGRADE_ON_PROVIDER_ERROR: boolean =
+  parseDenseDegradeOnProviderError(process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR);

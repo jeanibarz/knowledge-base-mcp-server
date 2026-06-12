@@ -92,6 +92,7 @@ describe('KnowledgeBaseServer handlers', () => {
     KB_INGEST_ENABLED: process.env.KB_INGEST_ENABLED,
     INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
     INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
+    KB_DENSE_DEGRADE_ON_PROVIDER_ERROR: process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
   };
 
   beforeEach(() => {
@@ -1432,6 +1433,229 @@ describe('KnowledgeBaseServer handlers', () => {
       state: 'injected',
       input_count: 2,
       output_count: 2,
+    });
+  });
+
+  it('handleRetrieveKnowledge fails closed on provider errors by default', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Alpha fallback content');
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const { KBError } = await import('./errors.js');
+    similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_UNAVAILABLE', 'embedding provider unavailable'));
+
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'alpha',
+      knowledge_base_name: 'alpha',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_UNAVAILABLE');
+    expect((result as any).structuredContent?.degraded).toBeUndefined();
+  });
+
+  it('handleRetrieveKnowledge degrades dense retrieval to lexical-only when opted in', async () => {
+    const tempDir = await setRetrieveEnv();
+    const logFile = path.join(tempDir, 'canonical.log');
+    process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR = 'on';
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'canonical';
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Alpha lexical fallback content');
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'second.md'), 'Second alpha fallback content');
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const { KBError } = await import('./errors.js');
+    similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_TIMEOUT', 'embedding provider timed out'));
+
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'alpha fallback',
+      knowledge_base_name: 'alpha',
+      gate: 'on',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('> _Mode: degraded lexical-only (reason: provider_timeout; original mode dense)._');
+    expect(result.content[0].text).toContain('Alpha lexical fallback content');
+    expect(result.content[0].text).toContain('Second alpha fallback content');
+    expect((result as any).structuredContent).toMatchObject({
+      degraded: true,
+      degrade_reason: 'provider_timeout',
+      gate_verdict: {
+        state: 'injected',
+        input_count: 2,
+        output_count: 2,
+      },
+    });
+    const events = (await readCanonicalEvents(logFile))
+      .filter((event) => event.tool === 'retrieve_knowledge');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      search_mode: 'dense',
+      degraded: true,
+      degrade_reason: 'provider_timeout',
+      result_count: 2,
+    });
+    expect(events[0].error).toBeUndefined();
+  });
+
+  it('handleRetrieveKnowledge does not degrade dense retrieval when metadata filters are present', async () => {
+    const tempDir = await setRetrieveEnv();
+    process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR = 'on';
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Alpha fallback content');
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const { KBError } = await import('./errors.js');
+    similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_TIMEOUT', 'embedding provider timed out'));
+
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'alpha',
+      knowledge_base_name: 'alpha',
+      extensions: ['.md'],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_TIMEOUT');
+    expect((result as any).structuredContent?.degraded).toBeUndefined();
+  });
+
+  it('handleRetrieveKnowledge does not degrade provider auth errors', async () => {
+    const tempDir = await setRetrieveEnv();
+    process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR = 'on';
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Alpha fallback content');
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const { KBError } = await import('./errors.js');
+    similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_AUTH', 'missing provider credentials'));
+
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'alpha',
+      knowledge_base_name: 'alpha',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_AUTH');
+    expect((result as any).structuredContent?.degraded).toBeUndefined();
+  });
+
+  it('handleRetrieveKnowledge returns the provider error when no lexical leg is available', async () => {
+    await setRetrieveEnv();
+    process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR = 'on';
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const { KBError } = await import('./errors.js');
+    similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_UNAVAILABLE', 'embedding provider unavailable'));
+
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'alpha',
+      knowledge_base_name: 'missing-kb',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_UNAVAILABLE');
+    expect((result as any).structuredContent?.degraded).toBeUndefined();
+  });
+
+  it('handleRetrieveKnowledge returns the provider error when every lexical leg fails', async () => {
+    const tempDir = await setRetrieveEnv();
+    process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR = 'on';
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Alpha fallback content');
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const { LexicalIndex } = await import('./lexical-index.js');
+    jest.spyOn(LexicalIndex, 'load').mockRejectedValueOnce(new Error('broken lexical index'));
+    const { KBError } = await import('./errors.js');
+    similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_UNAVAILABLE', 'embedding provider unavailable'));
+
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'alpha',
+      knowledge_base_name: 'alpha',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_UNAVAILABLE');
+    expect((result as any).structuredContent?.degraded).toBeUndefined();
+  });
+
+  it('handleRetrieveKnowledge fails closed for hybrid provider errors by default', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Hybrid lexical fallback content');
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const { KBError } = await import('./errors.js');
+    similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_UNAVAILABLE', 'embedding provider unavailable'));
+
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'hybrid fallback',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_UNAVAILABLE');
+    expect((result as any).structuredContent?.degraded).toBeUndefined();
+  });
+
+  it('handleRetrieveKnowledge degrades hybrid retrieval to lexical-only when opted in', async () => {
+    const tempDir = await setRetrieveEnv();
+    const logFile = path.join(tempDir, 'canonical.log');
+    process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR = 'on';
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'canonical';
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Hybrid lexical fallback content');
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const { searchLatencyMetrics } = await import('./metrics.js');
+    searchLatencyMetrics.reset();
+    const { KBError } = await import('./errors.js');
+    similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_UNAVAILABLE', 'embedding provider unavailable'));
+
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'hybrid fallback',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+      gate: 'on',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain(
+      '> _Mode: degraded lexical-only (reason: provider_unavailable; original mode hybrid); dense fetched 0, lexical fetched 1',
+    );
+    expect(result.content[0].text).toContain('Hybrid lexical fallback content');
+    expect((result as any).structuredContent).toMatchObject({
+      degraded: true,
+      degrade_reason: 'provider_unavailable',
+      gate_verdict: {
+        state: 'injected',
+        input_count: 1,
+        output_count: 1,
+      },
+    });
+    const events = (await readCanonicalEvents(logFile))
+      .filter((event) => event.tool === 'retrieve_knowledge');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      search_mode: 'hybrid',
+      degraded: true,
+      degrade_reason: 'provider_unavailable',
+      result_count: 1,
+    });
+    expect(searchLatencyMetrics.snapshot().degraded).toEqual({
+      hybrid: { provider_unavailable: 1 },
     });
   });
 

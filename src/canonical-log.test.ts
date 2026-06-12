@@ -48,6 +48,9 @@ describe('canonical log line schema (#216)', () => {
         model_id: 'fake__model',
         elapsed_ms: 1,
       },
+      error: { code: 'PROVIDER_TIMEOUT', category: 'provider' },
+      degraded: true,
+      degrade_reason: 'provider_timeout',
     });
 
     const json = stableCanonicalJson(event);
@@ -66,10 +69,15 @@ describe('canonical log line schema (#216)', () => {
         model_id: 'fake__model',
         elapsed_ms: 1,
       },
+      error: { code: 'PROVIDER_TIMEOUT', category: 'provider' },
+      degraded: true,
+      degrade_reason: 'provider_timeout',
     });
     expect(json.indexOf('"schema_version"')).toBeLessThan(json.indexOf('"request_id"'));
     expect(json.indexOf('"top_sources"')).toBeLessThan(json.indexOf('"took_ms"'));
     expect(json.indexOf('"cache"')).toBeLessThan(json.indexOf('"query_cache"'));
+    expect(json.indexOf('"error"')).toBeLessThan(json.indexOf('"degraded"'));
+    expect(json.indexOf('"degraded"')).toBeLessThan(json.indexOf('"degrade_reason"'));
   });
 
   it('extracts error code and category from MCP tool error payloads', () => {

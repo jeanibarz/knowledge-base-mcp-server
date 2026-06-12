@@ -14,6 +14,7 @@ verify the active behavior.
 | Advanced retrieval exploration | `kb search --diverse`, `--anti-query=<text>`, `--plus=<text>`, `--minus=<text>` | off | CLI search | Implemented, opt-in | per-call flags only | `kb search "agent evidence" --diverse --format=json` |
 | Query decomposition | `kb search --mode=hybrid --decompose`, `--decompose-provider=rule\|llm`, `--decompose-max-subqueries=<n>`, `--decompose-max-iterations=<n>`, `--decompose-max-candidates=<n>`, `--decompose-timeout-ms=<n>` | off | CLI hybrid search, BEIR `hybrid+decompose` benchmark mode | Implemented, opt-in | per-call flags only; `llm` provider uses `KB_DECOMPOSE_LLM_ENDPOINT` or `KB_LLM_ENDPOINT` and falls back to `rule` | `kb search "multi hop query" --mode=hybrid --decompose --format=json` |
 | Refresh before search | `kb search --refresh` | off | CLI search | Implemented | `--refresh` | `kb search "query" --refresh --timing` |
+| Dense-provider lexical degradation | `KB_DENSE_DEGRADE_ON_PROVIDER_ERROR=on` | off | MCP `retrieve_knowledge` dense/hybrid retrieval | Implemented, opt-in | none | Stop the embedding provider, call MCP `retrieve_knowledge` with `search_mode: "hybrid"`, and confirm `structuredContent.degraded: true` plus `degrade_reason` |
 | Active embedding model | `KB_ACTIVE_MODEL` | unset, then `${FAISS_INDEX_PATH}/active.txt`, then legacy provider env | CLI and MCP retrieval | Implemented | `--model=<id>` on CLI, `model_name` on MCP `retrieve_knowledge` | `kb models list` |
 | Query embedding cache | `KB_QUERY_CACHE` | on | CLI and MCP retrieval | Implemented | `kb search --no-cache` | `kb doctor --format=json` |
 | Query cache memory limit | `KB_QUERY_CACHE_LRU_MAX` | `256` | CLI and MCP retrieval | Implemented | none | `kb doctor --format=json` |
@@ -29,6 +30,16 @@ Neighbor context windows are dense-only. They expand the returned context after
 ranking and do not make neighboring chunks influence the dense score. See
 [Neighbor Context Search Windows](search-neighbor-context.md) for examples,
 markdown/JSON output shape, and when wider windows dilute results.
+
+`KB_DENSE_DEGRADE_ON_PROVIDER_ERROR=on` is fail-open only for classified
+transient embedding-provider failures (`PROVIDER_UNAVAILABLE` and
+`PROVIDER_TIMEOUT`). It does not hide `PROVIDER_AUTH`, validation, active-model,
+or index configuration errors. A degraded MCP response is lexical-only, sets
+`structuredContent.degraded: true` with a bounded `degrade_reason`, emits the
+same fields in the canonical search event, and increments
+`kb_search_degraded_total{mode,reason}` when metrics export is enabled. Query
+embedding cache hits still return through the normal dense/hybrid path because
+no provider call failed.
 
 ## Relevance Gate
 

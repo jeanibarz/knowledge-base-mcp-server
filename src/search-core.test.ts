@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   buildExplainEmptyDiagnostics,
+  classifyDenseDegradationReason,
   computeAutoThreshold,
   formatAutoModeHeader,
   formatAutoThresholdHeader,
@@ -11,6 +12,8 @@ import {
   type ExplainEmptyDiagnostics,
   type Staleness,
 } from './search-core.js';
+import { parseDenseDegradeOnProviderError } from './config/retrieval.js';
+import { KBError } from './errors.js';
 
 const MTIME = '2026-05-03T15:33:56.964Z';
 
@@ -240,6 +243,26 @@ describe('formatAutoModeHeader', () => {
     expect(formatAutoModeHeader({ mode: 'hybrid', reason: 'file-like token' })).toBe(
       '> _Mode: auto -> hybrid (file-like token)._',
     );
+  });
+});
+
+describe('dense provider degradation policy (#595)', () => {
+  it('keeps the feature flag opt-in', () => {
+    expect(parseDenseDegradeOnProviderError(undefined)).toBe(false);
+    expect(parseDenseDegradeOnProviderError('')).toBe(false);
+    expect(parseDenseDegradeOnProviderError('true')).toBe(false);
+    expect(parseDenseDegradeOnProviderError(' on ')).toBe(true);
+    expect(parseDenseDegradeOnProviderError('ON')).toBe(true);
+  });
+
+  it('classifies only transient provider errors as degradable', () => {
+    expect(classifyDenseDegradationReason(new KBError('PROVIDER_UNAVAILABLE', 'provider down')))
+      .toBe('provider_unavailable');
+    expect(classifyDenseDegradationReason(new KBError('PROVIDER_TIMEOUT', 'provider timed out')))
+      .toBe('provider_timeout');
+    expect(classifyDenseDegradationReason(new KBError('PROVIDER_AUTH', 'missing key')))
+      .toBeNull();
+    expect(classifyDenseDegradationReason(new Error('ECONNREFUSED'))).toBeNull();
   });
 });
 

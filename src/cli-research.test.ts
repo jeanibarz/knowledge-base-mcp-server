@@ -85,6 +85,7 @@ function statsPayload(overrides: Partial<KbStatsPayload> = {}): KbStatsPayload {
     search_latency: {
       requests: {},
       stages: {},
+      degraded: {},
     },
     query_cache: {
       hits: 0,

@@ -175,14 +175,28 @@ describe('SearchLatencyMetrics', () => {
     expect(snap.stages.hybrid?.lexical_search?.success).toMatchObject({ count: 1, sum_ms: 40 });
     expect(snap.stages.hybrid?.fusion?.success).toMatchObject({ count: 1, sum_ms: 3 });
     expect(snap.stages.hybrid?.fusion?.error).toBeUndefined();
+    expect(snap.degraded).toEqual({});
+  });
+
+  it('records degraded search counters by bounded mode and reason labels', () => {
+    const metrics = new SearchLatencyMetrics({ now: () => 1 });
+    metrics.recordDegraded('dense', 'provider_timeout');
+    metrics.recordDegraded('dense', 'provider_timeout');
+    metrics.recordDegraded('hybrid', 'provider_unavailable');
+
+    expect(metrics.snapshot().degraded).toEqual({
+      dense: { provider_timeout: 2 },
+      hybrid: { provider_unavailable: 1 },
+    });
   });
 
   it('reset() clears search latency state', () => {
     const metrics = new SearchLatencyMetrics({ now: () => 1 });
     metrics.record({ mode: 'dense', status: 'success', totalMs: 1 });
+    metrics.recordDegraded('dense', 'provider_timeout');
     expect(metrics.snapshot().requests.dense?.success?.count).toBe(1);
     metrics.reset();
-    expect(metrics.snapshot()).toEqual({ requests: {}, stages: {} });
+    expect(metrics.snapshot()).toEqual({ requests: {}, stages: {}, degraded: {} });
   });
 });
 
