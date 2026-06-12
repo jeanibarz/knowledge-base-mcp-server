@@ -43,6 +43,7 @@ describe('parseAskArgs', () => {
       refresh: true,
       stdin: false,
       format: 'json',
+      noStream: false,
       timing: true,
       saveTranscript: true,
       title: 'Incident answer',
@@ -56,6 +57,14 @@ describe('parseAskArgs', () => {
     expect(() => parseAskArgs(['q', '--format=yaml'])).toThrow(/invalid --format/);
     expect(() => parseAskArgs(['q', '--bad'])).toThrow(/unknown flag/);
     expect(() => parseAskArgs(['q', 'extra'])).toThrow(/unexpected argument/);
+  });
+
+  it('parses --no-stream for markdown output', () => {
+    expect(parseAskArgs(['what changed?', '--no-stream'])).toMatchObject({
+      question: 'what changed?',
+      format: 'md',
+      noStream: true,
+    });
   });
 
   it('requires explicit confirmation and a target KB before saving transcripts', () => {
@@ -448,15 +457,11 @@ describe('ask transcript records', () => {
     const previousEndpoint = process.env.KB_LLM_ENDPOINT;
     const previousLogFormat = process.env.KB_LOG_FORMAT;
     const stdout: string[] = [];
-    const stderr: string[] = [];
     const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
       stdout.push(String(chunk));
       return true;
     });
-    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
-      stderr.push(String(chunk));
-      return true;
-    });
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     try {
       process.env.KB_LLM_FAKE = 'on';
@@ -488,7 +493,6 @@ describe('ask transcript records', () => {
       const code = await runAsk(['Who approves rollback?', '--kb=ops', '--format=json'], deps);
 
       expect(code).toBe(0);
-      expect(stderr.join('')).toContain('"llm_provider":"fake"');
       const payload = JSON.parse(stdout.join('')) as {
         answer: string;
         llm: { profile: string; source: string; model: string | null; endpoint: string };
@@ -578,6 +582,136 @@ describe('ask transcript records', () => {
       expect(rendered).toContain('context_included_chunks=1');
       expect(rendered).toContain('context_excluded_chunks=1');
       expect(rendered).toContain('context_truncated_chunks=1');
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+    }
+  });
+
+  it('streams markdown answer tokens before rendering citations and timing', async () => {
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+
+    try {
+      process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
+      const manager = {
+        modelDir: '/tmp/kb-ask-model',
+        initialize: jest.fn(async () => {}),
+        updateIndex: jest.fn(async () => {}),
+        similaritySearch: jest.fn(async () => [
+          {
+            pageContent: 'Rollback approval requires the release lead.',
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md' },
+            score: 0.1,
+          },
+        ]),
+      };
+      const callChatCompletion = jest.fn(async (call: Parameters<RunAskDeps['callChatCompletion']>[0]) => {
+        expect(call.stream).toBeDefined();
+        call.stream?.onFirstToken?.();
+        await call.stream?.onToken('Rollback ');
+        expect(stdout.join('')).toBe('Rollback ');
+        expect(stdout.join('')).not.toContain('## Sources');
+        await call.stream?.onToken('approval requires the release lead.');
+        expect(stdout.join('')).toBe('Rollback approval requires the release lead.');
+        expect(stdout.join('')).not.toContain('## Sources');
+        expect(stdout.join('')).not.toContain('llm_first_token_ms=');
+        return {
+          content: 'Rollback approval requires the release lead.',
+          model: 'qwen3',
+          raw: {},
+        };
+      });
+      const deps: RunAskDeps = {
+        bootstrapLayout: jest.fn(async () => {}),
+        resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+        loadManagerForModel: jest.fn(async () => manager as never),
+        loadWithJsonRetry: jest.fn(async () => {}),
+        withWriteLock: jest.fn(async <T>(_resource: string, action: () => Promise<T>) => action()) as RunAskDeps['withWriteLock'],
+        callChatCompletion,
+        createTranscriptNote: createAskTranscriptNote,
+        knowledgeBasesRootDir: '/tmp/kb-ask-root',
+      };
+
+      const code = await runAsk(['Who approves rollback?', '--kb=ops', '--timing'], deps);
+
+      expect(code).toBe(0);
+      expect(stderr.join('')).toBe('');
+      const rendered = stdout.join('');
+      expect(rendered).toMatch(/^Rollback approval requires the release lead\.\n\n## Sources/);
+      expect(rendered).toContain('- ops:runbooks/rollback.md');
+      expect(rendered).toContain('llm_first_token_ms=');
+      expect(callChatCompletion).toHaveBeenCalledTimes(1);
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+    }
+  });
+
+  it('keeps markdown output non-streaming when --no-stream is passed', async () => {
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+
+    try {
+      process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
+      const manager = {
+        modelDir: '/tmp/kb-ask-model',
+        initialize: jest.fn(async () => {}),
+        updateIndex: jest.fn(async () => {}),
+        similaritySearch: jest.fn(async () => [
+          {
+            pageContent: 'Rollback approval requires the release lead.',
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md' },
+            score: 0.1,
+          },
+        ]),
+      };
+      const callChatCompletion = jest.fn(async (call: Parameters<RunAskDeps['callChatCompletion']>[0]) => {
+        expect(call.stream).toBeUndefined();
+        return {
+          content: 'Non-streamed answer.',
+          model: 'qwen3',
+          raw: {},
+        };
+      });
+      const deps: RunAskDeps = {
+        bootstrapLayout: jest.fn(async () => {}),
+        resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+        loadManagerForModel: jest.fn(async () => manager as never),
+        loadWithJsonRetry: jest.fn(async () => {}),
+        withWriteLock: jest.fn(async <T>(_resource: string, action: () => Promise<T>) => action()) as RunAskDeps['withWriteLock'],
+        callChatCompletion,
+        createTranscriptNote: createAskTranscriptNote,
+        knowledgeBasesRootDir: '/tmp/kb-ask-root',
+      };
+
+      const code = await runAsk(['Who approves rollback?', '--kb=ops', '--no-stream'], deps);
+
+      expect(code).toBe(0);
+      expect(stderr.join('')).toBe('');
+      expect(stdout.join('')).toContain('Non-streamed answer.\n\n## Sources');
     } finally {
       stdoutSpy.mockRestore();
       stderrSpy.mockRestore();

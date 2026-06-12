@@ -148,4 +148,22 @@ describe('llm fake stub', () => {
       await fsp.rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('streams fake chat content when the caller opts in', async () => {
+    const tokens: string[] = [];
+    let firstTokenCount = 0;
+
+    const result = await callFakeChatCompletion({
+      endpoint: 'mock://ignored',
+      messages: [{ role: 'user', content: 'plain prompt' }],
+      stream: {
+        onFirstToken: () => { firstTokenCount += 1; },
+        onToken: (token) => { tokens.push(token); },
+      },
+    }, { KB_LOG_FORMAT: 'text' } as NodeJS.ProcessEnv);
+
+    expect(result.content).toBe('Fake LLM response from kb-fake-llm.');
+    expect(tokens.join('')).toBe(result.content);
+    expect(firstTokenCount).toBe(1);
+  });
 });

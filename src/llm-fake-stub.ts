@@ -89,6 +89,16 @@ export async function callFakeChatCompletion(
   const startedAt = Date.now();
   const rules = await loadFakeLlmRules(env);
   const content = generateFakeChatContent(options.messages, rules);
+  if (options.stream !== undefined) {
+    let first = true;
+    for (const token of splitFakeStreamContent(content)) {
+      if (first) {
+        first = false;
+        options.stream.onFirstToken?.();
+      }
+      await options.stream.onToken(token);
+    }
+  }
   const raw = fakeOpenAiChatCompletionResponse({
     model: options.model ?? FAKE_LLM_MODEL,
     messages: options.messages,
@@ -107,6 +117,10 @@ export async function callFakeChatCompletion(
     model: FAKE_LLM_MODEL,
     raw,
   };
+}
+
+function splitFakeStreamContent(content: string): string[] {
+  return content.match(/\S+\s*/g) ?? (content === '' ? [] : [content]);
 }
 
 async function loadFakeLlmRules(env: NodeJS.ProcessEnv = process.env): Promise<FakeLlmRules> {

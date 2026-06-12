@@ -69,6 +69,7 @@ Options:
   --endpoint=<url>      OpenAI-compatible chat endpoint for this call only.
   --llm-profile=<name>  Use a saved \`kb llm\` profile.
   --format=md|json      Output format (default: md).
+  --no-stream           Wait for the full answer before printing markdown output.
   --timing              Include elapsed milliseconds for retrieval and LLM stages.
   --stdin               Read question from stdin.
   --save-transcript     Save the question, answer, citations, and provenance
@@ -89,6 +90,7 @@ export interface AskArgs {
   refresh: boolean;
   stdin: boolean;
   format: 'md' | 'json';
+  noStream: boolean;
   timing: boolean;
   saveTranscript: boolean;
   title?: string;
@@ -150,8 +152,21 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
   }
 
   let result: AskKnowledgeResult;
+  let streamedAnswer = false;
   try {
-    result = await executeAsk({ ...args, question: args.question }, toRunAskCoreDeps(deps), totalStartedAt);
+    const streamMarkdown = args.format === 'md' && !args.noStream;
+    result = await executeAsk({
+      ...args,
+      question: args.question,
+      ...(streamMarkdown
+        ? {
+            onAnswerToken: (token: string) => {
+              streamedAnswer = true;
+              process.stdout.write(token);
+            },
+          }
+        : {}),
+    }, toRunAskCoreDeps(deps), totalStartedAt);
   } catch (err) {
     if (err instanceof AskExecutionError) {
       if (err.failure !== undefined) {
@@ -238,7 +253,7 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
       ...(savedTranscript ? { transcript: savedTranscript } : {}),
     }, null, 2)}\n`);
   } else {
-    process.stdout.write(`${result.answer}\n\n`);
+    process.stdout.write(streamedAnswer ? '\n\n' : `${result.answer}\n\n`);
     if (result.citations.length > 0) {
       process.stdout.write('## Sources\n\n');
       for (const c of result.citations) {
@@ -285,6 +300,7 @@ export function parseAskArgs(rest: string[]): AskArgs {
     refresh: false,
     stdin: false,
     format: 'md',
+    noStream: false,
     timing: false,
     saveTranscript: false,
     yes: false,
@@ -293,6 +309,7 @@ export function parseAskArgs(rest: string[]): AskArgs {
     const raw = rest[i];
     if (raw === '--refresh') { out.refresh = true; continue; }
     if (raw === '--stdin') { out.stdin = true; continue; }
+    if (raw === '--no-stream') { out.noStream = true; continue; }
     if (raw === '--timing') { out.timing = true; continue; }
     if (raw === '--save-transcript') { out.saveTranscript = true; continue; }
     if (raw === '--yes') { out.yes = true; continue; }
