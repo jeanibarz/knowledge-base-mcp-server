@@ -3,6 +3,7 @@
 - [Retrieval eval command](retrieval-eval.md)
 - [Retrieval eval methodology](retrieval-eval-methodology.md)
 - [Fake LLM fixture](fake-llm.md)
+- [Concurrency stress suite](../../tests/stress/README.md)
 - [Fixtures](fixtures/README.md)
 - RFC test surfaces:
   [RFC 017 contextual retrieval](../rfcs/017-contextual-retrieval.md),
