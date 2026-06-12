@@ -13,12 +13,12 @@
 //      datasets (RFC §4 / Open-question 2); AND
 //   2. the drop is **statistically significant** per `significance.ts` — the
 //      paired bootstrap CI on the per-query ΔnDCG@10 excludes zero and the
-//      paired t-test rejects at α.
+//      paired t-test rejects at α, and the observed delta clears the stated MDE
+//      plus the 2x-standard-error noise floor.
 //
-// A dip that clears the tolerance, or one that is within noise (not
-// significant), is reported as PASS/WARN, never failed — this is the explicit
-// anti-flake property the RFC calls for ("a non-significant dip is reported, not
-// failed — avoids flaky gates").
+// A dip that clears the tolerance, or one that is within noise, is reported as
+// PASS/INCONCLUSIVE, never failed — this is the explicit anti-flake property the
+// RFC calls for while also preventing sub-noise deltas from being accepted.
 //
 // Like the latency baselines, BEIR baselines are only ever updated by an
 // explicit, reviewed commit (`chore(bench): update BEIR baseline`); this gate
@@ -34,6 +34,7 @@ import {
   DEFAULT_ALPHA,
   DEFAULT_BOOTSTRAP_RESAMPLES,
   DEFAULT_BOOTSTRAP_SEED,
+  minimumDetectableEffectForBoundedMetric,
   type PerQueryScore,
   type Verdict,
 } from '../significance.js';
@@ -45,7 +46,7 @@ import {
 } from './run.js';
 import { baselineFileName, CI_SUBSET } from './baseline.js';
 
-export type QualityGateStatus = 'pass' | 'warn' | 'fail' | 'skip';
+export type QualityGateStatus = 'pass' | 'inconclusive-below-noise-floor' | 'fail' | 'skip';
 
 // Default tolerance: a relative fraction of the baseline nDCG@10, with an
 // absolute floor so a tiny baseline cannot make the band collapse to ~0 (RFC §4,
@@ -64,6 +65,8 @@ export interface QualityGateThresholds {
   alpha: number;
   resamples: number;
   seed: number;
+  minimumDetectableEffectMultiplier: number;
+  standardErrorMultiplier: number;
 }
 
 export const DEFAULT_GATE_THRESHOLDS: QualityGateThresholds = {
@@ -72,6 +75,8 @@ export const DEFAULT_GATE_THRESHOLDS: QualityGateThresholds = {
   alpha: DEFAULT_ALPHA,
   resamples: DEFAULT_BOOTSTRAP_RESAMPLES,
   seed: DEFAULT_BOOTSTRAP_SEED,
+  minimumDetectableEffectMultiplier: 2,
+  standardErrorMultiplier: 2,
 };
 
 /**
@@ -100,6 +105,11 @@ export interface QualityGateRow {
   verdict?: Verdict;
   pValue?: number;
   meanDelta?: number;
+  standardError?: number;
+  minimumDetectableEffect?: number;
+  twoStandardErrors?: number;
+  noiseFloor?: number;
+  noiseFloorPassed?: boolean;
   ciLow?: number;
   ciHigh?: number;
   pairedQueries?: number;
@@ -148,6 +158,14 @@ export function evaluateGateComparison(
     };
   }
 
+  const baselineNdcg = baseline.metrics.ndcgAt10;
+  const currentNdcg = current.metrics.ndcgAt10;
+  const approximatePairedQueries = Math.min(baseline.per_query.length, current.per_query.length);
+  const minimumDetectableEffect = minimumDetectableEffectForBoundedMetric(
+    baselineNdcg,
+    Math.max(1, approximatePairedQueries),
+    thresholds.minimumDetectableEffectMultiplier,
+  );
   let comparison;
   try {
     comparison = compareScores(perQueryScores(baseline), perQueryScores(current), {
@@ -155,6 +173,8 @@ export function evaluateGateComparison(
       alpha: thresholds.alpha,
       resamples: thresholds.resamples,
       seed: thresholds.seed,
+      minimumDetectableEffect,
+      standardErrorMultiplier: thresholds.standardErrorMultiplier,
     });
   } catch (error) {
     return {
@@ -167,21 +187,19 @@ export function evaluateGateComparison(
     };
   }
 
-  const baselineNdcg = baseline.metrics.ndcgAt10;
-  const currentNdcg = current.metrics.ndcgAt10;
   const delta = Number((currentNdcg - baselineNdcg).toFixed(6));
   const tolerance = toleranceFor(baselineNdcg, thresholds);
   const belowTolerance = currentNdcg < baselineNdcg - tolerance;
   const significant = comparison.verdict === 'regression';
 
   // Fail only on a tolerance-clearing AND statistically-significant drop. A dip
-  // within tolerance passes; a below-tolerance dip that is not significant warns
-  // (reported, never failed) so the gate does not flake on noise.
+  // within tolerance passes; a below-tolerance dip that does not clear the
+  // MDE/2x-SE floor is inconclusive (reported, never passed or failed).
   const status: QualityGateStatus = !belowTolerance
     ? 'pass'
     : significant
       ? 'fail'
-      : 'warn';
+      : 'inconclusive-below-noise-floor';
 
   return {
     dataset,
@@ -196,34 +214,39 @@ export function evaluateGateComparison(
     verdict: comparison.verdict,
     pValue: comparison.pValue,
     meanDelta: comparison.meanDelta,
+    standardError: comparison.standardError,
+    minimumDetectableEffect: comparison.minimumDetectableEffect,
+    twoStandardErrors: comparison.twoStandardErrors,
+    noiseFloor: comparison.noiseFloor,
+    noiseFloorPassed: comparison.noiseFloorPassed,
     ciLow: comparison.bootstrap.ciLow,
     ciHigh: comparison.bootstrap.ciHigh,
     pairedQueries: comparison.n,
-    note: status === 'warn'
-      ? 'below tolerance but not statistically significant — reported, not failed'
+    note: status === 'inconclusive-below-noise-floor'
+      ? 'below tolerance but delta is below the MDE/2x-SE noise floor — inconclusive, not failed'
       : undefined,
   };
 }
 
 export function summarizeGateRows(rows: readonly QualityGateRow[]): {
   fail: number;
+  inconclusive: number;
   pass: number;
   skip: number;
-  warn: number;
   worstStatus: QualityGateStatus;
 } {
   const counts = {
     fail: rows.filter((row) => row.status === 'fail').length,
+    inconclusive: rows.filter((row) => row.status === 'inconclusive-below-noise-floor').length,
     pass: rows.filter((row) => row.status === 'pass').length,
     skip: rows.filter((row) => row.status === 'skip').length,
-    warn: rows.filter((row) => row.status === 'warn').length,
   };
   return {
     ...counts,
     worstStatus: counts.fail > 0
       ? 'fail'
-      : counts.warn > 0
-        ? 'warn'
+      : counts.inconclusive > 0
+        ? 'inconclusive-below-noise-floor'
         : counts.skip === rows.length
           ? 'skip'
           : 'pass',
@@ -245,11 +268,12 @@ export function renderGateMarkdown(options: RenderGateOptions): string {
     '',
     options.baselineLabel ? `Baseline: \`${options.baselineLabel}\`` : 'Baseline: committed BEIR CI-subset baselines',
     `Tolerance: −${(thresholds.relativeTolerance * 100).toFixed(1)}% (abs floor ${thresholds.absoluteTolerance.toFixed(3)}); significance at α=${thresholds.alpha}`,
+    `Noise floor: MDE=${thresholds.minimumDetectableEffectMultiplier}×bounded SE and delta must exceed ${thresholds.standardErrorMultiplier}×paired SE`,
     `Mode: ${options.enforceFailures ? 'enforcing FAIL rows' : 'advisory'}`,
-    `Overall: ${summary.worstStatus.toUpperCase()} (${summary.fail} fail, ${summary.warn} warn, ${summary.pass} pass, ${summary.skip} skipped)`,
+    `Overall: ${summary.worstStatus.toUpperCase()} (${summary.fail} fail, ${summary.inconclusive} inconclusive, ${summary.pass} pass, ${summary.skip} skipped)`,
     '',
-    '| Status | Dataset | Mode | Baseline | Current | Δ nDCG@10 | Tolerance | Significance | Verdict |',
-    '| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |',
+    '| Status | Dataset | Mode | Baseline | Current | Δ nDCG@10 | Tolerance | MDE | 2×SE | Significance | Verdict |',
+    '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |',
   ];
 
   for (const row of options.rows) {
@@ -261,6 +285,8 @@ export function renderGateMarkdown(options: RenderGateOptions): string {
       formatScore(row.currentNdcg),
       formatDelta(row.delta),
       row.tolerance === undefined ? '-' : `−${row.tolerance.toFixed(4)}`,
+      row.minimumDetectableEffect === undefined ? '-' : row.minimumDetectableEffect.toFixed(4),
+      row.twoStandardErrors === undefined ? '-' : row.twoStandardErrors.toFixed(4),
       formatSignificance(row),
       row.verdict ?? (row.note ?? '-'),
     ].join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
@@ -269,8 +295,9 @@ export function renderGateMarkdown(options: RenderGateOptions): string {
   lines.push(
     '',
     'A cell FAILS only when nDCG@10 drops below `baseline − tolerance` **and** the',
-    'drop is statistically significant; a non-significant dip is reported, not failed',
-    '(RFC 020 §4). FAIL rows fail the job only when `BENCH_QUALITY_GATE_FAIL=1`.',
+    'drop is statistically significant **and** the absolute delta exceeds both the stated',
+    'MDE and 2× paired standard error. A below-tolerance dip under that noise floor is',
+    'INCONCLUSIVE-BELOW-NOISE-FLOOR, not PASS or FAIL (RFC 020 §4). FAIL rows fail the job only when `BENCH_QUALITY_GATE_FAIL=1`.',
     'Baseline updates are an explicit, reviewed commit — never automatic.',
   );
   return `${lines.join('\n')}\n`;
@@ -291,7 +318,9 @@ function formatSignificance(row: QualityGateRow): string {
   const ci = row.ciLow !== undefined && row.ciHigh !== undefined
     ? ` CI[${row.ciLow.toFixed(4)}, ${row.ciHigh.toFixed(4)}]`
     : '';
-  return `p=${p}${ci}`;
+  const se = row.standardError === undefined ? '' : ` SE=${row.standardError.toFixed(4)}`;
+  const floor = row.noiseFloor === undefined ? '' : ` floor=${row.noiseFloor.toFixed(4)}`;
+  return `p=${p}${se}${floor}${ci}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +504,10 @@ export function parseQualityGateArgs(argv: string[], env: NodeJS.ProcessEnv): Cl
       options.thresholds.resamples = parsePositiveInt(readValue(), '--bootstrap');
     } else if (flag === '--seed') {
       options.thresholds.seed = parsePositiveInt(readValue(), '--seed');
+    } else if (flag === '--mde-multiplier') {
+      options.thresholds.minimumDetectableEffectMultiplier = parsePositive(readValue(), '--mde-multiplier');
+    } else if (flag === '--se-multiplier') {
+      options.thresholds.standardErrorMultiplier = parsePositive(readValue(), '--se-multiplier');
     } else if (flag === '--max-queries') {
       options.maxQueries = parsePositiveInt(readValue(), '--max-queries');
     } else if (flag === '--fail-on-regression') {
@@ -521,6 +554,12 @@ function parseNonNegative(raw: string, flag: string): number {
   return parsed;
 }
 
+function parsePositive(raw: string, flag: string): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${flag} must be a positive number`);
+  return parsed;
+}
+
 function isMissingFileError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error
     && (error as { code?: string }).code === 'ENOENT';
@@ -549,6 +588,8 @@ Options:
   --tolerance=<f>      Relative tolerance (0,1). Default: ${DEFAULT_RELATIVE_TOLERANCE}.
   --abs-tolerance=<f>  Absolute floor. Default: ${DEFAULT_ABSOLUTE_TOLERANCE}.
   --alpha=<p>          Significance level. Default: ${DEFAULT_ALPHA}.
+  --mde-multiplier=<n> MDE multiplier over bounded-metric SE. Default: 2.
+  --se-multiplier=<n>  Paired-SE multiplier. Default: 2.
   --max-queries=<n>    Deterministic subset for a quick smoke.
   --fail-on-regression Exit 1 when any cell is FAIL (env: BENCH_QUALITY_GATE_FAIL=1).
   --summary=<path>     Append markdown to this file (CI step summary).

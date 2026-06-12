@@ -103,7 +103,7 @@ describe('BEIR runner issue #579 reranker bakeoff modes', () => {
 
     const result = await runBeirBenchmark(args, { ...baseDeps, loadSearchBackend: loadBakeoffBackend });
 
-    expect(result.report.schema_version).toBe('kb.beir-benchmark.v6');
+    expect(result.report.schema_version).toBe('kb.beir-benchmark.v7');
     expect(result.report.mode).toBe(mode);
     expect(result.report.reranker_bakeoff).toMatchObject({
       strategy,

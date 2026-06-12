@@ -52,6 +52,16 @@ means across judged cases. When positive judgments carry `group`, `groups`,
 alpha-nDCG@k. Cases without judgments preserve the original binary pass/fail
 output shape, plus the source diversity diagnostics.
 
+Benchmark acceptance gates must state a minimum detectable effect (MDE) and the
+observed delta versus `2 * SE`. BEIR run reports include per-metric SE/CI/MDE
+from the per-query metric vectors, and the quality gate reports
+`INCONCLUSIVE-BELOW-NOISE-FLOOR` when a below-tolerance delta does not exceed
+both the stated MDE and `2 * paired SE`. RAG scorecard metric gates use the same
+pass/fail/inconclusive contract. The unit tests use deterministic worked
+fixtures for the noise-floor cases instead of re-running a historical benchmark,
+because the historical comparisons require model/provider state that is too
+expensive and environment-dependent for focused command tests.
+
 For authoring guidance, see [Retrieval eval fixture methodology](retrieval-eval-methodology.md).
 
 ### TS-RETRIEVAL-EVAL-509: Replayable Benchmark Tuning

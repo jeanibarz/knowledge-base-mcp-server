@@ -2,8 +2,9 @@
 //
 // "Add a comparator that takes two run files (per-query nDCG@10 vectors over
 // the same query set) and reports a paired bootstrap (10k resamples) CI on the
-// mean delta, a paired t-test p-value, and a verdict (improvement / regression
-// / no-significant-change) at α = 0.05."
+// mean delta, a paired t-test p-value, the stated MDE + 2x-SE noise floor, and a
+// verdict (improvement / regression / no-significant-change /
+// inconclusive-below-noise-floor) at α = 0.05."
 //
 // This is the arbiter for every roadmap decision (M1+) and for the future CI
 // gate's "is this a real regression?" question. It lives next to
@@ -40,7 +41,7 @@ export const DEFAULT_ALPHA = 0.05;
 // Fixed default seed keeps the CLI reproducible run-to-run (RFC §7 ledger).
 export const DEFAULT_BOOTSTRAP_SEED = 0x9e3779b9;
 
-export type Verdict = 'improvement' | 'regression' | 'no-significant-change';
+export type Verdict = 'improvement' | 'regression' | 'no-significant-change' | 'inconclusive-below-noise-floor';
 export type CorrectionMethod = 'bonferroni' | 'holm' | 'none';
 
 export interface PerQueryScore {
@@ -72,6 +73,15 @@ export interface ComparisonResult {
   n: number;
   clusters: number;
   meanDelta: number;
+  /** Standard error of the paired mean delta. */
+  standardError: number;
+  /** The stated minimum detectable effect for this metric/corpus. */
+  minimumDetectableEffect: number;
+  /** The benchmark contract's 2x-standard-error threshold. */
+  twoStandardErrors: number;
+  /** max(minimumDetectableEffect, twoStandardErrors). */
+  noiseFloor: number;
+  noiseFloorPassed: boolean;
   /** Paired t-test. */
   tStatistic: number;
   degreesOfFreedom: number;
@@ -163,6 +173,10 @@ export interface CompareOptions {
   resamples?: number;
   seed?: number;
   alpha?: number;
+  /** Stated MDE for the metric. Acceptance gates should set this explicitly. */
+  minimumDetectableEffect?: number;
+  /** Multiplier for the standard-error floor. Defaults to the issue #603 2x rule. */
+  standardErrorMultiplier?: number;
   /** Add the wild-cluster bootstrap-t leg (queries cluster by dataset). */
   clusterByDataset?: boolean;
 }
@@ -189,6 +203,11 @@ export function compareSamples(
   const clusters = new Set(samples.map((s) => s.cluster)).size;
 
   const meanDelta = mean(deltas);
+  const standardError = sampleStandardError(deltas);
+  const minimumDetectableEffect = options.minimumDetectableEffect ?? 0;
+  const twoStandardErrors = (options.standardErrorMultiplier ?? 2) * standardError;
+  const noiseFloor = Math.max(minimumDetectableEffect, twoStandardErrors);
+  const noiseFloorPassed = Math.abs(meanDelta) > noiseFloor;
   const ttest = pairedTTest(deltas);
   const bootstrap = pairedBootstrap(deltas, resamples, seed, alpha);
   const wildCluster = options.clusterByDataset && clusters > 1
@@ -200,12 +219,17 @@ export function compareSamples(
     n,
     clusters,
     meanDelta,
+    standardError,
+    minimumDetectableEffect,
+    twoStandardErrors,
+    noiseFloor,
+    noiseFloorPassed,
     tStatistic: ttest.tStatistic,
     degreesOfFreedom: ttest.degreesOfFreedom,
     pValue: ttest.pValue,
     bootstrap,
     ...(wildCluster !== undefined ? { wildCluster } : {}),
-    verdict: verdictFromResult(meanDelta, ttest.pValue, bootstrap, wildCluster, alpha),
+    verdict: verdictFromResult(meanDelta, ttest.pValue, bootstrap, wildCluster, alpha, noiseFloor, noiseFloorPassed),
   };
 }
 
@@ -230,9 +254,36 @@ export function pairedTTest(deltas: readonly number[]): {
   if (sd === 0) {
     return { tStatistic: m === 0 ? 0 : Math.sign(m) * Infinity, degreesOfFreedom: df, pValue: m === 0 ? 1 : 0 };
   }
-  const standardError = sd / Math.sqrt(n);
+  const standardError = sampleStandardError(deltas);
   const tStatistic = m / standardError;
   return { tStatistic, degreesOfFreedom: df, pValue: studentTwoSidedP(tStatistic, df) };
+}
+
+export function sampleStandardError(values: readonly number[]): number {
+  const n = values.length;
+  if (n < 2) return 0;
+  const m = mean(values);
+  const variance = values.reduce((acc, value) => acc + (value - m) ** 2, 0) / (n - 1);
+  return Math.sqrt(variance) / Math.sqrt(n);
+}
+
+export function boundedMetricStandardError(pointEstimate: number, observations: number): number {
+  if (!Number.isSafeInteger(observations) || observations <= 0) {
+    throw new Error(`significance: observations must be a positive integer, got ${observations}`);
+  }
+  const p = clamp01(pointEstimate);
+  return Math.sqrt((p * (1 - p)) / observations);
+}
+
+export function minimumDetectableEffectForBoundedMetric(
+  pointEstimate: number,
+  observations: number,
+  multiplier = 2,
+): number {
+  if (!Number.isFinite(multiplier) || multiplier <= 0) {
+    throw new Error(`significance: multiplier must be positive, got ${multiplier}`);
+  }
+  return multiplier * boundedMetricStandardError(pointEstimate, observations);
 }
 
 /**
@@ -411,9 +462,11 @@ export function compareFamily(
   const familyComparisons = comparisons.map((comparison, index) => {
     const adjustedPValue = adjusted[index];
     const rejectedNull = adjustedPValue < alpha;
-    const correctedVerdict: Verdict = rejectedNull
-      ? comparison.meanDelta >= 0 ? 'improvement' : 'regression'
-      : 'no-significant-change';
+    const correctedVerdict: Verdict = !comparison.noiseFloorPassed
+      ? 'inconclusive-below-noise-floor'
+      : rejectedNull
+        ? comparison.meanDelta >= 0 ? 'improvement' : 'regression'
+        : 'no-significant-change';
     return { ...comparison, adjustedPValue, rejectedNull, correctedVerdict };
   });
   return { method, alpha, comparisons: familyComparisons };
@@ -429,7 +482,12 @@ function verdictFromResult(
   bootstrap: BootstrapCi,
   wildCluster: WildClusterResult | undefined,
   alpha: number,
+  noiseFloor: number,
+  noiseFloorPassed: boolean,
 ): Verdict {
+  if (noiseFloor > 0 && !noiseFloorPassed) {
+    return 'inconclusive-below-noise-floor';
+  }
   // A change is "significant" when the bootstrap CI excludes zero AND the
   // (cluster-aware, when available) test rejects at α. Requiring both the
   // interval and the test agree keeps a borderline p from flipping the verdict

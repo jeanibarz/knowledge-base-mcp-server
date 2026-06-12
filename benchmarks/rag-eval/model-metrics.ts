@@ -17,6 +17,7 @@
 import { normalizedTokens, tokenF1Pair } from './reference.js';
 import { clampUnit, roundUnit } from './types.js';
 import type { RetrievedContext } from './types.js';
+import { boundedMetricStandardError, minimumDetectableEffectForBoundedMetric } from '../significance.js';
 
 export type EntailmentLabel = 'entailment' | 'neutral' | 'contradiction';
 
@@ -39,6 +40,33 @@ export interface SemanticSimilarityModel {
   similarity(candidate: string, reference: string): Promise<number>;
 }
 
+export type MetricGateStatus = 'pass' | 'fail' | 'inconclusive-below-noise-floor';
+
+export interface MetricGateInput {
+  metric: string;
+  baseline: number;
+  current: number;
+  observations: number;
+  /** Defaults to true because RAG quality metrics are unit scores where higher is better. */
+  higherIsBetter?: boolean;
+  minimumDetectableEffect?: number;
+  standardError?: number;
+  standardErrorMultiplier?: number;
+}
+
+export interface MetricGateResult {
+  metric: string;
+  status: MetricGateStatus;
+  baseline: number;
+  current: number;
+  delta: number;
+  minimumDetectableEffect: number;
+  standardError: number;
+  twoStandardErrors: number;
+  noiseFloor: number;
+  noiseFloorPassed: boolean;
+}
+
 export interface FaithfulnessOptions {
   /** Entailment score at/above which a claim counts as supported. */
   entailmentThreshold?: number;
@@ -58,6 +86,34 @@ export interface FaithfulnessResult {
 }
 
 export const DEFAULT_ENTAILMENT_THRESHOLD = 0.5;
+
+export function evaluateMetricGate(input: MetricGateInput): MetricGateResult {
+  const higherIsBetter = input.higherIsBetter ?? true;
+  const delta = input.current - input.baseline;
+  const standardError = input.standardError ?? boundedMetricStandardError(input.baseline, input.observations);
+  const minimumDetectableEffect = input.minimumDetectableEffect
+    ?? minimumDetectableEffectForBoundedMetric(input.baseline, input.observations);
+  const twoStandardErrors = (input.standardErrorMultiplier ?? 2) * standardError;
+  const noiseFloor = Math.max(minimumDetectableEffect, twoStandardErrors);
+  const noiseFloorPassed = Math.abs(delta) > noiseFloor;
+  const status: MetricGateStatus = !noiseFloorPassed
+    ? 'inconclusive-below-noise-floor'
+    : (higherIsBetter ? delta >= 0 : delta <= 0)
+      ? 'pass'
+      : 'fail';
+  return {
+    metric: input.metric,
+    status,
+    baseline: roundUnit(input.baseline),
+    current: roundUnit(input.current),
+    delta: Number(delta.toFixed(6)),
+    minimumDetectableEffect: Number(minimumDetectableEffect.toFixed(6)),
+    standardError: Number(standardError.toFixed(6)),
+    twoStandardErrors: Number(twoStandardErrors.toFixed(6)),
+    noiseFloor: Number(noiseFloor.toFixed(6)),
+    noiseFloorPassed,
+  };
+}
 
 /** Split an answer into claim-sized units (sentences) for claim-wise NLI. */
 export function splitClaims(answer: string): string[] {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import {
+  evaluateMetricGate,
   faithfulnessScore,
   semanticScore,
   splitClaims,
@@ -61,5 +62,35 @@ describe('semanticScore (stub BERTScore)', () => {
     const model = tokenOverlapSimilarityModel();
     expect(await semanticScore('paris', ['london', 'paris'], model)).toBe(1);
     expect(await semanticScore('paris', [], model)).toBe(0);
+  });
+});
+
+describe('evaluateMetricGate', () => {
+  it('marks a small deterministic fixture delta as inconclusive below the noise floor', () => {
+    const result = evaluateMetricGate({
+      metric: 'faithfulness',
+      baseline: 0.8,
+      current: 0.82,
+      observations: 25,
+    });
+    expect(result.delta).toBeCloseTo(0.02, 6);
+    expect(result.noiseFloor).toBeCloseTo(0.16, 6);
+    expect(result.noiseFloorPassed).toBe(false);
+    expect(result.status).toBe('inconclusive-below-noise-floor');
+  });
+
+  it('fails a regression only after it exceeds the stated MDE and 2x SE', () => {
+    const result = evaluateMetricGate({
+      metric: 'semantic',
+      baseline: 0.8,
+      current: 0.6,
+      observations: 25,
+      minimumDetectableEffect: 0.05,
+      standardError: 0.04,
+    });
+    expect(result.twoStandardErrors).toBeCloseTo(0.08, 6);
+    expect(result.noiseFloor).toBeCloseTo(0.08, 6);
+    expect(result.noiseFloorPassed).toBe(true);
+    expect(result.status).toBe('fail');
   });
 });

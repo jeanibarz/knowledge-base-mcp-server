@@ -4,12 +4,15 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   adjustPValues,
+  boundedMetricStandardError,
   compareFamily,
   compareSamples,
   loadRunScores,
+  minimumDetectableEffectForBoundedMetric,
   pairScores,
   pairedBootstrap,
   pairedTTest,
+  sampleStandardError,
   studentTwoSidedCritical,
   studentTwoSidedP,
   wildClusterBootstrap,
@@ -162,11 +165,41 @@ describe('compareSamples verdicts', () => {
     expect(result.meanDelta).toBeLessThan(0);
   });
 
-  it('returns no-significant-change for a noisy near-zero shift', () => {
+  it('returns inconclusive-below-noise-floor for a noisy near-zero shift', () => {
     const result = compareSamples(samplesFromDeltas(
       Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? 0.3 : -0.29)),
     ));
-    expect(result.verdict).toBe('no-significant-change');
+    expect(result.verdict).toBe('inconclusive-below-noise-floor');
+  });
+
+  it('returns inconclusive-below-noise-floor when the mean delta does not clear the stated MDE', () => {
+    const result = compareSamples(samplesFromDeltas(
+      Array.from({ length: 40 }, (_, i) => 0.03 + 0.001 * ((i % 4) - 1.5)),
+    ), { minimumDetectableEffect: 0.05 });
+    expect(result.meanDelta).toBeGreaterThan(0);
+    expect(result.noiseFloor).toBeCloseTo(0.05, 12);
+    expect(result.noiseFloorPassed).toBe(false);
+    expect(result.verdict).toBe('inconclusive-below-noise-floor');
+  });
+
+  it('requires the mean delta to exceed 2x standard error before accepting a change', () => {
+    const result = compareSamples(samplesFromDeltas([0.1, 0.1, 0.1, -0.05, -0.05, -0.05]));
+    expect(result.meanDelta).toBeCloseTo(0.025, 12);
+    expect(result.standardError).toBeCloseTo(sampleStandardError([0.1, 0.1, 0.1, -0.05, -0.05, -0.05]), 12);
+    expect(result.twoStandardErrors).toBeGreaterThan(Math.abs(result.meanDelta));
+    expect(result.verdict).toBe('inconclusive-below-noise-floor');
+  });
+});
+
+describe('bounded metric MDE helpers', () => {
+  it('computes binomial-style SE and MDE from a bounded point estimate and corpus size', () => {
+    expect(boundedMetricStandardError(0.75, 100)).toBeCloseTo(Math.sqrt(0.75 * 0.25 / 100), 12);
+    expect(minimumDetectableEffectForBoundedMetric(0.75, 100)).toBeCloseTo(2 * Math.sqrt(0.75 * 0.25 / 100), 12);
+  });
+
+  it('rejects invalid corpus sizes and multipliers', () => {
+    expect(() => boundedMetricStandardError(0.5, 0)).toThrow(/positive integer/);
+    expect(() => minimumDetectableEffectForBoundedMetric(0.5, 10, 0)).toThrow(/multiplier/);
   });
 });
 
@@ -197,9 +230,10 @@ describe('wildClusterBootstrap', () => {
     const naiveWidth = naive.bootstrap.ciHigh - naive.bootstrap.ciLow;
     const wildWidth = wild.ciHigh - wild.ciLow;
     expect(wildWidth).toBeGreaterThan(naiveWidth);
-    // The cluster-aware verdict does not over-claim.
+    // The cluster-aware verdict does not over-claim; the observed delta is also
+    // below the 2x-SE floor, so the comparator calls it inconclusive.
     expect(wild.pValue).toBeGreaterThan(0.05);
-    expect(clustered.verdict).toBe('no-significant-change');
+    expect(clustered.verdict).toBe('inconclusive-below-noise-floor');
     // The Wald-t cluster CI stays bounded (no percentile-t blow-up) and, here,
     // straddles zero.
     expect(Number.isFinite(wild.ciLow)).toBe(true);
@@ -274,6 +308,11 @@ describe('compareFamily', () => {
       n: 50,
       clusters: 1,
       meanDelta,
+      standardError: 0,
+      minimumDetectableEffect: 0,
+      twoStandardErrors: 0,
+      noiseFloor: 0,
+      noiseFloorPassed: true,
       tStatistic: 0,
       degreesOfFreedom: 49,
       pValue,

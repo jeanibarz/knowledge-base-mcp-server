@@ -12,6 +12,7 @@ import {
   parseQrelsTsv,
   scoreQuery,
   summarizeLatencies,
+  type AggregateMetrics,
   type Qrels,
   type RankedDocument,
   type QueryMetric,
@@ -31,6 +32,11 @@ import {
   type BenchmarkRerankerSummary,
 } from './reranker-bakeoff-rerankers.js';
 import { durationMs, ensureDirectory, gitSha, resetDirectory, writeJsonFile } from '../utils.js';
+import {
+  minimumDetectableEffectForBoundedMetric,
+  sampleStandardError,
+  studentTwoSidedCritical,
+} from '../significance.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -50,6 +56,7 @@ const DATASET_URLS: Record<string, string> = {
   'webis-touche2020': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/webis-touche2020.zip',
 };
 
+// v7 (issue #603): added per-metric SE/CI/MDE noise-floor reporting.
 // v6 (retrieval frontier #579): added benchmark-only listwise, hard-negative,
 // and adaptive rerank bakeoff modes. v5 (retrieval frontier #578): added
 // benchmark-only late-interaction
@@ -58,7 +65,7 @@ const DATASET_URLS: Record<string, string> = {
 // `hybrid+rerank` / `hybrid+rerank+contextual`
 // modes plus `rerank` / `contextual` provenance blocks. v2 added `dense`/`hybrid`
 // + precision@10 + `embedding`; v1 was lexical-only.
-const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v6';
+const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v7';
 type LexicalUnit = 'chunk' | 'source';
 // RFC 020 §1 — the retrieval-mode space the runner can score. `lexical` is
 // credential-free (BM25 only), and `late` is a credential-free benchmark-only
@@ -350,6 +357,7 @@ interface BeirBenchmarkReport {
     chunks: number;
   };
   metrics: ReturnType<typeof aggregateQueryMetrics>;
+  metrics_uncertainty: MetricUncertaintySummary;
   high_recall_candidates?: {
     schema_version: 'kb.beir.high-recall-candidates.v1';
     candidate_pool_k: number;
@@ -367,6 +375,21 @@ interface BeirBenchmarkReport {
   latency: ReturnType<typeof summarizeLatencies>;
   per_query: QueryMetric[];
   caveats: string[];
+}
+
+type MetricName = Exclude<keyof AggregateMetrics, 'judgedQueries'>;
+
+interface MetricUncertaintySummary {
+  schema_version: 'kb.beir.metric-uncertainty.v1';
+  observations: number;
+  alpha: number;
+  note: string;
+  metrics: Record<MetricName, {
+    standard_error: number;
+    ci_low: number;
+    ci_high: number;
+    minimum_detectable_effect: number;
+  }>;
 }
 
 export interface BeirBenchmarkRunResult {
@@ -478,6 +501,7 @@ export async function runBeirBenchmark(
     });
   }
 
+  const aggregateMetrics = aggregateQueryMetrics(perQuery);
   const report: BeirBenchmarkReport = {
     schema_version: BENCHMARK_SCHEMA_VERSION,
     generated_at: dependencies.now().toISOString(),
@@ -522,7 +546,8 @@ export async function runBeirBenchmark(
       files: indexing.files,
       chunks: indexing.chunks,
     },
-    metrics: aggregateQueryMetrics(perQuery),
+    metrics: aggregateMetrics,
+    metrics_uncertainty: summarizeMetricUncertainty(aggregateMetrics, perQuery),
     ...(candidatePerQuery !== undefined && args.candidatePoolK !== undefined
       ? {
           high_recall_candidates: {
@@ -559,6 +584,46 @@ export async function runBeirBenchmark(
   }
 
   return { jsonPath, trecPath, reportPath, report };
+}
+
+function summarizeMetricUncertainty(
+  aggregateMetrics: AggregateMetrics,
+  perQuery: readonly QueryMetric[],
+  alpha = 0.05,
+): MetricUncertaintySummary {
+  const observations = perQuery.length;
+  const metricNames: MetricName[] = ['ndcgAt10', 'mapAt100', 'precisionAt10', 'recallAt10', 'recallAt100'];
+  const metrics = Object.fromEntries(metricNames.map((metric) => {
+    const values = perQuery.map((row) => row[metric]);
+    const standardError = sampleStandardError(values);
+    const tCritical = observations >= 2 ? studentTwoSidedCritical(observations - 1, alpha) : 0;
+    const meanValue = aggregateMetrics[metric];
+    const margin = tCritical * standardError;
+    return [metric, {
+      standard_error: roundReportMetric(standardError),
+      ci_low: roundReportMetric(clampUnit(meanValue - margin)),
+      ci_high: roundReportMetric(clampUnit(meanValue + margin)),
+      minimum_detectable_effect: roundReportMetric(minimumDetectableEffectForBoundedMetric(
+        meanValue,
+        Math.max(1, observations),
+      )),
+    }];
+  })) as MetricUncertaintySummary['metrics'];
+  return {
+    schema_version: 'kb.beir.metric-uncertainty.v1',
+    observations,
+    alpha,
+    note: 'SE/CI are estimated across per-query metric values; MDE is 2x bounded-metric SE for the evaluated query count.',
+    metrics,
+  };
+}
+
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function roundReportMetric(value: number): number {
+  return Number(value.toFixed(6));
 }
 
 interface RetrievalOutcome {
@@ -1800,6 +1865,9 @@ function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jso
     `- MAP@100: ${metrics.mapAt100}`,
     `- Recall@10: ${metrics.recallAt10}`,
     `- Recall@100: ${metrics.recallAt100}`,
+    `- nDCG@10 uncertainty: SE=${report.metrics_uncertainty.metrics.ndcgAt10.standard_error}, ` +
+      `CI[${report.metrics_uncertainty.metrics.ndcgAt10.ci_low}, ${report.metrics_uncertainty.metrics.ndcgAt10.ci_high}], ` +
+      `MDE=${report.metrics_uncertainty.metrics.ndcgAt10.minimum_detectable_effect}`,
     ...(report.high_recall_candidates !== undefined
       ? [
           `- Candidate Recall@100: ${report.high_recall_candidates.candidate_recall_at100} ` +
