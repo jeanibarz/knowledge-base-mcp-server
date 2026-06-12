@@ -45,11 +45,13 @@ export class FakeEmbeddings {
 
 /**
  * Issue #567 — per-role task prefixes for embedding models trained with
- * instruction prefixes. The nomic-embed-text family (v1, v1.5, v2-moe)
- * requires `search_document: <text>` at index time and
- * `search_query: <text>` at query time; embedding both roles raw lands
- * them in the wrong region of the embedding space (SciFact dense nDCG@10
- * 0.491 vs 0.669 source-BM25 in the BEIR harness).
+ * instruction prefixes (`search_document: <text>` at index time,
+ * `search_query: <text>` at query time for the nomic-embed-text family).
+ * OPT-IN via KB_EMBEDDING_TASK_PREFIXES=on: the PR #587 BEIR ablation
+ * measured the prefixes as flat-to-negative on this pipeline (no
+ * significant gain on any of 5 datasets × dense/hybrid; significant
+ * regressions on arguana and scidocs), so they are not default behavior —
+ * see benchmarks/results/beir/matrix/nomic-prefixed/.
  */
 export interface EmbeddingTaskPrefixes {
   query: string;
@@ -63,11 +65,11 @@ const NOMIC_TASK_PREFIXES: EmbeddingTaskPrefixes = {
 
 /**
  * @internal exported for tests. Returns the per-role prefixes a model
- * requires, or `null` for models that take raw text. Matched on the
+ * defines, or `null` for models that take raw text. Matched on the
  * model-name stem so Ollama tags (`:latest`, `:v1.5`) and HF-style org
- * paths (`nomic-ai/nomic-embed-text-v1.5`) are covered, and gated on
- * `KB_EMBEDDING_TASK_PREFIXES` so an operator can defer the change while
- * a pre-#567 index (built without prefixes) is still in service.
+ * paths (`nomic-ai/nomic-embed-text-v1.5`) are covered. Gated on the
+ * opt-in `KB_EMBEDDING_TASK_PREFIXES` (default off — see the adjudicated
+ * BEIR ablation referenced above).
  */
 export function embeddingTaskPrefixesFor(
   provider: EmbeddingProvider | 'fake',

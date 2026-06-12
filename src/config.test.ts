@@ -398,22 +398,22 @@ describe('parseKbFakeDim (#204 — KB_FAKE_DIM)', () => {
 });
 
 describe('parseEmbeddingTaskPrefixes (#567 — KB_EMBEDDING_TASK_PREFIXES)', () => {
-  it('defaults to on when unset or blank', () => {
-    expect(parseEmbeddingTaskPrefixes(undefined)).toBe(true);
-    expect(parseEmbeddingTaskPrefixes('')).toBe(true);
-    expect(parseEmbeddingTaskPrefixes('   ')).toBe(true);
+  it('defaults to off when unset or blank (PR #587 ablation: no measured gain)', () => {
+    expect(parseEmbeddingTaskPrefixes(undefined)).toBe(false);
+    expect(parseEmbeddingTaskPrefixes('')).toBe(false);
+    expect(parseEmbeddingTaskPrefixes('   ')).toBe(false);
   });
 
-  it('recognizes the off spellings case-insensitively', () => {
-    expect(parseEmbeddingTaskPrefixes('0')).toBe(false);
-    expect(parseEmbeddingTaskPrefixes('false')).toBe(false);
-    expect(parseEmbeddingTaskPrefixes('OFF')).toBe(false);
-    expect(parseEmbeddingTaskPrefixes(' No ')).toBe(false);
-  });
-
-  it('treats any other value as on', () => {
+  it('recognizes the on spellings case-insensitively', () => {
     expect(parseEmbeddingTaskPrefixes('on')).toBe(true);
     expect(parseEmbeddingTaskPrefixes('1')).toBe(true);
-    expect(parseEmbeddingTaskPrefixes('yes')).toBe(true);
+    expect(parseEmbeddingTaskPrefixes('TRUE')).toBe(true);
+    expect(parseEmbeddingTaskPrefixes(' Yes ')).toBe(true);
+  });
+
+  it('treats anything else as off', () => {
+    expect(parseEmbeddingTaskPrefixes('0')).toBe(false);
+    expect(parseEmbeddingTaskPrefixes('off')).toBe(false);
+    expect(parseEmbeddingTaskPrefixes('enable')).toBe(false);
   });
 });

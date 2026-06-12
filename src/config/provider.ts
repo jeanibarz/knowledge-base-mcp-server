@@ -101,15 +101,17 @@ function huggingFaceRouterUrl(model: string): string {
 export const HUGGINGFACE_ENDPOINT_URL = HUGGINGFACE_ENDPOINT_URL_OVERRIDE
   || huggingFaceRouterUrl(HUGGINGFACE_MODEL_NAME);
 
-// Issue #567 — kill switch for per-role embedding task prefixes (the
-// nomic-embed-text family needs `search_document: ` / `search_query: `).
-// Default on. Set to `0`/`false`/`off`/`no` to keep querying an index that
-// was built without prefixes (pre-#567) until it can be reindexed — mixing
-// prefixed queries with unprefixed document vectors is worse than neither.
+// Issue #567 — opt-in per-role embedding task prefixes (the nomic-embed-text
+// family documents `search_document: ` / `search_query: `). Default OFF: the
+// PR #587 BEIR ablation (5 datasets × dense/hybrid vs the #573 baselines)
+// measured zero significant improvements and three Holm-corrected
+// regressions (arguana dense/hybrid, scidocs hybrid), so prefixes are kept
+// only as a reproducible experiment surface, not shipped behavior. Enabling
+// requires a reindex — prefixed queries against unprefixed document vectors
+// mismatch both ways.
 export function parseEmbeddingTaskPrefixes(raw: string | undefined): boolean {
   const normalized = (raw ?? '').trim().toLowerCase();
-  if (normalized === '') return true;
-  return !['0', 'false', 'off', 'no'].includes(normalized);
+  return ['1', 'true', 'on', 'yes'].includes(normalized);
 }
 
 export const KB_EMBEDDING_TASK_PREFIXES: boolean =

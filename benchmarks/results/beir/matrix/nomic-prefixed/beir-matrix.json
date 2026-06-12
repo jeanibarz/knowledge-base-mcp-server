@@ -1,0 +1,552 @@
+{
+  "schema_version": "kb.beir-matrix.v1",
+  "generated_at": "2026-06-12T02:48:12.423Z",
+  "git_sha": "726a4cb",
+  "modes": [
+    "lexical",
+    "dense",
+    "hybrid"
+  ],
+  "datasets": [
+    "scifact",
+    "nfcorpus",
+    "arguana",
+    "scidocs",
+    "fiqa"
+  ],
+  "env": {
+    "embedding_provider": "ollama",
+    "embedding_model": "nomic-embed-text",
+    "rrf_c": "60",
+    "rerank_model": "Xenova/ms-marco-MiniLM-L-6-v2",
+    "rerank_top_n": "40",
+    "chunk_size": "1000",
+    "chunk_overlap": "200",
+    "contextual": "off",
+    "retrieval_views": null
+  },
+  "cells": [
+    {
+      "dataset": "scifact",
+      "domain": "scientific fact-checking",
+      "mode": "lexical",
+      "status": "ok",
+      "ndcgAt10": 0.668981,
+      "precisionAt10": 0.087,
+      "mapAt100": 0.630274,
+      "recallAt10": 0.792333,
+      "recallAt100": 0.895889,
+      "queriesEvaluated": 300,
+      "latencyP50Ms": 34.981945,
+      "latencyP95Ms": 62.731561,
+      "latencyP99Ms": 85.217218,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scifact-lexical-source-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scifact-lexical-source-run.trec"
+    },
+    {
+      "dataset": "nfcorpus",
+      "domain": "bio-medical",
+      "mode": "lexical",
+      "status": "ok",
+      "ndcgAt10": 0.302477,
+      "precisionAt10": 0.212384,
+      "mapAt100": 0.137795,
+      "recallAt10": 0.143751,
+      "recallAt100": 0.237567,
+      "queriesEvaluated": 323,
+      "latencyP50Ms": 1.428966,
+      "latencyP95Ms": 15.596919,
+      "latencyP99Ms": 18.668378,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-nfcorpus-lexical-source-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-nfcorpus-lexical-source-run.trec"
+    },
+    {
+      "dataset": "arguana",
+      "domain": "argument retrieval",
+      "mode": "lexical",
+      "status": "ok",
+      "ndcgAt10": 0.332901,
+      "precisionAt10": 0.07091,
+      "mapAt100": 0.226969,
+      "recallAt10": 0.709104,
+      "recallAt100": 0.945235,
+      "queriesEvaluated": 1406,
+      "latencyP50Ms": 432.15845,
+      "latencyP95Ms": 1291.101298,
+      "latencyP99Ms": 2119.670233,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-arguana-lexical-source-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-arguana-lexical-source-run.trec"
+    },
+    {
+      "dataset": "scidocs",
+      "domain": "scientific citation",
+      "mode": "lexical",
+      "status": "ok",
+      "ndcgAt10": 0.153652,
+      "precisionAt10": 0.078,
+      "mapAt100": 0.10612,
+      "recallAt10": 0.158167,
+      "recallAt100": 0.349333,
+      "queriesEvaluated": 1000,
+      "latencyP50Ms": 148.423695,
+      "latencyP95Ms": 259.294287,
+      "latencyP99Ms": 313.356075,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scidocs-lexical-source-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scidocs-lexical-source-run.trec"
+    },
+    {
+      "dataset": "fiqa",
+      "domain": "finance",
+      "mode": "lexical",
+      "status": "ok",
+      "ndcgAt10": 0.228174,
+      "precisionAt10": 0.063117,
+      "mapAt100": 0.18273,
+      "recallAt10": 0.288506,
+      "recallAt100": 0.504729,
+      "queriesEvaluated": 648,
+      "latencyP50Ms": 299.013654,
+      "latencyP95Ms": 490.656145,
+      "latencyP99Ms": 743.615893,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-fiqa-lexical-source-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-fiqa-lexical-source-run.trec"
+    },
+    {
+      "dataset": "scifact",
+      "domain": "scientific fact-checking",
+      "mode": "dense",
+      "status": "ok",
+      "ndcgAt10": 0.479258,
+      "precisionAt10": 0.069,
+      "mapAt100": 0.44337,
+      "recallAt10": 0.604056,
+      "recallAt100": 0.794333,
+      "queriesEvaluated": 300,
+      "latencyP50Ms": 231.604251,
+      "latencyP95Ms": 372.484514,
+      "latencyP99Ms": 7966.44337,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scifact-dense-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scifact-dense-chunk-run.trec"
+    },
+    {
+      "dataset": "nfcorpus",
+      "domain": "bio-medical",
+      "mode": "dense",
+      "status": "ok",
+      "ndcgAt10": 0.183357,
+      "precisionAt10": 0.130031,
+      "mapAt100": 0.088955,
+      "recallAt10": 0.088478,
+      "recallAt100": 0.160726,
+      "queriesEvaluated": 323,
+      "latencyP50Ms": 243.95429,
+      "latencyP95Ms": 1291.653387,
+      "latencyP99Ms": 1577.527522,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-nfcorpus-dense-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-nfcorpus-dense-chunk-run.trec"
+    },
+    {
+      "dataset": "arguana",
+      "domain": "argument retrieval",
+      "mode": "dense",
+      "status": "ok",
+      "ndcgAt10": 0.29814,
+      "precisionAt10": 0.062873,
+      "mapAt100": 0.207997,
+      "recallAt10": 0.628734,
+      "recallAt100": 0.928876,
+      "queriesEvaluated": 1406,
+      "latencyP50Ms": 234.484198,
+      "latencyP95Ms": 317.692709,
+      "latencyP99Ms": 363.417603,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-arguana-dense-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-arguana-dense-chunk-run.trec"
+    },
+    {
+      "dataset": "scidocs",
+      "domain": "scientific citation",
+      "mode": "dense",
+      "status": "ok",
+      "ndcgAt10": 0.054317,
+      "precisionAt10": 0.027,
+      "mapAt100": 0.036802,
+      "recallAt10": 0.0554,
+      "recallAt100": 0.131467,
+      "queriesEvaluated": 1000,
+      "latencyP50Ms": 258.598533,
+      "latencyP95Ms": 343.878025,
+      "latencyP99Ms": 401.584995,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scidocs-dense-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scidocs-dense-chunk-run.trec"
+    },
+    {
+      "dataset": "fiqa",
+      "domain": "finance",
+      "mode": "dense",
+      "status": "ok",
+      "ndcgAt10": 0.224005,
+      "precisionAt10": 0.06358,
+      "mapAt100": 0.185185,
+      "recallAt10": 0.269989,
+      "recallAt100": 0.48072,
+      "queriesEvaluated": 648,
+      "latencyP50Ms": 246.908012,
+      "latencyP95Ms": 309.440351,
+      "latencyP99Ms": 340.10344,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-fiqa-dense-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-fiqa-dense-chunk-run.trec"
+    },
+    {
+      "dataset": "scifact",
+      "domain": "scientific fact-checking",
+      "mode": "hybrid",
+      "status": "ok",
+      "ndcgAt10": 0.615787,
+      "precisionAt10": 0.084667,
+      "mapAt100": 0.571983,
+      "recallAt10": 0.762944,
+      "recallAt100": 0.924,
+      "queriesEvaluated": 300,
+      "latencyP50Ms": 784.021196,
+      "latencyP95Ms": 899.136445,
+      "latencyP99Ms": 949.752639,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scifact-hybrid-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scifact-hybrid-chunk-run.trec"
+    },
+    {
+      "dataset": "nfcorpus",
+      "domain": "bio-medical",
+      "mode": "hybrid",
+      "status": "ok",
+      "ndcgAt10": 0.247436,
+      "precisionAt10": 0.177709,
+      "mapAt100": 0.117146,
+      "recallAt10": 0.128878,
+      "recallAt100": 0.255583,
+      "queriesEvaluated": 323,
+      "latencyP50Ms": 755.949354,
+      "latencyP95Ms": 1543.459517,
+      "latencyP99Ms": 1998.118974,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-nfcorpus-hybrid-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-nfcorpus-hybrid-chunk-run.trec"
+    },
+    {
+      "dataset": "arguana",
+      "domain": "argument retrieval",
+      "mode": "hybrid",
+      "status": "ok",
+      "ndcgAt10": 0.366064,
+      "precisionAt10": 0.07596,
+      "mapAt100": 0.253524,
+      "recallAt10": 0.759602,
+      "recallAt100": 0.972973,
+      "queriesEvaluated": 1406,
+      "latencyP50Ms": 1410.19964,
+      "latencyP95Ms": 1788.454446,
+      "latencyP99Ms": 2064.187613,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-arguana-hybrid-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-arguana-hybrid-chunk-run.trec"
+    },
+    {
+      "dataset": "scidocs",
+      "domain": "scientific citation",
+      "mode": "hybrid",
+      "status": "ok",
+      "ndcgAt10": 0.105919,
+      "precisionAt10": 0.0592,
+      "mapAt100": 0.071246,
+      "recallAt10": 0.120217,
+      "recallAt100": 0.317883,
+      "queriesEvaluated": 1000,
+      "latencyP50Ms": 3517.948021,
+      "latencyP95Ms": 4043.197895,
+      "latencyP99Ms": 4552.260275,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scidocs-hybrid-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-scidocs-hybrid-chunk-run.trec"
+    },
+    {
+      "dataset": "fiqa",
+      "domain": "finance",
+      "mode": "hybrid",
+      "status": "ok",
+      "ndcgAt10": 0.25855,
+      "precisionAt10": 0.074074,
+      "mapAt100": 0.209976,
+      "recallAt10": 0.32813,
+      "recallAt100": 0.592828,
+      "queriesEvaluated": 648,
+      "latencyP50Ms": 5456.415161,
+      "latencyP95Ms": 5887.016549,
+      "latencyP99Ms": 6220.764341,
+      "jsonPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-fiqa-hybrid-chunk-results.json",
+      "trecPath": "benchmarks/results/beir/matrix/nomic-prefixed/kb-fiqa-hybrid-chunk-run.trec"
+    }
+  ],
+  "perMode": [
+    {
+      "mode": "lexical",
+      "datasetsEvaluated": 5,
+      "datasetsRequested": 5,
+      "multiDomainMeanNdcgAt10": 0.337237,
+      "multiDomainMeanPrecisionAt10": 0.102282,
+      "multiDomainMeanRecallAt10": 0.418372
+    },
+    {
+      "mode": "dense",
+      "datasetsEvaluated": 5,
+      "datasetsRequested": 5,
+      "multiDomainMeanNdcgAt10": 0.247815,
+      "multiDomainMeanPrecisionAt10": 0.070497,
+      "multiDomainMeanRecallAt10": 0.329331
+    },
+    {
+      "mode": "hybrid",
+      "datasetsEvaluated": 5,
+      "datasetsRequested": 5,
+      "multiDomainMeanNdcgAt10": 0.318751,
+      "multiDomainMeanPrecisionAt10": 0.094322,
+      "multiDomainMeanRecallAt10": 0.419954
+    }
+  ],
+  "generalization": {
+    "modes": [
+      {
+        "mode": "lexical",
+        "domains": [
+          {
+            "domain": "argument retrieval",
+            "datasets": [
+              "arguana"
+            ],
+            "meanNdcgAt10": 0.332901,
+            "meanPrecisionAt10": 0.07091,
+            "queriesEvaluated": 1406
+          },
+          {
+            "domain": "bio-medical",
+            "datasets": [
+              "nfcorpus"
+            ],
+            "meanNdcgAt10": 0.302477,
+            "meanPrecisionAt10": 0.212384,
+            "queriesEvaluated": 323
+          },
+          {
+            "domain": "finance",
+            "datasets": [
+              "fiqa"
+            ],
+            "meanNdcgAt10": 0.228174,
+            "meanPrecisionAt10": 0.063117,
+            "queriesEvaluated": 648
+          },
+          {
+            "domain": "scientific citation",
+            "datasets": [
+              "scidocs"
+            ],
+            "meanNdcgAt10": 0.153652,
+            "meanPrecisionAt10": 0.078,
+            "queriesEvaluated": 1000
+          },
+          {
+            "domain": "scientific fact-checking",
+            "datasets": [
+              "scifact"
+            ],
+            "meanNdcgAt10": 0.668981,
+            "meanPrecisionAt10": 0.087,
+            "queriesEvaluated": 300
+          }
+        ],
+        "deltaG": {
+          "mode": "lexical",
+          "seenDatasets": [
+            "fiqa",
+            "nfcorpus",
+            "scifact"
+          ],
+          "unseenDatasets": [
+            "arguana",
+            "scidocs"
+          ],
+          "seenMeanNdcgAt10": 0.399877,
+          "unseenMeanNdcgAt10": 0.243277,
+          "deltaG": 0.39162
+        }
+      },
+      {
+        "mode": "dense",
+        "domains": [
+          {
+            "domain": "argument retrieval",
+            "datasets": [
+              "arguana"
+            ],
+            "meanNdcgAt10": 0.29814,
+            "meanPrecisionAt10": 0.062873,
+            "queriesEvaluated": 1406
+          },
+          {
+            "domain": "bio-medical",
+            "datasets": [
+              "nfcorpus"
+            ],
+            "meanNdcgAt10": 0.183357,
+            "meanPrecisionAt10": 0.130031,
+            "queriesEvaluated": 323
+          },
+          {
+            "domain": "finance",
+            "datasets": [
+              "fiqa"
+            ],
+            "meanNdcgAt10": 0.224005,
+            "meanPrecisionAt10": 0.06358,
+            "queriesEvaluated": 648
+          },
+          {
+            "domain": "scientific citation",
+            "datasets": [
+              "scidocs"
+            ],
+            "meanNdcgAt10": 0.054317,
+            "meanPrecisionAt10": 0.027,
+            "queriesEvaluated": 1000
+          },
+          {
+            "domain": "scientific fact-checking",
+            "datasets": [
+              "scifact"
+            ],
+            "meanNdcgAt10": 0.479258,
+            "meanPrecisionAt10": 0.069,
+            "queriesEvaluated": 300
+          }
+        ],
+        "deltaG": {
+          "mode": "dense",
+          "seenDatasets": [
+            "fiqa",
+            "nfcorpus",
+            "scifact"
+          ],
+          "unseenDatasets": [
+            "arguana",
+            "scidocs"
+          ],
+          "seenMeanNdcgAt10": 0.29554,
+          "unseenMeanNdcgAt10": 0.176229,
+          "deltaG": 0.403705
+        }
+      },
+      {
+        "mode": "hybrid",
+        "domains": [
+          {
+            "domain": "argument retrieval",
+            "datasets": [
+              "arguana"
+            ],
+            "meanNdcgAt10": 0.366064,
+            "meanPrecisionAt10": 0.07596,
+            "queriesEvaluated": 1406
+          },
+          {
+            "domain": "bio-medical",
+            "datasets": [
+              "nfcorpus"
+            ],
+            "meanNdcgAt10": 0.247436,
+            "meanPrecisionAt10": 0.177709,
+            "queriesEvaluated": 323
+          },
+          {
+            "domain": "finance",
+            "datasets": [
+              "fiqa"
+            ],
+            "meanNdcgAt10": 0.25855,
+            "meanPrecisionAt10": 0.074074,
+            "queriesEvaluated": 648
+          },
+          {
+            "domain": "scientific citation",
+            "datasets": [
+              "scidocs"
+            ],
+            "meanNdcgAt10": 0.105919,
+            "meanPrecisionAt10": 0.0592,
+            "queriesEvaluated": 1000
+          },
+          {
+            "domain": "scientific fact-checking",
+            "datasets": [
+              "scifact"
+            ],
+            "meanNdcgAt10": 0.615787,
+            "meanPrecisionAt10": 0.084667,
+            "queriesEvaluated": 300
+          }
+        ],
+        "deltaG": {
+          "mode": "hybrid",
+          "seenDatasets": [
+            "fiqa",
+            "nfcorpus",
+            "scifact"
+          ],
+          "unseenDatasets": [
+            "arguana",
+            "scidocs"
+          ],
+          "seenMeanNdcgAt10": 0.373924,
+          "unseenMeanNdcgAt10": 0.235991,
+          "deltaG": 0.36888
+        }
+      }
+    ],
+    "tunedDatasets": [
+      "scifact",
+      "nfcorpus",
+      "fiqa"
+    ],
+    "unseenGeneralityDatasets": [
+      "arguana",
+      "scidocs",
+      "webis-touche2020"
+    ]
+  },
+  "contamination": [
+    {
+      "dataset": "scifact",
+      "knownInPretraining": false,
+      "qrels": "expert",
+      "note": "Expert (scientist) claim↔evidence annotations; small corpus, low pretraining-leakage risk."
+    },
+    {
+      "dataset": "nfcorpus",
+      "knownInPretraining": false,
+      "qrels": "expert",
+      "note": "Medical nutrition queries with expert/relevance-graded links; niche corpus, low leakage risk."
+    },
+    {
+      "dataset": "arguana",
+      "knownInPretraining": false,
+      "qrels": "crowdsourced",
+      "note": "Counter-argument retrieval; query IS a full argument. Distinct task shape from QA — held out for Δ_g."
+    },
+    {
+      "dataset": "scidocs",
+      "knownInPretraining": false,
+      "qrels": "automatic",
+      "note": "Citation/co-read prediction; relevance derived from citation graph (automatic). Held out for Δ_g."
+    },
+    {
+      "dataset": "fiqa",
+      "knownInPretraining": false,
+      "qrels": "crowdsourced",
+      "note": "Financial opinion QA over StackExchange/forum text; crowdsourced relevance."
+    }
+  ]
+}
