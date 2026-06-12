@@ -1,22 +1,16 @@
 // `kb backup` — checksum-validated directory snapshots for one model index.
 
+import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import {
-  addingSentinelPath,
-  modelDir,
-  resolveActiveModel,
-} from './active-model.js';
-import { FAISS_INDEX_PATH } from './config/paths.js';
-import { INDEX_INTEGRITY_MANIFEST_FILENAME, parseIndexVersionDirName } from './faiss-store-layout.js';
-import { FRESHNESS_MANIFEST_FILE } from './freshness-manifest.js';
-import { METADATA_SIDECAR_FILENAME } from './metadata-sidecar.js';
-import { PENDING_SIDECAR_COMMIT_FILENAME } from './pending-sidecar-commit.js';
-import { calculateSHA256, pathExists } from './file-utils.js';
-import { withWriteLock } from './write-lock.js';
 
 export const BACKUP_MANIFEST_FILENAME = 'backup-manifest.json';
 export const BACKUP_MANIFEST_SCHEMA_VERSION = 'kb.backup.v1';
+export const INDEX_INTEGRITY_MANIFEST_FILENAME = 'integrity.json';
+
+const FRESHNESS_MANIFEST_FILE = 'freshness.json';
+const METADATA_SIDECAR_FILENAME = 'metadata-sidecar.jsonl';
+const PENDING_SIDECAR_COMMIT_FILENAME = 'pending-manifest.json';
 
 export const BACKUP_HELP = `kb backup — create a checksum-validated index directory snapshot
 
@@ -117,8 +111,11 @@ export function parseBackupArgs(rest: readonly string[]): BackupArgs {
 }
 
 export async function createBackup(args: BackupArgs): Promise<BackupResult> {
+  const { FAISS_INDEX_PATH } = await import('./config/paths.js');
+  const { modelDir, resolveActiveModel } = await import('./active-model.js');
+  const { withWriteLock } = await import('./write-lock.js');
   const outputDir = path.resolve(args.outputDir);
-  await assertSafeNewOutputDir(outputDir);
+  await assertSafeNewOutputDir(outputDir, FAISS_INDEX_PATH);
   const parent = path.dirname(outputDir);
   await fsp.mkdir(parent, { recursive: true });
   const tmpDir = path.join(parent, `.${path.basename(outputDir)}.tmp.${process.pid}.${Date.now()}`);
@@ -223,8 +220,8 @@ export function manifestVersionRel(modelId: string, version: string): string {
   return path.posix.join('models', modelId, version);
 }
 
-async function assertSafeNewOutputDir(outputDir: string): Promise<void> {
-  const faissRoot = path.resolve(FAISS_INDEX_PATH);
+async function assertSafeNewOutputDir(outputDir: string, faissIndexPath: string): Promise<void> {
+  const faissRoot = path.resolve(faissIndexPath);
   if (pathsOverlap(outputDir, faissRoot)) {
     throw new Error(`unsafe backup destination: --output must be outside $FAISS_INDEX_PATH (${faissRoot})`);
   }
@@ -234,6 +231,7 @@ async function assertSafeNewOutputDir(outputDir: string): Promise<void> {
 }
 
 async function assertNoIncompleteModelState(modelId: string): Promise<void> {
+  const { addingSentinelPath, modelDir } = await import('./active-model.js');
   if (await pathExists(addingSentinelPath(modelId))) {
     throw new Error(`model ${modelId} is incomplete (.adding sentinel exists); refusing to snapshot it`);
   }
@@ -243,6 +241,7 @@ async function assertNoIncompleteModelState(modelId: string): Promise<void> {
 }
 
 async function assertRequiredModelFiles(modelId: string): Promise<void> {
+  const { modelDir } = await import('./active-model.js');
   const filePath = path.join(modelDir(modelId), 'model_name.txt');
   try {
     const st = await fsp.stat(filePath);
@@ -374,4 +373,28 @@ function pathsOverlap(a: string, b: string): boolean {
   const left = path.resolve(a);
   const right = path.resolve(b);
   return left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`);
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fsp.stat(target);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+    throw err;
+  }
+}
+
+async function calculateSHA256(filePath: string): Promise<string> {
+  const fileBuffer = await fsp.readFile(filePath);
+  return crypto.createHash('sha256').update(fileBuffer).digest('hex');
+}
+
+function parseIndexVersionDirName(name: unknown): number | null {
+  if (typeof name !== 'string') return null;
+  const match = /^index\.v(\d+)$/.exec(name);
+  if (!match) return null;
+  const n = parseInt(match[1], 10);
+  return Number.isFinite(n) ? n : null;
 }
