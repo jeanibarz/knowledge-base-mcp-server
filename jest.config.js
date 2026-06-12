@@ -14,7 +14,11 @@ const e2eEnabled = process.env.KB_RUN_E2E === '1';
 export default {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  testMatch: ["**/src/**/*.test.ts", "**/benchmarks/**/*.test.ts"],
+  testMatch: [
+    "**/src/**/*.test.ts",
+    "**/benchmarks/**/*.test.ts",
+    "**/tests/stress/**/*.test.ts",
+  ],
   testPathIgnorePatterns: [
     '/node_modules/',
     ...(e2eEnabled ? [] : ['<rootDir>/src/e2e/']),
