@@ -4,6 +4,7 @@ import { KBError, type KBErrorCode } from './errors.js';
 import { ActiveModelResolutionError } from './active-model.js';
 import type { QueryCacheOutcome, QueryCacheTelemetry } from './query-cache.js';
 import { readKBSlowQueryMs } from './config/logging.js';
+import type { DenseDegradationReason } from './search-core.js';
 
 export const CANONICAL_SCHEMA_VERSION = 'kb-canonical.v1';
 
@@ -57,6 +58,8 @@ export interface CanonicalLogEvent {
   cache?: CanonicalCacheStatus;
   query_cache?: QueryCacheTelemetry;
   error?: CanonicalError;
+  degraded?: true;
+  degrade_reason?: DenseDegradationReason;
   recovery_hint?: string;
   rerank?: Record<string, unknown>;
   gate?: Record<string, unknown>;
@@ -101,6 +104,8 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'cache',
   'query_cache',
   'error',
+  'degraded',
+  'degrade_reason',
   'recovery_hint',
   'rerank',
   'gate',
@@ -155,6 +160,8 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   assignIfDefined(event, 'cache', input.cache);
   assignIfDefined(event, 'query_cache', input.query_cache);
   assignIfDefined(event, 'error', input.error);
+  assignIfDefined(event, 'degraded', input.degraded);
+  assignIfDefined(event, 'degrade_reason', input.degrade_reason);
   assignIfDefined(event, 'recovery_hint', input.recovery_hint);
   assignIfDefined(event, 'rerank', input.rerank);
   assignIfDefined(event, 'gate', input.gate);

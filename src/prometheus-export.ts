@@ -111,6 +111,7 @@ export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
     },
     ...providerLatencyMetrics(payload),
     ...searchLatencyCounterMetrics(payload.search_latency),
+    ...searchDegradedCounterMetrics(payload.search_latency),
     {
       name: 'kb_query_cache_hits_total',
       help: 'Query embedding cache hits.',
@@ -300,6 +301,25 @@ function searchLatencyCounterMetrics(snapshot: SearchLatencyMetricsSnapshot): Me
   return [{
     name: 'kb_search_requests_total',
     help: 'Daemon-served search requests by effective mode and status.',
+    type: 'counter',
+    samples,
+  }];
+}
+
+function searchDegradedCounterMetrics(snapshot: SearchLatencyMetricsSnapshot): MetricDefinition[] {
+  const samples: MetricSample[] = [];
+  for (const [mode, byReason] of Object.entries(snapshot.degraded)) {
+    for (const [reason, count] of Object.entries(byReason ?? {})) {
+      samples.push({
+        name: 'kb_search_degraded_total',
+        labels: { mode, reason },
+        value: count,
+      });
+    }
+  }
+  return [{
+    name: 'kb_search_degraded_total',
+    help: 'Search requests degraded from dense-provider retrieval to lexical-only output by bounded reason.',
     type: 'counter',
     samples,
   }];

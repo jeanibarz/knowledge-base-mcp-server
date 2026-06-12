@@ -39,6 +39,7 @@ import {
 } from './config/mcp-descriptions.js';
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+  KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
 } from './config/retrieval.js';
 import {
   INGEST_EXCLUDE_PATHS,
@@ -111,6 +112,10 @@ import {
   type DiffIndexQuery,
 } from './diff-index-core.js';
 import {
+  classifyDenseDegradationReason,
+  type DenseDegradationReason,
+} from './search-core.js';
+import {
   applyRelevanceGate,
   emitRelevanceGateDecision,
   formatGateVerdictFooter,
@@ -168,6 +173,20 @@ function withGateVerdict<T extends CallToolResult>(
   } as T;
 }
 
+function withDegradationMetadata<T extends CallToolResult>(
+  result: T,
+  reason: DenseDegradationReason,
+): T {
+  return {
+    ...result,
+    structuredContent: {
+      ...((result as { structuredContent?: Record<string, unknown> }).structuredContent ?? {}),
+      degraded: true,
+      degrade_reason: reason,
+    },
+  } as T;
+}
+
 function resolveNeighborContextOptions(args: {
   context_before?: number;
   context_after?: number;
@@ -181,6 +200,16 @@ function resolveNeighborContextOptions(args: {
 
 function hasNeighborContext(options: NeighborContextOptions | undefined): boolean {
   return (options?.before ?? 0) > 0 || (options?.after ?? 0) > 0;
+}
+
+function hasRetrievalFilters(
+  filters: { extensions?: string[]; pathGlob?: string; tags?: string[] } | undefined,
+): boolean {
+  return filters !== undefined && (
+    (filters.extensions?.length ?? 0) > 0 ||
+    filters.pathGlob !== undefined ||
+    (filters.tags?.length ?? 0) > 0
+  );
 }
 
 function topSourcesForCanonicalLog(
@@ -782,23 +811,57 @@ export class KnowledgeBaseServer {
 
       // Perform similarity search using the provided query.
       const timing: SimilaritySearchTiming = {};
-      let similaritySearchResults = await manager.similaritySearch(
-        query,
-        10,
-        threshold,
-        knowledgeBaseName,
-        filters,
-        timing,
-      );
-      if (neighborContext) {
+      let degradedReason: DenseDegradationReason | null = null;
+      let similaritySearchResults;
+      try {
+        similaritySearchResults = await manager.similaritySearch(
+          query,
+          10,
+          threshold,
+          knowledgeBaseName,
+          filters,
+          timing,
+        );
+      } catch (error: unknown) {
+        const reason = classifyDenseDegradationReason(error);
+        if (
+          !KB_DENSE_DEGRADE_ON_PROVIDER_ERROR ||
+          reason === null ||
+          hasRetrievalFilters(filters) ||
+          hasNeighborContext(neighborContext)
+        ) {
+          throw error;
+        }
+        const degraded = await this.runDegradedLexicalOnly({
+          query,
+          knowledgeBaseName,
+          fetchK: 10,
+        });
+        if (degraded === null) throw error;
+        degradedReason = reason;
+        similaritySearchResults = degraded.results;
+        searchLatencyMetrics.recordDegraded('dense', reason);
+        if (canonical) {
+          canonical.degraded = true;
+          canonical.degrade_reason = reason;
+        }
+        logger.warn(`retrieve_knowledge dense degraded to lexical-only: ${reason}`);
+      }
+      if (neighborContext && degradedReason === null) {
         similaritySearchResults = manager.expandWithNeighborContext(
           similaritySearchResults,
           neighborContext,
         );
       }
       const denseDistanceById = new Map<string, number>();
+      const lexicalHitIds = degradedReason === null ? undefined : new Set<string>();
       for (const result of similaritySearchResults) {
-        denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
+        const id = chunkIdFromMetadata(result.metadata as Record<string, unknown>);
+        if (degradedReason === null) {
+          denseDistanceById.set(id, result.score);
+        } else {
+          lexicalHitIds?.add(id);
+        }
       }
       const gateStartedAt = Date.now();
       const gate = await applyRelevanceGate({
@@ -806,6 +869,7 @@ export class KnowledgeBaseServer {
         taskContext,
         candidates: similaritySearchResults,
         denseDistanceById,
+        lexicalHitIds,
         gateOverride,
         process: 'mcp',
       });
@@ -840,6 +904,10 @@ export class KnowledgeBaseServer {
       if (gate.verdict.state !== 'bypassed') {
         responseText = `${responseText}\n\n${formatGateVerdictFooter(gate.verdict)}`;
       }
+      if (degradedReason !== null) {
+        responseText = `> _Mode: degraded lexical-only (reason: ${degradedReason}; original mode dense)._` +
+          `\n\n${responseText}`;
+      }
       canonical.format_ms = Date.now() - formatStartedAt;
       const stageTiming: TimingPayload = {
         embed_query_ms: timing.embed_query_ms,
@@ -871,7 +939,10 @@ export class KnowledgeBaseServer {
       }
 
       const content: TextContent = { type: 'text', text: responseText };
-      return withGateVerdict({ content: [content] }, gate.verdict);
+      const response = withGateVerdict({ content: [content] }, gate.verdict);
+      return degradedReason === null
+        ? response
+        : withDegradationMetadata(response, degradedReason);
     } catch (error: unknown) {
       const err = toError(error);
       searchLatencyMetrics.record({
@@ -1003,17 +1074,23 @@ export class KnowledgeBaseServer {
 
       // Dense leg — over-fetch to give RRF room.
       const denseTiming: SimilaritySearchTiming = {};
+      let denseError: unknown = null;
       const densePromise = manager
         .similaritySearch(query, fetchK, Number.POSITIVE_INFINITY, knowledgeBaseName, filters, denseTiming)
-        .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })));
+        .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })))
+        .catch((err) => {
+          denseError = err;
+          return [];
+        });
 
       // Lexical leg — BM25 over the same chunks the FAISS path embeds, but
       // managed independently (the lexical index is model-agnostic and lives
       // under `${FAISS_INDEX_PATH}/lexical/<kb>/`). Auto-refresh on first use
       // per KB; explicit refresh is the CLI's job (`kb search --refresh`).
+      const allKbNames = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
       const kbNames = knowledgeBaseName
-        ? [knowledgeBaseName]
-        : await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+        ? allKbNames.filter((name) => name === knowledgeBaseName)
+        : allKbNames;
       const kbs = kbNames.map((kbName) => ({ kbName, kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName) }));
       let lexicalSearchMs = 0;
       const lexicalStartedAt = Date.now();
@@ -1027,22 +1104,49 @@ export class KnowledgeBaseServer {
         },
       }).then((res) => {
         lexicalSearchMs = Date.now() - lexicalStartedAt;
-        return res.hits;
+        return res;
       });
 
-      const [denseResults, lexicalResults] = await Promise.all([densePromise, lexicalPromise]);
+      const [denseResults, lexicalLegResult] = await Promise.all([densePromise, lexicalPromise]);
+      const lexicalResults = lexicalLegResult.hits;
       if (canonical) {
         canonical.embed_ms = denseTiming.embed_query_ms;
         canonical.faiss_ms = denseTiming.faiss_search_ms ?? denseTiming.query_search_ms;
       }
+      let degradedReason: DenseDegradationReason | null = null;
+      if (denseError !== null) {
+        const reason = classifyDenseDegradationReason(denseError);
+        if (
+          !KB_DENSE_DEGRADE_ON_PROVIDER_ERROR ||
+          reason === null ||
+          hasRetrievalFilters(filters) ||
+          kbs.length === 0 ||
+          lexicalLegResult.failed >= kbs.length
+        ) {
+          throw denseError;
+        }
+        degradedReason = reason;
+        searchLatencyMetrics.recordDegraded('hybrid', reason);
+        if (canonical) {
+          canonical.degraded = true;
+          canonical.degrade_reason = reason;
+        }
+        logger.warn(`retrieve_knowledge hybrid degraded to lexical-only: ${reason}`);
+      }
 
       const rerankConfig = resolveRerankerConfig(process.env, rerankOverride, knowledgeBaseName ?? null);
       const fusionStartedAt = Date.now();
-      const fusion = fuseHybridResultsWithDiagnostics({
-        denseResults,
-        lexicalResults,
-        k: rerankConfig.enabled ? Math.max(HYBRID_TOP_K, rerankConfig.topN) : HYBRID_TOP_K,
-      });
+      const fusion = degradedReason === null
+        ? fuseHybridResultsWithDiagnostics({
+            denseResults,
+            lexicalResults,
+            k: rerankConfig.enabled ? Math.max(HYBRID_TOP_K, rerankConfig.topN) : HYBRID_TOP_K,
+          })
+        : {
+            results: lexicalResults.slice(0, rerankConfig.enabled ? Math.max(HYBRID_TOP_K, rerankConfig.topN) : HYBRID_TOP_K),
+            denseDistanceById: new Map<string, number>(),
+            lexicalHitIds: new Set(lexicalResults.map((r) => chunkIdFromMetadata(r.metadata))),
+          };
       const fusionMs = Date.now() - fusionStartedAt;
       let ranked = fusion.results;
       const rerankStartedAt = Date.now();
@@ -1112,13 +1216,19 @@ export class KnowledgeBaseServer {
       const rerankHeader = rerankResult.candidatesIn > 0
         ? `; rerank ${rerankResult.model}${rerankResult.degraded ? ' degraded' : ''}`
         : '';
-      const header = `> _Mode: hybrid (RRF c=${HYBRID_RRF_C}); dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length}${rerankHeader} (#206 stage 2)._`;
+      const modeHeader = degradedReason === null
+        ? `hybrid (RRF c=${HYBRID_RRF_C})`
+        : `degraded lexical-only (reason: ${degradedReason}; original mode hybrid)`;
+      const header = `> _Mode: ${modeHeader}; dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length}${rerankHeader} (#206 stage 2)._`;
       responseText = modelNameOverride !== undefined
         ? `> _Model: ${activeModelId}_\n${header}\n\n${responseText}`
         : `${header}\n\n${responseText}`;
 
       const content: TextContent = { type: 'text', text: responseText };
-      return withGateVerdict({ content: [content] }, gate.verdict);
+      const response = withGateVerdict({ content: [content] }, gate.verdict);
+      return degradedReason === null
+        ? response
+        : withDegradationMetadata(response, degradedReason);
     } catch (error: unknown) {
       const err = toError(error);
       searchLatencyMetrics.record({
@@ -1130,6 +1240,33 @@ export class KnowledgeBaseServer {
       if (err.stack) logger.error(err.stack);
       return { content: [mcpErrorContent(err)], isError: true };
     }
+  }
+
+  private async runDegradedLexicalOnly(input: {
+    query: string;
+    knowledgeBaseName?: string;
+    fetchK: number;
+  }): Promise<{ results: Array<{ pageContent: string; metadata: Record<string, unknown>; score: number }> } | null> {
+    const allKbNames = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+    const kbNames = input.knowledgeBaseName
+      ? allKbNames.filter((name) => name === input.knowledgeBaseName)
+      : allKbNames;
+    if (kbNames.length === 0) return null;
+    const kbs = kbNames.map((kbName) => ({
+      kbName,
+      kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName),
+    }));
+    const row = await runLexicalLeg({
+      kbs,
+      query: input.query,
+      fetchK: input.fetchK,
+      refresh: 'when-empty',
+      onError: (kbName, err) => {
+        logger.warn(`degraded lexical-only: lexical leg failed for KB "${kbName}": ${err.message}`);
+      },
+    });
+    if (row.failed >= kbs.length) return null;
+    return { results: row.hits };
   }
 
   async run() {

@@ -24,6 +24,7 @@ import {
   listKnowledgeBases,
   type KbFilesystemEnumerationFailure,
 } from './kb-fs.js';
+import { KBError } from './errors.js';
 
 // -- Search mode -------------------------------------------------------------
 
@@ -56,6 +57,22 @@ export function resolveAutoSearchMode(query: string): AutoSearchModeDecision {
 
 export function formatAutoModeHeader(decision: AutoSearchModeDecision): string {
   return `> _Mode: auto -> ${decision.mode} (${decision.reason})._`;
+}
+
+// -- Dense-provider degradation ---------------------------------------------
+
+export type DenseDegradationReason = 'provider_unavailable' | 'provider_timeout';
+
+export function classifyDenseDegradationReason(error: unknown): DenseDegradationReason | null {
+  if (!(error instanceof KBError)) return null;
+  switch (error.code) {
+    case 'PROVIDER_UNAVAILABLE':
+      return 'provider_unavailable';
+    case 'PROVIDER_TIMEOUT':
+      return 'provider_timeout';
+    default:
+      return null;
+  }
 }
 
 // -- Auto-threshold (knee detection) -----------------------------------------

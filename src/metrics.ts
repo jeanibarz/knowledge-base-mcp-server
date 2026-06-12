@@ -9,6 +9,7 @@
 // runtime histograms live on the existing `kb_stats` MCP tool surface.
 
 import type { SearchLatencyStage } from './timing-core.js';
+import type { DenseDegradationReason } from './search-core.js';
 
 /**
  * Fixed log-spaced latency bucket upper bounds, in milliseconds. 10 bucket
@@ -86,6 +87,7 @@ export interface SearchLatencyMetricsSnapshot {
     SearchLatencyMode,
     Partial<Record<SearchLatencyStage, Partial<Record<SearchLatencyStatus, LatencyHistogramSnapshot>>>>
   >>;
+  degraded: Partial<Record<SearchLatencyMode, Partial<Record<DenseDegradationReason, number>>>>;
 }
 
 function emptyState(now: number): MetricsState {
@@ -265,6 +267,7 @@ export class ProviderCallMetrics {
 export class SearchLatencyMetrics {
   private readonly requestStates = new Map<string, HistogramState>();
   private readonly stageStates = new Map<string, HistogramState>();
+  private readonly degradedCounts = new Map<string, number>();
   private readonly now: () => number;
 
   constructor(options: { now?: () => number } = {}) {
@@ -280,6 +283,11 @@ export class SearchLatencyMetrics {
       const stageState = this.getStageState(sample.mode, stage, sample.status);
       recordHistogramSample(stageState, value);
     }
+  }
+
+  recordDegraded(mode: SearchLatencyMode, reason: DenseDegradationReason): void {
+    const key = `${mode}|${reason}`;
+    this.degradedCounts.set(key, (this.degradedCounts.get(key) ?? 0) + 1);
   }
 
   snapshot(): SearchLatencyMetricsSnapshot {
@@ -298,12 +306,20 @@ export class SearchLatencyMetrics {
       stages[mode]![stage]![status] = snapshotHistogram(state);
     }
 
-    return { requests, stages };
+    const degraded: SearchLatencyMetricsSnapshot['degraded'] = {};
+    for (const [key, count] of this.degradedCounts.entries()) {
+      const [mode, reason] = key.split('|') as [SearchLatencyMode, DenseDegradationReason];
+      degraded[mode] ??= {};
+      degraded[mode]![reason] = count;
+    }
+
+    return { requests, stages, degraded };
   }
 
   reset(): void {
     this.requestStates.clear();
     this.stageStates.clear();
+    this.degradedCounts.clear();
   }
 
   private getRequestState(mode: SearchLatencyMode, status: SearchLatencyStatus): HistogramState {

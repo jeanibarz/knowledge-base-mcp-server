@@ -75,6 +75,7 @@ function payload(): KbStatsPayload {
     search_latency: {
       requests: {},
       stages: {},
+      degraded: {},
     },
     query_cache: {
       hits: 0,

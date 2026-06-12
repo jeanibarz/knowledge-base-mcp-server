@@ -248,6 +248,7 @@ describe('kb serve metrics formatting', () => {
       search_latency: {
         requests: {},
         stages: {},
+        degraded: {},
       },
       query_cache: {
         hits: 0,
