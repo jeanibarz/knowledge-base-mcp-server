@@ -37,8 +37,11 @@ import {
 import { logger } from './logger.js';
 import {
   providerCallMetrics,
+  searchLatencyMetrics,
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
+  type SearchLatencyMetrics,
+  type SearchLatencyMetricsSnapshot,
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
 import { queryEmbeddingCache, type QueryCacheStats } from './query-cache.js';
@@ -108,6 +111,12 @@ export interface KbStatsPayload {
    * `provider_calls` keep working.
    */
   provider_calls: Record<string, ProviderCallSnapshot>;
+  /**
+   * Issue #597 — process-lifetime latency histograms for daemon-served
+   * search requests and their bounded per-stage timings. Empty until this
+   * serving process handles a search request.
+   */
+  search_latency: SearchLatencyMetricsSnapshot;
   query_cache: QueryCacheStats;
   relevance_gate: RelevanceGateMetricsSnapshot;
   /**
@@ -131,6 +140,8 @@ export interface ComputeKbStatsOptions {
    * singleton is read.
    */
   metrics?: ProviderCallMetrics;
+  /** Issue #597 — test seam for daemon-served search latency telemetry. */
+  searchMetrics?: SearchLatencyMetrics;
   /** Process-local HTTP/SSE counters, supplied by KnowledgeBaseServer when active. */
   remoteTransportStats?: TransportRuntimeStatsSnapshot;
 }
@@ -211,6 +222,7 @@ export async function computeKbStats(
   }
 
   const metricsSource = options.metrics ?? providerCallMetrics;
+  const searchMetricsSource = options.searchMetrics ?? searchLatencyMetrics;
   const managerSummary = manager.getLastIndexUpdateSummary();
   const readPersistedSummary = FaissIndexManager.readPersistedIndexUpdateSummary;
   const lastIndexUpdate = managerSummary.status === 'never_run'
@@ -239,6 +251,7 @@ export async function computeKbStats(
       uptime_ms: Date.now() - options.startedAt,
     },
     provider_calls: metricsSource.snapshot(),
+    search_latency: searchMetricsSource.snapshot(),
     query_cache: await queryEmbeddingCache.stats(),
     relevance_gate: relevanceGateMetrics.snapshot(),
     ...(options.remoteTransportStats !== undefined

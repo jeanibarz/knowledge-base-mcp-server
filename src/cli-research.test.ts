@@ -82,6 +82,10 @@ function statsPayload(overrides: Partial<KbStatsPayload> = {}): KbStatsPayload {
       uptime_ms: 1,
     },
     provider_calls: {},
+    search_latency: {
+      requests: {},
+      stages: {},
+    },
     query_cache: {
       hits: 0,
       misses: 0,

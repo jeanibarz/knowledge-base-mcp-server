@@ -1,4 +1,11 @@
 import type { KbStatsPayload } from './kb-stats.js';
+import {
+  LATENCY_BUCKET_BOUNDS_MS,
+  type LatencyHistogramSnapshot,
+  type SearchLatencyMetricsSnapshot,
+  type SearchLatencyMode,
+  type SearchLatencyStatus,
+} from './metrics.js';
 
 interface MetricSample {
   name: string;
@@ -103,6 +110,7 @@ export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
         })),
     },
     ...providerLatencyMetrics(payload),
+    ...searchLatencyCounterMetrics(payload.search_latency),
     {
       name: 'kb_query_cache_hits_total',
       help: 'Query embedding cache hits.',
@@ -173,6 +181,7 @@ export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
       lines.push(`${sample.name}${formatLabels(sample.labels)} ${formatNumber(sample.value)}`);
     }
   }
+  lines.push(...searchLatencyHistogramLines(payload.search_latency));
   lines.push('# EOF');
   return `${lines.join('\n')}\n`;
 }
@@ -274,6 +283,111 @@ function remoteTransportMetrics(payload: KbStatsPayload): MetricDefinition[] {
       }],
     })),
   ];
+}
+
+function searchLatencyCounterMetrics(snapshot: SearchLatencyMetricsSnapshot): MetricDefinition[] {
+  const samples: MetricSample[] = [];
+  for (const [mode, byStatus] of Object.entries(snapshot.requests)) {
+    for (const [status, histogram] of Object.entries(byStatus)) {
+      if (histogram === undefined) continue;
+      samples.push({
+        name: 'kb_search_requests_total',
+        labels: { mode, status },
+        value: histogram.count,
+      });
+    }
+  }
+  return [{
+    name: 'kb_search_requests_total',
+    help: 'Daemon-served search requests by effective mode and status.',
+    type: 'counter',
+    samples,
+  }];
+}
+
+function searchLatencyHistogramLines(snapshot: SearchLatencyMetricsSnapshot): string[] {
+  const lines: string[] = [];
+  lines.push(...renderHistogramFamily({
+    name: 'kb_search_request_duration_ms',
+    help: 'End-to-end daemon-served search request latency in milliseconds.',
+    rows: requestHistogramRows(snapshot),
+  }));
+  lines.push(...renderHistogramFamily({
+    name: 'kb_search_stage_duration_ms',
+    help: 'Daemon-served search stage latency in milliseconds.',
+    rows: stageHistogramRows(snapshot),
+  }));
+  return lines;
+}
+
+function requestHistogramRows(snapshot: SearchLatencyMetricsSnapshot): HistogramRow[] {
+  const rows: HistogramRow[] = [];
+  for (const [mode, byStatus] of Object.entries(snapshot.requests)) {
+    for (const [status, histogram] of Object.entries(byStatus)) {
+      if (histogram === undefined) continue;
+      rows.push({
+        labels: {
+          mode: mode as SearchLatencyMode,
+          status: status as SearchLatencyStatus,
+        },
+        histogram,
+      });
+    }
+  }
+  return rows;
+}
+
+function stageHistogramRows(snapshot: SearchLatencyMetricsSnapshot): HistogramRow[] {
+  const rows: HistogramRow[] = [];
+  for (const [mode, byStage] of Object.entries(snapshot.stages)) {
+    for (const [stage, byStatus] of Object.entries(byStage)) {
+      if (byStatus === undefined) continue;
+      for (const [status, histogram] of Object.entries(byStatus)) {
+        if (histogram === undefined) continue;
+        rows.push({
+          labels: {
+            mode,
+            stage,
+            status,
+          },
+          histogram,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+interface HistogramRow {
+  labels: Record<string, string>;
+  histogram: LatencyHistogramSnapshot;
+}
+
+function renderHistogramFamily(input: {
+  name: string;
+  help: string;
+  rows: HistogramRow[];
+}): string[] {
+  if (input.rows.length === 0) return [];
+  const lines: string[] = [
+    `# HELP ${input.name} ${input.help}`,
+    `# TYPE ${input.name} histogram`,
+  ];
+  for (const row of input.rows) {
+    let cumulative = 0;
+    for (let index = 0; index < LATENCY_BUCKET_BOUNDS_MS.length; index += 1) {
+      cumulative += row.histogram.buckets[index] ?? 0;
+      lines.push(
+        `${input.name}_bucket${formatLabels({ ...row.labels, le: String(LATENCY_BUCKET_BOUNDS_MS[index]) })} ${formatNumber(cumulative)}`,
+      );
+    }
+    lines.push(
+      `${input.name}_bucket${formatLabels({ ...row.labels, le: '+Inf' })} ${formatNumber(row.histogram.count)}`,
+    );
+    lines.push(`${input.name}_sum${formatLabels(row.labels)} ${formatNumber(row.histogram.sum_ms)}`);
+    lines.push(`${input.name}_count${formatLabels(row.labels)} ${formatNumber(row.histogram.count)}`);
+  }
+  return lines;
 }
 
 function formatLabels(labels: Record<string, string> | undefined): string {

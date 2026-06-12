@@ -11,6 +11,7 @@ import type { DaemonRunResult } from './daemon-client.js';
 import type { KbStatsPayload } from './kb-stats.js';
 import type { RunSearchDeps } from './cli-search.js';
 import type { LexicalIndex } from './lexical-index.js';
+import { searchLatencyMetrics } from './metrics.js';
 
 interface RawResponse {
   statusCode: number;
@@ -49,6 +50,7 @@ describe('kb serve daemon', () => {
   const originalMetricsExport = process.env.KB_METRICS_EXPORT;
 
   afterEach(() => {
+    searchLatencyMetrics.reset();
     if (originalMetricsExport === undefined) delete process.env.KB_METRICS_EXPORT;
     else process.env.KB_METRICS_EXPORT = originalMetricsExport;
   });
@@ -134,6 +136,44 @@ describe('kb serve daemon', () => {
     expect(lexicalIndexLoader).toHaveBeenCalledWith('alpha', '/kb/alpha');
   });
 
+  it('records successful daemon-served search timings through the search deps hook', async () => {
+    const runSearchImpl = jest.fn(async (_args: string[], deps: RunSearchDeps = {} as RunSearchDeps) => {
+      deps.onSearchTiming?.({
+        mode: 'hybrid',
+        status: 'success',
+        totalMs: 50,
+        timing: {
+          total_ms: 50,
+          dense_search_ms: 30,
+          fusion_ms: 4,
+        },
+      });
+      return 0;
+    });
+    const handlers = createDaemonCommandHandlers({ runSearchImpl });
+
+    const result = await handlers.search(['query', '--mode=hybrid']);
+
+    expect(result).toEqual({ exitCode: 0, stdout: '', stderr: '' });
+    const snap = searchLatencyMetrics.snapshot();
+    expect(snap.requests.hybrid?.success).toMatchObject({ count: 1, sum_ms: 50 });
+    expect(snap.stages.hybrid?.dense_search?.success).toMatchObject({ count: 1, sum_ms: 30 });
+    expect(snap.stages.hybrid?.fusion?.success).toMatchObject({ count: 1, sum_ms: 4 });
+  });
+
+  it('records failed daemon-served search exits by requested mode', async () => {
+    const runSearchImpl = jest.fn(async () => 2);
+    const handlers = createDaemonCommandHandlers({ runSearchImpl });
+
+    const result = await handlers.search(['query', '--mode=lexical']);
+
+    expect(result.exitCode).toBe(2);
+    const snap = searchLatencyMetrics.snapshot();
+    expect(snap.requests.lexical?.error).toMatchObject({ count: 1 });
+    expect(snap.requests.lexical?.error?.sum_ms).toBeGreaterThanOrEqual(0);
+    expect(snap.stages).toEqual({});
+  });
+
   it('exposes OpenMetrics text only when KB_METRICS_EXPORT is enabled', async () => {
     const daemon = await startDaemonServer({
       port: 0,
@@ -205,6 +245,10 @@ describe('kb serve metrics formatting', () => {
         uptime_ms: 1,
       },
       provider_calls: {},
+      search_latency: {
+        requests: {},
+        stages: {},
+      },
       query_cache: {
         hits: 0,
         misses: 0,

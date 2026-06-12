@@ -1,6 +1,24 @@
 export type TimingValue = number | string | boolean | null;
 
 export type TimingPayload = Record<string, TimingValue | undefined>;
+export type SearchLatencyStage =
+  | 'bootstrap'
+  | 'model_resolution'
+  | 'manager_load'
+  | 'index_load'
+  | 'dense_search'
+  | 'embed_query'
+  | 'faiss_search'
+  | 'query_search'
+  | 'post_filter'
+  | 'lexical_kb_list'
+  | 'lexical_search'
+  | 'high_recall_filter'
+  | 'fusion'
+  | 'rerank'
+  | 'freshness_scan'
+  | 'gate'
+  | 'format';
 export type RefreshTimingPhase = 'embed' | 'save' | 'sidecar' | 'manifest';
 export type FreshnessScanScope = 'global' | 'scoped';
 export type FreshnessScanSource = 'filesystem' | 'manifest' | 'none';
@@ -50,6 +68,39 @@ export function compactTimingPayload(timing: TimingPayload): Record<string, Timi
   const out: Record<string, TimingValue> = {};
   for (const [key, value] of Object.entries(timing)) {
     if (value !== undefined) out[key] = typeof value === 'number' ? Math.round(value) : value;
+  }
+  return out;
+}
+
+const SEARCH_LATENCY_STAGE_TIMING_KEYS: ReadonlyArray<readonly [string, SearchLatencyStage]> = [
+  ['bootstrap_ms', 'bootstrap'],
+  ['model_resolution_ms', 'model_resolution'],
+  ['manager_load_ms', 'manager_load'],
+  ['index_load_ms', 'index_load'],
+  ['dense_search_ms', 'dense_search'],
+  ['embed_query_ms', 'embed_query'],
+  ['faiss_search_ms', 'faiss_search'],
+  ['query_search_ms', 'query_search'],
+  ['post_filter_ms', 'post_filter'],
+  ['lexical_kb_list_ms', 'lexical_kb_list'],
+  ['lexical_search_ms', 'lexical_search'],
+  ['high_recall_filter_ms', 'high_recall_filter'],
+  ['fusion_ms', 'fusion'],
+  ['rerank_ms', 'rerank'],
+  ['freshness_scan_ms', 'freshness_scan'],
+  ['gate_ms', 'gate'],
+  ['format_ms', 'format'],
+];
+
+export function searchStageDurationsFromTiming(
+  timing: TimingPayload,
+): Partial<Record<SearchLatencyStage, number>> {
+  const out: Partial<Record<SearchLatencyStage, number>> = {};
+  for (const [key, stage] of SEARCH_LATENCY_STAGE_TIMING_KEYS) {
+    const value = timing[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      out[stage] = value;
+    }
   }
   return out;
 }

@@ -39,6 +39,9 @@ The v1 exporter keeps labels bounded:
 |---|---|---|
 | `kb` | `kb_knowledge_base_*` | registered knowledge bases |
 | `model_id` | `kb_provider_*` | registered embedding models observed by the process |
+| `mode` | `kb_search_*` | `dense`, `lexical`, `hybrid`, `auto`, `unknown` |
+| `stage` | `kb_search_stage_duration_ms` | fixed search timing stage names |
+| `status` | `kb_search_*` | `success`, `error` |
 
 There are no query text, file path, user, request id, source URL, or raw error
 labels.
@@ -49,11 +52,31 @@ labels.
 |---|---|
 | `kb_knowledge_base_*` | file counts, chunk counts, indexed bytes, quarantine counts by KB |
 | `kb_provider_*` | provider call counts, errors, token totals when reported, p50/p95/p99 latency |
+| `kb_search_requests_total` | daemon-served search request totals by mode/status |
+| `kb_search_request_duration_ms` | end-to-end daemon-served search request latency histogram |
+| `kb_search_stage_duration_ms` | per-stage daemon-served search latency histogram |
 | `kb_query_cache_*` | query embedding cache hits, misses, bypasses, disk usage |
 | `kb_relevance_gate_*` | relevance gate query and verdict counters |
 | `kb_remote_transport_*` | HTTP/SSE sessions, requests, auth failures, origin denials, status buckets |
 | `kb_server_uptime_ms` | process uptime for the serving process |
 | `kb_index_embedding_dimensions` | active dense index dimensionality, or `0` when unknown |
+
+Search latency histograms use the same millisecond bucket bounds as provider
+latency telemetry: `1`, `3`, `10`, `30`, `100`, `300`, `1000`, `3000`,
+`10000`, `30000`, and `+Inf`.
+
+Search timing scope is process-local and scrapeable only for searches served
+by the resident process:
+
+- MCP `retrieve_knowledge` on stdio, HTTP, or SSE transports.
+- `kb search --daemon` requests handled by `kb serve`.
+
+One-shot `kb search` processes are not exported: the process exits before a
+Prometheus scraper can reliably collect its in-memory timings. Stage labels
+come from the existing `--timing`/canonical-log vocabulary where practical
+(`embed_query`, `faiss_search`, `query_search`, `post_filter`,
+`lexical_search`, `fusion`, `rerank`, `gate`, `format`, and related setup
+stages).
 
 ## Prometheus Scrape
 

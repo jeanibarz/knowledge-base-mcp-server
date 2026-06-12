@@ -16,6 +16,8 @@ import {
   type DaemonRunResult,
 } from './daemon-client.js';
 import { formatKbStatsOpenMetrics } from './prometheus-export.js';
+import { searchLatencyMetrics, type SearchLatencyMode } from './metrics.js';
+import { searchStageDurationsFromTiming } from './timing-core.js';
 import type { KbStatsPayload } from './kb-stats.js';
 import { LexicalIndexCache } from './lexical-index-cache.js';
 import type { LexicalIndex } from './lexical-index.js';
@@ -327,15 +329,48 @@ export function parseServeArgs(rest: string[]): ServeArgs {
 export function createDaemonCommandHandlers(options: DaemonCommandHandlerOptions = {}): DaemonCommandHandlers {
   const cache = new LexicalIndexCache();
   const loadLexicalIndex = options.lexicalIndexLoader ?? cache.load.bind(cache);
-  const searchDeps: RunSearchDeps = createRunSearchDeps({ loadLexicalIndex });
+  const searchDeps: RunSearchDeps = createRunSearchDeps({
+    loadLexicalIndex,
+    onSearchTiming: (record) => {
+      searchLatencyMetrics.record({
+        mode: record.mode,
+        status: record.status,
+        totalMs: record.totalMs,
+        stageDurationsMs: searchStageDurationsFromTiming(record.timing),
+      });
+    },
+  });
   const runSearchImpl = options.runSearchImpl ?? runSearch;
   const runListImpl = options.runListImpl ?? runList;
   const runStatsImpl = options.runStatsImpl ?? runStats;
   return {
-    search: async (args) => captureProcessOutput(() => runSearchImpl(args, searchDeps)),
+    search: async (args) => {
+      const startedAt = Date.now();
+      const result = await captureProcessOutput(() => runSearchImpl(args, searchDeps));
+      if (result.exitCode !== 0) {
+        searchLatencyMetrics.record({
+          mode: requestedSearchModeFromArgs(args),
+          status: 'error',
+          totalMs: Date.now() - startedAt,
+        });
+      }
+      return result;
+    },
     list: async (args) => captureProcessOutput(() => runListImpl(args)),
     stats: async (args) => captureProcessOutput(() => runStatsImpl(args)),
   };
+}
+
+function requestedSearchModeFromArgs(args: readonly string[]): SearchLatencyMode {
+  const modeFlag = args.find((arg) => arg === '--mode' || arg.startsWith('--mode='));
+  if (modeFlag === undefined) return 'dense';
+  const raw = modeFlag === '--mode'
+    ? args[args.indexOf(modeFlag) + 1]
+    : modeFlag.slice('--mode='.length);
+  if (raw === 'dense' || raw === 'lexical' || raw === 'hybrid' || raw === 'auto') {
+    return raw;
+  }
+  return 'unknown';
 }
 
 async function handleRequest(

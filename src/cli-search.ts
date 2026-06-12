@@ -351,6 +351,12 @@ export interface RunSearchDeps {
   listLexicalKbs?: typeof listLexicalKbs;
   loadLexicalIndex?: typeof LexicalIndex.load;
   runLexicalLeg?: typeof runLexicalLeg;
+  onSearchTiming?: (record: {
+    mode: EffectiveSearchMode;
+    status: 'success' | 'error';
+    totalMs: number;
+    timing: TimingPayload;
+  }) => void;
 }
 
 const DEFAULT_RUN_SEARCH_DEPS: RunSearchDeps = {
@@ -454,7 +460,8 @@ export async function runSearch(
   const effectiveMode: EffectiveSearchMode = autoModeDecision
     ? autoModeDecision.mode
     : (parsed.mode as EffectiveSearchMode);
-  const timing: TimingPayload | null = parsed.timing
+  const collectTiming = parsed.timing || deps.onSearchTiming !== undefined;
+  const timing: TimingPayload | null = collectTiming
     ? {
         requested_mode: parsed.mode,
         effective_mode: effectiveMode,
@@ -611,6 +618,7 @@ export async function runSearch(
   }
   let gateVerdict: RelevanceGateVerdict;
   try {
+    const gateStartedAt = nowMs();
     const gate = await applyRelevanceGate({
       query,
       taskContext: parsed.taskContext,
@@ -619,6 +627,7 @@ export async function runSearch(
       gateOverride: parsed.gateOverride,
       process: 'cli',
     });
+    if (timing) timing.gate_ms = elapsedMs(gateStartedAt);
     results = gate.results;
     if (advancedRetrieval !== null) {
       advancedRetrieval = filterAdvancedRetrievalMetadata(advancedRetrieval, results);
@@ -663,6 +672,14 @@ export async function runSearch(
       : null;
 
   if (timing) timing.total_ms = elapsedMs(totalStartedAt);
+  if (timing && deps.onSearchTiming !== undefined) {
+    deps.onSearchTiming({
+      mode: effectiveMode,
+      status: 'success',
+      totalMs: typeof timing.total_ms === 'number' ? timing.total_ms : elapsedMs(totalStartedAt),
+      timing,
+    });
+  }
   recordDenseSearchCanonicalTelemetry({
     query,
     activeModelId,
@@ -678,6 +695,8 @@ export async function runSearch(
     return runPicker({ results: results as ScoredDocument[] });
   }
 
+  const outputTiming = parsed.timing ? timing : null;
+  const outputFilterDiagnostics = parsed.timing ? filterDiagnostics : null;
   if (parsed.format === 'json') {
     const payload = buildDenseSearchJsonPayload({
       results,
@@ -690,8 +709,8 @@ export async function runSearch(
       query,
       staleness,
       autoThresholdDecision,
-      timing,
-      filterDiagnostics,
+      timing: outputTiming,
+      filterDiagnostics: outputFilterDiagnostics,
       explainEmptyDiagnostics,
       gateVerdict,
       advancedRetrieval,
@@ -709,8 +728,8 @@ export async function runSearch(
       staleness,
       refreshed: parsed.refresh,
       gateVerdict,
-      timing,
-      filterDiagnostics,
+      timing: outputTiming,
+      filterDiagnostics: outputFilterDiagnostics,
     }));
   } else {
     await writeSearchOutput(parsed, deps, formatDenseSearchMarkdownOutput({
@@ -722,8 +741,8 @@ export async function runSearch(
       query,
       autoModeDecision,
       autoThresholdDecision,
-      timing,
-      filterDiagnostics,
+      timing: outputTiming,
+      filterDiagnostics: outputFilterDiagnostics,
       explainEmptyDiagnostics,
       gateVerdict,
       explain: parsed.explain,
@@ -2350,6 +2369,14 @@ async function runLexicalSearch(
   for (const e of errors) {
     process.stderr.write(`kb search (lexical): ${e.kbName} — ${e.error?.message ?? 'unknown error'}\n`);
   }
+  if (errors.length === 0 && timing && deps.onSearchTiming !== undefined) {
+    deps.onSearchTiming({
+      mode: 'lexical',
+      status: 'success',
+      totalMs: typeof timing.total_ms === 'number' ? timing.total_ms : elapsedMs(totalStartedAt),
+      timing,
+    });
+  }
 
   // For format reuse, transform LexicalSearchResult into the dense
   // shape `{...Document, score}` that formatRetrievalAs* expect.
@@ -2391,7 +2418,7 @@ async function runLexicalSearch(
       ...(retrievalViewsJson(parsed.retrievalViews) !== null
         ? { retrieval_views: retrievalViewsJson(parsed.retrievalViews) }
         : {}),
-      ...(timing ? { timing: compactTimingPayload(timing) } : {}),
+      ...(parsed.timing && timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
@@ -2409,7 +2436,7 @@ async function runLexicalSearch(
     })}\n`;
     const summary = `${perKb.length} KB(s), ${errors.length} error(s), unit=${parsed.lexicalUnit}`;
     output += `> _Lexical status: ${summary}._\n`;
-    if (timing) {
+    if (parsed.timing && timing) {
       output += `${formatTimingFooter('Timing', timing)}\n`;
     }
     await writeSearchOutput(parsed, deps, output);
@@ -2441,7 +2468,7 @@ async function runLexicalSearch(
       return `- ${r.kbName}: ${counts}`;
     });
     output += `> _Lexical index status:_\n${summaryLines.join('\n')}\n`;
-    if (timing) {
+    if (parsed.timing && timing) {
       output += `\n${formatTimingFooter('Timing', timing)}\n`;
     }
     await writeSearchOutput(parsed, deps, output);
@@ -2709,6 +2736,7 @@ async function runHybridSearch(
 
   let gateVerdict: RelevanceGateVerdict;
   try {
+    const gateStartedAt = nowMs();
     const gate = await applyRelevanceGate({
       query,
       taskContext: parsed.taskContext,
@@ -2718,6 +2746,7 @@ async function runHybridSearch(
       gateOverride: parsed.gateOverride,
       process: 'cli',
     });
+    if (timing) timing.gate_ms = elapsedMs(gateStartedAt);
     ranked = gate.results;
     gateVerdict = gate.verdict;
     emitRelevanceGateDecision({
@@ -2732,6 +2761,15 @@ async function runHybridSearch(
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
   ranked = ranked.slice(0, parsed.k);
+  if (timing) timing.total_ms = elapsedMs(totalStartedAt);
+  if (timing && deps.onSearchTiming !== undefined) {
+    deps.onSearchTiming({
+      mode: 'hybrid',
+      status: 'success',
+      totalMs: typeof timing.total_ms === 'number' ? timing.total_ms : elapsedMs(totalStartedAt),
+      timing,
+    });
+  }
 
   if (shouldUsePicker(parsed)) {
     return runPicker({ results: ranked as ScoredDocument[] });
@@ -2772,7 +2810,7 @@ async function runHybridSearch(
         degrade_reason: rerankResult.degradeReason,
       },
       gate_verdict: gateVerdict,
-      ...(timing ? { timing: compactTimingPayload(timing) } : {}),
+      ...(parsed.timing && timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
@@ -2805,7 +2843,7 @@ async function runHybridSearch(
     if (parsed.explain) {
       output += `${formatGateDroppedList(gateVerdict)}\n`;
     }
-    if (timing) {
+    if (parsed.timing && timing) {
       output += `${formatTimingFooter('Timing', timing)}\n`;
     }
     await writeSearchOutput(parsed, deps, output);
@@ -2842,7 +2880,7 @@ async function runHybridSearch(
     if (parsed.explain) {
       output += `${formatGateDroppedList(gateVerdict)}\n`;
     }
-    if (timing) {
+    if (parsed.timing && timing) {
       output += `${formatTimingFooter('Timing', timing)}\n`;
     }
     await writeSearchOutput(parsed, deps, output);

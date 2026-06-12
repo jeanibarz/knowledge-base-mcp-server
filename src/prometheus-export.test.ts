@@ -1,5 +1,9 @@
 import { describe, expect, it } from '@jest/globals';
 import type { KbStatsPayload } from './kb-stats.js';
+import {
+  bucketIndexForLatency,
+  LATENCY_BUCKET_BOUNDS_MS,
+} from './metrics.js';
 import { formatKbStatsOpenMetrics } from './prometheus-export.js';
 
 describe('formatKbStatsOpenMetrics', () => {
@@ -14,6 +18,15 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('kb_provider_calls_total{model_id="ollama__nomic-embed-text-latest"} 11');
     expect(text).not.toContain('kb_provider_tokens_in_total');
     expect(text).toContain('kb_provider_call_latency_p95_ms{model_id="ollama__nomic-embed-text-latest"} 123.4');
+    expect(text).toContain('kb_search_requests_total{mode="dense",status="success"} 1');
+    expect(text).toContain('# TYPE kb_search_request_duration_ms histogram');
+    expect(text).toContain('kb_search_request_duration_ms_bucket{le="100",mode="dense",status="success"} 1');
+    expect(text).toContain('kb_search_request_duration_ms_bucket{le="+Inf",mode="dense",status="success"} 1');
+    expect(text).toContain('kb_search_request_duration_ms_sum{mode="dense",status="success"} 80');
+    expect(text).toContain('kb_search_request_duration_ms_count{mode="dense",status="success"} 1');
+    expect(text).toContain('# TYPE kb_search_stage_duration_ms histogram');
+    expect(text).toContain('kb_search_stage_duration_ms_bucket{le="30",mode="dense",stage="embed_query",status="success"} 1');
+    expect(text).toContain('kb_search_stage_duration_ms_sum{mode="dense",stage="embed_query",status="success"} 12');
     expect(text).toContain('kb_remote_transport_requests_total 9');
     expect(text).toContain('# TYPE kb_remote_transport_responses_4xx counter');
     expect(text).toContain('kb_remote_transport_responses_4xx_total 2');
@@ -91,6 +104,20 @@ function samplePayload(): KbStatsPayload {
         since_started_at: '2026-05-21T00:00:00.000Z',
       },
     },
+    search_latency: {
+      requests: {
+        dense: {
+          success: histogramSnapshot(80),
+        },
+      },
+      stages: {
+        dense: {
+          embed_query: {
+            success: histogramSnapshot(12),
+          },
+        },
+      },
+    },
     query_cache: {
       hits: 5,
       misses: 6,
@@ -138,5 +165,16 @@ function samplePayload(): KbStatsPayload {
       origin_denials: 1,
       last_error: null,
     },
+  };
+}
+
+function histogramSnapshot(value: number) {
+  const buckets = new Array<number>(LATENCY_BUCKET_BOUNDS_MS.length + 1).fill(0);
+  buckets[bucketIndexForLatency(value)] = 1;
+  return {
+    buckets,
+    count: 1,
+    sum_ms: value,
+    since_started_at: '2026-05-21T00:00:00.000Z',
   };
 }
