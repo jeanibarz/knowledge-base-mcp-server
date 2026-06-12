@@ -13,6 +13,7 @@ const originalEnv = {
   HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
   KB_ACTIVE_MODEL: process.env.KB_ACTIVE_MODEL,
   KB_INDEX_VERSION_RETENTION: process.env.KB_INDEX_VERSION_RETENTION,
+  KB_FLAT_SEARCH_P95_ADVISORY_MS: process.env.KB_FLAT_SEARCH_P95_ADVISORY_MS,
   KB_AGE_BUDGET_HOURS: process.env.KB_AGE_BUDGET_HOURS,
   KB_AGE_BUDGET_HOURS_ALPHA: process.env.KB_AGE_BUDGET_HOURS_ALPHA,
   KB_AGE_BUDGET_HOURS_BETA: process.env.KB_AGE_BUDGET_HOURS_BETA,
@@ -460,6 +461,7 @@ describe('kb doctor', () => {
         packageVersion: '9.9.9',
         llmEndpointProbe: healthyLlmProbe,
         lastIndexUpdateSummary: persistedSuccessSummary(),
+        daemonStatsPayload: async () => null,
       });
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -1873,6 +1875,206 @@ describe('kb doctor', () => {
         const md = formatDoctorMarkdown(report);
         expect(md).toContain('model=ollama__nomic calls=10 errors=8');
         expect(md).toMatch(/p50=\d+(\.\d+)?ms p95=\d+(\.\d+)?ms p99=\d+(\.\d+)?ms tokens=n\/a, WARN/);
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('dense flat-search latency advisory (issue #604)', () => {
+    it('reports active index type/factory and warns only with a suggest-only hint above threshold', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-flat-latency-warn-'));
+      try {
+        const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+          KB_FLAT_SEARCH_P95_ADVISORY_MS: '50',
+        });
+        const { SearchLatencyMetrics } = await import('./metrics.js');
+        const searchMetrics = new SearchLatencyMetrics({ now: () => 1_700_000_000_000 });
+        searchMetrics.record({
+          mode: 'dense',
+          status: 'success',
+          totalMs: 130,
+          stageDurationsMs: { faiss_search: 80 },
+        });
+        searchMetrics.record({
+          mode: 'dense',
+          status: 'success',
+          totalMs: 180,
+          stageDurationsMs: { faiss_search: 140 },
+        });
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+          searchMetrics,
+        });
+
+        expect(report.index.type).toBe('flat');
+        expect(report.index.factory).toBe('Flat');
+        expect(report.dense_search_latency).toMatchObject({
+          active_index: { type: 'flat', factory: 'Flat' },
+          sample_count: 2,
+          threshold_ms: 50,
+          advisory: {
+            code: 'FLAT_SCAN_P95_ABOVE_THRESHOLD',
+            docs: expect.arrayContaining([
+              'docs/operations/index-quantization.md#hnsw--ann-status',
+              'https://github.com/jeanibarz/knowledge-base-mcp-server/issues/596',
+            ]),
+          },
+        });
+        const latencyCheck = report.checks.find((c) => c.name === 'flat_search_latency');
+        expect(latencyCheck?.status).toBe('warn');
+        expect(latencyCheck?.detail).toContain('not auto-enabled');
+        expect(latencyCheck?.detail).toContain('issue #596 is blocked');
+        const markdown = formatDoctorMarkdown(report);
+        expect(markdown).toContain('Index type: flat');
+        expect(markdown).toContain('Index factory: Flat');
+        expect(markdown).toContain('Dense search latency:');
+        expect(markdown).toContain('HINT Dense flat-search p95');
+        expect(markdown).toContain('docs/architecture/adr/0010-hnsw-binding-evaluation.md');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('uses daemon stats latency when the doctor process has no local search histogram', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-flat-latency-daemon-'));
+      try {
+        const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+        const { buildDoctorReport } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+          KB_FLAT_SEARCH_P95_ADVISORY_MS: '50',
+        });
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+          daemonStatsPayload: async () => ({
+            dense_search_latency: {
+              mode: 'dense',
+              stage: 'faiss_search',
+              status: 'success',
+              active_index: { type: 'flat', factory: 'Flat' },
+              sample_count: 5,
+              p50_ms: 25,
+              p95_ms: 90,
+              threshold_ms: 50,
+              since_started_at: '2026-06-12T10:00:00.000Z',
+              advisory: {
+                code: 'FLAT_SCAN_P95_ABOVE_THRESHOLD',
+                message: 'daemon p95 warning',
+                docs: ['docs/architecture/adr/0010-hnsw-binding-evaluation.md'],
+              },
+            },
+          }),
+        });
+
+        expect(report.dense_search_latency).toMatchObject({
+          sample_count: 5,
+          p95_ms: 90,
+          advisory: { message: 'daemon p95 warning' },
+        });
+        expect(report.checks).toContainEqual({
+          name: 'flat_search_latency',
+          status: 'warn',
+          detail: 'daemon p95 warning',
+        });
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps missing dense latency quiet in doctor checks', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-flat-latency-empty-'));
+      try {
+        const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+        });
+        const { SearchLatencyMetrics } = await import('./metrics.js');
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+          searchMetrics: new SearchLatencyMetrics({ now: () => 0 }),
+        });
+
+        expect(report.dense_search_latency).toBeNull();
+        expect(report.checks.some((c) => c.name === 'flat_search_latency')).toBe(false);
+        expect(formatDoctorMarkdown(report)).toContain(
+          'Dense search latency:\n  (no dense faiss_search latency observed)',
+        );
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps below-threshold observed dense latency quiet in doctor checks', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-flat-latency-ok-'));
+      try {
+        const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+          KB_FLAT_SEARCH_P95_ADVISORY_MS: '50',
+        });
+        const { SearchLatencyMetrics } = await import('./metrics.js');
+        const searchMetrics = new SearchLatencyMetrics({ now: () => 1_700_000_000_000 });
+        searchMetrics.record({
+          mode: 'dense',
+          status: 'success',
+          totalMs: 200,
+          stageDurationsMs: { faiss_search: 12 },
+        });
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+          searchMetrics,
+        });
+
+        expect(report.dense_search_latency).toMatchObject({
+          active_index: { type: 'flat', factory: 'Flat' },
+          sample_count: 1,
+          threshold_ms: 50,
+          advisory: null,
+        });
+        expect(report.dense_search_latency?.p95_ms).toBeLessThanOrEqual(50);
+        expect(report.checks.some((c) => c.name === 'flat_search_latency')).toBe(false);
+        const markdown = formatDoctorMarkdown(report);
+        expect(markdown).toContain('Dense search latency:');
+        expect(markdown).toContain('p95=');
+        expect(markdown).not.toContain('HINT Dense flat-search p95');
       } finally {
         await fsp.rm(tempDir, { recursive: true, force: true });
       }

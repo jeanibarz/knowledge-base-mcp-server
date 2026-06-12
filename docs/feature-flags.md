@@ -130,6 +130,7 @@ wrap-close vars below.
 | Config schema validation | `kb config validate` | process environment | CLI preflight / CI | Implemented | `--file=<path>` | `kb config validate --file=.env --format=json` |
 | Mutation audit log | `KB_MUTATION_AUDIT_LOG` | unset | KB write paths | Implemented, opt-in | none | `KB_MUTATION_AUDIT_LOG=/tmp/kb-mutations.jsonl kb remember --kb=<name> --title="..." --stdin --yes` |
 | OpenMetrics export | `KB_METRICS_EXPORT` | `off` | `kb serve` and HTTP/SSE transport `/metrics` | Implemented, opt-in | none | `KB_METRICS_EXPORT=on kb serve` then `curl http://127.0.0.1:17799/metrics` |
+| Flat-search latency advisory threshold | `KB_FLAT_SEARCH_P95_ADVISORY_MS` | `50` | `kb doctor`, `kb stats` | Implemented, hint only; never changes indexing behavior | none | `KB_FLAT_SEARCH_P95_ADVISORY_MS=50 kb stats` |
 | Tool description overrides | `RETRIEVE_KNOWLEDGE_DESCRIPTION`, `LIST_KNOWLEDGE_BASES_DESCRIPTION`, `LIST_MODELS_DESCRIPTION`, `KB_STATS_DESCRIPTION` | built-in descriptions | MCP server tool metadata | Implemented | none; set before server start | restart MCP server and inspect tool descriptions |
 
 ## Ingest and Storage

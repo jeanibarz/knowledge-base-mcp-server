@@ -13,6 +13,7 @@ import {
   resolveKnowledgeBasesRootDir,
 } from './paths.js';
 import {
+  DEFAULT_FLAT_SEARCH_P95_ADVISORY_MS,
   defaultIndexingBatchSize,
 } from './indexing.js';
 import {
@@ -217,6 +218,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_LOG_VERBOSE', kind: 'boolean', default: 'off' },
   { name: 'KB_SLOW_QUERY_MS', kind: 'duration', min: 1 },
   { name: 'KB_METRICS_EXPORT', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
+  { name: 'KB_FLAT_SEARCH_P95_ADVISORY_MS', kind: 'duration', default: String(DEFAULT_FLAT_SEARCH_P95_ADVISORY_MS), min: 1 },
   { name: 'KB_MUTATION_AUDIT_LOG', kind: 'path' },
   { name: 'KB_AGE_BUDGET_HOURS', kind: 'integer', min: 1 },
 
