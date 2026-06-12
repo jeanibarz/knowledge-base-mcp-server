@@ -1,6 +1,7 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import {
   formatDenseCoverageSection,
+  formatDenseSearchLatencySection,
   formatContextualSection,
   formatFilesystemSection,
   formatRemoteTransportSection,
@@ -38,6 +39,8 @@ function payload(): KbStatsPayload {
       provider: 'ollama',
       model: 'nomic-embed-text:latest',
       dim: 768,
+      index_type: 'flat',
+      index_factory: 'Flat',
     },
     index_path: '/tmp/kb-index',
     last_index_update: {
@@ -188,6 +191,45 @@ describe('kb stats CLI', () => {
     );
   });
 
+  it('uses a reachable daemon stats payload before loading local index state', async () => {
+    const daemonPayload = payload();
+    daemonPayload.dense_search_latency = {
+      mode: 'dense',
+      stage: 'faiss_search',
+      status: 'success',
+      active_index: { type: 'flat', factory: 'Flat' },
+      sample_count: 3,
+      p50_ms: 20,
+      p95_ms: 45,
+      threshold_ms: 50,
+      since_started_at: '2026-06-12T10:00:00.000Z',
+      advisory: null,
+    };
+    const { deps, stdout } = makeDeps();
+    deps.tryReadDaemonStatsPayload = jest.fn(async () => daemonPayload);
+
+    const code = await runStats(['--format=json'], deps);
+
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout.join(''))).toEqual(daemonPayload);
+    expect(deps.bootstrapLayout).not.toHaveBeenCalled();
+    expect(deps.computeKbStats).not.toHaveBeenCalled();
+  });
+
+  it('can disable daemon stats lookup for the resident daemon handler', async () => {
+    const { deps, stdout } = makeDeps();
+    deps.tryReadDaemonStatsPayload = jest.fn(async () => {
+      throw new Error('daemon lookup should be skipped');
+    });
+
+    const code = await runStats(['--format=json'], deps, { preferDaemon: false });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout.join(''))).toEqual(payload());
+    expect(deps.tryReadDaemonStatsPayload).not.toHaveBeenCalled();
+    expect(deps.computeKbStats).toHaveBeenCalledTimes(1);
+  });
+
   it('formats markdown as a compact table plus index metadata', async () => {
     const { deps, stdout } = makeDeps();
 
@@ -201,9 +243,45 @@ describe('kb stats CLI', () => {
     expect(out).toContain('- Provider: ollama');
     expect(out).toContain('- Model: nomic-embed-text:latest');
     expect(out).toContain('- Index type: flat');
+    expect(out).toContain('- Index factory: Flat');
     expect(out).toContain('- Index path: `/tmp/kb-index`');
     expect(out).toContain('## Relevance Gate');
     expect(out).toContain('- Gated queries: 0');
+  });
+
+  it('renders dense faiss_search latency and a suggest-only ANN hint when p95 is high', () => {
+    const p = payload();
+    p.dense_search_latency = {
+      mode: 'dense',
+      stage: 'faiss_search',
+      status: 'success',
+      active_index: { type: 'flat', factory: 'Flat' },
+      sample_count: 12,
+      p50_ms: 18.2,
+      p95_ms: 76.5,
+      threshold_ms: 50,
+      since_started_at: '2026-06-12T10:00:00.000Z',
+      advisory: {
+        code: 'FLAT_SCAN_P95_ABOVE_THRESHOLD',
+        message: 'Dense flat-search p95 is 76.5ms, above the 50ms advisory threshold. Approximate/ANN indexing is not auto-enabled and is not currently a supported switch; issue #596 is blocked until a viable tunable backend lands.',
+        docs: [
+          'docs/operations/index-quantization.md#hnsw--ann-status',
+          'docs/architecture/adr/0010-hnsw-binding-evaluation.md',
+          'https://github.com/jeanibarz/knowledge-base-mcp-server/issues/596',
+        ],
+      },
+    };
+
+    const lines = formatDenseSearchLatencySection(p);
+
+    expect(lines.join('\n')).toContain('## Dense Search Latency');
+    expect(lines.join('\n')).toContain('p50=18.2 ms, p95=76.5 ms, threshold=50 ms');
+    expect(lines.join('\n')).toContain('Hint: Dense flat-search p95 is 76.5ms');
+    expect(lines.join('\n')).toContain('issue #596 is blocked');
+  });
+
+  it('omits the dense search latency section when no search timing has been observed', () => {
+    expect(formatDenseSearchLatencySection(payload())).toEqual([]);
   });
 
   it('diagnoses shelves with files but zero dense chunks in markdown stats', async () => {

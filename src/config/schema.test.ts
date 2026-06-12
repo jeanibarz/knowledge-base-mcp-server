@@ -13,6 +13,7 @@ describe('config schema validation (FR-OBS-470)', () => {
       KB_RELEVANCE_GATE: 'on',
       KB_GATE_LLM_ENDPOINT: 'http://127.0.0.1:8080/v1/chat/completions',
       KB_GATE_SCORE_FLOOR: '0.75',
+      KB_FLAT_SEARCH_P95_ADVISORY_MS: '75',
       KB_AGE_BUDGET_HOURS_ALPHA: '24',
       MCP_TRANSPORT: 'http',
       MCP_AUTH_TOKEN: 'x'.repeat(32),
@@ -25,6 +26,7 @@ describe('config schema validation (FR-OBS-470)', () => {
     expect(report.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'EMBEDDING_PROVIDER', status: 'ok', value: 'fake' }),
       expect.objectContaining({ name: 'KB_AGE_BUDGET_HOURS_ALPHA', status: 'ok', value: '24' }),
+      expect.objectContaining({ name: 'KB_FLAT_SEARCH_P95_ADVISORY_MS', status: 'ok', value: '75' }),
       expect.objectContaining({ name: 'KB_RERANK_TOP_N', status: 'ok', value: '12' }),
       expect.objectContaining({ name: 'MCP_AUTH_TOKEN', status: 'ok', value: '<redacted>' }),
     ]));
@@ -36,6 +38,7 @@ describe('config schema validation (FR-OBS-470)', () => {
       KB_RERANK: 'maybe',
       KB_RERANK_TOP_N: '1001',
       KB_GATE_SCORE_FLOOR: '0.95.0',
+      KB_FLAT_SEARCH_P95_ADVISORY_MS: '0',
       KB_GATE_LLM_ENDPOINT: 'not a url',
       MCP_PORT: '70000',
     }, { source: '/tmp/bad.env' });
@@ -47,6 +50,7 @@ describe('config schema validation (FR-OBS-470)', () => {
       expect.objectContaining({ name: 'KB_RERANK', status: 'error', message: expect.stringContaining('expected boolean') }),
       expect.objectContaining({ name: 'KB_RERANK_TOP_N', status: 'error', message: expect.stringContaining('<= 1000') }),
       expect.objectContaining({ name: 'KB_GATE_SCORE_FLOOR', status: 'error', message: expect.stringContaining('number') }),
+      expect.objectContaining({ name: 'KB_FLAT_SEARCH_P95_ADVISORY_MS', status: 'error', message: expect.stringContaining('>= 1') }),
       expect.objectContaining({ name: 'KB_GATE_LLM_ENDPOINT', status: 'error', message: expect.stringContaining('URL') }),
       expect.objectContaining({ name: 'MCP_PORT', status: 'error', message: expect.stringContaining('<= 65535') }),
     ]));
@@ -174,6 +178,12 @@ describe('config schema validation (FR-OBS-470)', () => {
       expect.objectContaining({
         name: 'KB_INGEST_SECRET_SCAN',
         value: 'off',
+        source: 'default',
+        redacted: false,
+      }),
+      expect.objectContaining({
+        name: 'KB_FLAT_SEARCH_P95_ADVISORY_MS',
+        value: '50',
         source: 'default',
         redacted: false,
       }),

@@ -37,11 +37,12 @@ import {
 import { logger } from './logger.js';
 import {
   providerCallMetrics,
+  quantileFromBuckets,
   searchLatencyMetrics,
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
-  type SearchLatencyMetrics,
   type SearchLatencyMetricsSnapshot,
+  type SearchLatencyMetrics,
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
 import { queryEmbeddingCache, type QueryCacheStats } from './query-cache.js';
@@ -50,7 +51,10 @@ import {
   type RelevanceGateMetricsSnapshot,
 } from './relevance-gate-metrics.js';
 import type { TransportRuntimeStatsSnapshot } from './transport-runtime-stats.js';
-import type { FaissIndexType } from './config/indexing.js';
+import {
+  resolveFlatSearchP95AdvisoryMs,
+  type FaissIndexType,
+} from './config/indexing.js';
 
 export interface KbStatsRow {
   file_count: number;
@@ -99,8 +103,15 @@ export interface KbStatsPayload {
   filesystem: {
     enumeration_failures: KbFilesystemEnumerationDiagnostics;
   };
-  embedding: { provider: string; model: string; dim: number | null; index_type?: FaissIndexType };
+  embedding: {
+    provider: string;
+    model: string;
+    dim: number | null;
+    index_type?: FaissIndexType;
+    index_factory?: string;
+  };
   index_path: string;
+  dense_search_latency?: KbStatsDenseSearchLatencySummary;
   last_index_update: IndexUpdateSummary;
   server: { version: string; uptime_ms: number };
   /**
@@ -125,6 +136,28 @@ export interface KbStatsPayload {
    * that are not serving a remote transport.
    */
   remote_transport?: TransportRuntimeStatsSnapshot;
+}
+
+export interface KbStatsDenseSearchLatencySummary {
+  mode: 'dense';
+  stage: 'faiss_search';
+  status: 'success';
+  active_index: {
+    type: FaissIndexType;
+    factory: string;
+  };
+  sample_count: number;
+  p50_ms: number;
+  p95_ms: number;
+  threshold_ms: number;
+  since_started_at: string;
+  advisory: KbStatsDenseSearchLatencyAdvisory | null;
+}
+
+export interface KbStatsDenseSearchLatencyAdvisory {
+  code: 'FLAT_SCAN_P95_ABOVE_THRESHOLD';
+  message: string;
+  docs: string[];
 }
 
 export interface ComputeKbStatsOptions {
@@ -223,6 +256,14 @@ export async function computeKbStats(
 
   const metricsSource = options.metrics ?? providerCallMetrics;
   const searchMetricsSource = options.searchMetrics ?? searchLatencyMetrics;
+  const searchMetricsSnapshot = searchMetricsSource.snapshot();
+  const activeIndexType = indexStats.indexType ?? 'flat';
+  const activeIndexFactory = indexFactoryForType(activeIndexType);
+  const denseSearchLatency = summarizeDenseSearchLatency(
+    searchMetricsSnapshot,
+    activeIndexType,
+    resolveFlatSearchP95AdvisoryMs(),
+  );
   const managerSummary = manager.getLastIndexUpdateSummary();
   const readPersistedSummary = FaissIndexManager.readPersistedIndexUpdateSummary;
   const lastIndexUpdate = managerSummary.status === 'never_run'
@@ -242,22 +283,79 @@ export async function computeKbStats(
       provider: manager.embeddingProvider,
       model: manager.modelName,
       dim: indexStats.dim,
-      index_type: indexStats.indexType,
+      index_type: activeIndexType,
+      index_factory: activeIndexFactory,
     },
     index_path: FAISS_INDEX_PATH,
+    ...(denseSearchLatency === null ? {} : { dense_search_latency: denseSearchLatency }),
     last_index_update: lastIndexUpdate,
     server: {
       version: options.serverVersion,
       uptime_ms: Date.now() - options.startedAt,
     },
     provider_calls: metricsSource.snapshot(),
-    search_latency: searchMetricsSource.snapshot(),
+    search_latency: searchMetricsSnapshot,
     query_cache: await queryEmbeddingCache.stats(),
     relevance_gate: relevanceGateMetrics.snapshot(),
     ...(options.remoteTransportStats !== undefined
       ? { remote_transport: options.remoteTransportStats }
       : {}),
   };
+}
+
+export function indexFactoryForType(indexType: FaissIndexType): string {
+  return indexType === 'sq8' ? 'SQ8' : 'Flat';
+}
+
+export function summarizeDenseSearchLatency(
+  snapshot: SearchLatencyMetricsSnapshot,
+  indexType: FaissIndexType,
+  thresholdMs: number = resolveFlatSearchP95AdvisoryMs(),
+): KbStatsDenseSearchLatencySummary | null {
+  const histogram = snapshot.stages.dense?.faiss_search?.success;
+  if (histogram === undefined || histogram.count === 0) return null;
+  const p50 = roundLatency(quantileFromBuckets(histogram.buckets, histogram.count, 0.5));
+  const p95 = roundLatency(quantileFromBuckets(histogram.buckets, histogram.count, 0.95));
+  const activeIndexFactory = indexFactoryForType(indexType);
+  return {
+    mode: 'dense',
+    stage: 'faiss_search',
+    status: 'success',
+    active_index: {
+      type: indexType,
+      factory: activeIndexFactory,
+    },
+    sample_count: histogram.count,
+    p50_ms: p50,
+    p95_ms: p95,
+    threshold_ms: thresholdMs,
+    since_started_at: histogram.since_started_at,
+    advisory: indexType === 'flat' && p95 > thresholdMs
+      ? buildFlatSearchLatencyAdvisory(p95, thresholdMs)
+      : null,
+  };
+}
+
+function buildFlatSearchLatencyAdvisory(
+  p95Ms: number,
+  thresholdMs: number,
+): KbStatsDenseSearchLatencyAdvisory {
+  return {
+    code: 'FLAT_SCAN_P95_ABOVE_THRESHOLD',
+    message:
+      `Dense flat-search p95 is ${p95Ms}ms, above the ${thresholdMs}ms advisory threshold. ` +
+      'Approximate/ANN indexing is not auto-enabled and is not currently a supported switch; ' +
+      'issue #596 is blocked until a viable tunable backend lands.',
+    docs: [
+      'docs/operations/index-quantization.md#hnsw--ann-status',
+      'docs/architecture/adr/0010-hnsw-binding-evaluation.md',
+      'https://github.com/jeanibarz/knowledge-base-mcp-server/issues/596',
+    ],
+  };
+}
+
+function roundLatency(latencyMs: number): number {
+  return Math.round(latencyMs * 10) / 10;
 }
 
 /**

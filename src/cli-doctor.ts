@@ -16,6 +16,7 @@ import {
   modelsRoot,
   parseModelId,
   readModelIndexStorage,
+  readStoredIndexType,
   resolveActiveModel,
   resolveFaissIndexBinaryPath,
 } from './active-model.js';
@@ -58,11 +59,19 @@ import {
   formatAgeHours,
   type AgeBudgetStatus,
 } from './age-budget.js';
-import { maxMtimeIso } from './kb-stats.js';
+import {
+  indexFactoryForType,
+  maxMtimeIso,
+  summarizeDenseSearchLatency,
+  type KbStatsDenseSearchLatencySummary,
+  type KbStatsPayload,
+} from './kb-stats.js';
 import {
   providerCallMetrics,
+  searchLatencyMetrics,
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
+  type SearchLatencyMetrics,
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
 import {
@@ -79,6 +88,8 @@ import {
   type LlmProfile,
 } from './llm-profiles.js';
 import { resolveRerankerConfig } from './config/reranker.js';
+import { resolveFlatSearchP95AdvisoryMs, type FaissIndexType } from './config/indexing.js';
+import { tryReadDaemonStatsPayload } from './cli-stats.js';
 import {
   daemonUrlFromEnv,
   fetchDaemonHealth,
@@ -179,6 +190,7 @@ export interface DoctorArgs {
 
 export type HealthStatus = 'ok' | 'warn' | 'error';
 export type EndpointHealthStatus = HealthStatus | 'skipped';
+type DoctorDaemonStatsPayload = Pick<KbStatsPayload, 'dense_search_latency'>;
 
 export interface EndpointReadinessEntry {
   name: 'mcp_bind' | 'kb_daemon' | 'embedding_ollama' | 'llm_endpoint';
@@ -274,6 +286,8 @@ export interface DoctorReport {
     binary_path: string | null;
     version: string | null;
     mtime: string | null;
+    type: FaissIndexType | null;
+    factory: string | null;
     storage: {
       active_version_bytes: number | null;
       inactive_version_count: number;
@@ -428,6 +442,7 @@ export interface DoctorReport {
    * model_id; otherwise it is OK.
    */
   provider_calls: Record<string, ProviderCallSnapshot>;
+  dense_search_latency: KbStatsDenseSearchLatencySummary | null;
   /** Non-null only when kb doctor is invoked with --integrity or --slow. */
   integrity: IntegrityReport | null;
 }
@@ -444,6 +459,10 @@ export interface BuildDoctorReportOptions {
    * singleton is read.
    */
   providerCallMetrics?: ProviderCallMetrics;
+  /** Issue #604 — test seam for daemon-served search latency telemetry. */
+  searchMetrics?: SearchLatencyMetrics;
+  /** Issue #604 — test seam for daemon stats telemetry captured out of process. */
+  daemonStatsPayload?: () => Promise<DoctorDaemonStatsPayload | null>;
   /**
    * Issue #388 — test seam for the local LLM endpoint readiness check.
    * Production callers leave this undefined so the doctor performs a
@@ -1495,6 +1514,26 @@ export async function buildDoctorReport(
     }
   }
 
+  const searchMetricsSource = options.searchMetrics ?? searchLatencyMetrics;
+  const daemonStats = await (options.daemonStatsPayload ?? (() => tryReadDaemonStatsPayload()))();
+  const denseSearchLatency = daemonStats?.dense_search_latency
+    ?? (
+      index.type === null
+        ? null
+        : summarizeDenseSearchLatency(
+            searchMetricsSource.snapshot(),
+            index.type,
+            resolveFlatSearchP95AdvisoryMs(),
+          )
+    );
+  if (denseSearchLatency?.advisory !== null && denseSearchLatency?.advisory !== undefined) {
+    checks.push({
+      name: 'flat_search_latency',
+      status: 'warn',
+      detail: denseSearchLatency.advisory.message,
+    });
+  }
+
   const packageRoot = options.packageRoot ?? resolvePackageRoot();
   const invokedPath = options.invokedPath ?? process.argv[1] ?? null;
   const cli = {
@@ -1556,6 +1595,7 @@ export async function buildDoctorReport(
     last_index_update: lastIndexUpdate,
     reindex_trigger: reindexTrigger,
     provider_calls: providerCalls,
+    dense_search_latency: denseSearchLatency,
     integrity,
   };
 }
@@ -1655,8 +1695,18 @@ async function readIndexHealth(activeModelId: string | null): Promise<DoctorRepo
     retention_previous_versions: 0,
   };
   if (activeModelId === null) {
-    return { path: FAISS_INDEX_PATH, binary_path: null, version: null, mtime: null, storage: emptyStorage };
+    return {
+      path: FAISS_INDEX_PATH,
+      binary_path: null,
+      version: null,
+      mtime: null,
+      type: null,
+      factory: null,
+      storage: emptyStorage,
+    };
   }
+  const indexType = await readStoredIndexType(activeModelId);
+  const indexFactory = indexFactoryForType(indexType);
   const storage = await readModelIndexStorage(activeModelId);
   const storageSummary: DoctorReport['index']['storage'] = {
     active_version_bytes: storage.active_version_bytes,
@@ -1667,7 +1717,15 @@ async function readIndexHealth(activeModelId: string | null): Promise<DoctorRepo
   };
   const binaryPath = await resolveFaissIndexBinaryPath(activeModelId);
   if (binaryPath === null) {
-    return { path: FAISS_INDEX_PATH, binary_path: null, version: null, mtime: null, storage: storageSummary };
+    return {
+      path: FAISS_INDEX_PATH,
+      binary_path: null,
+      version: null,
+      mtime: null,
+      type: indexType,
+      factory: indexFactory,
+      storage: storageSummary,
+    };
   }
   try {
     const st = await fsp.stat(binaryPath);
@@ -1676,10 +1734,20 @@ async function readIndexHealth(activeModelId: string | null): Promise<DoctorRepo
       binary_path: binaryPath,
       version: indexVersionFromPath(binaryPath),
       mtime: new Date(st.mtimeMs).toISOString(),
+      type: indexType,
+      factory: indexFactory,
       storage: storageSummary,
     };
   } catch {
-    return { path: FAISS_INDEX_PATH, binary_path: null, version: null, mtime: null, storage: storageSummary };
+    return {
+      path: FAISS_INDEX_PATH,
+      binary_path: null,
+      version: null,
+      mtime: null,
+      type: indexType,
+      factory: indexFactory,
+      storage: storageSummary,
+    };
   }
 }
 
@@ -2316,6 +2384,8 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   }
   lines.push(`Index: ${report.index.binary_path ?? '<not built>'}`);
   lines.push(`Index version: ${report.index.version ?? '<unknown>'}`);
+  lines.push(`Index type: ${report.index.type ?? '<unknown>'}`);
+  lines.push(`Index factory: ${report.index.factory ?? '<unknown>'}`);
   lines.push(`Index mtime: ${report.index.mtime ?? '<none>'}`);
   lines.push(
     `Index storage: ${formatBytes(report.index.storage.total_version_bytes)} total ` +
@@ -2514,6 +2584,22 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
         ` p50=${row.latency_ms.p50}ms p95=${row.latency_ms.p95}ms` +
         ` p99=${row.latency_ms.p99}ms ${tokens}${errorMarker}`,
       );
+    }
+  }
+  lines.push('');
+  lines.push('Dense search latency:');
+  if (report.dense_search_latency === null) {
+    lines.push('  (no dense faiss_search latency observed)');
+  } else {
+    const row = report.dense_search_latency;
+    lines.push(
+      `  active_index=${row.active_index.type} factory=${row.active_index.factory} ` +
+      `samples=${row.sample_count} p50=${row.p50_ms}ms p95=${row.p95_ms}ms ` +
+      `threshold=${row.threshold_ms}ms`,
+    );
+    if (row.advisory !== null) {
+      lines.push(`  HINT ${row.advisory.message}`);
+      lines.push(`  docs: ${row.advisory.docs.join(', ')}`);
     }
   }
   lines.push('');

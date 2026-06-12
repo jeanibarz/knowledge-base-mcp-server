@@ -357,7 +357,7 @@ export function createDaemonCommandHandlers(options: DaemonCommandHandlerOptions
       return result;
     },
     list: async (args) => captureProcessOutput(() => runListImpl(args)),
-    stats: async (args) => captureProcessOutput(() => runStatsImpl(args)),
+    stats: async (args) => captureProcessOutput(() => runStatsImpl(args, undefined, { preferDaemon: false })),
   };
 }
 

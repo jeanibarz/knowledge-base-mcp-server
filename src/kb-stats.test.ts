@@ -16,6 +16,7 @@ interface FakeManager {
     totalChunks: number;
     chunkCountsByKb: Record<string, number>;
     dim: number | null;
+    indexType: 'flat' | 'sq8';
   };
   getLastIndexUpdateSummary(): unknown;
 }
@@ -26,6 +27,7 @@ function makeManager(opts: {
   modelId?: string;
   chunkCountsByKb?: Record<string, number>;
   dim?: number | null;
+  indexType?: 'flat' | 'sq8';
   lastIndexUpdateSummary?: unknown;
 }): FakeManager {
   const modelId = opts.modelId ?? 'huggingface__BAAI-bge-small-en-v1.5';
@@ -37,6 +39,7 @@ function makeManager(opts: {
       totalChunks: Object.values(opts.chunkCountsByKb ?? {}).reduce((s, n) => s + n, 0),
       chunkCountsByKb: opts.chunkCountsByKb ?? {},
       dim: opts.dim ?? null,
+      indexType: opts.indexType ?? 'flat',
     }),
     getLastIndexUpdateSummary: () => opts.lastIndexUpdateSummary ?? ({
       status: 'never_run',
@@ -92,6 +95,7 @@ describe('computeKbStats', () => {
   const originalEnv = {
     KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
     FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    KB_FLAT_SEARCH_P95_ADVISORY_MS: process.env.KB_FLAT_SEARCH_P95_ADVISORY_MS,
     INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
     INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
   };
@@ -147,6 +151,8 @@ describe('computeKbStats', () => {
       provider: 'huggingface',
       model: 'BAAI/bge-small-en-v1.5',
       dim: 384,
+      index_type: 'flat',
+      index_factory: 'Flat',
     });
     expect(payload.index_path).toBe(path.join(tempDir, '.faiss'));
     expect(payload.last_index_update).toMatchObject({
@@ -417,6 +423,106 @@ describe('computeKbStats', () => {
       expect(row.tokens_in).toBe(12);
       expect(row.latency_ms.p95).toBeGreaterThanOrEqual(row.latency_ms.p50);
       expect(row.since_started_at).toBe(new Date(1_700_000_000_000).toISOString());
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('summarizes dense flat-search latency and emits an advisory above the p95 threshold (#604)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-search-latency-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'alpha'));
+      await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'a');
+
+      const { computeKbStats } = await freshKbStats({
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+        KB_FLAT_SEARCH_P95_ADVISORY_MS: '50',
+      });
+      const { SearchLatencyMetrics } = await import('./metrics.js');
+      const searchMetrics = new SearchLatencyMetrics({ now: () => 1_700_000_000_000 });
+      searchMetrics.record({
+        mode: 'dense',
+        status: 'success',
+        totalMs: 125,
+        stageDurationsMs: { faiss_search: 75 },
+      });
+      searchMetrics.record({
+        mode: 'dense',
+        status: 'success',
+        totalMs: 160,
+        stageDurationsMs: { faiss_search: 125 },
+      });
+
+      const payload = await computeKbStats(makeManager({ indexType: 'flat' }) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        searchMetrics,
+      });
+
+      expect(payload.embedding).toMatchObject({
+        index_type: 'flat',
+        index_factory: 'Flat',
+      });
+      expect(payload.dense_search_latency).toMatchObject({
+        mode: 'dense',
+        stage: 'faiss_search',
+        status: 'success',
+        active_index: { type: 'flat', factory: 'Flat' },
+        sample_count: 2,
+        p50_ms: 100,
+        p95_ms: 280,
+        threshold_ms: 50,
+        since_started_at: new Date(1_700_000_000_000).toISOString(),
+        advisory: {
+          code: 'FLAT_SCAN_P95_ABOVE_THRESHOLD',
+          docs: expect.arrayContaining([
+            'docs/architecture/adr/0010-hnsw-binding-evaluation.md',
+            'https://github.com/jeanibarz/knowledge-base-mcp-server/issues/596',
+          ]),
+        },
+      });
+      expect(payload.dense_search_latency?.advisory?.message).toContain('not auto-enabled');
+      expect(payload.dense_search_latency?.advisory?.message).toContain('issue #596 is blocked');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps dense latency advisory quiet when search timing is missing or below threshold (#604)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-search-latency-quiet-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'alpha'));
+      await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'a');
+
+      const { computeKbStats } = await freshKbStats({
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+        KB_FLAT_SEARCH_P95_ADVISORY_MS: '50',
+      });
+      const { SearchLatencyMetrics } = await import('./metrics.js');
+      const emptyMetrics = new SearchLatencyMetrics({ now: () => 1 });
+
+      const missing = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        searchMetrics: emptyMetrics,
+      });
+      expect(missing.dense_search_latency).toBeUndefined();
+
+      const lowMetrics = new SearchLatencyMetrics({ now: () => 1_700_000_000_000 });
+      lowMetrics.record({
+        mode: 'dense',
+        status: 'success',
+        totalMs: 15,
+        stageDurationsMs: { faiss_search: 12 },
+      });
+      const belowThreshold = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        searchMetrics: lowMetrics,
+      });
+      expect(belowThreshold.dense_search_latency?.advisory).toBeNull();
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }

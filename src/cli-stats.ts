@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from 'fs';
 import * as path from 'path';
 import { resolveActiveModel } from './active-model.js';
+import { tryRunDaemonCommand } from './daemon-client.js';
 import {
   classifyKbSearchError,
   exitCodeForFailure,
@@ -57,9 +58,14 @@ export interface RunStatsDeps {
     manager: FaissIndexManager,
     options: ComputeKbStatsOptions,
   ) => Promise<KbStatsPayload>;
+  tryReadDaemonStatsPayload?: () => Promise<KbStatsPayload | null>;
   readPackageVersion: () => string;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
+}
+
+export interface RunStatsOptions {
+  preferDaemon?: boolean;
 }
 
 const DEFAULT_DEPS: RunStatsDeps = {
@@ -73,7 +79,11 @@ const DEFAULT_DEPS: RunStatsDeps = {
   stderr: (text) => process.stderr.write(text),
 };
 
-export async function runStats(rest: string[], deps: RunStatsDeps = DEFAULT_DEPS): Promise<number> {
+export async function runStats(
+  rest: string[],
+  deps: RunStatsDeps = DEFAULT_DEPS,
+  options: RunStatsOptions = {},
+): Promise<number> {
   let parsed: StatsArgs;
   try {
     parsed = parseStatsArgs(rest);
@@ -83,6 +93,22 @@ export async function runStats(rest: string[], deps: RunStatsDeps = DEFAULT_DEPS
   }
 
   try {
+    if (options.preferDaemon !== false) {
+      // Keep daemon probing after argument validation so invalid local CLI
+      // input still fails locally instead of being hidden by a daemon fallback.
+      const readDaemonStats = deps.tryReadDaemonStatsPayload
+        ?? (deps === DEFAULT_DEPS ? tryReadDaemonStatsPayload : async () => null);
+      const daemonStats = await readDaemonStats();
+      if (daemonStats !== null) {
+        if (parsed.format === 'json') {
+          deps.stdout(`${JSON.stringify(daemonStats, null, 2)}\n`);
+        } else {
+          deps.stdout(formatStatsMarkdown(daemonStats));
+        }
+        return 0;
+      }
+    }
+
     await deps.bootstrapLayout();
     const activeModelId = await deps.resolveActiveModel();
     const manager = await deps.loadManagerForModel(activeModelId);
@@ -107,6 +133,20 @@ export async function runStats(rest: string[], deps: RunStatsDeps = DEFAULT_DEPS
       deps.stderr(formatKbSearchFailureStderr(failure).replace(/^kb search:/, 'kb stats:'));
     }
     return exitCodeForFailure(failure);
+  }
+}
+
+export async function tryReadDaemonStatsPayload(
+  options: { timeoutMs?: number } = {},
+): Promise<KbStatsPayload | null> {
+  try {
+    const result = await tryRunDaemonCommand('stats', ['--format=json'], {
+      timeoutMs: options.timeoutMs ?? 150,
+    });
+    if (result === null || result.exitCode !== 0) return null;
+    return JSON.parse(result.stdout) as KbStatsPayload;
+  } catch {
+    return null;
   }
 }
 
@@ -160,10 +200,12 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
     `- Model: ${payload.embedding.model}`,
     `- Dimensions: ${dim}`,
     `- Index type: ${payload.embedding.index_type ?? 'flat'}`,
+    `- Index factory: ${payload.embedding.index_factory ?? 'Flat'}`,
     `- Index path: \`${payload.index_path}\``,
     `- Server version: ${payload.server.version}`,
     `- Uptime: ${formatInteger(uptimeMs)} ms`,
     '',
+    ...formatDenseSearchLatencySection(payload),
     ...formatFilesystemSection(payload),
     ...formatDenseCoverageSection(payload),
     '## Relevance Gate',
@@ -183,6 +225,24 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
     ...formatRemoteTransportSection(payload),
     ...formatContextualSection(payload),
   ].join('\n');
+}
+
+export function formatDenseSearchLatencySection(payload: KbStatsPayload): string[] {
+  const row = payload.dense_search_latency;
+  if (row === undefined) return [];
+  const lines = [
+    '## Dense Search Latency',
+    '',
+    `- Active index: ${row.active_index.type} (factory ${row.active_index.factory})`,
+    `- Dense faiss_search: samples=${formatInteger(row.sample_count)}, ` +
+      `p50=${row.p50_ms} ms, p95=${row.p95_ms} ms, threshold=${row.threshold_ms} ms`,
+  ];
+  if (row.advisory !== null) {
+    lines.push(`- Hint: ${row.advisory.message}`);
+    lines.push(`- Docs: ${row.advisory.docs.join(', ')}`);
+  }
+  lines.push('');
+  return lines;
 }
 
 export function formatFilesystemSection(payload: KbStatsPayload): string[] {

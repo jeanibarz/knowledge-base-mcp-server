@@ -9,6 +9,8 @@ export const DEFAULT_OLLAMA_INDEXING_BATCH_SIZE = 16;
 const MAX_INDEXING_BATCH_SIZE = 512;
 export const KB_INDEX_TYPE_ENV = 'KB_INDEX_TYPE';
 export type FaissIndexType = 'flat' | 'sq8';
+export const KB_FLAT_SEARCH_P95_ADVISORY_MS_ENV = 'KB_FLAT_SEARCH_P95_ADVISORY_MS';
+export const DEFAULT_FLAT_SEARCH_P95_ADVISORY_MS = 50;
 
 export function resolveIndexingBatchSize(
   provider: string = EMBEDDING_PROVIDER,
@@ -40,6 +42,15 @@ export function resolveFaissIndexType(
   if (normalized === undefined || normalized === '') return 'flat';
   if (normalized === 'flat' || normalized === 'sq8') return normalized;
   return 'flat';
+}
+
+export function resolveFlatSearchP95AdvisoryMs(
+  raw: string | undefined = process.env[KB_FLAT_SEARCH_P95_ADVISORY_MS_ENV],
+): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_FLAT_SEARCH_P95_ADVISORY_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_FLAT_SEARCH_P95_ADVISORY_MS;
+  return Math.floor(parsed);
 }
 
 // ---------------------------------------------------------------------------
