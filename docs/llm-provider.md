@@ -1,7 +1,7 @@
 # LLM provider configuration
 
-`kb`'s chat-completion calls — contextual-retrieval prefaces (RFC 017), the
-relevance-gate judge (RFC 018), and `kb llm probe` — route through a
+`kb`'s chat-completion calls — `kb ask`, contextual-retrieval prefaces
+(RFC 017), the relevance-gate judge (RFC 018), and `kb llm probe` — route through a
 **provider-neutral, OpenAI-compatible** config layer. A single switch moves the
 active chat model between:
 
@@ -15,7 +15,7 @@ This mirrors the same switch in the sibling repos
 `LRA_LLM_*`, `kookr`'s `KOOKR_LLM_*`) so one DeepSeek/OpenRouter setup is
 consistent across all three. **Embeddings are unaffected** — they always run
 locally through the configured embedding provider (e.g. nomic via Ollama). Only
-the *generation* step (prefaces, gate judging) is switched here.
+the *generation* step (answers, prefaces, gate judging) is switched here.
 
 ## Environment variables
 
@@ -79,3 +79,12 @@ deliberate shift from the local-first default; embeddings still run locally.
 - **Request body:** the `chat_template_kwargs` llama.cpp/vLLM extension is sent
   only for local endpoints (hosted providers reject/ignore unknown fields).
 - **Health probe:** skipped for remote providers (no `/health`).
+- **Streaming:** markdown `kb ask` output opts into OpenAI-compatible SSE
+  streaming and prints answer tokens as they arrive, then renders sources,
+  context, timing, and transcript status after the final answer. Use
+  `kb ask --no-stream` to keep the old wait-then-print markdown behavior.
+  `--format=json`, contextual prefaces, relevance-gate calls, and probes remain
+  non-streaming. Streaming calls retry only before the first answer token is
+  emitted; after output starts, stream errors are surfaced without replaying
+  partial content. The streaming timeout is idle/inter-chunk, while non-streaming
+  calls keep the existing request timeout behavior.

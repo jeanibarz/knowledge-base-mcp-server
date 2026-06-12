@@ -12,6 +12,7 @@ export interface ChatCompletionOptions {
   messages: LlmChatMessage[];
   temperature?: number;
   timeoutMs?: number;
+  stream?: ChatCompletionStreamOptions;
   /** Retry policy for transient provider/network failures. Set to false to disable. */
   retry?: false | LlmRetryOptions;
   /**
@@ -24,6 +25,11 @@ export interface ChatCompletionOptions {
   appTitle?: string;
   /** OpenRouter `HTTP-Referer` attribution header (only sent when an apiKey is set). */
   httpReferer?: string;
+}
+
+export interface ChatCompletionStreamOptions {
+  onToken: (token: string) => void | Promise<void>;
+  onFirstToken?: () => void;
 }
 
 export interface ChatCompletionResult {
@@ -141,7 +147,7 @@ export async function callChatCompletion(
     model: options.model ?? provider.model ?? 'local-model',
     messages: options.messages,
     temperature: options.temperature ?? 0.2,
-    stream: false,
+    stream: options.stream !== undefined,
   };
   // `chat_template_kwargs` is a llama.cpp / vLLM extension; hosted providers
   // (OpenRouter) reject or ignore unknown body fields, so only send it locally.
@@ -159,12 +165,16 @@ export async function callChatCompletion(
 
   const retryPolicy = resolveRetryPolicy(options.retry);
   let totalRetryDelayMs = 0;
+  let emittedStreamToken = false;
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await callChatCompletionOnce(endpoint, payload, headers, options.timeoutMs, fetchImpl);
+      return await callChatCompletionOnce(endpoint, payload, headers, options.timeoutMs, options.stream, () => {
+        emittedStreamToken = true;
+      }, fetchImpl);
     } catch (err) {
       if (
         !(err instanceof LlmClientError) ||
+        emittedStreamToken ||
         retryPolicy === null ||
         attempt >= retryPolicy.maxRetries ||
         !isTransientLlmClientError(err)
@@ -186,11 +196,17 @@ async function callChatCompletionOnce(
   payload: Record<string, unknown>,
   headers: Record<string, string>,
   timeoutMs: number | undefined,
+  stream: ChatCompletionStreamOptions | undefined,
+  onStreamTokenEmitted: () => void,
   fetchImpl: FetchLike,
 ): Promise<ChatCompletionResult> {
   let response: Response;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs ?? 180_000);
+  let timeout = setTimeout(() => controller.abort(), timeoutMs ?? 180_000);
+  const resetStreamingIdleTimeout = () => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => controller.abort(), timeoutMs ?? 180_000);
+  };
   try {
     response = await fetchImpl(endpoint, {
       method: 'POST',
@@ -203,7 +219,20 @@ async function callChatCompletionOnce(
     const msg = err instanceof Error ? err.message : String(err);
     throw new LlmClientError(`local LLM request failed: ${msg}`, { transient: true });
   }
-  clearTimeout(timeout);
+  if (stream === undefined) clearTimeout(timeout);
+  else resetStreamingIdleTimeout();
+
+  if (stream !== undefined) {
+    try {
+      return await readStreamingChatCompletion(response, stream, onStreamTokenEmitted, resetStreamingIdleTimeout);
+    } catch (err) {
+      if (err instanceof LlmClientError) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new LlmClientError(`local LLM stream failed: ${msg}`, { transient: true });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 
   const body = await readResponseBody(response);
 
@@ -231,6 +260,185 @@ async function callChatCompletionOnce(
     ? (data as { model: string }).model
     : null;
   return { content: content.trim(), model, raw: data };
+}
+
+async function readStreamingChatCompletion(
+  response: Response,
+  stream: ChatCompletionStreamOptions,
+  onStreamTokenEmitted: () => void,
+  onChunk: () => void,
+): Promise<ChatCompletionResult> {
+  if (!response.ok) {
+    const body = await readResponseBody(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
+    const message = body.ok
+      ? extractErrorMessage(body.data)
+      : body.text ?? body.errorMessage;
+    throw new LlmClientError(
+      `local LLM returned HTTP ${response.status}: ${message}`,
+      { status: response.status, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    );
+  }
+
+  if (response.body === null) {
+    throw new LlmClientError('local LLM streaming response did not contain a body', { transient: true });
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const state: StreamingReadState = {
+    rawEvents: [],
+    contentParts: [],
+    model: null,
+    sawFirstToken: false,
+  };
+  let buffer = '';
+  let done = false;
+
+  try {
+    while (!done) {
+      const chunk = await reader.read();
+      onChunk();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      const parsed = await drainSseBlocks(buffer, async (block) => {
+        return handleStreamingBlock(block, state, stream, onStreamTokenEmitted);
+      });
+      buffer = parsed.remaining;
+      done = parsed.done;
+    }
+
+    const tail = decoder.decode();
+    if (tail !== '') {
+      buffer += tail;
+    }
+    if (!done && buffer.trim() !== '') {
+      await drainSseBlocks(`${buffer}\n\n`, async (block) => {
+        return handleStreamingBlock(block, state, stream, onStreamTokenEmitted);
+      });
+    }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new LlmClientError('local LLM stream timed out waiting for the next chunk', { transient: true });
+    }
+    throw err;
+  } finally {
+    reader.releaseLock();
+  }
+
+  const content = state.contentParts.join('').trim();
+  if (content === '') {
+    throw new LlmClientError('local LLM streaming response did not contain choices[0].delta.content', { transient: false });
+  }
+  return { content, model: state.model, raw: { stream: true, events: state.rawEvents } };
+}
+
+interface StreamingReadState {
+  rawEvents: unknown[];
+  contentParts: string[];
+  model: string | null;
+  sawFirstToken: boolean;
+}
+
+async function handleStreamingBlock(
+  block: string,
+  state: StreamingReadState,
+  stream: ChatCompletionStreamOptions,
+  onStreamTokenEmitted: () => void,
+): Promise<boolean> {
+  const data = sseData(block);
+  if (data === null) return false;
+  if (data.trim() === '[DONE]') return true;
+  const parsedEvent = parseStreamingEvent(data);
+  state.rawEvents.push(parsedEvent);
+  const eventModel = typeof (parsedEvent as { model?: unknown }).model === 'string'
+    ? (parsedEvent as { model: string }).model
+    : null;
+  if (eventModel !== null) state.model = eventModel;
+  const delta = extractStreamingDelta(parsedEvent);
+  if (delta === null || delta === '') return false;
+  if (!state.sawFirstToken) {
+    state.sawFirstToken = true;
+    stream.onFirstToken?.();
+  }
+  onStreamTokenEmitted();
+  await stream.onToken(delta);
+  state.contentParts.push(delta);
+  return false;
+}
+
+async function drainSseBlocks(
+  input: string,
+  handle: (block: string) => Promise<boolean>,
+): Promise<{ remaining: string; done: boolean }> {
+  let remaining = input;
+  let done = false;
+  for (;;) {
+    const separator = findSseBlockSeparator(remaining);
+    if (separator === null) break;
+    const block = remaining.slice(0, separator.index);
+    remaining = remaining.slice(separator.index + separator.length);
+    if (block.trim() === '') continue;
+    done = await handle(block);
+    if (done) break;
+  }
+  return { remaining, done };
+}
+
+function findSseBlockSeparator(input: string): { index: number; length: number } | null {
+  const crlf = input.indexOf('\r\n\r\n');
+  const lf = input.indexOf('\n\n');
+  const cr = input.indexOf('\r\r');
+  let best: { index: number; length: number } | null = null;
+  for (const candidate of [
+    crlf < 0 ? null : { index: crlf, length: 4 },
+    lf < 0 ? null : { index: lf, length: 2 },
+    cr < 0 ? null : { index: cr, length: 2 },
+  ]) {
+    if (candidate !== null && (best === null || candidate.index < best.index)) {
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+function sseData(block: string): string | null {
+  const lines = block.split(/\r\n|\n|\r/);
+  const data = lines
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trimStart());
+  return data.length === 0 ? null : data.join('\n');
+}
+
+function parseStreamingEvent(data: string): unknown {
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    const err = (parsed as { error?: unknown }).error;
+    if (err !== undefined) {
+      throw new LlmClientError(`local LLM streaming response returned error: ${extractErrorMessage(parsed)}`, {
+        transient: false,
+      });
+    }
+    return parsed;
+  } catch (err) {
+    if (err instanceof LlmClientError) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new LlmClientError(`local LLM returned malformed streaming event: ${msg}`, { transient: true });
+  }
+}
+
+function extractStreamingDelta(data: unknown): string | null {
+  const choices = (data as { choices?: unknown }).choices;
+  if (!Array.isArray(choices) || choices.length === 0) return null;
+  const first = choices[0] as {
+    delta?: { content?: unknown };
+    message?: { content?: unknown };
+    text?: unknown;
+  };
+  if (typeof first.delta?.content === 'string') return first.delta.content;
+  if (typeof first.message?.content === 'string') return first.message.content;
+  if (typeof first.text === 'string') return first.text;
+  return null;
 }
 
 async function readResponseBody(response: Response): Promise<

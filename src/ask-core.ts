@@ -53,6 +53,7 @@ export interface AskExecutionArgs {
   timing: boolean;
   taskContext?: string;
   gate?: RelevanceGateOverride;
+  onAnswerToken?: (token: string) => void | Promise<void>;
 }
 
 export interface AskKnowledgeInput {
@@ -298,13 +299,23 @@ export async function executeAsk(
   let llmModel: string | null = null;
   try {
     const startedAt = nowMs();
+    if (timing) timing.llm_first_token_ms = null;
     const response = await deps.callChatCompletion({
       endpoint: target.profile.endpoint,
       messages: buildAskMessages(args.question, packedContext.included, args.taskContext),
       temperature: 0.2,
+      ...(args.onAnswerToken !== undefined
+        ? {
+            stream: {
+              onToken: args.onAnswerToken,
+              onFirstToken: () => {
+                if (timing) timing.llm_first_token_ms = elapsedMs(startedAt);
+              },
+            },
+          }
+        : {}),
     });
     if (timing) {
-      timing.llm_first_token_ms = null;
       timing.llm_total_ms = elapsedMs(startedAt);
     }
     answer = response.content;

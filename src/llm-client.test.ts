@@ -74,6 +74,113 @@ describe('llm-client', () => {
     expect(delays).toEqual([50]);
   });
 
+  it('streams OpenAI-compatible SSE deltas and returns the final content', async () => {
+    const tokens: string[] = [];
+    const events: string[] = [];
+    const fetchMock = jest.fn(async () => new Response(streamBody([
+      'data: {"model":"local-model","choices":[{"delta":{"content":"hello "}}]}\n\n',
+      'data: {"model":"local-model","choices":[{"delta":{"content":"world"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+
+    const result = await callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+      stream: {
+        onFirstToken: () => { events.push('first'); },
+        onToken: (token) => {
+          tokens.push(token);
+          events.push(token);
+        },
+      },
+    }, fetchMock as unknown as typeof fetch);
+
+    expect(result.content).toBe('hello world');
+    expect(result.model).toBe('local-model');
+    expect(tokens).toEqual(['hello ', 'world']);
+    expect(events).toEqual(['first', 'hello ', 'world']);
+    const body = JSON.parse((fetchMock.mock.calls as unknown as Array<[string, RequestInit]>)[0][1].body as string) as {
+      stream?: boolean;
+    };
+    expect(body.stream).toBe(true);
+  });
+
+  it('handles CRLF SSE delimiters split across network chunks', async () => {
+    const tokens: string[] = [];
+    const fetchMock = jest.fn(async () => new Response(streamBody([
+      'data: {"model":"local-model","choices":[{"delta":{"content":"split"}}]}\r\n\r',
+      '\n',
+      'data: [DONE]\r\n\r\n',
+    ]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+
+    const result = await callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+      stream: {
+        onToken: (token) => { tokens.push(token); },
+      },
+    }, fetchMock as unknown as typeof fetch);
+
+    expect(result.content).toBe('split');
+    expect(tokens).toEqual(['split']);
+  });
+
+  it('retries streaming failures before the first emitted token', async () => {
+    const tokens: string[] = [];
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(new Response(streamBody([
+        'data: {"choices":[{"delta":{"content":',
+      ]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }))
+      .mockResolvedValueOnce(new Response(streamBody([
+        'data: {"choices":[{"delta":{"content":"recovered"}}]}\n\n',
+        'data: [DONE]\n\n',
+      ]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+
+    const result = await callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+      stream: { onToken: (token) => { tokens.push(token); } },
+      retry: {
+        maxRetries: 1,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+        maxTotalDelayMs: 1,
+        sleep: async () => {},
+      },
+    }, fetchMock as unknown as typeof fetch);
+
+    expect(result.content).toBe('recovered');
+    expect(tokens).toEqual(['recovered']);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry streaming failures after a token has been emitted', async () => {
+    const tokens: string[] = [];
+    const fetchMock = jest.fn(async () => new Response(streamBody([
+      'data: {"choices":[{"delta":{"content":"partial "}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":',
+    ]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+
+    await expect(callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+      stream: { onToken: (token) => { tokens.push(token); } },
+      retry: {
+        maxRetries: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+        maxTotalDelayMs: 1,
+        sleep: async () => {},
+      },
+    }, fetchMock as unknown as typeof fetch)).rejects.toMatchObject({
+      name: 'LlmClientError',
+      message: expect.stringContaining('malformed streaming event'),
+    });
+
+    expect(tokens).toEqual(['partial ']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('does not retry terminal auth failures', async () => {
     const delays: number[] = [];
     const fetchMock = jest.fn(async () => new Response(
@@ -292,3 +399,13 @@ describe('llm-client', () => {
     expect(result.chat_ok).toBe(true);
   });
 });
+
+function streamBody(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+}
