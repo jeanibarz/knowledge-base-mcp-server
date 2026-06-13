@@ -158,6 +158,8 @@ export interface CachedLoadOptions {
   parse: (buffer: Buffer) => Promise<string>;
   /** Override the cache directory; defaults to {@link defaultExtractionCacheDir}. */
   cacheDir?: string;
+  /** When false, return parsed text on a miss without populating the cache. */
+  writeOnMiss?: boolean;
 }
 
 export interface ExtractionCacheEntry {
@@ -277,7 +279,9 @@ export async function loadWithExtractionCache(opts: CachedLoadOptions): Promise<
   }
 
   const text = await opts.parse(buffer);
-  await writeCachedExtraction(cacheDir, cacheKey, text);
+  if (opts.writeOnMiss !== false) {
+    await writeCachedExtraction(cacheDir, cacheKey, text);
+  }
   return text;
 }
 

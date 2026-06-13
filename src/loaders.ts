@@ -28,8 +28,13 @@ import { resolveLargeFileLimits, type KBLargeFilePolicy } from './config/ingest.
 import { resolveChunkSize } from './config/indexing.js';
 import { loadWithExtractionCache } from './extraction-cache.js';
 
+export interface LoadFileOptions {
+  /** When false, cache-backed loaders read cache hits but do not write misses. */
+  writeExtractionCacheOnMiss?: boolean;
+}
+
 /** Loader contract: filePath in, plain text out. Throws on parse failure. */
-export type Loader = (filePath: string) => Promise<string>;
+export type Loader = (filePath: string, options?: LoadFileOptions) => Promise<string>;
 
 // Issue #279 — bump these constants whenever the extraction behavior of the
 // corresponding loader changes in a way that would affect chunk content
@@ -367,7 +372,11 @@ function formatDelimitedTable(
   return groups.join('\n\n');
 }
 
-async function loadDelimitedTable(filePath: string, delimiter: Delimiter): Promise<string> {
+async function loadDelimitedTable(
+  filePath: string,
+  delimiter: Delimiter,
+  options: LoadFileOptions = {},
+): Promise<string> {
   const limits = resolveLargeFileLimits();
   const size = await statSize(filePath);
   const { chunkSize } = resolveChunkSize();
@@ -394,16 +403,17 @@ async function loadDelimitedTable(filePath: string, delimiter: Delimiter): Promi
       filePath,
       chunkSize,
     ),
+    writeOnMiss: options.writeExtractionCacheOnMiss,
   });
   return applyExtractedTextLimit(filePath, text);
 }
 
-function loadCsv(filePath: string): Promise<string> {
-  return loadDelimitedTable(filePath, ',');
+function loadCsv(filePath: string, options?: LoadFileOptions): Promise<string> {
+  return loadDelimitedTable(filePath, ',', options);
 }
 
-function loadTsv(filePath: string): Promise<string> {
-  return loadDelimitedTable(filePath, '\t');
+function loadTsv(filePath: string, options?: LoadFileOptions): Promise<string> {
+  return loadDelimitedTable(filePath, '\t', options);
 }
 
 // Reentrancy depth for `silencePdfjsConsole` — pdf-parse calls can interleave
@@ -471,7 +481,7 @@ async function silencePdfjsConsole<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function loadPdf(filePath: string): Promise<string> {
+async function loadPdf(filePath: string, options: LoadFileOptions = {}): Promise<string> {
   const limits = resolveLargeFileLimits();
   const size = await statSize(filePath);
   enforceFileSizeLimit(filePath, size, limits);
@@ -501,11 +511,12 @@ async function loadPdf(filePath: string): Promise<string> {
       const result = await silencePdfjsConsole(() => pdfParse(buffer));
       return result.text;
     },
+    writeOnMiss: options.writeExtractionCacheOnMiss,
   });
   return applyExtractedTextLimit(filePath, text);
 }
 
-async function loadHtml(filePath: string): Promise<string> {
+async function loadHtml(filePath: string, options: LoadFileOptions = {}): Promise<string> {
   const limits = resolveLargeFileLimits();
   const size = await statSize(filePath);
   if (limits.policy === 'truncate') {
@@ -542,6 +553,7 @@ async function loadHtml(filePath: string): Promise<string> {
         ],
       });
     },
+    writeOnMiss: options.writeExtractionCacheOnMiss,
   });
   return applyExtractedTextLimit(filePath, text);
 }
@@ -582,6 +594,6 @@ export function getLoader(filePath: string): Loader {
 }
 
 /** Convenience wrapper: route by extension and load to a string. */
-export function loadFile(filePath: string): Promise<string> {
-  return getLoader(filePath)(filePath);
+export function loadFile(filePath: string, options?: LoadFileOptions): Promise<string> {
+  return getLoader(filePath)(filePath, options);
 }

@@ -103,6 +103,142 @@ Stdout/stderr and exit codes:
   exit `2`.
 - `kb help` without `--format=json` keeps the existing human-readable output.
 
+## `kb inspect`
+
+Invocation:
+
+```bash
+kb inspect alpha/docs/deploy.md --format=json
+kb inspect kb://alpha/docs/deploy.md --json
+kb inspect /absolute/path/under/knowledge-bases/alpha/docs/deploy.md --format=json
+```
+
+Success envelope:
+
+```json
+{
+  "schema_version": "kb.inspect.v1",
+  "target": "alpha/docs/deploy.md",
+  "path": "/abs/knowledge-bases/alpha/docs/deploy.md",
+  "knowledgeBase": "alpha",
+  "relativePath": "alpha/docs/deploy.md",
+  "read_only": true,
+  "source": {
+    "extension": ".md",
+    "source_bytes": 1234,
+    "loaded_text_bytes": 1200,
+    "source_sha256": "..."
+  },
+  "loader": {
+      "extraction_cache": {
+        "applies": false,
+        "cache_dir": "/abs/.faiss/extracted-text",
+        "may_write_on_miss": false,
+      "entry_count_before": null,
+      "entry_count_after": null,
+      "changed_during_inspect": null
+    }
+  },
+  "splitter": {
+    "type": "markdown",
+    "chunk_size": 1000,
+    "chunk_overlap": 200
+  },
+  "frontmatter": {
+    "tags": ["ops"],
+    "lifted_keys": ["status", "title"]
+  },
+  "secret_scan": {
+    "enabled": true,
+    "verdict": "clean",
+    "categories": [],
+    "chunk_indexes": [],
+    "locations": [],
+    "error_code": null,
+    "message": null
+  },
+  "quarantine": {
+    "manifest_path": "/abs/knowledge-bases/alpha/.index/quarantine.jsonl",
+    "present": false,
+    "source_sha256_matches": null,
+    "record": null
+  },
+  "contextual_preface": {
+    "enabled": false,
+    "generation_skipped": true,
+    "sidecar_path": "/abs/.faiss/.contextual-prefaces/alpha/source.json",
+    "sidecar_exists": false,
+    "sidecar_valid": null,
+    "document_hash_matches": null,
+    "generator_matches": null,
+    "chunk_config_matches": null,
+    "model": null,
+    "chunks": {
+      "total": null,
+      "with_preface": 0,
+      "null_preface": 0,
+      "retry_pending": 0
+    }
+  },
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "chars": 512,
+      "bytes": 512,
+      "normalized_text_sha256": "...",
+      "start_char": 0,
+      "end_char": 512,
+      "lines": { "from": 1, "to": 20 }
+    }
+  ]
+}
+```
+
+Stable fields:
+
+- `schema_version`: currently `kb.inspect.v1`.
+- `target`, `path`, `knowledgeBase`, and `relativePath`: the requested target,
+  resolved absolute source path, KB name, and KB-root-relative display path.
+- `read_only`: always `true` for the inspect command.
+- `source`: extension, raw source byte count, loaded text byte count, and raw
+  source SHA-256.
+- `loader.extraction_cache`: diagnostic state for loaders backed by the
+  extracted-text cache. `applies` is true for PDF, HTML, CSV, and TSV loader
+  paths. Inspect may read existing extracted-text cache entries, but it runs
+  loaders in no-write mode and does not populate new extracted-text cache
+  entries on a miss. `entry_count_before`, `entry_count_after`, and
+  `changed_during_inspect` report whether anything external changed while the
+  command ran.
+- `splitter`: splitter family and the effective chunk size/overlap.
+- `frontmatter.tags` and `frontmatter.lifted_keys`: tag values and lifted
+  frontmatter key names. Inspect does not print frontmatter values.
+- `secret_scan`: `verdict` is `clean`, `secret_detected`, `disabled`, or
+  `bypassed`. Secret-detected files still exit `0`; agents should branch on
+  this field rather than treating the command as crashed.
+- `quarantine`: read-only view of the matching ingest quarantine record for
+  the file, when present. Inspect does not call retry helpers and does not
+  clear stale entries.
+- `contextual_preface`: read-only sidecar/cache status. `generation_skipped`
+  is always `true`; inspect never calls the contextual-preface LLM and never
+  writes contextual-preface sidecars.
+- `chunks`: one entry per would-be chunk. `start_char`, `end_char`, and
+  `lines` are best-effort boundaries in the frontmatter-stripped loaded text;
+  they are `null` when the splitter output cannot be matched back to that
+  text. `normalized_text_sha256` hashes the normalized text used for ingest
+  dedupe diagnostics, not the raw chunk.
+
+Stdout/stderr and exit codes:
+
+- Success JSON is stdout with exit `0`.
+- A file whose ingest secret scan would quarantine it still exits `0` with
+  `secret_scan.verdict: "secret_detected"`.
+- Missing files, loader failures, and splitter failures write stderr and exit
+  non-zero.
+- Invalid arguments, unknown KBs, and paths outside
+  `KNOWLEDGE_BASES_ROOT_DIR` exit `2`.
+- Human-readable output is the default when `--format=json` / `--json` is not
+  used.
+
 ## `kb search`
 
 Invocation:

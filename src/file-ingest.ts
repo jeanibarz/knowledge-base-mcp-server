@@ -65,6 +65,19 @@ export interface PendingChunkManifestWrite {
   manifest: ChunkManifest;
 }
 
+export interface BuildChunkDocumentsOptions {
+  /**
+   * Diagnostic callers can disable contextual-preface resolution so they do
+   * not call the LLM or write contextual sidecars. Default preserves ingest.
+   */
+  generateContextualPrefaces?: boolean;
+  /**
+   * Diagnostic callers can inspect a file that would be quarantined and report
+   * the secret verdict separately. Default preserves ingest.
+   */
+  enforceSecretScan?: boolean;
+}
+
 export function normalizeChunkTextForEmbedding(text: string): string {
   return text.normalize('NFC').replace(/\s+/g, ' ').trim();
 }
@@ -207,7 +220,10 @@ export async function buildChunkDocuments(
   filePath: string,
   content: string,
   knowledgeBaseName: string,
+  options: BuildChunkDocumentsOptions = {},
 ): Promise<Document[]> {
+  const generateContextualPrefaces = options.generateContextualPrefaces ?? true;
+  const enforceSecretScan = options.enforceSecretScan ?? true;
   const ext = path.extname(filePath).toLowerCase();
   const { chunkSize, chunkOverlap } = resolveChunkSize();
   const splitter = ext === '.md'
@@ -257,10 +273,12 @@ export async function buildChunkDocuments(
       location: 'frontmatter',
     });
   }
-  assertNoIngestSecrets(secretScanInputs, {
-    relativePath,
-    knowledgeBaseName,
-  });
+  if (enforceSecretScan) {
+    assertNoIngestSecrets(secretScanInputs, {
+      relativePath,
+      knowledgeBaseName,
+    });
+  }
 
   // RFC 017 — contextual-retrieval prefaces. Gated off by default; when
   // enabled, we call the LLM once per chunk (cached) to produce a short
@@ -271,7 +289,7 @@ export async function buildChunkDocuments(
   // helper. When the feature is off, no LLM calls fire and the metadata
   // field is absent.
   let prefaces: (string | null)[] = [];
-  if (isContextualRetrievalEnabled() && documents.length > 0) {
+  if (generateContextualPrefaces && isContextualRetrievalEnabled() && documents.length > 0) {
     try {
       prefaces = await resolveContextualPrefaces({
         source: filePath,
