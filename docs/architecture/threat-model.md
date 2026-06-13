@@ -101,6 +101,20 @@ are not registered and do not appear in `tools/list`. Read-side tools and
 Resources continue to work. The flag gates MCP tool availability only; it does
 not restrict CLI commands or direct filesystem writes.
 
+Per-KB write policy is an additional guardrail for over-permissioned MCP or CLI
+clients. A shelf may contain `<kb>/.kb-policy.json` with
+`{"mutations":"deny"}` to make managed mutation handlers refuse writes to that
+shelf. Missing policy files and omitted `mutations` default to `allow`; invalid
+policy JSON fails closed for writes until fixed or removed. The managed
+surfaces also refuse to modify or delete `.kb-policy.json` itself, so operators
+change that file directly on disk. This is not protection from a local
+filesystem attacker: anyone who can edit files under `$KNOWLEDGE_BASES_ROOT_DIR`
+can edit or remove the policy file outside the server.
+
+`KB_INGEST_ENABLED=false` remains the stronger MCP-wide switch: it prevents the
+ingest tools from being registered regardless of any per-KB `allow` policy.
+The per-KB policy does not re-enable globally disabled MCP tools.
+
 `list_knowledge_bases` continues to read `KNOWLEDGE_BASES_ROOT_DIR` directly without taking any client path. `retrieve_knowledge` takes only `query`, optional `knowledge_base_name`, optional numeric filters, and never writes based on the name.
 
 **Requirement.** The KB root and every per-KB directory must not contain symlinks pointing outside `KNOWLEDGE_BASES_ROOT_DIR`. The realpath check would catch a jailbreak attempt at request time, but symlinks-out-of-root represent operator-side trust intent. Treat the KB root the way you'd treat a static-content directory served to anonymous callers — own every entry, even the symlink targets.

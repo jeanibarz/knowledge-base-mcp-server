@@ -10,6 +10,7 @@ import { withSidecarLock, withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { appendSectionInDocument, listHeadings, parseHeadingSpec } from './markdown-section.js';
 import { appendFileAtomically, atomicWriteFile, rewriteFileAtomically } from './file-mutation.js';
+import { assertKbWritePolicyAllowsMutation } from './kb-write-policy.js';
 import {
   DEFAULT_SIMILAR_K,
   DEFAULT_SIMILAR_THRESHOLD,
@@ -935,6 +936,8 @@ function tokenize(value: string): Set<string> {
 async function createNewNote(kbName: string, title: string, content: string): Promise<string> {
   const relativePath = `${slugifyTitle(title)}.md`;
   const documentPath = await resolveKbPath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath, { mustExist: false });
+  const kbDir = await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName);
+  await assertKbWritePolicyAllowsMutation(kbDir, documentPath);
   await fsp.mkdir(path.dirname(documentPath), { recursive: true });
   try {
     const handle = await fsp.open(documentPath, 'wx');
@@ -955,12 +958,13 @@ async function createNewNote(kbName: string, title: string, content: string): Pr
 async function appendExistingNote(kbName: string, relativePath: string, content: string): Promise<string> {
   assertNoTraversal(relativePath);
   const documentPath = await resolveKbPath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath, { mustExist: false });
+  const kbDir = await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName);
   const stat = await fsp.stat(documentPath);
   if (!stat.isFile()) {
     throw new Error(`append target is not a file: ${JSON.stringify(relativePath)}`);
   }
-  await appendFileAtomically(documentPath, content);
-  return path.relative(await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName), documentPath)
+  await appendFileAtomically(documentPath, content, { kbDir });
+  return path.relative(kbDir, documentPath)
     .split(path.sep)
     .join('/');
 }
@@ -995,11 +999,13 @@ async function appendSectionInExistingNote(
   }
 
   const spec = parseHeadingSpec(headingSpec);
+  const kbDir = await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName);
   await rewriteFileAtomically(documentPath, (original) =>
     appendSectionInDocument(original, spec, content, { occurrence }).content,
+    { kbDir },
   );
 
-  return path.relative(await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName), documentPath)
+  return path.relative(kbDir, documentPath)
     .split(path.sep)
     .join('/');
 }

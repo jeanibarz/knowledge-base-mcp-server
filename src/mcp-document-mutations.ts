@@ -8,6 +8,7 @@ import { auditEnabled, recordMutation, sha256OfFileOrNull } from './audit-log.js
 import { toError } from './error-utils.js';
 import { KBError, type KBErrorCode } from './errors.js';
 import { resolveKbPath, resolveKnowledgeBaseDir } from './kb-fs.js';
+import { assertKbWritePolicyAllowsMutation } from './kb-write-policy.js';
 import { logger } from './logger.js';
 import { withWriteLock } from './write-lock.js';
 import type { CanonicalLogInput } from './canonical-log.js';
@@ -286,6 +287,7 @@ export async function handleAddDocument(
           knowledgeBasesRootDir,
           args.knowledge_base_name,
         );
+        await assertKbWritePolicyAllowsMutation(kbDir, documentPath);
         const existingDirs = await collectExistingAncestorDirs(path.dirname(documentPath), kbDir);
         const snapshot = await snapshotDocumentForRollback(documentPath);
         await fsp.mkdir(path.dirname(documentPath), { recursive: true });
@@ -394,6 +396,7 @@ export async function handleDeleteDocument(
         if (auditing) {
           beforeHash = await sha256OfFileOrNull(documentPath);
         }
+        await assertKbWritePolicyAllowsMutation(kbDir, documentPath);
         const relativePath = path.relative(kbDir, documentPath);
         sidecarPath = path.join(
           kbDir,

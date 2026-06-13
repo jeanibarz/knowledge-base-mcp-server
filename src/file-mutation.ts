@@ -1,9 +1,14 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
+import { assertKbWritePolicyAllowsMutation } from './kb-write-policy.js';
 
 interface AtomicWriteHooks {
   rename?: (oldPath: string, newPath: string) => Promise<void>;
+}
+
+interface FileMutationOptions {
+  kbDir?: string;
 }
 
 const FILE_MUTATION_LOCK_OPTS: Omit<properLockfile.LockOptions, 'lockfilePath'> = {
@@ -11,15 +16,23 @@ const FILE_MUTATION_LOCK_OPTS: Omit<properLockfile.LockOptions, 'lockfilePath'> 
   retries: { retries: 50, factor: 1.2, minTimeout: 25, maxTimeout: 250 },
 };
 
-export async function appendFileAtomically(targetPath: string, content: string): Promise<void> {
-  await rewriteFileAtomically(targetPath, (original) => `${original}${content}`);
+export async function appendFileAtomically(
+  targetPath: string,
+  content: string,
+  options: FileMutationOptions = {},
+): Promise<void> {
+  await rewriteFileAtomically(targetPath, (original) => `${original}${content}`, options);
 }
 
 export async function rewriteFileAtomically(
   targetPath: string,
   rewrite: (original: string) => string | Promise<string>,
+  options: FileMutationOptions = {},
 ): Promise<void> {
   await withFileMutationLock(targetPath, async () => {
+    if (options.kbDir !== undefined) {
+      await assertKbWritePolicyAllowsMutation(options.kbDir, targetPath);
+    }
     const stat = await fsp.stat(targetPath);
     if (!stat.isFile()) {
       throw new Error(`append target is not a file: ${JSON.stringify(path.basename(targetPath))}`);

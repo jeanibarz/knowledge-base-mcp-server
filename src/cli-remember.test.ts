@@ -1,4 +1,8 @@
 import { describe, expect, it } from '@jest/globals';
+import { spawnSync } from 'child_process';
+import * as fsp from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import {
   buildBlockedJson,
   candidatesFromResults,
@@ -10,6 +14,26 @@ import {
 // ts-jest cannot transform). We exercise the parser end-to-end via the
 // child-process tests in cli.test.ts instead.
 import type { ScoredDocument } from './formatter.js';
+
+const cliPath = path.join(process.cwd(), 'build', 'cli.js');
+
+function runCli(args: string[], env: Record<string, string>, input?: string): {
+  code: number;
+  stdout: string;
+  stderr: string;
+} {
+  const result = spawnSync('node', [cliPath, ...args], {
+    env: { PATH: process.env.PATH ?? '', KB_LOG_FORMAT: 'text', ...env },
+    encoding: 'utf-8',
+    input,
+  });
+  if (result.error) throw result.error;
+  return {
+    code: result.status ?? -1,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
+}
 
 describe('candidatesFromResults', () => {
   function doc(score: number, kb: string | null, relPath: string | null, content: string): ScoredDocument {
@@ -104,5 +128,54 @@ describe('formatBlockedMarkdown', () => {
     expect(out).toContain('runbooks/deploy.md');
     expect(out).toContain('Score: 0.42 (lower distance = closer match)');
     expect(out).toContain('rerun with --force');
+  });
+});
+
+describe('kb remember write policy', () => {
+  it('denies creates when the target shelf policy denies mutations', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-policy-create-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(rootDir, 'project');
+      await fsp.mkdir(kbDir, { recursive: true });
+      await fsp.writeFile(path.join(kbDir, '.kb-policy.json'), '{"mutations":"deny"}\n', 'utf-8');
+
+      const r = runCli(
+        ['remember', '--kb=project', '--title=Draft', '--stdin', '--yes', '--no-check-similar'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        '# Draft\n',
+      );
+
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('KB write policy denies mutations');
+      await expect(fsp.stat(path.join(kbDir, 'draft.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses managed appends to the policy file itself', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-policy-file-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(rootDir, 'project');
+      const policyPath = path.join(kbDir, '.kb-policy.json');
+      await fsp.mkdir(kbDir, { recursive: true });
+      await fsp.writeFile(policyPath, '{"mutations":"allow"}\n', 'utf-8');
+
+      const r = runCli(
+        ['remember', '--kb=project', '--append=.kb-policy.json', '--stdin', '--yes', '--no-check-similar'],
+        { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir },
+        '{"mutations":"deny"}\n',
+      );
+
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('cannot modify .kb-policy.json');
+      await expect(fsp.readFile(policyPath, 'utf-8')).resolves.toBe('{"mutations":"allow"}\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
