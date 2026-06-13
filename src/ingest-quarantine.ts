@@ -58,6 +58,13 @@ export async function listIngestQuarantine(kbPath: string): Promise<IngestQuaran
   return readManifest(kbPath);
 }
 
+export async function getIngestQuarantineRecord(
+  kbPath: string,
+  relativePath: string,
+): Promise<IngestQuarantineRecord | null> {
+  return findRecord(kbPath, relativePath);
+}
+
 export async function countIngestQuarantine(kbPath: string): Promise<number> {
   return (await readManifest(kbPath)).length;
 }

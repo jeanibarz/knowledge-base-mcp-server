@@ -25,6 +25,7 @@ import { EVAL_GATE_HELP, runEvalGate } from './cli-eval-gate.js';
 import { EXPLAIN_HELP, runExplain } from './cli-explain.js';
 import { FEEDBACK_HELP, runFeedback } from './cli-feedback.js';
 import { IMPORT_URL_HELP, runImportUrl } from './cli-import-url.js';
+import { INSPECT_HELP, runInspect } from './cli-inspect.js';
 import { LIST_HELP, runList } from './cli-list.js';
 import { LLM_HELP, runLlm } from './cli-llm.js';
 import { LOGS_HELP, runLogs } from './cli-logs.js';
@@ -115,6 +116,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'capture',      summary: 'Run a command and append its stdout to a KB note as a fenced block.',    help: CAPTURE_HELP,      handler: runCapture },
   { name: 'config',       summary: 'Validate KB environment configuration.',                                help: CONFIG_HELP,       handler: runConfig },
   { name: 'import-url',   summary: 'Snapshot a web page or PDF into a KB note with provenance frontmatter.',  help: IMPORT_URL_HELP,   handler: runImportUrl },
+  { name: 'inspect',      summary: 'Show file-side ingest chunking diagnostics for one file.',               help: INSPECT_HELP,      handler: runInspect },
   { name: 'compare',      summary: 'Side-by-side rank/score table for two embedding models.',                help: COMPARE_HELP,      handler: runCompare },
   { name: 'diff-index',   summary: 'Compare retrieval-result churn across two FAISS index versions.',        help: DIFF_INDEX_HELP,   handler: runDiffIndexCli },
   { name: 'doctor',       summary: 'Aggregate model / index / backend health report.',                       help: DOCTOR_HELP,       handler: runDoctor },
