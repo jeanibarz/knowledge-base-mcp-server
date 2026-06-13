@@ -9,7 +9,11 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 |---|---|---|---|---|---|---|
 | <code>KNOWLEDGE_BASES_ROOT_DIR</code> | <code>path</code> | <code>$HOME/knowledge_bases</code> |  |  | uses default | Root directory containing knowledge base shelves. |
 | <code>FAISS_INDEX_PATH</code> | <code>path</code> | <code>$KNOWLEDGE_BASES_ROOT_DIR/.faiss</code> |  |  | uses default | Directory where FAISS index data is stored. |
-| <code>KB_INDEX_TYPE</code> | <code>enum</code> | <code>flat</code> | <code>flat</code>, <code>sq8</code> |  | uses default |  |
+| <code>KB_INDEX_TYPE</code> | <code>enum</code> | <code>flat</code> | <code>flat</code>, <code>sq8</code>, <code>hnsw</code> |  | uses default |  |
+| <code>KB_HNSW_M</code> | <code>integer</code> | <code>32</code> |  | >= <code>2</code>; <= <code>128</code>; digits only | uses default | HNSW graph connectivity when KB_INDEX_TYPE=hnsw. |
+| <code>KB_HNSW_EF_CONSTRUCTION</code> | <code>integer</code> | <code>200</code> |  | >= <code>1</code>; <= <code>10000</code>; digits only | uses default | HNSW build-time candidate list size when KB_INDEX_TYPE=hnsw. |
+| <code>KB_HNSW_EF_SEARCH</code> | <code>integer</code> | <code>100</code> |  | >= <code>1</code>; <= <code>10000</code>; digits only | uses default | HNSW query-time candidate list size when KB_INDEX_TYPE=hnsw. |
+| <code>KB_HNSW_RANDOM_SEED</code> | <code>integer</code> | <code>100</code> |  | >= <code>1</code>; <= <code>2147483647</code>; digits only | uses default | HNSW random seed recorded in the index manifest. |
 | <code>EMBEDDING_PROVIDER</code> | <code>enum</code> | <code>huggingface</code> | <code>huggingface</code>, <code>ollama</code>, <code>openai</code>, <code>fake</code> |  | uses default | Default embedding provider for retrieval and ingest. |
 | <code>KB_ACTIVE_MODEL</code> | <code>string</code> | _unset_ |  |  | kept as set | Active model override; otherwise the active model sidecar or legacy provider env is used. |
 | <code>KB_FAKE_DIM</code> | <code>integer</code> | <code>256</code> |  | >= <code>8</code>; <= <code>4096</code> | uses default |  |

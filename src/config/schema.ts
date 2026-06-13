@@ -14,6 +14,10 @@ import {
 } from './paths.js';
 import {
   DEFAULT_FLAT_SEARCH_P95_ADVISORY_MS,
+  DEFAULT_HNSW_EF_CONSTRUCTION,
+  DEFAULT_HNSW_EF_SEARCH,
+  DEFAULT_HNSW_M,
+  DEFAULT_HNSW_RANDOM_SEED,
   defaultIndexingBatchSize,
 } from './indexing.js';
 import {
@@ -143,7 +147,11 @@ const CONTROLLED_PREFIXES = [
 export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KNOWLEDGE_BASES_ROOT_DIR', kind: 'path', docDefault: '$HOME/knowledge_bases', description: 'Root directory containing knowledge base shelves.', defaultValue: (env) => resolveKnowledgeBasesRootDir(env.KNOWLEDGE_BASES_ROOT_DIR) },
   { name: 'FAISS_INDEX_PATH', kind: 'path', docDefault: '$KNOWLEDGE_BASES_ROOT_DIR/.faiss', description: 'Directory where FAISS index data is stored.', defaultValue: (env) => defaultFaissIndexPath(effectiveStringValue(env, 'KNOWLEDGE_BASES_ROOT_DIR', resolveKnowledgeBasesRootDir(undefined))) },
-  { name: 'KB_INDEX_TYPE', kind: 'enum', values: ['flat', 'sq8'], default: 'flat', normalize: lowercase },
+  { name: 'KB_INDEX_TYPE', kind: 'enum', values: ['flat', 'sq8', 'hnsw'], default: 'flat', normalize: lowercase },
+  { name: 'KB_HNSW_M', kind: 'integer', default: String(DEFAULT_HNSW_M), min: 2, max: 128, integerSyntax: 'digits', description: 'HNSW graph connectivity when KB_INDEX_TYPE=hnsw.' },
+  { name: 'KB_HNSW_EF_CONSTRUCTION', kind: 'integer', default: String(DEFAULT_HNSW_EF_CONSTRUCTION), min: 1, max: 10000, integerSyntax: 'digits', description: 'HNSW build-time candidate list size when KB_INDEX_TYPE=hnsw.' },
+  { name: 'KB_HNSW_EF_SEARCH', kind: 'integer', default: String(DEFAULT_HNSW_EF_SEARCH), min: 1, max: 10000, integerSyntax: 'digits', description: 'HNSW query-time candidate list size when KB_INDEX_TYPE=hnsw.' },
+  { name: 'KB_HNSW_RANDOM_SEED', kind: 'integer', default: String(DEFAULT_HNSW_RANDOM_SEED), min: 1, max: 2147483647, integerSyntax: 'digits', description: 'HNSW random seed recorded in the index manifest.' },
   { name: 'EMBEDDING_PROVIDER', kind: 'enum', values: [...KNOWN_EMBEDDING_PROVIDERS], default: 'huggingface', description: 'Default embedding provider for retrieval and ingest.' },
   { name: 'KB_ACTIVE_MODEL', kind: 'string', description: 'Active model override; otherwise the active model sidecar or legacy provider env is used.' },
   { name: 'KB_FAKE_DIM', kind: 'integer', default: '256', min: 8, max: 4096 },

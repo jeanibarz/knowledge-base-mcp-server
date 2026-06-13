@@ -65,6 +65,7 @@
     "@modelcontextprotocol/sdk": "^1.17.2",
     "axios": "^1.6.7",
     "faiss-node": "latest",
+    "hnswlib-node": "^3.0.0",
     "html-to-text": "^9.0.5",
     "js-yaml": "^4.1.1",
     "langchain": "^0.3.15",

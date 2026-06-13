@@ -397,6 +397,11 @@ describe('FaissIndexManager permission handling', () => {
     KB_INGEST_SECRET_SCAN: process.env.KB_INGEST_SECRET_SCAN,
     KB_SECRET_SCAN_BYPASS_KBS: process.env.KB_SECRET_SCAN_BYPASS_KBS,
     KB_LOG_FORMAT: process.env.KB_LOG_FORMAT,
+    KB_INDEX_TYPE: process.env.KB_INDEX_TYPE,
+    KB_HNSW_M: process.env.KB_HNSW_M,
+    KB_HNSW_EF_CONSTRUCTION: process.env.KB_HNSW_EF_CONSTRUCTION,
+    KB_HNSW_EF_SEARCH: process.env.KB_HNSW_EF_SEARCH,
+    KB_HNSW_RANDOM_SEED: process.env.KB_HNSW_RANDOM_SEED,
   };
 
 
@@ -700,6 +705,55 @@ describe('FaissIndexManager permission handling', () => {
       dimensions: 2,
     });
     expect(manifest.embedding_canary?.vector).toHaveLength(2);
+  });
+
+  it('builds, persists, reloads, and queries an HNSW index when explicitly configured', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-hnsw-manager-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'doc.md'), '# Alpha\n\nAlpha HNSW content.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_INDEX_TYPE = 'hnsw';
+    process.env.KB_HNSW_M = '8';
+    process.env.KB_HNSW_EF_CONSTRUCTION = '40';
+    process.env.KB_HNSW_EF_SEARCH = '20';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    const versionDir = versionedIndexPathIn(process.env.FAISS_INDEX_PATH!);
+    await expect(fsp.stat(path.join(versionDir, 'hnsw.index'))).resolves.toBeTruthy();
+    await expect(fsp.stat(path.join(versionDir, 'faiss.index'))).rejects.toMatchObject({ code: 'ENOENT' });
+    const manifest = JSON.parse(
+      await fsp.readFile(path.join(versionDir, 'integrity.json'), 'utf-8'),
+    );
+    expect(manifest).toMatchObject({
+      backend: 'hnsw',
+      index_type: 'hnsw',
+      hnsw: {
+        m: 8,
+        efConstruction: 40,
+        efSearch: 20,
+        metric: 'l2',
+      },
+    });
+
+    const reloaded = new FaissIndexManager();
+    await reloaded.initialize({ readOnly: true });
+    const results = await reloaded.similaritySearch('Alpha HNSW content', 1, Number.POSITIVE_INFINITY);
+    expect(results[0]?.pageContent).toContain('Alpha HNSW content');
+    expect(reloaded.getStats()).toMatchObject({
+      totalChunks: 1,
+      indexType: 'hnsw',
+    });
   });
 
   it('recovers a save-complete pending manifest by finishing hash and chunk sidecars', async () => {
