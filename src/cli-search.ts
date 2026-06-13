@@ -141,6 +141,10 @@ import {
   type QueryDecompositionProvider,
   type QueryDecompositionTrace,
 } from './query-decomposition.js';
+import {
+  parseRecencyFilterRange,
+  type SimilaritySearchFilters,
+} from './search-filters.js';
 
 export const SEARCH_HELP = `kb search — semantic search across knowledge bases
 
@@ -162,6 +166,12 @@ Output normally ends with a freshness footer (markdown) or staleness fields
 Scope:
   --kb=<name>           Scope to one knowledge base. Omit to search ALL KBs.
   --model=<id>          Override the active model for this call (RFC 013).
+  --since=<time>        Dense-only: keep chunks whose current source-file
+                        mtime is at or after this bound. Accepts durations
+                        like 30d/24h or ISO dates/timestamps.
+  --until=<time>        Dense-only: keep chunks whose current source-file
+                        mtime is at or before this bound. File mtime can
+                        differ from indexed-content time on stale indexes.
 
 Result tuning:
   --threshold=<float>   Max similarity score; lower = closer match (default 2).
@@ -236,8 +246,8 @@ Output:
                         result envelope per row. Each row accepts query plus
                         optional per-row search option fields such as kb, k,
                         mode, model, threshold, no_cache, freshness,
-                        group_by_source, task_context, gate, refresh, and
-                        context_window.
+                        group_by_source, task_context, gate, refresh, since,
+                        until, and context_window.
   --group-by-source     Collapse repeated chunks from the same source file
                         in markdown output. With \`--format=json\`, adds a
                         \`grouped_results\` field alongside raw results.
@@ -309,6 +319,8 @@ interface SearchArgs {
   model?: string;
   threshold?: number;
   thresholdAuto: boolean;
+  since?: string;
+  until?: string;
   k: number;
   format: SearchFormat;
   refresh: boolean;
@@ -472,6 +484,10 @@ export async function runSearch(
     process.stderr.write('kb search: neighbor context expansion is only supported with --mode=dense\n');
     return 2;
   }
+  if (hasRecencyFilter(parsed) && effectiveMode !== 'dense') {
+    process.stderr.write('kb search: --since/--until are only supported with --mode=dense\n');
+    return 2;
+  }
   if (parsed.candidatePoolK !== undefined && effectiveMode !== 'hybrid') {
     process.stderr.write('kb search: --candidate-pool-k is only supported with --mode=hybrid\n');
     return 2;
@@ -567,6 +583,7 @@ export async function runSearch(
   let autoThresholdDecision: AutoThresholdDecision | null = null;
   let advancedRetrieval: AdvancedRetrievalMetadata | null = null;
   const denseTiming: SimilaritySearchTiming = {};
+  const filters = searchFiltersFromArgs(parsed);
   try {
     const startedAt = nowMs();
     if (hasAdvancedRetrieval(parsed)) {
@@ -584,7 +601,7 @@ export async function runSearch(
         parsed.k,
         Number.POSITIVE_INFINITY,
         parsed.kb,
-        undefined,
+        filters,
         denseTiming,
         { noCache: parsed.noCache, retrievalViews: parsed.retrievalViews },
       );
@@ -596,7 +613,7 @@ export async function runSearch(
         parsed.k,
         parsed.threshold,
         parsed.kb,
-        undefined,
+        filters,
         denseTiming,
         { noCache: parsed.noCache, retrievalViews: parsed.retrievalViews },
       );
@@ -868,7 +885,7 @@ async function runAdvancedDenseSearch(input: {
       candidateK,
       input.parsed.threshold,
       input.parsed.kb,
-      undefined,
+      searchFiltersFromArgs(input.parsed),
       input.denseTiming,
       { noCache: input.parsed.noCache, retrievalViews: input.parsed.retrievalViews },
     );
@@ -1032,6 +1049,8 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
       if (!Number.isFinite(n)) throw new Error(`invalid --threshold: ${raw}`);
       out.threshold = n; continue;
     }
+    if (raw.startsWith('--since=')) { out.since = raw.slice('--since='.length); continue; }
+    if (raw.startsWith('--until=')) { out.until = raw.slice('--until='.length); continue; }
     if (raw.startsWith('--k=')) {
       const n = Number(raw.slice('--k='.length));
       if (!Number.isInteger(n) || n <= 0) throw new Error(`invalid --k: ${raw}`);
@@ -1065,7 +1084,20 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (out.query === null) { out.query = raw; continue; }
     throw new Error(`unexpected argument: ${raw}`);
   }
+  if (hasRecencyFilter(out)) {
+    parseRecencyFilterRange({ since: out.since, until: out.until });
+  }
   return out;
+}
+
+function hasRecencyFilter(args: Pick<SearchArgs, 'since' | 'until'>): boolean {
+  return args.since !== undefined || args.until !== undefined;
+}
+
+function searchFiltersFromArgs(args: Pick<SearchArgs, 'since' | 'until'>): SimilaritySearchFilters | undefined {
+  return hasRecencyFilter(args)
+    ? { since: args.since, until: args.until }
+    : undefined;
 }
 
 function parseNonEmptyComponent(raw: string, prefix: string): string {
@@ -1297,7 +1329,8 @@ function hasFilterSelectivitySurface(
 ): boolean {
   return (
     typeof parsed.kb === 'string' && parsed.kb.length > 0
-  ) || denseTiming.sidecar_candidates !== undefined
+  ) || hasRecencyFilter(parsed)
+    || denseTiming.sidecar_candidates !== undefined
     || denseTiming.sidecar_fast_path !== undefined
     || denseTiming.post_filter_kept !== undefined;
 }
@@ -1867,7 +1900,7 @@ async function runBatchJsonlSearch(
           row.k,
           Number.POSITIVE_INFINITY,
           row.kb,
-          undefined,
+          searchFiltersFromArgs(row),
           denseTiming,
           { noCache: row.noCache },
         );
@@ -1879,7 +1912,7 @@ async function runBatchJsonlSearch(
           row.k,
           row.threshold,
           row.kb,
-          undefined,
+          searchFiltersFromArgs(row),
           denseTiming,
           { noCache: row.noCache },
         );
@@ -2119,6 +2152,17 @@ function parseBatchJsonlRow(line: string, lineNumber: number, defaults: SearchAr
   if (refresh !== undefined) row.refresh = refresh;
   const freshness = readBatchBoolean(raw, 'freshness', lineNumber);
   if (freshness !== undefined) row.freshness = freshness;
+  const since = readBatchString(raw, 'since', lineNumber, false);
+  if (since !== undefined) row.since = since;
+  const until = readBatchString(raw, 'until', lineNumber, false);
+  if (until !== undefined) row.until = until;
+  if (hasRecencyFilter(row)) {
+    try {
+      parseRecencyFilterRange({ since: row.since, until: row.until });
+    } catch (err) {
+      throw new Error(`line ${lineNumber}: ${(err as Error).message}`);
+    }
+  }
   const groupBySource = readBatchBoolean(raw, 'group_by_source', lineNumber);
   if (groupBySource !== undefined) row.groupBySource = groupBySource;
   const explainEmpty = readBatchBoolean(raw, 'explain_empty', lineNumber);

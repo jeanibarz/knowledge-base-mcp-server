@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import type { Document } from '@langchain/core/documents';
 import { minimatch } from 'minimatch';
@@ -6,9 +7,16 @@ export interface SimilaritySearchFilters {
   extensions?: readonly string[];
   pathGlob?: string;
   tags?: readonly string[];
+  since?: string;
+  until?: string;
 }
 
 export type ScoredDocument = readonly [Document, number];
+
+export interface RecencyFilterRange {
+  sinceMs?: number;
+  untilMs?: number;
+}
 
 export interface SimilaritySearchPostFilter {
   requiresOverfetch: boolean;
@@ -20,20 +28,28 @@ export function createSimilaritySearchPostFilter(options: {
   knowledgeBasesRootDir: string;
   knowledgeBaseName?: string;
   filters?: SimilaritySearchFilters;
+  recencyNowMs?: number;
 }): SimilaritySearchPostFilter {
   const { threshold, knowledgeBasesRootDir, knowledgeBaseName, filters } = options;
   const scoped = typeof knowledgeBaseName === 'string' && knowledgeBaseName.length > 0;
   const normalizedExtensions = normalizeExtensionFilter(filters?.extensions);
   const pathGlob = filters?.pathGlob && filters.pathGlob.length > 0 ? filters.pathGlob : undefined;
   const requiredTags = filters?.tags?.filter((t): t is string => typeof t === 'string' && t.length > 0) ?? [];
+  const recencyRange = parseRecencyFilterRange({
+    since: filters?.since,
+    until: filters?.until,
+    nowMs: options.recencyNowMs,
+  });
   const hasMetadataFilter =
     normalizedExtensions !== undefined || pathGlob !== undefined || requiredTags.length > 0;
+  const hasRecencyFilter = recencyRange !== undefined;
+  const sourceMtimeMemo = new Map<string, number | null>();
   const kbPrefix = scoped
     ? path.join(knowledgeBasesRootDir, knowledgeBaseName as string) + path.sep
     : undefined;
 
   return {
-    requiresOverfetch: scoped || hasMetadataFilter,
+    requiresOverfetch: scoped || hasMetadataFilter || hasRecencyFilter,
     apply(resultsWithScore) {
       return resultsWithScore.filter(([doc, score]) => {
         if (score > threshold) {
@@ -66,10 +82,100 @@ export function createSimilaritySearchPostFilter(options: {
             if (!tagSet.has(required)) return false;
           }
         }
+        if (recencyRange !== undefined) {
+          const source = metadata?.source;
+          if (typeof source !== 'string' || source.length === 0) {
+            return false;
+          }
+          const mtimeMs = sourceMtimeMs(source, sourceMtimeMemo);
+          if (mtimeMs === null) return false;
+          if (recencyRange.sinceMs !== undefined && mtimeMs < recencyRange.sinceMs) {
+            return false;
+          }
+          if (recencyRange.untilMs !== undefined && mtimeMs > recencyRange.untilMs) {
+            return false;
+          }
+        }
         return true;
       });
     },
   };
+}
+
+export function parseRecencyFilterRange(input: {
+  since?: string;
+  until?: string;
+  nowMs?: number;
+}): RecencyFilterRange | undefined {
+  const nowMs = input.nowMs ?? Date.now();
+  const sinceMs = input.since === undefined
+    ? undefined
+    : parseRecencyBound(input.since, 'since', nowMs);
+  const untilMs = input.until === undefined
+    ? undefined
+    : parseRecencyBound(input.until, 'until', nowMs);
+  if (sinceMs === undefined && untilMs === undefined) return undefined;
+  if (sinceMs !== undefined && untilMs !== undefined && sinceMs > untilMs) {
+    throw new Error('invalid recency range: since must be earlier than or equal to until');
+  }
+  return { sinceMs, untilMs };
+}
+
+const DURATION_RE = /^([1-9]\d*)(ms|s|m|h|d|w)$/i;
+const ISO_DATE_OR_TIMESTAMP_RE =
+  /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+
+function parseRecencyBound(raw: string, label: 'since' | 'until', nowMs: number): number {
+  const value = raw.trim();
+  if (value.length === 0) {
+    throw new Error(`invalid ${label}: expected duration like 30d/24h or ISO date`);
+  }
+  const durationMatch = DURATION_RE.exec(value);
+  if (durationMatch !== null) {
+    const amount = Number(durationMatch[1]);
+    const unit = durationMatch[2].toLowerCase();
+    return nowMs - amount * durationUnitMs(unit);
+  }
+  if (!ISO_DATE_OR_TIMESTAMP_RE.test(value)) {
+    throw new Error(`invalid ${label}: expected duration like 30d/24h or ISO date`);
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`invalid ${label}: expected duration like 30d/24h or ISO date`);
+  }
+  return parsed;
+}
+
+function durationUnitMs(unit: string): number {
+  switch (unit) {
+    case 'ms': return 1;
+    case 's': return 1000;
+    case 'm': return 60 * 1000;
+    case 'h': return 60 * 60 * 1000;
+    case 'd': return 24 * 60 * 60 * 1000;
+    case 'w': return 7 * 24 * 60 * 60 * 1000;
+    default: {
+      const exhaustive: never = unit as never;
+      return exhaustive;
+    }
+  }
+}
+
+function sourceMtimeMs(source: string, memo: Map<string, number | null>): number | null {
+  if (memo.has(source)) {
+    return memo.get(source) ?? null;
+  }
+  let mtimeMs: number | null = null;
+  try {
+    const stat = fs.statSync(source);
+    if (stat.isFile()) {
+      mtimeMs = stat.mtimeMs;
+    }
+  } catch {
+    mtimeMs = null;
+  }
+  memo.set(source, mtimeMs);
+  return mtimeMs;
 }
 
 /**

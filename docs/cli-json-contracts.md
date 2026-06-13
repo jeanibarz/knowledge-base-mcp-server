@@ -245,6 +245,7 @@ Invocation:
 
 ```bash
 kb search "<query>" --format=json [--kb=<name>] [--model=<id>] [--k=<int>]
+kb search "<query>" --format=json [--since=30d] [--until=2026-06-01]
 kb search "<query>" --format=json --refresh [--kb=<name>]
 kb search --stdin --format=json
 kb search "<query>" --format=json --mode=dense|lexical|hybrid|auto
@@ -344,6 +345,12 @@ Optional stable fields:
   `--anti-query` is not raw farthest-neighbor search.
 - `auto_threshold`: present with `--threshold=auto`. Shape:
   `{"threshold": number, "knee_index": number|null, "kept": number}`.
+- `--since` / `--until`: dense-only input filters. They do not add response
+  fields; they narrow `results` to chunks whose current source-file mtime is
+  within the requested range. Bounds accept durations such as `30d` or `24h`
+  and ISO dates/timestamps. The comparison uses the file mtime at query time,
+  so a stale index can produce matches whose indexed text predates or postdates
+  the current file mtime.
 - `timing`: present with `--timing`; keys are elapsed millisecond counters and
   mode labels. Dense query-cache diagnostics use the flat keys
   `query_cache`, `query_cache_enabled`, `query_cache_model_id`, and
