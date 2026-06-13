@@ -18,7 +18,7 @@ defaults, see [`docs/feature-flags.md`](../feature-flags.md).
 | `kb` CLI | shell command | this package | `kb doctor` |
 | MCP stdio server | client child process | MCP client | restart the MCP client |
 | MCP HTTP/SSE server | `127.0.0.1:8765` when enabled | this package process supervisor | `curl http://127.0.0.1:8765/health` |
-| Warm CLI daemon | `http://127.0.0.1:17799` | `kb serve` process | `kb serve status` |
+| Warm CLI daemon | `http://127.0.0.1:17799` | foreground/systemd `kb serve`, or opt-in `KB_DAEMON_AUTOSTART=on` | `kb serve status` |
 | Ollama embeddings | `http://localhost:11434` | Ollama | `curl http://localhost:11434/api/tags` |
 | n8n workflows | `http://127.0.0.1:5678` by n8n default | n8n or local-research-agent | n8n/systemd status |
 | External local LLM | `http://127.0.0.1:8080/v1/chat/completions` by convention | usually local-research-agent | `kb llm probe --endpoint=http://127.0.0.1:8080/v1/chat/completions` |
@@ -47,7 +47,7 @@ Interpret the checks in order:
 | --- | --- | --- |
 | `kb doctor` reports provider unavailable | Query embeddings cannot run | Start Ollama or fix provider credentials/env, then retry `kb doctor`. |
 | `kb doctor` reports a stale index | Source files changed after the active index | Run a scoped refresh: `kb search "known phrase" --kb=<name> --refresh`. |
-| `kb serve status` exits `3` | No warm CLI daemon answered | Start one with `kb serve` only if you need repeated low-latency CLI reads. |
+| `kb serve status` exits `3` | No warm CLI daemon answered | Start one with `kb serve`, or set `KB_DAEMON_AUTOSTART=on` for opportunistic daemon-capable reads. |
 | `kb llm status` shows no profiles | `kb ask` may still use `KB_LLM_ENDPOINT`, but no profile is stored | Add an external profile with `kb llm use-endpoint <url>` or install a managed one. |
 | MCP client works differently than the shell | The client inherited different env or package version | Restart the client after updating its env block or package spec. |
 
@@ -92,6 +92,10 @@ When bringing the full stack up after reboot or a model change:
    kb serve
    ```
 
+   If you do not want a long-lived foreground or systemd daemon, leave the
+   daemon stopped and set `KB_DAEMON_AUTOSTART=on` only in shells where
+   daemon-capable reads should start an opportunistic `kb serve`.
+
 5. Restart MCP clients last. Stdio MCP servers inherit env once, at client
    launch, so client restart is what picks up a new package, model, token, or
    `KNOWLEDGE_BASES_ROOT_DIR`.
@@ -103,7 +107,7 @@ Prefer the narrowest restart that matches the symptom:
 | Symptom | Restart |
 | --- | --- |
 | Shell `kb` is fixed but MCP client still fails | Restart the MCP client. |
-| `kb search --daemon` is stale or slow | Stop the `kb serve` process and start a new one. |
+| `kb search --daemon` is stale or slow | Check `kb serve status` ownership. Stop/restart the manual daemon or let the autostarted daemon idle out, then retry. |
 | `kb ask` uses the wrong external LLM | Update `KB_LLM_ENDPOINT` or `kb llm use-endpoint <url>`, then retry. |
 | Managed `kb` LLM changed model | `kb llm set-model --profile=<name> --model=<file.gguf> --start`. |
 | Ollama model or endpoint changed | Restart Ollama, then run `kb doctor`. |
@@ -204,6 +208,12 @@ Keep these defaults distinct:
 One process should own each port. If a port is already in use, either point
 `kb` at that existing owner with an endpoint/profile setting or choose a
 different port for the new managed service.
+
+`kb serve status` reports daemon ownership. `manual` means a foreground or
+supervised `kb serve` process owns the URL; `autostart` means a CLI read
+started it because `KB_DAEMON_AUTOSTART=on` was set. Do not enable autostart
+inside a systemd unit that already manages `kb serve`; keep one ownership mode
+per daemon URL.
 
 ## Shutdown Checklist
 

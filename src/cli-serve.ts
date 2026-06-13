@@ -13,6 +13,7 @@ import {
   tryFetchDaemonHealth,
   type DaemonCommand,
   type DaemonHealth,
+  type DaemonOwnership,
   type DaemonRunResult,
 } from './daemon-client.js';
 import { formatKbStatsOpenMetrics } from './prometheus-export.js';
@@ -65,6 +66,7 @@ interface ServeArgs {
   host: string;
   port: number;
   idleTimeoutMs: number;
+  ownership: DaemonOwnership;
 }
 
 export interface DaemonCommandHandlers {
@@ -96,6 +98,7 @@ const DEFAULT_SERVE_ARGS: ServeArgs = {
   host: '127.0.0.1',
   port: 17799,
   idleTimeoutMs: 300_000,
+  ownership: 'manual',
 };
 
 export async function runServe(rest: string[]): Promise<number> {
@@ -196,6 +199,9 @@ function formatServeStatus(health: DaemonHealth, queriedUrl: URL): string {
       `  idle timeout: ${health.idle_timeout_ms === 0 ? 'disabled' : formatDuration(health.idle_timeout_ms)}`,
     );
   }
+  if (health.ownership !== undefined) {
+    lines.push(`  ownership:    ${health.ownership}`);
+  }
   if (health.commands !== undefined) {
     lines.push(`  commands:     ${health.commands.join(', ')}`);
   }
@@ -216,6 +222,7 @@ export async function startDaemonServer(
     host: options.host ?? DEFAULT_SERVE_ARGS.host,
     port: options.port ?? DEFAULT_SERVE_ARGS.port,
     idleTimeoutMs: options.idleTimeoutMs ?? DEFAULT_SERVE_ARGS.idleTimeoutMs,
+    ownership: options.ownership ?? DEFAULT_SERVE_ARGS.ownership,
   };
   assertLoopbackHost(parsed.host);
   const handlers = options.handlers ?? createDaemonCommandHandlers();
@@ -235,6 +242,7 @@ export async function startDaemonServer(
     pid: process.pid,
     url: boundUrl,
     idle_timeout_ms: parsed.idleTimeoutMs,
+    ownership: parsed.ownership,
     commands: [...DAEMON_COMMANDS],
     uptime_ms: Date.now() - startedAt,
   });
@@ -317,6 +325,14 @@ export function parseServeArgs(rest: string[]): ServeArgs {
         throw new Error(`invalid --idle-timeout-ms: ${raw}`);
       }
       out.idleTimeoutMs = idleTimeoutMs;
+      continue;
+    }
+    if (raw.startsWith('--owner=')) {
+      const ownership = raw.slice('--owner='.length);
+      if (ownership !== 'manual' && ownership !== 'autostart') {
+        throw new Error(`invalid --owner: ${raw}`);
+      }
+      out.ownership = ownership;
       continue;
     }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);

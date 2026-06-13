@@ -1,13 +1,15 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
   DaemonProtocolError,
+  DaemonUnavailableError,
   daemonUrlFromEnv,
   fetchDaemonHealth,
   runDaemonCommand,
   tryFetchDaemonHealth,
   tryRunDaemonCommand,
+  type SpawnDaemon,
 } from './daemon-client.js';
 
 async function withServer(
@@ -54,11 +56,14 @@ describe('daemon client', () => {
   });
 
   it('returns null from tryRunDaemonCommand when the daemon is unreachable', async () => {
+    const spawnImpl = jest.fn<SpawnDaemon>();
     const result = await tryRunDaemonCommand('search', ['q'], {
       env: { KB_DAEMON_URL: 'http://127.0.0.1:17798' },
       timeoutMs: 50,
+      spawnImpl,
     });
     expect(result).toBeNull();
+    expect(spawnImpl).not.toHaveBeenCalled();
   });
 
   it('treats malformed daemon payloads as protocol errors', async () => {
@@ -123,4 +128,133 @@ describe('daemon client', () => {
         .rejects.toBeInstanceOf(DaemonProtocolError);
     });
   });
+
+  it('autostarts a detached daemon and reruns the command after health is ready', async () => {
+    let call = 0;
+    const child = { once: jest.fn(() => child), unref: jest.fn() };
+    const spawnImpl = jest.fn<SpawnDaemon>(() => child);
+    const fetchImpl = jest.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      call += 1;
+      const pathname = new URL(String(url)).pathname;
+      if (call === 1 && pathname === '/v1/run') {
+        throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+      }
+      if (call === 2 && pathname === '/health') {
+        throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+      }
+      if (call === 3 && pathname === '/health') {
+        return jsonResponse({ status: 'ok', commands: ['search', 'list', 'stats'] });
+      }
+      if (call === 4 && pathname === '/v1/run') {
+        expect(init?.method).toBe('POST');
+        return jsonResponse({ exitCode: 0, stdout: 'warm\n', stderr: '' });
+      }
+      throw new Error(`unexpected fetch call ${call} ${pathname}`);
+    });
+    const notices: string[] = [];
+
+    const result = await tryRunDaemonCommand('search', ['q'], {
+      env: { KB_DAEMON_AUTOSTART: 'on', KB_DAEMON_URL: 'http://127.0.0.1:17799/' },
+      fetchImpl,
+      spawnImpl,
+      sleep: async () => {},
+      notice: (message) => notices.push(message),
+      autostartDeadlineMs: 1000,
+    });
+
+    expect(result).toEqual({ exitCode: 0, stdout: 'warm\n', stderr: '' });
+    expect(spawnImpl).toHaveBeenCalledWith(
+      process.execPath,
+      expect.arrayContaining(['serve', '--owner=autostart']),
+      expect.objectContaining({ detached: true, stdio: 'ignore' }),
+    );
+    expect(child.once).toHaveBeenCalledWith('error', expect.any(Function));
+    expect(child.unref).toHaveBeenCalled();
+    expect(notices).toEqual([
+      'kb daemon autostart: started kb serve; daemon is ready at http://127.0.0.1:17799/\n',
+    ]);
+  });
+
+  it('does not autostart when an existing listener has a protocol mismatch', async () => {
+    const spawnImpl = jest.fn<SpawnDaemon>();
+    const fetchImpl = jest.fn(async (url: URL | RequestInfo) => {
+      const pathname = new URL(String(url)).pathname;
+      if (pathname === '/v1/run') {
+        throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+      }
+      return jsonResponse({ service: 'not-kb' });
+    });
+
+    await expect(tryRunDaemonCommand('search', ['q'], {
+      env: { KB_DAEMON_AUTOSTART: 'on', KB_DAEMON_URL: 'http://127.0.0.1:17799/' },
+      fetchImpl,
+      spawnImpl,
+    })).rejects.toBeInstanceOf(DaemonProtocolError);
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+
+  it('re-polls readiness when spawn itself loses a startup race', async () => {
+    let call = 0;
+    const spawnImpl = jest.fn<SpawnDaemon>(() => {
+      throw Object.assign(new Error('spawn EADDRINUSE'), { code: 'EADDRINUSE' });
+    });
+    const fetchImpl = jest.fn(async (url: URL | RequestInfo) => {
+      call += 1;
+      const pathname = new URL(String(url)).pathname;
+      if (call === 1 && pathname === '/v1/run') {
+        throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+      }
+      if (call === 2 && pathname === '/health') {
+        throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+      }
+      if (call === 3 && pathname === '/health') {
+        return jsonResponse({ status: 'ok', commands: ['search'] });
+      }
+      if (call === 4 && pathname === '/v1/run') {
+        return jsonResponse({ exitCode: 0, stdout: 'won\n', stderr: '' });
+      }
+      throw new Error(`unexpected fetch call ${call} ${pathname}`);
+    });
+
+    await expect(tryRunDaemonCommand('search', ['q'], {
+      env: { KB_DAEMON_AUTOSTART: 'on', KB_DAEMON_URL: 'http://127.0.0.1:17799/' },
+      fetchImpl,
+      spawnImpl,
+      sleep: async () => {},
+      notice: () => undefined,
+    })).resolves.toEqual({ exitCode: 0, stdout: 'won\n', stderr: '' });
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back cold with a notice when autostart readiness times out', async () => {
+    const child = { once: jest.fn(() => child), unref: jest.fn() };
+    const fetchImpl = jest.fn(async () => {
+      throw new DaemonUnavailableError('kb daemon is not reachable', { cause: { code: 'ECONNREFUSED' } });
+    });
+    const notices: string[] = [];
+    let now = 0;
+
+    const result = await tryRunDaemonCommand('search', ['q'], {
+      env: { KB_DAEMON_AUTOSTART: 'on', KB_DAEMON_URL: 'http://127.0.0.1:17799/' },
+      fetchImpl,
+      spawnImpl: jest.fn<SpawnDaemon>(() => child),
+      sleep: async (ms) => { now += ms; },
+      now: () => now,
+      notice: (message) => notices.push(message),
+      autostartDeadlineMs: 250,
+      autostartPollIntervalMs: 100,
+    });
+
+    expect(result).toBeNull();
+    expect(notices).toEqual([
+      'kb daemon autostart: kb serve was not ready after 250ms; running command directly.\n',
+    ]);
+  });
 });
+
+function jsonResponse(payload: unknown, init: { status?: number } = {}): Response {
+  return new Response(JSON.stringify(payload), {
+    status: init.status ?? 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
