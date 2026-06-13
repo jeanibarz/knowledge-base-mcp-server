@@ -7,7 +7,8 @@ loaded in memory so each CLI invocation skips the cold-start cost.
 
 CLI clients use the daemon when they pass `--daemon`. If the daemon is not
 reachable, they print a one-line notice on stderr and fall back to direct
-in-process execution.
+in-process execution. Autostart is default-off; set `KB_DAEMON_AUTOSTART=on`
+only when daemon-capable reads should try to start `kb serve` automatically.
 
 ## When to run it
 
@@ -84,6 +85,7 @@ Exit codes are deliberately distinct:
     "pid": 41234,
     "uptime_ms": 124500,
     "idle_timeout_ms": 300000,
+    "ownership": "manual",
     "commands": ["search", "list", "stats"]
   }
 }
@@ -121,9 +123,38 @@ Any CLI subcommand that supports `--daemon` will use the daemon when set:
 kb search "your query" --daemon --format=json
 ```
 
-Without `--daemon` the CLI runs in-process. If you want daemon-first by
-default, alias it: `alias kb-d='kb --daemon'` — there is no global switch (the
-fallback is intentionally explicit).
+Without `--daemon` the CLI runs in-process.
+
+## Autostart on daemon-capable reads
+
+`KB_DAEMON_AUTOSTART=on` is an opt-in companion to daemon-capable CLI reads.
+When a read path asks for the daemon and no listener is present at the
+configured daemon URL, the client starts a detached `kb serve`, polls
+`GET /health` with a bounded readiness deadline, then retries the command
+through the daemon. If readiness does not complete in time, the CLI prints a
+clear autostart notice and runs the command directly.
+
+```bash
+export KB_DAEMON_AUTOSTART=on
+kb search "your query" --daemon
+```
+
+Race handling is intentionally conservative:
+
+- If several callers start at the same time, each caller re-polls `/health`.
+  A process that loses the bind race can still use the daemon started by
+  another caller.
+- If something answers at the configured URL but does not return the kb
+  `/health` contract, the client treats that as a protocol mismatch and does
+  not start another daemon blindly.
+- Autostarted daemons report `"ownership": "autostart"` in `/health` and
+  `kb serve status`; foreground and systemd-launched daemons report
+  `"ownership": "manual"`.
+
+For long-lived supervised daemons, prefer a systemd user unit with
+`--idle-timeout-ms=0` and leave `KB_DAEMON_AUTOSTART` off in that service
+environment. Autostart is for opportunistic warm reads, not for replacing a
+deliberately managed daemon.
 
 ## Limits
 
@@ -137,7 +168,9 @@ fallback is intentionally explicit).
 ## Diagnose
 
 - **`kb search --daemon` falls back silently**: run `kb serve status`. If exit
-  `3`, start the daemon. If exit `1`, the daemon is misconfigured.
+  `3`, start the daemon or set `KB_DAEMON_AUTOSTART=on` for opportunistic
+  starts. If exit `1`, the daemon URL is occupied by an incompatible or stale
+  process and autostart will not override it.
 - **Daemon exits after 5 minutes**: that's the default idle timeout. Set
   `--idle-timeout-ms=0` to disable, or wrap in systemd with `Restart=`.
 - **`Address already in use`**: another daemon (or other process) holds the

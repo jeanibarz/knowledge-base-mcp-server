@@ -85,6 +85,7 @@ describe('kb serve daemon', () => {
         pid: process.pid,
         url: daemon.url.href,
         idle_timeout_ms: 0,
+        ownership: 'manual',
         commands: ['search', 'list', 'stats'],
       });
       expect(typeof healthBody.uptime_ms).toBe('number');
@@ -195,6 +196,21 @@ describe('kb serve daemon', () => {
 
   it('keeps serve binding loopback-only', () => {
     expect(() => parseServeArgs(['--host=0.0.0.0'])).toThrow(/non-loopback/);
+  });
+
+  it('advertises autostart ownership from the hidden owner flag', async () => {
+    const parsed = parseServeArgs(['--port=0', '--idle-timeout-ms=0', '--owner=autostart']);
+    const daemon = await startDaemonServer(parsed);
+    try {
+      const health = await request(daemon.url, { path: '/health' });
+      expect(health.statusCode).toBe(200);
+      expect(JSON.parse(health.body)).toMatchObject({
+        status: 'ok',
+        ownership: 'autostart',
+      });
+    } finally {
+      await daemon.stop();
+    }
   });
 });
 
@@ -335,6 +351,7 @@ describe('kb serve status', () => {
       expect(result.code).toBe(0);
       expect(result.stdout).toContain('daemon running');
       expect(result.stdout).toContain(`pid:          ${process.pid}`);
+      expect(result.stdout).toContain('ownership:    manual');
       expect(result.stdout).toContain('commands:     search, list, stats');
     } finally {
       await daemon.stop();
