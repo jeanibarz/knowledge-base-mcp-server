@@ -7,6 +7,7 @@ import {
   resolveFaissIndexType,
   resolveChunkSize,
   resolveIndexingBatchSize,
+  resolveIndexingConcurrency,
 } from './config/indexing.js';
 import {
   parseKBLogFormat,
@@ -89,6 +90,37 @@ describe('resolveIndexingBatchSize (issue #236 — INDEXING_BATCH_SIZE)', () => 
 
     process.env.INDEXING_BATCH_SIZE = '0';
     expect(resolveIndexingBatchSize('ollama')).toBe(16);
+  });
+});
+
+describe('resolveIndexingConcurrency (issue #613 — KB_INDEXING_CONCURRENCY)', () => {
+  it('defaults to serial indexing for every provider', () => {
+    expect(resolveIndexingConcurrency('huggingface', {})).toBe(1);
+    expect(resolveIndexingConcurrency('openai', {})).toBe(1);
+    expect(resolveIndexingConcurrency('ollama', {})).toBe(1);
+  });
+
+  it('allows bounded remote-provider concurrency when explicitly enabled', () => {
+    expect(resolveIndexingConcurrency('huggingface', { KB_INDEXING_CONCURRENCY: '3' })).toBe(3);
+    expect(resolveIndexingConcurrency('openai', { KB_INDEXING_CONCURRENCY: '9' })).toBe(4);
+    expect(resolveIndexingConcurrency('openai', { KB_INDEXING_CONCURRENCY: '2.9' })).toBe(2);
+  });
+
+  it('falls back to serial indexing for invalid values', () => {
+    expect(resolveIndexingConcurrency('huggingface', { KB_INDEXING_CONCURRENCY: 'nope' })).toBe(1);
+    expect(resolveIndexingConcurrency('huggingface', { KB_INDEXING_CONCURRENCY: '0' })).toBe(1);
+  });
+
+  it('keeps ollama serial unless OLLAMA_NUM_PARALLEL opts in', () => {
+    expect(resolveIndexingConcurrency('ollama', { KB_INDEXING_CONCURRENCY: '3' })).toBe(1);
+    expect(resolveIndexingConcurrency('ollama', {
+      KB_INDEXING_CONCURRENCY: '3',
+      OLLAMA_NUM_PARALLEL: '1',
+    })).toBe(1);
+    expect(resolveIndexingConcurrency('ollama', {
+      KB_INDEXING_CONCURRENCY: '3',
+      OLLAMA_NUM_PARALLEL: '2',
+    })).toBe(2);
   });
 });
 

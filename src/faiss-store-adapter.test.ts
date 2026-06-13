@@ -87,6 +87,45 @@ describe('FaissStoreAdapter', () => {
     expect(addVectors).toHaveBeenCalledWith([[1, 1, 1, 1], [2, 2, 2, 2]], docs);
   });
 
+  it('can embed a batch before serialized insertion', async () => {
+    const indexingEmbeddings = {
+      embedDocuments: jest.fn(async (texts: string[]) =>
+        texts.map((_t, i) => [i + 1, i + 2]),
+      ),
+      embedQuery: jest.fn(),
+    };
+    const docs = [
+      { pageContent: 'a', metadata: {} },
+      { pageContent: 'b', metadata: {} },
+    ];
+
+    const embedded = await FaissStoreAdapter.embedDocumentsForIndexing(
+      docs as never,
+      indexingEmbeddings as never,
+    );
+
+    expect(embedded.documents).toBe(docs);
+    expect(embedded.vectors).toEqual([[1, 2], [2, 3]]);
+
+    const addVectors = jest.fn(async () => {});
+    const store = {
+      embeddings: { embedDocuments: jest.fn(), embedQuery: jest.fn() },
+      addVectors,
+      index: { ntotal: () => 2, getDimension: () => 2 },
+      docstore: {
+        _docs: new Map<string, unknown>([
+          ['id-0', { pageContent: 'a', metadata: {} }],
+          ['id-1', { pageContent: 'b', metadata: {} }],
+        ]),
+      },
+    };
+
+    await adapterFor(store).addEmbeddedDocuments(embedded);
+
+    expect(addVectors).toHaveBeenCalledWith([[1, 2], [2, 3]], docs);
+    expect(indexingEmbeddings.embedDocuments).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the preface-prepended form for embedding when metadata.contextual_preface is set', async () => {
     const indexingEmbeddings = {
       embedDocuments: jest.fn(async (texts: string[]) =>

@@ -30,6 +30,7 @@ import {
 import {
   resolveFaissIndexType,
   resolveIndexingBatchSize,
+  resolveIndexingConcurrency,
   type FaissIndexType,
 } from './config/indexing.js';
 import { casRootForIndexPath } from './docstore-cas.js';
@@ -90,7 +91,7 @@ import {
 } from './metadata-sidecar.js';
 import { queryEmbeddingCache, type QueryCacheLookupStatus, type QueryCacheTelemetry } from './query-cache.js';
 import { withSidecarLock } from './write-lock.js';
-import { FaissStoreAdapter } from './faiss-store-adapter.js';
+import { FaissStoreAdapter, type EmbeddedDocumentsBatch } from './faiss-store-adapter.js';
 import {
   recordIngestFailure,
   recordIngestSuccess,
@@ -570,6 +571,7 @@ export class FaissIndexManager {
   readonly modelDir: string;
   readonly modelNameFile: string;
   private readonly indexingBatchSize: number;
+  private readonly indexingConcurrency: number;
   private readonly indexType: FaissIndexType;
   private lastIndexUpdateSummary: IndexUpdateSummary;
   // Issue #283 — cached metadata sidecar so we don't re-parse the JSONL
@@ -605,6 +607,7 @@ export class FaissIndexManager {
     this.modelDir = modelDir(this.modelId);
     this.modelNameFile = modelNameFilePath(this.modelId);
     this.indexingBatchSize = resolveIndexingBatchSize(this.embeddingProvider);
+    this.indexingConcurrency = resolveIndexingConcurrency(this.embeddingProvider);
     this.indexType = opts?.indexType ?? resolveFaissIndexType();
     this.lastIndexUpdateSummary = createNeverRunIndexUpdateSummary(this.modelId);
 
@@ -1232,52 +1235,110 @@ export class FaissIndexManager {
     const batchCount = Math.ceil(documentsToAdd.length / this.indexingBatchSize);
     const embedStartedAtMs = Date.now();
     let processedChunks = 0;
-    let batchIndex = 0;
     // Scope duplicate-compaction to this indexing operation. FAISS still
     // receives every document; only provider embedDocuments calls are deduped.
+    // With opt-in cross-batch pipelining, identical text in two concurrently
+    // embedding batches may still race and call the provider twice. Keeping the
+    // cache local preserves bounded memory and deterministic FAISS insertion.
     const indexingEmbeddings = new IndexingEmbeddingDeduper(this.embeddings);
+    const batches: Document[][] = [];
     for (let offset = 0; offset < documentsToAdd.length; offset += this.indexingBatchSize) {
-      const batch = documentsToAdd.slice(offset, offset + this.indexingBatchSize);
-      batchIndex += 1;
+      batches.push(documentsToAdd.slice(offset, offset + this.indexingBatchSize));
+    }
+
+    const emitEmbeddingProgress = async (
+      batch: readonly Document[],
+      batchIndex: number,
+    ): Promise<void> => {
+      processedChunks += batch.length;
+      if (!opts?.onProgress) return;
+
+      const phaseElapsedMs = Date.now() - embedStartedAtMs;
+      const throughputChunksPerSecond = phaseElapsedMs > 0
+        ? processedChunks / (phaseElapsedMs / 1000)
+        : null;
+      const lastSource = batch[batch.length - 1]?.metadata?.source;
+      await opts.onProgress({
+        processedFiles: opts.processedFiles(),
+        totalFiles: opts.totalFiles,
+        currentFile: typeof lastSource === 'string' ? lastSource : '',
+        modelId: this.modelId,
+        phase: 'embed',
+        phaseStatus: 'progress',
+        processedChunks,
+        totalChunks: documentsToAdd.length,
+        batchIndex,
+        batchCount,
+        batchSize: batch.length,
+        provider: this.embeddingProvider,
+        modelName: this.modelName,
+        elapsedMs: Date.now() - opts.updateStartedAtMs,
+        phaseElapsedMs,
+        throughputChunksPerSecond: throughputChunksPerSecond ?? undefined,
+      });
+    };
+
+    const insertEmbeddedBatch = async (
+      embedded: EmbeddedDocumentsBatch,
+      batchIndex: number,
+    ): Promise<void> => {
       if (this.faissIndex === null) {
-        logger.info(`Creating new FAISS index from ${batch.length} text(s)...`);
-        this.faissIndex = await FaissStoreAdapter.fromDocuments(
-          batch,
-          indexingEmbeddings,
+        logger.info(`Creating new FAISS index from ${embedded.documents.length} text(s)...`);
+        this.faissIndex = await FaissStoreAdapter.fromEmbeddedDocuments(
+          embedded,
+          this.embeddings,
           { indexType: this.indexType },
         );
-        // The store must keep the real client for query embeddings and later
-        // operations; the deduper is only an insertion-time wrapper.
-        this.faissIndex.restoreEmbeddings(this.embeddings);
       } else {
-        await this.faissIndex.addDocumentsWithEmbeddings(batch, indexingEmbeddings);
+        await this.faissIndex.addEmbeddedDocuments(embedded);
       }
-      processedChunks += batch.length;
-      if (opts?.onProgress) {
-        const phaseElapsedMs = Date.now() - embedStartedAtMs;
-        const throughputChunksPerSecond = phaseElapsedMs > 0
-          ? processedChunks / (phaseElapsedMs / 1000)
-          : null;
-        const lastSource = batch[batch.length - 1]?.metadata?.source;
-        await opts.onProgress({
-          processedFiles: opts.processedFiles(),
-          totalFiles: opts.totalFiles,
-          currentFile: typeof lastSource === 'string' ? lastSource : '',
-          modelId: this.modelId,
-          phase: 'embed',
-          phaseStatus: 'progress',
-          processedChunks,
-          totalChunks: documentsToAdd.length,
-          batchIndex,
-          batchCount,
-          batchSize: batch.length,
-          provider: this.embeddingProvider,
-          modelName: this.modelName,
-          elapsedMs: Date.now() - opts.updateStartedAtMs,
-          phaseElapsedMs,
-          throughputChunksPerSecond: throughputChunksPerSecond ?? undefined,
-        });
+      await emitEmbeddingProgress(embedded.documents, batchIndex);
+    };
+
+    if (this.indexingConcurrency <= 1) {
+      for (let i = 0; i < batches.length; i += 1) {
+        const batch = batches[i];
+        const embedded = await FaissStoreAdapter.embedDocumentsForIndexing(batch, indexingEmbeddings);
+        await insertEmbeddedBatch(embedded, i + 1);
       }
+      return true;
+    }
+
+    type EmbeddedBatchResult =
+      | { ok: true; embedded: EmbeddedDocumentsBatch }
+      | { ok: false; error: unknown };
+    const inFlight = new Map<number, Promise<EmbeddedBatchResult>>();
+    let nextBatchToLaunch = 0;
+    const launchMoreEmbeddingBatches = (): void => {
+      while (
+        nextBatchToLaunch < batches.length &&
+        inFlight.size < this.indexingConcurrency
+      ) {
+        const launchIndex = nextBatchToLaunch;
+        const batch = batches[launchIndex];
+        inFlight.set(
+          launchIndex,
+          FaissStoreAdapter.embedDocumentsForIndexing(batch, indexingEmbeddings)
+            .then((embedded) => ({ ok: true, embedded }) as const)
+            .catch((error: unknown) => ({ ok: false, error }) as const),
+        );
+        nextBatchToLaunch += 1;
+      }
+    };
+
+    launchMoreEmbeddingBatches();
+    for (let i = 0; i < batches.length; i += 1) {
+      const resultPromise = inFlight.get(i);
+      if (resultPromise === undefined) {
+        throw new Error(`Missing in-flight embedding batch ${i + 1}`);
+      }
+      const result = await resultPromise;
+      inFlight.delete(i);
+      if (!result.ok) {
+        throw result.error;
+      }
+      launchMoreEmbeddingBatches();
+      await insertEmbeddedBatch(result.embedded, i + 1);
     }
     return true;
   }

@@ -385,6 +385,8 @@ describe('FaissIndexManager permission handling', () => {
     HUGGINGFACE_ENDPOINT_URL: process.env.HUGGINGFACE_ENDPOINT_URL,
     HUGGINGFACE_PROVIDER: process.env.HUGGINGFACE_PROVIDER,
     INDEXING_BATCH_SIZE: process.env.INDEXING_BATCH_SIZE,
+    KB_INDEXING_CONCURRENCY: process.env.KB_INDEXING_CONCURRENCY,
+    OLLAMA_NUM_PARALLEL: process.env.OLLAMA_NUM_PARALLEL,
     LOG_FILE: process.env.LOG_FILE,
     KB_MAX_FILE_BYTES: process.env.KB_MAX_FILE_BYTES,
     KB_MAX_EXTRACTED_TEXT_BYTES: process.env.KB_MAX_EXTRACTED_TEXT_BYTES,
@@ -405,6 +407,10 @@ describe('FaissIndexManager permission handling', () => {
     fromTextsMock.mockReset();
     loadMock.mockReset();
     similaritySearchMock.mockReset();
+    embedDocumentsMock.mockReset();
+    embedDocumentsMock.mockImplementation(async (texts: string[]) => texts.map(mockVectorForText));
+    embedQueryMock.mockReset();
+    embedQueryMock.mockImplementation(async (text: string) => mockVectorForText(text));
     embeddingConstructorMock.mockReset();
   });
 
@@ -964,6 +970,127 @@ describe('FaissIndexManager permission handling', () => {
       const sidecarPath = path.join(defaultKb, '.index', path.basename(docPath));
       await expect(fsp.readFile(sidecarPath, 'utf-8')).resolves.toMatch(/^[0-9a-f]{64}$/);
     }
+  });
+
+  it('pipelines embedding batches while inserting and reporting progress in order', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pipelined-embeddings-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPaths: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const docPath = path.join(defaultKb, `doc-${i}.md`);
+      await fsp.writeFile(docPath, `# Doc ${i}\n\nPipelined content for document ${i}.`);
+      docPaths.push(docPath);
+    }
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.INDEXING_BATCH_SIZE = '1';
+    process.env.KB_INDEXING_CONCURRENCY = '2';
+
+    let activeEmbeddings = 0;
+    let maxActiveEmbeddings = 0;
+    const completedProviderTexts: string[] = [];
+    embedDocumentsMock.mockImplementation(async (texts: string[]) => {
+      activeEmbeddings += 1;
+      maxActiveEmbeddings = Math.max(maxActiveEmbeddings, activeEmbeddings);
+      const firstText = texts[0] ?? '';
+      if (firstText.includes('Doc 0')) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      completedProviderTexts.push(firstText);
+      activeEmbeddings -= 1;
+      return texts.map(mockVectorForText);
+    });
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { EMBEDDING_CANARY_TEXT } = await import('./faiss-store-layout.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    const progressEvents: Array<{
+      phase?: string;
+      batchIndex?: number;
+      processedChunks?: number;
+    }> = [];
+
+    await manager.updateIndex(undefined, {
+      onProgress: (progress) => {
+        progressEvents.push(progress);
+      },
+    });
+
+    expect(maxActiveEmbeddings).toBe(2);
+    expect(completedProviderTexts.filter((text) => text !== EMBEDDING_CANARY_TEXT)[0])
+      .toContain('Doc 1');
+
+    const [seedTexts, seedMetadatas] = fromTextsMock.mock.calls[0] as [
+      string[],
+      Array<{ source: string }>,
+    ];
+    expect(seedTexts).toHaveLength(1);
+    expect(seedMetadatas.map((metadata) => metadata.source)).toEqual(docPaths.slice(0, 1));
+
+    const appendedSources = addDocumentsMock.mock.calls.map((call) => {
+      const [docs] = call as [Array<{ metadata: { source: string } }>];
+      return docs.map((doc) => doc.metadata.source);
+    });
+    expect(appendedSources).toEqual([
+      docPaths.slice(1, 2),
+      docPaths.slice(2, 3),
+    ]);
+
+    const embedEvents = progressEvents.filter((event) => event.phase === 'embed');
+    expect(embedEvents.map((event) => ({
+      batchIndex: event.batchIndex,
+      processedChunks: event.processedChunks,
+    }))).toEqual([
+      { batchIndex: 1, processedChunks: 1 },
+      { batchIndex: 2, processedChunks: 2 },
+      { batchIndex: 3, processedChunks: 3 },
+    ]);
+  });
+
+  it('keeps ollama embedding batches serial unless OLLAMA_NUM_PARALLEL opts in', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-ollama-serial-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    for (let i = 0; i < 3; i += 1) {
+      const docPath = path.join(defaultKb, `doc-${i}.md`);
+      await fsp.writeFile(docPath, `# Doc ${i}\n\nOllama serial content for document ${i}.`);
+    }
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'ollama';
+    process.env.OLLAMA_MODEL = 'nomic-embed-text';
+    process.env.INDEXING_BATCH_SIZE = '1';
+    process.env.KB_INDEXING_CONCURRENCY = '3';
+    delete process.env.OLLAMA_NUM_PARALLEL;
+
+    let activeEmbeddings = 0;
+    let maxActiveEmbeddings = 0;
+    embedDocumentsMock.mockImplementation(async (texts: string[]) => {
+      activeEmbeddings += 1;
+      maxActiveEmbeddings = Math.max(maxActiveEmbeddings, activeEmbeddings);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      activeEmbeddings -= 1;
+      return texts.map(mockVectorForText);
+    });
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    expect(maxActiveEmbeddings).toBe(1);
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(addDocumentsMock).toHaveBeenCalledTimes(2);
   });
 
   it('embeds duplicate normalized chunk text once per indexing operation while preserving every source', async () => {
