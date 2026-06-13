@@ -20,6 +20,7 @@ const baseTestMatch = [
 const serialTestPathPatterns = [
   '<rootDir>/src/FaissIndexManager.test.ts',
   '<rootDir>/src/KnowledgeBaseServer.test.ts',
+  '<rootDir>/src/cli-doctor.test.ts',
   '<rootDir>/src/docstore-cas.integration.test.ts',
   '<rootDir>/src/docstore-cas.test.ts',
   '<rootDir>/src/recursive-fs-watch.test.ts',
@@ -67,6 +68,7 @@ export default {
       testMatch: [
         '**/src/FaissIndexManager.test.ts',
         '**/src/KnowledgeBaseServer.test.ts',
+        '**/src/cli-doctor.test.ts',
         '**/src/docstore-cas.integration.test.ts',
         '**/src/docstore-cas.test.ts',
         '**/src/recursive-fs-watch.test.ts',

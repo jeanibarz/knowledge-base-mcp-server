@@ -25,6 +25,7 @@ The serial project is the explicit escape hatch for suites with shared process, 
 
 - `src/FaissIndexManager.test.ts` uses native FAISS bindings, model-directory state, provider env mutation, and process signal listeners.
 - `src/KnowledgeBaseServer.test.ts` exercises server lifecycle, canonical logging modes, mutation rollback, and trigger watchers.
+- `src/cli-doctor.test.ts` performs filesystem permission probes and was observed to exceed Jest's default per-test timeout under the capped parallel CI runner on Node 24.
 - `src/transport/http.test.ts` and `src/transport/sse.test.ts` bind real local HTTP/SSE servers and long-lived connections.
 - `src/recursive-fs-watch.test.ts` and `src/triggerWatcher.test.ts` exercise filesystem watchers and timers.
 - `src/reindex-runner.test.ts` covers reindex sentinels, process ids, and contextual-retrieval env.
