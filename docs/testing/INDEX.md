@@ -35,6 +35,25 @@ The serial project is the explicit escape hatch for suites with shared process, 
 
 New tests should stay in the parallel project unless they require one of those shared resources. Add a test to the serial project by listing its path in `jest.config.js` and documenting the reason in this section.
 
+## Test Corpus Builder
+
+Use `createTestCorpus` from `src/test-support/corpus.ts` for tests that need a temporary knowledge-base root with Markdown files. Pass a relative-path-to-content map and call `cleanup()` in `finally`:
+
+```ts
+const corpus = await createTestCorpus({
+  files: {
+    'ops/note.md': '# Note\n',
+  },
+});
+try {
+  // Use corpus.rootDir or corpus.pathFor('ops/note.md').
+} finally {
+  await corpus.cleanup();
+}
+```
+
+Keep this helper limited to temp directory scaffolding, file writes, path lookup, and cleanup. Test-specific fakes for embeddings, indexes, process env, or CLI wiring should remain local to the tests that need them.
+
 ## Indexing
 
 ### TS-INDEX-358: Default Text-First Ingest Filter
