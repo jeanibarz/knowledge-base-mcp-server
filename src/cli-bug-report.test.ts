@@ -30,6 +30,16 @@ function minimalDoctorReport(): DoctorReport {
       ownership_check: 'checked',
       entries: [],
     },
+    embedding_canary: {
+      status: 'skipped',
+      canary_id: null,
+      recorded_at: null,
+      dimensions: null,
+      similarity: null,
+      threshold: 0.999,
+      detail: 'embedding canary skipped because the active model index is not built',
+      next_action: null,
+    },
     extraction_cache: {
       cache_dir: '/tmp/faiss/extracted-text',
       exists: false,

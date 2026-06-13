@@ -33,6 +33,18 @@ kb stats --format=json
 kb reindex status --format=json
 ```
 
+In the doctor JSON, check `embedding_canary.status` for the active model:
+
+- `ok` means the active provider re-embedded the persisted canary close enough
+  to the vector captured when the index was built.
+- `not_recorded` means the index was built before canary fingerprints were
+  recorded. Rebuild that model once with the current CLI before relying on the
+  canary for drift detection.
+- `warn` means the canary changed or its dimensions no longer match. Treat that
+  as possible silent embedding-model drift: either rebuild the index for the
+  intended provider/model or restore the original embedding backend before
+  serving queries from that index.
+
 Capture the current active model id:
 
 ```bash

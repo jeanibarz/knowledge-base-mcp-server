@@ -1,4 +1,5 @@
 import * as fsp from 'fs/promises';
+import * as crypto from 'crypto';
 import * as path from 'path';
 import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import { FaissStore } from '@langchain/community/vectorstores/faiss';
@@ -18,12 +19,30 @@ const SYMLINK_NAME = 'index';
 const LEGACY_INDEX_NAME = 'faiss.index';
 export const INDEX_INTEGRITY_MANIFEST_FILENAME = 'integrity.json';
 export const INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION = 'kb.index-integrity.v1';
+export const EMBEDDING_CANARY_TEXT =
+  'kb embedding canary v1: stable fingerprint for detecting silent embedding model drift.';
+export const EMBEDDING_CANARY_TEXT_SHA256 = crypto
+  .createHash('sha256')
+  .update(EMBEDDING_CANARY_TEXT, 'utf-8')
+  .digest('hex');
+export const EMBEDDING_CANARY_ID = `sha256:${EMBEDDING_CANARY_TEXT_SHA256}`;
+export const EMBEDDING_CANARY_COSINE_WARN_THRESHOLD = 0.999;
+
+export interface EmbeddingCanaryFingerprint {
+  canary_id: typeof EMBEDDING_CANARY_ID;
+  text_sha256: typeof EMBEDDING_CANARY_TEXT_SHA256;
+  embedding_role: 'document';
+  captured_at: string;
+  dimensions: number;
+  vector: number[];
+}
 
 export interface IndexIntegrityManifest {
   schema_version: typeof INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION;
   written_at: string;
   model_id: string;
   index_type: FaissIndexType;
+  embedding_canary?: EmbeddingCanaryFingerprint;
   files: {
     'faiss.index': { sha256: string };
     'docstore.json': { sha256: string };
@@ -294,6 +313,7 @@ export async function saveFaissStoreAtomic(options: {
   modelId: string;
   swapCounter: number;
   indexType?: FaissIndexType;
+  embeddingCanary?: EmbeddingCanaryFingerprint | null;
   /**
    * RFC 016 — when provided, the per-model `docstore.json` written by
    * `FaissStore.save` is canonicalized and hardlinked to a shared payload
@@ -315,6 +335,7 @@ export async function saveFaissStoreAtomic(options: {
     modelId,
     swapCounter,
     indexType = resolveFaissIndexType(),
+    embeddingCanary = null,
     casRoot = null,
     onCommitted,
   } = options;
@@ -337,7 +358,9 @@ export async function saveFaissStoreAtomic(options: {
   if (casRoot !== null) {
     dedup = await dedupeDocstoreOnSave({ stagingDir, casRoot, swapCounter });
   }
-  await writeIndexIntegrityManifest(stagingDir, modelId, indexType);
+  await writeIndexIntegrityManifest(stagingDir, modelId, indexType, {
+    embeddingCanary,
+  });
 
   const tmpLink = path.join(
     modelDir,
@@ -373,12 +396,14 @@ export async function writeIndexIntegrityManifest(
   versionDir: string,
   modelId: string,
   indexType: FaissIndexType = resolveFaissIndexType(),
+  opts: { embeddingCanary?: EmbeddingCanaryFingerprint | null } = {},
 ): Promise<IndexIntegrityManifest> {
   const manifest: IndexIntegrityManifest = {
     schema_version: INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION,
     written_at: new Date().toISOString(),
     model_id: modelId,
     index_type: indexType,
+    ...(opts.embeddingCanary ? { embedding_canary: opts.embeddingCanary } : {}),
     files: {
       'faiss.index': {
         sha256: await calculateSHA256(path.join(versionDir, 'faiss.index')),
@@ -394,6 +419,63 @@ export async function writeIndexIntegrityManifest(
     { encoding: 'utf-8', mode: 0o600 },
   );
   return manifest;
+}
+
+export async function createEmbeddingCanaryFingerprint(
+  embeddings: Pick<EmbeddingsInterface, 'embedDocuments'>,
+  capturedAt: Date = new Date(),
+): Promise<EmbeddingCanaryFingerprint> {
+  const vectors = await embeddings.embedDocuments([EMBEDDING_CANARY_TEXT]);
+  const vector = vectors[0];
+  if (!Array.isArray(vector) || vector.length === 0) {
+    throw new Error('Embedding canary provider returned no vector');
+  }
+  if (!vector.every((value) => Number.isFinite(value))) {
+    throw new Error('Embedding canary provider returned a non-finite vector value');
+  }
+  return {
+    canary_id: EMBEDDING_CANARY_ID,
+    text_sha256: EMBEDDING_CANARY_TEXT_SHA256,
+    embedding_role: 'document',
+    captured_at: capturedAt.toISOString(),
+    dimensions: vector.length,
+    vector,
+  };
+}
+
+export function cosineSimilarity(a: readonly number[], b: readonly number[]): number | null {
+  if (a.length === 0 || a.length !== b.length) return null;
+  let dot = 0;
+  let aNorm = 0;
+  let bNorm = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const av = a[i];
+    const bv = b[i];
+    if (!Number.isFinite(av) || !Number.isFinite(bv)) return null;
+    dot += av * bv;
+    aNorm += av * av;
+    bNorm += bv * bv;
+  }
+  if (aNorm === 0 || bNorm === 0) return null;
+  return dot / (Math.sqrt(aNorm) * Math.sqrt(bNorm));
+}
+
+export async function readIndexIntegrityManifest(
+  versionDir: string,
+): Promise<IndexIntegrityManifest | null> {
+  let raw: string;
+  try {
+    raw = await fsp.readFile(
+      path.join(versionDir, INDEX_INTEGRITY_MANIFEST_FILENAME),
+      'utf-8',
+    );
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    throw err;
+  }
+  const parsed = JSON.parse(raw) as IndexIntegrityManifest;
+  return parsed;
 }
 
 export async function resolveActiveIndexFilePath(modelDir: string): Promise<string | null> {
