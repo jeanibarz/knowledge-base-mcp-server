@@ -5,6 +5,11 @@ diagnostic, and output knobs. Design RFCs explain why a feature exists; this
 page answers what is on in a normal install, where it applies, and how to
 verify the active behavior.
 
+For the schema-derived environment-variable reference, including kinds,
+defaults, accepted values, and validation constraints, see
+[Configuration Reference](reference/configuration.md). This page keeps the
+operator workflow matrix and avoids duplicating the generated schema table.
+
 ## Retrieval and Answering
 
 | Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
