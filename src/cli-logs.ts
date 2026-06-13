@@ -7,7 +7,8 @@ export const LOGS_HELP = `kb logs — inspect historical canonical request logs
 
 Usage:
   kb logs --slow [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json]
-  kb logs recent [--slow] [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json]
+  kb logs --degraded [--limit=<n>] [--file=<path>] [--format=md|json]
+  kb logs recent [--slow] [--degraded] [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json]
   kb logs show --request-id=<id> [--file=<path>] [--format=md|json]
   kb logs show --query-sha=<hash> [--file=<path>] [--format=md|json]
 
@@ -22,6 +23,7 @@ Options:
   --limit=<n>           Number of recent canonical events to show (default: 20).
   --slow                Show only events marked slow, or events matching
                         --min-ms when that filter is supplied.
+  --degraded            Show only events with aggregate degraded=true.
   --min-ms=<n>          Minimum took_ms for the slow view; implies --slow.
   --request-id=<id>     Show canonical events for one request id.
   --query-sha=<hash>    Show canonical events for one query_sha256 value.
@@ -30,6 +32,7 @@ Options:
 Examples:
   kb logs recent
   kb logs --slow
+  kb logs --degraded
   kb logs recent --slow --min-ms=1000
   kb logs recent --limit=5 --format=json
   kb logs show --request-id=maw6d3qfabcd1234
@@ -49,6 +52,7 @@ export interface LogsArgs {
   file?: string;
   limit: number;
   slow: boolean;
+  degraded: boolean;
   minMs?: number;
   requestId?: string;
   querySha?: string;
@@ -71,6 +75,7 @@ interface LogsPayload {
     request_id?: string;
     query_sha256?: string;
     slow?: true;
+    degraded?: true;
     min_ms?: number;
   };
   scanned_line_count: number;
@@ -78,6 +83,7 @@ interface LogsPayload {
   ignored_line_count: number;
   malformed_canonical_line_count: number;
   slow_event_count: number;
+  degraded_event_count: number;
   result_count: number;
   events: CanonicalLogSummary[];
 }
@@ -94,6 +100,8 @@ interface CanonicalLogSummary {
   query_sha256?: string;
   took_ms?: number;
   slow?: true;
+  degraded?: true;
+  degraded_stages?: CanonicalLogSummaryDegradedStage[];
   timings: {
     embed_ms?: number;
     faiss_ms?: number;
@@ -108,6 +116,11 @@ interface CanonicalLogSummary {
   recovery_hint?: string;
   gate?: unknown;
   rerank?: Record<string, unknown>;
+}
+
+interface CanonicalLogSummaryDegradedStage {
+  stage: string;
+  reason?: string;
 }
 
 export interface RunLogsDeps {
@@ -188,14 +201,19 @@ export function parseLogsArgs(rest: string[]): LogsArgs {
   let optionStart = 1;
   if (rest[0] === 'recent' || rest[0] === 'show') {
     action = rest[0];
-  } else if (rest[0] === '--slow' || rest[0] === '--min-ms' || rest[0].startsWith('--min-ms=')) {
+  } else if (
+    rest[0] === '--slow' ||
+    rest[0] === '--degraded' ||
+    rest[0] === '--min-ms' ||
+    rest[0].startsWith('--min-ms=')
+  ) {
     action = 'recent';
     optionStart = 0;
   } else {
     throw new Error(`unknown action: ${JSON.stringify(rest[0])}`);
   }
 
-  const out: LogsArgs = { action, format: 'md', limit: DEFAULT_LIMIT, slow: false };
+  const out: LogsArgs = { action, format: 'md', limit: DEFAULT_LIMIT, slow: false, degraded: false };
   for (let index = optionStart; index < rest.length; index++) {
     const raw = rest[index];
     if (raw.startsWith('--file=')) {
@@ -218,6 +236,10 @@ export function parseLogsArgs(rest: string[]): LogsArgs {
     }
     if (raw === '--slow') {
       out.slow = true;
+      continue;
+    }
+    if (raw === '--degraded') {
+      out.degraded = true;
       continue;
     }
     if (raw === '--min-ms') {
@@ -358,7 +380,10 @@ function selectEvents(events: CanonicalLogRecord[], args: LogsArgs): CanonicalLo
     : args.requestId !== undefined
       ? events.filter((event) => event.request_id === args.requestId)
       : events.filter((event) => event.query_sha256 === args.querySha);
-  const filtered = args.slow ? base.filter((event) => matchesSlowFilter(event, args)) : base;
+  let filtered = args.slow ? base.filter((event) => matchesSlowFilter(event, args)) : base;
+  if (args.degraded) {
+    filtered = filtered.filter((event) => event.degraded === true);
+  }
   return args.action === 'recent' ? filtered.slice(-args.limit) : filtered;
 }
 
@@ -384,6 +409,7 @@ function buildLogsPayload(
       ...(args.requestId !== undefined ? { request_id: args.requestId } : {}),
       ...(args.querySha !== undefined ? { query_sha256: args.querySha } : {}),
       ...(args.slow ? { slow: true as const } : {}),
+      ...(args.degraded ? { degraded: true as const } : {}),
       ...(args.minMs !== undefined ? { min_ms: args.minMs } : {}),
     },
     scanned_line_count: parsed.scannedLineCount,
@@ -391,6 +417,7 @@ function buildLogsPayload(
     ignored_line_count: parsed.ignoredLineCount,
     malformed_canonical_line_count: parsed.malformedCanonicalLineCount,
     slow_event_count: parsed.events.filter((event) => event.slow === true).length,
+    degraded_event_count: parsed.events.filter((event) => event.degraded === true).length,
     result_count: events.length,
     events: events.map(summarizeEvent),
   };
@@ -408,7 +435,9 @@ function summarizeEvent(event: CanonicalLogRecord): CanonicalLogSummary {
     kb_scope: kbScopeField(event.kb_scope),
     query_sha256: stringField(event.query_sha256),
     took_ms: numberField(event.took_ms),
-    slow: slowField(event.slow),
+    slow: trueMarkerField(event.slow),
+    degraded: trueMarkerField(event.degraded),
+    degraded_stages: degradedStagesField(event.degraded_stages),
     timings: {
       embed_ms: numberField(event.embed_ms),
       faiss_ms: numberField(event.faiss_ms),
@@ -452,6 +481,7 @@ function formatLogsMarkdown(payload: LogsPayload): string {
     `- Ignored lines: ${payload.ignored_line_count}`,
     `- Malformed canonical lines: ${payload.malformed_canonical_line_count}`,
     `- Slow events: ${payload.slow_event_count}`,
+    `- Degraded events: ${payload.degraded_event_count}`,
     '',
   ];
 
@@ -461,8 +491,8 @@ function formatLogsMarkdown(payload: LogsPayload): string {
   }
 
   lines.push(
-    '| Time | Request | Command/tool | Query SHA | Took | Slow | Results | Error | Cache |',
-    '| --- | --- | --- | --- | ---: | --- | ---: | --- | --- |',
+    '| Time | Request | Command/tool | Query SHA | Took | Slow | Degraded | Results | Error | Cache |',
+    '| --- | --- | --- | --- | ---: | --- | --- | ---: | --- | --- |',
   );
   for (const event of payload.events) {
     lines.push([
@@ -472,6 +502,7 @@ function formatLogsMarkdown(payload: LogsPayload): string {
       code(event.query_sha256 ?? ''),
       event.took_ms === undefined ? '' : `${event.took_ms} ms`,
       event.slow === true ? 'yes' : '',
+      event.degraded === true ? formatDegradedStages(event.degraded_stages) : '',
       event.result_count === undefined ? '' : String(event.result_count),
       code(formatError(event.error)),
       event.cache ?? '',
@@ -490,6 +521,7 @@ function formatEventDetails(event: CanonicalLogSummary): string[] {
   const lines = [`## ${title}`, ''];
   lines.push(`- Timings: ${formatTimings(event)}`);
   if (event.slow === true) lines.push('- Slow: yes');
+  if (event.degraded === true) lines.push(`- Degraded: ${formatDegradedStages(event.degraded_stages)}`);
   if (event.model_id !== undefined) lines.push(`- Model: \`${event.model_id}\``);
   if (event.kb_scope !== undefined) lines.push(`- KB scope: \`${event.kb_scope ?? 'all'}\``);
   if (event.top_sources !== undefined && event.top_sources.length > 0) {
@@ -537,7 +569,7 @@ function numberField(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function slowField(value: unknown): true | undefined {
+function trueMarkerField(value: unknown): true | undefined {
   return value === true ? true : undefined;
 }
 
@@ -548,6 +580,27 @@ function kbScopeField(value: unknown): string | null | undefined {
 function stringArrayField(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter((item): item is string => typeof item === 'string');
+}
+
+function degradedStagesField(value: unknown): CanonicalLogSummaryDegradedStage[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const stages = value.flatMap((item): CanonicalLogSummaryDegradedStage[] => {
+    if (typeof item !== 'object' || item === null) return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.stage !== 'string') return [];
+    return [{
+      stage: record.stage,
+      ...(typeof record.reason === 'string' ? { reason: record.reason } : {}),
+    }];
+  });
+  return stages.length === 0 ? undefined : stages;
+}
+
+function formatDegradedStages(stages: CanonicalLogSummaryDegradedStage[] | undefined): string {
+  if (stages === undefined || stages.length === 0) return 'yes';
+  return stages
+    .map((stage) => stage.reason === undefined ? stage.stage : `${stage.stage}:${stage.reason}`)
+    .join(', ');
 }
 
 function compactJson(value: unknown): string {

@@ -420,7 +420,7 @@ Stable lexical fields are `mode`, `results`, and `knowledge_bases[]` with
 per-KB warnings to stderr and can return exit code `1` when one or more KBs
 failed while still printing this JSON payload.
 
-Hybrid success envelope:
+Hybrid success envelope with a degraded rerank stage:
 
 ```json
 {
@@ -432,13 +432,17 @@ Hybrid success envelope:
   },
   "rrf": { "c": 60, "fetch_k": 40 },
   "rerank": {
-    "enabled": false,
+    "enabled": true,
     "model": "Xenova/ms-marco-MiniLM-L-6-v2",
-    "candidates": 0,
+    "candidates": 10,
     "cache_hits": 0,
-    "degraded": false,
-    "degrade_reason": null
-  }
+    "degraded": true,
+    "degrade_reason": "model unavailable"
+  },
+  "degraded": true,
+  "degraded_stages": [
+    { "stage": "rerank", "reason": "model unavailable" }
+  ]
 }
 ```
 
@@ -448,6 +452,12 @@ Stable hybrid fields are `mode`, `results`, `retrievers.dense.fetched`,
 `rrf.fetch_k`. `rerank.enabled`, `rerank.model`, `rerank.candidates`,
 `rerank.cache_hits`, `rerank.degraded`, and `rerank.degrade_reason` are stable
 when the `rerank` object is present.
+
+Search envelopes MAY include top-level `degraded: true` and
+`degraded_stages[]` when a known, classified fallback affected the returned
+results. `degraded_stages[].stage` is machine-readable (`dense`, `rerank`, or
+`gate`); `reason` is present when the originating stage supplied one. Disabled
+stages, skipped stages, and successful stages are not counted as degraded.
 
 When `kb search --mode=hybrid --candidate-pool-k=<n> --format=json` is used,
 the payload also includes `high_recall` with schema version
@@ -1302,6 +1312,7 @@ Invocation:
 
 ```bash
 kb logs recent --format=json [--limit=<n>] [--file=<path>]
+kb logs recent --degraded --format=json [--limit=<n>] [--file=<path>]
 kb logs show --request-id=<id> --format=json [--file=<path>]
 kb logs show --query-sha=<hash> --format=json [--file=<path>]
 ```
@@ -1318,6 +1329,8 @@ Report envelope:
   "canonical_event_count": 3,
   "ignored_line_count": 6,
   "malformed_canonical_line_count": 1,
+  "slow_event_count": 0,
+  "degraded_event_count": 1,
   "result_count": 1,
   "events": [
     {
@@ -1330,6 +1343,10 @@ Report envelope:
       "timings": { "embed_ms": 10, "faiss_ms": 20, "format_ms": 3 },
       "cache": "miss",
       "result_count": 3,
+      "degraded": true,
+      "degraded_stages": [
+        { "stage": "gate", "reason": "judge failed" }
+      ],
       "top_sources": ["docs/a.md"],
       "error": { "code": "PROVIDER_TIMEOUT", "category": "provider" },
       "recovery_hint": "Run `kb doctor`."
@@ -1345,9 +1362,12 @@ Stable fields:
 - `source` is the resolved log file path. Resolution uses `--file`, then
   `LOG_FILE`, then existing local default paths.
 - Counts report the scan outcome before filtering.
+- `filters.degraded: true` is present for `--degraded`; the filter keeps only
+  canonical event summaries whose aggregate `degraded` field is true.
 - `events[]` contains summaries of `kb-canonical.v1` lines only. Text log
   lines are ignored. Each event includes `timings`; optional fields are
-  present only when the canonical log line carried them.
+  present only when the canonical log line carried them. Degraded summaries
+  preserve `degraded` and `degraded_stages[]` when present.
 
 Stdout/stderr and exit codes:
 

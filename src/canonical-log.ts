@@ -31,6 +31,29 @@ export interface CanonicalError {
   category: CanonicalErrorCategory;
 }
 
+export interface CanonicalDegradedStage {
+  stage: 'dense' | 'rerank' | 'gate';
+  reason?: string;
+}
+
+export interface CanonicalGateStageInput {
+  state: string;
+  input_count: number;
+  output_count: number;
+  judge: {
+    status: string;
+    reason?: string;
+  };
+}
+
+export interface CanonicalRerankStageInput {
+  model: string;
+  candidatesIn: number;
+  cacheHits: number;
+  degraded: boolean;
+  degradeReason: string | null;
+}
+
 export interface CanonicalLogEvent {
   schema_version: typeof CANONICAL_SCHEMA_VERSION;
   ts: string;
@@ -59,6 +82,7 @@ export interface CanonicalLogEvent {
   query_cache?: QueryCacheTelemetry;
   error?: CanonicalError;
   degraded?: true;
+  degraded_stages?: CanonicalDegradedStage[];
   degrade_reason?: DenseDegradationReason;
   recovery_hint?: string;
   rerank?: Record<string, unknown>;
@@ -105,6 +129,7 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'query_cache',
   'error',
   'degraded',
+  'degraded_stages',
   'degrade_reason',
   'recovery_hint',
   'rerank',
@@ -160,7 +185,6 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   assignIfDefined(event, 'cache', input.cache);
   assignIfDefined(event, 'query_cache', input.query_cache);
   assignIfDefined(event, 'error', input.error);
-  assignIfDefined(event, 'degraded', input.degraded);
   assignIfDefined(event, 'degrade_reason', input.degrade_reason);
   assignIfDefined(event, 'recovery_hint', input.recovery_hint);
   assignIfDefined(event, 'rerank', input.rerank);
@@ -168,7 +192,66 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   assignIfDefined(event, 'secret_scan', input.secret_scan);
   assignIfDefined(event, 'llm_provider', input.llm_provider);
 
+  applyDegradationSummary(event, input.degraded);
+
   return event;
+}
+
+export function deriveDegradedStages(input: {
+  degraded?: true;
+  degrade_reason?: DenseDegradationReason;
+  rerank?: Record<string, unknown>;
+  gate?: Record<string, unknown>;
+}): CanonicalDegradedStage[] {
+  const stages: CanonicalDegradedStage[] = [];
+  if (input.degraded === true || input.degrade_reason !== undefined) {
+    stages.push({
+      stage: 'dense',
+      ...(input.degrade_reason !== undefined ? { reason: input.degrade_reason } : {}),
+    });
+  }
+  addSubrecordDegradation(stages, 'rerank', input.rerank);
+  addSubrecordDegradation(stages, 'gate', input.gate);
+  return stages;
+}
+
+export function degradationSummaryFields(input: {
+  degraded?: true;
+  degrade_reason?: DenseDegradationReason;
+  rerank?: Record<string, unknown>;
+  gate?: Record<string, unknown>;
+}): { degraded?: true; degraded_stages?: CanonicalDegradedStage[] } {
+  const degradedStages = deriveDegradedStages(input);
+  return degradedStages.length === 0
+    ? {}
+    : { degraded: true, degraded_stages: degradedStages };
+}
+
+export function canonicalGateStageRecord(
+  verdict: CanonicalGateStageInput,
+): Record<string, unknown> | undefined {
+  if (verdict.state === 'bypassed') return undefined;
+  const degraded = verdict.judge.status === 'failed';
+  return {
+    state: verdict.state,
+    input_count: verdict.input_count,
+    output_count: verdict.output_count,
+    degraded,
+    degrade_reason: degraded ? verdict.judge.reason ?? 'judge failed' : null,
+  };
+}
+
+export function canonicalRerankStageRecord(
+  result: CanonicalRerankStageInput,
+): Record<string, unknown> | undefined {
+  if (result.candidatesIn === 0) return undefined;
+  return {
+    model: result.model,
+    candidates_in: result.candidatesIn,
+    cache_hits: result.cacheHits,
+    degraded: result.degraded,
+    degrade_reason: result.degradeReason,
+  };
 }
 
 export function stableCanonicalJson(event: CanonicalLogEvent): string {
@@ -297,4 +380,35 @@ function assignIfDefined<K extends keyof CanonicalLogEvent>(
 
 function roundNonNegative(value: number | undefined): number | undefined {
   return value === undefined ? undefined : Math.max(0, Math.round(value));
+}
+
+function applyDegradationSummary(event: CanonicalLogEvent, explicitDegraded: true | undefined): void {
+  const summary = degradationSummaryFields({
+    degraded: explicitDegraded,
+    degrade_reason: event.degrade_reason,
+    rerank: event.rerank,
+    gate: event.gate,
+  });
+  assignIfDefined(event, 'degraded', summary.degraded);
+  assignIfDefined(event, 'degraded_stages', summary.degraded_stages);
+}
+
+function addSubrecordDegradation(
+  stages: CanonicalDegradedStage[],
+  stage: CanonicalDegradedStage['stage'],
+  record: Record<string, unknown> | undefined,
+): void {
+  if (record?.degraded !== true) return;
+  const reason = stringRecordField(record, 'degrade_reason')
+    ?? stringRecordField(record, 'degradeReason')
+    ?? stringRecordField(record, 'reason');
+  stages.push({
+    stage,
+    ...(reason !== undefined && reason !== '' ? { reason } : {}),
+  });
+}
+
+function stringRecordField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' ? value : undefined;
 }

@@ -1,6 +1,7 @@
 import {
   CANONICAL_SCHEMA_VERSION,
   canonicalErrorFromToolResult,
+  deriveDegradedStages,
   hashQuery,
   normalizeCanonicalEvent,
   stableCanonicalJson,
@@ -50,6 +51,7 @@ describe('canonical log line schema (#216)', () => {
       },
       error: { code: 'PROVIDER_TIMEOUT', category: 'provider' },
       degraded: true,
+      degraded_stages: [{ stage: 'dense', reason: 'provider_timeout' }],
       degrade_reason: 'provider_timeout',
     });
 
@@ -71,13 +73,49 @@ describe('canonical log line schema (#216)', () => {
       },
       error: { code: 'PROVIDER_TIMEOUT', category: 'provider' },
       degraded: true,
+      degraded_stages: [{ stage: 'dense', reason: 'provider_timeout' }],
       degrade_reason: 'provider_timeout',
     });
     expect(json.indexOf('"schema_version"')).toBeLessThan(json.indexOf('"request_id"'));
     expect(json.indexOf('"top_sources"')).toBeLessThan(json.indexOf('"took_ms"'));
     expect(json.indexOf('"cache"')).toBeLessThan(json.indexOf('"query_cache"'));
     expect(json.indexOf('"error"')).toBeLessThan(json.indexOf('"degraded"'));
-    expect(json.indexOf('"degraded"')).toBeLessThan(json.indexOf('"degrade_reason"'));
+    expect(json.indexOf('"degraded"')).toBeLessThan(json.indexOf('"degraded_stages"'));
+    expect(json.indexOf('"degraded_stages"')).toBeLessThan(json.indexOf('"degrade_reason"'));
+  });
+
+  it('derives aggregate degraded stages from known classified fallback sub-records', () => {
+    const event = normalizeCanonicalEvent({
+      request_id: 'req-degraded',
+      ts: '2026-05-12T00:00:00.000Z',
+      process: 'cli',
+      cmd: 'kb search',
+      took_ms: 25,
+      degraded: true,
+      degrade_reason: 'provider_unavailable',
+      rerank: {
+        degraded: true,
+        degrade_reason: 'reranker unavailable',
+      },
+      gate: {
+        degraded: true,
+        degrade_reason: 'judge failed',
+      },
+    });
+
+    expect(event.degraded).toBe(true);
+    expect(event.degraded_stages).toEqual([
+      { stage: 'dense', reason: 'provider_unavailable' },
+      { stage: 'rerank', reason: 'reranker unavailable' },
+      { stage: 'gate', reason: 'judge failed' },
+    ]);
+  });
+
+  it('does not count disabled or successful sub-stages as degraded', () => {
+    expect(deriveDegradedStages({
+      rerank: { enabled: false, degraded: false, degrade_reason: null },
+      gate: { state: 'bypassed', degraded: false, degrade_reason: null },
+    })).toEqual([]);
   });
 
   it('extracts error code and category from MCP tool error payloads', () => {

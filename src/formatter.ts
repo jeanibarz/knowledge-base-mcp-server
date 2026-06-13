@@ -5,6 +5,7 @@
 
 import type { Document } from '@langchain/core/documents';
 import { buildChunkCitation, type ChunkCitation } from './chunk-id.js';
+import type { CanonicalDegradedStage } from './canonical-log.js';
 import { KB_EDITOR_URI, type KBEditorUriMode } from './config/retrieval.js';
 import {
   applyInjectionGuard,
@@ -217,6 +218,14 @@ export function highlightQueryTerms(text: string, terms: readonly string[]): str
   if (normalizedTerms.length === 0 || text === '') return text;
   const pattern = normalizedTerms.map(escapeRegex).join('|');
   return text.replace(new RegExp(pattern, 'giu'), (match) => `${ANSI_BOLD}${match}${ANSI_BOLD_OFF}`);
+}
+
+export function formatDegradedStagesFooter(stages: readonly CanonicalDegradedStage[] | undefined): string {
+  if (stages === undefined || stages.length === 0) return '';
+  const stageText = stages
+    .map((stage) => stage.reason === undefined ? stage.stage : `${stage.stage} (${stage.reason})`)
+    .join(', ');
+  return `> _Degraded stages: ${stageText}._`;
 }
 
 function applyRetrievalHighlight(text: string, highlight: RetrievalHighlightOptions | undefined): string {

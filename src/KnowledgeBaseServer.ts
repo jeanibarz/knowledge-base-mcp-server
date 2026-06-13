@@ -61,7 +61,10 @@ import {
   TransportConfigError,
   type TransportConfig,
 } from './transport-config.js';
-import { formatRetrievalAsMarkdown } from './formatter.js';
+import {
+  formatDegradedStagesFooter,
+  formatRetrievalAsMarkdown,
+} from './formatter.js';
 import {
   listKnowledgeBases,
   resolveKnowledgeBaseDir,
@@ -96,7 +99,11 @@ import {
 import {
   canonicalErrorFromToolResult,
   classifyCanonicalError,
+  canonicalGateStageRecord,
+  canonicalRerankStageRecord,
+  degradationSummaryFields,
   emitCanonicalLog,
+  type CanonicalDegradedStage,
   type CanonicalLogInput,
 } from './canonical-log.js';
 import { formatKbStatsOpenMetrics } from './prometheus-export.js';
@@ -184,6 +191,21 @@ function withDegradationMetadata<T extends CallToolResult>(
       ...((result as { structuredContent?: Record<string, unknown> }).structuredContent ?? {}),
       degraded: true,
       degrade_reason: reason,
+    },
+  } as T;
+}
+
+function withDegradationSummary<T extends CallToolResult>(
+  result: T,
+  stages: readonly CanonicalDegradedStage[] | undefined,
+): T {
+  if (stages === undefined || stages.length === 0) return result;
+  return {
+    ...result,
+    structuredContent: {
+      ...((result as { structuredContent?: Record<string, unknown> }).structuredContent ?? {}),
+      degraded: true,
+      degraded_stages: stages,
     },
   } as T;
 }
@@ -912,6 +934,7 @@ export class KnowledgeBaseServer {
         taskContext,
         observability: gate.observability,
       });
+      canonical.gate = canonicalGateStageRecord(gate.verdict);
       if (process.env.KB_LOG_VERBOSE === '1') {
         logger.debug(`[${Date.now()}] Similarity search completed`);
       }
@@ -935,6 +958,15 @@ export class KnowledgeBaseServer {
       if (degradedReason !== null) {
         responseText = `> _Mode: degraded lexical-only (reason: ${degradedReason}; original mode dense)._` +
           `\n\n${responseText}`;
+      }
+      const degradation = degradationSummaryFields({
+        degraded: degradedReason === null ? undefined : true,
+        degrade_reason: degradedReason ?? undefined,
+        gate: canonical.gate,
+      });
+      const degradedFooter = formatDegradedStagesFooter(degradation.degraded_stages);
+      if (degradedFooter !== '') {
+        responseText = `${responseText}\n\n${degradedFooter}`;
       }
       canonical.format_ms = Date.now() - formatStartedAt;
       const stageTiming: TimingPayload = {
@@ -968,9 +1000,10 @@ export class KnowledgeBaseServer {
 
       const content: TextContent = { type: 'text', text: responseText };
       const response = withGateVerdict({ content: [content] }, gate.verdict);
+      const responseWithSummary = withDegradationSummary(response, degradation.degraded_stages);
       return degradedReason === null
-        ? response
-        : withDegradationMetadata(response, degradedReason);
+        ? responseWithSummary
+        : withDegradationMetadata(responseWithSummary, degradedReason);
     } catch (error: unknown) {
       const err = toError(error);
       searchLatencyMetrics.record({
@@ -1190,6 +1223,9 @@ export class KnowledgeBaseServer {
       });
       const rerankMs = rerankResult.tookMs ?? Date.now() - rerankStartedAt;
       ranked = rerankResult.results;
+      if (canonical) {
+        canonical.rerank = canonicalRerankStageRecord(rerankResult);
+      }
       const gateStartedAt = Date.now();
       const gate = await applyRelevanceGate({
         query,
@@ -1211,6 +1247,9 @@ export class KnowledgeBaseServer {
         taskContext,
         observability: gate.observability,
       });
+      if (canonical) {
+        canonical.gate = canonicalGateStageRecord(gate.verdict);
+      }
 
       const formatStartedAt = Date.now();
       let responseText = formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
@@ -1251,12 +1290,23 @@ export class KnowledgeBaseServer {
       responseText = modelNameOverride !== undefined
         ? `> _Model: ${activeModelId}_\n${header}\n\n${responseText}`
         : `${header}\n\n${responseText}`;
+      const degradation = degradationSummaryFields({
+        degraded: degradedReason === null ? undefined : true,
+        degrade_reason: degradedReason ?? undefined,
+        rerank: canonical?.rerank,
+        gate: canonical?.gate,
+      });
+      const degradedFooter = formatDegradedStagesFooter(degradation.degraded_stages);
+      if (degradedFooter !== '') {
+        responseText = `${responseText}\n\n${degradedFooter}`;
+      }
 
       const content: TextContent = { type: 'text', text: responseText };
       const response = withGateVerdict({ content: [content] }, gate.verdict);
+      const responseWithSummary = withDegradationSummary(response, degradation.degraded_stages);
       return degradedReason === null
-        ? response
-        : withDegradationMetadata(response, degradedReason);
+        ? responseWithSummary
+        : withDegradationMetadata(responseWithSummary, degradedReason);
     } catch (error: unknown) {
       const err = toError(error);
       searchLatencyMetrics.record({

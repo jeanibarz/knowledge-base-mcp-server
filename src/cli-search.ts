@@ -28,6 +28,7 @@ import {
 import {
   formatRetrievalAsJson,
   formatRetrievalAsCompactTable,
+  formatDegradedStagesFooter,
   formatRetrievalAsMarkdown,
   formatRetrievalAsVimgrep,
   formatRetrievalEmptyAsMarkdown,
@@ -123,7 +124,13 @@ import {
   type SearchMode,
   type Staleness,
 } from './search-core.js';
-import { hashQuery, type CanonicalLogInput } from './canonical-log.js';
+import {
+  canonicalGateStageRecord,
+  canonicalRerankStageRecord,
+  degradationSummaryFields,
+  hashQuery,
+  type CanonicalLogInput,
+} from './canonical-log.js';
 import type { QueryCacheTelemetry } from './query-cache.js';
 import {
   KB_RETRIEVAL_VIEWS_ENV,
@@ -706,6 +713,7 @@ export async function runSearch(
     searchMode: effectiveMode,
     results,
     denseTiming,
+    gateVerdict,
   });
 
   if (shouldUsePicker(parsed)) {
@@ -1344,6 +1352,7 @@ function recordDenseSearchCanonicalTelemetry(input: {
   searchMode: EffectiveSearchMode;
   results: ScoredDocument[];
   denseTiming: SimilaritySearchTiming;
+  gateVerdict?: RelevanceGateVerdict;
 }): void {
   const queryCache = input.denseTiming.query_cache_telemetry;
   lastSearchCanonicalTelemetry = {
@@ -1361,6 +1370,7 @@ function recordDenseSearchCanonicalTelemetry(input: {
     faiss_ms: input.denseTiming.faiss_search_ms ?? input.denseTiming.query_search_ms,
     cache: queryCache?.outcome,
     query_cache: queryCache,
+    gate: input.gateVerdict === undefined ? undefined : canonicalGateStageRecord(input.gateVerdict),
   };
 }
 
@@ -1455,7 +1465,9 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
       kept: input.autoThresholdDecision.kept,
     };
   }
-  payload.gate_verdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
+  const gateVerdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
+  payload.gate_verdict = gateVerdict;
+  Object.assign(payload, degradationSummaryFields({ gate: canonicalGateStageRecord(gateVerdict) }));
   if (input.advancedRetrieval !== undefined && input.advancedRetrieval !== null) {
     payload.advanced_retrieval = input.advancedRetrieval;
   }
@@ -1615,6 +1627,12 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
   if (gateVerdict.state !== 'bypassed') {
     output += `${formatGateVerdictFooter(gateVerdict)}\n`;
   }
+  const degradedFooter = formatDegradedStagesFooter(
+    degradationSummaryFields({ gate: canonicalGateStageRecord(gateVerdict) }).degraded_stages,
+  );
+  if (degradedFooter !== '') {
+    output += `${degradedFooter}\n`;
+  }
   if (input.explain) {
     output += `${formatGateDroppedList(gateVerdict)}\n`;
   }
@@ -1656,6 +1674,12 @@ export function formatDenseSearchCompactOutput(input: {
   const gateVerdict = input.gateVerdict ?? defaultBypassedGateVerdict(input.results.length);
   if (gateVerdict.state !== 'bypassed') {
     output += `${formatGateVerdictFooter(gateVerdict)}\n`;
+  }
+  const degradedFooter = formatDegradedStagesFooter(
+    degradationSummaryFields({ gate: canonicalGateStageRecord(gateVerdict) }).degraded_stages,
+  );
+  if (degradedFooter !== '') {
+    output += `${degradedFooter}\n`;
   }
   if (input.results.length > 0 && input.filterDiagnostics) {
     output += `${formatFilterSelectivityDiagnosticsFooter(input.filterDiagnostics)}\n`;
@@ -2805,6 +2829,22 @@ async function runHybridSearch(
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
   ranked = ranked.slice(0, parsed.k);
+  const rerankStage = canonicalRerankStageRecord(rerankResult);
+  const gateStage = canonicalGateStageRecord(gateVerdict);
+  const degradation = degradationSummaryFields({ rerank: rerankStage, gate: gateStage });
+  lastSearchCanonicalTelemetry = {
+    query_sha256: hashQuery(query),
+    query_len_chars: query.length,
+    model_id: activeModelId,
+    kb_scope: parsed.kb ?? null,
+    k: parsed.k,
+    search_mode: 'hybrid',
+    result_count: ranked.length,
+    top_score: ranked[0]?.score,
+    top_sources: topSourcesForCanonicalLog(ranked as never),
+    rerank: rerankStage,
+    gate: gateStage,
+  };
   if (timing) timing.total_ms = elapsedMs(totalStartedAt);
   if (timing && deps.onSearchTiming !== undefined) {
     deps.onSearchTiming({
@@ -2854,6 +2894,7 @@ async function runHybridSearch(
         degrade_reason: rerankResult.degradeReason,
       },
       gate_verdict: gateVerdict,
+      ...degradation,
       ...(parsed.timing && timing ? { timing: compactTimingPayload(timing) } : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
@@ -2883,6 +2924,10 @@ async function runHybridSearch(
     }
     if (gateVerdict.state !== 'bypassed') {
       output += `${formatGateVerdictFooter(gateVerdict)}\n`;
+    }
+    const degradedFooter = formatDegradedStagesFooter(degradation.degraded_stages);
+    if (degradedFooter !== '') {
+      output += `${degradedFooter}\n`;
     }
     if (parsed.explain) {
       output += `${formatGateDroppedList(gateVerdict)}\n`;
@@ -2920,6 +2965,10 @@ async function runHybridSearch(
     }
     if (gateVerdict.state !== 'bypassed') {
       output += `${formatGateVerdictFooter(gateVerdict)}\n`;
+    }
+    const degradedFooter = formatDegradedStagesFooter(degradation.degraded_stages);
+    if (degradedFooter !== '') {
+      output += `${degradedFooter}\n`;
     }
     if (parsed.explain) {
       output += `${formatGateDroppedList(gateVerdict)}\n`;
