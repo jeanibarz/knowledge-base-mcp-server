@@ -360,6 +360,94 @@ Source and test anchors: `src/cli-search.ts:262-320`,
 `src/formatter.ts:136-213`, `src/cli-search-errors.ts:181-215`,
 `src/formatter.test.ts:133-185`, `src/cli-search-errors.test.ts:121-159`.
 
+## `kb ask`
+
+Invocation:
+
+```bash
+kb ask "<question>" --format=json [--kb=<name>] [--model=<id>] [--k=<int>]
+kb ask --stdin --format=json [--save-transcript --kb=<name> --yes]
+```
+
+Success envelope:
+
+```json
+{
+  "answer": "The release lead approves rollback.",
+  "citations": [
+    {
+      "knowledge_base": "ops",
+      "path": "runbooks/rollback.md",
+      "score": 0.12,
+      "chunk_id": "ops/runbooks/rollback.md#L12-L18"
+    }
+  ],
+  "llm": {
+    "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+    "profile": "env",
+    "mode": "external",
+    "source": "env",
+    "model": "qwen3"
+  },
+  "retrieval": {
+    "embedding_model": "ollama__nomic-embed-text-latest",
+    "k": 8,
+    "context_budget_tokens": 6000,
+    "refreshed": false,
+    "knowledge_base": "ops"
+  },
+  "context_packing": {
+    "budget_tokens": 6000,
+    "estimated_tokens": 42,
+    "included_chunks": 1,
+    "excluded_chunks": 0,
+    "truncated_chunks": 0,
+    "policy_filtered_chunks": 0,
+    "chunks": []
+  },
+  "abstention_reason": null
+}
+```
+
+Stable error envelope:
+
+```json
+{
+  "error": {
+    "code": "ASK_LLM_ENDPOINT_UNREACHABLE",
+    "category": "external",
+    "message": "local LLM request failed: connect ECONNREFUSED 127.0.0.1:8080",
+    "next_action": "Start or fix the configured LLM endpoint, then run `kb llm probe --endpoint=<url>` from the same shell."
+  },
+  "error_text": "kb ask: local LLM request failed: connect ECONNREFUSED 127.0.0.1:8080"
+}
+```
+
+Stable success fields are `answer`, `citations[]`, `llm`, `retrieval`,
+`context_packing`, and `abstention_reason`. When `--save-transcript` succeeds,
+the payload also includes `transcript.saved`, `transcript.knowledge_base`,
+`transcript.path`, and `transcript.title`.
+
+Stable error fields are `error.code`, `error.category`, `error.message`, and
+`error.next_action`. `error_text` is a compatibility display alias for the
+former `{"error": "kb ask: ..."}` JSON string; machine clients should branch on
+the object under `error`.
+
+Stdout/stderr and exit codes:
+
+- Success JSON is stdout with exit `0`.
+- JSON-mode classified failures are stdout with exit `1` or `2`.
+- Human-mode classified failures are stderr.
+- Exit `2` covers argument, active-model, LLM profile, and duplicate transcript
+  title errors. Exit `1` covers index, provider, LLM endpoint/response,
+  permission, lock, and unknown runtime errors.
+- The ask-first stable JSON error envelope is intentionally limited to `kb ask`;
+  remember, capture, and import-url retain their documented error behavior.
+
+Source and test anchors: `src/cli-ask.ts:122-237`,
+`src/ask-core.ts:255-324`, `src/search-errors-core.ts:82-142`,
+`src/cli-ask.test.ts:358-537`, `src/cli-json-contracts.test.ts:179-198`.
+
 ## `kb research`
 
 Invocation:

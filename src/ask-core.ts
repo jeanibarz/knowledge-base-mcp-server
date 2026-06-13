@@ -21,6 +21,7 @@ import {
 } from './relevance-gate.js';
 import { chunkIdFromMetadata } from './rrf.js';
 import {
+  classifyKbAskError,
   classifyKbSearchError,
   exitCodeForFailure,
 } from './search-errors-core.js';
@@ -275,7 +276,8 @@ export async function executeAsk(
     target = await resolveLlmTarget(args);
     if (timing) timing.llm_profile_resolution_ms = elapsedMs(startedAt);
   } catch (err) {
-    throw new AskExecutionError((err as Error).message, 2);
+    const failure = classifyKbAskError(err, 'llm-profile');
+    throw new AskExecutionError(failure.message, exitCodeForFailure(failure), failure);
   }
 
   if (target.profile.mode === 'managed') {
@@ -321,7 +323,8 @@ export async function executeAsk(
     answer = response.content;
     llmModel = response.model;
   } catch (err) {
-    throw new AskExecutionError((err as Error).message, 1);
+    const failure = classifyKbAskError(err, 'llm-chat');
+    throw new AskExecutionError(failure.message, exitCodeForFailure(failure), failure);
   }
 
   if (timing) timing.total_ms = elapsedMs(totalStartedAt);

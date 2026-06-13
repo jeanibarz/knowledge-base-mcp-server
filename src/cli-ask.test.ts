@@ -14,7 +14,7 @@ import {
   askKnowledge,
   packAskContext,
 } from './ask-core.js';
-import { callChatCompletion } from './llm-client.js';
+import { callChatCompletion, LlmClientError } from './llm-client.js';
 
 describe('parseAskArgs', () => {
   it('parses retrieval and LLM options', () => {
@@ -352,6 +352,179 @@ describe('ask transcript records', () => {
       if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
       else process.env.KB_LLM_ENDPOINT = previousEndpoint;
       await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('emits a classified JSON error for invalid ask context budget', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+
+    try {
+      const code = await runAsk([
+        'What changed?',
+        '--context-budget-tokens=63',
+        '--format=json',
+      ]);
+
+      expect(code).toBe(2);
+      expect(stderr.join('')).toBe('');
+      const payload = JSON.parse(stdout.join('')) as {
+        error: { code: string; category: string; message: string; next_action: string };
+        error_text: string;
+      };
+      expect(payload.error).toMatchObject({
+        code: 'ASK_CONTEXT_BUDGET_INVALID',
+        category: 'input',
+        message: expect.stringContaining('invalid --context-budget-tokens'),
+        next_action: 'Pass `--context-budget-tokens=<int>` with a value of at least 64, then retry.',
+      });
+      expect(payload.error_text).toContain('kb ask: invalid --context-budget-tokens');
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('emits a classified JSON error when the answer LLM endpoint is unreachable', async () => {
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+
+    try {
+      process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
+      const manager = {
+        modelDir: '/tmp/kb-ask-model',
+        initialize: jest.fn(async () => {}),
+        updateIndex: jest.fn(async () => {}),
+        similaritySearch: jest.fn(async () => [
+          {
+            pageContent: 'Rollback approval requires the release lead.',
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md' },
+            score: 0.1,
+          },
+        ]),
+      };
+      const deps: RunAskDeps = {
+        bootstrapLayout: jest.fn(async () => {}),
+        resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+        loadManagerForModel: jest.fn(async () => manager as never),
+        loadWithJsonRetry: jest.fn(async () => {}),
+        withWriteLock: jest.fn(async <T>(_resource: string, action: () => Promise<T>) => action()) as RunAskDeps['withWriteLock'],
+        callChatCompletion: jest.fn(async () => {
+          throw new LlmClientError('local LLM request failed: connect ECONNREFUSED 127.0.0.1:8080', { transient: true });
+        }),
+        createTranscriptNote: createAskTranscriptNote,
+        knowledgeBasesRootDir: '/tmp/kb-ask-root',
+      };
+
+      const code = await runAsk(['Who approves rollback?', '--kb=ops', '--format=json'], deps);
+
+      expect(code).toBe(1);
+      expect(stderr.join('')).toBe('');
+      const payload = JSON.parse(stdout.join('')) as {
+        error: { code: string; category: string; message: string; next_action: string };
+        error_text: string;
+      };
+      expect(payload.error).toMatchObject({
+        code: 'ASK_LLM_ENDPOINT_UNREACHABLE',
+        category: 'external',
+        message: 'local LLM request failed: connect ECONNREFUSED 127.0.0.1:8080',
+        next_action: 'Start or fix the configured LLM endpoint, then run `kb llm probe --endpoint=<url>` from the same shell.',
+      });
+      expect(payload.error_text).toBe('kb ask: local LLM request failed: connect ECONNREFUSED 127.0.0.1:8080');
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+    }
+  });
+
+  it('emits a classified JSON error when transcript writing fails', async () => {
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+
+    try {
+      process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
+      const manager = {
+        modelDir: '/tmp/kb-ask-model',
+        initialize: jest.fn(async () => {}),
+        updateIndex: jest.fn(async () => {}),
+        similaritySearch: jest.fn(async () => [
+          {
+            pageContent: 'Rollback approval requires the release lead.',
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md' },
+            score: 0.1,
+          },
+        ]),
+      };
+      const deps: RunAskDeps = {
+        bootstrapLayout: jest.fn(async () => {}),
+        resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+        loadManagerForModel: jest.fn(async () => manager as never),
+        loadWithJsonRetry: jest.fn(async () => {}),
+        withWriteLock: jest.fn(async <T>(_resource: string, action: () => Promise<T>) => action()) as RunAskDeps['withWriteLock'],
+        callChatCompletion: jest.fn(async () => ({
+          content: 'Rollback approval requires the release lead.',
+          model: 'qwen3',
+          raw: {},
+        })),
+        createTranscriptNote: jest.fn(async () => {
+          throw new Error('refusing to overwrite existing transcript: incident-answer.md');
+        }),
+        knowledgeBasesRootDir: '/tmp/kb-ask-root',
+      };
+
+      const code = await runAsk([
+        'Who approves rollback?',
+        '--kb=ops',
+        '--format=json',
+        '--save-transcript',
+        '--title=Incident answer',
+        '--yes',
+      ], deps);
+
+      expect(code).toBe(2);
+      expect(stderr.join('')).toBe('');
+      const payload = JSON.parse(stdout.join('')) as {
+        error: { code: string; category: string; message: string; next_action: string };
+      };
+      expect(payload.error).toMatchObject({
+        code: 'ASK_TRANSCRIPT_EXISTS',
+        category: 'input',
+        message: 'refusing to overwrite existing transcript: incident-answer.md',
+        next_action: 'Choose a different `--title` or remove the existing transcript note, then retry.',
+      });
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
     }
   });
 

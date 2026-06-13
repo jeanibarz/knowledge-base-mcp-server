@@ -1,14 +1,15 @@
 # KB Error Codes
 
 This reference documents the stable `KBErrorCode` values emitted by the server
-and CLI. Operators can see these codes in classified CLI JSON failures under
-`error.code`, MCP tool error payloads, and canonical logs from server-side and
-reindex paths that preserve `KBError` details. Some CLI wrappers log only their
-process exit class, such as `EXIT_1` or `EXIT_2`, so prefer the command's JSON
-error payload when available. Contextual-retrieval ingest can also surface
-related per-chunk sidecar `error_code` values; those are lower-level
-diagnostics, while the codes below are the operator-facing taxonomy from
-`src/errors.ts`.
+and CLI, plus command-local classified CLI codes where a command has a stable
+JSON error envelope. Operators can see these codes in classified CLI JSON
+failures under `error.code`, MCP tool error payloads, and canonical logs from
+server-side and reindex paths that preserve `KBError` details. Some CLI wrappers
+log only their process exit class, such as `EXIT_1` or `EXIT_2`, so prefer the
+command's JSON error payload when available. Contextual-retrieval ingest can
+also surface related per-chunk sidecar `error_code` values; those are
+lower-level diagnostics, while the first table below is the operator-facing
+taxonomy from `src/errors.ts`.
 
 Use the code to decide the first response. Message text is diagnostic prose and
 can change between releases.
@@ -43,3 +44,25 @@ For symptom-first triage, start with
 [`docs/operations/incident-response.md`](../operations/incident-response.md).
 For JSON output shapes, see
 [`docs/cli-json-contracts.md`](../cli-json-contracts.md).
+
+## `kb ask` CLI Codes
+
+`kb ask --format=json` uses the same classified envelope shape as dense
+`kb search`: `error.code`, `error.category`, `error.message`, and
+`error.next_action`. It can emit the shared `KBErrorCode` values above for
+retrieval/index/model failures and the ask-local codes below for argument, LLM,
+and transcript paths.
+
+| Code | Category | Meaning | Operator Remedy | Transient? |
+| --- | --- | --- | --- | --- |
+| <code>ASK_ARGUMENT_INVALID</code> | `input` | The ask command line is missing or rejects an argument. | Fix the argv shown in `error.message`; run `kb ask --help` for usage. | No |
+| <code>ASK_CONTEXT_BUDGET_INVALID</code> | `input` | `--context-budget-tokens` is not an integer at or above the minimum. | Pass `--context-budget-tokens=<int>` with a value of at least 64. | No |
+| <code>ASK_LLM_PROFILE_INVALID</code> | `configuration` | The selected or active `kb llm` profile is malformed or unreadable. | Run `kb llm status --format=json`, repair the profile, or choose a valid `--llm-profile`. | No |
+| <code>ASK_LLM_AUTH</code> | `configuration` | The LLM provider rejected credentials. | Fix provider credentials in the environment used to launch `kb`, then probe the endpoint. | No |
+| <code>ASK_LLM_RATE_LIMITED</code> | `external` | The LLM provider returned HTTP 429. | Wait for quota/rate limit recovery, then retry. | Yes |
+| <code>ASK_LLM_ENDPOINT_UNREACHABLE</code> | `external` | The answer LLM endpoint is unreachable, timed out, or returned a transient/server failure. | Start or fix the configured endpoint, then run `kb llm probe --endpoint=<url>`. | Yes |
+| <code>ASK_LLM_RESPONSE_INVALID</code> | `external` | The endpoint answered but not with a usable OpenAI-compatible chat completion. | Probe the endpoint and fix the service/model response shape. | No |
+| <code>ASK_LLM_REQUEST_FAILED</code> | `external` | The LLM call failed outside a recognized `LlmClientError` path. | Check `kb llm status --format=json` and probe the configured endpoint. | Unknown |
+| <code>ASK_TRANSCRIPT_EXISTS</code> | `input` | `--save-transcript` would overwrite an existing note. | Choose a different `--title` or remove the existing transcript note. | No |
+| <code>ASK_TRANSCRIPT_PERMISSION_DENIED</code> | `permissions` | Transcript write failed with a filesystem permission/read-only error. | Grant write access to the target KB directory, then retry. | No |
+| <code>ASK_TRANSCRIPT_WRITE_FAILED</code> | `unknown` | Transcript write failed without a more specific errno classification. | Check the target KB path and disk state, then retry. | Unknown |
