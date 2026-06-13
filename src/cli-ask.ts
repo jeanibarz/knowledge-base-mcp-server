@@ -10,8 +10,10 @@ import {
   type RefreshStatus,
 } from './audit-log.js';
 import {
-  formatKbSearchFailureJson,
-  formatKbSearchFailureStderr,
+  classifyKbAskError,
+  exitCodeForFailure,
+  formatKbAskFailureJson,
+  formatKbAskFailureStderr,
 } from './search-errors-core.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import {
@@ -140,15 +142,15 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
   try {
     args = parseAskArgs(rest);
   } catch (err) {
-    process.stderr.write(`kb ask: ${(err as Error).message}\n`);
-    return 2;
+    const failure = classifyKbAskError(err, 'argument');
+    return reportAskFailure(requestedAskFormat(rest), failure);
   }
   if (args.stdin && args.question === null) {
     args.question = await readAllStdin();
   }
   if (args.question === null || args.question.trim() === '') {
-    process.stderr.write('kb ask: missing <question> (or use --stdin)\n');
-    return 2;
+    const failure = classifyKbAskError(new Error('missing <question> (or use --stdin)'), 'argument');
+    return reportAskFailure(args.format, failure);
   }
 
   let result: AskKnowledgeResult;
@@ -170,13 +172,13 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
   } catch (err) {
     if (err instanceof AskExecutionError) {
       if (err.failure !== undefined) {
-        if (args.format === 'json') process.stdout.write(formatKbSearchFailureJson(err.failure));
-        else process.stderr.write(formatKbSearchFailureStderr(err.failure));
-        return err.exitCode;
+        return reportAskFailure(args.format, err.failure, err.exitCode);
       }
-      return reportAskError(args.format, `kb ask: ${err.message}`, err.exitCode);
+      const failure = classifyKbAskError(err, 'runtime');
+      return reportAskFailure(args.format, failure, err.exitCode);
     }
-    return reportAskError(args.format, `kb ask: ${(err as Error).message}`, 1);
+    const failure = classifyKbAskError(err, 'runtime');
+    return reportAskFailure(args.format, failure);
   }
 
   let savedTranscript: SavedTranscriptInfo | null = null;
@@ -237,7 +239,8 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
       });
     }
     if (writeError !== undefined) {
-      return reportAskError(args.format, `kb ask: ${writeError.message}`, 1);
+      const failure = classifyKbAskError(writeError, 'transcript');
+      return reportAskFailure(args.format, failure);
     }
     savedTranscript = {
       saved: true,
@@ -489,13 +492,21 @@ function sha256(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-function reportAskError(format: 'md' | 'json', message: string, code: number): number {
+function reportAskFailure(
+  format: 'md' | 'json',
+  failure: ReturnType<typeof classifyKbAskError>,
+  code = exitCodeForFailure(failure),
+): number {
   if (format === 'json') {
-    process.stdout.write(`${JSON.stringify({ error: message }, null, 2)}\n`);
+    process.stdout.write(formatKbAskFailureJson(failure));
   } else {
-    process.stderr.write(`${message}\n`);
+    process.stderr.write(formatKbAskFailureStderr(failure));
   }
   return code;
+}
+
+function requestedAskFormat(rest: string[]): 'md' | 'json' {
+  return rest.includes('--format=json') ? 'json' : 'md';
 }
 
 async function readAllStdin(): Promise<string> {

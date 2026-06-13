@@ -18,6 +18,7 @@ const docsPath = path.join(process.cwd(), 'docs', 'cli-json-contracts.md');
 const DOCUMENTED_COMMANDS = [
   'kb help',
   'kb search',
+  'kb ask',
   'kb remember',
   'kb capture',
   'kb where',
@@ -168,6 +169,25 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
       message: expect.any(String),
       next_action: expect.any(String),
     });
+  },
+  'kb ask': (examples) => {
+    expect(examples).toHaveLength(2);
+    expect(record(examples[0])).toMatchObject({
+      answer: expect.any(String),
+      citations: expect.any(Array),
+      llm: expect.any(Object),
+      retrieval: expect.any(Object),
+      context_packing: expect.any(Object),
+      abstention_reason: null,
+    });
+    const errorExample = record(examples[1]);
+    expect(record(errorExample.error)).toMatchObject({
+      code: expect.any(String),
+      category: expect.any(String),
+      message: expect.any(String),
+      next_action: expect.any(String),
+    });
+    expect(errorExample.error_text).toEqual(expect.any(String));
   },
   'kb remember': (examples) => {
     expect(examples).toHaveLength(3);
@@ -353,6 +373,21 @@ describe('CLI JSON contract golden outputs', () => {
       message: expect.any(String),
       next_action: expect.any(String),
     });
+  });
+
+  it('kb ask --format=json preserves the structured error envelope', () => {
+    const result = runCli(['ask', 'What changed?', '--format=json']);
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).toBe('');
+    const payload = record(parseStdoutJson(result));
+    expect(record(payload.error)).toMatchObject({
+      code: 'ACTIVE_MODEL_UNRESOLVED',
+      category: 'configuration',
+      message: expect.any(String),
+      next_action: expect.any(String),
+    });
+    expect(payload.error_text).toEqual(expect.stringContaining('kb ask:'));
   });
 
   it('kb remember writes the documented success JSON fields', () => {

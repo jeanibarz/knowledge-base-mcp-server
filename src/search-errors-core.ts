@@ -15,6 +15,7 @@
 
 import { ActiveModelResolutionError } from './active-model.js';
 import { KBError, type KBErrorCode } from './errors.js';
+import { LlmClientError } from './llm-client.js';
 import { RerankerConfigError } from './config/reranker.js';
 import { WriteLockContentionError } from './write-lock.js';
 
@@ -43,6 +44,14 @@ export interface SearchFailure {
 }
 
 const RUN_DOCTOR = 'Run `kb doctor` to diagnose backend, configuration, and index health.';
+const ASK_HELP_NEXT_ACTION = 'Fix the command arguments and retry. Run `kb ask --help` for usage.';
+
+export type AskFailureKind =
+  | 'argument'
+  | 'llm-profile'
+  | 'llm-chat'
+  | 'transcript'
+  | 'runtime';
 
 export function classifyKbSearchError(err: unknown): SearchFailure {
   if (err instanceof WriteLockContentionError) {
@@ -91,6 +100,46 @@ export function classifyKbSearchError(err: unknown): SearchFailure {
     message,
     next_action: RUN_DOCTOR,
   };
+}
+
+export function classifyKbAskError(err: unknown, kind: AskFailureKind): SearchFailure {
+  if (kind === 'runtime') {
+    return classifyKbSearchError(err);
+  }
+
+  const message = errorMessage(err);
+  if (kind === 'argument') {
+    if (message.includes('--context-budget-tokens')) {
+      return {
+        code: 'ASK_CONTEXT_BUDGET_INVALID',
+        category: 'input',
+        message,
+        next_action: 'Pass `--context-budget-tokens=<int>` with a value of at least 64, then retry.',
+      };
+    }
+    return {
+      code: 'ASK_ARGUMENT_INVALID',
+      category: 'input',
+      message,
+      next_action: ASK_HELP_NEXT_ACTION,
+    };
+  }
+
+  if (kind === 'llm-profile') {
+    return {
+      code: 'ASK_LLM_PROFILE_INVALID',
+      category: 'configuration',
+      message,
+      next_action:
+        'Run `kb llm status --format=json` to inspect the active profile, then fix it with `kb llm use-endpoint <url> --profile=<name>` or choose a valid `--llm-profile=<name>`.',
+    };
+  }
+
+  if (kind === 'llm-chat') {
+    return classifyAskLlmError(err, message);
+  }
+
+  return classifyAskTranscriptError(err, message);
 }
 
 function classifyKBError(err: KBError): SearchFailure {
@@ -221,8 +270,34 @@ function classifyKBError(err: KBError): SearchFailure {
 
 /** Stderr (markdown / human-mode) renderer. Always ends with a trailing newline. */
 export function formatKbSearchFailureStderr(failure: SearchFailure): string {
+  return formatClassifiedFailureStderr('kb search', failure);
+}
+
+/** JSON renderer for `--format=json` so agents can branch on `error.category`/`error.code`. */
+export function formatKbSearchFailureJson(failure: SearchFailure): string {
+  return formatClassifiedFailureJson(failure);
+}
+
+/** Stderr renderer for `kb ask` classified failures. Always ends with a trailing newline. */
+export function formatKbAskFailureStderr(failure: SearchFailure): string {
+  return formatClassifiedFailureStderr('kb ask', failure);
+}
+
+/**
+ * JSON renderer for `kb ask --format=json` classified failures.
+ *
+ * `error_text` intentionally preserves the former one-line string shape for
+ * display-oriented callers while `error` becomes the stable classified object.
+ */
+export function formatKbAskFailureJson(failure: SearchFailure): string {
+  return formatClassifiedFailureJson(failure, {
+    legacyErrorText: `kb ask: ${failure.message}`,
+  });
+}
+
+function formatClassifiedFailureStderr(command: string, failure: SearchFailure): string {
   const lines = [
-    `kb search: ${failure.message}`,
+    `${command}: ${failure.message}`,
     `  category: ${failure.category} (code: ${failure.code})`,
     `  next: ${failure.next_action}`,
   ];
@@ -232,8 +307,10 @@ export function formatKbSearchFailureStderr(failure: SearchFailure): string {
   return `${lines.join('\n')}\n`;
 }
 
-/** JSON renderer for `--format=json` so agents can branch on `error.category`/`error.code`. */
-export function formatKbSearchFailureJson(failure: SearchFailure): string {
+function formatClassifiedFailureJson(
+  failure: SearchFailure,
+  options: { legacyErrorText?: string } = {},
+): string {
   const error: Record<string, unknown> = {
     code: failure.code,
     category: failure.category,
@@ -253,7 +330,10 @@ export function formatKbSearchFailureJson(failure: SearchFailure): string {
   if (failure.category === 'lock') {
     error.retry_hint = failure.next_action;
   }
-  return `${JSON.stringify({ error }, null, 2)}\n`;
+  return `${JSON.stringify({
+    error,
+    ...(options.legacyErrorText !== undefined ? { error_text: options.legacyErrorText } : {}),
+  }, null, 2)}\n`;
 }
 
 /**
@@ -267,4 +347,85 @@ export function exitCodeForFailure(failure: SearchFailure): number {
     return 2;
   }
   return 1;
+}
+
+function classifyAskLlmError(err: unknown, message: string): SearchFailure {
+  if (err instanceof LlmClientError) {
+    if (err.status === 401 || err.status === 403) {
+      return {
+        code: 'ASK_LLM_AUTH',
+        category: 'configuration',
+        message,
+        next_action:
+          'Fix the LLM provider credentials in the environment used to launch `kb`, then run `kb llm probe --endpoint=<url>`.',
+      };
+    }
+    if (err.status === 429) {
+      return {
+        code: 'ASK_LLM_RATE_LIMITED',
+        category: 'external',
+        message,
+        next_action:
+          'Wait for the LLM provider rate limit to clear, then retry `kb ask`; check provider quota if this repeats.',
+      };
+    }
+    if (err.transient === true || err.status === undefined || err.status >= 500) {
+      return {
+        code: 'ASK_LLM_ENDPOINT_UNREACHABLE',
+        category: 'external',
+        message,
+        next_action:
+          'Start or fix the configured LLM endpoint, then run `kb llm probe --endpoint=<url>` from the same shell.',
+      };
+    }
+    return {
+      code: 'ASK_LLM_RESPONSE_INVALID',
+      category: 'external',
+      message,
+      next_action:
+        'Probe the LLM endpoint with `kb llm probe --endpoint=<url>` and verify it returns OpenAI-compatible chat completions.',
+    };
+  }
+
+  return {
+    code: 'ASK_LLM_REQUEST_FAILED',
+    category: 'external',
+    message,
+    next_action:
+      'Check the configured LLM endpoint with `kb llm status --format=json` and `kb llm probe --endpoint=<url>`, then retry.',
+  };
+}
+
+function classifyAskTranscriptError(err: unknown, message: string): SearchFailure {
+  if (message.includes('refusing to overwrite existing transcript')) {
+    return {
+      code: 'ASK_TRANSCRIPT_EXISTS',
+      category: 'input',
+      message,
+      next_action: 'Choose a different `--title` or remove the existing transcript note, then retry.',
+    };
+  }
+
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+    return {
+      code: 'ASK_TRANSCRIPT_PERMISSION_DENIED',
+      category: 'permissions',
+      message,
+      next_action:
+        'Grant the running user write access to the target knowledge base directory, then retry `kb ask --save-transcript`.',
+    };
+  }
+
+  return {
+    code: 'ASK_TRANSCRIPT_WRITE_FAILED',
+    category: 'unknown',
+    message,
+    next_action:
+      'Check the target knowledge base path and disk state, then retry `kb ask --save-transcript`.',
+  };
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
