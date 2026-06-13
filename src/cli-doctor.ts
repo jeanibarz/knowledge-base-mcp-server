@@ -52,6 +52,8 @@ import {
   FaissIndexManager,
   type IndexUpdateSummary,
 } from './FaissIndexManager.js';
+import { createEmbeddingsClient } from './embedding-provider.js';
+import type { EmbeddingProvider } from './model-id.js';
 import {
   AgeBudgetConfigError,
   computeAgeBudgetStatus,
@@ -104,6 +106,13 @@ import {
   verifyIntegrity,
   type IntegrityReport,
 } from './cli-verify.js';
+import {
+  EMBEDDING_CANARY_COSINE_WARN_THRESHOLD,
+  EMBEDDING_CANARY_ID,
+  createEmbeddingCanaryFingerprint,
+  cosineSimilarity,
+  readIndexIntegrityManifest,
+} from './faiss-store-layout.js';
 import { createDoctorBugReportBundle } from './cli-bug-report.js';
 import {
   WRITE_LOCK_OWNER_SCHEMA_VERSION,
@@ -190,6 +199,7 @@ export interface DoctorArgs {
 
 export type HealthStatus = 'ok' | 'warn' | 'error';
 export type EndpointHealthStatus = HealthStatus | 'skipped';
+export type EmbeddingCanaryHealthStatus = HealthStatus | 'not_recorded' | 'skipped';
 type DoctorDaemonStatsPayload = Pick<KbStatsPayload, 'dense_search_latency'>;
 
 export interface EndpointReadinessEntry {
@@ -273,6 +283,17 @@ export interface DoctorIndexSecurityEntry {
   warnings: string[];
 }
 
+export interface DoctorEmbeddingCanaryReport {
+  status: EmbeddingCanaryHealthStatus;
+  canary_id: string | null;
+  recorded_at: string | null;
+  dimensions: number | null;
+  similarity: number | null;
+  threshold: number;
+  detail: string;
+  next_action: string | null;
+}
+
 export interface DoctorReport {
   status: HealthStatus;
   checks: Array<{ name: string; status: HealthStatus; detail: string }>;
@@ -306,6 +327,7 @@ export interface DoctorReport {
     ownership_check: 'checked' | 'skipped';
     entries: DoctorIndexSecurityEntry[];
   };
+  embedding_canary: DoctorEmbeddingCanaryReport;
   extraction_cache: {
     cache_dir: string;
     exists: boolean;
@@ -471,6 +493,13 @@ export interface BuildDoctorReportOptions {
   llmEndpointProbe?: LlmEndpointProbe;
   /** Run the slow `kb verify --integrity` audit and fold it into status. */
   integrity?: boolean;
+  /** Test seam for the embedding canary drift check. */
+  embeddingCanaryCheck?: (
+    modelId: string | null,
+    provider: string | null,
+    modelName: string | null,
+    binaryPath: string | null,
+  ) => Promise<DoctorEmbeddingCanaryReport>;
 }
 
 export interface BuildEndpointReadinessReportOptions {
@@ -1359,6 +1388,16 @@ export async function buildDoctorReport(
       ? 'FAISS index boundary permissions look safe'
       : `${indexSecurityWarningCount} FAISS index boundary permission warning(s)`,
   });
+  const embeddingCanary = await (
+    options.embeddingCanaryCheck ?? readEmbeddingCanaryHealth
+  )(activeModelId, activeProvider, activeModelName, index.binary_path);
+  checks.push({
+    name: 'embedding_canary',
+    status: embeddingCanary.status === 'warn' || embeddingCanary.status === 'error'
+      ? embeddingCanary.status
+      : 'ok',
+    detail: embeddingCanary.detail,
+  });
   const extractionCache = await readExtractionCacheHealth();
   checks.push({
     name: 'extraction_cache',
@@ -1580,6 +1619,7 @@ export async function buildDoctorReport(
     },
     index,
     index_security: indexSecurity,
+    embedding_canary: embeddingCanary,
     extraction_cache: extractionCache,
     stale_counts_by_kb: staleCounts,
     filesystem: staleResult.filesystem,
@@ -1749,6 +1789,139 @@ async function readIndexHealth(activeModelId: string | null): Promise<DoctorRepo
       storage: storageSummary,
     };
   }
+}
+
+async function readEmbeddingCanaryHealth(
+  activeModelId: string | null,
+  provider: string | null,
+  modelName: string | null,
+  binaryPath: string | null,
+): Promise<DoctorEmbeddingCanaryReport> {
+  const base = (): Omit<DoctorEmbeddingCanaryReport, 'status' | 'detail'> => ({
+    canary_id: null,
+    recorded_at: null,
+    dimensions: null,
+    similarity: null,
+    threshold: EMBEDDING_CANARY_COSINE_WARN_THRESHOLD,
+    next_action: null,
+  });
+
+  if (activeModelId === null || binaryPath === null) {
+    return {
+      ...base(),
+      status: 'skipped',
+      detail: 'embedding canary skipped because the active model index is not built',
+    };
+  }
+
+  let manifest: Awaited<ReturnType<typeof readIndexIntegrityManifest>>;
+  try {
+    manifest = await readIndexIntegrityManifest(path.dirname(binaryPath));
+  } catch (err) {
+    return {
+      ...base(),
+      status: 'error',
+      detail: `could not read embedding canary manifest: ${(err as Error).message}`,
+      next_action: 'Run kb verify --integrity, then rebuild the affected index if the manifest is corrupt.',
+    };
+  }
+  const canary = manifest?.embedding_canary;
+  if (canary === undefined) {
+    return {
+      ...base(),
+      status: 'not_recorded',
+      detail: 'embedding canary not recorded for this index; rebuild the index to capture a canary fingerprint',
+      next_action: 'Run a forced reindex with this version before relying on drift detection for this model.',
+    };
+  }
+
+  if (
+    canary.canary_id !== EMBEDDING_CANARY_ID ||
+    !Array.isArray(canary.vector) ||
+    canary.vector.length === 0 ||
+    canary.dimensions !== canary.vector.length
+  ) {
+    return {
+      ...base(),
+      status: 'warn',
+      canary_id: typeof canary.canary_id === 'string' ? canary.canary_id : null,
+      recorded_at: typeof canary.captured_at === 'string' ? canary.captured_at : null,
+      dimensions: typeof canary.dimensions === 'number' ? canary.dimensions : null,
+      detail: 'embedding canary metadata is invalid or was written with an unsupported canary id',
+      next_action: 'Rebuild the index with the current CLI; see docs/operations/switching-embedding-models.md for model-switch validation steps.',
+    };
+  }
+
+  if (provider === null || modelName === null || !isEmbeddingsProvider(provider)) {
+    return {
+      ...base(),
+      status: 'error',
+      canary_id: canary.canary_id,
+      recorded_at: canary.captured_at,
+      dimensions: canary.dimensions,
+      detail: 'embedding canary could not run because the active embedding provider is unresolved',
+      next_action: 'Fix the active model metadata, then rerun kb doctor.',
+    };
+  }
+
+  try {
+    const embeddings = await createEmbeddingsClient({ provider, modelName });
+    const current = await createEmbeddingCanaryFingerprint(embeddings);
+    const similarity = cosineSimilarity(canary.vector, current.vector);
+    if (similarity === null) {
+      return {
+        ...base(),
+        status: 'warn',
+        canary_id: canary.canary_id,
+        recorded_at: canary.captured_at,
+        dimensions: canary.dimensions,
+        detail: `embedding canary dimensions are incompatible: recorded=${canary.vector.length}, current=${current.vector.length}`,
+        next_action: 'Review docs/operations/switching-embedding-models.md, then rebuild or switch back to a matching embedding model.',
+      };
+    }
+    const common = {
+      canary_id: canary.canary_id,
+      recorded_at: canary.captured_at,
+      dimensions: canary.dimensions,
+      similarity,
+      threshold: EMBEDDING_CANARY_COSINE_WARN_THRESHOLD,
+    };
+    if (similarity < EMBEDDING_CANARY_COSINE_WARN_THRESHOLD) {
+      return {
+        ...common,
+        status: 'warn',
+        detail: `embedding canary drift detected: cosine=${formatSimilarity(similarity)} below threshold=${EMBEDDING_CANARY_COSINE_WARN_THRESHOLD}`,
+        next_action: 'Review docs/operations/switching-embedding-models.md, then rebuild the index for the intended model or restore the original embedding backend.',
+      };
+    }
+    return {
+      ...common,
+      status: 'ok',
+      detail: `embedding canary matches persisted fingerprint: cosine=${formatSimilarity(similarity)}`,
+      next_action: null,
+    };
+  } catch (err) {
+    return {
+      ...base(),
+      status: 'error',
+      canary_id: canary.canary_id,
+      recorded_at: canary.captured_at,
+      dimensions: canary.dimensions,
+      detail: `embedding canary re-embed failed: ${(err as Error).message}`,
+      next_action: 'Fix embedding provider credentials/connectivity, then rerun kb doctor.',
+    };
+  }
+}
+
+function isEmbeddingsProvider(value: string): value is EmbeddingProvider | 'fake' {
+  return value === 'huggingface' ||
+    value === 'ollama' ||
+    value === 'openai' ||
+    value === 'fake';
+}
+
+function formatSimilarity(value: number): string {
+  return value.toFixed(6);
 }
 
 async function readIndexSecurity(
@@ -2394,6 +2567,20 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
       `${report.index.storage.inactive_version_count} retained inactive version(s); ` +
       `retention=${report.index.storage.retention_previous_versions})`,
   );
+  lines.push('Embedding canary:');
+  lines.push(`  status: ${report.embedding_canary.status}`);
+  lines.push(`  canary_id: ${report.embedding_canary.canary_id ?? '<not recorded>'}`);
+  lines.push(`  recorded_at: ${report.embedding_canary.recorded_at ?? '<not recorded>'}`);
+  lines.push(
+    `  cosine: ${report.embedding_canary.similarity === null
+      ? 'n/a'
+      : formatSimilarity(report.embedding_canary.similarity)} ` +
+      `(threshold=${report.embedding_canary.threshold})`,
+  );
+  lines.push(`  detail: ${report.embedding_canary.detail}`);
+  if (report.embedding_canary.next_action !== null) {
+    lines.push(`  next_action: ${report.embedding_canary.next_action}`);
+  }
   lines.push('Extracted-text cache:');
   lines.push(`  path: ${report.extraction_cache.cache_dir}`);
   lines.push(

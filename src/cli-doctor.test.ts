@@ -421,6 +421,114 @@ describe('kb doctor', () => {
     }
   });
 
+  it('reports legacy indexes without an embedding canary as not recorded', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-canary-missing-'));
+    try {
+      const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+      });
+
+      expect(report.embedding_canary).toMatchObject({
+        status: 'not_recorded',
+        similarity: null,
+      });
+      expect(report.checks).toContainEqual({
+        name: 'embedding_canary',
+        status: 'ok',
+        detail: expect.stringContaining('not recorded'),
+      });
+      const markdown = formatDoctorMarkdown(report);
+      expect(markdown).toContain('Embedding canary:');
+      expect(markdown).toContain('status: not_recorded');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('warns when the persisted embedding canary no longer matches the active provider', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-canary-drift-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const fakeModelId = 'fake__bag-256d';
+      const modelDir = path.join(faissDir, 'models', fakeModelId);
+      const versionDir = path.join(modelDir, 'index.v1');
+      await fsp.mkdir(rootDir, { recursive: true });
+      await fsp.mkdir(versionDir, { recursive: true });
+      await fsp.writeFile(path.join(modelDir, 'model_name.txt'), 'bag-256d');
+      await fsp.writeFile(path.join(faissDir, 'active.txt'), fakeModelId);
+      await fsp.writeFile(path.join(versionDir, 'faiss.index'), 'fake-index');
+      await fsp.writeFile(path.join(versionDir, 'docstore.json'), '{}');
+      await fsp.symlink('index.v1', path.join(modelDir, 'index'), 'dir');
+
+      const {
+        EMBEDDING_CANARY_ID,
+        EMBEDDING_CANARY_TEXT_SHA256,
+      } = await import('./faiss-store-layout.js');
+      await fsp.writeFile(path.join(versionDir, 'integrity.json'), JSON.stringify({
+        schema_version: 'kb.index-integrity.v1',
+        written_at: '2026-06-13T00:00:00.000Z',
+        model_id: fakeModelId,
+        index_type: 'flat',
+        embedding_canary: {
+          canary_id: EMBEDDING_CANARY_ID,
+          text_sha256: EMBEDDING_CANARY_TEXT_SHA256,
+          embedding_role: 'document',
+          captured_at: '2026-06-13T00:00:00.000Z',
+          dimensions: 2,
+          vector: [1, 0],
+        },
+        files: {
+          'faiss.index': { sha256: '0'.repeat(64) },
+          'docstore.json': { sha256: '1'.repeat(64) },
+        },
+      }), 'utf-8');
+
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'fake',
+      });
+
+      const report = await buildDoctorReport({
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+      });
+
+      expect(report.embedding_canary).toMatchObject({
+        status: 'warn',
+        canary_id: EMBEDDING_CANARY_ID,
+        next_action: expect.stringContaining('docs/operations/switching-embedding-models.md'),
+      });
+      expect(report.checks).toContainEqual({
+        name: 'embedding_canary',
+        status: 'warn',
+        detail: expect.stringContaining('incompatible'),
+      });
+      const markdown = formatDoctorMarkdown(report);
+      expect(markdown).toContain('status: warn');
+      expect(markdown).toContain('next_action: Review docs/operations/switching-embedding-models.md');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('marks Ollama backend unhealthy when the active embedding model is missing', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-ollama-missing-model-'));
     const oldFetch = global.fetch;

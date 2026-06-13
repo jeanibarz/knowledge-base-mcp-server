@@ -50,6 +50,7 @@ import {
 } from './layout-bootstrap.js';
 import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import {
+  createEmbeddingCanaryFingerprint,
   loadFaissStoreAtomic,
   loadFaissStoreFromVersionDir,
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
@@ -1188,6 +1189,10 @@ export class FaissIndexManager {
     // safer enforcement; future violations are caught by reviewers, not by
     // runtime assertion that itself misfires.
 
+    const embeddingsForCanary = this.embeddings as Partial<Pick<EmbeddingsClient, 'embedDocuments'>> | undefined;
+    const embeddingCanary = typeof embeddingsForCanary?.embedDocuments === 'function'
+      ? await createEmbeddingCanaryFingerprint({ embedDocuments: embeddingsForCanary.embedDocuments })
+      : null;
     this.swapCounter += 1;
     await saveFaissStoreAtomic({
       store: this.faissStoreForPersistence(),
@@ -1195,6 +1200,7 @@ export class FaissIndexManager {
       modelId: this.modelId,
       swapCounter: this.swapCounter,
       indexType: this.indexType,
+      embeddingCanary,
       casRoot: casRootForIndexPath(FAISS_INDEX_PATH),
       onCommitted: opts.onCommitted,
     });

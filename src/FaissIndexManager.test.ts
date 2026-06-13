@@ -651,6 +651,51 @@ describe('FaissIndexManager permission handling', () => {
       .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('persists an embedding canary fingerprint in the index integrity manifest', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-canary-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'doc.md'), '# Doc\n\nCanary content.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const {
+      EMBEDDING_CANARY_ID,
+      EMBEDDING_CANARY_TEXT_SHA256,
+    } = await import('./faiss-store-layout.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    const manifest = JSON.parse(
+      await fsp.readFile(
+        path.join(versionedIndexPathIn(process.env.FAISS_INDEX_PATH!), 'integrity.json'),
+        'utf-8',
+      ),
+    ) as {
+      embedding_canary?: {
+        canary_id: string;
+        text_sha256: string;
+        embedding_role: string;
+        dimensions: number;
+        vector: number[];
+      };
+    };
+    expect(manifest.embedding_canary).toMatchObject({
+      canary_id: EMBEDDING_CANARY_ID,
+      text_sha256: EMBEDDING_CANARY_TEXT_SHA256,
+      embedding_role: 'document',
+      dimensions: 2,
+    });
+    expect(manifest.embedding_canary?.vector).toHaveLength(2);
+  });
+
   it('recovers a save-complete pending manifest by finishing hash and chunk sidecars', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pending-complete-'));
     const kbDir = path.join(tempDir, 'kb');
@@ -945,6 +990,7 @@ describe('FaissIndexManager permission handling', () => {
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
     const { normalizeChunkTextForEmbedding } = await import('./file-ingest.js');
+    const { EMBEDDING_CANARY_TEXT } = await import('./faiss-store-layout.js');
     const manager = new FaissIndexManager();
     await manager.initialize();
     embedDocumentsMock.mockClear();
@@ -978,7 +1024,7 @@ describe('FaissIndexManager permission handling', () => {
     const providerTexts = embedDocumentsMock.mock.calls.flatMap((call) => {
       const [texts] = call as [string[]];
       return texts;
-    });
+    }).filter((text) => text !== EMBEDDING_CANARY_TEXT);
     expect(providerTexts).toEqual([...new Set(indexedTexts.map(normalizeChunkTextForEmbedding))]);
     expect(providerTexts).toHaveLength(2);
     expect(providerTexts).toContain(normalizeChunkTextForEmbedding(seedTexts[0]));
@@ -1010,6 +1056,7 @@ describe('FaissIndexManager permission handling', () => {
 
     jest.resetModules();
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { EMBEDDING_CANARY_TEXT } = await import('./faiss-store-layout.js');
     const manager = new FaissIndexManager();
     await manager.initialize();
     await manager.updateIndex();
@@ -1052,7 +1099,7 @@ describe('FaissIndexManager permission handling', () => {
     const providerTexts = embedDocumentsMock.mock.calls.flatMap((call) => {
       const [texts] = call as [string[]];
       return texts;
-    });
+    }).filter((text) => text !== EMBEDDING_CANARY_TEXT);
     expect(providerTexts).toHaveLength(appendedChunkCount);
     expect(saveMock).toHaveBeenCalledTimes(1);
     expect(manager.getLastIndexUpdateSummary()).toMatchObject({
