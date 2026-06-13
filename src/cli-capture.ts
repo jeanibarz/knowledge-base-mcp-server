@@ -16,6 +16,7 @@ import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel } from './cli-shared.js';
 import { appendFileAtomically } from './file-mutation.js';
+import { assertKbWritePolicyAllowsMutation } from './kb-write-policy.js';
 import {
   auditEnabled,
   recordMutation,
@@ -406,12 +407,13 @@ function detectLanguageFromCommand(argv: string[]): string | null {
 async function appendToNote(kbName: string, relativePath: string, content: string): Promise<string> {
   assertNoTraversal(relativePath);
   const documentPath = await resolveKbPath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath, { mustExist: false });
+  const kbDir = await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName);
+  await assertKbWritePolicyAllowsMutation(kbDir, documentPath);
   const stat = await fsp.stat(documentPath);
   if (!stat.isFile()) {
     throw new Error(`append target is not a file: ${JSON.stringify(relativePath)}`);
   }
-  await appendFileAtomically(documentPath, content);
-  const kbDir = await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName);
+  await appendFileAtomically(documentPath, content, { kbDir });
   return path.relative(kbDir, documentPath).split(path.sep).join('/');
 }
 

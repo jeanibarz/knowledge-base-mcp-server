@@ -3,6 +3,7 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import type { FaissIndexManager } from './FaissIndexManager.js';
+import { KB_WRITE_POLICY_FILENAME } from './kb-write-policy.js';
 import {
   handleAddDocument,
   handleDeleteDocument,
@@ -111,6 +112,35 @@ describe('mcp-document-mutations', () => {
     });
   });
 
+  it('handleAddDocument returns a structured policy denial without writing or indexing', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-mcp-mutations-policy-add-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tempDir, 'alpha', KB_WRITE_POLICY_FILENAME),
+      '{"mutations":"deny"}\n',
+      'utf-8',
+    );
+    const { manager, updateIndex } = createManager(tempDir);
+    const { context } = createContext(tempDir, manager);
+
+    const result = await handleAddDocument({
+      knowledge_base_name: 'alpha',
+      path: 'notes/new.md',
+      content: '# New note\n',
+    }, context);
+
+    const documentPath = path.join(tempDir, 'alpha', 'notes', 'new.md');
+    expect(result.isError).toBe(true);
+    await expect(exists(documentPath)).resolves.toBe(false);
+    expect(updateIndex).not.toHaveBeenCalled();
+    expect(parseTextPayload(result)).toMatchObject({
+      error: {
+        code: 'PERMISSION_DENIED',
+        message: expect.stringContaining('KB write policy denies mutations'),
+      },
+    });
+  });
+
   it('handleAddDocument removes a new file when indexing fails after the write', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-mcp-mutations-rollback-'));
     await fsp.mkdir(path.join(tempDir, 'alpha'));
@@ -164,6 +194,29 @@ describe('mcp-document-mutations', () => {
       absolute_path: documentPath,
       sidecar_path: sidecarPath,
       deleted: true,
+    });
+  });
+
+  it('handleDeleteDocument refuses to delete the policy file through MCP', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-mcp-mutations-policy-delete-'));
+    const policyPath = path.join(tempDir, 'alpha', KB_WRITE_POLICY_FILENAME);
+    await fsp.mkdir(path.dirname(policyPath), { recursive: true });
+    await fsp.writeFile(policyPath, '{"mutations":"allow"}\n', 'utf-8');
+    const { manager } = createManager(tempDir);
+    const { context } = createContext(tempDir, manager);
+
+    const result = await handleDeleteDocument({
+      knowledge_base_name: 'alpha',
+      path: KB_WRITE_POLICY_FILENAME,
+    }, context);
+
+    expect(result.isError).toBe(true);
+    await expect(fsp.readFile(policyPath, 'utf-8')).resolves.toBe('{"mutations":"allow"}\n');
+    expect(parseTextPayload(result)).toMatchObject({
+      error: {
+        code: 'PERMISSION_DENIED',
+        message: expect.stringContaining('cannot modify .kb-policy.json'),
+      },
     });
   });
 });

@@ -3,6 +3,7 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { appendFileAtomically, atomicWriteFile, rewriteFileAtomically } from './file-mutation.js';
+import { KB_WRITE_POLICY_FILENAME } from './kb-write-policy.js';
 
 describe('file mutation helpers', () => {
   it('atomically appends by rewrite and preserves target permissions', async () => {
@@ -79,6 +80,45 @@ describe('file mutation helpers', () => {
       await expect(fsp.readFile(target, 'utf-8')).resolves.toBe('old\n');
       const leftovers = (await fsp.readdir(tempDir)).filter((name) => name.includes('.kb-tmp.'));
       expect(leftovers).toEqual([]);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks policy-denied managed appends without changing the target', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-file-mutation-policy-'));
+    try {
+      const kbDir = path.join(tempDir, 'alpha');
+      const target = path.join(kbDir, 'note.md');
+      await fsp.mkdir(kbDir, { recursive: true });
+      await fsp.writeFile(target, 'old\n', 'utf-8');
+      await fsp.writeFile(
+        path.join(kbDir, KB_WRITE_POLICY_FILENAME),
+        '{"mutations":"deny"}\n',
+        'utf-8',
+      );
+
+      await expect(appendFileAtomically(target, 'new\n', { kbDir })).rejects.toMatchObject({
+        code: 'PERMISSION_DENIED',
+      });
+      await expect(fsp.readFile(target, 'utf-8')).resolves.toBe('old\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks managed rewrites of the policy file itself', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-file-mutation-policy-file-'));
+    try {
+      const kbDir = path.join(tempDir, 'alpha');
+      const target = path.join(kbDir, KB_WRITE_POLICY_FILENAME);
+      await fsp.mkdir(kbDir, { recursive: true });
+      await fsp.writeFile(target, '{"mutations":"allow"}\n', 'utf-8');
+
+      await expect(rewriteFileAtomically(target, () => '{}\n', { kbDir })).rejects.toMatchObject({
+        code: 'PERMISSION_DENIED',
+      });
+      await expect(fsp.readFile(target, 'utf-8')).resolves.toBe('{"mutations":"allow"}\n');
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
