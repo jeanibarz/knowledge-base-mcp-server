@@ -96,6 +96,8 @@ interface BaseSpec<K extends ConfigValueKind> {
   name: string;
   kind: K;
   default?: string;
+  docDefault?: string;
+  description?: string;
   defaultValue?: (env: NodeJS.ProcessEnv | Record<string, string | undefined>) => string | null;
   emptyUsesDefault?: boolean;
   normalize?: (value: string) => string;
@@ -139,26 +141,26 @@ const CONTROLLED_PREFIXES = [
 ];
 
 export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
-  { name: 'KNOWLEDGE_BASES_ROOT_DIR', kind: 'path', defaultValue: (env) => resolveKnowledgeBasesRootDir(env.KNOWLEDGE_BASES_ROOT_DIR) },
-  { name: 'FAISS_INDEX_PATH', kind: 'path', defaultValue: (env) => defaultFaissIndexPath(effectiveStringValue(env, 'KNOWLEDGE_BASES_ROOT_DIR', resolveKnowledgeBasesRootDir(undefined))) },
+  { name: 'KNOWLEDGE_BASES_ROOT_DIR', kind: 'path', docDefault: '$HOME/knowledge_bases', description: 'Root directory containing knowledge base shelves.', defaultValue: (env) => resolveKnowledgeBasesRootDir(env.KNOWLEDGE_BASES_ROOT_DIR) },
+  { name: 'FAISS_INDEX_PATH', kind: 'path', docDefault: '$KNOWLEDGE_BASES_ROOT_DIR/.faiss', description: 'Directory where FAISS index data is stored.', defaultValue: (env) => defaultFaissIndexPath(effectiveStringValue(env, 'KNOWLEDGE_BASES_ROOT_DIR', resolveKnowledgeBasesRootDir(undefined))) },
   { name: 'KB_INDEX_TYPE', kind: 'enum', values: ['flat', 'sq8'], default: 'flat', normalize: lowercase },
-  { name: 'EMBEDDING_PROVIDER', kind: 'enum', values: [...KNOWN_EMBEDDING_PROVIDERS], default: 'huggingface' },
-  { name: 'KB_ACTIVE_MODEL', kind: 'string' },
+  { name: 'EMBEDDING_PROVIDER', kind: 'enum', values: [...KNOWN_EMBEDDING_PROVIDERS], default: 'huggingface', description: 'Default embedding provider for retrieval and ingest.' },
+  { name: 'KB_ACTIVE_MODEL', kind: 'string', description: 'Active model override; otherwise the active model sidecar or legacy provider env is used.' },
   { name: 'KB_FAKE_DIM', kind: 'integer', default: '256', min: 8, max: 4096 },
 
   { name: 'HUGGINGFACE_API_KEY', kind: 'secret', secret: true },
   { name: 'HUGGINGFACE_MODEL_NAME', kind: 'string', default: DEFAULT_HUGGINGFACE_MODEL_NAME, emptyUsesDefault: true },
   { name: 'HUGGINGFACE_PROVIDER', kind: 'string', default: 'hf-inference', emptyUsesDefault: true },
-  { name: 'HUGGINGFACE_ENDPOINT_URL', kind: 'url', defaultValue: (env) => `https://router.huggingface.co/hf-inference/models/${effectiveValue(env, 'HUGGINGFACE_MODEL_NAME')}/pipeline/feature-extraction`, protocols: ['http:', 'https:'] },
+  { name: 'HUGGINGFACE_ENDPOINT_URL', kind: 'url', docDefault: 'https://router.huggingface.co/hf-inference/models/$HUGGINGFACE_MODEL_NAME/pipeline/feature-extraction', defaultValue: (env) => `https://router.huggingface.co/hf-inference/models/${effectiveValue(env, 'HUGGINGFACE_MODEL_NAME')}/pipeline/feature-extraction`, protocols: ['http:', 'https:'] },
   { name: 'OLLAMA_BASE_URL', kind: 'url', default: 'http://localhost:11434', protocols: ['http:', 'https:'] },
   { name: 'OLLAMA_MODEL', kind: 'string', default: 'dengcao/Qwen3-Embedding-0.6B:Q8_0', emptyUsesDefault: true },
   { name: 'OPENAI_API_KEY', kind: 'secret', secret: true },
   { name: 'OPENAI_MODEL_NAME', kind: 'string', default: DEFAULT_OPENAI_MODEL_NAME, emptyUsesDefault: true },
 
-  { name: 'INDEXING_BATCH_SIZE', kind: 'integer', defaultValue: (env) => String(defaultIndexingBatchSize(effectiveStringValue(env, 'EMBEDDING_PROVIDER', 'huggingface'))), min: 1, max: 512 },
+  { name: 'INDEXING_BATCH_SIZE', kind: 'integer', docDefault: '64; 16 when EMBEDDING_PROVIDER=ollama', defaultValue: (env) => String(defaultIndexingBatchSize(effectiveStringValue(env, 'EMBEDDING_PROVIDER', 'huggingface'))), min: 1, max: 512 },
   { name: 'KB_INDEXING_CONCURRENCY', kind: 'integer', default: '1', min: 1, max: 4 },
   { name: 'KB_CHUNK_SIZE', kind: 'integer', default: '1000', min: 1 },
-  { name: 'KB_CHUNK_OVERLAP', kind: 'integer', defaultValue: (env) => defaultChunkOverlap(env), min: 0 },
+  { name: 'KB_CHUNK_OVERLAP', kind: 'integer', docDefault: '200; floor(KB_CHUNK_SIZE / 5) when KB_CHUNK_SIZE is customized', defaultValue: (env) => defaultChunkOverlap(env), min: 0 },
   { name: 'INGEST_EXTRA_EXTENSIONS', kind: 'csv', default: '' },
   { name: 'INGEST_EXCLUDE_PATHS', kind: 'csv', default: '' },
   { name: 'KB_MAX_FILE_BYTES', kind: 'integer', default: String(100 * 1024 * 1024), min: 1 },
@@ -169,11 +171,11 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_INGEST_SECRET_SCAN', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_SECRET_SCAN_BYPASS_KBS', kind: 'csv', default: '' },
 
-  { name: 'KB_QUERY_CACHE', kind: 'boolean', default: 'on', booleanValues: QUERY_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'yes', 'enabled'] },
+  { name: 'KB_QUERY_CACHE', kind: 'boolean', default: 'on', booleanValues: QUERY_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'yes', 'enabled'], description: 'Enables the query embedding cache.' },
   { name: 'KB_QUERY_CACHE_LRU_MAX', kind: 'integer', default: '256', min: 0 },
   { name: 'KB_QUERY_CACHE_DISK_MAX_MB', kind: 'number', default: '64', min: 0.000001 },
 
-  { name: 'KB_CONTEXTUAL_RETRIEVAL', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
+  { name: 'KB_CONTEXTUAL_RETRIEVAL', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables LLM contextual prefaces during ingest.' },
   { name: 'KB_RETRIEVAL_VIEWS', kind: 'csv', default: '' },
   { name: 'KB_CONTEXTUAL_MAX_TOKENS', kind: 'integer', default: '150', min: 20, max: 1000 },
   { name: 'KB_CONTEXTUAL_CONCURRENCY', kind: 'integer', default: '10', min: 1, max: 64 },
@@ -186,11 +188,11 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_LLM_HTTP_REFERER', kind: 'string' },
   { name: 'KB_LLM_FAKE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_LLM_FAKE_RULES', kind: 'path' },
-  { name: 'KB_LLM_CONFIG_DIR', kind: 'path', defaultValue: (env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'kb', 'llm') },
-  { name: 'KB_LLM_STATE_DIR', kind: 'path', defaultValue: (env) => path.join(env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'kb', 'llm') },
-  { name: 'KB_LLM_SYSTEMD_USER_DIR', kind: 'path', defaultValue: (env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user') },
+  { name: 'KB_LLM_CONFIG_DIR', kind: 'path', docDefault: '$XDG_CONFIG_HOME/kb/llm or ~/.config/kb/llm', defaultValue: (env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'kb', 'llm') },
+  { name: 'KB_LLM_STATE_DIR', kind: 'path', docDefault: '$XDG_STATE_HOME/kb/llm or ~/.local/state/kb/llm', defaultValue: (env) => path.join(env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'kb', 'llm') },
+  { name: 'KB_LLM_SYSTEMD_USER_DIR', kind: 'path', docDefault: '$XDG_CONFIG_HOME/systemd/user or ~/.config/systemd/user', defaultValue: (env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user') },
 
-  { name: 'KB_RELEVANCE_GATE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
+  { name: 'KB_RELEVANCE_GATE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables recall-negative relevance gating by default.' },
   { name: 'KB_GATE_EMPTY_VERDICT', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_GATE_SCORE_FLOOR', kind: 'number', default: '0.95', min: 0, max: 1 },
   { name: 'KB_GATE_JUDGE_INPUT', kind: 'integer', default: '10', min: 1, max: 1000 },
@@ -201,7 +203,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_GATE_TASK_CONTEXT_MODE', kind: 'enum', values: ['off', 'warn', 'strict'], default: 'warn' },
   { name: 'KB_GATE_TASK_CONTEXT_ARGV_MAX', kind: 'integer', default: '600', min: 1 },
 
-  { name: 'KB_RERANK', kind: 'boolean', default: 'off' },
+  { name: 'KB_RERANK', kind: 'boolean', default: 'off', description: 'Enables optional cross-encoder reranking.' },
   { name: 'KB_RERANK_MODEL', kind: 'string', default: DEFAULT_RERANK_MODEL },
   { name: 'KB_RERANK_TOP_N', kind: 'integer', default: String(DEFAULT_RERANK_TOP_N), min: 1, max: MAX_RERANK_TOP_N, integerSyntax: 'digits' },
   { name: 'KB_RERANK_SKIP_DOMAINS', kind: 'csv' },
@@ -227,16 +229,16 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_DAEMON_HOST', kind: 'string', default: '127.0.0.1', emptyUsesDefault: true },
   { name: 'KB_DAEMON_PORT', kind: 'integer', default: '17799', min: 1, max: 65535 },
   { name: 'KB_DAEMON_AUTOSTART', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
-  { name: 'MCP_TRANSPORT', kind: 'enum', values: ['stdio', 'sse', 'http'], default: 'stdio' },
+  { name: 'MCP_TRANSPORT', kind: 'enum', values: ['stdio', 'sse', 'http'], default: 'stdio', description: 'MCP server transport.' },
   { name: 'MCP_PORT', kind: 'integer', default: '8765', min: 1, max: 65535 },
   { name: 'MCP_BIND_ADDR', kind: 'string', default: '127.0.0.1' },
-  { name: 'MCP_AUTH_TOKEN', kind: 'secret', secret: true },
+  { name: 'MCP_AUTH_TOKEN', kind: 'secret', secret: true, description: 'Bearer token required for HTTP/SSE transports.' },
   { name: 'MCP_ALLOWED_ORIGINS', kind: 'csv' },
   { name: 'MCP_AUTH_BACKOFF_THRESHOLD', kind: 'integer', default: '5', min: 0 },
   { name: 'MCP_AUTH_BACKOFF_MS', kind: 'duration', default: '30000', min: 0 },
   { name: 'MCP_AUTH_BACKOFF_MAX_ENTRIES', kind: 'integer', default: '1024', min: 1 },
 
-  { name: 'REINDEX_TRIGGER_PATH', kind: 'path', defaultValue: (env) => path.join(effectiveStringValue(env, 'KNOWLEDGE_BASES_ROOT_DIR', resolveKnowledgeBasesRootDir(undefined)), '.reindex-trigger') },
+  { name: 'REINDEX_TRIGGER_PATH', kind: 'path', docDefault: '$KNOWLEDGE_BASES_ROOT_DIR/.reindex-trigger', defaultValue: (env) => path.join(effectiveStringValue(env, 'KNOWLEDGE_BASES_ROOT_DIR', resolveKnowledgeBasesRootDir(undefined)), '.reindex-trigger') },
   { name: 'REINDEX_TRIGGER_POLL_MS', kind: 'duration', default: '5000', min: 0, max: 60000 },
   { name: 'KB_FS_WATCH', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_FS_WATCH_DEBOUNCE_MS', kind: 'duration', default: '250', min: 25, max: 60000 },

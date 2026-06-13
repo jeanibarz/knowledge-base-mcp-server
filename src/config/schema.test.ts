@@ -231,4 +231,18 @@ describe('config schema validation (FR-OBS-470)', () => {
       },
     ]);
   });
+
+  it('keeps schema documentation metadata portable', () => {
+    const names = CONFIG_SCHEMA.map((spec) => spec.name);
+    expect(new Set(names).size).toBe(names.length);
+
+    const dynamicDefaultSpecs = CONFIG_SCHEMA.filter((spec) => spec.defaultValue !== undefined);
+    expect(dynamicDefaultSpecs.length).toBeGreaterThan(0);
+    for (const spec of dynamicDefaultSpecs) {
+      expect(spec.docDefault).toEqual(expect.any(String));
+      expect(spec.docDefault).not.toContain('/home/');
+      expect(spec.docDefault).not.toContain('/Users/');
+      expect(spec.docDefault).not.toMatch(/[A-Za-z]:\\Users\\/);
+    }
+  });
 });
