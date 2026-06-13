@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { createTestCorpus } from './test-support/corpus.js';
 import {
   extractReferences,
   formatReport,
@@ -80,24 +81,20 @@ describe('staleCheck (filesystem + injected url checker)', () => {
   }
 
   it('flags MISSING tilde paths, OK url, MISSING relative path', async () => {
-    const { rootDir, cleanup } = await makeKb('kb-stale-fs-');
-    try {
-      const kbDir = path.join(rootDir, 'ops');
-      await fsp.mkdir(kbDir, { recursive: true });
-      const notePath = path.join(kbDir, 'note.md');
-      await fsp.writeFile(
-        notePath,
-        [
+    const corpus = await createTestCorpus({
+      prefix: 'kb-stale-fs-',
+      files: {
+        'ops/note.md': [
           'Active: ~/this-path-should-not-exist-stale-check-test',
           'See https://example.com/ok',
           '[broken](missing.md)',
         ].join('\n') + '\n',
-        'utf-8',
-      );
-
+      },
+    });
+    try {
       const checker: UrlChecker = async () => ({ status: 'OK' });
       const report = await staleCheck({
-        rootDir,
+        rootDir: corpus.rootDir,
         cachePath: null,
         urlChecker: checker,
       });
@@ -109,7 +106,7 @@ describe('staleCheck (filesystem + injected url checker)', () => {
       const types = stale.map((r) => r.type).sort();
       expect(types).toEqual(['rel-path', 'tilde-path']);
     } finally {
-      await cleanup();
+      await corpus.cleanup();
     }
   });
 

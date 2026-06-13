@@ -1,7 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import * as fsp from 'fs/promises';
-import * as os from 'os';
-import * as path from 'path';
+import { createTestCorpus } from './test-support/corpus.js';
 import {
   formatSupersededJson,
   formatSupersededMarkdown,
@@ -41,63 +39,44 @@ describe('parseSupersededArgs', () => {
 
 describe('supersededCheck', () => {
   async function makeKb(): Promise<{ rootDir: string; cleanup: () => Promise<void> }> {
-    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-superseded-'));
-    const rootDir = path.join(tempDir, 'kbs');
-    const kbDir = path.join(rootDir, 'ops');
-    await fsp.mkdir(path.join(kbDir, 'patterns'), { recursive: true });
-    await fsp.writeFile(
-      path.join(kbDir, 'patterns', 'old-low.md'),
-      [
-        '---',
-        'status: active',
-        'confidence: 0.2',
-        'last_verified_at: 2025-01-01',
-        '---',
-        '# Old Low Confidence',
-        '',
-        'Old agent memory that may have been replaced.',
-      ].join('\n') + '\n',
-      'utf-8',
-    );
-    await fsp.writeFile(
-      path.join(kbDir, 'patterns', 'current.md'),
-      [
-        '---',
-        'status: active',
-        'confidence: 0.9',
-        'last_verified_at: 2026-05-01',
-        '---',
-        '# Current',
-        '',
-        'Newer replacement note.',
-      ].join('\n') + '\n',
-      'utf-8',
-    );
-    await fsp.writeFile(
-      path.join(kbDir, 'contradicted.md'),
-      [
-        '---',
-        'contradicted_by:',
-        '  - patterns/current.md',
-        '---',
-        '# Contradicted',
-      ].join('\n') + '\n',
-      'utf-8',
-    );
-    await fsp.writeFile(
-      path.join(kbDir, 'archived.md'),
-      [
-        '---',
-        'review_status: archived',
-        '---',
-        '# Archived',
-      ].join('\n') + '\n',
-      'utf-8',
-    );
-    return {
-      rootDir,
-      cleanup: async () => fsp.rm(tempDir, { recursive: true, force: true }),
-    };
+    return createTestCorpus({
+      prefix: 'kb-superseded-',
+      files: {
+        'ops/patterns/old-low.md': [
+          '---',
+          'status: active',
+          'confidence: 0.2',
+          'last_verified_at: 2025-01-01',
+          '---',
+          '# Old Low Confidence',
+          '',
+          'Old agent memory that may have been replaced.',
+        ].join('\n') + '\n',
+        'ops/patterns/current.md': [
+          '---',
+          'status: active',
+          'confidence: 0.9',
+          'last_verified_at: 2026-05-01',
+          '---',
+          '# Current',
+          '',
+          'Newer replacement note.',
+        ].join('\n') + '\n',
+        'ops/contradicted.md': [
+          '---',
+          'contradicted_by:',
+          '  - patterns/current.md',
+          '---',
+          '# Contradicted',
+        ].join('\n') + '\n',
+        'ops/archived.md': [
+          '---',
+          'review_status: archived',
+          '---',
+          '# Archived',
+        ].join('\n') + '\n',
+      },
+    });
   }
 
   it('flags lifecycle metadata and conservative same-KB semantic neighbors', async () => {
