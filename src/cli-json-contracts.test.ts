@@ -4,6 +4,7 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { toJsonReport } from './cli-eval.js';
+import { buildDenseSearchJsonPayload } from './cli-search.js';
 import { runWhere, type RunWhereDeps } from './cli-where.js';
 import type { SearchResultDocument } from './FaissIndexManager.js';
 import type { Staleness } from './search-core.js';
@@ -511,6 +512,36 @@ describe('CLI JSON contract golden outputs', () => {
       source: logFile,
       result_count: 1,
       events: [expect.objectContaining({ request_id: 'req-1', result_count: 3 })],
+    });
+  });
+
+  it('kb search JSON envelope carries aggregate gate degradation fields', () => {
+    const payload = record(buildDenseSearchJsonPayload({
+      results: [doc('alpha', 'note.md', 0.1)],
+      requestedMode: 'dense',
+      effectiveMode: 'dense',
+      autoModeDecision: null,
+      groupBySource: false,
+      refreshed: false,
+      scopedKb: 'alpha',
+      staleness: FRESH,
+      autoThresholdDecision: null,
+      timing: null,
+      gateVerdict: {
+        schema_version: 'kb.relevance-gate.v1',
+        state: 'injected',
+        low_confidence: false,
+        input_count: 1,
+        output_count: 1,
+        dropped: [],
+        judge: { status: 'failed', reason: 'judge failed' },
+        empty_verdict_enabled: false,
+      },
+    }));
+
+    expect(payload).toMatchObject({
+      degraded: true,
+      degraded_stages: [{ stage: 'gate', reason: 'judge failed' }],
     });
   });
 

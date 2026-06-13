@@ -49,12 +49,14 @@ describe('parseLogsArgs', () => {
       file: './kb.log',
       limit: 5,
       slow: false,
+      degraded: false,
     });
     expect(parseLogsArgs(['show', '--request-id=req-1'])).toEqual({
       action: 'show',
       format: 'md',
       limit: 20,
       slow: false,
+      degraded: false,
       requestId: 'req-1',
     });
     expect(parseLogsArgs(['show', '--query-sha=abc123'])).toMatchObject({
@@ -66,7 +68,15 @@ describe('parseLogsArgs', () => {
       format: 'md',
       limit: 20,
       slow: true,
+      degraded: false,
       minMs: 250,
+    });
+    expect(parseLogsArgs(['--degraded', '--format=json'])).toEqual({
+      action: 'recent',
+      format: 'json',
+      limit: 20,
+      slow: false,
+      degraded: true,
     });
   });
 
@@ -195,6 +205,47 @@ describe('runLogs', () => {
     expect(payload.events.map((event) => event.request_id)).toEqual(['req-250', 'req-400']);
   });
 
+  it('filters recent events to degraded canonical markers with kb logs --degraded', async () => {
+    const { deps, stdout, stderr } = depsFor({
+      '/repo/kb.log': [
+        canonical({ request_id: 'req-ok', query_sha256: 'ok' }),
+        canonical({
+          request_id: 'req-degraded',
+          query_sha256: 'degraded',
+          degraded: true,
+          degraded_stages: [
+            { stage: 'rerank', reason: 'model unavailable' },
+          ],
+        }),
+      ].join('\n'),
+    }, { LOG_FILE: './kb.log' });
+
+    const code = await runLogs(['--degraded', '--format=json'], deps);
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    const payload = JSON.parse(stdout.join('')) as {
+      filters: { degraded?: true };
+      degraded_event_count: number;
+      result_count: number;
+      events: Array<{
+        request_id: string;
+        degraded?: true;
+        degraded_stages?: Array<{ stage: string; reason?: string }>;
+      }>;
+    };
+    expect(payload.filters).toEqual({ degraded: true });
+    expect(payload.degraded_event_count).toBe(1);
+    expect(payload.result_count).toBe(1);
+    expect(payload.events).toEqual([
+      expect.objectContaining({
+        request_id: 'req-degraded',
+        degraded: true,
+        degraded_stages: [{ stage: 'rerank', reason: 'model unavailable' }],
+      }),
+    ]);
+  });
+
   it('shows request details with timings, sources, gate, rerank, and recovery hints in markdown', async () => {
     const { deps, stdout } = depsFor({
       '/tmp/canonical.log': [
@@ -207,6 +258,8 @@ describe('runLogs', () => {
           format_ms: 5,
           top_sources: ['docs/a.md', 'docs/b.md'],
           gate: { verdict: 'injected', kept: 2 },
+          degraded: true,
+          degraded_stages: [{ stage: 'gate', reason: 'judge failed' }],
           rerank_ms: 11,
           error: { code: 'PROVIDER_TIMEOUT', category: 'provider' },
           recovery_hint: 'Run `kb doctor`.',
@@ -225,6 +278,7 @@ describe('runLogs', () => {
     expect(md).toContain('took=125ms, embed=20ms, faiss=40ms, format=5ms');
     expect(md).toContain('`docs/a.md`, `docs/b.md`');
     expect(md).toContain('Gate: `{"verdict":"injected","kept":2}`');
+    expect(md).toContain('Degraded: gate:judge failed');
     expect(md).toContain('Rerank: `{"rerank_ms":11}`');
     expect(md).toContain('Recovery hint: Run `kb doctor`.');
   });

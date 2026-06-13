@@ -1813,6 +1813,45 @@ describe('runSearch timing guard (#331)', () => {
     });
   });
 
+  it('surfaces gate degradation in dense JSON output and canonical telemetry', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([
+      {
+        pageContent: 'deployment rollback',
+        metadata: { source: '/kb/deploy.md', chunkIndex: 0 },
+        score: 0.2,
+      },
+    ] as never);
+
+    const out = await captureSearchOutput([
+      'query',
+      '--gate',
+      '--task-context=answer the deployment rollback question with current operational constraints',
+      '--format=json',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    const payload = JSON.parse(out.stdout);
+    expect(payload).toMatchObject({
+      degraded: true,
+      degraded_stages: [{ stage: 'gate', reason: 'KB_GATE_LLM_ENDPOINT unset; degraded to A2' }],
+      gate_verdict: {
+        state: 'injected',
+        judge: {
+          status: 'failed',
+          reason: 'KB_GATE_LLM_ENDPOINT unset; degraded to A2',
+        },
+      },
+    });
+    expect(takeLastSearchCanonicalTelemetry()).toMatchObject({
+      gate: {
+        degraded: true,
+        degrade_reason: 'KB_GATE_LLM_ENDPOINT unset; degraded to A2',
+      },
+    });
+  });
+
   it('ignores invalid reranker-only topN config when dense mode cannot rerank', async () => {
     const { deps } = makeDeps();
     const previousRerank = process.env.KB_RERANK;
@@ -1962,6 +2001,69 @@ describe('runSearch timing guard (#331)', () => {
       });
       expect(payload.timing).toMatchObject({
         rerank_candidates: 3,
+      });
+    } finally {
+      restoreFactory();
+      if (previousRerank === undefined) delete process.env.KB_RERANK;
+      else process.env.KB_RERANK = previousRerank;
+      if (previousTopN === undefined) delete process.env.KB_RERANK_TOP_N;
+      else process.env.KB_RERANK_TOP_N = previousTopN;
+    }
+  });
+
+  it('surfaces hybrid reranker degradation in markdown output and canonical telemetry', async () => {
+    const manager = {
+      modelDir: '/tmp/kb-test-model',
+      initialize: jest.fn(async () => {}),
+      updateIndex: jest.fn(async () => {}),
+      similaritySearch: jest.fn(async () => [
+        {
+          pageContent: 'dense candidate',
+          metadata: { source: '/kb/dense.md', chunkIndex: 0 },
+          score: 0.1,
+        },
+      ]),
+    } as unknown as FaissIndexManager & { similaritySearch: jest.Mock };
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      runLexicalLeg: jest.fn(async () => ({
+        refreshed: 0,
+        failed: 0,
+        hits: [
+          {
+            pageContent: 'lexical candidate',
+            metadata: { source: '/kb/lexical.md', chunkIndex: 0 },
+            score: 10,
+          },
+        ],
+      })),
+    };
+    const restoreFactory = setRerankerFactoryForTests(async () => {
+      throw new Error('reranker unavailable');
+    });
+    const previousRerank = process.env.KB_RERANK;
+    const previousTopN = process.env.KB_RERANK_TOP_N;
+    process.env.KB_RERANK = 'on';
+    process.env.KB_RERANK_TOP_N = '2';
+
+    try {
+      const out = await captureSearchOutput(
+        ['query', '--mode=hybrid', '--k=2', '--no-freshness'],
+        deps,
+      );
+
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('> _Rerank: Xenova/ms-marco-MiniLM-L-6-v2; rescored 2 candidate(s), cache hits 0; degraded to fused order._');
+      expect(out.stdout).toContain('> _Degraded stages: rerank (reranker unavailable)._');
+      expect(takeLastSearchCanonicalTelemetry()).toMatchObject({
+        rerank: {
+          degraded: true,
+          degrade_reason: 'reranker unavailable',
+        },
       });
     } finally {
       restoreFactory();

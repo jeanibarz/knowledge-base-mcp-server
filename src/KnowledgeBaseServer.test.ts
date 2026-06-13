@@ -1483,6 +1483,7 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(result.content[0].text).toContain('Second alpha fallback content');
     expect((result as any).structuredContent).toMatchObject({
       degraded: true,
+      degraded_stages: [{ stage: 'dense', reason: 'provider_timeout' }],
       degrade_reason: 'provider_timeout',
       gate_verdict: {
         state: 'injected',
@@ -1496,6 +1497,7 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(events[0]).toMatchObject({
       search_mode: 'dense',
       degraded: true,
+      degraded_stages: [{ stage: 'dense', reason: 'provider_timeout' }],
       degrade_reason: 'provider_timeout',
       result_count: 2,
     });
@@ -1664,6 +1666,7 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(result.content[0].text).toContain('Hybrid lexical fallback content');
     expect((result as any).structuredContent).toMatchObject({
       degraded: true,
+      degraded_stages: [{ stage: 'dense', reason: 'provider_unavailable' }],
       degrade_reason: 'provider_unavailable',
       gate_verdict: {
         state: 'injected',
@@ -1677,6 +1680,7 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(events[0]).toMatchObject({
       search_mode: 'hybrid',
       degraded: true,
+      degraded_stages: [{ stage: 'dense', reason: 'provider_unavailable' }],
       degrade_reason: 'provider_unavailable',
       result_count: 1,
     });
@@ -1715,6 +1719,59 @@ describe('KnowledgeBaseServer handlers', () => {
       expect(text).toContain('rerank stub-reranker');
       expect(text.indexOf('Lexical winner content')).toBeGreaterThanOrEqual(0);
       expect(text.indexOf('Lexical winner content')).toBeLessThan(text.indexOf('Dense loser content'));
+    } finally {
+      restoreFactory();
+    }
+  });
+
+  it('handleRetrieveKnowledge surfaces reranker degradation in structured content and canonical logs', async () => {
+    const tempDir = await setRetrieveEnv();
+    const logFile = path.join(tempDir, 'canonical.log');
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'canonical';
+    process.env.KB_RERANK = 'on';
+    process.env.KB_RERANK_TOP_N = '2';
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Alpha lexical content');
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'Dense content', metadata: { source: '/kb/dense.md', chunkIndex: 0 }, score: 0.2 },
+    ]);
+
+    const server = await freshServer();
+    const { setRerankerFactoryForTests } = await import('./reranker.js');
+    const restoreFactory = setRerankerFactoryForTests(async () => {
+      throw new Error('reranker model unavailable');
+    });
+    try {
+      const result = await server['handleRetrieveKnowledge']({
+        query: 'alpha',
+        knowledge_base_name: 'alpha',
+        search_mode: 'hybrid',
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0].text).toContain('rerank Xenova/ms-marco-MiniLM-L-6-v2 degraded');
+      expect(result.content[0].text).toContain('> _Degraded stages: rerank (reranker model unavailable)._');
+      expect((result as any).structuredContent).toMatchObject({
+        degraded: true,
+        degraded_stages: [{ stage: 'rerank', reason: 'reranker model unavailable' }],
+      });
+      expect((result as any).structuredContent.degrade_reason).toBeUndefined();
+
+      const events = (await readCanonicalEvents(logFile))
+        .filter((event) => event.tool === 'retrieve_knowledge');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        search_mode: 'hybrid',
+        degraded: true,
+        degraded_stages: [{ stage: 'rerank', reason: 'reranker model unavailable' }],
+        rerank: {
+          degraded: true,
+          degrade_reason: 'reranker model unavailable',
+        },
+      });
+      expect(events[0].degrade_reason).toBeUndefined();
     } finally {
       restoreFactory();
     }
