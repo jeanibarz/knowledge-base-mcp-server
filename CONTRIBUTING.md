@@ -34,7 +34,12 @@ Please use the [Feature Request issue template](./.github/ISSUE_TEMPLATE/feature
 
 Use `npm run check` before opening a PR; it runs the TypeScript build, full Jest suite, and documentation anchor verifier.
 
-Use `npm test` for faster Jest-only iteration; it runs the full Jest suite serially.
+Use `npm test` for the local CI-parity test gate. It builds the TypeScript output first, then runs the Jest `parallel` project with four workers followed by the Jest `serial` project in-band. The scripts clear `LOG_FILE` so ambient local logging does not redirect canonical stderr assertions into a personal log file.
+
+Use the project scripts when you need a narrower runner check:
+
+- `npm run test:parallel` runs the parallel-safe Jest project with `--maxWorkers=4`.
+- `npm run test:serial` runs the explicit serial Jest project with `--runInBand`.
 
 For focused local work:
 

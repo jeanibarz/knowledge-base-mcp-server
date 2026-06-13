@@ -12,6 +12,28 @@
   [RFC 019 cross-encoder reranker](../rfcs/019-cross-encoder-reranker.md)
   ([M0b reranker report](../rfcs/019-m0b-reranker-report.md))
 
+## Jest Projects
+
+`npm test` is the contributor and CI Jest gate. It runs `npm run build`, then:
+
+- `npm run test:parallel` runs the Jest `parallel` project with `--maxWorkers=4`.
+- `npm run test:serial` runs the Jest `serial` project with `--runInBand`.
+
+Both scripts set `LOG_FILE=` for the Jest process. This keeps canonical-log assertions deterministic when a local agent shell exports a personal `LOG_FILE`; otherwise canonical events are appended to that file instead of being visible to tests that intentionally spy on stderr.
+
+The serial project is the explicit escape hatch for suites with shared process, server, native-module, lock, watcher, or opt-in stress behavior:
+
+- `src/FaissIndexManager.test.ts` uses native FAISS bindings, model-directory state, provider env mutation, and process signal listeners.
+- `src/KnowledgeBaseServer.test.ts` exercises server lifecycle, canonical logging modes, mutation rollback, and trigger watchers.
+- `src/transport/http.test.ts` and `src/transport/sse.test.ts` bind real local HTTP/SSE servers and long-lived connections.
+- `src/recursive-fs-watch.test.ts` and `src/triggerWatcher.test.ts` exercise filesystem watchers and timers.
+- `src/reindex-runner.test.ts` covers reindex sentinels, process ids, and contextual-retrieval env.
+- `src/write-lock.test.ts`, `src/docstore-cas.test.ts`, and `src/docstore-cas.integration.test.ts` exercise lock files and shared docstore CAS behavior.
+- `tests/stress/**/*.test.ts` remains in the serial project because stress scenarios are process- and resource-sensitive even when skipped by default.
+- `src/e2e/**/*.test.ts` joins the serial project only when `KB_RUN_E2E=1`.
+
+New tests should stay in the parallel project unless they require one of those shared resources. Add a test to the serial project by listing its path in `jest.config.js` and documenting the reason in this section.
+
 ## Indexing
 
 ### TS-INDEX-358: Default Text-First Ingest Filter
