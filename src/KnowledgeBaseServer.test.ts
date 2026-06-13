@@ -2043,6 +2043,51 @@ describe('KnowledgeBaseServer handlers', () => {
     );
   });
 
+  it('handleRetrieveKnowledge forwards since / until mtime filters (#609)', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([]);
+
+    const server = await freshServer();
+
+    await server['handleRetrieveKnowledge']({
+      query: 'q',
+      since: '30d',
+      until: '24h',
+    });
+
+    expect(similaritySearchMock).toHaveBeenLastCalledWith(
+      'q',
+      10,
+      undefined,
+      undefined,
+      { extensions: undefined, pathGlob: undefined, tags: undefined, since: '30d', until: '24h' },
+      expect.any(Object),
+    );
+  });
+
+  it('handleRetrieveKnowledge rejects invalid recency ranges before retrieval (#609)', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([]);
+
+    const server = await freshServer();
+
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'q',
+      since: '24h',
+      until: '30d',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toMatchObject({
+      code: 'VALIDATION',
+      message: expect.stringContaining('invalid recency range'),
+    });
+    expect(updateIndexMock).not.toHaveBeenCalled();
+    expect(similaritySearchMock).not.toHaveBeenCalled();
+  });
+
   it('handleRetrieveKnowledge scopes returned sources to knowledge_base_name (#71)', async () => {
     const tempDir = await setRetrieveEnv();
     const alphaSource = path.join(tempDir, 'alpha', 'one.md');

@@ -151,6 +151,27 @@ describe('parseSearchArgs freshness', () => {
   });
 });
 
+describe('parseSearchArgs recency filters (#609)', () => {
+  it('accepts --since and --until duration or ISO bounds', () => {
+    expect(parseSearchArgs([
+      'query',
+      '--since=2026-06-01',
+      '--until=2026-06-02T00:00:00Z',
+    ])).toMatchObject({
+      since: '2026-06-01',
+      until: '2026-06-02T00:00:00Z',
+    });
+    expect(parseSearchArgs(['query', '--since=30d'])).toMatchObject({ since: '30d' });
+  });
+
+  it('rejects malformed and inverted recency ranges', () => {
+    expect(() => parseSearchArgs(['query', '--since=soon'])).toThrow(/invalid since/);
+    expect(() => parseSearchArgs(['query', '--since=24h', '--until=30d'])).toThrow(
+      /invalid recency range/,
+    );
+  });
+});
+
 describe('parseSearchArgs pager (#471)', () => {
   it('defaults to env-driven pager resolution', () => {
     expect(parseSearchArgs(['query'])).toMatchObject({ pager: null });
@@ -831,6 +852,46 @@ describe('runSearch timing guard (#331)', () => {
       sidecar_fast_path: 'hit',
       post_filter_kept: 6,
       post_filter_ms: 3,
+    });
+  });
+
+  it('forwards --since/--until as dense recency filters and surfaces timing diagnostics', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockImplementationOnce(async (...args: unknown[]) => {
+      const denseTiming = args[5] as SimilaritySearchTiming;
+      denseTiming.fetch_k = 20;
+      denseTiming.post_filter_ms = 4;
+      denseTiming.post_filter_kept = 1;
+      return [{
+        pageContent: 'recent runbook',
+        metadata: { source: '/kb/ops/recent.md', relativePath: 'ops/recent.md', chunkIndex: 0 },
+        score: 0.12,
+      }] as never;
+    });
+
+    const out = await captureSearchOutput([
+      'runbook',
+      '--since=2026-06-01',
+      '--until=2026-06-02',
+      '--format=json',
+      '--timing',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    expect(manager.similaritySearch).toHaveBeenCalledWith(
+      'runbook',
+      10,
+      undefined,
+      undefined,
+      { since: '2026-06-01', until: '2026-06-02' },
+      expect.any(Object),
+      { noCache: false, retrievalViews: undefined },
+    );
+    expect(JSON.parse(out.stdout).filter_diagnostics).toMatchObject({
+      fetch_k: 20,
+      post_filter_kept: 1,
+      post_filter_ms: 4,
     });
   });
 

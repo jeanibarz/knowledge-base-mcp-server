@@ -115,6 +115,7 @@ import {
   classifyDenseDegradationReason,
   type DenseDegradationReason,
 } from './search-core.js';
+import { parseRecencyFilterRange } from './search-filters.js';
 import {
   applyRelevanceGate,
   emitRelevanceGateDecision,
@@ -203,12 +204,14 @@ function hasNeighborContext(options: NeighborContextOptions | undefined): boolea
 }
 
 function hasRetrievalFilters(
-  filters: { extensions?: string[]; pathGlob?: string; tags?: string[] } | undefined,
+  filters: { extensions?: string[]; pathGlob?: string; tags?: string[]; since?: string; until?: string } | undefined,
 ): boolean {
   return filters !== undefined && (
     (filters.extensions?.length ?? 0) > 0 ||
     filters.pathGlob !== undefined ||
-    (filters.tags?.length ?? 0) > 0
+    (filters.tags?.length ?? 0) > 0 ||
+    filters.since !== undefined ||
+    filters.until !== undefined
   );
 }
 
@@ -291,6 +294,8 @@ export class KnowledgeBaseServer {
         extensions: z.array(z.string()).optional().describe('Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional.'),
         path_glob: z.string().optional().describe('Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching.'),
         tags: z.array(z.string()).optional().describe('Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter.'),
+        since: z.string().optional().describe('Limit dense results to chunks whose current source-file mtime is at or after this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes.'),
+        until: z.string().optional().describe('Limit dense results to chunks whose current source-file mtime is at or before this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes.'),
         context_before: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense semantic match. Defaults to 0.'),
         context_after: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each dense semantic match. Defaults to 0.'),
         context_window: z.number().int().min(0).max(5).optional().describe('Shorthand for setting context_before and context_after to the same value. Defaults to 0.'),
@@ -710,6 +715,8 @@ export class KnowledgeBaseServer {
     extensions?: string[];
     path_glob?: string;
     tags?: string[];
+    since?: string;
+    until?: string;
     context_before?: number;
     context_after?: number;
     context_window?: number;
@@ -724,8 +731,8 @@ export class KnowledgeBaseServer {
     const knowledgeBaseName: string | undefined = args.knowledge_base_name;
     const threshold: number | undefined = args.threshold;
     const modelNameOverride: string | undefined = args.model_name;
-    const filters = (args.extensions || args.path_glob || args.tags)
-      ? { extensions: args.extensions, pathGlob: args.path_glob, tags: args.tags }
+    const filters = (args.extensions || args.path_glob || args.tags || args.since || args.until)
+      ? { extensions: args.extensions, pathGlob: args.path_glob, tags: args.tags, since: args.since, until: args.until }
       : undefined;
     const searchMode: 'dense' | 'hybrid' = args.search_mode ?? 'dense';
     const taskContext = args.task_context;
@@ -741,6 +748,27 @@ export class KnowledgeBaseServer {
       threshold: threshold ?? 2,
       search_mode: searchMode,
     }, async () => {
+      try {
+        parseRecencyFilterRange({ since: args.since, until: args.until });
+      } catch (err) {
+        searchLatencyMetrics.record({
+          mode: searchMode,
+          status: 'error',
+          totalMs: Date.now() - requestStartedAt,
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: {
+                code: 'VALIDATION',
+                message: (err as Error).message,
+              },
+            }),
+          }],
+          isError: true,
+        };
+      }
       if (searchMode === 'hybrid') {
         if (hasNeighborContext(neighborContext)) {
           searchLatencyMetrics.record({
@@ -1042,7 +1070,7 @@ export class KnowledgeBaseServer {
     query: string;
     knowledgeBaseName?: string;
     modelNameOverride?: string;
-    filters?: { extensions?: string[]; pathGlob?: string; tags?: string[] };
+    filters?: { extensions?: string[]; pathGlob?: string; tags?: string[]; since?: string; until?: string };
     canonical?: Partial<CanonicalLogInput>;
     taskContext?: string;
     gateOverride?: RelevanceGateOverride;
