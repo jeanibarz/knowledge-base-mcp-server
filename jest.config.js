@@ -1,6 +1,6 @@
 /** @type {import('ts-jest').JestConfigWithTsJest} */
 
-// Issue #222 — the spawn-the-binary E2E suite under `src/e2e/` boots
+// Issue #222 - the spawn-the-binary E2E suite under `src/e2e/` boots
 // `build/index.js` as a child process per test and adds seconds of
 // wall-time to a run that is otherwise milliseconds. It is opt-in:
 // default `npm test` excludes it via `testPathIgnorePatterns`, while
@@ -11,18 +11,31 @@
 // env var still sees a clean "skipped" line rather than an opaque hang.
 const e2eEnabled = process.env.KB_RUN_E2E === '1';
 
-export default {
+const baseTestMatch = [
+  '**/src/**/*.test.ts',
+  '**/benchmarks/**/*.test.ts',
+  '**/tests/stress/**/*.test.ts',
+];
+
+const serialTestPathPatterns = [
+  '<rootDir>/src/FaissIndexManager.test.ts',
+  '<rootDir>/src/KnowledgeBaseServer.test.ts',
+  '<rootDir>/src/cli-doctor.test.ts',
+  '<rootDir>/src/docstore-cas.integration.test.ts',
+  '<rootDir>/src/docstore-cas.test.ts',
+  '<rootDir>/src/recursive-fs-watch.test.ts',
+  '<rootDir>/src/reindex-runner.test.ts',
+  '<rootDir>/src/transport/http.test.ts',
+  '<rootDir>/src/transport/sse.test.ts',
+  '<rootDir>/src/triggerWatcher.test.ts',
+  '<rootDir>/src/write-lock.test.ts',
+  '<rootDir>/tests/stress/',
+  ...(e2eEnabled ? ['<rootDir>/src/e2e/'] : []),
+];
+
+const baseConfig = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  testMatch: [
-    "**/src/**/*.test.ts",
-    "**/benchmarks/**/*.test.ts",
-    "**/tests/stress/**/*.test.ts",
-  ],
-  testPathIgnorePatterns: [
-    '/node_modules/',
-    ...(e2eEnabled ? [] : ['<rootDir>/src/e2e/']),
-  ],
   extensionsToTreatAsEsm: ['.ts'],
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
@@ -35,4 +48,42 @@ export default {
       },
     ],
   },
+};
+
+export default {
+  projects: [
+    {
+      ...baseConfig,
+      displayName: 'parallel',
+      testMatch: baseTestMatch,
+      testPathIgnorePatterns: [
+        '/node_modules/',
+        ...serialTestPathPatterns,
+        ...(e2eEnabled ? [] : ['<rootDir>/src/e2e/']),
+      ],
+    },
+    {
+      ...baseConfig,
+      displayName: 'serial',
+      testMatch: [
+        '**/src/FaissIndexManager.test.ts',
+        '**/src/KnowledgeBaseServer.test.ts',
+        '**/src/cli-doctor.test.ts',
+        '**/src/docstore-cas.integration.test.ts',
+        '**/src/docstore-cas.test.ts',
+        '**/src/recursive-fs-watch.test.ts',
+        '**/src/reindex-runner.test.ts',
+        '**/src/transport/http.test.ts',
+        '**/src/transport/sse.test.ts',
+        '**/src/triggerWatcher.test.ts',
+        '**/src/write-lock.test.ts',
+        '**/tests/stress/**/*.test.ts',
+        ...(e2eEnabled ? ['**/src/e2e/**/*.test.ts'] : []),
+      ],
+      testPathIgnorePatterns: [
+        '/node_modules/',
+        ...(e2eEnabled ? [] : ['<rootDir>/src/e2e/']),
+      ],
+    },
+  ],
 };
