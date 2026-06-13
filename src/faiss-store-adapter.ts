@@ -4,6 +4,7 @@ import type { Document } from '@langchain/core/documents';
 import { embeddingText } from './contextual-preface.js';
 import { resolveFaissIndexType, type FaissIndexType } from './config/indexing.js';
 import type { QueryCacheLookupStatus, QueryCacheTelemetry } from './query-cache.js';
+import type { SearchIndexAdapter } from './search-index-adapter.js';
 
 type ScoredFaissDocument = [Document, number];
 
@@ -161,7 +162,7 @@ export interface EmbeddedDocumentsBatch {
  * and the optional vector-first search method. Keep those assumptions here so
  * FaissIndexManager remains the public orchestration facade.
  */
-export class FaissStoreAdapter {
+export class FaissStoreAdapter implements SearchIndexAdapter {
   private constructor(private readonly store: FaissStore) {}
 
   static fromStore(store: FaissStore): FaissStoreAdapter {

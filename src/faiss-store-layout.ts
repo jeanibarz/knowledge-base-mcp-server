@@ -9,7 +9,21 @@ import {
   type DedupOutcome,
 } from './docstore-cas.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
-import { resolveFaissIndexType, type FaissIndexType } from './config/indexing.js';
+import {
+  backendForIndexType,
+  HNSW_CAPACITY_POLICY,
+  HNSW_METRIC,
+  resolveFaissIndexType,
+  type FaissIndexType,
+  type HnswIndexConfig,
+  type IndexBackend,
+  type SearchIndexType,
+} from './config/indexing.js';
+import {
+  HNSW_DOCSTORE_FILENAME,
+  HNSW_INDEX_FILENAME,
+  HnswIndexAdapter,
+} from './hnsw-index-adapter.js';
 import { logger } from './logger.js';
 
 export const INDEX_VERSION_RETENTION_ENV = 'KB_INDEX_VERSION_RETENTION';
@@ -17,6 +31,7 @@ export const DEFAULT_PREVIOUS_INDEX_VERSION_RETENTION = 2;
 const VERSION_DIR_PATTERN = /^index\.v(\d+)$/;
 const SYMLINK_NAME = 'index';
 const LEGACY_INDEX_NAME = 'faiss.index';
+export const FAISS_INDEX_FILENAME = LEGACY_INDEX_NAME;
 export const INDEX_INTEGRITY_MANIFEST_FILENAME = 'integrity.json';
 export const INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION = 'kb.index-integrity.v1';
 export const EMBEDDING_CANARY_TEXT =
@@ -41,12 +56,20 @@ export interface IndexIntegrityManifest {
   schema_version: typeof INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION;
   written_at: string;
   model_id: string;
-  index_type: FaissIndexType;
-  embedding_canary?: EmbeddingCanaryFingerprint;
-  files: {
-    'faiss.index': { sha256: string };
-    'docstore.json': { sha256: string };
+  backend?: IndexBackend;
+  index_type: SearchIndexType;
+  hnsw?: {
+    m: number;
+    efConstruction: number;
+    efSearch: number;
+    metric: typeof HNSW_METRIC;
+    capacity_policy: typeof HNSW_CAPACITY_POLICY;
+    random_seed: number;
+    dimensions: number;
+    max_elements: number;
   };
+  embedding_canary?: EmbeddingCanaryFingerprint;
+  files: Record<string, { sha256: string }>;
 }
 
 export interface IndexVersionPruneResult {
@@ -177,6 +200,29 @@ export async function pruneInactiveIndexVersions(
 
 type FsOperationErrorHandler = (action: string, targetPath: string, error: unknown) => never;
 
+function manifestBackend(manifest: IndexIntegrityManifest | null): IndexBackend {
+  return manifest?.backend ?? 'faiss';
+}
+
+function mismatchMessage(
+  versionDir: string,
+  expectedBackend: IndexBackend,
+  actualBackend: IndexBackend,
+): string {
+  return `Versioned index ${versionDir} was written for backend ${actualBackend}, ` +
+    `but the current configuration expects ${expectedBackend}`;
+}
+
+async function readManifestForLoad(versionDir: string): Promise<IndexIntegrityManifest | null> {
+  try {
+    return await readIndexIntegrityManifest(versionDir);
+  } catch (err) {
+    throw new Error(
+      `Versioned index ${versionDir} has a malformed integrity manifest: ${(err as Error).message}`,
+    );
+  }
+}
+
 /**
  * RFC 017 M0c — load a specific `index.vN/` directory directly,
  * bypassing the `index` symlink. Used by `kb eval --compare-index` to
@@ -201,6 +247,7 @@ export async function loadFaissStoreAtomic(options: {
   modelId: string;
   embeddings: EmbeddingsInterface;
   handleFsOperationError: FsOperationErrorHandler;
+  expectedIndexType?: FaissIndexType;
   repairCorrupt?: boolean;
 }): Promise<FaissStore | null> {
   const {
@@ -208,6 +255,7 @@ export async function loadFaissStoreAtomic(options: {
     modelId,
     embeddings,
     handleFsOperationError,
+    expectedIndexType = resolveFaissIndexType(),
     repairCorrupt = true,
   } = options;
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
@@ -231,6 +279,40 @@ export async function loadFaissStoreAtomic(options: {
         );
       }
       throw err;
+    }
+
+    const manifest = await readManifestForLoad(resolved);
+    const actualBackend = manifestBackend(manifest);
+    if (actualBackend !== 'faiss') {
+      const message = mismatchMessage(resolved, 'faiss', actualBackend);
+      if (!repairCorrupt) {
+        throw new Error(`${message}; read-only load will not rebuild it.`);
+      }
+      logger.warn(`${message}; removing active symlink so the next update rebuilds.`);
+      try {
+        await fsp.rm(symlinkPath, { force: true });
+      } catch (unlinkErr) {
+        handleFsOperationError('delete mismatched index symlink', symlinkPath, unlinkErr);
+      }
+      return null;
+    }
+    if (
+      manifest !== null &&
+      manifest.index_type !== undefined &&
+      manifest.index_type !== expectedIndexType
+    ) {
+      const message = `Versioned FAISS index ${resolved} was written as ` +
+        `${manifest.index_type}, but the current configuration expects ${expectedIndexType}`;
+      if (!repairCorrupt) {
+        throw new Error(`${message}; read-only load will not rebuild it.`);
+      }
+      logger.warn(`${message}; removing active symlink so the next update rebuilds.`);
+      try {
+        await fsp.rm(symlinkPath, { force: true });
+      } catch (unlinkErr) {
+        handleFsOperationError('delete mismatched index symlink', symlinkPath, unlinkErr);
+      }
+      return null;
     }
 
     let store: FaissStore;
@@ -274,6 +356,19 @@ export async function loadFaissStoreAtomic(options: {
   }
 
   if (await pathExists(legacyPath)) {
+    if (backendForIndexType(expectedIndexType) !== 'faiss') {
+      if (!repairCorrupt) {
+        throw new Error(
+          `Legacy FAISS index at ${legacyPath} cannot satisfy backend hnsw; ` +
+            `read-only load will not rebuild it.`,
+        );
+      }
+      logger.warn(
+        `Legacy FAISS index at ${legacyPath} ignored because current backend is hnsw. ` +
+          `The next updateIndex will rebuild into the versioned HNSW layout.`,
+      );
+      return null;
+    }
     try {
       logger.info(
         `Loading legacy FAISS index for model ${modelId} from faiss.index/. ` +
@@ -304,6 +399,141 @@ export async function loadFaissStoreAtomic(options: {
   logger.info(
     `FAISS index not found for model ${modelId}. It will be created on the next updateIndex.`,
   );
+  return null;
+}
+
+export async function loadHnswIndexAtomic(options: {
+  modelDir: string;
+  modelId: string;
+  config: HnswIndexConfig;
+  handleFsOperationError: FsOperationErrorHandler;
+  repairCorrupt?: boolean;
+}): Promise<HnswIndexAdapter | null> {
+  const {
+    modelDir,
+    modelId,
+    config,
+    handleFsOperationError,
+    repairCorrupt = true,
+  } = options;
+  const symlinkPath = path.join(modelDir, SYMLINK_NAME);
+  const legacyPath = path.join(modelDir, LEGACY_INDEX_NAME);
+
+  const symStat = await fsp.lstat(symlinkPath).catch((err) => {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  });
+
+  if (symStat?.isSymbolicLink()) {
+    let resolved: string;
+    try {
+      resolved = await fsp.realpath(symlinkPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(
+          `loadAtomic: symlink ${symlinkPath} target vanished between lstat and realpath - ` +
+            `N=3 retention contract violated. Check for concurrent gc, manual filesystem ` +
+            `surgery, or unexpected rmrf.`,
+        );
+      }
+      throw err;
+    }
+
+    const manifest = await readManifestForLoad(resolved);
+    const actualBackend = manifestBackend(manifest);
+    if (actualBackend !== 'hnsw') {
+      const message = mismatchMessage(resolved, 'hnsw', actualBackend);
+      if (!repairCorrupt) {
+        throw new Error(`${message}; read-only load will not rebuild it.`);
+      }
+      logger.warn(`${message}; removing active symlink so the next update rebuilds.`);
+      try {
+        await fsp.rm(symlinkPath, { force: true });
+      } catch (unlinkErr) {
+        handleFsOperationError('delete mismatched index symlink', symlinkPath, unlinkErr);
+      }
+      return null;
+    }
+    if (manifest?.index_type !== 'hnsw' || manifest.hnsw === undefined) {
+      const message = `Versioned HNSW index ${resolved} is missing HNSW manifest metadata`;
+      if (!repairCorrupt) {
+        throw new Error(`${message}; read-only load will not rebuild it.`);
+      }
+      logger.warn(`${message}; removing active symlink so the next update rebuilds.`);
+      try {
+        await fsp.rm(symlinkPath, { force: true });
+      } catch (unlinkErr) {
+        handleFsOperationError('delete incomplete HNSW index symlink', symlinkPath, unlinkErr);
+      }
+      return null;
+    }
+    if (
+      manifest.hnsw.m !== config.m ||
+      manifest.hnsw.efConstruction !== config.efConstruction ||
+      manifest.hnsw.metric !== config.metric ||
+      manifest.hnsw.random_seed !== config.randomSeed
+    ) {
+      const message = `Versioned HNSW index ${resolved} was built with ` +
+        `m=${manifest.hnsw.m}, efConstruction=${manifest.hnsw.efConstruction}, ` +
+        `metric=${manifest.hnsw.metric}, randomSeed=${manifest.hnsw.random_seed}; ` +
+        `current configuration expects m=${config.m}, ` +
+        `efConstruction=${config.efConstruction}, metric=${config.metric}, ` +
+        `randomSeed=${config.randomSeed}`;
+      if (!repairCorrupt) {
+        throw new Error(`${message}; read-only load will not rebuild it.`);
+      }
+      logger.warn(`${message}; removing active symlink so the next update rebuilds.`);
+      try {
+        await fsp.rm(symlinkPath, { force: true });
+      } catch (unlinkErr) {
+        handleFsOperationError('delete retuned HNSW index symlink', symlinkPath, unlinkErr);
+      }
+      return null;
+    }
+
+    try {
+      logger.info(
+        `Loading HNSW index for model ${modelId} from ${path.basename(resolved)} ` +
+          `(m=${config.m}, efConstruction=${config.efConstruction}, efSearch=${config.efSearch})`,
+      );
+      return await HnswIndexAdapter.load(resolved, config, manifest.hnsw.dimensions);
+    } catch (err) {
+      if (!repairCorrupt) {
+        throw new Error(
+          `Versioned HNSW index ${resolved} is corrupt or unreadable; ` +
+            `read-only load will not repair it. Underlying error: ${(err as Error).message}`,
+        );
+      }
+      logger.warn(
+        `Versioned HNSW index ${resolved} is corrupt or unreadable - ` +
+          `removing symlink and falling back to rebuild. Error:`,
+        err,
+      );
+      try {
+        await fsp.rm(symlinkPath, { force: true });
+      } catch (unlinkErr) {
+        handleFsOperationError('delete corrupt HNSW index symlink', symlinkPath, unlinkErr);
+      }
+      return null;
+    }
+  }
+
+  if (await pathExists(legacyPath)) {
+    if (!repairCorrupt) {
+      throw new Error(
+        `Legacy FAISS index at ${legacyPath} cannot satisfy backend hnsw; ` +
+          `read-only load will not rebuild it.`,
+      );
+    }
+    logger.warn(
+      `Legacy FAISS index at ${legacyPath} ignored because current backend is hnsw. ` +
+        `The next updateIndex will rebuild into the versioned HNSW layout.`,
+    );
+  } else {
+    logger.info(
+      `HNSW index not found for model ${modelId}. It will be created on the next updateIndex.`,
+    );
+  }
   return null;
 }
 
@@ -359,6 +589,7 @@ export async function saveFaissStoreAtomic(options: {
     dedup = await dedupeDocstoreOnSave({ stagingDir, casRoot, swapCounter });
   }
   await writeIndexIntegrityManifest(stagingDir, modelId, indexType, {
+    backend: 'faiss',
     embeddingCanary,
   });
 
@@ -392,26 +623,115 @@ export async function saveFaissStoreAtomic(options: {
   }
 }
 
+export async function saveHnswIndexAtomic(options: {
+  adapter: HnswIndexAdapter;
+  modelDir: string;
+  modelId: string;
+  swapCounter: number;
+  config: HnswIndexConfig;
+  embeddingCanary?: EmbeddingCanaryFingerprint | null;
+  onCommitted?: () => Promise<void>;
+}): Promise<void> {
+  const {
+    adapter,
+    modelDir,
+    modelId,
+    swapCounter,
+    config,
+    embeddingCanary = null,
+    onCommitted,
+  } = options;
+  const symlinkPath = path.join(modelDir, SYMLINK_NAME);
+  const currentTarget = await readSymlinkOrNull(symlinkPath);
+  const nextVersion = nextVersionAfter(currentTarget);
+  const stagingDir = path.join(modelDir, nextVersion);
+
+  if (await pathExists(stagingDir)) {
+    logger.warn(`atomicSave: clearing orphan staging dir ${stagingDir} from prior crash`);
+    await fsp.rm(stagingDir, { recursive: true, force: true });
+  }
+  await adapter.save(stagingDir);
+  await writeIndexIntegrityManifest(stagingDir, modelId, 'hnsw', {
+    backend: 'hnsw',
+    hnsw: {
+      ...config,
+      dimensions: adapter.vectorDimension(),
+      maxElements: adapter.totalVectors(),
+    },
+    embeddingCanary,
+  });
+
+  const tmpLink = path.join(
+    modelDir,
+    `.${SYMLINK_NAME}.tmp.${process.pid}.${swapCounter}`,
+  );
+  await fsp.symlink(nextVersion, tmpLink);
+  await fsp.rename(tmpLink, symlinkPath);
+  await onCommitted?.();
+  logger.info(
+    `atomicSave: ${modelId} ${currentTarget ?? '(none)'} -> ${nextVersion} ` +
+      `(hnsw m=${config.m}, efConstruction=${config.efConstruction}, efSearch=${config.efSearch})`,
+  );
+
+  await pruneInactiveIndexVersions(modelDir, {
+    retention: resolveIndexVersionRetention(),
+  });
+}
+
 export async function writeIndexIntegrityManifest(
   versionDir: string,
   modelId: string,
-  indexType: FaissIndexType = resolveFaissIndexType(),
-  opts: { embeddingCanary?: EmbeddingCanaryFingerprint | null } = {},
+  indexType: SearchIndexType = resolveFaissIndexType(),
+  opts: {
+    backend?: IndexBackend;
+    hnsw?: HnswIndexConfig & {
+      dimensions: number;
+      maxElements: number;
+    };
+    embeddingCanary?: EmbeddingCanaryFingerprint | null;
+  } = {},
 ): Promise<IndexIntegrityManifest> {
+  const backend = opts.backend ?? backendForIndexType(indexType);
+  let files: Record<string, { sha256: string }>;
+  if (backend === 'hnsw') {
+    files = {
+        [HNSW_INDEX_FILENAME]: {
+          sha256: await calculateSHA256(path.join(versionDir, HNSW_INDEX_FILENAME)),
+        },
+        [HNSW_DOCSTORE_FILENAME]: {
+          sha256: await calculateSHA256(path.join(versionDir, HNSW_DOCSTORE_FILENAME)),
+        },
+      };
+  } else {
+    files = {
+        [FAISS_INDEX_FILENAME]: {
+          sha256: await calculateSHA256(path.join(versionDir, FAISS_INDEX_FILENAME)),
+        },
+        'docstore.json': {
+          sha256: await calculateSHA256(path.join(versionDir, 'docstore.json')),
+        },
+      };
+  }
   const manifest: IndexIntegrityManifest = {
     schema_version: INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION,
     written_at: new Date().toISOString(),
     model_id: modelId,
+    backend,
     index_type: indexType,
+    ...(opts.hnsw ? {
+      hnsw: {
+        m: opts.hnsw.m,
+        efConstruction: opts.hnsw.efConstruction,
+        efSearch: opts.hnsw.efSearch,
+        metric: opts.hnsw.metric,
+        capacity_policy: opts.hnsw.capacityPolicy,
+        random_seed: opts.hnsw.randomSeed,
+        dimensions: opts.hnsw.dimensions,
+        max_elements: opts.hnsw.maxElements,
+      },
+    } : {}),
     ...(opts.embeddingCanary ? { embedding_canary: opts.embeddingCanary } : {}),
-    files: {
-      'faiss.index': {
-        sha256: await calculateSHA256(path.join(versionDir, 'faiss.index')),
-      },
-      'docstore.json': {
-        sha256: await calculateSHA256(path.join(versionDir, 'docstore.json')),
-      },
-    },
+    files,
   };
   await fsp.writeFile(
     path.join(versionDir, INDEX_INTEGRITY_MANIFEST_FILENAME),
@@ -478,19 +798,24 @@ export async function readIndexIntegrityManifest(
   return parsed;
 }
 
-export async function resolveActiveIndexFilePath(modelDir: string): Promise<string | null> {
+export async function resolveActiveIndexFilePath(
+  modelDir: string,
+  backend: IndexBackend = 'faiss',
+): Promise<string | null> {
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
+  const indexFilename = backend === 'hnsw' ? HNSW_INDEX_FILENAME : FAISS_INDEX_FILENAME;
   try {
     const symStat = await fsp.lstat(symlinkPath);
     if (symStat.isSymbolicLink()) {
       const resolved = await fsp.realpath(symlinkPath);
-      const candidate = path.join(resolved, LEGACY_INDEX_NAME);
+      const candidate = path.join(resolved, indexFilename);
       if (await pathExists(candidate)) return candidate;
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
 
+  if (backend === 'hnsw') return null;
   const legacyFile = path.join(modelDir, LEGACY_INDEX_NAME, LEGACY_INDEX_NAME);
   if (await pathExists(legacyFile)) return legacyFile;
   return null;

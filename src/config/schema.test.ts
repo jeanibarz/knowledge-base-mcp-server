@@ -73,17 +73,24 @@ describe('config schema validation (FR-OBS-470)', () => {
 
   it('matches the runtime KB_INDEX_TYPE parser for case-insensitive values', () => {
     const validation = validateConfigEnv({
-      KB_INDEX_TYPE: ' SQ8 ',
+      KB_INDEX_TYPE: ' HNSW ',
+      KB_HNSW_M: '32',
+      KB_HNSW_EF_CONSTRUCTION: '200',
+      KB_HNSW_EF_SEARCH: '100',
     });
     const show = showConfigEnv({
-      KB_INDEX_TYPE: ' SQ8 ',
+      KB_INDEX_TYPE: ' HNSW ',
     });
 
     expect(validation.findings).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'KB_INDEX_TYPE', status: 'ok', value: 'sq8' }),
+      expect.objectContaining({ name: 'KB_INDEX_TYPE', status: 'ok', value: 'hnsw' }),
+      expect.objectContaining({ name: 'KB_HNSW_M', status: 'ok', value: '32' }),
+      expect.objectContaining({ name: 'KB_HNSW_EF_CONSTRUCTION', status: 'ok', value: '200' }),
+      expect.objectContaining({ name: 'KB_HNSW_EF_SEARCH', status: 'ok', value: '100' }),
     ]));
     expect(show.entries).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'KB_INDEX_TYPE', value: 'sq8', source: 'env' }),
+      expect.objectContaining({ name: 'KB_INDEX_TYPE', value: 'hnsw', source: 'env' }),
+      expect.objectContaining({ name: 'KB_HNSW_M', value: '32', source: 'default' }),
     ]));
   });
 

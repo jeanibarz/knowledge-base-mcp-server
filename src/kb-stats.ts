@@ -53,7 +53,7 @@ import {
 import type { TransportRuntimeStatsSnapshot } from './transport-runtime-stats.js';
 import {
   resolveFlatSearchP95AdvisoryMs,
-  type FaissIndexType,
+  type SearchIndexType,
 } from './config/indexing.js';
 
 export interface KbStatsRow {
@@ -107,7 +107,7 @@ export interface KbStatsPayload {
     provider: string;
     model: string;
     dim: number | null;
-    index_type?: FaissIndexType;
+    index_type?: SearchIndexType;
     index_factory?: string;
   };
   index_path: string;
@@ -143,7 +143,7 @@ export interface KbStatsDenseSearchLatencySummary {
   stage: 'faiss_search';
   status: 'success';
   active_index: {
-    type: FaissIndexType;
+    type: SearchIndexType;
     factory: string;
   };
   sample_count: number;
@@ -303,13 +303,14 @@ export async function computeKbStats(
   };
 }
 
-export function indexFactoryForType(indexType: FaissIndexType): string {
+export function indexFactoryForType(indexType: SearchIndexType): string {
+  if (indexType === 'hnsw') return 'HNSW';
   return indexType === 'sq8' ? 'SQ8' : 'Flat';
 }
 
 export function summarizeDenseSearchLatency(
   snapshot: SearchLatencyMetricsSnapshot,
-  indexType: FaissIndexType,
+  indexType: SearchIndexType,
   thresholdMs: number = resolveFlatSearchP95AdvisoryMs(),
 ): KbStatsDenseSearchLatencySummary | null {
   const histogram = snapshot.stages.dense?.faiss_search?.success;

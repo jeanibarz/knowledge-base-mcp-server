@@ -18,7 +18,7 @@ import {
   readModelIndexStorage,
   readStoredIndexType,
   resolveActiveModel,
-  resolveFaissIndexBinaryPath,
+  modelDir,
 } from './active-model.js';
 import {
   FAISS_INDEX_PATH,
@@ -90,7 +90,11 @@ import {
   type LlmProfile,
 } from './llm-profiles.js';
 import { resolveRerankerConfig } from './config/reranker.js';
-import { resolveFlatSearchP95AdvisoryMs, type FaissIndexType } from './config/indexing.js';
+import {
+  backendForIndexType,
+  resolveFlatSearchP95AdvisoryMs,
+  type SearchIndexType,
+} from './config/indexing.js';
 import { tryReadDaemonStatsPayload } from './cli-stats.js';
 import {
   daemonUrlFromEnv,
@@ -112,6 +116,7 @@ import {
   createEmbeddingCanaryFingerprint,
   cosineSimilarity,
   readIndexIntegrityManifest,
+  resolveActiveIndexFilePath,
 } from './faiss-store-layout.js';
 import { createDoctorBugReportBundle } from './cli-bug-report.js';
 import {
@@ -307,7 +312,7 @@ export interface DoctorReport {
     binary_path: string | null;
     version: string | null;
     mtime: string | null;
-    type: FaissIndexType | null;
+    type: SearchIndexType | null;
     factory: string | null;
     storage: {
       active_version_bytes: number | null;
@@ -1755,7 +1760,10 @@ async function readIndexHealth(activeModelId: string | null): Promise<DoctorRepo
     total_version_bytes: storage.total_version_bytes,
     retention_previous_versions: storage.retention_previous_versions,
   };
-  const binaryPath = await resolveFaissIndexBinaryPath(activeModelId);
+  const binaryPath = await resolveActiveIndexFilePath(
+    modelDir(activeModelId),
+    backendForIndexType(indexType),
+  );
   if (binaryPath === null) {
     return {
       path: FAISS_INDEX_PATH,

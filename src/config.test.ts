@@ -4,7 +4,9 @@ import {
   parseKbMaxFileBytes,
 } from './config/ingest.js';
 import {
+  resolveHnswIndexConfig,
   resolveFaissIndexType,
+  resolveIndexType,
   resolveChunkSize,
   resolveIndexingBatchSize,
   resolveIndexingConcurrency,
@@ -134,6 +136,45 @@ describe('resolveFaissIndexType (#468 — KB_INDEX_TYPE)', () => {
   it('accepts flat and sq8 case-insensitively', () => {
     expect(resolveFaissIndexType('flat')).toBe('flat');
     expect(resolveFaissIndexType(' SQ8 ')).toBe('sq8');
+  });
+
+  it('keeps hnsw opt-in on the generic parser without sending it to FAISS', () => {
+    expect(resolveIndexType(' HNSW ')).toBe('hnsw');
+    expect(resolveFaissIndexType('hnsw')).toBe('flat');
+  });
+});
+
+describe('resolveHnswIndexConfig (#623)', () => {
+  it('uses explicit non-binding defaults for HNSW tuning', () => {
+    expect(resolveHnswIndexConfig({})).toEqual({
+      m: 32,
+      efConstruction: 200,
+      efSearch: 100,
+      metric: 'l2',
+      capacityPolicy: 'resize_to_fit',
+      randomSeed: 100,
+    });
+  });
+
+  it('parses valid HNSW parameters and rejects invalid values', () => {
+    expect(resolveHnswIndexConfig({
+      KB_HNSW_M: '16',
+      KB_HNSW_EF_CONSTRUCTION: '80',
+      KB_HNSW_EF_SEARCH: '40',
+      KB_HNSW_RANDOM_SEED: '1234',
+    })).toMatchObject({
+      m: 16,
+      efConstruction: 80,
+      efSearch: 40,
+      randomSeed: 1234,
+    });
+
+    expect(() => resolveHnswIndexConfig({ KB_HNSW_M: '1' })).toThrow(/KB_HNSW_M/);
+    expect(() => resolveHnswIndexConfig({
+      KB_HNSW_M: '64',
+      KB_HNSW_EF_CONSTRUCTION: '32',
+    })).toThrow(/KB_HNSW_EF_CONSTRUCTION.*KB_HNSW_M/);
+    expect(() => resolveHnswIndexConfig({ KB_HNSW_EF_SEARCH: '1.5' })).toThrow(/KB_HNSW_EF_SEARCH/);
   });
 });
 

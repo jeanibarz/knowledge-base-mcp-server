@@ -28,10 +28,14 @@ import {
   resolveRefreshQuiesceMs,
 } from './config/ingest.js';
 import {
-  resolveFaissIndexType,
+  backendForIndexType,
+  resolveHnswIndexConfig,
+  resolveIndexType,
   resolveIndexingBatchSize,
   resolveIndexingConcurrency,
-  type FaissIndexType,
+  type HnswIndexConfig,
+  type IndexBackend,
+  type SearchIndexType,
 } from './config/indexing.js';
 import { casRootForIndexPath } from './docstore-cas.js';
 import {
@@ -52,9 +56,12 @@ import {
 import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import {
   createEmbeddingCanaryFingerprint,
+  loadHnswIndexAtomic,
   loadFaissStoreAtomic,
   loadFaissStoreFromVersionDir,
+  readIndexIntegrityManifest,
   resolveActiveIndexFilePath as resolveActiveIndexFilePathFromLayout,
+  saveHnswIndexAtomic,
   saveFaissStoreAtomic,
 } from './faiss-store-layout.js';
 import {
@@ -92,6 +99,8 @@ import {
 import { queryEmbeddingCache, type QueryCacheLookupStatus, type QueryCacheTelemetry } from './query-cache.js';
 import { withSidecarLock } from './write-lock.js';
 import { FaissStoreAdapter, type EmbeddedDocumentsBatch } from './faiss-store-adapter.js';
+import { HnswIndexAdapter } from './hnsw-index-adapter.js';
+import type { SearchIndexAdapter } from './search-index-adapter.js';
 import {
   recordIngestFailure,
   recordIngestSuccess,
@@ -237,7 +246,7 @@ function totalFileCount(
 export interface FaissIndexManagerOptions {
   provider: EmbeddingProvider;
   modelName: string;
-  indexType?: FaissIndexType;
+  indexType?: SearchIndexType;
 }
 
 export interface IndexUpdateProgress {
@@ -553,7 +562,7 @@ function parsePersistedIndexUpdateSummary(value: unknown): IndexUpdateSummary | 
 }
 
 export class FaissIndexManager {
-  private faissIndex: FaissStoreAdapter | null = null;
+  private faissIndex: SearchIndexAdapter | null = null;
   // Issue #59 — populated by initialize() via dynamic import of the active
   // provider's @langchain module. Definite-assignment-asserted because the
   // class invariant is "every method that touches embeddings runs after
@@ -572,7 +581,9 @@ export class FaissIndexManager {
   readonly modelNameFile: string;
   private readonly indexingBatchSize: number;
   private readonly indexingConcurrency: number;
-  private readonly indexType: FaissIndexType;
+  private readonly indexType: SearchIndexType;
+  private readonly indexBackend: IndexBackend;
+  private readonly hnswConfig: HnswIndexConfig | null;
   private lastIndexUpdateSummary: IndexUpdateSummary;
   // Issue #283 — cached metadata sidecar so we don't re-parse the JSONL
   // file on every query. Invalidated whenever updateIndex rewrites it,
@@ -608,14 +619,19 @@ export class FaissIndexManager {
     this.modelNameFile = modelNameFilePath(this.modelId);
     this.indexingBatchSize = resolveIndexingBatchSize(this.embeddingProvider);
     this.indexingConcurrency = resolveIndexingConcurrency(this.embeddingProvider);
-    this.indexType = opts?.indexType ?? resolveFaissIndexType();
+    this.indexType = opts?.indexType ?? resolveIndexType();
+    this.indexBackend = backendForIndexType(this.indexType);
+    this.hnswConfig = this.indexType === 'hnsw' ? resolveHnswIndexConfig() : null;
     this.lastIndexUpdateSummary = createNeverRunIndexUpdateSummary(this.modelId);
 
     // Issue #59 — embeddings are constructed lazily inside initialize() so
     // the unused providers' @langchain modules never load. API-key validation
     // moves with them; the throw still fires before any disk work.
 
-    logger.info(`FaissIndexManager bound to ${this.modelDir} (provider=${this.embeddingProvider}, model=${this.modelName}, id=${this.modelId})`);
+    logger.info(
+      `FaissIndexManager bound to ${this.modelDir} (provider=${this.embeddingProvider}, ` +
+        `model=${this.modelName}, id=${this.modelId}, index=${this.indexType})`,
+    );
   }
 
   get hasLoadedIndex(): boolean {
@@ -1117,12 +1133,25 @@ export class FaissIndexManager {
    * `list_models` (active-model.ts:detectDowngradeHazard), so no marker
    * file is required — the filesystem is the single source of truth.
    */
-  private async loadAtomic(opts: { repairCorrupt?: boolean } = {}): Promise<FaissStoreAdapter | null> {
+  private async loadAtomic(opts: { repairCorrupt?: boolean } = {}): Promise<SearchIndexAdapter | null> {
+    if (this.indexBackend === 'hnsw') {
+      if (this.hnswConfig === null) {
+        throw new Error('HNSW index configuration was not initialized');
+      }
+      return await loadHnswIndexAtomic({
+        modelDir: this.modelDir,
+        modelId: this.modelId,
+        config: this.hnswConfig,
+        handleFsOperationError,
+        repairCorrupt: opts.repairCorrupt,
+      });
+    }
     const store = await loadFaissStoreAtomic({
       modelDir: this.modelDir,
       modelId: this.modelId,
       embeddings: this.embeddings,
       handleFsOperationError,
+      expectedIndexType: this.indexType === 'sq8' ? 'sq8' : 'flat',
       repairCorrupt: opts.repairCorrupt,
     });
     return store === null ? null : FaissStoreAdapter.fromStore(store);
@@ -1156,6 +1185,21 @@ export class FaissIndexManager {
   async loadFromVersionDir(versionDir: string): Promise<void> {
     if (!this.embeddings) {
       throw new Error('FaissIndexManager.loadFromVersionDir requires initialize() first');
+    }
+    const manifest = await readIndexIntegrityManifest(versionDir);
+    if ((manifest?.backend ?? 'faiss') === 'hnsw') {
+      if (manifest?.hnsw === undefined) {
+        throw new Error(`HNSW version directory ${versionDir} is missing manifest metadata`);
+      }
+      this.faissIndex = await HnswIndexAdapter.load(
+        versionDir,
+        this.hnswConfig ?? resolveHnswIndexConfig(),
+        manifest.hnsw.dimensions,
+      );
+      this.metadataSidecarAllowedForLoadedStore = false;
+      this.metadataSidecarCache = null;
+      this.metadataSidecarMissingLogged = false;
+      return;
     }
     const store = await loadFaissStoreFromVersionDir({
       versionDir,
@@ -1197,12 +1241,27 @@ export class FaissIndexManager {
       ? await createEmbeddingCanaryFingerprint({ embedDocuments: embeddingsForCanary.embedDocuments })
       : null;
     this.swapCounter += 1;
+    if (this.indexBackend === 'hnsw') {
+      if (!(this.faissIndex instanceof HnswIndexAdapter) || this.hnswConfig === null) {
+        throw new Error('atomicSave called with a non-HNSW adapter for HNSW index type');
+      }
+      await saveHnswIndexAtomic({
+        adapter: this.faissIndex,
+        modelDir: this.modelDir,
+        modelId: this.modelId,
+        swapCounter: this.swapCounter,
+        config: this.hnswConfig,
+        embeddingCanary,
+        onCommitted: opts.onCommitted,
+      });
+      return;
+    }
     await saveFaissStoreAtomic({
       store: this.faissStoreForPersistence(),
       modelDir: this.modelDir,
       modelId: this.modelId,
       swapCounter: this.swapCounter,
-      indexType: this.indexType,
+      indexType: this.indexType === 'sq8' ? 'sq8' : 'flat',
       embeddingCanary,
       casRoot: casRootForIndexPath(FAISS_INDEX_PATH),
       onCommitted: opts.onCommitted,
@@ -1212,11 +1271,23 @@ export class FaissIndexManager {
   private faissStoreForPersistence(): ReturnType<FaissStoreAdapter['getStoreForPersistence']> {
     const candidate = this.faissIndex as
       | FaissStoreAdapter
-      | ReturnType<FaissStoreAdapter['getStoreForPersistence']>;
+      | HnswIndexAdapter
+      | ReturnType<FaissStoreAdapter['getStoreForPersistence']>
+      | null;
+    if (candidate instanceof HnswIndexAdapter) {
+      throw new Error('atomicSave called with a HNSW adapter for FAISS index type');
+    }
     if (candidate instanceof FaissStoreAdapter) {
       return candidate.getStoreForPersistence();
     }
-    return candidate;
+    if (
+      candidate !== null &&
+      typeof candidate === 'object' &&
+      typeof (candidate as { save?: unknown }).save === 'function'
+    ) {
+      return candidate as ReturnType<FaissStoreAdapter['getStoreForPersistence']>;
+    }
+    throw new Error('atomicSave called with a non-FAISS adapter for FAISS index type');
   }
 
   private async addDocumentsToIndex(
@@ -1283,12 +1354,17 @@ export class FaissIndexManager {
       batchIndex: number,
     ): Promise<void> => {
       if (this.faissIndex === null) {
-        logger.info(`Creating new FAISS index from ${embedded.documents.length} text(s)...`);
-        this.faissIndex = await FaissStoreAdapter.fromEmbeddedDocuments(
-          embedded,
-          this.embeddings,
-          { indexType: this.indexType },
-        );
+        logger.info(`Creating new ${this.indexBackend.toUpperCase()} index from ${embedded.documents.length} text(s)...`);
+        this.faissIndex = this.indexBackend === 'hnsw'
+          ? await HnswIndexAdapter.fromEmbeddedDocuments(
+              embedded,
+              this.hnswConfig ?? resolveHnswIndexConfig(),
+            )
+          : await FaissStoreAdapter.fromEmbeddedDocuments(
+              embedded,
+              this.embeddings,
+              { indexType: this.indexType === 'sq8' ? 'sq8' : 'flat' },
+            );
       } else {
         await this.faissIndex.addEmbeddedDocuments(embedded);
       }
@@ -2820,7 +2896,7 @@ export class FaissIndexManager {
     totalChunks: number;
     chunkCountsByKb: Record<string, number>;
     dim: number | null;
-    indexType: FaissIndexType;
+    indexType: SearchIndexType;
   } {
     if (!this.faissIndex) {
       return { totalChunks: 0, chunkCountsByKb: {}, dim: null, indexType: this.indexType };
@@ -2843,7 +2919,7 @@ export class FaissIndexManager {
    * if no index has been persisted yet for this model.
    */
   async resolveActiveIndexFilePath(): Promise<string | null> {
-    return resolveActiveIndexFilePathFromLayout(this.modelDir);
+    return resolveActiveIndexFilePathFromLayout(this.modelDir, this.indexBackend);
   }
 }
 
