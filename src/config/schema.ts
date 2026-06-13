@@ -156,6 +156,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'OPENAI_MODEL_NAME', kind: 'string', default: DEFAULT_OPENAI_MODEL_NAME, emptyUsesDefault: true },
 
   { name: 'INDEXING_BATCH_SIZE', kind: 'integer', defaultValue: (env) => String(defaultIndexingBatchSize(effectiveStringValue(env, 'EMBEDDING_PROVIDER', 'huggingface'))), min: 1, max: 512 },
+  { name: 'KB_INDEXING_CONCURRENCY', kind: 'integer', default: '1', min: 1, max: 4 },
   { name: 'KB_CHUNK_SIZE', kind: 'integer', default: '1000', min: 1 },
   { name: 'KB_CHUNK_OVERLAP', kind: 'integer', defaultValue: (env) => defaultChunkOverlap(env), min: 0 },
   { name: 'INGEST_EXTRA_EXTENSIONS', kind: 'csv', default: '' },

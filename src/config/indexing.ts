@@ -6,8 +6,11 @@ import { EMBEDDING_PROVIDER } from './provider.js';
 
 export const DEFAULT_INDEXING_BATCH_SIZE = 64;
 export const DEFAULT_OLLAMA_INDEXING_BATCH_SIZE = 16;
+export const DEFAULT_INDEXING_CONCURRENCY = 1;
 const MAX_INDEXING_BATCH_SIZE = 512;
+const MAX_INDEXING_CONCURRENCY = 4;
 export const KB_INDEX_TYPE_ENV = 'KB_INDEX_TYPE';
+export const KB_INDEXING_CONCURRENCY_ENV = 'KB_INDEXING_CONCURRENCY';
 export type FaissIndexType = 'flat' | 'sq8';
 export const KB_FLAT_SEARCH_P95_ADVISORY_MS_ENV = 'KB_FLAT_SEARCH_P95_ADVISORY_MS';
 export const DEFAULT_FLAT_SEARCH_P95_ADVISORY_MS = 50;
@@ -28,6 +31,32 @@ export function resolveIndexingBatchSize(
 }
 
 export const INDEXING_BATCH_SIZE: number = resolveIndexingBatchSize();
+
+export function resolveIndexingConcurrency(
+  provider: string = EMBEDDING_PROVIDER,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): number {
+  const raw = env[KB_INDEXING_CONCURRENCY_ENV];
+  if (raw === undefined || raw.trim() === '') {
+    return DEFAULT_INDEXING_CONCURRENCY;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_INDEXING_CONCURRENCY;
+  }
+
+  const requested = Math.min(MAX_INDEXING_CONCURRENCY, Math.max(1, Math.floor(parsed)));
+  if (provider !== 'ollama' || requested === 1) {
+    return requested;
+  }
+
+  const ollamaParallelRaw = env.OLLAMA_NUM_PARALLEL;
+  const ollamaParallel = ollamaParallelRaw === undefined ? NaN : Number(ollamaParallelRaw);
+  if (!Number.isFinite(ollamaParallel) || ollamaParallel <= 1) {
+    return DEFAULT_INDEXING_CONCURRENCY;
+  }
+  return Math.min(requested, Math.floor(ollamaParallel));
+}
 
 export function defaultIndexingBatchSize(provider: string): number {
   return provider === 'ollama'

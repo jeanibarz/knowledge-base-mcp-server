@@ -10,6 +10,7 @@ rollback commands over design background.
 | [Eval gate harness](eval-gate-harness.md) | Measuring relevance-gate behavior before or after rollout. |
 | [Feedback workflow](feedback-workflow.md) | Recording retrieval judgements and promoting them into eval fixtures. |
 | [Incident response](incident-response.md) | Triage starts from a user-visible failure symptom. |
+| [Indexing](indexing.md) | Tuning indexing batch concurrency and measuring local throughput. |
 | [Index quantization](index-quantization.md) | Registering or evaluating an SQ8 FAISS index. |
 | [Local services](local-services.md) | Checking Ollama, llama-server, n8n, and local service health. |
 | [Logs reader](logs-reader.md) | Inspecting canonical logs and request ids. |

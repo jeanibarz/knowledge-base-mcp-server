@@ -164,6 +164,12 @@ describe('config schema validation (FR-OBS-470)', () => {
         redacted: false,
       }),
       expect.objectContaining({
+        name: 'KB_INDEXING_CONCURRENCY',
+        value: '1',
+        source: 'default',
+        redacted: false,
+      }),
+      expect.objectContaining({
         name: 'HUGGINGFACE_API_KEY',
         value: '<redacted>',
         source: 'env',

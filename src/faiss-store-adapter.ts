@@ -148,6 +148,11 @@ export interface QueryEmbeddingLookup {
   telemetry: QueryCacheTelemetry;
 }
 
+export interface EmbeddedDocumentsBatch {
+  documents: readonly Document[];
+  vectors: number[][];
+}
+
 /**
  * Small boundary around @langchain/community's FaissStore.
  *
@@ -174,6 +179,14 @@ export class FaissStoreAdapter {
     // We pre-compute embeddings against `embeddingText(doc)` and then store
     // the documents verbatim via `addVectors` — preserving caller-visible
     // pageContent byte-identical to today while enriching the vector.
+    const embedded = await FaissStoreAdapter.embedDocumentsForIndexing(documents, embeddings);
+    return FaissStoreAdapter.fromEmbeddedDocuments(embedded, embeddings, options);
+  }
+
+  static async embedDocumentsForIndexing(
+    documents: readonly Document[],
+    embeddings: EmbeddingsInterface,
+  ): Promise<EmbeddedDocumentsBatch> {
     const texts = documents.map(embeddingText);
     const vectors = await embeddings.embedDocuments(texts);
     if (vectors.length !== documents.length) {
@@ -181,15 +194,23 @@ export class FaissStoreAdapter {
         `Embedding provider returned ${vectors.length} vector(s) for ${documents.length} document(s)`,
       );
     }
+    return { documents, vectors };
+  }
+
+  static async fromEmbeddedDocuments(
+    embedded: EmbeddedDocumentsBatch,
+    embeddings: EmbeddingsInterface,
+    options: { indexType?: FaissIndexType } = {},
+  ): Promise<FaissStoreAdapter> {
     const indexType = options.indexType ?? resolveFaissIndexType();
-    const index = await createIndexForVectors(vectors, indexType);
+    const index = await createIndexForVectors(embedded.vectors, indexType);
     const store = new FaissStore(embeddings, { ...(index ? { index } : {}) } as FaissLibArgs);
-    await store.addVectors(vectors, [...documents]);
+    await store.addVectors(embedded.vectors, [...embedded.documents]);
     // Post-batch invariant: the FaissStore.addVectors call must produce a
     // 1:1 docstore-to-vector ratio. RFC 017 §3 mandates this check to catch
     // a partial-failure where `index.add()` succeeded but `docstore.add()`
     // threw mid-batch.
-    assertIndexDocstoreParity(store, 'FaissStoreAdapter.fromDocuments');
+    assertIndexDocstoreParity(store, 'FaissStoreAdapter.fromEmbeddedDocuments');
     return new FaissStoreAdapter(store);
   }
 
@@ -210,22 +231,20 @@ export class FaissStoreAdapter {
     documents: readonly Document[],
     embeddings: EmbeddingsInterface,
   ): Promise<void> {
-    assertEmbeddingsSlot(this.store);
     // RFC 017 §3 — embed against `embeddingText(doc)` (preface-prepended
     // when present), then call `addVectors` with the original documents.
     // The `embeddings` argument here may be an `IndexingEmbeddingDeduper`
     // (see FaissIndexManager:1062); it normalizes strings before
     // delegating, so two chunks with identical text but different prefaces
     // are now correctly different inputs and produce different vectors.
-    const texts = documents.map(embeddingText);
-    const vectors = await embeddings.embedDocuments(texts);
-    if (vectors.length !== documents.length) {
-      throw new Error(
-        `Embedding provider returned ${vectors.length} vector(s) for ${documents.length} document(s)`,
-      );
-    }
-    await this.store.addVectors(vectors, [...documents]);
-    assertIndexDocstoreParity(this.store, 'FaissStoreAdapter.addDocumentsWithEmbeddings');
+    const embedded = await FaissStoreAdapter.embedDocumentsForIndexing(documents, embeddings);
+    await this.addEmbeddedDocuments(embedded);
+  }
+
+  async addEmbeddedDocuments(embedded: EmbeddedDocumentsBatch): Promise<void> {
+    assertEmbeddingsSlot(this.store);
+    await this.store.addVectors(embedded.vectors, [...embedded.documents]);
+    assertIndexDocstoreParity(this.store, 'FaissStoreAdapter.addEmbeddedDocuments');
   }
 
   async similaritySearchUsingBestPath(options: {
