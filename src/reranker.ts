@@ -359,9 +359,18 @@ class TransformersJsReranker implements Reranker {
 
   static async create(model: string): Promise<TransformersJsReranker> {
     const mod = await import('@huggingface/transformers') as unknown as TransformersModule;
+    // Opt-in GPU execution (RTX 3090): set KB_RERANK_DEVICE=cuda KB_RERANK_DTYPE=fp32
+    // with onnxruntime's CUDA EP + cuDNN on LD_LIBRARY_PATH. ~60x faster than the
+    // default CPU quantized path on long-document cross-encoding. Defaults to the
+    // original quantized CPU behavior when unset.
+    const device = process.env.KB_RERANK_DEVICE?.trim();
+    const dtype = process.env.KB_RERANK_DTYPE?.trim();
+    const modelOptions: Record<string, unknown> = device
+      ? { device, ...(dtype ? { dtype } : {}) }
+      : { quantized: true };
     const [tokenizer, classifier] = await Promise.all([
       mod.AutoTokenizer.from_pretrained(model),
-      mod.AutoModelForSequenceClassification.from_pretrained(model, { quantized: true }),
+      mod.AutoModelForSequenceClassification.from_pretrained(model, modelOptions),
     ]);
     return new TransformersJsReranker(model, tokenizer, classifier);
   }
