@@ -6,6 +6,7 @@
 import type { Document } from '@langchain/core/documents';
 import { buildChunkCitation, type ChunkCitation } from './chunk-id.js';
 import type { CanonicalDegradedStage } from './canonical-log.js';
+import { ANSI_BOLD, ANSI_BOLD_OFF } from './color.js';
 import { KB_EDITOR_URI, type KBEditorUriMode } from './config/retrieval.js';
 import {
   applyInjectionGuard,
@@ -89,8 +90,8 @@ export interface RetrievalHighlightOptions {
   terms: readonly string[];
 }
 
-const ANSI_BOLD = '\x1b[1m';
-const ANSI_BOLD_OFF = '\x1b[22m';
+// Query-term highlighting emits ANSI bold; the escape codes live in `color.ts`
+// so all ANSI output shares one source and one color-control decision (#659).
 
 /**
  * Strips `frontmatter.extras` from a chunk's metadata before wire
