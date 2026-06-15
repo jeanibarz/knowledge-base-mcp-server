@@ -2554,4 +2554,96 @@ describe('KnowledgeBaseServer handlers', () => {
     expect((result as any).frontmatter.extras).toBeUndefined();
     expect((result as any).frontmatter.arxiv_id).toBe('2604.1');
   });
+
+  // --- #660: bounded MCP tool inputs ----------------------------------------
+  // The zod input schemas registered on the MCP tools must reject oversized
+  // free-form inputs (query text, extensions[]/tags[] arrays, path_glob length
+  // and wildcard complexity) so a hostile client cannot drive unbounded work.
+  // These assert against the ACTUAL schema wired into each tool, not a copy.
+
+  function toolInputSchema(server: any, toolName: string): any {
+    const tool = server['mcp']['_registeredTools'][toolName];
+    if (!tool) throw new Error(`tool ${toolName} not registered`);
+    return tool.inputSchema;
+  }
+
+  // Read the bounds from the same (freshly reset) module instance the server
+  // was built from, so the test sizes track the real wired defaults.
+  async function inputBounds(): Promise<{
+    KB_MAX_QUERY_CHARS: number;
+    KB_MAX_FILTER_ITEMS: number;
+    KB_MAX_GLOB_CHARS: number;
+    KB_MAX_GLOB_WILDCARDS: number;
+  }> {
+    return import('./KnowledgeBaseServer.js');
+  }
+
+  it('retrieve_knowledge rejects a query longer than KB_MAX_QUERY_CHARS', async () => {
+    await setRetrieveEnv();
+    const server = await freshServer();
+    const { KB_MAX_QUERY_CHARS } = await inputBounds();
+    const schema = toolInputSchema(server, 'retrieve_knowledge');
+    // At the cap: accepted.
+    expect(schema.safeParse({ query: 'a'.repeat(KB_MAX_QUERY_CHARS) }).success).toBe(true);
+    // One over the cap: rejected.
+    const over = schema.safeParse({ query: 'a'.repeat(KB_MAX_QUERY_CHARS + 1) });
+    expect(over.success).toBe(false);
+    expect(JSON.stringify(over.error)).toContain('at most');
+  });
+
+  it('retrieve_knowledge rejects extensions[] and tags[] longer than KB_MAX_FILTER_ITEMS', async () => {
+    await setRetrieveEnv();
+    const server = await freshServer();
+    const { KB_MAX_FILTER_ITEMS } = await inputBounds();
+    const schema = toolInputSchema(server, 'retrieve_knowledge');
+    const okItems = Array.from({ length: KB_MAX_FILTER_ITEMS }, () => '.md');
+    const tooMany = Array.from({ length: KB_MAX_FILTER_ITEMS + 1 }, () => '.md');
+    expect(schema.safeParse({ query: 'q', extensions: okItems }).success).toBe(true);
+    expect(schema.safeParse({ query: 'q', extensions: tooMany }).success).toBe(false);
+    expect(schema.safeParse({ query: 'q', tags: okItems }).success).toBe(true);
+    expect(schema.safeParse({ query: 'q', tags: tooMany }).success).toBe(false);
+  });
+
+  it('retrieve_knowledge rejects an over-long or over-complex path_glob', async () => {
+    await setRetrieveEnv();
+    const server = await freshServer();
+    const { KB_MAX_GLOB_CHARS, KB_MAX_GLOB_WILDCARDS } = await inputBounds();
+    const schema = toolInputSchema(server, 'retrieve_knowledge');
+    // Within bounds: accepted.
+    expect(schema.safeParse({ query: 'q', path_glob: 'runbooks/**' }).success).toBe(true);
+    // Over the length cap (non-wildcard chars, so only length triggers).
+    const longGlob = 'a'.repeat(KB_MAX_GLOB_CHARS + 1);
+    expect(schema.safeParse({ query: 'q', path_glob: longGlob }).success).toBe(false);
+    // Over the wildcard-complexity cap (short string, only wildcards trigger).
+    const complexGlob = '*'.repeat(KB_MAX_GLOB_WILDCARDS + 1);
+    expect(complexGlob.length).toBeLessThanOrEqual(KB_MAX_GLOB_CHARS);
+    const complex = schema.safeParse({ query: 'q', path_glob: complexGlob });
+    expect(complex.success).toBe(false);
+    expect(JSON.stringify(complex.error)).toContain('wildcard');
+  });
+
+  it('ask_knowledge rejects a query longer than KB_MAX_QUERY_CHARS', async () => {
+    await setRetrieveEnv();
+    const server = await freshServer();
+    const { KB_MAX_QUERY_CHARS } = await inputBounds();
+    const schema = toolInputSchema(server, 'ask_knowledge');
+    expect(schema.safeParse({ query: 'a'.repeat(KB_MAX_QUERY_CHARS) }).success).toBe(true);
+    expect(schema.safeParse({ query: 'a'.repeat(KB_MAX_QUERY_CHARS + 1) }).success).toBe(false);
+  });
+
+  it('diff_index bounds per-query length and the queries[] array size', async () => {
+    await setRetrieveEnv();
+    const server = await freshServer();
+    const { KB_MAX_QUERY_CHARS, KB_MAX_FILTER_ITEMS } = await inputBounds();
+    const schema = toolInputSchema(server, 'diff_index');
+    const base = { before: '1', after: '2' };
+    expect(schema.safeParse({ ...base, queries: ['ok'] }).success).toBe(true);
+    // A single over-long query is rejected.
+    expect(
+      schema.safeParse({ ...base, queries: ['a'.repeat(KB_MAX_QUERY_CHARS + 1)] }).success,
+    ).toBe(false);
+    // Too many queries is rejected.
+    const tooMany = Array.from({ length: KB_MAX_FILTER_ITEMS + 1 }, () => 'q');
+    expect(schema.safeParse({ ...base, queries: tooMany }).success).toBe(false);
+  });
 });

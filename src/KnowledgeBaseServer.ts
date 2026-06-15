@@ -144,6 +144,57 @@ import { callChatCompletion } from './llm-client.js';
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
 
+// ---------------------------------------------------------------------------
+// MCP tool input bounds (#660).
+// Bound the most attacker-influenced free-form tool inputs — query text,
+// extensions[]/tags[] filter arrays, and path_glob — so a malformed or hostile
+// client cannot drive unbounded work (huge embeddings, pathological minimatch
+// evaluation) through retrieve_knowledge and friends, especially over the
+// remote HTTP/SSE transport. Mirrors the existing task_context truncation
+// (2000 chars, relevance-gate.ts) and the numeric caps (context_window max 5).
+// Defaults are generous so legitimate large-but-reasonable inputs are
+// unaffected; each is overridable via an env var without touching
+// config/schema.ts. Violations surface as zod VALIDATION errors at the MCP
+// tool boundary.
+// ---------------------------------------------------------------------------
+
+function parsePositiveIntEnv(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+export const KB_MAX_QUERY_CHARS = parsePositiveIntEnv(process.env.KB_MAX_QUERY_CHARS, 8192);
+export const KB_MAX_FILTER_ITEMS = parsePositiveIntEnv(process.env.KB_MAX_FILTER_ITEMS, 64);
+export const KB_MAX_GLOB_CHARS = parsePositiveIntEnv(process.env.KB_MAX_GLOB_CHARS, 1024);
+export const KB_MAX_GLOB_WILDCARDS = parsePositiveIntEnv(process.env.KB_MAX_GLOB_WILDCARDS, 64);
+
+const boundedQueryString = () =>
+  z.string().max(
+    KB_MAX_QUERY_CHARS,
+    `query must be at most ${KB_MAX_QUERY_CHARS} characters`,
+  );
+
+const boundedFilterArray = () =>
+  z.array(z.string()).max(
+    KB_MAX_FILTER_ITEMS,
+    `at most ${KB_MAX_FILTER_ITEMS} items are allowed`,
+  );
+
+// path_glob: cap raw length AND wildcard count. minimatch translates each
+// wildcard into regex alternation; an unbounded wildcard count is the
+// complexity lever a hostile glob would pull, so a length cap alone is
+// insufficient.
+const boundedGlobString = () =>
+  z
+    .string()
+    .max(KB_MAX_GLOB_CHARS, `path_glob must be at most ${KB_MAX_GLOB_CHARS} characters`)
+    .refine(
+      (value) => (value.match(/[*?]/g)?.length ?? 0) <= KB_MAX_GLOB_WILDCARDS,
+      `path_glob must contain at most ${KB_MAX_GLOB_WILDCARDS} wildcard characters`,
+    );
+
 function mcpErrorContent(error: Error): TextContent {
   const code = error instanceof KBError
     ? error.code
@@ -304,7 +355,7 @@ export class KnowledgeBaseServer {
       'retrieve_knowledge',
       RETRIEVE_KNOWLEDGE_DESCRIPTION,
       {
-        query: z.string().describe('The search query to use for retrieving similar chunks from the knowledge base.'),
+        query: boundedQueryString().describe('The search query to use for retrieving similar chunks from the knowledge base.'),
         knowledge_base_name: z.string().optional().describe('The name of the knowledge base to search. If omitted, all available knowledge bases are considered.'),
         threshold: z.number().optional().describe('The maximum similarity score threshold for returned documents. Defaults to 2 if not specified.'),
         // RFC 013 M3 §4.5 — optional override of the active embedding model.
@@ -313,9 +364,9 @@ export class KnowledgeBaseServer {
         model_name: z.string().optional().describe('The model_id of an alternate embedding model to query (e.g. "openai__text-embedding-3-small"). If omitted, the active model is used. Run list_models for available ids.'),
         // Issue #53 — metadata POST-filters. Applied after FAISS returns,
         // ANDed with each other and with knowledge_base_name + threshold.
-        extensions: z.array(z.string()).optional().describe('Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional.'),
-        path_glob: z.string().optional().describe('Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching.'),
-        tags: z.array(z.string()).optional().describe('Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter.'),
+        extensions: boundedFilterArray().optional().describe('Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional.'),
+        path_glob: boundedGlobString().optional().describe('Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching.'),
+        tags: boundedFilterArray().optional().describe('Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter.'),
         since: z.string().optional().describe('Limit dense results to chunks whose current source-file mtime is at or after this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes.'),
         until: z.string().optional().describe('Limit dense results to chunks whose current source-file mtime is at or before this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes.'),
         context_before: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense semantic match. Defaults to 0.'),
@@ -338,7 +389,7 @@ export class KnowledgeBaseServer {
       'ask_knowledge',
       ASK_KNOWLEDGE_DESCRIPTION,
       {
-        query: z.string().describe('Question to answer from retrieved knowledge-base snippets.'),
+        query: boundedQueryString().describe('Question to answer from retrieved knowledge-base snippets.'),
         knowledge_base_name: z.string().optional().describe('Name of a single knowledge base to search. If omitted, all available knowledge bases are considered.'),
         model_name: z.string().optional().describe('Registered embedding model_id to use for retrieval. If omitted, the active model is used.'),
         llm_profile: z.string().optional().describe('Saved kb llm profile name to use for answer generation.'),
@@ -379,7 +430,7 @@ export class KnowledgeBaseServer {
       {
         before: z.string().describe('BEFORE index version number, relative directory, or absolute version directory.'),
         after: z.string().describe('AFTER index version number, relative directory, or absolute version directory.'),
-        queries: z.array(z.string()).min(1).describe('Plaintext queries to run against both index versions.'),
+        queries: z.array(boundedQueryString()).min(1).max(KB_MAX_FILTER_ITEMS).describe('Plaintext queries to run against both index versions.'),
         model_name: z.string().optional().describe('Optional registered embedding model id. If omitted, the active model is used.'),
         knowledge_base_name: z.string().optional().describe('Optional KB scope applied to every query.'),
         top_k: z.number().int().min(1).max(100).optional().describe('Top-K results per query. Default 10.'),
