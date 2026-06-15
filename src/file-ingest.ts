@@ -206,8 +206,10 @@ export function countStableChunkPrefix(
 /**
  * RFC 011 §5.4.2-aware chunk builder. Markdown files use the markdown
  * splitter (heading-aware); everything else (PDF text via pdf-parse,
- * HTML via html-to-text, operator-supplied extensions like `.json` /
- * `.csv`) goes through the recursive character splitter.
+ * HTML via html-to-text, structure-aware loaders like `.csv` / `.tsv` /
+ * `.ipynb`, operator-supplied extensions like `.json`) goes through the
+ * recursive character splitter — the per-cell blocks a `.ipynb` notebook
+ * emits are blank-line separated so cell boundaries are preferred splits.
  *
  * Each emitted `Document` carries the wire-shape metadata
  * `retrieve_knowledge` projects: `source`, `relativePath` (POSIX-form,
