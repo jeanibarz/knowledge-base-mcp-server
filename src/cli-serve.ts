@@ -16,6 +16,12 @@ import {
   type DaemonOwnership,
   type DaemonRunResult,
 } from './daemon-client.js';
+import {
+  DaemonAdmissionGate,
+  DAEMON_RETRY_AFTER_SECONDS,
+  resolveDaemonAdmissionConfig,
+  type DaemonAdmissionConfig,
+} from './daemon-admission.js';
 import { formatKbStatsOpenMetrics } from './prometheus-export.js';
 import { searchLatencyMetrics, type SearchLatencyMode } from './metrics.js';
 import { searchStageDurationsFromTiming } from './timing-core.js';
@@ -51,6 +57,11 @@ Environment:
                             http://127.0.0.1:17799).
   KB_METRICS_EXPORT         Set to \`on\` to expose OpenMetrics text at
                             \`GET /metrics\` on the loopback daemon.
+  KB_DAEMON_MAX_CONCURRENCY Max requests the daemon runs at once before
+                            queueing (default 8).
+  KB_DAEMON_QUEUE_MAX       Max requests queued beyond the concurrency cap
+                            before the daemon replies 429 + Retry-After
+                            (default 128; 0 rejects immediately when full).
 
 Exit codes:
   0   daemon started, or \`kb serve status\` found a reachable daemon
@@ -78,6 +89,12 @@ export interface DaemonCommandHandlers {
 export interface StartDaemonServerOptions extends Partial<ServeArgs> {
   handlers?: DaemonCommandHandlers;
   metricsHandler?: () => Promise<string>;
+  /**
+   * Admission-control bounds (issue #648). Defaults are resolved from
+   * `KB_DAEMON_MAX_CONCURRENCY` / `KB_DAEMON_QUEUE_MAX`; tests pass an
+   * explicit config so the cap/queue/429 behaviour is deterministic.
+   */
+  admission?: DaemonAdmissionConfig;
 }
 
 export interface DaemonCommandHandlerOptions {
@@ -226,9 +243,16 @@ export async function startDaemonServer(
   };
   assertLoopbackHost(parsed.host);
   const handlers = options.handlers ?? createDaemonCommandHandlers();
-  const metricsHandler = options.metricsHandler ?? defaultMetricsHandler;
+  const baseMetricsHandler = options.metricsHandler ?? defaultMetricsHandler;
+  const admission = new DaemonAdmissionGate(
+    options.admission ?? resolveDaemonAdmissionConfig(),
+  );
+  // Always surface the daemon's admission gauge/counter on /metrics, even
+  // when a custom metrics body is supplied, by splicing the lines in ahead
+  // of the OpenMetrics `# EOF` terminator.
+  const metricsHandler = async (): Promise<string> =>
+    appendDaemonAdmissionMetrics(await baseMetricsHandler(), admission);
   let idleTimer: NodeJS.Timeout | undefined;
-  let queue: Promise<void> = Promise.resolve();
   const startedAt = Date.now();
   let boundUrl = '';
 
@@ -249,10 +273,7 @@ export async function startDaemonServer(
 
   const server = http.createServer((req, res) => {
     resetIdleTimer();
-    void handleRequest(req, res, handlers, metricsHandler, buildHealth, (job) => {
-      queue = queue.then(job, job);
-      return queue;
-    });
+    void handleRequest(req, res, handlers, metricsHandler, buildHealth, admission);
   });
 
   server.on('close', () => {
@@ -395,7 +416,7 @@ async function handleRequest(
   handlers: DaemonCommandHandlers,
   metricsHandler: () => Promise<string>,
   buildHealth: () => DaemonHealth,
-  enqueue: (job: () => Promise<void>) => Promise<void>,
+  admission: DaemonAdmissionGate,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://placeholder');
   if (req.method === 'GET' && url.pathname === '/health') {
@@ -403,7 +424,10 @@ async function handleRequest(
     return;
   }
   if (url.pathname === '/metrics') {
-    await handleMetricsRequest(req, res, metricsHandler, enqueue);
+    // /metrics stays outside admission control: scraping must keep working
+    // under load, which is exactly when the daemon_inflight / rejected
+    // gauges matter most.
+    await handleMetricsRequest(req, res, metricsHandler);
     return;
   }
   if (req.method !== 'POST' || url.pathname !== '/v1/run') {
@@ -430,7 +454,7 @@ async function handleRequest(
     return;
   }
 
-  await enqueue(async () => {
+  const accepted = admission.run(async () => {
     try {
       writeJson(res, 200, await handlers[command](args));
     } catch (err) {
@@ -440,6 +464,24 @@ async function handleRequest(
         stderr: `kb serve: ${(err as Error).message}\n`,
       });
     }
+  });
+  if (accepted === null) {
+    rejectOverloaded(res);
+    return;
+  }
+  await accepted;
+}
+
+/**
+ * Admission-control rejection (issue #648): the concurrency slots and the
+ * bounded queue are both full, so shed load with a fast `429` and a
+ * `Retry-After` hint rather than letting the backlog grow without limit.
+ */
+function rejectOverloaded(res: http.ServerResponse): void {
+  res.setHeader('Retry-After', String(DAEMON_RETRY_AFTER_SECONDS));
+  writeJson(res, 429, {
+    error: 'too_many_requests',
+    message: 'kb serve: daemon at capacity; retry after backoff',
   });
 }
 
@@ -464,7 +506,6 @@ async function handleMetricsRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   metricsHandler: () => Promise<string>,
-  enqueue: (job: () => Promise<void>) => Promise<void>,
 ): Promise<void> {
   if (!isMetricsExportEnabled()) {
     writeJson(res, 404, { error: 'not_found' });
@@ -477,22 +518,45 @@ async function handleMetricsRequest(
     return;
   }
 
-  await enqueue(async () => {
-    try {
-      const body = await metricsHandler();
-      res.writeHead(200, {
-        'Content-Type': OPENMETRICS_CONTENT_TYPE,
-        'Cache-Control': 'no-store',
-      });
-      if (method === 'GET') res.end(body);
-      else res.end();
-    } catch (err) {
-      writeJson(res, 500, {
-        error: 'metrics_unavailable',
-        message: (err as Error).message,
-      });
-    }
-  });
+  try {
+    const body = await metricsHandler();
+    res.writeHead(200, {
+      'Content-Type': OPENMETRICS_CONTENT_TYPE,
+      'Cache-Control': 'no-store',
+    });
+    if (method === 'GET') res.end(body);
+    else res.end();
+  } catch (err) {
+    writeJson(res, 500, {
+      error: 'metrics_unavailable',
+      message: (err as Error).message,
+    });
+  }
+}
+
+/**
+ * Splice the daemon admission-control metrics (issue #648) into an
+ * OpenMetrics body ahead of its `# EOF` terminator. The counter family
+ * name omits the `_total` suffix to match the convention in
+ * prometheus-export.ts (`metricFamilyName`).
+ */
+export function appendDaemonAdmissionMetrics(
+  body: string,
+  gate: { inFlight: number; rejectedTotal: number },
+): string {
+  const lines = [
+    '# HELP kb_daemon_inflight Admitted-but-incomplete kb serve daemon requests (running + queued).',
+    '# TYPE kb_daemon_inflight gauge',
+    `kb_daemon_inflight ${gate.inFlight}`,
+    '# HELP kb_daemon_rejected Total kb serve daemon requests rejected by admission control.',
+    '# TYPE kb_daemon_rejected counter',
+    `kb_daemon_rejected_total ${gate.rejectedTotal}`,
+  ];
+  const eofMarker = '# EOF\n';
+  if (body.endsWith(eofMarker)) {
+    return `${body.slice(0, -eofMarker.length)}${lines.join('\n')}\n${eofMarker}`;
+  }
+  return `${body}${lines.join('\n')}\n`;
 }
 
 async function defaultMetricsHandler(): Promise<string> {
