@@ -87,6 +87,24 @@ describe('parseLogsArgs', () => {
     expect(() => parseLogsArgs(['recent', '--limit=0'])).toThrow(/between 1 and 500/);
     expect(() => parseLogsArgs(['recent', '--slow', '--min-ms=0'])).toThrow(/at least 1/);
   });
+
+  it('parses the summary action in both forms and rejects show-only filters', () => {
+    expect(parseLogsArgs(['--summary'])).toEqual({
+      action: 'summary',
+      format: 'md',
+      limit: 20,
+      slow: false,
+      degraded: false,
+    });
+    expect(parseLogsArgs(['summary', '--limit=5', '--format=json'])).toEqual({
+      action: 'summary',
+      format: 'json',
+      limit: 5,
+      slow: false,
+      degraded: false,
+    });
+    expect(() => parseLogsArgs(['--summary', '--request-id=a'])).toThrow(/summary does not accept/);
+  });
 });
 
 describe('parseCanonicalLogLines', () => {
@@ -333,5 +351,137 @@ describe('runLogs', () => {
         message: 'no log file found; pass --file=<path> or set LOG_FILE',
       },
     });
+  });
+});
+
+describe('runLogs --summary', () => {
+  // took_ms 10..100 across 10 requests; 3 carry errors. Used to assert exact
+  // percentile math and the outcome/error-code breakdown.
+  const summaryLog = [
+    canonical({ request_id: 'r1', query_sha256: 'q1', took_ms: 10 }),
+    canonical({ request_id: 'r2', query_sha256: 'q2', took_ms: 20 }),
+    canonical({ request_id: 'r3', query_sha256: 'q3', took_ms: 30, error: { code: 'VALIDATION', category: 'input' } }),
+    canonical({ request_id: 'r4', query_sha256: 'q4', took_ms: 40 }),
+    canonical({ request_id: 'r5', query_sha256: 'q5', took_ms: 50 }),
+    canonical({ request_id: 'r6', query_sha256: 'q6', took_ms: 60 }),
+    canonical({ request_id: 'r7', query_sha256: 'q7', took_ms: 70, error: { code: 'PROVIDER_TIMEOUT', category: 'provider' } }),
+    canonical({ request_id: 'r8', query_sha256: 'q8', took_ms: 80 }),
+    canonical({ request_id: 'r9', query_sha256: 'q9', took_ms: 90 }),
+    canonical({ request_id: 'r10', query_sha256: 'q10', took_ms: 100, error: { code: 'PROVIDER_TIMEOUT', category: 'provider' } }),
+  ].join('\n');
+
+  it('aggregates percentiles, outcomes, and error-code breakdown as JSON', async () => {
+    const { deps, stdout, stderr } = depsFor(
+      { '/repo/kb.log': summaryLog },
+      { LOG_FILE: './kb.log' },
+    );
+
+    const code = await runLogs(['--summary', '--limit=3', '--format=json'], deps);
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    const payload = JSON.parse(stdout.join('')) as {
+      action: string;
+      summary: {
+        total_requests: number;
+        outcomes: { success: number; error: number };
+        by_error_code: Record<string, number>;
+        by_error_category: Record<string, number>;
+        latency_ms: { count: number; min: number; max: number; p50: number; p95: number; p99: number } | null;
+        slowest: Array<{ request_id: string; took_ms: number; error_code?: string }>;
+      };
+    };
+
+    expect(payload.action).toBe('summary');
+    expect(payload.summary.total_requests).toBe(10);
+    expect(payload.summary.outcomes).toEqual({ success: 7, error: 3 });
+    expect(payload.summary.by_error_code).toEqual({ PROVIDER_TIMEOUT: 2, VALIDATION: 1 });
+    expect(payload.summary.by_error_category).toEqual({ provider: 2, input: 1 });
+    expect(payload.summary.latency_ms).toEqual({
+      count: 10,
+      min: 10,
+      max: 100,
+      p50: 50,
+      p95: 100,
+      p99: 100,
+    });
+    // top-N slowest, descending, honouring --limit
+    expect(payload.summary.slowest.map((entry) => entry.request_id)).toEqual(['r10', 'r9', 'r8']);
+    expect(payload.summary.slowest[0]).toMatchObject({ took_ms: 100, error_code: 'PROVIDER_TIMEOUT' });
+  });
+
+  it('computes nearest-rank percentiles for an odd-sized sample', async () => {
+    // took_ms = [100, 200, 300]; p50 -> rank 2 -> 200, p95/p99 -> rank 3 -> 300.
+    const { deps, stdout } = depsFor(
+      {
+        '/repo/kb.log': [
+          canonical({ request_id: 'a', took_ms: 300 }),
+          canonical({ request_id: 'b', took_ms: 100 }),
+          canonical({ request_id: 'c', took_ms: 200 }),
+        ].join('\n'),
+      },
+      { LOG_FILE: './kb.log' },
+    );
+
+    const code = await runLogs(['--summary', '--format=json'], deps);
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(stdout.join('')) as {
+      summary: { latency_ms: { p50: number; p95: number; p99: number; min: number; max: number } };
+    };
+    expect(payload.summary.latency_ms).toMatchObject({ min: 100, p50: 200, p95: 300, p99: 300, max: 300 });
+  });
+
+  it('renders the summary as markdown', async () => {
+    const { deps, stdout } = depsFor(
+      { '/repo/kb.log': summaryLog },
+      { LOG_FILE: './kb.log' },
+    );
+
+    const code = await runLogs(['--summary'], deps);
+
+    expect(code).toBe(0);
+    const md = stdout.join('');
+    expect(md).toContain('## Summary');
+    expect(md).toContain('- Total requests: 10');
+    expect(md).toContain('- Success: 7');
+    expect(md).toContain('- Error: 3');
+    expect(md).toContain('p95: 100 ms');
+    expect(md).toContain('`PROVIDER_TIMEOUT`: 2');
+    expect(md).toContain('### Slowest queries');
+    expect(md).toContain('`r10`');
+  });
+
+  it('reports null latency and empty breakdown for a log with no timed requests', async () => {
+    // Canonical lines whose took_ms is non-numeric are ignored for latency.
+    const { deps, stdout } = depsFor(
+      {
+        '/repo/kb.log': JSON.stringify({
+          schema_version: 'kb-canonical.v1',
+          ts: '2026-05-18T20:00:00.000Z',
+          request_id: 'no-timing',
+          process: 'cli',
+          cmd: 'kb search',
+          took_ms: 'not-a-number',
+        }),
+      },
+      { LOG_FILE: './kb.log' },
+    );
+
+    const code = await runLogs(['--summary', '--format=json'], deps);
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(stdout.join('')) as {
+      summary: {
+        total_requests: number;
+        outcomes: { success: number; error: number };
+        latency_ms: null | object;
+        slowest: unknown[];
+      };
+    };
+    expect(payload.summary.total_requests).toBe(1);
+    expect(payload.summary.outcomes).toEqual({ success: 1, error: 0 });
+    expect(payload.summary.latency_ms).toBeNull();
+    expect(payload.summary.slowest).toEqual([]);
   });
 });
