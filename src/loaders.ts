@@ -27,6 +27,7 @@ import * as path from 'path';
 import { resolveLargeFileLimits, type KBLargeFilePolicy } from './config/ingest.js';
 import { resolveChunkSize } from './config/indexing.js';
 import { loadWithExtractionCache } from './extraction-cache.js';
+import { formatNotebook } from './loaders-ipynb.js';
 
 /** Loader contract: filePath in, plain text out. Throws on parse failure. */
 export type Loader = (filePath: string) => Promise<string>;
@@ -43,6 +44,8 @@ const HTML_LOADER_NAME = 'html-to-text';
 const HTML_LOADER_VERSION = 1;
 const DELIMITED_TABLE_LOADER_NAME = 'delimited-table';
 const DELIMITED_TABLE_LOADER_VERSION = 1;
+const IPYNB_LOADER_NAME = 'ipynb';
+const IPYNB_LOADER_VERSION = 1;
 
 export type LargeFileLimitKind = 'file_bytes' | 'extracted_text_bytes';
 
@@ -406,6 +409,48 @@ function loadTsv(filePath: string): Promise<string> {
   return loadDelimitedTable(filePath, '\t');
 }
 
+// Issue #652 — structure-aware Jupyter notebook loader. Parses the notebook
+// JSON and re-emits one labelled block per cell (see `loaders-ipynb.ts`)
+// rather than letting the file ride the default text loader as one opaque JSON
+// blob. Mirrors the delimited-table loader's large-file handling and gates the
+// parse behind the content-addressed extraction cache (#279).
+async function loadIpynb(filePath: string): Promise<string> {
+  const limits = resolveLargeFileLimits();
+  const size = await statSize(filePath);
+
+  if (limits.policy === 'truncate') {
+    // A truncated notebook is no longer valid JSON, so parsing the prefix
+    // would throw. Read the whole file (still bounded by the byte limits) and
+    // bound the formatted text afterwards, matching the delimited-table path.
+    const raw = await readUtf8Prefix(
+      filePath,
+      Math.min(size, limits.maxFileBytes, limits.maxExtractedTextBytes),
+    );
+    return applyExtractedTextLimit(filePath, safeFormatNotebook(raw, filePath));
+  }
+
+  enforceFileSizeLimit(filePath, size, limits);
+  const text = await loadWithExtractionCache({
+    filePath,
+    loaderName: IPYNB_LOADER_NAME,
+    loaderVersion: IPYNB_LOADER_VERSION,
+    parse: async (buffer) => safeFormatNotebook(buffer.toString('utf-8'), filePath),
+  });
+  return applyExtractedTextLimit(filePath, text);
+}
+
+// A `.ipynb` whose JSON is malformed (truncated export, hand-edited) should
+// not abort the whole ingest run. Fall back to the raw text so the file is
+// still ingested verbatim — the same outcome the default text loader would
+// have produced before this loader existed.
+function safeFormatNotebook(raw: string, filePath: string): string {
+  try {
+    return formatNotebook(raw, filePath);
+  } catch {
+    return raw;
+  }
+}
+
 // Reentrancy depth for `silencePdfjsConsole` — pdf-parse calls can interleave
 // (the hybrid-search dense and lexical legs both load PDFs in parallel under
 // `--refresh`). Depth-counting ensures the first concurrent caller installs
@@ -552,7 +597,8 @@ async function loadHtml(filePath: string): Promise<string> {
  * fall back to {@link loadText} (read-as-UTF-8); the loader registry only
  * needs an entry when the file format is binary or structured enough that
  * a naive UTF-8 read would be wrong (PDF bytes → U+FFFD noise; HTML →
- * embedded markup tags; CSV/TSV rows → chunks without column context).
+ * embedded markup tags; CSV/TSV rows → chunks without column context;
+ * `.ipynb` → one opaque JSON blob instead of per-cell context).
  * Plain-text formats (`.md`, `.txt`, `.json`, `.yaml`, any extension the
  * operator opts into via `INGEST_EXTRA_EXTENSIONS`) ride the default text
  * loader without needing to be enumerated here.
@@ -563,6 +609,7 @@ export const LOADERS: Readonly<Record<string, Loader>> = Object.freeze({
   '.htm': loadHtml,
   '.csv': loadCsv,
   '.tsv': loadTsv,
+  '.ipynb': loadIpynb,
 });
 
 /** Lowercased dot-prefixed extensions with a non-text loader registered. */
