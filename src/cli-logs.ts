@@ -8,6 +8,7 @@ export const LOGS_HELP = `kb logs — inspect historical canonical request logs
 Usage:
   kb logs --slow [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json]
   kb logs --degraded [--limit=<n>] [--file=<path>] [--format=md|json]
+  kb logs --summary [--limit=<n>] [--file=<path>] [--format=md|json]
   kb logs recent [--slow] [--degraded] [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json]
   kb logs show --request-id=<id> [--file=<path>] [--format=md|json]
   kb logs show --query-sha=<hash> [--file=<path>] [--format=md|json]
@@ -16,15 +17,21 @@ Reads mixed text/canonical log files, keeps only \`kb-canonical.v1\` JSON lines,
 and summarizes request ids, query hashes, timings, errors, cache state, gate
 fields, rerank fields, top sources, and recovery hints.
 
+The --summary view aggregates the whole log into a post-hoc report: request
+counts by outcome and error code/category, latency percentiles (p50/p95/p99)
+over took_ms, and the top-N slowest queries.
+
 Options:
   --file=<path>         Log file to read. Defaults to LOG_FILE, then known
                         local log paths if they exist.
   --format=md|json      Output format (default: md).
-  --limit=<n>           Number of recent canonical events to show (default: 20).
+  --limit=<n>           Number of recent canonical events to show, or top-N
+                        slowest queries for --summary (default: 20).
   --slow                Show only events marked slow, or events matching
                         --min-ms when that filter is supplied.
   --degraded            Show only events with aggregate degraded=true.
   --min-ms=<n>          Minimum took_ms for the slow view; implies --slow.
+  --summary             Aggregate the whole log into a diagnostics report.
   --request-id=<id>     Show canonical events for one request id.
   --query-sha=<hash>    Show canonical events for one query_sha256 value.
   --help, -h            Show this help.
@@ -33,6 +40,8 @@ Examples:
   kb logs recent
   kb logs --slow
   kb logs --degraded
+  kb logs --summary
+  kb logs --summary --limit=5 --format=json
   kb logs recent --slow --min-ms=1000
   kb logs recent --limit=5 --format=json
   kb logs show --request-id=maw6d3qfabcd1234
@@ -43,7 +52,7 @@ const LOGS_SCHEMA_VERSION = 'kb.logs.v1';
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 500;
 
-type LogsAction = 'recent' | 'show';
+type LogsAction = 'recent' | 'show' | 'summary';
 type LogsFormat = 'md' | 'json';
 
 export interface LogsArgs {
@@ -86,6 +95,37 @@ interface LogsPayload {
   degraded_event_count: number;
   result_count: number;
   events: CanonicalLogSummary[];
+  summary?: LogsAggregate;
+}
+
+interface LogsAggregate {
+  total_requests: number;
+  outcomes: {
+    success: number;
+    error: number;
+  };
+  by_error_code: Record<string, number>;
+  by_error_category: Record<string, number>;
+  latency_ms: LatencyStats | null;
+  slowest: SlowestQuery[];
+}
+
+interface LatencyStats {
+  count: number;
+  min: number;
+  max: number;
+  p50: number;
+  p95: number;
+  p99: number;
+}
+
+interface SlowestQuery {
+  request_id?: string;
+  query_sha256?: string;
+  took_ms: number;
+  ts?: string;
+  cmd?: string;
+  error_code?: string;
 }
 
 interface CanonicalLogSummary {
@@ -199,8 +239,11 @@ export function parseLogsArgs(rest: string[]): LogsArgs {
   }
   let action: LogsAction;
   let optionStart = 1;
-  if (rest[0] === 'recent' || rest[0] === 'show') {
+  if (rest[0] === 'recent' || rest[0] === 'show' || rest[0] === 'summary') {
     action = rest[0];
+  } else if (rest[0] === '--summary') {
+    action = 'summary';
+    optionStart = 0;
   } else if (
     rest[0] === '--slow' ||
     rest[0] === '--degraded' ||
@@ -232,6 +275,10 @@ export function parseLogsArgs(rest: string[]): LogsArgs {
     }
     if (raw.startsWith('--limit=')) {
       out.limit = parseLimit(raw.slice('--limit='.length));
+      continue;
+    }
+    if (raw === '--summary') {
+      out.action = 'summary';
       continue;
     }
     if (raw === '--slow') {
@@ -277,9 +324,9 @@ export function parseLogsArgs(rest: string[]): LogsArgs {
     throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
   }
 
-  if (out.action === 'recent') {
+  if (out.action !== 'show') {
     if (out.requestId !== undefined || out.querySha !== undefined) {
-      throw new Error('recent does not accept --request-id or --query-sha; use `kb logs show`');
+      throw new Error(`${out.action} does not accept --request-id or --query-sha; use \`kb logs show\``);
     }
   } else if ((out.requestId === undefined) === (out.querySha === undefined)) {
     throw new Error('show requires exactly one of --request-id or --query-sha');
@@ -375,6 +422,7 @@ function expandPath(filePath: string, deps: RunLogsDeps): string {
 }
 
 function selectEvents(events: CanonicalLogRecord[], args: LogsArgs): CanonicalLogRecord[] {
+  if (args.action === 'summary') return [];
   const base = args.action === 'recent'
     ? events
     : args.requestId !== undefined
@@ -420,7 +468,103 @@ function buildLogsPayload(
     degraded_event_count: parsed.events.filter((event) => event.degraded === true).length,
     result_count: events.length,
     events: events.map(summarizeEvent),
+    ...(args.action === 'summary'
+      ? { summary: aggregateEvents(parsed.events, args.limit) }
+      : {}),
   };
+}
+
+function aggregateEvents(events: CanonicalLogRecord[], topN: number): LogsAggregate {
+  const byErrorCode: Record<string, number> = {};
+  const byErrorCategory: Record<string, number> = {};
+  let success = 0;
+  let error = 0;
+  const latencies: number[] = [];
+  const timed: SlowestQuery[] = [];
+
+  for (const event of events) {
+    const errInfo = errorInfo(event.error);
+    if (errInfo !== undefined) {
+      error++;
+      byErrorCode[errInfo.code] = (byErrorCode[errInfo.code] ?? 0) + 1;
+      byErrorCategory[errInfo.category] = (byErrorCategory[errInfo.category] ?? 0) + 1;
+    } else {
+      success++;
+    }
+
+    const tookMs = numberField(event.took_ms);
+    if (tookMs !== undefined) {
+      latencies.push(tookMs);
+      timed.push({
+        ...(stringField(event.request_id) !== undefined ? { request_id: stringField(event.request_id) } : {}),
+        ...(stringField(event.query_sha256) !== undefined ? { query_sha256: stringField(event.query_sha256) } : {}),
+        took_ms: tookMs,
+        ...(stringField(event.ts) !== undefined ? { ts: stringField(event.ts) } : {}),
+        ...(stringField(event.cmd ?? event.tool) !== undefined ? { cmd: stringField(event.cmd ?? event.tool) } : {}),
+        ...(errInfo !== undefined ? { error_code: errInfo.code } : {}),
+      });
+    }
+  }
+
+  const slowest = timed
+    .slice()
+    .sort((a, b) => (b.took_ms - a.took_ms) || compareStrings(a.request_id, b.request_id))
+    .slice(0, topN);
+
+  return {
+    total_requests: events.length,
+    outcomes: { success, error },
+    by_error_code: sortRecordByCountDesc(byErrorCode),
+    by_error_category: sortRecordByCountDesc(byErrorCategory),
+    latency_ms: latencyStats(latencies),
+    slowest,
+  };
+}
+
+function latencyStats(values: number[]): LatencyStats | null {
+  if (values.length === 0) return null;
+  const sorted = values.slice().sort((a, b) => a - b);
+  return {
+    count: sorted.length,
+    min: sorted[0],
+    max: sorted[sorted.length - 1],
+    p50: percentile(sorted, 50),
+    p95: percentile(sorted, 95),
+    p99: percentile(sorted, 99),
+  };
+}
+
+// Exact nearest-rank percentile over an ascending-sorted array. Suitable for
+// the typical on-disk log sizes this command targets; for very large logs an
+// approximate streaming digest would be needed, but exact sort keeps the math
+// auditable in tests.
+function percentile(sortedAsc: number[], p: number): number {
+  const rank = Math.ceil((p / 100) * sortedAsc.length);
+  const index = Math.min(sortedAsc.length - 1, Math.max(0, rank - 1));
+  return sortedAsc[index];
+}
+
+function errorInfo(error: unknown): { code: string; category: string } | undefined {
+  if (error === undefined || error === null) return undefined;
+  if (typeof error === 'object') {
+    const record = error as { code?: unknown; category?: unknown };
+    const code = typeof record.code === 'string' ? record.code : 'ERROR';
+    const category = typeof record.category === 'string' ? record.category : 'unknown';
+    return { code, category };
+  }
+  return { code: String(error), category: 'unknown' };
+}
+
+function sortRecordByCountDesc(record: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [key] of Object.entries(record).sort((a, b) => (b[1] - a[1]) || compareStrings(a[0], b[0]))) {
+    out[key] = record[key];
+  }
+  return out;
+}
+
+function compareStrings(a: string | undefined, b: string | undefined): number {
+  return (a ?? '').localeCompare(b ?? '');
 }
 
 function summarizeEvent(event: CanonicalLogRecord): CanonicalLogSummary {
@@ -485,6 +629,11 @@ function formatLogsMarkdown(payload: LogsPayload): string {
     '',
   ];
 
+  if (payload.summary !== undefined) {
+    lines.push(...formatSummaryMarkdown(payload.summary));
+    return lines.join('\n');
+  }
+
   if (payload.events.length === 0) {
     lines.push('No matching canonical log events.', '');
     return lines.join('\n');
@@ -514,6 +663,77 @@ function formatLogsMarkdown(payload: LogsPayload): string {
     lines.push(...formatEventDetails(event));
   }
   return lines.join('\n');
+}
+
+function formatSummaryMarkdown(summary: LogsAggregate): string[] {
+  const lines = [
+    '## Summary',
+    '',
+    `- Total requests: ${summary.total_requests}`,
+    `- Success: ${summary.outcomes.success}`,
+    `- Error: ${summary.outcomes.error}`,
+    '',
+  ];
+
+  const latency = summary.latency_ms;
+  lines.push('### Latency (took_ms)', '');
+  if (latency === null) {
+    lines.push('No timed requests.', '');
+  } else {
+    lines.push(
+      `- Count: ${latency.count}`,
+      `- Min: ${latency.min} ms`,
+      `- p50: ${latency.p50} ms`,
+      `- p95: ${latency.p95} ms`,
+      `- p99: ${latency.p99} ms`,
+      `- Max: ${latency.max} ms`,
+      '',
+    );
+  }
+
+  lines.push('### By error code', '');
+  const errorCodes = Object.entries(summary.by_error_code);
+  if (errorCodes.length === 0) {
+    lines.push('No errors.', '');
+  } else {
+    for (const [code_, count] of errorCodes) {
+      lines.push(`- ${code(code_)}: ${count}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('### By error category', '');
+  const errorCategories = Object.entries(summary.by_error_category);
+  if (errorCategories.length === 0) {
+    lines.push('No errors.', '');
+  } else {
+    for (const [category, count] of errorCategories) {
+      lines.push(`- ${code(category)}: ${count}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('### Slowest queries', '');
+  if (summary.slowest.length === 0) {
+    lines.push('No timed requests.', '');
+    return lines;
+  }
+  lines.push(
+    '| Took | Request | Query SHA | Command/tool | Error | Time |',
+    '| ---: | --- | --- | --- | --- | --- |',
+  );
+  for (const entry of summary.slowest) {
+    lines.push([
+      `${entry.took_ms} ms`,
+      code(entry.request_id),
+      code(entry.query_sha256),
+      code(entry.cmd),
+      code(entry.error_code),
+      entry.ts ?? '',
+    ].map(escapeTableCell).join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
+  }
+  lines.push('');
+  return lines;
 }
 
 function formatEventDetails(event: CanonicalLogSummary): string[] {
