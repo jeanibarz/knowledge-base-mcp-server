@@ -1,6 +1,6 @@
 # RFC 015 - Warm Local LLM Service for the `kb` CLI
 
-- **Status:** Draft
+- **Status:** Implemented (systemd user-unit management + `kb serve` daemon — src/llm-service.ts, src/cli-serve.ts)
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`
 - **Related:** RFC 012 (CLI distribution), RFC 013 (multi-model embedding support), RFC 014 (atomic FAISS save), local-research-agent RFC 002 daemonization

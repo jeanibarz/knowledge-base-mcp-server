@@ -1,6 +1,6 @@
 # RFC 020 — Retrieval Evaluation & Public-Benchmark Strategy
 
-**Status:** Draft
+**Status:** Partially implemented (M0–M2 benchmark infrastructure largely built — BEIR matrix, MLflow ledger, compare leaderboard under benchmarks/)
 **Depends on:** #206 (hybrid RRF), RFC 017 (contextual retrieval), RFC 018 (relevance gating), RFC 019 (cross-encoder reranker), RFC 013 (multi-model support)
 **Composes with:** existing `src/retrieval-eval.ts` fixture framework, `benchmarks/beir/` harness, `benchmarks/observability/mlflow.ts`
 **Tracks:** retrieval quality *as a measured, defensible, reproducible quantity* — and a path to public leaderboard standing without sacrificing zero-shot generality

@@ -4,7 +4,7 @@
 
 > Historical RFC: source anchors in this proposal refer to code at drafting time and are not maintained as current-main anchors.
 
-- **Status:** Draft — awaiting approval
+- **Status:** Implemented (benchmark harness, save-once atomic save, per-model indexes, and lazy read path all landed)
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`
 - **Related:** RFC 005 (code quality), RFC 006 (retrieval)
@@ -575,11 +575,11 @@ Each numbered item maps to a single PR unless the note says otherwise. Stages an
 
 ### PR 0.1 — Benchmark harness (no behavior change)
 
-- [ ] **0.1.1** Add `benchmarks/` directory with `run.ts`, `scenarios/{cold-start,cold-index,warm-query,memory,retrieval-quality}.ts`, and a seeded-PRNG fixture generator (§6.1).
-- [ ] **0.1.2** Add `benchmarks/README.md` describing JSON schema, how to run in stub vs real mode, and the Jest-based mocking strategy for `FaissStore`/embeddings (§8).
-- [ ] **0.1.3** Add `npm run bench` script to `package.json`.
-- [ ] **0.1.4** Add CI job running `npm run bench` with `BENCH_PROVIDER=stub`, uploading JSON as an artifact; **does not** fail the build.
-- [ ] **0.1.5** Commit an initial `benchmarks/results/baseline-stub-nodeXX-{os}-{arch}.json` so later PRs can diff against it.
+- [x] **0.1.1** Add `benchmarks/` directory with `run.ts`, `scenarios/{cold-start,cold-index,warm-query,memory,retrieval-quality}.ts`, and a seeded-PRNG fixture generator (§6.1).
+- [x] **0.1.2** Add `benchmarks/README.md` describing JSON schema, how to run in stub vs real mode, and the Jest-based mocking strategy for `FaissStore`/embeddings (§8).
+- [x] **0.1.3** Add `npm run bench` script to `package.json`.
+- [x] **0.1.4** Add CI job running `npm run bench` with `BENCH_PROVIDER=stub`, uploading JSON as an artifact; **does not** fail the build.
+- [x] **0.1.5** Commit an initial `benchmarks/results/baseline-stub-nodeXX-{os}-{arch}.json` so later PRs can diff against it.
 
 ### PR 0.2 — Real-provider baseline (maintainer-local, one-time)
 
@@ -587,26 +587,26 @@ Each numbered item maps to a single PR unless the note says otherwise. Stages an
 
 ### PR 1.1 — Save-once + non-blocking `existsSync` removal
 
-- [ ] **1.1.1** Hoist `FaissStore.save()` out of the per-file loop in `FaissIndexManager.updateIndex` so it runs once after all changed files are added (§6.5).
-- [ ] **1.1.2** Order hash-sidecar writes **after** the successful `save()` and use tmp+rename for atomicity (§6.2.1 initial version; the full manifest lands in 2.1).
-- [ ] **1.1.3** Replace `fs.existsSync` calls at `src/FaissIndexManager.ts:112,130,141,206` with non-blocking `fsp.stat(...).catch(...)` (§6.7).
-- [ ] **1.1.4** Extend `src/FaissIndexManager.test.ts` with a case asserting `save` is called exactly once per `updateIndex` invocation with ≥2 changed files.
-- [ ] **1.1.5** Run `npm run bench`; commit `benchmarks/results/stage-1.1-stub-*.json` showing `save` call count drop (§10.1).
+- [x] **1.1.1** Hoist `FaissStore.save()` out of the per-file loop in `FaissIndexManager.updateIndex` so it runs once after all changed files are added (§6.5).
+- [x] **1.1.2** Order hash-sidecar writes **after** the successful `save()` and use tmp+rename for atomicity (§6.2.1 initial version; the full manifest lands in 2.1).
+- [x] **1.1.3** Replace `fs.existsSync` calls at `src/FaissIndexManager.ts:112,130,141,206` with non-blocking `fsp.stat(...).catch(...)` (§6.7).
+- [x] **1.1.4** Extend `src/FaissIndexManager.test.ts` with a case asserting `save` is called exactly once per `updateIndex` invocation with ≥2 changed files.
+- [x] **1.1.5** Run `npm run bench`; commit `benchmarks/results/stage-1.1-stub-*.json` showing `save` call count drop (§10.1).
 
 ### PR 1.2 — mtime+size short-circuit (§7.5)
 
-- [ ] **1.2.1** Change hash-sidecar format from `hash` to `{ hash, mtime, size }` (JSON, backward-compat parse: if content isn't JSON, treat as legacy hash-only string).
-- [ ] **1.2.2** In `updateIndex`, `fsp.stat(filePath)` before `calculateSHA256`; if `{mtime, size}` match the sidecar record, skip sha256.
-- [ ] **1.2.3** Test for: (a) stat-match skips sha (fast path), (b) mtime-mismatch falls through to sha and re-indexes correctly, (c) legacy-format sidecar is upgraded in place on first match.
+- [x] **1.2.1** Change hash-sidecar format from `hash` to `{ hash, mtime, size }` (JSON, backward-compat parse: if content isn't JSON, treat as legacy hash-only string).
+- [x] **1.2.2** In `updateIndex`, `fsp.stat(filePath)` before `calculateSHA256`; if `{mtime, size}` match the sidecar record, skip sha256.
+- [x] **1.2.3** Test for: (a) stat-match skips sha (fast path), (b) mtime-mismatch falls through to sha and re-indexes correctly, (c) legacy-format sidecar is upgraded in place on first match.
 - [ ] **1.2.4** Commit `benchmarks/results/stage-1.2-*.json`. **Decision gate A** happens here: maintainer decides whether §6.3 is still needed.
 
 ### PR 2.1 — Batched embeddings + crash-safety manifest
 
 - [ ] **2.1.1** Add `chunked<T>(arr: T[], size: number): T[][]` to `src/utils.ts`.
-- [ ] **2.1.2** Add `INDEXING_BATCH_SIZE_DEFAULTS` map and `getIndexingBatchSize(provider)` helper to `src/config.ts` (§6.2).
-- [ ] **2.1.3** Refactor `FaissIndexManager.updateIndex` to build a `pending.chunks[]` list for all changed files, then call `FaissStore.fromTexts` / `addDocuments` in batches of `getIndexingBatchSize(provider)` (§6.2).
-- [ ] **2.1.4** Implement the `pending-manifest.json` crash-safety protocol in §6.2.1. Handle detection on `initialize()` with the **conservative finish** strategy (simpler; defensive rebuild can come later if needed).
-- [ ] **2.1.5** Add `FaissIndexManager.test.ts` cases: (a) batch-size call-count semantics, (b) simulated `save()` rejection leaves no hash sidecars, (c) duplicate-vector invariant holds after simulated mid-commit crash.
+- [x] **2.1.2** Add `INDEXING_BATCH_SIZE_DEFAULTS` map and `getIndexingBatchSize(provider)` helper to `src/config.ts` (§6.2).
+- [x] **2.1.3** Refactor `FaissIndexManager.updateIndex` to build a `pending.chunks[]` list for all changed files, then call `FaissStore.fromTexts` / `addDocuments` in batches of `getIndexingBatchSize(provider)` (§6.2).
+- [x] **2.1.4** Implement the `pending-manifest.json` crash-safety protocol in §6.2.1. Handle detection on `initialize()` with the **conservative finish** strategy (simpler; defensive rebuild can come later if needed).
+- [x] **2.1.5** Add `FaissIndexManager.test.ts` cases: (a) batch-size call-count semantics, (b) simulated `save()` rejection leaves no hash sidecars, (c) duplicate-vector invariant holds after simulated mid-commit crash.
 - [ ] **2.1.6** Commit `benchmarks/results/stage-2.1-{stub,real}-*.json` showing ≥5× real-provider cold-build improvement vs 0.2 baseline (§10.2).
 
 ### PR 3.1 — (Conditional on decision gate A) Opt-in `SKIP_PER_QUERY_INDEX`

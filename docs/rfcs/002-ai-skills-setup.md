@@ -4,7 +4,7 @@
 
 > Historical RFC: source anchors in this proposal refer to code at drafting time and are not maintained as current-main anchors.
 
-- **Status:** Draft — awaiting approval
+- **Status:** Partially implemented (only the compare-embedding-models skill landed via RFC 013 M5; the broader 8-skill scaffolding was not built; the M5 README/flow-doc drift cleanup did land)
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`
 - **Related:** RFC 003 (skill testing harness — out of scope here), RFC 004 (long-form agent docs / drift — out of scope here), RFC 007 (architecture & performance)

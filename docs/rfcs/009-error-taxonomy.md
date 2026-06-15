@@ -1,6 +1,6 @@
 # RFC 009 — Structured MCP error taxonomy
 
-- **Status:** Draft — awaiting approval
+- **Status:** Implemented (KBError/KBErrorCode + docs/reference/error-codes.md, parity-enforced by src/errors-docs.test.ts)
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`
 - **Related:** RFC 008 (remote transport — introduces a separate HTTP-layer error surface that must not double-wrap MCP-tool errors), RFC 010 (MCP surface v2 — new tools inherit this taxonomy for their path-guard and KB-name validator throws)

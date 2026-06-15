@@ -1,6 +1,6 @@
 # RFC 012 — `kb` CLI alongside the MCP server: restart-free upgrades for the dogfood loop
 
-- **Status:** Draft (v4 — post-round-3 revision; all round-1, round-2, and critical round-3 safety findings triaged)
+- **Status:** Partially implemented (the `kb` bin + npm packaging shipped; package version is still 0.2.2)
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`
 - **Related:** RFC 008 (remote transport — adds SSE/HTTP transports), RFC 010 (MCP surface v2 — adds tools), RFC 011 (arxiv backend / ingest filters)
