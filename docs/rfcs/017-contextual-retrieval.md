@@ -1,6 +1,6 @@
 # RFC 017 — Contextual Retrieval at Ingest
 
-**Status:** Draft (v4 — post-round-2 critic revision + index-layout correction)
+**Status:** Implemented (KB_CONTEXTUAL_RETRIEVAL, preface generation, versioned sidecars — src/contextual-preface.ts)
 **Depends on:** RFC 013 (per-model layout), RFC 014 (atomic save), RFC 015 (warm-LLM endpoint discovery), RFC 016 (docstore dedup, `withSidecarLock`)
 **Tracks:** retrieval quality on chunked notes that lose pronoun / heading / section context
 

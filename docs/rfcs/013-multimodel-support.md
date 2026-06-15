@@ -1,6 +1,6 @@
 # RFC 013 — Multi-model embedding support: keep many indexes side-by-side
 
-- **Status:** Draft (v4 — operator-requested addition: §4.13 embedding-comparison benchmarking skill + M5 milestone. Multi-model rails (M0-M4) unchanged from v3.)
+- **Status:** Implemented (v4 — M0–M5: models/<id>/ layout, active-model resolution, compare skill — src/active-model.ts)
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`
 - **Related:** RFC 012 (CLI distribution — adds the `kb` bin, split-lock coordination, model-mismatch check), RFC 011 (arxiv-backend ingestion pipeline), RFC 010 (MCP surface v2)

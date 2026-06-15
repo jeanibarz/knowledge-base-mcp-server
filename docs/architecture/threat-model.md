@@ -48,7 +48,7 @@ The server applies retrieval-time content guards before chunks cross the formatt
 
 Issue [#221](https://github.com/jeanibarz/knowledge-base-mcp-server/issues/221) adds a second guard contract for chunk metadata and opt-in delimiters. By default (`KB_INJECTION_GUARD` unset or `tag`), each chunk is scanned for common indirect-prompt-injection signals and the additive `metadata.injection_signals` array is emitted with the result. `KB_INJECTION_GUARD=wrap` wraps chunk content in an `<untrusted-doc>` envelope, and `KB_INJECTION_GUARD=both` combines wrapping with metadata signals. `KB_INJECTION_GUARD=off` disables only this metadata/wrap guard. `KB_INJECTION_GUARD_BYPASS_KBS` skips shield signals, metadata detection, and wrapping for explicitly named KBs that intentionally study injection content.
 
-This guard is a boundary cue, not a guarantee. Pattern matching cannot eliminate prompt injection, and wrapped content still remains untrusted. Downstream agents must continue to treat retrieved text as data, not instructions. ADR [`0006-injection-guard-detect-tag-delimit.md`](./adr/0006-injection-guard-detect-tag-delimit.md) records the decision and constraints.
+This guard is a boundary cue, not a guarantee. Pattern matching cannot eliminate prompt injection, and wrapped content still remains untrusted. Downstream agents must continue to treat retrieved text as data, not instructions. ADR [`0010-injection-guard-detect-tag-delimit.md`](./adr/0010-injection-guard-detect-tag-delimit.md) records the decision and constraints.
 
 ## 3. Embedding-provider keys
 

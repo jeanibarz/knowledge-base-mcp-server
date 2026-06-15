@@ -1,6 +1,6 @@
 # RFC 016 — Canonical Docstore Dedup Across Multi-Model Indexes
 
-**Status:** Draft (lifts RFC 013 §8.9 future-RFC seed)
+**Status:** Implemented (content-addressed docstore dedup — src/docstore-cas.ts)
 **Depends on:** RFC 013 (per-model layout `models/<id>/`), RFC 014 (atomic save via `index.vN/` + symlink swap)
 **Tracks:** issue #286
 

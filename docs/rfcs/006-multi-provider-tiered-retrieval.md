@@ -4,7 +4,7 @@
 
 > Historical RFC: source anchors in this proposal refer to code at drafting time and are not maintained as current-main anchors.
 
-- **Status:** Draft — awaiting approval
+- **Status:** Partially implemented (multi-provider embeddings shipped — EMBEDDING_PROVIDER huggingface/ollama/openai; the tiered fast/balanced/deep retrieval layer is NOT built)
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`
 - **Related:** RFC 007 (architecture & performance — overlaps on per-KB index sharding)

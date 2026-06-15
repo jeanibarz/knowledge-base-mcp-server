@@ -4,7 +4,7 @@
 
 > Historical RFC: source anchors in this proposal refer to code at drafting time and are not maintained as current-main anchors.
 
-- **Status:** Draft — awaiting approval
+- **Status:** Partially implemented (list_models, kb_stats, diff_index, add_document, delete_document, reindex_knowledge_base shipped; get_document, update_document, list_documents, refresh_knowledge_base, add_model, remove_model NOT shipped)
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`
 - **Related:** RFC 006 (multi-provider fusion), RFC 007 (architecture & performance)

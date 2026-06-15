@@ -4,7 +4,7 @@
 
 > Historical RFC: source anchors in this proposal refer to code at drafting time and are not maintained as current-main anchors.
 
-- **Status:** Draft — awaiting approval
+- **Status:** Implemented (SSE + streamable-HTTP hosts, MCP_TRANSPORT, auth-token gating — src/transport/{sse,http}.ts)
 - **Author:** Jean Ibarz (drafted by automation)
 - **Target:** `jeanibarz/knowledge-base-mcp-server` `main`
 - **Related:** RFC 006 (multi-provider retrieval — overlaps on MCP tool surface), RFC 007 (architecture & performance — overlaps on per-KB index isolation and the single-process-per-`FAISS_INDEX_PATH` invariant)

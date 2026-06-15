@@ -85,7 +85,16 @@ kb doctor --kb-symlinks       # inventory KB-root symlinks and escaping targets
 kb doctor --bug-report=/tmp   # write a redacted support bundle for issue reports
 kb --help                     # top-level command list
 kb help search                # per-command help (also: kb search --help)
-kb completion bash            # generate a bash shell completion script
+kb completion bash|zsh|fish   # generate a shell completion script (bash, zsh, or fish)
+kb cite alpha/docs/deploy.md  # export BibTeX or CSL-JSON from note frontmatter
+kb cache list                 # inspect local cache surfaces
+kb cache prune                # prune stale cache entries
+kb explain "rollback procedure" --kb=work  # verbose single-query retrieval trace for debugging
+kb verify                     # run slow integrity checks for persisted indexes and sidecars
+kb where "observability stack" # recommend the best KB and file for a given topic
+kb stale-check --kb=work      # scan markdown notes for path / URL references that no longer resolve
+kb promote alpha/docs/deploy.md  # review and update lifecycle frontmatter on a KB note
+kb quarantine list --kb=work  # inspect and manage per-file ingest quarantine entries
 ```
 
 The `kb` bin shares the same env vars as the MCP server (`KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `EMBEDDING_PROVIDER`, `OLLAMA_*`, `OPENAI_*`, `HUGGINGFACE_*`). The consolidated operator matrix for retrieval flags, defaults, per-call overrides, rollout status, and validation commands lives in [docs/feature-flags.md](docs/feature-flags.md). `kb stats [--kb=<name>] [--format=md|json]` mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte counts, last indexed time, embedding model, index path, version context, filesystem enumeration failure diagnostics, contextual-preface cache/failure counters (when RFC 017 ingest is enabled), and remote-transport request/auth/backoff counters (when the HTTP or SSE transport is active). It is read-only and does not refresh the index. `kb search` also defaults to read-only dense retrieval — it loads the existing FAISS index but does not re-scan KB files. Pass `--refresh` to re-index. Use `--mode=hybrid` for explicit dense+BM25 rank fusion, or `--mode=auto` to keep dense for prose queries while selecting hybrid for code, path, flag, error-code, and issue-reference shaped queries. Dense-only neighbor context flags (`--context-before`, `--context-after`, `--context-window`) attach adjacent chunks from the same source around each ranked semantic match; see [docs/search-neighbor-context.md](docs/search-neighbor-context.md) for examples, JSON shape, and tradeoffs. Exploration operators stay additive and read-only: `--diverse` reranks a bounded dense candidate pool for source-aware representative coverage; `--anti-query=<text>` penalizes candidates close to a negative query but only among positively supported candidates; `--plus=<text>` and `--minus=<text>` add vector-composition-style positive and negative query components. JSON output includes an `advanced_retrieval` explanation block with mode, constraints, query components, and per-result scoring signals. Add `--timing` to `kb search` or `kb ask` when you need per-stage elapsed milliseconds in either markdown or JSON output. `--format=compact` collapses each result to a single `score|kb|path:line` line for terse operator listings; `--batch-jsonl` reads `{"query":"…","kb":"…","k":N}` records from stdin and emits one JSON result envelope per line. Search output includes a freshness footer indicating whether the index is up-to-date relative to KB file mtimes.
@@ -112,6 +121,17 @@ active incidents, start with the symptom-keyed
 [incident response runbook](docs/operations/incident-response.md).
 
 RFC 018 relevance gating is off by default. Enable it per process with `KB_RELEVANCE_GATE=on`, or per CLI call with `kb search --gate`; bypass an enabled process with `--no-gate` or MCP `gate: "off"`. The judge uses `--task-context=<text>` / `--task-context-file=<path>` or MCP `task_context`, and reads `KB_GATE_LLM_ENDPOINT` / `KB_GATE_LLM_MODEL` (falling back to `KB_LLM_ENDPOINT` / `KB_LLM_MODEL`). Tuning env vars are `KB_GATE_SCORE_FLOOR` (default `0.95`), `KB_GATE_JUDGE_INPUT` (default `10`), `KB_GATE_LLM_TIMEOUT_MS` (default `8000`), and `KB_GATE_MIN_TASK_TOKENS` (default `8`). `KB_GATE_EMPTY_VERDICT` defaults to `off`; turn it on only when you are comfortable letting the gate return no retrieved context.
+
+**Cross-encoder reranking (RFC 019, off by default).** After the initial dense (or hybrid) retrieval stage, an optional cross-encoder reranking pass reorders the top-N candidates using a more precise model. It improves precision at a small latency cost. Enable it with `KB_RERANK=on`. Tuning env vars:
+
+| Env var | Description | Default |
+| --- | --- | --- |
+| `KB_RERANK` | Enable the cross-encoder reranking stage. | `off` |
+| `KB_RERANK_MODEL` | Cross-encoder model id used for reranking. | (built-in default) |
+| `KB_RERANK_TOP_N` | How many top candidates to feed into the reranker. | (built-in default) |
+| `KB_RERANK_SKIP_DOMAINS` | Comma-separated KB domain names to skip reranking for. | (none) |
+
+Note: `KB_RERANK_DEVICE` (e.g. `cuda`, `cpu`) is an external ONNX Runtime / Transformers.js runtime knob — set it in the shell environment when you want GPU acceleration, but it is not a KB config option and is not validated by `kb config validate`.
 
 `kb search --format=vimgrep` prints one quickfix-compatible line per result: `path:line:col:preview`. JSON results include a stable `chunk_id` such as `alpha/docs/deploy.md#L42-L78` when chunk metadata has a KB, path, and line range; chunks without line metadata fall back to `#chunk-N`. Set `KB_EDITOR_URI=vscode`, `cursor`, or `file` to add opt-in absolute-path `editor_uri` fields and markdown `Open` links. The default `KB_EDITOR_URI=none` omits local absolute paths. `kb open <chunk-id|kb://uri|kb-relative-path>` resolves any of those pointers back to the absolute source path, validated against the KB root; it is read-only and prints the path (add `--json` for the cited line range and an `editorUri`). `kb related <chunk-id|kb://uri>` retrieves an indexed seed chunk from that handle, runs dense search with the seed text, and excludes the seed chunk unless `--include-self` is passed.
 
@@ -498,6 +518,8 @@ The MCP server exposes the current tool set registered by `src/KnowledgeBaseServ
 *   `add_document`: Writes a text document into a KB through the guarded MCP mutation path.
 *   `delete_document`: Deletes a KB-relative document through the guarded MCP mutation path.
 *   `reindex_knowledge_base`: Forces a global FAISS rebuild, optionally validating a named KB before the rebuild.
+
+> **Ingest gate (`KB_INGEST_ENABLED`).** The three write tools above — `add_document`, `delete_document`, and `reindex_knowledge_base` — are only registered when `KB_INGEST_ENABLED` is `on` (the default). Set `KB_INGEST_ENABLED=off` to remove all three from the MCP surface, leaving the server with a read-only tool set. This is useful for read-only deployments or shared environments where you want to prevent accidental writes.
 
 You can use these tools through the MCP interface. The `kb` CLI covers the shell-oriented surfaces shown above.
 
