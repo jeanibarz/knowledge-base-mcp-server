@@ -17,7 +17,13 @@ export type KBErrorCode =
   | 'PREFACE_LLM_FAILURE'
   | 'PREFACE_SIDECAR_CORRUPT'
   | 'REINDEX_LOCK_HELD'
-  | 'REINDEX_BUDGET_EXCEEDED';
+  | 'REINDEX_BUDGET_EXCEEDED'
+  // Issue #645 — disk-space preflight guard. Thrown by the reindex/ingest
+  // entry path when estimated required bytes exceed available free space
+  // (minus the KB_MIN_FREE_DISK_BYTES margin), so a write-heavy run fails
+  // fast with an actionable "need ~X, have Y" message instead of an
+  // ENOSPC partway through.
+  | 'INSUFFICIENT_DISK_SPACE';
 
 export class KBError extends Error {
   readonly code: KBErrorCode;

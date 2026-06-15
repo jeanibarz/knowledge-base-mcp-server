@@ -204,6 +204,17 @@ function classifyKBError(err: KBError): SearchFailure {
         next_action:
           'The estimated reindex runtime would cross the LRA cron window (06:00-10:30 UTC). Schedule the run for the quiet window or pass `--force`.',
       };
+    // #645 — disk-space preflight refusal. Not reachable from the search
+    // path (it originates in the reindex/ingest entry path), but wired in to
+    // keep the exhaustiveness check honest when the code is added.
+    case 'INSUFFICIENT_DISK_SPACE':
+      return {
+        code,
+        category: 'input',
+        message: err.message,
+        next_action:
+          'Free disk space under `$FAISS_INDEX_PATH` (or lower `KB_MIN_FREE_DISK_BYTES`) and retry; the reindex/ingest refused before writing.',
+      };
     default: {
       // Exhaustiveness — if a new KBErrorCode is added, the switch above must
       // be updated. The fallthrough here keeps the runtime behaviour safe.

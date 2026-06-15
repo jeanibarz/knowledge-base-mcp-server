@@ -30,6 +30,7 @@ can change between releases.
 | `PREFACE_SIDECAR_CORRUPT` | A contextual-preface sidecar is unreadable or inconsistent. | Corrupt sidecar JSON, partial sidecar writes, or sidecar content that no longer matches expected contextual-retrieval schema. | Delete the offending sidecar under `$FAISS_INDEX_PATH/.contextual-prefaces/` so the next ingest can regenerate it. | No |
 | `REINDEX_LOCK_HELD` | A contextual reindex cannot start because another reindex owns the model lock. | A live `kb reindex --with-context` run is active, or a previous run left a state file that still appears live. | Check `kb reindex status --format=json`; wait for the active run or follow the incident runbook before removing any lock/state file. | Yes |
 | `REINDEX_BUDGET_EXCEEDED` | The contextual reindex estimate exceeds the configured quiet-window budget. | The estimated runtime would cross the LRA cron window or configured reindex budget guard. | Schedule the run inside the quiet window, reduce scope where supported, or pass `--force` only when the operator accepts the risk. | No |
+| `INSUFFICIENT_DISK_SPACE` | A write-heavy reindex/ingest preflight estimated more bytes than the volume can hold. | Estimated index/sidecar bytes plus the `KB_MIN_FREE_DISK_BYTES` margin exceed the `statfs`-reported free space under `$FAISS_INDEX_PATH`; the run refused before writing. | Free disk space under `$FAISS_INDEX_PATH` (prune old index versions, clear caches) or lower `KB_MIN_FREE_DISK_BYTES`, then retry. | No |
 
 ## Response Guidance
 

@@ -241,6 +241,11 @@ function categoryForKBError(code: KBErrorCode): CanonicalErrorCategory {
       return 'lock';
     case 'REINDEX_BUDGET_EXCEEDED':
       return 'input';
+    // #645 — disk-space preflight refusal. Like the budget guard above it is
+    // a preflight precondition failure detected before any write, so it
+    // shares the `input` category.
+    case 'INSUFFICIENT_DISK_SPACE':
+      return 'input';
   }
 }
 
@@ -259,6 +264,7 @@ function isKBErrorCode(code: string): code is KBErrorCode {
     'PREFACE_SIDECAR_CORRUPT',
     'REINDEX_LOCK_HELD',
     'REINDEX_BUDGET_EXCEEDED',
+    'INSUFFICIENT_DISK_SPACE',
   ].includes(code);
 }
 

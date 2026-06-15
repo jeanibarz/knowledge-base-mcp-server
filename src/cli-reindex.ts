@@ -15,6 +15,9 @@ import {
   type ReindexProgress,
 } from './reindex-progress.js';
 import { isContextualRetrievalEnabled } from './config/contextual-preface.js';
+import { FAISS_INDEX_PATH } from './config/paths.js';
+import { assertSufficientDiskSpace } from './disk-preflight.js';
+import { KBError } from './errors.js';
 import { logger } from './logger.js';
 
 export const REINDEX_HELP = `kb reindex — rebuild FAISS indexes (RFC 017)
@@ -94,6 +97,8 @@ Exit codes:
   2   argv / env error (e.g. --kb=<missing>, missing --with-context)
   3   guard blocked the run (inside or crossing the LRA window)
   4   another reindex is already running on the same model
+  5   disk-space preflight failed (estimated write exceeds free space
+      minus the KB_MIN_FREE_DISK_BYTES margin); nothing was written (#645)
 `;
 
 interface ReindexArgs {
@@ -159,6 +164,21 @@ export async function runReindexCli(rest: string[]): Promise<number> {
         'The reindex will run, but newly-embedded chunks will not carry contextual prefaces — ' +
         'i.e. it would behave like a force-rebuild without the feature. Set the env var first if that is unintended.\n',
     );
+  }
+
+  // #645 — disk-space preflight. A reindex writes a fresh FAISS index
+  // version, docstore, sidecars, and lexical indexes under
+  // $FAISS_INDEX_PATH before the atomic swap; refuse up front when the
+  // volume cannot hold the estimate (+ margin) instead of failing with a
+  // raw ENOSPC partway through an expensive run.
+  try {
+    await assertSufficientDiskSpace(FAISS_INDEX_PATH);
+  } catch (err) {
+    if (err instanceof KBError && err.code === 'INSUFFICIENT_DISK_SPACE') {
+      process.stderr.write(`kb reindex: ${err.message}\n`);
+      return 5;
+    }
+    throw err;
   }
 
   let result: ReindexResult;
