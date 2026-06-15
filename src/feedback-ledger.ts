@@ -54,6 +54,16 @@ export interface PromotedFixture {
   cases: Array<Record<string, unknown>>;
 }
 
+export interface ParsedFeedbackLedger {
+  entries: FeedbackLedgerEntry[];
+  /**
+   * Number of non-empty lines that could not be parsed as JSON and were
+   * skipped (e.g. a torn final line from a crash mid-append). Mirrors the
+   * canonical-log reader's `malformed_canonical_line_count`.
+   */
+  malformedLineCount: number;
+}
+
 export function feedbackLedgerPath(kbDir: string): string {
   return path.join(kbDir, '.index', FEEDBACK_LEDGER_FILENAME);
 }
@@ -67,31 +77,41 @@ export async function appendFeedbackEntry(kbDir: string, input: FeedbackAddInput
 }
 
 export async function readFeedbackLedger(kbDir: string): Promise<FeedbackLedgerEntry[]> {
+  return (await readFeedbackLedgerWithStats(kbDir)).entries;
+}
+
+export async function readFeedbackLedgerWithStats(kbDir: string): Promise<ParsedFeedbackLedger> {
   const ledgerPath = feedbackLedgerPath(kbDir);
   let raw: string;
   try {
     raw = await fsp.readFile(ledgerPath, 'utf-8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { entries: [], malformedLineCount: 0 };
     throw err;
   }
   return parseFeedbackJsonl(raw);
 }
 
-export function parseFeedbackJsonl(raw: string): FeedbackLedgerEntry[] {
+export function parseFeedbackJsonl(raw: string): ParsedFeedbackLedger {
   const entries: FeedbackLedgerEntry[] = [];
+  let malformedLineCount = 0;
   const lines = raw.split(/\r?\n/);
   lines.forEach((line, idx) => {
     if (line.trim().length === 0) return;
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
-    } catch (err) {
-      throw new Error(`feedback ledger line ${idx + 1} is not valid JSON: ${(err as Error).message}`);
+    } catch {
+      // A non-parseable line is almost always a torn write (crash mid-append)
+      // or other byte-level corruption. Skip and count it rather than bricking
+      // the whole read; well-formed-but-schema-invalid lines still throw below
+      // so genuine format/version mismatches stay loud.
+      malformedLineCount++;
+      return;
     }
     entries.push(normalizeFeedbackEntry(parsed, idx + 1));
   });
-  return entries;
+  return { entries, malformedLineCount };
 }
 
 export function buildFeedbackEntry(input: FeedbackAddInput): FeedbackLedgerEntry {
