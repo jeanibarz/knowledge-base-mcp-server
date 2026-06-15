@@ -38,6 +38,7 @@ import {
   type ScoredDocument,
 } from './formatter.js';
 import { runPicker } from './cli-search-picker.js';
+import { parseColorMode, resolveColorEnabled, type ColorMode } from './color.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
@@ -269,6 +270,13 @@ Output:
                         emphasis. auto uses ANSI only on a TTY (default);
                         always also works through pipes; never disables it.
   --no-highlight        Alias for --highlight=never.
+  --color=auto|always|never
+                        Unified control for all ANSI color/emphasis output.
+                        auto colorizes only on a TTY with NO_COLOR unset
+                        (default); always forces color (even through a pipe and
+                        over NO_COLOR); never disables it. Also set via KB_COLOR.
+                        Honors the NO_COLOR standard (https://no-color.org).
+                        Precedence: --color > NO_COLOR > KB_COLOR > TTY.
   --daemon              Use the local read-only daemon when available; falls
                         back to direct search when unreachable.
   --no-freshness        Skip the staleness scan and omit freshness output.
@@ -341,6 +349,8 @@ interface SearchArgs {
   noCache: boolean;
   freshness: boolean;
   highlight: SearchHighlightMode;
+  color: ColorMode;
+  colorExplicit: boolean;
   explainEmpty: boolean;
   explain: boolean;
   neighborContext?: NeighborContextOptions;
@@ -940,6 +950,8 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     noCache: false,
     freshness: true,
     highlight: 'auto',
+    color: 'auto',
+    colorExplicit: false,
     explainEmpty: false,
     explain: false,
     diverse: false,
@@ -1083,6 +1095,11 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
       }
       out.highlight = v; continue;
     }
+    if (raw.startsWith('--color=')) {
+      out.color = parseColorMode(raw.slice('--color='.length));
+      out.colorExplicit = true;
+      continue;
+    }
     if (raw.startsWith('--view=')) {
       const v = raw.slice('--view='.length);
       if (v !== 'compact') throw new Error(`invalid --view: ${raw} (expected 'compact')`);
@@ -1136,15 +1153,25 @@ function buildSearchHighlightOptions(
 }
 
 export function shouldHighlightSearchOutput(
-  parsed: { format: SearchFormat; highlight: SearchHighlightMode },
+  parsed: { format: SearchFormat; highlight: SearchHighlightMode; color?: ColorMode; colorExplicit?: boolean },
   env: NodeJS.ProcessEnv = process.env,
   stdoutIsTTY: boolean = process.stdout.isTTY === true,
 ): boolean {
+  // Highlighting only applies to markdown, and `--highlight=never` is a hard
+  // off switch for this specific feature regardless of the color decision.
   if (parsed.format !== 'md') return false;
   if (parsed.highlight === 'never') return false;
-  if (env.NO_COLOR !== undefined) return false;
-  if (parsed.highlight === 'always') return true;
-  return stdoutIsTTY;
+  // Route the colorize decision through the unified resolver (#659). An explicit
+  // `--color` is authoritative; otherwise a non-default `--highlight` acts as the
+  // color flag for back-compat (so `--highlight=always` still forces ANSI through
+  // a pipe). When neither is set the flag is left undefined so NO_COLOR, KB_COLOR,
+  // and TTY detection inside the resolver decide.
+  const flag: ColorMode | undefined = parsed.colorExplicit
+    ? parsed.color ?? 'auto'
+    : parsed.highlight !== 'auto'
+      ? parsed.highlight
+      : undefined;
+  return resolveColorEnabled({ flag, env, isTTY: stdoutIsTTY });
 }
 
 export function extractSearchHighlightTerms(query: string): string[] {
