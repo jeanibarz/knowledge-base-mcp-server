@@ -7,27 +7,33 @@ describe('logger', () => {
     LOG_FILE: process.env.LOG_FILE,
     LOG_LEVEL: process.env.LOG_LEVEL,
     KB_LOG_FORMAT: process.env.KB_LOG_FORMAT,
+    KB_LOG_MAX_BYTES: process.env.KB_LOG_MAX_BYTES,
+    KB_LOG_MAX_FILES: process.env.KB_LOG_MAX_FILES,
+  };
+
+  const restoreEnv = (key: keyof typeof originalEnv) => {
+    if (originalEnv[key] === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = originalEnv[key];
+    }
   };
 
   afterEach(() => {
-    if (originalEnv.LOG_FILE === undefined) {
-      delete process.env.LOG_FILE;
-    } else {
-      process.env.LOG_FILE = originalEnv.LOG_FILE;
-    }
-    if (originalEnv.LOG_LEVEL === undefined) {
-      delete process.env.LOG_LEVEL;
-    } else {
-      process.env.LOG_LEVEL = originalEnv.LOG_LEVEL;
-    }
-    if (originalEnv.KB_LOG_FORMAT === undefined) {
-      delete process.env.KB_LOG_FORMAT;
-    } else {
-      process.env.KB_LOG_FORMAT = originalEnv.KB_LOG_FORMAT;
-    }
+    restoreEnv('LOG_FILE');
+    restoreEnv('LOG_LEVEL');
+    restoreEnv('KB_LOG_FORMAT');
+    restoreEnv('KB_LOG_MAX_BYTES');
+    restoreEnv('KB_LOG_MAX_FILES');
     jest.restoreAllMocks();
     jest.resetModules();
   });
+
+  // Build a canonical payload whose written line (payload + '\n') is exactly `bytes` long.
+  const canonicalLineOfBytes = (tag: string, bytes: number): string => {
+    const padding = Math.max(0, bytes - 1 - tag.length); // -1 for the '\n' the logger appends
+    return `${tag}${'x'.repeat(padding)}`;
+  };
 
   it('writes log messages to the configured file', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-logger-file-'));
@@ -105,5 +111,90 @@ describe('logger', () => {
     const fileContents = await fsp.readFile(logFile, 'utf-8');
     expect(fileContents).toContain('text remains');
     expect(fileContents).not.toContain('kb-canonical.v1');
+  });
+
+  it('does not rotate when KB_LOG_MAX_BYTES is unset (disabled by default)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-logger-norotate-'));
+    const logFile = path.join(tempDir, 'app.log');
+    process.env.LOG_FILE = logFile;
+    delete process.env.KB_LOG_MAX_BYTES;
+
+    await jest.isolateModulesAsync(async () => {
+      const { logger } = await import('./logger.js');
+      for (let i = 0; i < 20; i += 1) {
+        logger.canonical(canonicalLineOfBytes(`L${i}`, 50));
+      }
+    });
+
+    await expect(fsp.stat(`${logFile}.1`)).rejects.toThrow();
+    const contents = await fsp.readFile(logFile, 'utf-8');
+    expect(contents).toContain('L0');
+    expect(contents).toContain('L19');
+  });
+
+  it('rotates LOG_FILE to LOG_FILE.1 once it reaches KB_LOG_MAX_BYTES', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-logger-rotate-'));
+    const logFile = path.join(tempDir, 'app.log');
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'canonical';
+    process.env.KB_LOG_MAX_BYTES = '100';
+
+    await jest.isolateModulesAsync(async () => {
+      const { logger } = await import('./logger.js');
+      // Each line is 61 bytes. After A (61) and B (122) the file is over the
+      // 100-byte cap, so writing C rolls A+B into .1 and starts a fresh file.
+      logger.canonical(canonicalLineOfBytes('A', 61));
+      logger.canonical(canonicalLineOfBytes('B', 61));
+      logger.canonical(canonicalLineOfBytes('C', 61));
+    });
+
+    const rolled = await fsp.readFile(`${logFile}.1`, 'utf-8');
+    expect(rolled).toContain('A');
+    expect(rolled).toContain('B');
+    expect(rolled).not.toContain('C');
+
+    const current = await fsp.readFile(logFile, 'utf-8');
+    expect(current).toContain('C');
+    expect(current).not.toContain('A');
+  });
+
+  it('honors the KB_LOG_MAX_FILES retention bound', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-logger-retention-'));
+    const logFile = path.join(tempDir, 'app.log');
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'canonical';
+    process.env.KB_LOG_MAX_BYTES = '50';
+    process.env.KB_LOG_MAX_FILES = '2';
+
+    await jest.isolateModulesAsync(async () => {
+      const { logger } = await import('./logger.js');
+      // 31-byte lines past a 50-byte cap force repeated rotations.
+      for (let i = 0; i < 12; i += 1) {
+        logger.canonical(canonicalLineOfBytes(`L${i}`, 31));
+      }
+    });
+
+    await expect(fsp.stat(`${logFile}.1`)).resolves.toBeDefined();
+    await expect(fsp.stat(`${logFile}.2`)).resolves.toBeDefined();
+    // Retention is 2: a third generation must never be created.
+    await expect(fsp.stat(`${logFile}.3`)).rejects.toThrow();
+  });
+
+  it('rolls an oversized pre-existing log on startup', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-logger-startup-'));
+    const logFile = path.join(tempDir, 'app.log');
+    await fsp.writeFile(logFile, `${'x'.repeat(500)}\n`, 'utf-8');
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_MAX_BYTES = '100';
+
+    await jest.isolateModulesAsync(async () => {
+      await import('./logger.js');
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+
+    const rolled = await fsp.readFile(`${logFile}.1`, 'utf-8');
+    expect(rolled.length).toBeGreaterThanOrEqual(500);
+    const current = await fsp.readFile(logFile, 'utf-8');
+    expect(current.length).toBeLessThan(100);
   });
 });
