@@ -2,6 +2,50 @@ export const DEFAULT_RERANK_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
 export const DEFAULT_RERANK_TOP_N = 40;
 export const MAX_RERANK_TOP_N = 1000;
 
+// ---------------------------------------------------------------------------
+// Disk-tiered rerank-score cache configuration (#646).
+//
+// The cross-encoder is the most expensive query-time stage and its score cache
+// has been in-process only (InMemoryRerankScoreCache). KB_RERANK_CACHE opts in
+// to the persistent L1-memory + disk cache (DiskTieredRerankScoreCache), so
+// rerank scores survive process exit and are reused across cold `kb` CLI
+// invocations — mirroring the query embedding cache (ADR 0009).
+//
+// Opt-in (default off): unlike KB_QUERY_CACHE, the rerank cache is disabled by
+// default so existing behavior — an in-memory cache that leaves no on-disk
+// artifacts — is preserved unless an operator explicitly enables it.
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_RERANK_CACHE_DISK_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Whether the disk-tiered rerank-score cache is enabled. Opt-in: only the
+ * affirmative aliases (`on`/`true`/`1`/`enabled`) turn it on; anything else —
+ * including unset — leaves it off.
+ */
+export function isRerankCacheEnabled(raw: string | undefined = process.env.KB_RERANK_CACHE): boolean {
+  const value = (raw ?? '').trim().toLowerCase();
+  return value === 'on' || value === 'true' || value === '1' || value === 'enabled';
+}
+
+/**
+ * Resolve the disk-tier size bound in bytes. KB_RERANK_CACHE_DISK_MAX_BYTES is
+ * interpreted directly as a byte count (it is the bound the issue specifies).
+ * A missing, blank, non-numeric, or non-positive value falls back to the 64 MiB
+ * default, so the disk tier can never be left silently unbounded by a malformed
+ * setting.
+ */
+export function resolveRerankCacheDiskMaxBytes(
+  raw: string | undefined = process.env.KB_RERANK_CACHE_DISK_MAX_BYTES,
+): number {
+  const parsed = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_RERANK_CACHE_DISK_MAX_BYTES;
+  return Math.floor(parsed);
+}
+
+export const KB_RERANK_CACHE_ENABLED = isRerankCacheEnabled();
+export const KB_RERANK_CACHE_DISK_MAX_BYTES = resolveRerankCacheDiskMaxBytes();
+
 export type RerankOverride = 'on' | 'off' | undefined;
 
 export interface RerankerConfig {

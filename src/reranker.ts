@@ -5,6 +5,7 @@ import {
   DEFAULT_RERANK_MODEL,
   DEFAULT_RERANK_TOP_N,
   isRerankSkippedForDomain,
+  KB_RERANK_CACHE_ENABLED,
   normalizeRerankDomain,
   parseRerankFlag,
   parseRerankTopN,
@@ -14,6 +15,7 @@ import {
   type RerankOverride,
   type RerankerConfig,
 } from './config/reranker.js';
+import { DiskTieredRerankScoreCache } from './rerank-cache-disk.js';
 import { logger } from './logger.js';
 
 export {
@@ -102,7 +104,14 @@ export class InMemoryRerankScoreCache implements RerankScoreCache {
   }
 }
 
-export const globalRerankScoreCache = new InMemoryRerankScoreCache();
+// #646: when KB_RERANK_CACHE is enabled, the global cache gains a persistent
+// disk tier (L1 memory + disk) so cross-encoder scores survive process exit and
+// warm cold `kb` CLI invocations. Otherwise it stays the in-process LRU, which
+// leaves no on-disk artifacts. Both implement the synchronous RerankScoreCache
+// interface, so rerankFusedResults is unaffected by the choice.
+export const globalRerankScoreCache: RerankScoreCache = KB_RERANK_CACHE_ENABLED
+  ? new DiskTieredRerankScoreCache()
+  : new InMemoryRerankScoreCache();
 
 const providerCache = new Map<string, Promise<Reranker>>();
 const warnedDegradeReasons = new Set<string>();
