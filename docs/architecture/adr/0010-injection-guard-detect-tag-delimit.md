@@ -1,4 +1,4 @@
-# 0006 — Retrieval-time injection guard: detect, tag, and delimit
+# 0010 — Retrieval-time injection guard: detect, tag, and delimit
 
 - **Status:** Accepted (#221)
 - **Date:** 2026-05-12

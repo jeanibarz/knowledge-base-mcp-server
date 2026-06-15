@@ -2,7 +2,7 @@
 
 **Status:** Accepted (v4 — 3 critic rounds + empirical probe; user-ratified 2026-05-17 — see "Ratified decisions")
 **Depends on:** RFC 009 (error taxonomy), RFC 010 (MCP surface), RFC 015 (warm-LLM endpoint discovery), #206 (hybrid RRF), #358 (`--explain-empty`)
-**Related:** ADR 0006 (injection-guard — the existing post-retrieval inspection stage)
+**Related:** ADR 0010 (injection-guard — the existing post-retrieval inspection stage)
 **Tracks:** context pollution — irrelevant retrieved chunks injected into the consuming agent's context window
 
 ## Problem
@@ -30,7 +30,7 @@ This has a hard consequence. **The gate can only remove results; it can never ad
 - A hybrid path that already runs dense + a BM25 **lexical leg** and fuses them (`src/hybrid-retrieval.ts`, `src/rrf.ts`, #206). The lexical leg matters below: it is a retrieval signal genuinely independent of dense embedding distance.
 - `--explain-empty` diagnostics for the zero-result case (#358).
 - A warm local LLM over an OpenAI-compatible endpoint (RFC 015) and an LLM client (`src/llm-client.ts`).
-- An **injection-guard** stage (`src/injection-guard.ts`, ADR 0006) that already inspects retrieved content post-retrieval, pre-caller — precedent that a post-retrieval inspection stage is accepted architecture.
+- An **injection-guard** stage (`src/injection-guard.ts`, ADR 0010) that already inspects retrieved content post-retrieval, pre-caller — precedent that a post-retrieval inspection stage is accepted architecture.
 
 What is missing: a stage that decides, over the candidate **set**, whether the retrieved context is relevant *enough to inject at all* — and that may answer **"inject nothing."**
 
@@ -234,7 +234,7 @@ This RFC delivers the kb-mcp-server mechanism; the Kookr-side hook is cross-repo
 
 **Schema artifact (round-2 delivery — cross-repo contract enforcement).** The `gate_verdict` shape is exported as a validatable schema, `src/relevance-gate-schema.ts` (a Zod schema, also emitted as JSON Schema). An M0a test asserts the server's actual output validates against it. The Kookr hook imports/copies this schema and validates what it receives — so a schema change is caught at the hook's test layer, not silently at runtime. There is deliberately no version *token* (tokens go stale); the schema artifact plus contract tests on both sides is the mechanism.
 
-**`task_context` is a trust-boundary input.** It is free text concatenated into the judge prompt. M0a runs the ADR 0006 injection-guard inspection over `task_context` (not just over retrieved content), and the judge prompt structurally delimits `task_context` and each candidate, instructing the judge that text inside those regions is data.
+**`task_context` is a trust-boundary input.** It is free text concatenated into the judge prompt. M0a runs the ADR 0010 injection-guard inspection over `task_context` (not just over retrieved content), and the judge prompt structurally delimits `task_context` and each candidate, instructing the judge that text inside those regions is data.
 
 ### 12. Observability and the self-improvement signal
 
@@ -262,7 +262,7 @@ This RFC delivers the kb-mcp-server mechanism; the Kookr-side hook is cross-repo
 | Judge model under-detects `no-relevant-context` (small/weak model) | M0 + M0a fixture asserting `no-relevant-context` is reachable | the judge model must pass the capability check before `on` is trusted (§5). |
 | `KB_GATE_JUDGE_INPUT` overflow (> 10 survivors) | survivor count | the lowest-ranked overflow is **kept un-judged** (`stage: B-input-overflow`), never silently dropped. |
 | Stale `task_context` | none in-band — server cannot detect it | §11 freshness contract makes the hook responsible; documented silent-false-drop source. |
-| Degenerate / adversarial `task_context` | token count; ADR 0006 injection-guard over `task_context` + structural delimiting in the judge prompt | degenerate → statistical path; injected instructions inside delimited data regions are treated as data. |
+| Degenerate / adversarial `task_context` | token count; ADR 0010 injection-guard over `task_context` + structural delimiting in the judge prompt | degenerate → statistical path; injected instructions inside delimited data regions are treated as data. |
 | Judge latency exceeds budget | `judge_degrade_rate` in `kb stats` + WARN alarm at 10% | default raised to 8000 ms; a persistently high rate is alarmed, not silent — `on` is then effectively the statistical path and the operator is told. |
 | Hybrid mode, candidates lack a dense leg | absent from `denseDistanceById` | A1 passes them; the BM25 floor + A2/B decide; the lexical leg is the §6 independent witness. |
 | `denseDistanceById` missing an expected dense-leg distance | gate asserts finite distance for dense-contributed ids | throws at the gate boundary (programmer error) rather than silently disabling A1. |
@@ -288,7 +288,7 @@ This RFC delivers the kb-mcp-server mechanism; the Kookr-side hook is cross-repo
 - The `hybrid-retrieval.ts` side-channel returning `denseDistanceById` (no `rrf.ts` / `FusedResult` change — rollback stays total).
 - The BM25 veto ships as a **simple presence check** (a strong query-term-overlap hit exists); full BM25-score normalization is deferred to M1, where its signal quality is actually measured — building the normalization before M1 risks building it twice (round-3).
 - `KB_RELEVANCE_GATE` + the env surface; the per-call `gate`/`--no-gate` override; wire into `src/search-core.ts` behind the flag.
-- `task_context` MCP parameter + `--task-context*` flags; ADR 0006 injection-guard over `task_context`.
+- `task_context` MCP parameter + `--task-context*` flags; ADR 0010 injection-guard over `task_context`.
 - `gate_verdict` in the MCP response (always present) + `kb search` JSON/footer; the `src/relevance-gate-schema.ts` artifact + a test asserting server output validates against it; `KBError` codes per RFC 009.
 - In-memory verdict cache; `relevance-gate.decision` canonical log line.
 - Default `KB_RELEVANCE_GATE=off` — zero behavior change for every existing caller.
