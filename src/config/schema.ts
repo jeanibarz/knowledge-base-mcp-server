@@ -260,6 +260,8 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
 
   { name: 'KB_MCP_PROMPTS', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Advertises the MCP prompts capability with read-only KB prompt templates.' },
   { name: 'KB_ASK_REDACT_OUTBOUND', kind: 'boolean', docDefault: 'on when KB_LLM_PROVIDER=openrouter (remote); off for local', defaultValue: (env) => (((env.KB_LLM_PROVIDER ?? '').trim().toLowerCase() === 'openrouter') ? 'on' : 'off'), booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Scrub secrets (via redactSecrets) from the assembled kb ask prompt before it is sent to a remote LLM. Defaults on for remote providers; set explicitly to scrub (or skip) on the local path.' },
+  { name: 'KB_ASK_CACHE', kind: 'boolean', default: 'off', booleanValues: QUERY_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'yes', 'enabled'], description: 'Enables the opt-in kb ask / ask_knowledge answer cache keyed by query + retrieved-context fingerprint + embedding model + LLM profile. Invalidates implicitly when the retrieved context changes.' },
+  { name: 'KB_ASK_CACHE_DISK_MAX_MB', kind: 'number', default: '64', min: 0.000001, description: 'Disk-size cap (MiB) for the answer cache; oldest entries are evicted first on write.' },
 ] as const;
 
 const SCHEMA_BY_NAME = new Map(CONFIG_SCHEMA.map((spec) => [spec.name, spec]));
