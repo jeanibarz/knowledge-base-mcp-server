@@ -38,6 +38,15 @@ import {
   RETRIEVE_KNOWLEDGE_DESCRIPTION,
 } from './config/mcp-descriptions.js';
 import {
+  ADD_DOCUMENT_INPUT,
+  ASK_KNOWLEDGE_INPUT,
+  DELETE_DOCUMENT_INPUT,
+  DIFF_INDEX_INPUT,
+  KB_STATS_INPUT,
+  REINDEX_KNOWLEDGE_BASE_INPUT,
+  RETRIEVE_KNOWLEDGE_INPUT,
+} from './mcp-tool-specs.js';
+import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
 } from './config/retrieval.js';
@@ -159,42 +168,16 @@ const SERVER_VERSION = '0.1.0';
 // tool boundary.
 // ---------------------------------------------------------------------------
 
-function parsePositiveIntEnv(raw: string | undefined, fallback: number): number {
-  if (raw === undefined || raw.trim() === '') return fallback;
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
-  return parsed;
-}
-
-export const KB_MAX_QUERY_CHARS = parsePositiveIntEnv(process.env.KB_MAX_QUERY_CHARS, 8192);
-export const KB_MAX_FILTER_ITEMS = parsePositiveIntEnv(process.env.KB_MAX_FILTER_ITEMS, 64);
-export const KB_MAX_GLOB_CHARS = parsePositiveIntEnv(process.env.KB_MAX_GLOB_CHARS, 1024);
-export const KB_MAX_GLOB_WILDCARDS = parsePositiveIntEnv(process.env.KB_MAX_GLOB_WILDCARDS, 64);
-
-const boundedQueryString = () =>
-  z.string().max(
-    KB_MAX_QUERY_CHARS,
-    `query must be at most ${KB_MAX_QUERY_CHARS} characters`,
-  );
-
-const boundedFilterArray = () =>
-  z.array(z.string()).max(
-    KB_MAX_FILTER_ITEMS,
-    `at most ${KB_MAX_FILTER_ITEMS} items are allowed`,
-  );
-
-// path_glob: cap raw length AND wildcard count. minimatch translates each
-// wildcard into regex alternation; an unbounded wildcard count is the
-// complexity lever a hostile glob would pull, so a length cap alone is
-// insufficient.
-const boundedGlobString = () =>
-  z
-    .string()
-    .max(KB_MAX_GLOB_CHARS, `path_glob must be at most ${KB_MAX_GLOB_CHARS} characters`)
-    .refine(
-      (value) => (value.match(/[*?]/g)?.length ?? 0) <= KB_MAX_GLOB_WILDCARDS,
-      `path_glob must contain at most ${KB_MAX_GLOB_WILDCARDS} wildcard characters`,
-    );
+// The input bounds, bounded-string helpers, and per-tool Zod input shapes now
+// live in mcp-tool-specs.ts so the doc generator can enumerate the tool surface
+// (name + description + input schema) without booting the server. The caps are
+// re-exported here to preserve the existing import surface.
+export {
+  KB_MAX_QUERY_CHARS,
+  KB_MAX_FILTER_ITEMS,
+  KB_MAX_GLOB_CHARS,
+  KB_MAX_GLOB_WILDCARDS,
+} from './mcp-tool-specs.js';
 
 function mcpErrorContent(error: Error): TextContent {
   const code = error instanceof KBError
@@ -350,6 +333,38 @@ export class KnowledgeBaseServer {
     return mcp;
   }
 
+  // The Zod input shapes now live in mcp-tool-specs.ts (single source of truth
+  // for the doc generator). Registering through this helper keeps the original
+  // wiring while sidestepping two TypeScript problems that only appear once a
+  // shape is a const rather than an inline literal: the SDK's
+  // `Args | ToolAnnotations` overload otherwise falls back to a loose
+  // ShapeOutput, and inferring the precise arg type generically over the largest
+  // shape (retrieve_knowledge) trips TS2589 "excessively deep". We type the
+  // handler argument from the handler's own concrete signature (Args) — the
+  // runtime zod parse mcp.tool runs against `shape` still validates the input
+  // before the handler sees it.
+  private registerShapedTool<Args>(
+    mcp: McpServer,
+    name: string,
+    description: string,
+    shape: z.ZodRawShape,
+    handler: (args: Args) => Promise<CallToolResult>,
+  ): void {
+    // Call mcp.tool through a loosened signature: its generic
+    // `tool<Args extends ZodRawShapeCompat>` overload instantiates ShapeOutput
+    // over the shape, which trips TS2589 once the shape is a runtime value
+    // rather than an inline literal. The 4-arg (name, description, shape, cb)
+    // runtime form is unchanged; zod still validates `args` against `shape`
+    // before the handler runs.
+    const registerTool = mcp.tool.bind(mcp) as unknown as (
+      name: string,
+      description: string,
+      shape: z.ZodRawShape,
+      cb: (args: unknown) => Promise<CallToolResult>,
+    ) => void;
+    registerTool(name, description, shape, (args) => handler(args as Args));
+  }
+
   private registerTools(mcp: McpServer) {
     mcp.tool(
       'list_knowledge_bases',
@@ -357,55 +372,20 @@ export class KnowledgeBaseServer {
       async () => this.handleListKnowledgeBases()
     );
 
-    mcp.tool(
+    this.registerShapedTool(
+      mcp,
       'retrieve_knowledge',
       RETRIEVE_KNOWLEDGE_DESCRIPTION,
-      {
-        query: boundedQueryString().describe('The search query to use for retrieving similar chunks from the knowledge base.'),
-        knowledge_base_name: z.string().optional().describe('The name of the knowledge base to search. If omitted, all available knowledge bases are considered.'),
-        threshold: z.number().optional().describe('The maximum similarity score threshold for returned documents. Defaults to 2 if not specified.'),
-        // RFC 013 M3 §4.5 — optional override of the active embedding model.
-        // When omitted, the server uses the model recorded in active.txt.
-        // When passed, must be a registered model_id (see list_models).
-        model_name: z.string().optional().describe('The model_id of an alternate embedding model to query (e.g. "openai__text-embedding-3-small"). If omitted, the active model is used. Run list_models for available ids.'),
-        // Issue #53 — metadata POST-filters. Applied after FAISS returns,
-        // ANDed with each other and with knowledge_base_name + threshold.
-        extensions: boundedFilterArray().optional().describe('Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional.'),
-        path_glob: boundedGlobString().optional().describe('Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching.'),
-        tags: boundedFilterArray().optional().describe('Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter.'),
-        since: z.string().optional().describe('Limit dense results to chunks whose current source-file mtime is at or after this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes.'),
-        until: z.string().optional().describe('Limit dense results to chunks whose current source-file mtime is at or before this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes.'),
-        context_before: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense semantic match. Defaults to 0.'),
-        context_after: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each dense semantic match. Defaults to 0.'),
-        context_window: z.number().int().min(0).max(5).optional().describe('Shorthand for setting context_before and context_after to the same value. Defaults to 0.'),
-        // #206 stage 2 — sparse+dense hybrid retrieval. Default 'dense' is
-        // wire-compatible with 0.x clients: when the field is absent the
-        // server runs the unmodified dense path. 'hybrid' fuses dense FAISS
-        // top-N with per-KB BM25 top-N via Reciprocal Rank Fusion (c=60,
-        // Cormack 2009); see RFC 006 §4 + #206 + ADR 0006.
-        search_mode: z.enum(['dense', 'hybrid']).optional().describe('Retrieval mode. "dense" (default) uses FAISS only. "hybrid" fuses FAISS top-N with per-KB BM25 top-N via Reciprocal Rank Fusion. See #206.'),
-        task_context: z.string().optional().describe('Optional task context used by the relevance gate judge. Truncated to 2000 characters.'),
-        gate: z.enum(['on', 'off']).optional().describe('Per-call relevance gate override. Omit to use KB_RELEVANCE_GATE.'),
-        rerank: z.enum(['on', 'off']).optional().describe('Per-call RFC 019 reranker override for hybrid retrieval. Omit to use KB_RERANK.'),
-      },
-      async (args) => this.handleRetrieveKnowledge(args)
+      RETRIEVE_KNOWLEDGE_INPUT,
+      this.handleRetrieveKnowledge.bind(this)
     );
 
-    mcp.tool(
+    this.registerShapedTool(
+      mcp,
       'ask_knowledge',
       ASK_KNOWLEDGE_DESCRIPTION,
-      {
-        query: boundedQueryString().describe('Question to answer from retrieved knowledge-base snippets.'),
-        knowledge_base_name: z.string().optional().describe('Name of a single knowledge base to search. If omitted, all available knowledge bases are considered.'),
-        model_name: z.string().optional().describe('Registered embedding model_id to use for retrieval. If omitted, the active model is used.'),
-        llm_profile: z.string().optional().describe('Saved kb llm profile name to use for answer generation.'),
-        k: z.number().int().min(1).max(50).optional().describe('Retrieval top-K before context packing. Default 8.'),
-        context_budget_tokens: z.number().int().min(64).optional().describe('Approximate token budget for snippets sent to the LLM. Default 6000.'),
-        task_context: z.string().optional().describe('Optional task context passed to the answer prompt and relevance gate when enabled.'),
-        gate: z.enum(['on', 'off']).optional().describe('Per-call relevance gate override for retrieved snippets. Omit to keep the ask path ungated.'),
-        timing: z.boolean().optional().describe('Include retrieval, packing, and LLM timing fields. Defaults to true for MCP.'),
-      },
-      async (args) => this.handleAskKnowledge(args)
+      ASK_KNOWLEDGE_INPUT,
+      this.handleAskKnowledge.bind(this)
     );
 
     // RFC 013 M3 §4.5 — list_models surfaces what's registered so an agent
@@ -418,66 +398,45 @@ export class KnowledgeBaseServer {
 
     // Issue #54 — kb_stats observability surface (counts, last-index timestamp,
     // active model). Read-only; does not acquire the write lock.
-    mcp.tool(
+    this.registerShapedTool(
+      mcp,
       'kb_stats',
       KB_STATS_DESCRIPTION,
-      {
-        knowledge_base_name: z
-          .string()
-          .optional()
-          .describe('Name of a single KB to scope to. If omitted, every registered KB is reported.'),
-      },
-      async (args) => this.handleKbStats(args)
+      KB_STATS_INPUT,
+      this.handleKbStats.bind(this)
     );
 
-    mcp.tool(
+    this.registerShapedTool(
+      mcp,
       'diff_index',
       DIFF_INDEX_DESCRIPTION,
-      {
-        before: z.string().describe('BEFORE index version number, relative directory, or absolute version directory.'),
-        after: z.string().describe('AFTER index version number, relative directory, or absolute version directory.'),
-        queries: z.array(boundedQueryString()).min(1).max(KB_MAX_FILTER_ITEMS).describe('Plaintext queries to run against both index versions.'),
-        model_name: z.string().optional().describe('Optional registered embedding model id. If omitted, the active model is used.'),
-        knowledge_base_name: z.string().optional().describe('Optional KB scope applied to every query.'),
-        top_k: z.number().int().min(1).max(100).optional().describe('Top-K results per query. Default 10.'),
-        threshold: z.number().optional().describe('Dense similarity threshold. Default 2.'),
-        format: z.enum(['json', 'markdown']).optional().describe('Response format. Default markdown.'),
-      },
-      async (args) => this.handleDiffIndex(args)
+      DIFF_INDEX_INPUT,
+      this.handleDiffIndex.bind(this)
     );
 
     if (KB_INGEST_ENABLED) {
-      mcp.tool(
+      this.registerShapedTool(
+        mcp,
         'add_document',
         ADD_DOCUMENT_DESCRIPTION,
-        {
-          knowledge_base_name: z.string().describe('The name of the knowledge base to write into.'),
-          path: z.string().describe('KB-relative document path to create or overwrite. Parent directories are created as needed.'),
-          content: z.string().describe('UTF-8 text content to write.'),
-        },
-        async (args) => this.handleAddDocument(args)
+        ADD_DOCUMENT_INPUT,
+        this.handleAddDocument.bind(this)
       );
 
-      mcp.tool(
+      this.registerShapedTool(
+        mcp,
         'delete_document',
         DELETE_DOCUMENT_DESCRIPTION,
-        {
-          knowledge_base_name: z.string().describe('The name of the knowledge base to delete from.'),
-          path: z.string().describe('KB-relative document path to delete.'),
-        },
-        async (args) => this.handleDeleteDocument(args)
+        DELETE_DOCUMENT_INPUT,
+        this.handleDeleteDocument.bind(this)
       );
 
-      mcp.tool(
+      this.registerShapedTool(
+        mcp,
         'reindex_knowledge_base',
         REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
-        {
-          knowledge_base_name: z
-            .string()
-            .optional()
-            .describe('Name of a single KB to force re-index. If omitted, every registered KB is re-indexed.'),
-        },
-        async (args) => this.handleReindexKnowledgeBase(args)
+        REINDEX_KNOWLEDGE_BASE_INPUT,
+        this.handleReindexKnowledgeBase.bind(this)
       );
     }
   }
