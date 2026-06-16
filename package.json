@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x build/index.js build/cli.js",
     "build:clean": "rm -rf build",
-    "check": "npm run build && npm run test:coverage && npm run docs:check-anchors && npm run docs:check-config-reference",
+    "check": "npm run build && npm run test:coverage && npm run docs:check-anchors && npm run docs:check-config-reference && npm run docs:check-cli",
     "bench": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/run.js",
     "bench:beir": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/beir/run.js",
     "bench:beir:sweep": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/beir/sweep.js",
@@ -35,6 +35,7 @@
     "docs:check-anchors": "node scripts/check-doc-anchors.mjs",
     "docs:generate-config-reference": "npm run build && node scripts/generate-config-reference.mjs",
     "docs:check-config-reference": "node scripts/check-config-reference.mjs",
+    "docs:check-cli": "node scripts/gen-cli-reference.mjs --check",
     "test": "npm run build && npm run test:parallel && npm run test:serial",
     "test:parallel": "LOG_FILE= jest --selectProjects parallel --maxWorkers=4",
     "test:serial": "LOG_FILE= jest --selectProjects serial --runInBand",
