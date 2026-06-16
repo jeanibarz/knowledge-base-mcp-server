@@ -48,6 +48,17 @@ For focused local work:
 
 Treat watch mode as local-only. It expects an interactive terminal and should not be used in automation.
 
+## Incremental Builds
+
+`tsc` runs with `incremental: true`, persisting compile state to `build/.tsbuildinfo` (and `build/benchmarks/.tsbuildinfo` for the bench config). Unchanged files are skipped, so the second `npm run build` after a small edit is much faster than the cold build. The `.tsbuildinfo` files live under the git-ignored `build/` directory and are never committed; CI always runs from a clean checkout, so it gets a correct cold build.
+
+If a branch switch or other change leaves stale build state, reset it with the clean escape hatch:
+
+- `npm run build:clean` — removes the `build/` directory (including `.tsbuildinfo`).
+- Equivalently, `rm -rf build` or `tsc --build --clean`.
+
+The next `npm run build` then rebuilds from scratch.
+
 ## Spinning Off Follow-Up Issues
 
 If you notice an obvious-but-out-of-scope bug or improvement while working, do not silently absorb it into the current PR. Open a tracking issue with the **What / Where (file:line) / Why / Suggested fix** format and link it in the PR's **Follow-ups** section.

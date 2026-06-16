@@ -1,6 +1,7 @@
 node_modules/
 build/
 coverage/
+*.tsbuildinfo
 __pycache__/
 *.py[cod]
 .DS_Store
