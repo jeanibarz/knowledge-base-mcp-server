@@ -1,0 +1,31 @@
+name: Mutation Tests
+
+# Issue #651 — Stryker mutation testing measures whether the test suite
+# actually *kills* injected bugs in the curated core modules (see
+# stryker.conf.json `mutate`). Mutation runs are slow, so this is nightly +
+# manual only — NOT per-PR — to keep the contributor loop fast. The
+# `thresholds.break` gate in stryker.conf.json fails the job when the
+# mutation score drops below the observed baseline.
+on:
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 24
+      - run: npm ci
+      - run: npm run test:mutation
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          if-no-files-found: ignore

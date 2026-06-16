@@ -43,6 +43,7 @@
     "test:watch": "LOG_FILE= jest --watch --maxWorkers=4",
     "test:file": "LOG_FILE= jest --runInBand --runTestsByPath",
     "test:chaos": "LOG_FILE= jest --selectProjects serial --runInBand --testMatch '**/tests/chaos/scenarios/**/*.test.ts'",
+    "test:mutation": "stryker run",
     "start": "node build/index.js",
     "dev": "nodemon src/index.ts",
     "dev:cli": "node --enable-source-maps --import tsx scripts/dev-cli.mjs",
@@ -80,6 +81,8 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/jest-runner": "^9.6.1",
     "@types/html-to-text": "^9.0.4",
     "@types/jest": "^30.0.0",
     "@types/js-yaml": "^4.0.9",
