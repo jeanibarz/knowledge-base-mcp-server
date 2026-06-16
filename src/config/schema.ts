@@ -259,6 +259,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_STATS_DESCRIPTION', kind: 'string', default: DEFAULT_KB_STATS_DESCRIPTION, emptyUsesDefault: true },
 
   { name: 'KB_MCP_PROMPTS', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Advertises the MCP prompts capability with read-only KB prompt templates.' },
+  { name: 'KB_ASK_REDACT_OUTBOUND', kind: 'boolean', docDefault: 'on when KB_LLM_PROVIDER=openrouter (remote); off for local', defaultValue: (env) => (((env.KB_LLM_PROVIDER ?? '').trim().toLowerCase() === 'openrouter') ? 'on' : 'off'), booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Scrub secrets (via redactSecrets) from the assembled kb ask prompt before it is sent to a remote LLM. Defaults on for remote providers; set explicitly to scrub (or skip) on the local path.' },
 ] as const;
 
 const SCHEMA_BY_NAME = new Map(CONFIG_SCHEMA.map((spec) => [spec.name, spec]));
