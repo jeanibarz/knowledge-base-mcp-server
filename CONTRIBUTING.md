@@ -7,7 +7,7 @@ Thank you for your interest in contributing! Please read [`CLAUDE.md`](./CLAUDE.
 1. Check open [RFCs](./docs/rfcs/) for in-flight design discussions.
 2. Fork the repository and create a feature branch (`git checkout -b feat/amazing-feature`).
 3. Make your changes, following the conventions below.
-4. Ensure the local CI-parity gate passes: `npm run check`
+4. Ensure the local CI-parity gate passes: `npm run check` (which now also runs `npm run lint`)
 5. If your change affects performance, run the benchmark harness: `BENCH_PROVIDER=stub npm run bench`
 6. Commit using **conventional commits** — `feat:`, `fix(scope):`, `docs:`, `chore:` (see `git log` for prior style).
 7. Push to the branch and open a Pull Request using the PR template.
@@ -32,7 +32,13 @@ Please use the [Feature Request issue template](./.github/ISSUE_TEMPLATE/feature
 
 ## Local Test Iteration
 
-Use `npm run check` before opening a PR; it runs the TypeScript build, full Jest suite, and documentation anchor verifier.
+Use `npm run check` before opening a PR; it runs the TypeScript build, ESLint, the full Jest suite, and documentation anchor verifier.
+
+## Linting
+
+Use `npm run lint` (`eslint src`) to run the type-aware ESLint gate, or `npm run lint:fix` to apply autofixes. It is also wired into `npm run check` and the CI Tests workflow, so a clean `npm run lint` is required before a PR is mergeable.
+
+The flat config lives in [`eslint.config.js`](./eslint.config.js). It seeds typescript-eslint's `recommendedTypeChecked` ruleset (scoped to `src/`, excluding tests) with the currently-failing rules disabled so the gate is green today. Those disabled rules are documented ratchet targets — follow-up PRs should fix the violations and re-enable rules one at a time.
 
 Use `npm test` for the local CI-parity test gate. It builds the TypeScript output first, then runs the Jest `parallel` project with four workers followed by the Jest `serial` project in-band. The scripts clear `LOG_FILE` so ambient local logging does not redirect canonical stderr assertions into a personal log file.
 
