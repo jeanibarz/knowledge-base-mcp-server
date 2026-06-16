@@ -2,7 +2,8 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "build/benchmarks",
-    "rootDir": "benchmarks"
+    "rootDir": "benchmarks",
+    "tsBuildInfoFile": "build/benchmarks/.tsbuildinfo"
   },
   "include": ["benchmarks/**/*.ts"],
   "exclude": ["node_modules", "benchmarks/**/*.test.ts"]

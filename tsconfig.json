@@ -13,7 +13,9 @@
     "outDir": "build",
     "rootDir": "src",
     "sourceMap": true,
-    "useDefineForClassFields": true
+    "useDefineForClassFields": true,
+    "incremental": true,
+    "tsBuildInfoFile": "build/.tsbuildinfo"
   },
   "include": ["src/**/*.ts", "src/**/*.mjs"],
   "exclude": ["node_modules", "src/**/*.test.ts", "src/test-support"]
