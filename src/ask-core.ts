@@ -2,7 +2,15 @@ import * as fsp from 'fs/promises';
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
 import type { SearchResultDocument } from './FaissIndexManager.js';
 import type { resolveActiveModel } from './active-model.js';
+import { resolveLlmProvider } from './config/llm-provider.js';
 import { FRONTMATTER_EXTRAS_WIRE_VISIBLE } from './config/retrieval.js';
+import { logger } from './logger.js';
+import {
+  combineRedactionSummaries,
+  emptyRedactionSummary,
+  redactSecrets,
+  type RedactionSummary,
+} from './redaction.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { resolveInjectionGuardOptions } from './injection-guard.js';
@@ -125,6 +133,12 @@ export interface AskKnowledgeResult {
   llm: AskLlmPayload;
   retrieval: AskRetrievalPayload;
   context_packing: AskContextPackingPayload;
+  /**
+   * Outbound secret-redaction summary for the assembled prompt (#650). Counts
+   * only — the scrubbed secrets are never recorded. `enabled` is false when the
+   * egress scrub was skipped (e.g. a local provider with the flag unset).
+   */
+  redaction: RedactionSummary;
   abstention_reason: string | null;
   timing?: Record<string, unknown>;
 }
@@ -297,6 +311,24 @@ export async function executeAsk(
     timing.context_excluded_chunks = packedContext.payload.excluded_chunks;
     timing.context_truncated_chunks = packedContext.payload.truncated_chunks;
   }
+  // #650 — outbound secret redaction. Scrub the assembled prompt right before
+  // it crosses the trust boundary to the LLM endpoint. The flag defaults ON for
+  // remote providers and leaves the local path untouched unless explicitly
+  // requested (see resolveOutboundRedactionEnabled). Only a count is recorded —
+  // never the secret text.
+  const redactionEnabled = resolveOutboundRedactionEnabled();
+  const outbound = redactOutboundMessages(
+    buildAskMessages(args.question, packedContext.included, args.taskContext),
+    redactionEnabled,
+  );
+  if (timing) timing.outbound_redactions = outbound.summary.total;
+  if (outbound.summary.enabled) {
+    logger.info(
+      `kb ask: redacted ${outbound.summary.total} outbound secret(s) before LLM send`,
+      JSON.stringify({ by_type: outbound.summary.by_type }),
+    );
+  }
+
   let answer: string;
   let llmModel: string | null = null;
   try {
@@ -304,7 +336,7 @@ export async function executeAsk(
     if (timing) timing.llm_first_token_ms = null;
     const response = await deps.callChatCompletion({
       endpoint: target.profile.endpoint,
-      messages: buildAskMessages(args.question, packedContext.included, args.taskContext),
+      messages: outbound.messages,
       temperature: 0.2,
       ...(args.onAnswerToken !== undefined
         ? {
@@ -350,8 +382,63 @@ export async function executeAsk(
       ...(args.gate !== undefined ? { gate: args.gate } : {}),
     },
     context_packing: packedContext.payload,
+    redaction: outbound.summary,
     abstention_reason: inferAskAbstentionReason(answer, packedContext.payload),
     ...(compactTiming ? { timing: compactTiming } : {}),
+  };
+}
+
+const ASK_REDACT_OUTBOUND_ENV = 'KB_ASK_REDACT_OUTBOUND';
+const REDACT_TRUTHY_VALUES = new Set(['on', 'true', '1', 'yes']);
+const REDACT_FALSY_VALUES = new Set(['off', 'false', '0', 'no']);
+
+/**
+ * Decide whether the assembled ask prompt is scrubbed before it leaves the
+ * machine (#650). `KB_ASK_REDACT_OUTBOUND` is a tri-state: when explicitly set
+ * it wins for every provider (so a local-Ollama user can opt in, or a remote
+ * user can opt out), and when unset it defaults ON for remote providers and OFF
+ * for local — i.e. the local path is never altered unless explicitly requested.
+ * Provider remoteness is resolved via {@link resolveLlmProvider}
+ * (src/config/llm-provider.ts).
+ */
+export function resolveOutboundRedactionEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = env[ASK_REDACT_OUTBOUND_ENV]?.trim().toLowerCase();
+  if (raw !== undefined && raw !== '') {
+    if (REDACT_TRUTHY_VALUES.has(raw)) return true;
+    if (REDACT_FALSY_VALUES.has(raw)) return false;
+  }
+  return resolveLlmProvider(env).remote;
+}
+
+interface OutboundMessages {
+  messages: ReturnType<typeof buildAskMessages>;
+  summary: RedactionSummary;
+}
+
+/**
+ * Run every outbound chat message through the shared {@link redactSecrets}
+ * engine when redaction is enabled, returning the scrubbed messages and a
+ * combined count-only summary. When disabled the messages pass through verbatim
+ * with an empty (disabled) summary.
+ */
+export function redactOutboundMessages(
+  messages: ReturnType<typeof buildAskMessages>,
+  enabled: boolean,
+): OutboundMessages {
+  if (!enabled) {
+    return { messages, summary: emptyRedactionSummary(false) };
+  }
+  const summaries: RedactionSummary[] = [];
+  const redacted = messages.map((message) => {
+    const { text, summary } = redactSecrets(message.content);
+    summaries.push(summary);
+    return { ...message, content: text };
+  });
+  return {
+    messages: redacted,
+    summary: combineRedactionSummaries(true, ...summaries),
   };
 }
 
