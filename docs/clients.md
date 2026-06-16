@@ -28,6 +28,8 @@ For local empty-result, stale-index, active-model, provider, lock, or linked-che
 
 For clients that expose MCP resources, the server also supports `resources/list` and `resources/read` over `kb://` URIs. See [MCP resources and `kb://` URIs](./mcp-resources.md) for URI encoding, MIME behavior, and when to prefer resources over `retrieve_knowledge`.
 
+The server can also expose reusable MCP prompt templates (`summarize_kb`, `cite_sources`, `compare_notes`, `research_brief`) that clients surface as slash-commands. This surface is opt-in (`KB_MCP_PROMPTS=on`) and read-only. See [MCP prompts and reusable KB templates](./mcp-prompts.md) for the template registry, arguments, and client support.
+
 ## Multi-model setups (RFC 013, 0.3.0+)
 
 The default config in the snippets below resolves to a single embedding model via the legacy env vars (`EMBEDDING_PROVIDER` + `OLLAMA_MODEL`/`OPENAI_MODEL_NAME`/`HUGGINGFACE_MODEL_NAME`). On 0.3.0+, you can keep multiple models registered side-by-side and have the MCP server use any of them per-call.

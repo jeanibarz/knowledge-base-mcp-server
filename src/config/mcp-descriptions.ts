@@ -55,3 +55,129 @@ export const REINDEX_KNOWLEDGE_BASE_DESCRIPTION =
 
 export const DIFF_INDEX_DESCRIPTION =
   'Compares retrieval-result churn across two persisted FAISS index versions for a list of plaintext queries. Returns rank deltas, top-K membership changes, and stability/churn scores; useful before promoting a new index version.';
+
+// ---------------------------------------------------------------------------
+// MCP prompts surface (#642).
+// The server's third MCP primitive (alongside tools + resources): a small,
+// opinionated set of read-only, parameterized prompt templates that an MCP
+// client (Claude Desktop, IDE plugins) can surface as slash-commands and that
+// pre-wire a grounded `retrieve_knowledge` workflow. v1 is intentionally a
+// fixed registry — there is no user-defined-prompt store. Template TEXT lives
+// here so the wording stays next to the tool descriptions; the wire handlers
+// and arg substitution live in `src/mcp-prompts.ts`.
+//
+// Each template is read-only: rendering substitutes the caller's arguments
+// into instruction text. The server never runs retrieval or calls an LLM while
+// answering `prompts/get`; the returned messages tell the client/agent to call
+// the `retrieve_knowledge` tool itself.
+// ---------------------------------------------------------------------------
+
+export interface KbPromptArgument {
+  name: string;
+  description: string;
+  required?: boolean;
+}
+
+export interface KbPromptTemplate {
+  name: string;
+  description: string;
+  arguments: readonly KbPromptArgument[];
+  /**
+   * Render the prompt body from already-validated arguments. Required
+   * arguments are guaranteed present by the caller (`renderKbPrompt`);
+   * optional arguments may be absent and the template supplies a default.
+   */
+  render: (args: Record<string, string>) => string;
+}
+
+/**
+ * Describe the KB scope for an instruction line. When the caller passed a
+ * `knowledge_base_name` the retrieval is pinned to that shelf; otherwise the
+ * agent searches every registered KB (the `retrieve_knowledge` default).
+ */
+function kbScopeClause(args: Record<string, string>): string {
+  const kb = args.knowledge_base_name?.trim();
+  return kb
+    ? `the "${kb}" knowledge base (pass knowledge_base_name="${kb}")`
+    : 'all available knowledge bases (omit knowledge_base_name)';
+}
+
+export const KB_PROMPT_TEMPLATES: readonly KbPromptTemplate[] = [
+  {
+    name: 'summarize_kb',
+    description:
+      'Summarize what a knowledge base contains, grounded in retrieved chunks and cited by source path.',
+    arguments: [
+      { name: 'knowledge_base_name', description: 'KB to summarize. Omit to summarize across all KBs.' },
+      { name: 'focus', description: 'Optional topic to focus the summary on.' },
+    ],
+    render: (args) => {
+      const focus = args.focus?.trim();
+      const query = focus && focus.length > 0 ? focus : 'key topics and themes';
+      return [
+        `Summarize ${kbScopeClause(args)}.`,
+        '',
+        `1. Call the retrieve_knowledge tool with query="${query}" scoped to ${kbScopeClause(args)}.`,
+        '2. Write a concise, structured summary (3-6 bullet points) of the retrieved material.',
+        '3. Ground every point in the retrieved chunks — cite the source path for each claim and do not add facts that are not in the results.',
+        '4. If retrieval returns nothing relevant, say so plainly instead of guessing.',
+      ].join('\n');
+    },
+  },
+  {
+    name: 'cite_sources',
+    description:
+      'Answer a question strictly from retrieved knowledge-base chunks, citing the source path for every claim.',
+    arguments: [
+      { name: 'question', description: 'The question to answer from the knowledge base.', required: true },
+      { name: 'knowledge_base_name', description: 'KB to search. Omit to search all KBs.' },
+    ],
+    render: (args) =>
+      [
+        `Answer this question using only the knowledge base: "${args.question}"`,
+        '',
+        `1. Call the retrieve_knowledge tool with query="${args.question}" scoped to ${kbScopeClause(args)}.`,
+        '2. Answer strictly from the retrieved chunks. Cite the source path inline after each claim, e.g. (source: notes/topic.md).',
+        '3. Do not use outside knowledge. If the retrieved chunks do not support an answer, state that the knowledge base does not cover it and abstain.',
+      ].join('\n'),
+  },
+  {
+    name: 'compare_notes',
+    description:
+      'Compare and contrast two topics using retrieved knowledge-base chunks, with citations for each side.',
+    arguments: [
+      { name: 'topic_a', description: 'First topic to compare.', required: true },
+      { name: 'topic_b', description: 'Second topic to compare.', required: true },
+      { name: 'knowledge_base_name', description: 'KB to search. Omit to search all KBs.' },
+    ],
+    render: (args) =>
+      [
+        `Compare and contrast "${args.topic_a}" and "${args.topic_b}" using the knowledge base.`,
+        '',
+        `1. Call retrieve_knowledge once with query="${args.topic_a}" and once with query="${args.topic_b}", both scoped to ${kbScopeClause(args)}.`,
+        '2. Produce a comparison covering points in common and key differences.',
+        '3. Cite the source path for each point. Use only retrieved material; if one topic has no coverage, say so.',
+      ].join('\n'),
+  },
+  {
+    name: 'research_brief',
+    description:
+      'Produce a short, cited research brief on a topic from retrieved knowledge-base chunks.',
+    arguments: [
+      { name: 'topic', description: 'The topic to brief.', required: true },
+      { name: 'knowledge_base_name', description: 'KB to search. Omit to search all KBs.' },
+      { name: 'k', description: 'How many chunks to retrieve before synthesizing (default 8).' },
+    ],
+    render: (args) => {
+      const k = args.k?.trim();
+      const kClause = k && k.length > 0 ? ` with up to ${k} results` : '';
+      return [
+        `Write a research brief on "${args.topic}" grounded in the knowledge base.`,
+        '',
+        `1. Call retrieve_knowledge with query="${args.topic}"${kClause}, scoped to ${kbScopeClause(args)}.`,
+        '2. Structure the brief as: Background, Key findings, Open questions.',
+        '3. Ground every statement in the retrieved chunks and cite the source path. Flag gaps where the knowledge base is thin rather than filling them with outside knowledge.',
+      ].join('\n');
+    },
+  },
+];

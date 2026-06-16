@@ -257,6 +257,8 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'LIST_KNOWLEDGE_BASES_DESCRIPTION', kind: 'string', default: DEFAULT_LIST_KNOWLEDGE_BASES_DESCRIPTION, emptyUsesDefault: true },
   { name: 'LIST_MODELS_DESCRIPTION', kind: 'string', default: DEFAULT_LIST_MODELS_DESCRIPTION, emptyUsesDefault: true },
   { name: 'KB_STATS_DESCRIPTION', kind: 'string', default: DEFAULT_KB_STATS_DESCRIPTION, emptyUsesDefault: true },
+
+  { name: 'KB_MCP_PROMPTS', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Advertises the MCP prompts capability with read-only KB prompt templates.' },
 ] as const;
 
 const SCHEMA_BY_NAME = new Map(CONFIG_SCHEMA.map((spec) => [spec.name, spec]));
