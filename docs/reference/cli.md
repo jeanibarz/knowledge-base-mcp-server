@@ -78,6 +78,10 @@ Options:
   --endpoint=<url>      OpenAI-compatible chat endpoint for this call only.
   --llm-profile=<name>  Use a saved `kb llm` profile.
   --format=md|json      Output format (default: md).
+  --interactive, -i     Start a multi-turn REPL: the first question retrieves
+                        evidence and follow-ups reuse it (/refresh to re-retrieve).
+                        Requires a TTY; otherwise falls back to one-shot. In-session
+                        commands: /sources, /kb <name>, /save, /refresh, /reset, /exit.
   --no-stream           Wait for the full answer before printing markdown output.
   --timing              Include elapsed milliseconds for retrieval and LLM stages.
   --stdin               Read question from stdin.

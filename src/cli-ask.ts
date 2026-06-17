@@ -37,11 +37,17 @@ import {
   executeAsk,
   packAskContext,
   type AskCitation,
+  type AskExecutionArgs,
   type AskKnowledgeResult,
   type AskLlmPayload,
   type AskRetrievalPayload,
   type RunAskCoreDeps,
 } from './ask-core.js';
+import {
+  runAskRepl,
+  type SaveTranscriptInput,
+  type SaveTranscriptResult,
+} from './ask-repl.js';
 
 export {
   DEFAULT_ASK_CONTEXT_BUDGET_TOKENS,
@@ -71,6 +77,10 @@ Options:
   --endpoint=<url>      OpenAI-compatible chat endpoint for this call only.
   --llm-profile=<name>  Use a saved \`kb llm\` profile.
   --format=md|json      Output format (default: md).
+  --interactive, -i     Start a multi-turn REPL: the first question retrieves
+                        evidence and follow-ups reuse it (/refresh to re-retrieve).
+                        Requires a TTY; otherwise falls back to one-shot. In-session
+                        commands: /sources, /kb <name>, /save, /refresh, /reset, /exit.
   --no-stream           Wait for the full answer before printing markdown output.
   --timing              Include elapsed milliseconds for retrieval and LLM stages.
   --stdin               Read question from stdin.
@@ -92,6 +102,7 @@ export interface AskArgs {
   refresh: boolean;
   stdin: boolean;
   format: 'md' | 'json';
+  interactive: boolean;
   noStream: boolean;
   timing: boolean;
   saveTranscript: boolean;
@@ -123,6 +134,10 @@ export interface RunAskDeps extends Omit<RunAskCoreDeps, 'loadReadOnlyIndex'> {
   loadWithJsonRetry: typeof loadWithJsonRetry;
   createTranscriptNote: typeof createAskTranscriptNote;
   knowledgeBasesRootDir: string;
+  /** Interactive REPL runner (injectable for tests; defaults to {@link runAskRepl}). */
+  runRepl?: typeof runAskRepl;
+  /** Whether stdin is a TTY — gates the REPL vs. the one-shot fall-back. */
+  stdinIsTty?: () => boolean;
 }
 
 const defaultRunAskDeps: RunAskDeps = {
@@ -134,6 +149,8 @@ const defaultRunAskDeps: RunAskDeps = {
   callChatCompletion,
   createTranscriptNote: createAskTranscriptNote,
   knowledgeBasesRootDir: KNOWLEDGE_BASES_ROOT_DIR,
+  runRepl: runAskRepl,
+  stdinIsTty: () => Boolean(process.stdin.isTTY),
 };
 
 export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDeps): Promise<number> {
@@ -148,6 +165,27 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
   if (args.stdin && args.question === null) {
     args.question = await readAllStdin();
   }
+
+  if (args.interactive) {
+    const stdinIsTty = deps.stdinIsTty ?? (() => Boolean(process.stdin.isTTY));
+    if (stdinIsTty()) {
+      const runRepl = deps.runRepl ?? runAskRepl;
+      const seedQuestion = args.question !== null && args.question.trim() !== ''
+        ? args.question.trim()
+        : undefined;
+      return runRepl({
+        baseArgs: toAskBaseArgs(args),
+        coreDeps: toRunAskCoreDeps(deps),
+        env: process.env,
+        ...(seedQuestion !== undefined ? { seedQuestion } : {}),
+        saveTranscript: (input) => persistAskTranscript(deps, input),
+      });
+    }
+    // Non-TTY (piped/redirected) input cannot drive a REPL — fall back to a
+    // single one-shot answer over the supplied question (#649).
+    process.stderr.write('kb ask: interactive mode requires a TTY; falling back to one-shot.\n');
+  }
+
   if (args.question === null || args.question.trim() === '') {
     const failure = classifyKbAskError(new Error('missing <question> (or use --stdin)'), 'argument');
     return reportAskFailure(args.format, failure);
@@ -295,6 +333,52 @@ function toRunAskCoreDeps(deps: RunAskDeps): RunAskCoreDeps {
   };
 }
 
+/** Project parsed CLI args onto the per-turn retrieval/answer shape the REPL drives. */
+function toAskBaseArgs(args: AskArgs): AskExecutionArgs {
+  return {
+    question: '',
+    ...(args.kb !== undefined ? { kb: args.kb } : {}),
+    ...(args.model !== undefined ? { model: args.model } : {}),
+    ...(args.llmProfile !== undefined ? { llmProfile: args.llmProfile } : {}),
+    ...(args.endpoint !== undefined ? { endpoint: args.endpoint } : {}),
+    k: args.k,
+    contextBudgetTokens: args.contextBudgetTokens,
+    refresh: args.refresh,
+    timing: false,
+    ...(args.taskContext !== undefined ? { taskContext: args.taskContext } : {}),
+    ...(args.gate !== undefined ? { gate: args.gate } : {}),
+  };
+}
+
+/**
+ * Persist a REPL exchange as a transcript note, reusing the one-shot transcript
+ * markdown + atomic-write plumbing so interactive and one-shot saves never
+ * diverge. (#649)
+ */
+async function persistAskTranscript(
+  deps: RunAskDeps,
+  input: SaveTranscriptInput,
+): Promise<SaveTranscriptResult> {
+  const title = input.title ?? defaultAskTranscriptTitle(input.question);
+  const content = buildAskTranscriptMarkdown({
+    title,
+    createdAt: new Date().toISOString(),
+    question: input.question,
+    answer: input.result.answer,
+    citations: input.result.citations,
+    llm: input.result.llm,
+    retrieval: input.result.retrieval,
+    ...(input.result.timing ? { timing: input.result.timing } : {}),
+  });
+  const path = await deps.createTranscriptNote(
+    deps.knowledgeBasesRootDir,
+    input.kb,
+    title,
+    content,
+  );
+  return { kb: input.kb, path };
+}
+
 export function parseAskArgs(rest: string[]): AskArgs {
   const out: AskArgs = {
     question: null,
@@ -303,6 +387,7 @@ export function parseAskArgs(rest: string[]): AskArgs {
     refresh: false,
     stdin: false,
     format: 'md',
+    interactive: false,
     noStream: false,
     timing: false,
     saveTranscript: false,
@@ -312,6 +397,7 @@ export function parseAskArgs(rest: string[]): AskArgs {
     const raw = rest[i];
     if (raw === '--refresh') { out.refresh = true; continue; }
     if (raw === '--stdin') { out.stdin = true; continue; }
+    if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
     if (raw === '--no-stream') { out.noStream = true; continue; }
     if (raw === '--timing') { out.timing = true; continue; }
     if (raw === '--save-transcript') { out.saveTranscript = true; continue; }

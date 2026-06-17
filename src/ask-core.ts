@@ -217,14 +217,26 @@ export async function askKnowledge(
   }, deps, nowMs());
 }
 
-export async function executeAsk(
+export interface AskEvidence {
+  /** Embedding model id used for retrieval (folds into the answer-cache key). */
+  activeModelId: string;
+  /** Retrieved + sensitivity-hydrated + gated documents, reusable across turns. */
+  results: SearchResultDocument[];
+}
+
+/**
+ * Retrieval half of {@link executeAsk}: resolves the active embedding model and
+ * returns the retrieved evidence. Split out so the interactive REPL (#649) can
+ * retrieve once and reuse the same evidence across follow-up turns instead of
+ * paying retrieval latency on every question.
+ */
+export async function retrieveAskEvidence(
   args: AskExecutionArgs,
   deps: RunAskCoreDeps,
-  totalStartedAt: number,
-): Promise<AskKnowledgeResult> {
+  timing: TimingPayload | null = null,
+): Promise<AskEvidence> {
   let activeModelId: string;
   let results;
-  const timing: TimingPayload | null = args.timing ? {} : null;
   try {
     let startedAt = nowMs();
     await deps.bootstrapLayout();
@@ -295,6 +307,24 @@ export async function executeAsk(
     const failure = classifyKbSearchError(err);
     throw new AskExecutionError(failure.message, exitCodeForFailure(failure), failure);
   }
+
+  return { activeModelId, results };
+}
+
+/**
+ * Answering half of {@link executeAsk}: packs the supplied evidence, resolves
+ * the LLM target, and produces the cited answer (with optional streaming). The
+ * REPL calls this directly with cached evidence on follow-up turns (#649), so
+ * the one-shot CLI and the interactive session share one answering path.
+ */
+export async function answerWithEvidence(
+  args: AskExecutionArgs,
+  evidence: AskEvidence,
+  deps: RunAskCoreDeps,
+  totalStartedAt: number,
+  timing: TimingPayload | null = null,
+): Promise<AskKnowledgeResult> {
+  const { activeModelId, results } = evidence;
 
   let target: LlmTarget;
   try {
@@ -438,6 +468,16 @@ export async function executeAsk(
     abstention_reason: inferAskAbstentionReason(answer, packedContext.payload),
     ...(compactTiming ? { timing: compactTiming } : {}),
   };
+}
+
+export async function executeAsk(
+  args: AskExecutionArgs,
+  deps: RunAskCoreDeps,
+  totalStartedAt: number,
+): Promise<AskKnowledgeResult> {
+  const timing: TimingPayload | null = args.timing ? {} : null;
+  const evidence = await retrieveAskEvidence(args, deps, timing);
+  return answerWithEvidence(args, evidence, deps, totalStartedAt, timing);
 }
 
 const ASK_REDACT_OUTBOUND_ENV = 'KB_ASK_REDACT_OUTBOUND';

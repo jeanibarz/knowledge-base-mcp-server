@@ -43,6 +43,7 @@ describe('parseAskArgs', () => {
       refresh: true,
       stdin: false,
       format: 'json',
+      interactive: false,
       noStream: false,
       timing: true,
       saveTranscript: true,
@@ -64,6 +65,14 @@ describe('parseAskArgs', () => {
       question: 'what changed?',
       format: 'md',
       noStream: true,
+    });
+  });
+
+  it('parses -i / --interactive without consuming the question', () => {
+    expect(parseAskArgs(['-i'])).toMatchObject({ question: null, interactive: true });
+    expect(parseAskArgs(['--interactive', 'why?'])).toMatchObject({
+      question: 'why?',
+      interactive: true,
     });
   });
 
@@ -1367,3 +1376,74 @@ function createAskFixtureHarness(options: AskFixtureHarnessOptions) {
     },
   };
 }
+
+describe('kb ask --interactive routing', () => {
+  function makeInteractiveDeps(overrides: Partial<RunAskDeps> = {}): {
+    deps: RunAskDeps;
+    runRepl: jest.Mock;
+    callChatCompletion: jest.Mock;
+  } {
+    const manager = {
+      modelDir: '/tmp/kb-ask-repl-route',
+      initialize: jest.fn(async () => {}),
+      updateIndex: jest.fn(async () => {}),
+      similaritySearch: jest.fn(async () => [
+        {
+          pageContent: 'Rollback needs the release lead.',
+          metadata: { knowledgeBase: 'ops', relativePath: 'rollback.md' },
+          score: 0.1,
+        },
+      ]),
+    };
+    const callChatCompletion = jest.fn(async () => ({ content: 'one-shot answer', model: 'qwen3', raw: {} }));
+    const runRepl = jest.fn(async () => 0);
+    const deps: RunAskDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager as never),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      withWriteLock: jest.fn(async <T>(_resource: string, action: () => Promise<T>) => action()) as RunAskDeps['withWriteLock'],
+      callChatCompletion: callChatCompletion as unknown as RunAskDeps['callChatCompletion'],
+      createTranscriptNote: createAskTranscriptNote,
+      knowledgeBasesRootDir: '/tmp/kb-ask-root',
+      runRepl: runRepl as unknown as RunAskDeps['runRepl'],
+      ...overrides,
+    };
+    return { deps, runRepl: runRepl as unknown as jest.Mock, callChatCompletion: callChatCompletion as unknown as jest.Mock };
+  }
+
+  it('routes to the REPL with a seed question when stdin is a TTY', async () => {
+    const { deps, runRepl, callChatCompletion } = makeInteractiveDeps({ stdinIsTty: () => true });
+    const code = await runAsk(['-i', 'first question', '--kb=ops'], deps);
+    expect(code).toBe(0);
+    expect(runRepl).toHaveBeenCalledTimes(1);
+    expect(callChatCompletion).not.toHaveBeenCalled();
+    const opts = runRepl.mock.calls[0]![0] as { baseArgs: { kb?: string }; seedQuestion?: string };
+    expect(opts.baseArgs.kb).toBe('ops');
+    expect(opts.seedQuestion).toBe('first question');
+  });
+
+  it('falls back to one-shot when stdin is not a TTY', async () => {
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr: string[] = [];
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    try {
+      const { deps, runRepl, callChatCompletion } = makeInteractiveDeps({ stdinIsTty: () => false });
+      const code = await runAsk(['-i', 'a question', '--kb=ops'], deps);
+      expect(code).toBe(0);
+      expect(runRepl).not.toHaveBeenCalled();
+      expect(callChatCompletion).toHaveBeenCalledTimes(1);
+      expect(stderr.join('')).toContain('falling back to one-shot');
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+    }
+  });
+});
