@@ -14,6 +14,7 @@ import { FaissIndexManager } from './FaissIndexManager.js';
 import type {
   IndexUpdateProgress,
   NeighborContextOptions,
+  SearchResultDocument,
   SimilaritySearchTiming,
 } from './FaissIndexManager.js';
 import {
@@ -133,6 +134,7 @@ import {
   type DenseDegradationReason,
 } from './search-core.js';
 import { parseRecencyFilterRange } from './search-filters.js';
+import { withSpan } from './otel-trace.js';
 import {
   applyRelevanceGate,
   emitRelevanceGateDecision,
@@ -778,7 +780,11 @@ export class KnowledgeBaseServer {
     const rerankOverride: RerankOverride = args.rerank;
     const neighborContext = resolveNeighborContextOptions(args);
 
-    return this.withCanonicalTool({
+    return withSpan('kb.retrieve_knowledge', {
+      'kb.scope': knowledgeBaseName ?? null,
+      'kb.search_mode': searchMode,
+      'kb.k': 10,
+    }, () => this.withCanonicalTool({
       tool: 'retrieve_knowledge',
       query,
       kb_scope: knowledgeBaseName ?? null,
@@ -878,16 +884,20 @@ export class KnowledgeBaseServer {
       // Perform similarity search using the provided query.
       const timing: SimilaritySearchTiming = {};
       let degradedReason: DenseDegradationReason | null = null;
-      let similaritySearchResults;
+      let similaritySearchResults: SearchResultDocument[];
       try {
-        similaritySearchResults = await manager.similaritySearch(
+        // `kb.retrieve.dense` covers query embedding + FAISS search.
+        similaritySearchResults = await withSpan('kb.retrieve.dense', {
+          'kb.k': 10,
+          'kb.scope': knowledgeBaseName ?? null,
+        }, () => manager.similaritySearch(
           query,
           10,
           threshold,
           knowledgeBaseName,
           filters,
           timing,
-        );
+        ));
       } catch (error: unknown) {
         const reason = classifyDenseDegradationReason(error);
         if (
@@ -930,14 +940,21 @@ export class KnowledgeBaseServer {
         }
       }
       const gateStartedAt = Date.now();
-      const gate = await applyRelevanceGate({
-        query,
-        taskContext,
-        candidates: similaritySearchResults,
-        denseDistanceById,
-        lexicalHitIds,
-        gateOverride,
-        process: 'mcp',
+      const gate = await withSpan('kb.retrieve.gate', {
+        'kb.candidates_in': similaritySearchResults.length,
+      }, async (gateSpan) => {
+        const decision = await applyRelevanceGate({
+          query,
+          taskContext,
+          candidates: similaritySearchResults,
+          denseDistanceById,
+          lexicalHitIds,
+          gateOverride,
+          process: 'mcp',
+        });
+        gateSpan.setAttribute('kb.gate_state', decision.verdict.state);
+        gateSpan.setAttribute('kb.candidates_out', decision.results.length);
+        return decision;
       });
       const gateMs = Date.now() - gateStartedAt;
       similaritySearchResults = gate.results;
@@ -964,10 +981,12 @@ export class KnowledgeBaseServer {
 
       // Build a nicely formatted markdown response including the similarity score.
       const formatStartedAt = Date.now();
-      let responseText = formatRetrievalAsMarkdown(
+      let responseText = await withSpan('kb.retrieve.format', {
+        'kb.result_count': similaritySearchResults.length,
+      }, async () => formatRetrievalAsMarkdown(
         similaritySearchResults,
         FRONTMATTER_EXTRAS_WIRE_VISIBLE,
-      );
+      ));
       if (gate.verdict.state !== 'bypassed') {
         responseText = `${responseText}\n\n${formatGateVerdictFooter(gate.verdict)}`;
       }
@@ -1033,7 +1052,7 @@ export class KnowledgeBaseServer {
       }
       return { content: [mcpErrorContent(err)], isError: true };
     }
-    }, () => canonical);
+    }, () => canonical));
   }
 
   private async handleAskKnowledge(args: {
@@ -1152,8 +1171,11 @@ export class KnowledgeBaseServer {
       // Dense leg — over-fetch to give RRF room.
       const denseTiming: SimilaritySearchTiming = {};
       let denseError: unknown = null;
-      const densePromise = manager
-        .similaritySearch(query, fetchK, Number.POSITIVE_INFINITY, knowledgeBaseName, filters, denseTiming)
+      const densePromise = withSpan('kb.retrieve.dense', {
+        'kb.k': fetchK,
+        'kb.scope': knowledgeBaseName ?? null,
+      }, () => manager
+        .similaritySearch(query, fetchK, Number.POSITIVE_INFINITY, knowledgeBaseName, filters, denseTiming))
         .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })))
         .catch((err) => {
           denseError = err;
@@ -1171,7 +1193,10 @@ export class KnowledgeBaseServer {
       const kbs = kbNames.map((kbName) => ({ kbName, kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName) }));
       let lexicalSearchMs = 0;
       const lexicalStartedAt = Date.now();
-      const lexicalPromise = runLexicalLeg({
+      const lexicalPromise = withSpan('kb.retrieve.lexical', {
+        'kb.k': fetchK,
+        'kb.kb_count': kbs.length,
+      }, () => runLexicalLeg({
         kbs,
         query,
         fetchK,
@@ -1179,7 +1204,7 @@ export class KnowledgeBaseServer {
         onError: (kbName, err) => {
           logger.warn(`hybrid: lexical leg failed for KB "${kbName}": ${err.message}`);
         },
-      }).then((res) => {
+      })).then((res) => {
         lexicalSearchMs = Date.now() - lexicalStartedAt;
         return res;
       });
@@ -1213,7 +1238,10 @@ export class KnowledgeBaseServer {
 
       const rerankConfig = resolveRerankerConfig(process.env, rerankOverride, knowledgeBaseName ?? null);
       const fusionStartedAt = Date.now();
-      const fusion = degradedReason === null
+      const fusion = await withSpan('kb.retrieve.fusion', {
+        'kb.dense_in': denseResults.length,
+        'kb.lexical_in': lexicalResults.length,
+      }, async () => (degradedReason === null
         ? fuseHybridResultsWithDiagnostics({
             denseResults,
             lexicalResults,
@@ -1223,11 +1251,14 @@ export class KnowledgeBaseServer {
             results: lexicalResults.slice(0, rerankConfig.enabled ? Math.max(HYBRID_TOP_K, rerankConfig.topN) : HYBRID_TOP_K),
             denseDistanceById: new Map<string, number>(),
             lexicalHitIds: new Set(lexicalResults.map((r) => chunkIdFromMetadata(r.metadata))),
-          };
+          }));
       const fusionMs = Date.now() - fusionStartedAt;
       let ranked = fusion.results;
       const rerankStartedAt = Date.now();
-      const rerankResult = await applyRerankerIfEnabled({
+      const rerankResult = await withSpan('kb.retrieve.rerank', {
+        'kb.candidates_in': ranked.length,
+        'kb.rerank_enabled': rerankConfig.enabled,
+      }, () => applyRerankerIfEnabled({
         query,
         results: ranked,
         k: HYBRID_TOP_K,
@@ -1236,21 +1267,28 @@ export class KnowledgeBaseServer {
         process: 'mcp',
         searchMode: 'hybrid',
         kbScope: knowledgeBaseName ?? null,
-      });
+      }));
       const rerankMs = rerankResult.tookMs ?? Date.now() - rerankStartedAt;
       ranked = rerankResult.results;
       if (canonical) {
         canonical.rerank = canonicalRerankStageRecord(rerankResult);
       }
       const gateStartedAt = Date.now();
-      const gate = await applyRelevanceGate({
-        query,
-        taskContext,
-        candidates: ranked,
-        denseDistanceById: fusion.denseDistanceById,
-        lexicalHitIds: fusion.lexicalHitIds,
-        gateOverride,
-        process: 'mcp',
+      const gate = await withSpan('kb.retrieve.gate', {
+        'kb.candidates_in': ranked.length,
+      }, async (gateSpan) => {
+        const decision = await applyRelevanceGate({
+          query,
+          taskContext,
+          candidates: ranked,
+          denseDistanceById: fusion.denseDistanceById,
+          lexicalHitIds: fusion.lexicalHitIds,
+          gateOverride,
+          process: 'mcp',
+        });
+        gateSpan.setAttribute('kb.gate_state', decision.verdict.state);
+        gateSpan.setAttribute('kb.candidates_out', decision.results.length);
+        return decision;
       });
       const gateMs = Date.now() - gateStartedAt;
       ranked = gate.results;
@@ -1268,7 +1306,9 @@ export class KnowledgeBaseServer {
       }
 
       const formatStartedAt = Date.now();
-      let responseText = formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
+      let responseText = await withSpan('kb.retrieve.format', {
+        'kb.result_count': ranked.length,
+      }, async () => formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE));
       if (gate.verdict.state !== 'bypassed') {
         responseText = `${responseText}\n\n${formatGateVerdictFooter(gate.verdict)}`;
       }

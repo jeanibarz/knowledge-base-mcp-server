@@ -71,6 +71,8 @@
     "@langchain/ollama": "^0.2.3",
     "@langchain/openai": "^0.4.3",
     "@modelcontextprotocol/sdk": "^1.17.2",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-trace-base": "^2.0.0",
     "axios": "^1.6.7",
     "faiss-node": "latest",
     "hnswlib-node": "^3.0.0",
@@ -83,6 +85,12 @@
     "pickleparser": "^0.2.1",
     "proper-lockfile": "^4.1.2",
     "zod": "^3.23.8"
+  },
+  "optionalDependencies": {
+    "@opentelemetry/exporter-trace-otlp-http": "^0.200.0",
+    "@opentelemetry/resources": "^2.0.0",
+    "@opentelemetry/sdk-trace-node": "^2.0.0",
+    "@opentelemetry/semantic-conventions": "^1.30.0"
   },
   "devDependencies": {
     "@stryker-mutator/core": "^9.6.1",

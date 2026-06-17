@@ -51,6 +51,7 @@ import {
   normalizeKbSensitivityPolicy,
   sensitivityPolicyFromMetadata,
 } from './sensitivity-policy.js';
+import { withSpan } from './otel-trace.js';
 
 export const DEFAULT_ASK_CONTEXT_BUDGET_TOKENS = 6000;
 export const MIN_ASK_CONTEXT_BUDGET_TOKENS = 64;
@@ -235,80 +236,101 @@ export async function retrieveAskEvidence(
   deps: RunAskCoreDeps,
   timing: TimingPayload | null = null,
 ): Promise<AskEvidence> {
-  let activeModelId: string;
-  let results;
-  try {
-    let startedAt = nowMs();
-    await deps.bootstrapLayout();
-    if (timing) timing.bootstrap_ms = elapsedMs(startedAt);
-    startedAt = nowMs();
-    activeModelId = await deps.resolveActiveModel({ explicitOverride: args.model });
-    if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
-    startedAt = nowMs();
-    const manager = await deps.loadManagerForModel(activeModelId);
-    if (timing) timing.manager_load_ms = elapsedMs(startedAt);
-    startedAt = nowMs();
-    if (args.refresh) {
-      await deps.withWriteLock(manager.modelDir, async () => {
-        await manager.initialize();
-        await manager.updateIndex(args.kb);
-      });
-    } else {
-      await deps.loadReadOnlyIndex(manager);
-    }
-    if (timing) timing.index_load_ms = elapsedMs(startedAt);
-    const denseTiming: SimilaritySearchTiming = {};
-    startedAt = nowMs();
-    results = await manager.similaritySearch(
-      args.question,
-      args.k,
-      undefined,
-      args.kb,
-      undefined,
-      timing ? denseTiming : undefined,
-    );
-    results = await hydrateSensitivityPoliciesFromSource(results);
-    if (args.gate !== undefined || args.taskContext !== undefined) {
-      const denseDistanceById = new Map<string, number>();
-      const policyExcluded = results.filter((result) =>
-        excludesLlmContext(result.metadata as Record<string, unknown>),
-      );
-      let gateCandidates = results.filter((result) =>
-        !excludesLlmContext(result.metadata as Record<string, unknown>),
-      );
-      for (const result of gateCandidates) {
-        denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
+  return withSpan('kb.ask.retrieve', {
+    'kb.scope': args.kb ?? null,
+    'kb.k': args.k,
+    'kb.search_mode': 'dense',
+    'kb.refresh': args.refresh,
+  }, async (retrieveSpan) => {
+    let activeModelId: string;
+    let results;
+    try {
+      let startedAt = nowMs();
+      await deps.bootstrapLayout();
+      if (timing) timing.bootstrap_ms = elapsedMs(startedAt);
+      startedAt = nowMs();
+      activeModelId = await deps.resolveActiveModel({ explicitOverride: args.model });
+      if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
+      retrieveSpan.setAttribute('kb.embedding_model', activeModelId);
+      startedAt = nowMs();
+      const manager = await deps.loadManagerForModel(activeModelId);
+      if (timing) timing.manager_load_ms = elapsedMs(startedAt);
+      startedAt = nowMs();
+      if (args.refresh) {
+        await deps.withWriteLock(manager.modelDir, async () => {
+          await manager.initialize();
+          await manager.updateIndex(args.kb);
+        });
+      } else {
+        await deps.loadReadOnlyIndex(manager);
       }
-      const gate = await applyRelevanceGate({
-        query: args.question,
-        taskContext: args.taskContext,
-        candidates: gateCandidates,
-        denseDistanceById,
-        gateOverride: args.gate,
-        process: 'mcp',
-      });
-      gateCandidates = gate.results;
-      results = [...gateCandidates, ...policyExcluded];
-      emitRelevanceGateDecision({
-        process: 'mcp',
-        query: args.question,
-        kbScope: args.kb ?? null,
-        searchMode: 'dense',
-        verdict: gate.verdict,
-        taskContext: args.taskContext,
-        observability: gate.observability,
-      });
+      if (timing) timing.index_load_ms = elapsedMs(startedAt);
+      const denseTiming: SimilaritySearchTiming = {};
+      startedAt = nowMs();
+      // `kb.ask.dense` covers the embedding of the query plus the FAISS
+      // nearest-neighbour search (both happen inside similaritySearch).
+      results = await withSpan('kb.ask.dense', {
+        'kb.k': args.k,
+        'kb.scope': args.kb ?? null,
+      }, () => manager.similaritySearch(
+        args.question,
+        args.k,
+        undefined,
+        args.kb,
+        undefined,
+        timing ? denseTiming : undefined,
+      ));
+      results = await hydrateSensitivityPoliciesFromSource(results);
+      if (args.gate !== undefined || args.taskContext !== undefined) {
+        const denseDistanceById = new Map<string, number>();
+        const policyExcluded = results.filter((result) =>
+          excludesLlmContext(result.metadata as Record<string, unknown>),
+        );
+        let gateCandidates = results.filter((result) =>
+          !excludesLlmContext(result.metadata as Record<string, unknown>),
+        );
+        for (const result of gateCandidates) {
+          denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
+        }
+        const gate = await withSpan('kb.ask.gate', {
+          'kb.candidates_in': gateCandidates.length,
+        }, async (gateSpan) => {
+          const decision = await applyRelevanceGate({
+            query: args.question,
+            taskContext: args.taskContext,
+            candidates: gateCandidates,
+            denseDistanceById,
+            gateOverride: args.gate,
+            process: 'mcp',
+          });
+          gateSpan.setAttribute('kb.gate_state', decision.verdict.state);
+          gateSpan.setAttribute('kb.candidates_out', decision.results.length);
+          return decision;
+        });
+        gateCandidates = gate.results;
+        results = [...gateCandidates, ...policyExcluded];
+        emitRelevanceGateDecision({
+          process: 'mcp',
+          query: args.question,
+          kbScope: args.kb ?? null,
+          searchMode: 'dense',
+          verdict: gate.verdict,
+          taskContext: args.taskContext,
+          observability: gate.observability,
+        });
+      }
+      if (timing) {
+        timing.retrieval_ms = elapsedMs(startedAt);
+        mergeAskDenseTiming(timing, denseTiming);
+      }
+    } catch (err) {
+      const failure = classifyKbSearchError(err);
+      throw new AskExecutionError(failure.message, exitCodeForFailure(failure), failure);
     }
-    if (timing) {
-      timing.retrieval_ms = elapsedMs(startedAt);
-      mergeAskDenseTiming(timing, denseTiming);
-    }
-  } catch (err) {
-    const failure = classifyKbSearchError(err);
-    throw new AskExecutionError(failure.message, exitCodeForFailure(failure), failure);
-  }
 
-  return { activeModelId, results };
+    retrieveSpan.setAttribute('kb.result_count', results.length);
+    return { activeModelId, results };
+  });
 }
 
 /**
@@ -344,8 +366,15 @@ export async function answerWithEvidence(
     }).catch(() => {});
   }
 
-  const retrieval = formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
-  const packedContext = packAskContext(retrieval, args.contextBudgetTokens);
+  const packedContext = await withSpan('kb.ask.format', {
+    'kb.context_budget_tokens': args.contextBudgetTokens,
+  }, async (formatSpan) => {
+    const retrieval = formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE);
+    const packed = packAskContext(retrieval, args.contextBudgetTokens);
+    formatSpan.setAttribute('kb.included_chunks', packed.payload.included_chunks);
+    formatSpan.setAttribute('kb.excluded_chunks', packed.payload.excluded_chunks);
+    return packed;
+  });
   if (timing) {
     timing.context_budget_tokens = packedContext.payload.budget_tokens;
     timing.context_estimated_tokens = packedContext.payload.estimated_tokens;
@@ -412,7 +441,11 @@ export async function answerWithEvidence(
     try {
       const startedAt = nowMs();
       if (timing) timing.llm_first_token_ms = null;
-      const response = await deps.callChatCompletion({
+      const response = await withSpan('kb.ask.llm', {
+        'kb.llm_profile': target.profile.name,
+        'kb.llm_mode': target.profile.mode,
+        'kb.llm_source': target.source,
+      }, () => deps.callChatCompletion({
         endpoint: target.profile.endpoint,
         messages: outbound.messages,
         temperature: ASK_TEMPERATURE,
@@ -426,7 +459,7 @@ export async function answerWithEvidence(
               },
             }
           : {}),
-      });
+      }));
       if (timing) {
         timing.llm_total_ms = elapsedMs(startedAt);
       }
@@ -476,8 +509,13 @@ export async function executeAsk(
   totalStartedAt: number,
 ): Promise<AskKnowledgeResult> {
   const timing: TimingPayload | null = args.timing ? {} : null;
-  const evidence = await retrieveAskEvidence(args, deps, timing);
-  return answerWithEvidence(args, evidence, deps, totalStartedAt, timing);
+  return withSpan('kb.ask', {
+    'kb.scope': args.kb ?? null,
+    'kb.k': args.k,
+  }, async () => {
+    const evidence = await retrieveAskEvidence(args, deps, timing);
+    return answerWithEvidence(args, evidence, deps, totalStartedAt, timing);
+  });
 }
 
 const ASK_REDACT_OUTBOUND_ENV = 'KB_ASK_REDACT_OUTBOUND';
