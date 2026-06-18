@@ -1,5 +1,6 @@
 import { callFakeChatCompletion, isFakeLlmEnabled } from './llm-fake-stub.js';
 import { resolveLlmProvider } from './config/llm-provider.js';
+import { providerBreakerRegistry } from './provider-breaker.js';
 
 export interface LlmChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -164,31 +165,64 @@ export async function callChatCompletion(
   }
 
   const retryPolicy = resolveRetryPolicy(options.retry);
+  const breakerKey = llmProviderBreakerKey(provider.provider, endpoint, String(payload.model));
+  return providerBreakerRegistry.run(
+    breakerKey,
+    () => callChatCompletionWithRetry({
+      endpoint,
+      payload,
+      headers,
+      timeoutMs: options.timeoutMs,
+      stream: options.stream,
+      retryPolicy,
+      fetchImpl,
+    }),
+    { shouldRecordFailure: (err) => err instanceof LlmClientError && isTransientLlmClientError(err) },
+  );
+}
+
+interface ChatCompletionWithRetryOptions {
+  endpoint: string;
+  payload: Record<string, unknown>;
+  headers: Record<string, string>;
+  timeoutMs?: number;
+  stream?: ChatCompletionStreamOptions;
+  retryPolicy: ResolvedRetryPolicy | null;
+  fetchImpl: FetchLike;
+}
+
+async function callChatCompletionWithRetry(
+  options: ChatCompletionWithRetryOptions,
+): Promise<ChatCompletionResult> {
   let totalRetryDelayMs = 0;
   let emittedStreamToken = false;
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await callChatCompletionOnce(endpoint, payload, headers, options.timeoutMs, options.stream, () => {
+      return await callChatCompletionOnce(options.endpoint, options.payload, options.headers, options.timeoutMs, options.stream, () => {
         emittedStreamToken = true;
-      }, fetchImpl);
+      }, options.fetchImpl);
     } catch (err) {
       if (
         !(err instanceof LlmClientError) ||
         emittedStreamToken ||
-        retryPolicy === null ||
-        attempt >= retryPolicy.maxRetries ||
+        options.retryPolicy === null ||
+        attempt >= options.retryPolicy.maxRetries ||
         !isTransientLlmClientError(err)
       ) {
         throw err;
       }
 
-      const remainingDelayMs = retryPolicy.maxTotalDelayMs - totalRetryDelayMs;
+      const remainingDelayMs = options.retryPolicy.maxTotalDelayMs - totalRetryDelayMs;
       if (remainingDelayMs <= 0) throw err;
-      const delayMs = Math.min(computeRetryDelayMs(err, attempt, retryPolicy), remainingDelayMs);
+      const delayMs = Math.min(computeRetryDelayMs(err, attempt, options.retryPolicy), remainingDelayMs);
       totalRetryDelayMs += delayMs;
-      await retryPolicy.sleep(delayMs);
+      await options.retryPolicy.sleep(delayMs);
     }
   }
+}
+
+export function llmProviderBreakerKey(provider: string, endpoint: string, model: string): string {
+  return `llm:${provider}:${endpoint}:${model}`;
 }
 
 async function callChatCompletionOnce(
@@ -359,10 +393,20 @@ async function handleStreamingBlock(
   if (delta === null || delta === '') return false;
   if (!state.sawFirstToken) {
     state.sawFirstToken = true;
-    stream.onFirstToken?.();
+    try {
+      stream.onFirstToken?.();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new LlmClientError(`local LLM stream callback failed: ${msg}`, { transient: false });
+    }
   }
   onStreamTokenEmitted();
-  await stream.onToken(delta);
+  try {
+    await stream.onToken(delta);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new LlmClientError(`local LLM stream callback failed: ${msg}`, { transient: false });
+  }
   state.contentParts.push(delta);
   return false;
 }

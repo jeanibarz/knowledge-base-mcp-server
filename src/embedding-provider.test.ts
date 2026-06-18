@@ -4,6 +4,7 @@ const originalEnv = {
   EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
   KB_FAKE_DIM: process.env.KB_FAKE_DIM,
   KB_EMBEDDING_TASK_PREFIXES: process.env.KB_EMBEDDING_TASK_PREFIXES,
+  KB_PROVIDER_BREAKER: process.env.KB_PROVIDER_BREAKER,
   HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
 };
@@ -208,36 +209,42 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
     expect(seen).toEqual(['search_query: what is faiss?']);
   });
 
-  it('createEmbeddingsClient wraps the ollama nomic arm in TaskPrefixedEmbeddings', async () => {
-    const { createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
+  it('createEmbeddingsClient wraps the ollama nomic arm with task prefixes inside the circuit breaker', async () => {
+    const { CircuitBrokenEmbeddings, createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
       KB_EMBEDDING_TASK_PREFIXES: undefined,
     });
     // Construction only — OllamaEmbeddings does not touch the network here.
     const client = await createEmbeddingsClient({ provider: 'ollama', modelName: 'nomic-embed-text' });
-    expect(client).toBeInstanceOf(TaskPrefixedEmbeddings);
+    expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
+    const inner = (client as unknown as { inner: unknown }).inner;
+    expect(inner).toBeInstanceOf(TaskPrefixedEmbeddings);
   });
 
-  it('createEmbeddingsClient leaves other ollama models unwrapped', async () => {
-    const { createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
+  it('createEmbeddingsClient leaves other ollama models without task prefixes', async () => {
+    const { CircuitBrokenEmbeddings, createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
       KB_EMBEDDING_TASK_PREFIXES: undefined,
     });
     const client = await createEmbeddingsClient({
       provider: 'ollama',
       modelName: 'dengcao/Qwen3-Embedding-0.6B:Q8_0',
     });
-    expect(client).not.toBeInstanceOf(TaskPrefixedEmbeddings);
+    expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
+    const inner = (client as unknown as { inner: unknown }).inner;
+    expect(inner).not.toBeInstanceOf(TaskPrefixedEmbeddings);
   });
 
   it('createEmbeddingsClient leaves nomic unwrapped when the kill switch is off', async () => {
-    const { createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
+    const { CircuitBrokenEmbeddings, createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
       KB_EMBEDDING_TASK_PREFIXES: 'off',
     });
     const client = await createEmbeddingsClient({ provider: 'ollama', modelName: 'nomic-embed-text' });
-    expect(client).not.toBeInstanceOf(TaskPrefixedEmbeddings);
+    expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
+    const inner = (client as unknown as { inner: unknown }).inner;
+    expect(inner).not.toBeInstanceOf(TaskPrefixedEmbeddings);
   });
 
   it('telemetry records calls made through the prefix wrapper (issue #210 interaction)', async () => {
-    const { createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
+    const { CircuitBrokenEmbeddings, createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
       KB_EMBEDDING_TASK_PREFIXES: undefined,
     });
     const { ProviderCallMetrics } = await import('./metrics.js');
@@ -248,16 +255,69 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
       modelId: 'ollama__nomic-embed-text',
       metrics,
     });
-    expect(client).toBeInstanceOf(TaskPrefixedEmbeddings);
+    expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
     // Stub the inner provider so no network is involved; the instrumented
     // surface is the wrapper, so the counter must still tick.
-    const wrapper = client as InstanceType<typeof TaskPrefixedEmbeddings> & {
+    const circuit = client as InstanceType<typeof CircuitBrokenEmbeddings> & {
       embedQuery(text: string): Promise<number[]>;
     };
-    const inner = (wrapper as unknown as { inner: { embedQuery(text: string): Promise<number[]> } }).inner;
+    const prefixWrapper = (circuit as unknown as { inner: InstanceType<typeof TaskPrefixedEmbeddings> }).inner;
+    expect(prefixWrapper).toBeInstanceOf(TaskPrefixedEmbeddings);
+    const inner = (prefixWrapper as unknown as { inner: { embedQuery(text: string): Promise<number[]> } }).inner;
     inner.embedQuery = async () => [1];
-    await wrapper.embedQuery('hello');
+    await circuit.embedQuery('hello');
     expect(metrics.snapshot()['ollama__nomic-embed-text'].count).toBe(1);
+  });
+
+  it('CircuitBrokenEmbeddings fast-fails while open without calling the inner provider', async () => {
+    const { CircuitBrokenEmbeddings } = await loadFresh({});
+    const { ProviderBreakerRegistry } = await import('./provider-breaker.js');
+    const breaker = new ProviderBreakerRegistry({ failureThreshold: 1, cooldownMs: 1_000 });
+    let calls = 0;
+    const inner = {
+      async embedDocuments(): Promise<number[][]> {
+        calls += 1;
+        throw new Error('embedding endpoint down');
+      },
+      async embedQuery(): Promise<number[]> {
+        calls += 1;
+        throw new Error('embedding endpoint down');
+      },
+    };
+    const wrapped = new CircuitBrokenEmbeddings(inner, 'embedding:ollama:http://localhost:11434:nomic', breaker);
+
+    await expect(wrapped.embedQuery('first')).rejects.toThrow('embedding endpoint down');
+    await expect(wrapped.embedQuery('second')).rejects.toMatchObject({
+      name: 'ProviderCircuitOpenError',
+    });
+    expect(calls).toBe(1);
+  });
+
+  it('CircuitBrokenEmbeddings does not open on terminal validation errors', async () => {
+    const { CircuitBrokenEmbeddings } = await loadFresh({});
+    const { KBError } = await import('./errors.js');
+    const { ProviderBreakerRegistry } = await import('./provider-breaker.js');
+    const breaker = new ProviderBreakerRegistry({ failureThreshold: 1, cooldownMs: 1_000 });
+    let calls = 0;
+    const inner = {
+      async embedDocuments(): Promise<number[][]> {
+        calls += 1;
+        throw new KBError('VALIDATION', 'chunk too long');
+      },
+      async embedQuery(): Promise<number[]> {
+        calls += 1;
+        throw new KBError('VALIDATION', 'chunk too long');
+      },
+    };
+    const wrapped = new CircuitBrokenEmbeddings(inner, 'embedding:ollama:http://localhost:11434:nomic', breaker);
+
+    await expect(wrapped.embedQuery('oversized')).rejects.toMatchObject({ code: 'VALIDATION' });
+    await expect(wrapped.embedQuery('oversized again')).rejects.toMatchObject({ code: 'VALIDATION' });
+    expect(calls).toBe(2);
+    expect(breaker.snapshot()).toEqual([expect.objectContaining({
+      state: 'closed',
+      consecutive_failures: 0,
+    })]);
   });
 });
 
