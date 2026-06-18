@@ -1,11 +1,13 @@
 // RFC 017 M0b — orchestration for `kb reindex --with-context`.
 //
-// The actual rebuild is delegated to the existing
+// The initial contextual backfill is delegated to the existing
 // `FaissIndexManager.updateIndex(undefined, { force: true })` path —
-// that already walks every KB, re-embeds every chunk through the
-// adapter (patched by M0a to apply contextual prefaces upstream of the
-// embedder), and atomically swaps the FAISS index per RFC 014. M0b's
-// job is the orchestration around it:
+// that walks every KB, re-embeds every chunk through the adapter
+// (patched by M0a to apply contextual prefaces upstream of the
+// embedder), and atomically swaps the FAISS index per RFC 014. Once the
+// contextual-preface sidecar cache is warm, follow-up runs delegate to
+// the normal incremental `updateIndex()` path so unchanged files do not
+// get re-embedded every day. M0b's job is the orchestration around it:
 //
 //  1. Resolve in-scope KBs (default: every registered KB). Count total
 //     chunks from existing chunk manifests and estimate runtime as
@@ -17,7 +19,8 @@
 //  4. Write `.reindex.run.json` with this process's PID + scope. The
 //     trigger watcher consults this file before grabbing the per-model
 //     write lock, deferring its update until we finish (M0b §5 step 5).
-//  5. Run `updateIndex(undefined, { force: true })`.
+//  5. Run `updateIndex(undefined, { force })`, where `force` is true
+//     only while the contextual-preface estimate still has cold chunks.
 //  6. Delete `.reindex.run.json` on success or failure.
 //
 // What this file does NOT do:
@@ -97,7 +100,7 @@ export interface ReindexOptions {
    * Test seam: bypass the actual updateIndex call (which requires a
    * working embedding provider). Returns a synthetic IndexUpdateSummary.
    */
-  runUpdateIndex?: () => Promise<IndexUpdateSummary>;
+  runUpdateIndex?: (args: { force: boolean }) => Promise<IndexUpdateSummary>;
 }
 
 /**
@@ -540,11 +543,13 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
   };
   await writeRunState(state);
 
-  // 5. Run the actual rebuild via `updateIndex(undefined, { force: true })`.
-  //    The force flag triggers a global rebuild that walks every KB and
-  //    re-embeds every chunk — including the new contextual-preface
-  //    metadata stamped by M0a's patched `buildChunkDocuments`. The
-  //    per-model write lock is acquired internally by updateIndex.
+  // 5. Run the actual refresh via `updateIndex`. Cold contextual-preface
+  //    chunks mean this is still a backfill: force a global rebuild so
+  //    all existing vectors are rewritten with contextual embedding
+  //    inputs. Once the sidecar cache is warm, use the normal
+  //    incremental path; it embeds only changed/appended chunks and
+  //    falls back to a full rebuild when FAISS deletion limits require it.
+  const shouldForceRebuild = estimate.cold_chunks > 0;
   let summary: IndexUpdateSummary;
   try {
     if (options.runUpdateIndex) {
@@ -554,10 +559,10 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
       // is configured (e.g. in CI) — even though the real `updateIndex`
       // is being mocked here. The manager is only consumed by the
       // non-seam path below, so construct it lazily there.
-      summary = await options.runUpdateIndex();
+      summary = await options.runUpdateIndex({ force: shouldForceRebuild });
     } else {
       const manager = options.manager ?? (await createManagerForReindex());
-      summary = await runManagerUpdateIndex(manager);
+      summary = await runManagerUpdateIndex(manager, { force: shouldForceRebuild });
     }
   } catch (err) {
     await deleteRunState();
@@ -621,12 +626,14 @@ async function createManagerForReindex(): Promise<FaissIndexManager> {
   return manager;
 }
 
-async function runManagerUpdateIndex(manager: FaissIndexManager): Promise<IndexUpdateSummary> {
-  // `force: true` triggers a global rebuild: drops the in-memory FAISS
-  // store, walks every KB, re-embeds every chunk. M0a's patched adapter
-  // applies contextual prefaces to the embedding input when
-  // KB_CONTEXTUAL_RETRIEVAL=on, leaving the docstore byte-identical.
-  await manager.updateIndex(undefined, { force: true });
+async function runManagerUpdateIndex(
+  manager: FaissIndexManager,
+  options: { force: boolean },
+): Promise<IndexUpdateSummary> {
+  // Forced mode is for the initial contextual backfill. Non-forced mode
+  // keeps daily follow-up runs incremental while preserving
+  // FaissIndexManager's full-rebuild fallback for unsafe deltas.
+  await manager.updateIndex(undefined, { force: options.force });
   return manager.getLastIndexUpdateSummary();
 }
 

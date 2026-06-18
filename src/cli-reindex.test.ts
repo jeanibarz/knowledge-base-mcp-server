@@ -1,8 +1,7 @@
 // Issue #406 — `kb reindex --kb` is a guard/estimator hint, not a scoped
-// rebuild. The M0b runner delegates to `updateIndex(undefined, { force:
-// true })`, which always rebuilds the whole single-index-per-model FAISS
-// index. These tests pin the help text so it cannot drift back to the
-// earlier wording that implied `--kb` limits which vectors are rebuilt.
+// forced backfill. These tests pin the help text so it cannot drift back
+// to the earlier wording that implied `--kb` limits which vectors are
+// rebuilt.
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'fs/promises';
@@ -24,9 +23,10 @@ describe('REINDEX_HELP — --kb scope accuracy (issue #406)', () => {
     expect(REINDEX_HELP).toMatch(/NOT a scoped\s+rebuild/i);
   });
 
-  it('states the rebuild is always global regardless of --kb', () => {
-    expect(REINDEX_HELP).toMatch(/always\s+global/i);
-    expect(REINDEX_HELP).toMatch(/entire FAISS index/i);
+  it('states cold backfills are global and warm follow-up runs are incremental', () => {
+    expect(REINDEX_HELP).toMatch(/cold backfills.*global/is);
+    expect(REINDEX_HELP).toMatch(/full active FAISS\s+index/i);
+    expect(REINDEX_HELP).toMatch(/warm follow-up runs.*incremental/is);
   });
 });
 

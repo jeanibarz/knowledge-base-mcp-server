@@ -280,6 +280,51 @@ describe('cache-aware reindex estimate (#408)', () => {
       cold_chunks: 1000,
     });
   });
+
+  it('forces the manager refresh while contextual prefaces are still cold', async () => {
+    await writeManifest('alpha', 'note', 4);
+    let refreshMode: { force: boolean } | null = null;
+
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: true,
+      resolveKbs: async () => ['alpha'],
+      runUpdateIndex: async (args) => {
+        refreshMode = args;
+        return makeNeverRunSummary();
+      },
+    });
+
+    expect(result.outcome).toBe('completed');
+    expect(result.contextual_estimate).toMatchObject({ cold_chunks: 4 });
+    expect(refreshMode).toEqual({ force: true });
+  });
+
+  it('uses the incremental manager refresh once contextual prefaces are cached', async () => {
+    await writeManifest('alpha', 'note', 4);
+    const cp = (await import('./contextual-preface.js')) as ContextualPrefaceModule;
+    await writeSidecar(cp, 'alpha', 'note', [
+      { chunk_index: 0, chunk_hash: 'h0', preface: 'ctx 0' },
+      { chunk_index: 1, chunk_hash: 'h1', preface: 'ctx 1' },
+      { chunk_index: 2, chunk_hash: 'h2', preface: 'ctx 2' },
+      { chunk_index: 3, chunk_hash: 'h3', preface: 'ctx 3' },
+    ]);
+    let refreshMode: { force: boolean } | null = null;
+
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: true,
+      resolveKbs: async () => ['alpha'],
+      runUpdateIndex: async (args) => {
+        refreshMode = args;
+        return makeNeverRunSummary();
+      },
+    });
+
+    expect(result.outcome).toBe('completed');
+    expect(result.contextual_estimate).toMatchObject({ cache_hits: 4, cold_chunks: 0 });
+    expect(refreshMode).toEqual({ force: false });
+  });
 });
 
 // ---------------------------------------------------------------------------
