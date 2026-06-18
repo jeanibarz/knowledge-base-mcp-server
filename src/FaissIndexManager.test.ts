@@ -621,6 +621,68 @@ describe('FaissIndexManager permission handling', () => {
     await expect(fsp.readFile(betaSidecar, 'utf-8')).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 
+  describe('force rebuild logging', () => {
+    it('does not describe a force rebuild as an empty FAISS index when an active index exists', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-force-log-'));
+      const kbDir = path.join(tempDir, 'kb');
+      const defaultKb = path.join(kbDir, 'default');
+      const docPath = path.join(defaultKb, 'doc.md');
+      await fsp.mkdir(defaultKb, { recursive: true });
+      await fsp.writeFile(docPath, '# Doc\n\nForce rebuild log content.');
+
+      process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+      process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+      process.env.EMBEDDING_PROVIDER = 'huggingface';
+      process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+      jest.resetModules();
+      const loggerModule = await import('./logger.js');
+      const loggerInfoSpy = jest.spyOn(loggerModule.logger, 'info').mockImplementation(() => {});
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const manager = new FaissIndexManager();
+      await manager.initialize();
+      await manager.updateIndex();
+      loggerInfoSpy.mockClear();
+
+      await manager.updateIndex(undefined, { force: true });
+
+      const forceLogs = loggerInfoSpy.mock.calls.flat().map((entry) => String(entry));
+      expect(forceLogs).toContain(
+        `Force rebuild: re-embedding chunks from ${docPath} ` +
+          `(existing index will be replaced)...`,
+      );
+      expect(forceLogs.some((entry) => entry.includes('FAISS index is empty'))).toBe(false);
+    });
+
+    it('does not claim a force rebuild will replace an index when no active index exists', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-force-first-log-'));
+      const kbDir = path.join(tempDir, 'kb');
+      const defaultKb = path.join(kbDir, 'default');
+      const docPath = path.join(defaultKb, 'doc.md');
+      await fsp.mkdir(defaultKb, { recursive: true });
+      await fsp.writeFile(docPath, '# Doc\n\nForce first-build log content.');
+
+      process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+      process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+      process.env.EMBEDDING_PROVIDER = 'huggingface';
+      process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+      jest.resetModules();
+      const loggerModule = await import('./logger.js');
+      const loggerInfoSpy = jest.spyOn(loggerModule.logger, 'info').mockImplementation(() => {});
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const manager = new FaissIndexManager();
+      await manager.initialize();
+
+      await manager.updateIndex(undefined, { force: true });
+
+      const forceLogs = loggerInfoSpy.mock.calls.flat().map((entry) => String(entry));
+      expect(forceLogs).toContain(`Force rebuild: re-embedding chunks from ${docPath}...`);
+      expect(forceLogs.some((entry) => entry.includes('existing index will be replaced'))).toBe(false);
+      expect(forceLogs.some((entry) => entry.includes('FAISS index is empty'))).toBe(false);
+    });
+  });
+
   it('saves the FAISS index exactly once per updateIndex call when multiple files change', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-save-once-'));
     const kbDir = path.join(tempDir, 'kb');

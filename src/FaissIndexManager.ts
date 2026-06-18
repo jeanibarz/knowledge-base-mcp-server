@@ -1936,11 +1936,14 @@ export class FaissIndexManager {
         // already current.
         if (rebuildFromEmptyIndex || forceReindex || scan.fileHash !== scan.storedHash) {
           runSummary.files_changed += 1;
+          const forceRebuildSuffix = hadActiveIndexBeforeForce
+            ? ' (existing index will be replaced)'
+            : '';
           logger.info(
-            rebuildFromEmptyIndex
-              ? `FAISS index is empty. Rebuilding from ${scan.filePath}...`
-              : forceReindex
-                ? `Force re-indexing ${scan.filePath}...`
+            forceReindex
+              ? `Force rebuild: re-embedding chunks from ${scan.filePath}${forceRebuildSuffix}...`
+              : rebuildFromEmptyIndex
+                ? `FAISS index is empty. Rebuilding from ${scan.filePath}...`
               : `File ${scan.filePath} has changed. Updating index...`,
           );
           // Issue #46 — extension-routed loader. `.pdf` runs through
