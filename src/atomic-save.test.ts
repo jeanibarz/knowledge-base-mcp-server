@@ -104,6 +104,14 @@ jest.mock('@langchain/community/embeddings/hf', () => ({
   __esModule: true,
   HuggingFaceInferenceEmbeddings: class MockEmbedding {
     constructor(public _config: unknown) {}
+
+    async embedDocuments(texts: string[]) {
+      return texts.map(() => [1, 0, 0]);
+    }
+
+    async embedQuery(_text: string) {
+      return [1, 0, 0];
+    }
   },
 }));
 
