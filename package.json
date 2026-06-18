@@ -17,6 +17,7 @@
     "build:clean": "rm -rf build",
     "check": "npm run build && npm run lint && npm run test:coverage && npm run docs:check-anchors && npm run docs:check-config-reference && npm run docs:check-cli && npm run docs:check-mcp-tools && npm run docs:check-embedding-models",
     "lint": "eslint src",
+    "lint:commit-message": "commitlint",
     "lint:fix": "eslint src --fix",
     "bench": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/run.js",
     "bench:beir": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/beir/run.js",
@@ -95,6 +96,8 @@
     "@opentelemetry/semantic-conventions": "^1.30.0"
   },
   "devDependencies": {
+    "@commitlint/cli": "^20.5.3",
+    "@commitlint/config-conventional": "^20.5.3",
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/jest-runner": "^9.6.1",
     "@types/html-to-text": "^9.0.4",

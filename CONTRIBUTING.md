@@ -9,7 +9,7 @@ Thank you for your interest in contributing! Please read [`CLAUDE.md`](./CLAUDE.
 3. Make your changes, following the conventions below.
 4. Ensure the local CI-parity gate passes: `npm run check` (which now also runs `npm run lint`)
 5. If your change affects performance, run the benchmark harness: `BENCH_PROVIDER=stub npm run bench`
-6. Commit using **conventional commits** — `feat:`, `fix(scope):`, `docs:`, `chore:` (see `git log` for prior style).
+6. Commit using **conventional commits** — `feat:`, `fix(scope):`, `docs:`, `chore:` (see `git log` for prior style). PR titles are checked with `npm run lint:commit-message` because squash merges use the PR title as the final commit message.
 7. Push to the branch and open a Pull Request using the PR template.
 
 ## Reporting Bugs
