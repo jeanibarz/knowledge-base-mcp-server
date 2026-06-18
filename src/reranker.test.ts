@@ -9,6 +9,7 @@ import {
   type Reranker,
   type RerankableDocument,
 } from './reranker.js';
+import { rerankMetrics } from './metrics.js';
 
 function doc(source: string, score: number, body = source): RerankableDocument {
   return {
@@ -118,6 +119,7 @@ describe('applyRerankerIfEnabled — per-domain skip-rerank fallback (RFC 020 §
   beforeEach(() => {
     saved = {};
     for (const key of ENV_KEYS) saved[key] = process.env[key];
+    rerankMetrics.reset();
   });
 
   afterEach(() => {
@@ -125,6 +127,7 @@ describe('applyRerankerIfEnabled — per-domain skip-rerank fallback (RFC 020 §
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     }
+    rerankMetrics.reset();
   });
 
   it('does NOT invoke the cross-encoder when the scoped domain is on KB_RERANK_SKIP_DOMAINS', async () => {
@@ -146,6 +149,7 @@ describe('applyRerankerIfEnabled — per-domain skip-rerank fallback (RFC 020 §
       expect(out.degraded).toBe(false);
       expect(out.candidatesIn).toBe(0);
       expect(out.results.map((r) => r.metadata.source)).toEqual(['a.md', 'b.md']);
+      expect(rerankMetrics.snapshot().skipped).toEqual({ skip_domain: 1 });
     } finally {
       restore();
     }
@@ -169,6 +173,58 @@ describe('applyRerankerIfEnabled — per-domain skip-rerank fallback (RFC 020 §
       expect(out.degraded).toBe(false);
       // b.md outscores a.md after reranking.
       expect(out.results.map((r) => r.metadata.source)).toEqual(['b.md', 'a.md']);
+      expect(rerankMetrics.snapshot()).toMatchObject({
+        invocations: 1,
+        candidates: { model_scored: 2 },
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('records a no-candidates skip without invoking the cross-encoder', async () => {
+    const reranker = stubReranker([]);
+    const restore = setRerankerFactoryForTests(async () => reranker);
+    try {
+      setEnv({ KB_RERANK: 'on' });
+
+      const out = await applyRerankerIfEnabled({
+        query: 'q',
+        results: [],
+        k: 2,
+        kbScope: 'prose',
+      });
+
+      expect(reranker.rerank).not.toHaveBeenCalled();
+      expect(out.results).toEqual([]);
+      expect(out.degraded).toBe(false);
+      expect(out.candidatesIn).toBe(0);
+      expect(rerankMetrics.snapshot().skipped).toEqual({ no_candidates: 1 });
+    } finally {
+      restore();
+    }
+  });
+
+  it('records cache-hit rerank paths separately from model-scored candidates', async () => {
+    const reranker = stubReranker([0.8, 0.2]);
+    const restore = setRerankerFactoryForTests(async () => reranker);
+    try {
+      setEnv({ KB_RERANK: 'on' });
+      const fused = [doc('a.md', 0.030, 'same body'), doc('b.md', 0.020, 'other body')];
+
+      await applyRerankerIfEnabled({ query: 'q', results: fused, k: 2, kbScope: 'prose' });
+      await applyRerankerIfEnabled({ query: 'q', results: fused, k: 2, kbScope: 'prose' });
+
+      expect(reranker.rerank).toHaveBeenCalledTimes(1);
+      expect(rerankMetrics.snapshot()).toMatchObject({
+        invocations: 2,
+        candidates: {
+          cache_hit: 2,
+          model_scored: 2,
+        },
+      });
+      expect(rerankMetrics.snapshot().latency.cache_hit?.count).toBe(1);
+      expect(rerankMetrics.snapshot().latency.model_scored?.count).toBe(1);
     } finally {
       restore();
     }

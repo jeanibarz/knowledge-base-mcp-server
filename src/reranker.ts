@@ -17,6 +17,7 @@ import {
 } from './config/reranker.js';
 import { DiskTieredRerankScoreCache } from './rerank-cache-disk.js';
 import { logger } from './logger.js';
+import { rerankMetrics } from './metrics.js';
 
 export {
   DEFAULT_RERANK_MODEL,
@@ -151,7 +152,8 @@ export async function applyRerankerIfEnabled<T extends RerankableDocument>(
   // KB_RERANK_SKIP_DOMAINS is never reranked. Treated as a disable (not a
   // degrade) — the cross-encoder simply does not run for this corpus.
   const skippedForDomain = input.kbScope != null && isRerankSkippedForDomain(process.env, input.kbScope);
-  if (!config.enabled || skippedForDomain) {
+  if (!config.enabled || skippedForDomain || input.results.length === 0) {
+    rerankMetrics.recordSkipped(skippedForDomain ? 'skip_domain' : (!config.enabled ? 'disabled' : 'no_candidates'));
     return {
       results: input.results.slice(0, input.k),
       degraded: false,
@@ -188,6 +190,11 @@ export async function applyRerankerIfEnabled<T extends RerankableDocument>(
   }
 
   if (out.degraded && out.degradeReason !== null) warnOnce(out.degradeReason, out.model);
+  rerankMetrics.recordInvocation({
+    latencyMs: out.tookMs,
+    candidatesIn: out.candidatesIn,
+    cacheHits: out.cacheHits,
+  });
   if (input.process !== undefined) {
     emitRerankStageLog({
       process: input.process,

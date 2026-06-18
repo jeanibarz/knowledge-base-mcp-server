@@ -90,6 +90,16 @@ export interface SearchLatencyMetricsSnapshot {
   degraded: Partial<Record<SearchLatencyMode, Partial<Record<DenseDegradationReason, number>>>>;
 }
 
+export type RerankSkipReason = 'disabled' | 'skip_domain' | 'no_candidates';
+export type RerankCandidateSource = 'cache_hit' | 'model_scored';
+
+export interface RerankMetricsSnapshot {
+  invocations: number;
+  skipped: Partial<Record<RerankSkipReason, number>>;
+  candidates: Partial<Record<RerankCandidateSource, number>>;
+  latency: Partial<Record<RerankCandidateSource, LatencyHistogramSnapshot>>;
+}
+
 function emptyState(now: number): MetricsState {
   return {
     buckets: new Array<number>(LATENCY_BUCKET_BOUNDS_MS.length + 1).fill(0),
@@ -348,6 +358,72 @@ export class SearchLatencyMetrics {
 }
 
 /**
+ * Process-lifetime reranker-stage telemetry. Labels are intentionally bounded:
+ * skip reason and candidate/latency source are fixed enums, never query text,
+ * KB name, path, model id, or error message.
+ */
+export class RerankMetrics {
+  private invocations = 0;
+  private readonly skippedCounts = new Map<RerankSkipReason, number>();
+  private readonly candidateCounts = new Map<RerankCandidateSource, number>();
+  private readonly latencyStates = new Map<RerankCandidateSource, HistogramState>();
+  private readonly now: () => number;
+
+  constructor(options: { now?: () => number } = {}) {
+    this.now = options.now ?? Date.now;
+  }
+
+  recordSkipped(reason: RerankSkipReason): void {
+    this.skippedCounts.set(reason, (this.skippedCounts.get(reason) ?? 0) + 1);
+  }
+
+  recordInvocation(sample: { latencyMs: number; candidatesIn: number; cacheHits: number }): void {
+    this.invocations += 1;
+    const cacheHits = clampCount(sample.cacheHits);
+    const candidatesIn = clampCount(sample.candidatesIn);
+    const modelScored = Math.max(0, candidatesIn - cacheHits);
+    if (cacheHits > 0) {
+      this.candidateCounts.set('cache_hit', (this.candidateCounts.get('cache_hit') ?? 0) + cacheHits);
+    }
+    if (modelScored > 0) {
+      this.candidateCounts.set('model_scored', (this.candidateCounts.get('model_scored') ?? 0) + modelScored);
+    }
+
+    const latencySource: RerankCandidateSource = candidatesIn > 0 && modelScored === 0 ? 'cache_hit' : 'model_scored';
+    let state = this.latencyStates.get(latencySource);
+    if (state === undefined) {
+      state = emptyHistogramState(this.now());
+      this.latencyStates.set(latencySource, state);
+    }
+    recordHistogramSample(state, sample.latencyMs);
+  }
+
+  snapshot(): RerankMetricsSnapshot {
+    const skipped: RerankMetricsSnapshot['skipped'] = {};
+    for (const [reason, count] of this.skippedCounts.entries()) skipped[reason] = count;
+
+    const candidates: RerankMetricsSnapshot['candidates'] = {};
+    for (const [source, count] of this.candidateCounts.entries()) candidates[source] = count;
+
+    const latency: RerankMetricsSnapshot['latency'] = {};
+    for (const [source, state] of this.latencyStates.entries()) latency[source] = snapshotHistogram(state);
+
+    return { invocations: this.invocations, skipped, candidates, latency };
+  }
+
+  reset(): void {
+    this.invocations = 0;
+    this.skippedCounts.clear();
+    this.candidateCounts.clear();
+    this.latencyStates.clear();
+  }
+}
+
+function clampCount(value: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+/**
  * Round a latency to 3 significant decimal places. The histogram
  * resolution is bounded by bucket width, so reporting full
  * floating-point precision overstates accuracy; one decimal in
@@ -364,6 +440,8 @@ function roundLatency(latencyMs: number): number {
 export const providerCallMetrics = new ProviderCallMetrics();
 
 export const searchLatencyMetrics = new SearchLatencyMetrics();
+
+export const rerankMetrics = new RerankMetrics();
 
 /**
  * Wrap a langchain-shaped embeddings client so every `embedQuery` /

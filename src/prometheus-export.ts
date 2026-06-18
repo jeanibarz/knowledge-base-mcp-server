@@ -2,6 +2,7 @@ import type { KbStatsPayload } from './kb-stats.js';
 import {
   LATENCY_BUCKET_BOUNDS_MS,
   type LatencyHistogramSnapshot,
+  type RerankMetricsSnapshot,
   type SearchLatencyMetricsSnapshot,
   type SearchLatencyMode,
   type SearchLatencyStatus,
@@ -112,6 +113,7 @@ export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
     ...providerLatencyMetrics(payload),
     ...searchLatencyCounterMetrics(payload.search_latency),
     ...searchDegradedCounterMetrics(payload.search_latency),
+    ...rerankCounterMetrics(payload.rerank),
     {
       name: 'kb_query_cache_hits_total',
       help: 'Query embedding cache hits.',
@@ -183,6 +185,7 @@ export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
     }
   }
   lines.push(...searchLatencyHistogramLines(payload.search_latency));
+  lines.push(...rerankLatencyHistogramLines(payload.rerank));
   lines.push('# EOF');
   return `${lines.join('\n')}\n`;
 }
@@ -325,6 +328,48 @@ function searchDegradedCounterMetrics(snapshot: SearchLatencyMetricsSnapshot): M
   }];
 }
 
+function rerankCounterMetrics(snapshot: RerankMetricsSnapshot | undefined): MetricDefinition[] {
+  if (snapshot === undefined) return [];
+  const skippedSamples: MetricSample[] = [];
+  for (const [reason, count] of Object.entries(snapshot.skipped)) {
+    skippedSamples.push({
+      name: 'kb_rerank_skipped_total',
+      labels: { reason },
+      value: count ?? 0,
+    });
+  }
+
+  const candidateSamples: MetricSample[] = [];
+  for (const [source, count] of Object.entries(snapshot.candidates)) {
+    candidateSamples.push({
+      name: 'kb_rerank_candidates_total',
+      labels: { source },
+      value: count ?? 0,
+    });
+  }
+
+  return [
+    {
+      name: 'kb_rerank_invocations_total',
+      help: 'Reranker-stage invocations.',
+      type: 'counter',
+      samples: [{ name: 'kb_rerank_invocations_total', value: snapshot.invocations }],
+    },
+    {
+      name: 'kb_rerank_skipped_total',
+      help: 'Reranker-stage skips by bounded reason.',
+      type: 'counter',
+      samples: skippedSamples,
+    },
+    {
+      name: 'kb_rerank_candidates_total',
+      help: 'Reranker-stage candidates by scoring source.',
+      type: 'counter',
+      samples: candidateSamples,
+    },
+  ];
+}
+
 function searchLatencyHistogramLines(snapshot: SearchLatencyMetricsSnapshot): string[] {
   const lines: string[] = [];
   lines.push(...renderHistogramFamily({
@@ -338,6 +383,20 @@ function searchLatencyHistogramLines(snapshot: SearchLatencyMetricsSnapshot): st
     rows: stageHistogramRows(snapshot),
   }));
   return lines;
+}
+
+function rerankLatencyHistogramLines(snapshot: RerankMetricsSnapshot | undefined): string[] {
+  if (snapshot === undefined) return [];
+  const rows: HistogramRow[] = [];
+  for (const [source, histogram] of Object.entries(snapshot.latency)) {
+    if (histogram === undefined) continue;
+    rows.push({ labels: { source }, histogram });
+  }
+  return renderHistogramFamily({
+    name: 'kb_rerank_latency_ms',
+    help: 'Reranker-stage latency in milliseconds, split by bounded scoring source.',
+    rows,
+  });
 }
 
 function requestHistogramRows(snapshot: SearchLatencyMetricsSnapshot): HistogramRow[] {
