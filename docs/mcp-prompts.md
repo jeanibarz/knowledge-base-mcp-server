@@ -49,6 +49,11 @@ pins the retrieval to that single shelf. Every template instructs the agent to
 ground its answer in the retrieved chunks, cite source paths, and abstain rather
 than invent when the KB does not cover the request.
 
+The server advertises MCP `completion/complete` so clients can request argument
+suggestions. Prompt `knowledge_base_name` arguments complete from registered KB
+names. Model-style prompt arguments are completed from registered `model_id`
+values when a future prompt template declares one.
+
 ## Example: `prompts/get`
 
 Request:

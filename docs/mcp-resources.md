@@ -47,6 +47,13 @@ Paginated response shape:
 
 The server also handles `resources/templates/list`, returning a `kb://{kb}/{path}` URI template for clients that support templated discovery. Clients can use the template, concrete URIs returned by `resources/list`, or retrieval citations.
 
+Clients that implement MCP `completion/complete` can ask the server for guided argument values for this template:
+
+| Template argument | Completion values |
+| --- | --- |
+| `kb` | Knowledge-base directory names under `KNOWLEDGE_BASES_ROOT_DIR`, prefix-matched against the in-progress value. |
+| `path` | Ingestable, non-quarantined KB-relative paths within the selected `kb`, prefix-matched against the in-progress value and capped to the MCP completion page size. |
+
 ## `kb://` URI Format
 
 Resource URIs use this form:

@@ -1,6 +1,7 @@
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { CompleteRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { SimilaritySearchTiming } from './FaissIndexManager.js';
 
 const initializeMock = jest.fn();
@@ -2395,6 +2396,16 @@ describe('KnowledgeBaseServer handlers', () => {
 
     const resources = await readOnlyServer['handleListResources']();
     expect(resources.resources.map((resource: { uri: string }) => resource.uri)).toContain('kb://alpha/note.md');
+  });
+
+  it('advertises MCP completions and registers completion/complete', async () => {
+    await setRetrieveEnv();
+
+    const server = await freshServer();
+    const mcp = server['mcp'];
+
+    expect(mcp.server.getCapabilities()).toMatchObject({ completions: {} });
+    expect(mcp.server._requestHandlers.has(CompleteRequestSchema.shape.method.value)).toBe(true);
   });
 
   it('with neither override env set, tool descriptions match the legacy hard-coded strings', async () => {
