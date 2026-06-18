@@ -4,6 +4,9 @@ Use this runbook when changing the default embedding model for an existing
 deployment. The current RFC 013 layout keeps one index directory per model
 under `${FAISS_INDEX_PATH}/models/<model_id>/`; switching the default writes
 `${FAISS_INDEX_PATH}/active.txt` and does not delete the previous model.
+Use the [embedding model compatibility reference](../reference/embedding-models.md)
+to confirm supported defaults, vector dimensions, task-prefix behavior, and
+reindex caveats before registering a new model.
 
 Keep the old model registered until the new model has passed the retrieval
 gate and the rollback window has expired.
@@ -217,6 +220,8 @@ before deleting the old directory.
 
 ## Related
 
+- [Embedding model compatibility reference](../reference/embedding-models.md)
+  for provider/model dimensions and task-prefix requirements.
 - [Feature flags and defaults](../feature-flags.md) for `KB_ACTIVE_MODEL`,
   provider env vars, and `FAISS_INDEX_PATH`.
 - [RFC 013 - multi-model embedding support](../rfcs/013-multimodel-support.md)
