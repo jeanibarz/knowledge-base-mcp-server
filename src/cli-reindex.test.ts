@@ -1,8 +1,9 @@
 // Issue #406 — `kb reindex --kb` is a guard/estimator hint, not a scoped
-// rebuild. The M0b runner delegates to `updateIndex(undefined, { force:
-// true })`, which always rebuilds the whole single-index-per-model FAISS
-// index. These tests pin the help text so it cannot drift back to the
-// earlier wording that implied `--kb` limits which vectors are rebuilt.
+// refresh. The M0b runner delegates to `updateIndex(undefined)`, or the
+// forced rebuild variant with `--force`, so the operation is always global
+// across the single-index-per-model FAISS layout. These tests pin the help
+// text so it cannot drift back to the earlier wording that implied `--kb`
+// limits which vectors are rebuilt.
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'fs/promises';
@@ -18,15 +19,15 @@ describe('REINDEX_HELP — --kb scope accuracy (issue #406)', () => {
     expect(REINDEX_HELP).not.toMatch(/Reindex only this KB/i);
   });
 
-  it('describes --kb as a guard/estimator hint, not a scoped rebuild', () => {
+  it('describes --kb as a guard/estimator hint, not a scoped refresh', () => {
     expect(REINDEX_HELP).toMatch(/--kb/);
     expect(REINDEX_HELP).toMatch(/guard\/estimator hint/i);
-    expect(REINDEX_HELP).toMatch(/NOT a scoped\s+rebuild/i);
+    expect(REINDEX_HELP).toMatch(/NOT a scoped\s+refresh/i);
   });
 
-  it('states the rebuild is always global regardless of --kb', () => {
+  it('states the refresh is always global regardless of --kb', () => {
     expect(REINDEX_HELP).toMatch(/always\s+global/i);
-    expect(REINDEX_HELP).toMatch(/entire FAISS index/i);
+    expect(REINDEX_HELP).toMatch(/`--kb` never narrows it/i);
   });
 });
 

@@ -20,24 +20,25 @@ import { assertSufficientDiskSpace } from './disk-preflight.js';
 import { KBError } from './errors.js';
 import { logger } from './logger.js';
 
-export const REINDEX_HELP = `kb reindex — rebuild FAISS indexes (RFC 017)
+export const REINDEX_HELP = `kb reindex — refresh FAISS indexes (RFC 017)
 
 Usage:
   kb reindex --with-context [--kb=<name>...] [--force]
   kb reindex status [--kb=<name>...] [--format=md|json]
 
 The \`--with-context\` flag is REQUIRED in this milestone (M0b). It
-triggers a full rebuild of the ENTIRE FAISS index — every KB, every
-chunk — through the contextual-retrieval ingest path: per-chunk
-LLM-generated prefaces are prepended for embedding while the docstore
-content stays byte-identical. The \`KB_CONTEXTUAL_RETRIEVAL=on\`
-environment variable must also be set; the CLI emits a warning
-otherwise.
+refreshes the global FAISS index through the contextual-retrieval ingest
+path: per-chunk LLM-generated prefaces are prepended for embedding while
+the docstore content stays byte-identical. By default the refresh is
+incremental and embeds only changed/new files; pass \`--force\` for an
+explicit full rebuild of every KB and every chunk. The
+\`KB_CONTEXTUAL_RETRIEVAL=on\` environment variable must also be set; the
+CLI emits a warning otherwise.
 
 Behavior:
   - Refuses to start inside the LRA cron window (06:00-10:30 UTC) or
     when the estimated runtime would cross it; pass --force to bypass
-    both guards.
+    both guards and request a full rebuild.
   - The runtime estimate is cache-aware: only chunks without a valid
     contextual-preface sidecar are priced at the 8s cold-LLM ceiling, so
     a reindex resumed after a partial run is not blocked for work it
@@ -46,12 +47,14 @@ Behavior:
     so the trigger watcher (RFC 014) defers its own updates until the
     reindex finishes. The file is deleted on exit (and zombie-cleaned
     by any later observer that finds its PID dead).
-  - Delegates the actual rebuild to
-    \`FaissIndexManager.updateIndex(undefined, { force: true })\` —
-    same machinery the existing \`kb search --refresh\` path uses, so
-    sidecar invalidation, error handling, and atomic FAISS swaps come
-    for free. The \`undefined\` scope argument is deliberate: the
-    rebuild is ALWAYS global and \`--kb\` never narrows it (see below).
+  - Delegates the actual refresh to
+    \`FaissIndexManager.updateIndex(undefined)\` by default, or
+    \`FaissIndexManager.updateIndex(undefined, { force: true })\` with
+    \`--force\` — same machinery the existing \`kb search --refresh\`
+    path uses, so sidecar invalidation, error handling, and atomic FAISS
+    swaps come for free. The \`undefined\` scope argument is deliberate:
+    the refresh is ALWAYS global and \`--kb\` never narrows it (see
+    below).
   - When \`KB_CONTEXTUAL_RETRIEVAL=on\`, prints a \`contextual:\` line
     summarising preface coverage and failures (covered / failed /
     retry-pending chunks, with an error-code breakdown) read back from
@@ -73,11 +76,11 @@ Options:
   --with-context        Required in M0b. Required for the CLI to do
                         anything except the \`status\` subcommand;
                         without it, exit code 2.
-  --kb=<name>           Rebuild: guard/estimator hint only — NOT a scoped
-                        rebuild. The FAISS index is single-index-per-
+  --kb=<name>           Refresh: guard/estimator hint only — NOT a scoped
+                        refresh. The FAISS index is single-index-per-
                         model with every KB co-located, so a partial
-                        rebuild would orphan the other shelves' vectors;
-                        the rebuild is therefore always global regardless
+                        refresh would orphan the other shelves' vectors;
+                        the refresh is therefore always global regardless
                         of this flag. --kb only narrows the chunk-count
                         estimate and the cron-window guard arithmetic,
                         and is validated against registered KBs (unknown
@@ -85,9 +88,11 @@ Options:
                         Default: every registered KB. Status: limit the
                         report to this KB.
   --force               Bypass the LRA cron window guard AND the
-                        self-runtime-budget guard. Required to start
-                        a reindex inside 06:00-10:30 UTC or when the
-                        run is estimated to cross that window.
+                        self-runtime-budget guard, and request a full
+                        rebuild instead of the default incremental
+                        refresh. Required to start a reindex inside
+                        06:00-10:30 UTC or when the run is estimated to
+                        cross that window.
   --format=md|json      Output format for \`status\` (default: md).
   --help, -h            Show this help.
 
@@ -221,7 +226,8 @@ function formatHumanResult(result: ReindexResult): string {
   lines.push(`  total_chunks_estimate: ${result.total_chunks_estimate}`);
   lines.push(
     `  contextual_estimate:   cold=${est.cold_chunks} ` +
-      `cache_hits=${est.cache_hits} retry_skips=${est.retry_skips}`,
+      `cache_hits=${est.cache_hits} retry_skips=${est.retry_skips} ` +
+      `unchanged=${est.unchanged_chunks}`,
   );
   lines.push(`  estimated_seconds:     ${result.estimated_seconds}`);
   lines.push(`  took_ms:               ${result.took_ms}`);

@@ -134,7 +134,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'where',        summary: 'Recommend the best KB and file for a given topic.',                      help: WHERE_HELP,        handler: runWhere },
   { name: 'models',       summary: 'Manage embedding models (list, add, set-active, remove).',               help: MODELS_HELP,       handler: runModels },
   { name: 'llm',          summary: 'Configure local LLM endpoints and managed warm model services.',          help: LLM_HELP,          handler: runLlm },
-  { name: 'reindex',      summary: 'Rebuild FAISS indexes (RFC 017 — requires --with-context).',              help: REINDEX_HELP,      handler: runReindexCli },
+  { name: 'reindex',      summary: 'Refresh FAISS indexes (RFC 017 — requires --with-context).',              help: REINDEX_HELP,      handler: runReindexCli },
   { name: 'completion',   summary: 'Generate shell completions for bash, zsh, or fish.',                      help: COMPLETION_HELP,   handler: runCompletionWithCurrentManifest },
 ];
 

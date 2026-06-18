@@ -185,10 +185,11 @@ describe('self-runtime estimator', () => {
 describe('cache-aware reindex estimate (#408)', () => {
   type ContextualPrefaceModule = typeof import('./contextual-preface.js');
 
-  async function writeManifest(kb: string, relPath: string, chunkCount: number): Promise<void> {
+  async function writeManifest(kb: string, relPath: string, chunkCount: number): Promise<string> {
     const manifestPath = path.join(tempDir, 'kbs', kb, '.index', `${relPath}.chunks.json`);
     await fsp.mkdir(path.dirname(manifestPath), { recursive: true });
     await fsp.writeFile(manifestPath, JSON.stringify({ chunks: new Array(chunkCount).fill({}) }));
+    return manifestPath;
   }
 
   async function writeSidecar(
@@ -221,7 +222,13 @@ describe('cache-aware reindex estimate (#408)', () => {
     await writeManifest('alpha', path.join('sub', 'nested'), 5);
     const est = await runner.estimateContextualReindexWork(['alpha']);
     // No sidecars yet — every chunk is cold, identical to the pre-#408 estimate.
-    expect(est).toEqual({ total_chunks: 8, cache_hits: 0, retry_skips: 0, cold_chunks: 8 });
+    expect(est).toEqual({
+      total_chunks: 8,
+      unchanged_chunks: 0,
+      cache_hits: 0,
+      retry_skips: 0,
+      cold_chunks: 8,
+    });
   });
 
   it('estimateContextualReindexWork counts sidecar hits as non-cold', async () => {
@@ -232,7 +239,13 @@ describe('cache-aware reindex estimate (#408)', () => {
       { chunk_index: 1, chunk_hash: 'b', preface: 'ctx 1' },
     ]);
     const est = await runner.estimateContextualReindexWork(['alpha']);
-    expect(est).toEqual({ total_chunks: 4, cache_hits: 2, retry_skips: 0, cold_chunks: 2 });
+    expect(est).toEqual({
+      total_chunks: 4,
+      unchanged_chunks: 0,
+      cache_hits: 2,
+      retry_skips: 0,
+      cold_chunks: 2,
+    });
   });
 
   it('prices only cold chunks for the LRA-window guard', async () => {
@@ -257,6 +270,7 @@ describe('cache-aware reindex estimate (#408)', () => {
     expect(result.estimated_seconds).toBe(80);
     expect(result.contextual_estimate).toEqual({
       total_chunks: 1000,
+      unchanged_chunks: 0,
       cache_hits: 990,
       retry_skips: 0,
       cold_chunks: 10,
@@ -275,9 +289,41 @@ describe('cache-aware reindex estimate (#408)', () => {
     expect(result.outcome).toBe('guard_blocked');
     expect(result.contextual_estimate).toEqual({
       total_chunks: 1000,
+      unchanged_chunks: 0,
       cache_hits: 0,
       retry_skips: 0,
       cold_chunks: 1000,
+    });
+  });
+
+  it('does not guard-block unchanged files missing contextual sidecars on incremental runs', async () => {
+    const relPath = 'note';
+    const sourcePath = path.join(tempDir, 'kbs', 'alpha', relPath);
+    await fsp.writeFile(sourcePath, 'unchanged source\n');
+    const manifestPath = await writeManifest('alpha', relPath, 1000);
+    const { calculateSHA256 } = await import('./file-utils.js');
+    await fsp.writeFile(
+      manifestPath.replace(/\.chunks\.json$/, ''),
+      await calculateSHA256(sourcePath),
+      'utf-8',
+    );
+
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: false,
+      now: new Date(Date.UTC(2026, 4, 15, 4, 0, 0)),
+      resolveKbs: async () => ['alpha'],
+      runUpdateIndex: async () => makeNeverRunSummary(),
+    });
+
+    expect(result.outcome).toBe('completed');
+    expect(result.estimated_seconds).toBe(0);
+    expect(result.contextual_estimate).toEqual({
+      total_chunks: 1000,
+      unchanged_chunks: 1000,
+      cache_hits: 0,
+      retry_skips: 0,
+      cold_chunks: 0,
     });
   });
 });
@@ -375,6 +421,56 @@ describe('.reindex.run.json + PID liveness', () => {
     expect(check.alive).toBe(false);
     // File should have been deleted by the zombie cleanup.
     await expect(fsp.access(runner.runStateFilePath())).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Manager dispatch (#695) — daily contextual reindex is incremental by
+// default; `--force` is the explicit full rebuild path.
+// ---------------------------------------------------------------------------
+
+describe('manager dispatch (#695)', () => {
+  function makeManager(summary = makeNeverRunSummary()): {
+    manager: import('./FaissIndexManager.js').FaissIndexManager;
+    updateIndex: jest.Mock;
+  } {
+    const updateIndex = jest.fn(async () => undefined);
+    const manager = {
+      updateIndex,
+      getLastIndexUpdateSummary: jest.fn(() => summary),
+    } as unknown as import('./FaissIndexManager.js').FaissIndexManager;
+    return { manager, updateIndex };
+  }
+
+  it('uses the incremental updateIndex path by default', async () => {
+    const { manager, updateIndex } = makeManager();
+
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: false,
+      now: new Date(Date.UTC(2026, 4, 15, 0, 0, 0)),
+      resolveKbs: async () => ['alpha', 'beta'],
+      manager,
+    });
+
+    expect(result.outcome).toBe('completed');
+    expect(updateIndex).toHaveBeenCalledTimes(1);
+    expect(updateIndex).toHaveBeenCalledWith(undefined);
+  });
+
+  it('uses the full rebuild path only when force is true', async () => {
+    const { manager, updateIndex } = makeManager();
+
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: true,
+      resolveKbs: async () => ['alpha', 'beta'],
+      manager,
+    });
+
+    expect(result.outcome).toBe('completed');
+    expect(updateIndex).toHaveBeenCalledTimes(1);
+    expect(updateIndex).toHaveBeenCalledWith(undefined, { force: true });
   });
 });
 

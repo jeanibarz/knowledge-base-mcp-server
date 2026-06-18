@@ -1,11 +1,12 @@
 // RFC 017 M0b — orchestration for `kb reindex --with-context`.
 //
-// The actual rebuild is delegated to the existing
-// `FaissIndexManager.updateIndex(undefined, { force: true })` path —
-// that already walks every KB, re-embeds every chunk through the
+// The actual refresh is delegated to the existing
+// `FaissIndexManager.updateIndex(undefined)` path by default — that
+// already walks every KB, embeds only changed/new chunks through the
 // adapter (patched by M0a to apply contextual prefaces upstream of the
-// embedder), and atomically swaps the FAISS index per RFC 014. M0b's
-// job is the orchestration around it:
+// embedder), and atomically swaps the FAISS index per RFC 014 when
+// needed. Passing `--force` upgrades this to the explicit global rebuild
+// path. M0b's job is the orchestration around it:
 //
 //  1. Resolve in-scope KBs (default: every registered KB). Count total
 //     chunks from existing chunk manifests and estimate runtime as
@@ -17,7 +18,8 @@
 //  4. Write `.reindex.run.json` with this process's PID + scope. The
 //     trigger watcher consults this file before grabbing the per-model
 //     write lock, deferring its update until we finish (M0b §5 step 5).
-//  5. Run `updateIndex(undefined, { force: true })`.
+//  5. Run `updateIndex(undefined)` or, with `--force`,
+//     `updateIndex(undefined, { force: true })`.
 //  6. Delete `.reindex.run.json` on success or failure.
 //
 // What this file does NOT do:
@@ -35,6 +37,7 @@ import {
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config/paths.js';
 import { emitCanonicalLog } from './canonical-log.js';
+import { calculateSHA256 } from './file-utils.js';
 import {
   isContextualRetrievalEnabled,
   type ContextualErrorCode,
@@ -68,16 +71,18 @@ export const REINDEX_RUN_SCHEMA_VERSION = 'reindex-run.v1';
 export interface ReindexOptions {
   /**
    * KB names used for the chunk-count estimate and the cron-window guard
-   * arithmetic — NOT a scoped rebuild. `updateIndex` is always invoked
+   * arithmetic — NOT a scoped refresh. `updateIndex` is always invoked
    * with an `undefined` (whole-corpus) scope; see `runManagerUpdateIndex`.
-   * A partial rebuild would orphan the other shelves' vectors in the
+   * A partial refresh would orphan the other shelves' vectors in the
    * single-index-per-model FAISS layout. Empty array means "every
    * registered KB".
    */
   knowledgeBases: readonly string[];
   /**
-   * Skip the LRA-cron guard AND the self-runtime-budget guard. Operators
-   * pass `--force` from the CLI; tests pass `force: true` directly.
+   * Skip the LRA-cron guard and self-runtime-budget guard, and request an
+   * explicit global rebuild instead of the default incremental refresh.
+   * Operators pass `--force` from the CLI; tests pass `force: true`
+   * directly.
    */
   force: boolean;
   /**
@@ -97,7 +102,7 @@ export interface ReindexOptions {
    * Test seam: bypass the actual updateIndex call (which requires a
    * working embedding provider). Returns a synthetic IndexUpdateSummary.
    */
-  runUpdateIndex?: () => Promise<IndexUpdateSummary>;
+  runUpdateIndex?: (options: { force: boolean }) => Promise<IndexUpdateSummary>;
 }
 
 /**
@@ -109,6 +114,8 @@ export interface ReindexOptions {
 export interface ContextualReindexEstimate {
   /** Total chunks across all in-scope KBs, summed from chunk manifests. */
   total_chunks: number;
+  /** Chunks whose source hash is unchanged and are skipped by incremental refresh. */
+  unchanged_chunks: number;
   /** Chunks with a valid cached preface — no LLM call. */
   cache_hits: number;
   /** Chunks with a recorded failure whose retry-after has not elapsed. */
@@ -383,19 +390,27 @@ async function readManifestChunkCount(manifestPath: string): Promise<number> {
  *     not-yet-due retry skip, or a cold LLM call (see
  *     `classifyContextualSidecarChunks`).
  *
+ * For the default incremental refresh (#695), unchanged files are skipped by
+ * `updateIndex(undefined)`, so missing contextual sidecars on unchanged
+ * sources are counted as `unchanged_chunks`, not `cold_chunks`. Passing
+ * `changedOnly: false` estimates the full force-rebuild path instead.
+ *
  * `cold_chunks * REINDEX_PER_CHUNK_ESTIMATE_MS` is then the cache-aware
- * runtime upper bound. A first-ever reindex (no sidecars) yields
+ * runtime upper bound. A first-ever force reindex (no sidecars) yields
  * `cold_chunks === total_chunks`, identical to the pre-#408 estimate.
  */
 export async function estimateContextualReindexWork(
   kbs: readonly string[],
   now: Date = new Date(),
+  options: { changedOnly?: boolean } = {},
 ): Promise<ContextualReindexEstimate> {
   const nowMs = now.getTime();
   let totalChunks = 0;
+  let unchangedChunks = 0;
   let cacheHits = 0;
   let retrySkips = 0;
   let coldChunks = 0;
+  const changedOnly = options.changedOnly === true;
 
   for (const kb of kbs) {
     const indexDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, '.index');
@@ -407,6 +422,10 @@ export async function estimateContextualReindexWork(
       // `<kb>/.index/<rel>.chunks.json` → source `<kb>/<rel>`.
       const rel = path.relative(indexDir, manifestPath).replace(/\.chunks\.json$/, '');
       const source = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, rel);
+      if (changedOnly && !(await sourceHashDiffersFromStoredHash(source, manifestPath))) {
+        unchangedChunks += chunkCount;
+        continue;
+      }
       const tally = await classifyContextualSidecarChunks(source, kb, chunkCount, nowMs);
       cacheHits += tally.cache_hits;
       retrySkips += tally.retry_skips;
@@ -416,10 +435,27 @@ export async function estimateContextualReindexWork(
 
   return {
     total_chunks: totalChunks,
+    unchanged_chunks: unchangedChunks,
     cache_hits: cacheHits,
     retry_skips: retrySkips,
     cold_chunks: coldChunks,
   };
+}
+
+async function sourceHashDiffersFromStoredHash(
+  sourcePath: string,
+  manifestPath: string,
+): Promise<boolean> {
+  try {
+    const storedHashPath = manifestPath.replace(/\.chunks\.json$/, '');
+    const [sourceHash, storedHash] = await Promise.all([
+      calculateSHA256(sourcePath),
+      fsp.readFile(storedHashPath, 'utf-8'),
+    ]);
+    return sourceHash !== storedHash;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -467,7 +503,9 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
   //    priced at the 8s cold-LLM ceiling, so a reindex following a partial
   //    run is not needlessly guard-blocked for work it would skip.
   const kbs = await resolveKbsInScope(options);
-  const estimate = await estimateContextualReindexWork(kbs, now);
+  const estimate = await estimateContextualReindexWork(kbs, now, {
+    changedOnly: !options.force,
+  });
   const totalChunks = estimate.total_chunks;
   const estimatedSeconds = Math.ceil((estimate.cold_chunks * REINDEX_PER_CHUNK_ESTIMATE_MS) / 1_000);
 
@@ -540,11 +578,12 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
   };
   await writeRunState(state);
 
-  // 5. Run the actual rebuild via `updateIndex(undefined, { force: true })`.
-  //    The force flag triggers a global rebuild that walks every KB and
-  //    re-embeds every chunk — including the new contextual-preface
-  //    metadata stamped by M0a's patched `buildChunkDocuments`. The
-  //    per-model write lock is acquired internally by updateIndex.
+  // 5. Run the actual refresh. By default this uses the existing
+  //    incremental path: every KB is scanned, but only changed/new files
+  //    are loaded and embedded. `--force` remains the explicit global
+  //    rebuild path that drops the in-memory FAISS store and re-embeds the
+  //    whole corpus. The per-model write lock is acquired internally by
+  //    updateIndex.
   let summary: IndexUpdateSummary;
   try {
     if (options.runUpdateIndex) {
@@ -554,10 +593,10 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
       // is configured (e.g. in CI) — even though the real `updateIndex`
       // is being mocked here. The manager is only consumed by the
       // non-seam path below, so construct it lazily there.
-      summary = await options.runUpdateIndex();
+      summary = await options.runUpdateIndex({ force: options.force });
     } else {
       const manager = options.manager ?? (await createManagerForReindex());
-      summary = await runManagerUpdateIndex(manager);
+      summary = await runManagerUpdateIndex(manager, options.force);
     }
   } catch (err) {
     await deleteRunState();
@@ -621,12 +660,18 @@ async function createManagerForReindex(): Promise<FaissIndexManager> {
   return manager;
 }
 
-async function runManagerUpdateIndex(manager: FaissIndexManager): Promise<IndexUpdateSummary> {
-  // `force: true` triggers a global rebuild: drops the in-memory FAISS
-  // store, walks every KB, re-embeds every chunk. M0a's patched adapter
-  // applies contextual prefaces to the embedding input when
-  // KB_CONTEXTUAL_RETRIEVAL=on, leaving the docstore byte-identical.
-  await manager.updateIndex(undefined, { force: true });
+async function runManagerUpdateIndex(
+  manager: FaissIndexManager,
+  force: boolean,
+): Promise<IndexUpdateSummary> {
+  // The default daily path is incremental: scan every KB but only embed
+  // changed/new files. `--force` is the operator escape hatch for an
+  // explicit full rebuild, including the first contextual-preface rollout.
+  if (force) {
+    await manager.updateIndex(undefined, { force: true });
+  } else {
+    await manager.updateIndex(undefined);
+  }
   return manager.getLastIndexUpdateSummary();
 }
 
