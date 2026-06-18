@@ -40,6 +40,7 @@ export interface RetrievalJsonResult {
   score: number | null;
   rerank_score?: number;
   content: string;
+  snippet?: string;
   metadata: Record<string, unknown>;
   chunk_id?: string;
   editor_uri?: string;
@@ -88,6 +89,11 @@ export interface CompactRetrievalOptions {
 
 export interface RetrievalHighlightOptions {
   terms: readonly string[];
+}
+
+export interface RetrievalSnippetOptions {
+  terms: readonly string[];
+  lines: number;
 }
 
 // Query-term highlighting emits ANSI bold; the escape codes live in `color.ts`
@@ -150,6 +156,7 @@ export function formatRetrievalAsMarkdown(
   extrasVisible: boolean,
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
   highlight?: RetrievalHighlightOptions,
+  snippet?: RetrievalSnippetOptions,
 ): string {
   if (!results || results.length === 0) {
     return formatRetrievalEmptyAsMarkdown();
@@ -166,7 +173,10 @@ export function formatRetrievalAsMarkdown(
         extrasVisible,
       );
       const guarded = guardRetrievalChunk(doc.pageContent, sanitizedMetadata, guardOptions);
-      const content = applyRetrievalHighlight(guarded.content.trim(), highlight);
+      const content = applyRetrievalHighlight(
+        applyRetrievalSnippet(guarded.content.trim(), snippet),
+        highlight,
+      );
       const citation = buildChunkCitation(guarded.metadata, editorUriMode);
       const metadata = JSON.stringify(guarded.metadata, null, 2);
       const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
@@ -184,8 +194,9 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
   extrasVisible: boolean,
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
   highlight?: RetrievalHighlightOptions,
+  snippet?: RetrievalSnippetOptions,
 ): string {
-  const grouped = groupRetrievalBySource(results, extrasVisible, editorUriMode);
+  const grouped = groupRetrievalBySource(results, extrasVisible, editorUriMode, snippet);
   if (grouped.length === 0) {
     return formatRetrievalEmptyAsMarkdown();
   }
@@ -198,7 +209,7 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
           const openText = chunk.editor_uri ? `\n   **Open:** ${chunk.editor_uri}` : '';
           const shieldText = formatInjectionGrouped(chunk.injection_signals);
           const typeText = chunk.match_type ? `\n   **Type:** ${chunk.match_type}` : '';
-          const content = applyRetrievalHighlight(chunk.content.trim(), highlight);
+          const content = applyRetrievalHighlight((chunk.snippet ?? chunk.content).trim(), highlight);
           const contextText = formatJsonContextChunksForGroupedMarkdown(chunk.context_chunks, highlight);
           return `${chunkIdx + 1}. **Score:** ${scoreText}${typeText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(content)}${shieldText}${contextText}`;
         })
@@ -221,6 +232,19 @@ export function highlightQueryTerms(text: string, terms: readonly string[]): str
   return text.replace(new RegExp(pattern, 'giu'), (match) => `${ANSI_BOLD}${match}${ANSI_BOLD_OFF}`);
 }
 
+export function renderSearchSnippet(content: string, options: RetrievalSnippetOptions): string {
+  const lines = content.split(/\r?\n/);
+  const windowSize = Math.max(1, Math.floor(options.lines));
+  if (lines.length <= windowSize) return content;
+
+  const start = bestSnippetStart(lines, normalizeHighlightTerms(options.terms), windowSize);
+  const end = Math.min(lines.length, start + windowSize);
+  const out = lines.slice(start, end);
+  if (start > 0) out.unshift('…');
+  if (end < lines.length) out.push('…');
+  return out.join('\n');
+}
+
 export function formatDegradedStagesFooter(stages: readonly CanonicalDegradedStage[] | undefined): string {
   if (stages === undefined || stages.length === 0) return '';
   const stageText = stages
@@ -231,6 +255,52 @@ export function formatDegradedStagesFooter(stages: readonly CanonicalDegradedSta
 
 function applyRetrievalHighlight(text: string, highlight: RetrievalHighlightOptions | undefined): string {
   return highlight ? highlightQueryTerms(text, highlight.terms) : text;
+}
+
+function applyRetrievalSnippet(text: string, snippet: RetrievalSnippetOptions | undefined): string {
+  return snippet ? renderSearchSnippet(text, snippet) : text;
+}
+
+function bestSnippetStart(lines: readonly string[], terms: readonly string[], windowSize: number): number {
+  const lastStart = Math.max(0, lines.length - windowSize);
+  if (terms.length === 0) return 0;
+  const pattern = new RegExp(terms.map(escapeRegex).join('|'), 'giu');
+  const lineScores = lines.map((line) => (line.match(pattern) ?? []).length);
+  // Prefer the densest matching window; when windows tie, choose the one whose
+  // center is closest to the weighted center of all matched lines.
+  const targetLine = weightedMatchLine(lineScores);
+  let bestStart = 0;
+  let bestScore = 0;
+  for (let start = 0; start <= lastStart; start += 1) {
+    let score = 0;
+    for (let idx = start; idx < start + windowSize; idx += 1) {
+      score += lineScores[idx] ?? 0;
+    }
+    if (
+      score > bestScore ||
+      (score === bestScore &&
+        score > 0 &&
+        windowDistance(start, windowSize, targetLine) < windowDistance(bestStart, windowSize, targetLine))
+    ) {
+      bestScore = score;
+      bestStart = start;
+    }
+  }
+  return bestScore === 0 ? 0 : bestStart;
+}
+
+function weightedMatchLine(lineScores: readonly number[]): number {
+  let total = 0;
+  let weighted = 0;
+  lineScores.forEach((score, idx) => {
+    total += score;
+    weighted += score * idx;
+  });
+  return total === 0 ? 0 : weighted / total;
+}
+
+function windowDistance(start: number, windowSize: number, targetLine: number): number {
+  return Math.abs(start + (windowSize - 1) / 2 - targetLine);
 }
 
 function normalizeHighlightTerms(terms: readonly string[]): string[] {
@@ -261,6 +331,7 @@ export function formatRetrievalAsJson(
   results: ScoredDocument[] | null | undefined,
   extrasVisible: boolean,
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
+  snippet?: RetrievalSnippetOptions,
 ): RetrievalJsonResult[] {
   if (!results || results.length === 0) return [];
   const guardOptions = resolveInjectionGuardOptions();
@@ -276,6 +347,7 @@ export function formatRetrievalAsJson(
       score: doc.score ?? null,
       ...(doc.rerankScore !== undefined ? { rerank_score: doc.rerankScore } : {}),
       content: guarded.content,
+      ...(snippet ? { snippet: applyRetrievalSnippet(guarded.content, snippet) } : {}),
       metadata: guarded.metadata,
       ...(citation ? { chunk_id: citation.chunk_id } : {}),
       ...(citation?.editor_uri ? { editor_uri: citation.editor_uri } : {}),
@@ -298,6 +370,7 @@ export function groupRetrievalBySource(
   results: ScoredDocument[] | null | undefined,
   extrasVisible: boolean,
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
+  snippet?: RetrievalSnippetOptions,
 ): GroupedRetrievalSource[] {
   if (!results || results.length === 0) return [];
 
@@ -329,6 +402,7 @@ export function groupRetrievalBySource(
     group.chunks.push({
       score,
       content: guarded.content,
+      ...(snippet ? { snippet: applyRetrievalSnippet(guarded.content, snippet) } : {}),
       metadata: guarded.metadata,
       location,
       ...(citation ? { chunk_id: citation.chunk_id } : {}),
