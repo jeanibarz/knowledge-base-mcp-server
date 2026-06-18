@@ -26,11 +26,14 @@ Usage:
   kb reindex --with-context [--kb=<name>...] [--force]
   kb reindex status [--kb=<name>...] [--format=md|json]
 
-The \`--with-context\` flag is REQUIRED in this milestone (M0b). It
-triggers a full rebuild of the ENTIRE FAISS index — every KB, every
-chunk — through the contextual-retrieval ingest path: per-chunk
-LLM-generated prefaces are prepended for embedding while the docstore
-content stays byte-identical. The \`KB_CONTEXTUAL_RETRIEVAL=on\`
+The \`--with-context\` flag is REQUIRED in this milestone (M0b). It runs
+the contextual-retrieval ingest path: per-chunk LLM-generated prefaces
+are prepended for embedding while the docstore content stays
+byte-identical. The initial cold backfill rebuilds the full active FAISS
+index so existing vectors become contextual. After the contextual
+sidecar cache is warm, follow-up runs use the normal incremental refresh
+path and only re-embed changed/appended chunks unless FAISS deletion
+limits require a full rebuild. The \`KB_CONTEXTUAL_RETRIEVAL=on\`
 environment variable must also be set; the CLI emits a warning
 otherwise.
 
@@ -46,12 +49,12 @@ Behavior:
     so the trigger watcher (RFC 014) defers its own updates until the
     reindex finishes. The file is deleted on exit (and zombie-cleaned
     by any later observer that finds its PID dead).
-  - Delegates the actual rebuild to
-    \`FaissIndexManager.updateIndex(undefined, { force: true })\` —
-    same machinery the existing \`kb search --refresh\` path uses, so
-    sidecar invalidation, error handling, and atomic FAISS swaps come
-    for free. The \`undefined\` scope argument is deliberate: the
-    rebuild is ALWAYS global and \`--kb\` never narrows it (see below).
+  - Delegates the actual refresh to \`FaissIndexManager.updateIndex()\`
+    using \`force: true\` only while contextual-preface chunks are cold.
+    Warm follow-up runs use \`force: false\`, the same incremental
+    machinery as \`kb search --refresh\`. The \`undefined\` scope argument
+    is deliberate for forced backfills: the rebuild is global and
+    \`--kb\` never narrows it (see below).
   - When \`KB_CONTEXTUAL_RETRIEVAL=on\`, prints a \`contextual:\` line
     summarising preface coverage and failures (covered / failed /
     retry-pending chunks, with an error-code breakdown) read back from
@@ -73,17 +76,17 @@ Options:
   --with-context        Required in M0b. Required for the CLI to do
                         anything except the \`status\` subcommand;
                         without it, exit code 2.
-  --kb=<name>           Rebuild: guard/estimator hint only — NOT a scoped
+  --kb=<name>           Guard/estimator hint only — NOT a scoped
                         rebuild. The FAISS index is single-index-per-
                         model with every KB co-located, so a partial
-                        rebuild would orphan the other shelves' vectors;
-                        the rebuild is therefore always global regardless
-                        of this flag. --kb only narrows the chunk-count
-                        estimate and the cron-window guard arithmetic,
-                        and is validated against registered KBs (unknown
-                        name -> exit 2). Repeat for multiple KBs.
-                        Default: every registered KB. Status: limit the
-                        report to this KB.
+                        forced rebuild would orphan the other shelves'
+                        vectors; cold backfills therefore remain global.
+                        --kb only narrows the chunk-count estimate and
+                        the cron-window guard arithmetic, and is
+                        validated against registered KBs (unknown name
+                        -> exit 2). Repeat for multiple KBs. Default:
+                        every registered KB. Status: limit the report to
+                        this KB.
   --force               Bypass the LRA cron window guard AND the
                         self-runtime-budget guard. Required to start
                         a reindex inside 06:00-10:30 UTC or when the

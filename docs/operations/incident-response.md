@@ -483,8 +483,9 @@ and there is remaining work.
    ```
 
 4. Remember that `--kb=<name>` is a guard and estimator hint for contextual
-   reindex; the forced rebuild still covers the active model's full FAISS index,
-   not just one KB.
+   reindex. Cold contextual backfills still cover the active model's full FAISS
+   index, not just one KB; warm follow-up runs use the incremental refresh path
+   unless FAISS deletion limits force a full rebuild.
 
 **Escalate**
 
