@@ -85,6 +85,7 @@ import {
   readResource,
   registerResources,
 } from './mcp-resources.js';
+import { registerCompletions } from './mcp-completions.js';
 import { KB_MCP_PROMPTS, registerPrompts } from './mcp-prompts.js';
 import {
   handleAddDocument,
@@ -327,6 +328,7 @@ export class KnowledgeBaseServer {
     mcp.server.onerror = (error) => logger.error('[MCP Error]', error);
     this.registerTools(mcp);
     registerResources(mcp);
+    registerCompletions(mcp);
     // #642 — opt-in MCP prompts surface. Off by default; gated by
     // KB_MCP_PROMPTS so the capability is only advertised when enabled.
     if (KB_MCP_PROMPTS) {
