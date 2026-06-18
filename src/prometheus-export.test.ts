@@ -28,6 +28,13 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('# TYPE kb_search_stage_duration_ms histogram');
     expect(text).toContain('kb_search_stage_duration_ms_bucket{le="30",mode="dense",stage="embed_query",status="success"} 1');
     expect(text).toContain('kb_search_stage_duration_ms_sum{mode="dense",stage="embed_query",status="success"} 12');
+    expect(text).toContain('# TYPE kb_rerank_invocations counter');
+    expect(text).toContain('kb_rerank_invocations_total 3');
+    expect(text).toContain('kb_rerank_skipped_total{reason="skip_domain"} 2');
+    expect(text).toContain('kb_rerank_candidates_total{source="model_scored"} 4');
+    expect(text).toContain('# TYPE kb_rerank_latency_ms histogram');
+    expect(text).toContain('kb_rerank_latency_ms_bucket{le="30",source="model_scored"} 1');
+    expect(text).toContain('kb_rerank_latency_ms_sum{source="model_scored"} 12');
     expect(text).toContain('kb_remote_transport_requests_total 9');
     expect(text).toContain('# TYPE kb_remote_transport_responses_4xx counter');
     expect(text).toContain('kb_remote_transport_responses_4xx_total 2');
@@ -151,6 +158,20 @@ function samplePayload(): KbStatsPayload {
         degraded: 0,
         rate: 0,
         warn_threshold: 0.1,
+      },
+    },
+    rerank: {
+      invocations: 3,
+      skipped: {
+        skip_domain: 2,
+        disabled: 1,
+      },
+      candidates: {
+        cache_hit: 5,
+        model_scored: 4,
+      },
+      latency: {
+        model_scored: histogramSnapshot(12),
       },
     },
     remote_transport: {

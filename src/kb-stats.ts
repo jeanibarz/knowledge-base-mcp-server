@@ -38,11 +38,14 @@ import { logger } from './logger.js';
 import {
   providerCallMetrics,
   quantileFromBuckets,
+  rerankMetrics,
   searchLatencyMetrics,
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
-  type SearchLatencyMetricsSnapshot,
+  type RerankMetrics,
+  type RerankMetricsSnapshot,
   type SearchLatencyMetrics,
+  type SearchLatencyMetricsSnapshot,
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
 import { queryEmbeddingCache, type QueryCacheStats } from './query-cache.js';
@@ -130,6 +133,8 @@ export interface KbStatsPayload {
   search_latency: SearchLatencyMetricsSnapshot;
   query_cache: QueryCacheStats;
   relevance_gate: RelevanceGateMetricsSnapshot;
+  /** Issue #689 — process-lifetime reranker-stage counters and latency histograms. */
+  rerank?: RerankMetricsSnapshot;
   /**
    * Issue #430 — live counters for the optional HTTP/SSE MCP transport.
    * Omitted for stdio-only processes and for local `kb stats` invocations
@@ -175,6 +180,8 @@ export interface ComputeKbStatsOptions {
   metrics?: ProviderCallMetrics;
   /** Issue #597 — test seam for daemon-served search latency telemetry. */
   searchMetrics?: SearchLatencyMetrics;
+  /** Issue #689 — test seam for reranker-stage telemetry. */
+  rerankMetrics?: RerankMetrics;
   /** Process-local HTTP/SSE counters, supplied by KnowledgeBaseServer when active. */
   remoteTransportStats?: TransportRuntimeStatsSnapshot;
 }
@@ -256,6 +263,7 @@ export async function computeKbStats(
 
   const metricsSource = options.metrics ?? providerCallMetrics;
   const searchMetricsSource = options.searchMetrics ?? searchLatencyMetrics;
+  const rerankMetricsSource = options.rerankMetrics ?? rerankMetrics;
   const searchMetricsSnapshot = searchMetricsSource.snapshot();
   const activeIndexType = indexStats.indexType ?? 'flat';
   const activeIndexFactory = indexFactoryForType(activeIndexType);
@@ -297,6 +305,7 @@ export async function computeKbStats(
     search_latency: searchMetricsSnapshot,
     query_cache: await queryEmbeddingCache.stats(),
     relevance_gate: relevanceGateMetrics.snapshot(),
+    rerank: rerankMetricsSource.snapshot(),
     ...(options.remoteTransportStats !== undefined
       ? { remote_transport: options.remoteTransportStats }
       : {}),

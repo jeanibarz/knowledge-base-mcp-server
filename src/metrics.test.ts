@@ -5,6 +5,7 @@ import {
   LATENCY_BUCKET_BOUNDS_MS,
   ProviderCallMetrics,
   quantileFromBuckets,
+  RerankMetrics,
   SearchLatencyMetrics,
 } from './metrics.js';
 
@@ -197,6 +198,44 @@ describe('SearchLatencyMetrics', () => {
     expect(metrics.snapshot().requests.dense?.success?.count).toBe(1);
     metrics.reset();
     expect(metrics.snapshot()).toEqual({ requests: {}, stages: {}, degraded: {} });
+  });
+});
+
+describe('RerankMetrics', () => {
+  it('records skips, invocation counts, candidate sources, and latency source histograms', () => {
+    const metrics = new RerankMetrics({ now: () => 1_700_000_000_000 });
+
+    metrics.recordSkipped('disabled');
+    metrics.recordSkipped('skip_domain');
+    metrics.recordSkipped('skip_domain');
+    metrics.recordInvocation({ latencyMs: 12, candidatesIn: 3, cacheHits: 1 });
+    metrics.recordInvocation({ latencyMs: 2, candidatesIn: 2, cacheHits: 2 });
+
+    const snap = metrics.snapshot();
+    expect(snap.invocations).toBe(2);
+    expect(snap.skipped).toEqual({ disabled: 1, skip_domain: 2 });
+    expect(snap.candidates).toEqual({ cache_hit: 3, model_scored: 2 });
+    expect(snap.latency.model_scored).toMatchObject({
+      count: 1,
+      sum_ms: 12,
+      since_started_at: '2023-11-14T22:13:20.000Z',
+    });
+    expect(snap.latency.cache_hit).toMatchObject({ count: 1, sum_ms: 2 });
+  });
+
+  it('reset() clears rerank telemetry', () => {
+    const metrics = new RerankMetrics();
+    metrics.recordSkipped('no_candidates');
+    metrics.recordInvocation({ latencyMs: 1, candidatesIn: 1, cacheHits: 0 });
+
+    metrics.reset();
+
+    expect(metrics.snapshot()).toEqual({
+      invocations: 0,
+      skipped: {},
+      candidates: {},
+      latency: {},
+    });
   });
 });
 
