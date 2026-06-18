@@ -206,6 +206,7 @@ wrap-close vars below.
 | Daemon URL | `KB_DAEMON_URL` | composed from `KB_DAEMON_HOST` (default `127.0.0.1`) and `KB_DAEMON_PORT` (default `17799`) when unset | `kb serve` clients, `kb doctor --endpoints`, `kb serve status` | Implemented | none | `KB_DAEMON_URL=http://127.0.0.1:17799 kb serve status` |
 | Daemon host | `KB_DAEMON_HOST` | `127.0.0.1` | Daemon URL composition | Implemented | none | `KB_DAEMON_HOST=127.0.0.1 KB_DAEMON_PORT=17799 kb serve` |
 | Daemon port | `KB_DAEMON_PORT` | `17799` | Daemon URL composition | Implemented | none | `KB_DAEMON_PORT=18888 kb serve` |
+| Daemon startup prewarm | `KB_DAEMON_PREWARM` / `kb serve --warm` | `off` | `kb serve`, `/health`, `kb serve status` | Implemented, opt-in | `kb serve --warm` | `KB_DAEMON_PREWARM=on kb serve status --json` |
 
 ## Managed LLM Profiles
 

@@ -1650,7 +1650,13 @@ Reachable envelope:
     "pid": 41234,
     "uptime_ms": 124500,
     "idle_timeout_ms": 300000,
-    "commands": ["search", "list", "stats"]
+    "commands": ["search", "list", "stats"],
+    "prewarm": {
+      "enabled": true,
+      "status": "ready",
+      "model_id": "ollama__nomic-embed-text-latest",
+      "lexical_kbs": 3
+    }
   }
 }
 ```
@@ -1670,6 +1676,9 @@ Stable fields:
 - `daemon.commands` always lists the read-only commands the daemon accepts.
 - `daemon.pid`, `daemon.uptime_ms`, `daemon.idle_timeout_ms` are present when
   the daemon's `/health` payload supplies them.
+- `daemon.prewarm` is present on current daemons. `status` is `disabled`,
+  `ready`, or `failed`; successful prewarm includes `model_id` and
+  `lexical_kbs`, while failed prewarm includes `error`.
 
 Stdout/stderr and exit codes:
 

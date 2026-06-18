@@ -9,6 +9,15 @@ export interface DaemonRunResult {
 export type DaemonCommand = 'search' | 'list' | 'stats';
 export type DaemonOwnership = 'manual' | 'autostart';
 
+export interface DaemonPrewarmHealth {
+  enabled: boolean;
+  status: 'disabled' | 'ready' | 'failed';
+  model_id?: string;
+  lexical_kbs?: number;
+  error?: string;
+  updated_at?: string;
+}
+
 /**
  * Lifecycle snapshot returned by the daemon's `GET /health` endpoint and
  * surfaced verbatim by `kb serve status --json`. Every field beyond `status`
@@ -23,6 +32,7 @@ export interface DaemonHealth {
   ownership?: DaemonOwnership;
   commands?: string[];
   uptime_ms?: number;
+  prewarm?: DaemonPrewarmHealth;
 }
 
 interface SpawnedDaemonProcess {
@@ -225,7 +235,31 @@ function parseDaemonHealth(payload: unknown): DaemonHealth {
     health.commands = obj.commands as string[];
   }
   if (typeof obj.uptime_ms === 'number') health.uptime_ms = obj.uptime_ms;
+  const prewarm = parseDaemonPrewarmHealth(obj.prewarm);
+  if (prewarm !== null) health.prewarm = prewarm;
   return health;
+}
+
+function parseDaemonPrewarmHealth(payload: unknown): DaemonPrewarmHealth | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const obj = payload as Record<string, unknown>;
+  if (typeof obj.enabled !== 'boolean') return null;
+  if (
+    obj.status !== 'disabled' &&
+    obj.status !== 'ready' &&
+    obj.status !== 'failed'
+  ) {
+    return null;
+  }
+  const out: DaemonPrewarmHealth = {
+    enabled: obj.enabled,
+    status: obj.status,
+  };
+  if (typeof obj.model_id === 'string') out.model_id = obj.model_id;
+  if (typeof obj.lexical_kbs === 'number') out.lexical_kbs = obj.lexical_kbs;
+  if (typeof obj.error === 'string') out.error = obj.error;
+  if (typeof obj.updated_at === 'string') out.updated_at = obj.updated_at;
+  return out;
 }
 
 async function runDaemonCommandAfterAutostart(
