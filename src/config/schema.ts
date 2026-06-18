@@ -165,6 +165,9 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'OLLAMA_MODEL', kind: 'string', default: 'dengcao/Qwen3-Embedding-0.6B:Q8_0', emptyUsesDefault: true },
   { name: 'OPENAI_API_KEY', kind: 'secret', secret: true },
   { name: 'OPENAI_MODEL_NAME', kind: 'string', default: DEFAULT_OPENAI_MODEL_NAME, emptyUsesDefault: true },
+  { name: 'KB_PROVIDER_BREAKER', kind: 'boolean', default: 'on', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables the process-shared open/half-open circuit breaker for embedding and LLM provider calls.' },
+  { name: 'KB_PROVIDER_BREAKER_FAILURE_THRESHOLD', kind: 'integer', default: '3', min: 1, max: 100, integerSyntax: 'digits', description: 'Consecutive provider failures before the circuit opens.' },
+  { name: 'KB_PROVIDER_BREAKER_COOLDOWN_MS', kind: 'duration', default: '30000', min: 1, max: 3600000, description: 'Open-circuit cooldown before a single half-open recovery probe is allowed.' },
 
   { name: 'INDEXING_BATCH_SIZE', kind: 'integer', docDefault: '64; 16 when EMBEDDING_PROVIDER=ollama', defaultValue: (env) => String(defaultIndexingBatchSize(effectiveStringValue(env, 'EMBEDDING_PROVIDER', 'huggingface'))), min: 1, max: 512 },
   { name: 'KB_INDEXING_CONCURRENCY', kind: 'integer', default: '1', min: 1, max: 4 },

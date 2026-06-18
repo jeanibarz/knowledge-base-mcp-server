@@ -2,17 +2,20 @@ import { afterEach, describe, expect, it } from '@jest/globals';
 import {
   callChatCompletion,
   deriveHealthUrl,
+  llmProviderBreakerKey,
   LlmClientError,
   normalizeChatEndpoint,
   parseRetryAfterMs,
   probeLlmEndpoint,
 } from './llm-client.js';
+import { providerBreakerRegistry } from './provider-breaker.js';
 
 describe('llm-client', () => {
   const SAVED_KEYS = [
     'KB_LLM_FAKE', 'KB_LOG_FORMAT', 'KB_LLM_PROVIDER', 'KB_OPENROUTER_API_KEY',
     'OPENROUTER_API_KEY', 'KB_LLM_MODEL', 'KB_LLM_APP_TITLE', 'KB_LLM_HTTP_REFERER',
-    'KB_LLM_MAX_RETRIES',
+    'KB_LLM_MAX_RETRIES', 'KB_PROVIDER_BREAKER', 'KB_PROVIDER_BREAKER_FAILURE_THRESHOLD',
+    'KB_PROVIDER_BREAKER_COOLDOWN_MS',
   ] as const;
   const saved: Record<string, string | undefined> = {};
   for (const k of SAVED_KEYS) saved[k] = process.env[k];
@@ -22,6 +25,7 @@ describe('llm-client', () => {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
+    providerBreakerRegistry.reset();
   });
 
   it('normalizes base URLs to chat-completions endpoints', () => {
@@ -181,6 +185,41 @@ describe('llm-client', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('does not open the provider circuit for streaming callback failures', async () => {
+    const fetchMock = jest.fn(async () => new Response(streamBody([
+      'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+
+    for (let i = 0; i < 3; i += 1) {
+      await expect(callChatCompletion({
+        endpoint: 'http://127.0.0.1:8080',
+        messages: [{ role: 'user', content: 'q' }],
+        stream: {
+          onToken: () => {
+            throw new Error('consumer failed');
+          },
+        },
+        retry: false,
+      }, fetchMock as unknown as typeof fetch)).rejects.toMatchObject({
+        name: 'LlmClientError',
+        transient: false,
+        message: expect.stringContaining('stream callback failed'),
+      });
+    }
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      choices: [{ message: { content: 'ok' } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    await expect(callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+      retry: false,
+    }, fetchMock as unknown as typeof fetch)).resolves.toMatchObject({ content: 'ok' });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it('does not retry terminal auth failures', async () => {
     const delays: number[] = [];
     const fetchMock = jest.fn(async () => new Response(
@@ -235,6 +274,53 @@ describe('llm-client', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(delays).toEqual([100]);
+  });
+
+  it('opens the provider circuit after repeated transient failures and skips retries while open', async () => {
+    process.env.KB_PROVIDER_BREAKER = 'on';
+    process.env.KB_PROVIDER_BREAKER_FAILURE_THRESHOLD = '3';
+    process.env.KB_PROVIDER_BREAKER_COOLDOWN_MS = '30000';
+    jest.resetModules();
+    const {
+      callChatCompletion: freshCallChatCompletion,
+      llmProviderBreakerKey: freshLlmProviderBreakerKey,
+    } = await import('./llm-client.js');
+    const { providerBreakerRegistry: freshProviderBreakerRegistry } = await import('./provider-breaker.js');
+    const fetchMock = jest.fn(async () => new Response(
+      JSON.stringify({ error: { message: 'down' } }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } },
+    ));
+
+    for (let i = 0; i < 3; i += 1) {
+      await expect(freshCallChatCompletion({
+        endpoint: 'http://127.0.0.1:8080',
+        messages: [{ role: 'user', content: 'q' }],
+        retry: false,
+      }, fetchMock as unknown as typeof fetch)).rejects.toMatchObject({
+        name: 'LlmClientError',
+        status: 503,
+      });
+    }
+
+    await expect(freshCallChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'q' }],
+      retry: {
+        maxRetries: 2,
+        sleep: async () => {
+          throw new Error('retry sleep must be skipped while circuit is open');
+        },
+      },
+    }, fetchMock as unknown as typeof fetch)).rejects.toMatchObject({
+      name: 'ProviderCircuitOpenError',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(freshProviderBreakerRegistry.snapshot()).toEqual([expect.objectContaining({
+      key: freshLlmProviderBreakerKey('local', 'http://127.0.0.1:8080/v1/chat/completions', 'local-model'),
+      state: 'open',
+      consecutive_failures: 3,
+    })]);
   });
 
   it('honors Retry-After for retry delay while capping total wait', async () => {

@@ -22,6 +22,7 @@ import { logger } from './logger.js';
 import { instrumentEmbeddingsClient, type ProviderCallMetrics } from './metrics.js';
 import type { EmbeddingProvider } from './model-id.js';
 import { makeOllamaOnFailedAttempt } from './ollama-error.js';
+import { providerBreakerRegistry, type ProviderBreakerRegistry } from './provider-breaker.js';
 
 /**
  * Issue #204 — deterministic, network-free embedding host. Hash-bag over a
@@ -104,12 +105,46 @@ export class TaskPrefixedEmbeddings {
   }
 }
 
+/**
+ * Issue #687 — process-shared circuit breaker wrapper for network-backed
+ * embedding providers. It sits outside provider-specific clients and inside
+ * telemetry, so open circuits skip provider retries while still recording a
+ * failed provider call when a model_id is instrumented.
+ */
+export class CircuitBrokenEmbeddings {
+  constructor(
+    private readonly inner: {
+      embedDocuments(texts: string[]): Promise<number[][]>;
+      embedQuery(text: string): Promise<number[]>;
+    },
+    readonly breakerKey: string,
+    private readonly breaker: ProviderBreakerRegistry = providerBreakerRegistry,
+  ) {}
+
+  async embedDocuments(texts: string[]): Promise<number[][]> {
+    return this.breaker.run(
+      this.breakerKey,
+      () => this.inner.embedDocuments(texts),
+      { shouldRecordFailure: shouldRecordEmbeddingBreakerFailure },
+    );
+  }
+
+  async embedQuery(text: string): Promise<number[]> {
+    return this.breaker.run(
+      this.breakerKey,
+      () => this.inner.embedQuery(text),
+      { shouldRecordFailure: shouldRecordEmbeddingBreakerFailure },
+    );
+  }
+}
+
 export type EmbeddingsClient =
   | HuggingFaceInferenceEmbeddings
   | OllamaEmbeddings
   | OpenAIEmbeddings
   | FakeEmbeddings
-  | TaskPrefixedEmbeddings;
+  | TaskPrefixedEmbeddings
+  | CircuitBrokenEmbeddings;
 
 export interface CreateEmbeddingsOptions {
   // Issue #204 — `'fake'` is accepted at the factory boundary but is not in
@@ -158,6 +193,10 @@ export async function createEmbeddingsClient(
     );
     client = new TaskPrefixedEmbeddings(rawClient, prefixes);
   }
+  const breakerKey = embeddingProviderBreakerKey(provider, modelName);
+  if (breakerKey !== null) {
+    client = new CircuitBrokenEmbeddings(client, breakerKey);
+  }
   if (options.modelId !== undefined) {
     // Issue #210 — wrap once with the per-model_id telemetry collector.
     // The wrap is idempotent so a second `initialize()` (e.g.
@@ -165,6 +204,26 @@ export async function createEmbeddingsClient(
     instrumentEmbeddingsClient(client, options.modelId, { metrics: options.metrics });
   }
   return client;
+}
+
+export function embeddingProviderBreakerKey(
+  provider: EmbeddingProvider | 'fake',
+  modelName: string,
+): string | null {
+  if (provider === 'fake') return null;
+  if (provider === 'ollama') return `embedding:ollama:${OLLAMA_BASE_URL}:${modelName}`;
+  if (provider === 'openai') return `embedding:openai:https://api.openai.com/v1/embeddings:${modelName}`;
+  const endpointUrl = HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN
+    ? HUGGINGFACE_ENDPOINT_URL
+    : `https://router.huggingface.co/hf-inference/models/${modelName}/pipeline/feature-extraction`;
+  return `embedding:huggingface:${endpointUrl}:${modelName}`;
+}
+
+function shouldRecordEmbeddingBreakerFailure(err: unknown): boolean {
+  if (err instanceof KBError) {
+    return err.code === 'PROVIDER_UNAVAILABLE' || err.code === 'PROVIDER_TIMEOUT';
+  }
+  return true;
 }
 
 async function constructEmbeddingsClient(
