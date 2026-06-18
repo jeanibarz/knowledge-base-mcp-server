@@ -313,17 +313,18 @@ Usage:
   kb config validate [--file=.env] [--format=md|json]
   kb config show [--format=md|json] [--non-default-only]
 
-Validates known environment variables against the static KB config schema:
+Validates known runtime configuration against the static KB config schema:
 type, enum membership, numeric ranges, URL syntax, and cross-variable
-dependencies. The command is read-only and does not probe live endpoints.
+dependencies. Without --file, project config files are layered under
+process.env. The command is read-only and does not probe live endpoints.
 
 Shows the effective value and source for every known configuration variable.
 Secrets such as API keys and MCP_AUTH_TOKEN are redacted.
 
 Options:
-  --file=<path>             Parse this dotenv file instead of process.env.
+  --file=<path>             Parse this dotenv file instead of runtime config.
   --format=md|json          Output format (default: md).
-  --non-default-only        For show, print only values supplied by env.
+  --non-default-only        For show, print only env/file-supplied values.
   --help, -h                Show this help.
 
 Exit codes:
@@ -1428,6 +1429,10 @@ Output:
                         emphasis. auto uses ANSI only on a TTY (default);
                         always also works through pipes; never disables it.
   --no-highlight        Alias for --highlight=never.
+  --snippet[=N]         Markdown/JSON: show an N-line focused excerpt centered
+                        on the densest query-term match. Default N is 5.
+                        Also set via KB_SEARCH_SNIPPET=true|N.
+  --full                Disable snippet mode and render full result bodies.
   --color=auto|always|never
                         Unified control for all ANSI color/emphasis output.
                         auto colorizes only on a TTY with NO_COLOR unset
@@ -1481,7 +1486,7 @@ Run a localhost daemon for warm read-only CLI requests.
 kb serve — resident local daemon for warm CLI reads
 
 Usage:
-  kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000]
+  kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000] [--warm]
   kb serve status [--json]
 
 Starts a localhost-only JSON HTTP daemon used by `kb search --daemon`.
@@ -1497,6 +1502,8 @@ Options:
   --host=<host>             Loopback host to bind (default: 127.0.0.1).
   --port=<port>             TCP port to bind (default: 17799; 0 for tests).
   --idle-timeout-ms=<ms>    Stop after this much idle time (default: 300000).
+  --warm                    Pre-warm the active model, FAISS index, and
+                            lexical indexes before the daemon reports ready.
   --json                    `kb serve status`: emit the daemon health JSON.
   --help, -h                Show this help.
 
@@ -1511,6 +1518,8 @@ Environment:
   KB_DAEMON_QUEUE_MAX       Max requests queued beyond the concurrency cap
                             before the daemon replies 429 + Retry-After
                             (default 128; 0 rejects immediately when full).
+  KB_DAEMON_PREWARM         Set to `on` to enable the same startup pre-warm
+                            as `kb serve --warm`.
 
 Exit codes:
   0   daemon started, or `kb serve status` found a reachable daemon

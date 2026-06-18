@@ -57,11 +57,14 @@ function request(
 
 describe('kb serve daemon', () => {
   const originalMetricsExport = process.env.KB_METRICS_EXPORT;
+  const originalDaemonPrewarm = process.env.KB_DAEMON_PREWARM;
 
   afterEach(() => {
     searchLatencyMetrics.reset();
     if (originalMetricsExport === undefined) delete process.env.KB_METRICS_EXPORT;
     else process.env.KB_METRICS_EXPORT = originalMetricsExport;
+    if (originalDaemonPrewarm === undefined) delete process.env.KB_DAEMON_PREWARM;
+    else process.env.KB_DAEMON_PREWARM = originalDaemonPrewarm;
   });
 
   it('serves health and dispatches read-only commands through handlers', async () => {
@@ -146,6 +149,57 @@ describe('kb serve daemon', () => {
     expect(lexicalIndexLoader).toHaveBeenCalledWith('alpha', '/kb/alpha');
   });
 
+  it('prewarms the active model manager, FAISS index, and lexical indexes on demand', async () => {
+    const lexicalIndex = { numFiles: () => 1 } as unknown as LexicalIndex;
+    const manager = { marker: 'manager', modelId: 'ollama__nomic' };
+    let denseMtimeMs = 1;
+    const lexicalIndexLoader = jest.fn(async () => lexicalIndex);
+    const denseIndexMetadataReader = jest.fn(async () => ({
+      path: '/faiss/index',
+      mtimeMs: denseMtimeMs,
+      size: 10,
+    }));
+    const resolveActiveModelImpl = jest.fn(async () => 'ollama__nomic');
+    const loadManagerForModel = jest.fn(async () => manager as never);
+    const loadWithJsonRetry = jest.fn(async () => undefined);
+    const listKnowledgeBasesImpl = jest.fn(async () => ['alpha', 'beta']);
+    const runSearchImpl = jest.fn(async (_args: string[], deps: RunSearchDeps = {} as RunSearchDeps) => {
+      const loaded = await deps.loadManagerForModel('ollama__nomic');
+      await deps.loadWithJsonRetry(loaded);
+      return 0;
+    });
+    const handlers = createDaemonCommandHandlers({
+      lexicalIndexLoader,
+      denseIndexMetadataReader,
+      resolveActiveModelImpl,
+      loadManagerForModel,
+      loadWithJsonRetry,
+      listKnowledgeBasesImpl,
+      knowledgeBasesRootDir: '/kb-root',
+      runSearchImpl,
+    });
+
+    await expect(handlers.prewarm?.()).resolves.toEqual({
+      modelId: 'ollama__nomic',
+      lexicalKbs: 2,
+    });
+
+    expect(resolveActiveModelImpl).toHaveBeenCalledTimes(1);
+    expect(loadManagerForModel).toHaveBeenCalledWith('ollama__nomic');
+    expect(loadWithJsonRetry).toHaveBeenCalledWith(manager);
+    expect(lexicalIndexLoader).toHaveBeenCalledWith('alpha', '/kb-root/alpha');
+    expect(lexicalIndexLoader).toHaveBeenCalledWith('beta', '/kb-root/beta');
+
+    await expect(handlers.search(['query'])).resolves.toMatchObject({ exitCode: 0 });
+    expect(loadManagerForModel).toHaveBeenCalledTimes(1);
+    expect(loadWithJsonRetry).toHaveBeenCalledTimes(1);
+
+    denseMtimeMs = 2;
+    await expect(handlers.search(['query'])).resolves.toMatchObject({ exitCode: 0 });
+    expect(loadManagerForModel).toHaveBeenCalledTimes(1);
+    expect(loadWithJsonRetry).toHaveBeenCalledTimes(2);
+  });
+
   it('records successful daemon-served search timings through the search deps hook', async () => {
     const runSearchImpl = jest.fn(async (_args: string[], deps: RunSearchDeps = {} as RunSearchDeps) => {
       deps.onSearchTiming?.({
@@ -207,6 +261,14 @@ describe('kb serve daemon', () => {
     expect(() => parseServeArgs(['--host=0.0.0.0'])).toThrow(/non-loopback/);
   });
 
+  it('enables startup prewarm from --warm or KB_DAEMON_PREWARM=on', () => {
+    delete process.env.KB_DAEMON_PREWARM;
+    expect(parseServeArgs(['--warm']).warm).toBe(true);
+    expect(parseServeArgs([]).warm).toBe(false);
+    process.env.KB_DAEMON_PREWARM = 'on';
+    expect(parseServeArgs([]).warm).toBe(true);
+  });
+
   it('advertises autostart ownership from the hidden owner flag', async () => {
     const parsed = parseServeArgs(['--port=0', '--idle-timeout-ms=0', '--owner=autostart']);
     const daemon = await startDaemonServer(parsed);
@@ -217,6 +279,56 @@ describe('kb serve daemon', () => {
         status: 'ok',
         ownership: 'autostart',
       });
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('surfaces successful startup prewarm in daemon health', async () => {
+    const lexicalIndex = { numFiles: () => 1 } as unknown as LexicalIndex;
+    const manager = { marker: 'manager', modelId: 'ollama__nomic' };
+    const lexicalIndexLoader = jest.fn(async () => lexicalIndex);
+    const denseIndexMetadataReader = jest.fn(async () => ({
+      path: '/faiss/index',
+      mtimeMs: 1,
+      size: 10,
+    }));
+    const resolveActiveModelImpl = jest.fn(async () => 'ollama__nomic');
+    const loadManagerForModel = jest.fn(async () => manager as never);
+    const loadWithJsonRetry = jest.fn(async () => undefined);
+    const listKnowledgeBasesImpl = jest.fn(async () => ['alpha', 'beta']);
+    const handlers = createDaemonCommandHandlers({
+      lexicalIndexLoader,
+      denseIndexMetadataReader,
+      resolveActiveModelImpl,
+      loadManagerForModel,
+      loadWithJsonRetry,
+      listKnowledgeBasesImpl,
+      knowledgeBasesRootDir: '/kb-root',
+    });
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      warm: true,
+      handlers,
+    });
+    try {
+      const health = await request(daemon.url, { path: '/health' });
+      expect(health.statusCode).toBe(200);
+      expect(JSON.parse(health.body)).toMatchObject({
+        status: 'ok',
+        prewarm: {
+          enabled: true,
+          status: 'ready',
+          model_id: 'ollama__nomic',
+          lexical_kbs: 2,
+        },
+      });
+      expect(resolveActiveModelImpl).toHaveBeenCalledTimes(1);
+      expect(loadManagerForModel).toHaveBeenCalledWith('ollama__nomic');
+      expect(loadWithJsonRetry).toHaveBeenCalledWith(manager);
+      expect(lexicalIndexLoader).toHaveBeenCalledWith('alpha', '/kb-root/alpha');
+      expect(lexicalIndexLoader).toHaveBeenCalledWith('beta', '/kb-root/beta');
     } finally {
       await daemon.stop();
     }
@@ -570,7 +682,17 @@ describe('kb serve status', () => {
   }
 
   it('reports a reachable daemon with its lifecycle details', async () => {
-    const daemon = await startDaemonServer({ port: 0, idleTimeoutMs: 0 });
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      warm: true,
+      handlers: {
+        search: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        list: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        stats: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        prewarm: async () => ({ modelId: 'ollama__nomic', lexicalKbs: 2 }),
+      },
+    });
     process.env.KB_DAEMON_URL = daemon.url.href;
     try {
       const result = await captureStatus([]);
@@ -579,6 +701,7 @@ describe('kb serve status', () => {
       expect(result.stdout).toContain(`pid:          ${process.pid}`);
       expect(result.stdout).toContain('ownership:    manual');
       expect(result.stdout).toContain('commands:     search, list, stats');
+      expect(result.stdout).toContain('prewarm:      ready (ollama__nomic, lexical_kbs=2)');
     } finally {
       await daemon.stop();
     }

@@ -1,5 +1,7 @@
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import * as path from 'node:path';
+import * as fsp from 'node:fs/promises';
 import { runList } from './cli-list.js';
 import { createRunSearchDeps, runSearch, type RunSearchDeps } from './cli-search.js';
 import { captureProcessOutput } from './cli-shared.js';
@@ -14,6 +16,7 @@ import {
   type DaemonCommand,
   type DaemonHealth,
   type DaemonOwnership,
+  type DaemonPrewarmHealth,
   type DaemonRunResult,
 } from './daemon-client.js';
 import {
@@ -28,11 +31,15 @@ import { searchStageDurationsFromTiming } from './timing-core.js';
 import type { KbStatsPayload } from './kb-stats.js';
 import { LexicalIndexCache } from './lexical-index-cache.js';
 import type { LexicalIndex } from './lexical-index.js';
+import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
+import { modelDir, resolveActiveModel, resolveFaissIndexBinaryPath } from './active-model.js';
+import { listKnowledgeBases } from './kb-fs.js';
+import { logger } from './logger.js';
 
 export const SERVE_HELP = `kb serve — resident local daemon for warm CLI reads
 
 Usage:
-  kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000]
+  kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000] [--warm]
   kb serve status [--json]
 
 Starts a localhost-only JSON HTTP daemon used by \`kb search --daemon\`.
@@ -48,6 +55,8 @@ Options:
   --host=<host>             Loopback host to bind (default: 127.0.0.1).
   --port=<port>             TCP port to bind (default: 17799; 0 for tests).
   --idle-timeout-ms=<ms>    Stop after this much idle time (default: 300000).
+  --warm                    Pre-warm the active model, FAISS index, and
+                            lexical indexes before the daemon reports ready.
   --json                    \`kb serve status\`: emit the daemon health JSON.
   --help, -h                Show this help.
 
@@ -62,6 +71,8 @@ Environment:
   KB_DAEMON_QUEUE_MAX       Max requests queued beyond the concurrency cap
                             before the daemon replies 429 + Retry-After
                             (default 128; 0 rejects immediately when full).
+  KB_DAEMON_PREWARM         Set to \`on\` to enable the same startup pre-warm
+                            as \`kb serve --warm\`.
 
 Exit codes:
   0   daemon started, or \`kb serve status\` found a reachable daemon
@@ -78,12 +89,19 @@ interface ServeArgs {
   port: number;
   idleTimeoutMs: number;
   ownership: DaemonOwnership;
+  warm: boolean;
+}
+
+export interface DaemonPrewarmResult {
+  modelId: string;
+  lexicalKbs: number;
 }
 
 export interface DaemonCommandHandlers {
   search: (args: string[]) => Promise<DaemonRunResult>;
   list: (args: string[]) => Promise<DaemonRunResult>;
   stats: (args: string[]) => Promise<DaemonRunResult>;
+  prewarm?: () => Promise<DaemonPrewarmResult>;
 }
 
 export interface StartDaemonServerOptions extends Partial<ServeArgs> {
@@ -99,9 +117,21 @@ export interface StartDaemonServerOptions extends Partial<ServeArgs> {
 
 export interface DaemonCommandHandlerOptions {
   lexicalIndexLoader?: (kbName: string, kbPath: string) => Promise<LexicalIndex>;
+  denseIndexMetadataReader?: (modelId: string) => Promise<DenseIndexMetadata>;
+  knowledgeBasesRootDir?: string;
+  listKnowledgeBasesImpl?: typeof listKnowledgeBases;
+  resolveActiveModelImpl?: typeof resolveActiveModel;
+  loadManagerForModel?: RunSearchDeps['loadManagerForModel'];
+  loadWithJsonRetry?: RunSearchDeps['loadWithJsonRetry'];
   runSearchImpl?: typeof runSearch;
   runListImpl?: typeof runList;
   runStatsImpl?: typeof runStats;
+}
+
+interface DenseIndexMetadata {
+  path: string | null;
+  mtimeMs: number;
+  size: number;
 }
 
 export interface ResidentDaemon {
@@ -116,6 +146,7 @@ const DEFAULT_SERVE_ARGS: ServeArgs = {
   port: 17799,
   idleTimeoutMs: 300_000,
   ownership: 'manual',
+  warm: false,
 };
 
 export async function runServe(rest: string[]): Promise<number> {
@@ -222,7 +253,21 @@ function formatServeStatus(health: DaemonHealth, queriedUrl: URL): string {
   if (health.commands !== undefined) {
     lines.push(`  commands:     ${health.commands.join(', ')}`);
   }
+  if (health.prewarm !== undefined) {
+    lines.push(`  prewarm:      ${formatPrewarmStatus(health.prewarm)}`);
+  }
   return `${lines.join('\n')}\n`;
+}
+
+function formatPrewarmStatus(prewarm: DaemonPrewarmHealth): string {
+  if (!prewarm.enabled || prewarm.status === 'disabled') return 'disabled';
+  if (prewarm.status === 'ready') {
+    return `ready${prewarm.model_id ? ` (${prewarm.model_id}, lexical_kbs=${prewarm.lexical_kbs ?? 0})` : ''}`;
+  }
+  if (prewarm.status === 'failed') {
+    return `failed${prewarm.error ? ` (${prewarm.error})` : ''}`;
+  }
+  return prewarm.status;
 }
 
 function formatDuration(ms: number): string {
@@ -240,9 +285,17 @@ export async function startDaemonServer(
     port: options.port ?? DEFAULT_SERVE_ARGS.port,
     idleTimeoutMs: options.idleTimeoutMs ?? DEFAULT_SERVE_ARGS.idleTimeoutMs,
     ownership: options.ownership ?? DEFAULT_SERVE_ARGS.ownership,
+    warm: options.warm ?? DEFAULT_SERVE_ARGS.warm,
   };
   assertLoopbackHost(parsed.host);
   const handlers = options.handlers ?? createDaemonCommandHandlers();
+  let prewarmHealth: DaemonPrewarmHealth = {
+    enabled: parsed.warm,
+    status: 'disabled',
+  };
+  if (parsed.warm) {
+    prewarmHealth = await runDaemonPrewarm(handlers);
+  }
   const baseMetricsHandler = options.metricsHandler ?? defaultMetricsHandler;
   const admission = new DaemonAdmissionGate(
     options.admission ?? resolveDaemonAdmissionConfig(),
@@ -269,6 +322,7 @@ export async function startDaemonServer(
     ownership: parsed.ownership,
     commands: [...DAEMON_COMMANDS],
     uptime_ms: Date.now() - startedAt,
+    prewarm: prewarmHealth,
   });
 
   const server = http.createServer((req, res) => {
@@ -326,7 +380,7 @@ export async function startDaemonServer(
 }
 
 export function parseServeArgs(rest: string[]): ServeArgs {
-  const out = { ...DEFAULT_SERVE_ARGS };
+  const out = { ...DEFAULT_SERVE_ARGS, warm: daemonPrewarmEnabledFromEnv(process.env) };
   for (const raw of rest) {
     if (raw.startsWith('--host=')) {
       out.host = raw.slice('--host='.length);
@@ -356,6 +410,10 @@ export function parseServeArgs(rest: string[]): ServeArgs {
       out.ownership = ownership;
       continue;
     }
+    if (raw === '--warm') {
+      out.warm = true;
+      continue;
+    }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     throw new Error(`unexpected argument: ${raw}`);
   }
@@ -363,10 +421,47 @@ export function parseServeArgs(rest: string[]): ServeArgs {
   return out;
 }
 
+function daemonPrewarmEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.KB_DAEMON_PREWARM?.trim().toLowerCase();
+  return raw === 'on' || raw === '1' || raw === 'true' || raw === 'yes';
+}
+
 export function createDaemonCommandHandlers(options: DaemonCommandHandlerOptions = {}): DaemonCommandHandlers {
   const cache = new LexicalIndexCache();
   const loadLexicalIndex = options.lexicalIndexLoader ?? cache.load.bind(cache);
+  const defaultSearchDeps = createRunSearchDeps();
+  type SearchManager = Awaited<ReturnType<RunSearchDeps['loadManagerForModel']>>;
+  const baseLoadManagerForModel = options.loadManagerForModel ?? defaultSearchDeps.loadManagerForModel;
+  const baseLoadWithJsonRetry = options.loadWithJsonRetry ?? defaultSearchDeps.loadWithJsonRetry;
+  const readDenseIndexMetadata = options.denseIndexMetadataReader ?? readCurrentDenseIndexMetadata;
+  const managerCache = new Map<string, Promise<SearchManager>>();
+  const loadedManagers = new WeakMap<object, DenseIndexMetadata>();
+  const loadManagerForModel: RunSearchDeps['loadManagerForModel'] = async (modelId) => {
+    const cached = managerCache.get(modelId);
+    if (cached) return cached;
+    const promise = baseLoadManagerForModel(modelId);
+    managerCache.set(modelId, promise);
+    try {
+      return await promise;
+    } catch (err) {
+      if (managerCache.get(modelId) === promise) managerCache.delete(modelId);
+      throw err;
+    }
+  };
+  const loadWithJsonRetry: RunSearchDeps['loadWithJsonRetry'] = async (manager) => {
+    const before = await readDenseIndexMetadata(manager.modelId);
+    const loaded = loadedManagers.get(manager);
+    if (loaded !== undefined && sameDenseIndexMetadata(loaded, before)) return;
+    await baseLoadWithJsonRetry(manager);
+    loadedManagers.set(manager, await readDenseIndexMetadata(manager.modelId));
+  };
+  const resolveActiveModelImpl = options.resolveActiveModelImpl ?? resolveActiveModel;
+  const listKnowledgeBasesImpl = options.listKnowledgeBasesImpl ?? listKnowledgeBases;
+  const knowledgeBasesRootDir = options.knowledgeBasesRootDir ?? KNOWLEDGE_BASES_ROOT_DIR;
   const searchDeps: RunSearchDeps = createRunSearchDeps({
+    resolveActiveModel: resolveActiveModelImpl,
+    loadManagerForModel,
+    loadWithJsonRetry,
     loadLexicalIndex,
     onSearchTiming: (record) => {
       searchLatencyMetrics.record({
@@ -395,7 +490,95 @@ export function createDaemonCommandHandlers(options: DaemonCommandHandlerOptions
     },
     list: async (args) => captureProcessOutput(() => runListImpl(args)),
     stats: async (args) => captureProcessOutput(() => runStatsImpl(args, undefined, { preferDaemon: false })),
+    prewarm: async () => {
+      const activeModelId = await resolveActiveModelImpl();
+      const manager = await loadManagerForModel(activeModelId);
+      await loadWithJsonRetry(manager);
+      const kbNames = await listKnowledgeBasesImpl(knowledgeBasesRootDir);
+      for (const kbName of kbNames) {
+        await loadLexicalIndex(kbName, path.join(knowledgeBasesRootDir, kbName));
+      }
+      return { modelId: activeModelId, lexicalKbs: kbNames.length };
+    },
   };
+}
+
+async function readCurrentDenseIndexMetadata(modelId: string): Promise<DenseIndexMetadata> {
+  const activeVersionMetadata = await readActiveVersionIndexMetadata(modelId);
+  if (activeVersionMetadata !== null) return activeVersionMetadata;
+  const indexPath = await resolveFaissIndexBinaryPath(modelId);
+  if (indexPath === null) return { path: null, mtimeMs: 0, size: 0 };
+  try {
+    const stat = await fsp.stat(indexPath);
+    return { path: indexPath, mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { path: null, mtimeMs: 0, size: 0 };
+    throw err;
+  }
+}
+
+async function readActiveVersionIndexMetadata(modelId: string): Promise<DenseIndexMetadata | null> {
+  const symlinkPath = path.join(modelDir(modelId), 'index');
+  let resolvedDir: string;
+  try {
+    const st = await fsp.lstat(symlinkPath);
+    if (!st.isSymbolicLink()) return null;
+    resolvedDir = await fsp.realpath(symlinkPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    throw err;
+  }
+
+  for (const filename of ['faiss.index', 'hnsw.index']) {
+    const indexPath = path.join(resolvedDir, filename);
+    try {
+      const stat = await fsp.stat(indexPath);
+      return { path: indexPath, mtimeMs: stat.mtimeMs, size: stat.size };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw err;
+    }
+  }
+  return null;
+}
+
+function sameDenseIndexMetadata(a: DenseIndexMetadata, b: DenseIndexMetadata): boolean {
+  return a.path === b.path && a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+
+async function runDaemonPrewarm(handlers: DaemonCommandHandlers): Promise<DaemonPrewarmHealth> {
+  if (handlers.prewarm === undefined) {
+    return {
+      enabled: true,
+      status: 'failed',
+      error: 'daemon handlers do not support prewarm',
+      updated_at: new Date().toISOString(),
+    };
+  }
+  try {
+    const result = await handlers.prewarm();
+    logger.info(
+      `kb serve: prewarmed active model ${result.modelId} and ${result.lexicalKbs} lexical indexes`,
+    );
+    return {
+      enabled: true,
+      status: 'ready',
+      model_id: result.modelId,
+      lexical_kbs: result.lexicalKbs,
+      updated_at: new Date().toISOString(),
+    };
+  } catch (err) {
+    const error = (err as Error).message;
+    logger.warn(`kb serve: startup prewarm failed; continuing with lazy loading: ${error}`);
+    return {
+      enabled: true,
+      status: 'failed',
+      error,
+      updated_at: new Date().toISOString(),
+    };
+  }
 }
 
 function requestedSearchModeFromArgs(args: readonly string[]): SearchLatencyMode {

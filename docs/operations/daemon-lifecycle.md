@@ -22,7 +22,7 @@ only when daemon-capable reads should try to start `kb serve` automatically.
 ## Start the daemon
 
 ```bash
-kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000]
+kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000] [--warm]
 ```
 
 Defaults:
@@ -30,6 +30,13 @@ Defaults:
 - `--host=127.0.0.1` (loopback only; non-loopback bind is rejected)
 - `--port=17799`
 - `--idle-timeout-ms=300000` (5 minutes; `0` disables auto-exit)
+- `--warm` pre-loads the active model, FAISS index, and lexical indexes
+  before the daemon reports ready. `KB_DAEMON_PREWARM=on` enables the same
+  behavior from the environment.
+
+Startup prewarm is best-effort: if active model or index loading fails, the
+daemon still starts, reports `"prewarm": {"status": "failed", ...}` in
+`/health`, and falls back to lazy loading on the first real request.
 
 The process logs `kb serve: listening on http://127.0.0.1:17799/` to stdout
 and stays in the foreground. SIGINT / SIGTERM stops it cleanly. Run it under
@@ -86,7 +93,13 @@ Exit codes are deliberately distinct:
     "uptime_ms": 124500,
     "idle_timeout_ms": 300000,
     "ownership": "manual",
-    "commands": ["search", "list", "stats"]
+    "commands": ["search", "list", "stats"],
+    "prewarm": {
+      "enabled": true,
+      "status": "ready",
+      "model_id": "ollama__nomic-embed-text-latest",
+      "lexical_kbs": 3
+    }
   }
 }
 

@@ -75,7 +75,7 @@ kb reindex --with-context     # rebuild the FAISS index with RFC 017 contextual 
 kb reindex status --format=json  # ledger of recent / in-flight reindex passes (#417)
 kb logs show --request-id=<id>     # read canonical request logs by id (#397)
 kb logs recent --limit=20 --format=json  # most recent canonical log entries
-kb serve                      # start the loopback CLI daemon (warm reads); --port=17799 --idle-timeout-ms=300000
+kb serve                      # start the loopback CLI daemon (warm reads); add --warm to pre-load active indexes
 kb serve status               # daemon liveness + degraded-mode diagnostics (#420)
 kb config validate            # static env-var schema validation before startup
 kb doctor                     # availability snapshot (index, embedding backend, LLM)
@@ -147,7 +147,7 @@ Note: `KB_RERANK_DEVICE` (e.g. `cuda`, `cpu`) is an external ONNX Runtime / Tran
 
 `kb logs` is the canonical reader for the structured request log emitted under `KB_LOG_FORMAT=canonical` or `both`. Use `kb logs show --request-id=<id>` to pull every line of a specific retrieval, `kb logs show --query-sha=<hash>` to follow recurring queries, and `kb logs recent --limit=<n>` for the most recent entries. `--format=json` produces one line per record for downstream tooling.
 
-`kb serve` runs the loopback CLI daemon used by clients that pass `--daemon` for warm reads. The bare `kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000]` brings it up; `kb serve status [--json]` reports reachability, pid, idle timeout, and supported commands at the configured `KB_DAEMON_URL` (defaults to `http://127.0.0.1:17799`); SIGINT or SIGTERM stops it. CLI commands fall back to direct in-process execution when the daemon is unavailable. See [`docs/operations/daemon-lifecycle.md`](docs/operations/daemon-lifecycle.md).
+`kb serve` runs the loopback CLI daemon used by clients that pass `--daemon` for warm reads. The bare `kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000] [--warm]` brings it up; `--warm` or `KB_DAEMON_PREWARM=on` pre-loads the active model, FAISS index, and lexical indexes before readiness. `kb serve status [--json]` reports reachability, pid, idle timeout, supported commands, and prewarm state at the configured `KB_DAEMON_URL` (defaults to `http://127.0.0.1:17799`); SIGINT or SIGTERM stops it. CLI commands fall back to direct in-process execution when the daemon is unavailable. See [`docs/operations/daemon-lifecycle.md`](docs/operations/daemon-lifecycle.md).
 
 `kb reindex --with-context` rebuilds the FAISS index with RFC 017 contextual prefaces (requires `KB_CONTEXTUAL_RETRIEVAL=on` and an `KB_LLM_ENDPOINT`). `kb reindex status` reads the `.reindex.run.json` ledger and reports the current or most recent run (kb scope, model, started/finished timestamps, chunks processed, cache hit rate, and any failure code). The `--kb=<name>` flag is a guard/estimator hint only — the rebuild always covers the entire single-index-per-model FAISS layout (see RFC 017 §5).
 
