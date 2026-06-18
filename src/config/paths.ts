@@ -1,5 +1,8 @@
 import * as os from 'os';
 import * as path from 'path';
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
 
 export function resolveKnowledgeBasesRootDir(raw: string | undefined): string {
   return raw || path.join(os.homedir(), 'knowledge_bases');

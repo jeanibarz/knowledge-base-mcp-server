@@ -6,6 +6,10 @@
 // load; set the env vars BEFORE the server process starts.
 // ---------------------------------------------------------------------------
 
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
+
 export const DEFAULT_RETRIEVE_KNOWLEDGE_DESCRIPTION =
   'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.';
 export const RETRIEVE_KNOWLEDGE_DESCRIPTION =

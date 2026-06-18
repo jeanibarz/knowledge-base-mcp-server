@@ -1,3 +1,7 @@
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
+
 export function isMetricsExportEnabled(
   raw: string | undefined = process.env.KB_METRICS_EXPORT,
 ): boolean {

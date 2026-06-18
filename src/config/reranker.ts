@@ -1,3 +1,7 @@
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
+
 export const DEFAULT_RERANK_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
 export const DEFAULT_RERANK_TOP_N = 40;
 export const MAX_RERANK_TOP_N = 1000;

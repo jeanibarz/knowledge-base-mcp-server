@@ -10,9 +10,15 @@ import {
   parseConfigArgs,
   runConfig,
 } from './cli-config.js';
+import { resetProjectConfigForTests } from './config/project-config.js';
 
 const ORIGINAL_ENV = { ...process.env };
-const cliPath = path.join(process.cwd(), 'build', 'cli.js');
+const ORIGINAL_CWD = process.cwd();
+const tsxLoaderPath = path.join(ORIGINAL_CWD, 'node_modules', 'tsx', 'dist', 'loader.mjs');
+
+function cliArgs(...args: string[]): string[] {
+  return ['--enable-source-maps', '--import', tsxLoaderPath, path.join(ORIGINAL_CWD, 'src', 'cli.ts'), ...args];
+}
 
 let stdout = '';
 let stderr = '';
@@ -20,6 +26,7 @@ let tempDir = '';
 
 beforeEach(async () => {
   process.env = { ...ORIGINAL_ENV };
+  resetProjectConfigForTests();
   stdout = '';
   stderr = '';
   tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-config-validate-'));
@@ -35,7 +42,9 @@ beforeEach(async () => {
 
 afterEach(async () => {
   jest.restoreAllMocks();
+  process.chdir(ORIGINAL_CWD);
   process.env = { ...ORIGINAL_ENV };
+  resetProjectConfigForTests();
   await fsp.rm(tempDir, { recursive: true, force: true });
 });
 
@@ -87,7 +96,7 @@ describe('kb config validate (FR-OBS-470)', () => {
   });
 
   it('is reachable through the top-level kb dispatcher', async () => {
-    const help = spawnSync('node', [cliPath, 'config', '--help'], {
+    const help = spawnSync('node', cliArgs('config', '--help'), {
       env: { PATH: ORIGINAL_ENV.PATH ?? '', KB_LOG_FORMAT: 'text' },
       encoding: 'utf-8',
     });
@@ -95,7 +104,7 @@ describe('kb config validate (FR-OBS-470)', () => {
     expect(help.stdout).toContain('kb config validate');
     expect(help.stdout).toContain('kb config show');
 
-    const result = spawnSync('node', [cliPath, 'config', 'validate', '--format=json'], {
+    const result = spawnSync('node', cliArgs('config', 'validate', '--format=json'), {
       env: { PATH: ORIGINAL_ENV.PATH ?? '', KB_LOG_FORMAT: 'text', KB_RERANK: 'maybe' },
       encoding: 'utf-8',
     });
@@ -108,6 +117,35 @@ describe('kb config validate (FR-OBS-470)', () => {
     expect(parsed.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'KB_RERANK', status: 'error' }),
     ]));
+  });
+
+  it('does not let malformed project config break help or explicit dotenv validation', async () => {
+    await fsp.writeFile(path.join(tempDir, 'kb.config.yaml'), 'KB_RERANK: []\n');
+    const dotenv = path.join(tempDir, 'good.env');
+    await fsp.writeFile(dotenv, [
+      'EMBEDDING_PROVIDER=fake',
+      'KB_RERANK=off',
+    ].join('\n'));
+
+    const help = spawnSync('node', cliArgs('config', '--help'), {
+      cwd: tempDir,
+      env: { PATH: ORIGINAL_ENV.PATH ?? '', KB_LOG_FORMAT: 'text' },
+      encoding: 'utf-8',
+    });
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain('kb config validate');
+
+    const validate = spawnSync('node', cliArgs('config', 'validate', `--file=${dotenv}`, '--format=json'), {
+      cwd: tempDir,
+      env: { PATH: ORIGINAL_ENV.PATH ?? '', KB_LOG_FORMAT: 'text' },
+      encoding: 'utf-8',
+    });
+    expect(validate.status).toBe(0);
+    expect(JSON.parse(validate.stdout)).toMatchObject({
+      schema_version: 'kb.config-validate.v1',
+      status: 'ok',
+      source: dotenv,
+    });
   });
 
   it('renders markdown with per-variable verdicts', () => {
@@ -202,8 +240,82 @@ describe('kb config show (#545)', () => {
     expect(stderr).toBe('');
   });
 
+  it('layers project config files under explicit env and reports file provenance', async () => {
+    await fsp.writeFile(path.join(tempDir, 'kb.config.yaml'), [
+      'KNOWLEDGE_BASES_ROOT_DIR: /tmp/file-kbs',
+      'KB_RELEVANCE_GATE: on',
+      'KB_RERANK_TOP_N: 7',
+    ].join('\n'));
+    process.chdir(tempDir);
+    process.env = {
+      PATH: ORIGINAL_ENV.PATH ?? '',
+      KB_RERANK_TOP_N: '9',
+    };
+    resetProjectConfigForTests();
+
+    await expect(runConfig(['show', '--format=json', '--non-default-only'])).resolves.toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.config_file).toBe(path.join(tempDir, 'kb.config.yaml'));
+    expect(parsed.entries).toEqual(expect.arrayContaining([
+      {
+        name: 'KNOWLEDGE_BASES_ROOT_DIR',
+        kind: 'path',
+        value: '/tmp/file-kbs',
+        source: 'file',
+        redacted: false,
+      },
+      {
+        name: 'KB_RELEVANCE_GATE',
+        kind: 'boolean',
+        value: 'on',
+        source: 'file',
+        redacted: false,
+      },
+      {
+        name: 'KB_RERANK_TOP_N',
+        kind: 'integer',
+        value: '9',
+        source: 'env',
+        redacted: false,
+      },
+    ]));
+  });
+
+  it('validates the effective runtime config after project config layering', async () => {
+    await fsp.writeFile(path.join(tempDir, '.kbrc.json'), JSON.stringify({
+      KB_RERANK: 'on',
+      KB_RERANK_TOP_N: 2000,
+    }));
+    process.chdir(tempDir);
+    process.env = { PATH: ORIGINAL_ENV.PATH ?? '' };
+    resetProjectConfigForTests();
+
+    await expect(runConfig(['validate', '--format=json'])).resolves.toBe(1);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.source).toContain(path.join(tempDir, '.kbrc.json'));
+    expect(parsed.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'KB_RERANK_TOP_N',
+        status: 'error',
+        message: expect.stringContaining('<= 1000'),
+      }),
+    ]));
+  });
+
+  it('reports malformed project config with the offending key for runtime show', async () => {
+    await fsp.writeFile(path.join(tempDir, 'kb.config.yaml'), 'KB_RELEVANCE_GATE: []\n');
+    process.chdir(tempDir);
+    process.env = { PATH: ORIGINAL_ENV.PATH ?? '' };
+    resetProjectConfigForTests();
+
+    await expect(runConfig(['show', '--format=json'])).resolves.toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr).toContain(`invalid project config ${path.join(tempDir, 'kb.config.yaml')} (KB_RELEVANCE_GATE)`);
+    expect(stderr).toContain('expected a string, number, or boolean value');
+  });
+
   it('is reachable through the top-level kb dispatcher', () => {
-    const result = spawnSync('node', [cliPath, 'config', 'show', '--format=json', '--non-default-only'], {
+    const result = spawnSync('node', cliArgs('config', 'show', '--format=json', '--non-default-only'), {
       env: { PATH: ORIGINAL_ENV.PATH ?? '', KB_LOG_FORMAT: 'text', KB_RELEVANCE_GATE: 'on' },
       encoding: 'utf-8',
     });
@@ -220,6 +332,35 @@ describe('kb config show (#545)', () => {
         value: 'on',
         source: 'env',
         redacted: false,
+      }),
+    ]));
+  });
+
+  it('loads project config through the top-level kb dispatcher', async () => {
+    await fsp.writeFile(path.join(tempDir, '.kbrc.json'), JSON.stringify({
+      KNOWLEDGE_BASES_ROOT_DIR: '/tmp/subprocess-kbs',
+      KB_RELEVANCE_GATE: 'on',
+    }));
+
+    const result = spawnSync('node', cliArgs('config', 'show', '--format=json', '--non-default-only'), {
+      cwd: tempDir,
+      env: { PATH: ORIGINAL_ENV.PATH ?? '', KB_LOG_FORMAT: 'text' },
+      encoding: 'utf-8',
+    });
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.config_file).toBe(path.join(tempDir, '.kbrc.json'));
+    expect(parsed.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'KNOWLEDGE_BASES_ROOT_DIR',
+        value: '/tmp/subprocess-kbs',
+        source: 'file',
+      }),
+      expect.objectContaining({
+        name: 'KB_RELEVANCE_GATE',
+        value: 'on',
+        source: 'file',
       }),
     ]));
   });

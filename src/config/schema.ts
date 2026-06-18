@@ -64,7 +64,7 @@ export interface ConfigValidateReport {
   findings: ConfigFinding[];
 }
 
-export type ConfigValueSource = 'env' | 'default';
+export type ConfigValueSource = 'env' | 'file' | 'default';
 
 export interface ConfigShowEntry {
   name: string;
@@ -76,6 +76,7 @@ export interface ConfigShowEntry {
 
 export interface ConfigShowReport {
   schema_version: 'kb.config-show.v1';
+  config_file?: string | null;
   entries: ConfigShowEntry[];
 }
 
@@ -301,14 +302,19 @@ export function validateConfigEnv(
 
 export function showConfigEnv(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
-  options: { nonDefaultOnly?: boolean } = {},
+  options: {
+    nonDefaultOnly?: boolean;
+    configFile?: string | null;
+    sources?: Record<string, ConfigValueSource | undefined>;
+  } = {},
 ): ConfigShowReport {
   const entries = CONFIG_SCHEMA
-    .map((spec) => showSpec(spec, env))
+    .map((spec) => showSpec(spec, env, options.sources))
     .filter((entry) => !options.nonDefaultOnly || entry.source !== 'default');
 
   return {
     schema_version: 'kb.config-show.v1',
+    ...(options.configFile !== undefined ? { config_file: options.configFile } : {}),
     entries,
   };
 }
@@ -400,6 +406,7 @@ function validateSpec(
 function showSpec(
   spec: ConfigSpec,
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  sources?: Record<string, ConfigValueSource | undefined>,
 ): ConfigShowEntry {
   const value = effectiveValue(env, spec.name);
   const redacted = isSecretSpec(spec) && value !== null && value !== '';
@@ -407,7 +414,7 @@ function showSpec(
     name: spec.name,
     kind: spec.kind,
     value: redacted ? '<redacted>' : value,
-    source: sourceForSpec(spec, env),
+    source: sourceForSpec(spec, env, sources),
     redacted,
   };
 }
@@ -593,11 +600,12 @@ function effectiveStringValue(
 function sourceForSpec(
   spec: ConfigSpec,
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  sources?: Record<string, ConfigValueSource | undefined>,
 ): ConfigValueSource {
   const value = normalizeSpecValue(spec, normalizeRaw(env[spec.name]));
   if (value === undefined) return 'default';
   if (value === '' && usesDefaultForEmpty(spec)) return 'default';
-  return 'env';
+  return sources?.[spec.name] ?? 'env';
 }
 
 function defaultForSpec(
