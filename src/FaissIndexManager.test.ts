@@ -580,6 +580,8 @@ describe('FaissIndexManager permission handling', () => {
     process.env.HUGGINGFACE_API_KEY = 'test-key';
 
     jest.resetModules();
+    const loggerModule = await import('./logger.js');
+    const loggerInfoSpy = jest.spyOn(loggerModule.logger, 'info');
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
     const manager = new FaissIndexManager();
     await manager.initialize();
@@ -591,27 +593,42 @@ describe('FaissIndexManager permission handling', () => {
     const initialAdds = addDocumentsMock.mock.calls.length;
     fromTextsMock.mockClear();
     addDocumentsMock.mockClear();
+    loggerInfoSpy.mockClear();
 
     // Action: caller scopes a forced reindex to "alpha". The bug we are
     // fixing: this would keep the existing store and only re-embed alpha,
     // appending duplicates while leaving any orphaned vectors alive. The
     // fix nulls the in-memory store and walks ALL KBs.
-    await manager.updateIndex('alpha', { force: true });
+    try {
+      await manager.updateIndex('alpha', { force: true });
 
-    // After fix: the in-memory store was nulled, so the rebuild starts
-    // with fromTexts() again, and BOTH KBs' files are re-ingested.
-    expect(fromTextsMock).toHaveBeenCalledTimes(1);
-    // Both alpha (1 file) and beta (1 file) re-embedded. With the default
-    // batch size they fit in the fromTexts seed batch, so addDocuments has
-    // the same call count as the initial build.
-    const rebuildAdds = addDocumentsMock.mock.calls.length;
-    expect(rebuildAdds).toBe(initialAdds);
-    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
-      status: 'success',
-      scope: 'global',
-      files_scanned: 2,
-      files_changed: 2,
-    });
+      // After fix: the in-memory store was nulled, so the rebuild starts
+      // with fromTexts() again, and BOTH KBs' files are re-ingested.
+      expect(fromTextsMock).toHaveBeenCalledTimes(1);
+      // Both alpha (1 file) and beta (1 file) re-embedded. With the default
+      // batch size they fit in the fromTexts seed batch, so addDocuments has
+      // the same call count as the initial build.
+      const rebuildAdds = addDocumentsMock.mock.calls.length;
+      expect(rebuildAdds).toBe(initialAdds);
+      expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+        status: 'success',
+        scope: 'global',
+        files_scanned: 2,
+        files_changed: 2,
+      });
+      const forceLogMessages = loggerInfoSpy.mock.calls.map((call) => String(call[0]));
+      expect(forceLogMessages).toContainEqual(
+        expect.stringContaining('Force rebuild: re-embedding all chunks from'),
+      );
+      expect(forceLogMessages).toContainEqual(
+        expect.stringContaining('existing index will be replaced'),
+      );
+      expect(forceLogMessages).not.toContainEqual(
+        expect.stringContaining('FAISS index is empty'),
+      );
+    } finally {
+      loggerInfoSpy.mockRestore();
+    }
 
     // The KB hash sidecars must reflect the rebuild — both files have
     // up-to-date sidecars now.
