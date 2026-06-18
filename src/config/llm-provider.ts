@@ -1,3 +1,7 @@
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
+
 // LLM provider resolution — local (default) vs OpenRouter (OpenAI-compatible).
 //
 // This mirrors the provider-neutral switch used by the sibling repos

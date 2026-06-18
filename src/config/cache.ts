@@ -1,3 +1,7 @@
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
+
 // ---------------------------------------------------------------------------
 // Query embedding cache configuration (#214).
 // ---------------------------------------------------------------------------

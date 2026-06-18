@@ -1,4 +1,7 @@
 import { EMBEDDING_PROVIDER } from './provider.js';
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
 
 // ---------------------------------------------------------------------------
 // Indexing batch configuration (RFC 007 section6.2 / issue #236).

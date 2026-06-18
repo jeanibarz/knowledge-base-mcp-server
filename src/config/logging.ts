@@ -1,3 +1,7 @@
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
+
 // ---------------------------------------------------------------------------
 // Canonical log line configuration (#216).
 // ---------------------------------------------------------------------------

@@ -8,6 +8,10 @@ import {
   type ConfigShowReport,
   type ConfigValidateReport,
 } from './config/schema.js';
+import {
+  getProjectConfig,
+  projectConfigAppliedSources,
+} from './config/project-config.js';
 
 export const CONFIG_HELP = `kb config — inspect and validate KB configuration
 
@@ -15,17 +19,18 @@ Usage:
   kb config validate [--file=.env] [--format=md|json]
   kb config show [--format=md|json] [--non-default-only]
 
-Validates known environment variables against the static KB config schema:
+Validates known runtime configuration against the static KB config schema:
 type, enum membership, numeric ranges, URL syntax, and cross-variable
-dependencies. The command is read-only and does not probe live endpoints.
+dependencies. Without --file, project config files are layered under
+process.env. The command is read-only and does not probe live endpoints.
 
 Shows the effective value and source for every known configuration variable.
 Secrets such as API keys and MCP_AUTH_TOKEN are redacted.
 
 Options:
-  --file=<path>             Parse this dotenv file instead of process.env.
+  --file=<path>             Parse this dotenv file instead of runtime config.
   --format=md|json          Output format (default: md).
-  --non-default-only        For show, print only values supplied by env.
+  --non-default-only        For show, print only env/file-supplied values.
   --help, -h                Show this help.
 
 Exit codes:
@@ -51,7 +56,18 @@ export async function runConfig(rest: string[]): Promise<number> {
   }
 
   if (parsed.action === 'show') {
-    const report = showConfigEnv(process.env, { nonDefaultOnly: parsed.nonDefaultOnly });
+    let projectConfig: ReturnType<typeof getProjectConfig>;
+    try {
+      projectConfig = getProjectConfig();
+    } catch (err) {
+      process.stderr.write(`kb config show: ${(err as Error).message}\n`);
+      return 2;
+    }
+    const report = showConfigEnv(process.env, {
+      nonDefaultOnly: parsed.nonDefaultOnly,
+      configFile: projectConfig.path,
+      sources: projectConfigAppliedSources(projectConfig),
+    });
     if (parsed.format === 'json') {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     } else {
@@ -75,6 +91,15 @@ export async function runConfig(rest: string[]): Promise<number> {
     const parsedEnv = parseDotEnvText(raw, source);
     env = parsedEnv.env;
     parseErrors = parsedEnv.errors;
+  } else {
+    let projectConfig: ReturnType<typeof getProjectConfig>;
+    try {
+      projectConfig = getProjectConfig();
+    } catch (err) {
+      process.stderr.write(`kb config validate: ${(err as Error).message}\n`);
+      return 2;
+    }
+    source = projectConfig.path === null ? 'process.env' : `process.env + ${projectConfig.path}`;
   }
 
   const report = validateConfigEnv(env, { source });
@@ -160,6 +185,7 @@ export function formatConfigShowMarkdown(report: ConfigShowReport): string {
   const lines = [
     '# kb config show',
     '',
+    ...(report.config_file === undefined ? [] : [`config_file: ${report.config_file ?? '(none)'}`, '']),
     '| Variable | Source | Kind | Value |',
     '| --- | --- | --- | --- |',
   ];

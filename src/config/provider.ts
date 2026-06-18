@@ -1,5 +1,9 @@
 // Embedding provider configuration.
 //
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
+
 // Issue #204 - `fake` is a deterministic, offline embedding provider used by
 // CI and local development. It produces hash-bag, L2-normalized vectors with
 // no network, no API key, and no Ollama daemon. Whitelisted here so callers

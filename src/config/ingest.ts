@@ -1,3 +1,7 @@
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
+
 function parseCommaSeparatedList(raw: string | undefined): string[] {
   if (raw === undefined || raw.trim() === '') return [];
   return raw

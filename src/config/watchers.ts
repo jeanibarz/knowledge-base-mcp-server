@@ -1,5 +1,8 @@
 import * as path from 'path';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './paths.js';
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
 
 // ---------------------------------------------------------------------------
 // Reindex-trigger watcher (RFC 011 section5.5).

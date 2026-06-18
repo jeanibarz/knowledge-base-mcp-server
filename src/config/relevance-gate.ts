@@ -1,4 +1,7 @@
 import { FAKE_LLM_ENDPOINT, isFakeLlmEnabled } from '../llm-fake-stub.js';
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
 
 export interface RelevanceGateConfig {
   enabled: boolean;

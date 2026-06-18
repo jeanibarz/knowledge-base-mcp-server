@@ -1,3 +1,7 @@
+import { initializeProjectConfig } from './project-config.js';
+
+initializeProjectConfig();
+
 /**
  * When false (default), `frontmatter.extras` is stripped from every
  * `retrieve_knowledge` response before JSON serialization. Extras hold
