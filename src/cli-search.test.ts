@@ -139,6 +139,66 @@ describe('parseSearchArgs output format', () => {
     expect(parseSearchArgs(['query', '--no-highlight'])).toMatchObject({ highlight: 'never' });
     expect(() => parseSearchArgs(['query', '--highlight=sometimes'])).toThrow(/invalid --highlight/);
   });
+
+  it('accepts search snippet controls', () => {
+    const previous = process.env.KB_SEARCH_SNIPPET;
+    delete process.env.KB_SEARCH_SNIPPET;
+    try {
+      expect(parseSearchArgs(['query']).snippetLines).toBeUndefined();
+      expect(parseSearchArgs(['query', '--snippet'])).toMatchObject({ snippetLines: 5 });
+      expect(parseSearchArgs(['query', '--snippet=3'])).toMatchObject({ snippetLines: 3 });
+      expect(parseSearchArgs(['query', '--snippet=3', '--full']).snippetLines).toBeUndefined();
+      expect(() => parseSearchArgs(['query', '--snippet=0'])).toThrow(/invalid --snippet/);
+    } finally {
+      if (previous === undefined) delete process.env.KB_SEARCH_SNIPPET;
+      else process.env.KB_SEARCH_SNIPPET = previous;
+    }
+  });
+
+  it('uses KB_SEARCH_SNIPPET as an opt-in default with --full as an escape hatch', () => {
+    const previous = process.env.KB_SEARCH_SNIPPET;
+    process.env.KB_SEARCH_SNIPPET = '2';
+    try {
+      expect(parseSearchArgs(['query'])).toMatchObject({ snippetLines: 2 });
+      expect(parseSearchArgs(['query', '--full']).snippetLines).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.KB_SEARCH_SNIPPET;
+      else process.env.KB_SEARCH_SNIPPET = previous;
+    }
+  });
+
+  it.each([
+    ['true', 5],
+    ['on', 5],
+    ['yes', 5],
+    ['false', undefined],
+    ['off', undefined],
+    ['no', undefined],
+    ['0', undefined],
+    ['', undefined],
+  ])('parses KB_SEARCH_SNIPPET=%p', (value, expected) => {
+    const previous = process.env.KB_SEARCH_SNIPPET;
+    process.env.KB_SEARCH_SNIPPET = value;
+    try {
+      expect(parseSearchArgs(['query']).snippetLines).toBe(expected);
+    } finally {
+      if (previous === undefined) delete process.env.KB_SEARCH_SNIPPET;
+      else process.env.KB_SEARCH_SNIPPET = previous;
+    }
+  });
+
+  it('lets explicit snippet flags override an invalid KB_SEARCH_SNIPPET', () => {
+    const previous = process.env.KB_SEARCH_SNIPPET;
+    process.env.KB_SEARCH_SNIPPET = 'bogus';
+    try {
+      expect(parseSearchArgs(['query', '--full']).snippetLines).toBeUndefined();
+      expect(parseSearchArgs(['query', '--snippet=2'])).toMatchObject({ snippetLines: 2 });
+      expect(() => parseSearchArgs(['query'])).toThrow(/invalid KB_SEARCH_SNIPPET/);
+    } finally {
+      if (previous === undefined) delete process.env.KB_SEARCH_SNIPPET;
+      else process.env.KB_SEARCH_SNIPPET = previous;
+    }
+  });
 });
 
 describe('parseSearchArgs freshness', () => {
@@ -448,7 +508,7 @@ describe('runSearch timing guard (#331)', () => {
         };
         return [
           {
-            pageContent: 'first result',
+            pageContent: 'intro\nrollback detail\nappendix',
             metadata: { source: '/kb/ops/first.md', chunkIndex: 0 },
             score: 0.11,
           },
@@ -467,7 +527,7 @@ describe('runSearch timing guard (#331)', () => {
       '',
     ].join('\n');
 
-    const out = await captureSearchOutput(['--batch-jsonl', '--timing', '--no-freshness'], deps, stdin);
+    const out = await captureSearchOutput(['--batch-jsonl', '--snippet=1', '--timing', '--no-freshness'], deps, stdin);
 
     expect(out.code).toBe(0);
     expect(out.stderr).toBe('');
@@ -520,7 +580,10 @@ describe('runSearch timing guard (#331)', () => {
           query_cache_model_id: 'ollama__nomic-embed-text-latest',
           query_cache_elapsed_ms: 3,
         },
-        results: [{ content: 'first result' }],
+        results: [{
+          content: 'intro\nrollback detail\nappendix',
+          snippet: '…\nrollback detail\n…',
+        }],
       },
     });
     expect(envelopes[1]).toMatchObject({
@@ -765,6 +828,65 @@ describe('runSearch timing guard (#331)', () => {
     expect(out.code).toBe(0);
     expect(out.stdout).not.toContain('\x1b[');
     expect(JSON.parse(out.stdout).results[0].content).toBe('Rollback plan');
+  });
+
+  it('renders a focused markdown snippet when requested', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([{
+      pageContent: 'intro\nsetup\nRollback plan\nverify\nappendix',
+      metadata: { source: '/kb/ops/rollback.md', chunkIndex: 0 },
+      score: 0.12,
+    }] as never);
+
+    const out = await captureSearchOutput(['rollback', '--snippet=1', '--no-freshness'], deps);
+
+    expect(out.code).toBe(0);
+    expect(out.stdout).toContain('…\nRollback plan\n…');
+    expect(out.stdout).not.toContain('intro');
+    expect(out.stdout).not.toContain('appendix');
+  });
+
+  it('adds snippets to JSON output without replacing content', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([{
+      pageContent: 'intro\nsetup\nRollback plan\nverify\nappendix',
+      metadata: { source: '/kb/ops/rollback.md', chunkIndex: 0 },
+      score: 0.12,
+    }] as never);
+
+    const out = await captureSearchOutput([
+      'rollback',
+      '--snippet=1',
+      '--format=json',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    const result = JSON.parse(out.stdout).results[0];
+    expect(result.content).toBe('intro\nsetup\nRollback plan\nverify\nappendix');
+    expect(result.snippet).toBe('…\nRollback plan\n…');
+  });
+
+  it('lets --full disable KB_SEARCH_SNIPPET for output', async () => {
+    const previous = process.env.KB_SEARCH_SNIPPET;
+    process.env.KB_SEARCH_SNIPPET = '1';
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch.mockResolvedValueOnce([{
+      pageContent: 'intro\nRollback plan\nappendix',
+      metadata: { source: '/kb/ops/rollback.md', chunkIndex: 0 },
+      score: 0.12,
+    }] as never);
+
+    try {
+      const out = await captureSearchOutput(['rollback', '--full', '--no-freshness'], deps);
+
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain('intro\nRollback plan\nappendix');
+      expect(out.stdout).not.toContain('…');
+    } finally {
+      if (previous === undefined) delete process.env.KB_SEARCH_SNIPPET;
+      else process.env.KB_SEARCH_SNIPPET = previous;
+    }
   });
 
   it('exposes query-cache telemetry in dense JSON, timing, and canonical metadata', async () => {

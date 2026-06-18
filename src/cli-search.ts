@@ -35,6 +35,7 @@ import {
   formatRetrievalGroupedBySourceAsMarkdown,
   groupRetrievalBySource,
   type RetrievalHighlightOptions,
+  type RetrievalSnippetOptions,
   type ScoredDocument,
 } from './formatter.js';
 import { runPicker } from './cli-search-picker.js';
@@ -270,6 +271,10 @@ Output:
                         emphasis. auto uses ANSI only on a TTY (default);
                         always also works through pipes; never disables it.
   --no-highlight        Alias for --highlight=never.
+  --snippet[=N]         Markdown/JSON: show an N-line focused excerpt centered
+                        on the densest query-term match. Default N is 5.
+                        Also set via KB_SEARCH_SNIPPET=true|N.
+  --full                Disable snippet mode and render full result bodies.
   --color=auto|always|never
                         Unified control for all ANSI color/emphasis output.
                         auto colorizes only on a TTY with NO_COLOR unset
@@ -316,6 +321,7 @@ Examples:
 
 export type SearchFormat = 'md' | 'json' | 'vimgrep' | 'compact';
 export type SearchHighlightMode = 'auto' | 'always' | 'never';
+const DEFAULT_SEARCH_SNIPPET_LINES = 5;
 
 let lastSearchCanonicalTelemetry: Partial<CanonicalLogInput> | null = null;
 
@@ -349,6 +355,7 @@ interface SearchArgs {
   noCache: boolean;
   freshness: boolean;
   highlight: SearchHighlightMode;
+  snippetLines?: number;
   color: ColorMode;
   colorExplicit: boolean;
   explainEmpty: boolean;
@@ -751,6 +758,7 @@ export async function runSearch(
       advancedRetrieval,
       queryCache: denseTiming.query_cache_telemetry,
       retrievalViews: parsed.retrievalViews,
+      snippet: buildSearchSnippetOptions(parsed, query),
     });
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
@@ -783,6 +791,7 @@ export async function runSearch(
       explain: parsed.explain,
       advancedRetrieval,
       highlight: buildSearchHighlightOptions(parsed, query),
+      snippet: buildSearchSnippetOptions(parsed, query),
     }));
   }
 
@@ -934,6 +943,7 @@ async function runAdvancedDenseSearch(input: {
 }
 
 export function parseSearchArgs(rest: string[]): SearchArgs {
+  let snippetExplicit = false;
   const out: SearchArgs = {
     query: null,
     k: 10,
@@ -973,6 +983,16 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     if (raw === '--no-cache') { out.noCache = true; continue; }
     if (raw === '--highlight') { out.highlight = 'always'; continue; }
     if (raw === '--no-highlight') { out.highlight = 'never'; continue; }
+    if (raw === '--snippet') {
+      snippetExplicit = true;
+      out.snippetLines = DEFAULT_SEARCH_SNIPPET_LINES;
+      continue;
+    }
+    if (raw === '--full') {
+      snippetExplicit = true;
+      out.snippetLines = undefined;
+      continue;
+    }
     if (raw === '--gate') { out.gateOverride = 'on'; continue; }
     if (raw === '--no-gate') { out.gateOverride = 'off'; continue; }
     if (raw === '--rerank') { out.rerankOverride = 'on'; continue; }
@@ -1095,6 +1115,11 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
       }
       out.highlight = v; continue;
     }
+    if (raw.startsWith('--snippet=')) {
+      snippetExplicit = true;
+      out.snippetLines = parseSearchSnippetCount(raw.slice('--snippet='.length), '--snippet');
+      continue;
+    }
     if (raw.startsWith('--color=')) {
       out.color = parseColorMode(raw.slice('--color='.length));
       out.colorExplicit = true;
@@ -1111,6 +1136,9 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
   }
   if (hasRecencyFilter(out)) {
     parseRecencyFilterRange({ since: out.since, until: out.until });
+  }
+  if (!snippetExplicit) {
+    out.snippetLines = parseSearchSnippetEnv(process.env.KB_SEARCH_SNIPPET);
   }
   return out;
 }
@@ -1141,6 +1169,28 @@ function parsePositiveFlag(raw: string, prefix: string): number {
   return n;
 }
 
+function parseSearchSnippetEnv(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = raw.trim();
+  if (value === '') return undefined;
+  const normalized = value.toLocaleLowerCase();
+  if (normalized === 'false' || normalized === 'off' || normalized === 'no' || normalized === '0') {
+    return undefined;
+  }
+  if (normalized === 'true' || normalized === 'on' || normalized === 'yes') {
+    return DEFAULT_SEARCH_SNIPPET_LINES;
+  }
+  return parseSearchSnippetCount(value, 'KB_SEARCH_SNIPPET');
+}
+
+function parseSearchSnippetCount(value: string, source: string): number {
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n <= 0) {
+    throw new Error(`invalid ${source}: ${value} (expected positive integer)`);
+  }
+  return n;
+}
+
 function buildSearchHighlightOptions(
   parsed: SearchArgs,
   query: string,
@@ -1150,6 +1200,15 @@ function buildSearchHighlightOptions(
   }
   const terms = extractSearchHighlightTerms(query);
   return terms.length === 0 ? undefined : { terms };
+}
+
+function buildSearchSnippetOptions(
+  parsed: Pick<SearchArgs, 'snippetLines'>,
+  query: string,
+): RetrievalSnippetOptions | undefined {
+  return parsed.snippetLines === undefined
+    ? undefined
+    : { lines: parsed.snippetLines, terms: extractSearchHighlightTerms(query) };
 }
 
 export function shouldHighlightSearchOutput(
@@ -1456,11 +1515,17 @@ export interface DenseSearchJsonPayloadInput {
   advancedRetrieval?: AdvancedRetrievalMetadata | null;
   queryCache?: QueryCacheTelemetry;
   retrievalViews?: RetrievalViewKind[];
+  snippet?: RetrievalSnippetOptions;
 }
 
 export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {
-    results: formatRetrievalAsJson(input.results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI),
+    results: formatRetrievalAsJson(
+      input.results,
+      FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+      KB_EDITOR_URI,
+      input.snippet,
+    ),
   };
   if (input.requestedMode === 'auto') {
     payload.mode = input.effectiveMode;
@@ -1472,6 +1537,7 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
       input.results,
       FRONTMATTER_EXTRAS_WIRE_VISIBLE,
       KB_EDITOR_URI,
+      input.snippet,
     );
   }
   Object.assign(payload, buildFreshnessJsonFields(input));
@@ -1598,6 +1664,7 @@ export interface DenseSearchMarkdownOutputInput {
   explain?: boolean;
   advancedRetrieval?: AdvancedRetrievalMetadata | null;
   highlight?: RetrievalHighlightOptions;
+  snippet?: RetrievalSnippetOptions;
 }
 
 export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutputInput): string {
@@ -1625,6 +1692,7 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
       FRONTMATTER_EXTRAS_WIRE_VISIBLE,
       KB_EDITOR_URI,
       input.highlight,
+      input.snippet,
     );
   } else {
     md = formatRetrievalAsMarkdown(
@@ -1632,6 +1700,7 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
       FRONTMATTER_EXTRAS_WIRE_VISIBLE,
       KB_EDITOR_URI,
       input.highlight,
+      input.snippet,
     );
   }
   output += `${md}\n\n`;
@@ -2037,6 +2106,7 @@ async function runBatchJsonlSearch(
           explainEmptyDiagnostics,
           gateVerdict: gate.verdict,
           queryCache: denseTiming.query_cache_telemetry,
+          snippet: buildSearchSnippetOptions(row, query),
         }),
       });
     } catch (err) {
@@ -2494,7 +2564,12 @@ async function runLexicalSearch(
       ...(autoModeDecision
         ? { requested_mode: 'auto' as const, auto_mode: autoModeDecision }
         : {}),
-      results: formatRetrievalAsJson(formatted as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI),
+      results: formatRetrievalAsJson(
+        formatted as never,
+        FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+        KB_EDITOR_URI,
+        buildSearchSnippetOptions(parsed, query),
+      ),
       knowledge_bases: perKb.map((r) => ({
         kb: r.kbName,
         files: r.refreshSummary?.totalFiles ?? null,
@@ -2549,6 +2624,7 @@ async function runLexicalSearch(
         FRONTMATTER_EXTRAS_WIRE_VISIBLE,
         KB_EDITOR_URI,
         buildSearchHighlightOptions(parsed, query),
+        buildSearchSnippetOptions(parsed, query),
       )}\n\n`;
     }
     const summaryLines = perKb.map((r) => {
@@ -2892,7 +2968,12 @@ async function runHybridSearch(
       ...(autoModeDecision
         ? { requested_mode: 'auto' as const, auto_mode: autoModeDecision }
         : {}),
-      results: formatRetrievalAsJson(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI),
+      results: formatRetrievalAsJson(
+        ranked as never,
+        FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+        KB_EDITOR_URI,
+        buildSearchSnippetOptions(parsed, query),
+      ),
       retrievers: {
         dense: { fetched: denseResults.length, model: activeModelId },
         lexical: {
@@ -2977,6 +3058,7 @@ async function runHybridSearch(
         FRONTMATTER_EXTRAS_WIRE_VISIBLE,
         KB_EDITOR_URI,
         buildSearchHighlightOptions(parsed, query),
+        buildSearchSnippetOptions(parsed, query),
       )}\n\n`;
     }
     output += `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} with unit=${parsed.lexicalUnit} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`;

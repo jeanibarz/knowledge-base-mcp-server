@@ -8,6 +8,7 @@ import {
   formatRetrievalAsMarkdown,
   groupRetrievalBySource,
   highlightQueryTerms,
+  renderSearchSnippet,
   sanitizeMetadataForWire,
   ScoredDocument,
 } from './formatter.js';
@@ -216,6 +217,50 @@ describe('formatRetrievalAsMarkdown', () => {
     expect(out).toContain('"source": "rollback.md"');
     expect(out).not.toContain('"source": "\\u001b');
   });
+
+  it('renders a focused snippet window around the densest query-term match', () => {
+    const doc: ScoredDocument = {
+      pageContent: [
+        'intro line',
+        'setup line',
+        'rollback first mention',
+        'rollback second mention',
+        'cleanup line',
+        'appendix line',
+      ].join('\n'),
+      metadata: { source: 'rollback.md' },
+      score: 0.42,
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsMarkdown([doc], false, 'none', undefined, {
+      terms: ['rollback'],
+      lines: 2,
+    });
+
+    expect(out).toContain('…\nrollback first mention\nrollback second mention\n…');
+    expect(out).not.toContain('intro line');
+    expect(out).not.toContain('appendix line');
+  });
+
+  it('preserves highlighting inside a focused snippet window', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'before\nDeploy rollback procedure\nafter',
+      metadata: { source: 'rollback.md' },
+      score: 0.42,
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsMarkdown(
+      [doc],
+      false,
+      'none',
+      { terms: ['rollback'] },
+      { terms: ['rollback'], lines: 1 },
+    );
+
+    expect(out).toContain(`…\nDeploy \x1b[1mrollback\x1b[22m procedure\n…`);
+    expect(out).not.toContain('before');
+    expect(out).not.toContain('after');
+  });
 });
 
 describe('highlightQueryTerms', () => {
@@ -228,6 +273,18 @@ describe('highlightQueryTerms', () => {
   it('handles overlapping terms without nested ANSI escapes', () => {
     expect(highlightQueryTerms('rollback roll', ['roll', 'rollback'])).toBe(
       '\x1b[1mrollback\x1b[22m \x1b[1mroll\x1b[22m',
+    );
+  });
+});
+
+describe('renderSearchSnippet', () => {
+  it('leaves short content unchanged', () => {
+    expect(renderSearchSnippet('one\ntwo', { terms: ['missing'], lines: 5 })).toBe('one\ntwo');
+  });
+
+  it('falls back to the first window when there is no term match', () => {
+    expect(renderSearchSnippet('one\ntwo\nthree', { terms: ['missing'], lines: 2 })).toBe(
+      'one\ntwo\n…',
     );
   });
 });
@@ -545,6 +602,19 @@ describe('formatRetrievalAsJson', () => {
       chunkIndex: 3,
     });
   });
+
+  it('adds an optional snippet field while preserving full JSON content', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'alpha\nbeta\nneedle here\ngamma\ndelta',
+      metadata: { source: 'doc.md' },
+      score: 1.5,
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsJson([doc], false, 'none', { terms: ['needle'], lines: 1 });
+
+    expect(out[0].content).toBe('alpha\nbeta\nneedle here\ngamma\ndelta');
+    expect(out[0].snippet).toBe('…\nneedle here\n…');
+  });
 });
 
 describe('formatRetrievalAsVimgrep', () => {
@@ -779,5 +849,29 @@ describe('formatRetrievalGroupedBySourceAsMarkdown', () => {
     expect(out).toContain('"from":20');
     expect(out).toContain('first chunk');
     expect(out).toContain('second chunk');
+  });
+
+  it('renders focused snippets while preserving grouped source metadata', () => {
+    const docs: ScoredDocument[] = [
+      {
+        pageContent: 'intro\nsetup\nrollback detail\nverify\nappendix',
+        metadata: { source: 'kb/repeated.md', loc: { lines: { from: 1, to: 5 } } },
+        score: 0.7,
+      } as unknown as ScoredDocument,
+    ];
+
+    const out = formatRetrievalGroupedBySourceAsMarkdown(
+      docs,
+      false,
+      'none',
+      undefined,
+      { terms: ['rollback'], lines: 1 },
+    );
+
+    expect(out).toContain('**Source 1:** `kb/repeated.md`');
+    expect(out).toContain('**Location:** `{"lines":{"from":1,"to":5}}`');
+    expect(out).toContain('…\n   rollback detail\n   …');
+    expect(out).not.toContain('intro');
+    expect(out).not.toContain('appendix');
   });
 });
