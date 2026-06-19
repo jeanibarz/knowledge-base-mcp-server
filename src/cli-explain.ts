@@ -75,12 +75,16 @@ Output:
 
 Repro bundle:
   --repro-bundle=<dir>    Write a redacted repro bundle to <dir> containing
-                          \`query.txt\`, \`system.json\`, \`top-candidates.json\`,
-                          and \`freshness.json\`. Chunk *content* is NOT
-                          included unless you also pass \`--include-content\`.
+                          \`manifest.json\`, \`query.txt\`, \`system.json\`,
+                          \`top-candidates.json\`, and \`freshness.json\`.
+                          Bundle dirs are private (0700) and files are private
+                          (0600) on POSIX. Chunk *content* is NOT included
+                          unless you also pass \`--include-content\`.
   --include-content       Bundle the candidate chunk text alongside the
                           metadata. Explicit consent for KB content to leave
                           the trust boundary; default is content-redacted.
+  --force                 If <dir> already exists with unsafe group/other
+                          permissions, set its mode to 0700 before writing.
 
 Misc:
   --help, -h              Show this help.
@@ -105,11 +109,34 @@ export interface ExplainArgs {
   format: ExplainFormat;
   reproBundle: string | null;
   includeContent: boolean;
+  reproBundleForce: boolean;
 }
 
 export const EXPLAIN_DEFAULT_K = 5;
 export const EXPLAIN_DEFAULT_NEAR_MISS = 5;
 const NO_THRESHOLD = Number.POSITIVE_INFINITY;
+
+export interface RunExplainDeps {
+  bootstrapLayout: () => Promise<void>;
+  resolveActiveModel: typeof resolveActiveModel;
+  loadManagerForModel: typeof loadManagerForModel;
+  loadWithJsonRetry: typeof loadWithJsonRetry;
+  computeStaleness: typeof computeStaleness;
+  resolveFaissIndexBinaryPath: typeof resolveFaissIndexBinaryPath;
+  writeReproBundle: typeof writeReproBundle;
+  readPackageVersion: () => string;
+}
+
+const DEFAULT_RUN_EXPLAIN_DEPS: RunExplainDeps = {
+  bootstrapLayout: () => FaissIndexManager.bootstrapLayout(),
+  resolveActiveModel,
+  loadManagerForModel,
+  loadWithJsonRetry,
+  computeStaleness,
+  resolveFaissIndexBinaryPath,
+  writeReproBundle,
+  readPackageVersion,
+};
 
 export function parseExplainArgs(rest: string[]): ExplainArgs {
   const out: ExplainArgs = {
@@ -121,10 +148,12 @@ export function parseExplainArgs(rest: string[]): ExplainArgs {
     format: 'md',
     reproBundle: null,
     includeContent: false,
+    reproBundleForce: false,
   };
   let candidatesExplicit = false;
   for (const raw of rest) {
     if (raw === '--include-content') { out.includeContent = true; continue; }
+    if (raw === '--force') { out.reproBundleForce = true; continue; }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
     if (raw.startsWith('--k=')) {
@@ -172,10 +201,16 @@ export function parseExplainArgs(rest: string[]): ExplainArgs {
   if (out.includeContent && out.reproBundle === null) {
     throw new Error(`--include-content requires --repro-bundle=<dir>`);
   }
+  if (out.reproBundleForce && out.reproBundle === null) {
+    throw new Error(`--force requires --repro-bundle=<dir>`);
+  }
   return out;
 }
 
-export async function runExplain(rest: string[]): Promise<number> {
+export async function runExplain(
+  rest: string[],
+  deps: RunExplainDeps = DEFAULT_RUN_EXPLAIN_DEPS,
+): Promise<number> {
   const totalStartedAt = nowMs();
   let parsed: ExplainArgs;
   try {
@@ -199,7 +234,7 @@ export async function runExplain(rest: string[]): Promise<number> {
 
   try {
     const startedAt = nowMs();
-    await FaissIndexManager.bootstrapLayout();
+    await deps.bootstrapLayout();
     timings.bootstrap = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -208,7 +243,7 @@ export async function runExplain(rest: string[]): Promise<number> {
   let activeModelId: string;
   try {
     const startedAt = nowMs();
-    activeModelId = await resolveActiveModel({ explicitOverride: parsed.model });
+    activeModelId = await deps.resolveActiveModel({ explicitOverride: parsed.model });
     timings.model_resolution = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -217,7 +252,7 @@ export async function runExplain(rest: string[]): Promise<number> {
   let manager: FaissIndexManager;
   try {
     const startedAt = nowMs();
-    manager = await loadManagerForModel(activeModelId);
+    manager = await deps.loadManagerForModel(activeModelId);
     timings.manager_load = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -225,7 +260,7 @@ export async function runExplain(rest: string[]): Promise<number> {
 
   try {
     const startedAt = nowMs();
-    await loadWithJsonRetry(manager);
+    await deps.loadWithJsonRetry(manager);
     timings.index_load = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -252,11 +287,11 @@ export async function runExplain(rest: string[]): Promise<number> {
   }
 
   const stalenessStartedAt = nowMs();
-  const staleness = await computeStaleness(activeModelId, parsed.kb);
+  const staleness = await deps.computeStaleness(activeModelId, parsed.kb);
   timings.staleness = elapsedMs(stalenessStartedAt);
 
   const stats = manager.getStats();
-  const binaryPath = await resolveFaissIndexBinaryPath(activeModelId);
+  const binaryPath = await deps.resolveFaissIndexBinaryPath(activeModelId);
 
   const trace = buildTrace({
     parsed,
@@ -266,7 +301,7 @@ export async function runExplain(rest: string[]): Promise<number> {
     embeddingModel: manager.modelName,
     indexBinaryPath: binaryPath,
     indexMtime: staleness.indexMtime,
-    cliVersion: readPackageVersion(),
+    cliVersion: deps.readPackageVersion(),
     dim: stats.dim,
     results,
     timings,
@@ -277,7 +312,7 @@ export async function runExplain(rest: string[]): Promise<number> {
 
   if (parsed.reproBundle !== null) {
     try {
-      await writeReproBundle(parsed.reproBundle, trace, results, parsed.includeContent);
+      await deps.writeReproBundle(parsed.reproBundle, trace, results, parsed.includeContent, parsed.reproBundleForce);
     } catch (err) {
       process.stderr.write(`kb explain: failed to write repro bundle: ${(err as Error).message}\n`);
       return 1;
@@ -386,23 +421,29 @@ function numberOrNull(value: number | undefined): number | null {
  * before attaching to a bug report; the README will document the gesture.
  * Chunk content is *redacted by default*; the operator must pass
  * `--include-content` to bundle it (explicit trust-boundary opt-in).
+ * Issue #717 hardens this export path: the target directory is private
+ * (0700), files are private (0600), and `manifest.json` records the privacy
+ * posture so bug reports can be audited before sharing.
  */
-async function writeReproBundle(
+export async function writeReproBundle(
   bundlePath: string,
   trace: ExplainTrace,
   results: ReadonlyArray<{ pageContent: string; metadata: Record<string, unknown>; score: number }>,
   includeContent: boolean,
+  forceUnsafeExistingDirectory = false,
 ): Promise<void> {
-  await fsp.mkdir(bundlePath, { recursive: true });
+  const directory = await ensurePrivateBundleDirectory(bundlePath, forceUnsafeExistingDirectory);
+  const files: ReproBundleFileManifest[] = [];
 
-  await fsp.writeFile(
-    path.join(bundlePath, 'query.txt'),
+  files.push(await writePrivateUtf8File(
+    bundlePath,
+    'query.txt',
     `${trace.query.raw}\n`,
-    'utf-8',
-  );
+  ));
 
-  await fsp.writeFile(
-    path.join(bundlePath, 'system.json'),
+  files.push(await writePrivateUtf8File(
+    bundlePath,
+    'system.json',
     `${JSON.stringify({
       schema_version: trace.schema_version,
       system: trace.system,
@@ -410,8 +451,7 @@ async function writeReproBundle(
       filters: trace.filters,
       timing: trace.timing,
     }, null, 2)}\n`,
-    'utf-8',
-  );
+  ));
 
   const topCandidates = trace.retrieval.candidates.map((c, idx) => ({
     rank: c.rank,
@@ -424,8 +464,9 @@ async function writeReproBundle(
     frontmatter: extractFrontmatter(results[idx]?.metadata ?? {}),
     ...(includeContent ? { content: results[idx]?.pageContent ?? '' } : {}),
   }));
-  await fsp.writeFile(
-    path.join(bundlePath, 'top-candidates.json'),
+  files.push(await writePrivateUtf8File(
+    bundlePath,
+    'top-candidates.json',
     `${JSON.stringify(
       {
         schema_version: trace.schema_version,
@@ -438,11 +479,11 @@ async function writeReproBundle(
       null,
       2,
     )}\n`,
-    'utf-8',
-  );
+  ));
 
-  await fsp.writeFile(
-    path.join(bundlePath, 'freshness.json'),
+  files.push(await writePrivateUtf8File(
+    bundlePath,
+    'freshness.json',
     `${JSON.stringify(
       {
         schema_version: trace.schema_version,
@@ -451,8 +492,178 @@ async function writeReproBundle(
       null,
       2,
     )}\n`,
-    'utf-8',
+  ));
+
+  const pendingManifestFile: ReproBundleFileManifest = {
+    path: 'manifest.json',
+    mode: isPosixPermissionsSupported() ? '0600' : null,
+  };
+  await writePrivateUtf8File(
+    bundlePath,
+    'manifest.json',
+    `${JSON.stringify(
+      buildReproBundleManifest(trace, includeContent, directory, [...files, pendingManifestFile]),
+      null,
+      2,
+    )}\n`,
   );
+  // Rewrite after statting the manifest so the manifest records its own final mode.
+  const manifestFile = await describeBundleFile(path.join(bundlePath, 'manifest.json'), 'manifest.json');
+  await writePrivateUtf8File(
+    bundlePath,
+    'manifest.json',
+    `${JSON.stringify(
+      buildReproBundleManifest(trace, includeContent, directory, [...files, manifestFile]),
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
+const UNSAFE_DIR_MODE_MASK = 0o077;
+const REPRO_BUNDLE_FILENAMES = new Set([
+  'query.txt',
+  'system.json',
+  'top-candidates.json',
+  'freshness.json',
+  'manifest.json',
+]);
+
+interface ReproBundleDirectoryManifest {
+  path: string;
+  mode: string | null;
+  existed: boolean;
+  existing_mode: string | null;
+  existing_directory_was_unsafe: boolean;
+  unsafe_existing_directory_forced: boolean;
+}
+
+interface ReproBundleFileManifest {
+  path: string;
+  mode: string | null;
+}
+
+interface ReproBundleManifest {
+  schema_version: 'kb-explain-repro-bundle.v1';
+  trace_schema_version: string;
+  content_included: boolean;
+  permissions: {
+    posix_permissions_enforced: boolean;
+    intended_directory_mode: '0700';
+    intended_file_mode: '0600';
+    directory: ReproBundleDirectoryManifest;
+  };
+  files: ReproBundleFileManifest[];
+}
+
+async function ensurePrivateBundleDirectory(
+  bundlePath: string,
+  forceUnsafeExistingDirectory: boolean,
+): Promise<ReproBundleDirectoryManifest> {
+  const posixPermissions = isPosixPermissionsSupported();
+  let existed = false;
+  let existingMode: string | null = null;
+  let existingDirectoryWasUnsafe = false;
+
+  try {
+    const existing = await fsp.stat(bundlePath);
+    existed = true;
+    if (!existing.isDirectory()) {
+      throw new Error(`${bundlePath} exists and is not a directory`);
+    }
+    if (posixPermissions) {
+      existingMode = formatMode(existing.mode);
+      existingDirectoryWasUnsafe = (existing.mode & UNSAFE_DIR_MODE_MASK) !== 0;
+      if (existingDirectoryWasUnsafe && !forceUnsafeExistingDirectory) {
+        throw new Error(
+          `${bundlePath} exists with unsafe permissions ${existingMode}; ` +
+          `rerun with --force to chmod it to 0700 before writing`,
+        );
+      }
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    await fsp.mkdir(bundlePath, { recursive: true, mode: PRIVATE_DIR_MODE });
+  }
+
+  if (posixPermissions) {
+    await fsp.chmod(bundlePath, PRIVATE_DIR_MODE);
+  }
+  await assertBundleDirectoryHasOnlyBundleFiles(bundlePath);
+  const final = await fsp.stat(bundlePath);
+  return {
+    path: bundlePath,
+    mode: posixPermissions ? formatMode(final.mode) : null,
+    existed,
+    existing_mode: existingMode,
+    existing_directory_was_unsafe: existingDirectoryWasUnsafe,
+    unsafe_existing_directory_forced: existingDirectoryWasUnsafe && forceUnsafeExistingDirectory,
+  };
+}
+
+async function assertBundleDirectoryHasOnlyBundleFiles(bundlePath: string): Promise<void> {
+  const entries = await fsp.readdir(bundlePath, { withFileTypes: true });
+  const unsafeEntries = entries
+    .filter((entry) => !REPRO_BUNDLE_FILENAMES.has(entry.name) || !entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
+  if (unsafeEntries.length > 0) {
+    throw new Error(
+      `${bundlePath} contains non-bundle file(s): ${unsafeEntries.join(', ')}; ` +
+      `choose an empty directory or remove stale files before writing`,
+    );
+  }
+}
+
+async function writePrivateUtf8File(
+  bundlePath: string,
+  relativePath: string,
+  body: string,
+): Promise<ReproBundleFileManifest> {
+  const filePath = path.join(bundlePath, relativePath);
+  await fsp.writeFile(filePath, body, { encoding: 'utf-8', mode: PRIVATE_FILE_MODE });
+  if (isPosixPermissionsSupported()) {
+    await fsp.chmod(filePath, PRIVATE_FILE_MODE);
+  }
+  return describeBundleFile(filePath, relativePath);
+}
+
+async function describeBundleFile(filePath: string, relativePath: string): Promise<ReproBundleFileManifest> {
+  if (!isPosixPermissionsSupported()) {
+    return { path: relativePath, mode: null };
+  }
+  const stats = await fsp.stat(filePath);
+  return { path: relativePath, mode: formatMode(stats.mode) };
+}
+
+function buildReproBundleManifest(
+  trace: ExplainTrace,
+  includeContent: boolean,
+  directory: ReproBundleDirectoryManifest,
+  files: ReproBundleFileManifest[],
+): ReproBundleManifest {
+  return {
+    schema_version: 'kb-explain-repro-bundle.v1',
+    trace_schema_version: trace.schema_version,
+    content_included: includeContent,
+    permissions: {
+      posix_permissions_enforced: isPosixPermissionsSupported(),
+      intended_directory_mode: '0700',
+      intended_file_mode: '0600',
+      directory,
+    },
+    files,
+  };
+}
+
+function isPosixPermissionsSupported(): boolean {
+  return process.platform !== 'win32';
+}
+
+function formatMode(mode: number): string {
+  return (mode & 0o777).toString(8).padStart(4, '0');
 }
 
 function extractFrontmatter(metadata: Record<string, unknown>): unknown {
