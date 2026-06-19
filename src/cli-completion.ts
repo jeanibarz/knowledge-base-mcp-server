@@ -19,20 +19,20 @@ Examples:
   kb completion fish > ~/.config/fish/completions/kb.fish
 `;
 
-interface CompletionOption {
+export interface CompletionOption {
   flags: string[];
   value: string | null;
   description: string;
 }
 
-interface CompletionCommand {
+export interface CompletionCommand {
   name: string;
   summary: string;
   usage: string[];
   options: CompletionOption[];
 }
 
-type CompletionShell = 'bash' | 'zsh' | 'fish';
+export type CompletionShell = 'bash' | 'zsh' | 'fish';
 
 export async function runCompletion(
   rest: string[],
@@ -51,7 +51,7 @@ export async function runCompletion(
   return 0;
 }
 
-function generateCompletionScript(shell: CompletionShell, commands: CompletionCommand[]): string {
+export function generateCompletionScript(shell: CompletionShell, commands: CompletionCommand[]): string {
   switch (shell) {
     case 'bash': return generateBashCompletion(commands);
     case 'zsh': return generateZshCompletion(commands);
