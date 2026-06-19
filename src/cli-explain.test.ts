@@ -13,6 +13,9 @@ import {
   EXPLAIN_DEFAULT_K,
   EXPLAIN_DEFAULT_NEAR_MISS,
   parseExplainArgs,
+  runExplain,
+  type RunExplainDeps,
+  writeReproBundle,
 } from './cli-explain.js';
 import {
   buildCandidates,
@@ -36,6 +39,7 @@ describe('parseExplainArgs', () => {
     expect(a.thresholdIsDefault).toBe(true);
     expect(a.reproBundle).toBeNull();
     expect(a.includeContent).toBe(false);
+    expect(a.reproBundleForce).toBe(false);
   });
 
   it('honors explicit --k and grows candidates to k + 5 near-misses', () => {
@@ -100,6 +104,12 @@ describe('parseExplainArgs', () => {
     const a = parseExplainArgs(['q', '--repro-bundle=./out', '--include-content']);
     expect(a.reproBundle).toBe('./out');
     expect(a.includeContent).toBe(true);
+  });
+
+  it('accepts --force only with --repro-bundle', () => {
+    const a = parseExplainArgs(['q', '--repro-bundle=./out', '--force']);
+    expect(a.reproBundleForce).toBe(true);
+    expect(() => parseExplainArgs(['q', '--force'])).toThrow(/--force requires --repro-bundle/);
   });
 
   it('rejects empty --repro-bundle path', () => {
@@ -384,12 +394,9 @@ describe('deriveDiagnostics', () => {
 
 // -- writeReproBundle redaction test ------------------------------------------
 //
-// We import the runtime helper indirectly by re-creating the bundle layout
-// the same way runExplain does. Verifying the *directory* output via fs is
-// the cheapest way to assert the redaction contract — including content is
-// strictly opt-in, default-off.
-
-import { runExplain } from './cli-explain.js';
+// Verifying the *directory* output via fs is the cheapest way to assert the
+// privacy and redaction contract: including content is strictly opt-in and
+// POSIX bundles are written with private directory/file permissions.
 
 describe('kb explain repro bundle', () => {
   it('refuses --include-content without --repro-bundle (defense in depth)', async () => {
@@ -422,4 +429,232 @@ describe('kb explain repro bundle', () => {
       await fsp.rm(tempRoot, { recursive: true, force: true });
     }
   });
+
+  it('writes a private redacted bundle manifest', async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-explain-bundle-'));
+    try {
+      const bundleDir = path.join(tempRoot, 'bundle');
+      await writeReproBundle(bundleDir, makeTrace(), sampleBundleResults(), false);
+
+      const query = await fsp.readFile(path.join(bundleDir, 'query.txt'), 'utf-8');
+      expect(query).toBe('rollback procedure\n');
+
+      const topCandidates = JSON.parse(
+        await fsp.readFile(path.join(bundleDir, 'top-candidates.json'), 'utf-8'),
+      ) as { content_included: boolean; candidates: Array<{ content?: string }> };
+      expect(topCandidates.content_included).toBe(false);
+      expect(topCandidates.candidates[0]).not.toHaveProperty('content');
+
+      const manifest = JSON.parse(
+        await fsp.readFile(path.join(bundleDir, 'manifest.json'), 'utf-8'),
+      ) as ReproBundleManifestForTest;
+      expect(manifest.schema_version).toBe('kb-explain-repro-bundle.v1');
+      expect(manifest.trace_schema_version).toBe('kb-explain.v1');
+      expect(manifest.content_included).toBe(false);
+      expect(manifest.files.map((f) => f.path).sort()).toEqual([
+        'freshness.json',
+        'manifest.json',
+        'query.txt',
+        'system.json',
+        'top-candidates.json',
+      ]);
+
+      if (process.platform !== 'win32') {
+        expect(modeOf(await fsp.stat(bundleDir))).toBe('0700');
+        for (const file of manifest.files) {
+          expect(file.mode).toBe('0600');
+          expect(modeOf(await fsp.stat(path.join(bundleDir, file.path)))).toBe('0600');
+        }
+      } else {
+        expect(manifest.permissions.posix_permissions_enforced).toBe(false);
+      }
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('records explicit content inclusion in the manifest', async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-explain-bundle-'));
+    try {
+      const bundleDir = path.join(tempRoot, 'bundle');
+      await writeReproBundle(bundleDir, makeTrace(), sampleBundleResults(), true);
+
+      const topCandidates = JSON.parse(
+        await fsp.readFile(path.join(bundleDir, 'top-candidates.json'), 'utf-8'),
+      ) as { content_included: boolean; candidates: Array<{ content?: string }> };
+      expect(topCandidates.content_included).toBe(true);
+      expect(topCandidates.candidates[0].content).toBe('secret rollback text');
+
+      const manifest = JSON.parse(
+        await fsp.readFile(path.join(bundleDir, 'manifest.json'), 'utf-8'),
+      ) as ReproBundleManifestForTest;
+      expect(manifest.content_included).toBe(true);
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an existing bundle directory containing non-bundle files', async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-explain-bundle-'));
+    try {
+      const bundleDir = path.join(tempRoot, 'bundle');
+      await fsp.mkdir(bundleDir, { mode: 0o700 });
+      if (process.platform !== 'win32') await fsp.chmod(bundleDir, 0o700);
+      await fsp.writeFile(path.join(bundleDir, 'old-content.json'), 'stale sensitive content\n', 'utf-8');
+
+      await expect(writeReproBundle(bundleDir, makeTrace(), sampleBundleResults(), false))
+        .rejects.toThrow(/contains non-bundle file\(s\): old-content\.json/);
+      await expect(fsp.access(path.join(bundleDir, 'query.txt'))).rejects.toThrow();
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  const itOnPosix = process.platform === 'win32' ? it.skip : it;
+
+  itOnPosix('refuses an existing bundle directory with group/other permissions', async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-explain-bundle-'));
+    try {
+      const bundleDir = path.join(tempRoot, 'bundle');
+      await fsp.mkdir(bundleDir, { mode: 0o755 });
+      await fsp.chmod(bundleDir, 0o755);
+
+      await expect(writeReproBundle(bundleDir, makeTrace(), sampleBundleResults(), false))
+        .rejects.toThrow(/unsafe permissions 0755/);
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  itOnPosix('force-chmods an unsafe existing bundle directory before writing', async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-explain-bundle-'));
+    try {
+      const bundleDir = path.join(tempRoot, 'bundle');
+      await fsp.mkdir(bundleDir, { mode: 0o755 });
+      await fsp.chmod(bundleDir, 0o755);
+
+      await writeReproBundle(bundleDir, makeTrace(), sampleBundleResults(), false, true);
+
+      expect(modeOf(await fsp.stat(bundleDir))).toBe('0700');
+      const manifest = JSON.parse(
+        await fsp.readFile(path.join(bundleDir, 'manifest.json'), 'utf-8'),
+      ) as ReproBundleManifestForTest;
+      expect(manifest.permissions.directory.existing_mode).toBe('0755');
+      expect(manifest.permissions.directory.existing_directory_was_unsafe).toBe(true);
+      expect(manifest.permissions.directory.unsafe_existing_directory_forced).toBe(true);
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  itOnPosix('runExplain forwards --force and --include-content to the repro writer', async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-explain-bundle-'));
+    try {
+      const bundleDir = path.join(tempRoot, 'bundle');
+      await fsp.mkdir(bundleDir, { mode: 0o755 });
+      await fsp.chmod(bundleDir, 0o755);
+
+      const noForce = await captureExplainOutput(
+        ['rollback procedure', `--repro-bundle=${bundleDir}`],
+        makeRunExplainDeps(),
+      );
+      expect(noForce.code).toBe(1);
+      expect(noForce.stderr).toMatch(/unsafe permissions 0755/);
+
+      const forced = await captureExplainOutput(
+        ['rollback procedure', `--repro-bundle=${bundleDir}`, '--include-content', '--force'],
+        makeRunExplainDeps(),
+      );
+      expect(forced.code).toBe(0);
+      expect(modeOf(await fsp.stat(bundleDir))).toBe('0700');
+
+      const manifest = JSON.parse(
+        await fsp.readFile(path.join(bundleDir, 'manifest.json'), 'utf-8'),
+      ) as ReproBundleManifestForTest;
+      expect(manifest.content_included).toBe(true);
+      expect(manifest.permissions.directory.unsafe_existing_directory_forced).toBe(true);
+
+      const topCandidates = JSON.parse(
+        await fsp.readFile(path.join(bundleDir, 'top-candidates.json'), 'utf-8'),
+      ) as { candidates: Array<{ content?: string }> };
+      expect(topCandidates.candidates[0].content).toBe('secret rollback text');
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
 });
+
+function sampleBundleResults(): Array<{ pageContent: string; metadata: Record<string, unknown>; score: number }> {
+  return [
+    { pageContent: 'secret rollback text', metadata: { frontmatter: { type: 'runbook' } }, score: 0.42 },
+    { pageContent: 'secret deploy text', metadata: {}, score: 0.61 },
+    { pageContent: 'secret other text', metadata: {}, score: 1.18 },
+  ];
+}
+
+function makeRunExplainDeps(): RunExplainDeps {
+  const manager = {
+    embeddingProvider: 'fake',
+    modelName: 'bag-256d',
+    async similaritySearch() {
+      return sampleBundleResults();
+    },
+    getStats() {
+      return { dim: 64 };
+    },
+  };
+  return {
+    bootstrapLayout: async () => {},
+    resolveActiveModel: async () => 'fake__bag-256d',
+    loadManagerForModel: async () => manager as never,
+    loadWithJsonRetry: async () => {},
+    computeStaleness: async () => ({ indexMtime: null, modifiedFiles: 0, newFiles: 0 }),
+    resolveFaissIndexBinaryPath: async () => null,
+    writeReproBundle,
+    readPackageVersion: () => 'test-version',
+  };
+}
+
+async function captureExplainOutput(
+  args: string[],
+  deps: RunExplainDeps,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const origStdout = process.stdout.write.bind(process.stdout);
+  const origStderr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const code = await runExplain(args, deps);
+    return { code, stdout: stdout.join(''), stderr: stderr.join('') };
+  } finally {
+    process.stdout.write = origStdout;
+    process.stderr.write = origStderr;
+  }
+}
+
+function modeOf(stats: { mode: number }): string {
+  return (stats.mode & 0o777).toString(8).padStart(4, '0');
+}
+
+interface ReproBundleManifestForTest {
+  schema_version: string;
+  trace_schema_version: string;
+  content_included: boolean;
+  permissions: {
+    posix_permissions_enforced: boolean;
+    directory: {
+      existing_mode: string | null;
+      existing_directory_was_unsafe: boolean;
+      unsafe_existing_directory_forced: boolean;
+    };
+  };
+  files: Array<{ path: string; mode: string | null }>;
+}

@@ -584,12 +584,16 @@ Output:
 
 Repro bundle:
   --repro-bundle=<dir>    Write a redacted repro bundle to <dir> containing
-                          `query.txt`, `system.json`, `top-candidates.json`,
-                          and `freshness.json`. Chunk *content* is NOT
-                          included unless you also pass `--include-content`.
+                          `manifest.json`, `query.txt`, `system.json`,
+                          `top-candidates.json`, and `freshness.json`.
+                          Bundle dirs are private (0700) and files are private
+                          (0600) on POSIX. Chunk *content* is NOT included
+                          unless you also pass `--include-content`.
   --include-content       Bundle the candidate chunk text alongside the
                           metadata. Explicit consent for KB content to leave
                           the trust boundary; default is content-redacted.
+  --force                 If <dir> already exists with unsafe group/other
+                          permissions, set its mode to 0700 before writing.
 
 Misc:
   --help, -h              Show this help.
