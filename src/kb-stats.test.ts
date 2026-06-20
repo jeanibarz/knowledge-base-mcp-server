@@ -428,6 +428,47 @@ describe('computeKbStats', () => {
     }
   });
 
+  it('surfaces write-lock wait and hold telemetry when recorded (issue #714)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-write-locks-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'alpha'));
+      await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'a');
+
+      const { computeKbStats } = await freshKbStats({
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+      const { WriteLockMetrics } = await import('./metrics.js');
+      const writeLockMetrics = new WriteLockMetrics({ now: () => 1_700_000_000_000 });
+
+      const empty = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        writeLockMetrics,
+      });
+      expect(empty.write_locks).toEqual({ wait: {}, hold: {} });
+
+      writeLockMetrics.record({ resourceKind: 'model_index', waitMs: 12, holdMs: 80 });
+
+      const populated = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        writeLockMetrics,
+      });
+      expect(populated.write_locks.wait.model_index).toMatchObject({
+        count: 1,
+        sum_ms: 12,
+        since_started_at: new Date(1_700_000_000_000).toISOString(),
+      });
+      expect(populated.write_locks.hold.model_index).toMatchObject({
+        count: 1,
+        sum_ms: 80,
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('summarizes dense flat-search latency and emits an advisory above the p95 threshold (#604)', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-search-latency-'));
     try {

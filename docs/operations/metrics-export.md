@@ -42,6 +42,7 @@ The v1 exporter keeps labels bounded:
 | `mode` | `kb_search_*` | `dense`, `lexical`, `hybrid`, `auto`, `unknown` |
 | `stage` | `kb_search_stage_duration_ms` | fixed search timing stage names |
 | `status` | `kb_search_*` | `success`, `error` |
+| `resource_kind` | `kb_write_lock_*` | `active_index`, `model_index`, `other` |
 
 There are no query text, file path, user, request id, source URL, or raw error
 labels.
@@ -55,6 +56,8 @@ labels.
 | `kb_search_requests_total` | daemon-served search request totals by mode/status |
 | `kb_search_request_duration_ms` | end-to-end daemon-served search request latency histogram |
 | `kb_search_stage_duration_ms` | per-stage daemon-served search latency histogram |
+| `kb_write_lock_wait_duration_ms` | write-lock acquisition wait latency histogram by resource kind |
+| `kb_write_lock_hold_duration_ms` | write-lock function hold latency histogram by resource kind |
 | `kb_query_cache_*` | query embedding cache hits, misses, bypasses, disk usage |
 | `kb_relevance_gate_*` | relevance gate query and verdict counters |
 | `kb_remote_transport_*` | HTTP/SSE sessions, requests, auth failures, origin denials, status buckets |

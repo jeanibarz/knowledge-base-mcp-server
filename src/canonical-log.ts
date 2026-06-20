@@ -5,6 +5,7 @@ import { ActiveModelResolutionError } from './active-model.js';
 import type { QueryCacheOutcome, QueryCacheTelemetry } from './query-cache.js';
 import { readKBSlowQueryMs } from './config/logging.js';
 import type { DenseDegradationReason } from './search-core.js';
+import type { WriteLockResourceKind } from './metrics.js';
 
 export const CANONICAL_SCHEMA_VERSION = 'kb-canonical.v1';
 
@@ -75,6 +76,9 @@ export interface CanonicalLogEvent {
   top_score?: number;
   top_sources?: string[];
   took_ms: number;
+  lock_wait_ms?: number;
+  lock_hold_ms?: number;
+  lock_resource_kind?: WriteLockResourceKind;
   embed_ms?: number;
   faiss_ms?: number;
   format_ms?: number;
@@ -122,6 +126,9 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'top_score',
   'top_sources',
   'took_ms',
+  'lock_wait_ms',
+  'lock_hold_ms',
+  'lock_resource_kind',
   'embed_ms',
   'faiss_ms',
   'format_ms',
@@ -179,6 +186,9 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   assignIfDefined(event, 'result_count', input.result_count);
   assignIfDefined(event, 'top_score', input.top_score);
   assignIfDefined(event, 'top_sources', input.top_sources?.slice(0, 3));
+  assignIfDefined(event, 'lock_wait_ms', roundNonNegative(input.lock_wait_ms));
+  assignIfDefined(event, 'lock_hold_ms', roundNonNegative(input.lock_hold_ms));
+  assignIfDefined(event, 'lock_resource_kind', input.lock_resource_kind);
   assignIfDefined(event, 'embed_ms', roundNonNegative(input.embed_ms));
   assignIfDefined(event, 'faiss_ms', roundNonNegative(input.faiss_ms));
   assignIfDefined(event, 'format_ms', roundNonNegative(input.format_ms));

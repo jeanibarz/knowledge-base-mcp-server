@@ -28,6 +28,10 @@ It never writes to stdout. The event contains stable request fields such as
 `query_sha256`, `result_count`, `top_score`, `top_sources`, timing fields, and
 an optional `{ code, category }` error object.
 
+Write-lock observability events use the same schema with `event: "write_lock"`
+and additive `lock_wait_ms`, `lock_hold_ms`, and `lock_resource_kind` fields.
+The resource kind is a bounded enum and does not serialize filesystem paths.
+
 Queries are redacted by default. The raw query is never serialized; only a
 16-character SHA-256 prefix of the whitespace-normalized query is emitted.
 `top_sources` is capped at three entries to bound line size and cardinality.

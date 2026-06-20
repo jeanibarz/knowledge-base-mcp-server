@@ -633,6 +633,10 @@ describe('kb serve metrics formatting', () => {
           warn_threshold: 0.1,
         },
       },
+      write_locks: {
+        wait: {},
+        hold: {},
+      },
     };
 
     const text = formatStatsRunResultAsOpenMetrics({

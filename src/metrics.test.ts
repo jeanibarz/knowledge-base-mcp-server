@@ -7,6 +7,7 @@ import {
   quantileFromBuckets,
   RerankMetrics,
   SearchLatencyMetrics,
+  WriteLockMetrics,
 } from './metrics.js';
 
 describe('bucketIndexForLatency (issue #210 — fixed-bucket histogram)', () => {
@@ -236,6 +237,34 @@ describe('RerankMetrics', () => {
       candidates: {},
       latency: {},
     });
+  });
+});
+
+describe('WriteLockMetrics', () => {
+  it('records wait and hold histograms by bounded resource kind', () => {
+    const metrics = new WriteLockMetrics({ now: () => 1_700_000_000_000 });
+
+    metrics.record({ resourceKind: 'model_index', waitMs: 12, holdMs: 80 });
+    metrics.record({ resourceKind: 'active_index', waitMs: 2, holdMs: 5 });
+
+    const snap = metrics.snapshot();
+    expect(snap.wait.model_index).toMatchObject({
+      count: 1,
+      sum_ms: 12,
+      since_started_at: '2023-11-14T22:13:20.000Z',
+    });
+    expect(snap.hold.model_index).toMatchObject({ count: 1, sum_ms: 80 });
+    expect(snap.wait.active_index).toMatchObject({ count: 1, sum_ms: 2 });
+    expect(snap.wait.other).toBeUndefined();
+  });
+
+  it('reset() clears write-lock telemetry', () => {
+    const metrics = new WriteLockMetrics();
+    metrics.record({ resourceKind: 'other', waitMs: 1, holdMs: 2 });
+
+    metrics.reset();
+
+    expect(metrics.snapshot()).toEqual({ wait: {}, hold: {} });
   });
 });
 

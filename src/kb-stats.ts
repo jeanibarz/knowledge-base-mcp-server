@@ -40,12 +40,15 @@ import {
   quantileFromBuckets,
   rerankMetrics,
   searchLatencyMetrics,
+  writeLockMetrics,
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
   type RerankMetrics,
   type RerankMetricsSnapshot,
   type SearchLatencyMetrics,
   type SearchLatencyMetricsSnapshot,
+  type WriteLockMetrics,
+  type WriteLockMetricsSnapshot,
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
 import { queryEmbeddingCache, type QueryCacheStats } from './query-cache.js';
@@ -136,6 +139,11 @@ export interface KbStatsPayload {
   /** Issue #689 — process-lifetime reranker-stage counters and latency histograms. */
   rerank?: RerankMetricsSnapshot;
   /**
+   * Issue #714 — process-lifetime write-lock wait and hold histograms by
+   * coarse resource kind. No filesystem paths or model ids are used as labels.
+   */
+  write_locks: WriteLockMetricsSnapshot;
+  /**
    * Issue #430 — live counters for the optional HTTP/SSE MCP transport.
    * Omitted for stdio-only processes and for local `kb stats` invocations
    * that are not serving a remote transport.
@@ -182,6 +190,8 @@ export interface ComputeKbStatsOptions {
   searchMetrics?: SearchLatencyMetrics;
   /** Issue #689 — test seam for reranker-stage telemetry. */
   rerankMetrics?: RerankMetrics;
+  /** Issue #714 — test seam for write-lock wait/hold telemetry. */
+  writeLockMetrics?: WriteLockMetrics;
   /** Process-local HTTP/SSE counters, supplied by KnowledgeBaseServer when active. */
   remoteTransportStats?: TransportRuntimeStatsSnapshot;
 }
@@ -264,6 +274,7 @@ export async function computeKbStats(
   const metricsSource = options.metrics ?? providerCallMetrics;
   const searchMetricsSource = options.searchMetrics ?? searchLatencyMetrics;
   const rerankMetricsSource = options.rerankMetrics ?? rerankMetrics;
+  const writeLockMetricsSource = options.writeLockMetrics ?? writeLockMetrics;
   const searchMetricsSnapshot = searchMetricsSource.snapshot();
   const activeIndexType = indexStats.indexType ?? 'flat';
   const activeIndexFactory = indexFactoryForType(activeIndexType);
@@ -306,6 +317,7 @@ export async function computeKbStats(
     query_cache: await queryEmbeddingCache.stats(),
     relevance_gate: relevanceGateMetrics.snapshot(),
     rerank: rerankMetricsSource.snapshot(),
+    write_locks: writeLockMetricsSource.snapshot(),
     ...(options.remoteTransportStats !== undefined
       ? { remote_transport: options.remoteTransportStats }
       : {}),

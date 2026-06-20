@@ -6,6 +6,7 @@ import {
   type SearchLatencyMetricsSnapshot,
   type SearchLatencyMode,
   type SearchLatencyStatus,
+  type WriteLockMetricsSnapshot,
 } from './metrics.js';
 
 interface MetricSample {
@@ -186,6 +187,7 @@ export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
   }
   lines.push(...searchLatencyHistogramLines(payload.search_latency));
   lines.push(...rerankLatencyHistogramLines(payload.rerank));
+  lines.push(...writeLockHistogramLines(payload.write_locks));
   lines.push('# EOF');
   return `${lines.join('\n')}\n`;
 }
@@ -397,6 +399,32 @@ function rerankLatencyHistogramLines(snapshot: RerankMetricsSnapshot | undefined
     help: 'Reranker-stage latency in milliseconds, split by bounded scoring source.',
     rows,
   });
+}
+
+function writeLockHistogramLines(snapshot: WriteLockMetricsSnapshot): string[] {
+  return [
+    ...renderHistogramFamily({
+      name: 'kb_write_lock_wait_duration_ms',
+      help: 'Write-lock acquisition wait time in milliseconds, split by bounded resource kind.',
+      rows: writeLockHistogramRows(snapshot.wait),
+    }),
+    ...renderHistogramFamily({
+      name: 'kb_write_lock_hold_duration_ms',
+      help: 'Write-lock function hold time in milliseconds, split by bounded resource kind.',
+      rows: writeLockHistogramRows(snapshot.hold),
+    }),
+  ];
+}
+
+function writeLockHistogramRows(
+  snapshots: WriteLockMetricsSnapshot['wait'],
+): HistogramRow[] {
+  const rows: HistogramRow[] = [];
+  for (const [resourceKind, histogram] of Object.entries(snapshots)) {
+    if (histogram === undefined) continue;
+    rows.push({ labels: { resource_kind: resourceKind }, histogram });
+  }
+  return rows;
 }
 
 function requestHistogramRows(snapshot: SearchLatencyMetricsSnapshot): HistogramRow[] {
