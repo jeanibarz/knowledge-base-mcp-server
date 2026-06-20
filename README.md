@@ -75,6 +75,7 @@ kb reindex --with-context     # rebuild the FAISS index with RFC 017 contextual 
 kb reindex status --format=json  # ledger of recent / in-flight reindex passes (#417)
 kb logs show --request-id=<id>     # read canonical request logs by id (#397)
 kb logs recent --limit=20 --format=json  # most recent canonical log entries
+kb diagnose --request-id=<id> --repro-bundle=/tmp/kb-diag  # package redacted canonical log context
 kb serve                      # start the loopback CLI daemon (warm reads); add --warm to pre-load active indexes
 kb serve status               # daemon liveness + degraded-mode diagnostics (#420)
 kb config validate            # static env-var schema validation before startup
@@ -146,6 +147,8 @@ Note: `KB_RERANK_DEVICE` (e.g. `cuda`, `cpu`) is an external ONNX Runtime / Tran
 `kb eval-gate <fixture.yml>` runs the RFC 018 relevance-gate validation harness end-to-end against a labelled-queries fixture (Stage A statistical floor + optional Stage B LLM judge) and reports per-stage precision, recall, and false-empty rate. Use it when you change `KB_GATE_*` tuning or the judge prompt before promoting changes to production. See [`docs/operations/eval-gate-harness.md`](docs/operations/eval-gate-harness.md).
 
 `kb logs` is the canonical reader for the structured request log emitted under `KB_LOG_FORMAT=canonical` or `both`. Use `kb logs show --request-id=<id>` to pull every line of a specific retrieval, `kb logs show --query-sha=<hash>` to follow recurring queries, and `kb logs recent --limit=<n>` for the most recent entries. `--format=json` produces one line per record for downstream tooling.
+
+`kb diagnose --request-id=<id> --repro-bundle=<dir>` packages the matching canonical events into a private redacted bundle. Canonical logs do not store raw query text; pass `--query`, `--query-file`, or `--stdin` to also replay `kb explain --repro-bundle` with model, KB scope, k, and threshold hints inferred from the log event.
 
 `kb serve` runs the loopback CLI daemon used by clients that pass `--daemon` for warm reads. The bare `kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000] [--warm]` brings it up; `--warm` or `KB_DAEMON_PREWARM=on` pre-loads the active model, FAISS index, and lexical indexes before readiness. `kb serve status [--json]` reports reachability, pid, idle timeout, supported commands, and prewarm state at the configured `KB_DAEMON_URL` (defaults to `http://127.0.0.1:17799`); SIGINT or SIGTERM stops it. CLI commands fall back to direct in-process execution when the daemon is unavailable. See [`docs/operations/daemon-lifecycle.md`](docs/operations/daemon-lifecycle.md).
 

@@ -19,6 +19,7 @@ import { COMPLETION_HELP, runCompletion } from './cli-completion.js';
 import { CONFIG_HELP, runConfig } from './cli-config.js';
 import { COMPARE_HELP, runCompare } from './cli-compare.js';
 import { DIFF_INDEX_HELP, runDiffIndexCli } from './cli-diff-index.js';
+import { DIAGNOSE_HELP, runDiagnose } from './cli-diagnose.js';
 import { DOCTOR_HELP, runDoctor } from './cli-doctor.js';
 import { EVAL_HELP, runEval } from './cli-eval.js';
 import { EVAL_GATE_HELP, runEvalGate } from './cli-eval-gate.js';
@@ -119,6 +120,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'inspect',      summary: 'Show file-side ingest chunking diagnostics for one file.',               help: INSPECT_HELP,      handler: runInspect },
   { name: 'compare',      summary: 'Side-by-side rank/score table for two embedding models.',                help: COMPARE_HELP,      handler: runCompare },
   { name: 'diff-index',   summary: 'Compare retrieval-result churn across two FAISS index versions.',        help: DIFF_INDEX_HELP,   handler: runDiffIndexCli },
+  { name: 'diagnose',     summary: 'Package a canonical request log as a redacted repro bundle.',             help: DIAGNOSE_HELP,     handler: runDiagnose },
   { name: 'doctor',       summary: 'Aggregate model / index / backend health report.',                       help: DOCTOR_HELP,       handler: runDoctor },
   { name: 'logs',         summary: 'Inspect historical canonical request logs.',                             help: LOGS_HELP,         handler: runLogs },
   { name: 'stats',        summary: 'Read-only index/corpus stats (mirrors the MCP kb_stats payload).',       help: STATS_HELP,        handler: runStats },

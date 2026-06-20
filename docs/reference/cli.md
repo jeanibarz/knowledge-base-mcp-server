@@ -9,7 +9,7 @@ surface. Run `npm run build && node scripts/gen-cli-reference.mjs` after
 changing a command or its help text, and commit the result. The
 `docs:check-cli` gate (part of `npm run check`) fails if this file drifts.
 
-The `kb` CLI exposes 35 commands.
+The `kb` CLI exposes 36 commands.
 
 ## Commands
 
@@ -23,6 +23,7 @@ The `kb` CLI exposes 35 commands.
 | [`kb compare`](#kb-compare) | Side-by-side rank/score table for two embedding models. |
 | [`kb completion`](#kb-completion) | Generate shell completions for bash, zsh, or fish. |
 | [`kb config`](#kb-config) | Validate KB environment configuration. |
+| [`kb diagnose`](#kb-diagnose) | Package a canonical request log as a redacted repro bundle. |
 | [`kb diff-index`](#kb-diff-index) | Compare retrieval-result churn across two FAISS index versions. |
 | [`kb doctor`](#kb-doctor) | Aggregate model / index / backend health report. |
 | [`kb eval`](#kb-eval) | Run fixture-driven retrieval checks. |
@@ -331,6 +332,41 @@ Exit codes:
   0   validation passed with no errors
   1   validation found one or more errors
   2   invalid arguments or unreadable dotenv file
+```
+
+## `kb diagnose`
+
+Package a canonical request log as a redacted repro bundle.
+
+```text
+kb diagnose — package a canonical request log as a repro bundle
+
+Usage:
+  kb diagnose --request-id=<id> --repro-bundle=<dir> [--file=<path>] [--query=<text>|--query-file=<path>|--stdin] [--include-content] [--force] [--format=md|json]
+
+Reads canonical logs for one request id and writes a private diagnostic bundle
+with redacted log context. When the raw query is supplied, it also replays
+`kb explain --repro-bundle` using model, KB scope, k, and threshold hints from
+the selected canonical event when available.
+
+Options:
+  --request-id=<id>       Canonical request id to package.
+  --repro-bundle=<dir>    Output directory for the diagnostic bundle.
+  --file=<path>           Log file to read. Defaults to LOG_FILE, then known
+                          local log paths if they exist.
+  --query=<text>          Raw query to replay with kb explain. Canonical logs
+                          store only query_sha256 and query_len_chars.
+  --query-file=<path>     Read the raw query from a UTF-8 file.
+  --stdin                 Read the raw query from stdin.
+  --include-content       Forward to kb explain; includes candidate chunk text.
+                          Requires a raw query.
+  --force                 Chmod unsafe existing bundle directories to 0700.
+  --format=md|json        Output format (default: md).
+  --help, -h              Show this help.
+
+Examples:
+  kb diagnose --request-id=maw6d3qfabcd1234 --repro-bundle=/tmp/kb-diag
+  kb diagnose --request-id=maw6d3qfabcd1234 --query-file=query.txt --repro-bundle=/tmp/kb-diag
 ```
 
 ## `kb diff-index`
