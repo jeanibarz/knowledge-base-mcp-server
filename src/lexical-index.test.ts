@@ -6,6 +6,7 @@
 // per test.
 
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import { createHash } from 'crypto';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -40,6 +41,10 @@ async function seedKb(rootDir: string, kbName: string, files: Record<string, str
     await fsp.writeFile(target, content, 'utf-8');
   }
   return kbPath;
+}
+
+async function sha256(filePath: string): Promise<string> {
+  return createHash('sha256').update(await fsp.readFile(filePath)).digest('hex');
 }
 
 describe('LexicalIndex', () => {
@@ -137,6 +142,146 @@ describe('LexicalIndex', () => {
 
       const hits = await idx.query('NEW_KEYWORD', 5);
       expect(hits[0]?.metadata.relativePath).toBe('notes/edit.md');
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('does not rewrite the persisted index when refresh finds no file changes', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-noop-save-'));
+    try {
+      const rootDir = path.join(tmp, 'kbs');
+      const faissDir = path.join(tmp, 'faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const kbPath = await seedKb(rootDir, 'docs', {
+        'a.md': '# Alpha\n\nStable content for a no-op refresh.\n',
+      });
+
+      const { LexicalIndex } = await freshLexical(rootDir, faissDir);
+      let idx = await LexicalIndex.load('docs', kbPath);
+      const initial = await idx.refresh();
+      expect(initial.added).toBe(1);
+      await idx.save();
+
+      const persisted = path.join(faissDir, 'lexical', 'docs', 'index.json');
+      const oldDate = new Date('2001-02-03T04:05:06.000Z');
+      await fsp.utimes(persisted, oldDate, oldDate);
+      const before = await fsp.stat(persisted);
+      const rawBefore = await fsp.readFile(persisted, 'utf-8');
+
+      idx = await LexicalIndex.load('docs', kbPath);
+      const second = await idx.refresh();
+      expect(second).toMatchObject({
+        added: 0,
+        updated: 0,
+        removed: 0,
+        failed: 0,
+        totalFiles: 1,
+      });
+      await idx.save();
+
+      const after = await fsp.stat(persisted);
+      const rawAfter = await fsp.readFile(persisted, 'utf-8');
+      expect(after.mtimeMs).toBe(before.mtimeMs);
+      expect(rawAfter).toBe(rawBefore);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('rewrites readable old-schema indexes even when refresh finds no file changes', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-schema-upgrade-save-'));
+    try {
+      const rootDir = path.join(tmp, 'kbs');
+      const faissDir = path.join(tmp, 'faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const kbPath = await seedKb(rootDir, 'docs', {
+        'a.md': '# Alpha\n\nStable content in a v1 lexical index.\n',
+      });
+
+      const persistedDir = path.join(faissDir, 'lexical', 'docs');
+      await fsp.mkdir(persistedDir, { recursive: true });
+      const persisted = path.join(persistedDir, 'index.json');
+      await fsp.writeFile(
+        persisted,
+        JSON.stringify({
+          version: 1,
+          kbName: 'docs',
+          writtenAt: '2001-02-03T04:05:06.000Z',
+          files: {
+            'a.md': {
+              sha256: await sha256(path.join(kbPath, 'a.md')),
+              chunks: [{
+                pageContent: '# Alpha\n\nStable content in a v1 lexical index.\n',
+                metadata: { source: path.join(kbPath, 'a.md'), relativePath: 'docs/a.md' },
+              }],
+            },
+          },
+        }, null, 2),
+        'utf-8',
+      );
+      const oldDate = new Date('2001-02-03T04:05:06.000Z');
+      await fsp.utimes(persisted, oldDate, oldDate);
+      const before = await fsp.stat(persisted);
+
+      const { LexicalIndex } = await freshLexical(rootDir, faissDir);
+      const idx = await LexicalIndex.load('docs', kbPath);
+      const summary = await idx.refresh();
+      expect(summary).toMatchObject({
+        added: 0,
+        updated: 0,
+        removed: 0,
+        failed: 0,
+        totalFiles: 1,
+      });
+      await idx.save();
+
+      const after = await fsp.stat(persisted);
+      const raw = JSON.parse(await fsp.readFile(persisted, 'utf-8'));
+      expect(after.mtimeMs).toBeGreaterThan(before.mtimeMs);
+      expect(raw.version).toBe(2);
+      expect(raw.files['a.md'].chunks[0]).not.toHaveProperty('searchText');
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('persists changed and removed files after a refresh mutation', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-dirty-save-'));
+    try {
+      const rootDir = path.join(tmp, 'kbs');
+      const faissDir = path.join(tmp, 'faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const kbPath = await seedKb(rootDir, 'docs', {
+        'edit.md': 'Original content.',
+        'gone.md': 'This file will be removed.',
+      });
+
+      const { LexicalIndex } = await freshLexical(rootDir, faissDir);
+      let idx = await LexicalIndex.load('docs', kbPath);
+      await idx.refresh();
+      await idx.save();
+
+      const persisted = path.join(faissDir, 'lexical', 'docs', 'index.json');
+      const oldDate = new Date('2001-02-03T04:05:06.000Z');
+      await fsp.utimes(persisted, oldDate, oldDate);
+      const before = await fsp.stat(persisted);
+
+      await fsp.writeFile(path.join(kbPath, 'edit.md'), 'Edited content with DIRTY_SAVE_MARKER.', 'utf-8');
+      await fsp.unlink(path.join(kbPath, 'gone.md'));
+
+      idx = await LexicalIndex.load('docs', kbPath);
+      const second = await idx.refresh();
+      expect(second.updated).toBe(1);
+      expect(second.removed).toBe(1);
+      await idx.save();
+
+      const after = await fsp.stat(persisted);
+      expect(after.mtimeMs).toBeGreaterThan(before.mtimeMs);
+
+      const raw = JSON.parse(await fsp.readFile(persisted, 'utf-8'));
+      expect(Object.keys(raw.files)).toEqual(['edit.md']);
+      expect(raw.files['edit.md'].chunks[0].pageContent).toContain('DIRTY_SAVE_MARKER');
     } finally {
       await fsp.rm(tmp, { recursive: true, force: true });
     }

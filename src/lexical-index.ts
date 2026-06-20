@@ -157,6 +157,7 @@ export class LexicalIndex {
     public readonly kbName: string,
     public readonly kbPath: string,
     private entries: Map<string, FileEntry>,
+    private needsSave: boolean,
     private chunkRankerCache: Map<string, LexicalBm25Ranker<ChunkRecordItem>> = new Map(),
     private sourceRankerCache: Map<string, LexicalBm25Ranker<SourceRecordItem>> = new Map(),
   ) {}
@@ -164,7 +165,7 @@ export class LexicalIndex {
   static async load(kbName: string, kbPath: string): Promise<LexicalIndex> {
     const filePath = lexicalIndexFilePath(kbName);
     if (!(await pathExists(filePath))) {
-      return new LexicalIndex(kbName, kbPath, new Map());
+      return new LexicalIndex(kbName, kbPath, new Map(), true);
     }
 
     let raw: string;
@@ -218,7 +219,7 @@ export class LexicalIndex {
       }
       entries.set(relPath, entry as FileEntry);
     }
-    return new LexicalIndex(kbName, kbPath, entries);
+    return new LexicalIndex(kbName, kbPath, entries, file.version !== SCHEMA_VERSION);
   }
 
   /**
@@ -307,6 +308,7 @@ export class LexicalIndex {
         return entry;
       });
       this.entries.set(relPath, { sha256: sha, retrievalViews: retrievalViewsKey, chunks: serialized });
+      this.needsSave = true;
       if (existing) {
         summary.updated += 1;
       } else {
@@ -317,6 +319,7 @@ export class LexicalIndex {
     for (const relPath of [...this.entries.keys()]) {
       if (!seen.has(relPath)) {
         this.entries.delete(relPath);
+        this.needsSave = true;
         summary.removed += 1;
       }
     }
@@ -333,6 +336,10 @@ export class LexicalIndex {
   }
 
   async save(): Promise<void> {
+    // No-op refreshes keep the in-memory entries unchanged; avoid rewriting
+    // the full JSON index just to bump writtenAt/mtime.
+    if (!this.needsSave) return;
+
     const dir = lexicalKbDir(this.kbName);
     await fsp.mkdir(dir, { recursive: true });
     const filePath = lexicalIndexFilePath(this.kbName);
@@ -352,6 +359,7 @@ export class LexicalIndex {
     };
     await fsp.writeFile(tmpPath, JSON.stringify(payload, null, 2), 'utf-8');
     await fsp.rename(tmpPath, filePath);
+    this.needsSave = false;
   }
 
   /**
