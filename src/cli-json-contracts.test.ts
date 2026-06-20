@@ -24,6 +24,7 @@ const DOCUMENTED_COMMANDS = [
   'kb capture',
   'kb where',
   'kb doctor',
+  'kb diagnose',
   'kb logs',
   'kb eval',
   'kb list',
@@ -294,6 +295,32 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
           detail: expect.any(String),
         }),
       ]),
+    });
+  },
+  'kb diagnose': (examples) => {
+    expect(examples).toHaveLength(1);
+    expect(record(examples[0])).toMatchObject({
+      schema_version: 'kb.diagnose.repro_bundle.v1',
+      bundle_dir: expect.any(String),
+      created_at: expect.any(String),
+      source_log: expect.any(String),
+      request_id: expect.any(String),
+      event_count: expect.any(Number),
+      selected_event: expect.any(Object),
+      raw_query: expect.objectContaining({
+        supplied: expect.any(Boolean),
+        source: expect.any(String),
+        query_sha256_matches: expect.any(Boolean),
+        query_len_chars_matches: expect.any(Boolean),
+      }),
+      explain: expect.objectContaining({
+        attempted: expect.any(Boolean),
+        exit_code: expect.any(Number),
+        bundle_dir: expect.any(String),
+        inferred_args: expect.any(Array),
+      }),
+      files: expect.any(Array),
+      redaction_summary: expect.any(Object),
     });
   },
   'kb logs': (examples) => {

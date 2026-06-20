@@ -1306,6 +1306,74 @@ Source and test anchors: `src/cli-doctor.ts:92-146`,
 `src/cli-doctor.ts:1365-1452`, `src/cli-doctor.test.ts:923-1120`,
 `src/cli-json-contracts.test.ts:215-237`.
 
+## `kb diagnose`
+
+Invocation:
+
+```bash
+kb diagnose --request-id=<id> --repro-bundle=<dir> [--file=<path>] [--format=json]
+kb diagnose --request-id=<id> --repro-bundle=<dir> --query-file=query.txt [--include-content] [--format=json]
+```
+
+`kb diagnose` writes a private request-id diagnostic bundle that bridges
+canonical logs and the existing `kb explain --repro-bundle` surface. The root
+bundle contains:
+
+- `manifest.json`: schema `kb.diagnose.repro_bundle.v1`, selected event
+  summary, raw-query match checks, nested explain replay status, file list, and
+  aggregate redaction counts.
+- `canonical-events.json`: redacted canonical log events for the request id.
+- `README.md`: sharing guidance and residual sensitivity notes.
+- `explain/`: only when a raw query is supplied by `--query`, `--query-file`, or
+  `--stdin`; contains the normal `kb explain --repro-bundle` files.
+- `explain-stderr.txt`: only when the nested explain replay writes stderr.
+
+The manifest shape is:
+
+```json
+{
+  "schema_version": "kb.diagnose.repro_bundle.v1",
+  "bundle_dir": "/tmp/kb-diag",
+  "created_at": "2026-06-20T11:22:33.000Z",
+  "source_log": "/tmp/kb.log",
+  "request_id": "req-1",
+  "event_count": 1,
+  "selected_event": {
+    "cmd": "kb search",
+    "model_id": "ollama__nomic-embed-text-latest",
+    "kb_scope": "work",
+    "query_sha256": "0123456789abcdef",
+    "query_len_chars": 18,
+    "k": 5,
+    "threshold": 2,
+    "took_ms": 42
+  },
+  "raw_query": {
+    "supplied": true,
+    "source": "--query-file",
+    "query_sha256_matches": true,
+    "query_len_chars_matches": true
+  },
+  "explain": {
+    "attempted": true,
+    "exit_code": 0,
+    "bundle_dir": "explain",
+    "inferred_args": ["<raw-query>", "--repro-bundle=/tmp/kb-diag/explain"],
+    "stderr_file": null
+  },
+  "files": ["README.md", "canonical-events.json", "explain", "manifest.json"],
+  "redaction_summary": {
+    "enabled": true,
+    "total": 0,
+    "by_type": {}
+  }
+}
+```
+
+Canonical logs never contain raw query text. Supplying a raw query is an
+explicit replay input; review `explain/query.txt` before sharing the bundle.
+Candidate chunk content is still excluded unless `--include-content` is passed.
+
 ## `kb logs`
 
 Invocation:
