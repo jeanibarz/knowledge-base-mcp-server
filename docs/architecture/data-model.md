@@ -23,13 +23,16 @@ flowchart LR
     Models["models/"]
     ModelDir["&lt;model_id&gt;/<br/>provider__filesystem-safe-slug"]
       ModelName["model_name.txt<br/>configured embedding model name"]
-      IndexType["index-type.txt<br/>flat or sq8"]
+      IndexType["index-type.txt<br/>flat, sq8, or hnsw"]
       LastUpdate["last-index-update.json<br/>latest update summary"]
       MetadataSidecar["metadata-sidecar.jsonl<br/>filter fast-path rows"]
       IndexLink["index<br/>symlink to index.vN"]
       Version["index.vN/"]
-      Faiss["faiss.index<br/>faiss-node binary vector index"]
-      Docs["docstore.json<br/>LangChain docstore sibling"]
+      Faiss["faiss.index<br/>FAISS binary, when backend=faiss"]
+      Hnsw["hnsw.index<br/>HNSW binary, when backend=hnsw"]
+      Docs["docstore.json<br/>FAISS LangChain tuple or HNSW JSON docstore"]
+      Integrity["integrity.json<br/>backend, index type, hashes, HNSW params"]
+      Cas[".docstore-cas/<br/>canonical FAISS docstore payloads"]
       QueryCache["cache/queries/&lt;model_id&gt;/<br/>query embedding cache"]
       Legacy["faiss.index/<br/>legacy layout, read fallback"]
 
@@ -42,7 +45,10 @@ flowchart LR
     ModelDir --> IndexLink
     IndexLink --> Version
     Version --> Faiss
+    Version --> Hnsw
     Version --> Docs
+    Version --> Integrity
+    Docs -.hardlink when FAISS dedup succeeds.-> Cas
     ModelDir --> QueryCache
     ModelDir -.pre-RFC-014.-> Legacy
   end
@@ -83,27 +89,42 @@ Normal completion removes the manifest after all sidecars are durable. On startu
 
 A model is registered only when its directory exists, `model_name.txt` exists, and `.adding` does not exist (`src/active-model.ts:107-127`). `model_name.txt` is written per model during `FaissIndexManager.initialize()` (`src/FaissIndexManager.ts:327-334`) and stores the configured embedding model name, not the derived model id.
 
-### Versioned FAISS store
+### Versioned search-index store
 
-New saves use the RFC 014 layout in each model directory:
+New saves use the RFC 014 layout in each model directory. The active
+`index-type.txt` value selects the backend: `flat` and `sq8` use the FAISS
+adapter, while `hnsw` uses the HNSW adapter.
 
 ```text
 models/<model_id>/
   model_name.txt
+  index-type.txt
   index -> index.vN
   index.vN/
-    faiss.index
+    faiss.index | hnsw.index
     docstore.json
+    integrity.json
   index.vN-1/
-    faiss.index
+    faiss.index | hnsw.index
     docstore.json
+    integrity.json
 ```
 
-`saveFaissStoreAtomic` writes the next `index.vN/`, creates a temporary symlink, atomically renames it to `index`, and then prunes inactive version directories (`src/faiss-store-layout.ts`). The default retention policy keeps the active version plus two inactive retained versions. Operators can set `KB_INDEX_VERSION_RETENTION=<non-negative integer>` to change the inactive-version count; `0` keeps only the active version after a successful save. Pruning reads the active `index` symlink before deleting anything and never removes that target, even if it is outside the newest retained versions. `kb doctor` reports active, inactive, and total version-directory storage so retained-version cost is visible during health checks.
+`saveFaissStoreAtomic` and `saveHnswIndexAtomic` write the next `index.vN/`, create a temporary symlink, atomically rename it to `index`, and then prune inactive version directories (`src/faiss-store-layout.ts`). The default retention policy keeps the active version plus two inactive retained versions. Operators can set `KB_INDEX_VERSION_RETENTION=<non-negative integer>` to change the inactive-version count; `0` keeps only the active version after a successful save. Pruning reads the active `index` symlink before deleting anything and never removes that target, even if it is outside the newest retained versions. `kb doctor` reports active, inactive, and total version-directory storage so retained-version cost is visible during health checks.
 
-`loadFaissStoreAtomic` pins reads by resolving the `index` symlink once before calling `FaissStore.load`, so `faiss.index` and `docstore.json` come from the same version directory even if another writer swaps the symlink later (`src/faiss-store-layout.ts:58-120`).
+`loadFaissStoreAtomic` and `loadHnswIndexAtomic` pin reads by resolving the `index` symlink once before loading backend files, so the vector index, `docstore.json`, and `integrity.json` come from the same version directory even if another writer swaps the symlink later.
 
-`faiss.index` is the binary vector index in `faiss-node`'s native format. `docstore.json` is the LangChain docstore sibling emitted by `FaissStore.save`; it is part of the `$FAISS_INDEX_PATH` code-exec trust boundary because loading attacker-controlled serialized data is unsafe. See [`threat-model.md`](./threat-model.md).
+For FAISS models, `faiss.index` is the binary vector index in `faiss-node`'s native format and `docstore.json` is the LangChain docstore sibling emitted by `FaissStore.save`. That FAISS docstore is part of the `$FAISS_INDEX_PATH` code-exec trust boundary because loading attacker-controlled serialized data is unsafe. For HNSW models, `hnsw.index` is the `hnswlib-node` native index and `docstore.json` is the project-owned `kb.hnsw-docstore.v1` JSON payload. `integrity.json` records the backend, index type, file hashes, embedding canary, and HNSW tuning fields when applicable. See [`threat-model.md`](./threat-model.md).
+
+### Docstore CAS
+
+For FAISS saves, `$FAISS_INDEX_PATH/.docstore-cas/` stores canonicalized
+`docstore.json` payloads keyed by SHA-256. `saveFaissStoreAtomic` can replace a
+per-model `index.vN/docstore.json` with a hardlink to the shared CAS payload so
+multiple embedding models over the same chunks do not duplicate the same text
+and metadata. CAS writes and garbage collection run under `.docstore-cas/.lock`;
+if hardlinking is unsupported or crosses devices, saves fall back to ordinary
+per-model `docstore.json` files without changing retrieval behavior.
 
 ### Legacy FAISS store
 
@@ -122,7 +143,7 @@ with `KB_QUERY_CACHE=off` or per-call CLI flags where supported.
 
 Each model directory can also contain:
 
-- `index-type.txt` — index creation type such as `flat` or `sq8`.
+- `index-type.txt` — index creation type: `flat`, `sq8`, or `hnsw`.
 - `last-index-update.json` — latest sanitized `updateIndex` summary for fresh
   process stats and doctor reports.
 - `metadata-sidecar.jsonl` — per-doc metadata rows used to speed filtered search
@@ -158,6 +179,7 @@ type ChunkMetadata = {
   tags: string[];
   frontmatter?: LiftedFrontmatter;
   pdf_path?: string;
+  contextual_preface?: string;
 };
 ```
 
@@ -173,6 +195,7 @@ type ChunkMetadata = {
 | `tags` | `string[]` | yes | `parseFrontmatter(content)` at `src/file-ingest.ts:68`, `:92-100` | visible |
 | `frontmatter` | `LiftedFrontmatter` | no | `liftFrontmatter(frontmatter, filePath)` at `src/file-ingest.ts:74-100` | visible after sanitization; `extras` hidden by default |
 | `pdf_path` | `string` KB-relative POSIX path | no | `detectSiblingPdfPath` for markdown files at `src/file-ingest.ts:80-101` | visible |
+| `contextual_preface` | `string` | no | `resolveContextualPrefaces` when contextual retrieval is enabled in `src/file-ingest.ts` | stored for embedding/lexical input; not a source-content replacement |
 
 ### Lifted frontmatter
 
@@ -201,6 +224,8 @@ This page is verified against the following source files. If one of these files 
 - Chunk metadata wire shape: `src/file-ingest.ts:37-104`.
 - Frontmatter whitelist + sanitisation: `src/frontmatter-lift.ts:19-218`, `src/formatter.ts:34-90`.
 - Atomic FAISS save / pinned load / version retention: `src/faiss-store-layout.ts`.
+- HNSW backend files and JSON docstore: `src/hnsw-index-adapter.ts`, `src/faiss-store-layout.ts`.
+- Docstore CAS hardlink dedup: `src/docstore-cas.ts`, `src/faiss-store-layout.ts`.
 - Query embedding cache: `src/query-cache.ts`.
 - Model registry, model sidecars, incomplete-add sentinel: `src/active-model.ts`.
 - Sidecar write path: `src/file-ingest.ts:118-144`, `src/FaissIndexManager.ts:782-793`.

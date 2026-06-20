@@ -178,7 +178,7 @@ wrap-close vars below.
 | Splitter chunk size | `KB_CHUNK_SIZE` | `1000` | Ingest and refresh | Implemented | none | `KB_CHUNK_SIZE=500 kb search "query" --refresh` |
 | Splitter chunk overlap | `KB_CHUNK_OVERLAP` | `200` (auto-scales as `floor(chunkSize/5)` when only `KB_CHUNK_SIZE` is set) | Ingest and refresh | Implemented | none | `KB_CHUNK_SIZE=500 KB_CHUNK_OVERLAP=100 kb search "query" --refresh` |
 | Indexing batch size | `INDEXING_BATCH_SIZE` | `64` (Ollama: `16`) | Embedding ingest | Implemented | none | `INDEXING_BATCH_SIZE=32 kb search "query" --refresh` |
-| FAISS index type | `KB_INDEX_TYPE=flat\|sq8`, or `kb models add --index-type=flat\|sq8` | `flat` | Per-model FAISS index creation | Implemented, opt-in SQ8 | model registration flag | `KB_INDEX_TYPE=sq8 kb models add ollama nomic-embed-text --dry-run` |
+| Search index type | `KB_INDEX_TYPE=flat\|sq8\|hnsw`, or `kb models add --index-type=flat\|sq8\|hnsw` | `flat` | Per-model index creation | Implemented; `sq8` uses FAISS scalar quantization, `hnsw` uses the HNSW backend | model registration flag | `KB_INDEX_TYPE=hnsw kb models add ollama nomic-embed-text --dry-run` |
 | Filesystem watcher | `KB_FS_WATCH` | off | KB root watcher (auto-refresh on file change) | Implemented, opt-in | none | `KB_FS_WATCH=1 node build/index.js` |
 | FS watcher debounce | `KB_FS_WATCH_DEBOUNCE_MS` | `250` | KB root watcher | Implemented | none | `KB_FS_WATCH=1 KB_FS_WATCH_DEBOUNCE_MS=500 node build/index.js` |
 | Index version retention | `KB_INDEX_VERSION_RETENTION` | `2` | FAISS version rotation | Implemented | none | `KB_INDEX_VERSION_RETENTION=4 kb reindex --with-context` |

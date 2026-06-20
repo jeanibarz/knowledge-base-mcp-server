@@ -1,6 +1,6 @@
 # 0001 — FAISS (embedded) over a standalone vector DB
 
-- **Status:** Accepted; concurrency and layout notes superseded by RFC 013/014
+- **Status:** Accepted for the default embedded store; concurrency/layout notes superseded by RFC 013/014 and opt-in HNSW backend added later
 - **Date:** 2026-04-24 (back-documented)
 - **Deciders:** Repo owner
 
@@ -25,9 +25,10 @@ The server needs a vector store. It must persist across restarts, survive the us
 
 ## Decision Outcome
 
-**Option 1 — embedded FAISS.** The implementation still uses FAISS through the
-LangChain community store and `faiss-node`, wrapped by local layout and adapter
-helpers.
+**Option 1 — embedded FAISS.** The default implementation still uses FAISS
+through the LangChain community store and `faiss-node`, wrapped by local layout
+and adapter helpers. Later HNSW work added an opt-in embedded `hnswlib-node`
+backend under the same local-file model; it does not add a standalone vector DB.
 
 Current layout note: the original root-level `$FAISS_INDEX_PATH/faiss.index`
 description is historical. Current saves are per model under

@@ -1,190 +1,163 @@
 # C4 — Component
 
-Zooming into the server process from [`c4-container.md`](./c4-container.md). The current source tree is an acyclic set of focused helpers around three orchestration surfaces: the MCP server, the FAISS index manager, and the CLI.
+Zooming into the package from [`c4-container.md`](./c4-container.md). The current source tree is still organized around three orchestration surfaces: the MCP server, the `kb` CLI dispatcher, and `FaissIndexManager`. The implementation below those surfaces is broader than the first architecture snapshot: retrieval now includes dense, lexical, hybrid, reranking, gate, metrics, FAISS/HNSW backends, and multiple operator workflows.
 
 ## Diagram
 
 ```mermaid
 flowchart TB
-  Entry["index.ts:1-11<br/>process entrypoint"]
-  CLI["cli.ts:62-150<br/>kb command dispatcher"]
+  Entry["index.ts<br/>server process entrypoint"]
+  CLI["cli.ts<br/>35-command kb dispatcher"]
 
-  subgraph cli["CLI handlers"]
-    CliList["cli-list.ts:1-15<br/>list command"]
-    CliSearch["cli-search.ts:37-250<br/>search command"]
-    CliCompare["cli-compare.ts:1-125<br/>compare command"]
-    CliModels["cli-models.ts:22-327<br/>models command"]
-    CliShared["cli-shared.ts:1-52<br/>CLI manager loading"]
+  subgraph cli["CLI command families"]
+    ReadCli["read/search<br/>list, search, open, related, stats, explain, where"]
+    WriteCli["KB writes<br/>remember, capture, import-url, ask --save-transcript"]
+    OpsCli["operations<br/>doctor, logs, backup, restore, verify, quarantine, stale-check, superseded, promote"]
+    EvalCli["evaluation<br/>eval, eval-gate, feedback, research"]
+    ModelCli["models and services<br/>models, compare, reindex, cache, llm, serve, config, completion"]
+    CliShared["cli-shared.ts / *-core.ts<br/>shared command-independent helpers"]
   end
 
   subgraph server["MCP runtime"]
-    KBS["KnowledgeBaseServer.ts:191-790<br/>tools, resources, transports, warmup"]
-    SSE["transport/sse.ts<br/>SSE host and session dispatch"]
-    Watcher["triggerWatcher.ts:41-209<br/>polling reindex trigger"]
+    KBS["KnowledgeBaseServer.ts<br/>tools, resources, prompts, transports"]
+    ToolSpecs["mcp-tool-specs.ts<br/>tool schema source of truth"]
+    Resources["mcp-resources.ts<br/>kb:// list/read"]
+    Prompts["mcp-prompts.ts<br/>optional prompt templates"]
+    Http["transport/http.ts + transport/sse.ts<br/>remote MCP hosts"]
+    Watchers["triggerWatcher.ts + recursive-fs-watch.ts<br/>optional refresh triggers"]
   end
 
-  subgraph index["Indexing and retrieval"]
-    FIM["FaissIndexManager.ts:244-1413<br/>provider, ingest, search, stats"]
-    FaissLayout["faiss-store-layout.ts:13-211<br/>versioned FAISS load/save"]
-    Loaders["loaders.ts:28-101<br/>extension-routed file loading"]
-    Format["formatter.ts:25-88<br/>retrieval wire formatting"]
-    Lock["write-lock.ts:17-72<br/>per-resource write locks"]
+  subgraph retrieval["Retrieval and answering"]
+    FIM["FaissIndexManager.ts<br/>model-scoped ingest/search/stats"]
+    SearchCore["search-core.ts / hybrid-retrieval.ts / lexical-index.ts<br/>dense, lexical, hybrid retrieval"]
+    Ask["ask-core.ts / llm-client.ts<br/>answer generation"]
+    Gate["relevance-gate.ts / reranker.ts<br/>optional post-retrieval stages"]
+    Formatter["formatter.ts / injection-guard.ts<br/>wire formatting and untrusted-content guard"]
   end
 
-  subgraph model["Model and KB filesystem"]
-    Active["active-model.ts:32-381<br/>model dirs, registration, active resolution"]
-    ModelId["model-id.ts:8-66<br/>model id parsing and validation"]
-    KbFs["kb-fs.ts:11-90<br/>KB listing and document path resolution"]
-    FileUtils["file-utils.ts:6-46<br/>SHA256 and recursive walk"]
-    IngestFilter["ingest-filter.ts<br/>ingestable path rules"]
-    KbPaths["kb-paths.ts<br/>KB name validation"]
-    Frontmatter["frontmatter.ts:16-83<br/>YAML frontmatter parsing"]
-    ErrorUtils["error-utils.ts:1-23<br/>unknown-to-Error coercion"]
+  subgraph storage["Storage and indexing"]
+    Active["active-model.ts<br/>model registry and active model"]
+    Layout["faiss-store-layout.ts<br/>versioned index load/save"]
+    FaissAdapter["faiss-store-adapter.ts<br/>FAISS backend adapter"]
+    HnswAdapter["hnsw-index-adapter.ts<br/>HNSW backend adapter"]
+    DocstoreCas["docstore-cas.ts<br/>docstore hardlink CAS"]
+    FileIngest["file-ingest.ts / loaders.ts<br/>chunking, manifests, loaders"]
+    KbFs["kb-fs.ts / kb-paths.ts / ingest-filter.ts<br/>KB enumeration and path safety"]
   end
 
-  Config["config/*.ts<br/>env-derived runtime config"]
-  Logger["logger.ts:14-74<br/>stderr logger + optional file mirror"]
-  Errors["errors.ts:1-23<br/>typed KB errors"]
-  OllamaErr["ollama-error.ts:34-108<br/>Ollama retry/error translation"]
-  Costs["cost-estimates.ts:11-60<br/>CLI model-add estimates"]
+  subgraph cross["Cross-cutting"]
+    Config["config/*.ts + transport-config.ts<br/>env/config schema"]
+    Lock["write-lock.ts<br/>per-model and sidecar locks"]
+    Logs["logger.ts / canonical-log.ts<br/>stderr, canonical logs"]
+    Metrics["metrics.ts / prometheus-export.ts / otel-trace.ts<br/>observability"]
+    Errors["errors.ts / error-utils.ts<br/>typed errors"]
+  end
 
   Entry --> KBS
-  CLI --> FIM
-  CLI --> CliList
-  CLI --> CliSearch
-  CLI --> CliCompare
-  CLI --> CliModels
-  CliList --> KbFs
-  CliSearch --> Active
-  CliSearch --> FIM
-  CliSearch --> Format
-  CliSearch --> Lock
-  CliSearch --> FileUtils
-  CliSearch --> IngestFilter
-  CliSearch --> CliShared
-  CliCompare --> Active
-  CliCompare --> FIM
-  CliCompare --> Format
-  CliCompare --> CliShared
-  CliModels --> Active
-  CliModels --> FIM
-  CliModels --> KbFs
-  CliModels --> Lock
-  CliModels --> Costs
-  CliModels --> FileUtils
-  CliModels --> IngestFilter
+  CLI --> ReadCli
+  CLI --> WriteCli
+  CLI --> OpsCli
+  CLI --> EvalCli
+  CLI --> ModelCli
+  ReadCli --> CliShared
+  WriteCli --> CliShared
+  OpsCli --> CliShared
+  EvalCli --> CliShared
+  ModelCli --> CliShared
   CliShared --> FIM
+  CliShared --> Active
 
+  KBS --> ToolSpecs
+  KBS --> Resources
+  KBS --> Prompts
+  KBS --> Http
+  KBS --> Watchers
   KBS --> FIM
-  KBS --> Active
-  KBS --> Config
-  KBS --> Format
-  KBS --> KbFs
-  KBS --> Lock
-  KBS --> SSE
-  KBS --> Watcher
-  KBS --> ErrorUtils
-  KBS --> FileUtils
-  KBS --> IngestFilter
-  KBS --> KbPaths
-  KBS --> Errors
+  KBS --> Ask
+  KBS --> Gate
+  KBS --> Formatter
 
+  FIM --> SearchCore
   FIM --> Active
-  FIM --> Config
-  FIM --> Errors
+  FIM --> Layout
+  FIM --> FileIngest
   FIM --> KbFs
-  FIM --> FaissLayout
-  FIM --> FileUtils
-  FIM --> Frontmatter
-  FIM --> IngestFilter
-  FIM --> Loaders
-  FIM --> Logger
-  FIM --> ModelId
-  FIM --> OllamaErr
-  FIM --> ErrorUtils
+  Layout --> FaissAdapter
+  Layout --> HnswAdapter
+  Layout --> DocstoreCas
+  SearchCore --> Formatter
+  Ask --> SearchCore
 
-  Active --> Config
-  Active --> Logger
-  Active --> ModelId
-  KbFs --> KbPaths
-  SSE --> Config
-  SSE --> Logger
-  Watcher --> Logger
-  FaissLayout --> Logger
-  FileUtils --> Logger
-  IngestFilter --> Logger
-  Lock --> Logger
-  OllamaErr --> Errors
+  KBS --> Config
+  CLI --> Config
+  FIM --> Config
+  KBS --> Lock
+  CLI --> Lock
+  FIM --> Lock
+  KBS --> Logs
+  CLI --> Logs
+  FIM --> Logs
+  KBS --> Metrics
+  SearchCore --> Metrics
+  KBS --> Errors
+  FIM --> Errors
 ```
 
 ## Components
 
 | Component | File | Responsibility | Public surface touched elsewhere |
 | --- | --- | --- | --- |
-| Process entrypoint | `src/index.ts:1-11` | Constructs `KnowledgeBaseServer`, runs it, and converts top-level failures to process exit code 1. | Imported by no source module. |
-| MCP server | `src/KnowledgeBaseServer.ts:191-790` | Registers MCP tools/resources, resolves model managers, coordinates retrieval, starts stdio/SSE transports, warmup, shutdown, and reindex watcher. | `KnowledgeBaseServer.run()` from `src/index.ts:8`. |
-| FAISS index manager | `src/FaissIndexManager.ts:244-1413` | Owns embedding provider instances, ingest/update, search, index stats, and chunk metadata shaping. | `initialize()`, `updateIndex()`, `similaritySearch()`, `stats()`, `resolveActiveIndexFilePath()`. |
-| FAISS store layout | `src/faiss-store-layout.ts:13-211` | Owns versioned FAISS `index -> index.vN` load/save, legacy fallback, symlink swaps, and version garbage collection. | Used by FAISS manager wrappers and active-model index path resolution. |
-| CLI dispatcher | `src/cli.ts:62-150` | Implements help/version handling, subcommand dispatch, and process-driver detection for the `kb` binary. | `main(argv)` and the package `bin` entries in `package.json:5-9`. |
-| CLI search handler | `src/cli-search.ts:37-250` | Parses search args, optionally refreshes under the write lock, runs similarity search, and reports staleness. | Called only by the CLI dispatcher. |
-| CLI model handler | `src/cli-models.ts:22-327` | Handles model list/add/set-active/remove, cost estimates, model registration, active model writes, and incomplete-add cleanup. | Called only by the CLI dispatcher. |
-| CLI compare/list/shared helpers | `src/cli-compare.ts:1-125`, `src/cli-list.ts:1-15`, `src/cli-shared.ts:1-52` | Keep compare/list output and CLI manager loading separate from search/model flows. | Called only by CLI handlers. |
-| Active model store | `src/active-model.ts:32-381` | Single owner of `models/<id>/` paths, registered-model discovery, active-model resolution, and `active.txt` writes. | Used by CLI, MCP server, and FAISS manager. |
-| Model id helpers | `src/model-id.ts:8-66` | Validates and derives provider-qualified model ids. | Used by active-model, CLI, FAISS manager, and cost estimates. |
-| KB filesystem helpers | `src/kb-fs.ts:11-90` | Lists KB directories and resolves exposed MCP resource document paths. | Used by CLI, MCP server, and FAISS manager. |
-| File utilities | `src/file-utils.ts:6-46` | SHA256 hashing and recursive, dotfile-skipping file walks. | Used by CLI handlers and FAISS manager. |
-| Ingest filter | `src/ingest-filter.ts` | Applies corpus inclusion/exclusion rules and public skipped-filename patterns. | Used by CLI handlers, MCP server, and FAISS manager. |
-| KB path validation | `src/kb-paths.ts` | Validates KB names. Document path resolution without traversal or symlink escape lives in `src/kb-fs.ts` and `src/mcp-resources.ts`. | Used by MCP server, resources, and KB FS. |
-| Frontmatter parser | `src/frontmatter.ts:16-83` | Parses bounded FAILSAFE YAML frontmatter into tags/body/raw object. | Used by FAISS manager chunk metadata shaping. |
-| Error utilities | `src/error-utils.ts:1-23` | Converts unknown thrown values into stable `Error` instances at catch boundaries. | Used by MCP server and FAISS manager. |
-| Config | `src/config/*.ts`, `src/transport-config.ts` | Reads env-derived runtime config at module load; validates MCP transport settings at startup. | Used by most runtime modules. |
-| Formatter | `src/formatter.ts:25-88` | Sanitizes metadata and formats retrieval results as markdown/JSON. | Used by CLI and MCP server. |
-| Loaders | `src/loaders.ts:28-101` | Routes file loading by extension for plain text, PDF, and HTML. | Used by FAISS manager. |
-| Write lock | `src/write-lock.ts:17-72` | Serializes write paths with `proper-lockfile`. | Used by CLI and MCP server. |
-| SSE host | `src/transport/sse.ts` | Hosts MCP-over-SSE sessions with auth/origin checks and per-session `McpServer` instances. | Used by `KnowledgeBaseServer.runSse()`. |
-| Trigger watcher | `src/triggerWatcher.ts:41-209` | Polls a trigger file and requests reindexing when mtime changes. | Used by `KnowledgeBaseServer.startTriggerWatcher()`. |
-| Logger | `src/logger.ts:14-74` | Writes logs to stderr and optional `LOG_FILE`, preserving stdout for JSON-RPC/CLI output. | Imported by runtime modules. |
-| Error taxonomy | `src/errors.ts:1-23` | Defines `KBError` codes for operator-facing failure paths. | Used by FAISS manager, MCP server, and Ollama error translation. |
-| Ollama error translation | `src/ollama-error.ts:34-108` | Detects non-retryable Ollama context-length failures and maps them to `KBError`. | Used by FAISS manager provider setup. |
+| Process entrypoint | `src/index.ts` | Constructs `KnowledgeBaseServer`, runs it, and converts top-level failures to process exit code 1. | Package `knowledge-base-mcp-server` bin. |
+| MCP server | `src/KnowledgeBaseServer.ts` | Registers MCP tools/resources/prompts, resolves model managers, coordinates retrieval/ask/write handlers, starts stdio/SSE/HTTP transports, warmup, shutdown, and reindex watchers. | `KnowledgeBaseServer.run()` from the process entrypoint. |
+| MCP tool specs | `src/mcp-tool-specs.ts` | Single source of truth for MCP tool names, descriptions, input schemas, and ingest gating. | Used by server registration and generated `docs/reference/mcp-tools.md`. |
+| MCP resources and prompts | `src/mcp-resources.ts`, `src/mcp-prompts.ts` | Expose `kb://` source-document list/read and optional prompt templates. | Registered from `KnowledgeBaseServer.buildMcpServer()`. |
+| Remote transports | `src/transport/http.ts`, `src/transport/sse.ts`, `src/transport/base-http-host.ts`, `src/transport-config.ts` | Host streamable HTTP/SSE sessions with bearer auth, origin checks, backoff, runtime counters, and health/metrics endpoints. | Selected by `MCP_TRANSPORT`. |
+| CLI dispatcher | `src/cli.ts` | Loads package `.env`, owns help/version/daemon routing, and dispatches 35 subcommands from the `SUBCOMMANDS` registry. | Package `kb` bin and generated `docs/reference/cli.md`. |
+| CLI command modules | `src/cli-*.ts` | Implement shell workflows: search/list/open/related, ask/remember/capture/import-url, model management, diagnostics, logs, backup/restore, eval/feedback/research, daemon/service helpers, cache, config, and completion. | Called only by `src/cli.ts` or other CLI modules. |
+| Shared CLI/core helpers | `src/cli-shared.ts`, `src/*-core.ts` | Keep command-independent logic reusable by CLI, MCP, tests, and benchmarks. | Used by CLI handlers and selected server paths. |
+| FAISS index manager | `src/FaissIndexManager.ts` | Model-scoped owner of embedding clients, ingest/update, sidecars, backend load/save, similarity search, stats, and chunk metadata shaping. | Constructed by CLI shared loading, `ManagerRegistry`, and read-only server helpers. |
+| Search backends | `src/faiss-store-adapter.ts`, `src/hnsw-index-adapter.ts`, `src/search-index-adapter.ts` | Present FAISS and HNSW stores behind a shared search-index adapter surface. | Loaded/saved by `faiss-store-layout.ts`, queried by `FaissIndexManager`. |
+| Versioned store layout | `src/faiss-store-layout.ts` | Owns `index -> index.vN` load/save, backend/integrity manifests, legacy fallback, symlink swaps, retention pruning, and HNSW/FAISS backend dispatch. | Used by `FaissIndexManager` and diff/verify flows. |
+| Docstore CAS | `src/docstore-cas.ts` | Canonicalizes FAISS `docstore.json` payloads and hardlinks identical docstores through `$FAISS_INDEX_PATH/.docstore-cas/`. | Called during FAISS atomic saves. |
+| Active model store | `src/active-model.ts` | Single owner of `models/<id>/` paths, registered-model discovery, `model_name.txt`, `index-type.txt`, incomplete-add state, and `active.txt` resolution/writes. | Used by CLI, MCP server, manager registry, and FAISS manager. |
+| Ingest and loaders | `src/file-ingest.ts`, `src/loaders.ts`, `src/ingest-quarantine.ts`, `src/secret-scanner.ts` | Build chunks/manifests, route extension-specific extraction, quarantine failed/secret-bearing files, and write sidecars. | Used by `FaissIndexManager` and inspect/doctor surfaces. |
+| Retrieval composition | `src/search-core.ts`, `src/hybrid-retrieval.ts`, `src/lexical-index.ts`, `src/rrf.ts`, `src/retrieval-views.ts` | Implement dense, lexical, hybrid RRF, retrieval views, scoring/diagnostics, and fallback/degradation behavior. | Used by CLI search, MCP retrieval, eval, and research flows. |
+| Answering and relevance | `src/ask-core.ts`, `src/llm-client.ts`, `src/relevance-gate.ts`, `src/reranker.ts` | Pack retrieval context, call local/OpenAI-compatible LLMs, optionally gate/rerank candidates, and report timing/provenance. | Used by CLI `ask`, MCP `ask_knowledge`, MCP/CLI retrieval, eval-gate. |
+| Formatting and content guard | `src/formatter.ts`, `src/injection-guard.ts`, `src/kb-shield.ts` | Sanitize metadata, format markdown/JSON retrieval output, and tag/wrap untrusted retrieved content. | Used by CLI and MCP retrieval surfaces. |
+| KB filesystem helpers | `src/kb-fs.ts`, `src/kb-paths.ts`, `src/file-utils.ts`, `src/ingest-filter.ts` | List KBs, validate names/paths, walk files, hash content, and apply inclusion/exclusion rules. | Used by CLI, MCP resources/writes, and FAISS manager. |
+| Locking and lifecycle | `src/write-lock.ts`, `src/manager-registry.ts`, `src/triggerWatcher.ts`, `src/recursive-fs-watch.ts` | Serialize mutating index/sidecar paths, cache managers per model, and trigger refreshes from polling/fs-watch inputs. | Used by server and CLI mutation/refresh flows. |
+| Observability and diagnostics | `src/logger.ts`, `src/canonical-log.ts`, `src/metrics.ts`, `src/prometheus-export.ts`, `src/otel-trace.ts`, `src/kb-stats.ts` | Keep stdout clean, emit canonical events, expose stats/metrics/traces, and power doctor/logs/stats surfaces. | Used across CLI/MCP runtime modules. |
+| Configuration and errors | `src/config/*.ts`, `src/errors.ts`, `src/error-utils.ts`, `src/ollama-error.ts` | Resolve env/config defaults, validate schemas, and translate provider/filesystem failures into stable operator-facing errors. | Imported by runtime modules and generated config docs. |
 
 ## Key Cross-Component Interactions
 
-### Request path
+### Request Path
 
-`retrieve_knowledge` is registered in `src/KnowledgeBaseServer.ts`. At request
-time, `handleRetrieveKnowledge` resolves the active or explicit model, runs
-`manager.updateIndex()` under the per-model write lock, queries
-`manager.similaritySearch()` or the hybrid search path, then formats results
-through `formatRetrievalAsMarkdown()`.
+`retrieve_knowledge` is registered in `src/KnowledgeBaseServer.ts` from schemas in `src/mcp-tool-specs.ts`. At request time, `handleRetrieveKnowledge` resolves the active or explicit model, loads a model manager from `ManagerRegistry`, refreshes under the per-model write lock for MCP retrieval, queries dense or hybrid retrieval, applies optional relevance gate/reranker stages, and formats through `formatRetrievalAsMarkdown()`.
 
-### Startup path
+### Startup Path
 
-`src/index.ts:8` calls `server.run()`. `KnowledgeBaseServer.run()` loads transport config, bootstraps the FAISS layout, then starts stdio, SSE, or streamable HTTP. Active-manager warmup is best-effort and starts after transport connect.
+`src/index.ts` calls `server.run()`. `KnowledgeBaseServer.run()` bootstraps the index layout, validates transport config, then starts stdio, SSE, or streamable HTTP. Active-manager warmup and file/trigger watchers are optional runtime concerns, not persistence owners.
 
-### Model layout path
+### Model Layout Path
 
-`active-model.ts` owns the filesystem schema and active resolution rules. `modelDir()` validates ids before joining paths at `src/active-model.ts:36-42`; `isRegisteredModel()` defines registration at `src/active-model.ts:111-140`; and `resolveActiveModel()` applies explicit override, `KB_ACTIVE_MODEL`, `active.txt`, then legacy env-derived fallback at `src/active-model.ts:291-359`.
+`active-model.ts` owns the filesystem schema and active resolution rules: model directory derivation, registration checks, `model_name.txt`, `index-type.txt`, `.adding`, and `active.txt`. New model-loading code should read model metadata there instead of reconstructing paths or assuming the process-level `KB_INDEX_TYPE`.
 
-### Index persistence path
+### Index Persistence Path
 
-`FaissIndexManager.initialize()` creates embeddings lazily and loads the current
-store. The manager delegates versioned persistence to
-`loadFaissStoreAtomic()` and `saveFaissStoreAtomic()` in
-`src/faiss-store-layout.ts`; those helpers prefer the RFC 014 symlink layout,
-fall back to legacy `faiss.index/`, write a new `index.vN/`, atomically swap the
-`index` symlink, and garbage-collect old versions.
+`FaissIndexManager.initialize()` creates embeddings lazily and loads the current backend. The manager delegates versioned persistence to `loadFaissStoreAtomic()` / `saveFaissStoreAtomic()` and `loadHnswIndexAtomic()` / `saveHnswIndexAtomic()` in `src/faiss-store-layout.ts`. The layout helpers prefer the RFC 014 symlink layout, fall back to legacy FAISS when valid, write new `index.vN/` directories, atomically swap `index`, and prune old versions.
 
-### CLI path
+### CLI Path
 
-`main()` in `src/cli.ts:62-93` is a dispatcher only. Command-specific behavior lives in `runSearch()` at `src/cli-search.ts:37-132`, `runModels()` at `src/cli-models.ts:22-42`, `runCompare()` at `src/cli-compare.ts:1-125`, and `runList()` at `src/cli-list.ts:1-15`; shared manager loading stays in `src/cli-shared.ts:1-52`.
+`src/cli.ts` is the dispatcher. Command-specific behavior lives in `src/cli-*.ts`; shared manager loading and process-capture helpers live in `src/cli-shared.ts`; command-independent logic belongs in `*-core.ts` modules so non-CLI runtime code does not depend on CLI adapters.
 
 ## Dependency Rules In Force
 
-- **No source import cycles.** The current non-test TypeScript graph has 43 internal edges and no direct or transitive cycles.
-- **Runtime orchestration points outward.** `KnowledgeBaseServer` and `cli.ts` may depend on indexing/model/filesystem helpers; those helpers do not import either orchestration surface.
-- **Non-CLI modules never import `cli-*` adapters.** Only `cli.ts` and `cli-*.ts` command modules may import a `cli-*` adapter. Shared, server, and transport modules import command-independent `*-core` modules (`search-core.ts`, `search-errors-core.ts`, `timing-core.ts`) instead. `src/non-cli-import-boundary.test.ts` scans every production module and fails on a regression; `src/search-core.boundaries.test.ts` pins two specific consumers.
+- **No source import cycles.** Production modules should remain acyclic; keep orchestration modules at the edge.
+- **Runtime orchestration points outward.** `KnowledgeBaseServer` and `cli.ts` may depend on indexing/model/filesystem helpers; those helpers should not import either orchestration surface.
+- **Non-CLI modules never import `cli-*` adapters.** Only `cli.ts` and `cli-*.ts` command modules may import a `cli-*` adapter. Shared, server, and transport modules import command-independent `*-core` modules (`search-core.ts`, `search-errors-core.ts`, `timing-core.ts`) instead. `src/non-cli-import-boundary.test.ts` scans production modules for regressions.
 - **`logger` remains a leaf.** It has no source imports and must continue writing logs away from stdout.
-- **`active-model.ts` is the model layout authority.** New code should not reconstruct `models/<id>/` paths independently.
-- **FAISS store layout is not embedded in the manager.** Versioned index load/save behavior belongs in `faiss-store-layout.ts`; `FaissIndexManager` remains the ingest/search orchestrator.
-- **Shared helpers are domain-scoped.** Prefer `file-utils.ts`, `ingest-filter.ts`, `kb-paths.ts`, `frontmatter.ts`, and `error-utils.ts` over reintroducing broad utility barrels.
+- **`active-model.ts` is the model layout authority.** New code should not reconstruct `models/<id>/` paths, `model_name.txt`, or `index-type.txt` independently.
+- **Versioned store layout is not embedded in the manager.** Backend-specific load/save behavior belongs in `faiss-store-layout.ts`; `FaissIndexManager` remains the ingest/search orchestrator.
+- **Shared helpers are domain-scoped.** Prefer existing domain helpers over broad utility barrels.
 - **Config is read at module load except transport validation.** `loadTransportConfig()` in `src/transport-config.ts` is the explicit startup validation boundary for MCP transport settings.
