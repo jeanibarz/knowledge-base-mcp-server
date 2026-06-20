@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 
 const DEFAULT_DOC_ROOTS = [
   'docs/architecture',
+  'docs/operations',
   'docs/rfcs',
   'README.md',
   'CONTRIBUTING.md',
@@ -27,8 +28,9 @@ function usage() {
   return [
     'usage: node scripts/check-doc-anchors.mjs [--root <repo>] [--strict] [--verbose] [--json] [--self-test]',
     '',
-    'Scans docs/architecture/**/*.md, docs/rfcs/**/*.md, README.md,',
-    'CONTRIBUTING.md, and CLAUDE.md for anchors like src/file.ts:12-20',
+    'Scans docs/architecture/**/*.md, docs/operations/**/*.md,',
+    'docs/rfcs/**/*.md, README.md, CONTRIBUTING.md, and CLAUDE.md',
+    'for anchors like src/file.ts:12-20',
     'and src/file.ts::SymbolName.',
   ].join('\n');
 }
