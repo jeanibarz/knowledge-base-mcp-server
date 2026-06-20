@@ -5,6 +5,19 @@ performance and retrieval-efficiency changes. It is deliberately conservative:
 it emits `decision.json` and `report.md`, but it does not rewrite defaults,
 refresh baselines, or change code automatically.
 
+## Convenient chain
+
+For normal use, start with durable repo state instead of hand-writing a plan:
+
+```bash
+bin/run-iteration.sh          # one champion/challenger iteration
+bin/run-chain.sh --max-iter 0 # repeat until STOP, state cap, or no candidates
+```
+
+The chain reads `state.json`, writes artifacts under
+`benchmarks/results/evolution/<run-id>/`, advances `state.json`, and appends
+`history.md`. The Kookr playbook is `.kookr/playbooks/evolve.md`.
+
 ## Plan file
 
 ```json

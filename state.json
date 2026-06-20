@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "playbook": ".kookr/playbooks/evolve.md",
+  "current_champion": {
+    "id": "current-defaults",
+    "hypothesis": "Repository defaults on origin/main.",
+    "env": {}
+  },
+  "last_run_id": null,
+  "last_promoted_run_id": null,
+  "bench_command": [
+    "npm",
+    "run",
+    "bench"
+  ],
+  "champion_env": {
+    "BENCH_PROVIDER": "stub",
+    "BENCH_INCLUDE_CLI_SEARCH": "1",
+    "BENCH_CLI_SEARCH_REPETITIONS": "3"
+  },
+  "objective": {
+    "metric_path": "scenarios.cli_search.variants.0.wall_p95_ms",
+    "direction": "lower",
+    "min_absolute_improvement": 5
+  },
+  "gate": {
+    "max_fail_rows": 0,
+    "max_warn_rows": null,
+    "require_metric_present": true
+  },
+  "chain": {
+    "iter": 0,
+    "candidates_per_iteration": 2,
+    "stop_after_iter": null
+  },
+  "candidate_pool": [
+    {
+      "id": "chunk-768-overlap-128",
+      "axis": "chunking",
+      "hypothesis": "Smaller chunks with moderate overlap may reduce CLI search tail latency without recall or budget regressions.",
+      "env": {
+        "KB_CHUNK_SIZE": "768",
+        "KB_CHUNK_OVERLAP": "128"
+      }
+    },
+    {
+      "id": "chunk-1200-overlap-160",
+      "axis": "chunking",
+      "hypothesis": "Larger chunks with lower relative overlap may reduce index and search overhead while preserving source coverage.",
+      "env": {
+        "KB_CHUNK_SIZE": "1200",
+        "KB_CHUNK_OVERLAP": "160"
+      }
+    },
+    {
+      "id": "index-batch-32",
+      "axis": "indexing-batch",
+      "hypothesis": "A smaller indexing batch may lower memory/RSS risk while keeping CLI latency within budget.",
+      "env": {
+        "INDEXING_BATCH_SIZE": "32"
+      }
+    },
+    {
+      "id": "index-batch-128",
+      "axis": "indexing-batch",
+      "hypothesis": "A larger indexing batch may reduce provider-call overhead and cold index time without RSS regressions.",
+      "env": {
+        "INDEXING_BATCH_SIZE": "128"
+      }
+    }
+  ],
+  "candidate_history": [],
+  "last_decision": null
+}

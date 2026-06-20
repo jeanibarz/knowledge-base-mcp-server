@@ -13,3 +13,7 @@ benchmarks/results/**/*.trec
 # Stryker mutation testing output (issue #651)
 .stryker-tmp/
 reports/mutation/
+
+# Local evolution chain controls
+STOP
+.chain-heartbeat

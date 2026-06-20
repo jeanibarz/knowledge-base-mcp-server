@@ -22,6 +22,9 @@
 - [x] Given a candidate improves the objective metric but triggers a protected quality or performance budget failure, then the decision holds the champion.
 - [x] Given a candidate improvement is below the pre-registered objective margin, then the decision holds the champion.
 - [x] Given an arm supplies a command instead of a report path, then the harness can execute the command with arm-specific environment variables and consume the emitted benchmark JSON artifact.
+- [x] Given durable evolution state, when a single iteration runs, then the system shall generate a plan, run the champion/challenger benchmark, update `state.json`, and append `history.md`.
+- [x] Given no eligible candidate remains for the current champion, when the iteration wrapper runs, then the chain shall stop with a cap/no-work exit instead of rerunning stale arms.
+- [x] Given an operator wants unattended convenience, when they use the Kookr playbook or `bin/run-chain.sh`, then the system shall provide the same one-iteration/self-continuation contract used by the sibling evolution repositories.
 
 **Linked Tests:** TS-BENCH-712
 **Dependencies:** NFR-INDEX-236, RFC020
