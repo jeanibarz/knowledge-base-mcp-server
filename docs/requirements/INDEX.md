@@ -9,6 +9,23 @@
 
 ## Indexing
 
+### NFR-BENCH-712: KB CLI Evolution Harness
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall provide an advisory evolution harness that compares `kb` CLI benchmark champion and challenger arms, applies pre-registered objective and budget gates, and emits deterministic promotion artifacts without mutating defaults or benchmark baselines.
+**Rationale:** Performance and efficiency improvements need a repeatable champion/challenger loop that can explore configuration and implementation hypotheses while preserving retrieval quality and regression budgets.
+
+**Acceptance Criteria:**
+- [x] Given a plan with a champion report and candidate reports, when the evolution harness runs, then it writes `decision.json`, `report.md`, and copied arm reports under a run directory.
+- [x] Given a candidate improves the configured objective metric and has no disallowed budget rows, then the decision promotes that candidate over the champion.
+- [x] Given a candidate improves the objective metric but triggers a protected quality or performance budget failure, then the decision holds the champion.
+- [x] Given a candidate improvement is below the pre-registered objective margin, then the decision holds the champion.
+- [x] Given an arm supplies a command instead of a report path, then the harness can execute the command with arm-specific environment variables and consume the emitted benchmark JSON artifact.
+
+**Linked Tests:** TS-BENCH-712
+**Dependencies:** NFR-INDEX-236, RFC020
+
 ### NFR-INDEX-358: Default Text-First Ingest Filter
 **Status:** Implemented
 **Priority:** High

@@ -1,6 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "ignoreDeprecations": "5.0",
     "outDir": "build/benchmarks",
     "rootDir": "benchmarks",
     "tsBuildInfoFile": "build/benchmarks/.tsbuildinfo"
