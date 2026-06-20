@@ -2,6 +2,7 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { execFile } from 'child_process';
+import { fileURLToPath } from 'url';
 import { promisify } from 'util';
 import type { BenchmarkReport } from '../types.js';
 import { ensureDirectory, writeJsonFile } from '../utils.js';
@@ -16,8 +17,26 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+export interface RunEvolutionPlanOptions {
+  outDir?: string;
+  planPath: string;
+}
+
+export interface RunEvolutionPlanResult {
+  decisionPath: string;
+  outDir: string;
+  reportPath: string;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  const result = await runEvolutionPlan(args);
+  process.stdout.write(`Decision: ${result.decisionPath}\n`);
+  process.stdout.write(`Report: ${result.reportPath}\n`);
+}
+
+export async function runEvolutionPlan(options: RunEvolutionPlanOptions): Promise<RunEvolutionPlanResult> {
+  const args = options;
   const plan = await readPlan(args.planPath);
   const runId = plan.run_id ?? timestampRunId(new Date());
   const outDir = args.outDir ?? path.join(process.cwd(), 'benchmarks', 'results', 'evolution', runId);
@@ -37,10 +56,11 @@ async function main(): Promise<void> {
     runId,
   });
 
-  await writeJsonFile(path.join(outDir, 'decision.json'), decision);
-  await fsp.writeFile(path.join(outDir, 'report.md'), renderEvolutionMarkdown(decision), 'utf-8');
-  process.stdout.write(`Decision: ${path.join(outDir, 'decision.json')}\n`);
-  process.stdout.write(`Report: ${path.join(outDir, 'report.md')}\n`);
+  const decisionPath = path.join(outDir, 'decision.json');
+  const reportPath = path.join(outDir, 'report.md');
+  await writeJsonFile(decisionPath, decision);
+  await fsp.writeFile(reportPath, renderEvolutionMarkdown(decision), 'utf-8');
+  return { decisionPath, outDir, reportPath };
 }
 
 interface CliArgs {
@@ -134,7 +154,9 @@ function safeFileSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'arm';
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}
