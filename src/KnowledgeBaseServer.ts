@@ -22,6 +22,7 @@ import {
   listRegisteredModels,
   modelDir,
   parseModelId,
+  readStoredIndexType,
   readStoredModelName,
   resolveActiveModel,
   resolveFaissIndexBinaryPath,
@@ -682,6 +683,7 @@ export class KnowledgeBaseServer {
     const manager = new FaissIndexManager({
       provider: provider as EmbeddingProvider,
       modelName,
+      indexType: await readStoredIndexType(modelId),
     });
     await manager.initialize({ readOnly: true });
     return manager;

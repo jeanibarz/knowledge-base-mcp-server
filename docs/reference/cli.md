@@ -873,7 +873,7 @@ kb models — manage embedding models (RFC 013)
 
 Usage:
   kb models list
-  kb models add <provider> <model> [--index-type=flat|sq8] [--yes] [--dry-run] [--recover]
+  kb models add <provider> <model> [--index-type=flat|sq8|hnsw] [--yes] [--dry-run] [--recover]
   kb models set-active <id>
   kb models remove <id>
   kb models gc --dry-run [--format=json]
@@ -911,8 +911,9 @@ Options for `add`:
   --recover             When a previous add left a stale .adding sentinel
                         whose writer PID is dead, delete that incomplete
                         model directory before retrying. Requires --yes.
-  --index-type=flat|sq8 Select the FAISS index type for this model. Default
-                        is KB_INDEX_TYPE when set, otherwise flat.
+  --index-type=flat|sq8|hnsw
+                        Select the search index type for this model. Default is
+                        KB_INDEX_TYPE when set, otherwise flat.
 
 Options for `gc`:
   --dry-run             Required. Print the cleanup plan; never delete.
