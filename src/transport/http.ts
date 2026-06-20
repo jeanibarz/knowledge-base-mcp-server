@@ -6,6 +6,7 @@
 //
 // Surface:
 //   GET    /health     unauthenticated JSON liveness probe
+//   GET    /ready      authenticated model/index/backend readiness probe
 //   POST   /mcp        initialize or per-session JSON-RPC POST
 //   GET    /mcp        optional per-session SSE stream
 //   DELETE /mcp        terminate a session

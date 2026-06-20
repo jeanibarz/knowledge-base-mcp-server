@@ -11,6 +11,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import type { AuthBackoffConfig } from '../transport-config.js';
+import type { ReadinessPayload } from '../transport-readiness.js';
 import { StreamableHttpHost } from './http.js';
 
 const VALID_TOKEN = 'a-very-secret-token-for-test-use-only';
@@ -35,6 +36,7 @@ async function startHost(opts: {
   allowedOrigins?: string[];
   authBackoff?: AuthBackoffConfig;
   metricsExporter?: () => Promise<string>;
+  readinessProbe?: () => Promise<ReadinessPayload>;
 }): Promise<{ host: StreamableHttpHost; port: number; stop: () => Promise<void> }> {
   const host = new StreamableHttpHost({
     config: {
@@ -47,6 +49,7 @@ async function startHost(opts: {
     },
     createMcpServer: freshFactory(),
     metricsExporter: opts.metricsExporter,
+    readinessProbe: opts.readinessProbe,
   });
   const server = await host.start();
   const addr = server.address() as AddressInfo;
@@ -143,6 +146,30 @@ function sendMalformedHttpRequest(port: number): Promise<void> {
   });
 }
 
+function readyPayload(
+  status: 'ok' | 'error',
+  failingChecks: ReadinessPayload['failing_checks'] = [],
+): ReadinessPayload {
+  return {
+    status,
+    checks: [
+      {
+        name: 'active_model',
+        status: failingChecks.includes('active_model') ? 'error' : 'ok',
+      },
+      {
+        name: 'index',
+        status: failingChecks.includes('index') ? 'error' : 'ok',
+      },
+      {
+        name: 'backend',
+        status: failingChecks.includes('backend') ? 'error' : 'ok',
+      },
+    ],
+    failing_checks: failingChecks,
+  };
+}
+
 describe('StreamableHttpHost — endpoints', () => {
   let stop: (() => Promise<void>) | undefined;
   const originalMetricsExport = process.env.KB_METRICS_EXPORT;
@@ -163,6 +190,69 @@ describe('StreamableHttpHost — endpoints', () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toMatch(/application\/json/);
     expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
+  });
+
+  it('requires bearer auth for GET /ready', async () => {
+    const started = await startHost({
+      readinessProbe: async () => readyPayload('ok'),
+    });
+    stop = started.stop;
+
+    const missing = await request(started.port, { path: '/ready' });
+    expect(missing.statusCode).toBe(401);
+
+    const wrong = await request(started.port, {
+      path: '/ready',
+      headers: { Authorization: 'Bearer not-the-real-token-not-the-real-tok' },
+    });
+    expect(wrong.statusCode).toBe(401);
+  });
+
+  it('serves authenticated readiness JSON when model, index, and backend are ready', async () => {
+    const started = await startHost({
+      readinessProbe: async () => readyPayload('ok'),
+    });
+    stop = started.stop;
+
+    const res = await request(started.port, {
+      path: '/ready',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(JSON.parse(res.body)).toEqual(readyPayload('ok'));
+  });
+
+  it('returns 503 readiness JSON with failing check names when a dependency is not ready', async () => {
+    const started = await startHost({
+      readinessProbe: async () => readyPayload('error', ['backend']),
+    });
+    stop = started.stop;
+
+    const res = await request(started.port, {
+      path: '/ready',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` },
+    });
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual(readyPayload('error', ['backend']));
+  });
+
+  it('applies the same origin gate to /ready as MCP routes', async () => {
+    const started = await startHost({
+      allowedOrigins: ['https://app.example'],
+      readinessProbe: async () => readyPayload('ok'),
+    });
+    stop = started.stop;
+
+    const res = await request(started.port, {
+      path: '/ready',
+      headers: {
+        Authorization: `Bearer ${VALID_TOKEN}`,
+        Origin: 'https://evil.example',
+      },
+    });
+    expect(res.statusCode).toBe(403);
   });
 
   it('serves authenticated OpenMetrics text at GET /metrics when enabled', async () => {
