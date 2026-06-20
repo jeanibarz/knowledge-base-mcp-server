@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted; hnswlib backend path implemented.
 
 ## Context
 
@@ -65,6 +65,20 @@ Recommended path for #596:
 
 In short: **no-go for status-quo `faiss-node` HNSW factory work; conditional
 go for either FAISS accessors or a dedicated `hnswlib-node` backend.**
+
+## Current Implementation
+
+The project has since taken the dedicated `hnswlib-node` backend path. The
+implemented surface is `KB_INDEX_TYPE=hnsw` or
+`kb models add --index-type=hnsw`, with tuning through `KB_HNSW_M`,
+`KB_HNSW_EF_CONSTRUCTION`, `KB_HNSW_EF_SEARCH`, and
+`KB_HNSW_RANDOM_SEED`.
+
+The layout follows the recommendation in this ADR: HNSW stores
+`index.vN/hnsw.index`, a project-owned JSON `docstore.json`, and HNSW
+parameters in `integrity.json`; the loader reapplies `efSearch` after every
+load. FAISS `flat` and `sq8` remain the default/recommended modes unless local
+fixtures show the approximate HNSW trade-off is worthwhile for a shelf.
 
 ## Comparison
 

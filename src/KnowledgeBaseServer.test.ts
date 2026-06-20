@@ -37,7 +37,7 @@ const getLastIndexUpdateSummaryMock = jest.fn(() => ({
   failures: [],
 }));
 
-const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provider?: string; modelName?: string }) => {
+const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provider?: string; modelName?: string; indexType?: string }) => {
   // RFC 013 M1+M2: the manager exposes modelDir / modelId / modelName for
   // callers (KnowledgeBaseServer's per-call lock acquisition + cache key).
   // Mock these so handleRetrieveKnowledge can do withWriteLock(manager.modelDir, ...).
@@ -97,6 +97,7 @@ describe('KnowledgeBaseServer handlers', () => {
   };
 
   beforeEach(() => {
+    FaissIndexManagerMock.mockClear();
     initializeMock.mockReset();
     updateIndexMock.mockReset();
     reloadPersistedIndexMock.mockReset();
@@ -315,6 +316,47 @@ describe('KnowledgeBaseServer handlers', () => {
     const result = await server['handleRetrieveKnowledge']({ query: 'q', model_name: idB });
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain(`Model: ${idB}`);
+  });
+
+  it('handleRetrieveKnowledge constructs managers with the stored index type', async () => {
+    await setRetrieveEnv();
+    const faissDir = process.env.FAISS_INDEX_PATH!;
+    const idB = 'ollama__nomic-embed-text-latest';
+    await fsp.mkdir(path.join(faissDir, 'models', idB), { recursive: true });
+    await fsp.writeFile(path.join(faissDir, 'models', idB, 'model_name.txt'), 'nomic-embed-text:latest');
+    await fsp.writeFile(path.join(faissDir, 'models', idB, 'index-type.txt'), 'hnsw\n');
+
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'hello', metadata: { source: '/tmp/x.md' }, score: 0.5 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({ query: 'q', model_name: idB });
+
+    expect(result.isError).toBeUndefined();
+    expect(FaissIndexManagerMock).toHaveBeenCalledWith({
+      provider: 'ollama',
+      modelName: 'nomic-embed-text:latest',
+      indexType: 'hnsw',
+    });
+  });
+
+  it('createReadOnlyManagerForModel constructs managers with the stored index type', async () => {
+    await setRetrieveEnv();
+    const faissDir = process.env.FAISS_INDEX_PATH!;
+    const id = 'huggingface__BAAI-bge-small-en-v1.5';
+    await fsp.writeFile(path.join(faissDir, 'models', id, 'index-type.txt'), 'sq8\n');
+
+    const server = await freshServer();
+    await server['createReadOnlyManagerForModel'](id);
+
+    expect(FaissIndexManagerMock).toHaveBeenCalledWith({
+      provider: 'huggingface',
+      modelName: 'BAAI/bge-small-en-v1.5',
+      indexType: 'sq8',
+    });
+    expect(initializeMock).toHaveBeenCalledWith({ readOnly: true });
   });
 
   it('handleRetrieveKnowledge without model_name does NOT prepend model_id footer (back-compat)', async () => {

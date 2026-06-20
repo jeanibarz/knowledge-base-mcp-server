@@ -262,6 +262,8 @@ kb models list
 kb models add ollama nomic-embed-text          # local, free
 kb models add openai text-embedding-3-small    # paid; estimate first
 kb models add huggingface BAAI/bge-small-en-v1.5
+kb models add ollama nomic-embed-text --index-type=sq8   # FAISS scalar quantization
+kb models add ollama nomic-embed-text --index-type=hnsw  # HNSW approximate search backend
 
 # Query a specific model without changing the default.
 kb search "your query" --model=openai__text-embedding-3-small
@@ -276,7 +278,7 @@ kb models set-active openai__text-embedding-3-small
 kb models remove huggingface__BAAI-bge-small-en-v1.5
 ```
 
-`<model_id>` is `<provider>__<filesystem-safe-slug>`, derived deterministically from `(provider, model_name)` as typed (e.g. `OLLAMA_MODEL=nomic-embed-text:latest` → `ollama__nomic-embed-text-latest`). On-disk layout: each model lives at `${FAISS_INDEX_PATH}/models/<id>/`. The active model is recorded in `${FAISS_INDEX_PATH}/active.txt` and overridable per-process via `KB_ACTIVE_MODEL`. See [`docs/reference/embedding-models.md`](docs/reference/embedding-models.md) for the supported defaults, vector dimensions, task-prefix requirements, and reindex caveats; see [`docs/rfcs/013-multimodel-support.md`](docs/rfcs/013-multimodel-support.md) for the full design.
+`<model_id>` is `<provider>__<filesystem-safe-slug>`, derived deterministically from `(provider, model_name)` as typed (e.g. `OLLAMA_MODEL=nomic-embed-text:latest` → `ollama__nomic-embed-text-latest`). On-disk layout: each model lives at `${FAISS_INDEX_PATH}/models/<id>/`. The active model is recorded in `${FAISS_INDEX_PATH}/active.txt` and overridable per-process via `KB_ACTIVE_MODEL`. `KB_INDEX_TYPE` or `kb models add --index-type=flat|sq8|hnsw` selects the per-model search index type; see [docs/operations/index-quantization.md](docs/operations/index-quantization.md). See [`docs/reference/embedding-models.md`](docs/reference/embedding-models.md) for the supported defaults, vector dimensions, task-prefix requirements, and reindex caveats; see [`docs/rfcs/013-multimodel-support.md`](docs/rfcs/013-multimodel-support.md) for the full design.
 
 **Migration from the legacy single-model layout** is automatic on first server (or `kb`) start: the existing single-model index is moved into `${FAISS_INDEX_PATH}/models/<derived_id>/` and `active.txt` is written. Cross-process starts coordinate the migration with `${FAISS_INDEX_PATH}/.kb-migration.lock`; MCP and CLI processes no longer rely on a long-lived single-instance PID advisory. Keep a backup of the previous `${FAISS_INDEX_PATH}` if you need rollback safety before upgrading from an older checkout.
 

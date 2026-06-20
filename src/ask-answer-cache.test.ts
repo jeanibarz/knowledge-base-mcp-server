@@ -133,7 +133,10 @@ describe('AnswerCache storage (#656)', () => {
     // Size the cap to exactly one entry so the second write evicts the first.
     const probe = new AnswerCache({ enabled: true, indexPath: dir });
     await probe.set(keyOld, { answer: 'old answer', model: null });
-    const entrySize = (await fsp.stat(path.join(answerCacheDir(dir), `${keyOld}.json`))).size;
+    const oldEntry = path.join(answerCacheDir(dir), `${keyOld}.json`);
+    const entrySize = (await fsp.stat(oldEntry)).size;
+    const oldTimestamp = new Date(Date.now() - 60_000);
+    await fsp.utimes(oldEntry, oldTimestamp, oldTimestamp);
 
     const cache = new AnswerCache({ enabled: true, indexPath: dir, diskMaxBytes: entrySize });
     await cache.set(keyNew, { answer: 'new answer', model: null });

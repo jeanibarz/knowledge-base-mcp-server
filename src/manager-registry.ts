@@ -11,7 +11,7 @@
 // resolved cache so a hard failure on first init doesn't poison
 // subsequent retries (the entry is removed in the `finally`).
 
-import { parseModelId, readStoredModelName } from './active-model.js';
+import { parseModelId, readStoredIndexType, readStoredModelName } from './active-model.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import type { EmbeddingProvider } from './model-id.js';
 
@@ -39,6 +39,7 @@ export class ManagerRegistry {
       const manager = new FaissIndexManager({
         provider: provider as EmbeddingProvider,
         modelName,
+        indexType: await readStoredIndexType(modelId),
       });
       await manager.initialize();
       this.cache.set(modelId, manager);

@@ -19,7 +19,7 @@ import {
   writeAddingSentinel,
   writeActiveModelAtomic,
 } from './active-model.js';
-import { resolveFaissIndexType, type FaissIndexType } from './config/indexing.js';
+import { resolveIndexType, type SearchIndexType } from './config/indexing.js';
 import { KB_ACTIVE_MODEL } from './config/provider.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
@@ -32,7 +32,7 @@ export const MODELS_HELP = `kb models — manage embedding models (RFC 013)
 
 Usage:
   kb models list
-  kb models add <provider> <model> [--index-type=flat|sq8] [--yes] [--dry-run] [--recover]
+  kb models add <provider> <model> [--index-type=flat|sq8|hnsw] [--yes] [--dry-run] [--recover]
   kb models set-active <id>
   kb models remove <id>
   kb models gc --dry-run [--format=json]
@@ -70,8 +70,9 @@ Options for \`add\`:
   --recover             When a previous add left a stale .adding sentinel
                         whose writer PID is dead, delete that incomplete
                         model directory before retrying. Requires --yes.
-  --index-type=flat|sq8 Select the FAISS index type for this model. Default
-                        is KB_INDEX_TYPE when set, otherwise flat.
+  --index-type=flat|sq8|hnsw
+                        Select the search index type for this model. Default is
+                        KB_INDEX_TYPE when set, otherwise flat.
 
 Options for \`gc\`:
   --dry-run             Required. Print the cleanup plan; never delete.
@@ -149,7 +150,7 @@ async function runModelsAdd(rest: string[]): Promise<number> {
   let yes = false;
   let dryRun = false;
   let recover = false;
-  let indexType: FaissIndexType = resolveFaissIndexType();
+  let indexType: SearchIndexType = resolveIndexType();
   for (const raw of rest) {
     if (raw === '--yes') { yes = true; continue; }
     if (raw === '--dry-run') { dryRun = true; continue; }
@@ -157,7 +158,7 @@ async function runModelsAdd(rest: string[]): Promise<number> {
     if (raw.startsWith('--index-type=')) {
       const value = raw.slice('--index-type='.length);
       const normalized = value.trim().toLowerCase();
-      const parsed = resolveFaissIndexType(value);
+      const parsed = resolveIndexType(value);
       if (normalized !== parsed) {
         process.stderr.write(`kb models add: invalid --index-type: ${raw}\n`);
         return 2;
