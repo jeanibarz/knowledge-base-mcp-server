@@ -1804,7 +1804,7 @@ describe('KnowledgeBaseServer handlers', () => {
     });
   });
 
-  it('handleRetrieveKnowledge emits one canonical event with redacted query and result fields (#216)', async () => {
+  it('handleRetrieveKnowledge emits canonical events with redacted query and result fields (#216)', async () => {
     const tempDir = await setRetrieveEnv();
     const logFile = path.join(tempDir, 'canonical.log');
     process.env.LOG_FILE = logFile;
@@ -1835,8 +1835,8 @@ describe('KnowledgeBaseServer handlers', () => {
 
     expect(result.isError).toBeUndefined();
     const events = await readCanonicalEvents(logFile);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    const retrieveEvent = events.find((event) => event.tool === 'retrieve_knowledge');
+    expect(retrieveEvent).toMatchObject({
       schema_version: 'kb-canonical.v1',
       process: 'mcp',
       tool: 'retrieve_knowledge',
@@ -1856,8 +1856,14 @@ describe('KnowledgeBaseServer handlers', () => {
         elapsed_ms: 2,
       },
     });
-    expect(events[0].query_sha256).toMatch(/^[a-f0-9]{16}$/);
-    expect(JSON.stringify(events[0])).not.toContain('raw private query');
+    expect(retrieveEvent?.query_sha256).toMatch(/^[a-f0-9]{16}$/);
+    expect(JSON.stringify(retrieveEvent)).not.toContain('raw private query');
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'write_lock',
+      lock_resource_kind: 'model_index',
+      lock_wait_ms: expect.any(Number),
+      lock_hold_ms: expect.any(Number),
+    }));
   });
 
   it('handleRetrieveKnowledge returns "_No similar results found._" when similaritySearch returns []', async () => {
@@ -2022,8 +2028,8 @@ describe('KnowledgeBaseServer handlers', () => {
 
     expect(result.isError).toBe(true);
     const events = await readCanonicalEvents(logFile);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    const retrieveEvent = events.find((event) => event.tool === 'retrieve_knowledge');
+    expect(retrieveEvent).toMatchObject({
       schema_version: 'kb-canonical.v1',
       process: 'mcp',
       tool: 'retrieve_knowledge',
@@ -2032,6 +2038,14 @@ describe('KnowledgeBaseServer handlers', () => {
         category: 'provider',
       },
     });
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'write_lock',
+      lock_resource_kind: 'model_index',
+      error: {
+        code: 'PROVIDER_TIMEOUT',
+        category: 'provider',
+      },
+    }));
   });
 
   it('threshold argument flows through to similaritySearch(query, 10, threshold, kb, filters)', async () => {

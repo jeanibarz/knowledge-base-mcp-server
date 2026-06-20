@@ -35,6 +35,12 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('# TYPE kb_rerank_latency_ms histogram');
     expect(text).toContain('kb_rerank_latency_ms_bucket{le="30",source="model_scored"} 1');
     expect(text).toContain('kb_rerank_latency_ms_sum{source="model_scored"} 12');
+    expect(text).toContain('# TYPE kb_write_lock_wait_duration_ms histogram');
+    expect(text).toContain('kb_write_lock_wait_duration_ms_bucket{le="30",resource_kind="model_index"} 1');
+    expect(text).toContain('kb_write_lock_wait_duration_ms_sum{resource_kind="model_index"} 12');
+    expect(text).toContain('# TYPE kb_write_lock_hold_duration_ms histogram');
+    expect(text).toContain('kb_write_lock_hold_duration_ms_bucket{le="100",resource_kind="model_index"} 1');
+    expect(text).toContain('kb_write_lock_hold_duration_ms_sum{resource_kind="model_index"} 80');
     expect(text).toContain('kb_remote_transport_requests_total 9');
     expect(text).toContain('# TYPE kb_remote_transport_responses_4xx counter');
     expect(text).toContain('kb_remote_transport_responses_4xx_total 2');
@@ -172,6 +178,14 @@ function samplePayload(): KbStatsPayload {
       },
       latency: {
         model_scored: histogramSnapshot(12),
+      },
+    },
+    write_locks: {
+      wait: {
+        model_index: histogramSnapshot(12),
+      },
+      hold: {
+        model_index: histogramSnapshot(80),
       },
     },
     remote_transport: {

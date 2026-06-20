@@ -95,6 +95,9 @@ const coverageConfig = {
 };
 
 export default {
+  // Root-level coverage collection uses the root transform, not only the
+  // per-project transforms, when instrumenting untested source files.
+  ...baseConfig,
   ...coverageConfig,
   // Issue #661 — `--coverage` (istanbul) instrumentation roughly doubles
   // execution time, and a few tests lazily `import()` heavy modules

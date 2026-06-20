@@ -15,8 +15,10 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
+import { classifyCanonicalError, emitCanonicalLog, type CanonicalError } from './canonical-log.js';
 import { FAISS_INDEX_PATH } from './config/paths.js';
 import { logger } from './logger.js';
+import { writeLockMetrics, type WriteLockResourceKind } from './metrics.js';
 
 export const WRITE_LOCK_STALE_MS = 10_000;
 
@@ -93,6 +95,8 @@ export async function withWriteLock<T>(resource: string, fn: () => Promise<T>): 
 
   const lockfilePath = path.join(resource, '.kb-write.lock');
   const ownerPath = writeLockOwnerPathFor(resource);
+  const resourceKind = writeLockResourceKindFor(resource);
+  const waitStart = performanceNow();
   let release: () => Promise<void>;
   try {
     release = await properLockfile.lock(resource, {
@@ -109,10 +113,25 @@ export async function withWriteLock<T>(resource: string, fn: () => Promise<T>): 
     }
     throw err;
   }
+  const waitMs = performanceNow() - waitStart;
   await writeLockOwnerMetadata(ownerPath);
+  const holdStart = performanceNow();
+  let holdMs = 0;
+  let canonicalError: CanonicalError | undefined;
   try {
     return await fn();
+  } catch (err) {
+    canonicalError = classifyCanonicalError(err);
+    throw err;
   } finally {
+    holdMs = performanceNow() - holdStart;
+    writeLockMetrics.record({ resourceKind, waitMs, holdMs });
+    emitWriteLockTiming({
+      resourceKind,
+      waitMs,
+      holdMs,
+      error: canonicalError,
+    });
     try {
       await fsp.rm(ownerPath, { force: true });
     } catch (err) {
@@ -139,6 +158,18 @@ export function writeLockOwnerPathFor(resource: string): string {
   return path.join(resource, '.kb-write.lock.owner.json');
 }
 
+export function writeLockResourceKindFor(resource: string): WriteLockResourceKind {
+  const resolvedResource = path.resolve(resource);
+  const resolvedFaissRoot = path.resolve(FAISS_INDEX_PATH);
+  if (resolvedResource === resolvedFaissRoot) return 'active_index';
+  const modelsRoot = path.join(resolvedFaissRoot, 'models');
+  const relativeToModels = path.relative(modelsRoot, resolvedResource);
+  if (relativeToModels !== '' && !relativeToModels.startsWith('..') && !path.isAbsolute(relativeToModels)) {
+    return 'model_index';
+  }
+  return 'other';
+}
+
 async function writeLockOwnerMetadata(ownerPath: string): Promise<void> {
   const metadata: WriteLockOwnerMetadata = {
     schema_version: WRITE_LOCK_OWNER_SCHEMA_VERSION,
@@ -161,6 +192,35 @@ function safeCwd(): string | null {
   } catch {
     return null;
   }
+}
+
+function emitWriteLockTiming(input: {
+  resourceKind: WriteLockResourceKind;
+  waitMs: number;
+  holdMs: number;
+  error?: CanonicalError;
+}): void {
+  emitCanonicalLog({
+    process: canonicalProcessKind(),
+    event: 'write_lock',
+    took_ms: input.waitMs + input.holdMs,
+    lock_wait_ms: input.waitMs,
+    lock_hold_ms: input.holdMs,
+    lock_resource_kind: input.resourceKind,
+    ...(input.error === undefined ? {} : { error: input.error }),
+  });
+}
+
+function canonicalProcessKind(): 'cli' | 'mcp' {
+  const argv = process.argv.map((entry) => path.basename(entry));
+  return argv.some((entry) => entry === 'kb' || entry === 'cli.js') ? 'cli' : 'mcp';
+}
+
+function performanceNow(): number {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
 }
 
 /**

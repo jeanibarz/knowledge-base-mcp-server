@@ -92,12 +92,18 @@ export interface SearchLatencyMetricsSnapshot {
 
 export type RerankSkipReason = 'disabled' | 'skip_domain' | 'no_candidates';
 export type RerankCandidateSource = 'cache_hit' | 'model_scored';
+export type WriteLockResourceKind = 'active_index' | 'model_index' | 'other';
 
 export interface RerankMetricsSnapshot {
   invocations: number;
   skipped: Partial<Record<RerankSkipReason, number>>;
   candidates: Partial<Record<RerankCandidateSource, number>>;
   latency: Partial<Record<RerankCandidateSource, LatencyHistogramSnapshot>>;
+}
+
+export interface WriteLockMetricsSnapshot {
+  wait: Partial<Record<WriteLockResourceKind, LatencyHistogramSnapshot>>;
+  hold: Partial<Record<WriteLockResourceKind, LatencyHistogramSnapshot>>;
 }
 
 function emptyState(now: number): MetricsState {
@@ -419,6 +425,59 @@ export class RerankMetrics {
   }
 }
 
+/**
+ * Process-lifetime write-lock telemetry. Labels stay bounded to coarse
+ * resource kinds so model directories and KB paths never enter metrics.
+ */
+export class WriteLockMetrics {
+  private readonly waitStates = new Map<WriteLockResourceKind, HistogramState>();
+  private readonly holdStates = new Map<WriteLockResourceKind, HistogramState>();
+  private readonly now: () => number;
+
+  constructor(options: { now?: () => number } = {}) {
+    this.now = options.now ?? Date.now;
+  }
+
+  record(sample: { resourceKind: WriteLockResourceKind; waitMs: number; holdMs: number }): void {
+    recordHistogramSample(this.getState(this.waitStates, sample.resourceKind), sample.waitMs);
+    recordHistogramSample(this.getState(this.holdStates, sample.resourceKind), sample.holdMs);
+  }
+
+  snapshot(): WriteLockMetricsSnapshot {
+    return {
+      wait: this.snapshotStates(this.waitStates),
+      hold: this.snapshotStates(this.holdStates),
+    };
+  }
+
+  reset(): void {
+    this.waitStates.clear();
+    this.holdStates.clear();
+  }
+
+  private getState(
+    states: Map<WriteLockResourceKind, HistogramState>,
+    resourceKind: WriteLockResourceKind,
+  ): HistogramState {
+    let state = states.get(resourceKind);
+    if (state === undefined) {
+      state = emptyHistogramState(this.now());
+      states.set(resourceKind, state);
+    }
+    return state;
+  }
+
+  private snapshotStates(
+    states: Map<WriteLockResourceKind, HistogramState>,
+  ): Partial<Record<WriteLockResourceKind, LatencyHistogramSnapshot>> {
+    const out: Partial<Record<WriteLockResourceKind, LatencyHistogramSnapshot>> = {};
+    for (const [resourceKind, state] of states.entries()) {
+      out[resourceKind] = snapshotHistogram(state);
+    }
+    return out;
+  }
+}
+
 function clampCount(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
@@ -442,6 +501,8 @@ export const providerCallMetrics = new ProviderCallMetrics();
 export const searchLatencyMetrics = new SearchLatencyMetrics();
 
 export const rerankMetrics = new RerankMetrics();
+
+export const writeLockMetrics = new WriteLockMetrics();
 
 /**
  * Wrap a langchain-shaped embeddings client so every `embedQuery` /

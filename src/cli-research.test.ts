@@ -116,6 +116,10 @@ function statsPayload(overrides: Partial<KbStatsPayload> = {}): KbStatsPayload {
         warn_threshold: 0.1,
       },
     },
+    write_locks: {
+      wait: {},
+      hold: {},
+    },
     ...overrides,
   };
 }

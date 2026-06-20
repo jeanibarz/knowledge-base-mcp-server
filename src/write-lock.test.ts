@@ -28,6 +28,7 @@ describe('withWriteLock', () => {
 
   it('acquires the lock, runs fn, releases', async () => {
     jest.resetModules();
+    const { writeLockMetrics } = await import('./metrics.js');
     const { withWriteLock, writeLockOwnerPathFor } = await import('./write-lock.js');
 
     let observed: { lockedDuringFn: boolean; ownerPid: number | null } = {
@@ -47,9 +48,20 @@ describe('withWriteLock', () => {
     expect(result).toBe('value');
     expect(observed.lockedDuringFn).toBe(true);
     expect(observed.ownerPid).toBe(process.pid);
+    expect(writeLockMetrics.snapshot().wait.active_index).toMatchObject({ count: 1 });
+    expect(writeLockMetrics.snapshot().hold.active_index).toMatchObject({ count: 1 });
     // Lock released after fn.
     await expect(fsp.stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fsp.stat(writeLockOwnerPathFor(tempDir))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('classifies write-lock resources without exposing raw paths', async () => {
+    jest.resetModules();
+    const { writeLockResourceKindFor } = await import('./write-lock.js');
+
+    expect(writeLockResourceKindFor(tempDir)).toBe('active_index');
+    expect(writeLockResourceKindFor(path.join(tempDir, 'models', 'ollama__model'))).toBe('model_index');
+    expect(writeLockResourceKindFor(path.join(os.tmpdir(), 'outside-kb-index'))).toBe('other');
   });
 
   it('serializes concurrent callers (second waits for the first)', async () => {

@@ -42,6 +42,9 @@ describe('canonical log line schema (#216)', () => {
       tool: 'retrieve_knowledge',
       took_ms: 5,
       top_sources: ['a.md', 'b.md', 'c.md', 'd.md'],
+      lock_wait_ms: 1.2,
+      lock_hold_ms: 8.7,
+      lock_resource_kind: 'model_index',
       cache: 'memory_hit',
       query_cache: {
         enabled: true,
@@ -64,6 +67,9 @@ describe('canonical log line schema (#216)', () => {
       tool: 'retrieve_knowledge',
       top_sources: ['a.md', 'b.md', 'c.md'],
       took_ms: 5,
+      lock_wait_ms: 1,
+      lock_hold_ms: 9,
+      lock_resource_kind: 'model_index',
       cache: 'memory_hit',
       query_cache: {
         enabled: true,
@@ -78,6 +84,10 @@ describe('canonical log line schema (#216)', () => {
     });
     expect(json.indexOf('"schema_version"')).toBeLessThan(json.indexOf('"request_id"'));
     expect(json.indexOf('"top_sources"')).toBeLessThan(json.indexOf('"took_ms"'));
+    expect(json.indexOf('"took_ms"')).toBeLessThan(json.indexOf('"lock_wait_ms"'));
+    expect(json.indexOf('"lock_wait_ms"')).toBeLessThan(json.indexOf('"lock_hold_ms"'));
+    expect(json.indexOf('"lock_hold_ms"')).toBeLessThan(json.indexOf('"lock_resource_kind"'));
+    expect(json.indexOf('"lock_resource_kind"')).toBeLessThan(json.indexOf('"cache"'));
     expect(json.indexOf('"cache"')).toBeLessThan(json.indexOf('"query_cache"'));
     expect(json.indexOf('"error"')).toBeLessThan(json.indexOf('"degraded"'));
     expect(json.indexOf('"degraded"')).toBeLessThan(json.indexOf('"degraded_stages"'));
