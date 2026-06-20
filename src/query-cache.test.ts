@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
+import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -12,6 +13,16 @@ import { isQueryCacheEnabled } from './config/cache.js';
 async function tempIndexPath(prefix: string): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
   return path.join(dir, '.faiss');
+}
+
+function vectorBuffer(values: readonly number[]): Buffer {
+  const buffer = Buffer.allocUnsafe(values.length * 4);
+  values.forEach((value, index) => buffer.writeFloatLE(value, index * 4));
+  return buffer;
+}
+
+function sha256(buffer: Buffer): string {
+  return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
 describe('query embedding cache (#214)', () => {
@@ -67,6 +78,11 @@ describe('query embedding cache (#214)', () => {
       expect(hit.telemetry.outcome).toBe('disk_hit');
       expect(hit.embedding).toEqual([1.25, 2.5, 3.75]);
       expect(calls).toBe(1);
+
+      const paths = queryCachePaths({ indexPath, modelId: 'fake__one', query: 'hello world' });
+      const meta = JSON.parse(await fsp.readFile(paths.metaPath, 'utf-8')) as { vector_sha256?: string };
+      expect(meta.vector_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(meta.vector_sha256).toBe(sha256(await fsp.readFile(paths.vectorPath)));
     } finally {
       await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
     }
@@ -140,6 +156,96 @@ describe('query embedding cache (#214)', () => {
       const stats = await cache.stats();
       expect(stats.corruptions).toBe(1);
       expect(await fsp.readFile(paths.vectorPath)).toHaveLength(4);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('treats checksum mismatches as corrupt disk entries', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-checksum-');
+    try {
+      const paths = queryCachePaths({ indexPath, modelId: 'fake__one', query: 'tampered' });
+      const buffer = vectorBuffer([1, 2]);
+      await fsp.mkdir(paths.modelCacheDir, { recursive: true });
+      await fsp.writeFile(paths.vectorPath, buffer);
+      await fsp.writeFile(paths.metaPath, JSON.stringify({
+        schema_version: 'kb-query-cache.v1',
+        model_id: 'fake__one',
+        dim: 2,
+        created_at: new Date().toISOString(),
+        vector_sha256: sha256(vectorBuffer([9, 9])),
+      }));
+
+      const cache = new QueryEmbeddingCache({ indexPath, lruMax: 8 });
+      const result = await cache.getOrCompute({
+        modelId: 'fake__one',
+        query: 'tampered',
+        embed: async () => [7, 8],
+      });
+
+      expect(result.status).toBe('miss');
+      expect(result.embedding).toEqual([7, 8]);
+      expect((await cache.stats()).corruptions).toBe(1);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('treats non-finite vector bytes as corrupt disk entries', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-non-finite-');
+    try {
+      const paths = queryCachePaths({ indexPath, modelId: 'fake__one', query: 'nan' });
+      const buffer = vectorBuffer([1, Number.NaN]);
+      await fsp.mkdir(paths.modelCacheDir, { recursive: true });
+      await fsp.writeFile(paths.vectorPath, buffer);
+      await fsp.writeFile(paths.metaPath, JSON.stringify({
+        schema_version: 'kb-query-cache.v1',
+        model_id: 'fake__one',
+        dim: 2,
+        created_at: new Date().toISOString(),
+        vector_sha256: sha256(buffer),
+      }));
+
+      const cache = new QueryEmbeddingCache({ indexPath, lruMax: 8 });
+      const result = await cache.getOrCompute({
+        modelId: 'fake__one',
+        query: 'nan',
+        embed: async () => [3, 4],
+      });
+
+      expect(result.status).toBe('miss');
+      expect(result.embedding).toEqual([3, 4]);
+      expect((await cache.stats()).corruptions).toBe(1);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('keeps reading valid old disk records that do not have checksums', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-old-meta-');
+    try {
+      const paths = queryCachePaths({ indexPath, modelId: 'fake__one', query: 'legacy' });
+      await fsp.mkdir(paths.modelCacheDir, { recursive: true });
+      await fsp.writeFile(paths.vectorPath, vectorBuffer([5, 6]));
+      await fsp.writeFile(paths.metaPath, JSON.stringify({
+        schema_version: 'kb-query-cache.v1',
+        model_id: 'fake__one',
+        dim: 2,
+        created_at: new Date().toISOString(),
+      }));
+
+      const cache = new QueryEmbeddingCache({ indexPath, lruMax: 8 });
+      const result = await cache.getOrCompute({
+        modelId: 'fake__one',
+        query: 'legacy',
+        embed: async () => [9, 9],
+      });
+
+      expect(result.status).toBe('hit_disk');
+      expect(result.embedding).toEqual([5, 6]);
+      const stats = await cache.stats();
+      expect(stats.disk_hits).toBe(1);
+      expect(stats.corruptions).toBe(0);
     } finally {
       await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
     }
