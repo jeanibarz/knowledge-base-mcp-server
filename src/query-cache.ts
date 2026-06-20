@@ -57,6 +57,7 @@ interface CacheMeta {
   model_id: string;
   dim: number;
   created_at: string;
+  vector_sha256?: string;
 }
 
 class LruVectorCache {
@@ -230,9 +231,20 @@ export class QueryEmbeddingCache {
       await this.recordCorrupt(paths);
       return null;
     }
+    if (meta.vector_sha256 !== undefined) {
+      if (!isSha256Hex(meta.vector_sha256) || sha256Buffer(buffer) !== meta.vector_sha256) {
+        await this.recordCorrupt(paths);
+        return null;
+      }
+    }
     const out: number[] = [];
     for (let offset = 0; offset < buffer.byteLength; offset += 4) {
-      out.push(buffer.readFloatLE(offset));
+      const value = buffer.readFloatLE(offset);
+      if (!Number.isFinite(value)) {
+        await this.recordCorrupt(paths);
+        return null;
+      }
+      out.push(value);
     }
     return out;
   }
@@ -254,6 +266,7 @@ export class QueryEmbeddingCache {
         model_id: paths.modelId,
         dim: embedding.length,
         created_at: new Date().toISOString(),
+        vector_sha256: sha256Buffer(buffer),
       };
       await fsp.writeFile(vectorTmp, buffer);
       await fsp.rename(vectorTmp, paths.vectorPath);
@@ -355,6 +368,14 @@ function queryCacheRoot(indexPath: string): string {
 
 function toFloat32Numbers(values: readonly number[]): number[] {
   return Array.from(Float32Array.from(values));
+}
+
+function sha256Buffer(buffer: Buffer): string {
+  return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+function isSha256Hex(value: string): boolean {
+  return /^[0-9a-f]{64}$/.test(value);
 }
 
 async function listCacheVectorFiles(root: string): Promise<Array<{ path: string; size: number; mtimeMs: number }>> {
