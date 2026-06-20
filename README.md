@@ -465,6 +465,17 @@ Or, when editing locally:
 npm run build       # global `kb` immediately reflects your change
 ```
 
+To smoke-check a fresh contributor shell without touching your real knowledge
+bases or FAISS indexes, run:
+
+```bash
+npm run dev:doctor
+```
+
+It builds the checkout, creates a disposable scratch corpus, verifies the local
+CLI and native FAISS dependency, runs `kb list`, runs lexical search, and
+attempts dense search when the configured embedding provider is reachable.
+
 For source-mapped CLI debugging without rebuilding or relinking, run the
 TypeScript CLI entrypoint directly:
 
