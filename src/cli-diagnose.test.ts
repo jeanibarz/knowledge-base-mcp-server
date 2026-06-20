@@ -199,6 +199,78 @@ describe('runDiagnose', () => {
     }
   });
 
+  it('clears stale explain replay data before writing a no-query bundle', async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-diagnose-test-'));
+    try {
+      const bundleDir = path.join(tempRoot, 'bundle');
+      const staleExplainDir = path.join(bundleDir, 'explain');
+      await fsp.mkdir(staleExplainDir, { recursive: true });
+      if (process.platform !== 'win32') await fsp.chmod(bundleDir, 0o700);
+      await fsp.writeFile(path.join(staleExplainDir, 'query.txt'), 'old sensitive query');
+      await fsp.writeFile(path.join(bundleDir, 'manifest.json'), '{}');
+      const logFile = path.join(tempRoot, 'kb.log');
+      const { deps, stdout } = depsFor({
+        [logFile]: canonical({ request_id: 'req-match' }),
+      });
+
+      const code = await runDiagnose([
+        '--request-id=req-match',
+        `--file=${logFile}`,
+        `--repro-bundle=${bundleDir}`,
+        '--format=json',
+      ], deps);
+
+      expect(code).toBe(0);
+      await expect(fsp.stat(staleExplainDir)).rejects.toThrow(/ENOENT/);
+      const manifest = JSON.parse(stdout.join('')) as {
+        explain: { attempted: boolean; bundle_dir: string | null };
+        files: string[];
+      };
+      expect(manifest.explain).toMatchObject({ attempted: false, bundle_dir: null });
+      expect(manifest.files).not.toContain('explain');
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not claim an explain bundle when replay fails before creating one', async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-diagnose-test-'));
+    try {
+      const bundleDir = path.join(tempRoot, 'bundle');
+      const logFile = path.join(tempRoot, 'kb.log');
+      const query = 'rollback procedure';
+      const { deps, stdout } = depsFor({
+        [logFile]: canonical({ request_id: 'req-match' }),
+      }, {
+        runExplain: async () => 1,
+      });
+
+      const code = await runDiagnose([
+        '--request-id=req-match',
+        `--file=${logFile}`,
+        `--repro-bundle=${bundleDir}`,
+        `--query=${query}`,
+        '--format=json',
+      ], deps);
+
+      expect(code).toBe(0);
+      const manifest = JSON.parse(stdout.join('')) as {
+        explain: { attempted: boolean; exit_code: number | null; bundle_dir: string | null };
+        files: string[];
+      };
+      expect(manifest.explain).toMatchObject({
+        attempted: true,
+        exit_code: 1,
+        bundle_dir: null,
+      });
+      expect(manifest.files).not.toContain('explain');
+      const readme = await fsp.readFile(path.join(bundleDir, 'README.md'), 'utf-8');
+      expect(readme).not.toContain('`explain/`');
+    } finally {
+      await fsp.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it('rejects include-content when no raw query is supplied', async () => {
     const { deps, stderr } = depsFor({});
 

@@ -1370,9 +1370,54 @@ The manifest shape is:
 }
 ```
 
+Without a raw query, replay is skipped and nullable replay fields remain null:
+
+```json
+{
+  "schema_version": "kb.diagnose.repro_bundle.v1",
+  "bundle_dir": "/tmp/kb-diag",
+  "created_at": "2026-06-20T11:22:33.000Z",
+  "source_log": "/tmp/kb.log",
+  "request_id": "req-1",
+  "event_count": 1,
+  "selected_event": {
+    "cmd": "kb search",
+    "model_id": "ollama__nomic-embed-text-latest",
+    "kb_scope": "work",
+    "query_sha256": "0123456789abcdef",
+    "query_len_chars": 18,
+    "k": 5,
+    "threshold": 2,
+    "took_ms": 42
+  },
+  "raw_query": {
+    "supplied": false,
+    "source": null,
+    "query_sha256_matches": null,
+    "query_len_chars_matches": null
+  },
+  "explain": {
+    "attempted": false,
+    "exit_code": null,
+    "bundle_dir": null,
+    "inferred_args": [],
+    "stderr_file": null
+  },
+  "files": ["README.md", "canonical-events.json", "manifest.json"],
+  "redaction_summary": {
+    "enabled": true,
+    "total": 0,
+    "by_type": {}
+  }
+}
+```
+
 Canonical logs never contain raw query text. Supplying a raw query is an
 explicit replay input; review `explain/query.txt` before sharing the bundle.
 Candidate chunk content is still excluded unless `--include-content` is passed.
+
+Source and test anchors: `src/cli-diagnose.ts:17-615`,
+`src/cli-diagnose.test.ts:1-277`, `src/cli-json-contracts.test.ts:298-338`.
 
 ## `kb logs`
 

@@ -118,6 +118,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ['import-url', 'kb import-url'],
     ['compare', 'kb compare'],
     ['diff-index', 'kb diff-index'],
+    ['diagnose', 'kb diagnose'],
     ['doctor', 'kb doctor'],
     ['logs', 'kb logs'],
     ['stats', 'kb stats'],

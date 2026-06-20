@@ -8,6 +8,7 @@ import {
   type CanonicalLogRecord,
 } from './cli-logs.js';
 import { runExplain } from './cli-explain.js';
+import { captureProcessOutput } from './cli-shared.js';
 import {
   combineRedactionSummaries,
   redactSecrets,
@@ -58,7 +59,7 @@ const DIAGNOSE_BUNDLE_FILENAMES = new Set([
 type DiagnoseFormat = 'md' | 'json';
 type QuerySource = '--query' | '--query-file' | 'stdin';
 
-export interface DiagnoseArgs {
+interface DiagnoseArgs {
   requestId?: string;
   reproBundle?: string;
   file?: string;
@@ -212,14 +213,15 @@ export async function runDiagnose(
     const selectedEvent = chooseSelectedEvent(events);
     let explainExitCode: number | null = null;
     let explainStderrFile: string | null = null;
+    let explainBundleRel: string | null = null;
     let inferredArgs: string[] = [];
 
     if (rawQuery !== null) {
-      const explainBundleRel = 'explain';
-      const explainBundleDir = path.join(bundleDir, explainBundleRel);
+      const nextExplainBundleRel = 'explain';
+      const explainBundleDir = path.join(bundleDir, nextExplainBundleRel);
       inferredArgs = buildExplainArgs(rawQuery.value, selectedEvent, explainBundleDir, args);
-      const captured = await runExplainCaptured(inferredArgs, deps.runExplain);
-      explainExitCode = captured.code;
+      const captured = await captureProcessOutput(() => deps.runExplain(inferredArgs));
+      explainExitCode = captured.exitCode;
       if (captured.stderr.trim() !== '') {
         const stderrRedacted = redactSecrets(captured.stderr);
         await writePrivateUtf8File(bundleDir, 'explain-stderr.txt', stderrRedacted.text);
@@ -228,7 +230,8 @@ export async function runDiagnose(
         explainStderrFile = 'explain-stderr.txt';
       }
       if (deps.exists(explainBundleDir)) {
-        files.push(explainBundleRel);
+        files.push(nextExplainBundleRel);
+        explainBundleRel = nextExplainBundleRel;
       }
     }
 
@@ -240,7 +243,7 @@ export async function runDiagnose(
       selectedEvent,
       rawQuery,
       explainExitCode,
-      explainBundleDir: rawQuery === null ? null : 'explain',
+      explainBundleDir: explainBundleRel,
       inferredArgs,
       explainStderrFile,
       files: [...files, 'README.md', 'manifest.json'].sort(),
@@ -410,31 +413,6 @@ function buildExplainArgs(
   return explainArgs;
 }
 
-async function runExplainCaptured(
-  args: string[],
-  runExplainFn: (rest: string[]) => Promise<number>,
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const origStdout = process.stdout.write.bind(process.stdout);
-  const origStderr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = ((chunk: string | Uint8Array) => {
-    stdout.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
-    return true;
-  }) as typeof process.stdout.write;
-  process.stderr.write = ((chunk: string | Uint8Array) => {
-    stderr.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    const code = await runExplainFn(args);
-    return { code, stdout: stdout.join(''), stderr: stderr.join('') };
-  } finally {
-    process.stdout.write = origStdout;
-    process.stderr.write = origStderr;
-  }
-}
-
 function buildManifest(input: {
   bundleDir: string;
   source: string;
@@ -531,6 +509,7 @@ async function ensurePrivateDiagnoseDirectory(
   }
   if (posixPermissions) await fsp.chmod(bundleDir, PRIVATE_DIR_MODE);
   await assertDiagnoseDirectoryHasOnlyBundleFiles(bundleDir);
+  await clearExistingDiagnoseBundleFiles(bundleDir);
 }
 
 async function assertDiagnoseDirectoryHasOnlyBundleFiles(bundleDir: string): Promise<void> {
@@ -548,6 +527,13 @@ async function assertDiagnoseDirectoryHasOnlyBundleFiles(bundleDir: string): Pro
       'choose an empty directory or remove stale files before writing',
     );
   }
+}
+
+async function clearExistingDiagnoseBundleFiles(bundleDir: string): Promise<void> {
+  for (const filename of DIAGNOSE_BUNDLE_FILENAMES) {
+    await fsp.rm(path.join(bundleDir, filename), { force: true });
+  }
+  await fsp.rm(path.join(bundleDir, 'explain'), { recursive: true, force: true });
 }
 
 async function writePrivateUtf8File(bundleDir: string, relativePath: string, body: string): Promise<void> {

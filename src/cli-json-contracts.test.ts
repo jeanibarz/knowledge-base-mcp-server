@@ -298,7 +298,7 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
     });
   },
   'kb diagnose': (examples) => {
-    expect(examples).toHaveLength(1);
+    expect(examples).toHaveLength(2);
     expect(record(examples[0])).toMatchObject({
       schema_version: 'kb.diagnose.repro_bundle.v1',
       bundle_dir: expect.any(String),
@@ -321,6 +321,21 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
       }),
       files: expect.any(Array),
       redaction_summary: expect.any(Object),
+    });
+    expect(record(examples[1])).toMatchObject({
+      schema_version: 'kb.diagnose.repro_bundle.v1',
+      raw_query: expect.objectContaining({
+        supplied: false,
+        source: null,
+        query_sha256_matches: null,
+        query_len_chars_matches: null,
+      }),
+      explain: expect.objectContaining({
+        attempted: false,
+        exit_code: null,
+        bundle_dir: null,
+      }),
+      files: expect.arrayContaining(['README.md', 'canonical-events.json', 'manifest.json']),
     });
   },
   'kb logs': (examples) => {
