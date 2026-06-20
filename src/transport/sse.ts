@@ -6,6 +6,7 @@
 //
 // Surface:
 //   GET  /health            unauthenticated JSON liveness probe
+//   GET  /ready             authenticated model/index/backend readiness probe
 //   GET  /sse               long-lived SSE stream (mints a session)
 //   POST /messages          per-session JSON-RPC POST (sessionId in query)
 //   OPTIONS *               CORS preflight against MCP_ALLOWED_ORIGINS

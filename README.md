@@ -580,10 +580,11 @@ node build/index.js
 Endpoints exposed in this mode:
 
 - `GET /health` — unauthenticated liveness probe; returns `200 {"status":"ok"}` only. Per RFC 008 §6.8 it intentionally exposes no version, uptime, or filesystem fingerprint to anonymous callers.
+- `GET /ready` — authenticated readiness probe for operators and reverse proxies. Returns `200` when the active model resolves, the active index file is present, and the embedding backend answers a tiny smoke query; returns `503` with only failing check names otherwise.
 - `MCP_TRANSPORT=sse`: `GET /sse` opens the long-lived SSE stream and `POST /messages?sessionId=<uuid>` sends JSON-RPC messages for that session.
 - `MCP_TRANSPORT=http`: `POST /mcp` initializes and sends JSON-RPC messages using streamable HTTP. The server returns `Mcp-Session-Id` during initialization; clients must send it on subsequent `GET`, `POST`, and `DELETE /mcp` requests.
 
-All non-health transport endpoints require `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+All non-health transport endpoints, including `/ready`, require `Authorization: Bearer <MCP_AUTH_TOKEN>`.
 Repeated bearer failures from the same remote address enter a bounded in-memory
 backoff and return `Retry-After`; valid authentication clears the address state.
 When the server sits behind a reverse proxy, the key is the proxy socket address,

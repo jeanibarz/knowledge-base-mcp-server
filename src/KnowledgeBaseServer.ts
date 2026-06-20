@@ -151,6 +151,7 @@ import {
   type RerankOverride,
 } from './reranker.js';
 import type { TransportRuntimeStatsSnapshot } from './transport-runtime-stats.js';
+import { buildTransportReadinessPayload } from './transport-readiness.js';
 import { AskExecutionError, askKnowledge } from './ask-core.js';
 import { callChatCompletion } from './llm-client.js';
 
@@ -1469,6 +1470,7 @@ export class KnowledgeBaseServer {
       config,
       createMcpServer: () => this.buildMcpServer(),
       metricsExporter: () => this.handleMetricsExport(),
+      readinessProbe: () => buildTransportReadinessPayload(),
     });
     this.sseHost = host;
     this.installHttpShutdown();
@@ -1486,6 +1488,7 @@ export class KnowledgeBaseServer {
       config,
       createMcpServer: () => this.buildMcpServer(),
       metricsExporter: () => this.handleMetricsExport(),
+      readinessProbe: () => buildTransportReadinessPayload(),
     });
     this.httpHost = host;
     this.installHttpShutdown();

@@ -9,7 +9,8 @@
 //   4. Bearer-token auth (constant-time compare).
 //   5. Shutdown gate.
 //   6. CORS response headers for accepted cross-origin calls.
-//   7. Subclass-specific path routing (the actually-different bit).
+//   7. Authenticated shared operator routes.
+//   8. Subclass-specific path routing (the actually-different bit).
 //
 // Plus identical lifecycle (start / stop with drain), session bookkeeping
 // (`sessionCount`, `notify` fanout), and observability (per-request access
@@ -43,8 +44,10 @@ import {
   type TransportRuntimeErrorSnapshot,
   type TransportRuntimeStatsSnapshot,
 } from '../transport-runtime-stats.js';
+import type { ReadinessPayload } from '../transport-readiness.js';
 
 const HEALTH_ENDPOINT = '/health';
+const READY_ENDPOINT = '/ready';
 const SHUTDOWN_DRAIN_DEADLINE_MS = 10_000;
 const SHUTDOWN_POLL_INTERVAL_MS = 50;
 
@@ -52,6 +55,7 @@ export interface BaseHttpHostOptions {
   config: TransportConfig;
   createMcpServer: () => McpServer;
   metricsExporter?: () => Promise<string>;
+  readinessProbe?: () => Promise<ReadinessPayload>;
 }
 
 export interface BaseSessionEntry<TTransport> {
@@ -387,7 +391,15 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       this.setCorsResponseHeaders(res, originHeader);
     }
 
-    // 7. Optional OpenMetrics route. Kept behind the same auth/origin gates
+    // 7. Shared operator routes. Kept behind the same auth/origin gates as
+    // MCP routes so model and index state is not exposed anonymously.
+    if (path === READY_ENDPOINT) {
+      const readyStatus = await this.handleReady(method, res);
+      finalize(readyStatus);
+      return;
+    }
+
+    // 8. Optional OpenMetrics route. Kept behind the same auth/origin gates
     // as MCP routes so KB names and model ids are not exposed accidentally.
     if (path === '/metrics') {
       const metricsStatus = await this.handleMetricsExport(method, res);
@@ -395,7 +407,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       return;
     }
 
-    // 8. Subclass routing.
+    // 9. Subclass routing.
     const status = await this.handleAuthenticatedRequest(req, res, url);
     finalize(status);
   }
@@ -482,6 +494,45 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       logger.warn(`[${this.logPrefix}] metrics export failed: ${(err as Error).message}`);
       respond(res, 500, 'Metrics unavailable');
       return 500;
+    } finally {
+      this.inFlight -= 1;
+    }
+  }
+
+  private async handleReady(
+    method: string,
+    res: http.ServerResponse,
+  ): Promise<number> {
+    if (this.options.readinessProbe === undefined) {
+      respond(res, 404, 'Not Found');
+      return 404;
+    }
+    if (method !== 'GET' && method !== 'HEAD') {
+      res.setHeader('Allow', 'GET, HEAD');
+      respond(res, 405, 'Method Not Allowed');
+      return 405;
+    }
+
+    this.inFlight += 1;
+    try {
+      const payload = await this.options.readinessProbe();
+      const status = payload.status === 'ok' ? 200 : 503;
+      writeJson(res, status, payload, method);
+      return status;
+    } catch (err) {
+      this.recordTransportError(err as Error);
+      logger.warn(`[${this.logPrefix}] readiness probe failed: ${(err as Error).message}`);
+      const payload: ReadinessPayload = {
+        status: 'error',
+        checks: [
+          { name: 'active_model', status: 'error' },
+          { name: 'index', status: 'error' },
+          { name: 'backend', status: 'error' },
+        ],
+        failing_checks: ['active_model', 'index', 'backend'],
+      };
+      writeJson(res, 503, payload, method);
+      return 503;
     } finally {
       this.inFlight -= 1;
     }
@@ -675,4 +726,22 @@ export function respond(res: http.ServerResponse, status: number, message: strin
   }
   res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end(message);
+}
+
+function writeJson(
+  res: http.ServerResponse,
+  status: number,
+  body: unknown,
+  method: string,
+): void {
+  const buf = Buffer.from(JSON.stringify(body), 'utf8');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Length', String(buf.length));
+  res.setHeader('Cache-Control', 'no-store');
+  res.writeHead(status);
+  if (method === 'GET') {
+    res.end(buf);
+  } else {
+    res.end();
+  }
 }
