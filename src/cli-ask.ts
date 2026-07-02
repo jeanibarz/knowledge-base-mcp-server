@@ -48,6 +48,7 @@ import {
   type SaveTranscriptInput,
   type SaveTranscriptResult,
 } from './ask-repl.js';
+import { createTtyProgress } from './tty-progress.js';
 
 export {
   DEFAULT_ASK_CONTEXT_BUDGET_TOKENS,
@@ -193,6 +194,11 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
 
   let result: AskKnowledgeResult;
   let streamedAnswer = false;
+  // #759 — retrieval + LLM latency can leave the terminal silent for many
+  // seconds. Show a stderr spinner while we wait; it self-suppresses for
+  // JSON / piped / NO_COLOR output and is cleared before any answer prints.
+  const progress = createTtyProgress({ label: 'kb ask: thinking', format: args.format });
+  progress.start();
   try {
     const streamMarkdown = args.format === 'md' && !args.noStream;
     result = await executeAsk({
@@ -201,13 +207,18 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
       ...(streamMarkdown
         ? {
             onAnswerToken: (token: string) => {
+              // Clear the spinner before the first streamed token so stdout
+              // never interleaves with the stderr spinner line.
+              progress.stop();
               streamedAnswer = true;
               process.stdout.write(token);
             },
           }
         : {}),
     }, toRunAskCoreDeps(deps), totalStartedAt);
+    progress.stop();
   } catch (err) {
+    progress.stop();
     if (err instanceof AskExecutionError) {
       if (err.failure !== undefined) {
         return reportAskFailure(args.format, err.failure, err.exitCode);
