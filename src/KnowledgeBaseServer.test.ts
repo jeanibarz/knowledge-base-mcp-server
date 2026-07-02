@@ -648,6 +648,8 @@ describe('KnowledgeBaseServer handlers', () => {
     updateIndexMock.mockResolvedValue(undefined);
 
     const server = await freshServer();
+    await server['refreshResourceListFingerprint']();
+    const notify = jest.spyOn(server['mcp'], 'sendResourceListChanged');
     const result = await server['handleAddDocument']({
       knowledge_base_name: 'alpha',
       path: 'notes/new.md',
@@ -665,6 +667,30 @@ describe('KnowledgeBaseServer handlers', () => {
       absolute_path: documentPath,
       indexed: true,
     });
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('handleAddDocument does not notify resources/list_changed for an overwrite', async () => {
+    const tempDir = await setRetrieveEnv();
+    const documentPath = path.join(tempDir, 'alpha', 'notes', 'existing.md');
+    await fsp.mkdir(path.dirname(documentPath), { recursive: true });
+    await fsp.writeFile(documentPath, 'old content');
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    await server['refreshResourceListFingerprint']();
+    const notify = jest.spyOn(server['mcp'], 'sendResourceListChanged');
+
+    const result = await server['handleAddDocument']({
+      knowledge_base_name: 'alpha',
+      path: 'notes/existing.md',
+      content: 'new content',
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(fsp.readFile(documentPath, 'utf-8')).resolves.toBe('new content');
+    expect(updateIndexMock).toHaveBeenCalledWith('alpha');
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('handleAddDocument removes a new file when indexing fails after the write', async () => {
@@ -893,6 +919,8 @@ describe('KnowledgeBaseServer handlers', () => {
     await fsp.writeFile(sidecarPath, 'hash');
 
     const server = await freshServer();
+    await server['refreshResourceListFingerprint']();
+    const notify = jest.spyOn(server['mcp'], 'sendResourceListChanged');
     const result = await server['handleDeleteDocument']({
       knowledge_base_name: 'alpha',
       path: 'notes/old.md',
@@ -910,6 +938,7 @@ describe('KnowledgeBaseServer handlers', () => {
       sidecar_path: sidecarPath,
       deleted: true,
     });
+    expect(notify).toHaveBeenCalledTimes(1);
   });
 
   it('handleDeleteDocument rejects path traversal and leaves files intact', async () => {
@@ -953,6 +982,8 @@ describe('KnowledgeBaseServer handlers', () => {
     updateIndexMock.mockResolvedValue(undefined);
 
     const server = await freshServer();
+    await server['refreshResourceListFingerprint']();
+    const notify = jest.spyOn(server['mcp'], 'sendResourceListChanged');
     const result = await server['handleReindexKnowledgeBase']({
       knowledge_base_name: 'alpha',
     });
@@ -964,6 +995,28 @@ describe('KnowledgeBaseServer handlers', () => {
     // so the response advertises scope: 'global' even when a KB name was
     // passed. The KB name is preserved as a caller-provided echo.
     expect(payload).toEqual({ knowledge_base_name: 'alpha', reindexed: true, scope: 'global' });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('handleReindexKnowledgeBase notifies when the resource listing changed since the last snapshot', async () => {
+    const tempDir = await setRetrieveEnv();
+    const documentPath = path.join(tempDir, 'alpha', 'notes', 'new.md');
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    await server['refreshResourceListFingerprint']();
+    const notify = jest.spyOn(server['mcp'], 'sendResourceListChanged');
+    await fsp.mkdir(path.dirname(documentPath), { recursive: true });
+    await fsp.writeFile(documentPath, '# New\n');
+
+    const result = await server['handleReindexKnowledgeBase']({
+      knowledge_base_name: 'alpha',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(updateIndexMock).toHaveBeenCalledWith('alpha', { force: true });
+    expect(notify).toHaveBeenCalledTimes(1);
   });
 
   it('handleReindexKnowledgeBase forces a global update when no KB is named', async () => {

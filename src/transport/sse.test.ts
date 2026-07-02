@@ -838,4 +838,21 @@ describe('SseHost — endpoints', () => {
 
     sessions.clear();
   });
+
+  it('notifyResourceListChanged fans out to every live session McpServer', async () => {
+    const started = await startHost({});
+    stop = started.stop;
+    const sessionA = { sendResourceListChanged: jest.fn() };
+    const sessionB = { sendResourceListChanged: jest.fn() };
+    const sessions: Map<string, { transport: unknown; mcp: unknown }> =
+      (started.host as unknown as { sessions: Map<string, { transport: unknown; mcp: unknown }> }).sessions;
+    sessions.set('a', { transport: {}, mcp: sessionA });
+    sessions.set('b', { transport: {}, mcp: sessionB });
+
+    await expect(started.host.notifyResourceListChanged()).resolves.toBeUndefined();
+    expect(sessionA.sendResourceListChanged).toHaveBeenCalledTimes(1);
+    expect(sessionB.sendResourceListChanged).toHaveBeenCalledTimes(1);
+
+    sessions.clear();
+  });
 });

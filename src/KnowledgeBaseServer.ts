@@ -307,6 +307,7 @@ export class KnowledgeBaseServer {
   // Complements `triggerWatcher` (root-level dotfile poller); this one
   // observes per-file edits *inside* each KB tree.
   private fsWatcher?: RecursiveKbWatcher;
+  private resourceListFingerprint: string | null = null;
   private shutdownInstalled = false;
   // Issue #54 — uptime baseline for kb_stats.server.uptime_ms.
   private readonly startedAt: number = Date.now();
@@ -695,19 +696,27 @@ export class KnowledgeBaseServer {
   }
 
   private async handleAddDocument(args: AddDocumentArgs): Promise<CallToolResult> {
-    return handleAddDocument(args, {
+    const result = await handleAddDocument(args, {
       getActiveManagerForMutation: () => this.getActiveManagerForMutation(),
       withCanonicalTool: (base, operation, enrich) =>
         this.withCanonicalTool(base, operation, enrich),
     });
+    if (!result.isError) {
+      await this.notifyResourceListChangedIfListingChanged();
+    }
+    return result;
   }
 
   private async handleDeleteDocument(args: DeleteDocumentArgs): Promise<CallToolResult> {
-    return handleDeleteDocument(args, {
+    const result = await handleDeleteDocument(args, {
       getActiveManagerForMutation: () => this.getActiveManagerForMutation(),
       withCanonicalTool: (base, operation, enrich) =>
         this.withCanonicalTool(base, operation, enrich),
     });
+    if (!result.isError) {
+      await this.notifyResourceListChangedIfListingChanged();
+    }
+    return result;
   }
 
   private async handleReindexKnowledgeBase(args: {
@@ -718,36 +727,37 @@ export class KnowledgeBaseServer {
       kb_scope: args.knowledge_base_name ?? null,
     }, async () => {
       try {
-      const manager = await this.getActiveManagerForMutation();
-      await withWriteLock(manager.modelDir, async () => {
-        if (args.knowledge_base_name !== undefined) {
-          await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, args.knowledge_base_name);
-        }
-        await manager.updateIndex(args.knowledge_base_name, { force: true });
-      });
+        const manager = await this.getActiveManagerForMutation();
+        await withWriteLock(manager.modelDir, async () => {
+          if (args.knowledge_base_name !== undefined) {
+            await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, args.knowledge_base_name);
+          }
+          await manager.updateIndex(args.knowledge_base_name, { force: true });
+        });
+        await this.notifyResourceListChangedIfListingChanged();
 
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            knowledge_base_name: args.knowledge_base_name ?? null,
-            reindexed: true,
-            // FAISS has no per-vector deletion in this server, so every
-            // forced rebuild covers all KBs (see FaissIndexManager.updateIndex).
-            scope: 'global',
-          }, null, 2),
-        }],
-      };
-    } catch (error: unknown) {
-      if (error instanceof ActiveModelResolutionError) {
-        return { content: [{ type: 'text', text: error.message }], isError: true };
-      }
-      const err = toError(error);
-      logger.error('Error re-indexing knowledge base:', err);
-      if (err.stack) {
-        logger.error(err.stack);
-      }
-      return { content: [mcpErrorContent(err)], isError: true };
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              knowledge_base_name: args.knowledge_base_name ?? null,
+              reindexed: true,
+              // FAISS has no per-vector deletion in this server, so every
+              // forced rebuild covers all KBs (see FaissIndexManager.updateIndex).
+              scope: 'global',
+            }, null, 2),
+          }],
+        };
+      } catch (error: unknown) {
+        if (error instanceof ActiveModelResolutionError) {
+          return { content: [{ type: 'text', text: error.message }], isError: true };
+        }
+        const err = toError(error);
+        logger.error('Error re-indexing knowledge base:', err);
+        if (err.stack) {
+          logger.error(err.stack);
+        }
+        return { content: [mcpErrorContent(err)], isError: true };
       }
     });
   }
@@ -1462,6 +1472,7 @@ export class KnowledgeBaseServer {
     await this.mcp.connect(transport);
     this.transportMode = 'stdio';
     logger.info('Knowledge Base MCP server running on stdio');
+    await this.refreshResourceListFingerprint();
     this.startActiveManagerWarmup();
     this.startTriggerWatcher();
     await this.startFsWatcher();
@@ -1480,6 +1491,7 @@ export class KnowledgeBaseServer {
     // host.start() unwinds without leaving a dangling polling timer.
     await host.start();
     this.transportMode = 'sse';
+    await this.refreshResourceListFingerprint();
     this.startActiveManagerWarmup();
     this.startTriggerWatcher();
     await this.startFsWatcher();
@@ -1496,6 +1508,7 @@ export class KnowledgeBaseServer {
     this.installHttpShutdown();
     await host.start();
     this.transportMode = 'http';
+    await this.refreshResourceListFingerprint();
     this.startActiveManagerWarmup();
     this.startTriggerWatcher();
     await this.startFsWatcher();
@@ -1597,6 +1610,55 @@ export class KnowledgeBaseServer {
     }
   }
 
+  private async readResourceListFingerprint(): Promise<string> {
+    const result = await listResources();
+    return result.resources.map((resource) => resource.uri).sort().join('\0');
+  }
+
+  private async refreshResourceListFingerprint(): Promise<void> {
+    try {
+      this.resourceListFingerprint = await this.readResourceListFingerprint();
+    } catch (err) {
+      logger.warn(`Unable to snapshot MCP resource list: ${toError(err).message}`);
+      this.resourceListFingerprint = null;
+    }
+  }
+
+  private async notifyResourceListChangedIfListingChanged(): Promise<void> {
+    let nextFingerprint: string;
+    try {
+      nextFingerprint = await this.readResourceListFingerprint();
+    } catch (err) {
+      logger.warn(`Unable to compare MCP resource list after mutation: ${toError(err).message}`);
+      await this.sendResourceListChanged();
+      this.resourceListFingerprint = null;
+      return;
+    }
+
+    const previousFingerprint = this.resourceListFingerprint;
+    this.resourceListFingerprint = nextFingerprint;
+    if (previousFingerprint !== null && previousFingerprint === nextFingerprint) {
+      return;
+    }
+    await this.sendResourceListChanged();
+  }
+
+  private async sendResourceListChanged(): Promise<void> {
+    if (this.transportMode === 'sse') {
+      if (this.sseHost) await this.sseHost.notifyResourceListChanged();
+      return;
+    }
+    if (this.transportMode === 'http') {
+      if (this.httpHost) await this.httpHost.notifyResourceListChanged();
+      return;
+    }
+    try {
+      this.mcp.sendResourceListChanged();
+    } catch (err) {
+      logger.debug(`Unable to emit MCP resource list change: ${toError(err).message}`);
+    }
+  }
+
   /**
    * RFC 007 §6.6 / issue #212 — opt-in recursive `fs.watch` watcher.
    * Off by default; `KB_FS_WATCH=1` enables it. Failure to enumerate
@@ -1631,6 +1693,7 @@ export class KnowledgeBaseServer {
           const activeId = await resolveActiveModel();
           const manager = await this.managers.getOrCreate(activeId);
           await withWriteLock(manager.modelDir, () => manager.updateIndex(kbName));
+          await this.notifyResourceListChangedIfListingChanged();
         } catch (err) {
           logger.warn(
             `RecursiveKbWatcher updateIndex(${kbName}) failed: ${(err as Error).message}`,
@@ -1662,6 +1725,7 @@ export class KnowledgeBaseServer {
           const activeId = await resolveActiveModel();
           const manager = await this.managers.getOrCreate(activeId);
           await withWriteLock(manager.modelDir, () => manager.updateIndex(undefined));
+          await this.notifyResourceListChangedIfListingChanged();
         } catch (err) {
           logger.warn(`Trigger watcher updateIndex failed: ${(err as Error).message}`);
         }

@@ -215,6 +215,20 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     );
   }
 
+  async notifyResourceListChanged(): Promise<void> {
+    const targets = [...this.sessions.values()].map((entry) => entry.mcp);
+    if (targets.length === 0) return;
+    await Promise.all(
+      targets.map(async (target) => {
+        try {
+          target.sendResourceListChanged();
+        } catch (err) {
+          logger.debug(`[${this.logPrefix}] resources/list_changed notify error: ${(err as Error).message}`);
+        }
+      }),
+    );
+  }
+
   async start(): Promise<http.Server> {
     if (this.server) {
       throw new Error(`${this.constructor.name} already started`);
