@@ -1630,6 +1630,8 @@ export class KnowledgeBaseServer {
       nextFingerprint = await this.readResourceListFingerprint();
     } catch (err) {
       logger.warn(`Unable to compare MCP resource list after mutation: ${toError(err).message}`);
+      // The mutation already succeeded; fail open so clients drop stale
+      // listing caches instead of missing a possible create/delete.
       await this.sendResourceListChanged();
       this.resourceListFingerprint = null;
       return;

@@ -566,13 +566,19 @@ extension is in the map above. A KB with mixed markdown and PDFs shows only
 the markdown in v1. CHANGELOG calls this out. `kb_stats` (§5.7) reports
 total file counts unconditionally so users see what's hidden.
 
-#### 5.3.4 `resources/subscribe` — explicitly v2
+#### 5.3.4 Resource change notifications
 
-Gated on RFC 007 stage 5.1's watcher being on-by-default (per RFC 007 §6.6
-and §9 decision gate B). Once live, a follow-up PR flips on
-`resources/subscribe` + emits `resources/updated` when the watcher's
-dirty-set flush completes. No design in this RFC — the watcher's
-notifications are what we subscribe to. Tracked as "follow-up to M5" in §8.
+Implemented for v1: the server emits MCP
+`notifications/resources/list_changed` after successful mutations that change
+the concrete `resources/list` output. This includes new ingestable files,
+deleted ingestable files, and reindex/watch events whose before/after resource
+URI fingerprints differ. Clients should treat this as a cache invalidation
+signal and call `resources/list` again.
+
+Still explicitly v2: `resources/subscribe` and per-resource
+`notifications/resources/updated`. Those require a separate subscription model
+and resource identity/change payload design. The v1 notification is intentionally
+coarse-grained and does not imply per-file streaming semantics.
 
 ### 5.4 Issue #51 — Ingest tools (`add_document`, `delete_document`, `refresh_knowledge_base`)
 

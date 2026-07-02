@@ -522,16 +522,42 @@ describe('StreamableHttpHost — endpoints', () => {
   it('notifyResourceListChanged fans out to every live session McpServer', async () => {
     const started = await startHost({});
     stop = started.stop;
-    const sessionA = { sendResourceListChanged: jest.fn() };
-    const sessionB = { sendResourceListChanged: jest.fn() };
+    const sessionA = { server: { sendResourceListChanged: jest.fn().mockResolvedValue(undefined) } };
+    const sessionB = { server: { sendResourceListChanged: jest.fn().mockResolvedValue(undefined) } };
     const sessions: Map<string, { transport: unknown; mcp: unknown }> =
       (started.host as unknown as { sessions: Map<string, { transport: unknown; mcp: unknown }> }).sessions;
     sessions.set('a', { transport: {}, mcp: sessionA });
     sessions.set('b', { transport: {}, mcp: sessionB });
 
     await expect(started.host.notifyResourceListChanged()).resolves.toBeUndefined();
-    expect(sessionA.sendResourceListChanged).toHaveBeenCalledTimes(1);
-    expect(sessionB.sendResourceListChanged).toHaveBeenCalledTimes(1);
+    expect(sessionA.server.sendResourceListChanged).toHaveBeenCalledTimes(1);
+    expect(sessionB.server.sendResourceListChanged).toHaveBeenCalledTimes(1);
+
+    sessions.clear();
+  });
+
+  it('notifyResourceListChanged no-ops when there are no live sessions', async () => {
+    const started = await startHost({});
+    stop = started.stop;
+
+    await expect(started.host.notifyResourceListChanged()).resolves.toBeUndefined();
+  });
+
+  it('notifyResourceListChanged swallows per-session errors so one bad client cannot poison the rest', async () => {
+    const started = await startHost({});
+    stop = started.stop;
+    const happy = { server: { sendResourceListChanged: jest.fn().mockResolvedValue(undefined) } };
+    const sad = {
+      server: { sendResourceListChanged: jest.fn().mockRejectedValue(new Error('client gone')) },
+    };
+    const sessions: Map<string, { transport: unknown; mcp: unknown }> =
+      (started.host as unknown as { sessions: Map<string, { transport: unknown; mcp: unknown }> }).sessions;
+    sessions.set('happy', { transport: {}, mcp: happy });
+    sessions.set('sad', { transport: {}, mcp: sad });
+
+    await expect(started.host.notifyResourceListChanged()).resolves.toBeUndefined();
+    expect(happy.server.sendResourceListChanged).toHaveBeenCalledTimes(1);
+    expect(sad.server.sendResourceListChanged).toHaveBeenCalledTimes(1);
 
     sessions.clear();
   });

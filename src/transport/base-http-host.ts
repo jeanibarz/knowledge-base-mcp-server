@@ -202,28 +202,31 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     logger_: string,
     data: string,
   ): Promise<void> {
-    const targets = [...this.sessions.values()].map((entry) => entry.mcp);
-    if (targets.length === 0) return;
-    await Promise.all(
-      targets.map(async (target) => {
-        try {
-          await target.sendLoggingMessage({ level, logger: logger_, data });
-        } catch (err) {
-          logger.debug(`[${this.logPrefix}] notify error: ${(err as Error).message}`);
-        }
-      }),
+    await this.fanoutMcpServers(
+      (target) => target.sendLoggingMessage({ level, logger: logger_, data }),
+      'notify error',
     );
   }
 
   async notifyResourceListChanged(): Promise<void> {
+    await this.fanoutMcpServers(
+      (target) => target.server.sendResourceListChanged(),
+      'resources/list_changed notify error',
+    );
+  }
+
+  private async fanoutMcpServers(
+    action: (target: McpServer) => Promise<void>,
+    errorLabel: string,
+  ): Promise<void> {
     const targets = [...this.sessions.values()].map((entry) => entry.mcp);
     if (targets.length === 0) return;
     await Promise.all(
       targets.map(async (target) => {
         try {
-          target.sendResourceListChanged();
+          await action(target);
         } catch (err) {
-          logger.debug(`[${this.logPrefix}] resources/list_changed notify error: ${(err as Error).message}`);
+          logger.debug(`[${this.logPrefix}] ${errorLabel}: ${(err as Error).message}`);
         }
       }),
     );

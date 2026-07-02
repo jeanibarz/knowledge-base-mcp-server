@@ -670,6 +670,52 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
+  it('handleAddDocument sends resource list notifications through the HTTP host in HTTP mode', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    await server['refreshResourceListFingerprint']();
+    const rootNotify = jest.spyOn(server['mcp'], 'sendResourceListChanged');
+    const hostNotify = jest.fn().mockResolvedValue(undefined);
+    server['transportMode'] = 'http';
+    server['httpHost'] = { notifyResourceListChanged: hostNotify };
+
+    const result = await server['handleAddDocument']({
+      knowledge_base_name: 'alpha',
+      path: 'notes/http.md',
+      content: '# HTTP\n',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(hostNotify).toHaveBeenCalledTimes(1);
+    expect(rootNotify).not.toHaveBeenCalled();
+  });
+
+  it('handleAddDocument sends resource list notifications through the SSE host in SSE mode', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    await server['refreshResourceListFingerprint']();
+    const rootNotify = jest.spyOn(server['mcp'], 'sendResourceListChanged');
+    const hostNotify = jest.fn().mockResolvedValue(undefined);
+    server['transportMode'] = 'sse';
+    server['sseHost'] = { notifyResourceListChanged: hostNotify };
+
+    const result = await server['handleAddDocument']({
+      knowledge_base_name: 'alpha',
+      path: 'notes/sse.md',
+      content: '# SSE\n',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(hostNotify).toHaveBeenCalledTimes(1);
+    expect(rootNotify).not.toHaveBeenCalled();
+  });
+
   it('handleAddDocument does not notify resources/list_changed for an overwrite', async () => {
     const tempDir = await setRetrieveEnv();
     const documentPath = path.join(tempDir, 'alpha', 'notes', 'existing.md');
