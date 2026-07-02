@@ -54,6 +54,19 @@ Clients that implement MCP `completion/complete` can ask the server for guided a
 | `kb` | Knowledge-base directory names under `KNOWLEDGE_BASES_ROOT_DIR`, prefix-matched against the in-progress value. |
 | `path` | Ingestable, non-quarantined KB-relative paths within the selected `kb`, prefix-matched against the in-progress value and capped to the MCP completion page size. |
 
+## Resource List Change Notifications
+
+The server emits MCP `notifications/resources/list_changed` whenever a successful mutation changes the concrete `resources/list` output:
+
+- `add_document` emits after creating a new ingestable file, but not when overwriting an existing URI.
+- `delete_document` emits after removing an ingestable file.
+- `refresh_knowledge_base` emits only when the resource listing differs from the last snapshot.
+- The optional filesystem watcher emits after a watched create or delete changes the resource listing.
+
+The notification means clients should invalidate cached `resources/list` results and request the list again. It is intentionally coarser than per-resource update streaming: the server does not yet implement `resources/subscribe` or `notifications/resources/updated`.
+
+In stdio mode the notification is sent on the root MCP server. In SSE and streamable HTTP modes it is fanned out to every live session; a failure in one session is logged at debug level and does not prevent delivery attempts to the remaining sessions.
+
 ## `kb://` URI Format
 
 Resource URIs use this form:
