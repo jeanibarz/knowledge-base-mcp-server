@@ -80,7 +80,7 @@ describe('parseDiffIndexArgs', () => {
       '--kb=ops',
       '--top-k=25',
       '--threshold=1.5',
-      '--format=json',
+      '--format=csv',
     ])).toEqual({
       before: '3',
       after: 'index.v4',
@@ -89,8 +89,10 @@ describe('parseDiffIndexArgs', () => {
       kb: 'ops',
       topK: 25,
       threshold: 1.5,
-      format: 'json',
+      format: 'csv',
     });
+    expect(parseDiffIndexArgs(['--before=1', '--after=2', '--query=q', '--format=tsv'])).toMatchObject({ format: 'tsv' });
+    expect(parseDiffIndexArgs(['--before=1', '--after=2', '--query=q', '--format=ndjson'])).toMatchObject({ format: 'ndjson' });
   });
 
   it('rejects multiple query sources', () => {
@@ -190,6 +192,49 @@ describe('runDiffIndexCli', () => {
     expect(code).toBe(2);
     expect(stdout.join('')).toBe('');
     expect(stderr.join('')).toContain('--before and --after are required');
+  });
+
+  it('prints rank deltas as CSV rows', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runDiffIndexCli([
+      '--before=1',
+      '--after=2',
+      '--query=rollback, procedure',
+      '--format=csv',
+    ], createCliDeps({
+      stdout,
+      stderr,
+      report: minimalReport({
+        queries: [{
+          query: 'rollback, procedure',
+          kb: 'ops',
+          before_top_k: [],
+          after_top_k: [],
+          rank_deltas: [{
+            chunk_id: 'ops:runbook.md:0',
+            source: 'runbook.md',
+            before_rank: 2,
+            after_rank: 1,
+            rank_delta: -1,
+            absolute_rank_delta: 1,
+            percent_rank_delta: 0.2,
+            status: 'moved',
+          }],
+          stability_score: 0.8,
+          churn_score: 0.2,
+          top1_changed: true,
+        }],
+      }),
+    }));
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    expect(stdout.join('')).toBe([
+      'query,name,kb,stability_score,churn_score,top1_changed,chunk_id,source,before_rank,after_rank,rank_delta,absolute_rank_delta,percent_rank_delta,status',
+      '"rollback, procedure",,ops,0.8,0.2,true,ops:runbook.md:0,runbook.md,2,1,-1,1,0.2,moved',
+      '',
+    ].join('\n'));
   });
 
   it('returns runtime failure status when the diff-index engine fails', async () => {

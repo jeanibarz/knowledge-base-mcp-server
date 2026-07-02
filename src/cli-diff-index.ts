@@ -5,7 +5,12 @@ import {
   ActiveModelResolutionError,
   resolveActiveModel,
 } from './active-model.js';
-import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import {
+  type DelimitedOutputFormat,
+  loadManagerForModel,
+  loadWithJsonRetry,
+  renderRecords,
+} from './cli-shared.js';
 import {
   formatDiffIndexMarkdown,
   resolveIndexVersionPath,
@@ -16,7 +21,7 @@ import {
 import { FaissIndexManager } from './FaissIndexManager.js';
 import { normalizeRetrievalEvalFixture } from './retrieval-eval.js';
 
-type DiffIndexFormat = 'json' | 'markdown';
+type DiffIndexFormat = 'json' | 'markdown' | DelimitedOutputFormat;
 
 type QuerySource =
   | { kind: 'query'; query: string }
@@ -85,8 +90,10 @@ Options:
   --top-k=<int>         Top-K results per query (default: ${DEFAULT_TOP_K}).
   --k=<int>             Alias for --top-k.
   --threshold=<float>   Dense similarity threshold (default: ${DEFAULT_THRESHOLD}).
-  --format=md|json      Output format (default: md; markdown is accepted as
-                        an alias).
+  --format=md|json|csv|tsv|ndjson
+                        Output format (default: md; markdown is accepted as
+                        an alias). Delimited formats emit one rank-delta row
+                        per changed or stable chunk.
   --help, -h            Show this help.
 
 Notes:
@@ -161,6 +168,8 @@ export async function runDiffIndexCli(
     });
     if (parsed.format === 'json') {
       deps.stdout(`${JSON.stringify(report, null, 2)}\n`);
+    } else if (parsed.format === 'csv' || parsed.format === 'tsv' || parsed.format === 'ndjson') {
+      deps.stdout(renderRecords(diffIndexRows(report), parsed.format, { columns: DIFF_INDEX_COLUMNS }));
     } else {
       deps.stdout(formatDiffIndexMarkdown(report));
     }
@@ -228,6 +237,8 @@ export function parseDiffIndexArgs(rest: readonly string[]): DiffIndexArgs {
         out.format = 'markdown';
       } else if (value === 'json') {
         out.format = 'json';
+      } else if (value === 'csv' || value === 'tsv' || value === 'ndjson') {
+        out.format = value;
       } else {
         throw new Error(`invalid --format: ${raw}`);
       }
@@ -304,4 +315,40 @@ function parseFiniteNumber(raw: string, prefix: string): number {
   const value = Number(raw.slice(prefix.length));
   if (!Number.isFinite(value)) throw new Error(`invalid ${prefix.slice(0, -1)}: ${raw}`);
   return value;
+}
+
+const DIFF_INDEX_COLUMNS = [
+  'query',
+  'name',
+  'kb',
+  'stability_score',
+  'churn_score',
+  'top1_changed',
+  'chunk_id',
+  'source',
+  'before_rank',
+  'after_rank',
+  'rank_delta',
+  'absolute_rank_delta',
+  'percent_rank_delta',
+  'status',
+] as const;
+
+function diffIndexRows(report: Awaited<ReturnType<typeof runDiffIndexCore>>): Record<string, unknown>[] {
+  return report.queries.flatMap((query) => query.rank_deltas.map((delta) => ({
+    query: query.query,
+    name: query.name,
+    kb: query.kb,
+    stability_score: query.stability_score,
+    churn_score: query.churn_score,
+    top1_changed: query.top1_changed,
+    chunk_id: delta.chunk_id,
+    source: delta.source,
+    before_rank: delta.before_rank,
+    after_rank: delta.after_rank,
+    rank_delta: delta.rank_delta,
+    absolute_rank_delta: delta.absolute_rank_delta,
+    percent_rank_delta: delta.percent_rank_delta,
+    status: delta.status,
+  })));
 }

@@ -8,7 +8,12 @@ import {
   formatKbSearchFailureJson,
   formatKbSearchFailureStderr,
 } from './search-errors-core.js';
-import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import {
+  type DelimitedOutputFormat,
+  loadManagerForModel,
+  loadWithJsonRetry,
+  renderRecords,
+} from './cli-shared.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   computeKbStats,
@@ -22,7 +27,7 @@ const CLI_STARTED_AT = Date.now();
 export const STATS_HELP = `kb stats — read-only index/corpus stats
 
 Usage:
-  kb stats [--kb=<name>] [--format=md|json]
+  kb stats [--kb=<name>] [--format=md|json|csv|tsv|ndjson]
 
 Mirrors the MCP \`kb_stats\` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
@@ -34,8 +39,10 @@ Strictly read-only — does not refresh the index.
 
 Options:
   --kb=<name>           Scope to one knowledge base. Omit for all KBs.
-  --format=md|json      Output format (default: md). \`json\` emits the
-                        underlying \`KbStatsPayload\` shape verbatim.
+  --format=md|json|csv|tsv|ndjson
+                        Output format (default: md). \`json\` emits the
+                        underlying \`KbStatsPayload\` shape verbatim; delimited
+                        formats emit one row per knowledge base.
   --help, -h            Show this help.
 
 Examples:
@@ -46,7 +53,7 @@ Examples:
 
 export interface StatsArgs {
   kb?: string;
-  format: 'md' | 'json';
+  format: 'md' | 'json' | DelimitedOutputFormat;
 }
 
 export interface RunStatsDeps {
@@ -100,11 +107,7 @@ export async function runStats(
         ?? (deps === DEFAULT_DEPS ? tryReadDaemonStatsPayload : async () => null);
       const daemonStats = await readDaemonStats();
       if (daemonStats !== null) {
-        if (parsed.format === 'json') {
-          deps.stdout(`${JSON.stringify(daemonStats, null, 2)}\n`);
-        } else {
-          deps.stdout(formatStatsMarkdown(daemonStats));
-        }
+        deps.stdout(formatStatsOutput(daemonStats, parsed.format));
         return 0;
       }
     }
@@ -119,11 +122,7 @@ export async function runStats(
       startedAt: CLI_STARTED_AT,
     });
 
-    if (parsed.format === 'json') {
-      deps.stdout(`${JSON.stringify(payload, null, 2)}\n`);
-    } else {
-      deps.stdout(formatStatsMarkdown(payload));
-    }
+    deps.stdout(formatStatsOutput(payload, parsed.format));
     return 0;
   } catch (err) {
     const failure = classifyKbSearchError(err);
@@ -161,7 +160,7 @@ export function parseStatsArgs(rest: string[]): StatsArgs {
     }
     if (raw.startsWith('--format=')) {
       const value = raw.slice('--format='.length);
-      if (value !== 'md' && value !== 'json') {
+      if (!isStatsFormat(value)) {
         throw new Error(`invalid --format: ${raw}`);
       }
       out.format = value;
@@ -171,6 +170,38 @@ export function parseStatsArgs(rest: string[]): StatsArgs {
     throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
   }
   return out;
+}
+
+function isStatsFormat(value: string): value is StatsArgs['format'] {
+  return value === 'md' || value === 'json' || value === 'csv' || value === 'tsv' || value === 'ndjson';
+}
+
+function formatStatsOutput(payload: KbStatsPayload, format: StatsArgs['format']): string {
+  if (format === 'json') return `${JSON.stringify(payload, null, 2)}\n`;
+  if (format === 'md') return formatStatsMarkdown(payload);
+  return renderRecords(statsRows(payload), format, { columns: STATS_COLUMNS });
+}
+
+const STATS_COLUMNS = [
+  'knowledge_base',
+  'file_count',
+  'chunk_count',
+  'total_bytes_indexed',
+  'last_updated_at',
+  'quarantined',
+] as const;
+
+function statsRows(payload: KbStatsPayload): Record<string, unknown>[] {
+  return Object.entries(payload.knowledge_bases)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, row]) => ({
+      knowledge_base: name,
+      file_count: row.file_count,
+      chunk_count: row.chunk_count,
+      total_bytes_indexed: row.total_bytes_indexed,
+      last_updated_at: row.last_updated_at,
+      quarantined: payload.quarantined[name] ?? 0,
+    }));
 }
 
 export function formatStatsMarkdown(payload: KbStatsPayload): string {

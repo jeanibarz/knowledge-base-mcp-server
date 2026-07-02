@@ -27,11 +27,12 @@ import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
 import { estimateCostUsd } from './cost-estimates.js';
 import { pathExists } from './file-utils.js';
+import { type DelimitedOutputFormat, renderRecords } from './cli-shared.js';
 
 export const MODELS_HELP = `kb models — manage embedding models (RFC 013)
 
 Usage:
-  kb models list
+  kb models list [--format=md|json|csv|tsv|ndjson]
   kb models add <provider> <model> [--index-type=flat|sq8|hnsw] [--yes] [--dry-run] [--recover]
   kb models set-active <id>
   kb models remove <id>
@@ -78,11 +79,17 @@ Options for \`gc\`:
   --dry-run             Required. Print the cleanup plan; never delete.
   --format=json         Emit a stable JSON payload instead of text.
 
+Options for \`list\`:
+  --format=md|json|csv|tsv|ndjson
+                        Output format (default: md). Delimited formats emit
+                        one row per registered model.
+
 Global:
   --help, -h            Show this help.
 
 Examples:
   kb models list
+  kb models list --format=csv
   kb models add ollama nomic-embed-text
   kb models add openai text-embedding-3-small --dry-run
   kb models set-active openai__text-embedding-3-small
@@ -104,7 +111,7 @@ export async function runModels(rest: string[]): Promise<number> {
     return 1;
   }
 
-  if (verb === 'list') return runModelsList();
+  if (verb === 'list') return runModelsList(rest.slice(1));
   if (verb === 'add') return runModelsAdd(rest.slice(1));
   if (verb === 'set-active') return runModelsSetActive(rest.slice(1));
   if (verb === 'remove') return runModelsRemove(rest.slice(1));
@@ -114,13 +121,63 @@ export async function runModels(rest: string[]): Promise<number> {
   return 2;
 }
 
-async function runModelsList(): Promise<number> {
+type ModelsListFormat = 'md' | 'json' | DelimitedOutputFormat;
+
+const MODELS_LIST_SCHEMA_VERSION = 'kb.models.list.v1';
+const MODELS_LIST_COLUMNS = [
+  'model_id',
+  'provider',
+  'model_name',
+  'active',
+  'downgrade_hazard',
+] as const;
+
+interface ModelsListPayload {
+  schema_version: typeof MODELS_LIST_SCHEMA_VERSION;
+  active_model_id: string | null;
+  models: Array<Record<string, unknown>>;
+}
+
+async function runModelsList(rest: string[]): Promise<number> {
+  let format: ModelsListFormat = 'md';
+  for (const raw of rest) {
+    if (raw.startsWith('--format=')) {
+      const value = raw.slice('--format='.length);
+      if (!isModelsListFormat(value)) {
+        process.stderr.write(`kb models list: invalid --format: ${raw}\n`);
+        return 2;
+      }
+      format = value;
+      continue;
+    }
+    if (raw.startsWith('--')) {
+      process.stderr.write(`kb models list: unknown flag: ${raw}\n`);
+      return 2;
+    }
+    process.stderr.write(`kb models list: unexpected argument: ${JSON.stringify(raw)}\n`);
+    return 2;
+  }
+
   const models = await listRegisteredModels();
   let activeId: string | null = null;
   try {
     activeId = await resolveActiveModel();
   } catch {
     // No active resolvable; just don't mark any.
+  }
+  const rows = models.map((model) => modelListRow(model, activeId));
+  if (format === 'json') {
+    const payload: ModelsListPayload = {
+      schema_version: MODELS_LIST_SCHEMA_VERSION,
+      active_model_id: activeId,
+      models: rows,
+    };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return 0;
+  }
+  if (format !== 'md') {
+    process.stdout.write(renderRecords(rows, format, { columns: MODELS_LIST_COLUMNS }));
+    return 0;
   }
   if (models.length === 0) {
     process.stdout.write('(no models registered — run `kb models add <provider> <model>`)\n');
@@ -143,6 +200,23 @@ async function runModelsList(): Promise<number> {
     );
   }
   return 0;
+}
+
+function isModelsListFormat(value: string): value is ModelsListFormat {
+  return value === 'md' || value === 'json' || value === 'csv' || value === 'tsv' || value === 'ndjson';
+}
+
+function modelListRow(
+  model: Awaited<ReturnType<typeof listRegisteredModels>>[number],
+  activeId: string | null,
+): Record<string, unknown> {
+  return {
+    model_id: model.model_id,
+    provider: model.provider,
+    model_name: model.model_name,
+    active: model.model_id === activeId,
+    downgrade_hazard: model.downgrade_hazard === true,
+  };
 }
 
 async function runModelsAdd(rest: string[]): Promise<number> {

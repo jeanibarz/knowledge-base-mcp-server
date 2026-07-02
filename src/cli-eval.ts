@@ -9,9 +9,15 @@ import {
   formatCompareReportMarkdown,
   resolveIndexVersionPath,
   runCompareEval,
+  type CompareReport,
 } from './cli-eval-compare.js';
 import { computeStaleness, type SearchMode } from './search-core.js';
-import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import {
+  type DelimitedOutputFormat,
+  loadManagerForModel,
+  loadWithJsonRetry,
+  renderRecords,
+} from './cli-shared.js';
 import {
   buildRetrievalEvalScaffoldFixture,
   evaluateRetrievalCase,
@@ -40,7 +46,7 @@ interface EvalBaseArgs {
 interface EvalRunArgs extends EvalBaseArgs {
   action: 'run';
   fixturePath: string | null;
-  format: 'md' | 'json';
+  format: 'md' | 'json' | DelimitedOutputFormat;
   /** RFC 017 M0c — `--compare-index` activates the two-index comparison flow. */
   compareIndex?: { before: string; after: string };
 }
@@ -60,7 +66,7 @@ export const EVAL_HELP = `kb eval — run fixture-driven retrieval checks
 
 Usage:
   kb eval <fixture.yml|json> [--model=<id>] [--k=<int>] [--threshold=<float>]
-                              [--mode=dense|lexical|hybrid|auto] [--format=md|json]
+                              [--mode=dense|lexical|hybrid|auto] [--format=md|json|csv|tsv|ndjson]
   kb eval scaffold <query> [--model=<id>] [--kb=<name>] [--k=<int>]
                             [--threshold=<float>] [--mode=dense|lexical|hybrid|auto]
                             [--required-sources=<int>]
@@ -91,7 +97,9 @@ Options:
   --mode=dense|lexical|hybrid|auto
                         Retrieval mode (default: dense). Fixture-level mode
                         sets a default; case-level mode overrides both.
-  --format=md|json      Output format (default: md).
+  --format=md|json|csv|tsv|ndjson
+                        Output format (default: md). Delimited formats emit
+                        one row per eval case.
   --kb=<name>           Scope scaffold retrieval to one knowledge base.
   --required-sources=<int>
                         Max unique result sources to seed in scaffold YAML
@@ -198,6 +206,8 @@ export async function runEval(rest: string[]): Promise<number> {
       });
       if (parsed.format === 'json') {
         process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      } else if (parsed.format === 'csv' || parsed.format === 'tsv' || parsed.format === 'ndjson') {
+        process.stdout.write(renderRecords(compareEvalRows(report), parsed.format, { columns: COMPARE_EVAL_COLUMNS }));
       } else {
         process.stdout.write(formatCompareReportMarkdown(report));
       }
@@ -228,6 +238,8 @@ export async function runEval(rest: string[]): Promise<number> {
   const report = summarizeRetrievalEval(results);
   if (parsed.format === 'json') {
     process.stdout.write(`${JSON.stringify(toJsonReport(report), null, 2)}\n`);
+  } else if (parsed.format === 'csv' || parsed.format === 'tsv' || parsed.format === 'ndjson') {
+    process.stdout.write(renderRecords(evalRows(toJsonReport(report)), parsed.format, { columns: EVAL_COLUMNS }));
   } else {
     process.stdout.write(formatRetrievalEvalMarkdown(report));
   }
@@ -275,7 +287,7 @@ export function parseEvalArgs(rest: string[]): EvalArgs {
     if (raw.startsWith('--format=')) {
       if (out.action === 'scaffold') throw new Error('--format is not supported for scaffold');
       const value = raw.slice('--format='.length);
-      if (value !== 'md' && value !== 'json') throw new Error(`invalid --format: ${raw}`);
+      if (!isEvalFormat(value)) throw new Error(`invalid --format: ${raw}`);
       out.format = value;
       continue;
     }
@@ -363,6 +375,10 @@ export function parseEvalArgs(rest: string[]): EvalArgs {
   }
 
   return out;
+}
+
+function isEvalFormat(value: string): value is EvalRunArgs['format'] {
+  return value === 'md' || value === 'json' || value === 'csv' || value === 'tsv' || value === 'ndjson';
 }
 
 async function runEvalScaffold(parsed: EvalScaffoldArgs): Promise<number> {
@@ -485,6 +501,81 @@ export function toJsonReport(report: ReturnType<typeof summarizeRetrievalEval>):
       } : {}),
     })),
   };
+}
+
+const EVAL_COLUMNS = [
+  'name',
+  'query',
+  'kb',
+  'gate',
+  'requested_mode',
+  'effective_mode',
+  'passed',
+  'failure_count',
+  'warning_count',
+  'result_count',
+  'duplicate_groups',
+  'failures',
+  'warnings',
+  'diversity_metrics',
+  'ranked_metrics',
+] as const;
+
+function evalRows(report: unknown): Record<string, unknown>[] {
+  const cases = Array.isArray((report as { cases?: unknown }).cases)
+    ? (report as { cases: Array<Record<string, unknown>> }).cases
+    : [];
+  return cases.map((row) => ({
+    name: row.name,
+    query: row.query,
+    kb: row.kb,
+    gate: row.gate,
+    requested_mode: row.requested_mode,
+    effective_mode: row.effective_mode,
+    passed: row.passed,
+    failure_count: Array.isArray(row.failures) ? row.failures.length : 0,
+    warning_count: Array.isArray(row.warnings) ? row.warnings.length : 0,
+    result_count: row.result_count,
+    duplicate_groups: row.duplicate_groups,
+    failures: row.failures,
+    warnings: row.warnings,
+    diversity_metrics: row.diversity_metrics,
+    ranked_metrics: row.ranked_metrics,
+  }));
+}
+
+const COMPARE_EVAL_COLUMNS = [
+  'name',
+  'query',
+  'kb',
+  'mode',
+  'before_result_count',
+  'after_result_count',
+  'result_count_delta',
+  'before_mean_score',
+  'after_mean_score',
+  'mean_score_delta',
+  'new_sources',
+  'dropped_sources',
+  'rank_changes',
+] as const;
+
+function compareEvalRows(report: CompareReport): Record<string, unknown>[] {
+  return report.cases.map((row) => ({
+    name: row.name,
+    query: row.query,
+    kb: row.kb,
+    mode: row.mode,
+    before_result_count: row.before.result_count,
+    after_result_count: row.after.result_count,
+    result_count_delta: row.changes.result_count_delta,
+    before_mean_score: row.before.mean_score,
+    after_mean_score: row.after.mean_score,
+    mean_score_delta: row.changes.mean_score_delta,
+    new_sources: row.changes.new_sources,
+    dropped_sources: row.changes.dropped_sources,
+    rank_changes: row.changes.rank_changes,
+  }));
 }
 
 function toJsonDiversityMetrics(metrics: RetrievalEvalDiversityMetrics): unknown {

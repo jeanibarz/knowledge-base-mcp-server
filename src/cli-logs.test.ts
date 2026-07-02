@@ -43,9 +43,9 @@ function depsFor(files: Record<string, string>, env: NodeJS.ProcessEnv = {}): {
 
 describe('parseLogsArgs', () => {
   it('parses recent and show commands', () => {
-    expect(parseLogsArgs(['recent', '--limit=5', '--file=./kb.log', '--format=json'])).toEqual({
+    expect(parseLogsArgs(['recent', '--limit=5', '--file=./kb.log', '--format=csv'])).toEqual({
       action: 'recent',
-      format: 'json',
+      format: 'csv',
       file: './kb.log',
       limit: 5,
       slow: false,
@@ -78,6 +78,8 @@ describe('parseLogsArgs', () => {
       slow: false,
       degraded: true,
     });
+    expect(parseLogsArgs(['recent', '--format=tsv'])).toMatchObject({ format: 'tsv' });
+    expect(parseLogsArgs(['recent', '--format=ndjson'])).toMatchObject({ format: 'ndjson' });
   });
 
   it('rejects ambiguous filters and invalid limits', () => {
@@ -201,6 +203,27 @@ describe('runLogs', () => {
     expect(payload.events).toEqual([
       expect.objectContaining({ request_id: 'req-slow', query_sha256: 'slow', slow: true }),
     ]);
+  });
+
+  it('prints recent canonical events as CSV rows', async () => {
+    const { deps, stdout, stderr } = depsFor({
+      '/repo/kb.log': canonical({
+        request_id: 'req-csv',
+        query_sha256: 'abc,123',
+        took_ms: 42,
+        top_sources: ['docs/a.md', 'docs/b.md'],
+      }),
+    }, { LOG_FILE: './kb.log' });
+
+    const code = await runLogs(['recent', '--format=csv'], deps);
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    const lines = stdout.join('').trimEnd().split('\n');
+    expect(lines[0]).toBe('ts,request_id,process,event,cmd,tool,model_id,kb_scope,query_sha256,took_ms,slow,degraded,degraded_stages,result_count,top_score,top_sources,cache,query_cache,error,recovery_hint,timings,gate,rerank');
+    expect(lines[1]).toContain('req-csv');
+    expect(lines[1]).toContain('"abc,123"');
+    expect(lines[1]).toContain('"[""docs/a.md"",""docs/b.md""]"');
   });
 
   it('filters slow view by minimum took_ms when --min-ms is supplied', async () => {
@@ -450,6 +473,21 @@ describe('runLogs --summary', () => {
     expect(md).toContain('`PROVIDER_TIMEOUT`: 2');
     expect(md).toContain('### Slowest queries');
     expect(md).toContain('`r10`');
+  });
+
+  it('renders summary aggregates as one TSV row', async () => {
+    const { deps, stdout } = depsFor(
+      { '/repo/kb.log': summaryLog },
+      { LOG_FILE: './kb.log' },
+    );
+
+    const code = await runLogs(['--summary', '--limit=1', '--format=tsv'], deps);
+
+    expect(code).toBe(0);
+    const lines = stdout.join('').trimEnd().split('\n');
+    expect(lines[0]).toBe('total_requests\tsuccess\terror\tlatency_count\tlatency_min_ms\tlatency_p50_ms\tlatency_p95_ms\tlatency_p99_ms\tlatency_max_ms\tby_error_code\tby_error_category\tslowest');
+    expect(lines[1]).toContain('10\t7\t3\t10\t10\t50\t100\t100\t100');
+    expect(lines[1]).toContain('"{""PROVIDER_TIMEOUT"":2,""VALIDATION"":1}"');
   });
 
   it('reports null latency and empty breakdown for a log with no timed requests', async () => {

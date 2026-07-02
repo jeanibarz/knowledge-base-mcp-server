@@ -1976,26 +1976,59 @@ Source and test anchors: `src/cli-open.ts`, `src/chunk-id.ts::parseChunkReferenc
 Invocation:
 
 ```bash
-kb models list
+kb models list --format=json
+kb models list --format=csv
+kb models list --format=tsv
+kb models list --format=ndjson
 ```
 
-Current contract:
+JSON report envelope:
 
-- `kb models list` has no JSON output mode in the current CLI.
-- Its stable agent-facing behavior is text on stdout with exit `0`: either a
-  no-models message, or one row per registered model with an active `*` marker
-  and optional `[downgrade-hazard]` suffix.
+```json
+{
+  "schema_version": "kb.models.list.v1",
+  "active_model_id": "ollama__nomic-embed-text-latest",
+  "models": [
+    {
+      "model_id": "ollama__nomic-embed-text-latest",
+      "provider": "ollama",
+      "model_name": "nomic-embed-text:latest",
+      "active": true,
+      "downgrade_hazard": false
+    }
+  ]
+}
+```
+
+Stable fields:
+
+- `schema_version` is `kb.models.list.v1`.
+- `active_model_id` is the resolved active model id, or `null` when no active
+  model is resolvable.
+- `models[]` contains one object per registered model, sorted by `model_id`.
+- `models[].active` mirrors whether the row matches `active_model_id`.
+- `models[].downgrade_hazard` is `true` when both the RFC-014 versioned layout
+  and legacy `faiss.index/` directory coexist for the model.
+
+Delimited formats:
+
+- `--format=csv` and `--format=tsv` emit a header row, even when no models are
+  registered.
+- `--format=ndjson` emits one compact model object per line and no envelope.
+- The stable row columns are `model_id`, `provider`, `model_name`, `active`,
+  and `downgrade_hazard`.
+
+Stdout/stderr and exit codes:
+
+- JSON and delimited reports are stdout with exit `0`.
+- Markdown/text remains the default for `kb models list`.
 - Errors from the `models` command family print `kb models: ...` or
   `kb models <verb>: ...` to stderr and use exit `1` for runtime/layout errors
   and `2` for argv/configuration errors.
 
-Agents that need a machine-readable model inventory should not parse
-`kb models list` text as JSON. Use this section as a negative contract until a
-future CLI adds `--format=json`.
-
 Source and test anchors: `src/cli-models.ts:20-64`,
-`src/cli-models.ts:88-117`, `src/active-model.ts:129-166`,
-`src/cli.test.ts:1463-1505`.
+`src/cli-models.ts:88-177`, `src/active-model.ts:463-499`,
+`src/cli-json-contracts.test.ts`.
 
 ## `kb models gc --dry-run --format=json`
 
