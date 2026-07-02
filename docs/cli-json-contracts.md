@@ -1428,6 +1428,7 @@ kb logs recent --format=json [--limit=<n>] [--file=<path>]
 kb logs recent --degraded --format=json [--limit=<n>] [--file=<path>]
 kb logs show --request-id=<id> --format=json [--file=<path>]
 kb logs show --query-sha=<hash> --format=json [--file=<path>]
+kb logs recent --format=csv|tsv|ndjson [--limit=<n>] [--file=<path>]
 ```
 
 Report envelope:
@@ -1471,7 +1472,7 @@ Report envelope:
 Stable fields:
 
 - `schema_version` is `kb.logs.v1`.
-- `action` is `recent` or `show`.
+- `action` is `recent`, `show`, or `summary`.
 - `source` is the resolved log file path. Resolution uses `--file`, then
   `LOG_FILE`, then existing local default paths.
 - Counts report the scan outcome before filtering.
@@ -1481,6 +1482,21 @@ Stable fields:
   lines are ignored. Each event includes `timings`; optional fields are
   present only when the canonical log line carried them. Degraded summaries
   preserve `degraded` and `degraded_stages[]` when present.
+
+Delimited formats:
+
+- `--format=csv` and `--format=tsv` emit a header row, even when no events
+  match.
+- `--format=ndjson` emits one compact event object per line and no envelope.
+- Recent/show row columns are `ts`, `request_id`, `process`, `event`, `cmd`,
+  `tool`, `model_id`, `kb_scope`, `query_sha256`, `took_ms`, `slow`,
+  `degraded`, `degraded_stages`, `result_count`, `top_score`, `top_sources`,
+  `cache`, `query_cache`, `error`, `recovery_hint`, `timings`, `gate`, and
+  `rerank`.
+- `kb logs --summary --format=csv|tsv|ndjson` emits one aggregate row with
+  columns `total_requests`, `success`, `error`, `latency_count`,
+  `latency_min_ms`, `latency_p50_ms`, `latency_p95_ms`, `latency_p99_ms`,
+  `latency_max_ms`, `by_error_code`, `by_error_category`, and `slowest`.
 
 Stdout/stderr and exit codes:
 
@@ -1500,6 +1516,7 @@ Invocation:
 
 ```bash
 kb eval <fixture.yml|json> --format=json [--model=<id>] [--k=<int>] [--threshold=<float>]
+kb eval <fixture.yml|json> --format=csv|tsv|ndjson [--model=<id>] [--k=<int>] [--threshold=<float>]
 ```
 
 Report envelope:
@@ -1531,6 +1548,22 @@ Stable fields:
 - Top-level `total`, `passed`, `failed`, `gate_failed`, and `cases`.
 - `cases[]`: `name`, `query`, optional `kb`, `gate`, `passed`, `failures`,
   `warnings`, `result_count`, and `duplicate_groups`.
+
+Delimited formats:
+
+- `--format=csv` and `--format=tsv` emit a header row, even when the fixture has
+  no cases.
+- `--format=ndjson` emits one compact case object per line and no top-level
+  aggregate envelope.
+- Standard eval row columns are `name`, `query`, `kb`, `gate`,
+  `requested_mode`, `effective_mode`, `passed`, `failure_count`,
+  `warning_count`, `result_count`, `duplicate_groups`, `failures`, `warnings`,
+  `diversity_metrics`, and `ranked_metrics`.
+- `kb eval --compare-index --format=csv|tsv|ndjson` emits one row per compared
+  case with columns `name`, `query`, `kb`, `mode`, `before_result_count`,
+  `after_result_count`, `result_count_delta`, `before_mean_score`,
+  `after_mean_score`, `mean_score_delta`, `new_sources`, `dropped_sources`,
+  and `rank_changes`.
 
 Stdout/stderr and exit codes:
 
@@ -1915,6 +1948,69 @@ Stdout/stderr and exit codes:
 
 Source and test anchors: `src/cli-related.ts`, `src/FaissIndexManager.ts::findChunkByReference`,
 `src/cli-related.test.ts`, `src/FaissIndexManager.test.ts`.
+
+## `kb stats`
+
+Invocation:
+
+```bash
+kb stats --format=json [--kb=<name>]
+kb stats --format=csv|tsv|ndjson [--kb=<name>]
+```
+
+JSON reports keep the MCP `kb_stats` payload shape verbatim.
+
+Delimited formats:
+
+- `--format=csv` and `--format=tsv` emit a header row, even when no knowledge
+  bases are present.
+- `--format=ndjson` emits one compact knowledge-base stats object per line and
+  no MCP payload envelope.
+- Stable row columns are `knowledge_base`, `file_count`, `chunk_count`,
+  `total_bytes_indexed`, `last_updated_at`, and `quarantined`.
+
+Stdout/stderr and exit codes:
+
+- JSON and delimited reports are stdout with exit `0`.
+- Search/index/model failures use the same JSON failure envelope as
+  `kb search --format=json` when JSON was requested; other format failures
+  print to stderr.
+
+Source and test anchors: `src/cli-stats.ts`, `src/kb-stats.ts`,
+`src/cli-stats.test.ts`.
+
+## `kb diff-index`
+
+Invocation:
+
+```bash
+kb diff-index --before=<v> --after=<v> --query=<text> --format=json
+kb diff-index --before=<v> --after=<v> --query=<text> --format=csv|tsv|ndjson
+```
+
+JSON reports keep the `runDiffIndexCore` report envelope with one or more
+query entries and their `rank_deltas[]`.
+
+Delimited formats:
+
+- `--format=csv` and `--format=tsv` emit a header row, even when no rank deltas
+  are present.
+- `--format=ndjson` emits one compact rank-delta object per line and no report
+  envelope.
+- Stable row columns are `query`, `name`, `kb`, `stability_score`,
+  `churn_score`, `top1_changed`, `chunk_id`, `source`, `before_rank`,
+  `after_rank`, `rank_delta`, `absolute_rank_delta`, `percent_rank_delta`, and
+  `status`.
+
+Stdout/stderr and exit codes:
+
+- JSON and delimited reports are stdout with exit `0`.
+- Argument errors print `kb diff-index: ...` to stderr and exit `2`.
+- Runtime/index/search failures print `kb diff-index: ...` to stderr and exit
+  `1`.
+
+Source and test anchors: `src/cli-diff-index.ts`, `src/diff-index-core.ts`,
+`src/cli-diff-index.test.ts`.
 
 ## `kb open`
 

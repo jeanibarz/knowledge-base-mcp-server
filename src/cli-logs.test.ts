@@ -220,7 +220,31 @@ describe('runLogs', () => {
     expect(code).toBe(0);
     expect(stderr).toEqual([]);
     const lines = stdout.join('').trimEnd().split('\n');
-    expect(lines[0]).toBe('ts,request_id,process,event,cmd,tool,model_id,kb_scope,query_sha256,took_ms,slow,degraded,degraded_stages,result_count,top_score,top_sources,cache,query_cache,error,recovery_hint,timings,gate,rerank');
+    expect(lines[0]).toBe([
+      'ts',
+      'request_id',
+      'process',
+      'event',
+      'cmd',
+      'tool',
+      'model_id',
+      'kb_scope',
+      'query_sha256',
+      'took_ms',
+      'slow',
+      'degraded',
+      'degraded_stages',
+      'result_count',
+      'top_score',
+      'top_sources',
+      'cache',
+      'query_cache',
+      'error',
+      'recovery_hint',
+      'timings',
+      'gate',
+      'rerank',
+    ].join(','));
     expect(lines[1]).toContain('req-csv');
     expect(lines[1]).toContain('"abc,123"');
     expect(lines[1]).toContain('"[""docs/a.md"",""docs/b.md""]"');

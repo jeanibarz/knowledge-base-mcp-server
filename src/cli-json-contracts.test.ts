@@ -656,4 +656,27 @@ describe('CLI JSON contract golden outputs', () => {
     expect(result.stderr).toBe('');
     expect(result.stdout).toBe('model_id,provider,model_name,active,downgrade_hazard\n');
   });
+
+  it('kb models list --format=json maps registered model rows', async () => {
+    const id = 'ollama__nomic-embed-text';
+    await fsp.mkdir(path.join(faissRoot, 'models', id), { recursive: true });
+    await fsp.writeFile(path.join(faissRoot, 'models', id, 'model_name.txt'), 'nomic-embed-text', 'utf-8');
+    await fsp.writeFile(path.join(faissRoot, 'active.txt'), `${id}\n`, 'utf-8');
+
+    const result = runCli(['models', 'list', '--format=json']);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(parseStdoutJson(result)).toEqual({
+      schema_version: 'kb.models.list.v1',
+      active_model_id: id,
+      models: [{
+        model_id: id,
+        provider: 'ollama',
+        model_name: 'nomic-embed-text',
+        active: true,
+        downgrade_hazard: false,
+      }],
+    });
+  });
 });

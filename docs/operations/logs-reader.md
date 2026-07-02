@@ -24,14 +24,16 @@ For *live* tailing, use your usual log-pipe tool against the file directly;
 ## Two actions
 
 ```bash
-kb logs recent [--limit=<n>] [--file=<path>] --format=md|json
-kb logs show   --request-id=<id> [--file=<path>] --format=md|json
-kb logs show   --query-sha=<hash> [--file=<path>] --format=md|json
+kb logs recent [--limit=<n>] [--file=<path>] --format=md|json|csv|tsv|ndjson
+kb logs show   --request-id=<id> [--file=<path>] --format=md|json|csv|tsv|ndjson
+kb logs show   --query-sha=<hash> [--file=<path>] --format=md|json|csv|tsv|ndjson
 ```
 
 `recent` returns the most recent canonical events (default limit `10`).
 `show` filters by a stable id — `request_id` (one request) or `query_sha256`
 (every request for the same query).
+Delimited formats emit one row per canonical event; `--summary` emits one
+aggregate row.
 
 ## Log-file resolution
 
