@@ -178,6 +178,47 @@ describe('kb stats CLI', () => {
     expect(manager.updateIndex).not.toHaveBeenCalled();
   });
 
+  it('prints one CSV row per knowledge base with a stable header', async () => {
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await runStats(['--format=csv'], deps);
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    expect(stdout.join('')).toBe([
+      'knowledge_base,file_count,chunk_count,total_bytes_indexed,last_updated_at,quarantined',
+      'alpha,2,4,16,2026-05-09T18:42:18.460Z,0',
+      'beta,1,3,100,,0',
+      '',
+    ].join('\n'));
+  });
+
+  it('prints stats rows as NDJSON without the JSON envelope', async () => {
+    const { deps, stdout } = makeDeps();
+
+    const code = await runStats(['--format=ndjson'], deps);
+
+    expect(code).toBe(0);
+    expect(stdout.join('').trim().split('\n').map((line) => JSON.parse(line))).toEqual([
+      {
+        knowledge_base: 'alpha',
+        file_count: 2,
+        chunk_count: 4,
+        total_bytes_indexed: 16,
+        last_updated_at: '2026-05-09T18:42:18.460Z',
+        quarantined: 0,
+      },
+      {
+        knowledge_base: 'beta',
+        file_count: 1,
+        chunk_count: 3,
+        total_bytes_indexed: 100,
+        last_updated_at: null,
+        quarantined: 0,
+      },
+    ]);
+  });
+
   it('passes --kb through as knowledgeBaseName without mutating the payload shape', async () => {
     const scoped = payload();
     scoped.knowledge_bases = { alpha: scoped.knowledge_bases.alpha };

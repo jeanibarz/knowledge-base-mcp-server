@@ -367,7 +367,20 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
     ]);
   },
   'kb models list': (examples) => {
-    expect(examples).toEqual([]);
+    expect(examples).toHaveLength(1);
+    expect(record(examples[0])).toMatchObject({
+      schema_version: 'kb.models.list.v1',
+      active_model_id: expect.any(String),
+      models: expect.arrayContaining([
+        expect.objectContaining({
+          model_id: expect.any(String),
+          provider: expect.any(String),
+          model_name: expect.any(String),
+          active: expect.any(Boolean),
+          downgrade_hazard: expect.any(Boolean),
+        }),
+      ]),
+    });
   },
 };
 
@@ -624,12 +637,46 @@ describe('CLI JSON contract golden outputs', () => {
     expect(parseStdoutJson(result)).toEqual([{ name: 'alpha', description: 'Alpha KB' }]);
   });
 
-  it('kb models list remains a negative JSON contract', () => {
-    const result = runCli(['models', 'list']);
+  it('kb models list --format=json emits a documented list envelope', () => {
+    const result = runCli(['models', 'list', '--format=json']);
 
     expect(result.code).toBe(0);
     expect(result.stderr).toBe('');
-    expect(result.stdout).toContain('no models registered');
-    expect(() => JSON.parse(result.stdout)).toThrow();
+    expect(parseStdoutJson(result)).toEqual({
+      schema_version: 'kb.models.list.v1',
+      active_model_id: null,
+      models: [],
+    });
+  });
+
+  it('kb models list --format=csv emits a stable header for empty model directories', () => {
+    const result = runCli(['models', 'list', '--format=csv']);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toBe('model_id,provider,model_name,active,downgrade_hazard\n');
+  });
+
+  it('kb models list --format=json maps registered model rows', async () => {
+    const id = 'ollama__nomic-embed-text';
+    await fsp.mkdir(path.join(faissRoot, 'models', id), { recursive: true });
+    await fsp.writeFile(path.join(faissRoot, 'models', id, 'model_name.txt'), 'nomic-embed-text', 'utf-8');
+    await fsp.writeFile(path.join(faissRoot, 'active.txt'), `${id}\n`, 'utf-8');
+
+    const result = runCli(['models', 'list', '--format=json']);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(parseStdoutJson(result)).toEqual({
+      schema_version: 'kb.models.list.v1',
+      active_model_id: id,
+      models: [{
+        model_id: id,
+        provider: 'ollama',
+        model_name: 'nomic-embed-text',
+        active: true,
+        downgrade_hazard: false,
+      }],
+    });
   });
 });

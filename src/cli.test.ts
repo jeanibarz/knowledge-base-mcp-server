@@ -2301,7 +2301,7 @@ describe('kb search — active-model resolution (RFC 013 §4.7)', () => {
     }
   });
 
-  it('kb models list --format=json still emits text, not a JSON contract', async () => {
+  it('kb models list --format=json emits a stable empty model inventory', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-models-list-json-'));
     try {
       const faissDir = path.join(tempDir, '.faiss');
@@ -2315,8 +2315,11 @@ describe('kb search — active-model resolution (RFC 013 §4.7)', () => {
       });
 
       expect(r.code).toBe(0);
-      expect(r.stdout).toContain('(no models registered');
-      expect(() => JSON.parse(r.stdout)).toThrow();
+      expect(JSON.parse(r.stdout)).toEqual({
+        schema_version: 'kb.models.list.v1',
+        active_model_id: null,
+        models: [],
+      });
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }

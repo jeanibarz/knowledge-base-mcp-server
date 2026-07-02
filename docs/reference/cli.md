@@ -398,8 +398,10 @@ Options:
   --top-k=<int>         Top-K results per query (default: 10).
   --k=<int>             Alias for --top-k.
   --threshold=<float>   Dense similarity threshold (default: 2).
-  --format=md|json      Output format (default: md; markdown is accepted as
-                        an alias).
+  --format=md|json|csv|tsv|ndjson
+                        Output format (default: md; markdown is accepted as
+                        an alias). Delimited formats emit one rank-delta row
+                        per changed or stable chunk.
   --help, -h            Show this help.
 
 Notes:
@@ -474,7 +476,7 @@ kb eval — run fixture-driven retrieval checks
 
 Usage:
   kb eval <fixture.yml|json> [--model=<id>] [--k=<int>] [--threshold=<float>]
-                              [--mode=dense|lexical|hybrid|auto] [--format=md|json]
+                              [--mode=dense|lexical|hybrid|auto] [--format=md|json|csv|tsv|ndjson]
   kb eval scaffold <query> [--model=<id>] [--kb=<name>] [--k=<int>]
                             [--threshold=<float>] [--mode=dense|lexical|hybrid|auto]
                             [--required-sources=<int>]
@@ -505,7 +507,9 @@ Options:
   --mode=dense|lexical|hybrid|auto
                         Retrieval mode (default: dense). Fixture-level mode
                         sets a default; case-level mode overrides both.
-  --format=md|json      Output format (default: md).
+  --format=md|json|csv|tsv|ndjson
+                        Output format (default: md). Delimited formats emit
+                        one row per eval case.
   --kb=<name>           Scope scaffold retrieval to one knowledge base.
   --required-sources=<int>
                         Max unique result sources to seed in scaffold YAML
@@ -822,12 +826,12 @@ Inspect historical canonical request logs.
 kb logs — inspect historical canonical request logs
 
 Usage:
-  kb logs --slow [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json]
-  kb logs --degraded [--limit=<n>] [--file=<path>] [--format=md|json]
-  kb logs --summary [--limit=<n>] [--file=<path>] [--format=md|json]
-  kb logs recent [--slow] [--degraded] [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json]
-  kb logs show --request-id=<id> [--file=<path>] [--format=md|json]
-  kb logs show --query-sha=<hash> [--file=<path>] [--format=md|json]
+  kb logs --slow [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json|csv|tsv|ndjson]
+  kb logs --degraded [--limit=<n>] [--file=<path>] [--format=md|json|csv|tsv|ndjson]
+  kb logs --summary [--limit=<n>] [--file=<path>] [--format=md|json|csv|tsv|ndjson]
+  kb logs recent [--slow] [--degraded] [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json|csv|tsv|ndjson]
+  kb logs show --request-id=<id> [--file=<path>] [--format=md|json|csv|tsv|ndjson]
+  kb logs show --query-sha=<hash> [--file=<path>] [--format=md|json|csv|tsv|ndjson]
 
 Reads mixed text/canonical log files, keeps only `kb-canonical.v1` JSON lines,
 and summarizes request ids, query hashes, timings, errors, cache state, gate
@@ -840,7 +844,9 @@ over took_ms, and the top-N slowest queries.
 Options:
   --file=<path>         Log file to read. Defaults to LOG_FILE, then known
                         local log paths if they exist.
-  --format=md|json      Output format (default: md).
+  --format=md|json|csv|tsv|ndjson
+                        Output format (default: md). Delimited formats emit
+                        event rows; summary emits one aggregate row.
   --limit=<n>           Number of recent canonical events to show, or top-N
                         slowest queries for --summary (default: 20).
   --slow                Show only events marked slow, or events matching
@@ -872,7 +878,7 @@ Manage embedding models (list, add, set-active, remove).
 kb models — manage embedding models (RFC 013)
 
 Usage:
-  kb models list
+  kb models list [--format=md|json|csv|tsv|ndjson]
   kb models add <provider> <model> [--index-type=flat|sq8|hnsw] [--yes] [--dry-run] [--recover]
   kb models set-active <id>
   kb models remove <id>
@@ -919,11 +925,17 @@ Options for `gc`:
   --dry-run             Required. Print the cleanup plan; never delete.
   --format=json         Emit a stable JSON payload instead of text.
 
+Options for `list`:
+  --format=md|json|csv|tsv|ndjson
+                        Output format (default: md). Delimited formats emit
+                        one row per registered model.
+
 Global:
   --help, -h            Show this help.
 
 Examples:
   kb models list
+  kb models list --format=csv
   kb models add ollama nomic-embed-text
   kb models add openai text-embedding-3-small --dry-run
   kb models set-active openai__text-embedding-3-small
@@ -1613,7 +1625,7 @@ Read-only index/corpus stats (mirrors the MCP kb_stats payload).
 kb stats — read-only index/corpus stats
 
 Usage:
-  kb stats [--kb=<name>] [--format=md|json]
+  kb stats [--kb=<name>] [--format=md|json|csv|tsv|ndjson]
 
 Mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
@@ -1625,8 +1637,10 @@ Strictly read-only — does not refresh the index.
 
 Options:
   --kb=<name>           Scope to one knowledge base. Omit for all KBs.
-  --format=md|json      Output format (default: md). `json` emits the
-                        underlying `KbStatsPayload` shape verbatim.
+  --format=md|json|csv|tsv|ndjson
+                        Output format (default: md). `json` emits the
+                        underlying `KbStatsPayload` shape verbatim; delimited
+                        formats emit one row per knowledge base.
   --help, -h            Show this help.
 
 Examples:

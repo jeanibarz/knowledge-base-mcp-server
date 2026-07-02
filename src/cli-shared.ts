@@ -58,6 +58,56 @@ export interface CapturedProcessOutput {
   stderr: string;
 }
 
+export type DelimitedOutputFormat = 'csv' | 'tsv' | 'ndjson';
+
+export interface RenderRecordsOptions {
+  columns?: readonly string[];
+}
+
+export function renderRecords(
+  records: readonly Record<string, unknown>[],
+  format: DelimitedOutputFormat,
+  options: RenderRecordsOptions = {},
+): string {
+  if (format === 'ndjson') {
+    return records.map((record) => JSON.stringify(record)).join('\n') + (records.length > 0 ? '\n' : '');
+  }
+
+  const delimiter = format === 'csv' ? ',' : '\t';
+  const columns = options.columns ?? inferColumns(records);
+  const lines = [
+    columns.map((column) => escapeDelimitedCell(column, delimiter)).join(delimiter),
+    ...records.map((record) => columns
+      .map((column) => escapeDelimitedCell(formatRecordValue(record[column]), delimiter))
+      .join(delimiter)),
+  ];
+  return `${lines.join('\n')}\n`;
+}
+
+function inferColumns(records: readonly Record<string, unknown>[]): string[] {
+  const columns = new Set<string>();
+  for (const record of records) {
+    for (const key of Object.keys(record)) columns.add(key);
+  }
+  return [...columns];
+}
+
+function formatRecordValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+function escapeDelimitedCell(value: string, delimiter: string): string {
+  if (!value.includes(delimiter) && !value.includes('"') && !value.includes('\n') && !value.includes('\r')) {
+    return value;
+  }
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
 export async function captureProcessOutput(
   fn: () => Promise<number>,
 ): Promise<CapturedProcessOutput> {

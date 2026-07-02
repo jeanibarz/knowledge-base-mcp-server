@@ -2,16 +2,17 @@ import { existsSync, readFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CANONICAL_SCHEMA_VERSION, type CanonicalLogEvent } from './canonical-log.js';
+import { type DelimitedOutputFormat, renderRecords } from './cli-shared.js';
 
 export const LOGS_HELP = `kb logs — inspect historical canonical request logs
 
 Usage:
-  kb logs --slow [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json]
-  kb logs --degraded [--limit=<n>] [--file=<path>] [--format=md|json]
-  kb logs --summary [--limit=<n>] [--file=<path>] [--format=md|json]
-  kb logs recent [--slow] [--degraded] [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json]
-  kb logs show --request-id=<id> [--file=<path>] [--format=md|json]
-  kb logs show --query-sha=<hash> [--file=<path>] [--format=md|json]
+  kb logs --slow [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json|csv|tsv|ndjson]
+  kb logs --degraded [--limit=<n>] [--file=<path>] [--format=md|json|csv|tsv|ndjson]
+  kb logs --summary [--limit=<n>] [--file=<path>] [--format=md|json|csv|tsv|ndjson]
+  kb logs recent [--slow] [--degraded] [--min-ms=<n>] [--limit=<n>] [--file=<path>] [--format=md|json|csv|tsv|ndjson]
+  kb logs show --request-id=<id> [--file=<path>] [--format=md|json|csv|tsv|ndjson]
+  kb logs show --query-sha=<hash> [--file=<path>] [--format=md|json|csv|tsv|ndjson]
 
 Reads mixed text/canonical log files, keeps only \`kb-canonical.v1\` JSON lines,
 and summarizes request ids, query hashes, timings, errors, cache state, gate
@@ -24,7 +25,9 @@ over took_ms, and the top-N slowest queries.
 Options:
   --file=<path>         Log file to read. Defaults to LOG_FILE, then known
                         local log paths if they exist.
-  --format=md|json      Output format (default: md).
+  --format=md|json|csv|tsv|ndjson
+                        Output format (default: md). Delimited formats emit
+                        event rows; summary emits one aggregate row.
   --limit=<n>           Number of recent canonical events to show, or top-N
                         slowest queries for --summary (default: 20).
   --slow                Show only events marked slow, or events matching
@@ -53,7 +56,7 @@ const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 500;
 
 type LogsAction = 'recent' | 'show' | 'summary';
-type LogsFormat = 'md' | 'json';
+type LogsFormat = 'md' | 'json' | DelimitedOutputFormat;
 
 export interface LogsArgs {
   action: LogsAction;
@@ -225,11 +228,7 @@ export async function runLogs(rest: string[], deps: RunLogsDeps = DEFAULT_DEPS):
 
   const events = selectEvents(parsed.events, args);
   const payload = buildLogsPayload(args, source, parsed, events);
-  if (args.format === 'json') {
-    deps.stdout(`${JSON.stringify(payload, null, 2)}\n`);
-  } else {
-    deps.stdout(formatLogsMarkdown(payload));
-  }
+  deps.stdout(formatLogsOutput(payload, args.format));
   return 0;
 }
 
@@ -267,7 +266,7 @@ export function parseLogsArgs(rest: string[]): LogsArgs {
     }
     if (raw.startsWith('--format=')) {
       const value = raw.slice('--format='.length);
-      if (value !== 'md' && value !== 'json') {
+      if (!isLogsFormat(value)) {
         throw new Error(`invalid --format: ${raw}`);
       }
       out.format = value;
@@ -332,6 +331,10 @@ export function parseLogsArgs(rest: string[]): LogsArgs {
     throw new Error('show requires exactly one of --request-id or --query-sha');
   }
   return out;
+}
+
+function isLogsFormat(value: string): value is LogsFormat {
+  return value === 'md' || value === 'json' || value === 'csv' || value === 'tsv' || value === 'ndjson';
 }
 
 export function parseCanonicalLogLines(text: string): ParsedCanonicalLogs {
@@ -472,6 +475,101 @@ function buildLogsPayload(
       ? { summary: aggregateEvents(parsed.events, args.limit) }
       : {}),
   };
+}
+
+function formatLogsOutput(payload: LogsPayload, format: LogsFormat): string {
+  if (format === 'json') return `${JSON.stringify(payload, null, 2)}\n`;
+  if (format === 'md') return formatLogsMarkdown(payload);
+  if (payload.summary !== undefined) {
+    return renderRecords(logSummaryRows(payload.summary), format, { columns: LOG_SUMMARY_COLUMNS });
+  }
+  return renderRecords(payload.events.map(logEventRow), format, { columns: LOG_EVENT_COLUMNS });
+}
+
+const LOG_EVENT_COLUMNS = [
+  'ts',
+  'request_id',
+  'process',
+  'event',
+  'cmd',
+  'tool',
+  'model_id',
+  'kb_scope',
+  'query_sha256',
+  'took_ms',
+  'slow',
+  'degraded',
+  'degraded_stages',
+  'result_count',
+  'top_score',
+  'top_sources',
+  'cache',
+  'query_cache',
+  'error',
+  'recovery_hint',
+  'timings',
+  'gate',
+  'rerank',
+] as const;
+
+const LOG_SUMMARY_COLUMNS = [
+  'total_requests',
+  'success',
+  'error',
+  'latency_count',
+  'latency_min_ms',
+  'latency_p50_ms',
+  'latency_p95_ms',
+  'latency_p99_ms',
+  'latency_max_ms',
+  'by_error_code',
+  'by_error_category',
+  'slowest',
+] as const;
+
+function logEventRow(event: CanonicalLogSummary): Record<string, unknown> {
+  return {
+    ts: event.ts,
+    request_id: event.request_id,
+    process: event.process,
+    event: event.event,
+    cmd: event.cmd,
+    tool: event.tool,
+    model_id: event.model_id,
+    kb_scope: event.kb_scope,
+    query_sha256: event.query_sha256,
+    took_ms: event.took_ms,
+    slow: event.slow,
+    degraded: event.degraded,
+    degraded_stages: event.degraded_stages,
+    result_count: event.result_count,
+    top_score: event.top_score,
+    top_sources: event.top_sources,
+    cache: event.cache,
+    query_cache: event.query_cache,
+    error: event.error,
+    recovery_hint: event.recovery_hint,
+    timings: event.timings,
+    gate: event.gate,
+    rerank: event.rerank,
+  };
+}
+
+function logSummaryRows(summary: LogsAggregate): Record<string, unknown>[] {
+  return [{
+    total_requests: summary.total_requests,
+    success: summary.outcomes.success,
+    error: summary.outcomes.error,
+    latency_count: summary.latency_ms?.count ?? null,
+    latency_min_ms: summary.latency_ms?.min ?? null,
+    latency_p50_ms: summary.latency_ms?.p50 ?? null,
+    latency_p95_ms: summary.latency_ms?.p95 ?? null,
+    latency_p99_ms: summary.latency_ms?.p99 ?? null,
+    latency_max_ms: summary.latency_ms?.max ?? null,
+    by_error_code: summary.by_error_code,
+    by_error_category: summary.by_error_category,
+    slowest: summary.slowest,
+  }];
 }
 
 function aggregateEvents(events: CanonicalLogRecord[], topN: number): LogsAggregate {
