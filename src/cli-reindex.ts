@@ -19,6 +19,7 @@ import { FAISS_INDEX_PATH } from './config/paths.js';
 import { assertSufficientDiskSpace } from './disk-preflight.js';
 import { KBError } from './errors.js';
 import { logger } from './logger.js';
+import { createTtyProgress } from './tty-progress.js';
 
 export const REINDEX_HELP = `kb reindex — rebuild FAISS indexes (RFC 017)
 
@@ -184,6 +185,12 @@ export async function runReindexCli(rest: string[]): Promise<number> {
     throw err;
   }
 
+  // #759 — a contextual rebuild can run for many seconds while emitting
+  // nothing until it finishes. Show a stderr spinner so the operator can tell
+  // the process is working, not hung. It self-suppresses on non-TTY / NO_COLOR
+  // output and is cleared before the summary prints to stdout.
+  const progress = createTtyProgress({ label: 'kb reindex: rebuilding index', format: 'md' });
+  progress.start();
   let result: ReindexResult;
   try {
     result = await runReindex({
@@ -191,6 +198,7 @@ export async function runReindexCli(rest: string[]): Promise<number> {
       force: parsed.force,
     });
   } catch (err) {
+    progress.stop();
     const message = (err as Error).message;
     const code = (err as { code?: unknown }).code;
     if (code === 'KB_NOT_FOUND') {
@@ -201,6 +209,7 @@ export async function runReindexCli(rest: string[]): Promise<number> {
     return 1;
   }
 
+  progress.stop();
   process.stdout.write(formatHumanResult(result));
 
   switch (result.outcome) {
