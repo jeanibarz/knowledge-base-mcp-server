@@ -166,6 +166,137 @@ describe('applyKey navigation', () => {
   });
 });
 
+function makeBigState(n: number): PickerState {
+  const s = createPickerState(
+    Array.from({ length: n }, (_, i) => makeDoc(i, `f${i}.md`, `body number ${i}`, i / 100)),
+  );
+  s.viewportRows = 10;
+  return s;
+}
+
+describe('applyKey page-wise navigation', () => {
+  it('PageDown / PageUp move the focus by a full window height', () => {
+    let s = makeBigState(50);
+    s = applyKey(s, { name: 'pagedown' }).state;
+    expect(s.focusIndex).toBe(10);
+    s = applyKey(s, { name: 'pagedown' }).state;
+    expect(s.focusIndex).toBe(20);
+    s = applyKey(s, { name: 'pageup' }).state;
+    expect(s.focusIndex).toBe(10);
+  });
+
+  it('PageDown clamps at the last row', () => {
+    let s = makeBigState(15);
+    s.focusIndex = 10;
+    s = applyKey(s, { name: 'pagedown' }).state;
+    expect(s.focusIndex).toBe(14);
+  });
+
+  it('Ctrl-D / Ctrl-U move the focus by a half window height', () => {
+    let s = makeBigState(50);
+    s = applyKey(s, { name: 'd', ctrl: true }).state;
+    expect(s.focusIndex).toBe(5);
+    s = applyKey(s, { name: 'd', ctrl: true }).state;
+    expect(s.focusIndex).toBe(10);
+    s = applyKey(s, { name: 'u', ctrl: true }).state;
+    expect(s.focusIndex).toBe(5);
+  });
+
+  it('Ctrl-D never signals an exit (distinct from EOF/quit)', () => {
+    const s = makeBigState(50);
+    const r = applyKey(s, { name: 'd', ctrl: true });
+    expect(r.action).toEqual({ type: 'continue' });
+  });
+});
+
+describe('applyKey incremental filter', () => {
+  it('/ enters filter mode with an empty query', () => {
+    const s = makeState();
+    const r = applyKey(s, { sequence: '/' });
+    expect(r.state.filterActive).toBe(true);
+    expect(r.state.filterQuery).toBe('');
+    expect(r.action).toEqual({ type: 'continue' });
+  });
+
+  it('typing narrows the visible set and snaps focus to the first match', () => {
+    let s = makeState();
+    s = applyKey(s, { sequence: '/' }).state;
+    // "bravo" only appears in the second doc (index 1).
+    for (const ch of 'bravo') s = applyKey(s, { sequence: ch }).state;
+    expect(s.filterQuery).toBe('bravo');
+    expect(pickerItemCount(s)).toBe(3); // underlying item count is unchanged
+    expect(s.focusIndex).toBe(1); // focus snapped onto the only match
+  });
+
+  it('vi-motion keys are literal query text while filtering', () => {
+    let s = makeState();
+    s = applyKey(s, { sequence: '/' }).state;
+    s = applyKey(s, { sequence: 'j' }).state;
+    expect(s.filterQuery).toBe('j');
+    expect(s.focusIndex).toBe(0); // did not navigate
+  });
+
+  it('Enter within a filter selects the correct original result index', () => {
+    let s = makeState();
+    s = applyKey(s, { sequence: '/' }).state;
+    for (const ch of 'take two') s = applyKey(s, { sequence: ch }).state;
+    // "take two" matches only the third doc (index 2).
+    expect(s.focusIndex).toBe(2);
+    const r = applyKey(s, { name: 'return' });
+    expect(r.action).toEqual({ type: 'select', view: 'flat', index: 2 });
+    // The selection maps back to the original document.
+    const out = formatSelection(r.state, { view: 'flat', index: 2 });
+    expect(out).toMatch(/alpha content take two/);
+  });
+
+  it('Down / Up move within the filtered set', () => {
+    let s = makeState();
+    s = applyKey(s, { sequence: '/' }).state;
+    // "alpha" matches docs 0 and 2.
+    for (const ch of 'alpha') s = applyKey(s, { sequence: ch }).state;
+    expect(s.focusIndex).toBe(0);
+    s = applyKey(s, { name: 'down' }).state;
+    expect(s.focusIndex).toBe(2); // skips the non-matching doc 1
+    s = applyKey(s, { name: 'down' }).state;
+    expect(s.focusIndex).toBe(2); // clamps at the last match
+    s = applyKey(s, { name: 'up' }).state;
+    expect(s.focusIndex).toBe(0);
+  });
+
+  it('Backspace trims the query and re-widens the visible set', () => {
+    let s = makeState();
+    s = applyKey(s, { sequence: '/' }).state;
+    for (const ch of 'bravo') s = applyKey(s, { sequence: ch }).state;
+    s = applyKey(s, { name: 'backspace' }).state;
+    expect(s.filterQuery).toBe('brav');
+    s = applyKey(s, { name: 'backspace' }).state;
+    s = applyKey(s, { name: 'backspace' }).state;
+    s = applyKey(s, { name: 'backspace' }).state;
+    s = applyKey(s, { name: 'backspace' }).state;
+    expect(s.filterQuery).toBe('');
+  });
+
+  it('Esc clears the filter and restores the full list without exiting', () => {
+    let s = makeState();
+    s.focusIndex = 2;
+    s = applyKey(s, { sequence: '/' }).state;
+    for (const ch of 'bravo') s = applyKey(s, { sequence: ch }).state;
+    expect(s.focusIndex).toBe(1);
+    const r = applyKey(s, { name: 'escape' });
+    expect(r.action).toEqual({ type: 'continue' }); // does NOT exit in filter mode
+    expect(r.state.filterActive).toBe(false);
+    expect(r.state.filterQuery).toBe('');
+    expect(pickerItemCount(r.state)).toBe(3);
+  });
+
+  it('Ctrl-C still exits from within filter mode', () => {
+    let s = makeState();
+    s = applyKey(s, { sequence: '/' }).state;
+    const r = applyKey(s, { name: 'c', ctrl: true });
+    expect(r.action).toEqual({ type: 'exit' });
+  });
+});
+
 describe('renderPickerFrame', () => {
   it('shows a header with the result count and focus position', () => {
     const out = renderPickerFrame(makeState(), RENDER_OPTS);
@@ -255,6 +386,42 @@ describe('renderPickerFrame', () => {
     expect(out).toMatch(/view=grouped/);
     expect(out).toMatch(/demo\/a\.md \(2 chunks\)/);
     expect(out).toMatch(/demo\/b\.md \(1 chunk\)/);
+  });
+
+  it('advertises paging and filter keys in the flat footer hint', () => {
+    const out = renderPickerFrame(makeState(), RENDER_OPTS);
+    expect(out).toMatch(/\[PgUp\/PgDn\] page/);
+    expect(out).toMatch(/\[\/\] filter/);
+  });
+
+  it('renders the active filter query and a filtered count in filter mode', () => {
+    let s = makeState();
+    s = applyKey(s, { sequence: '/' }).state;
+    for (const ch of 'bravo') s = applyKey(s, { sequence: ch }).state;
+    const out = renderPickerFrame(s, RENDER_OPTS);
+    expect(out).toMatch(/filter: \/bravo/);
+    expect(out).toMatch(/filtered 1\/3/);
+    // Only the matching row is drawn.
+    expect(out).toMatch(/bravo content about deploy/);
+    expect(out).not.toMatch(/alpha content about rollback/);
+    // The footer hint is replaced by the filter prompt.
+    expect(out).not.toMatch(/\[Tab\] toggle view/);
+  });
+
+  it('reports "(no matches)" when a filter excludes every row', () => {
+    let s = makeState();
+    s = applyKey(s, { sequence: '/' }).state;
+    for (const ch of 'zzz') s = applyKey(s, { sequence: ch }).state;
+    const out = renderPickerFrame(s, RENDER_OPTS);
+    expect(out).toMatch(/\(no matches\)/);
+  });
+
+  it('documents paging and filter keys in the help body', () => {
+    let s = makeState();
+    s = applyKey(s, { sequence: '?' }).state;
+    const out = renderPickerFrame(s, RENDER_OPTS);
+    expect(out).toMatch(/PgDn \/ PgUp/);
+    expect(out).toMatch(/filter results/);
   });
 
   it('respects a small viewport by emitting a windowed slice of the rows', () => {
