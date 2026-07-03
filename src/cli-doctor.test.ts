@@ -1989,6 +1989,90 @@ describe('kb doctor', () => {
     });
   });
 
+  describe('provider circuit breaker check (issue #747)', () => {
+    async function doctorWithBreaker(
+      configure?: (breaker: InstanceType<typeof import('./provider-breaker.js').ProviderBreakerRegistry>) => Promise<void>,
+    ) {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-breaker-'));
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      await fsp.mkdir(faissDir, { recursive: true });
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+      const { ProviderBreakerRegistry } = await import('./provider-breaker.js');
+      const breaker = new ProviderBreakerRegistry({
+        failureThreshold: 1,
+        cooldownMs: 30_000,
+        now: () => 1_700_000_000_000,
+      });
+      if (configure !== undefined) await configure(breaker);
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+        providerBreaker: breaker,
+      });
+      return { report, formatDoctorMarkdown, cleanup: () => fsp.rm(tempDir, { recursive: true, force: true }) };
+    }
+
+    it('omits the provider_circuit check when no breaker has tracked a call', async () => {
+      const { report, formatDoctorMarkdown, cleanup } = await doctorWithBreaker();
+      try {
+        expect(report.provider_circuits).toEqual([]);
+        expect(report.checks.some((c) => c.name === 'provider_circuit')).toBe(false);
+        expect(formatDoctorMarkdown(report)).toContain(
+          'Provider circuit breakers:\n  (no provider breakers tracked)',
+        );
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it('emits an OK check when all tracked breakers are closed', async () => {
+      const { report, formatDoctorMarkdown, cleanup } = await doctorWithBreaker(async (breaker) => {
+        await breaker.run('embedding:ollama:http://localhost:11434:nomic', async () => 'ok');
+      });
+      try {
+        const check = report.checks.find((c) => c.name === 'provider_circuit');
+        expect(check?.status).toBe('ok');
+        expect(check?.detail).toContain('1 provider breaker(s) tracked, all closed');
+        expect(formatDoctorMarkdown(report)).toContain('embedding/ollama closed');
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it('warns with trip time and cooldown when a breaker is open', async () => {
+      const { report, formatDoctorMarkdown, cleanup } = await doctorWithBreaker(async (breaker) => {
+        await breaker
+          .run('embedding:ollama:http://localhost:11434:nomic', async () => {
+            throw new Error('provider down');
+          })
+          .catch(() => {});
+      });
+      try {
+        const check = report.checks.find((c) => c.name === 'provider_circuit');
+        expect(check?.status).toBe('warn');
+        expect(check?.detail).toContain('1 provider breaker(s) not closed');
+        expect(check?.detail).toContain('embedding/ollama open');
+        expect(check?.detail).toContain('cooldown=30s');
+        const md = formatDoctorMarkdown(report);
+        expect(md).toContain('embedding/ollama open');
+        expect(md).toContain(', WARN');
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+
   describe('dense flat-search latency advisory (issue #604)', () => {
     it('reports active index type/factory and warns only with a suggest-only hint above threshold', async () => {
       const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-flat-latency-warn-'));

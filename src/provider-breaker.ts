@@ -19,6 +19,20 @@ export interface ProviderCircuitSnapshot {
   consecutive_failures: number;
   opened_at_ms: number | null;
   half_open_probe_in_flight: boolean;
+  /**
+   * Issue #747 — cumulative count of closed/half-open → open transitions
+   * for this key over the registry's lifetime. Backs the
+   * `kb_provider_circuit_open_total` counter. Monotonic; reset only by
+   * `reset()`.
+   */
+  opened_total: number;
+  /**
+   * Issue #747 — cooldown remaining before an open breaker admits a
+   * half-open probe, in milliseconds, evaluated against `now()` at
+   * snapshot time. `0` when the breaker is closed, half-open, or its
+   * cooldown has already elapsed. Backs `kb doctor`'s cooldown display.
+   */
+  retry_after_ms: number;
 }
 
 interface ProviderCircuitRecord {
@@ -26,6 +40,7 @@ interface ProviderCircuitRecord {
   consecutiveFailures: number;
   openedAtMs: number | null;
   halfOpenProbeInFlight: boolean;
+  openedTotal: number;
 }
 
 interface ProviderCircuitPermit {
@@ -94,6 +109,7 @@ export class ProviderBreakerRegistry {
   }
 
   snapshot(): ProviderCircuitSnapshot[] {
+    const nowMs = this.now();
     return Array.from(this.records.entries())
       .map(([key, record]) => ({
         key,
@@ -101,6 +117,11 @@ export class ProviderBreakerRegistry {
         consecutive_failures: record.consecutiveFailures,
         opened_at_ms: record.openedAtMs,
         half_open_probe_in_flight: record.halfOpenProbeInFlight,
+        opened_total: record.openedTotal,
+        retry_after_ms:
+          record.state === 'open' && record.openedAtMs !== null
+            ? Math.max(0, this.cooldownMs - (nowMs - record.openedAtMs))
+            : 0,
       }))
       .sort((a, b) => a.key.localeCompare(b.key));
   }
@@ -149,6 +170,7 @@ export class ProviderBreakerRegistry {
     if (record.state === 'half-open' || record.consecutiveFailures >= this.failureThreshold) {
       record.state = 'open';
       record.openedAtMs = this.now();
+      record.openedTotal += 1;
     }
   }
 
@@ -160,6 +182,7 @@ export class ProviderBreakerRegistry {
         consecutiveFailures: 0,
         openedAtMs: null,
         halfOpenProbeInFlight: false,
+        openedTotal: 0,
       };
       this.records.set(key, record);
     }
@@ -190,6 +213,25 @@ function parseInteger(raw: string | undefined): number | undefined {
 function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+/**
+ * Issue #747 — decompose a breaker key into bounded `{kind, provider}`
+ * labels for observability. Keys are built as `<kind>:<provider>:<endpoint>:<model>`
+ * by `embeddingProviderBreakerKey` and `llmProviderBreakerKey`; only the
+ * first two colon-delimited segments are label-worthy (the endpoint and
+ * model carry unbounded cardinality — URLs, model ids — so they are
+ * dropped). Keys that do not match the convention fall back to
+ * `kind='unknown'` with the whole key as `provider`, so a malformed key
+ * still produces a valid, bounded label pair rather than being silently
+ * dropped.
+ */
+export function parseProviderCircuitKey(key: string): { kind: string; provider: string } {
+  const segments = key.split(':');
+  if (segments.length >= 2 && segments[0] !== '' && segments[1] !== '') {
+    return { kind: segments[0], provider: segments[1] };
+  }
+  return { kind: 'unknown', provider: key };
 }
 
 export const providerBreakerRegistry = new ProviderBreakerRegistry();

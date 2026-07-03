@@ -143,6 +143,7 @@ function minimalDoctorReport(): DoctorReport {
       limitation: 'test',
     },
     provider_calls: {},
+    provider_circuits: [],
     dense_search_latency: null,
     integrity: null,
   };

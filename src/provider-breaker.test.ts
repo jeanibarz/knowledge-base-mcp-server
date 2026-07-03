@@ -4,6 +4,7 @@ import {
   parseProviderBreakerCooldownMs,
   parseProviderBreakerEnabled,
   parseProviderBreakerFailureThreshold,
+  parseProviderCircuitKey,
   ProviderBreakerRegistry,
   ProviderCircuitOpenError,
 } from './provider-breaker.js';
@@ -135,6 +136,60 @@ describe('ProviderBreakerRegistry', () => {
     })]);
   });
 
+  it('counts cumulative open transitions and reports remaining cooldown (issue #747)', async () => {
+    let now = 1_000;
+    const breaker = new ProviderBreakerRegistry({
+      failureThreshold: 1,
+      cooldownMs: 500,
+      now: () => now,
+    });
+    const key = 'embedding:ollama:http://localhost:11434:nomic';
+
+    // First trip: closed -> open.
+    await expect(breaker.run(key, async () => {
+      throw new Error('down');
+    })).rejects.toThrow('down');
+    now += 200; // 300ms of the 500ms cooldown remains.
+    expect(breaker.snapshot()).toEqual([expect.objectContaining({
+      key,
+      state: 'open',
+      opened_total: 1,
+      retry_after_ms: 300,
+    })]);
+
+    // Cooldown elapses, half-open probe fails: second open transition.
+    now += 300;
+    await expect(breaker.run(key, async () => {
+      throw new Error('probe down');
+    })).rejects.toThrow('probe down');
+    expect(breaker.snapshot()).toEqual([expect.objectContaining({
+      state: 'open',
+      opened_total: 2,
+      retry_after_ms: 500,
+    })]);
+  });
+
+  it('reports zero cooldown for closed breakers (issue #747)', async () => {
+    let now = 1_000;
+    const breaker = new ProviderBreakerRegistry({
+      failureThreshold: 1,
+      cooldownMs: 500,
+      now: () => now,
+    });
+    const key = 'llm:local:http://127.0.0.1:8080/v1/chat/completions:qwen';
+
+    await expect(breaker.run(key, async () => {
+      throw new Error('down');
+    })).rejects.toThrow('down');
+    now += 500;
+    await expect(breaker.run(key, async () => 'ok')).resolves.toBe('ok');
+    expect(breaker.snapshot()).toEqual([expect.objectContaining({
+      state: 'closed',
+      opened_total: 1,
+      retry_after_ms: 0,
+    })]);
+  });
+
   it('bypasses all state tracking when disabled', async () => {
     const breaker = new ProviderBreakerRegistry({
       enabled: false,
@@ -171,5 +226,19 @@ describe('provider breaker env parsing', () => {
     expect(parseProviderBreakerCooldownMs(undefined)).toBe(30_000);
     expect(parseProviderBreakerCooldownMs('250')).toBe(250);
     expect(parseProviderBreakerCooldownMs('999999999')).toBe(3_600_000);
+  });
+});
+
+describe('parseProviderCircuitKey (issue #747)', () => {
+  it('extracts bounded {kind, provider} from real breaker keys', () => {
+    expect(parseProviderCircuitKey('embedding:ollama:http://localhost:11434:nomic'))
+      .toEqual({ kind: 'embedding', provider: 'ollama' });
+    expect(parseProviderCircuitKey('llm:openrouter:https://openrouter.ai/api/v1/chat/completions:qwen'))
+      .toEqual({ kind: 'llm', provider: 'openrouter' });
+  });
+
+  it('falls back to unknown kind for malformed keys', () => {
+    expect(parseProviderCircuitKey('weird')).toEqual({ kind: 'unknown', provider: 'weird' });
+    expect(parseProviderCircuitKey(':')).toEqual({ kind: 'unknown', provider: ':' });
   });
 });

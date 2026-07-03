@@ -75,6 +75,12 @@ import {
   type ProviderCallSnapshot,
   type SearchLatencyMetrics,
 } from './metrics.js';
+import {
+  parseProviderCircuitKey,
+  providerBreakerRegistry,
+  type ProviderBreakerRegistry,
+  type ProviderCircuitSnapshot,
+} from './provider-breaker.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
 import {
   inventoryExtractionCache,
@@ -469,6 +475,15 @@ export interface DoctorReport {
    * model_id; otherwise it is OK.
    */
   provider_calls: Record<string, ProviderCallSnapshot>;
+  /**
+   * Issue #747 — per-key snapshot of the shared provider circuit breaker
+   * (embedding + LLM paths). Empty `[]` until a breaker has admitted a
+   * call in this process; breakers are process-local, so a one-shot
+   * `kb doctor` typically sees an empty list. The `provider_circuit` check
+   * is WARN when any breaker is open or half-open, OK when all tracked
+   * breakers are closed, and omitted entirely when the list is empty.
+   */
+  provider_circuits: ProviderCircuitSnapshot[];
   dense_search_latency: KbStatsDenseSearchLatencySummary | null;
   /** Non-null only when kb doctor is invoked with --integrity or --slow. */
   integrity: IntegrityReport | null;
@@ -486,6 +501,8 @@ export interface BuildDoctorReportOptions {
    * singleton is read.
    */
   providerCallMetrics?: ProviderCallMetrics;
+  /** Issue #747 — test seam for the shared provider circuit breaker registry. */
+  providerBreaker?: ProviderBreakerRegistry;
   /** Issue #604 — test seam for daemon-served search latency telemetry. */
   searchMetrics?: SearchLatencyMetrics;
   /** Issue #604 — test seam for daemon stats telemetry captured out of process. */
@@ -1558,6 +1575,31 @@ export async function buildDoctorReport(
     }
   }
 
+  // Issue #747 — surface any tripped provider breaker before users hit
+  // failing searches. Breakers are process-local, so a one-shot `kb doctor`
+  // usually sees an empty snapshot; only emit the row when at least one
+  // breaker has tracked a call, mirroring the provider_calls row above.
+  const providerCircuits = (options.providerBreaker ?? providerBreakerRegistry).snapshot();
+  if (providerCircuits.length > 0) {
+    const tripped = providerCircuits.filter((c) => c.state !== 'closed');
+    if (tripped.length > 0) {
+      const summary = tripped
+        .map((c) => formatProviderCircuitDetail(c))
+        .join('; ');
+      checks.push({
+        name: 'provider_circuit',
+        status: 'warn',
+        detail: `${tripped.length} provider breaker(s) not closed: ${summary}`,
+      });
+    } else {
+      checks.push({
+        name: 'provider_circuit',
+        status: 'ok',
+        detail: `${providerCircuits.length} provider breaker(s) tracked, all closed`,
+      });
+    }
+  }
+
   const searchMetricsSource = options.searchMetrics ?? searchLatencyMetrics;
   const daemonStats = await (options.daemonStatsPayload ?? (() => tryReadDaemonStatsPayload()))();
   const denseSearchLatency = daemonStats?.dense_search_latency
@@ -1640,6 +1682,7 @@ export async function buildDoctorReport(
     last_index_update: lastIndexUpdate,
     reindex_trigger: reindexTrigger,
     provider_calls: providerCalls,
+    provider_circuits: providerCircuits,
     dense_search_latency: denseSearchLatency,
     integrity,
   };
@@ -1729,6 +1772,23 @@ function formatErrorRate(errors: number, count: number): string {
   if (count === 0) return '0%';
   const pct = (errors / count) * 100;
   return `${pct.toFixed(1)}%`;
+}
+
+/**
+ * Issue #747 — one-line operator summary for a non-closed provider
+ * breaker: which provider/kind, its state, when it last tripped, and how
+ * much cooldown remains before it admits a probe.
+ */
+function formatProviderCircuitDetail(circuit: ProviderCircuitSnapshot): string {
+  const { kind, provider } = parseProviderCircuitKey(circuit.key);
+  const openedAt = circuit.opened_at_ms === null
+    ? 'unknown'
+    : new Date(circuit.opened_at_ms).toISOString();
+  const cooldown = circuit.state === 'open'
+    ? `, cooldown=${Math.round(circuit.retry_after_ms / 1000)}s`
+    : '';
+  return `${kind}/${provider} ${circuit.state} (opened ${openedAt}, ` +
+    `opens=${circuit.opened_total}${cooldown})`;
 }
 
 async function readIndexHealth(activeModelId: string | null): Promise<DoctorReport['index']> {
@@ -2779,6 +2839,16 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
         ` p50=${row.latency_ms.p50}ms p95=${row.latency_ms.p95}ms` +
         ` p99=${row.latency_ms.p99}ms ${tokens}${errorMarker}`,
       );
+    }
+  }
+  lines.push('');
+  lines.push('Provider circuit breakers:');
+  if (report.provider_circuits.length === 0) {
+    lines.push('  (no provider breakers tracked)');
+  } else {
+    for (const circuit of report.provider_circuits) {
+      const marker = circuit.state === 'closed' ? '' : ', WARN';
+      lines.push(`  ${formatProviderCircuitDetail(circuit)}${marker}`);
     }
   }
   lines.push('');
