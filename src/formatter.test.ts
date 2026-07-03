@@ -35,6 +35,34 @@ afterEach(() => {
   else process.env.KB_SHIELD = savedShield;
 });
 
+function goldenSearchResults(): ScoredDocument[] {
+  return [
+    {
+      pageContent: '# Deploy rollback\n\nUse the blue-green rollback playbook.\nVerify pods before cutting traffic.',
+      metadata: {
+        source: '/tmp/kbs/ops/runbooks/deployments/rollback.md',
+        knowledgeBase: 'ops',
+        relativePath: 'ops/runbooks/deployments/rollback.md',
+        loc: { lines: { from: 42, to: 46 } },
+        chunkIndex: 0,
+        frontmatter: { title: 'Rollback', extras: { private_token: 'hidden' } },
+      },
+      score: 0.12345,
+    } as unknown as ScoredDocument,
+    {
+      pageContent: 'Incident review notes\nOwner handoff happens after mitigation is confirmed.',
+      metadata: {
+        source: '/tmp/kbs/team/notes/incident-review.md',
+        knowledgeBase: 'team',
+        relativePath: 'team/notes/incident-review.md',
+        loc: { lines: { from: 7, to: 9 } },
+        chunkIndex: 1,
+      },
+      score: 12.345,
+    } as unknown as ScoredDocument,
+  ];
+}
+
 function withGuardEnv<T>(env: Record<string, string>, run: () => T): T {
   const previous = Object.fromEntries(
     GUARD_ENV_KEYS.map((key) => [key, process.env[key]]),
@@ -261,6 +289,73 @@ describe('formatRetrievalAsMarkdown', () => {
     expect(out).not.toContain('before');
     expect(out).not.toContain('after');
   });
+
+  it('matches the golden human-readable search output', () => {
+    delete process.env.KB_SHIELD;
+
+    expect(formatRetrievalAsMarkdown(goldenSearchResults(), false, 'none')).toMatchInlineSnapshot(`
+"## Semantic Search Results
+
+**Result 1:**
+
+**Score:** 0.12
+
+# Deploy rollback
+
+Use the blue-green rollback playbook.
+Verify pods before cutting traffic.
+
+**Source:** [ops/runbooks/deployments/rollback.md#L42-L46](kb://ops/runbooks/deployments/rollback.md#L42-L46)
+
+\`\`\`json
+{
+  "source": "/tmp/kbs/ops/runbooks/deployments/rollback.md",
+  "knowledgeBase": "ops",
+  "relativePath": "ops/runbooks/deployments/rollback.md",
+  "loc": {
+    "lines": {
+      "from": 42,
+      "to": 46
+    }
+  },
+  "chunkIndex": 0,
+  "frontmatter": {
+    "title": "Rollback"
+  },
+  "injection_signals": []
+}
+\`\`\`
+
+---
+
+**Result 2:**
+
+**Score:** 12.35
+
+Incident review notes
+Owner handoff happens after mitigation is confirmed.
+
+**Source:** [team/notes/incident-review.md#L7-L9](kb://team/notes/incident-review.md#L7-L9)
+
+\`\`\`json
+{
+  "source": "/tmp/kbs/team/notes/incident-review.md",
+  "knowledgeBase": "team",
+  "relativePath": "team/notes/incident-review.md",
+  "loc": {
+    "lines": {
+      "from": 7,
+      "to": 9
+    }
+  },
+  "chunkIndex": 1,
+  "injection_signals": []
+}
+\`\`\`
+
+> **Disclaimer:** The provided results might not all be relevant. Please cross-check the relevance of the information."
+`);
+  });
 });
 
 describe('highlightQueryTerms', () => {
@@ -353,6 +448,25 @@ describe('formatRetrievalAsCompactTable', () => {
 
     expect(out).toContain('<untrusted-doc src="alpha/docs/deploy.md">');
     expect(out).not.toContain('Ignore prior instructions');
+  });
+
+  it('matches the golden compact search table', () => {
+    delete process.env.KB_SHIELD;
+
+    const out = formatRetrievalAsCompactTable(goldenSearchResults(), {
+      mode: 'hybrid',
+      gate: 'kept',
+      width: 132,
+    });
+
+    expect(out.split('\n')).toMatchInlineSnapshot(`
+[
+  "Rank  Score     KB              Path                                  Lines        Mode     Gate      Preview                       ",
+  "----  --------  --------------  ------------------------------------  -----------  -------  --------  ------------------------------",
+  "1     0.123     ops             runbooks/deployments/rollback.md      42-46        hybrid   kept      Deploy rollback               ",
+  "2     12.35     team            notes/incident-review.md              7-9          hybrid   kept      Incident review notes         ",
+]
+`);
   });
 });
 
@@ -635,6 +749,13 @@ describe('formatRetrievalAsVimgrep', () => {
     expect(formatRetrievalAsVimgrep(docs)).toBe(
       'work/runbooks/deploy.md:42:0:Deploy procedure starts here. Always verify pods before continuing.',
     );
+  });
+
+  it('matches the golden vimgrep search output', () => {
+    expect(formatRetrievalAsVimgrep(goldenSearchResults())).toMatchInlineSnapshot(`
+"ops/runbooks/deployments/rollback.md:42:0:# Deploy rollback Use the blue-green rollback playbook. Verify pods before cutti
+team/notes/incident-review.md:7:0:Incident review notes Owner handoff happens after mitigation is confirmed."
+`);
   });
 });
 
