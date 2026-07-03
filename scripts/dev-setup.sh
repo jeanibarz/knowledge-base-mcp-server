@@ -46,8 +46,8 @@ echo "==> Linking bins into npm global prefix: ${resolved_prefix}"
 echo "    (override with PREFIX, NPM_CONFIG_PREFIX, or ~/.npmrc 'prefix=' if wrong)"
 npm link
 
-echo "==> Configuring git hooks path -> .githooks (post-merge + post-rewrite)"
-chmod +x .githooks/post-merge scripts/*.sh 2>/dev/null || true
+echo "==> Configuring git hooks path -> .githooks (post-merge + post-rewrite + pre-push)"
+chmod +x .githooks/post-merge .githooks/pre-push scripts/*.sh 2>/dev/null || true
 git config core.hooksPath .githooks
 
 cat <<EOF
@@ -57,6 +57,8 @@ this checkout (${resolved_prefix}/bin/). From now on:
 
   - \`git pull\` (merge or rebase) auto-rebuilds via the post-merge /
     post-rewrite hooks.
+  - \`git push\` first runs the fast CI-parity gate (\`npm run check:fast\`:
+    lint + doc-drift) via the pre-push hook. Bypass with \`git push --no-verify\`.
   - Edit src/, run \`npm run build\`, and the global bins reflect it
     immediately — no re-link needed.
   - To unlink: \`npm unlink -g @jeanibarz/knowledge-base-mcp-server\`

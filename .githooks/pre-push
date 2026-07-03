@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Fast, local CI-parity gate that runs BEFORE a push reaches CI.
+#
+# Runs the deterministic fast subset of `npm run check` — ESLint plus the
+# generated-doc drift gates (`npm run check:fast`) — to catch the two most
+# common red-build causes (lint violations and stale reference docs) in
+# seconds locally instead of after a full CI round-trip. The slow test suite
+# (`test:coverage`) is deliberately excluded; CI remains the source of truth
+# for the full suite. `check:fast` runs one incremental `tsc` build first (the
+# doc gates read the compiled schema / specs), so push latency stays low.
+#
+# Enable once with:  npm run dev:setup
+# Manual enable:     git config core.hooksPath .githooks
+#
+# Opt-in by construction: this hook only fires when git hooks point at this
+# directory. Contributors who never ran `dev:setup` are unaffected.
+#
+# Bypass for emergencies:  git push --no-verify
+
+set -uo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root" || exit 1
+
+# A fresh clone that has not run `npm install` cannot run the gate. Don't block
+# the push over missing tooling — warn and let it through; CI still enforces.
+if [[ ! -d node_modules ]]; then
+  echo "[pre-push] node_modules missing — skipping fast checks (run 'npm install' to enable)." >&2
+  exit 0
+fi
+
+echo "[pre-push] running fast CI-parity checks (lint + doc-drift)…" >&2
+if npm run check:fast --silent; then
+  echo "[pre-push] fast checks passed." >&2
+  exit 0
+fi
+
+cat >&2 <<'EOF'
+
+[pre-push] BLOCKED: fast CI-parity checks failed (lint or doc-drift).
+
+Regenerate the drifted reference docs, then re-check:
+  - Lint:            npm run lint:fix
+  - Config docs:     npm run docs:generate-config-reference
+  - CLI docs:        node scripts/gen-cli-reference.mjs
+  - MCP-tool docs:   npm run docs:gen-mcp-tools
+  - Error-code docs: npm run docs:gen-error-codes
+  - Metrics docs:    npm run docs:generate-metrics-reference
+  - Embedding docs:  npm run docs:generate-embedding-models
+
+Re-run locally with:  npm run check:fast
+Bypass (emergencies): git push --no-verify
+EOF
+exit 1
