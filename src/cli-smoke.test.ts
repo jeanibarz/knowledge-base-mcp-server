@@ -23,6 +23,7 @@ const SUBCOMMANDS = [
   'explain',
   'stale-check',
   'superseded',
+  'tags',
   'promote',
   'quarantine',
   'where',

@@ -45,6 +45,7 @@ import { SERVE_HELP, runServe } from './cli-serve.js';
 import { STALE_CHECK_HELP, runStaleCheck } from './cli-stale-check.js';
 import { STATS_HELP, runStats } from './cli-stats.js';
 import { SUPERSEDED_HELP, runSuperseded } from './cli-superseded.js';
+import { TAGS_HELP, runTags } from './cli-tags.js';
 import { VERIFY_HELP, runVerify } from './cli-verify.js';
 import { WHERE_HELP, runWhere } from './cli-where.js';
 import { daemonUrlFromEnv, tryRunDaemonCommand } from './daemon-client.js';
@@ -131,6 +132,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'explain',      summary: 'Verbose single-query retrieval trace for debugging and bug reports.',   help: EXPLAIN_HELP,      handler: runExplain },
   { name: 'stale-check',  summary: 'Scan markdown notes for path / URL references that no longer resolve.',  help: STALE_CHECK_HELP,  handler: runStaleCheck },
   { name: 'superseded',   summary: 'Scan a KB for obsolete / contradicted / deprecated / stale notes.',      help: SUPERSEDED_HELP,   handler: runSuperseded },
+  { name: 'tags',         summary: 'Enumerate frontmatter facet values (tags/status/type) with counts.',     help: TAGS_HELP,         handler: runTags },
   { name: 'promote',      summary: 'Review and update lifecycle frontmatter on a KB note.',                  help: PROMOTE_HELP,      handler: runPromote },
   { name: 'quarantine',   summary: 'Inspect and manage per-file ingest quarantine entries.',                 help: QUARANTINE_HELP,   handler: runQuarantine },
   { name: 'verify',       summary: 'Run slow integrity checks for persisted indexes and sidecars.',          help: VERIFY_HELP,       handler: runVerify },
