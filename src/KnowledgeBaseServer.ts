@@ -155,9 +155,11 @@ import type { TransportRuntimeStatsSnapshot } from './transport-runtime-stats.js
 import { buildTransportReadinessPayload } from './transport-readiness.js';
 import { AskExecutionError, askKnowledge } from './ask-core.js';
 import { callChatCompletion } from './llm-client.js';
+import { readBuildInfo } from './build-info.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
+const SERVER_BUILD_INFO = readBuildInfo();
 
 // ---------------------------------------------------------------------------
 // MCP tool input bounds (#660).
@@ -1524,7 +1526,8 @@ export class KnowledgeBaseServer {
     const activeModelId = await resolveActiveModel();
     const manager = await this.managers.getOrCreate(activeModelId);
     const payload = await computeKbStats(manager, {
-      serverVersion: SERVER_VERSION,
+      serverVersion: SERVER_BUILD_INFO.version,
+      serverCommit: SERVER_BUILD_INFO.commit,
       startedAt: this.startedAt,
       remoteTransportStats: this.getRemoteTransportStats(),
     });

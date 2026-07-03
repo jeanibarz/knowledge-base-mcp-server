@@ -44,6 +44,7 @@ The v1 exporter keeps labels bounded:
 | `stage` | `kb_search_stage_duration_ms` | fixed search timing stage names |
 | `status` | `kb_search_*` | `success`, `error` |
 | `resource_kind` | `kb_write_lock_*` | `active_index`, `model_index`, `other` |
+| `version`, `commit` | `kb_build_info` | one serving process build identity |
 
 There are no query text, file path, user, request id, source URL, or raw error
 labels.
@@ -52,6 +53,7 @@ labels.
 
 | Prefix | Meaning |
 |---|---|
+| `kb_build_info` | package version and source/build commit for the serving process |
 | `kb_knowledge_base_*` | file counts, chunk counts, indexed bytes, quarantine counts by KB |
 | `kb_provider_*` | provider call counts, errors, token totals when reported, p50/p95/p99 latency |
 | `kb_search_requests_total` | daemon-served search request totals by mode/status |

@@ -119,7 +119,7 @@ export interface KbStatsPayload {
   index_path: string;
   dense_search_latency?: KbStatsDenseSearchLatencySummary;
   last_index_update: IndexUpdateSummary;
-  server: { version: string; uptime_ms: number };
+  server: { version: string; commit?: string; uptime_ms: number };
   /**
    * Issue #210 — per-`model_id` runtime histograms for the active
    * embedding provider's `embedQuery` / `embedDocuments` calls. Empty
@@ -178,6 +178,8 @@ export interface ComputeKbStatsOptions {
   knowledgeBaseName?: string;
   /** Server version string surfaced under `server.version`. */
   serverVersion: string;
+  /** Build or source commit surfaced under `server.commit`. */
+  serverCommit?: string;
   /** `Date.now()` baseline used to derive `server.uptime_ms`. */
   startedAt: number;
   /**
@@ -310,6 +312,7 @@ export async function computeKbStats(
     last_index_update: lastIndexUpdate,
     server: {
       version: options.serverVersion,
+      commit: options.serverCommit ?? 'unknown',
       uptime_ms: Date.now() - options.startedAt,
     },
     provider_calls: metricsSource.snapshot(),

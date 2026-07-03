@@ -1,5 +1,3 @@
-import { readFileSync, realpathSync } from 'fs';
-import * as path from 'path';
 import { resolveActiveModel } from './active-model.js';
 import { tryRunDaemonCommand } from './daemon-client.js';
 import {
@@ -21,6 +19,7 @@ import {
   type KbStatsContextualPrefaceBlock,
   type KbStatsPayload,
 } from './kb-stats.js';
+import { readBuildInfo, type BuildInfo } from './build-info.js';
 
 const CLI_STARTED_AT = Date.now();
 
@@ -66,7 +65,7 @@ export interface RunStatsDeps {
     options: ComputeKbStatsOptions,
   ) => Promise<KbStatsPayload>;
   tryReadDaemonStatsPayload?: () => Promise<KbStatsPayload | null>;
-  readPackageVersion: () => string;
+  readBuildInfo: () => BuildInfo;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -81,7 +80,7 @@ const DEFAULT_DEPS: RunStatsDeps = {
   loadManagerForModel,
   loadWithJsonRetry,
   computeKbStats,
-  readPackageVersion,
+  readBuildInfo,
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
 };
@@ -116,9 +115,11 @@ export async function runStats(
     const activeModelId = await deps.resolveActiveModel();
     const manager = await deps.loadManagerForModel(activeModelId);
     await deps.loadWithJsonRetry(manager);
+    const buildInfo = deps.readBuildInfo();
     const payload = await deps.computeKbStats(manager, {
       ...(parsed.kb !== undefined ? { knowledgeBaseName: parsed.kb } : {}),
-      serverVersion: deps.readPackageVersion(),
+      serverVersion: buildInfo.version,
+      serverCommit: buildInfo.commit,
       startedAt: CLI_STARTED_AT,
     });
 
@@ -423,16 +424,4 @@ function formatRate(value: number): string {
 function formatIndexUpdateScope(scope: KbStatsPayload['last_index_update']['scope']): string {
   if (scope === null) return 'none';
   return scope === 'global' ? 'global' : `kb:${scope}`;
-}
-
-function readPackageVersion(): string {
-  try {
-    const here = realpathSync(process.argv[1] ?? path.join(process.cwd(), 'build', 'cli.js'));
-    const pkgPath = path.join(path.dirname(here), '..', 'package.json');
-    const raw = readFileSync(pkgPath, 'utf-8');
-    const parsed = JSON.parse(raw) as { version?: string };
-    return parsed.version ?? 'unknown';
-  } catch {
-    return 'unknown';
-  }
 }

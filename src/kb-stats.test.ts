@@ -160,7 +160,29 @@ describe('computeKbStats', () => {
       model_id: 'huggingface__BAAI-bge-small-en-v1.5',
     });
     expect(payload.server.version).toBe('9.9.9');
+    expect(payload.server.commit).toBe('unknown');
     expect(payload.server.uptime_ms).toBeGreaterThanOrEqual(0);
+
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('carries the supplied server commit in the stats payload', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-build-info-'));
+    const { computeKbStats } = await freshKbStats({
+      KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+      FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+    });
+
+    const payload = await computeKbStats(makeManager({}) as any, {
+      serverVersion: '9.9.9',
+      serverCommit: 'abc123def456',
+      startedAt: Date.now(),
+    });
+
+    expect(payload.server).toMatchObject({
+      version: '9.9.9',
+      commit: 'abc123def456',
+    });
 
     await fsp.rm(tempDir, { recursive: true, force: true });
   });

@@ -11,6 +11,8 @@ describe('formatKbStatsOpenMetrics', () => {
     const payload = samplePayload();
     const text = formatKbStatsOpenMetrics(payload);
 
+    expect(text).toContain('# TYPE kb_build_info gauge');
+    expect(text).toContain('kb_build_info{commit="abc123def456",version="0.0.0-test"} 1');
     expect(text).toContain('# TYPE kb_knowledge_base_chunks gauge');
     expect(text).toContain('# TYPE kb_provider_calls counter');
     expect(text).not.toContain('# TYPE kb_provider_calls_total counter');
@@ -103,6 +105,7 @@ function samplePayload(): KbStatsPayload {
     },
     server: {
       version: '0.0.0-test',
+      commit: 'abc123def456',
       uptime_ms: 42,
     },
     provider_calls: {

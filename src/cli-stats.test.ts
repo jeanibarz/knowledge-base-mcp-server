@@ -155,7 +155,7 @@ function makeDeps(opts: {
       if (opts.computeError !== undefined) throw opts.computeError;
       return opts.payload ?? payload();
     }),
-    readPackageVersion: jest.fn(() => '1.2.3'),
+    readBuildInfo: jest.fn(() => ({ version: '1.2.3', commit: 'abc123def456' })),
     stdout: (text) => { stdout.push(text); },
     stderr: (text) => { stderr.push(text); },
   };
@@ -175,6 +175,10 @@ describe('kb stats CLI', () => {
     expect(deps.resolveActiveModel).toHaveBeenCalledTimes(1);
     expect(deps.loadManagerForModel).toHaveBeenCalledWith('ollama__nomic-embed-text-latest');
     expect(deps.loadWithJsonRetry).toHaveBeenCalledWith(manager);
+    expect(deps.computeKbStats).toHaveBeenCalledWith(manager, expect.objectContaining({
+      serverVersion: '1.2.3',
+      serverCommit: 'abc123def456',
+    }));
     expect(manager.updateIndex).not.toHaveBeenCalled();
   });
 
