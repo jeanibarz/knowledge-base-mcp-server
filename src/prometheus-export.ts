@@ -18,173 +18,410 @@ interface MetricSample {
 interface MetricDefinition {
   name: string;
   help: string;
-  type: 'counter' | 'gauge';
+  type: OpenMetricsMetricType;
   samples: MetricSample[];
+}
+
+export type OpenMetricsMetricType = 'counter' | 'gauge' | 'histogram';
+
+export interface OpenMetricsMetricReference {
+  name: string;
+  type: OpenMetricsMetricType;
+  help: string;
+  labels: readonly string[];
+  emittedWhen: string;
+}
+
+export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
+  {
+    name: 'kb_build_info',
+    type: 'gauge',
+    help: 'Build identity for the serving process.',
+    labels: ['commit', 'version'],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_knowledge_base_files',
+    type: 'gauge',
+    help: 'Number of ingestable source files by knowledge base.',
+    labels: ['kb'],
+    emittedWhen: 'Emitted once per registered knowledge base.',
+  },
+  {
+    name: 'kb_knowledge_base_chunks',
+    type: 'gauge',
+    help: 'Number of dense index chunks by knowledge base.',
+    labels: ['kb'],
+    emittedWhen: 'Emitted once per registered knowledge base.',
+  },
+  {
+    name: 'kb_knowledge_base_indexed_bytes',
+    type: 'gauge',
+    help: 'Total bytes from ingestable files by knowledge base.',
+    labels: ['kb'],
+    emittedWhen: 'Emitted once per registered knowledge base.',
+  },
+  {
+    name: 'kb_knowledge_base_quarantined_chunks',
+    type: 'gauge',
+    help: 'Number of quarantined chunks by knowledge base.',
+    labels: ['kb'],
+    emittedWhen: 'Emitted once per knowledge base with quarantined chunks.',
+  },
+  {
+    name: 'kb_server_uptime_ms',
+    type: 'gauge',
+    help: 'Process uptime in milliseconds for the serving process.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_index_embedding_dimensions',
+    type: 'gauge',
+    help: 'Embedding dimension of the active FAISS index, or 0 when unknown.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_provider_calls_total',
+    type: 'counter',
+    help: 'Embedding provider calls by model id.',
+    labels: ['model_id'],
+    emittedWhen: 'Emitted once per embedding model observed by the process.',
+  },
+  {
+    name: 'kb_provider_call_errors_total',
+    type: 'counter',
+    help: 'Embedding provider call errors by model id.',
+    labels: ['model_id'],
+    emittedWhen: 'Emitted once per embedding model observed by the process.',
+  },
+  {
+    name: 'kb_provider_tokens_in_total',
+    type: 'counter',
+    help: 'Reported input tokens consumed by embedding provider calls.',
+    labels: ['model_id'],
+    emittedWhen: 'Emitted once per model after the provider reports token usage.',
+  },
+  {
+    name: 'kb_provider_call_latency_p50_ms',
+    type: 'gauge',
+    help: 'Embedding provider call latency p50 by model id, in milliseconds.',
+    labels: ['model_id'],
+    emittedWhen: 'Emitted once per embedding model observed by the process.',
+  },
+  {
+    name: 'kb_provider_call_latency_p95_ms',
+    type: 'gauge',
+    help: 'Embedding provider call latency p95 by model id, in milliseconds.',
+    labels: ['model_id'],
+    emittedWhen: 'Emitted once per embedding model observed by the process.',
+  },
+  {
+    name: 'kb_provider_call_latency_p99_ms',
+    type: 'gauge',
+    help: 'Embedding provider call latency p99 by model id, in milliseconds.',
+    labels: ['model_id'],
+    emittedWhen: 'Emitted once per embedding model observed by the process.',
+  },
+  {
+    name: 'kb_search_requests_total',
+    type: 'counter',
+    help: 'Daemon-served search requests by effective mode and status.',
+    labels: ['mode', 'status'],
+    emittedWhen: 'Emitted after daemon-served search requests are observed.',
+  },
+  {
+    name: 'kb_search_degraded_total',
+    type: 'counter',
+    help: 'Search requests degraded from dense-provider retrieval to lexical-only output by bounded reason.',
+    labels: ['mode', 'reason'],
+    emittedWhen: 'Emitted after degraded daemon-served search requests are observed.',
+  },
+  {
+    name: 'kb_rerank_invocations_total',
+    type: 'counter',
+    help: 'Reranker-stage invocations.',
+    labels: [],
+    emittedWhen: 'Emitted when reranker telemetry is available.',
+  },
+  {
+    name: 'kb_rerank_skipped_total',
+    type: 'counter',
+    help: 'Reranker-stage skips by bounded reason.',
+    labels: ['reason'],
+    emittedWhen: 'Emitted when reranker telemetry is available and skip reasons have been observed.',
+  },
+  {
+    name: 'kb_rerank_candidates_total',
+    type: 'counter',
+    help: 'Reranker-stage candidates by scoring source.',
+    labels: ['source'],
+    emittedWhen: 'Emitted when reranker telemetry is available and candidate sources have been observed.',
+  },
+  {
+    name: 'kb_query_cache_hits_total',
+    type: 'counter',
+    help: 'Query embedding cache hits.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_query_cache_misses_total',
+    type: 'counter',
+    help: 'Query embedding cache misses.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_query_cache_bypasses_total',
+    type: 'counter',
+    help: 'Query embedding cache bypasses.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_query_cache_disk_size_bytes',
+    type: 'gauge',
+    help: 'Query embedding cache disk usage in bytes.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_relevance_gate_queries_total',
+    type: 'counter',
+    help: 'Relevance-gated retrieval queries.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_relevance_gate_verdict_injected_total',
+    type: 'counter',
+    help: 'Relevance gate injected-context verdict count.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_relevance_gate_verdict_no_relevant_context_total',
+    type: 'counter',
+    help: 'Relevance gate no-relevant-context verdict count.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_relevance_gate_verdict_empty_index_total',
+    type: 'counter',
+    help: 'Relevance gate empty-index verdict count.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_remote_transport_requests_total',
+    type: 'counter',
+    help: 'Remote HTTP/SSE transport requests.',
+    labels: [],
+    emittedWhen: 'Emitted when HTTP or SSE transport stats are available.',
+  },
+  {
+    name: 'kb_remote_transport_sessions_opened_total',
+    type: 'counter',
+    help: 'Remote HTTP/SSE transport sessions opened.',
+    labels: [],
+    emittedWhen: 'Emitted when HTTP or SSE transport stats are available.',
+  },
+  {
+    name: 'kb_remote_transport_sessions_closed_total',
+    type: 'counter',
+    help: 'Remote HTTP/SSE transport sessions closed.',
+    labels: [],
+    emittedWhen: 'Emitted when HTTP or SSE transport stats are available.',
+  },
+  {
+    name: 'kb_remote_transport_current_sessions',
+    type: 'gauge',
+    help: 'Current remote HTTP/SSE transport sessions.',
+    labels: [],
+    emittedWhen: 'Emitted when HTTP or SSE transport stats are available.',
+  },
+  {
+    name: 'kb_remote_transport_in_flight_requests',
+    type: 'gauge',
+    help: 'Current in-flight remote HTTP/SSE transport requests.',
+    labels: [],
+    emittedWhen: 'Emitted when HTTP or SSE transport stats are available.',
+  },
+  {
+    name: 'kb_remote_transport_auth_failures_total',
+    type: 'counter',
+    help: 'Remote HTTP/SSE transport authentication failures.',
+    labels: [],
+    emittedWhen: 'Emitted when HTTP or SSE transport stats are available.',
+  },
+  {
+    name: 'kb_remote_transport_origin_denials_total',
+    type: 'counter',
+    help: 'Remote HTTP/SSE transport CORS origin denials.',
+    labels: [],
+    emittedWhen: 'Emitted when HTTP or SSE transport stats are available.',
+  },
+  ...(['1xx', '2xx', '3xx', '4xx', '5xx'] as const).map((bucket) => ({
+    name: `kb_remote_transport_responses_${bucket}_total`,
+    type: 'counter' as const,
+    help: `Remote HTTP/SSE transport ${bucket} responses.`,
+    labels: [],
+    emittedWhen: 'Emitted when HTTP or SSE transport stats are available.',
+  })),
+  {
+    name: 'kb_search_request_duration_ms',
+    type: 'histogram',
+    help: 'End-to-end daemon-served search request latency in milliseconds.',
+    labels: ['le', 'mode', 'status'],
+    emittedWhen: 'Emitted after daemon-served search requests are observed.',
+  },
+  {
+    name: 'kb_search_stage_duration_ms',
+    type: 'histogram',
+    help: 'Daemon-served search stage latency in milliseconds.',
+    labels: ['le', 'mode', 'stage', 'status'],
+    emittedWhen: 'Emitted after daemon-served search stage timings are observed.',
+  },
+  {
+    name: 'kb_rerank_latency_ms',
+    type: 'histogram',
+    help: 'Reranker-stage latency in milliseconds, split by bounded scoring source.',
+    labels: ['le', 'source'],
+    emittedWhen: 'Emitted when reranker latency telemetry is available.',
+  },
+  {
+    name: 'kb_write_lock_wait_duration_ms',
+    type: 'histogram',
+    help: 'Write-lock acquisition wait time in milliseconds, split by bounded resource kind.',
+    labels: ['le', 'resource_kind'],
+    emittedWhen: 'Emitted after write-lock wait telemetry is observed.',
+  },
+  {
+    name: 'kb_write_lock_hold_duration_ms',
+    type: 'histogram',
+    help: 'Write-lock function hold time in milliseconds, split by bounded resource kind.',
+    labels: ['le', 'resource_kind'],
+    emittedWhen: 'Emitted after write-lock hold telemetry is observed.',
+  },
+  {
+    name: 'kb_daemon_inflight',
+    type: 'gauge',
+    help: 'Admitted-but-incomplete kb serve daemon requests (running + queued).',
+    labels: [],
+    emittedWhen: 'Emitted only by local kb serve metrics export.',
+  },
+  {
+    name: 'kb_daemon_rejected_total',
+    type: 'counter',
+    help: 'Total kb serve daemon requests rejected by admission control.',
+    labels: [],
+    emittedWhen: 'Emitted only by local kb serve metrics export.',
+  },
+];
+
+const OPEN_METRICS_REFERENCE_BY_NAME = new Map(
+  OPEN_METRICS_REFERENCE.map((metric) => [metric.name, metric]),
+);
+
+export function openMetricsReference(name: string): OpenMetricsMetricReference {
+  const metric = OPEN_METRICS_REFERENCE_BY_NAME.get(name);
+  if (metric === undefined) throw new Error(`Unknown OpenMetrics metric reference: ${name}`);
+  return metric;
+}
+
+export function openMetricsFamilyName(name: string): string {
+  const metric = openMetricsReference(name);
+  if (metric.type !== 'counter') return metric.name;
+  return metric.name.endsWith('_total') ? metric.name.slice(0, -'_total'.length) : metric.name;
+}
+
+function defineMetric(name: string, samples: MetricSample[]): MetricDefinition {
+  const reference = openMetricsReference(name);
+  if (reference.type === 'histogram') throw new Error(`Histogram metric ${name} cannot be rendered as a scalar metric`);
+  return {
+    name: reference.name,
+    help: reference.help,
+    type: reference.type,
+    samples,
+  };
 }
 
 export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
   const metrics: MetricDefinition[] = [
-    {
-      name: 'kb_build_info',
-      help: 'Build identity for the serving process.',
-      type: 'gauge',
-      samples: [{
+    defineMetric('kb_build_info', [{
         name: 'kb_build_info',
         labels: {
           version: payload.server.version,
           commit: payload.server.commit ?? 'unknown',
         },
         value: 1,
-      }],
-    },
-    {
-      name: 'kb_knowledge_base_files',
-      help: 'Number of ingestable source files by knowledge base.',
-      type: 'gauge',
-      samples: Object.entries(payload.knowledge_bases).map(([kb, row]) => ({
+      }]),
+    defineMetric('kb_knowledge_base_files', Object.entries(payload.knowledge_bases).map(([kb, row]) => ({
         name: 'kb_knowledge_base_files',
         labels: { kb },
         value: row.file_count,
-      })),
-    },
-    {
-      name: 'kb_knowledge_base_chunks',
-      help: 'Number of dense index chunks by knowledge base.',
-      type: 'gauge',
-      samples: Object.entries(payload.knowledge_bases).map(([kb, row]) => ({
+      }))),
+    defineMetric('kb_knowledge_base_chunks', Object.entries(payload.knowledge_bases).map(([kb, row]) => ({
         name: 'kb_knowledge_base_chunks',
         labels: { kb },
         value: row.chunk_count,
-      })),
-    },
-    {
-      name: 'kb_knowledge_base_indexed_bytes',
-      help: 'Total bytes from ingestable files by knowledge base.',
-      type: 'gauge',
-      samples: Object.entries(payload.knowledge_bases).map(([kb, row]) => ({
+      }))),
+    defineMetric('kb_knowledge_base_indexed_bytes', Object.entries(payload.knowledge_bases).map(([kb, row]) => ({
         name: 'kb_knowledge_base_indexed_bytes',
         labels: { kb },
         value: row.total_bytes_indexed,
-      })),
-    },
-    {
-      name: 'kb_knowledge_base_quarantined_chunks',
-      help: 'Number of quarantined chunks by knowledge base.',
-      type: 'gauge',
-      samples: Object.entries(payload.quarantined).map(([kb, count]) => ({
+      }))),
+    defineMetric('kb_knowledge_base_quarantined_chunks', Object.entries(payload.quarantined).map(([kb, count]) => ({
         name: 'kb_knowledge_base_quarantined_chunks',
         labels: { kb },
         value: count,
-      })),
-    },
-    {
-      name: 'kb_server_uptime_ms',
-      help: 'Process uptime in milliseconds for the serving process.',
-      type: 'gauge',
-      samples: [{ name: 'kb_server_uptime_ms', value: payload.server.uptime_ms }],
-    },
-    {
-      name: 'kb_index_embedding_dimensions',
-      help: 'Embedding dimension of the active FAISS index, or 0 when unknown.',
-      type: 'gauge',
-      samples: [{
+      }))),
+    defineMetric('kb_server_uptime_ms', [{ name: 'kb_server_uptime_ms', value: payload.server.uptime_ms }]),
+    defineMetric('kb_index_embedding_dimensions', [{
         name: 'kb_index_embedding_dimensions',
         value: payload.embedding.dim ?? 0,
-      }],
-    },
-    {
-      name: 'kb_provider_calls_total',
-      help: 'Embedding provider calls by model id.',
-      type: 'counter',
-      samples: Object.entries(payload.provider_calls).map(([modelId, snapshot]) => ({
+      }]),
+    defineMetric('kb_provider_calls_total', Object.entries(payload.provider_calls).map(([modelId, snapshot]) => ({
         name: 'kb_provider_calls_total',
         labels: { model_id: modelId },
         value: snapshot.count,
-      })),
-    },
-    {
-      name: 'kb_provider_call_errors_total',
-      help: 'Embedding provider call errors by model id.',
-      type: 'counter',
-      samples: Object.entries(payload.provider_calls).map(([modelId, snapshot]) => ({
+      }))),
+    defineMetric('kb_provider_call_errors_total', Object.entries(payload.provider_calls).map(([modelId, snapshot]) => ({
         name: 'kb_provider_call_errors_total',
         labels: { model_id: modelId },
         value: snapshot.errors,
-      })),
-    },
-    {
-      name: 'kb_provider_tokens_in_total',
-      help: 'Reported input tokens consumed by embedding provider calls.',
-      type: 'counter',
-      samples: Object.entries(payload.provider_calls)
+      }))),
+    defineMetric('kb_provider_tokens_in_total', Object.entries(payload.provider_calls)
         .filter(([, snapshot]) => snapshot.tokens_in !== null)
         .map(([modelId, snapshot]) => ({
           name: 'kb_provider_tokens_in_total',
           labels: { model_id: modelId },
           value: snapshot.tokens_in ?? 0,
-        })),
-    },
+        }))),
     ...providerLatencyMetrics(payload),
     ...searchLatencyCounterMetrics(payload.search_latency),
     ...searchDegradedCounterMetrics(payload.search_latency),
     ...rerankCounterMetrics(payload.rerank),
-    {
-      name: 'kb_query_cache_hits_total',
-      help: 'Query embedding cache hits.',
-      type: 'counter',
-      samples: [{ name: 'kb_query_cache_hits_total', value: payload.query_cache.hits }],
-    },
-    {
-      name: 'kb_query_cache_misses_total',
-      help: 'Query embedding cache misses.',
-      type: 'counter',
-      samples: [{ name: 'kb_query_cache_misses_total', value: payload.query_cache.misses }],
-    },
-    {
-      name: 'kb_query_cache_bypasses_total',
-      help: 'Query embedding cache bypasses.',
-      type: 'counter',
-      samples: [{ name: 'kb_query_cache_bypasses_total', value: payload.query_cache.bypasses }],
-    },
-    {
-      name: 'kb_query_cache_disk_size_bytes',
-      help: 'Query embedding cache disk usage in bytes.',
-      type: 'gauge',
-      samples: [{ name: 'kb_query_cache_disk_size_bytes', value: payload.query_cache.disk_size_bytes }],
-    },
-    {
-      name: 'kb_relevance_gate_queries_total',
-      help: 'Relevance-gated retrieval queries.',
-      type: 'counter',
-      samples: [{ name: 'kb_relevance_gate_queries_total', value: payload.relevance_gate.gated_queries }],
-    },
-    {
-      name: 'kb_relevance_gate_verdict_injected_total',
-      help: 'Relevance gate injected-context verdict count.',
-      type: 'counter',
-      samples: [{
+    defineMetric('kb_query_cache_hits_total', [{ name: 'kb_query_cache_hits_total', value: payload.query_cache.hits }]),
+    defineMetric('kb_query_cache_misses_total', [{ name: 'kb_query_cache_misses_total', value: payload.query_cache.misses }]),
+    defineMetric('kb_query_cache_bypasses_total', [{ name: 'kb_query_cache_bypasses_total', value: payload.query_cache.bypasses }]),
+    defineMetric('kb_query_cache_disk_size_bytes', [{ name: 'kb_query_cache_disk_size_bytes', value: payload.query_cache.disk_size_bytes }]),
+    defineMetric('kb_relevance_gate_queries_total', [{ name: 'kb_relevance_gate_queries_total', value: payload.relevance_gate.gated_queries }]),
+    defineMetric('kb_relevance_gate_verdict_injected_total', [{
         name: 'kb_relevance_gate_verdict_injected_total',
         value: payload.relevance_gate.verdict_injected,
-      }],
-    },
-    {
-      name: 'kb_relevance_gate_verdict_no_relevant_context_total',
-      help: 'Relevance gate no-relevant-context verdict count.',
-      type: 'counter',
-      samples: [{
+      }]),
+    defineMetric('kb_relevance_gate_verdict_no_relevant_context_total', [{
         name: 'kb_relevance_gate_verdict_no_relevant_context_total',
         value: payload.relevance_gate.verdict_no_relevant_context,
-      }],
-    },
-    {
-      name: 'kb_relevance_gate_verdict_empty_index_total',
-      help: 'Relevance gate empty-index verdict count.',
-      type: 'counter',
-      samples: [{
+      }]),
+    defineMetric('kb_relevance_gate_verdict_empty_index_total', [{
         name: 'kb_relevance_gate_verdict_empty_index_total',
         value: payload.relevance_gate.verdict_empty_index,
-      }],
-    },
+      }]),
     ...remoteTransportMetrics(payload),
   ];
 
@@ -206,8 +443,7 @@ export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
 }
 
 function metricFamilyName(metric: MetricDefinition): string {
-  if (metric.type !== 'counter') return metric.name;
-  return metric.name.endsWith('_total') ? metric.name.slice(0, -'_total'.length) : metric.name;
+  return openMetricsFamilyName(metric.name);
 }
 
 function providerLatencyMetrics(payload: KbStatsPayload): MetricDefinition[] {
@@ -216,91 +452,46 @@ function providerLatencyMetrics(payload: KbStatsPayload): MetricDefinition[] {
     ['p95', 'p95'] as const,
     ['p99', 'p99'] as const,
   ];
-  return quantiles.map(([suffix, field]) => ({
-    name: `kb_provider_call_latency_${suffix}_ms`,
-    help: `Embedding provider call latency ${suffix} by model id, in milliseconds.`,
-    type: 'gauge' as const,
-    samples: Object.entries(payload.provider_calls).map(([modelId, snapshot]) => ({
+  return quantiles.map(([suffix, field]) => defineMetric(`kb_provider_call_latency_${suffix}_ms`, Object.entries(payload.provider_calls).map(([modelId, snapshot]) => ({
       name: `kb_provider_call_latency_${suffix}_ms`,
       labels: { model_id: modelId },
       value: snapshot.latency_ms[field],
-    })),
-  }));
+    }))));
 }
 
 function remoteTransportMetrics(payload: KbStatsPayload): MetricDefinition[] {
   const stats = payload.remote_transport;
   if (stats === undefined) return [];
   return [
-    {
-      name: 'kb_remote_transport_requests_total',
-      help: 'Remote HTTP/SSE transport requests.',
-      type: 'counter',
-      samples: [{ name: 'kb_remote_transport_requests_total', value: stats.requests_total }],
-    },
-    {
-      name: 'kb_remote_transport_sessions_opened_total',
-      help: 'Remote HTTP/SSE transport sessions opened.',
-      type: 'counter',
-      samples: [{
+    defineMetric('kb_remote_transport_requests_total', [{ name: 'kb_remote_transport_requests_total', value: stats.requests_total }]),
+    defineMetric('kb_remote_transport_sessions_opened_total', [{
         name: 'kb_remote_transport_sessions_opened_total',
         value: stats.sessions_opened,
-      }],
-    },
-    {
-      name: 'kb_remote_transport_sessions_closed_total',
-      help: 'Remote HTTP/SSE transport sessions closed.',
-      type: 'counter',
-      samples: [{
+      }]),
+    defineMetric('kb_remote_transport_sessions_closed_total', [{
         name: 'kb_remote_transport_sessions_closed_total',
         value: stats.sessions_closed,
-      }],
-    },
-    {
-      name: 'kb_remote_transport_current_sessions',
-      help: 'Current remote HTTP/SSE transport sessions.',
-      type: 'gauge',
-      samples: [{
+      }]),
+    defineMetric('kb_remote_transport_current_sessions', [{
         name: 'kb_remote_transport_current_sessions',
         value: stats.current_sessions,
-      }],
-    },
-    {
-      name: 'kb_remote_transport_in_flight_requests',
-      help: 'Current in-flight remote HTTP/SSE transport requests.',
-      type: 'gauge',
-      samples: [{
+      }]),
+    defineMetric('kb_remote_transport_in_flight_requests', [{
         name: 'kb_remote_transport_in_flight_requests',
         value: stats.in_flight_requests,
-      }],
-    },
-    {
-      name: 'kb_remote_transport_auth_failures_total',
-      help: 'Remote HTTP/SSE transport authentication failures.',
-      type: 'counter',
-      samples: [{
+      }]),
+    defineMetric('kb_remote_transport_auth_failures_total', [{
         name: 'kb_remote_transport_auth_failures_total',
         value: stats.auth_failures,
-      }],
-    },
-    {
-      name: 'kb_remote_transport_origin_denials_total',
-      help: 'Remote HTTP/SSE transport CORS origin denials.',
-      type: 'counter',
-      samples: [{
+      }]),
+    defineMetric('kb_remote_transport_origin_denials_total', [{
         name: 'kb_remote_transport_origin_denials_total',
         value: stats.origin_denials,
-      }],
-    },
-    ...Object.entries(stats.response_status_buckets).map(([bucket, count]) => ({
-      name: `kb_remote_transport_responses_${bucket}_total`,
-      help: `Remote HTTP/SSE transport ${bucket} responses.`,
-      type: 'counter' as const,
-      samples: [{
+      }]),
+    ...Object.entries(stats.response_status_buckets).map(([bucket, count]) => defineMetric(`kb_remote_transport_responses_${bucket}_total`, [{
         name: `kb_remote_transport_responses_${bucket}_total`,
         value: count,
-      }],
-    })),
+      }])),
   ];
 }
 
@@ -316,12 +507,7 @@ function searchLatencyCounterMetrics(snapshot: SearchLatencyMetricsSnapshot): Me
       });
     }
   }
-  return [{
-    name: 'kb_search_requests_total',
-    help: 'Daemon-served search requests by effective mode and status.',
-    type: 'counter',
-    samples,
-  }];
+  return [defineMetric('kb_search_requests_total', samples)];
 }
 
 function searchDegradedCounterMetrics(snapshot: SearchLatencyMetricsSnapshot): MetricDefinition[] {
@@ -335,12 +521,7 @@ function searchDegradedCounterMetrics(snapshot: SearchLatencyMetricsSnapshot): M
       });
     }
   }
-  return [{
-    name: 'kb_search_degraded_total',
-    help: 'Search requests degraded from dense-provider retrieval to lexical-only output by bounded reason.',
-    type: 'counter',
-    samples,
-  }];
+  return [defineMetric('kb_search_degraded_total', samples)];
 }
 
 function rerankCounterMetrics(snapshot: RerankMetricsSnapshot | undefined): MetricDefinition[] {
@@ -364,24 +545,9 @@ function rerankCounterMetrics(snapshot: RerankMetricsSnapshot | undefined): Metr
   }
 
   return [
-    {
-      name: 'kb_rerank_invocations_total',
-      help: 'Reranker-stage invocations.',
-      type: 'counter',
-      samples: [{ name: 'kb_rerank_invocations_total', value: snapshot.invocations }],
-    },
-    {
-      name: 'kb_rerank_skipped_total',
-      help: 'Reranker-stage skips by bounded reason.',
-      type: 'counter',
-      samples: skippedSamples,
-    },
-    {
-      name: 'kb_rerank_candidates_total',
-      help: 'Reranker-stage candidates by scoring source.',
-      type: 'counter',
-      samples: candidateSamples,
-    },
+    defineMetric('kb_rerank_invocations_total', [{ name: 'kb_rerank_invocations_total', value: snapshot.invocations }]),
+    defineMetric('kb_rerank_skipped_total', skippedSamples),
+    defineMetric('kb_rerank_candidates_total', candidateSamples),
   ];
 }
 
@@ -389,12 +555,10 @@ function searchLatencyHistogramLines(snapshot: SearchLatencyMetricsSnapshot): st
   const lines: string[] = [];
   lines.push(...renderHistogramFamily({
     name: 'kb_search_request_duration_ms',
-    help: 'End-to-end daemon-served search request latency in milliseconds.',
     rows: requestHistogramRows(snapshot),
   }));
   lines.push(...renderHistogramFamily({
     name: 'kb_search_stage_duration_ms',
-    help: 'Daemon-served search stage latency in milliseconds.',
     rows: stageHistogramRows(snapshot),
   }));
   return lines;
@@ -409,7 +573,6 @@ function rerankLatencyHistogramLines(snapshot: RerankMetricsSnapshot | undefined
   }
   return renderHistogramFamily({
     name: 'kb_rerank_latency_ms',
-    help: 'Reranker-stage latency in milliseconds, split by bounded scoring source.',
     rows,
   });
 }
@@ -418,12 +581,10 @@ function writeLockHistogramLines(snapshot: WriteLockMetricsSnapshot): string[] {
   return [
     ...renderHistogramFamily({
       name: 'kb_write_lock_wait_duration_ms',
-      help: 'Write-lock acquisition wait time in milliseconds, split by bounded resource kind.',
       rows: writeLockHistogramRows(snapshot.wait),
     }),
     ...renderHistogramFamily({
       name: 'kb_write_lock_hold_duration_ms',
-      help: 'Write-lock function hold time in milliseconds, split by bounded resource kind.',
       rows: writeLockHistogramRows(snapshot.hold),
     }),
   ];
@@ -485,12 +646,13 @@ interface HistogramRow {
 
 function renderHistogramFamily(input: {
   name: string;
-  help: string;
   rows: HistogramRow[];
 }): string[] {
   if (input.rows.length === 0) return [];
+  const reference = openMetricsReference(input.name);
+  if (reference.type !== 'histogram') throw new Error(`Metric ${input.name} is not a histogram reference`);
   const lines: string[] = [
-    `# HELP ${input.name} ${input.help}`,
+    `# HELP ${input.name} ${reference.help}`,
     `# TYPE ${input.name} histogram`,
   ];
   for (const row of input.rows) {

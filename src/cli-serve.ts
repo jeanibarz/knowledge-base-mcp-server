@@ -27,7 +27,11 @@ import {
   resolveDaemonAdmissionConfig,
   type DaemonAdmissionConfig,
 } from './daemon-admission.js';
-import { formatKbStatsOpenMetrics } from './prometheus-export.js';
+import {
+  formatKbStatsOpenMetrics,
+  openMetricsFamilyName,
+  openMetricsReference,
+} from './prometheus-export.js';
 import { searchLatencyMetrics, type SearchLatencyMode } from './metrics.js';
 import { searchStageDurationsFromTiming } from './timing-core.js';
 import type { KbStatsPayload } from './kb-stats.js';
@@ -821,12 +825,14 @@ export function appendDaemonAdmissionMetrics(
   body: string,
   gate: { inFlight: number; rejectedTotal: number },
 ): string {
+  const inflight = openMetricsReference('kb_daemon_inflight');
+  const rejected = openMetricsReference('kb_daemon_rejected_total');
   const lines = [
-    '# HELP kb_daemon_inflight Admitted-but-incomplete kb serve daemon requests (running + queued).',
-    '# TYPE kb_daemon_inflight gauge',
+    `# HELP ${openMetricsFamilyName(inflight.name)} ${inflight.help}`,
+    `# TYPE ${openMetricsFamilyName(inflight.name)} ${inflight.type}`,
     `kb_daemon_inflight ${gate.inFlight}`,
-    '# HELP kb_daemon_rejected Total kb serve daemon requests rejected by admission control.',
-    '# TYPE kb_daemon_rejected counter',
+    `# HELP ${openMetricsFamilyName(rejected.name)} ${rejected.help}`,
+    `# TYPE ${openMetricsFamilyName(rejected.name)} ${rejected.type}`,
     `kb_daemon_rejected_total ${gate.rejectedTotal}`,
   ];
   const eofMarker = '# EOF\n';

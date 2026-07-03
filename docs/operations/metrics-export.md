@@ -12,6 +12,9 @@ not expose it on an untrusted interface. Remote transports already require
 `MCP_AUTH_TOKEN`; the local `kb serve` daemon is not exposed remotely by
 default.
 
+For the generated catalog of metric names, types, help text, and labels, see
+[Metrics reference](../reference/metrics.md).
+
 ## Enable
 
 ```bash
