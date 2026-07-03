@@ -129,7 +129,7 @@ const STRICT_TRUTHY_VALUES = ['on', 'true', '1'] as const;
 const YES_NO_BOOL_VALUES = [...STRICT_BOOL_VALUES, 'yes', 'no'] as const;
 const YES_NO_TRUTHY_VALUES = [...STRICT_TRUTHY_VALUES, 'yes'] as const;
 const QUERY_CACHE_BOOL_VALUES = [...YES_NO_BOOL_VALUES, 'enabled', 'disabled'] as const;
-const CONTROLLED_PREFIXES = [
+export const CONTROLLED_PREFIXES = [
   'KB_',
   'MCP_',
   'OLLAMA_',
@@ -143,7 +143,7 @@ const CONTROLLED_PREFIXES = [
   'REINDEX_',
   'FRONTMATTER_',
   'LOG_FILE',
-];
+] as const;
 
 export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KNOWLEDGE_BASES_ROOT_DIR', kind: 'path', docDefault: '$HOME/knowledge_bases', description: 'Root directory containing knowledge base shelves.', defaultValue: (env) => resolveKnowledgeBasesRootDir(env.KNOWLEDGE_BASES_ROOT_DIR) },
@@ -672,8 +672,19 @@ function booleanValuesFor(spec: Pick<BaseSpec<'boolean'>, 'booleanValues'>): Set
   return new Set(spec.booleanValues ?? STRICT_BOOL_VALUES);
 }
 
-function isControlledEnvName(name: string): boolean {
+export function isControlledEnvName(name: string): boolean {
   return CONTROLLED_PREFIXES.some((prefix) => name === prefix || name.startsWith(prefix));
+}
+
+/**
+ * True when `name` is registered with the config system: either an explicit
+ * entry in {@link CONFIG_SCHEMA} or a name matched by a dynamic spec pattern
+ * (e.g. `KB_AGE_BUDGET_HOURS_<KB>`). Used by the code→schema drift guard
+ * (`scripts/check-config-env-usage.mjs`) to distinguish registered reads from
+ * contributor drift.
+ */
+export function isRegisteredConfigName(name: string): boolean {
+  return SCHEMA_BY_NAME.has(name) || dynamicSpecForName(name) !== null;
 }
 
 function parseDotEnvValue(rawValue: string): string {
