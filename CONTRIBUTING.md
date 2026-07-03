@@ -34,6 +34,15 @@ Please use the [Feature Request issue template](./.github/ISSUE_TEMPLATE/feature
 
 Use `npm run check` before opening a PR; it runs the TypeScript build, ESLint, the full Jest suite, and documentation anchor verifier.
 
+## Local Git Hooks
+
+`npm run dev:setup` points git at the tracked [`.githooks/`](./.githooks/) directory (`git config core.hooksPath .githooks`). Two lifecycle hooks then run automatically:
+
+- **`post-merge` / `post-rewrite`** rebuild the linked `kb` bins after every `git pull` / `git merge` / `git pull --rebase`.
+- **`pre-push`** runs the fast CI-parity subset — `npm run check:fast` (ESLint plus the generated-doc drift gates) — before a push reaches CI. This catches the two most common red-build causes (lint violations and stale reference docs) in seconds locally, instead of after a full CI round-trip. It deliberately skips the slow `test:coverage` step, so CI remains the source of truth for the full test suite.
+
+`check:fast` is `npm run check` minus the slow `test:coverage` step (the leading `tsc` build is incremental, so it is quick); you can run it directly (`npm run check:fast`) any time. The hook is **opt-in** — it only fires once `dev:setup` has pointed `core.hooksPath` at `.githooks/`, so contributors who never ran setup are unaffected. Bypass it for emergencies with `git push --no-verify`.
+
 ## Linting
 
 Use `npm run lint` (`eslint src`) to run the type-aware ESLint gate, or `npm run lint:fix` to apply autofixes. It is also wired into `npm run check` and the CI Tests workflow, so a clean `npm run lint` is required before a PR is mergeable.
