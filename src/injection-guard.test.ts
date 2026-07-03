@@ -6,6 +6,7 @@ import {
   wrapUntrustedContent,
   type InjectionSignalKind,
 } from './injection-guard.js';
+import { INJECTION_GUARD_CORPUS } from './test-support/injection-guard-corpus.js';
 
 function kinds(content: string): InjectionSignalKind[] {
   return detectInjectionSignals(content).map((signal) => signal.kind);
@@ -50,6 +51,20 @@ describe('detectInjectionSignals', () => {
       [],
     );
   });
+
+  // Curated adversarial corpus (issue #751): every known bypass family must
+  // raise its expected signal kinds. The property suite additionally fuzzes
+  // these under benign-text wrapping and control-char smuggling.
+  it.each(INJECTION_GUARD_CORPUS.map((entry) => [entry.name, entry] as const))(
+    'catches adversarial corpus entry: %s',
+    (_name, entry) => {
+      const detected = new Set(kinds(entry.payload));
+      expect(detected.size).toBeGreaterThan(0);
+      for (const kind of entry.expectedKinds) {
+        expect(detected.has(kind)).toBe(true);
+      }
+    },
+  );
 });
 
 describe('resolveInjectionGuardOptions', () => {
