@@ -9,7 +9,7 @@ surface. Run `npm run build && node scripts/gen-cli-reference.mjs` after
 changing a command or its help text, and commit the result. The
 `docs:check-cli` gate (part of `npm run check`) fails if this file drifts.
 
-The `kb` CLI exposes 36 commands.
+The `kb` CLI exposes 37 commands.
 
 ## Commands
 
@@ -49,6 +49,7 @@ The `kb` CLI exposes 36 commands.
 | [`kb stale-check`](#kb-stale-check) | Scan markdown notes for path / URL references that no longer resolve. |
 | [`kb stats`](#kb-stats) | Read-only index/corpus stats (mirrors the MCP kb_stats payload). |
 | [`kb superseded`](#kb-superseded) | Scan a KB for obsolete / contradicted / deprecated / stale notes. |
+| [`kb tags`](#kb-tags) | Enumerate frontmatter facet values (tags/status/type) with counts. |
 | [`kb verify`](#kb-verify) | Run slow integrity checks for persisted indexes and sidecars. |
 | [`kb where`](#kb-where) | Recommend the best KB and file for a given topic. |
 
@@ -1691,6 +1692,52 @@ Examples:
   kb superseded --kb=work
   kb superseded --kb=work --format=json
   kb superseded --kb=work --include-clean --k=10
+```
+
+## `kb tags`
+
+Enumerate frontmatter facet values (tags/status/type) with counts.
+
+```text
+kb tags — enumerate frontmatter facet values with counts (read-only)
+
+Usage:
+  kb tags [--kb=<name>] [--facet=<name>] [--format=md|json]
+
+Walks every `.md` / `.markdown` note under one or all KBs, parses YAML
+frontmatter, and reports each facet's distinct values with the number of
+notes carrying that value (sorted by count, then value). Use it to learn
+the valid vocabulary for `kb search --tags` / `--status` / `--type`
+filters before constructing a query. Strictly read-only.
+
+By default the taxonomy facets `tags`, `status`, and `type` are reported.
+`--facet=<name>` narrows the scan to a single frontmatter key (any key,
+so you can discover facets beyond the defaults).
+
+Values are counted per note: a note listing a value more than once counts
+once, and array-valued facets (e.g. `tags`) count each distinct element.
+
+Options:
+  --kb=<name>           Scope to one knowledge base. Omit for all KBs.
+  --facet=<name>        Report a single frontmatter key instead of the
+                        default tags/status/type set.
+  --format=md|json      Output format (default: md). `json` is a stable
+                        shape suitable for agent shells.
+  --help, -h            Show this help.
+
+Environment:
+  KNOWLEDGE_BASES_ROOT_DIR  Root directory containing one folder per KB.
+
+Exit codes:
+  0   facet report printed (may be empty)
+  1   runtime error (unreadable KB or note)
+  2   argv error (bad flag, --format, or empty --kb / --facet)
+
+Examples:
+  kb tags
+  kb tags --kb=work
+  kb tags --facet=status
+  kb tags --format=json
 ```
 
 ## `kb verify`
