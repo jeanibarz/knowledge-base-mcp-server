@@ -1629,7 +1629,7 @@ Read-only index/corpus stats (mirrors the MCP kb_stats payload).
 kb stats — read-only index/corpus stats
 
 Usage:
-  kb stats [--kb=<name>] [--format=md|json|csv|tsv|ndjson]
+  kb stats [--kb=<name>] [--format=md|json|csv|tsv|ndjson|openmetrics]
 
 Mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
@@ -1641,16 +1641,24 @@ Strictly read-only — does not refresh the index.
 
 Options:
   --kb=<name>           Scope to one knowledge base. Omit for all KBs.
-  --format=md|json|csv|tsv|ndjson
+  --format=md|json|csv|tsv|ndjson|openmetrics
                         Output format (default: md). `json` emits the
                         underlying `KbStatsPayload` shape verbatim; delimited
-                        formats emit one row per knowledge base.
+                        formats emit one row per knowledge base. `openmetrics`
+                        emits a daemonless Prometheus/OpenMetrics text exposition
+                        of the corpus, index, provider, cache, rerank, and
+                        relevance-gate families derived from this one-shot run —
+                        pipe-clean on stdout for cron scrapers and node-exporter
+                        textfile collectors. Daemon-instance gauges (admission
+                        control, circuit breaker) are omitted since they are
+                        unavailable without a running `kb serve` daemon.
   --help, -h            Show this help.
 
 Examples:
   kb stats
   kb stats --kb=work
   kb stats --format=json
+  kb stats --format=openmetrics
 ```
 
 ## `kb superseded`
