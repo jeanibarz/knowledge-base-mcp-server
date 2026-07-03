@@ -67,6 +67,8 @@ printf '# Quarterly plan\n\n...' | kb remember --kb=work --title="Quarterly plan
 printf '\nFollow-up note.\n' | kb remember --kb=work --append=quarterly-plan.md --stdin --yes
 kb import-url --kb=research https://example.com/article   # snapshot a URL into a provenance-tagged note
 kb superseded --kb=work       # read-only review for obsolete/contradicted notes
+kb tags --kb=work             # read-only: list frontmatter facet values (tags/status/type) with counts
+kb tags --facet=status --format=json  # discover the vocabulary for kb search --status filters
 kb feedback add --kb=work --query="rollback procedure" --source=runbooks/deploy.md --verdict=relevant
 kb feedback promote --kb=work --query="rollback procedure" --fixture=docs/testing/feedback-fixture.yml --yes  # promote ledger entries into an eval fixture
 kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
