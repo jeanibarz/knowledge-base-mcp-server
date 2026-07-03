@@ -78,7 +78,7 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>KB_RERANK_MODEL</code> | <code>string</code> | <code>Xenova/ms-marco-MiniLM-L-6-v2</code> |  |  | kept as empty |  |
 | <code>KB_RERANK_TOP_N</code> | <code>integer</code> | <code>40</code> |  | >= <code>1</code>; <= <code>1000</code>; digits only | uses default |  |
 | <code>KB_RERANK_SKIP_DOMAINS</code> | <code>csv</code> | _unset_ | comma-separated strings |  | uses default |  |
-| <code>KB_RERANK_CACHE</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code>, <code>enabled</code>, <code>disabled</code> |  | uses default | Enables the persistent disk-tiered rerank-score cache. |
+| <code>KB_RERANK_CACHE</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>enabled</code>, <code>disabled</code> |  | uses default | Enables the persistent disk-tiered rerank-score cache. |
 | <code>KB_RERANK_CACHE_DISK_MAX_BYTES</code> | <code>integer</code> | <code>67108864</code> |  | >= <code>1</code> | uses default | Disk-size cap in bytes for the persistent rerank-score cache. |
 | <code>KB_RERANK_DEVICE</code> | <code>string</code> | _unset_ |  |  | kept as set | Optional @huggingface/transformers device override for cross-encoder reranking, such as cuda. |
 | <code>KB_RERANK_DTYPE</code> | <code>string</code> | _unset_ |  |  | kept as set | Optional @huggingface/transformers dtype override for cross-encoder reranking, such as fp32. |
@@ -86,7 +86,7 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>KB_INJECTION_GUARD_BYPASS_KBS</code> | <code>csv</code> | _unset_ | comma-separated strings |  | uses default |  |
 | <code>KB_INJECTION_GUARD_WRAP_OPEN</code> | <code>string</code> | _unset_ |  |  | kept as set |  |
 | <code>KB_INJECTION_GUARD_WRAP_CLOSE</code> | <code>string</code> | _unset_ |  |  | kept as set |  |
-| <code>KB_SHIELD</code> | <code>enum</code> | <code>on</code> | <code>on</code>, <code>off</code> |  | uses default | Enables retrieval-time injection signal scanning; set to off to omit injection_signals. |
+| <code>KB_SHIELD</code> | <code>enum</code> | <code>on</code> | <code>on</code>, <code>off</code> |  | uses default | Enables retrieval-time injection signal scanning; set exactly to off to omit injection_signals. |
 | <code>KB_EDITOR_URI</code> | <code>enum</code> | <code>none</code> | <code>vscode</code>, <code>cursor</code>, <code>file</code>, <code>none</code> |  | uses default |  |
 | <code>FRONTMATTER_EXTRAS_WIRE_VISIBLE</code> | <code>boolean</code> | <code>false</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code> |  | uses default |  |
 | <code>KB_LOG_FORMAT</code> | <code>enum</code> | <code>both</code> | <code>text</code>, <code>canonical</code>, <code>both</code> |  | uses default |  |

@@ -129,6 +129,7 @@ const STRICT_TRUTHY_VALUES = ['on', 'true', '1'] as const;
 const YES_NO_BOOL_VALUES = [...STRICT_BOOL_VALUES, 'yes', 'no'] as const;
 const YES_NO_TRUTHY_VALUES = [...STRICT_TRUTHY_VALUES, 'yes'] as const;
 const QUERY_CACHE_BOOL_VALUES = [...YES_NO_BOOL_VALUES, 'enabled', 'disabled'] as const;
+const RERANK_CACHE_BOOL_VALUES = [...STRICT_BOOL_VALUES, 'enabled', 'disabled'] as const;
 export const CONTROLLED_PREFIXES = [
   'KB_',
   'MCP_',
@@ -223,7 +224,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_RERANK_MODEL', kind: 'string', default: DEFAULT_RERANK_MODEL },
   { name: 'KB_RERANK_TOP_N', kind: 'integer', default: String(DEFAULT_RERANK_TOP_N), min: 1, max: MAX_RERANK_TOP_N, integerSyntax: 'digits' },
   { name: 'KB_RERANK_SKIP_DOMAINS', kind: 'csv' },
-  { name: 'KB_RERANK_CACHE', kind: 'boolean', default: 'off', booleanValues: QUERY_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'yes', 'enabled'], description: 'Enables the persistent disk-tiered rerank-score cache.' },
+  { name: 'KB_RERANK_CACHE', kind: 'boolean', default: 'off', booleanValues: RERANK_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'enabled'], description: 'Enables the persistent disk-tiered rerank-score cache.' },
   { name: 'KB_RERANK_CACHE_DISK_MAX_BYTES', kind: 'integer', default: String(64 * 1024 * 1024), min: 1, description: 'Disk-size cap in bytes for the persistent rerank-score cache.' },
   { name: 'KB_RERANK_DEVICE', kind: 'string', description: 'Optional @huggingface/transformers device override for cross-encoder reranking, such as cuda.' },
   { name: 'KB_RERANK_DTYPE', kind: 'string', description: 'Optional @huggingface/transformers dtype override for cross-encoder reranking, such as fp32.' },
@@ -232,7 +233,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_INJECTION_GUARD_BYPASS_KBS', kind: 'csv' },
   { name: 'KB_INJECTION_GUARD_WRAP_OPEN', kind: 'string' },
   { name: 'KB_INJECTION_GUARD_WRAP_CLOSE', kind: 'string' },
-  { name: 'KB_SHIELD', kind: 'enum', values: ['on', 'off'], default: 'on', normalize: lowercase, description: 'Enables retrieval-time injection signal scanning; set to off to omit injection_signals.' },
+  { name: 'KB_SHIELD', kind: 'enum', values: ['on', 'off'], default: 'on', description: 'Enables retrieval-time injection signal scanning; set exactly to off to omit injection_signals.' },
   { name: 'KB_EDITOR_URI', kind: 'enum', values: ['vscode', 'cursor', 'file', 'none'], default: 'none' },
   { name: 'FRONTMATTER_EXTRAS_WIRE_VISIBLE', kind: 'boolean', default: 'false' },
 
@@ -399,6 +400,9 @@ function validateSpec(
   if (value === '' && usesDefaultForEmpty(spec)) {
     return finding(spec.name, 'ok', spec.kind, source, displayValue, 'empty; default applies');
   }
+  if (spec.name === 'KB_SEARCH_SNIPPET') {
+    return validateSearchSnippetSpec(spec, value, displayValue, source);
+  }
 
   switch (spec.kind) {
     case 'boolean':
@@ -464,6 +468,26 @@ function validateNumberLike(
     return finding(spec.name, 'error', spec.kind, source, displayValue, `expected value <= ${spec.max}`);
   }
   return finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid number');
+}
+
+function validateSearchSnippetSpec(
+  spec: ConfigSpec,
+  value: string,
+  displayValue: string | null,
+  source: string,
+): ConfigFinding {
+  if (value === '') {
+    return finding(spec.name, 'ok', spec.kind, source, displayValue, 'empty; unset');
+  }
+  const normalized = value.toLowerCase();
+  if (['false', 'off', 'no', '0', 'true', 'on', 'yes'].includes(normalized)) {
+    return finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid search snippet mode');
+  }
+  const count = Number(value);
+  if (!Number.isSafeInteger(count) || count <= 0) {
+    return finding(spec.name, 'error', spec.kind, source, displayValue, 'expected off/on alias or positive integer');
+  }
+  return finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid search snippet line count');
 }
 
 function validateUrl(
