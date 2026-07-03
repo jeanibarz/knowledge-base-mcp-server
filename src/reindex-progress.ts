@@ -29,6 +29,7 @@ import {
   readContextualSidecarStatuses,
   type ContextualSidecarStatus,
 } from './contextual-preface.js';
+import { writeFileAtomicDurable } from './file-utils.js';
 import { logger } from './logger.js';
 import { checkReindexRunState } from './reindex-runner.js';
 
@@ -225,10 +226,8 @@ export async function computeReindexProgress(
  */
 export async function writeReindexProgress(progress: ReindexProgress): Promise<void> {
   const target = reindexProgressFilePath();
-  const tmp = `${target}.tmp`;
   await fsp.mkdir(path.dirname(target), { recursive: true });
-  await fsp.writeFile(tmp, `${JSON.stringify(progress, null, 2)}\n`, 'utf-8');
-  await fsp.rename(tmp, target);
+  await writeFileAtomicDurable(target, `${JSON.stringify(progress, null, 2)}\n`);
 }
 
 /** Read a previously-written ledger, or null when absent / unreadable. */
