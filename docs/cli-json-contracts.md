@@ -511,7 +511,7 @@ Stdout/stderr and exit codes:
 Source and test anchors: `src/cli-search.ts:262-320`,
 `src/cli-search.ts:762-785`, `src/cli-search.ts:985-999`,
 `src/formatter.ts:136-213`, `src/cli-search-errors.ts:181-215`,
-`src/formatter.test.ts:133-185`, `src/cli-search-errors.test.ts:121-159`.
+`src/formatter.test.ts:161-213`, `src/cli-search-errors.test.ts:121-159`.
 
 ## `kb ask`
 
