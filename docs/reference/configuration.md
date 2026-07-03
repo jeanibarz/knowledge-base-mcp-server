@@ -25,6 +25,7 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>OLLAMA_MODEL</code> | <code>string</code> | <code>dengcao/Qwen3-Embedding-0.6B:Q8_0</code> |  |  | uses default |  |
 | <code>OPENAI_API_KEY</code> | <code>secret</code> | _unset_ |  | redacted in reports | kept as set |  |
 | <code>OPENAI_MODEL_NAME</code> | <code>string</code> | <code>text-embedding-3-small</code> |  |  | uses default |  |
+| <code>KB_EMBEDDING_TASK_PREFIXES</code> | <code>boolean</code> | <code>on</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default | Enables role-specific embedding task prefixes for model families that require separate document/query prefixes. |
 | <code>KB_PROVIDER_BREAKER</code> | <code>boolean</code> | <code>on</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default | Enables the process-shared open/half-open circuit breaker for embedding and LLM provider calls. |
 | <code>KB_PROVIDER_BREAKER_FAILURE_THRESHOLD</code> | <code>integer</code> | <code>3</code> |  | >= <code>1</code>; <= <code>100</code>; digits only | uses default | Consecutive provider failures before the circuit opens. |
 | <code>KB_PROVIDER_BREAKER_COOLDOWN_MS</code> | <code>duration</code> | <code>30000</code> |  | >= <code>1</code>; <= <code>3600000</code> | uses default | Open-circuit cooldown before a single half-open recovery probe is allowed. |
@@ -57,10 +58,13 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>KB_LLM_HTTP_REFERER</code> | <code>string</code> | _unset_ |  |  | kept as set |  |
 | <code>KB_LLM_FAKE</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default |  |
 | <code>KB_LLM_FAKE_RULES</code> | <code>path</code> | _unset_ |  |  | uses default |  |
+| <code>KB_DECOMPOSE_LLM_ENDPOINT</code> | <code>url</code> | _unset_ | protocols: <code>http:</code>, <code>https:</code>, <code>mock:</code> |  | uses default | OpenAI-compatible endpoint used only by LLM query decomposition; falls back to KB_LLM_ENDPOINT when unset. |
+| <code>KB_DECOMPOSE_LLM_MODEL</code> | <code>string</code> | _unset_ |  |  | kept as set | Model override used only by LLM query decomposition; falls back to KB_LLM_MODEL when unset. |
 | <code>KB_LLM_CONFIG_DIR</code> | <code>path</code> | <code>$XDG_CONFIG_HOME/kb/llm or ~/.config/kb/llm</code> |  |  | uses default |  |
 | <code>KB_LLM_STATE_DIR</code> | <code>path</code> | <code>$XDG_STATE_HOME/kb/llm or ~/.local/state/kb/llm</code> |  |  | uses default |  |
 | <code>KB_LLM_SYSTEMD_USER_DIR</code> | <code>path</code> | <code>$XDG_CONFIG_HOME/systemd/user or ~/.config/systemd/user</code> |  |  | uses default |  |
 | <code>KB_RELEVANCE_GATE</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default | Enables recall-negative relevance gating by default. |
+| <code>KB_DENSE_DEGRADE_ON_PROVIDER_ERROR</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code> |  | uses default | Allows dense and hybrid retrieval to degrade to lexical-only results during transient provider errors. |
 | <code>KB_GATE_EMPTY_VERDICT</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default |  |
 | <code>KB_GATE_SCORE_FLOOR</code> | <code>number</code> | <code>0.95</code> |  | >= <code>0</code>; <= <code>1</code> | uses default |  |
 | <code>KB_GATE_JUDGE_INPUT</code> | <code>integer</code> | <code>10</code> |  | >= <code>1</code>; <= <code>1000</code> | uses default |  |
@@ -74,15 +78,22 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>KB_RERANK_MODEL</code> | <code>string</code> | <code>Xenova/ms-marco-MiniLM-L-6-v2</code> |  |  | kept as empty |  |
 | <code>KB_RERANK_TOP_N</code> | <code>integer</code> | <code>40</code> |  | >= <code>1</code>; <= <code>1000</code>; digits only | uses default |  |
 | <code>KB_RERANK_SKIP_DOMAINS</code> | <code>csv</code> | _unset_ | comma-separated strings |  | uses default |  |
+| <code>KB_RERANK_CACHE</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code>, <code>enabled</code>, <code>disabled</code> |  | uses default | Enables the persistent disk-tiered rerank-score cache. |
+| <code>KB_RERANK_CACHE_DISK_MAX_BYTES</code> | <code>integer</code> | <code>67108864</code> |  | >= <code>1</code> | uses default | Disk-size cap in bytes for the persistent rerank-score cache. |
+| <code>KB_RERANK_DEVICE</code> | <code>string</code> | _unset_ |  |  | kept as set | Optional @huggingface/transformers device override for cross-encoder reranking, such as cuda. |
+| <code>KB_RERANK_DTYPE</code> | <code>string</code> | _unset_ |  |  | kept as set | Optional @huggingface/transformers dtype override for cross-encoder reranking, such as fp32. |
 | <code>KB_INJECTION_GUARD</code> | <code>enum</code> | <code>tag</code> | <code>off</code>, <code>tag</code>, <code>wrap</code>, <code>both</code> |  | uses default |  |
 | <code>KB_INJECTION_GUARD_BYPASS_KBS</code> | <code>csv</code> | _unset_ | comma-separated strings |  | uses default |  |
 | <code>KB_INJECTION_GUARD_WRAP_OPEN</code> | <code>string</code> | _unset_ |  |  | kept as set |  |
 | <code>KB_INJECTION_GUARD_WRAP_CLOSE</code> | <code>string</code> | _unset_ |  |  | kept as set |  |
+| <code>KB_SHIELD</code> | <code>enum</code> | <code>on</code> | <code>on</code>, <code>off</code> |  | uses default | Enables retrieval-time injection signal scanning; set to off to omit injection_signals. |
 | <code>KB_EDITOR_URI</code> | <code>enum</code> | <code>none</code> | <code>vscode</code>, <code>cursor</code>, <code>file</code>, <code>none</code> |  | uses default |  |
 | <code>FRONTMATTER_EXTRAS_WIRE_VISIBLE</code> | <code>boolean</code> | <code>false</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code> |  | uses default |  |
 | <code>KB_LOG_FORMAT</code> | <code>enum</code> | <code>both</code> | <code>text</code>, <code>canonical</code>, <code>both</code> |  | uses default |  |
 | <code>LOG_LEVEL</code> | <code>enum</code> | <code>info</code> | <code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code> |  | uses default |  |
 | <code>LOG_FILE</code> | <code>path</code> | _unset_ |  |  | uses default |  |
+| <code>KB_LOG_MAX_BYTES</code> | <code>integer</code> | _unset_ |  | >= <code>1</code> | uses default | Enables size-based LOG_FILE rotation when set to a positive byte cap. |
+| <code>KB_LOG_MAX_FILES</code> | <code>integer</code> | <code>5</code> |  | >= <code>1</code> | uses default | Retained rotated LOG_FILE generations when KB_LOG_MAX_BYTES enables rotation. |
 | <code>KB_LOG_VERBOSE</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code> |  | uses default |  |
 | <code>KB_SLOW_QUERY_MS</code> | <code>duration</code> | _unset_ |  | >= <code>1</code> | uses default |  |
 | <code>KB_METRICS_EXPORT</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default |  |
@@ -105,16 +116,22 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>MCP_AUTH_BACKOFF_THRESHOLD</code> | <code>integer</code> | <code>5</code> |  | >= <code>0</code> | uses default |  |
 | <code>MCP_AUTH_BACKOFF_MS</code> | <code>duration</code> | <code>30000</code> |  | >= <code>0</code> | uses default |  |
 | <code>MCP_AUTH_BACKOFF_MAX_ENTRIES</code> | <code>integer</code> | <code>1024</code> |  | >= <code>1</code> | uses default |  |
+| <code>KB_MAX_QUERY_CHARS</code> | <code>integer</code> | <code>8192</code> |  | >= <code>1</code> | uses default | Maximum query string length accepted by MCP retrieval and ask tools. |
+| <code>KB_MAX_FILTER_ITEMS</code> | <code>integer</code> | <code>64</code> |  | >= <code>1</code> | uses default | Maximum number of filter items accepted by MCP retrieval and diff tools. |
+| <code>KB_MAX_GLOB_CHARS</code> | <code>integer</code> | <code>1024</code> |  | >= <code>1</code> | uses default | Maximum path_glob length accepted by MCP retrieval tools. |
+| <code>KB_MAX_GLOB_WILDCARDS</code> | <code>integer</code> | <code>64</code> |  | >= <code>1</code> | uses default | Maximum wildcard count accepted in MCP retrieval path_glob filters. |
 | <code>REINDEX_TRIGGER_PATH</code> | <code>path</code> | <code>$KNOWLEDGE_BASES_ROOT_DIR/.reindex-trigger</code> |  |  | uses default |  |
 | <code>REINDEX_TRIGGER_POLL_MS</code> | <code>duration</code> | <code>5000</code> |  | >= <code>0</code>; <= <code>60000</code> | uses default |  |
 | <code>KB_FS_WATCH</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default |  |
 | <code>KB_FS_WATCH_DEBOUNCE_MS</code> | <code>duration</code> | <code>250</code> |  | >= <code>25</code>; <= <code>60000</code> | uses default |  |
 | <code>KB_INDEX_VERSION_RETENTION</code> | <code>integer</code> | <code>2</code> |  | >= <code>0</code>; digits only | uses default |  |
+| <code>KB_MIN_FREE_DISK_BYTES</code> | <code>integer</code> | <code>536870912</code> |  | >= <code>0</code> | uses default | Free-space safety margin retained after write-heavy reindex and ingest estimates. |
 | <code>RETRIEVE_KNOWLEDGE_DESCRIPTION</code> | <code>string</code> | <code>Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.</code> |  |  | uses default |  |
 | <code>ASK_KNOWLEDGE_DESCRIPTION</code> | <code>string</code> | <code>Answers a question from retrieved knowledge-base context using the configured local OpenAI-compatible LLM endpoint. Returns a structured payload with answer, citations, context-packing diagnostics, abstention_reason, LLM provenance, retrieval model, and optional timing. Use retrieve_knowledge when you only need raw chunks.</code> |  |  | uses default |  |
 | <code>LIST_KNOWLEDGE_BASES_DESCRIPTION</code> | <code>string</code> | <code>Lists the available knowledge bases.</code> |  |  | uses default |  |
 | <code>LIST_MODELS_DESCRIPTION</code> | <code>string</code> | <code>Lists the embedding models registered for retrieval. Returns an array of {model_id, provider, model_name, active}. Use the model_id as the optional `model_name` argument to retrieve_knowledge to query a specific model instead of the active default.</code> |  |  | uses default |  |
 | <code>KB_STATS_DESCRIPTION</code> | <code>string</code> | <code>Reports observability stats for the knowledge base index: per-KB file_count, chunk_count, total_bytes_indexed and last_updated_at; the active embedding provider/model/dim; the on-disk index_path; server version/commit/uptime; and HTTP/SSE transport counters when a remote transport is active. Pass `knowledge_base_name` to scope to a single KB; omit it to get an entry per registered KB.</code> |  |  | uses default |  |
+| <code>KB_SEARCH_SNIPPET</code> | <code>string</code> | _unset_ |  |  | kept as set | Default kb search snippet mode; accepts off aliases, on aliases, or a positive line count. |
 | <code>KB_MCP_PROMPTS</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default | Advertises the MCP prompts capability with read-only KB prompt templates. |
 | <code>KB_ASK_REDACT_OUTBOUND</code> | <code>boolean</code> | <code>on when KB_LLM_PROVIDER=openrouter (remote); off for local</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default | Scrub secrets (via redactSecrets) from the assembled kb ask prompt before it is sent to a remote LLM. Defaults on for remote providers; set explicitly to scrub (or skip) on the local path. |
 | <code>KB_ASK_CACHE</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code>, <code>enabled</code>, <code>disabled</code> |  | uses default | Enables the opt-in kb ask / ask_knowledge answer cache keyed by query + retrieved-context fingerprint + embedding model + LLM profile. Invalidates implicitly when the retrieved context changes. |
