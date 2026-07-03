@@ -213,10 +213,11 @@ If read-only results are acceptable, keep working from the existing index and re
 
 ## Warm Daemon (`kb serve`)
 
-`kb serve` starts a localhost-only HTTP daemon that keeps the index warm so
+`kb serve` starts a local HTTP daemon that keeps the index warm so
 repeated `kb search --daemon` calls skip cold-start cost. The daemon is
-read-only (search/list/stats), binds loopback only, and exits after its idle
-timeout. `kb serve` itself adds no start/stop supervision — run it under your
+read-only (search/list/stats), binds loopback TCP or a Unix-domain socket, and
+exits after its idle timeout. `kb serve` itself adds no start/stop supervision —
+run it under your
 own shell, `tmux`, or a user service.
 
 Use `kb serve status` to inspect lifecycle without starting anything:

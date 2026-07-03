@@ -90,6 +90,7 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>KB_MUTATION_AUDIT_LOG</code> | <code>path</code> | _unset_ |  |  | uses default |  |
 | <code>KB_AGE_BUDGET_HOURS</code> | <code>integer</code> | _unset_ |  | >= <code>1</code> | uses default |  |
 | <code>KB_DAEMON_URL</code> | <code>url</code> | _unset_ | protocols: <code>http:</code>, <code>https:</code> |  | uses default |  |
+| <code>KB_DAEMON_SOCKET</code> | <code>path</code> | _unset_ |  |  | uses default |  |
 | <code>KB_DAEMON_HOST</code> | <code>string</code> | <code>127.0.0.1</code> |  |  | uses default |  |
 | <code>KB_DAEMON_PORT</code> | <code>integer</code> | <code>17799</code> |  | >= <code>1</code>; <= <code>65535</code> | uses default |  |
 | <code>KB_DAEMON_AUTOSTART</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default |  |

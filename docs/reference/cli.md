@@ -1539,10 +1539,10 @@ Run a localhost daemon for warm read-only CLI requests.
 kb serve — resident local daemon for warm CLI reads
 
 Usage:
-  kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000] [--warm]
+  kb serve [--host=127.0.0.1] [--port=17799] [--socket=/path/to/kb.sock] [--idle-timeout-ms=300000] [--warm]
   kb serve status [--json]
 
-Starts a localhost-only JSON HTTP daemon used by `kb search --daemon`.
+Starts a local JSON HTTP daemon used by `kb search --daemon`.
 The daemon accepts read-only search/list/stats requests and exits after the
 idle timeout.
 
@@ -1554,6 +1554,7 @@ daemon it prints a one-line notice to stderr and runs the search directly.
 Options:
   --host=<host>             Loopback host to bind (default: 127.0.0.1).
   --port=<port>             TCP port to bind (default: 17799; 0 for tests).
+  --socket=<path>           Unix-domain socket to bind instead of TCP.
   --idle-timeout-ms=<ms>    Stop after this much idle time (default: 300000).
   --warm                    Pre-warm the active model, FAISS index, and
                             lexical indexes before the daemon reports ready.
@@ -1564,6 +1565,8 @@ Environment:
   KB_DAEMON_URL             Daemon URL queried by `kb serve status` and
                             `kb search --daemon` (default
                             http://127.0.0.1:17799).
+  KB_DAEMON_SOCKET          Unix-domain socket path queried by clients and
+                            bound by `kb serve` when KB_DAEMON_URL is unset.
   KB_METRICS_EXPORT         Set to `on` to expose OpenMetrics text at
                             `GET /metrics` on the loopback daemon.
   KB_DAEMON_MAX_CONCURRENCY Max requests the daemon runs at once before

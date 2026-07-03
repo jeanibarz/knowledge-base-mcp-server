@@ -238,6 +238,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_AGE_BUDGET_HOURS', kind: 'integer', min: 1 },
 
   { name: 'KB_DAEMON_URL', kind: 'url', protocols: ['http:', 'https:'] },
+  { name: 'KB_DAEMON_SOCKET', kind: 'path' },
   { name: 'KB_DAEMON_HOST', kind: 'string', default: '127.0.0.1', emptyUsesDefault: true },
   { name: 'KB_DAEMON_PORT', kind: 'integer', default: '17799', min: 1, max: 65535 },
   { name: 'KB_DAEMON_AUTOSTART', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
