@@ -5,6 +5,18 @@ import { logger } from './logger.js';
 
 type FsError = NodeJS.ErrnoException & { code?: string };
 
+export interface WriteFileAtomicDurableHooks {
+  rename?: (oldPath: string, newPath: string) => Promise<void>;
+  syncDirectory?: (dirPath: string) => Promise<void>;
+}
+
+export interface WriteFileAtomicDurableOptions {
+  mode?: number;
+  encoding?: BufferEncoding;
+  syncParentDirectory?: boolean;
+  hooks?: WriteFileAtomicDurableHooks;
+}
+
 export interface FilesystemEnumerationFailure {
   path: string;
   code: string | null;
@@ -53,6 +65,52 @@ export async function calculateSHA256(filePath: string): Promise<string> {
   const hashSum = crypto.createHash('sha256');
   hashSum.update(fileBuffer);
   return hashSum.digest('hex');
+}
+
+export async function writeFileAtomicDurable(
+  targetPath: string,
+  data: string | Uint8Array,
+  options: WriteFileAtomicDurableOptions = {},
+): Promise<void> {
+  const tmpPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  const permissions = options.mode === undefined ? undefined : options.mode & 0o7777;
+  let handle: fsp.FileHandle | null = await fsp.open(tmpPath, 'w', permissions);
+  try {
+    if (permissions !== undefined) {
+      await handle.chmod(permissions);
+    }
+    if (typeof data === 'string') {
+      await handle.writeFile(data, options.encoding ?? 'utf-8');
+    } else {
+      await handle.writeFile(data);
+    }
+    await handle.sync();
+    await handle.close();
+    handle = null;
+
+    await (options.hooks?.rename ?? fsp.rename)(tmpPath, targetPath);
+    if (options.syncParentDirectory ?? true) {
+      await (options.hooks?.syncDirectory ?? syncDirectoryBestEffort)(path.dirname(targetPath));
+    }
+  } catch (err) {
+    await handle?.close().catch(() => {});
+    await fsp.unlink(tmpPath).catch(() => {});
+    throw err;
+  }
+}
+
+export async function syncDirectoryBestEffort(dirPath: string): Promise<void> {
+  let handle: fsp.FileHandle | null = null;
+  try {
+    handle = await fsp.open(dirPath, 'r');
+    await handle.sync();
+  } catch {
+    // Some filesystems/platforms do not allow fsync on directories. The temp
+    // file is still fsynced before the atomic rename; directory sync is a
+    // best-effort durability upgrade.
+  } finally {
+    await handle?.close().catch(() => {});
+  }
 }
 
 /**

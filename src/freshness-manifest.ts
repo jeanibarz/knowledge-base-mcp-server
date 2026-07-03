@@ -10,6 +10,7 @@ import {
 } from './config/paths.js';
 import { INGEST_BASE_EXTENSIONS } from './ingest-filter.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
+import { writeFileAtomicDurable } from './file-utils.js';
 
 export const FRESHNESS_MANIFEST_SCHEMA_VERSION = 'kb.freshness-manifest.v1';
 export const FRESHNESS_MANIFEST_FILE = 'freshness.json';
@@ -240,7 +241,5 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function writeJsonAtomic(targetPath: string, value: unknown): Promise<void> {
   await fsp.mkdir(path.dirname(targetPath), { recursive: true });
-  const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
-  await fsp.rename(tmpPath, targetPath);
+  await writeFileAtomicDurable(targetPath, `${JSON.stringify(value, null, 2)}\n`);
 }

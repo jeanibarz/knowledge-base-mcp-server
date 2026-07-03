@@ -21,7 +21,7 @@ import {
   OLLAMA_MODEL,
   OPENAI_MODEL_NAME,
 } from './config/provider.js';
-import { pathExists } from './file-utils.js';
+import { pathExists, writeFileAtomicDurable } from './file-utils.js';
 import { deriveModelId, EmbeddingProvider, isValidModelId, parseModelId } from './model-id.js';
 import { logger } from './logger.js';
 import {
@@ -433,9 +433,7 @@ export async function readStoredIndexType(modelId: string): Promise<SearchIndexT
 
 export async function writeIndexTypeAtomic(modelId: string, indexType: SearchIndexType): Promise<void> {
   const target = indexTypeFilePath(modelId);
-  const tmp = `${target}.${process.pid}.tmp`;
-  await fsp.writeFile(tmp, `${indexType}\n`, 'utf-8');
-  await fsp.rename(tmp, target);
+  await writeFileAtomicDurable(target, `${indexType}\n`);
 }
 
 /**
@@ -536,9 +534,7 @@ export async function writeActiveModelAtomic(modelId: string): Promise<void> {
     throw new Error(`Refusing to write invalid model_id "${modelId}" to active.txt`);
   }
   await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
-  const tmp = `${ACTIVE_FILE}.${process.pid}.tmp`;
-  await fsp.writeFile(tmp, modelId, 'utf-8');
-  await fsp.rename(tmp, ACTIVE_FILE);
+  await writeFileAtomicDurable(ACTIVE_FILE, modelId);
 }
 
 export async function activeFileExists(): Promise<boolean> {

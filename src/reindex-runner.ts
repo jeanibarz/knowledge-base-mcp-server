@@ -48,6 +48,7 @@ import {
 } from './contextual-preface.js';
 import { KBError } from './errors.js';
 import { FaissIndexManager, type IndexUpdateSummary } from './FaissIndexManager.js';
+import { writeFileAtomicDurable } from './file-utils.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
 
@@ -207,10 +208,8 @@ export function runStateFilePath(): string {
 
 async function writeRunState(state: RunStateFile): Promise<void> {
   const target = runStateFilePath();
-  const tmp = `${target}.tmp`;
   await fsp.mkdir(path.dirname(target), { recursive: true });
-  await fsp.writeFile(tmp, JSON.stringify(state, null, 2), 'utf-8');
-  await fsp.rename(tmp, target);
+  await writeFileAtomicDurable(target, JSON.stringify(state, null, 2));
 }
 
 async function readRunState(): Promise<RunStateFile | null> {
