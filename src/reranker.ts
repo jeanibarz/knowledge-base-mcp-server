@@ -2,11 +2,14 @@ import { createHash } from 'crypto';
 import type { Document } from '@langchain/core/documents';
 import { emitCanonicalLog, type CanonicalProcess, type CanonicalSearchMode } from './canonical-log.js';
 import {
+  DEFAULT_RERANK_BATCH_SIZE,
   DEFAULT_RERANK_MODEL,
   DEFAULT_RERANK_TOP_N,
   isRerankSkippedForDomain,
   KB_RERANK_CACHE_ENABLED,
+  MAX_RERANK_BATCH_SIZE,
   normalizeRerankDomain,
+  parseRerankBatchSize,
   parseRerankFlag,
   parseRerankTopN,
   parseSkipRerankDomains,
@@ -20,10 +23,13 @@ import { logger } from './logger.js';
 import { rerankMetrics } from './metrics.js';
 
 export {
+  DEFAULT_RERANK_BATCH_SIZE,
   DEFAULT_RERANK_MODEL,
   DEFAULT_RERANK_TOP_N,
   isRerankSkippedForDomain,
+  MAX_RERANK_BATCH_SIZE,
   normalizeRerankDomain,
+  parseRerankBatchSize,
   parseRerankFlag,
   parseRerankTopN,
   parseSkipRerankDomains,
@@ -371,6 +377,8 @@ class TransformersJsReranker implements Reranker {
     readonly id: string,
     private readonly tokenizer: Tokenizer,
     private readonly model: SequenceClassificationModel,
+    // #746 — 0 keeps the single-call path; >0 sub-batches inference to bound peak memory.
+    private readonly batchSize: number,
   ) {}
 
   static async create(model: string): Promise<TransformersJsReranker> {
@@ -388,11 +396,17 @@ class TransformersJsReranker implements Reranker {
       mod.AutoTokenizer.from_pretrained(model),
       mod.AutoModelForSequenceClassification.from_pretrained(model, modelOptions),
     ]);
-    return new TransformersJsReranker(model, tokenizer, classifier);
+    return new TransformersJsReranker(model, tokenizer, classifier, parseRerankBatchSize());
   }
 
   async rerank(query: string, candidates: string[]): Promise<number[]> {
-    if (candidates.length === 0) return [];
+    // #746 — sub-batch the candidate list when KB_RERANK_BATCH_SIZE is set, so
+    // peak tokenizer/activation memory is bounded by the batch size rather than
+    // the full top-N. Disabled (0) falls back to a single call for all misses.
+    return scoreInSubBatches(candidates, this.batchSize, (slice) => this.scoreBatch(query, slice));
+  }
+
+  private async scoreBatch(query: string, candidates: string[]): Promise<number[]> {
     const inputs = this.tokenizer(
       candidates.map(() => query),
       {
@@ -404,6 +418,42 @@ class TransformersJsReranker implements Reranker {
     const output = await this.model(inputs);
     return scoresFromSequenceClassifierOutput(output, this.model.config);
   }
+}
+
+/**
+ * Score `candidates` through the cross-encoder in fixed-size sub-batches (#746).
+ *
+ * When `batchSize <= 0` (disabled) or the candidate count already fits in a
+ * single batch, `runBatch` is invoked exactly once with the full list —
+ * preserving the original single-call behavior and today's GPU throughput.
+ * Otherwise the list is sliced into `ceil(n / batchSize)` contiguous chunks,
+ * each scored in order, and the per-chunk scores are concatenated. This is
+ * order-preserving and deterministic: it changes only peak memory and call
+ * shape, never the relative ranking. Padding is applied per-slice, so a smaller
+ * batch may pad to a shorter max length, but that does not reorder scores for
+ * the same query.
+ */
+export async function scoreInSubBatches(
+  candidates: string[],
+  batchSize: number,
+  runBatch: (slice: string[]) => Promise<number[]>,
+): Promise<number[]> {
+  if (candidates.length === 0) return [];
+  if (!Number.isInteger(batchSize) || batchSize <= 0 || candidates.length <= batchSize) {
+    return runBatch(candidates);
+  }
+  const scores: number[] = [];
+  for (let start = 0; start < candidates.length; start += batchSize) {
+    const slice = candidates.slice(start, start + batchSize);
+    const sliceScores = await runBatch(slice);
+    if (sliceScores.length !== slice.length) {
+      throw new Error(
+        `reranker sub-batch returned wrong-length score array: expected ${slice.length} scores, got ${sliceScores.length}`,
+      );
+    }
+    for (const score of sliceScores) scores.push(score);
+  }
+  return scores;
 }
 
 export function scoresFromSequenceClassifierOutput(

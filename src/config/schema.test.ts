@@ -10,6 +10,7 @@ describe('config schema validation (FR-OBS-470)', () => {
       KB_RERANK: 'on',
       KB_RERANK_MODEL: 'Xenova/ms-marco-MiniLM-L-6-v2',
       KB_RERANK_TOP_N: '12',
+      KB_RERANK_BATCH_SIZE: '16',
       KB_RELEVANCE_GATE: 'on',
       KB_GATE_LLM_ENDPOINT: 'http://127.0.0.1:8080/v1/chat/completions',
       KB_GATE_SCORE_FLOOR: '0.75',
@@ -28,6 +29,7 @@ describe('config schema validation (FR-OBS-470)', () => {
       expect.objectContaining({ name: 'KB_AGE_BUDGET_HOURS_ALPHA', status: 'ok', value: '24' }),
       expect.objectContaining({ name: 'KB_FLAT_SEARCH_P95_ADVISORY_MS', status: 'ok', value: '75' }),
       expect.objectContaining({ name: 'KB_RERANK_TOP_N', status: 'ok', value: '12' }),
+      expect.objectContaining({ name: 'KB_RERANK_BATCH_SIZE', status: 'ok', value: '16' }),
       expect.objectContaining({ name: 'MCP_AUTH_TOKEN', status: 'ok', value: '<redacted>' }),
     ]));
   });

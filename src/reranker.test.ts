@@ -4,6 +4,7 @@ import {
   applyRerankerIfEnabled,
   InMemoryRerankScoreCache,
   rerankFusedResults,
+  scoreInSubBatches,
   scoresFromSequenceClassifierOutput,
   setRerankerFactoryForTests,
   type Reranker,
@@ -228,6 +229,60 @@ describe('applyRerankerIfEnabled — per-domain skip-rerank fallback (RFC 020 §
     } finally {
       restore();
     }
+  });
+});
+
+describe('scoreInSubBatches (#746 — cross-encoder input sub-batching)', () => {
+  // A stand-in for the model call: scores each candidate by its string length so
+  // batched and unbatched runs are trivially comparable and order-sensitive.
+  const scoreByLength = jest.fn(async (slice: string[]) => slice.map((s) => s.length));
+
+  beforeEach(() => {
+    scoreByLength.mockClear();
+  });
+
+  it('issues a single call for the empty and single-fit cases regardless of batch size', async () => {
+    expect(await scoreInSubBatches([], 4, scoreByLength)).toEqual([]);
+    expect(scoreByLength).not.toHaveBeenCalled();
+
+    const three = ['a', 'bb', 'ccc'];
+    // batchSize >= length and batchSize 0 (disabled) both take the single-call path.
+    expect(await scoreInSubBatches(three, 8, scoreByLength)).toEqual([1, 2, 3]);
+    expect(await scoreInSubBatches(three, 0, scoreByLength)).toEqual([1, 2, 3]);
+    expect(scoreByLength).toHaveBeenCalledTimes(2);
+    expect(scoreByLength).toHaveBeenCalledWith(three);
+  });
+
+  it('chunks into ceil(n / batchSize) calls and concatenates scores in original order', async () => {
+    const candidates = ['a', 'bb', 'ccc', 'dddd', 'eeeee'];
+
+    const scores = await scoreInSubBatches(candidates, 2, scoreByLength);
+
+    // 5 candidates / batch 2 => ceil(5/2) = 3 model calls.
+    expect(scoreByLength).toHaveBeenCalledTimes(3);
+    expect(scoreByLength.mock.calls.map((c) => c[0])).toEqual([
+      ['a', 'bb'],
+      ['ccc', 'dddd'],
+      ['eeeee'],
+    ]);
+    // Concatenated in original order — identical to the single-call result.
+    expect(scores).toEqual([1, 2, 3, 4, 5]);
+    expect(scores).toEqual(await scoreInSubBatches(candidates, 0, scoreByLength));
+  });
+
+  it('produces the same score ordering batched or unbatched for the same inputs', async () => {
+    const candidates = Array.from({ length: 7 }, (_, i) => 'x'.repeat(i + 1));
+    const unbatched = await scoreInSubBatches(candidates, 0, scoreByLength);
+    for (const batchSize of [1, 2, 3, 7, 100]) {
+      expect(await scoreInSubBatches(candidates, batchSize, scoreByLength)).toEqual(unbatched);
+    }
+  });
+
+  it('throws when a sub-batch returns the wrong number of scores', async () => {
+    const shortReturn = jest.fn(async () => [0.5]);
+    await expect(scoreInSubBatches(['a', 'bb', 'ccc'], 2, shortReturn)).rejects.toThrow(
+      /wrong-length score array: expected 2 scores, got 1/,
+    );
   });
 });
 

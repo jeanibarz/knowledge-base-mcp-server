@@ -6,6 +6,15 @@ export const DEFAULT_RERANK_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
 export const DEFAULT_RERANK_TOP_N = 40;
 export const MAX_RERANK_TOP_N = 1000;
 
+// #746 — cross-encoder input sub-batching. The reranker sends all top-N
+// candidates to the model in a single padded call, so peak tokenizer/activation
+// memory scales with topN × longest-passage and can OOM on CPU/constrained
+// hosts. KB_RERANK_BATCH_SIZE slices the candidate list into fixed-size
+// sub-batches, bounding peak memory at a small per-batch overhead. 0/unset keeps
+// the original single-call behavior (and today's GPU throughput) unchanged.
+export const DEFAULT_RERANK_BATCH_SIZE = 0;
+export const MAX_RERANK_BATCH_SIZE = 1000;
+
 // ---------------------------------------------------------------------------
 // Disk-tiered rerank-score cache configuration (#646).
 //
@@ -98,6 +107,27 @@ export function parseRerankTopN(raw: string | undefined): number {
   const value = Number(trimmed);
   if (!Number.isInteger(value) || value < 1 || value > MAX_RERANK_TOP_N) {
     throw new RerankerConfigError(`invalid KB_RERANK_TOP_N=${JSON.stringify(raw)} (expected integer 1-${MAX_RERANK_TOP_N})`);
+  }
+  return value;
+}
+
+/**
+ * Parse `KB_RERANK_BATCH_SIZE` into a bounded non-negative integer. `0` (the
+ * default and the meaning of an unset/blank value) disables sub-batching, so the
+ * reranker keeps issuing a single model call for the whole top-N block — today's
+ * behavior. A positive value chunks the candidate list into slices of that size.
+ * Unlike `KB_RERANK_TOP_N`, `0` is valid here (it is the "off" sentinel), so the
+ * accepted range is `0-${MAX_RERANK_BATCH_SIZE}`.
+ */
+export function parseRerankBatchSize(raw: string | undefined = process.env.KB_RERANK_BATCH_SIZE): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_RERANK_BATCH_SIZE;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new RerankerConfigError(`invalid KB_RERANK_BATCH_SIZE=${JSON.stringify(raw)} (expected integer 0-${MAX_RERANK_BATCH_SIZE})`);
+  }
+  const value = Number(trimmed);
+  if (!Number.isInteger(value) || value < 0 || value > MAX_RERANK_BATCH_SIZE) {
+    throw new RerankerConfigError(`invalid KB_RERANK_BATCH_SIZE=${JSON.stringify(raw)} (expected integer 0-${MAX_RERANK_BATCH_SIZE})`);
   }
   return value;
 }

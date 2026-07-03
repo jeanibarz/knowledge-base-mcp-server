@@ -1,9 +1,11 @@
 import { describe, expect, it } from '@jest/globals';
 
 import {
+  DEFAULT_RERANK_BATCH_SIZE,
   DEFAULT_RERANK_MODEL,
   DEFAULT_RERANK_TOP_N,
   isRerankSkippedForDomain,
+  parseRerankBatchSize,
   parseRerankFlag,
   parseRerankTopN,
   parseSkipRerankDomains,
@@ -38,6 +40,19 @@ describe('reranker config (RFC 019)', () => {
     expect(() => parseRerankTopN('7.9')).toThrow(/KB_RERANK_TOP_N/);
     expect(() => parseRerankTopN('0')).toThrow(/KB_RERANK_TOP_N/);
     expect(() => parseRerankTopN('1001')).toThrow(/KB_RERANK_TOP_N/);
+  });
+
+  it('parses KB_RERANK_BATCH_SIZE as a non-negative bounded integer with 0 as the off sentinel (#746)', () => {
+    expect(parseRerankBatchSize(undefined)).toBe(DEFAULT_RERANK_BATCH_SIZE);
+    expect(parseRerankBatchSize('')).toBe(DEFAULT_RERANK_BATCH_SIZE);
+    expect(parseRerankBatchSize('   ')).toBe(DEFAULT_RERANK_BATCH_SIZE);
+    // 0 is valid here (unlike KB_RERANK_TOP_N) — it means "single call".
+    expect(parseRerankBatchSize('0')).toBe(0);
+    expect(parseRerankBatchSize('16')).toBe(16);
+    expect(() => parseRerankBatchSize('16.5')).toThrow(/KB_RERANK_BATCH_SIZE/);
+    expect(() => parseRerankBatchSize('-1')).toThrow(/KB_RERANK_BATCH_SIZE/);
+    expect(() => parseRerankBatchSize('nope')).toThrow(/KB_RERANK_BATCH_SIZE/);
+    expect(() => parseRerankBatchSize('1001')).toThrow(/KB_RERANK_BATCH_SIZE/);
   });
 
   it('lets per-call overrides win over the environment flag', () => {

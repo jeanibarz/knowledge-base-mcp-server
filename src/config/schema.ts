@@ -26,8 +26,10 @@ import {
   KNOWN_EMBEDDING_PROVIDERS,
 } from './provider.js';
 import {
+  DEFAULT_RERANK_BATCH_SIZE,
   DEFAULT_RERANK_MODEL,
   DEFAULT_RERANK_TOP_N,
+  MAX_RERANK_BATCH_SIZE,
   MAX_RERANK_TOP_N,
 } from './reranker.js';
 
@@ -223,6 +225,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_RERANK', kind: 'boolean', default: 'off', description: 'Enables optional cross-encoder reranking.' },
   { name: 'KB_RERANK_MODEL', kind: 'string', default: DEFAULT_RERANK_MODEL },
   { name: 'KB_RERANK_TOP_N', kind: 'integer', default: String(DEFAULT_RERANK_TOP_N), min: 1, max: MAX_RERANK_TOP_N, integerSyntax: 'digits' },
+  { name: 'KB_RERANK_BATCH_SIZE', kind: 'integer', default: String(DEFAULT_RERANK_BATCH_SIZE), min: 0, max: MAX_RERANK_BATCH_SIZE, integerSyntax: 'digits', description: 'Sub-batches cross-encoder inference to bound peak memory; 0 = single call (default).' },
   { name: 'KB_RERANK_SKIP_DOMAINS', kind: 'csv' },
   { name: 'KB_RERANK_CACHE', kind: 'boolean', default: 'off', booleanValues: RERANK_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'enabled'], description: 'Enables the persistent disk-tiered rerank-score cache.' },
   { name: 'KB_RERANK_CACHE_DISK_MAX_BYTES', kind: 'integer', default: String(64 * 1024 * 1024), min: 1, description: 'Disk-size cap in bytes for the persistent rerank-score cache.' },
