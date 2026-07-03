@@ -29,6 +29,7 @@ module.exports = {
     '**/src/redaction.test.ts',
     '**/src/lexical-bm25.test.ts',
     '**/src/hybrid-retrieval.test.ts',
+    '**/src/injection-guard.test.ts',
   ],
   testTimeout: 30000,
 };
