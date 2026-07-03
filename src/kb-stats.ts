@@ -51,6 +51,11 @@ import {
   type WriteLockMetricsSnapshot,
 } from './metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
+import {
+  providerBreakerRegistry,
+  type ProviderBreakerRegistry,
+  type ProviderCircuitSnapshot,
+} from './provider-breaker.js';
 import { queryEmbeddingCache, type QueryCacheStats } from './query-cache.js';
 import {
   relevanceGateMetrics,
@@ -139,6 +144,15 @@ export interface KbStatsPayload {
   /** Issue #689 — process-lifetime reranker-stage counters and latency histograms. */
   rerank?: RerankMetricsSnapshot;
   /**
+   * Issue #747 — per-key snapshot of the shared provider circuit breaker
+   * (embedding + LLM paths). Empty `[]` until a breaker has admitted at
+   * least one call in this process, so a one-shot `kb stats` on a
+   * freshly-spawned process typically sees nothing — the signal is most
+   * meaningful from the long-lived `kb serve` daemon. Additive on the
+   * wire; older clients ignore it.
+   */
+  provider_circuits?: ProviderCircuitSnapshot[];
+  /**
    * Issue #714 — process-lifetime write-lock wait and hold histograms by
    * coarse resource kind. No filesystem paths or model ids are used as labels.
    */
@@ -192,6 +206,8 @@ export interface ComputeKbStatsOptions {
   searchMetrics?: SearchLatencyMetrics;
   /** Issue #689 — test seam for reranker-stage telemetry. */
   rerankMetrics?: RerankMetrics;
+  /** Issue #747 — test seam for the shared provider circuit breaker registry. */
+  breaker?: ProviderBreakerRegistry;
   /** Issue #714 — test seam for write-lock wait/hold telemetry. */
   writeLockMetrics?: WriteLockMetrics;
   /** Process-local HTTP/SSE counters, supplied by KnowledgeBaseServer when active. */
@@ -321,6 +337,7 @@ export async function computeKbStats(
     relevance_gate: relevanceGateMetrics.snapshot(),
     rerank: rerankMetricsSource.snapshot(),
     write_locks: writeLockMetricsSource.snapshot(),
+    provider_circuits: (options.breaker ?? providerBreakerRegistry).snapshot(),
     ...(options.remoteTransportStats !== undefined
       ? { remote_transport: options.remoteTransportStats }
       : {}),

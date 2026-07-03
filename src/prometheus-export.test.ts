@@ -63,6 +63,55 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('kb_provider_tokens_in_total{model_id="ollama__nomic-embed-text-latest"} 42');
   });
 
+  it('renders provider circuit-breaker state and open-transition counters (issue #747)', () => {
+    const payload = samplePayload();
+    payload.provider_circuits = [
+      // Two embedding/ollama keys: worst state (open=2) wins, opens summed (1+3=4).
+      {
+        key: 'embedding:ollama:http://localhost:11434:nomic',
+        state: 'open',
+        consecutive_failures: 3,
+        opened_at_ms: 1000,
+        half_open_probe_in_flight: false,
+        opened_total: 1,
+        retry_after_ms: 5000,
+      },
+      {
+        key: 'embedding:ollama:http://localhost:11434:mxbai',
+        state: 'closed',
+        consecutive_failures: 0,
+        opened_at_ms: null,
+        half_open_probe_in_flight: false,
+        opened_total: 3,
+        retry_after_ms: 0,
+      },
+      {
+        key: 'llm:openrouter:https://openrouter.ai/api/v1/chat/completions:qwen',
+        state: 'half-open',
+        consecutive_failures: 1,
+        opened_at_ms: 2000,
+        half_open_probe_in_flight: true,
+        opened_total: 2,
+        retry_after_ms: 0,
+      },
+    ];
+
+    const text = formatKbStatsOpenMetrics(payload);
+
+    expect(text).toContain('# TYPE kb_provider_circuit_state gauge');
+    expect(text).toContain('kb_provider_circuit_state{kind="embedding",provider="ollama"} 2');
+    expect(text).toContain('kb_provider_circuit_state{kind="llm",provider="openrouter"} 1');
+    expect(text).toContain('# TYPE kb_provider_circuit_open counter');
+    expect(text).toContain('kb_provider_circuit_open_total{kind="embedding",provider="ollama"} 4');
+    expect(text).toContain('kb_provider_circuit_open_total{kind="llm",provider="openrouter"} 2');
+  });
+
+  it('omits provider circuit-breaker families when no breaker has tracked a call (issue #747)', () => {
+    const text = formatKbStatsOpenMetrics(samplePayload());
+    expect(text).not.toContain('kb_provider_circuit_state');
+    expect(text).not.toContain('kb_provider_circuit_open');
+  });
+
   it('keeps emitted metric families represented in the generated-reference catalog', () => {
     const names = OPEN_METRICS_REFERENCE.map((metric) => metric.name);
     expect(new Set(names).size).toBe(names.length);

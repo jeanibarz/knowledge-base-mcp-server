@@ -58,7 +58,10 @@ Daemon-instance-only gauges are **omitted** rather than emitted as misleading
 zeros, because they only have meaning inside a running daemon:
 
 - `kb_daemon_inflight` / `kb_daemon_rejected_total` — admission control (`kb serve`).
-- Provider circuit-breaker state — resets each process.
+- Provider circuit-breaker state (`kb_provider_circuit_*`) — process-local and
+  resets each process, so a one-shot dump emits nothing until that process has
+  itself exercised a provider; the signal is meaningful from the long-lived
+  daemon.
 - Remote-transport counters (`kb_remote_transport_*`) — only present when the
   metrics come from an HTTP/SSE transport instance.
 
@@ -71,7 +74,9 @@ The v1 exporter keeps labels bounded:
 | Label | Metrics | Cardinality bound |
 |---|---|---|
 | `kb` | `kb_knowledge_base_*` | registered knowledge bases |
-| `model_id` | `kb_provider_*` | registered embedding models observed by the process |
+| `model_id` | `kb_provider_call*` | registered embedding models observed by the process |
+| `kind` | `kb_provider_circuit_*` | `embedding`, `llm`, `unknown` |
+| `provider` | `kb_provider_circuit_*` | configured embedding/LLM provider names |
 | `mode` | `kb_search_*` | `dense`, `lexical`, `hybrid`, `auto`, `unknown` |
 | `stage` | `kb_search_stage_duration_ms` | fixed search timing stage names |
 | `status` | `kb_search_*` | `success`, `error` |
@@ -87,7 +92,8 @@ labels.
 |---|---|
 | `kb_build_info` | package version and source/build commit for the serving process |
 | `kb_knowledge_base_*` | file counts, chunk counts, indexed bytes, quarantine counts by KB |
-| `kb_provider_*` | provider call counts, errors, token totals when reported, p50/p95/p99 latency |
+| `kb_provider_call*` | provider call counts, errors, token totals when reported, p50/p95/p99 latency |
+| `kb_provider_circuit_*` | provider circuit-breaker state gauge (0=closed, 1=half-open, 2=open) and cumulative open-transition counter, by `kind`/`provider` |
 | `kb_search_requests_total` | daemon-served search request totals by mode/status |
 | `kb_search_request_duration_ms` | end-to-end daemon-served search request latency histogram |
 | `kb_search_stage_duration_ms` | per-stage daemon-served search latency histogram |

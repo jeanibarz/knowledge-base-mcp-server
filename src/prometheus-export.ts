@@ -1,5 +1,10 @@
 import type { KbStatsPayload } from './kb-stats.js';
 import {
+  parseProviderCircuitKey,
+  type ProviderCircuitSnapshot,
+  type ProviderCircuitState,
+} from './provider-breaker.js';
+import {
   LATENCY_BUCKET_BOUNDS_MS,
   type LatencyHistogramSnapshot,
   type RerankMetricsSnapshot,
@@ -123,6 +128,20 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     help: 'Embedding provider call latency p99 by model id, in milliseconds.',
     labels: ['model_id'],
     emittedWhen: 'Emitted once per embedding model observed by the process.',
+  },
+  {
+    name: 'kb_provider_circuit_state',
+    type: 'gauge',
+    help: 'Provider circuit-breaker state (0=closed, 1=half-open, 2=open) by provider and kind; the worst state is reported when several keys share a provider/kind.',
+    labels: ['kind', 'provider'],
+    emittedWhen: 'Emitted once per provider/kind after a breaker has tracked at least one call in this process.',
+  },
+  {
+    name: 'kb_provider_circuit_open_total',
+    type: 'counter',
+    help: 'Cumulative provider circuit-breaker open transitions by provider and kind.',
+    labels: ['kind', 'provider'],
+    emittedWhen: 'Emitted once per provider/kind after a breaker has tracked at least one call in this process.',
   },
   {
     name: 'kb_search_requests_total',
@@ -422,6 +441,7 @@ export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
         name: 'kb_relevance_gate_verdict_empty_index_total',
         value: payload.relevance_gate.verdict_empty_index,
       }]),
+    ...providerCircuitMetrics(payload.provider_circuits),
     ...remoteTransportMetrics(payload),
   ];
 
@@ -457,6 +477,65 @@ function providerLatencyMetrics(payload: KbStatsPayload): MetricDefinition[] {
       labels: { model_id: modelId },
       value: snapshot.latency_ms[field],
     }))));
+}
+
+const PROVIDER_CIRCUIT_STATE_VALUE: Record<ProviderCircuitState, number> = {
+  closed: 0,
+  'half-open': 1,
+  open: 2,
+};
+
+/**
+ * Issue #747 — render the provider circuit-breaker snapshot as a bounded
+ * `{kind, provider}` gauge plus an open-transition counter. Several breaker
+ * keys can share a provider/kind (e.g. two embedding models on the same
+ * provider); the state gauge reports the worst (highest-value) state and
+ * the counter sums the open transitions, so the label set stays bounded
+ * and the emitted signal is "how bad is this provider right now / how
+ * often has it tripped". Returns no samples for an empty snapshot, so the
+ * families are omitted on a process that has not exercised any breaker.
+ */
+function providerCircuitMetrics(
+  snapshots: ProviderCircuitSnapshot[] | undefined,
+): MetricDefinition[] {
+  const stateByLabel = new Map<string, { labels: Record<string, string>; value: number }>();
+  const openByLabel = new Map<string, { labels: Record<string, string>; value: number }>();
+  for (const snapshot of snapshots ?? []) {
+    const { kind, provider } = parseProviderCircuitKey(snapshot.key);
+    const labelKey = `${kind} ${provider}`;
+    const labels = { kind, provider };
+
+    const stateValue = PROVIDER_CIRCUIT_STATE_VALUE[snapshot.state];
+    const existingState = stateByLabel.get(labelKey);
+    if (existingState === undefined || stateValue > existingState.value) {
+      stateByLabel.set(labelKey, { labels, value: stateValue });
+    }
+
+    const existingOpen = openByLabel.get(labelKey);
+    openByLabel.set(labelKey, {
+      labels,
+      value: (existingOpen?.value ?? 0) + snapshot.opened_total,
+    });
+  }
+
+  return [
+    defineMetric(
+      'kb_provider_circuit_state',
+      [...stateByLabel.values()].map(({ labels, value }) => ({
+        name: 'kb_provider_circuit_state',
+        labels,
+        value,
+      })),
+    ),
+    defineMetric(
+      'kb_provider_circuit_open_total',
+      [...openByLabel.values()].map(({ labels, value }) => ({
+        name: 'kb_provider_circuit_open_total',
+        labels,
+        value,
+      })),
+    ),
+  ];
 }
 
 function remoteTransportMetrics(payload: KbStatsPayload): MetricDefinition[] {
