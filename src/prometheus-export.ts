@@ -25,6 +25,19 @@ interface MetricDefinition {
 export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
   const metrics: MetricDefinition[] = [
     {
+      name: 'kb_build_info',
+      help: 'Build identity for the serving process.',
+      type: 'gauge',
+      samples: [{
+        name: 'kb_build_info',
+        labels: {
+          version: payload.server.version,
+          commit: payload.server.commit ?? 'unknown',
+        },
+        value: 1,
+      }],
+    },
+    {
       name: 'kb_knowledge_base_files',
       help: 'Number of ingestable source files by knowledge base.',
       type: 'gauge',

@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, realpathSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { readPackageVersion } from './build-info.js';
 import { parseDotEnvText } from './config/schema.js';
 import { ASK_HELP, runAsk } from './cli-ask.js';
 import { BACKUP_HELP, runBackup } from './cli-backup.js';
@@ -233,7 +234,7 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (args[0] === '--version' || args[0] === '-v') {
-    process.stdout.write(`${getPackageVersion()}\n`);
+    process.stdout.write(`${readPackageVersion()}\n`);
     return 0;
   }
 
@@ -705,22 +706,6 @@ function daemonUrlSuffix(): string {
     return ` at ${daemonUrlFromEnv().href}`;
   } catch {
     return '';
-  }
-}
-
-// ----- version --------------------------------------------------------------
-
-function getPackageVersion(): string {
-  // package.json sits two levels above this file in build/ (build/cli.js
-  // → ../package.json). Cheap synchronous read; runs once per CLI start.
-  try {
-    const here = fileURLToPath(import.meta.url);
-    const pkgPath = path.join(path.dirname(here), '..', 'package.json');
-    const raw = readFileSync(pkgPath, 'utf-8');
-    const parsed = JSON.parse(raw) as { version?: string };
-    return parsed.version ?? 'unknown';
-  } catch {
-    return 'unknown';
   }
 }
 
