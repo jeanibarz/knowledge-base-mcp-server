@@ -4,7 +4,11 @@ import {
   bucketIndexForLatency,
   LATENCY_BUCKET_BOUNDS_MS,
 } from './metrics.js';
-import { formatKbStatsOpenMetrics } from './prometheus-export.js';
+import {
+  formatKbStatsOpenMetrics,
+  OPEN_METRICS_REFERENCE,
+  openMetricsFamilyName,
+} from './prometheus-export.js';
 
 describe('formatKbStatsOpenMetrics', () => {
   it('renders bounded-label OpenMetrics text from kb stats payloads', () => {
@@ -57,6 +61,20 @@ describe('formatKbStatsOpenMetrics', () => {
 
     expect(text).toContain('# TYPE kb_provider_tokens_in counter');
     expect(text).toContain('kb_provider_tokens_in_total{model_id="ollama__nomic-embed-text-latest"} 42');
+  });
+
+  it('keeps emitted metric families represented in the generated-reference catalog', () => {
+    const names = OPEN_METRICS_REFERENCE.map((metric) => metric.name);
+    expect(new Set(names).size).toBe(names.length);
+
+    const catalogFamilies = new Set(names.map((name) => openMetricsFamilyName(name)));
+    const emittedFamilies = [...formatKbStatsOpenMetrics(samplePayload()).matchAll(/^# HELP ([^ ]+) /gm)]
+      .map((match) => match[1]);
+
+    expect(emittedFamilies.length).toBeGreaterThan(0);
+    for (const family of emittedFamilies) {
+      expect(catalogFamilies).toContain(family);
+    }
   });
 });
 
