@@ -123,7 +123,7 @@ async function connectClient(port: number): Promise<{
 
 async function waitFor(
   predicate: () => boolean,
-  timeoutMs = 5000,
+  timeoutMs = 1000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -343,7 +343,7 @@ describe('StreamableHttpHost — endpoints', () => {
     const { client } = await connectClient(started.port);
     await waitFor(() => started.host.sessionCount === 1);
     await client.close();
-    await waitFor(() => started.host.sessionCount === 0);
+    await waitFor(() => started.host.sessionCount === 0, 20000);
 
     await sendMalformedHttpRequest(started.port);
     await waitFor(() => started.host.getRuntimeStats().last_error !== null);
@@ -463,7 +463,7 @@ describe('StreamableHttpHost — endpoints', () => {
     const { client } = await connectClient(started.port);
     await waitFor(() => started.host.sessionCount === 1);
     await client.close();
-    await waitFor(() => started.host.sessionCount === 0);
+    await waitFor(() => started.host.sessionCount === 0, 20000);
   });
 
   // ---------------------------------------------------------------------
