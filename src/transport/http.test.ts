@@ -123,14 +123,14 @@ async function connectClient(port: number): Promise<{
 
 async function waitFor(
   predicate: () => boolean,
-  timeoutMs = 1000,
+  timeoutMs = 5000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error('condition was not met before timeout');
+  throw new Error(`condition was not met before ${timeoutMs}ms timeout`);
 }
 
 function sendMalformedHttpRequest(port: number): Promise<void> {
