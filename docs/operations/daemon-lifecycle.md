@@ -1,9 +1,10 @@
 # `kb serve` — Local CLI Daemon Lifecycle
 
-`kb serve` runs a loopback-only HTTP daemon that serves read-only `kb search`,
-`kb list`, and `kb stats` requests from CLI clients. The point is *warm
-reads*: the daemon keeps the FAISS index, model adapter, and lexical store
-loaded in memory so each CLI invocation skips the cold-start cost.
+`kb serve` runs a local HTTP daemon that serves read-only `kb search`, `kb list`,
+and `kb stats` requests from CLI clients over loopback TCP or a Unix-domain
+socket. The point is *warm reads*: the daemon keeps the FAISS index, model
+adapter, and lexical store loaded in memory so each CLI invocation skips the
+cold-start cost.
 
 CLI clients use the daemon when they pass `--daemon`. If the daemon is not
 reachable, they print a one-line notice on stderr and fall back to direct
@@ -112,8 +113,9 @@ Exit codes are deliberately distinct:
 CLI clients and `kb serve status` resolve the daemon URL in this order:
 
 1. `KB_DAEMON_URL` (explicit, used verbatim — must include scheme)
-2. `KB_DAEMON_HOST` + `KB_DAEMON_PORT` (composed)
-3. Default `http://127.0.0.1:17799/`
+2. `KB_DAEMON_SOCKET` (Unix-domain socket path)
+3. `KB_DAEMON_HOST` + `KB_DAEMON_PORT` (composed)
+4. Default `http://127.0.0.1:17799/`
 
 For a non-default port:
 
@@ -124,9 +126,20 @@ kb serve status
 # kb serve: daemon running at http://127.0.0.1:18888/
 ```
 
-For a per-user instance on a multi-tenant host, run on a unique port and
-export `KB_DAEMON_URL` in the user's shell profile so every CLI call hits the
-right daemon.
+For a per-user instance on a multi-tenant host, prefer a Unix-domain socket so
+filesystem permissions control access and no TCP port allocation is needed:
+
+```bash
+export KB_DAEMON_SOCKET="$XDG_RUNTIME_DIR/kb-daemon.sock"
+kb serve &
+kb serve status
+# kb serve: daemon running at unix:///run/user/1000/kb-daemon.sock
+```
+
+`kb serve --socket=/path/to/kb-daemon.sock` binds the foreground daemon to a
+socket path directly. The daemon creates the socket with `0600` permissions,
+removes stale socket files before binding, and refuses to replace a socket that
+already accepts connections.
 
 ## Use the daemon from CLI clients
 

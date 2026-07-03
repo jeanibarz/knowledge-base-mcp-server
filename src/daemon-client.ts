@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import * as http from 'node:http';
 
 export interface DaemonRunResult {
   exitCode: number;
@@ -35,6 +36,11 @@ export interface DaemonHealth {
   prewarm?: DaemonPrewarmHealth;
 }
 
+export interface DaemonEndpoint {
+  url: URL;
+  socketPath?: string;
+}
+
 interface SpawnedDaemonProcess {
   once(event: 'error', listener: (err: Error) => void): SpawnedDaemonProcess;
   unref(): void;
@@ -60,6 +66,7 @@ export interface DaemonClientOptions {
 
 const DEFAULT_AUTOSTART_DEADLINE_MS = 3_000;
 const DEFAULT_AUTOSTART_POLL_INTERVAL_MS = 100;
+const MAX_UNIX_SOCKET_PATH_BYTES = 107;
 
 export class DaemonUnavailableError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -78,8 +85,16 @@ export class DaemonProtocolError extends Error {
 }
 
 export function daemonUrlFromEnv(env: NodeJS.ProcessEnv = process.env): URL {
+  return daemonEndpointFromEnv(env).url;
+}
+
+export function daemonEndpointFromEnv(env: NodeJS.ProcessEnv = process.env): DaemonEndpoint {
   if (env.KB_DAEMON_URL !== undefined && env.KB_DAEMON_URL.trim() !== '') {
-    return new URL(env.KB_DAEMON_URL);
+    return { url: new URL(env.KB_DAEMON_URL) };
+  }
+  const socketPath = daemonSocketPathFromEnv(env);
+  if (socketPath !== null) {
+    return { url: daemonSocketUrl(socketPath), socketPath };
   }
   const host = env.KB_DAEMON_HOST?.trim() || '127.0.0.1';
   const portRaw = env.KB_DAEMON_PORT?.trim() || '17799';
@@ -87,7 +102,7 @@ export function daemonUrlFromEnv(env: NodeJS.ProcessEnv = process.env): URL {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new DaemonProtocolError(`invalid KB_DAEMON_PORT: ${portRaw}`);
   }
-  return new URL(`http://${host}:${port}`);
+  return { url: new URL(`http://${host}:${port}`) };
 }
 
 export async function tryRunDaemonCommand(
@@ -111,13 +126,14 @@ export async function runDaemonCommand(
   args: string[],
   options: DaemonClientOptions = {},
 ): Promise<DaemonRunResult> {
-  const baseUrl = daemonUrlFromEnv(options.env);
-  const endpoint = new URL('/v1/run', baseUrl);
+  const baseEndpoint = daemonEndpointFromEnv(options.env);
+  const endpoint = new URL('/v1/run', baseEndpoint.url);
   const fetchImpl = options.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 1500);
   try {
-    const response = await fetchImpl(endpoint, {
+    const response = await requestDaemonEndpoint(baseEndpoint, endpoint, {
+      fetchImpl,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command, args }),
@@ -130,7 +146,7 @@ export async function runDaemonCommand(
     const payload = await response.json();
     return parseDaemonRunResult(payload);
   } catch (err) {
-    rethrowDaemonFetchError(err, endpoint.href);
+    rethrowDaemonFetchError(err, baseEndpoint.url.href);
   } finally {
     clearTimeout(timeout);
   }
@@ -145,22 +161,118 @@ export async function runDaemonCommand(
 export async function fetchDaemonHealth(
   options: DaemonClientOptions = {},
 ): Promise<DaemonHealth> {
-  const endpoint = new URL('/health', daemonUrlFromEnv(options.env));
+  const baseEndpoint = daemonEndpointFromEnv(options.env);
+  const endpoint = new URL('/health', baseEndpoint.url);
   const fetchImpl = options.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 1500);
   try {
-    const response = await fetchImpl(endpoint, { method: 'GET', signal: controller.signal });
+    const response = await requestDaemonEndpoint(baseEndpoint, endpoint, {
+      fetchImpl,
+      method: 'GET',
+      signal: controller.signal,
+    });
     if (!response.ok) {
       const text = await response.text().catch(() => '');
       throw new DaemonProtocolError(`daemon returned HTTP ${response.status}${text ? `: ${text}` : ''}`);
     }
     return parseDaemonHealth(await response.json());
   } catch (err) {
-    rethrowDaemonFetchError(err, endpoint.href);
+    rethrowDaemonFetchError(err, baseEndpoint.url.href);
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function daemonSocketPathFromEnv(env: NodeJS.ProcessEnv): string | null {
+  const raw = env.KB_DAEMON_SOCKET?.trim();
+  if (raw === undefined || raw === '') return null;
+  assertDaemonSocketPath(raw, 'KB_DAEMON_SOCKET');
+  return raw;
+}
+
+export function assertDaemonSocketPath(socketPath: string, source = 'socket path'): void {
+  if (socketPath.trim() === '') {
+    throw new DaemonProtocolError(`invalid ${source}: empty path`);
+  }
+  if (process.platform === 'win32') {
+    throw new DaemonProtocolError(`${source} is not supported on Windows`);
+  }
+  if (Buffer.byteLength(socketPath) > MAX_UNIX_SOCKET_PATH_BYTES) {
+    throw new DaemonProtocolError(
+      `invalid ${source}: path is too long for a Unix-domain socket (${Buffer.byteLength(socketPath)} > ${MAX_UNIX_SOCKET_PATH_BYTES} bytes)`,
+    );
+  }
+}
+
+function daemonSocketUrl(socketPath: string): URL {
+  return new URL(`unix://${socketPath}`);
+}
+
+interface DaemonRequestOptions {
+  fetchImpl: typeof fetch;
+  method: string;
+  headers?: Record<string, string>;
+  body?: string;
+  signal: AbortSignal;
+}
+
+interface DaemonResponse {
+  ok: boolean;
+  status: number;
+  text: () => Promise<string>;
+  json: () => Promise<unknown>;
+}
+
+async function requestDaemonEndpoint(
+  baseEndpoint: DaemonEndpoint,
+  endpoint: URL,
+  options: DaemonRequestOptions,
+): Promise<DaemonResponse> {
+  if (baseEndpoint.socketPath === undefined) {
+    return options.fetchImpl(endpoint, {
+      method: options.method,
+      headers: options.headers,
+      body: options.body,
+      signal: options.signal,
+    });
+  }
+
+  return requestUnixSocketEndpoint(baseEndpoint.socketPath, endpoint, options);
+}
+
+function requestUnixSocketEndpoint(
+  socketPath: string,
+  endpoint: URL,
+  options: DaemonRequestOptions,
+): Promise<DaemonResponse> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        socketPath,
+        method: options.method,
+        path: `${endpoint.pathname}${endpoint.search}`,
+        headers: options.headers,
+        signal: options.signal,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf-8');
+          resolve({
+            ok: (res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300,
+            status: res.statusCode ?? 0,
+            text: async () => text,
+            json: async () => JSON.parse(text),
+          });
+        });
+      },
+    );
+    req.on('error', reject);
+    if (options.body !== undefined) req.write(options.body);
+    req.end();
+  });
 }
 
 /**
@@ -382,7 +494,8 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 function isSafeNoListenerFailure(err: DaemonUnavailableError): boolean {
-  return errorCode(err.cause) === 'ECONNREFUSED';
+  const code = errorCode(err.cause);
+  return code === 'ECONNREFUSED' || code === 'ENOENT';
 }
 
 function errorCode(err: unknown): string | undefined {

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import * as fsp from 'node:fs/promises';
 import * as http from 'node:http';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   appendDaemonAdmissionMetrics,
   createDaemonCommandHandlers,
@@ -14,7 +17,7 @@ import {
   DEFAULT_DAEMON_MAX_CONCURRENCY,
   DEFAULT_DAEMON_QUEUE_MAX,
 } from './daemon-admission.js';
-import type { DaemonRunResult } from './daemon-client.js';
+import { fetchDaemonHealth, runDaemonCommand, type DaemonRunResult } from './daemon-client.js';
 import type { KbStatsPayload } from './kb-stats.js';
 import type { RunSearchDeps } from './cli-search.js';
 import type { LexicalIndex } from './lexical-index.js';
@@ -58,6 +61,8 @@ function request(
 describe('kb serve daemon', () => {
   const originalMetricsExport = process.env.KB_METRICS_EXPORT;
   const originalDaemonPrewarm = process.env.KB_DAEMON_PREWARM;
+  const originalDaemonSocket = process.env.KB_DAEMON_SOCKET;
+  const itUnix = process.platform === 'win32' ? it.skip : it;
 
   afterEach(() => {
     searchLatencyMetrics.reset();
@@ -65,6 +70,8 @@ describe('kb serve daemon', () => {
     else process.env.KB_METRICS_EXPORT = originalMetricsExport;
     if (originalDaemonPrewarm === undefined) delete process.env.KB_DAEMON_PREWARM;
     else process.env.KB_DAEMON_PREWARM = originalDaemonPrewarm;
+    if (originalDaemonSocket === undefined) delete process.env.KB_DAEMON_SOCKET;
+    else process.env.KB_DAEMON_SOCKET = originalDaemonSocket;
   });
 
   it('serves health and dispatches read-only commands through handlers', async () => {
@@ -261,6 +268,20 @@ describe('kb serve daemon', () => {
     expect(() => parseServeArgs(['--host=0.0.0.0'])).toThrow(/non-loopback/);
   });
 
+  itUnix('parses explicit and environment Unix-domain socket paths', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-serve-parse-'));
+    const envSocket = path.join(tempDir, 'env.sock');
+    const cliSocket = path.join(tempDir, 'cli.sock');
+    try {
+      process.env.KB_DAEMON_SOCKET = envSocket;
+      expect(parseServeArgs([]).socketPath).toBe(envSocket);
+      expect(parseServeArgs([`--socket=${cliSocket}`]).socketPath).toBe(cliSocket);
+      expect(() => parseServeArgs(['--socket='])).toThrow(/empty path/);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('enables startup prewarm from --warm or KB_DAEMON_PREWARM=on', () => {
     delete process.env.KB_DAEMON_PREWARM;
     expect(parseServeArgs(['--warm']).warm).toBe(true);
@@ -281,6 +302,60 @@ describe('kb serve daemon', () => {
       });
     } finally {
       await daemon.stop();
+    }
+  });
+
+  itUnix('serves health and read-only commands over a Unix-domain socket', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-serve-uds-'));
+    const socketPath = path.join(tempDir, 'daemon.sock');
+    const daemon = await startDaemonServer({
+      socketPath,
+      idleTimeoutMs: 0,
+      handlers: {
+        search: async () => ({ exitCode: 0, stdout: 'socket search\n', stderr: '' }),
+        list: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        stats: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      },
+    });
+    try {
+      expect(daemon.url.href).toBe(`unix://${socketPath}`);
+      const stat = await fsp.stat(socketPath);
+      expect(stat.mode & 0o777).toBe(0o600);
+      await expect(fetchDaemonHealth({ env: { KB_DAEMON_SOCKET: socketPath } }))
+        .resolves.toMatchObject({ status: 'ok', url: `unix://${socketPath}` });
+      await expect(runDaemonCommand('search', ['hello'], { env: { KB_DAEMON_SOCKET: socketPath } }))
+        .resolves.toEqual({ exitCode: 0, stdout: 'socket search\n', stderr: '' });
+    } finally {
+      await daemon.stop();
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  itUnix('unlinks a stale socket before listening and refuses an active socket', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-serve-stale-'));
+    const staleSocket = path.join(tempDir, 'stale.sock');
+    const activeSocket = path.join(tempDir, 'active.sock');
+    const staleServer = http.createServer();
+    await new Promise<void>((resolve, reject) => {
+      staleServer.once('error', reject);
+      staleServer.listen(staleSocket, () => resolve());
+    });
+    await new Promise<void>((resolve) => staleServer.close(() => resolve()));
+
+    const daemon = await startDaemonServer({ socketPath: staleSocket, idleTimeoutMs: 0 });
+    await daemon.stop();
+
+    const activeServer = http.createServer();
+    await new Promise<void>((resolve, reject) => {
+      activeServer.once('error', reject);
+      activeServer.listen(activeSocket, () => resolve());
+    });
+    try {
+      await expect(startDaemonServer({ socketPath: activeSocket, idleTimeoutMs: 0 }))
+        .rejects.toThrow(/already in use/);
+    } finally {
+      await new Promise<void>((resolve) => activeServer.close(() => resolve()));
+      await fsp.rm(tempDir, { recursive: true, force: true });
     }
   });
 

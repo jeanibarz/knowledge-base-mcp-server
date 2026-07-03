@@ -1,9 +1,13 @@
 import { describe, expect, it, jest } from '@jest/globals';
+import * as fsp from 'node:fs/promises';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   DaemonProtocolError,
   DaemonUnavailableError,
+  daemonEndpointFromEnv,
   daemonUrlFromEnv,
   fetchDaemonHealth,
   runDaemonCommand,
@@ -29,10 +33,49 @@ async function withServer(
   }
 }
 
+async function withUnixSocketServer(
+  handler: http.RequestListener,
+  fn: (socketPath: string) => Promise<void>,
+): Promise<void> {
+  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-daemon-client-'));
+  const socketPath = path.join(tempDir, 'daemon.sock');
+  const server = http.createServer(handler);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socketPath, () => resolve());
+  });
+  try {
+    await fn(socketPath);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 describe('daemon client', () => {
+  const itUnix = process.platform === 'win32' ? it.skip : it;
+
   it('builds a default loopback URL from env overrides', () => {
     expect(daemonUrlFromEnv({ KB_DAEMON_PORT: '18888' }).href).toBe('http://127.0.0.1:18888/');
     expect(daemonUrlFromEnv({ KB_DAEMON_URL: 'http://127.0.0.1:19999' }).href).toBe('http://127.0.0.1:19999/');
+  });
+
+  itUnix('builds a Unix-domain socket endpoint from KB_DAEMON_SOCKET', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-daemon-client-'));
+    const socketPath = path.join(tempDir, 'daemon.sock');
+    try {
+      expect(daemonUrlFromEnv({ KB_DAEMON_SOCKET: socketPath }).href).toBe(`unix://${socketPath}`);
+      expect(daemonEndpointFromEnv({ KB_DAEMON_SOCKET: socketPath })).toEqual({
+        url: new URL(`unix://${socketPath}`),
+        socketPath,
+      });
+      expect(daemonUrlFromEnv({
+        KB_DAEMON_URL: 'http://127.0.0.1:19999',
+        KB_DAEMON_SOCKET: socketPath,
+      }).href).toBe('http://127.0.0.1:19999/');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('posts command requests and parses daemon output', async () => {
@@ -52,6 +95,26 @@ describe('daemon client', () => {
     }, async (url) => {
       await expect(runDaemonCommand('search', ['hello'], { env: { KB_DAEMON_URL: url.href } }))
         .resolves.toEqual({ exitCode: 0, stdout: 'ok\n', stderr: '' });
+    });
+  });
+
+  itUnix('posts command requests over a Unix-domain socket', async () => {
+    await withUnixSocketServer((req, res) => {
+      expect(req.method).toBe('POST');
+      expect(req.url).toBe('/v1/run');
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        expect(JSON.parse(Buffer.concat(chunks).toString('utf-8'))).toEqual({
+          command: 'stats',
+          args: ['--format=json'],
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ exitCode: 0, stdout: '{}\n', stderr: '' }));
+      });
+    }, async (socketPath) => {
+      await expect(runDaemonCommand('stats', ['--format=json'], { env: { KB_DAEMON_SOCKET: socketPath } }))
+        .resolves.toEqual({ exitCode: 0, stdout: '{}\n', stderr: '' });
     });
   });
 

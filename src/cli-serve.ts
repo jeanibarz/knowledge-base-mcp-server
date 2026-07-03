@@ -1,4 +1,5 @@
 import * as http from 'node:http';
+import * as net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
 import * as fsp from 'node:fs/promises';
@@ -12,6 +13,7 @@ import {
 } from './config/metrics-export.js';
 import {
   daemonUrlFromEnv,
+  assertDaemonSocketPath,
   tryFetchDaemonHealth,
   type DaemonCommand,
   type DaemonHealth,
@@ -39,10 +41,10 @@ import { logger } from './logger.js';
 export const SERVE_HELP = `kb serve — resident local daemon for warm CLI reads
 
 Usage:
-  kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000] [--warm]
+  kb serve [--host=127.0.0.1] [--port=17799] [--socket=/path/to/kb.sock] [--idle-timeout-ms=300000] [--warm]
   kb serve status [--json]
 
-Starts a localhost-only JSON HTTP daemon used by \`kb search --daemon\`.
+Starts a local JSON HTTP daemon used by \`kb search --daemon\`.
 The daemon accepts read-only search/list/stats requests and exits after the
 idle timeout.
 
@@ -54,6 +56,7 @@ daemon it prints a one-line notice to stderr and runs the search directly.
 Options:
   --host=<host>             Loopback host to bind (default: 127.0.0.1).
   --port=<port>             TCP port to bind (default: 17799; 0 for tests).
+  --socket=<path>           Unix-domain socket to bind instead of TCP.
   --idle-timeout-ms=<ms>    Stop after this much idle time (default: 300000).
   --warm                    Pre-warm the active model, FAISS index, and
                             lexical indexes before the daemon reports ready.
@@ -64,6 +67,8 @@ Environment:
   KB_DAEMON_URL             Daemon URL queried by \`kb serve status\` and
                             \`kb search --daemon\` (default
                             http://127.0.0.1:17799).
+  KB_DAEMON_SOCKET          Unix-domain socket path queried by clients and
+                            bound by \`kb serve\` when KB_DAEMON_URL is unset.
   KB_METRICS_EXPORT         Set to \`on\` to expose OpenMetrics text at
                             \`GET /metrics\` on the loopback daemon.
   KB_DAEMON_MAX_CONCURRENCY Max requests the daemon runs at once before
@@ -87,6 +92,7 @@ const DAEMON_COMMANDS: readonly DaemonCommand[] = ['search', 'list', 'stats'];
 interface ServeArgs {
   host: string;
   port: number;
+  socketPath: string | null;
   idleTimeoutMs: number;
   ownership: DaemonOwnership;
   warm: boolean;
@@ -144,6 +150,7 @@ export interface ResidentDaemon {
 const DEFAULT_SERVE_ARGS: ServeArgs = {
   host: '127.0.0.1',
   port: 17799,
+  socketPath: null,
   idleTimeoutMs: 300_000,
   ownership: 'manual',
   warm: false,
@@ -283,11 +290,13 @@ export async function startDaemonServer(
   const parsed: ServeArgs = {
     host: options.host ?? DEFAULT_SERVE_ARGS.host,
     port: options.port ?? DEFAULT_SERVE_ARGS.port,
+    socketPath: options.socketPath ?? socketPathFromEnv(process.env),
     idleTimeoutMs: options.idleTimeoutMs ?? DEFAULT_SERVE_ARGS.idleTimeoutMs,
     ownership: options.ownership ?? DEFAULT_SERVE_ARGS.ownership,
     warm: options.warm ?? DEFAULT_SERVE_ARGS.warm,
   };
-  assertLoopbackHost(parsed.host);
+  if (parsed.socketPath === null) assertLoopbackHost(parsed.host);
+  else assertDaemonSocketPath(parsed.socketPath);
   const handlers = options.handlers ?? createDaemonCommandHandlers();
   let prewarmHealth: DaemonPrewarmHealth = {
     enabled: parsed.warm,
@@ -335,6 +344,10 @@ export async function startDaemonServer(
     resolveClosed();
   });
 
+  if (parsed.socketPath !== null) {
+    await prepareSocketPath(parsed.socketPath);
+  }
+
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => {
       server.off('listening', onListening);
@@ -346,13 +359,17 @@ export async function startDaemonServer(
     };
     server.once('error', onError);
     server.once('listening', onListening);
-    server.listen(parsed.port, parsed.host);
+    if (parsed.socketPath === null) server.listen(parsed.port, parsed.host);
+    else server.listen(parsed.socketPath);
   });
 
   resetIdleTimer();
-  const address = server.address() as AddressInfo;
-  const hostForUrl = parsed.host.includes(':') ? `[${parsed.host}]` : parsed.host;
-  const url = new URL(`http://${hostForUrl}:${address.port}`);
+  if (parsed.socketPath !== null) {
+    await fsp.chmod(parsed.socketPath, 0o600);
+  }
+  const url = parsed.socketPath === null
+    ? daemonTcpUrl(server.address() as AddressInfo, parsed.host)
+    : daemonSocketUrl(parsed.socketPath);
   boundUrl = url.href;
   return {
     server,
@@ -363,8 +380,11 @@ export async function startDaemonServer(
         return;
       }
       server.close((err) => {
-        if (err) reject(err);
-        else resolve();
+        if (err) {
+          reject(err);
+          return;
+        }
+        cleanupSocketPath(parsed.socketPath).then(resolve, reject);
       });
     }),
     closed,
@@ -374,13 +394,21 @@ export async function startDaemonServer(
     if (idleTimer) clearTimeout(idleTimer);
     if (parsed.idleTimeoutMs <= 0) return;
     idleTimer = setTimeout(() => {
-      void new Promise<void>((resolve) => server.close(() => resolve()));
+      void new Promise<void>((resolve) => {
+        server.close(() => {
+          void cleanupSocketPath(parsed.socketPath).finally(resolve);
+        });
+      });
     }, parsed.idleTimeoutMs);
   }
 }
 
 export function parseServeArgs(rest: string[]): ServeArgs {
-  const out = { ...DEFAULT_SERVE_ARGS, warm: daemonPrewarmEnabledFromEnv(process.env) };
+  const out = {
+    ...DEFAULT_SERVE_ARGS,
+    socketPath: socketPathFromEnv(process.env),
+    warm: daemonPrewarmEnabledFromEnv(process.env),
+  };
   for (const raw of rest) {
     if (raw.startsWith('--host=')) {
       out.host = raw.slice('--host='.length);
@@ -392,6 +420,12 @@ export function parseServeArgs(rest: string[]): ServeArgs {
         throw new Error(`invalid --port: ${raw}`);
       }
       out.port = port;
+      continue;
+    }
+    if (raw.startsWith('--socket=')) {
+      const socketPath = raw.slice('--socket='.length);
+      assertDaemonSocketPath(socketPath, '--socket');
+      out.socketPath = socketPath;
       continue;
     }
     if (raw.startsWith('--idle-timeout-ms=')) {
@@ -417,13 +451,73 @@ export function parseServeArgs(rest: string[]): ServeArgs {
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     throw new Error(`unexpected argument: ${raw}`);
   }
-  assertLoopbackHost(out.host);
+  if (out.socketPath === null) assertLoopbackHost(out.host);
   return out;
 }
 
 function daemonPrewarmEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
   const raw = env.KB_DAEMON_PREWARM?.trim().toLowerCase();
   return raw === 'on' || raw === '1' || raw === 'true' || raw === 'yes';
+}
+
+function socketPathFromEnv(env: NodeJS.ProcessEnv): string | null {
+  const raw = env.KB_DAEMON_SOCKET?.trim();
+  if (raw === undefined || raw === '') return null;
+  assertDaemonSocketPath(raw, 'KB_DAEMON_SOCKET');
+  return raw;
+}
+
+function daemonTcpUrl(address: AddressInfo, host: string): URL {
+  const hostForUrl = host.includes(':') ? `[${host}]` : host;
+  return new URL(`http://${hostForUrl}:${address.port}`);
+}
+
+function daemonSocketUrl(socketPath: string): URL {
+  return new URL(`unix://${socketPath}`);
+}
+
+async function prepareSocketPath(socketPath: string): Promise<void> {
+  try {
+    const stat = await fsp.lstat(socketPath);
+    if (!stat.isSocket()) {
+      throw new Error(`socket path exists and is not a Unix-domain socket: ${socketPath}`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+
+  if (await unixSocketAcceptsConnections(socketPath)) {
+    throw new Error(`socket path is already in use: ${socketPath}`);
+  }
+  await fsp.unlink(socketPath);
+}
+
+function unixSocketAcceptsConnections(socketPath: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', (err) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ECONNREFUSED' || code === 'ENOENT') {
+        resolve(false);
+        return;
+      }
+      reject(err);
+    });
+  });
+}
+
+async function cleanupSocketPath(socketPath: string | null): Promise<void> {
+  if (socketPath === null) return;
+  try {
+    await fsp.unlink(socketPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
 }
 
 export function createDaemonCommandHandlers(options: DaemonCommandHandlerOptions = {}): DaemonCommandHandlers {
