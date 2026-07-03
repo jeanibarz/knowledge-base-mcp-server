@@ -192,6 +192,7 @@ wrap-close vars below.
 | HTTP/SSE auth token | `MCP_AUTH_TOKEN` | required for non-stdio transports unless `MCP_AUTH_TOKEN_FILE` is set | MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> node build/index.js` |
 | HTTP/SSE auth token file | `MCP_AUTH_TOKEN_FILE` | unset | MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN_FILE=/run/secrets/kb-mcp-token node build/index.js` |
 | Allowed browser origins | `MCP_ALLOWED_ORIGINS` | deny browser origins | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_ALLOWED_ORIGINS=http://localhost:5173 node build/index.js` |
+| Allowed Host headers (DNS-rebinding) | `MCP_ALLOWED_HOSTS` | loopback aliases from bind addr/port | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_ALLOWED_HOSTS=kb.internal:8765 node build/index.js` |
 | HTTP/SSE port | `MCP_PORT` | `8765` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_PORT=8765 node build/index.js` |
 | Bind address | `MCP_BIND_ADDR` | `127.0.0.1` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_BIND_ADDR=127.0.0.1 node build/index.js` |
 | Failed auth backoff threshold | `MCP_AUTH_BACKOFF_THRESHOLD` | `5` | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_AUTH_BACKOFF_THRESHOLD=3 node build/index.js` |

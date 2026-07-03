@@ -249,6 +249,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'MCP_AUTH_TOKEN', kind: 'secret', secret: true, description: 'Bearer token required for HTTP/SSE transports.' },
   { name: 'MCP_AUTH_TOKEN_FILE', kind: 'path', description: 'Path to a file containing the bearer token for HTTP/SSE transports; takes precedence over MCP_AUTH_TOKEN.' },
   { name: 'MCP_ALLOWED_ORIGINS', kind: 'csv' },
+  { name: 'MCP_ALLOWED_HOSTS', kind: 'csv', description: 'Extra Host-header values accepted by the HTTP/SSE transports for DNS-rebinding protection. Loopback aliases derived from MCP_BIND_ADDR/MCP_PORT are always allowed; set to * to disable Host validation for reverse-proxy setups.' },
   { name: 'MCP_AUTH_BACKOFF_THRESHOLD', kind: 'integer', default: '5', min: 0 },
   { name: 'MCP_AUTH_BACKOFF_MS', kind: 'duration', default: '30000', min: 0 },
   { name: 'MCP_AUTH_BACKOFF_MAX_ENTRIES', kind: 'integer', default: '1024', min: 1 },

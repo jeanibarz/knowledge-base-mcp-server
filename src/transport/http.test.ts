@@ -34,6 +34,7 @@ function freshFactory(): () => McpServer {
 async function startHost(opts: {
   authToken?: string;
   allowedOrigins?: string[];
+  allowedHosts?: string[];
   authBackoff?: AuthBackoffConfig;
   metricsExporter?: () => Promise<string>;
   readinessProbe?: () => Promise<ReadinessPayload>;
@@ -45,6 +46,7 @@ async function startHost(opts: {
       bindAddr: '127.0.0.1',
       authToken: opts.authToken ?? VALID_TOKEN,
       allowedOrigins: opts.allowedOrigins ?? [],
+      allowedHosts: opts.allowedHosts,
       authBackoff: opts.authBackoff,
     },
     createMcpServer: freshFactory(),
@@ -566,6 +568,85 @@ describe('StreamableHttpHost — endpoints', () => {
     expect(sad.server.sendResourceListChanged).toHaveBeenCalledTimes(1);
 
     sessions.clear();
+  });
+
+  // ---------------------------------------------------------------------
+  // Issue #750 — DNS-rebinding protection via Host-header allow-list.
+  // ---------------------------------------------------------------------
+
+  it('rejects a forged Host header with 403 when the allow-list is active', async () => {
+    const started = await startHost({ allowedHosts: [`127.0.0.1:1`, 'localhost'] });
+    stop = started.stop;
+    const res = await request(started.port, {
+      method: 'POST',
+      path: '/mcp',
+      headers: {
+        Host: 'attacker.example',
+        Authorization: `Bearer ${VALID_TOKEN}`,
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toBe('Host not allowed');
+  });
+
+  it('accepts a request whose Host is on the allow-list', async () => {
+    const started = await startHost({ allowedHosts: ['trusted.example'] });
+    stop = started.stop;
+    // Reaches auth (bad token -> 401) rather than the Host gate (403),
+    // proving the Host check passed.
+    const res = await request(started.port, {
+      method: 'POST',
+      path: '/mcp',
+      headers: { Host: 'TRUSTED.example' },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('rejects a request with no Host header when the allow-list is active', async () => {
+    const started = await startHost({ allowedHosts: ['trusted.example'] });
+    stop = started.stop;
+    // Force an HTTP/1.0 request with no Host header via a raw socket; the
+    // node http client always sets Host otherwise.
+    const res = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+      const socket = net.createConnection({ host: '127.0.0.1', port: started.port }, () => {
+        socket.write('POST /mcp HTTP/1.0\r\n\r\n');
+      });
+      const chunks: Buffer[] = [];
+      socket.on('data', (c) => chunks.push(c));
+      socket.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        const statusLine = raw.split('\r\n', 1)[0] ?? '';
+        const statusCode = Number(statusLine.split(' ')[1] ?? '0');
+        const body = raw.slice(raw.indexOf('\r\n\r\n') + 4);
+        resolve({ statusCode, body });
+      });
+      socket.on('error', reject);
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toBe('Host not allowed');
+  });
+
+  it('does not enforce Host validation when the allow-list is empty', async () => {
+    const started = await startHost({});
+    stop = started.stop;
+    const res = await request(started.port, {
+      method: 'POST',
+      path: '/mcp',
+      headers: { Host: 'anything.example' },
+    });
+    // No 403 Host gate; falls through to auth (missing token -> 401).
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('keeps /health reachable regardless of Host header', async () => {
+    const started = await startHost({ allowedHosts: ['trusted.example'] });
+    stop = started.stop;
+    const res = await request(started.port, {
+      path: '/health',
+      headers: { Host: 'attacker.example' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
   });
 });
 

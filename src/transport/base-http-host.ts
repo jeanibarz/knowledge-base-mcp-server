@@ -83,6 +83,10 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
   protected readonly options: BaseHttpHostOptions;
   protected readonly sessions = new Map<string, BaseSessionEntry<TTransport>>();
   protected readonly originAllowList: ReadonlySet<string>;
+  // Host-header allow-list for DNS-rebinding protection (issue #750). Empty
+  // means the check is disabled. Entries are lowercased at construction so the
+  // dispatch-time comparison is case-insensitive.
+  protected readonly hostAllowList: ReadonlySet<string>;
   private readonly authTokenBuf: Buffer;
   private readonly authBackoff: AuthBackoffConfig;
   private readonly authFailureStates = new Map<string, AuthFailureState>();
@@ -101,6 +105,9 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
   constructor(options: BaseHttpHostOptions) {
     this.options = options;
     this.originAllowList = new Set(options.config.allowedOrigins);
+    this.hostAllowList = new Set(
+      (options.config.allowedHosts ?? []).map((host) => host.toLowerCase()),
+    );
     // RFC 008 §6.3: compare as latin1 (1 byte == 1 codeunit) so an
     // attacker-supplied `Authorization` header is not silently re-encoded
     // via UTF-8 substitution (U+FFFD is 3 bytes and mutates length) before
@@ -373,6 +380,20 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       return;
     }
 
+    // 3b. Host-header allow-list — DNS-rebinding protection (issue #750).
+    //     Runs independently of the Origin check above so it also covers the
+    //     no-Origin requests that the present-only Origin policy accepts. A
+    //     browser tricked via DNS rebinding sends the attacker's hostname in
+    //     the Host header, which will not match the loopback allow-list.
+    //     Disabled (skipped) when the allow-list is empty (`MCP_ALLOWED_HOSTS=*`
+    //     or no bind host derived). /health short-circuited earlier and stays
+    //     reachable by infra probes with arbitrary Host headers.
+    if (this.hostAllowList.size > 0 && !this.isAllowedHost(req.headers.host)) {
+      respond(res, 403, 'Host not allowed');
+      finalize(403);
+      return;
+    }
+
     // 4. Bearer-token auth.
     const bearerValid = this.verifyBearer(req.headers.authorization);
     if (!bearerValid) {
@@ -583,6 +604,20 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     } catch {
       return false;
     }
+  }
+
+  /**
+   * DNS-rebinding Host check. A missing Host header is rejected while the
+   * allow-list is active (HTTP/1.1 requires it; its absence is anomalous and
+   * cannot be matched). Comparison is case-insensitive — hostnames are
+   * case-insensitive and the allow-list is pre-lowercased.
+   */
+  private isAllowedHost(hostHeader: string | string[] | undefined): boolean {
+    const value = headerValue(hostHeader);
+    if (value === null) {
+      return false;
+    }
+    return this.hostAllowList.has(value.toLowerCase());
   }
 
   private authBackoffEnabled(): boolean {
