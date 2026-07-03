@@ -77,6 +77,7 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>KB_RERANK</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code> |  | uses default | Enables optional cross-encoder reranking. |
 | <code>KB_RERANK_MODEL</code> | <code>string</code> | <code>Xenova/ms-marco-MiniLM-L-6-v2</code> |  |  | kept as empty |  |
 | <code>KB_RERANK_TOP_N</code> | <code>integer</code> | <code>40</code> |  | >= <code>1</code>; <= <code>1000</code>; digits only | uses default |  |
+| <code>KB_RERANK_BATCH_SIZE</code> | <code>integer</code> | <code>0</code> |  | >= <code>0</code>; <= <code>1000</code>; digits only | uses default | Sub-batches cross-encoder inference to bound peak memory; 0 = single call (default). |
 | <code>KB_RERANK_SKIP_DOMAINS</code> | <code>csv</code> | _unset_ | comma-separated strings |  | uses default |  |
 | <code>KB_RERANK_CACHE</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>enabled</code>, <code>disabled</code> |  | uses default | Enables the persistent disk-tiered rerank-score cache. |
 | <code>KB_RERANK_CACHE_DISK_MAX_BYTES</code> | <code>integer</code> | <code>67108864</code> |  | >= <code>1</code> | uses default | Disk-size cap in bytes for the persistent rerank-score cache. |
