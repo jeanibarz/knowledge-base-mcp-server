@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x build/index.js build/cli.js",
     "build:clean": "rm -rf build",
-    "check": "npm run build && npm run lint && npm run test:coverage && npm run docs:check-anchors && npm run docs:check-config-reference && npm run docs:check-cli && npm run docs:check-mcp-tools && npm run docs:check-embedding-models && npm run docs:check-metrics-reference",
+    "check": "npm run build && npm run lint && npm run test:coverage && npm run docs:check-anchors && npm run docs:check-config-reference && npm run config:check-env-usage && npm run docs:check-cli && npm run docs:check-mcp-tools && npm run docs:check-embedding-models && npm run docs:check-metrics-reference",
     "lint": "eslint src",
     "lint:commit-message": "commitlint",
     "lint:fix": "eslint src --fix",
@@ -40,6 +40,7 @@
     "docs:check-anchors": "node scripts/check-doc-anchors.mjs",
     "docs:generate-config-reference": "npm run build && node scripts/generate-config-reference.mjs",
     "docs:check-config-reference": "node scripts/check-config-reference.mjs",
+    "config:check-env-usage": "npm run build && node scripts/check-config-env-usage.mjs",
     "docs:check-cli": "node scripts/gen-cli-reference.mjs --check",
     "docs:gen-mcp-tools": "npm run build && node scripts/gen-mcp-tools-doc.mjs",
     "docs:check-mcp-tools": "node scripts/gen-mcp-tools-doc.mjs --check",
