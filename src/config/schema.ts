@@ -246,6 +246,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'MCP_PORT', kind: 'integer', default: '8765', min: 1, max: 65535 },
   { name: 'MCP_BIND_ADDR', kind: 'string', default: '127.0.0.1' },
   { name: 'MCP_AUTH_TOKEN', kind: 'secret', secret: true, description: 'Bearer token required for HTTP/SSE transports.' },
+  { name: 'MCP_AUTH_TOKEN_FILE', kind: 'path', description: 'Path to a file containing the bearer token for HTTP/SSE transports; takes precedence over MCP_AUTH_TOKEN.' },
   { name: 'MCP_ALLOWED_ORIGINS', kind: 'csv' },
   { name: 'MCP_AUTH_BACKOFF_THRESHOLD', kind: 'integer', default: '5', min: 0 },
   { name: 'MCP_AUTH_BACKOFF_MS', kind: 'duration', default: '30000', min: 0 },
@@ -503,16 +504,17 @@ function validateDependencies(
   const transport = normalizeRaw(env.MCP_TRANSPORT);
   if (transport === 'http' || transport === 'sse') {
     const token = normalizeRaw(env.MCP_AUTH_TOKEN);
-    if (!token) {
+    const tokenFile = normalizeRaw(env.MCP_AUTH_TOKEN_FILE);
+    if (!token && !tokenFile) {
       findings.push(finding(
         'MCP_AUTH_TOKEN',
         'error',
         'dependency',
         source,
         null,
-        `MCP_TRANSPORT=${transport} requires MCP_AUTH_TOKEN`,
+        `MCP_TRANSPORT=${transport} requires MCP_AUTH_TOKEN or MCP_AUTH_TOKEN_FILE`,
       ));
-    } else if (token.length < 32) {
+    } else if (!tokenFile && token !== undefined && token.length < 32) {
       findings.push(finding(
         'MCP_AUTH_TOKEN',
         'error',

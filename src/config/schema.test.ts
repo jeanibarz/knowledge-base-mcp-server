@@ -122,6 +122,29 @@ describe('config schema validation (FR-OBS-470)', () => {
     ]));
   });
 
+  it('accepts MCP_AUTH_TOKEN_FILE as the remote transport bearer source', () => {
+    const report = validateConfigEnv({
+      MCP_TRANSPORT: 'http',
+      MCP_AUTH_TOKEN: 'short-env-fallback',
+      MCP_AUTH_TOKEN_FILE: '/run/secrets/kb-mcp-token',
+    });
+
+    expect(report.status).toBe('ok');
+    expect(report.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'MCP_AUTH_TOKEN_FILE',
+        status: 'ok',
+        value: '/run/secrets/kb-mcp-token',
+      }),
+    ]));
+    expect(report.findings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'MCP_AUTH_TOKEN',
+        status: 'error',
+      }),
+    ]));
+  });
+
   it('parses dotenv comments, export prefixes, quotes, escapes, and inline comments', () => {
     const parsed = parseDotEnvText(`
       # comment

@@ -12,6 +12,9 @@
 
 import * as http from 'node:http';
 import { AddressInfo } from 'node:net';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import {
@@ -202,9 +205,22 @@ async function waitFor(
 
 describe('loadTransportConfig validation', () => {
   const originalEnv = { ...process.env };
+  const tempDirs: string[] = [];
+
   afterEach(() => {
     process.env = { ...originalEnv };
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
+
+  function writeTokenFile(contents: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'kb-auth-token-'));
+    tempDirs.push(dir);
+    const tokenFile = join(dir, 'token');
+    writeFileSync(tokenFile, contents, 'utf8');
+    return tokenFile;
+  }
 
   it('defaults to stdio when MCP_TRANSPORT is unset', () => {
     delete process.env.MCP_TRANSPORT;
@@ -226,6 +242,44 @@ describe('loadTransportConfig validation', () => {
     process.env.MCP_TRANSPORT = 'http';
     process.env.MCP_AUTH_TOKEN = VALID_TOKEN;
     expect(loadTransportConfig().transport).toBe('http');
+  });
+
+  it('accepts MCP_AUTH_TOKEN_FILE and trims trailing whitespace', () => {
+    process.env.MCP_TRANSPORT = 'http';
+    delete process.env.MCP_AUTH_TOKEN;
+    process.env.MCP_AUTH_TOKEN_FILE = writeTokenFile(`${VALID_TOKEN}\n`);
+
+    expect(loadTransportConfig()).toMatchObject({
+      transport: 'http',
+      authToken: VALID_TOKEN,
+    });
+  });
+
+  it('prefers MCP_AUTH_TOKEN_FILE over MCP_AUTH_TOKEN', () => {
+    const fileToken = `${VALID_TOKEN}-from-file`;
+    process.env.MCP_TRANSPORT = 'sse';
+    process.env.MCP_AUTH_TOKEN = 'short-env-token';
+    process.env.MCP_AUTH_TOKEN_FILE = writeTokenFile(fileToken);
+
+    expect(loadTransportConfig().authToken).toBe(fileToken);
+  });
+
+  it('fails closed when MCP_AUTH_TOKEN_FILE cannot be read', () => {
+    process.env.MCP_TRANSPORT = 'http';
+    process.env.MCP_AUTH_TOKEN = VALID_TOKEN;
+    process.env.MCP_AUTH_TOKEN_FILE = join(tmpdir(), 'missing-kb-auth-token');
+
+    expect(() => loadTransportConfig()).toThrow(TransportConfigError);
+    expect(() => loadTransportConfig()).toThrow(/MCP_AUTH_TOKEN_FILE=.*could not be read/);
+  });
+
+  it('fails closed when MCP_AUTH_TOKEN_FILE is empty after trimming', () => {
+    process.env.MCP_TRANSPORT = 'http';
+    process.env.MCP_AUTH_TOKEN = VALID_TOKEN;
+    process.env.MCP_AUTH_TOKEN_FILE = writeTokenFile(' \n\t');
+
+    expect(() => loadTransportConfig()).toThrow(TransportConfigError);
+    expect(() => loadTransportConfig()).toThrow(/MCP_AUTH_TOKEN_FILE=.*empty/);
   });
 
   it('refuses startup when MCP_TRANSPORT=http but MCP_AUTH_TOKEN is unset', () => {

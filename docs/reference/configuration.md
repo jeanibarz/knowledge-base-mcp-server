@@ -98,6 +98,7 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>MCP_PORT</code> | <code>integer</code> | <code>8765</code> |  | >= <code>1</code>; <= <code>65535</code> | uses default |  |
 | <code>MCP_BIND_ADDR</code> | <code>string</code> | <code>127.0.0.1</code> |  |  | kept as empty |  |
 | <code>MCP_AUTH_TOKEN</code> | <code>secret</code> | _unset_ |  | redacted in reports | kept as set | Bearer token required for HTTP/SSE transports. |
+| <code>MCP_AUTH_TOKEN_FILE</code> | <code>path</code> | _unset_ |  |  | uses default | Path to a file containing the bearer token for HTTP/SSE transports; takes precedence over MCP_AUTH_TOKEN. |
 | <code>MCP_ALLOWED_ORIGINS</code> | <code>csv</code> | _unset_ | comma-separated strings |  | uses default |  |
 | <code>MCP_AUTH_BACKOFF_THRESHOLD</code> | <code>integer</code> | <code>5</code> |  | >= <code>0</code> | uses default |  |
 | <code>MCP_AUTH_BACKOFF_MS</code> | <code>duration</code> | <code>30000</code> |  | >= <code>0</code> | uses default |  |
