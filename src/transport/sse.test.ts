@@ -36,6 +36,7 @@ function freshFactory(): () => McpServer {
 async function startHost(opts: {
   authToken?: string;
   allowedOrigins?: string[];
+  allowedHosts?: string[];
   authBackoff?: AuthBackoffConfig;
   metricsExporter?: () => Promise<string>;
   readinessProbe?: () => Promise<ReadinessPayload>;
@@ -47,6 +48,7 @@ async function startHost(opts: {
       bindAddr: '127.0.0.1',
       authToken: opts.authToken ?? VALID_TOKEN,
       allowedOrigins: opts.allowedOrigins ?? [],
+      allowedHosts: opts.allowedHosts,
       authBackoff: opts.authBackoff,
     },
     createMcpServer: freshFactory(),
@@ -357,6 +359,23 @@ describe('SseHost — endpoints', () => {
     }
     if (originalMetricsExport === undefined) delete process.env.KB_METRICS_EXPORT;
     else process.env.KB_METRICS_EXPORT = originalMetricsExport;
+  });
+
+  // Issue #750 — DNS-rebinding Host-header protection is enforced in the
+  // shared BaseHttpHost, so it applies to the SSE transport as well.
+  it('rejects a forged Host header on /sse when the allow-list is active', async () => {
+    const started = await startHost({ allowedHosts: ['trusted.example'] });
+    stop = started.stop;
+    const res = await request(started.port, {
+      method: 'GET',
+      path: '/sse',
+      headers: {
+        Host: 'attacker.example',
+        Authorization: `Bearer ${VALID_TOKEN}`,
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toBe('Host not allowed');
   });
 
   it('exposes process-lifetime SSE transport counters', async () => {
