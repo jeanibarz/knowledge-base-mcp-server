@@ -19,6 +19,7 @@ import {
   type KbStatsContextualPrefaceBlock,
   type KbStatsPayload,
 } from './kb-stats.js';
+import { formatKbStatsOpenMetrics } from './prometheus-export.js';
 import { readBuildInfo, type BuildInfo } from './build-info.js';
 
 const CLI_STARTED_AT = Date.now();
@@ -26,7 +27,7 @@ const CLI_STARTED_AT = Date.now();
 export const STATS_HELP = `kb stats — read-only index/corpus stats
 
 Usage:
-  kb stats [--kb=<name>] [--format=md|json|csv|tsv|ndjson]
+  kb stats [--kb=<name>] [--format=md|json|csv|tsv|ndjson|openmetrics]
 
 Mirrors the MCP \`kb_stats\` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
@@ -38,21 +39,29 @@ Strictly read-only — does not refresh the index.
 
 Options:
   --kb=<name>           Scope to one knowledge base. Omit for all KBs.
-  --format=md|json|csv|tsv|ndjson
+  --format=md|json|csv|tsv|ndjson|openmetrics
                         Output format (default: md). \`json\` emits the
                         underlying \`KbStatsPayload\` shape verbatim; delimited
-                        formats emit one row per knowledge base.
+                        formats emit one row per knowledge base. \`openmetrics\`
+                        emits a daemonless Prometheus/OpenMetrics text exposition
+                        of the corpus, index, provider, cache, rerank, and
+                        relevance-gate families derived from this one-shot run —
+                        pipe-clean on stdout for cron scrapers and node-exporter
+                        textfile collectors. Daemon-instance gauges (admission
+                        control, circuit breaker) are omitted since they are
+                        unavailable without a running \`kb serve\` daemon.
   --help, -h            Show this help.
 
 Examples:
   kb stats
   kb stats --kb=work
   kb stats --format=json
+  kb stats --format=openmetrics
 `;
 
 export interface StatsArgs {
   kb?: string;
-  format: 'md' | 'json' | DelimitedOutputFormat;
+  format: 'md' | 'json' | 'openmetrics' | DelimitedOutputFormat;
 }
 
 export interface RunStatsDeps {
@@ -174,12 +183,14 @@ export function parseStatsArgs(rest: string[]): StatsArgs {
 }
 
 function isStatsFormat(value: string): value is StatsArgs['format'] {
-  return value === 'md' || value === 'json' || value === 'csv' || value === 'tsv' || value === 'ndjson';
+  return value === 'md' || value === 'json' || value === 'openmetrics'
+    || value === 'csv' || value === 'tsv' || value === 'ndjson';
 }
 
 function formatStatsOutput(payload: KbStatsPayload, format: StatsArgs['format']): string {
   if (format === 'json') return `${JSON.stringify(payload, null, 2)}\n`;
   if (format === 'md') return formatStatsMarkdown(payload);
+  if (format === 'openmetrics') return formatKbStatsOpenMetrics(payload);
   return renderRecords(statsRows(payload), format, { columns: STATS_COLUMNS });
 }
 

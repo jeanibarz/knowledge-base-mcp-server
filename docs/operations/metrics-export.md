@@ -35,6 +35,35 @@ curl -s \
   http://127.0.0.1:8765/metrics
 ```
 
+## Daemonless one-shot dump
+
+Hosts without a long-lived `kb serve` daemon (single-shot CLI usage, cron jobs,
+node-exporter textfile collectors) can render the same OpenMetrics exposition
+from a one-shot `kb stats` run — no daemon and no `KB_METRICS_EXPORT` flag
+required:
+
+```bash
+kb stats --format=openmetrics > /var/lib/node_exporter/textfile/kb.prom
+# or push to a Pushgateway:
+kb stats --format=openmetrics | curl --data-binary @- http://pushgateway:9091/metrics/job/kb
+```
+
+The output is pipe-clean on stdout (diagnostics go to stderr). It covers the
+process-derivable families — corpus (`kb_knowledge_base_*`), index
+(`kb_index_embedding_dimensions`, `kb_build_info`), provider
+(`kb_provider_*`), query cache (`kb_query_cache_*`), rerank (`kb_rerank_*`),
+search-latency, and relevance-gate counters.
+
+Daemon-instance-only gauges are **omitted** rather than emitted as misleading
+zeros, because they only have meaning inside a running daemon:
+
+- `kb_daemon_inflight` / `kb_daemon_rejected_total` — admission control (`kb serve`).
+- Provider circuit-breaker state — resets each process.
+- Remote-transport counters (`kb_remote_transport_*`) — only present when the
+  metrics come from an HTTP/SSE transport instance.
+
+Use the daemon `GET /metrics` endpoint when you need those live gauges.
+
 ## Label Contract
 
 The v1 exporter keeps labels bounded:

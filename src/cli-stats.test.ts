@@ -223,6 +223,51 @@ describe('kb stats CLI', () => {
     ]);
   });
 
+  it('renders a daemonless OpenMetrics exposition from a one-shot run', async () => {
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await runStats(['--format=openmetrics'], deps);
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    const out = stdout.join('');
+    // Well-formed OpenMetrics: HELP/TYPE lines present and the exposition
+    // terminates with the mandatory EOF marker followed by a trailing newline.
+    expect(out).toContain('# HELP kb_knowledge_base_files Number of ingestable source files by knowledge base.');
+    expect(out).toContain('# TYPE kb_knowledge_base_files gauge');
+    expect(out).toContain('kb_knowledge_base_files{kb="alpha"} 2');
+    expect(out).toContain('kb_knowledge_base_files{kb="beta"} 1');
+    expect(out).toContain('kb_knowledge_base_chunks{kb="alpha"} 4');
+    expect(out.endsWith('# EOF\n')).toBe(true);
+    // Local index state must still be loaded (no daemon short-circuit here).
+    expect(deps.computeKbStats).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits daemon-instance-only families from the one-shot OpenMetrics dump', async () => {
+    const { deps, stdout } = makeDeps();
+
+    const code = await runStats(['--format=openmetrics'], deps);
+
+    expect(code).toBe(0);
+    const out = stdout.join('');
+    // Admission-control and circuit-breaker gauges only exist inside a running
+    // `kb serve`; a daemonless dump must not fabricate them (issue #748).
+    expect(out).not.toContain('kb_daemon_inflight');
+    expect(out).not.toContain('kb_daemon_rejected');
+  });
+
+  it('sends failures to stderr (not stdout) for --format=openmetrics', async () => {
+    const { deps, stdout, stderr } = makeDeps({
+      computeError: new KBError('KB_NOT_FOUND', 'Knowledge base "missing" not found.'),
+    });
+
+    const code = await runStats(['--format=openmetrics'], deps);
+
+    expect(code).not.toBe(0);
+    expect(stdout.join('')).toBe('');
+    expect(stderr.join('')).toContain('kb stats:');
+  });
+
   it('passes --kb through as knowledgeBaseName without mutating the payload shape', async () => {
     const scoped = payload();
     scoped.knowledge_bases = { alpha: scoped.knowledge_bases.alpha };
