@@ -249,6 +249,26 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
       },
     },
     {
+      name: 'tags JSON reports empty facet buckets for a frontmatter-free corpus',
+      subcommand: 'tags',
+      args: ['tags', '--kb=alpha', '--format=json'],
+      assert: (result) => {
+        expect(result.code).toBe(0);
+        const body = parseStdoutJson(result) as {
+          schemaVersion?: string;
+          knowledgeBases?: string[];
+          notesScanned?: number;
+          facets?: Record<string, unknown[]>;
+        };
+        expect(body).toMatchObject({
+          schemaVersion: 'kb.tags.v1',
+          knowledgeBases: ['alpha'],
+          notesScanned: 1,
+          facets: { tags: [], status: [], type: [] },
+        });
+      },
+    },
+    {
       name: 'quarantine list JSON emits an empty entries array',
       subcommand: 'quarantine',
       args: ['quarantine', 'list', '--format=json'],
@@ -322,6 +342,7 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
     { subcommand: 'eval', args: ['eval'], expected: 'missing <fixture>' },
     { subcommand: 'eval-gate', args: ['eval-gate'], expected: 'missing <fixture>' },
     { subcommand: 'where', args: ['where'], expected: 'missing --topic=<query>' },
+    { subcommand: 'tags', args: ['tags', '--format=xml'], expected: 'invalid --format' },
     { subcommand: 'promote', args: ['promote'], expected: 'missing --kb=<name>' },
     { subcommand: 'reindex', args: ['reindex'], expected: '--with-context is required' },
     { subcommand: 'completion', args: ['completion'], expected: 'expected one shell' },
