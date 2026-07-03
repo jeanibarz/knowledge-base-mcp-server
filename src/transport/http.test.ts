@@ -341,6 +341,9 @@ describe('StreamableHttpHost — endpoints', () => {
     });
 
     const { client } = await connectClient(started.port);
+    await expect(client.listTools()).resolves.toEqual(
+      expect.objectContaining({ tools: expect.any(Array) }),
+    );
     await waitFor(() => started.host.sessionCount === 1);
     await client.close();
     await waitFor(() => started.host.sessionCount === 0, 20000);
@@ -461,6 +464,9 @@ describe('StreamableHttpHost — endpoints', () => {
     const started = await startHost({});
     stop = started.stop;
     const { client } = await connectClient(started.port);
+    await expect(client.listTools()).resolves.toEqual(
+      expect.objectContaining({ tools: expect.any(Array) }),
+    );
     await waitFor(() => started.host.sessionCount === 1);
     await client.close();
     await waitFor(() => started.host.sessionCount === 0, 20000);
