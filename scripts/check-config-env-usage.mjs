@@ -27,28 +27,9 @@ const SRC_DIR = path.join(REPO_ROOT, 'src');
 
 // Controlled-prefix env vars read in production source that are intentionally
 // NOT registered in CONFIG_SCHEMA. Every entry needs a reason. Keep this list
-// shrinking: prefer registering a var in src/config/schema.ts over adding it
-// here. The entries below are pre-existing reads baselined when this guard
-// landed (#753) and are tracked for schema registration or explicit
-// justification.
+// empty or shrinking: prefer registering a var in src/config/schema.ts over
+// adding it here.
 export const ALLOWLIST = new Map([
-  ['KB_DECOMPOSE_LLM_ENDPOINT', 'query-decomposition LLM override; baseline #753'],
-  ['KB_DECOMPOSE_LLM_MODEL', 'query-decomposition LLM override; baseline #753'],
-  ['KB_DENSE_DEGRADE_ON_PROVIDER_ERROR', 'dense-retrieval degrade toggle; baseline #753'],
-  ['KB_EMBEDDING_TASK_PREFIXES', 'embedding task-prefix override; baseline #753'],
-  ['KB_LOG_MAX_BYTES', 'log rotation size cap; baseline #753'],
-  ['KB_LOG_MAX_FILES', 'log rotation file count; baseline #753'],
-  ['KB_MAX_FILTER_ITEMS', 'MCP tool arg guardrail; baseline #753'],
-  ['KB_MAX_GLOB_CHARS', 'MCP tool arg guardrail; baseline #753'],
-  ['KB_MAX_GLOB_WILDCARDS', 'MCP tool arg guardrail; baseline #753'],
-  ['KB_MAX_QUERY_CHARS', 'MCP tool arg guardrail; baseline #753'],
-  ['KB_MIN_FREE_DISK_BYTES', 'disk-preflight threshold; baseline #753'],
-  ['KB_RERANK_CACHE', 'reranker cache toggle; baseline #753'],
-  ['KB_RERANK_CACHE_DISK_MAX_BYTES', 'reranker cache disk cap; baseline #753'],
-  ['KB_RERANK_DEVICE', 'reranker inference device; baseline #753'],
-  ['KB_RERANK_DTYPE', 'reranker inference dtype; baseline #753'],
-  ['KB_SEARCH_SNIPPET', 'kb search snippet toggle; baseline #753'],
-  ['KB_SHIELD', 'formatter shield toggle; baseline #753'],
 ]);
 
 const DOTTED_READ = /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { CONFIG_SCHEMA, parseDotEnvText, showConfigEnv, validateConfigEnv } from './schema.js';
+import { CONFIG_SCHEMA, isRegisteredConfigName, parseDotEnvText, showConfigEnv, validateConfigEnv } from './schema.js';
 
 describe('config schema validation (FR-OBS-470)', () => {
   it('emits ok findings and counts for valid known environment variables', () => {
@@ -274,5 +274,90 @@ describe('config schema validation (FR-OBS-470)', () => {
       expect(spec.docDefault).not.toContain('/Users/');
       expect(spec.docDefault).not.toMatch(/[A-Za-z]:\\Users\\/);
     }
+  });
+});
+
+describe('CONFIG_SCHEMA registrations for env-usage guard baseline (#776)', () => {
+  const baselinedNames = [
+    'KB_DECOMPOSE_LLM_ENDPOINT',
+    'KB_DECOMPOSE_LLM_MODEL',
+    'KB_DENSE_DEGRADE_ON_PROVIDER_ERROR',
+    'KB_EMBEDDING_TASK_PREFIXES',
+    'KB_LOG_MAX_BYTES',
+    'KB_LOG_MAX_FILES',
+    'KB_MAX_FILTER_ITEMS',
+    'KB_MAX_GLOB_CHARS',
+    'KB_MAX_GLOB_WILDCARDS',
+    'KB_MAX_QUERY_CHARS',
+    'KB_MIN_FREE_DISK_BYTES',
+    'KB_RERANK_CACHE',
+    'KB_RERANK_CACHE_DISK_MAX_BYTES',
+    'KB_RERANK_DEVICE',
+    'KB_RERANK_DTYPE',
+    'KB_SEARCH_SNIPPET',
+    'KB_SHIELD',
+  ] as const;
+
+  it('registers every previously allowlisted production env read', () => {
+    for (const name of baselinedNames) {
+      expect(isRegisteredConfigName(name)).toBe(true);
+    }
+  });
+
+  it('validates representative values for the registered knobs', () => {
+    const report = validateConfigEnv({
+      KB_DECOMPOSE_LLM_ENDPOINT: 'mock://decompose',
+      KB_DECOMPOSE_LLM_MODEL: 'local-model',
+      KB_DENSE_DEGRADE_ON_PROVIDER_ERROR: 'on',
+      KB_EMBEDDING_TASK_PREFIXES: 'off',
+      KB_LOG_MAX_BYTES: '1048576',
+      KB_LOG_MAX_FILES: '3',
+      KB_MAX_FILTER_ITEMS: '8',
+      KB_MAX_GLOB_CHARS: '512',
+      KB_MAX_GLOB_WILDCARDS: '12',
+      KB_MAX_QUERY_CHARS: '4096',
+      KB_MIN_FREE_DISK_BYTES: '0',
+      KB_RERANK_CACHE: 'enabled',
+      KB_RERANK_CACHE_DISK_MAX_BYTES: '33554432',
+      KB_RERANK_DEVICE: 'cuda',
+      KB_RERANK_DTYPE: 'fp32',
+      KB_SEARCH_SNIPPET: '2',
+      KB_SHIELD: 'off',
+    });
+
+    expect(report.status).toBe('ok');
+    for (const name of baselinedNames) {
+      expect(report.findings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name, status: 'ok' }),
+      ]));
+    }
+  });
+
+  it('matches runtime parsing for registered free-form knobs', () => {
+    const valid = validateConfigEnv({
+      KB_SEARCH_SNIPPET: 'yes',
+      KB_RERANK_CACHE: 'disabled',
+      KB_SHIELD: 'off',
+    });
+    const invalid = validateConfigEnv({
+      KB_SEARCH_SNIPPET: 'garbage',
+      KB_RERANK_CACHE: 'yes',
+      KB_SHIELD: 'OFF',
+    });
+
+    expect(valid.status).toBe('ok');
+    expect(invalid.status).toBe('error');
+    expect(invalid.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'KB_SEARCH_SNIPPET', status: 'error', message: expect.stringContaining('positive integer') }),
+      expect.objectContaining({ name: 'KB_RERANK_CACHE', status: 'error', message: expect.stringContaining('expected boolean') }),
+      expect.objectContaining({ name: 'KB_SHIELD', status: 'error', message: expect.stringContaining('expected one of') }),
+    ]));
+  });
+
+  it('surfaces the registered knobs in config show output', () => {
+    const report = showConfigEnv({});
+    const names = report.entries.map((entry) => entry.name);
+
+    expect(names).toEqual(expect.arrayContaining([...baselinedNames]));
   });
 });

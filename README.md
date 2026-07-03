@@ -134,7 +134,7 @@ RFC 018 relevance gating is off by default. Enable it per process with `KB_RELEV
 | `KB_RERANK_TOP_N` | How many top candidates to feed into the reranker. | (built-in default) |
 | `KB_RERANK_SKIP_DOMAINS` | Comma-separated KB domain names to skip reranking for. | (none) |
 
-Note: `KB_RERANK_DEVICE` (e.g. `cuda`, `cpu`) is an external ONNX Runtime / Transformers.js runtime knob — set it in the shell environment when you want GPU acceleration, but it is not a KB config option and is not validated by `kb config validate`.
+Note: `KB_RERANK_DEVICE` (e.g. `cuda`, `cpu`) and `KB_RERANK_DTYPE` (e.g. `fp32`) are optional Transformers.js / ONNX Runtime overrides for cross-encoder execution; set them in the shell when you need runtime-specific acceleration or dtype control. They are listed by `kb config show` and validated by `kb config validate`.
 
 `kb search --format=vimgrep` prints one quickfix-compatible line per result: `path:line:col:preview`. JSON results include a stable `chunk_id` such as `alpha/docs/deploy.md#L42-L78` when chunk metadata has a KB, path, and line range; chunks without line metadata fall back to `#chunk-N`. Set `KB_EDITOR_URI=vscode`, `cursor`, or `file` to add opt-in absolute-path `editor_uri` fields and markdown `Open` links. The default `KB_EDITOR_URI=none` omits local absolute paths. `kb open <chunk-id|kb://uri|kb-relative-path>` resolves any of those pointers back to the absolute source path, validated against the KB root; it is read-only and prints the path (add `--json` for the cited line range and an `editorUri`). `kb related <chunk-id|kb://uri>` retrieves an indexed seed chunk from that handle, runs dense search with the seed text, and excludes the seed chunk unless `--include-self` is passed.
 

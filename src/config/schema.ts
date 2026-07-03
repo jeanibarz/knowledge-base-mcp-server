@@ -129,6 +129,7 @@ const STRICT_TRUTHY_VALUES = ['on', 'true', '1'] as const;
 const YES_NO_BOOL_VALUES = [...STRICT_BOOL_VALUES, 'yes', 'no'] as const;
 const YES_NO_TRUTHY_VALUES = [...STRICT_TRUTHY_VALUES, 'yes'] as const;
 const QUERY_CACHE_BOOL_VALUES = [...YES_NO_BOOL_VALUES, 'enabled', 'disabled'] as const;
+const RERANK_CACHE_BOOL_VALUES = [...STRICT_BOOL_VALUES, 'enabled', 'disabled'] as const;
 export const CONTROLLED_PREFIXES = [
   'KB_',
   'MCP_',
@@ -165,6 +166,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'OLLAMA_MODEL', kind: 'string', default: 'dengcao/Qwen3-Embedding-0.6B:Q8_0', emptyUsesDefault: true },
   { name: 'OPENAI_API_KEY', kind: 'secret', secret: true },
   { name: 'OPENAI_MODEL_NAME', kind: 'string', default: DEFAULT_OPENAI_MODEL_NAME, emptyUsesDefault: true },
+  { name: 'KB_EMBEDDING_TASK_PREFIXES', kind: 'boolean', default: 'on', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables role-specific embedding task prefixes for model families that require separate document/query prefixes.' },
   { name: 'KB_PROVIDER_BREAKER', kind: 'boolean', default: 'on', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables the process-shared open/half-open circuit breaker for embedding and LLM provider calls.' },
   { name: 'KB_PROVIDER_BREAKER_FAILURE_THRESHOLD', kind: 'integer', default: '3', min: 1, max: 100, integerSyntax: 'digits', description: 'Consecutive provider failures before the circuit opens.' },
   { name: 'KB_PROVIDER_BREAKER_COOLDOWN_MS', kind: 'duration', default: '30000', min: 1, max: 3600000, description: 'Open-circuit cooldown before a single half-open recovery probe is allowed.' },
@@ -200,11 +202,14 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_LLM_HTTP_REFERER', kind: 'string' },
   { name: 'KB_LLM_FAKE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_LLM_FAKE_RULES', kind: 'path' },
+  { name: 'KB_DECOMPOSE_LLM_ENDPOINT', kind: 'url', protocols: ['http:', 'https:', 'mock:'], description: 'OpenAI-compatible endpoint used only by LLM query decomposition; falls back to KB_LLM_ENDPOINT when unset.' },
+  { name: 'KB_DECOMPOSE_LLM_MODEL', kind: 'string', description: 'Model override used only by LLM query decomposition; falls back to KB_LLM_MODEL when unset.' },
   { name: 'KB_LLM_CONFIG_DIR', kind: 'path', docDefault: '$XDG_CONFIG_HOME/kb/llm or ~/.config/kb/llm', defaultValue: (env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'kb', 'llm') },
   { name: 'KB_LLM_STATE_DIR', kind: 'path', docDefault: '$XDG_STATE_HOME/kb/llm or ~/.local/state/kb/llm', defaultValue: (env) => path.join(env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'kb', 'llm') },
   { name: 'KB_LLM_SYSTEMD_USER_DIR', kind: 'path', docDefault: '$XDG_CONFIG_HOME/systemd/user or ~/.config/systemd/user', defaultValue: (env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user') },
 
   { name: 'KB_RELEVANCE_GATE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables recall-negative relevance gating by default.' },
+  { name: 'KB_DENSE_DEGRADE_ON_PROVIDER_ERROR', kind: 'boolean', default: 'off', booleanValues: ['on', 'off'], truthyValues: ['on'], description: 'Allows dense and hybrid retrieval to degrade to lexical-only results during transient provider errors.' },
   { name: 'KB_GATE_EMPTY_VERDICT', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_GATE_SCORE_FLOOR', kind: 'number', default: '0.95', min: 0, max: 1 },
   { name: 'KB_GATE_JUDGE_INPUT', kind: 'integer', default: '10', min: 1, max: 1000 },
@@ -219,17 +224,24 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_RERANK_MODEL', kind: 'string', default: DEFAULT_RERANK_MODEL },
   { name: 'KB_RERANK_TOP_N', kind: 'integer', default: String(DEFAULT_RERANK_TOP_N), min: 1, max: MAX_RERANK_TOP_N, integerSyntax: 'digits' },
   { name: 'KB_RERANK_SKIP_DOMAINS', kind: 'csv' },
+  { name: 'KB_RERANK_CACHE', kind: 'boolean', default: 'off', booleanValues: RERANK_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'enabled'], description: 'Enables the persistent disk-tiered rerank-score cache.' },
+  { name: 'KB_RERANK_CACHE_DISK_MAX_BYTES', kind: 'integer', default: String(64 * 1024 * 1024), min: 1, description: 'Disk-size cap in bytes for the persistent rerank-score cache.' },
+  { name: 'KB_RERANK_DEVICE', kind: 'string', description: 'Optional @huggingface/transformers device override for cross-encoder reranking, such as cuda.' },
+  { name: 'KB_RERANK_DTYPE', kind: 'string', description: 'Optional @huggingface/transformers dtype override for cross-encoder reranking, such as fp32.' },
 
   { name: 'KB_INJECTION_GUARD', kind: 'enum', values: ['off', 'tag', 'wrap', 'both'], default: 'tag' },
   { name: 'KB_INJECTION_GUARD_BYPASS_KBS', kind: 'csv' },
   { name: 'KB_INJECTION_GUARD_WRAP_OPEN', kind: 'string' },
   { name: 'KB_INJECTION_GUARD_WRAP_CLOSE', kind: 'string' },
+  { name: 'KB_SHIELD', kind: 'enum', values: ['on', 'off'], default: 'on', description: 'Enables retrieval-time injection signal scanning; set exactly to off to omit injection_signals.' },
   { name: 'KB_EDITOR_URI', kind: 'enum', values: ['vscode', 'cursor', 'file', 'none'], default: 'none' },
   { name: 'FRONTMATTER_EXTRAS_WIRE_VISIBLE', kind: 'boolean', default: 'false' },
 
   { name: 'KB_LOG_FORMAT', kind: 'enum', values: ['text', 'canonical', 'both'], default: 'both' },
   { name: 'LOG_LEVEL', kind: 'enum', values: ['debug', 'info', 'warn', 'error'], default: 'info' },
   { name: 'LOG_FILE', kind: 'path' },
+  { name: 'KB_LOG_MAX_BYTES', kind: 'integer', min: 1, description: 'Enables size-based LOG_FILE rotation when set to a positive byte cap.' },
+  { name: 'KB_LOG_MAX_FILES', kind: 'integer', default: '5', min: 1, description: 'Retained rotated LOG_FILE generations when KB_LOG_MAX_BYTES enables rotation.' },
   { name: 'KB_LOG_VERBOSE', kind: 'boolean', default: 'off' },
   { name: 'KB_SLOW_QUERY_MS', kind: 'duration', min: 1 },
   { name: 'KB_METRICS_EXPORT', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
@@ -253,18 +265,24 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'MCP_AUTH_BACKOFF_THRESHOLD', kind: 'integer', default: '5', min: 0 },
   { name: 'MCP_AUTH_BACKOFF_MS', kind: 'duration', default: '30000', min: 0 },
   { name: 'MCP_AUTH_BACKOFF_MAX_ENTRIES', kind: 'integer', default: '1024', min: 1 },
+  { name: 'KB_MAX_QUERY_CHARS', kind: 'integer', default: '8192', min: 1, description: 'Maximum query string length accepted by MCP retrieval and ask tools.' },
+  { name: 'KB_MAX_FILTER_ITEMS', kind: 'integer', default: '64', min: 1, description: 'Maximum number of filter items accepted by MCP retrieval and diff tools.' },
+  { name: 'KB_MAX_GLOB_CHARS', kind: 'integer', default: '1024', min: 1, description: 'Maximum path_glob length accepted by MCP retrieval tools.' },
+  { name: 'KB_MAX_GLOB_WILDCARDS', kind: 'integer', default: '64', min: 1, description: 'Maximum wildcard count accepted in MCP retrieval path_glob filters.' },
 
   { name: 'REINDEX_TRIGGER_PATH', kind: 'path', docDefault: '$KNOWLEDGE_BASES_ROOT_DIR/.reindex-trigger', defaultValue: (env) => path.join(effectiveStringValue(env, 'KNOWLEDGE_BASES_ROOT_DIR', resolveKnowledgeBasesRootDir(undefined)), '.reindex-trigger') },
   { name: 'REINDEX_TRIGGER_POLL_MS', kind: 'duration', default: '5000', min: 0, max: 60000 },
   { name: 'KB_FS_WATCH', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_FS_WATCH_DEBOUNCE_MS', kind: 'duration', default: '250', min: 25, max: 60000 },
   { name: 'KB_INDEX_VERSION_RETENTION', kind: 'integer', default: '2', min: 0, integerSyntax: 'digits' },
+  { name: 'KB_MIN_FREE_DISK_BYTES', kind: 'integer', default: String(512 * 1024 * 1024), min: 0, description: 'Free-space safety margin retained after write-heavy reindex and ingest estimates.' },
 
   { name: 'RETRIEVE_KNOWLEDGE_DESCRIPTION', kind: 'string', default: DEFAULT_RETRIEVE_KNOWLEDGE_DESCRIPTION, emptyUsesDefault: true },
   { name: 'ASK_KNOWLEDGE_DESCRIPTION', kind: 'string', default: DEFAULT_ASK_KNOWLEDGE_DESCRIPTION, emptyUsesDefault: true },
   { name: 'LIST_KNOWLEDGE_BASES_DESCRIPTION', kind: 'string', default: DEFAULT_LIST_KNOWLEDGE_BASES_DESCRIPTION, emptyUsesDefault: true },
   { name: 'LIST_MODELS_DESCRIPTION', kind: 'string', default: DEFAULT_LIST_MODELS_DESCRIPTION, emptyUsesDefault: true },
   { name: 'KB_STATS_DESCRIPTION', kind: 'string', default: DEFAULT_KB_STATS_DESCRIPTION, emptyUsesDefault: true },
+  { name: 'KB_SEARCH_SNIPPET', kind: 'string', description: 'Default kb search snippet mode; accepts off aliases, on aliases, or a positive line count.' },
 
   { name: 'KB_MCP_PROMPTS', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Advertises the MCP prompts capability with read-only KB prompt templates.' },
   { name: 'KB_ASK_REDACT_OUTBOUND', kind: 'boolean', docDefault: 'on when KB_LLM_PROVIDER=openrouter (remote); off for local', defaultValue: (env) => (((env.KB_LLM_PROVIDER ?? '').trim().toLowerCase() === 'openrouter') ? 'on' : 'off'), booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Scrub secrets (via redactSecrets) from the assembled kb ask prompt before it is sent to a remote LLM. Defaults on for remote providers; set explicitly to scrub (or skip) on the local path.' },
@@ -382,6 +400,9 @@ function validateSpec(
   if (value === '' && usesDefaultForEmpty(spec)) {
     return finding(spec.name, 'ok', spec.kind, source, displayValue, 'empty; default applies');
   }
+  if (spec.name === 'KB_SEARCH_SNIPPET') {
+    return validateSearchSnippetSpec(spec, value, displayValue, source);
+  }
 
   switch (spec.kind) {
     case 'boolean':
@@ -447,6 +468,26 @@ function validateNumberLike(
     return finding(spec.name, 'error', spec.kind, source, displayValue, `expected value <= ${spec.max}`);
   }
   return finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid number');
+}
+
+function validateSearchSnippetSpec(
+  spec: ConfigSpec,
+  value: string,
+  displayValue: string | null,
+  source: string,
+): ConfigFinding {
+  if (value === '') {
+    return finding(spec.name, 'ok', spec.kind, source, displayValue, 'empty; unset');
+  }
+  const normalized = value.toLowerCase();
+  if (['false', 'off', 'no', '0', 'true', 'on', 'yes'].includes(normalized)) {
+    return finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid search snippet mode');
+  }
+  const count = Number(value);
+  if (!Number.isSafeInteger(count) || count <= 0) {
+    return finding(spec.name, 'error', spec.kind, source, displayValue, 'expected off/on alias or positive integer');
+  }
+  return finding(spec.name, 'ok', spec.kind, source, displayValue, 'valid search snippet line count');
 }
 
 function validateUrl(
