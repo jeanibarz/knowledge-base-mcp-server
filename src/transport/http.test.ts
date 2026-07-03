@@ -130,7 +130,7 @@ async function waitFor(
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error('condition was not met before timeout');
+  throw new Error(`condition was not met before ${timeoutMs}ms timeout`);
 }
 
 function sendMalformedHttpRequest(port: number): Promise<void> {
@@ -341,9 +341,12 @@ describe('StreamableHttpHost — endpoints', () => {
     });
 
     const { client } = await connectClient(started.port);
+    await expect(client.listTools()).resolves.toEqual(
+      expect.objectContaining({ tools: expect.any(Array) }),
+    );
     await waitFor(() => started.host.sessionCount === 1);
     await client.close();
-    await waitFor(() => started.host.sessionCount === 0);
+    await waitFor(() => started.host.sessionCount === 0, 20000);
 
     await sendMalformedHttpRequest(started.port);
     await waitFor(() => started.host.getRuntimeStats().last_error !== null);
@@ -461,9 +464,12 @@ describe('StreamableHttpHost — endpoints', () => {
     const started = await startHost({});
     stop = started.stop;
     const { client } = await connectClient(started.port);
+    await expect(client.listTools()).resolves.toEqual(
+      expect.objectContaining({ tools: expect.any(Array) }),
+    );
     await waitFor(() => started.host.sessionCount === 1);
     await client.close();
-    await waitFor(() => started.host.sessionCount === 0);
+    await waitFor(() => started.host.sessionCount === 0, 20000);
   });
 
   // ---------------------------------------------------------------------

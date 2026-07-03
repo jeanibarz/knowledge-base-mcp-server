@@ -80,6 +80,9 @@ const coverageConfig = {
     '<rootDir>/benchmarks/',
   ],
   coverageReporters: ['text-summary', 'lcov', 'json-summary'],
+  // V8 coverage keeps Node 24 from re-transpiling untested ESM files and
+  // rejecting `import.meta` during coverage collection.
+  coverageProvider: 'v8',
   // Baseline measured 2026-06-16 (`jest --coverage`):
   // statements 74.24% · branches 64.41% · functions 79.81% · lines 76.37%.
   // Floors sit a few points under each so the gate catches regressions
@@ -99,7 +102,7 @@ export default {
   // per-project transforms, when instrumenting untested source files.
   ...baseConfig,
   ...coverageConfig,
-  // Issue #661 — `--coverage` (istanbul) instrumentation roughly doubles
+  // Issue #661 — `--coverage` instrumentation roughly doubles
   // execution time, and a few tests lazily `import()` heavy modules
   // (e.g. FaissIndexManager + its faiss/langchain graph) on first use.
   // Under coverage on the slower Node 20 CI runner that first instrumented

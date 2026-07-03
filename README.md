@@ -585,6 +585,7 @@ By default the server speaks MCP over stdio — every supported client (Claude D
 ```bash
 export MCP_TRANSPORT=http                         # stdio (default), sse, or http
 export MCP_AUTH_TOKEN="$(openssl rand -base64 32)"   # must be ≥32 characters; shorter tokens abort startup
+# Or set MCP_AUTH_TOKEN_FILE=/run/secrets/kb-mcp-token to read the token from a file; takes precedence over MCP_AUTH_TOKEN
 export MCP_ALLOWED_ORIGINS="http://localhost:5173"   # comma-separated; leave unset to deny all browser origins
 export MCP_PORT=8765                                  # default
 export MCP_BIND_ADDR=127.0.0.1                        # default — loopback only
@@ -600,7 +601,10 @@ Endpoints exposed in this mode:
 - `MCP_TRANSPORT=sse`: `GET /sse` opens the long-lived SSE stream and `POST /messages?sessionId=<uuid>` sends JSON-RPC messages for that session.
 - `MCP_TRANSPORT=http`: `POST /mcp` initializes and sends JSON-RPC messages using streamable HTTP. The server returns `Mcp-Session-Id` during initialization; clients must send it on subsequent `GET`, `POST`, and `DELETE /mcp` requests.
 
-All non-health transport endpoints, including `/ready`, require `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+All non-health transport endpoints, including `/ready`, require `Authorization: Bearer <token>`.
+Set `MCP_AUTH_TOKEN_FILE` to read the bearer token from a mounted secret file;
+the file contents are trimmed, must still be at least 32 characters, and take
+precedence over `MCP_AUTH_TOKEN`.
 Repeated bearer failures from the same remote address enter a bounded in-memory
 backoff and return `Retry-After`; valid authentication clears the address state.
 When the server sits behind a reverse proxy, the key is the proxy socket address,
@@ -609,7 +613,7 @@ not `X-Forwarded-For`, so configure proxy-side throttling for internet exposure.
 For a disposable remote playground during development, use `npm run dev:remote`
 from the local development section above.
 
-**Security defaults:** the server refuses to start in SSE or streamable HTTP mode without `MCP_AUTH_TOKEN`, binds only to loopback, and uses a constant-time bearer comparison. Operators exposing the endpoint off-host should set `MCP_BIND_ADDR=0.0.0.0` *and* terminate TLS in a reverse proxy — TLS is out of scope for this server. Multiple MCP/CLI processes may share a `FAISS_INDEX_PATH`; mutating paths serialize through per-model locks and versioned atomic saves (see [`docs/architecture/threat-model.md`](./docs/architecture/threat-model.md)).
+**Security defaults:** the server refuses to start in SSE or streamable HTTP mode without `MCP_AUTH_TOKEN_FILE` or `MCP_AUTH_TOKEN`, binds only to loopback, and uses a constant-time bearer comparison. Operators exposing the endpoint off-host should set `MCP_BIND_ADDR=0.0.0.0` *and* terminate TLS in a reverse proxy — TLS is out of scope for this server. Multiple MCP/CLI processes may share a `FAISS_INDEX_PATH`; mutating paths serialize through per-model locks and versioned atomic saves (see [`docs/architecture/threat-model.md`](./docs/architecture/threat-model.md)).
 
 ## Troubleshooting & Logging
 

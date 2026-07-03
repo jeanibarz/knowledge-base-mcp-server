@@ -26,9 +26,10 @@ defaults, see [`docs/feature-flags.md`](../feature-flags.md).
 | Reindex trigger file | `$KNOWLEDGE_BASES_ROOT_DIR/.reindex-trigger` | external producer touches, `kb` watches | `kb doctor` |
 
 Remote MCP transports are off by default. When `MCP_TRANSPORT=http` or
-`MCP_TRANSPORT=sse`, set `MCP_AUTH_TOKEN` to at least 32 characters and keep
-`MCP_BIND_ADDR=127.0.0.1` unless you are deliberately exposing the service to
-another host.
+`MCP_TRANSPORT=sse`, set `MCP_AUTH_TOKEN_FILE` to a mounted secret file or set
+`MCP_AUTH_TOKEN` directly; the resolved token must be at least 32 characters.
+Keep `MCP_BIND_ADDR=127.0.0.1` unless you are deliberately exposing the service
+to another host.
 
 ## Daily Health Check
 

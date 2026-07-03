@@ -7,6 +7,8 @@
 // `transport/http.ts` import directly from here; nothing in `config.ts`
 // depends on this file.
 
+import { readFileSync } from 'node:fs';
+
 export type McpTransport = 'stdio' | 'sse' | 'http';
 
 const VALID_TRANSPORTS: readonly McpTransport[] = ['stdio', 'sse', 'http'];
@@ -137,13 +139,38 @@ function parseAllowedOrigins(raw: string | undefined): string[] {
     .map((entry) => normalizeOrigin(entry));
 }
 
+function resolveAuthToken(env: NodeJS.ProcessEnv): string | undefined {
+  const tokenFile = env.MCP_AUTH_TOKEN_FILE;
+  if (tokenFile === undefined || tokenFile.length === 0) {
+    return env.MCP_AUTH_TOKEN;
+  }
+
+  let token: string;
+  try {
+    token = readFileSync(tokenFile, 'utf8').trim();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new TransportConfigError(
+      `MCP_AUTH_TOKEN_FILE='${tokenFile}' could not be read: ${detail}`,
+    );
+  }
+
+  if (token.length === 0) {
+    throw new TransportConfigError(
+      `MCP_AUTH_TOKEN_FILE='${tokenFile}' is empty after trimming whitespace`,
+    );
+  }
+
+  return token;
+}
+
 export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): TransportConfig {
   const transport = parseTransport(env.MCP_TRANSPORT);
   const port = parsePort(env.MCP_PORT);
   const bindAddr = env.MCP_BIND_ADDR && env.MCP_BIND_ADDR.length > 0
     ? env.MCP_BIND_ADDR
     : DEFAULT_MCP_BIND_ADDR;
-  const authToken = env.MCP_AUTH_TOKEN;
+  const authToken = resolveAuthToken(env);
   const allowedOrigins = parseAllowedOrigins(env.MCP_ALLOWED_ORIGINS);
   const authBackoff = {
     failureThreshold: parseNonNegativeInteger(
@@ -166,7 +193,7 @@ export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): Trans
   if (transport === 'sse' || transport === 'http') {
     if (!authToken || authToken.length === 0) {
       throw new TransportConfigError(
-        `MCP_TRANSPORT=${transport} requires MCP_AUTH_TOKEN to be set (generate with: openssl rand -base64 32)`,
+        `MCP_TRANSPORT=${transport} requires MCP_AUTH_TOKEN_FILE or MCP_AUTH_TOKEN to be set (generate with: openssl rand -base64 32)`,
       );
     }
     // RFC 008 §6.1 / §8.1 R3: tokens shorter than 32 chars are rejected at
@@ -174,7 +201,7 @@ export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): Trans
     // secret even if generation tooling truncates.
     if (authToken.length < 32) {
       throw new TransportConfigError(
-        'MCP_AUTH_TOKEN must be at least 32 characters (generate with: openssl rand -base64 32)',
+        'Resolved MCP auth token must be at least 32 characters (generate with: openssl rand -base64 32)',
       );
     }
   }
