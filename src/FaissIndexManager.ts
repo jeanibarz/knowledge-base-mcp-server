@@ -1707,24 +1707,26 @@ export class FaissIndexManager {
         });
       };
       let lastLoadProgressFileCount = 0;
+      let loadedFilesForProgress = 0;
       const reportLoadProgress = async (currentFile: string): Promise<void> => {
-        if (!opts.onProgress || runSummary.files_scanned === lastLoadProgressFileCount) {
+        loadedFilesForProgress += 1;
+        if (!opts.onProgress || loadedFilesForProgress === lastLoadProgressFileCount) {
           return;
         }
         if (
-          runSummary.files_scanned % progressIntervalFiles !== 0 &&
-          runSummary.files_scanned !== totalFiles
+          loadedFilesForProgress % progressIntervalFiles !== 0 &&
+          loadedFilesForProgress !== totalFiles
         ) {
           return;
         }
-        lastLoadProgressFileCount = runSummary.files_scanned;
+        lastLoadProgressFileCount = loadedFilesForProgress;
         await emitProgress({
           processedFiles,
           totalFiles,
           currentFile,
           phase: 'load',
           phaseStatus: 'progress',
-          filesScanned: runSummary.files_scanned,
+          filesScanned: loadedFilesForProgress,
           filesChanged: runSummary.files_changed,
           filesSkipped: runSummary.files_skipped,
           chunksDiscovered: runSummary.chunks_attempted,
@@ -1763,16 +1765,7 @@ export class FaissIndexManager {
         documents: Document[];
         manifest: ChunkManifest;
       }> = [];
-      const metadataOnlyFileUpdates: Array<{
-        knowledgeBasePath: string;
-        relativePath: string;
-        filePath: string;
-        indexFilePath: string;
-        chunkManifestPath: string;
-        fileHash: string;
-        manifest: ChunkManifest;
-      }> = [];
-      const indexableScans: Array<{
+      type IndexableScan = {
         knowledgeBaseName: string;
         knowledgeBasePath: string;
         filePath: string;
@@ -1782,7 +1775,36 @@ export class FaissIndexManager {
         fileHash: string;
         fileSize: number;
         mtimeMs: number;
+      };
+      type ExtractionResult =
+        | {
+          scan: IndexableScan;
+          success: true;
+          documents: Document[];
+        }
+        | {
+          scan: IndexableScan;
+          success: false;
+          phase: 'load' | 'indexing';
+          error: unknown;
+        }
+        | {
+          scan: IndexableScan;
+          success: false;
+          phase: 'deferred';
+          warning: IndexUpdateWarningSummary;
+        };
+      const metadataOnlyFileUpdates: Array<{
+        knowledgeBasePath: string;
+        relativePath: string;
+        filePath: string;
+        indexFilePath: string;
+        chunkManifestPath: string;
+        fileHash: string;
+        manifest: ChunkManifest;
       }> = [];
+      const indexableScans: IndexableScan[] = [];
+      const extractionJobs: IndexableScan[] = [];
       let requiresFullRebuild = false;
       const successfulIndexedFiles: Array<{ knowledgeBasePath: string; relativePath: string }> = [];
       const fsConcurrency = resolveFsConcurrency();
@@ -1944,6 +1966,18 @@ export class FaissIndexManager {
                 ? `FAISS index is empty. Rebuilding from ${scan.filePath}...`
               : `File ${scan.filePath} has changed. Updating index...`,
           );
+          extractionJobs.push(scan);
+        } else {
+          await recordQuarantineSuccess(scan.knowledgeBasePath, scan.relativePath);
+          runSummary.files_unchanged += 1;
+          logger.debug(`File ${scan.filePath} unchanged, skipping.`);
+          await reportLoadProgress(scan.filePath);
+        }
+      }
+      const extractionResults = await mapBounded(
+        extractionJobs,
+        fsConcurrency,
+        async (scan): Promise<ExtractionResult> => {
           // Issue #46 — extension-routed loader. `.pdf` runs through
           // pdf-parse, `.html`/`.htm` through html-to-text, anything else
           // (including operator-supplied INGEST_EXTRA_EXTENSIONS like
@@ -1952,118 +1986,118 @@ export class FaissIndexManager {
           try {
             content = await loadFile(scan.filePath);
           } catch (error: unknown) {
-            logger.warn(`Quarantining load failure for ${scan.filePath}:`, toError(error));
-            runSummary.files_skipped += 1;
-            loaderFailurePaths.add(scan.filePath);
-            recordFailure(scan.relativePath, 'load', error);
-            await recordQuarantineFailure(
-              scan.knowledgeBasePath,
-              scan.relativePath,
-              scan.fileHash,
-              error,
-            );
-            await reportLoadProgress(scan.filePath);
-            continue;
+            return { scan, success: false, phase: 'load', error };
           }
           const loadWarning = await stillMatchesScan(scan);
           if (loadWarning !== null) {
-            recordDeferredNonQuiescentPath(scan.filePath, loadWarning);
-            await reportLoadProgress(scan.filePath);
-            continue;
+            return { scan, success: false, phase: 'deferred', warning: loadWarning };
           }
 
-          let documentsToAdd: Document[];
           try {
-            documentsToAdd = await buildChunkDocuments(
+            const documents = await buildChunkDocuments(
               scan.filePath,
               content,
               scan.knowledgeBaseName,
             );
+            return { scan, success: true, documents };
           } catch (error: unknown) {
-            logger.warn(`Quarantining chunking failure for ${scan.filePath}:`, toError(error));
-            runSummary.files_skipped += 1;
-            loaderFailurePaths.add(scan.filePath);
-            recordFailure(scan.relativePath, 'indexing', error);
-            await recordQuarantineFailure(
-              scan.knowledgeBasePath,
-              scan.relativePath,
-              scan.fileHash,
-              error,
-            );
+            return { scan, success: false, phase: 'indexing', error };
+          }
+        },
+      );
+      for (const result of extractionResults) {
+        const { scan } = result;
+        if (!result.success) {
+          if (result.phase === 'deferred') {
+            recordDeferredNonQuiescentPath(scan.filePath, result.warning);
             await reportLoadProgress(scan.filePath);
             continue;
           }
-          runSummary.chunks_attempted += documentsToAdd.length;
+          logger.warn(
+            result.phase === 'load'
+              ? `Quarantining load failure for ${scan.filePath}:`
+              : `Quarantining chunking failure for ${scan.filePath}:`,
+            toError(result.error),
+          );
+          runSummary.files_skipped += 1;
+          loaderFailurePaths.add(scan.filePath);
+          recordFailure(scan.relativePath, result.phase, result.error);
+          await recordQuarantineFailure(
+            scan.knowledgeBasePath,
+            scan.relativePath,
+            scan.fileHash,
+            result.error,
+          );
+          await reportLoadProgress(scan.filePath);
+          continue;
+        }
+        const documentsToAdd = result.documents;
+        runSummary.chunks_attempted += documentsToAdd.length;
 
-          if (documentsToAdd.length > 0) {
-            const nextManifest = buildChunkManifest(documentsToAdd, scan.fileHash);
-            let documentsForIndex = documentsToAdd;
-            if (!rebuildFromEmptyIndex && !forceReindex) {
-              const previousManifest = await readChunkManifest(scan.chunkManifestPath);
-              if (previousManifest === null) {
+        if (documentsToAdd.length > 0) {
+          const nextManifest = buildChunkManifest(documentsToAdd, scan.fileHash);
+          let documentsForIndex = documentsToAdd;
+          if (!rebuildFromEmptyIndex && !forceReindex) {
+            const previousManifest = await readChunkManifest(scan.chunkManifestPath);
+            if (previousManifest === null) {
+              requiresFullRebuild = true;
+              logger.info(
+                `Chunk manifest missing for changed file ${scan.filePath}; ` +
+                  `falling back to a full rebuild to avoid stale vectors.`,
+              );
+            } else {
+              const stablePrefix = countStableChunkPrefix(previousManifest, nextManifest);
+              if (
+                stablePrefix === previousManifest.chunks.length &&
+                nextManifest.chunks.length >= previousManifest.chunks.length
+              ) {
+                documentsForIndex = documentsToAdd.slice(stablePrefix);
+              } else {
                 requiresFullRebuild = true;
                 logger.info(
-                  `Chunk manifest missing for changed file ${scan.filePath}; ` +
-                    `falling back to a full rebuild to avoid stale vectors.`,
-                );
-              } else {
-                const stablePrefix = countStableChunkPrefix(previousManifest, nextManifest);
-                if (
-                  stablePrefix === previousManifest.chunks.length &&
-                  nextManifest.chunks.length >= previousManifest.chunks.length
-                ) {
-                  documentsForIndex = documentsToAdd.slice(stablePrefix);
-                } else {
-                  requiresFullRebuild = true;
-                  logger.info(
-                    `Chunk manifest for ${scan.filePath} changed outside a stable append; ` +
-                      `falling back to a full rebuild because FAISS vector deletion is unsupported.`,
-                  );
-                }
-              }
-            }
-
-            if (!requiresFullRebuild) {
-              if (documentsForIndex.length > 0) {
-                changedFileDocuments.push({
-                  knowledgeBasePath: scan.knowledgeBasePath,
-                  relativePath: scan.relativePath,
-                  filePath: scan.filePath,
-                  indexFilePath: scan.indexFilePath,
-                  chunkManifestPath: scan.chunkManifestPath,
-                  fileHash: scan.fileHash,
-                  documents: documentsForIndex,
-                  manifest: nextManifest,
-                });
-              } else {
-                metadataOnlyFileUpdates.push({
-                  knowledgeBasePath: scan.knowledgeBasePath,
-                  relativePath: scan.relativePath,
-                  filePath: scan.filePath,
-                  indexFilePath: scan.indexFilePath,
-                  chunkManifestPath: scan.chunkManifestPath,
-                  fileHash: scan.fileHash,
-                  manifest: nextManifest,
-                });
-              }
-            }
-          } else {
-            if (!rebuildFromEmptyIndex && !forceReindex) {
-              const previousManifest = await readChunkManifest(scan.chunkManifestPath);
-              if (previousManifest !== null && previousManifest.chunks.length > 0) {
-                requiresFullRebuild = true;
-                logger.info(
-                  `Changed file ${scan.filePath} now emits no chunks; ` +
-                    `falling back to a full rebuild to remove stale vectors.`,
+                  `Chunk manifest for ${scan.filePath} changed outside a stable append; ` +
+                    `falling back to a full rebuild because FAISS vector deletion is unsupported.`,
                 );
               }
             }
-            logger.debug(`No documents generated from ${scan.filePath}. Skipping index update.`);
+          }
+
+          if (!requiresFullRebuild) {
+            if (documentsForIndex.length > 0) {
+              changedFileDocuments.push({
+                knowledgeBasePath: scan.knowledgeBasePath,
+                relativePath: scan.relativePath,
+                filePath: scan.filePath,
+                indexFilePath: scan.indexFilePath,
+                chunkManifestPath: scan.chunkManifestPath,
+                fileHash: scan.fileHash,
+                documents: documentsForIndex,
+                manifest: nextManifest,
+              });
+            } else {
+              metadataOnlyFileUpdates.push({
+                knowledgeBasePath: scan.knowledgeBasePath,
+                relativePath: scan.relativePath,
+                filePath: scan.filePath,
+                indexFilePath: scan.indexFilePath,
+                chunkManifestPath: scan.chunkManifestPath,
+                fileHash: scan.fileHash,
+                manifest: nextManifest,
+              });
+            }
           }
         } else {
-          await recordQuarantineSuccess(scan.knowledgeBasePath, scan.relativePath);
-          runSummary.files_unchanged += 1;
-          logger.debug(`File ${scan.filePath} unchanged, skipping.`);
+          if (!rebuildFromEmptyIndex && !forceReindex) {
+            const previousManifest = await readChunkManifest(scan.chunkManifestPath);
+            if (previousManifest !== null && previousManifest.chunks.length > 0) {
+              requiresFullRebuild = true;
+              logger.info(
+                `Changed file ${scan.filePath} now emits no chunks; ` +
+                  `falling back to a full rebuild to remove stale vectors.`,
+              );
+            }
+          }
+          logger.debug(`No documents generated from ${scan.filePath}. Skipping index update.`);
         }
         await reportLoadProgress(scan.filePath);
       }

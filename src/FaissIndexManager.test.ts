@@ -386,6 +386,7 @@ describe('FaissIndexManager permission handling', () => {
     HUGGINGFACE_PROVIDER: process.env.HUGGINGFACE_PROVIDER,
     INDEXING_BATCH_SIZE: process.env.INDEXING_BATCH_SIZE,
     KB_INDEXING_CONCURRENCY: process.env.KB_INDEXING_CONCURRENCY,
+    KB_FS_CONCURRENCY: process.env.KB_FS_CONCURRENCY,
     OLLAMA_NUM_PARALLEL: process.env.OLLAMA_NUM_PARALLEL,
     LOG_FILE: process.env.LOG_FILE,
     KB_MAX_FILE_BYTES: process.env.KB_MAX_FILE_BYTES,
@@ -1123,6 +1124,69 @@ describe('FaissIndexManager permission handling', () => {
       { batchIndex: 2, processedChunks: 2 },
       { batchIndex: 3, processedChunks: 3 },
     ]);
+  });
+
+  it('parallelizes extraction with filesystem concurrency while preserving index order', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-parallel-extraction-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPaths: string[] = [];
+    const contentsByPath = new Map<string, string>();
+    for (let i = 0; i < 4; i += 1) {
+      const docPath = path.join(defaultKb, `doc-${i}.md`);
+      const content = `# Doc ${i}\n\nExtraction content for document ${i}.`;
+      await fsp.writeFile(docPath, content);
+      docPaths.push(docPath);
+      contentsByPath.set(docPath, content);
+    }
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_FS_CONCURRENCY = '2';
+
+    let activeLoads = 0;
+    let maxActiveLoads = 0;
+    const mockLoadFile = jest.fn(async (filePath: string): Promise<string> => {
+      activeLoads += 1;
+      maxActiveLoads = Math.max(maxActiveLoads, activeLoads);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        const content = contentsByPath.get(filePath);
+        if (content === undefined) {
+          throw new Error(`unexpected load path ${filePath}`);
+        }
+        return content;
+      } finally {
+        activeLoads -= 1;
+      }
+    });
+
+    try {
+      jest.resetModules();
+      jest.doMock('./loaders.js', () => ({
+        ...jest.requireActual<typeof import('./loaders.js')>('./loaders.js'),
+        __esModule: true,
+        loadFile: mockLoadFile,
+      }));
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      const manager = new FaissIndexManager();
+      await manager.initialize();
+
+      await manager.updateIndex();
+
+      expect(maxActiveLoads).toBe(2);
+      expect(mockLoadFile).toHaveBeenCalledTimes(4);
+      const [, seedDocuments] = addVectorsMock.mock.calls[0] as [
+        number[][],
+        Array<{ metadata?: { source?: string } }>,
+      ];
+      expect(seedDocuments.map((document) => document.metadata?.source)).toEqual(docPaths);
+    } finally {
+      jest.dontMock('./loaders.js');
+    }
   });
 
   it('keeps ollama embedding batches serial unless OLLAMA_NUM_PARALLEL opts in', async () => {
