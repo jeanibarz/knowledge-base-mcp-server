@@ -1035,7 +1035,7 @@ describe('KnowledgeBaseServer handlers', () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(updateIndexMock).toHaveBeenCalledWith('alpha', { force: true });
+    expect(updateIndexMock).toHaveBeenCalledWith('alpha', { force: true, onProgress: expect.any(Function) });
     const payload = JSON.parse(result.content[0].text);
     // The rebuild always covers every KB (FAISS has no per-vector delete),
     // so the response advertises scope: 'global' even when a KB name was
@@ -1061,7 +1061,7 @@ describe('KnowledgeBaseServer handlers', () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(updateIndexMock).toHaveBeenCalledWith('alpha', { force: true });
+    expect(updateIndexMock).toHaveBeenCalledWith('alpha', { force: true, onProgress: expect.any(Function) });
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
@@ -1073,7 +1073,7 @@ describe('KnowledgeBaseServer handlers', () => {
     const result = await server['handleReindexKnowledgeBase']({});
 
     expect(result.isError).toBeUndefined();
-    expect(updateIndexMock).toHaveBeenCalledWith(undefined, { force: true });
+    expect(updateIndexMock).toHaveBeenCalledWith(undefined, { force: true, onProgress: expect.any(Function) });
     const payload = JSON.parse(result.content[0].text);
     expect(payload).toEqual({ knowledge_base_name: null, reindexed: true, scope: 'global' });
   });

@@ -9,8 +9,11 @@ import {
   type ListResourcesRequest,
   type ListResourcesResult,
   type ReadResourceResult,
+  type ServerNotification,
+  type ServerRequest,
   type TextContent,
 } from '@modelcontextprotocol/sdk/types.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import type {
   IndexUpdateProgress,
@@ -161,6 +164,25 @@ import { readBuildInfo } from './build-info.js';
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
 const SERVER_BUILD_INFO = readBuildInfo();
+
+// Issue #795 — the SDK hands every tool callback a per-request `extra`
+// (RequestHandlerExtra) as its second argument. We thread it through the tool
+// wrapper so long-running handlers can emit `notifications/progress` when the
+// client opted in via `_meta.progressToken`.
+type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+/** Coarse progress update a handler feeds to {@link progressReporter}. */
+interface ProgressUpdate {
+  progress: number;
+  total?: number;
+  message?: string;
+}
+
+/**
+ * Emits an ordered `notifications/progress` frame per call, or a strict no-op
+ * when the client did not opt in. Returns once the frame has been dispatched.
+ */
+type ProgressReporter = (update: ProgressUpdate) => Promise<void>;
 
 // ---------------------------------------------------------------------------
 // MCP tool input bounds (#660).
@@ -385,7 +407,7 @@ export class KnowledgeBaseServer {
     name: string,
     description: string,
     shape: z.ZodRawShape,
-    handler: (args: Args) => Promise<CallToolResult>,
+    handler: (args: Args, extra: ToolExtra) => Promise<CallToolResult>,
   ): void {
     // Call mcp.tool through a loosened signature: its generic
     // `tool<Args extends ZodRawShapeCompat>` overload instantiates ShapeOutput
@@ -393,13 +415,53 @@ export class KnowledgeBaseServer {
     // rather than an inline literal. The 4-arg (name, description, shape, cb)
     // runtime form is unchanged; zod still validates `args` against `shape`
     // before the handler runs.
+    //
+    // Issue #795 — forward the SDK's second `extra` argument so handlers can
+    // reach `_meta.progressToken` / `sendNotification`. Handlers that don't
+    // emit progress simply omit the second parameter (fewer params stay
+    // assignable), so the change is a no-op for them.
     const registerTool = mcp.tool.bind(mcp) as unknown as (
       name: string,
       description: string,
       shape: z.ZodRawShape,
-      cb: (args: unknown) => Promise<CallToolResult>,
+      cb: (args: unknown, extra: ToolExtra) => Promise<CallToolResult>,
     ) => void;
-    registerTool(name, description, shape, (args) => handler(args as Args));
+    registerTool(name, description, shape, (args, extra) => handler(args as Args, extra));
+  }
+
+  /**
+   * Issue #795 — build a progress reporter bound to the current request. When
+   * the client did NOT supply `_meta.progressToken` this is a strict no-op, so
+   * calls that don't opt in behave exactly as before (the MCP spec forbids
+   * unsolicited progress frames). Otherwise each call emits an ordered
+   * `notifications/progress` frame; a monotonic guard drops any non-increasing
+   * update so the wire stream always carries strictly increasing `progress`.
+   * A failed dispatch is swallowed (debug-logged) — progress is best-effort and
+   * must never fail the underlying tool call.
+   */
+  private progressReporter(extra?: ToolExtra): ProgressReporter {
+    const progressToken = extra?._meta?.progressToken;
+    if (progressToken === undefined || progressToken === null) {
+      return async () => {};
+    }
+    let last = Number.NEGATIVE_INFINITY;
+    return async ({ progress, total, message }) => {
+      if (!(progress > last)) return;
+      last = progress;
+      try {
+        await extra!.sendNotification({
+          method: 'notifications/progress',
+          params: {
+            progressToken,
+            progress,
+            ...(total !== undefined ? { total } : {}),
+            ...(message !== undefined ? { message } : {}),
+          },
+        });
+      } catch (err) {
+        logger.debug(`Unable to emit MCP progress notification: ${toError(err).message}`);
+      }
+    };
   }
 
   private registerTools(mcp: McpServer) {
@@ -751,7 +813,8 @@ export class KnowledgeBaseServer {
 
   private async handleReindexKnowledgeBase(args: {
     knowledge_base_name?: string;
-  }): Promise<CallToolResult> {
+  }, extra?: ToolExtra): Promise<CallToolResult> {
+    const report = this.progressReporter(extra);
     return this.withCanonicalTool({
       tool: 'reindex_knowledge_base',
       kb_scope: args.knowledge_base_name ?? null,
@@ -762,7 +825,18 @@ export class KnowledgeBaseServer {
           if (args.knowledge_base_name !== undefined) {
             await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, args.knowledge_base_name);
           }
-          await manager.updateIndex(args.knowledge_base_name, { force: true });
+          // Issue #795 — drive MCP progress off the existing reindex plumbing.
+          // `processedFiles` climbs within a phase; the reporter's monotonic
+          // guard coalesces the per-phase resets (scan → load → embed) into a
+          // strictly increasing wire stream.
+          await manager.updateIndex(args.knowledge_base_name, {
+            force: true,
+            onProgress: (p) => report({
+              progress: p.processedFiles,
+              total: p.totalFiles,
+              message: `Embedded ${p.processedFiles}/${p.totalFiles} files`,
+            }),
+          });
         });
         await this.notifyResourceListChangedIfListingChanged();
 
@@ -809,7 +883,12 @@ export class KnowledgeBaseServer {
     task_context?: string;
     gate?: 'on' | 'off';
     rerank?: 'on' | 'off';
-  }): Promise<CallToolResult> {
+  }, extra?: ToolExtra): Promise<CallToolResult> {
+    // Issue #795 — coarse stage progress for the dense retrieval path. Hybrid
+    // delegates to handleRetrieveKnowledgeHybrid which is left as a no-op for
+    // now (the reporter is a no-op unless the client opted in either way).
+    const report = this.progressReporter(extra);
+    const RETRIEVE_STAGES = 4;
     const canonical: Partial<CanonicalLogInput> = {};
     const requestStartedAt = Date.now();
     const query: string = args.query;
@@ -925,6 +1004,7 @@ export class KnowledgeBaseServer {
       if (process.env.KB_LOG_VERBOSE === '1') {
         logger.debug(`[${Date.now()}] FAISS index update completed`);
       }
+      await report({ progress: 1, total: RETRIEVE_STAGES, message: 'index ready' });
 
       // Perform similarity search using the provided query.
       const timing: SimilaritySearchTiming = {};
@@ -984,6 +1064,7 @@ export class KnowledgeBaseServer {
           lexicalHitIds?.add(id);
         }
       }
+      await report({ progress: 2, total: RETRIEVE_STAGES, message: 'search complete' });
       const gateStartedAt = Date.now();
       const gate = await withSpan('kb.retrieve.gate', {
         'kb.candidates_in': similaritySearchResults.length,
@@ -1003,6 +1084,7 @@ export class KnowledgeBaseServer {
       });
       const gateMs = Date.now() - gateStartedAt;
       similaritySearchResults = gate.results;
+      await report({ progress: 3, total: RETRIEVE_STAGES, message: 'relevance gate complete' });
       emitRelevanceGateDecision({
         process: 'mcp',
         query,
@@ -1078,6 +1160,7 @@ export class KnowledgeBaseServer {
         logger.debug(`[${endTime}] handleRetrieveKnowledge completed in ${endTime - startTime}ms`);
       }
 
+      await report({ progress: 4, total: RETRIEVE_STAGES, message: 'response ready' });
       const content: TextContent = { type: 'text', text: responseText };
       const response = withGateVerdict({ content: [content] }, gate.verdict);
       const responseWithSummary = withDegradationSummary(response, degradation.degraded_stages);
@@ -1110,7 +1193,8 @@ export class KnowledgeBaseServer {
     task_context?: string;
     gate?: 'on' | 'off';
     timing?: boolean;
-  }): Promise<CallToolResult> {
+  }, extra?: ToolExtra): Promise<CallToolResult> {
+    const report = this.progressReporter(extra);
     return this.withCanonicalTool({
       tool: 'ask_knowledge',
       query: args.query,
@@ -1135,7 +1219,7 @@ export class KnowledgeBaseServer {
           loadReadOnlyIndex: async () => {},
           withWriteLock,
           callChatCompletion,
-        });
+        }, report);
         return {
           content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
           structuredContent: payload as unknown as Record<string, unknown>,
