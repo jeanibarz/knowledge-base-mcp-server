@@ -4,6 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import {
+  SetLevelRequestSchema,
   type CallToolResult,
   type ListResourcesRequest,
   type ListResourcesResult,
@@ -331,6 +332,33 @@ export class KnowledgeBaseServer {
       version: SERVER_VERSION,
     });
     mcp.server.onerror = (error) => logger.error('[MCP Error]', error);
+    // #796 — advertise the MCP `logging` capability and own the
+    // `logging/setLevel` request. `registerCapabilities` must run before
+    // `setRequestHandler` (the SDK gates the handler on the capability) and
+    // before `connect` (it throws once a transport is attached), so both
+    // happen here at build time. The client-chosen minimum level is stored on
+    // the HTTP/SSE host's per-session map and enforced in `notify()`; stdio
+    // has a single session and no host, so `setLevel` is a no-op there
+    // (per-session filtering only matters where sessions exist).
+    mcp.server.registerCapabilities({ logging: {} });
+    mcp.server.setRequestHandler(SetLevelRequestSchema, async (request, extra) => {
+      const host = this.transportMode === 'sse'
+        ? this.sseHost
+        : this.transportMode === 'http'
+          ? this.httpHost
+          : undefined;
+      // Prefer the transport session id; fall back to the request header the
+      // same way the SDK's default handler does, since streamable HTTP can
+      // route a request without `extra.sessionId` set. Array-valued headers
+      // are collapsed to the first entry (session ids are single-valued).
+      const headerSessionId = extra.requestInfo?.headers['mcp-session-id'];
+      const sessionId = extra.sessionId
+        ?? (Array.isArray(headerSessionId) ? headerSessionId[0] : headerSessionId);
+      if (host !== undefined && sessionId !== undefined) {
+        host.setSessionLevel(sessionId, request.params.level);
+      }
+      return {};
+    });
     this.registerTools(mcp);
     registerResources(mcp);
     registerCompletions(mcp);
