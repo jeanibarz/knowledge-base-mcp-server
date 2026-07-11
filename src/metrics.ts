@@ -478,6 +478,50 @@ export class WriteLockMetrics {
   }
 }
 
+/**
+ * Snapshot of per-KB fan-out failures observed during multi-KB search. The
+ * label is the KB *name* (never an absolute path), so cardinality is bounded
+ * by the number of configured knowledge bases.
+ */
+export interface KbSearchFailureSnapshot {
+  /** Total failures across all KBs since process start (or the last reset). */
+  total: number;
+  /** Per-KB-name failure counts. Absent KBs have had zero failures. */
+  by_kb: Record<string, number>;
+}
+
+/**
+ * Process-lifetime registry of per-KB fan-out failures in the multi-KB
+ * search leg (issue #737). Before this counter, a KB whose load/refresh/query
+ * threw was counted in `runLexicalLeg`'s `failed` and then swallowed when no
+ * `onError` was supplied — the user got partial results with no signal. Each
+ * failure now increments this counter so `/metrics` surfaces the loss.
+ *
+ * Labels are the KB name only: no path, query text, or error message, keeping
+ * cardinality bounded and avoiding leaking sensitive absolute paths.
+ */
+export class KbSearchFailureMetrics {
+  private readonly counts = new Map<string, number>();
+
+  record(kbName: string): void {
+    this.counts.set(kbName, (this.counts.get(kbName) ?? 0) + 1);
+  }
+
+  snapshot(): KbSearchFailureSnapshot {
+    let total = 0;
+    const by_kb: Record<string, number> = {};
+    for (const [kbName, count] of this.counts.entries()) {
+      by_kb[kbName] = count;
+      total += count;
+    }
+    return { total, by_kb };
+  }
+
+  reset(): void {
+    this.counts.clear();
+  }
+}
+
 function clampCount(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
@@ -501,6 +545,8 @@ export const providerCallMetrics = new ProviderCallMetrics();
 export const searchLatencyMetrics = new SearchLatencyMetrics();
 
 export const rerankMetrics = new RerankMetrics();
+
+export const kbSearchFailureMetrics = new KbSearchFailureMetrics();
 
 export const writeLockMetrics = new WriteLockMetrics();
 

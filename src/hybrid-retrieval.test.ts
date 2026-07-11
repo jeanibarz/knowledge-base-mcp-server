@@ -25,6 +25,8 @@ import {
   type LexicalKb,
 } from './hybrid-retrieval.js';
 import type { LexicalIndex, LexicalSearchResult } from './lexical-index.js';
+import { kbSearchFailureMetrics } from './metrics.js';
+import { logger } from './logger.js';
 import { DEFAULT_C } from './rrf.js';
 
 function chunk(source: string, chunkIndex: number, score: number, body = `c${chunkIndex}`): HybridChunk {
@@ -309,6 +311,63 @@ describe('runLexicalLeg', () => {
       fetchK: 10,
       refresh: 'when-empty',
     });
-    expect(result).toEqual({ hits: [], refreshed: 0, failed: 0 });
+    expect(result).toEqual({ hits: [], refreshed: 0, failed: 0, failedKbs: [] });
+  });
+
+  // Issue #737 — a deliberately-broken KB must increment the process metric
+  // and surface its NAME (not path) so a partial "search everything" result is
+  // never silent.
+  it('records kbSearchFailureMetrics and names the failed KB when a KB fails', async () => {
+    kbSearchFailureMetrics.reset();
+    const ok = makeFakeIndex({ numFiles: 5, hits: [lexicalHit('a.md', 0.9)] });
+    const loadIndex = jest.fn(async (kbName: string) => {
+      if (kbName === 'kb-a') return ok.idx;
+      throw new Error('corrupt index');
+    });
+    const result = await runLexicalLeg({
+      kbs: [
+        { kbName: 'kb-a', kbPath: '/tmp/secret/kb-a' },
+        { kbName: 'kb-b', kbPath: '/tmp/secret/kb-b' },
+      ],
+      query: 'q',
+      fetchK: 10,
+      refresh: 'when-empty',
+      loadIndex,
+    });
+
+    expect(result.failed).toBe(1);
+    expect(result.failedKbs).toEqual(['kb-b']);
+
+    const snapshot = kbSearchFailureMetrics.snapshot();
+    expect(snapshot.total).toBe(1);
+    expect(snapshot.by_kb).toEqual({ 'kb-b': 1 });
+    // KB name only — the absolute path must never leak into the metric label.
+    expect(Object.keys(snapshot.by_kb)).not.toContain('/tmp/secret/kb-b');
+  });
+
+  // Issue #737 — with no caller-supplied onError, the failure is logged rather
+  // than silently swallowed.
+  it('logs a warning via the default onError when the caller supplies none', async () => {
+    kbSearchFailureMetrics.reset();
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    try {
+      const loadIndex = jest.fn(async () => {
+        throw new Error('boom-load');
+      });
+      const result = await runLexicalLeg({
+        kbs: [{ kbName: 'kb-x', kbPath: '/tmp/fake/kb-x' }],
+        query: 'q',
+        fetchK: 10,
+        refresh: 'when-empty',
+        loadIndex,
+      });
+      expect(result.failed).toBe(1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const message = String(warnSpy.mock.calls[0][0]);
+      expect(message).toContain('kb-x');
+      expect(message).not.toContain('/tmp/fake/kb-x');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
