@@ -543,6 +543,12 @@ You can use these tools through the MCP interface. The `kb` CLI covers the shell
 
 The server also exposes MCP resources for clients that want to enumerate and read source documents directly. `resources/list` returns `kb://<knowledge-base>/<encoded-relative-path>` URIs for ingestable, non-quarantined files under `KNOWLEDGE_BASES_ROOT_DIR`, and `resources/read` returns the raw document content as text or, when `.pdf` is opted into ingest, a base64 PDF blob. See [`docs/mcp-resources.md`](docs/mcp-resources.md) for client-facing URI, MIME type, and percent-encoding details.
 
+The server advertises the standard MCP `logging` capability. HTTP and SSE
+clients can use `logging/setLevel` to select a minimum notification level per
+session; stdio accepts the request as a no-op. This does not change
+`KB_LOG_FORMAT` or `LOG_FILE`. See [`docs/mcp-logging.md`](docs/mcp-logging.md)
+for the transport-specific contract.
+
 The `retrieve_knowledge` tool performs a semantic search using a FAISS index. The index is automatically updated when the server starts or when a file in a knowledge base is modified.
 
 The output of the `retrieve_knowledge` tool is a markdown formatted string with the following structure:

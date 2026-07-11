@@ -66,7 +66,7 @@ flowchart LR
 | `kb` CLI | Node.js command binary | Fresh process per command, except when a command opts into `kb serve` for warm reads. | Writes only through explicit write commands or refresh/reindex flows. |
 | `kb serve` daemon | Loopback HTTP helper | Foreground process or user service; optional. | Keeps warm in-memory state; durable state remains in the stores. |
 | Knowledge-base source tree | Plain files | User-owned, long-lived content. | Source files plus `.index/` sidecars. |
-| FAISS/model store | `active.txt`, `models/<id>/`, versioned FAISS dirs, cache | Server-owned local state; safe to delete when the operator wants a rebuild. | Active model, model metadata, FAISS index versions, query cache, update summaries. |
+| Search-index/model store | `active.txt`, `models/<id>/`, versioned search-index dirs, cache | Server-owned local state; safe to delete when the operator wants a rebuild. | Active model, model metadata, FAISS/HNSW index versions, query-vector and query-decomposition caches, update summaries. |
 | Embedding provider | Local or remote HTTP/client library | External service selected by provider/model config. | N/A. |
 | Optional LLM endpoint | OpenAI-compatible chat endpoint | External or `kb llm` managed profile. | Profile config/state is outside the FAISS store; see the data model. |
 

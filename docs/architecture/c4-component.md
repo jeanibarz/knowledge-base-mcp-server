@@ -7,7 +7,7 @@ Zooming into the package from [`c4-container.md`](./c4-container.md). The curren
 ```mermaid
 flowchart TB
   Entry["index.ts<br/>server process entrypoint"]
-  CLI["cli.ts<br/>35-command kb dispatcher"]
+  CLI["cli.ts<br/>37-command kb dispatcher"]
 
   subgraph cli["CLI command families"]
     ReadCli["read/search<br/>list, search, open, related, stats, explain, where"]
@@ -30,6 +30,7 @@ flowchart TB
   subgraph retrieval["Retrieval and answering"]
     FIM["FaissIndexManager.ts<br/>model-scoped ingest/search/stats"]
     SearchCore["search-core.ts / hybrid-retrieval.ts / lexical-index.ts<br/>dense, lexical, hybrid retrieval"]
+    Decompose["query-decomposition.ts / decomposition-cache.ts<br/>bounded decomposition and optional two-tier cache"]
     Ask["ask-core.ts / llm-client.ts<br/>answer generation"]
     Gate["relevance-gate.ts / reranker.ts<br/>optional post-retrieval stages"]
     Formatter["formatter.ts / injection-guard.ts<br/>wire formatting and untrusted-content guard"]
@@ -60,6 +61,7 @@ flowchart TB
   CLI --> EvalCli
   CLI --> ModelCli
   ReadCli --> CliShared
+  ReadCli --> Decompose
   WriteCli --> CliShared
   OpsCli --> CliShared
   EvalCli --> CliShared
@@ -78,6 +80,7 @@ flowchart TB
   KBS --> Formatter
 
   FIM --> SearchCore
+  Decompose --> SearchCore
   FIM --> Active
   FIM --> Layout
   FIM --> FileIngest
@@ -108,11 +111,11 @@ flowchart TB
 | Component | File | Responsibility | Public surface touched elsewhere |
 | --- | --- | --- | --- |
 | Process entrypoint | `src/index.ts` | Constructs `KnowledgeBaseServer`, runs it, and converts top-level failures to process exit code 1. | Package `knowledge-base-mcp-server` bin. |
-| MCP server | `src/KnowledgeBaseServer.ts` | Registers MCP tools/resources/prompts, resolves model managers, coordinates retrieval/ask/write handlers, starts stdio/SSE/HTTP transports, warmup, shutdown, and reindex watchers. | `KnowledgeBaseServer.run()` from the process entrypoint. |
+| MCP server | `src/KnowledgeBaseServer.ts` | Registers MCP tools/resources/prompts and logging capability, resolves model managers, coordinates retrieval/ask/write handlers, starts stdio/SSE/HTTP transports, warmup, shutdown, and reindex watchers. | `KnowledgeBaseServer.run()` from the process entrypoint. |
 | MCP tool specs | `src/mcp-tool-specs.ts` | Single source of truth for MCP tool names, descriptions, input schemas, and ingest gating. | Used by server registration and generated `docs/reference/mcp-tools.md`. |
 | MCP resources and prompts | `src/mcp-resources.ts`, `src/mcp-prompts.ts` | Expose `kb://` source-document list/read and optional prompt templates. | Registered from `KnowledgeBaseServer.buildMcpServer()`. |
-| Remote transports | `src/transport/http.ts`, `src/transport/sse.ts`, `src/transport/base-http-host.ts`, `src/transport-config.ts` | Host streamable HTTP/SSE sessions with bearer auth, origin checks, backoff, runtime counters, and health/metrics endpoints. | Selected by `MCP_TRANSPORT`. |
-| CLI dispatcher | `src/cli.ts` | Loads package `.env`, owns help/version/daemon routing, and dispatches 35 subcommands from the `SUBCOMMANDS` registry. | Package `kb` bin and generated `docs/reference/cli.md`. |
+| Remote transports | `src/transport/http.ts`, `src/transport/sse.ts`, `src/transport/base-http-host.ts`, `src/transport-config.ts` | Host streamable HTTP/SSE sessions with bearer auth, origin checks, backoff, per-session MCP logging levels, runtime counters, and health/metrics endpoints. | Selected by `MCP_TRANSPORT`. |
+| CLI dispatcher | `src/cli.ts` | Loads package `.env`, owns help/version/daemon routing, and dispatches 37 subcommands from the `SUBCOMMANDS` registry. | Package `kb` bin and generated `docs/reference/cli.md`. |
 | CLI command modules | `src/cli-*.ts` | Implement shell workflows: search/list/open/related, ask/remember/capture/import-url, model management, diagnostics, logs, backup/restore, eval/feedback/research, daemon/service helpers, cache, config, and completion. | Called only by `src/cli.ts` or other CLI modules. |
 | Shared CLI/core helpers | `src/cli-shared.ts`, `src/*-core.ts` | Keep command-independent logic reusable by CLI, MCP, tests, and benchmarks. | Used by CLI handlers and selected server paths. |
 | FAISS index manager | `src/FaissIndexManager.ts` | Model-scoped owner of embedding clients, ingest/update, sidecars, backend load/save, similarity search, stats, and chunk metadata shaping. | Constructed by CLI shared loading, `ManagerRegistry`, and read-only server helpers. |
@@ -121,7 +124,7 @@ flowchart TB
 | Docstore CAS | `src/docstore-cas.ts` | Canonicalizes FAISS `docstore.json` payloads and hardlinks identical docstores through `$FAISS_INDEX_PATH/.docstore-cas/`. | Called during FAISS atomic saves. |
 | Active model store | `src/active-model.ts` | Single owner of `models/<id>/` paths, registered-model discovery, `model_name.txt`, `index-type.txt`, incomplete-add state, and `active.txt` resolution/writes. | Used by CLI, MCP server, manager registry, and FAISS manager. |
 | Ingest and loaders | `src/file-ingest.ts`, `src/loaders.ts`, `src/ingest-quarantine.ts`, `src/secret-scanner.ts` | Build chunks/manifests, route extension-specific extraction, quarantine failed/secret-bearing files, and write sidecars. | Used by `FaissIndexManager` and inspect/doctor surfaces. |
-| Retrieval composition | `src/search-core.ts`, `src/hybrid-retrieval.ts`, `src/lexical-index.ts`, `src/rrf.ts`, `src/retrieval-views.ts` | Implement dense, lexical, hybrid RRF, retrieval views, scoring/diagnostics, and fallback/degradation behavior. | Used by CLI search, MCP retrieval, eval, and research flows. |
+| Retrieval composition | `src/search-core.ts`, `src/hybrid-retrieval.ts`, `src/lexical-index.ts`, `src/rrf.ts`, `src/retrieval-views.ts`, `src/query-decomposition.ts`, `src/decomposition-cache.ts` | Implement dense, lexical, hybrid RRF, optional bounded query decomposition, retrieval views, scoring/diagnostics, fallback behavior, and the opt-in two-tier decomposition cache. | Used by CLI search, MCP retrieval, eval, and research flows. |
 | Answering and relevance | `src/ask-core.ts`, `src/llm-client.ts`, `src/relevance-gate.ts`, `src/reranker.ts` | Pack retrieval context, call local/OpenAI-compatible LLMs, optionally gate/rerank candidates, and report timing/provenance. | Used by CLI `ask`, MCP `ask_knowledge`, MCP/CLI retrieval, eval-gate. |
 | Formatting and content guard | `src/formatter.ts`, `src/injection-guard.ts`, `src/kb-shield.ts` | Sanitize metadata, format markdown/JSON retrieval output, and tag/wrap untrusted retrieved content. | Used by CLI and MCP retrieval surfaces. |
 | KB filesystem helpers | `src/kb-fs.ts`, `src/kb-paths.ts`, `src/file-utils.ts`, `src/ingest-filter.ts` | List KBs, validate names/paths, walk files, hash content, and apply inclusion/exclusion rules. | Used by CLI, MCP resources/writes, and FAISS manager. |
