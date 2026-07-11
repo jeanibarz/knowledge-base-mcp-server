@@ -56,7 +56,7 @@ retrieval.
 
 HNSW is implemented as a dedicated `hnswlib-node` backend, not as an arbitrary
 FAISS factory string. This follows ADR
-[`0010-hnsw-binding-evaluation`](../architecture/adr/0010-hnsw-binding-evaluation.md):
+[`0011-hnsw-binding-evaluation`](../architecture/adr/0011-hnsw-binding-evaluation.md):
 status-quo `faiss-node` can encode `M` through descriptors such as
 `HNSW32,SQ8`, but it exposes no `efConstruction` or `efSearch` setter. The
 current backend stores `hnsw.index`, a project-owned JSON `docstore.json`, and

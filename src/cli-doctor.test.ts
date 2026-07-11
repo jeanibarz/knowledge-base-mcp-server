@@ -2133,7 +2133,7 @@ describe('kb doctor', () => {
         expect(markdown).toContain('Index factory: Flat');
         expect(markdown).toContain('Dense search latency:');
         expect(markdown).toContain('HINT Dense flat-search p95');
-        expect(markdown).toContain('docs/architecture/adr/0010-hnsw-binding-evaluation.md');
+        expect(markdown).toContain('docs/architecture/adr/0011-hnsw-binding-evaluation.md');
       } finally {
         await fsp.rm(tempDir, { recursive: true, force: true });
       }
@@ -2172,7 +2172,7 @@ describe('kb doctor', () => {
               advisory: {
                 code: 'FLAT_SCAN_P95_ABOVE_THRESHOLD',
                 message: 'daemon p95 warning',
-                docs: ['docs/architecture/adr/0010-hnsw-binding-evaluation.md'],
+                docs: ['docs/architecture/adr/0011-hnsw-binding-evaluation.md'],
               },
             },
           }),

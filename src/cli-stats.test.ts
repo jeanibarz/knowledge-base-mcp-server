@@ -361,7 +361,7 @@ describe('kb stats CLI', () => {
         message: 'Dense flat-search p95 is 76.5ms, above the 50ms advisory threshold. Approximate/ANN indexing is not auto-enabled and is not currently a supported switch; issue #596 is blocked until a viable tunable backend lands.',
         docs: [
           'docs/operations/index-quantization.md#hnsw--ann-status',
-          'docs/architecture/adr/0010-hnsw-binding-evaluation.md',
+          'docs/architecture/adr/0011-hnsw-binding-evaluation.md',
           'https://github.com/jeanibarz/knowledge-base-mcp-server/issues/596',
         ],
       },

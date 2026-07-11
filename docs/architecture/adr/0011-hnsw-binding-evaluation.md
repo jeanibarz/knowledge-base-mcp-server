@@ -1,4 +1,4 @@
-# ADR 0010: HNSW Binding Evaluation
+# ADR 0011: HNSW Binding Evaluation
 
 ## Status
 
