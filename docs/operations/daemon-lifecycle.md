@@ -151,6 +151,91 @@ kb search "your query" --daemon --format=json
 
 Without `--daemon` the CLI runs in-process.
 
+## Wire protocol: `POST /v1/run`
+
+`POST /v1/run` is the internal endpoint used by daemon-capable CLI commands.
+It is an **unstable, local-only implementation detail**, not a public API or a
+compatibility promise. Prefer the `kb` CLI as the client. There is no HTTP
+authentication layer: access is limited by the daemon's loopback-only TCP bind
+or, for a Unix-domain socket, the socket's `0600` filesystem permissions.
+
+Send a JSON object with one of the supported read-only commands and its CLI
+arguments:
+
+```json
+{
+  "command": "search",
+  "args": ["daemon admission control", "--format=json"]
+}
+```
+
+- `command` must be `search`, `list`, or `stats`.
+- `args` must be an array of strings. They are the arguments after the command
+  name, exactly as the CLI handler would receive them.
+- `search --refresh` is rejected because the daemon is read-only.
+- Unknown top-level fields are currently ignored, but clients should not rely
+  on that behavior.
+
+For example, over loopback TCP:
+
+```bash
+curl --fail-with-body \
+  -H 'Content-Type: application/json' \
+  --data '{"command":"list","args":["--format=json"]}' \
+  http://127.0.0.1:17799/v1/run
+```
+
+Or over a configured Unix-domain socket:
+
+```bash
+curl --fail-with-body --unix-socket "$KB_DAEMON_SOCKET" \
+  -H 'Content-Type: application/json' \
+  --data '{"command":"stats","args":["--format=json"]}' \
+  http://localhost/v1/run
+```
+
+An admitted command returns HTTP `200` and a CLI-shaped JSON envelope:
+
+```json
+{
+  "exitCode": 0,
+  "stdout": "{\"knowledge_bases\":[\"engineering\"]}\n",
+  "stderr": ""
+}
+```
+
+`exitCode` is an integer and `stdout` and `stderr` are strings. A command-level
+failure may still use HTTP `200` with a non-zero `exitCode`; callers should
+interpret all three fields as they would the result of an in-process CLI run.
+The bundled client requires these fields with these types and ignores extra
+response fields. A malformed `200` payload is a protocol error.
+
+Transport and admission errors use non-2xx HTTP statuses:
+
+| Status | JSON body | Meaning |
+| --- | --- | --- |
+| `400` | `{"error":"invalid_json"}` | The request body is not valid JSON. |
+| `400` | `{"error":"invalid_request"}` | `command` is unsupported or `args` is not an array of strings. |
+| `400` | `{"error":"read_only_daemon","message":"kb serve does not run search --refresh"}` | The request attempts a refreshing search. |
+| `404` | `{"error":"not_found"}` | The method/path combination is not `POST /v1/run` (and is not another daemon endpoint). |
+| `429` | `{"error":"too_many_requests","message":"kb serve: daemon at capacity; retry after backoff"}` | All execution slots and queue positions are occupied. |
+| `500` | `{"exitCode":1,"stdout":"","stderr":"kb serve: <message>\n"}` | An admitted handler threw before it could return a command result. |
+
+A `429` response includes `Retry-After: 1`, in seconds. Alternate clients may
+wait at least that long and retry with their own bounded retry policy. The
+bundled client does not automatically retry a `429`: like every non-2xx
+response, it raises a daemon protocol error and does not silently fall back to
+an in-process run. Connection failures and its 1500 ms request timeout are
+availability failures; those can trigger the documented fallback or autostart
+behavior instead.
+
+All daemon JSON responses currently use `Content-Type: application/json` and
+end with a newline. Clients should parse JSON rather than depend on whitespace,
+error message text, ignored request fields, or fields beyond the required
+success envelope. Before sending a command, an alternate client can inspect
+`GET /health` and its `commands` array, but must still tolerate a later rejection
+or protocol mismatch because `/v1/run` remains unstable across versions.
+
 ## Autostart on daemon-capable reads
 
 `KB_DAEMON_AUTOSTART=on` is an opt-in companion to daemon-capable CLI reads.
