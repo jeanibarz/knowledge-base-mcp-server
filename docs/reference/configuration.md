@@ -29,6 +29,7 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>KB_PROVIDER_BREAKER</code> | <code>boolean</code> | <code>on</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default | Enables the process-shared open/half-open circuit breaker for embedding and LLM provider calls. |
 | <code>KB_PROVIDER_BREAKER_FAILURE_THRESHOLD</code> | <code>integer</code> | <code>3</code> |  | >= <code>1</code>; <= <code>100</code>; digits only | uses default | Consecutive provider failures before the circuit opens. |
 | <code>KB_PROVIDER_BREAKER_COOLDOWN_MS</code> | <code>duration</code> | <code>30000</code> |  | >= <code>1</code>; <= <code>3600000</code> | uses default | Open-circuit cooldown before a single half-open recovery probe is allowed. |
+| <code>KB_EMBED_TIMEOUT_MS</code> | <code>duration</code> | <code>120000</code> |  | >= <code>1</code> | uses default | Per-call deadline for network embedding-provider calls; on expiry the call fails with PROVIDER_TIMEOUT and the circuit breaker records it. |
 | <code>INDEXING_BATCH_SIZE</code> | <code>integer</code> | <code>64; 16 when EMBEDDING_PROVIDER=ollama</code> |  | >= <code>1</code>; <= <code>512</code> | uses default |  |
 | <code>KB_INDEXING_CONCURRENCY</code> | <code>integer</code> | <code>1</code> |  | >= <code>1</code>; <= <code>4</code> | uses default |  |
 | <code>KB_CHUNK_SIZE</code> | <code>integer</code> | <code>1000</code> |  | >= <code>1</code> | uses default |  |

@@ -13,6 +13,7 @@ import {
   HUGGINGFACE_ENDPOINT_URL,
   HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
   HUGGINGFACE_PROVIDER,
+  KB_EMBED_TIMEOUT_MS,
   KB_EMBEDDING_TASK_PREFIXES,
   KB_FAKE_DIM,
   OLLAMA_BASE_URL,
@@ -138,12 +139,75 @@ export class CircuitBrokenEmbeddings {
   }
 }
 
+/**
+ * Issue #793 — bounds every network embedding call with a per-call deadline.
+ * The embed path is the only network stage with no timeout, so a
+ * silently-hanging (not-erroring) provider socket can stall `retrieve`,
+ * `ask`, and reindex indefinitely. This decorator sits INSIDE the circuit
+ * breaker (the breaker wraps it) so an expired deadline throws
+ * `KBError('PROVIDER_TIMEOUT')`, which `shouldRecordEmbeddingBreakerFailure`
+ * counts as a breaker failure — making the previously-dead `PROVIDER_TIMEOUT`
+ * branch reachable on the embed path.
+ *
+ * Cancellation caveat: the LangChain embeddings interface
+ * (`embedDocuments`/`embedQuery`) does not accept a per-call `AbortSignal`,
+ * so on expiry we ABANDON the in-flight promise — the underlying fetch may
+ * keep running to completion — rather than truly cancelling it. We still
+ * create an `AbortController` and `abort()` it on the deadline so a
+ * signal-aware inner client can observe the cancellation; today's providers
+ * do not, which is the pragmatic fallback the issue calls out.
+ */
+export class TimeoutEmbeddings {
+  constructor(
+    private readonly inner: {
+      embedDocuments(texts: string[]): Promise<number[][]>;
+      embedQuery(text: string): Promise<number[]>;
+    },
+    readonly timeoutMs: number,
+  ) {}
+
+  async embedDocuments(texts: string[]): Promise<number[][]> {
+    return this.withDeadline('embedDocuments', () => this.inner.embedDocuments(texts));
+  }
+
+  async embedQuery(text: string): Promise<number[]> {
+    return this.withDeadline('embedQuery', () => this.inner.embedQuery(text));
+  }
+
+  private async withDeadline<T>(method: string, call: () => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(
+          new KBError(
+            'PROVIDER_TIMEOUT',
+            `embedding provider ${method} exceeded ${this.timeoutMs}ms deadline`,
+          ),
+        );
+      }, this.timeoutMs);
+    });
+    const inFlight = call();
+    // If the deadline wins the race, `inFlight` is abandoned; swallow any late
+    // rejection on that orphaned branch so it does not surface as an
+    // unhandledRejection after we have already thrown PROVIDER_TIMEOUT.
+    inFlight.catch(() => {});
+    try {
+      return await Promise.race([inFlight, deadline]);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  }
+}
+
 export type EmbeddingsClient =
   | HuggingFaceInferenceEmbeddings
   | OllamaEmbeddings
   | OpenAIEmbeddings
   | FakeEmbeddings
   | TaskPrefixedEmbeddings
+  | TimeoutEmbeddings
   | CircuitBrokenEmbeddings;
 
 export interface CreateEmbeddingsOptions {
@@ -195,6 +259,10 @@ export async function createEmbeddingsClient(
   }
   const breakerKey = embeddingProviderBreakerKey(provider, modelName);
   if (breakerKey !== null) {
+    // Issue #793 — bound the call BEFORE the breaker wraps it, so an expired
+    // deadline surfaces as PROVIDER_TIMEOUT and the breaker records it. The
+    // fake provider (breakerKey === null) is offline and needs no deadline.
+    client = new TimeoutEmbeddings(client, KB_EMBED_TIMEOUT_MS);
     client = new CircuitBrokenEmbeddings(client, breakerKey);
   }
   if (options.modelId !== undefined) {
