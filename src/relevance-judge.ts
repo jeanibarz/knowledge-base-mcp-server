@@ -4,7 +4,9 @@ import {
   type ChatCompletionResult,
   type LlmChatMessage,
 } from './llm-client.js';
+import { resolveLlmProvider } from './config/llm-provider.js';
 import { wrapUntrustedContent } from './injection-guard.js';
+import { redactSecrets } from './redaction.js';
 
 export interface RelevanceJudgeCandidate {
   id: string;
@@ -84,9 +86,15 @@ const STOP_WORDS = new Set([
   'would',
 ]);
 
+const REDACT_TRUTHY_VALUES = new Set(['on', 'true', '1', 'yes']);
+const REDACT_FALSY_VALUES = new Set(['off', 'false', '0', 'no']);
+
 export async function judgeRelevance(options: RelevanceJudgeOptions): Promise<RelevanceJudgeResult> {
   const shuffled = deterministicShuffle(options.candidates, options.seed);
-  const messages = buildJudgeMessages(options.query, options.taskContext, shuffled);
+  const messages = redactJudgeMessages(
+    buildJudgeMessages(options.query, options.taskContext, shuffled),
+    resolveJudgeRedactionEnabled(),
+  );
   const response = await callChatCompletion({
     endpoint: options.endpoint,
     model: options.model,
@@ -100,6 +108,26 @@ export async function judgeRelevance(options: RelevanceJudgeOptions): Promise<Re
     shuffledIds: shuffled.map((candidate) => candidate.id),
     promptHash: hashPrompt(messages),
   };
+}
+
+function resolveJudgeRedactionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.KB_ASK_REDACT_OUTBOUND?.trim().toLowerCase();
+  if (raw !== undefined && raw !== '') {
+    if (REDACT_TRUTHY_VALUES.has(raw)) return true;
+    if (REDACT_FALSY_VALUES.has(raw)) return false;
+  }
+  return resolveLlmProvider(env).remote;
+}
+
+function redactJudgeMessages(
+  messages: LlmChatMessage[],
+  enabled: boolean,
+): LlmChatMessage[] {
+  if (!enabled) return messages;
+  return messages.map((message) => ({
+    ...message,
+    content: redactSecrets(message.content).text,
+  }));
 }
 
 export function normalizeJudgeResponse(
