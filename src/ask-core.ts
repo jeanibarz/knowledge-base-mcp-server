@@ -154,6 +154,19 @@ export interface AskKnowledgeResult {
   timing?: Record<string, unknown>;
 }
 
+/**
+ * Issue #795 — coarse stage callback used to surface `ask_knowledge` progress
+ * over the MCP wire. The MCP server passes a reporter that turns each update
+ * into a `notifications/progress` frame; callers that don't care (the CLI) omit
+ * it entirely, so this is optional everywhere.
+ */
+export interface AskProgressUpdate {
+  progress: number;
+  total?: number;
+  message?: string;
+}
+export type AskProgressReporter = (update: AskProgressUpdate) => void | Promise<void>;
+
 export interface RunAskCoreDeps {
   bootstrapLayout: () => Promise<void>;
   resolveActiveModel: typeof resolveActiveModel;
@@ -194,6 +207,7 @@ export class AskExecutionError extends Error {
 export async function askKnowledge(
   input: AskKnowledgeInput,
   deps: RunAskCoreDeps,
+  onProgress?: AskProgressReporter,
 ): Promise<AskKnowledgeResult> {
   const query = input.query.trim();
   if (query === '') throw new Error('ask_knowledge requires a non-empty query');
@@ -215,7 +229,7 @@ export async function askKnowledge(
     timing: input.timing ?? false,
     taskContext: input.task_context,
     gate: input.gate,
-  }, deps, nowMs());
+  }, deps, nowMs(), onProgress);
 }
 
 export interface AskEvidence {
@@ -507,14 +521,24 @@ export async function executeAsk(
   args: AskExecutionArgs,
   deps: RunAskCoreDeps,
   totalStartedAt: number,
+  onProgress?: AskProgressReporter,
 ): Promise<AskKnowledgeResult> {
   const timing: TimingPayload | null = args.timing ? {} : null;
   return withSpan('kb.ask', {
     'kb.scope': args.kb ?? null,
     'kb.k': args.k,
   }, async () => {
+    // Issue #795 — two coarse stage boundaries flank the two expensive halves
+    // (retrieval, then LLM synthesis) so an MCP client sees progress on a call
+    // that can run for many seconds. `onProgress` is a no-op unless the client
+    // opted in via `_meta.progressToken`.
+    const ASK_STAGES = 2;
+    await onProgress?.({ progress: 0, total: ASK_STAGES, message: 'retrieving evidence' });
     const evidence = await retrieveAskEvidence(args, deps, timing);
-    return answerWithEvidence(args, evidence, deps, totalStartedAt, timing);
+    await onProgress?.({ progress: 1, total: ASK_STAGES, message: 'synthesizing answer' });
+    const result = await answerWithEvidence(args, evidence, deps, totalStartedAt, timing);
+    await onProgress?.({ progress: 2, total: ASK_STAGES, message: 'answer ready' });
+    return result;
   });
 }
 
