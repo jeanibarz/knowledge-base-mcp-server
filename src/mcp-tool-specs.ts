@@ -11,6 +11,7 @@
 // can therefore import the built `build/mcp-tool-specs.js` without booting a
 // server.
 
+import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { z, type ZodRawShape } from 'zod';
 
 import {
@@ -148,18 +149,76 @@ export interface McpToolSpec {
   inputShape?: ZodRawShape;
   /** True when the tool is only registered if KB_INGEST_ENABLED is set. */
   ingestGated?: boolean;
+  /**
+   * Issue #798 — advisory MCP `ToolAnnotations` (readOnlyHint / destructiveHint
+   * / idempotentHint) the server passes to `mcp.tool()`. These are hints an MCP
+   * client's policy layer keys on to gate auto-approval and confirm destructive
+   * actions; they are NOT server-side enforcement (the ingest gate remains the
+   * enforcement layer). Read-only tools mirror `!ingestGated`; the three
+   * ingest-gated writes are annotated by hand since a single boolean cannot
+   * distinguish a destructive delete from an idempotent add/reindex.
+   */
+  annotations: ToolAnnotations;
 }
+
+// Shared annotation objects. The six readers do not modify their environment;
+// per the MCP spec `destructiveHint`/`idempotentHint` are meaningful only when
+// `readOnlyHint === false`, so a lone `readOnlyHint: true` is the complete hint
+// for a reader.
+const READ_ONLY_ANNOTATIONS: ToolAnnotations = { readOnlyHint: true };
 
 // Order mirrors registration in KnowledgeBaseServer.registerTools so the
 // generated doc reads top-to-bottom like the server surface.
 export const MCP_TOOL_SPECS: McpToolSpec[] = [
-  { name: 'list_knowledge_bases', description: LIST_KNOWLEDGE_BASES_DESCRIPTION },
-  { name: 'retrieve_knowledge', description: RETRIEVE_KNOWLEDGE_DESCRIPTION, inputShape: RETRIEVE_KNOWLEDGE_INPUT },
-  { name: 'ask_knowledge', description: ASK_KNOWLEDGE_DESCRIPTION, inputShape: ASK_KNOWLEDGE_INPUT },
-  { name: 'list_models', description: LIST_MODELS_DESCRIPTION },
-  { name: 'kb_stats', description: KB_STATS_DESCRIPTION, inputShape: KB_STATS_INPUT },
-  { name: 'diff_index', description: DIFF_INDEX_DESCRIPTION, inputShape: DIFF_INDEX_INPUT },
-  { name: 'add_document', description: ADD_DOCUMENT_DESCRIPTION, inputShape: ADD_DOCUMENT_INPUT, ingestGated: true },
-  { name: 'delete_document', description: DELETE_DOCUMENT_DESCRIPTION, inputShape: DELETE_DOCUMENT_INPUT, ingestGated: true },
-  { name: 'reindex_knowledge_base', description: REINDEX_KNOWLEDGE_BASE_DESCRIPTION, inputShape: REINDEX_KNOWLEDGE_BASE_INPUT, ingestGated: true },
+  { name: 'list_knowledge_bases', description: LIST_KNOWLEDGE_BASES_DESCRIPTION, annotations: READ_ONLY_ANNOTATIONS },
+  { name: 'retrieve_knowledge', description: RETRIEVE_KNOWLEDGE_DESCRIPTION, inputShape: RETRIEVE_KNOWLEDGE_INPUT, annotations: READ_ONLY_ANNOTATIONS },
+  { name: 'ask_knowledge', description: ASK_KNOWLEDGE_DESCRIPTION, inputShape: ASK_KNOWLEDGE_INPUT, annotations: READ_ONLY_ANNOTATIONS },
+  { name: 'list_models', description: LIST_MODELS_DESCRIPTION, annotations: READ_ONLY_ANNOTATIONS },
+  { name: 'kb_stats', description: KB_STATS_DESCRIPTION, inputShape: KB_STATS_INPUT, annotations: READ_ONLY_ANNOTATIONS },
+  { name: 'diff_index', description: DIFF_INDEX_DESCRIPTION, inputShape: DIFF_INDEX_INPUT, annotations: READ_ONLY_ANNOTATIONS },
+  // add_document writes a document: not read-only, and additive rather than
+  // destructive (it creates/overwrites a single path). Re-writing the same
+  // path+content leaves the KB in the same state, so it is idempotent.
+  {
+    name: 'add_document',
+    description: ADD_DOCUMENT_DESCRIPTION,
+    inputShape: ADD_DOCUMENT_INPUT,
+    ingestGated: true,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+  },
+  // delete_document removes a document: the one destructive write. Deleting the
+  // same path twice is not a stable no-op (the second call has nothing to
+  // remove), so it is not marked idempotent.
+  {
+    name: 'delete_document',
+    description: DELETE_DOCUMENT_DESCRIPTION,
+    inputShape: DELETE_DOCUMENT_INPUT,
+    ingestGated: true,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+  },
+  // reindex_knowledge_base rebuilds the index from unchanged sources: not
+  // read-only, but additive (it does not delete source content) and idempotent
+  // (re-running over the same sources reproduces the same index).
+  {
+    name: 'reindex_knowledge_base',
+    description: REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
+    inputShape: REINDEX_KNOWLEDGE_BASE_INPUT,
+    ingestGated: true,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+  },
 ];
+
+const ANNOTATIONS_BY_NAME = new Map(MCP_TOOL_SPECS.map((spec) => [spec.name, spec.annotations]));
+
+/**
+ * Look up the advisory `ToolAnnotations` for a registered tool. Throws if the
+ * name is unknown so a registration/spec drift fails loudly rather than
+ * silently registering a tool with no safety hints.
+ */
+export function toolAnnotations(name: string): ToolAnnotations {
+  const annotations = ANNOTATIONS_BY_NAME.get(name);
+  if (annotations === undefined) {
+    throw new Error(`No MCP tool annotations registered for tool "${name}"`);
+  }
+  return annotations;
+}

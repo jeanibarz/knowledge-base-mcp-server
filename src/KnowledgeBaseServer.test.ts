@@ -2520,6 +2520,74 @@ describe('KnowledgeBaseServer handlers', () => {
     return Object.keys(registered);
   }
 
+  function annotationsOf(server: any, toolName: string): Record<string, unknown> | undefined {
+    const registered = server['mcp']._registeredTools as Record<
+      string,
+      { annotations?: Record<string, unknown> }
+    >;
+    expect(registered).toBeDefined();
+    expect(registered[toolName]).toBeDefined();
+    return registered[toolName].annotations;
+  }
+
+  // Issue #798 — every tool must advertise its advisory ToolAnnotations so MCP
+  // clients can gate auto-approval and confirm destructive writes. The six
+  // readers are read-only; the three ingest-gated writes carry hand-reviewed
+  // destructive/idempotent hints (delete is the only destructive one).
+  it('registers each of the 9 tools with the expected ToolAnnotations hints', async () => {
+    await setRetrieveEnv();
+    process.env.KB_INGEST_ENABLED = 'true';
+    const server = await freshServer();
+
+    // All 9 tools present so we can assert the writes too.
+    expect(registeredToolNames(server)).toEqual(
+      expect.arrayContaining([
+        'list_knowledge_bases',
+        'retrieve_knowledge',
+        'ask_knowledge',
+        'list_models',
+        'kb_stats',
+        'diff_index',
+        'add_document',
+        'delete_document',
+        'reindex_knowledge_base',
+      ]),
+    );
+
+    for (const readOnlyTool of [
+      'list_knowledge_bases',
+      'retrieve_knowledge',
+      'ask_knowledge',
+      'list_models',
+      'kb_stats',
+      'diff_index',
+    ]) {
+      expect(annotationsOf(server, readOnlyTool)).toMatchObject({ readOnlyHint: true });
+    }
+
+    // add_document / reindex: mutating but additive and idempotent.
+    expect(annotationsOf(server, 'add_document')).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+    });
+    expect(annotationsOf(server, 'reindex_knowledge_base')).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+    });
+
+    // delete_document: the sole destructive write.
+    expect(annotationsOf(server, 'delete_document')).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+    });
+
+    // A read-only tool must never advertise a destructive hint.
+    expect(annotationsOf(server, 'retrieve_knowledge')).not.toMatchObject({ destructiveHint: true });
+  });
+
   it('KB_INGEST_ENABLED=false hides MCP ingest tools while preserving read tools and resources', async () => {
     const tempDir = await setRetrieveEnv();
     await fsp.mkdir(path.join(tempDir, 'alpha'));
