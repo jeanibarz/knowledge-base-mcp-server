@@ -32,7 +32,7 @@ Please use the [Feature Request issue template](./.github/ISSUE_TEMPLATE/feature
 
 ## Local Test Iteration
 
-Use `npm run check` before opening a PR; it runs the TypeScript build, ESLint, the full Jest suite, and documentation anchor verifier.
+Use `npm run check` before opening a PR; it runs the TypeScript build, ESLint, the full Jest suite, and documentation/configuration consistency checks (including generated `.env.example` drift).
 
 For local configuration, copy [`.env.example`](./.env.example) to `.env`. The template is generated from `CONFIG_SCHEMA`; after changing the schema, run `npm run docs:generate-env-example` and commit the result.
 

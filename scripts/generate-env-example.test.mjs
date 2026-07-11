@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import test from 'node:test';
 
-import { generateEnvExample } from './generate-env-example.mjs';
+import { checkEnvExample, generateEnvExample } from './generate-env-example.mjs';
 
 test('groups entries, annotates defaults, and leaves secrets empty (#791)', () => {
   const output = generateEnvExample([
@@ -21,4 +24,14 @@ test('groups entries, annotates defaults, and leaves secrets empty (#791)', () =
   assert.match(output, /# Default: 64; 16 for ollama\nINDEXING_BATCH_SIZE=/);
   assert.match(output, /# Other/);
   assert.match(output, /FUTURE_SETTING="line one\\nline two"/);
+});
+
+test('rejects a stale generated template (#791)', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-env-example-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const write = t.mock.method(process.stderr, 'write', () => true);
+  await fs.writeFile(path.join(root, '.env.example'), 'stale\n', 'utf8');
+
+  assert.equal(await checkEnvExample({ root }), false);
+  assert.match(write.mock.calls[0].arguments[0], /.env.example is out of date/);
 });
