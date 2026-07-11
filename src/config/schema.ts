@@ -256,6 +256,8 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_DAEMON_SOCKET', kind: 'path' },
   { name: 'KB_DAEMON_HOST', kind: 'string', default: '127.0.0.1', emptyUsesDefault: true },
   { name: 'KB_DAEMON_PORT', kind: 'integer', default: '17799', min: 1, max: 65535 },
+  { name: 'KB_DAEMON_CLIENT_TIMEOUT_MS', kind: 'duration', default: '1500', min: 1, max: 300000, integerSyntax: 'digits', description: 'Timeout in milliseconds for daemon command requests.' },
+  { name: 'KB_DAEMON_HEALTH_TIMEOUT_MS', kind: 'duration', default: '500', min: 1, max: 300000, integerSyntax: 'digits', description: 'Timeout in milliseconds for daemon health requests, capped by any outer autostart deadline.' },
   { name: 'KB_DAEMON_AUTOSTART', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_DAEMON_PREWARM', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'MCP_TRANSPORT', kind: 'enum', values: ['stdio', 'sse', 'http'], default: 'stdio', description: 'MCP server transport.' },

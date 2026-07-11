@@ -105,6 +105,8 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>KB_DAEMON_SOCKET</code> | <code>path</code> | _unset_ |  |  | uses default |  |
 | <code>KB_DAEMON_HOST</code> | <code>string</code> | <code>127.0.0.1</code> |  |  | uses default |  |
 | <code>KB_DAEMON_PORT</code> | <code>integer</code> | <code>17799</code> |  | >= <code>1</code>; <= <code>65535</code> | uses default |  |
+| <code>KB_DAEMON_CLIENT_TIMEOUT_MS</code> | <code>duration</code> | <code>1500</code> |  | >= <code>1</code>; <= <code>300000</code>; digits only | uses default | Timeout in milliseconds for daemon command requests. |
+| <code>KB_DAEMON_HEALTH_TIMEOUT_MS</code> | <code>duration</code> | <code>500</code> |  | >= <code>1</code>; <= <code>300000</code>; digits only | uses default | Timeout in milliseconds for daemon health requests, capped by any outer autostart deadline. |
 | <code>KB_DAEMON_AUTOSTART</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default |  |
 | <code>KB_DAEMON_PREWARM</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code> |  | uses default |  |
 | <code>MCP_TRANSPORT</code> | <code>enum</code> | <code>stdio</code> | <code>stdio</code>, <code>sse</code>, <code>http</code> |  | uses default | MCP server transport. |

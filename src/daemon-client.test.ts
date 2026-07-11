@@ -5,6 +5,8 @@ import type { AddressInfo } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  DEFAULT_DAEMON_CLIENT_TIMEOUT_MS,
+  DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
   DaemonProtocolError,
   DaemonUnavailableError,
   daemonEndpointFromEnv,
@@ -55,6 +57,11 @@ async function withUnixSocketServer(
 describe('daemon client', () => {
   const itUnix = process.platform === 'win32' ? it.skip : it;
 
+  it('preserves the legacy request and health timeout defaults', () => {
+    expect(DEFAULT_DAEMON_CLIENT_TIMEOUT_MS).toBe(1500);
+    expect(DEFAULT_DAEMON_HEALTH_TIMEOUT_MS).toBe(500);
+  });
+
   it('builds a default loopback URL from env overrides', () => {
     expect(daemonUrlFromEnv({ KB_DAEMON_PORT: '18888' }).href).toBe('http://127.0.0.1:18888/');
     expect(daemonUrlFromEnv({ KB_DAEMON_URL: 'http://127.0.0.1:19999' }).href).toBe('http://127.0.0.1:19999/');
@@ -96,6 +103,51 @@ describe('daemon client', () => {
       await expect(runDaemonCommand('search', ['hello'], { env: { KB_DAEMON_URL: url.href } }))
         .resolves.toEqual({ exitCode: 0, stdout: 'ok\n', stderr: '' });
     });
+  });
+
+  it('uses the configured daemon request timeout and preserves the explicit override', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = jest.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      }));
+      const configured = runDaemonCommand('search', ['q'], {
+        env: {
+          KB_DAEMON_URL: 'http://127.0.0.1:17799/',
+          KB_DAEMON_CLIENT_TIMEOUT_MS: '2400',
+        },
+        fetchImpl,
+      });
+      const configuredRejection = expect(configured).rejects.toBeInstanceOf(DaemonUnavailableError);
+      await jest.advanceTimersByTimeAsync(2399);
+      expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await configuredRejection;
+
+      const overridden = runDaemonCommand('search', ['q'], {
+        env: {
+          KB_DAEMON_URL: 'http://127.0.0.1:17799/',
+          KB_DAEMON_CLIENT_TIMEOUT_MS: '2400',
+        },
+        fetchImpl,
+        timeoutMs: 25,
+      });
+      const overriddenRejection = expect(overridden).rejects.toBeInstanceOf(DaemonUnavailableError);
+      await jest.advanceTimersByTimeAsync(25);
+      await overriddenRejection;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('rejects invalid configured daemon request timeouts', async () => {
+    await expect(runDaemonCommand('search', ['q'], {
+      env: {
+        KB_DAEMON_URL: 'http://127.0.0.1:17799/',
+        KB_DAEMON_CLIENT_TIMEOUT_MS: '300001',
+      },
+      fetchImpl: jest.fn<typeof fetch>(),
+    })).rejects.toThrow('invalid KB_DAEMON_CLIENT_TIMEOUT_MS: 300001');
   });
 
   itUnix('posts command requests over a Unix-domain socket', async () => {
@@ -162,6 +214,30 @@ describe('daemon client', () => {
         uptime_ms: 1234,
       });
     });
+  });
+
+  it('uses the configured health timeout independently of the request timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = jest.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      }));
+      const health = fetchDaemonHealth({
+        env: {
+          KB_DAEMON_URL: 'http://127.0.0.1:17799/',
+          KB_DAEMON_CLIENT_TIMEOUT_MS: '2400',
+          KB_DAEMON_HEALTH_TIMEOUT_MS: '700',
+        },
+        fetchImpl,
+      });
+      const healthRejection = expect(health).rejects.toBeInstanceOf(DaemonUnavailableError);
+      await jest.advanceTimersByTimeAsync(699);
+      expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await healthRejection;
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('tolerates an older daemon that only answers { status }', async () => {

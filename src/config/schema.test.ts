@@ -15,6 +15,8 @@ describe('config schema validation (FR-OBS-470)', () => {
       KB_GATE_LLM_ENDPOINT: 'http://127.0.0.1:8080/v1/chat/completions',
       KB_GATE_SCORE_FLOOR: '0.75',
       KB_FLAT_SEARCH_P95_ADVISORY_MS: '75',
+      KB_DAEMON_CLIENT_TIMEOUT_MS: '1500',
+      KB_DAEMON_HEALTH_TIMEOUT_MS: '500',
       KB_AGE_BUDGET_HOURS_ALPHA: '24',
       MCP_TRANSPORT: 'http',
       MCP_AUTH_TOKEN: 'x'.repeat(32),
@@ -28,6 +30,8 @@ describe('config schema validation (FR-OBS-470)', () => {
       expect.objectContaining({ name: 'EMBEDDING_PROVIDER', status: 'ok', value: 'fake' }),
       expect.objectContaining({ name: 'KB_AGE_BUDGET_HOURS_ALPHA', status: 'ok', value: '24' }),
       expect.objectContaining({ name: 'KB_FLAT_SEARCH_P95_ADVISORY_MS', status: 'ok', value: '75' }),
+      expect.objectContaining({ name: 'KB_DAEMON_CLIENT_TIMEOUT_MS', status: 'ok', value: '1500' }),
+      expect.objectContaining({ name: 'KB_DAEMON_HEALTH_TIMEOUT_MS', status: 'ok', value: '500' }),
       expect.objectContaining({ name: 'KB_RERANK_TOP_N', status: 'ok', value: '12' }),
       expect.objectContaining({ name: 'KB_RERANK_BATCH_SIZE', status: 'ok', value: '16' }),
       expect.objectContaining({ name: 'MCP_AUTH_TOKEN', status: 'ok', value: '<redacted>' }),
@@ -43,6 +47,8 @@ describe('config schema validation (FR-OBS-470)', () => {
       KB_FLAT_SEARCH_P95_ADVISORY_MS: '0',
       KB_GATE_LLM_ENDPOINT: 'not a url',
       MCP_PORT: '70000',
+      KB_DAEMON_CLIENT_TIMEOUT_MS: '0',
+      KB_DAEMON_HEALTH_TIMEOUT_MS: '300001',
     }, { source: '/tmp/bad.env' });
 
     expect(report.status).toBe('error');
@@ -55,6 +61,8 @@ describe('config schema validation (FR-OBS-470)', () => {
       expect.objectContaining({ name: 'KB_FLAT_SEARCH_P95_ADVISORY_MS', status: 'error', message: expect.stringContaining('>= 1') }),
       expect.objectContaining({ name: 'KB_GATE_LLM_ENDPOINT', status: 'error', message: expect.stringContaining('URL') }),
       expect.objectContaining({ name: 'MCP_PORT', status: 'error', message: expect.stringContaining('<= 65535') }),
+      expect.objectContaining({ name: 'KB_DAEMON_CLIENT_TIMEOUT_MS', status: 'error', message: expect.stringContaining('>= 1') }),
+      expect.objectContaining({ name: 'KB_DAEMON_HEALTH_TIMEOUT_MS', status: 'error', message: expect.stringContaining('<= 300000') }),
     ]));
     expect(report.findings.every((finding) => finding.source === '/tmp/bad.env')).toBe(true);
   });
