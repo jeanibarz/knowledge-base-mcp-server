@@ -179,7 +179,7 @@ export function formatRetrievalAsMarkdown(
       );
       const citation = buildChunkCitation(guarded.metadata, editorUriMode);
       const metadata = JSON.stringify(guarded.metadata, null, 2);
-      const scoreText = doc.score !== undefined ? `**Score:** ${doc.score.toFixed(2)}\n\n` : '';
+      const scoreText = formatMarkdownRelevance(doc);
       const signals = getShieldSignals(doc.pageContent, sanitizedMetadata, guardOptions);
       const shieldFooter = formatInjectionMarkdown(signals);
       const contextText = formatContextChunksAsMarkdown(doc, extrasVisible, editorUriMode, highlight);
@@ -211,12 +211,12 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
           const typeText = chunk.match_type ? `\n   **Type:** ${chunk.match_type}` : '';
           const content = applyRetrievalHighlight((chunk.snippet ?? chunk.content).trim(), highlight);
           const contextText = formatJsonContextChunksForGroupedMarkdown(chunk.context_chunks, highlight);
-          return `${chunkIdx + 1}. **Score:** ${scoreText}${typeText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(content)}${shieldText}${contextText}`;
+          return `${chunkIdx + 1}. **Distance:** ${scoreText} (lower = better)${typeText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(content)}${shieldText}${contextText}`;
         })
         .join('\n\n');
       return (
         `**Source ${idx + 1}:** \`${group.source}\`\n\n` +
-        `**Best score:** ${formatScore(group.best_score)}\n\n` +
+        `**Best distance:** ${formatScore(group.best_score)} (lower = better)\n\n` +
         `**Chunk count:** ${group.chunk_count}\n\n` +
         `**Matching chunks:**\n\n${chunks}`
       );
@@ -475,7 +475,7 @@ export function formatRetrievalAsCompactTable(
     );
     const guarded = guardRetrievalChunk(doc.pageContent, metadata, guardOptions);
     const identity = compactIdentity(guarded.metadata, idx);
-    const score = doc.score === undefined ? 'n/a' : formatCompactScore(doc.score);
+    const score = formatCompactRelevance(doc, options.mode);
     return [
       padCompact(String(idx + 1), columns.rank),
       padCompact(score, columns.score),
@@ -487,7 +487,12 @@ export function formatRetrievalAsCompactTable(
       padCompact(compactPreview(guarded.content), columns.preview),
     ].join('  ');
   });
-  return [header, separator, ...rows].join('\n');
+  return [
+    header,
+    separator,
+    ...rows,
+    'Metric: D = distance (lower = better); B = BM25, RRF = fusion, R = rerank (higher = better).',
+  ].join('\n');
 }
 
 function getSourcePath(metadata: Record<string, unknown>, idx: number): string {
@@ -611,6 +616,33 @@ function formatCompactScore(score: number): string {
   if (Math.abs(score) >= 100) return score.toFixed(1);
   if (Math.abs(score) >= 10) return score.toFixed(2);
   return score.toFixed(3);
+}
+
+function formatMarkdownRelevance(doc: ScoredDocument): string {
+  if (doc.rerankScore !== undefined) {
+    return `**Rerank score:** ${doc.rerankScore.toFixed(2)} (higher = better)\n\n`;
+  }
+  if (doc.score !== undefined) {
+    return `**Score:** ${doc.score.toFixed(2)} (mode-specific; results ordered best first)\n\n`;
+  }
+  return '';
+}
+
+function formatCompactRelevance(doc: ScoredDocument, mode: CompactRetrievalOptions['mode']): string {
+  if (doc.rerankScore !== undefined) return formatCompactMetric('R↑', doc.rerankScore);
+  if (doc.score === undefined) return 'n/a';
+  const metric = mode === 'dense' ? 'D↓' : mode === 'lexical' ? 'B↑' : 'RRF↑';
+  return formatCompactMetric(metric, doc.score);
+}
+
+function formatCompactMetric(metric: string, score: number): string {
+  const available = 8 - metric.length;
+  if (!Number.isFinite(score)) return `${metric}${String(score).slice(0, available)}`;
+  for (let decimals = 3; decimals >= 0; decimals -= 1) {
+    const value = score.toFixed(decimals);
+    if (value.length <= available) return `${metric}${value}`;
+  }
+  return `${metric}${String(score).slice(0, available)}`;
 }
 
 function padCompact(value: string, width: number): string {

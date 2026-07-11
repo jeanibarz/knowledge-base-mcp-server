@@ -141,12 +141,22 @@ describe('formatRetrievalAsMarkdown', () => {
     expect(formatRetrievalAsMarkdown(undefined, false)).toContain('No similar results');
   });
 
-  it('renders one result with score, content, and source block', () => {
+  it('labels an otherwise opaque retrieval score without assuming its numeric direction', () => {
     const out = formatRetrievalAsMarkdown([sampleDoc], false);
     expect(out).toContain('**Result 1:**');
-    expect(out).toContain('**Score:** 0.42');
+    expect(out).toContain('**Score:** 0.42 (mode-specific; results ordered best first)');
     expect(out).toContain('sample content');
     expect(out).toContain('"source": "kb/doc.md"');
+  });
+
+  it('uses the rerank score and its higher-is-better direction for reranked rows', () => {
+    const reranked = { ...sampleDoc, score: 0.03, rerankScore: 0.87 } as ScoredDocument;
+
+    const out = formatRetrievalAsMarkdown([reranked, sampleDoc], false);
+
+    expect(out).toContain('**Rerank score:** 0.87 (higher = better)');
+    expect(out).not.toContain('**Score:** 0.03');
+    expect(out).toContain('**Score:** 0.42 (mode-specific; results ordered best first)');
   });
 
   it('adds a chunk citation link when stable chunk metadata is present', () => {
@@ -298,7 +308,7 @@ describe('formatRetrievalAsMarkdown', () => {
 
 **Result 1:**
 
-**Score:** 0.12
+**Score:** 0.12 (mode-specific; results ordered best first)
 
 # Deploy rollback
 
@@ -330,7 +340,7 @@ Verify pods before cutting traffic.
 
 **Result 2:**
 
-**Score:** 12.35
+**Score:** 12.35 (mode-specific; results ordered best first)
 
 Incident review notes
 Owner handoff happens after mitigation is confirmed.
@@ -385,7 +395,7 @@ describe('renderSearchSnippet', () => {
 });
 
 describe('formatRetrievalAsCompactTable', () => {
-  it('renders a fixed-width scan table with rank, score, KB, path, lines, mode, gate, and preview', () => {
+  it('renders a fixed-width scan table with rank, metric, KB, path, lines, mode, gate, and preview', () => {
     const docs: ScoredDocument[] = [
       {
         pageContent: '# Deploy rollback\n\nUse the blue-green rollback playbook.',
@@ -415,9 +425,10 @@ describe('formatRetrievalAsCompactTable', () => {
       width: 140,
     });
 
-    expect(out).toContain('Rank  Score     KB');
+    expect(out).toContain('Rank  Score');
     expect(out).toContain('Mode     Gate');
-    expect(out).toContain('1     0.123     ops');
+    expect(out).toContain('1     D↓0.123');
+    expect(out).toContain('D = distance (lower = better)');
     expect(out).toContain('42-58');
     expect(out).toContain('dense    kept');
     expect(out).toContain('Deploy rollback');
@@ -463,10 +474,34 @@ describe('formatRetrievalAsCompactTable', () => {
 [
   "Rank  Score     KB              Path                                  Lines        Mode     Gate      Preview                       ",
   "----  --------  --------------  ------------------------------------  -----------  -------  --------  ------------------------------",
-  "1     0.123     ops             runbooks/deployments/rollback.md      42-46        hybrid   kept      Deploy rollback               ",
-  "2     12.35     team            notes/incident-review.md              7-9          hybrid   kept      Incident review notes         ",
+  "1     RRF↑0.12  ops             runbooks/deployments/rollback.md      42-46        hybrid   kept      Deploy rollback               ",
+  "2     RRF↑12.3  team            notes/incident-review.md              7-9          hybrid   kept      Incident review notes         ",
+  "Metric: D = distance (lower = better); B = BM25, RRF = fusion, R = rerank (higher = better).",
 ]
 `);
+  });
+
+  it('labels compact metrics per mode and prefers rerank scores per row', () => {
+    const docs = [
+      { ...goldenSearchResults()[0], score: 0.02, rerankScore: 0.91 },
+      goldenSearchResults()[1],
+    ] as ScoredDocument[];
+
+    const hybrid = formatRetrievalAsCompactTable(docs, {
+      mode: 'hybrid',
+      gate: 'kept',
+      width: 160,
+    });
+    const lexical = formatRetrievalAsCompactTable([docs[1]], {
+      mode: 'lexical',
+      gate: 'kept',
+      width: 160,
+    });
+
+    expect(hybrid).toContain('R↑0.910');
+    expect(hybrid).toContain('RRF↑12.3');
+    expect(lexical).toContain('B↑12.345');
+    expect(hybrid).toContain('RRF = fusion, R = rerank (higher = better)');
   });
 });
 
@@ -500,6 +535,20 @@ describe('formatRetrievalAsJson', () => {
     expect(formatRetrievalAsJson([], false)).toEqual([]);
     expect(formatRetrievalAsJson(null, false)).toEqual([]);
     expect(formatRetrievalAsJson(undefined, false)).toEqual([]);
+  });
+
+  it('preserves raw and rerank scores when human output prefers the rerank metric', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'reranked content',
+      metadata: { source: 'kb/reranked.md' },
+      score: 0.03,
+      rerankScore: 0.87,
+    } as unknown as ScoredDocument;
+
+    expect(formatRetrievalAsJson([doc], false)[0]).toMatchObject({
+      score: 0.03,
+      rerank_score: 0.87,
+    });
   });
 
   it('returns shape { score, content, metadata, injection_signals } per result', () => {
@@ -964,7 +1013,8 @@ describe('formatRetrievalGroupedBySourceAsMarkdown', () => {
 
     expect(out).toContain('**Source 1:** `kb/repeated.md`');
     expect(out).not.toContain('**Source 2:**');
-    expect(out).toContain('**Best score:** 0.30');
+    expect(out).toContain('**Best distance:** 0.30 (lower = better)');
+    expect(out).toContain('**Distance:** 0.70 (lower = better)');
     expect(out).toContain('**Chunk count:** 2');
     expect(out).toContain('"from":1');
     expect(out).toContain('"from":20');
