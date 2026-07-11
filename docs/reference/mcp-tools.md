@@ -68,6 +68,8 @@ Answers a question from retrieved knowledge-base context using the configured lo
 | `llm_profile` | string | no | — | Saved kb llm profile name to use for answer generation. |
 | `k` | integer | no | min 1; max 50 | Retrieval top-K before context packing. Default 8. |
 | `context_budget_tokens` | integer | no | min 64 | Approximate token budget for snippets sent to the LLM. Default 6000. |
+| `search_mode` | enum | no | one of: `dense`, `hybrid`, `lexical`, `auto` | Retrieval mode for the snippets fed to the answer LLM. "auto" (default) keeps dense for prose and upgrades code/error-token queries to hybrid; "dense" is FAISS-only; "hybrid" fuses FAISS + per-KB BM25 via Reciprocal Rank Fusion; "lexical" is BM25-only. See #206 + #732. |
+| `rerank` | enum | no | one of: `on`, `off` | Per-call RFC 019 cross-encoder reranker override for hybrid retrieval. Off by default; omit to use KB_RERANK. |
 | `task_context` | string | no | — | Optional task context passed to the answer prompt and relevance gate when enabled. |
 | `gate` | enum | no | one of: `on`, `off` | Per-call relevance gate override for retrieved snippets. Omit to keep the ask path ungated. |
 | `timing` | boolean | no | — | Include retrieval, packing, and LLM timing fields. Defaults to true for MCP. |

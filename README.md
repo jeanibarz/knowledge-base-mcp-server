@@ -59,6 +59,7 @@ kb open alpha/docs/deploy.md#L42-L78         # resolve a chunk id / kb:// URI / 
 kb related alpha/docs/deploy.md#L42-L78      # find dense neighbors from an existing result chunk
 kb llm use-endpoint http://127.0.0.1:8080/v1/chat/completions --profile=local-research-agent
 kb ask "what changed in the daemonization notes?" --timing   # retrieval + local LLM answer with timings
+kb ask "why does src/cli.ts throw?" --mode=hybrid --rerank   # same dense|hybrid|lexical|auto modes + opt-in rerank as kb search
 kb ask "what changed?" --kb=work --save-transcript --title="Ask - daemon changes" --yes
 kb research plan "autonomous research agents and evals" --format=json
 kb research collect "autonomous research agents and evals" --run-dir runs/agents --format=json
