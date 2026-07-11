@@ -10,8 +10,8 @@
 // get re-embedded every day. M0b's job is the orchestration around it:
 //
 //  1. Resolve in-scope KBs (default: every registered KB). Count total
-//     chunks from existing chunk manifests and estimate runtime as
-//     `total_chunks * 8s` (cold-case ceiling).
+//     chunks from existing chunk manifests and estimate cold-preface plus
+//     possible whole-index embedding-rebuild work.
 //  2. Refuse to start inside the LRA cron window (06:00-10:30 UTC) or
 //     when the estimated runtime would cross it, unless `--force`.
 //  3. Check for a peer reindex via `.reindex.run.json` + PID liveness;
@@ -57,6 +57,12 @@ import { logger } from './logger.js';
 // latency observed against Qwen3.6-35B-A3B at the deployed context;
 // warm tenancy lands closer to 1-2s but the guard uses the ceiling.
 export const REINDEX_PER_CHUNK_ESTIMATE_MS = 8_000;
+
+// A changed file can make the incremental FAISS path rebuild the whole
+// index because individual vectors cannot be deleted. Price that possible
+// rebuild at the observed steady-state throughput (~30ms/chunk) so a warm
+// contextual-preface cache does not reduce a non-trivial run to 0 seconds.
+export const REINDEX_EMBEDDING_PER_CHUNK_ESTIMATE_MS = 30;
 
 // RFC 017 §5 step 2 — LRA cron guard window in UTC. Hard-coded rather
 // than env-tunable: there is exactly one operator and one downstream
@@ -107,8 +113,9 @@ export interface ReindexOptions {
 /**
  * RFC 017 §5 step 1 (cache-aware refinement, #408) — breakdown of the
  * contextual-preface work the runtime estimate is built from. `cold_chunks`
- * is the count actually priced at the 8s cold-LLM ceiling; `cache_hits` and
- * `retry_skips` are reused from per-source sidecars at no LLM cost.
+ * is the count priced at the 8s cold-LLM ceiling; every `total_chunks` entry
+ * is also priced at the embedding rebuild rate because the incremental FAISS
+ * path may rebuild the whole index.
  */
 export interface ContextualReindexEstimate {
   /** Total chunks across all in-scope KBs, summed from chunk manifests. */
@@ -385,9 +392,9 @@ async function readManifestChunkCount(manifestPath: string): Promise<number> {
  *     not-yet-due retry skip, or a cold LLM call (see
  *     `classifyContextualSidecarChunks`).
  *
- * `cold_chunks * REINDEX_PER_CHUNK_ESTIMATE_MS` is then the cache-aware
- * runtime upper bound. A first-ever reindex (no sidecars) yields
- * `cold_chunks === total_chunks`, identical to the pre-#408 estimate.
+ * The cache-aware runtime estimate adds cold-preface work to the possible
+ * whole-index embedding rebuild. A first-ever reindex (no sidecars) yields
+ * `cold_chunks === total_chunks`; a warm cache still retains embedding cost.
  */
 export async function estimateContextualReindexWork(
   kbs: readonly string[],
@@ -466,12 +473,18 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
 
   // 1. Resolve scope + estimate runtime. The estimate is cache-aware
   //    (#408): only chunks without a valid contextual-preface sidecar are
-  //    priced at the 8s cold-LLM ceiling, so a reindex following a partial
-  //    run is not needlessly guard-blocked for work it would skip.
+  //    priced at the 8s cold-LLM ceiling. Every chunk is additionally priced
+  //    at the observed embedding rebuild rate because an incremental update
+  //    can escalate to a whole-index FAISS rebuild.
   const kbs = await resolveKbsInScope(options);
   const estimate = await estimateContextualReindexWork(kbs, now);
   const totalChunks = estimate.total_chunks;
-  const estimatedSeconds = Math.ceil((estimate.cold_chunks * REINDEX_PER_CHUNK_ESTIMATE_MS) / 1_000);
+  const estimatedSeconds = Math.ceil(
+    (
+      estimate.cold_chunks * REINDEX_PER_CHUNK_ESTIMATE_MS
+      + estimate.total_chunks * REINDEX_EMBEDDING_PER_CHUNK_ESTIMATE_MS
+    ) / 1_000,
+  );
 
   emitCanonicalLog({
     process: 'cli',
