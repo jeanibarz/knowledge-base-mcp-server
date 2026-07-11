@@ -66,6 +66,9 @@ export interface DaemonClientOptions {
 
 const DEFAULT_AUTOSTART_DEADLINE_MS = 3_000;
 const DEFAULT_AUTOSTART_POLL_INTERVAL_MS = 100;
+export const DEFAULT_DAEMON_CLIENT_TIMEOUT_MS = 1_500;
+export const DEFAULT_DAEMON_HEALTH_TIMEOUT_MS = 500;
+export const MAX_DAEMON_CLIENT_TIMEOUT_MS = 300_000;
 const MAX_UNIX_SOCKET_PATH_BYTES = 107;
 
 export class DaemonUnavailableError extends Error {
@@ -130,7 +133,7 @@ export async function runDaemonCommand(
   const endpoint = new URL('/v1/run', baseEndpoint.url);
   const fetchImpl = options.fetchImpl ?? fetch;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 1500);
+  const timeout = setTimeout(() => controller.abort(), daemonRequestTimeoutMs(options));
   try {
     const response = await requestDaemonEndpoint(baseEndpoint, endpoint, {
       fetchImpl,
@@ -165,7 +168,7 @@ export async function fetchDaemonHealth(
   const endpoint = new URL('/health', baseEndpoint.url);
   const fetchImpl = options.fetchImpl ?? fetch;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 1500);
+  const timeout = setTimeout(() => controller.abort(), daemonHealthTimeoutMs(options));
   try {
     const response = await requestDaemonEndpoint(baseEndpoint, endpoint, {
       fetchImpl,
@@ -379,9 +382,14 @@ async function runDaemonCommandAfterAutostart(
   args: string[],
   options: DaemonClientOptions,
 ): Promise<DaemonRunResult | null> {
+  const now = options.now ?? Date.now;
+  const deadlineAt = now() + (options.autostartDeadlineMs ?? DEFAULT_AUTOSTART_DEADLINE_MS);
   let preflight: DaemonHealth | null;
   try {
-    preflight = await tryFetchDaemonHealth(options);
+    preflight = await tryFetchDaemonHealth({
+      ...options,
+      timeoutMs: Math.min(daemonHealthTimeoutMs(options), Math.max(1, deadlineAt - now())),
+    });
   } catch (err) {
     // Something is already answering at the URL, but not with the kb daemon
     // health contract. Do not start another process into a foreign listener.
@@ -389,8 +397,12 @@ async function runDaemonCommandAfterAutostart(
   }
 
   if (preflight === null) {
+    if (now() >= deadlineAt) {
+      writeNotice(options, autostartTimeoutNotice(options));
+      return null;
+    }
     const started = startDetachedDaemon(options);
-    const health = await pollDaemonReady(options);
+    const health = await pollDaemonReady(options, deadlineAt);
     if (health === null) {
       writeNotice(options, autostartTimeoutNotice(options));
       return null;
@@ -457,16 +469,14 @@ function ignoreSpawnError(child: SpawnedDaemonProcess): void {
   child.once('error', () => undefined);
 }
 
-async function pollDaemonReady(options: DaemonClientOptions): Promise<DaemonHealth | null> {
-  const deadlineMs = options.autostartDeadlineMs ?? DEFAULT_AUTOSTART_DEADLINE_MS;
+async function pollDaemonReady(options: DaemonClientOptions, deadlineAt: number): Promise<DaemonHealth | null> {
   const pollIntervalMs = options.autostartPollIntervalMs ?? DEFAULT_AUTOSTART_POLL_INTERVAL_MS;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
-  const deadlineAt = now() + deadlineMs;
-  while (now() <= deadlineAt) {
+  while (now() < deadlineAt) {
     const health = await tryFetchDaemonHealth({
       ...options,
-      timeoutMs: Math.min(options.timeoutMs ?? 500, Math.max(1, deadlineAt - now())),
+      timeoutMs: Math.min(daemonHealthTimeoutMs(options), Math.max(1, deadlineAt - now())),
     });
     if (health !== null) return health;
     const remainingMs = deadlineAt - now();
@@ -474,6 +484,39 @@ async function pollDaemonReady(options: DaemonClientOptions): Promise<DaemonHeal
     await sleep(Math.min(pollIntervalMs, remainingMs));
   }
   return null;
+}
+
+function daemonRequestTimeoutMs(options: DaemonClientOptions): number {
+  return options.timeoutMs ?? daemonTimeoutFromEnv(
+    options.env,
+    'KB_DAEMON_CLIENT_TIMEOUT_MS',
+    DEFAULT_DAEMON_CLIENT_TIMEOUT_MS,
+  );
+}
+
+function daemonHealthTimeoutMs(options: DaemonClientOptions): number {
+  return options.timeoutMs ?? daemonTimeoutFromEnv(
+    options.env,
+    'KB_DAEMON_HEALTH_TIMEOUT_MS',
+    DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
+  );
+}
+
+function daemonTimeoutFromEnv(
+  env: NodeJS.ProcessEnv | undefined,
+  name: 'KB_DAEMON_CLIENT_TIMEOUT_MS' | 'KB_DAEMON_HEALTH_TIMEOUT_MS',
+  fallback: number,
+): number {
+  const raw = (env ?? process.env)[name]?.trim();
+  if (raw === undefined || raw === '') return fallback;
+  if (!/^\d+$/.test(raw)) {
+    throw new DaemonProtocolError(`invalid ${name}: ${raw}`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_DAEMON_CLIENT_TIMEOUT_MS) {
+    throw new DaemonProtocolError(`invalid ${name}: ${raw}`);
+  }
+  return value;
 }
 
 function autostartTimeoutNotice(options: DaemonClientOptions): string {

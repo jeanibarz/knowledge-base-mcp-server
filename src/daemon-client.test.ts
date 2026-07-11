@@ -5,6 +5,8 @@ import type { AddressInfo } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  DEFAULT_DAEMON_CLIENT_TIMEOUT_MS,
+  DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
   DaemonProtocolError,
   DaemonUnavailableError,
   daemonEndpointFromEnv,
@@ -55,6 +57,42 @@ async function withUnixSocketServer(
 describe('daemon client', () => {
   const itUnix = process.platform === 'win32' ? it.skip : it;
 
+  it('preserves the legacy request timeout default', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = pendingFetch();
+      const request = runDaemonCommand('search', ['q'], {
+        env: { KB_DAEMON_URL: 'http://127.0.0.1:17799/' },
+        fetchImpl,
+      });
+      const rejection = expect(request).rejects.toBeInstanceOf(DaemonUnavailableError);
+      await jest.advanceTimersByTimeAsync(DEFAULT_DAEMON_CLIENT_TIMEOUT_MS - 1);
+      expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await rejection;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('preserves the legacy health timeout default', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = pendingFetch();
+      const health = fetchDaemonHealth({
+        env: { KB_DAEMON_URL: 'http://127.0.0.1:17799/' },
+        fetchImpl,
+      });
+      const rejection = expect(health).rejects.toBeInstanceOf(DaemonUnavailableError);
+      await jest.advanceTimersByTimeAsync(DEFAULT_DAEMON_HEALTH_TIMEOUT_MS - 1);
+      expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await rejection;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('builds a default loopback URL from env overrides', () => {
     expect(daemonUrlFromEnv({ KB_DAEMON_PORT: '18888' }).href).toBe('http://127.0.0.1:18888/');
     expect(daemonUrlFromEnv({ KB_DAEMON_URL: 'http://127.0.0.1:19999' }).href).toBe('http://127.0.0.1:19999/');
@@ -96,6 +134,49 @@ describe('daemon client', () => {
       await expect(runDaemonCommand('search', ['hello'], { env: { KB_DAEMON_URL: url.href } }))
         .resolves.toEqual({ exitCode: 0, stdout: 'ok\n', stderr: '' });
     });
+  });
+
+  it('uses the configured daemon request timeout and preserves the explicit override', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = pendingFetch();
+      const configured = runDaemonCommand('search', ['q'], {
+        env: {
+          KB_DAEMON_URL: 'http://127.0.0.1:17799/',
+          KB_DAEMON_CLIENT_TIMEOUT_MS: '2400',
+        },
+        fetchImpl,
+      });
+      const configuredRejection = expect(configured).rejects.toBeInstanceOf(DaemonUnavailableError);
+      await jest.advanceTimersByTimeAsync(2399);
+      expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await configuredRejection;
+
+      const overridden = runDaemonCommand('search', ['q'], {
+        env: {
+          KB_DAEMON_URL: 'http://127.0.0.1:17799/',
+          KB_DAEMON_CLIENT_TIMEOUT_MS: '2400',
+        },
+        fetchImpl,
+        timeoutMs: 25,
+      });
+      const overriddenRejection = expect(overridden).rejects.toBeInstanceOf(DaemonUnavailableError);
+      await jest.advanceTimersByTimeAsync(25);
+      await overriddenRejection;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('rejects invalid configured daemon request timeouts', async () => {
+    await expect(runDaemonCommand('search', ['q'], {
+      env: {
+        KB_DAEMON_URL: 'http://127.0.0.1:17799/',
+        KB_DAEMON_CLIENT_TIMEOUT_MS: '300001',
+      },
+      fetchImpl: jest.fn<typeof fetch>(),
+    })).rejects.toThrow('invalid KB_DAEMON_CLIENT_TIMEOUT_MS: 300001');
   });
 
   itUnix('posts command requests over a Unix-domain socket', async () => {
@@ -162,6 +243,28 @@ describe('daemon client', () => {
         uptime_ms: 1234,
       });
     });
+  });
+
+  it('uses the configured health timeout independently of the request timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = pendingFetch();
+      const health = fetchDaemonHealth({
+        env: {
+          KB_DAEMON_URL: 'http://127.0.0.1:17799/',
+          KB_DAEMON_CLIENT_TIMEOUT_MS: '2400',
+          KB_DAEMON_HEALTH_TIMEOUT_MS: '700',
+        },
+        fetchImpl,
+      });
+      const healthRejection = expect(health).rejects.toBeInstanceOf(DaemonUnavailableError);
+      await jest.advanceTimersByTimeAsync(699);
+      expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await healthRejection;
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('tolerates an older daemon that only answers { status }', async () => {
@@ -313,6 +416,44 @@ describe('daemon client', () => {
       'kb daemon autostart: kb serve was not ready after 250ms; running command directly.\n',
     ]);
   });
+
+  it('caps autostart preflight health by the outer readiness deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      const child = { once: jest.fn(() => child), unref: jest.fn() };
+      const spawnImpl = jest.fn<SpawnDaemon>(() => child);
+      const healthSignals: AbortSignal[] = [];
+      const fetchImpl = jest.fn((url: URL | RequestInfo, init?: RequestInit): Promise<Response> => {
+        if (new URL(String(url)).pathname === '/v1/run') {
+          return Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }));
+        }
+        if (init?.signal != null) healthSignals.push(init.signal);
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        });
+      });
+      const result = tryRunDaemonCommand('search', ['q'], {
+        env: {
+          KB_DAEMON_AUTOSTART: 'on',
+          KB_DAEMON_URL: 'http://127.0.0.1:17799/',
+          KB_DAEMON_HEALTH_TIMEOUT_MS: '1000',
+        },
+        fetchImpl,
+        spawnImpl,
+        autostartDeadlineMs: 250,
+        notice: () => undefined,
+      });
+      const resultExpectation = expect(result).resolves.toBeNull();
+      await jest.advanceTimersByTimeAsync(249);
+      expect(healthSignals[0]?.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(2);
+      await resultExpectation;
+      expect(healthSignals[0]?.aborted).toBe(true);
+      expect(spawnImpl).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 function jsonResponse(payload: unknown, init: { status?: number } = {}): Response {
@@ -320,4 +461,10 @@ function jsonResponse(payload: unknown, init: { status?: number } = {}): Respons
     status: init.status ?? 200,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function pendingFetch(): jest.MockedFunction<typeof fetch> {
+  return jest.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+  })) as jest.MockedFunction<typeof fetch>;
 }
