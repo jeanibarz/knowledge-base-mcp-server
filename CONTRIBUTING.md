@@ -12,9 +12,14 @@ Thank you for your interest in contributing! Please read [`CLAUDE.md`](./CLAUDE.
 6. Commit using **conventional commits** — `feat:`, `fix(scope):`, `docs:`, `chore:` (see `git log` for prior style). PR titles are checked with `npm run lint:commit-message` because squash merges use the PR title as the final commit message.
 7. Push to the branch and open a Pull Request using the PR template.
 
+The marked rows in the PR template are verified against the actual diff by the
+`PR checklist` workflow. Check a marked row only when it is true; otherwise
+strike the row through and add a one-line reason. A blank marked row fails CI.
+
 ## Reporting Bugs
 
 Please use the [Bug Report issue template](./.github/ISSUE_TEMPLATE/bug_report.yml) and include:
+
 - What you observed
 - Where it occurs (`file.ts:line` or URL)
 - Why it matters

@@ -1,0 +1,53 @@
+name: PR checklist
+
+# Machine-verifies marked anti-drift checklist rows against the PR body and
+# merge-base diff using Kookr's shared deterministic engine. The full commit SHA
+# prevents upstream changes from silently altering this repository's gate.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: pr-checklist-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # Kookr PR-checklist conventional-evidence fix. Pin remains immutable even
+  # while the corresponding Kookr PR is reviewed.
+  KOOKR_ENGINE_REF: dbedfc798b6b619a3c80bd6bc3f9d8b91fdc890d
+  TSX_VERSION: 4.22.4
+
+jobs:
+  checklist:
+    name: Anti-drift checklist
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (full history for merge-base diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Fetch Kookr PR-checklist engine (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: kookr-ai/kookr
+          ref: ${{ env.KOOKR_ENGINE_REF }}
+          path: .kookr-engine
+          persist-credentials: false
+
+      - name: Verify checklist against diff
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          printf '%s' "$PR_BODY" | npx --yes "tsx@${TSX_VERSION}" \
+            .kookr-engine/bin/kookr.js pr-checklist verify \
+            --base "${{ github.base_ref }}" \
+            --pr-body -
