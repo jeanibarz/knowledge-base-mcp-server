@@ -235,9 +235,11 @@ describe('cache-aware reindex estimate (#408)', () => {
     expect(est).toEqual({ total_chunks: 4, cache_hits: 2, retry_skips: 0, cold_chunks: 2 });
   });
 
-  it('prices only cold chunks for the LRA-window guard', async () => {
+  it('adds embedding rebuild cost to cold-preface cost for the LRA-window guard', async () => {
     // 1000 chunks × 8s = 8000s (~2h13m) would cross 06:00 UTC from a
-    // 04:00 start. With 990 chunks cached, only 10 are cold → 80s.
+    // 04:00 start.
+    // With 990 chunks cached, only 10 are cold: 80s of preface work plus
+    // 30s to rebuild embeddings for all 1000 chunks = 110s.
     await writeManifest('alpha', 'note', 1000);
     const cp = (await import('./contextual-preface.js')) as ContextualPrefaceModule;
     const cachedChunks = Array.from({ length: 990 }, (_unused, i) => ({
@@ -254,12 +256,39 @@ describe('cache-aware reindex estimate (#408)', () => {
       runUpdateIndex: async () => makeNeverRunSummary(),
     });
     expect(result.outcome).toBe('completed');
-    expect(result.estimated_seconds).toBe(80);
+    expect(result.estimated_seconds).toBe(110);
     expect(result.contextual_estimate).toEqual({
       total_chunks: 1000,
       cache_hits: 990,
       retry_skips: 0,
       cold_chunks: 10,
+    });
+  });
+
+  it('prices embedding rebuilds when every contextual preface is cached', async () => {
+    await writeManifest('alpha', 'note', 1000);
+    const cp = (await import('./contextual-preface.js')) as ContextualPrefaceModule;
+    const cachedChunks = Array.from({ length: 1000 }, (_unused, i) => ({
+      chunk_index: i,
+      chunk_hash: `h${i}`,
+      preface: `ctx ${i}`,
+    }));
+    await writeSidecar(cp, 'alpha', 'note', cachedChunks);
+
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: false,
+      now: new Date(Date.UTC(2026, 4, 15, 5, 59, 45)),
+      resolveKbs: async () => ['alpha'],
+      runUpdateIndex: async () => makeNeverRunSummary(),
+    });
+
+    expect(result.outcome).toBe('guard_blocked');
+    expect(result.estimated_seconds).toBe(30);
+    expect(result.contextual_estimate).toMatchObject({
+      total_chunks: 1000,
+      cache_hits: 1000,
+      cold_chunks: 0,
     });
   });
 
