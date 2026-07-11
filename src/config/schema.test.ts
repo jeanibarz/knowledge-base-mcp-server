@@ -301,6 +301,9 @@ describe('CONFIG_SCHEMA registrations for env-usage guard baseline (#776)', () =
   const baselinedNames = [
     'KB_DECOMPOSE_LLM_ENDPOINT',
     'KB_DECOMPOSE_LLM_MODEL',
+    'KB_DECOMPOSE_CACHE_ENABLED',
+    'KB_DECOMPOSE_CACHE_LRU_MAX',
+    'KB_DECOMPOSE_CACHE_DISK_MAX_BYTES',
     'KB_DENSE_DEGRADE_ON_PROVIDER_ERROR',
     'KB_EMBEDDING_TASK_PREFIXES',
     'KB_LOG_MAX_BYTES',
@@ -328,6 +331,9 @@ describe('CONFIG_SCHEMA registrations for env-usage guard baseline (#776)', () =
     const report = validateConfigEnv({
       KB_DECOMPOSE_LLM_ENDPOINT: 'mock://decompose',
       KB_DECOMPOSE_LLM_MODEL: 'local-model',
+      KB_DECOMPOSE_CACHE_ENABLED: 'on',
+      KB_DECOMPOSE_CACHE_LRU_MAX: '128',
+      KB_DECOMPOSE_CACHE_DISK_MAX_BYTES: '33554432',
       KB_DENSE_DEGRADE_ON_PROVIDER_ERROR: 'on',
       KB_EMBEDDING_TASK_PREFIXES: 'off',
       KB_LOG_MAX_BYTES: '1048576',

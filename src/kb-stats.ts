@@ -390,7 +390,7 @@ function buildFlatSearchLatencyAdvisory(
       'issue #596 is blocked until a viable tunable backend lands.',
     docs: [
       'docs/operations/index-quantization.md#hnsw--ann-status',
-      'docs/architecture/adr/0010-hnsw-binding-evaluation.md',
+      'docs/architecture/adr/0011-hnsw-binding-evaluation.md',
       'https://github.com/jeanibarz/knowledge-base-mcp-server/issues/596',
     ],
   };

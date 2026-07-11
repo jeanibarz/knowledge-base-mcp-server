@@ -34,6 +34,7 @@ flowchart LR
       Integrity["integrity.json<br/>backend, index type, hashes, HNSW params"]
       Cas[".docstore-cas/<br/>canonical FAISS docstore payloads"]
       QueryCache["cache/queries/&lt;model_id&gt;/<br/>query embedding cache"]
+      DecompositionCache["cache/query-decompositions/<br/>optional decomposition result cache"]
       Legacy["faiss.index/<br/>legacy layout, read fallback"]
 
     Active --> ModelDir
@@ -50,6 +51,7 @@ flowchart LR
     Version --> Integrity
     Docs -.hardlink when FAISS dedup succeeds.-> Cas
     ModelDir --> QueryCache
+    Models --> DecompositionCache
     ModelDir -.pre-RFC-014.-> Legacy
   end
 ```
@@ -139,6 +141,20 @@ normalized query. The vector is stored as `<sha>.f32`; metadata is stored as
 incomplete entries are removed and treated as misses. Operators can disable it
 with `KB_QUERY_CACHE=off` or per-call CLI flags where supported.
 
+### Query decomposition cache
+
+When `KB_DECOMPOSE_CACHE_ENABLED=on`,
+`$FAISS_INDEX_PATH/cache/query-decompositions/<prefix>/<sha>.json` stores the
+subqueries returned by LLM query decomposition. The SHA-256 key covers the
+schema version, model id, and normalized query. Each record also includes a
+checksum of its subquery list. Invalid or corrupt records are deleted and
+treated as misses; writes use a temporary file plus atomic rename.
+
+The disk tier is paired with a process-local LRU. Operators can bound the tiers
+with `KB_DECOMPOSE_CACHE_LRU_MAX` (default `256`, where `0` disables the memory
+tier) and `KB_DECOMPOSE_CACHE_DISK_MAX_BYTES` (default `67108864`). Oldest disk
+entries are removed when the byte budget is exceeded. The cache is an optional
+latency/cost optimization and does not change retrieval correctness.
 ### Model sidecar files
 
 Each model directory can also contain:

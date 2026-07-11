@@ -61,6 +61,9 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>KB_LLM_FAKE_RULES</code> | <code>path</code> | _unset_ |  |  | uses default |  |
 | <code>KB_DECOMPOSE_LLM_ENDPOINT</code> | <code>url</code> | _unset_ | protocols: <code>http:</code>, <code>https:</code>, <code>mock:</code> |  | uses default | OpenAI-compatible endpoint used only by LLM query decomposition; falls back to KB_LLM_ENDPOINT when unset. |
 | <code>KB_DECOMPOSE_LLM_MODEL</code> | <code>string</code> | _unset_ |  |  | kept as set | Model override used only by LLM query decomposition; falls back to KB_LLM_MODEL when unset. |
+| <code>KB_DECOMPOSE_CACHE_ENABLED</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code>, <code>no</code>, <code>enabled</code>, <code>disabled</code> |  | uses default | Enables the process LRU and persistent disk cache for query-decomposition results. |
+| <code>KB_DECOMPOSE_CACHE_LRU_MAX</code> | <code>integer</code> | <code>256</code> |  | >= <code>0</code> | uses default | Maximum query-decomposition entries retained in the process LRU; 0 disables the memory tier. |
+| <code>KB_DECOMPOSE_CACHE_DISK_MAX_BYTES</code> | <code>integer</code> | <code>67108864</code> |  | >= <code>1</code> | uses default | Maximum bytes retained under $FAISS_INDEX_PATH/cache/query-decompositions. |
 | <code>KB_LLM_CONFIG_DIR</code> | <code>path</code> | <code>$XDG_CONFIG_HOME/kb/llm or ~/.config/kb/llm</code> |  |  | uses default |  |
 | <code>KB_LLM_STATE_DIR</code> | <code>path</code> | <code>$XDG_STATE_HOME/kb/llm or ~/.local/state/kb/llm</code> |  |  | uses default |  |
 | <code>KB_LLM_SYSTEMD_USER_DIR</code> | <code>path</code> | <code>$XDG_CONFIG_HOME/systemd/user or ~/.config/systemd/user</code> |  |  | uses default |  |

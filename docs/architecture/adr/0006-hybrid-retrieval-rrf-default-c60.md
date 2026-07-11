@@ -21,7 +21,7 @@ Use **RRF with `c = 60`** as the default and only fuser for `--mode=hybrid` and 
 
 - **Score-distribution invariance.** Dense scores are FAISS L2 distances on float vectors; BM25 scores are TF-IDF aggregates over token frequencies. There is no principled normalization between them. RRF sidesteps the question entirely.
 - **Cross-model stability.** When users add a second embedding model (RFC 013 multi-model support), the dense score distribution shifts; RRF keeps fusion stable.
-- **One-knob simplicity.** Cormack's `c=60` choice has held up empirically across TREC corpora and inside LangChain's production retriever stack. We start from the same default and let operators tune via per-retriever weights (`KB_HYBRID_DENSE_WEIGHT`, `KB_HYBRID_LEXICAL_WEIGHT`) when their workload warrants it.
+- **One-knob simplicity.** Cormack's `c=60` choice has held up empirically across TREC corpora and inside LangChain's production retriever stack. The shipped surface keeps that constant and equal dense/lexical weights; neither setting is currently exposed as an operator environment variable.
 - **Existing convention.** RFC 006 §5.4 already chose RRF for the dense-multi-provider fusion path. Reusing the same combinator for sparse+dense keeps the codebase coherent and lets the eventual three-way (dense_A + dense_B + lexical) fusion in RFC 006's `deep` tier be a one-line extension instead of a redesign.
 - **Per-retriever weight headroom.** RRF accepts `w_r` weights without changing the math, so future ablations on `α` can land as `weights = { dense: α, lexical: 1-α }` without reworking the combinator.
 

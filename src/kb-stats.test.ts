@@ -540,7 +540,7 @@ describe('computeKbStats', () => {
         advisory: {
           code: 'FLAT_SCAN_P95_ABOVE_THRESHOLD',
           docs: expect.arrayContaining([
-            'docs/architecture/adr/0010-hnsw-binding-evaluation.md',
+            'docs/architecture/adr/0011-hnsw-binding-evaluation.md',
             'https://github.com/jeanibarz/knowledge-base-mcp-server/issues/596',
           ]),
         },
