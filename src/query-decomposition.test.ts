@@ -1,10 +1,12 @@
-import { describe, expect, it } from '@jest/globals';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import {
+  createLocalLlmQueryDecomposer,
   createRuleBasedQueryDecomposer,
   defaultQueryDecompositionBudget,
   queryDecompositionTraceToJson,
   runQueryDecomposition,
 } from './query-decomposition.js';
+import type { DecompositionCache } from './decomposition-cache.js';
 import type { HybridChunk } from './hybrid-retrieval.js';
 
 function chunk(source: string, chunkIndex: number, body: string): HybridChunk {
@@ -23,6 +25,64 @@ describe('rule-based query decomposition', () => {
       'Which kinase regulates MAPK',
       'where is it expressed?',
     ]);
+  });
+});
+
+describe('LLM query decomposition cache (#736)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('reuses a successful result for a normalized query and resolved model', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '{"subqueries":["hop one","hop two"]}' } }],
+      model: 'model-a',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const values = new Map<string, string[]>();
+    const get = jest.fn<DecompositionCache['get']>((model, query) =>
+      values.get(`${model}:${query.toLowerCase().replace(/\s+/g, ' ')}`)?.slice() ?? null);
+    const set = jest.fn<DecompositionCache['set']>((model, query, subqueries) => {
+      values.set(`${model}:${query.toLowerCase().replace(/\s+/g, ' ')}`, [...subqueries]);
+    });
+    const cache: DecompositionCache = {
+      get,
+      set,
+    };
+    const provider = createLocalLlmQueryDecomposer(undefined, {
+      endpoint: 'http://llm.test',
+      model: 'model-a',
+      cache,
+    });
+
+    await expect(provider.decompose('Multi   hop query')).resolves.toEqual(['hop one', 'hop two']);
+    await expect(provider.decompose('multi hop query')).resolves.toEqual(['hop one', 'hop two']);
+    expect(get).toHaveBeenNthCalledWith(1, 'model-a', 'Multi   hop query');
+    expect(set).toHaveBeenCalledWith('model-a', 'Multi   hop query', ['hop one', 'hop two']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never caches provider failures, invalid responses, or offline fallback results', async () => {
+    const fallback = createRuleBasedQueryDecomposer();
+    const cache: DecompositionCache = {
+      get: jest.fn<DecompositionCache['get']>().mockReturnValue(null),
+      set: jest.fn<DecompositionCache['set']>(),
+    };
+    const fetchMock = jest.spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: '{"subqueries":[]}' } }],
+        model: 'model-a',
+      }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const provider = createLocalLlmQueryDecomposer(fallback, {
+      endpoint: 'http://llm.test',
+      model: 'model-a',
+      cache,
+    });
+
+    await provider.decompose('alpha and beta');
+    await provider.decompose('alpha and beta');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(cache.set).not.toHaveBeenCalled();
   });
 });
 

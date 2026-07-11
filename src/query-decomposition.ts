@@ -1,6 +1,9 @@
 import { callChatCompletion } from './llm-client.js';
 import type { HybridChunk } from './hybrid-retrieval.js';
 import { chunkIdFromMetadata } from './rrf.js';
+import { DiskTieredDecompositionCache } from './decomposition-cache.js';
+import type { DecompositionCache } from './decomposition-cache.js';
+import { resolveLlmProvider } from './config/llm-provider.js';
 
 export const QUERY_DECOMPOSITION_SCHEMA_VERSION = 'kb.search.query-decomposition.v1';
 
@@ -87,6 +90,7 @@ export interface LocalLlmQueryDecomposerOptions {
   endpoint?: string;
   model?: string;
   timeoutMs?: number;
+  cache?: DecompositionCache;
 }
 
 const PROVIDER_TIMEOUT = Symbol('query-decomposition-provider-timeout');
@@ -166,15 +170,19 @@ export function createLocalLlmQueryDecomposer(
   fallback: QueryDecompositionProvider = createRuleBasedQueryDecomposer(),
   options: LocalLlmQueryDecomposerOptions = {},
 ): QueryDecompositionProvider {
+  const cache = options.cache ?? new DiskTieredDecompositionCache();
   return {
     name: 'local-llm',
     async decompose(query) {
       const endpoint = resolveLocalLlmEndpoint(options);
       if (endpoint === null) return fallback.decompose(query);
+      const model = resolveLocalLlmModel(options);
+      const cached = cache.get(model, query);
+      if (cached !== null) return cached;
       try {
         const result = await callChatCompletion({
           endpoint,
-          model: options.model ?? process.env.KB_DECOMPOSE_LLM_MODEL ?? process.env.KB_LLM_MODEL,
+          model,
           temperature: 0,
           timeoutMs: options.timeoutMs ?? 30_000,
           retry: false,
@@ -187,7 +195,9 @@ export function createLocalLlmQueryDecomposer(
           ],
         });
         const parsed = parseLlmSubqueries(result.content);
-        return parsed.length > 0 ? parsed : fallback.decompose(query);
+        if (parsed.length === 0) return fallback.decompose(query);
+        cache.set(model, query, parsed);
+        return parsed;
       } catch {
         // Local LLM decomposition is best-effort; endpoint errors degrade to the
         // deterministic rule provider so opt-in retrieval stays usable offline.
@@ -555,6 +565,10 @@ function resolveLocalLlmEndpoint(options: LocalLlmQueryDecomposerOptions): strin
   const raw = options.endpoint ?? process.env.KB_DECOMPOSE_LLM_ENDPOINT ?? process.env.KB_LLM_ENDPOINT;
   if (raw === undefined || raw.trim() === '') return null;
   return raw.trim();
+}
+
+function resolveLocalLlmModel(options: LocalLlmQueryDecomposerOptions): string {
+  return options.model ?? process.env.KB_DECOMPOSE_LLM_MODEL ?? resolveLlmProvider().model ?? 'local-model';
 }
 
 function dedupeQueries(queries: readonly string[]): string[] {
