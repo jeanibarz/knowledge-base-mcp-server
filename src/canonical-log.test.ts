@@ -94,6 +94,49 @@ describe('canonical log line schema (#216)', () => {
     expect(json.indexOf('"degraded_stages"')).toBeLessThan(json.indexOf('"degrade_reason"'));
   });
 
+  // Issue #737 — a partial multi-KB search carries the per-KB fan-out failure
+  // count and the failed KB *names* on the canonical line.
+  it('carries kb_failures and failed_kbs (names only), capped and ordered', () => {
+    const event = normalizeCanonicalEvent({
+      request_id: 'req-737',
+      ts: '2026-05-12T00:00:00.000Z',
+      process: 'cli',
+      cmd: 'search',
+      took_ms: 7,
+      result_count: 3,
+      kb_failures: 2,
+      failed_kbs: ['kb-broken', 'kb-corrupt'],
+    });
+
+    expect(event.kb_failures).toBe(2);
+    expect(event.failed_kbs).toEqual(['kb-broken', 'kb-corrupt']);
+
+    const json = stableCanonicalJson(event);
+    // Names only — never an absolute path.
+    expect(json).not.toContain('/');
+    // Canonical field order: kb_failures/failed_kbs sit after top_sources and
+    // before took_ms.
+    expect(json.indexOf('"kb_failures"')).toBeLessThan(json.indexOf('"failed_kbs"'));
+    expect(json.indexOf('"failed_kbs"')).toBeLessThan(json.indexOf('"took_ms"'));
+  });
+
+  it('caps failed_kbs to the documented maximum without truncating the count', () => {
+    const names = Array.from({ length: 25 }, (_unused, index) => `kb-${index}`);
+    const event = normalizeCanonicalEvent({
+      request_id: 'req-737-cap',
+      ts: '2026-05-12T00:00:00.000Z',
+      process: 'cli',
+      cmd: 'search',
+      took_ms: 7,
+      kb_failures: 25,
+      failed_kbs: names,
+    });
+
+    expect(event.kb_failures).toBe(25);
+    expect(event.failed_kbs).toHaveLength(20);
+    expect(event.failed_kbs?.[0]).toBe('kb-0');
+  });
+
   it('derives aggregate degraded stages from known classified fallback sub-records', () => {
     const event = normalizeCanonicalEvent({
       request_id: 'req-degraded',

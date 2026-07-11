@@ -61,6 +61,8 @@ import * as path from 'path';
 import { LexicalIndex, type LexicalRankingUnit, type LexicalSearchResult } from './lexical-index.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { listKnowledgeBases } from './kb-fs.js';
+import { logger } from './logger.js';
+import { kbSearchFailureMetrics } from './metrics.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
 import type { RetrievalViewKind } from './retrieval-views.js';
 
@@ -226,6 +228,12 @@ export interface LexicalLegOptions {
    * fatal — the leg continues with the remaining KBs. The hook lets each
    * surface log to its preferred channel (logger.warn for MCP, stderr for
    * CLI, throw for eval).
+   *
+   * Issue #737 — when omitted, a default hook logs a warning so a failing KB
+   * is never *silently* dropped from a "search everything" result. Either way,
+   * every failure increments `kbSearchFailureMetrics` and is counted in
+   * `failed`/`failedKbs`, so the loss is observable via `/metrics` and the
+   * canonical log regardless of the caller's choice.
    */
   onError?: (kbName: string, err: Error) => void;
   /**
@@ -239,8 +247,16 @@ export interface LexicalLegResult {
   hits: LexicalSearchResult[];
   /** Number of KBs whose index was refreshed during this call. */
   refreshed: number;
-  /** Number of KBs whose load/refresh/query failed (and were swallowed). */
+  /** Number of KBs whose load/refresh/query failed. */
   failed: number;
+  /**
+   * KB *names* (never paths) that failed the fan-out, in iteration order.
+   * `runLexicalLeg` always populates it (length equals `failed`); it is
+   * optional so callers that assemble a result by hand — e.g. aggregating
+   * across decomposed subqueries — need not thread it. Lets callers surface
+   * `failed_kbs` on the canonical log line (issue #737).
+   */
+  failedKbs?: string[];
 }
 
 /**
@@ -253,14 +269,17 @@ export interface LexicalLegResult {
  *   3. Query the top-`fetchK` hits and accumulate them.
  *
  * After the iteration, the merged hits are score-sorted descending and
- * clipped to `fetchK`. Per-KB failures are routed to `onError` (if provided)
- * and counted in the returned `failed`; the leg never throws on a per-KB
- * error.
+ * clipped to `fetchK`. Per-KB failures are routed to `onError` (or, when the
+ * caller supplies none, to a default warning logger so they are never silently
+ * swallowed — issue #737), counted in the returned `failed`, recorded in
+ * `kbSearchFailureMetrics`, and named in `failedKbs`; the leg never throws on
+ * a per-KB error.
  */
 export async function runLexicalLeg(opts: LexicalLegOptions): Promise<LexicalLegResult> {
   const load = opts.loadIndex ?? LexicalIndex.load.bind(LexicalIndex);
+  const onError = opts.onError ?? defaultLexicalLegOnError;
   let refreshed = 0;
-  let failed = 0;
+  const failedKbs: string[] = [];
   const all: LexicalSearchResult[] = [];
   for (const { kbName, kbPath } of opts.kbs) {
     try {
@@ -277,10 +296,21 @@ export async function runLexicalLeg(opts: LexicalLegOptions): Promise<LexicalLeg
       });
       for (const h of hits) all.push(h);
     } catch (err) {
-      failed += 1;
-      opts.onError?.(kbName, err as Error);
+      failedKbs.push(kbName);
+      kbSearchFailureMetrics.record(kbName);
+      onError(kbName, err as Error);
     }
   }
   all.sort((a, b) => b.score - a.score);
-  return { hits: all.slice(0, opts.fetchK), refreshed, failed };
+  return { hits: all.slice(0, opts.fetchK), refreshed, failed: failedKbs.length, failedKbs };
+}
+
+/**
+ * Default per-KB failure hook (issue #737). Used when the caller supplies no
+ * `onError`, so a KB that drops out of a multi-KB search is logged rather than
+ * silently swallowed. Logs the KB *name* only — never the absolute path — to
+ * avoid leaking filesystem layout into logs.
+ */
+function defaultLexicalLegOnError(kbName: string, err: Error): void {
+  logger.warn(`lexical leg: KB "${kbName}" failed and was dropped from partial results: ${err.message}`);
 }

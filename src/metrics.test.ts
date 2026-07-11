@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import {
   bucketIndexForLatency,
   instrumentEmbeddingsClient,
+  KbSearchFailureMetrics,
   LATENCY_BUCKET_BOUNDS_MS,
   ProviderCallMetrics,
   quantileFromBuckets,
@@ -331,5 +332,26 @@ describe('instrumentEmbeddingsClient', () => {
     instrumentEmbeddingsClient(client, 'm', { metrics, now: () => 0 });
     expect(await client.embedQuery('x')).toEqual([0.1, 0.2]);
     expect(await client.embedDocuments(['a', 'b'])).toEqual([[0.1, 0.2], [0.1, 0.2]]);
+  });
+});
+
+describe('KbSearchFailureMetrics (issue #737 — per-KB fan-out failures)', () => {
+  it('counts failures per KB name and totals them', () => {
+    const metrics = new KbSearchFailureMetrics();
+    metrics.record('kb-a');
+    metrics.record('kb-b');
+    metrics.record('kb-a');
+
+    const snapshot = metrics.snapshot();
+    expect(snapshot.total).toBe(3);
+    expect(snapshot.by_kb).toEqual({ 'kb-a': 2, 'kb-b': 1 });
+  });
+
+  it('reports an empty snapshot before any failure and after reset', () => {
+    const metrics = new KbSearchFailureMetrics();
+    expect(metrics.snapshot()).toEqual({ total: 0, by_kb: {} });
+    metrics.record('kb-a');
+    metrics.reset();
+    expect(metrics.snapshot()).toEqual({ total: 0, by_kb: {} });
   });
 });

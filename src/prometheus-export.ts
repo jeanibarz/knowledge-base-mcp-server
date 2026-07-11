@@ -6,6 +6,8 @@ import {
 } from './provider-breaker.js';
 import {
   LATENCY_BUCKET_BOUNDS_MS,
+  kbSearchFailureMetrics,
+  type KbSearchFailureSnapshot,
   type LatencyHistogramSnapshot,
   type RerankMetricsSnapshot,
   type SearchLatencyMetricsSnapshot,
@@ -156,6 +158,13 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     help: 'Search requests degraded from dense-provider retrieval to lexical-only output by bounded reason.',
     labels: ['mode', 'reason'],
     emittedWhen: 'Emitted after degraded daemon-served search requests are observed.',
+  },
+  {
+    name: 'kb_search_kb_failures_total',
+    type: 'counter',
+    help: 'Per-KB fan-out failures in the multi-KB search leg (load/refresh/query errors that yielded partial results) by knowledge base.',
+    labels: ['kb'],
+    emittedWhen: 'Emitted once per knowledge base that has failed at least one fan-out during the process lifetime.',
   },
   {
     name: 'kb_rerank_invocations_total',
@@ -368,7 +377,11 @@ function defineMetric(name: string, samples: MetricSample[]): MetricDefinition {
   };
 }
 
-export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
+export function formatKbStatsOpenMetrics(
+  payload: KbStatsPayload,
+  options: { kbSearchFailures?: KbSearchFailureSnapshot } = {},
+): string {
+  const kbSearchFailures = options.kbSearchFailures ?? kbSearchFailureMetrics.snapshot();
   const metrics: MetricDefinition[] = [
     defineMetric('kb_build_info', [{
         name: 'kb_build_info',
@@ -423,6 +436,7 @@ export function formatKbStatsOpenMetrics(payload: KbStatsPayload): string {
     ...providerLatencyMetrics(payload),
     ...searchLatencyCounterMetrics(payload.search_latency),
     ...searchDegradedCounterMetrics(payload.search_latency),
+    ...kbSearchFailureCounterMetrics(kbSearchFailures),
     ...rerankCounterMetrics(payload.rerank),
     defineMetric('kb_query_cache_hits_total', [{ name: 'kb_query_cache_hits_total', value: payload.query_cache.hits }]),
     defineMetric('kb_query_cache_misses_total', [{ name: 'kb_query_cache_misses_total', value: payload.query_cache.misses }]),
@@ -601,6 +615,15 @@ function searchDegradedCounterMetrics(snapshot: SearchLatencyMetricsSnapshot): M
     }
   }
   return [defineMetric('kb_search_degraded_total', samples)];
+}
+
+function kbSearchFailureCounterMetrics(snapshot: KbSearchFailureSnapshot): MetricDefinition[] {
+  const samples: MetricSample[] = Object.entries(snapshot.by_kb).map(([kb, count]) => ({
+    name: 'kb_search_kb_failures_total',
+    labels: { kb },
+    value: count,
+  }));
+  return [defineMetric('kb_search_kb_failures_total', samples)];
 }
 
 function rerankCounterMetrics(snapshot: RerankMetricsSnapshot | undefined): MetricDefinition[] {

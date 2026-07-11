@@ -9,6 +9,13 @@ import type { WriteLockResourceKind } from './metrics.js';
 
 export const CANONICAL_SCHEMA_VERSION = 'kb-canonical.v1';
 
+/**
+ * Cap on the number of failed-KB names carried in a single canonical line
+ * (issue #737), bounding log size when a fan-out fails across many KBs. The
+ * count in `kb_failures` is never truncated — only the name list is clipped.
+ */
+export const MAX_FAILED_KBS = 20;
+
 export type CanonicalProcess = 'mcp' | 'cli';
 export type CanonicalCacheStatus = QueryCacheOutcome;
 export type CanonicalSearchMode = 'dense' | 'lexical' | 'hybrid' | 'auto';
@@ -75,6 +82,17 @@ export interface CanonicalLogEvent {
   result_count?: number;
   top_score?: number;
   top_sources?: string[];
+  /**
+   * Issue #737 — number of knowledge bases whose per-KB fan-out failed during
+   * a multi-KB search (load/refresh/query error). Present only when at least
+   * one KB failed, so a partial "search everything" result is never silent.
+   */
+  kb_failures?: number;
+  /**
+   * KB *names* (never absolute paths — same redaction convention as
+   * `top_sources`) that failed the multi-KB fan-out, capped for log size.
+   */
+  failed_kbs?: string[];
   took_ms: number;
   lock_wait_ms?: number;
   lock_hold_ms?: number;
@@ -125,6 +143,8 @@ const CANONICAL_FIELD_ORDER: readonly (keyof CanonicalLogEvent)[] = [
   'result_count',
   'top_score',
   'top_sources',
+  'kb_failures',
+  'failed_kbs',
   'took_ms',
   'lock_wait_ms',
   'lock_hold_ms',
@@ -186,6 +206,8 @@ export function normalizeCanonicalEvent(input: CanonicalLogInput): CanonicalLogE
   assignIfDefined(event, 'result_count', input.result_count);
   assignIfDefined(event, 'top_score', input.top_score);
   assignIfDefined(event, 'top_sources', input.top_sources?.slice(0, 3));
+  assignIfDefined(event, 'kb_failures', input.kb_failures);
+  assignIfDefined(event, 'failed_kbs', input.failed_kbs?.slice(0, MAX_FAILED_KBS));
   assignIfDefined(event, 'lock_wait_ms', roundNonNegative(input.lock_wait_ms));
   assignIfDefined(event, 'lock_hold_ms', roundNonNegative(input.lock_hold_ms));
   assignIfDefined(event, 'lock_resource_kind', input.lock_resource_kind);
