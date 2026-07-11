@@ -1,0 +1,247 @@
+{
+  "add_document": {
+    "type": "object",
+    "properties": {
+      "knowledge_base_name": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "knowledge_base_name",
+      "path",
+      "content"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "ask_knowledge": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "maxLength": 8192
+      },
+      "knowledge_base_name": {
+        "type": "string"
+      },
+      "model_name": {
+        "type": "string"
+      },
+      "llm_profile": {
+        "type": "string"
+      },
+      "k": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      },
+      "context_budget_tokens": {
+        "type": "integer",
+        "minimum": 64
+      },
+      "task_context": {
+        "type": "string"
+      },
+      "gate": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ]
+      },
+      "timing": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "delete_document": {
+    "type": "object",
+    "properties": {
+      "knowledge_base_name": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "knowledge_base_name",
+      "path"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "diff_index": {
+    "type": "object",
+    "properties": {
+      "before": {
+        "type": "string"
+      },
+      "after": {
+        "type": "string"
+      },
+      "queries": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 8192
+        },
+        "minItems": 1,
+        "maxItems": 64
+      },
+      "model_name": {
+        "type": "string"
+      },
+      "knowledge_base_name": {
+        "type": "string"
+      },
+      "top_k": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100
+      },
+      "threshold": {
+        "type": "number"
+      },
+      "format": {
+        "type": "string",
+        "enum": [
+          "json",
+          "markdown"
+        ]
+      }
+    },
+    "required": [
+      "before",
+      "after",
+      "queries"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "kb_stats": {
+    "type": "object",
+    "properties": {
+      "knowledge_base_name": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "list_knowledge_bases": {
+    "type": "object",
+    "properties": {}
+  },
+  "list_models": {
+    "type": "object",
+    "properties": {}
+  },
+  "reindex_knowledge_base": {
+    "type": "object",
+    "properties": {
+      "knowledge_base_name": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "retrieve_knowledge": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "maxLength": 8192
+      },
+      "knowledge_base_name": {
+        "type": "string"
+      },
+      "threshold": {
+        "type": "number"
+      },
+      "model_name": {
+        "type": "string"
+      },
+      "extensions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 64
+      },
+      "path_glob": {
+        "type": "string",
+        "maxLength": 1024
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 64
+      },
+      "since": {
+        "type": "string"
+      },
+      "until": {
+        "type": "string"
+      },
+      "context_before": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5
+      },
+      "context_after": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5
+      },
+      "context_window": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5
+      },
+      "search_mode": {
+        "type": "string",
+        "enum": [
+          "dense",
+          "hybrid"
+        ]
+      },
+      "task_context": {
+        "type": "string"
+      },
+      "gate": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ]
+      },
+      "rerank": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ]
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+}
