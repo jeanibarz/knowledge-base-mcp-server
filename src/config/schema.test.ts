@@ -233,6 +233,16 @@ describe('config schema validation (FR-OBS-470)', () => {
         source: 'default',
         redacted: false,
       }),
+      expect.objectContaining({
+        name: 'KB_DAEMON_CLIENT_TIMEOUT_MS',
+        value: '1500',
+        source: 'default',
+      }),
+      expect.objectContaining({
+        name: 'KB_DAEMON_HEALTH_TIMEOUT_MS',
+        value: '500',
+        source: 'default',
+      }),
     ]));
   });
 

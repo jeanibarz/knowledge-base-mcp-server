@@ -382,9 +382,14 @@ async function runDaemonCommandAfterAutostart(
   args: string[],
   options: DaemonClientOptions,
 ): Promise<DaemonRunResult | null> {
+  const now = options.now ?? Date.now;
+  const deadlineAt = now() + (options.autostartDeadlineMs ?? DEFAULT_AUTOSTART_DEADLINE_MS);
   let preflight: DaemonHealth | null;
   try {
-    preflight = await tryFetchDaemonHealth(options);
+    preflight = await tryFetchDaemonHealth({
+      ...options,
+      timeoutMs: Math.min(daemonHealthTimeoutMs(options), Math.max(1, deadlineAt - now())),
+    });
   } catch (err) {
     // Something is already answering at the URL, but not with the kb daemon
     // health contract. Do not start another process into a foreign listener.
@@ -393,7 +398,7 @@ async function runDaemonCommandAfterAutostart(
 
   if (preflight === null) {
     const started = startDetachedDaemon(options);
-    const health = await pollDaemonReady(options);
+    const health = await pollDaemonReady(options, deadlineAt);
     if (health === null) {
       writeNotice(options, autostartTimeoutNotice(options));
       return null;
@@ -460,12 +465,10 @@ function ignoreSpawnError(child: SpawnedDaemonProcess): void {
   child.once('error', () => undefined);
 }
 
-async function pollDaemonReady(options: DaemonClientOptions): Promise<DaemonHealth | null> {
-  const deadlineMs = options.autostartDeadlineMs ?? DEFAULT_AUTOSTART_DEADLINE_MS;
+async function pollDaemonReady(options: DaemonClientOptions, deadlineAt: number): Promise<DaemonHealth | null> {
   const pollIntervalMs = options.autostartPollIntervalMs ?? DEFAULT_AUTOSTART_POLL_INTERVAL_MS;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
-  const deadlineAt = now() + deadlineMs;
   while (now() <= deadlineAt) {
     const health = await tryFetchDaemonHealth({
       ...options,
