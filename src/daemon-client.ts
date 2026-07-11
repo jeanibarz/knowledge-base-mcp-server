@@ -397,6 +397,10 @@ async function runDaemonCommandAfterAutostart(
   }
 
   if (preflight === null) {
+    if (now() >= deadlineAt) {
+      writeNotice(options, autostartTimeoutNotice(options));
+      return null;
+    }
     const started = startDetachedDaemon(options);
     const health = await pollDaemonReady(options, deadlineAt);
     if (health === null) {
@@ -469,7 +473,7 @@ async function pollDaemonReady(options: DaemonClientOptions, deadlineAt: number)
   const pollIntervalMs = options.autostartPollIntervalMs ?? DEFAULT_AUTOSTART_POLL_INTERVAL_MS;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
-  while (now() <= deadlineAt) {
+  while (now() < deadlineAt) {
     const health = await tryFetchDaemonHealth({
       ...options,
       timeoutMs: Math.min(daemonHealthTimeoutMs(options), Math.max(1, deadlineAt - now())),

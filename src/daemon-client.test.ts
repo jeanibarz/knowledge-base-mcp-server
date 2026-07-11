@@ -421,6 +421,7 @@ describe('daemon client', () => {
     jest.useFakeTimers();
     try {
       const child = { once: jest.fn(() => child), unref: jest.fn() };
+      const spawnImpl = jest.fn<SpawnDaemon>(() => child);
       const healthSignals: AbortSignal[] = [];
       const fetchImpl = jest.fn((url: URL | RequestInfo, init?: RequestInit): Promise<Response> => {
         if (new URL(String(url)).pathname === '/v1/run') {
@@ -438,7 +439,7 @@ describe('daemon client', () => {
           KB_DAEMON_HEALTH_TIMEOUT_MS: '1000',
         },
         fetchImpl,
-        spawnImpl: jest.fn<SpawnDaemon>(() => child),
+        spawnImpl,
         autostartDeadlineMs: 250,
         notice: () => undefined,
       });
@@ -448,6 +449,7 @@ describe('daemon client', () => {
       await jest.advanceTimersByTimeAsync(2);
       await resultExpectation;
       expect(healthSignals[0]?.aborted).toBe(true);
+      expect(spawnImpl).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
