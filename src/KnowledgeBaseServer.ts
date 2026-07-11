@@ -12,6 +12,7 @@ import {
   type ServerNotification,
   type ServerRequest,
   type TextContent,
+  type ToolAnnotations,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
@@ -51,6 +52,7 @@ import {
   KB_STATS_INPUT,
   REINDEX_KNOWLEDGE_BASE_INPUT,
   RETRIEVE_KNOWLEDGE_INPUT,
+  toolAnnotations,
 } from './mcp-tool-specs.js';
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
@@ -407,16 +409,22 @@ export class KnowledgeBaseServer {
     name: string,
     description: string,
     shape: z.ZodRawShape,
+    annotations: ToolAnnotations,
     handler: (args: Args, extra: ToolExtra) => Promise<CallToolResult>,
   ): void {
     // Call mcp.tool through a loosened signature: its generic
     // `tool<Args extends ZodRawShapeCompat>` overload instantiates ShapeOutput
     // over the shape, which trips TS2589 once the shape is a runtime value
-    // rather than an inline literal. The 4-arg (name, description, shape, cb)
-    // runtime form is unchanged; zod still validates `args` against `shape`
-    // before the handler runs.
+    // rather than an inline literal. The 5-arg
+    // (name, description, shape, annotations, cb) runtime form is unchanged;
+    // zod still validates `args` against `shape` before the handler runs.
     //
-    // Issue #795 — forward the SDK's second `extra` argument so handlers can
+    // Issue #798 — restore the SDK's
+    // `tool(name, description, paramsSchema, annotations, cb)` overload so each
+    // tool advertises its `ToolAnnotations` (readOnlyHint / destructiveHint /
+    // idempotentHint). The earlier loosening dropped that overload.
+    //
+    // Issue #795 — forward the SDK's trailing `extra` argument so handlers can
     // reach `_meta.progressToken` / `sendNotification`. Handlers that don't
     // emit progress simply omit the second parameter (fewer params stay
     // assignable), so the change is a no-op for them.
@@ -424,9 +432,10 @@ export class KnowledgeBaseServer {
       name: string,
       description: string,
       shape: z.ZodRawShape,
+      annotations: ToolAnnotations,
       cb: (args: unknown, extra: ToolExtra) => Promise<CallToolResult>,
     ) => void;
-    registerTool(name, description, shape, (args, extra) => handler(args as Args, extra));
+    registerTool(name, description, shape, annotations, (args, extra) => handler(args as Args, extra));
   }
 
   /**
@@ -465,9 +474,15 @@ export class KnowledgeBaseServer {
   }
 
   private registerTools(mcp: McpServer) {
+    // Issue #798 — each registration advertises its advisory ToolAnnotations
+    // (readOnlyHint / destructiveHint / idempotentHint) from the spec registry
+    // so MCP clients can gate auto-approval and confirm destructive writes. The
+    // zero-arg readers use the SDK's (name, description, annotations, cb)
+    // overload; shaped tools thread annotations through registerShapedTool.
     mcp.tool(
       'list_knowledge_bases',
       LIST_KNOWLEDGE_BASES_DESCRIPTION,
+      toolAnnotations('list_knowledge_bases'),
       async () => this.handleListKnowledgeBases()
     );
 
@@ -476,6 +491,7 @@ export class KnowledgeBaseServer {
       'retrieve_knowledge',
       RETRIEVE_KNOWLEDGE_DESCRIPTION,
       RETRIEVE_KNOWLEDGE_INPUT,
+      toolAnnotations('retrieve_knowledge'),
       this.handleRetrieveKnowledge.bind(this)
     );
 
@@ -484,6 +500,7 @@ export class KnowledgeBaseServer {
       'ask_knowledge',
       ASK_KNOWLEDGE_DESCRIPTION,
       ASK_KNOWLEDGE_INPUT,
+      toolAnnotations('ask_knowledge'),
       this.handleAskKnowledge.bind(this)
     );
 
@@ -492,6 +509,7 @@ export class KnowledgeBaseServer {
     mcp.tool(
       'list_models',
       LIST_MODELS_DESCRIPTION,
+      toolAnnotations('list_models'),
       async () => this.handleListModels()
     );
 
@@ -502,6 +520,7 @@ export class KnowledgeBaseServer {
       'kb_stats',
       KB_STATS_DESCRIPTION,
       KB_STATS_INPUT,
+      toolAnnotations('kb_stats'),
       this.handleKbStats.bind(this)
     );
 
@@ -510,6 +529,7 @@ export class KnowledgeBaseServer {
       'diff_index',
       DIFF_INDEX_DESCRIPTION,
       DIFF_INDEX_INPUT,
+      toolAnnotations('diff_index'),
       this.handleDiffIndex.bind(this)
     );
 
@@ -519,6 +539,7 @@ export class KnowledgeBaseServer {
         'add_document',
         ADD_DOCUMENT_DESCRIPTION,
         ADD_DOCUMENT_INPUT,
+        toolAnnotations('add_document'),
         this.handleAddDocument.bind(this)
       );
 
@@ -527,6 +548,7 @@ export class KnowledgeBaseServer {
         'delete_document',
         DELETE_DOCUMENT_DESCRIPTION,
         DELETE_DOCUMENT_INPUT,
+        toolAnnotations('delete_document'),
         this.handleDeleteDocument.bind(this)
       );
 
@@ -535,6 +557,7 @@ export class KnowledgeBaseServer {
         'reindex_knowledge_base',
         REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
         REINDEX_KNOWLEDGE_BASE_INPUT,
+        toolAnnotations('reindex_knowledge_base'),
         this.handleReindexKnowledgeBase.bind(this)
       );
     }
