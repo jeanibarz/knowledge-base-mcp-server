@@ -1,6 +1,7 @@
 import {
   isOllamaContextLengthError,
   isNonRetryableOllamaError,
+  isTransientOllamaSocketError,
   translateOllamaEmbeddingError,
   makeOllamaOnFailedAttempt,
 } from './ollama-error.js';
@@ -90,6 +91,65 @@ describe('isNonRetryableOllamaError', () => {
     });
     expect(isNonRetryableOllamaError(err)).toBe(true);
   });
+
+  // Issue #801 — transient runner-socket drops must stay retryable, even if a
+  // future daemon build wraps one in a ResponseError with an odd status.
+  it('leaves a raw EOF socket error retryable', () => {
+    const err = new Error(
+      'do embedding request: Post "http://127.0.0.1:40757/v1/embeddings": EOF',
+    );
+    expect(isNonRetryableOllamaError(err)).toBe(false);
+  });
+
+  it('does not flag a ResponseError-wrapped EOF as non-retryable', () => {
+    const err = new FakeOllamaResponseError(
+      'do embedding request: Post "http://127.0.0.1:40757/v1/embeddings": EOF',
+      500,
+    );
+    expect(isNonRetryableOllamaError(err)).toBe(false);
+  });
+});
+
+describe('isTransientOllamaSocketError', () => {
+  it.each([
+    'do embedding request: Post "http://127.0.0.1:40757/v1/embeddings": EOF',
+    'read ECONNRESET',
+    'socket hang up',
+    'ETIMEDOUT',
+    'connect ECONNREFUSED 127.0.0.1:40757',
+  ])('classifies %j as transient', (message) => {
+    expect(isTransientOllamaSocketError(new Error(message))).toBe(true);
+  });
+
+  it('classifies a fetch failure nested in .cause as transient', () => {
+    const err = Object.assign(new TypeError('fetch failed'), {
+      cause: new Error('read ECONNRESET'),
+    });
+    expect(isTransientOllamaSocketError(err)).toBe(true);
+  });
+
+  it('classifies by node error .code', () => {
+    const err = Object.assign(new Error('socket error'), { code: 'ECONNRESET' });
+    expect(isTransientOllamaSocketError(err)).toBe(true);
+  });
+
+  it('does not classify a 4xx schema violation as transient', () => {
+    const err = new FakeOllamaResponseError('not found', 404);
+    expect(isTransientOllamaSocketError(err)).toBe(false);
+  });
+
+  it('does not classify a context-length overflow as transient', () => {
+    const err = new FakeOllamaResponseError(
+      'the input length exceeds the context length',
+      400,
+    );
+    expect(isTransientOllamaSocketError(err)).toBe(false);
+  });
+
+  it('returns false for non-objects', () => {
+    expect(isTransientOllamaSocketError(undefined)).toBe(false);
+    expect(isTransientOllamaSocketError('EOF')).toBe(false);
+  });
 });
 
 describe('translateOllamaEmbeddingError', () => {
@@ -131,6 +191,44 @@ describe('translateOllamaEmbeddingError', () => {
     expect(translated.message).toContain('fake-model');
     expect(translated.message).toContain('not found');
   });
+
+  it('still labels a genuinely terminal 4xx "non-retryable"', () => {
+    const err = new FakeOllamaResponseError('forbidden', 403);
+    const translated = translateOllamaEmbeddingError(err, 'fake-model');
+    expect(translated.message).toContain('non-retryable');
+  });
+
+  // Issue #801 — a transient EOF must NOT be reported as "non-retryable".
+  it('describes a transient EOF accurately, not as "non-retryable"', () => {
+    const err = new FakeOllamaResponseError(
+      'do embedding request: Post "http://127.0.0.1:40757/v1/embeddings": EOF',
+      500,
+    );
+    const translated = translateOllamaEmbeddingError(err, 'nomic-embed-text:latest');
+    expect(translated).toBeInstanceOf(KBError);
+    expect(translated.code).toBe('PROVIDER_UNAVAILABLE');
+    expect(translated.message).not.toContain('non-retryable');
+    expect(translated.message).toContain('transient socket error');
+    expect(translated.message).toContain('nomic-embed-text:latest');
+    // Preserve the underlying detail for diagnosis.
+    expect(translated.message).toContain('EOF');
+  });
+
+  it('describes a raw ECONNRESET as transient, not non-retryable', () => {
+    const translated = translateOllamaEmbeddingError(
+      new Error('read ECONNRESET'),
+      'nomic-embed-text:latest',
+    );
+    expect(translated.message).not.toContain('non-retryable');
+    expect(translated.message).toContain('transient socket error');
+  });
+
+  it('does not claim "non-retryable" for an unknown non-context error', () => {
+    const err = new FakeOllamaResponseError('internal server error', 500);
+    const translated = translateOllamaEmbeddingError(err, 'fake-model');
+    expect(translated.message).not.toContain('non-retryable');
+    expect(translated.message).toContain('internal server error');
+  });
 });
 
 describe('makeOllamaOnFailedAttempt', () => {
@@ -166,5 +264,16 @@ describe('makeOllamaOnFailedAttempt', () => {
   it('does NOT throw on plain Error (network jitter etc.)', () => {
     const handler = makeOllamaOnFailedAttempt('foo');
     expect(() => handler(new Error('ECONNRESET'))).not.toThrow();
+  });
+
+  // Issue #801 — a transient runner-socket EOF must stay retryable so the
+  // AsyncCaller keeps retrying instead of aborting the whole rebuild.
+  it('does NOT throw on a transient EOF (keeps retrying)', () => {
+    const handler = makeOllamaOnFailedAttempt('nomic-embed-text:latest');
+    const err = new FakeOllamaResponseError(
+      'do embedding request: Post "http://127.0.0.1:40757/v1/embeddings": EOF',
+      500,
+    );
+    expect(() => handler(err)).not.toThrow();
   });
 });
