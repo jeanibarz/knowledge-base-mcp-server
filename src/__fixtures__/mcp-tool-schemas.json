@@ -45,6 +45,22 @@
         "type": "integer",
         "minimum": 64
       },
+      "search_mode": {
+        "type": "string",
+        "enum": [
+          "dense",
+          "hybrid",
+          "lexical",
+          "auto"
+        ]
+      },
+      "rerank": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ]
+      },
       "task_context": {
         "type": "string"
       },

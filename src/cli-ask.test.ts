@@ -61,6 +61,30 @@ describe('parseAskArgs', () => {
     expect(() => parseAskArgs(['q', 'extra'])).toThrow(/unexpected argument/);
   });
 
+  it('parses retrieval-mode, rerank, and gate overrides (#732)', () => {
+    expect(parseAskArgs(['q', '--mode=hybrid', '--rerank', '--gate'])).toMatchObject({
+      mode: 'hybrid',
+      rerank: 'on',
+      gate: 'on',
+    });
+    expect(parseAskArgs(['q', '--mode=lexical', '--no-rerank', '--no-gate'])).toMatchObject({
+      mode: 'lexical',
+      rerank: 'off',
+      gate: 'off',
+    });
+  });
+
+  it('rejects an invalid --mode', () => {
+    expect(() => parseAskArgs(['q', '--mode=fuzzy'])).toThrow(/invalid --mode/);
+  });
+
+  it('leaves mode, rerank, and gate unset by default', () => {
+    const parsed = parseAskArgs(['q']);
+    expect(parsed.mode).toBeUndefined();
+    expect(parsed.rerank).toBeUndefined();
+    expect(parsed.gate).toBeUndefined();
+  });
+
   it('parses --no-stream for markdown output', () => {
     expect(parseAskArgs(['what changed?', '--no-stream'])).toMatchObject({
       question: 'what changed?',
@@ -230,6 +254,7 @@ describe('ask transcript records', () => {
         context_budget_tokens: DEFAULT_ASK_CONTEXT_BUDGET_TOKENS,
         refreshed: false,
         knowledge_base: 'ops',
+        search_mode: 'dense',
       },
       timing: { retrieval_ms: 12, llm_total_ms: 34, total_ms: 56 },
     });

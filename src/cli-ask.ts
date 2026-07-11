@@ -42,6 +42,8 @@ import {
   type AskLlmPayload,
   type AskRetrievalPayload,
   type RunAskCoreDeps,
+  type RerankOverride,
+  type SearchMode,
 } from './ask-core.js';
 import {
   runAskRepl,
@@ -70,6 +72,17 @@ profile, or the local-research-agent default at 127.0.0.1:8080.
 Options:
   --kb=<name>           Scope retrieval to one knowledge base.
   --model=<id>          Override the active embedding model for retrieval.
+  --mode=dense|hybrid|lexical|auto
+                        Retrieval mode for the snippets fed to the LLM
+                        (default: auto). auto keeps dense for prose and
+                        upgrades code/error-token queries to hybrid; hybrid
+                        fuses dense + BM25 via RRF; lexical is BM25-only.
+  --rerank              Run the RFC 019 cross-encoder reranker for this call
+                        (hybrid retrieval only). Off by default.
+  --no-rerank           Bypass the reranker for this call.
+  --gate                Run the relevance gate for this call even when
+                        KB_RELEVANCE_GATE is off.
+  --no-gate             Bypass the relevance gate for this call.
   --k=<int>             Retrieval top-K (default 8).
   --context-budget-tokens=<int>
                         Approximate token budget for snippets sent to the LLM
@@ -115,6 +128,8 @@ export interface AskArgs {
   yes: boolean;
   taskContext?: string;
   gate?: RelevanceGateOverride;
+  mode?: SearchMode;
+  rerank?: RerankOverride;
 }
 
 interface AskTranscriptRecord {
@@ -211,6 +226,7 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
     result = await executeAsk({
       ...args,
       question: args.question,
+      ...(args.mode !== undefined ? { searchMode: args.mode } : {}),
       ...(streamMarkdown
         ? {
             onAnswerToken: (token: string) => {
@@ -369,6 +385,8 @@ function toAskBaseArgs(args: AskArgs): AskExecutionArgs {
     timing: false,
     ...(args.taskContext !== undefined ? { taskContext: args.taskContext } : {}),
     ...(args.gate !== undefined ? { gate: args.gate } : {}),
+    ...(args.mode !== undefined ? { searchMode: args.mode } : {}),
+    ...(args.rerank !== undefined ? { rerank: args.rerank } : {}),
   };
 }
 
@@ -428,6 +446,17 @@ export function parseAskArgs(rest: string[]): AskArgs {
     if (raw === '--timing') { out.timing = true; continue; }
     if (raw === '--save-transcript') { out.saveTranscript = true; continue; }
     if (raw === '--yes') { out.yes = true; continue; }
+    if (raw === '--rerank') { out.rerank = 'on'; continue; }
+    if (raw === '--no-rerank') { out.rerank = 'off'; continue; }
+    if (raw === '--gate') { out.gate = 'on'; continue; }
+    if (raw === '--no-gate') { out.gate = 'off'; continue; }
+    if (raw.startsWith('--mode=')) {
+      const v = raw.slice('--mode='.length);
+      if (v !== 'dense' && v !== 'hybrid' && v !== 'lexical' && v !== 'auto') {
+        throw new Error(`invalid --mode: ${raw} (expected 'dense', 'hybrid', 'lexical', or 'auto')`);
+      }
+      out.mode = v; continue;
+    }
     if (raw.startsWith('--kb=')) { out.kb = raw.slice('--kb='.length); continue; }
     if (raw.startsWith('--model=')) { out.model = raw.slice('--model='.length); continue; }
     if (raw.startsWith('--llm-profile=')) { out.llmProfile = raw.slice('--llm-profile='.length); continue; }

@@ -36,6 +36,23 @@ import {
 } from './relevance-gate.js';
 import { chunkIdFromMetadata } from './rrf.js';
 import {
+  fuseHybridResultsWithDiagnostics,
+  hybridFetchK,
+  listLexicalKbs,
+  runLexicalLeg,
+  type HybridChunk,
+} from './hybrid-retrieval.js';
+import {
+  applyRerankerIfEnabled,
+  resolveRerankerConfig,
+  type RerankOverride,
+} from './reranker.js';
+import {
+  resolveAutoSearchMode,
+  type EffectiveSearchMode,
+  type SearchMode,
+} from './search-core.js';
+import {
   classifyKbAskError,
   classifyKbSearchError,
   exitCodeForFailure,
@@ -55,6 +72,16 @@ import { withSpan } from './otel-trace.js';
 
 export const DEFAULT_ASK_CONTEXT_BUDGET_TOKENS = 6000;
 export const MIN_ASK_CONTEXT_BUDGET_TOKENS = 64;
+/**
+ * Issue #732 — the ask path now supports the same `dense|hybrid|lexical|auto`
+ * retrieval modes as `kb search` / `retrieve_knowledge`. It defaults to `auto`
+ * (a safe quality win: prose queries stay dense, code/error-token queries
+ * upgrade to hybrid) while reranking stays opt-in — cross-encoder reranking is
+ * not universally beneficial, so it is off unless the caller asks for it.
+ */
+export const DEFAULT_ASK_SEARCH_MODE: SearchMode = 'auto';
+
+export type { SearchMode, RerankOverride };
 const APPROX_CHARS_PER_TOKEN = 4;
 const ASK_SNIPPET_SEPARATOR = '\n\n---\n\n';
 const ASK_TEMPERATURE = 0.2;
@@ -73,6 +100,10 @@ export interface AskExecutionArgs {
   timing: boolean;
   taskContext?: string;
   gate?: RelevanceGateOverride;
+  /** Retrieval mode. Defaults to {@link DEFAULT_ASK_SEARCH_MODE} ('auto'). */
+  searchMode?: SearchMode;
+  /** Per-call cross-encoder reranker override (hybrid only). Off by default. */
+  rerank?: RerankOverride;
   onAnswerToken?: (token: string) => void | Promise<void>;
 }
 
@@ -88,6 +119,10 @@ export interface AskKnowledgeInput {
   timing?: boolean;
   task_context?: string;
   gate?: RelevanceGateOverride;
+  /** Retrieval mode. Defaults to {@link DEFAULT_ASK_SEARCH_MODE} ('auto'). */
+  search_mode?: SearchMode;
+  /** Per-call cross-encoder reranker override (hybrid only). Off by default. */
+  rerank?: RerankOverride;
 }
 
 export interface AskCitation {
@@ -112,8 +147,11 @@ export interface AskRetrievalPayload {
   context_budget_tokens: number;
   refreshed: boolean;
   knowledge_base: string | null;
+  /** Effective retrieval mode used (auto resolves to dense/hybrid). #732 */
+  search_mode: EffectiveSearchMode;
   task_context_provided?: boolean;
   gate?: RelevanceGateOverride;
+  rerank?: RerankOverride;
 }
 
 export interface AskPackedChunkPayload {
@@ -176,6 +214,10 @@ export interface RunAskCoreDeps {
   callChatCompletion: (options: ChatCompletionOptions) => Promise<ChatCompletionResult>;
   /** Optional answer-cache override (#656). Defaults to the env-configured singleton. */
   answerCache?: AnswerCache;
+  /** Lexical-leg KB enumeration for hybrid/lexical modes (#732). Injectable for tests. */
+  listLexicalKbs?: typeof listLexicalKbs;
+  /** Lexical-leg BM25 runner for hybrid/lexical modes (#732). Injectable for tests. */
+  runLexicalLeg?: typeof runLexicalLeg;
 }
 
 interface LlmTarget {
@@ -229,6 +271,8 @@ export async function askKnowledge(
     timing: input.timing ?? false,
     taskContext: input.task_context,
     gate: input.gate,
+    searchMode: input.search_mode,
+    rerank: input.rerank,
   }, deps, nowMs(), onProgress);
 }
 
@@ -237,6 +281,8 @@ export interface AskEvidence {
   activeModelId: string;
   /** Retrieved + sensitivity-hydrated + gated documents, reusable across turns. */
   results: SearchResultDocument[];
+  /** Effective retrieval mode used to gather the evidence (auto → dense/hybrid). */
+  searchMode: EffectiveSearchMode;
 }
 
 /**
@@ -250,14 +296,25 @@ export async function retrieveAskEvidence(
   deps: RunAskCoreDeps,
   timing: TimingPayload | null = null,
 ): Promise<AskEvidence> {
+  // #732 — resolve the requested mode before opening the span so the
+  // `kb.search_mode` attribute records the effective mode ('auto' resolves to
+  // dense for prose and hybrid for code/error-token queries).
+  const requestedMode: SearchMode = args.searchMode ?? DEFAULT_ASK_SEARCH_MODE;
+  const effectiveMode: EffectiveSearchMode = requestedMode === 'auto'
+    ? resolveAutoSearchMode(args.question).mode
+    : requestedMode;
   return withSpan('kb.ask.retrieve', {
     'kb.scope': args.kb ?? null,
     'kb.k': args.k,
-    'kb.search_mode': 'dense',
+    'kb.search_mode': effectiveMode,
     'kb.refresh': args.refresh,
   }, async (retrieveSpan) => {
     let activeModelId: string;
-    let results;
+    let results: SearchResultDocument[];
+    // Gate identity maps: dense distances feed the relevance judge, lexical hit
+    // ids let it credit BM25-only matches. Populated per mode below.
+    let denseDistanceById = new Map<string, number>();
+    let lexicalHitIds: Set<string> | undefined;
     try {
       let startedAt = nowMs();
       await deps.bootstrapLayout();
@@ -279,33 +336,49 @@ export async function retrieveAskEvidence(
         await deps.loadReadOnlyIndex(manager);
       }
       if (timing) timing.index_load_ms = elapsedMs(startedAt);
+
+      const retrievalStartedAt = nowMs();
       const denseTiming: SimilaritySearchTiming = {};
-      startedAt = nowMs();
-      // `kb.ask.dense` covers the embedding of the query plus the FAISS
-      // nearest-neighbour search (both happen inside similaritySearch).
-      results = await withSpan('kb.ask.dense', {
-        'kb.k': args.k,
-        'kb.scope': args.kb ?? null,
-      }, () => manager.similaritySearch(
-        args.question,
-        args.k,
-        undefined,
-        args.kb,
-        undefined,
-        timing ? denseTiming : undefined,
-      ));
+      if (effectiveMode === 'dense') {
+        // `kb.ask.dense` covers the embedding of the query plus the FAISS
+        // nearest-neighbour search (both happen inside similaritySearch).
+        results = await withSpan('kb.ask.dense', {
+          'kb.k': args.k,
+          'kb.scope': args.kb ?? null,
+        }, () => manager.similaritySearch(
+          args.question,
+          args.k,
+          undefined,
+          args.kb,
+          undefined,
+          timing ? denseTiming : undefined,
+        ));
+        for (const result of results) {
+          denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
+        }
+        if (timing) mergeAskDenseTiming(timing, denseTiming);
+      } else {
+        const hybrid = await retrieveHybridOrLexical({
+          manager,
+          args,
+          effectiveMode,
+          deps,
+          denseTiming,
+          timing,
+        });
+        results = hybrid.results;
+        denseDistanceById = hybrid.denseDistanceById;
+        lexicalHitIds = hybrid.lexicalHitIds;
+      }
+
       results = await hydrateSensitivityPoliciesFromSource(results);
       if (args.gate !== undefined || args.taskContext !== undefined) {
-        const denseDistanceById = new Map<string, number>();
         const policyExcluded = results.filter((result) =>
           excludesLlmContext(result.metadata as Record<string, unknown>),
         );
         let gateCandidates = results.filter((result) =>
           !excludesLlmContext(result.metadata as Record<string, unknown>),
         );
-        for (const result of gateCandidates) {
-          denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
-        }
         const gate = await withSpan('kb.ask.gate', {
           'kb.candidates_in': gateCandidates.length,
         }, async (gateSpan) => {
@@ -314,6 +387,7 @@ export async function retrieveAskEvidence(
             taskContext: args.taskContext,
             candidates: gateCandidates,
             denseDistanceById,
+            ...(lexicalHitIds !== undefined ? { lexicalHitIds } : {}),
             gateOverride: args.gate,
             process: 'mcp',
           });
@@ -327,24 +401,115 @@ export async function retrieveAskEvidence(
           process: 'mcp',
           query: args.question,
           kbScope: args.kb ?? null,
-          searchMode: 'dense',
+          searchMode: effectiveMode,
           verdict: gate.verdict,
           taskContext: args.taskContext,
           observability: gate.observability,
         });
       }
-      if (timing) {
-        timing.retrieval_ms = elapsedMs(startedAt);
-        mergeAskDenseTiming(timing, denseTiming);
-      }
+      if (timing) timing.retrieval_ms = elapsedMs(retrievalStartedAt);
     } catch (err) {
       const failure = classifyKbSearchError(err);
       throw new AskExecutionError(failure.message, exitCodeForFailure(failure), failure);
     }
 
     retrieveSpan.setAttribute('kb.result_count', results.length);
-    return { activeModelId, results };
+    return { activeModelId, results, searchMode: effectiveMode };
   });
+}
+
+interface HybridOrLexicalRetrieval {
+  results: SearchResultDocument[];
+  denseDistanceById: Map<string, number>;
+  lexicalHitIds: Set<string>;
+}
+
+/**
+ * #732 — hybrid/lexical retrieval leg for the ask path, mirroring
+ * `retrieve_knowledge`. Hybrid over-fetches a dense FAISS pool and a per-KB
+ * BM25 pool, fuses them with Reciprocal Rank Fusion, then applies the opt-in
+ * cross-encoder reranker. Lexical runs the BM25 leg alone. The lexical index is
+ * auto-refreshed on first use per KB (`when-empty`); `--refresh` forces it.
+ */
+async function retrieveHybridOrLexical(input: {
+  manager: FaissIndexManager;
+  args: AskExecutionArgs;
+  effectiveMode: Exclude<EffectiveSearchMode, 'dense'>;
+  deps: RunAskCoreDeps;
+  denseTiming: SimilaritySearchTiming;
+  timing: TimingPayload | null;
+}): Promise<HybridOrLexicalRetrieval> {
+  const { manager, args, effectiveMode, deps, denseTiming, timing } = input;
+  const fetchK = hybridFetchK(args.k);
+  const kbs = await (deps.listLexicalKbs ?? listLexicalKbs)(args.kb);
+
+  const runLexical = () => withSpan('kb.ask.lexical', {
+    'kb.k': fetchK,
+    'kb.kb_count': kbs.length,
+  }, () => (deps.runLexicalLeg ?? runLexicalLeg)({
+    kbs,
+    query: args.question,
+    fetchK,
+    refresh: args.refresh ? 'always' : 'when-empty',
+    onError: (kbName, err) => {
+      logger.warn(`kb ask (${effectiveMode} lexical leg): ${kbName} — ${err.message}`);
+    },
+  }));
+
+  if (effectiveMode === 'lexical') {
+    const lexical = await runLexical();
+    const hits = lexical.hits.slice(0, args.k);
+    const lexicalHitIds = new Set(hits.map((hit) => chunkIdFromMetadata(hit.metadata)));
+    return { results: hits as unknown as SearchResultDocument[], denseDistanceById: new Map(), lexicalHitIds };
+  }
+
+  // Hybrid: dense + lexical legs in parallel, then RRF + opt-in rerank.
+  const densePromise = withSpan('kb.ask.dense', {
+    'kb.k': fetchK,
+    'kb.scope': args.kb ?? null,
+  }, () => manager.similaritySearch(
+    args.question,
+    fetchK,
+    Number.POSITIVE_INFINITY,
+    args.kb,
+    undefined,
+    timing ? denseTiming : undefined,
+  )).then((rs) => rs.map((r): HybridChunk => ({
+    pageContent: r.pageContent,
+    metadata: r.metadata,
+    score: r.score,
+  })));
+  const [denseResults, lexical] = await Promise.all([densePromise, runLexical()]);
+  if (timing) mergeAskDenseTiming(timing, denseTiming);
+
+  const rerankConfig = resolveRerankerConfig(process.env, args.rerank, args.kb ?? null);
+  const fusion = fuseHybridResultsWithDiagnostics({
+    denseResults,
+    lexicalResults: lexical.hits,
+    k: rerankConfig.enabled ? Math.max(args.k, rerankConfig.topN) : args.k,
+  });
+  const rerankResult = await withSpan('kb.ask.rerank', {
+    'kb.candidates_in': fusion.results.length,
+    'kb.rerank_enabled': rerankConfig.enabled,
+  }, () => applyRerankerIfEnabled({
+    query: args.question,
+    results: fusion.results,
+    k: args.k,
+    override: args.rerank,
+    config: rerankConfig,
+    process: 'mcp',
+    searchMode: 'hybrid',
+    kbScope: args.kb ?? null,
+  }));
+  if (timing && rerankResult.candidatesIn > 0) {
+    timing.rerank_ms = rerankResult.tookMs;
+    if (rerankResult.degraded) timing.rerank_degraded = true;
+  }
+  return {
+    results: rerankResult.results as unknown as SearchResultDocument[],
+    denseDistanceById: fusion.denseDistanceById,
+    lexicalHitIds: fusion.lexicalHitIds,
+  };
 }
 
 /**
@@ -360,7 +525,7 @@ export async function answerWithEvidence(
   totalStartedAt: number,
   timing: TimingPayload | null = null,
 ): Promise<AskKnowledgeResult> {
-  const { activeModelId, results } = evidence;
+  const { activeModelId, results, searchMode } = evidence;
 
   let target: LlmTarget;
   try {
@@ -507,8 +672,10 @@ export async function answerWithEvidence(
       context_budget_tokens: args.contextBudgetTokens,
       refreshed: args.refresh,
       knowledge_base: args.kb ?? null,
+      search_mode: searchMode,
       ...(args.taskContext !== undefined ? { task_context_provided: args.taskContext.trim() !== '' } : {}),
       ...(args.gate !== undefined ? { gate: args.gate } : {}),
+      ...(args.rerank !== undefined ? { rerank: args.rerank } : {}),
     },
     context_packing: packedContext.payload,
     redaction: outboundSummary,

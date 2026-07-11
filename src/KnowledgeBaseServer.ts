@@ -1215,6 +1215,8 @@ export class KnowledgeBaseServer {
     context_budget_tokens?: number;
     task_context?: string;
     gate?: 'on' | 'off';
+    search_mode?: 'dense' | 'hybrid' | 'lexical' | 'auto';
+    rerank?: 'on' | 'off';
     timing?: boolean;
   }, extra?: ToolExtra): Promise<CallToolResult> {
     const report = this.progressReporter(extra);
@@ -1234,6 +1236,8 @@ export class KnowledgeBaseServer {
           context_budget_tokens: args.context_budget_tokens,
           task_context: args.task_context,
           gate: args.gate,
+          search_mode: args.search_mode,
+          rerank: args.rerank,
           timing: args.timing ?? true,
         }, {
           bootstrapLayout: FaissIndexManager.bootstrapLayout.bind(FaissIndexManager),

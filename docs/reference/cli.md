@@ -72,6 +72,17 @@ profile, or the local-research-agent default at 127.0.0.1:8080.
 Options:
   --kb=<name>           Scope retrieval to one knowledge base.
   --model=<id>          Override the active embedding model for retrieval.
+  --mode=dense|hybrid|lexical|auto
+                        Retrieval mode for the snippets fed to the LLM
+                        (default: auto). auto keeps dense for prose and
+                        upgrades code/error-token queries to hybrid; hybrid
+                        fuses dense + BM25 via RRF; lexical is BM25-only.
+  --rerank              Run the RFC 019 cross-encoder reranker for this call
+                        (hybrid retrieval only). Off by default.
+  --no-rerank           Bypass the reranker for this call.
+  --gate                Run the relevance gate for this call even when
+                        KB_RELEVANCE_GATE is off.
+  --no-gate             Bypass the relevance gate for this call.
   --k=<int>             Retrieval top-K (default 8).
   --context-budget-tokens=<int>
                         Approximate token budget for snippets sent to the LLM

@@ -99,6 +99,11 @@ export const ASK_KNOWLEDGE_INPUT = {
   llm_profile: z.string().optional().describe('Saved kb llm profile name to use for answer generation.'),
   k: z.number().int().min(1).max(50).optional().describe('Retrieval top-K before context packing. Default 8.'),
   context_budget_tokens: z.number().int().min(64).optional().describe('Approximate token budget for snippets sent to the LLM. Default 6000.'),
+  // #732 — bring the search-mode + opt-in rerank surface of retrieve_knowledge
+  // to the ask path. Defaults to 'auto' (prose stays dense, code/error-token
+  // queries upgrade to hybrid); reranking stays opt-in.
+  search_mode: z.enum(['dense', 'hybrid', 'lexical', 'auto']).optional().describe('Retrieval mode for the snippets fed to the answer LLM. "auto" (default) keeps dense for prose and upgrades code/error-token queries to hybrid; "dense" is FAISS-only; "hybrid" fuses FAISS + per-KB BM25 via Reciprocal Rank Fusion; "lexical" is BM25-only. See #206 + #732.'),
+  rerank: z.enum(['on', 'off']).optional().describe('Per-call RFC 019 cross-encoder reranker override for hybrid retrieval. Off by default; omit to use KB_RERANK.'),
   task_context: z.string().optional().describe('Optional task context passed to the answer prompt and relevance gate when enabled.'),
   gate: z.enum(['on', 'off']).optional().describe('Per-call relevance gate override for retrieved snippets. Omit to keep the ask path ungated.'),
   timing: z.boolean().optional().describe('Include retrieval, packing, and LLM timing fields. Defaults to true for MCP.'),
