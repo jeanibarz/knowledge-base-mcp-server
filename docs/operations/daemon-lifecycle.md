@@ -199,7 +199,7 @@ An admitted command returns HTTP `200` and a CLI-shaped JSON envelope:
 ```json
 {
   "exitCode": 0,
-  "stdout": "{\"knowledge_bases\":[\"engineering\"]}\n",
+  "stdout": "[\n  {\n    \"name\": \"engineering\"\n  }\n]\n",
   "stderr": ""
 }
 ```
