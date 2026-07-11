@@ -19,6 +19,7 @@
     "check:fast": "npm run build && npm run lint && npm run docs:check-anchors && npm run docs:check-config-reference && npm run docs:check-env-example && npm run config:check-env-usage && npm run docs:check-cli && npm run docs:check-mcp-tools && npm run docs:check-embedding-models && npm run docs:check-metrics-reference && npm run docs:check-error-codes && npm run docs:check-loaders",
     "lint": "eslint src",
     "lint:commit-message": "commitlint",
+    "pr-checklist": "node scripts/pr-checklist.mjs",
     "lint:fix": "eslint src --fix",
     "bench": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/run.js",
     "bench:beir": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/beir/run.js",
