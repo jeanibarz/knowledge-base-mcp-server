@@ -6,6 +6,7 @@ import * as fsp from 'node:fs/promises';
 import { runList } from './cli-list.js';
 import { createRunSearchDeps, runSearch, type RunSearchDeps } from './cli-search.js';
 import { captureProcessOutput } from './cli-shared.js';
+import { EXIT } from './cli-exit-codes.js';
 import { runStats } from './cli-stats.js';
 import {
   isMetricsExportEnabled,
@@ -176,7 +177,7 @@ export async function runServe(rest: string[]): Promise<number> {
     parsed = parseServeArgs(rest);
   } catch (err) {
     process.stderr.write(`kb serve: ${(err as Error).message}\n`);
-    return 2;
+    return EXIT.USAGE;
   }
 
   let daemon: ResidentDaemon;
@@ -184,7 +185,7 @@ export async function runServe(rest: string[]): Promise<number> {
     daemon = await startDaemonServer(parsed);
   } catch (err) {
     process.stderr.write(`kb serve: ${(err as Error).message}\n`);
-    return 1;
+    return EXIT.INTERNAL;
   }
 
   process.stdout.write(`kb serve: listening on ${daemon.url.href}\n`);
@@ -209,7 +210,7 @@ export async function runServe(rest: string[]): Promise<number> {
   await daemon.closed;
   process.off('SIGINT', stop);
   process.off('SIGTERM', stop);
-  return 0;
+  return EXIT.OK;
 }
 
 /** Grace beyond the drain budget for `server.close()` before force-exit. */
