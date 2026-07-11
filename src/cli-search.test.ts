@@ -9,10 +9,16 @@ import {
   formatRefreshProgressLine,
   parseSearchArgs,
   runSearch,
+  searchFiltersFromArgs,
   shouldUsePicker,
   takeLastSearchCanonicalTelemetry,
   type RunSearchDeps,
 } from './cli-search.js';
+import type { Document } from '@langchain/core/documents';
+import {
+  createSimilaritySearchPostFilter,
+  type ScoredDocument as EngineScoredDocument,
+} from './search-filters.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { compactTimingPayload, type TimingPayload } from './timing-core.js';
 import type { ScoredDocument } from './formatter.js';
@@ -229,6 +235,100 @@ describe('parseSearchArgs recency filters (#609)', () => {
     expect(() => parseSearchArgs(['query', '--since=24h', '--until=30d'])).toThrow(
       /invalid recency range/,
     );
+  });
+});
+
+describe('parseSearchArgs metadata filters (#790)', () => {
+  it('parses repeatable --tag / --extension and single --path-glob', () => {
+    expect(parseSearchArgs([
+      'query',
+      '--tag=alpha',
+      '--tag=beta',
+      '--extension=.md',
+      '--extension=pdf',
+      '--path-glob=runbooks/**',
+    ])).toMatchObject({
+      tags: ['alpha', 'beta'],
+      extensions: ['.md', 'pdf'],
+      pathGlob: 'runbooks/**',
+    });
+  });
+
+  it('defaults to empty filter arrays and undefined path glob', () => {
+    const parsed = parseSearchArgs(['query']);
+    expect(parsed).toMatchObject({ tags: [], extensions: [] });
+    expect(parsed.pathGlob).toBeUndefined();
+  });
+
+  it('rejects empty filter values', () => {
+    expect(() => parseSearchArgs(['query', '--tag='])).toThrow(/--tag/);
+    expect(() => parseSearchArgs(['query', '--extension='])).toThrow(/--extension/);
+    expect(() => parseSearchArgs(['query', '--path-glob='])).toThrow(/--path-glob/);
+  });
+
+  it('omits filters entirely when no metadata or recency flag is set', () => {
+    expect(searchFiltersFromArgs(parseSearchArgs(['query']))).toBeUndefined();
+  });
+
+  it('carries parsed metadata flags into SimilaritySearchFilters', () => {
+    expect(searchFiltersFromArgs(parseSearchArgs([
+      'query',
+      '--tag=alpha',
+      '--tag=beta',
+      '--extension=.md',
+      '--path-glob=runbooks/**',
+    ]))).toEqual({
+      since: undefined,
+      until: undefined,
+      tags: ['alpha', 'beta'],
+      extensions: ['.md'],
+      pathGlob: 'runbooks/**',
+    });
+  });
+});
+
+describe('kb search metadata filters scope results via the shared engine (#790)', () => {
+  function doc(
+    pageContent: string,
+    metadata: Record<string, unknown>,
+    score = 0.1,
+  ): EngineScoredDocument {
+    return [{ pageContent, metadata } as Document, score];
+  }
+
+  function applyFrom(args: string[], docs: EngineScoredDocument[]): string[] {
+    const filter = createSimilaritySearchPostFilter({
+      threshold: 2,
+      knowledgeBasesRootDir: '/kb-root',
+      filters: searchFiltersFromArgs(parseSearchArgs(['query', ...args])),
+    });
+    return filter.apply(docs).map(([d]) => d.pageContent);
+  }
+
+  const docs: EngineScoredDocument[] = [
+    doc('md-runbook', { extension: '.md', relativePath: 'ops/runbooks/rollback.md', tags: ['ops', 'urgent'] }),
+    doc('md-note', { extension: '.md', relativePath: 'ops/notes/idea.md', tags: ['ops'] }),
+    doc('pdf-runbook', { extension: '.pdf', relativePath: 'ops/runbooks/deploy.pdf', tags: ['ops', 'urgent'] }),
+  ];
+
+  it('--extension keeps only matching source extensions (case-insensitive)', () => {
+    expect(applyFrom(['--extension=md'], docs).sort()).toEqual(['md-note', 'md-runbook']);
+    expect(applyFrom(['--extension=.PDF'], docs)).toEqual(['pdf-runbook']);
+  });
+
+  it('--path-glob keeps only KB-internal paths matching the glob', () => {
+    expect(applyFrom(['--path-glob=runbooks/**'], docs).sort()).toEqual(['md-runbook', 'pdf-runbook']);
+  });
+
+  it('--tag is ALL-match: every tag must be present', () => {
+    expect(applyFrom(['--tag=ops'], docs).sort()).toEqual(['md-note', 'md-runbook', 'pdf-runbook']);
+    expect(applyFrom(['--tag=ops', '--tag=urgent'], docs).sort()).toEqual(['md-runbook', 'pdf-runbook']);
+    expect(applyFrom(['--tag=ops', '--tag=missing'], docs)).toEqual([]);
+  });
+
+  it('combines metadata filters with AND semantics', () => {
+    expect(applyFrom(['--extension=md', '--path-glob=runbooks/**', '--tag=urgent'], docs))
+      .toEqual(['md-runbook']);
   });
 });
 
@@ -1426,6 +1526,32 @@ describe('runSearch timing guard (#331)', () => {
 
     expect(out.code).toBe(2);
     expect(out.stderr).toContain('--candidate-pool-k is only supported with --mode=hybrid');
+  });
+
+  it('rejects metadata filters outside dense mode (#790)', async () => {
+    const { deps } = makeDeps();
+
+    const out = await captureSearchOutput(['query', '--mode=hybrid', '--tag=ops'], deps);
+
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain('--tag/--extension/--path-glob are only supported with --mode=dense');
+  });
+
+  it('forwards metadata filters into dense similaritySearch (#790)', async () => {
+    const { deps, manager } = makeDeps();
+
+    const out = await captureSearchOutput(
+      ['query', '--extension=.md', '--path-glob=runbooks/**', '--tag=ops', '--tag=urgent', '--format=json'],
+      deps,
+    );
+
+    expect(out.code).toBe(0);
+    const filtersArg = (manager.similaritySearch as jest.Mock).mock.calls[0][4];
+    expect(filtersArg).toMatchObject({
+      extensions: ['.md'],
+      pathGlob: 'runbooks/**',
+      tags: ['ops', 'urgent'],
+    });
   });
 
   it('rejects query decomposition outside hybrid mode', async () => {
