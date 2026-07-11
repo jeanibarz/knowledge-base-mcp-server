@@ -8,6 +8,7 @@ import {
   formatDenseSearchMarkdownOutput,
   formatRefreshProgressLine,
   parseSearchArgs,
+  refreshProgressWriter,
   runSearch,
   searchFiltersFromArgs,
   shouldUsePicker,
@@ -28,6 +29,30 @@ import type { ExplainEmptyDiagnostics, Staleness } from './search-core.js';
 import { setRerankerFactoryForTests } from './reranker.js';
 
 const MTIME = '2026-05-03T15:33:56.964Z';
+
+describe('refreshProgressWriter (#739)', () => {
+  it('--quiet swallows refresh progress lines', () => {
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      refreshProgressWriter('quiet')('kb search refresh: embed...\n');
+      expect(stderrSpy).not.toHaveBeenCalled();
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('normal/verbose write refresh progress to stderr', () => {
+    for (const level of ['normal', 'verbose'] as const) {
+      const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        refreshProgressWriter(level)('line\n');
+        expect(stderrSpy).toHaveBeenCalledWith('line\n');
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    }
+  });
+});
 
 describe('refresh progress output (#316)', () => {
   it('formats bounded embedding batches as concise stderr progress lines', () => {
@@ -741,6 +766,38 @@ describe('runSearch timing guard (#331)', () => {
       query: 'valid',
       result: { freshness_omitted: true },
     });
+  });
+
+  it('--quiet omits the freshness footer from markdown output (#739)', async () => {
+    const { deps } = makeDeps();
+    const out = await captureSearchOutput(['rollback', '--quiet'], deps);
+    expect(out.code).toBe(0);
+    expect(out.stdout).not.toContain('> _Index');
+  });
+
+  it('--quiet --format=json emits freshness_omitted with no staleness object (#739)', async () => {
+    const { deps } = makeDeps();
+    const out = await captureSearchOutput(['rollback', '--quiet', '--format=json'], deps);
+    expect(out.code).toBe(0);
+    const payload = JSON.parse(out.stdout) as { freshness_omitted?: boolean; staleness?: unknown };
+    expect(payload.freshness_omitted).toBe(true);
+    expect(payload.staleness).toBeUndefined();
+  });
+
+  it('--verbose turns on per-stage timing diagnostics (#739)', async () => {
+    const { deps } = makeDeps();
+    const verbose = await captureSearchOutput(
+      ['rollback', '--verbose', '--no-freshness', '--format=json'],
+      deps,
+    );
+    expect(verbose.code).toBe(0);
+    expect((JSON.parse(verbose.stdout) as { timing?: unknown }).timing).toBeDefined();
+
+    const normal = await captureSearchOutput(
+      ['rollback', '--no-freshness', '--format=json'],
+      deps,
+    );
+    expect((JSON.parse(normal.stdout) as { timing?: unknown }).timing).toBeUndefined();
   });
 
   it('invalidates cached freshness after a JSONL batch row refreshes the index', async () => {

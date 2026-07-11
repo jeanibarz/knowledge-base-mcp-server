@@ -20,6 +20,7 @@ import { assertSufficientDiskSpace } from './disk-preflight.js';
 import { KBError } from './errors.js';
 import { logger } from './logger.js';
 import { createTtyProgress } from './tty-progress.js';
+import { extractVerbosity } from './cli-shared.js';
 
 export const REINDEX_HELP = `kb reindex — rebuild FAISS indexes (RFC 017)
 
@@ -93,6 +94,9 @@ Options:
                         a reindex inside 06:00-10:30 UTC or when the
                         run is estimated to cross that window.
   --format=md|json      Output format for \`status\` (default: md).
+  --quiet, -q           Suppress the rebuild progress spinner, leaving only
+                        the summary and errors.
+  --verbose, -v         Reserved for extra diagnostics.
   --help, -h            Show this help.
 
 Exit codes:
@@ -140,15 +144,17 @@ function parseReindexArgs(rest: string[]): ReindexArgs {
 }
 
 export async function runReindexCli(rest: string[]): Promise<number> {
+  // Issue #739 — resolve the shared --quiet/--verbose flags before dispatching.
+  const { verbosity, rest: args } = extractVerbosity(rest);
   // `kb reindex status` is a separate read-only subcommand (#407) — it
   // does not run a rebuild and does not need `--with-context`.
-  if (rest[0] === 'status') {
-    return runReindexStatusCli(rest.slice(1));
+  if (args[0] === 'status') {
+    return runReindexStatusCli(args.slice(1));
   }
 
   let parsed: ReindexArgs;
   try {
-    parsed = parseReindexArgs(rest);
+    parsed = parseReindexArgs(args);
   } catch (err) {
     process.stderr.write(`kb reindex: ${(err as Error).message}\n`);
     return 2;
@@ -190,7 +196,9 @@ export async function runReindexCli(rest: string[]): Promise<number> {
   // the process is working, not hung. It self-suppresses on non-TTY / NO_COLOR
   // output and is cleared before the summary prints to stdout.
   const progress = createTtyProgress({ label: 'kb reindex: rebuilding index', format: 'md' });
-  progress.start();
+  // --quiet suppresses the spinner (routine progress), leaving only the summary
+  // and any errors.
+  if (verbosity !== 'quiet') progress.start();
   let result: ReindexResult;
   try {
     result = await runReindex({

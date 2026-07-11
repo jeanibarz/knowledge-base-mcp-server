@@ -59,6 +59,72 @@ export interface CapturedProcessOutput {
   stderr: string;
 }
 
+// -- Global verbosity (issue #739) -------------------------------------------
+//
+// A single shared mechanism so every migrated `kb` subcommand honors the same
+// `--quiet`/`--verbose` flags instead of each reinventing output-noise control.
+//   - `--quiet` / `-q`: strip non-essential chatter — progress spinners/lines,
+//     freshness footers, and informational status lines — leaving only the
+//     primary result and errors. This is what a `… | jq` pipeline wants, and it
+//     composes with `--format json`.
+//   - `--verbose` / `-v`: surface extra diagnostics (e.g. per-stage timing).
+// Errors and genuine warnings are NEVER routed through this mechanism, so a
+// degradation signal a user needs to see is not hidden by `--quiet`.
+
+export type Verbosity = 'quiet' | 'normal' | 'verbose';
+
+export interface ParsedVerbosity {
+  verbosity: Verbosity;
+  /** argv with the verbosity flags removed, ready for a command's own parser. */
+  rest: string[];
+}
+
+/**
+ * Strip `--quiet`/`-q` and `--verbose`/`-v` from argv and resolve one level.
+ * When both families appear the LAST occurrence wins, so `--verbose --quiet`
+ * ends quiet and `--quiet --verbose` ends verbose. The returned `rest` keeps
+ * every other token in order so a command's existing parser is unaffected.
+ */
+export function extractVerbosity(rest: readonly string[]): ParsedVerbosity {
+  let verbosity: Verbosity = 'normal';
+  const remaining: string[] = [];
+  for (const raw of rest) {
+    if (raw === '--quiet' || raw === '-q') { verbosity = 'quiet'; continue; }
+    if (raw === '--verbose' || raw === '-v') { verbosity = 'verbose'; continue; }
+    remaining.push(raw);
+  }
+  return { verbosity, rest: remaining };
+}
+
+export interface VerbosityPrinter {
+  readonly verbosity: Verbosity;
+  readonly isQuiet: boolean;
+  readonly isVerbose: boolean;
+  /** Non-essential status/progress line; written unless `--quiet`. */
+  info(text: string): void;
+  /** Extra diagnostic line; written only under `--verbose`. */
+  diag(text: string): void;
+}
+
+/**
+ * Build a printer for a resolved verbosity level. `info` is the sink for
+ * non-essential lines (suppressed by `--quiet`); `diag` is the sink for
+ * verbose-only diagnostics. Both default to stderr so stdout stays clean for
+ * the primary result. Callers pass complete lines including any trailing `\n`.
+ */
+export function createVerbosityPrinter(
+  verbosity: Verbosity,
+  write: (text: string) => void = (text) => { process.stderr.write(text); },
+): VerbosityPrinter {
+  return {
+    verbosity,
+    isQuiet: verbosity === 'quiet',
+    isVerbose: verbosity === 'verbose',
+    info(text) { if (verbosity !== 'quiet') write(text); },
+    diag(text) { if (verbosity === 'verbose') write(text); },
+  };
+}
+
 export type DelimitedOutputFormat = 'csv' | 'tsv' | 'ndjson';
 
 export interface RenderRecordsOptions {

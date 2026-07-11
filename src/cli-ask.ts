@@ -15,7 +15,7 @@ import {
   formatKbAskFailureJson,
   formatKbAskFailureStderr,
 } from './search-errors-core.js';
-import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import { extractVerbosity, loadManagerForModel, loadWithJsonRetry, type Verbosity } from './cli-shared.js';
 import {
   formatTimingFooter,
   nowMs,
@@ -84,6 +84,9 @@ Options:
                         commands: /sources, /kb <name>, /save, /refresh, /reset, /exit.
   --no-stream           Wait for the full answer before printing markdown output.
   --timing              Include elapsed milliseconds for retrieval and LLM stages.
+  --quiet, -q           Suppress the thinking spinner and the LLM/context
+                        footers, leaving only the answer and sources.
+  --verbose, -v         Surface extra diagnostics (equivalent to --timing).
   --stdin               Read question from stdin.
   --save-transcript     Save the question, answer, citations, and provenance
                         as a new markdown note. Requires --kb and --yes.
@@ -106,6 +109,7 @@ export interface AskArgs {
   interactive: boolean;
   noStream: boolean;
   timing: boolean;
+  verbosity: Verbosity;
   saveTranscript: boolean;
   title?: string;
   yes: boolean;
@@ -166,6 +170,8 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
   if (args.stdin && args.question === null) {
     args.question = await readAllStdin();
   }
+  // Issue #739 — --verbose surfaces the same per-stage timing as --timing.
+  if (args.verbosity === 'verbose') args.timing = true;
 
   if (args.interactive) {
     const stdinIsTty = deps.stdinIsTty ?? (() => Boolean(process.stdin.isTTY));
@@ -198,7 +204,8 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
   // seconds. Show a stderr spinner while we wait; it self-suppresses for
   // JSON / piped / NO_COLOR output and is cleared before any answer prints.
   const progress = createTtyProgress({ label: 'kb ask: thinking', format: args.format });
-  progress.start();
+  // --quiet suppresses the spinner along with the other non-essential chatter.
+  if (args.verbosity !== 'quiet') progress.start();
   try {
     const streamMarkdown = args.format === 'md' && !args.noStream;
     result = await executeAsk({
@@ -315,13 +322,17 @@ export async function runAsk(rest: string[], deps: RunAskDeps = defaultRunAskDep
         process.stdout.write(`- ${kb}${c.path}${score}${chunk}\n`);
       }
     }
-    process.stdout.write(`\n> _LLM: ${result.llm.profile} (${result.llm.mode}) at ${result.llm.endpoint}; retrieval model: ${result.retrieval.embedding_model}._\n`);
-    const totalChunks = result.context_packing.included_chunks + result.context_packing.excluded_chunks;
-    process.stdout.write(`> _Context: ${result.context_packing.included_chunks}/${totalChunks} chunks, approx ${result.context_packing.estimated_tokens}/${result.context_packing.budget_tokens} tokens`);
-    if (result.context_packing.truncated_chunks > 0) {
-      process.stdout.write(`, ${result.context_packing.truncated_chunks} truncated`);
+    // Issue #739 — the LLM/context provenance footers are non-essential
+    // metadata; --quiet drops them so the answer + sources are all that print.
+    if (args.verbosity !== 'quiet') {
+      process.stdout.write(`\n> _LLM: ${result.llm.profile} (${result.llm.mode}) at ${result.llm.endpoint}; retrieval model: ${result.retrieval.embedding_model}._\n`);
+      const totalChunks = result.context_packing.included_chunks + result.context_packing.excluded_chunks;
+      process.stdout.write(`> _Context: ${result.context_packing.included_chunks}/${totalChunks} chunks, approx ${result.context_packing.estimated_tokens}/${result.context_packing.budget_tokens} tokens`);
+      if (result.context_packing.truncated_chunks > 0) {
+        process.stdout.write(`, ${result.context_packing.truncated_chunks} truncated`);
+      }
+      process.stdout.write('._\n');
     }
-    process.stdout.write('._\n');
     if (savedTranscript) {
       process.stdout.write(`> _Transcript saved: ${savedTranscript.knowledge_base}:${savedTranscript.path}._\n`);
     }
@@ -391,6 +402,9 @@ async function persistAskTranscript(
 }
 
 export function parseAskArgs(rest: string[]): AskArgs {
+  // Issue #739 — resolve the shared --quiet/--verbose flags before parsing the
+  // command-specific flags from what remains.
+  const { verbosity, rest: args } = extractVerbosity(rest);
   const out: AskArgs = {
     question: null,
     k: 8,
@@ -401,11 +415,12 @@ export function parseAskArgs(rest: string[]): AskArgs {
     interactive: false,
     noStream: false,
     timing: false,
+    verbosity,
     saveTranscript: false,
     yes: false,
   };
-  for (let i = 0; i < rest.length; i++) {
-    const raw = rest[i];
+  for (let i = 0; i < args.length; i++) {
+    const raw = args[i];
     if (raw === '--refresh') { out.refresh = true; continue; }
     if (raw === '--stdin') { out.stdin = true; continue; }
     if (raw === '--interactive' || raw === '-i') { out.interactive = true; continue; }
@@ -419,7 +434,7 @@ export function parseAskArgs(rest: string[]): AskArgs {
     if (raw.startsWith('--endpoint=')) { out.endpoint = raw.slice('--endpoint='.length); continue; }
     if (raw.startsWith('--title=')) { out.title = raw.slice('--title='.length); continue; }
     if (raw === '--title') {
-      const next = rest[i + 1];
+      const next = args[i + 1];
       if (next === undefined) throw new Error('--title requires a value');
       out.title = next;
       i++;

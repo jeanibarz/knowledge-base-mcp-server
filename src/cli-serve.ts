@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import * as fsp from 'node:fs/promises';
 import { runList } from './cli-list.js';
 import { createRunSearchDeps, runSearch, type RunSearchDeps } from './cli-search.js';
-import { captureProcessOutput } from './cli-shared.js';
+import { captureProcessOutput, extractVerbosity, type Verbosity } from './cli-shared.js';
 import { EXIT } from './cli-exit-codes.js';
 import { runStats } from './cli-stats.js';
 import {
@@ -67,6 +67,9 @@ Options:
   --warm                    Pre-warm the active model, FAISS index, and
                             lexical indexes before the daemon reports ready.
   --json                    \`kb serve status\`: emit the daemon health JSON.
+  --quiet, -q               Suppress the "listening on" line (and the \`status\`
+                            "start one with" hint), leaving only errors.
+  --verbose, -v             Reserved for extra diagnostics.
   --help, -h                Show this help.
 
 Environment:
@@ -168,13 +171,15 @@ const DEFAULT_SERVE_ARGS: ServeArgs = {
 };
 
 export async function runServe(rest: string[]): Promise<number> {
-  if (rest[0] === 'status') {
-    return runServeStatus(rest.slice(1));
+  // Issue #739 — resolve the shared --quiet/--verbose flags before dispatching.
+  const { verbosity, rest: args } = extractVerbosity(rest);
+  if (args[0] === 'status') {
+    return runServeStatus(args.slice(1), verbosity);
   }
 
   let parsed: ServeArgs;
   try {
-    parsed = parseServeArgs(rest);
+    parsed = parseServeArgs(args);
   } catch (err) {
     process.stderr.write(`kb serve: ${(err as Error).message}\n`);
     return EXIT.USAGE;
@@ -188,7 +193,11 @@ export async function runServe(rest: string[]): Promise<number> {
     return EXIT.INTERNAL;
   }
 
-  process.stdout.write(`kb serve: listening on ${daemon.url.href}\n`);
+  // The "listening on" line is a non-essential status message; --quiet drops it
+  // so a scripted `kb serve &` starts silently.
+  if (verbosity !== 'quiet') {
+    process.stdout.write(`kb serve: listening on ${daemon.url.href}\n`);
+  }
   const drainTimeoutMs = resolveDaemonDrainTimeoutMs();
   let shuttingDown = false;
   const stop = () => {
@@ -265,7 +274,7 @@ function waitForInFlightDrain(
  * reachable, 2 bad argument/environment, 3 no daemon listening, 1 a daemon
  * answered with an unusable payload.
  */
-export async function runServeStatus(args: string[]): Promise<number> {
+export async function runServeStatus(args: string[], verbosity: Verbosity = 'normal'): Promise<number> {
   let json = false;
   for (const raw of args) {
     if (raw === '--json') {
@@ -298,7 +307,9 @@ export async function runServeStatus(args: string[]): Promise<number> {
       process.stdout.write(`${JSON.stringify({ reachable: false, url: url.href })}\n`);
     } else {
       process.stdout.write(`kb serve: no daemon reachable at ${url.href}\n`);
-      process.stdout.write('  start one with: kb serve\n');
+      // The "start one with" hint is a non-essential suggestion; --quiet omits
+      // it, leaving just the primary reachability line.
+      if (verbosity !== 'quiet') process.stdout.write('  start one with: kb serve\n');
     }
     return 3;
   }

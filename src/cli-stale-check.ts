@@ -17,11 +17,12 @@ import * as path from 'path';
 import * as os from 'os';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { listKnowledgeBases, resolveKnowledgeBaseDir } from './kb-fs.js';
+import { extractVerbosity } from './cli-shared.js';
 
 export const STALE_CHECK_HELP = `kb stale-check — find broken references in markdown notes (read-only)
 
 Usage:
-  kb stale-check [--kb=<name>] [--no-cache] [--verbose|-v]
+  kb stale-check [--kb=<name>] [--no-cache] [--quiet|-q] [--verbose|-v]
 
 Walks every \`.md\` / \`.markdown\` file under one or all KBs and extracts:
   - tilde-rooted absolute paths       (\`~/foo/bar\`)
@@ -39,6 +40,8 @@ Options:
   --kb=<name>           Scope to one knowledge base. Omit for all KBs.
   --no-cache            Bypass the URL cache for this run; freshly probe
                         every URL and overwrite cached entries.
+  --quiet, -q           Suppress the summary footer, leaving only the
+                        broken/error reference lines (empty when clean).
   --verbose, -v         Include OK references in the report (default:
                         only print broken/error references).
   --help, -h            Show this help.
@@ -117,7 +120,7 @@ export async function runStaleCheck(rest: string[]): Promise<number> {
       cachePath: parsed.noCache ? null : cachePath,
       verbose: parsed.verbose,
     });
-    process.stdout.write(formatReport(report));
+    process.stdout.write(formatReport(report, { quiet: parsed.quiet }));
     return 0;
   } catch (err) {
     process.stderr.write(`kb stale-check: ${(err as Error).message}\n`);
@@ -128,14 +131,25 @@ export async function runStaleCheck(rest: string[]): Promise<number> {
 interface ParsedArgs {
   kb?: string;
   noCache: boolean;
+  /** Include OK references in the report (shared --verbose / -v). */
   verbose: boolean;
+  /** Suppress the summary footer, leaving only broken references (--quiet / -q). */
+  quiet: boolean;
 }
 
 export function parseStaleCheckArgs(rest: string[]): ParsedArgs {
-  const out: ParsedArgs = { noCache: false, verbose: false };
-  for (const raw of rest) {
+  // Issue #739 — the historical per-command --verbose/-v now defers to the
+  // shared verbosity mechanism, which also adds --quiet/-q. `--verbose` keeps
+  // its original meaning here (include OK references); `--quiet` drops the
+  // summary footer so a script sees only the broken-reference lines.
+  const { verbosity, rest: args } = extractVerbosity(rest);
+  const out: ParsedArgs = {
+    noCache: false,
+    verbose: verbosity === 'verbose',
+    quiet: verbosity === 'quiet',
+  };
+  for (const raw of args) {
     if (raw === '--no-cache') { out.noCache = true; continue; }
-    if (raw === '--verbose' || raw === '-v') { out.verbose = true; continue; }
     if (raw.startsWith('--kb=')) {
       out.kb = raw.slice('--kb='.length);
       if (out.kb.length === 0) throw new Error('--kb=<name> requires a non-empty value');
@@ -500,7 +514,12 @@ function isStale(r: ReferenceResult): boolean {
   return r.status === 'MISSING' || r.status === 'HTTP_ERROR' || r.status === 'TIMEOUT';
 }
 
-export function formatReport(report: StaleCheckReport): string {
+export interface FormatReportOptions {
+  /** Issue #739 — drop the trailing summary footer, leaving only stale refs. */
+  quiet?: boolean;
+}
+
+export function formatReport(report: StaleCheckReport, options: FormatReportOptions = {}): string {
   const lines: string[] = [];
   for (const file of report.files) {
     const stale = file.results.filter(isStale);
@@ -509,6 +528,12 @@ export function formatReport(report: StaleCheckReport): string {
     for (const r of stale) {
       lines.push(`  L${r.line}  ${padCol(r.value, 50)}${formatStatus(r)}`);
     }
+  }
+
+  if (options.quiet) {
+    // Quiet output is just the broken-reference lines (empty when clean), so a
+    // pipeline can act on presence/absence of output without parsing a footer.
+    return lines.length === 0 ? '' : lines.join('\n') + '\n';
   }
 
   if (report.totals.staleReferences === 0) {
