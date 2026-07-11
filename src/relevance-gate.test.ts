@@ -293,6 +293,61 @@ describe('relevance gate', () => {
     expect(userMessage.content).toContain('</untrusted-doc>');
   });
 
+  it('redacts secrets from judge request content when outbound redaction is enabled', async () => {
+    const previousRedaction = process.env.KB_ASK_REDACT_OUTBOUND;
+    process.env.KB_ASK_REDACT_OUTBOUND = 'on';
+    try {
+      const secret = 'ghp_abcdefghijklmnopqrstuvwxyz123456';
+      const rows = [
+        candidate('/kb/secret.md', 0, 0.1, `deployment token: ${secret}`),
+      ];
+      const fetchImpl = fakeFetchJson('{"overall":"relevant","verdicts":[{"id":"/kb/secret.md#0","decision":"keep","reason":"deployment"}]}');
+
+      await applyRelevanceGate({
+        query: `find ${secret}`,
+        taskContext: `answer the deployment question using Authorization: Bearer ${secret} with precise operational context`,
+        candidates: rows,
+        config: config(),
+        fetchImpl,
+      });
+
+      const body = ((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string;
+      expect(body).not.toContain(secret);
+      expect(body).toContain('[REDACTED]');
+    } finally {
+      if (previousRedaction === undefined) delete process.env.KB_ASK_REDACT_OUTBOUND;
+      else process.env.KB_ASK_REDACT_OUTBOUND = previousRedaction;
+    }
+  });
+
+  it('preserves judge request content when outbound redaction is explicitly disabled', async () => {
+    const previousRedaction = process.env.KB_ASK_REDACT_OUTBOUND;
+    const previousProvider = process.env.KB_LLM_PROVIDER;
+    process.env.KB_ASK_REDACT_OUTBOUND = 'off';
+    process.env.KB_LLM_PROVIDER = 'openrouter';
+    try {
+      const secret = 'ghp_abcdefghijklmnopqrstuvwxyz123456';
+      const fetchImpl = fakeFetchJson('{"overall":"relevant","verdicts":[{"id":"/kb/secret.md#0","decision":"keep","reason":"deployment"}]}');
+
+      await applyRelevanceGate({
+        query: 'find the deployment token',
+        taskContext: 'answer the deployment question with precise operational context from the candidate',
+        candidates: [candidate('/kb/secret.md', 0, 0.1, `deployment token: ${secret}`)],
+        config: config(),
+        fetchImpl,
+      });
+
+      const body = ((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string;
+      expect(body).toContain(secret);
+      expect(body).not.toContain('[REDACTED]');
+    } finally {
+      if (previousRedaction === undefined) delete process.env.KB_ASK_REDACT_OUTBOUND;
+      else process.env.KB_ASK_REDACT_OUTBOUND = previousRedaction;
+      if (previousProvider === undefined) delete process.env.KB_LLM_PROVIDER;
+      else process.env.KB_LLM_PROVIDER = previousProvider;
+    }
+  });
+
   it('rescues top-1 when per-chunk drops empty the set', async () => {
     const rows = [candidate('/kb/a.md', 0, 0.1, 'states v2 default')];
     const input = {
