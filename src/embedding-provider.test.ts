@@ -4,6 +4,7 @@ const originalEnv = {
   EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
   KB_FAKE_DIM: process.env.KB_FAKE_DIM,
   KB_EMBEDDING_TASK_PREFIXES: process.env.KB_EMBEDDING_TASK_PREFIXES,
+  KB_EMBED_TIMEOUT_MS: process.env.KB_EMBED_TIMEOUT_MS,
   KB_PROVIDER_BREAKER: process.env.KB_PROVIDER_BREAKER,
   HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
@@ -216,7 +217,9 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
     // Construction only — OllamaEmbeddings does not touch the network here.
     const client = await createEmbeddingsClient({ provider: 'ollama', modelName: 'nomic-embed-text' });
     expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
-    const inner = (client as unknown as { inner: unknown }).inner;
+    // Issue #793 — the breaker now wraps a TimeoutEmbeddings deadline layer,
+    // which in turn wraps the task-prefix layer.
+    const inner = (client as unknown as { inner: { inner: unknown } }).inner.inner;
     expect(inner).toBeInstanceOf(TaskPrefixedEmbeddings);
   });
 
@@ -229,7 +232,7 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
       modelName: 'dengcao/Qwen3-Embedding-0.6B:Q8_0',
     });
     expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
-    const inner = (client as unknown as { inner: unknown }).inner;
+    const inner = (client as unknown as { inner: { inner: unknown } }).inner.inner;
     expect(inner).not.toBeInstanceOf(TaskPrefixedEmbeddings);
   });
 
@@ -239,7 +242,7 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
     });
     const client = await createEmbeddingsClient({ provider: 'ollama', modelName: 'nomic-embed-text' });
     expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
-    const inner = (client as unknown as { inner: unknown }).inner;
+    const inner = (client as unknown as { inner: { inner: unknown } }).inner.inner;
     expect(inner).not.toBeInstanceOf(TaskPrefixedEmbeddings);
   });
 
@@ -261,7 +264,11 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
     const circuit = client as InstanceType<typeof CircuitBrokenEmbeddings> & {
       embedQuery(text: string): Promise<number[]>;
     };
-    const prefixWrapper = (circuit as unknown as { inner: InstanceType<typeof TaskPrefixedEmbeddings> }).inner;
+    // Issue #793 — unwrap the TimeoutEmbeddings deadline layer that now sits
+    // between the breaker and the task-prefix wrapper.
+    const prefixWrapper = (circuit as unknown as {
+      inner: { inner: InstanceType<typeof TaskPrefixedEmbeddings> };
+    }).inner.inner;
     expect(prefixWrapper).toBeInstanceOf(TaskPrefixedEmbeddings);
     const inner = (prefixWrapper as unknown as { inner: { embedQuery(text: string): Promise<number[]> } }).inner;
     inner.embedQuery = async () => [1];
@@ -318,6 +325,82 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
       state: 'closed',
       consecutive_failures: 0,
     })]);
+  });
+});
+
+describe('TimeoutEmbeddings (issue #793 — per-call embedding deadline)', () => {
+  it('rejects with PROVIDER_TIMEOUT when the inner call hangs past the deadline', async () => {
+    const { TimeoutEmbeddings } = await loadFresh({});
+    const inner = {
+      embedDocuments: () => new Promise<number[][]>(() => {}),
+      embedQuery: () => new Promise<number[]>(() => {}),
+    };
+    const wrapped = new TimeoutEmbeddings(inner, 20);
+
+    await expect(wrapped.embedQuery('hang')).rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT' });
+    await expect(wrapped.embedDocuments(['hang'])).rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT' });
+  });
+
+  it('passes through a fast result without tripping the deadline', async () => {
+    const { TimeoutEmbeddings } = await loadFresh({});
+    const inner = {
+      embedDocuments: async () => [[1, 2, 3]],
+      embedQuery: async () => [1, 2, 3],
+    };
+    const wrapped = new TimeoutEmbeddings(inner, 1_000);
+
+    await expect(wrapped.embedQuery('fast')).resolves.toEqual([1, 2, 3]);
+    await expect(wrapped.embedDocuments(['fast'])).resolves.toEqual([[1, 2, 3]]);
+  });
+
+  it('a hang surfaces PROVIDER_TIMEOUT through the breaker, which records the failure and opens', async () => {
+    const { CircuitBrokenEmbeddings, TimeoutEmbeddings } = await loadFresh({});
+    const { ProviderBreakerRegistry } = await import('./provider-breaker.js');
+    const breaker = new ProviderBreakerRegistry({ failureThreshold: 1, cooldownMs: 1_000 });
+    const hangingInner = {
+      embedDocuments: () => new Promise<number[][]>(() => {}),
+      embedQuery: () => new Promise<number[]>(() => {}),
+    };
+    const key = 'embedding:ollama:http://localhost:11434:nomic';
+    const wrapped = new CircuitBrokenEmbeddings(
+      new TimeoutEmbeddings(hangingInner, 20),
+      key,
+      breaker,
+    );
+
+    await expect(wrapped.embedQuery('hang')).rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT' });
+    // Threshold is 1, so the recorded timeout opens the circuit; the next
+    // call fast-fails with PROVIDER_UNAVAILABLE instead of hanging again.
+    await expect(wrapped.embedQuery('again')).rejects.toMatchObject({
+      name: 'ProviderCircuitOpenError',
+      code: 'PROVIDER_UNAVAILABLE',
+    });
+    expect(breaker.snapshot()).toEqual([expect.objectContaining({
+      key,
+      state: 'open',
+      consecutive_failures: 1,
+    })]);
+  });
+
+  it('createEmbeddingsClient wraps the network arm with a TimeoutEmbeddings inside the breaker', async () => {
+    const { CircuitBrokenEmbeddings, TimeoutEmbeddings, createEmbeddingsClient } = await loadFresh({
+      KB_EMBED_TIMEOUT_MS: '4321',
+      KB_EMBEDDING_TASK_PREFIXES: '0',
+    });
+    const client = await createEmbeddingsClient({ provider: 'ollama', modelName: 'mxbai-embed-large' });
+    expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
+    const timeout = (client as unknown as { inner: unknown }).inner;
+    expect(timeout).toBeInstanceOf(TimeoutEmbeddings);
+    expect((timeout as InstanceType<typeof TimeoutEmbeddings>).timeoutMs).toBe(4321);
+  });
+
+  it('does not wrap the fake provider with a deadline (offline, no breaker)', async () => {
+    const { CircuitBrokenEmbeddings, TimeoutEmbeddings, FakeEmbeddings, createEmbeddingsClient } =
+      await loadFresh({ KB_FAKE_DIM: '32' });
+    const client = await createEmbeddingsClient({ provider: 'fake', modelName: 'fake-model' });
+    expect(client).toBeInstanceOf(FakeEmbeddings);
+    expect(client).not.toBeInstanceOf(CircuitBrokenEmbeddings);
+    expect(client).not.toBeInstanceOf(TimeoutEmbeddings);
   });
 });
 

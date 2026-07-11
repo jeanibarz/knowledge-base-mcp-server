@@ -19,6 +19,7 @@ import {
   KNOWN_EMBEDDING_PROVIDERS,
   parseEmbeddingProvider,
   parseEmbeddingTaskPrefixes,
+  parseKbEmbedTimeoutMs,
   parseKbFakeDim,
   UnknownEmbeddingProviderError,
 } from './config/provider.js';
@@ -467,6 +468,25 @@ describe('parseKbFakeDim (#204 — KB_FAKE_DIM)', () => {
     expect(parseKbFakeDim('not-a-number')).toBe(256);
     expect(parseKbFakeDim('0')).toBe(256);
     expect(parseKbFakeDim('-50')).toBe(256);
+  });
+});
+
+describe('parseKbEmbedTimeoutMs (#793 — KB_EMBED_TIMEOUT_MS)', () => {
+  it('returns the 120000ms default when unset or blank', () => {
+    expect(parseKbEmbedTimeoutMs(undefined)).toBe(120_000);
+    expect(parseKbEmbedTimeoutMs('')).toBe(120_000);
+    expect(parseKbEmbedTimeoutMs('   ')).toBe(120_000);
+  });
+
+  it('honors positive values and floors fractional ones', () => {
+    expect(parseKbEmbedTimeoutMs('5000')).toBe(5_000);
+    expect(parseKbEmbedTimeoutMs('250.9')).toBe(250);
+  });
+
+  it('falls back to default for non-numeric / non-positive inputs (stays bounded)', () => {
+    expect(parseKbEmbedTimeoutMs('not-a-number')).toBe(120_000);
+    expect(parseKbEmbedTimeoutMs('0')).toBe(120_000);
+    expect(parseKbEmbedTimeoutMs('-50')).toBe(120_000);
   });
 });
 

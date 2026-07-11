@@ -119,6 +119,29 @@ export function parseEmbeddingTaskPrefixes(raw: string | undefined): boolean {
 export const KB_EMBEDDING_TASK_PREFIXES: boolean =
   parseEmbeddingTaskPrefixes(process.env.KB_EMBEDDING_TASK_PREFIXES);
 
+// Issue #793 — per-call deadline (ms) that bounds every network
+// embedding-provider call (`embedQuery`/`embedDocuments`). The embed path is
+// the only network stage with no timeout, so a silently-hanging provider
+// socket can stall `retrieve`/`ask`/reindex indefinitely; the deadline
+// converts a hang into a `PROVIDER_TIMEOUT` the circuit breaker can record.
+// Default 120s: generous enough for a cold local Ollama first-load yet
+// bounded. Invalid / non-positive values fall back to the default (the call
+// stays bounded — there is no "disable" escape hatch by design).
+const DEFAULT_KB_EMBED_TIMEOUT_MS = 120_000;
+
+/**
+ * @internal exported only for config tests. Parses `KB_EMBED_TIMEOUT_MS`.
+ * Unset / blank / non-finite / `<= 0` -> default 120000; otherwise floored.
+ */
+export function parseKbEmbedTimeoutMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_KB_EMBED_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_KB_EMBED_TIMEOUT_MS;
+  return Math.floor(parsed);
+}
+
+export const KB_EMBED_TIMEOUT_MS: number = parseKbEmbedTimeoutMs(process.env.KB_EMBED_TIMEOUT_MS);
+
 // Ollama configuration
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'dengcao/Qwen3-Embedding-0.6B:Q8_0';
