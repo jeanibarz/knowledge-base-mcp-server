@@ -3,6 +3,7 @@ import { spawnSync } from 'child_process';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { createTestCorpus, type TestCorpus } from './test-support/corpus.js';
 
 const cliPath = path.join(process.cwd(), 'build', 'cli.js');
 
@@ -45,21 +46,22 @@ let tempDir: string;
 let kbRoot: string;
 let faissRoot: string;
 let homeDir: string;
+let corpus: TestCorpus;
 
 async function writeSmokeKb(): Promise<void> {
-  kbRoot = path.join(tempDir, 'knowledge-bases');
+  corpus = await createTestCorpus({
+    prefix: 'kb-cli-smoke-corpus-',
+    files: {
+      'alpha/note.md': '# Alpha\n\nA stable smoke-test note without external references.\n',
+    },
+  });
+  kbRoot = corpus.rootDir;
   faissRoot = path.join(tempDir, 'faiss');
   homeDir = path.join(tempDir, 'home');
-  await fsp.mkdir(path.join(kbRoot, 'alpha'), { recursive: true });
   await fsp.mkdir(homeDir, { recursive: true });
-  await fsp.writeFile(
-    path.join(kbRoot, 'alpha', 'note.md'),
-    '# Alpha\n\nA stable smoke-test note without external references.\n',
-    'utf-8',
-  );
 }
 
-function runCli(args: string[], input?: string): RunResult {
+function runCli(args: string[], input?: string, env: NodeJS.ProcessEnv = {}): RunResult {
   const result = spawnSync('node', [cliPath, ...args], {
     env: {
       PATH: process.env.PATH ?? '',
@@ -69,6 +71,7 @@ function runCli(args: string[], input?: string): RunResult {
       FAISS_INDEX_PATH: faissRoot,
       EMBEDDING_PROVIDER: 'ollama',
       OLLAMA_MODEL: 'nomic-embed-text',
+      ...env,
     },
     encoding: 'utf-8',
     input,
@@ -95,7 +98,10 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
   });
 
   afterEach(async () => {
-    await fsp.rm(tempDir, { recursive: true, force: true });
+    await Promise.all([
+      fsp.rm(tempDir, { recursive: true, force: true }),
+      corpus.cleanup(),
+    ]);
   });
 
   describe.each(SUBCOMMANDS)('kb %s help', (subcommand) => {
@@ -367,5 +373,28 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
     expect([...covered].sort()).toEqual([...SUBCOMMANDS].sort());
   });
 
-  it.todo('cover live-index search markdown output without --timing after issue #332 fixes the current timing-disabled crash');
+  it('searches a live index in ranked markdown without timing fields by default', async () => {
+    await corpus.writeFile('alpha/weather.md', '# Weather\n\nCloud forecasts and rainfall totals.\n');
+    const modelId = 'fake__BAAI-bge-small-en-v1.5';
+    const modelDir = path.join(faissRoot, 'models', modelId);
+    await fsp.mkdir(modelDir, { recursive: true });
+    await Promise.all([
+      fsp.writeFile(path.join(modelDir, 'model_name.txt'), 'BAAI/bge-small-en-v1.5'),
+      fsp.writeFile(path.join(faissRoot, 'active.txt'), modelId),
+    ]);
+
+    const result = runCli(
+      ['search', 'stable smoke-test note', '--refresh', '--format=md', '--no-freshness'],
+      undefined,
+      {
+        EMBEDDING_PROVIDER: 'fake',
+        KB_FAKE_DIM: '32',
+      },
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/\*\*Result 1:\*\*[\s\S]*\*\*Source:\*\* \[alpha\/note\.md/);
+    expect(result.stdout).toMatch(/\*\*Result 2:\*\*[\s\S]*\*\*Source:\*\* \[alpha\/weather\.md/);
+    expect(result.stdout).not.toMatch(/timing/i);
+  });
 });
