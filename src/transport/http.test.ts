@@ -506,6 +506,44 @@ describe('StreamableHttpHost — endpoints', () => {
     sessions.clear();
   });
 
+  it('#796 notify filters each session by its logging/setLevel minimum', async () => {
+    const started = await startHost({});
+    stop = started.stop;
+    const sessionA = { sendLoggingMessage: jest.fn().mockResolvedValue(undefined) };
+    const sessionB = { sendLoggingMessage: jest.fn().mockResolvedValue(undefined) };
+    const sessions: Map<string, { transport: unknown; mcp: unknown; minLevel?: string }> =
+      (started.host as unknown as {
+        sessions: Map<string, { transport: unknown; mcp: unknown; minLevel?: string }>;
+      }).sessions;
+    sessions.set('a', { transport: {}, mcp: sessionA });
+    sessions.set('b', { transport: {}, mcp: sessionB });
+
+    // Session A only wants warning and above; session B wants everything.
+    expect(started.host.setSessionLevel('a', 'warning')).toBe(true);
+    expect(started.host.setSessionLevel('b', 'debug')).toBe(true);
+
+    await started.host.notify('info', 'kb-test', 'below A threshold');
+    await started.host.notify('error', 'kb-test', 'above A threshold');
+
+    // A: the info is dropped, only the error reaches it.
+    expect(sessionA.sendLoggingMessage).toHaveBeenCalledTimes(1);
+    expect(sessionA.sendLoggingMessage).toHaveBeenCalledWith({
+      level: 'error',
+      logger: 'kb-test',
+      data: 'above A threshold',
+    });
+    // B: both notifications arrive.
+    expect(sessionB.sendLoggingMessage).toHaveBeenCalledTimes(2);
+
+    sessions.clear();
+  });
+
+  it('#796 setSessionLevel returns false for an unknown session', async () => {
+    const started = await startHost({});
+    stop = started.stop;
+    expect(started.host.setSessionLevel('nope', 'error')).toBe(false);
+  });
+
   it('notify swallows per-session errors so one bad client cannot poison the rest', async () => {
     const started = await startHost({});
     stop = started.stop;

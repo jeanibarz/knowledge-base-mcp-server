@@ -22,6 +22,7 @@ import * as http from 'node:http';
 import { Buffer } from 'node:buffer';
 import { timingSafeEqual } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { LoggingLevelSchema, type LoggingLevel } from '@modelcontextprotocol/sdk/types.js';
 
 import {
   isMetricsExportEnabled,
@@ -61,6 +62,30 @@ export interface BaseHttpHostOptions {
 export interface BaseSessionEntry<TTransport> {
   transport: TTransport;
   mcp: McpServer;
+  // #796 — per-session minimum log level requested by the client via
+  // `logging/setLevel`. When unset the session receives every level the
+  // server emits (byte-compatible with pre-#796 fanout behaviour).
+  minLevel?: LoggingLevel;
+}
+
+// #796 — MCP log-level severity order (least → most severe), mirroring the
+// SDK's `LoggingLevelSchema` option order. A message reaches a session only
+// when its severity is at or above the session's requested minimum.
+const LOG_LEVEL_SEVERITY = new Map<string, number>(
+  LoggingLevelSchema.options.map((level, index) => [level, index]),
+);
+
+function sessionAcceptsLevel(
+  minLevel: LoggingLevel | undefined,
+  level: LoggingLevel,
+): boolean {
+  if (minLevel === undefined) return true;
+  const messageSeverity = LOG_LEVEL_SEVERITY.get(level);
+  const minSeverity = LOG_LEVEL_SEVERITY.get(minLevel);
+  // An unknown level (should not happen — both are `LoggingLevel`) fails open
+  // so a mapping gap never silently swallows a notification.
+  if (messageSeverity === undefined || minSeverity === undefined) return true;
+  return messageSeverity >= minSeverity;
 }
 
 interface AccessLog {
@@ -205,13 +230,17 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
    * `transport.onclose` deletes mid-iteration.
    */
   async notify(
-    level: 'info' | 'warning' | 'error',
+    level: LoggingLevel,
     logger_: string,
     data: string,
   ): Promise<void> {
+    // #796 — respect the per-session minimum level chosen via
+    // `logging/setLevel`. Sessions that never called it keep receiving
+    // everything (`minLevel` undefined).
     await this.fanoutMcpServers(
       (target) => target.sendLoggingMessage({ level, logger: logger_, data }),
       'notify error',
+      (entry) => sessionAcceptsLevel(entry.minLevel, level),
     );
   }
 
@@ -222,11 +251,26 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     );
   }
 
+  /**
+   * #796 — record the minimum log level a session wants to receive, in
+   * response to a `logging/setLevel` request. Returns `false` when the
+   * session is unknown (e.g. already closed) so the caller can no-op safely.
+   */
+  setSessionLevel(sessionId: string, level: LoggingLevel): boolean {
+    const entry = this.sessions.get(sessionId);
+    if (entry === undefined) return false;
+    entry.minLevel = level;
+    return true;
+  }
+
   private async fanoutMcpServers(
     action: (target: McpServer) => Promise<void>,
     errorLabel: string,
+    filter?: (entry: BaseSessionEntry<TTransport>) => boolean,
   ): Promise<void> {
-    const targets = [...this.sessions.values()].map((entry) => entry.mcp);
+    const entries = [...this.sessions.values()];
+    const targets = (filter === undefined ? entries : entries.filter(filter))
+      .map((entry) => entry.mcp);
     if (targets.length === 0) return;
     await Promise.all(
       targets.map(async (target) => {
