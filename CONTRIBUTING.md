@@ -16,6 +16,21 @@ The marked rows in the PR template are verified against the actual diff by the
 `PR checklist` workflow. Check a marked row only when it is true; otherwise
 strike the row through and add a one-line reason. A blank marked row fails CI.
 
+**Preflight the checklist locally before you open the PR.** The most common
+first-attempt CI failure is a PR body that was not built from
+[`.github/PULL_REQUEST_TEMPLATE.md`](./.github/PULL_REQUEST_TEMPLATE.md), so the
+`kookr:check:*` rows are absent. Draft your body into a file, then run the same
+verifier CI runs against it:
+
+```sh
+npm run pr-checklist -- pr-body.md          # verifies against origin/main
+gh pr create --body-file pr-body.md         # only after it passes
+```
+
+This catches a wrong-shape body in seconds instead of after a full CI cycle. CI
+remains authoritative; the preflight is a convenience that shells out to the
+Kookr CLI (set `KOOKR_BIN` if it is not on your `PATH`).
+
 ## Reporting Bugs
 
 Please use the [Bug Report issue template](./.github/ISSUE_TEMPLATE/bug_report.yml) and include:
