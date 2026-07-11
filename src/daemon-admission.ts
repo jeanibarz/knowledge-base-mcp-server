@@ -21,6 +21,20 @@ export const DAEMON_MAX_CONCURRENCY_ENV = 'KB_DAEMON_MAX_CONCURRENCY';
 export const DAEMON_QUEUE_MAX_ENV = 'KB_DAEMON_QUEUE_MAX';
 
 /**
+ * Bounded wait (issue #735) for in-flight requests to finish when `kb serve`
+ * receives SIGINT/SIGTERM before the daemon force-exits. See
+ * `resolveDaemonDrainTimeoutMs`.
+ */
+export const DAEMON_DRAIN_TIMEOUT_ENV = 'KB_DAEMON_DRAIN_TIMEOUT_MS';
+
+/**
+ * Default drain budget on shutdown. A few seconds is generous enough for an
+ * ordinary warm search/list/stats to finish while still bounding how long a
+ * stuck request can delay exit.
+ */
+export const DEFAULT_DAEMON_DRAIN_TIMEOUT_MS = 5000;
+
+/**
  * Default concurrent-request cap. Matches DEFAULT_FS_CONCURRENCY (8) so the
  * daemon's inbound admission and its internal fan-out share one mental
  * model; tune with KB_DAEMON_MAX_CONCURRENCY on smaller boxes.
@@ -77,6 +91,22 @@ export function resolveDaemonAdmissionConfig(
 }
 
 /**
+ * Resolve the graceful-drain budget (issue #735) from
+ * `KB_DAEMON_DRAIN_TIMEOUT_MS`. A value of 0 means "do not wait" — stop the
+ * server immediately after refusing new requests. Malformed or negative
+ * values fall back to the default.
+ */
+export function resolveDaemonDrainTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  return parseBoundedInt(
+    env[DAEMON_DRAIN_TIMEOUT_ENV],
+    DEFAULT_DAEMON_DRAIN_TIMEOUT_MS,
+    0,
+  );
+}
+
+/**
  * Bounded admission gate for inbound daemon requests.
  *
  * `running` counts the slots currently held (≤ maxConcurrency); `waiters`
@@ -91,6 +121,8 @@ export class DaemonAdmissionGate {
   private running = 0;
   private readonly waiters: Array<() => void> = [];
   private rejectedTotalCount = 0;
+  private closed = false;
+  private readonly idleWaiters: Array<() => void> = [];
 
   constructor(config: DaemonAdmissionConfig) {
     this.maxConcurrency = Math.max(1, Math.floor(config.maxConcurrency));
@@ -105,6 +137,35 @@ export class DaemonAdmissionGate {
   /** Total requests rejected because both the cap and the queue were full. */
   get rejectedTotal(): number {
     return this.rejectedTotalCount;
+  }
+
+  /**
+   * Whether the gate has been closed for graceful shutdown (issue #735).
+   * Once closed the daemon refuses NEW requests (503) while letting the
+   * already-admitted, in-flight requests run to completion.
+   */
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /**
+   * Stop admitting new work. Idempotent. Callers should first flip this and
+   * then await `whenIdle()` to drain the in-flight requests before stopping
+   * the server.
+   */
+  close(): void {
+    this.closed = true;
+  }
+
+  /**
+   * Resolve once there is no in-flight work (running + queued == 0). Resolves
+   * immediately when already idle. Multiple concurrent callers are supported.
+   */
+  whenIdle(): Promise<void> {
+    if (this.inFlight === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.idleWaiters.push(resolve);
+    });
   }
 
   /**
@@ -150,5 +211,10 @@ export class DaemonAdmissionGate {
       return;
     }
     this.running -= 1;
+    if (this.inFlight === 0 && this.idleWaiters.length > 0) {
+      // Last in-flight request drained — wake the shutdown waiters (#735).
+      const waiters = this.idleWaiters.splice(0);
+      for (const resolve of waiters) resolve();
+    }
   }
 }
