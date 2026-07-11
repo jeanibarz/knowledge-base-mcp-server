@@ -25,10 +25,51 @@ interface OllamaResponseErrorShape {
   response?: { status?: number };
   message?: string;
   name?: string;
+  code?: string;
+  cause?: unknown;
 }
 
 function readStatus(err: OllamaResponseErrorShape): number | undefined {
   return err.status_code ?? err.status ?? err.response?.status;
+}
+
+// Transient socket / connection drops that mean "the model runner hiccuped,
+// try again" rather than "your request is malformed" (issue #801). On
+// CPU-based Ollama (e.g. WSL2) the dynamic model-runner subprocess can drop a
+// connection or respawn mid-batch; the daemon surfaces this as a bare `EOF`,
+// `ECONNRESET`, `socket hang up`, or a fetch `TypeError: fetch failed`. None of
+// these carry a 4xx status, so they are safe to retry once the runner is back.
+const TRANSIENT_SOCKET_PATTERNS = [
+  /\bEOF\b/,
+  /ECONNRESET/,
+  /socket hang up/i,
+  /fetch failed/i,
+  /ECONNREFUSED/,
+  /ETIMEDOUT/,
+  /EPIPE/,
+];
+
+/**
+ * True when `err` looks like a transient socket/connection drop from the
+ * Ollama model runner. These are RETRYABLE — the runner typically respawns
+ * and a re-attempt succeeds — and must never be labelled "non-retryable".
+ * Walks `.message`, `.code`, and a nested `.cause` (fetch failures wrap the
+ * real socket error there).
+ */
+export function isTransientOllamaSocketError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as OllamaResponseErrorShape;
+  const msg = typeof e.message === 'string' ? e.message : '';
+  const code = typeof e.code === 'string' ? e.code : '';
+  if (TRANSIENT_SOCKET_PATTERNS.some((p) => p.test(msg) || (code && p.test(code)))) {
+    return true;
+  }
+  // fetch() rejections carry `TypeError: fetch failed` with the underlying
+  // socket error nested in `.cause` — unwrap one level.
+  if (e.cause && e.cause !== err) {
+    return isTransientOllamaSocketError(e.cause);
+  }
+  return false;
 }
 
 export function isOllamaContextLengthError(err: unknown): boolean {
@@ -47,6 +88,10 @@ export function isOllamaContextLengthError(err: unknown): boolean {
 
 export function isNonRetryableOllamaError(err: unknown): boolean {
   if (isOllamaContextLengthError(err)) return true;
+  // Transient socket drops (EOF, ECONNRESET, ...) are retryable even when the
+  // Ollama daemon happens to wrap them in a ResponseError (issue #801) — guard
+  // before the status check so they never fall through to a terminal verdict.
+  if (isTransientOllamaSocketError(err)) return false;
   if (!err || typeof err !== 'object') return false;
   const e = err as OllamaResponseErrorShape;
   if (e.name !== 'ResponseError') return false;
@@ -76,15 +121,37 @@ export function translateOllamaEmbeddingError(err: unknown, model: string): KBEr
       `(e.g. ${suggestions}) and retry. See README → Ollama Configuration.`;
     return new KBError('VALIDATION', message, err);
   }
-  // Generic non-retryable Ollama 4xx — keep the original message but tag it
-  // so callers know we already decided not to retry.
   const original =
     err && typeof err === 'object' && 'message' in err
       ? String((err as { message?: unknown }).message ?? '')
       : String(err);
+  // Transient socket drop (issue #801). This is NOT deterministic — the model
+  // runner dropped or respawned mid-request. Say so accurately instead of
+  // mislabelling it "non-retryable", which sends operators hunting for a
+  // config bug that isn't there.
+  if (isTransientOllamaSocketError(err)) {
+    return new KBError(
+      'PROVIDER_UNAVAILABLE',
+      `Ollama embedding request for model \`${model}\` failed after exhausting retries on a ` +
+        `transient socket error (the model runner dropped the connection or was respawning). ` +
+        `This is not a deterministic failure — re-running usually succeeds. Original error: ${original}`,
+      err,
+    );
+  }
+  // Genuinely terminal Ollama 4xx schema violation — keep the original message
+  // but tag it so callers know we deliberately did not retry.
+  if (isNonRetryableOllamaError(err)) {
+    return new KBError(
+      'PROVIDER_UNAVAILABLE',
+      `Ollama embedding request for model \`${model}\` failed with a non-retryable error: ${original}`,
+      err,
+    );
+  }
+  // Unknown / retryable-but-exhausted failure — do not claim it was
+  // non-retryable, since we cannot prove that.
   return new KBError(
     'PROVIDER_UNAVAILABLE',
-    `Ollama embedding request for model \`${model}\` failed with a non-retryable error: ${original}`,
+    `Ollama embedding request for model \`${model}\` failed: ${original}`,
     err,
   );
 }
