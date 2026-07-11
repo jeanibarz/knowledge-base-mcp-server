@@ -181,6 +181,16 @@ Scope:
   --until=<time>        Dense-only: keep chunks whose current source-file
                         mtime is at or before this bound. File mtime can
                         differ from indexed-content time on stale indexes.
+  --tag=<name>          Dense-only: keep only chunks whose source file has
+                        the given tag in its YAML frontmatter. Repeatable;
+                        multiple tags are ANDed (a chunk must carry ALL of
+                        them), mirroring retrieve_knowledge.
+  --extension=<ext>     Dense-only: keep only chunks whose source file has
+                        one of these extensions (e.g. .md, .pdf).
+                        Case-insensitive; leading dot optional. Repeatable.
+  --path-glob=<glob>    Dense-only: keep only chunks whose KB-internal
+                        relative path matches this glob (e.g. "runbooks/**").
+                        The KB-name segment is stripped before matching.
 
 Result tuning:
   --threshold=<float>   Max similarity score; lower = closer match (default 2).
@@ -342,6 +352,9 @@ interface SearchArgs {
   thresholdAuto: boolean;
   since?: string;
   until?: string;
+  extensions: string[];
+  pathGlob?: string;
+  tags: string[];
   k: number;
   format: SearchFormat;
   refresh: boolean;
@@ -510,6 +523,10 @@ export async function runSearch(
   }
   if (hasRecencyFilter(parsed) && effectiveMode !== 'dense') {
     process.stderr.write('kb search: --since/--until are only supported with --mode=dense\n');
+    return 2;
+  }
+  if (hasMetadataFilter(parsed) && effectiveMode !== 'dense') {
+    process.stderr.write('kb search: --tag/--extension/--path-glob are only supported with --mode=dense\n');
     return 2;
   }
   if (parsed.candidatePoolK !== undefined && effectiveMode !== 'hybrid') {
@@ -968,6 +985,8 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     antiQueries: [],
     plusQueries: [],
     minusQueries: [],
+    extensions: [],
+    tags: [],
     lexicalUnit: 'chunk',
     decompose: false,
     decomposeProvider: 'rule',
@@ -1091,6 +1110,18 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     }
     if (raw.startsWith('--since=')) { out.since = raw.slice('--since='.length); continue; }
     if (raw.startsWith('--until=')) { out.until = raw.slice('--until='.length); continue; }
+    if (raw.startsWith('--extension=')) {
+      out.extensions.push(parseNonEmptyComponent(raw, '--extension='));
+      continue;
+    }
+    if (raw.startsWith('--tag=')) {
+      out.tags.push(parseNonEmptyComponent(raw, '--tag='));
+      continue;
+    }
+    if (raw.startsWith('--path-glob=')) {
+      out.pathGlob = parseNonEmptyComponent(raw, '--path-glob=');
+      continue;
+    }
     if (raw.startsWith('--k=')) {
       const n = Number(raw.slice('--k='.length));
       if (!Number.isInteger(n) || n <= 0) throw new Error(`invalid --k: ${raw}`);
@@ -1147,10 +1178,27 @@ function hasRecencyFilter(args: Pick<SearchArgs, 'since' | 'until'>): boolean {
   return args.since !== undefined || args.until !== undefined;
 }
 
-function searchFiltersFromArgs(args: Pick<SearchArgs, 'since' | 'until'>): SimilaritySearchFilters | undefined {
-  return hasRecencyFilter(args)
-    ? { since: args.since, until: args.until }
-    : undefined;
+function hasMetadataFilter(args: Pick<SearchArgs, 'extensions' | 'pathGlob' | 'tags'>): boolean {
+  return args.extensions.length > 0 || args.pathGlob !== undefined || args.tags.length > 0;
+}
+
+// Mirror the MCP `retrieve_knowledge` filter semantics exactly (#790): the
+// engine ANDs `extensions`/`path_glob`/`tags` with each other and with the
+// KB scope + threshold, and requires ALL tags to be present. We hand the
+// parsed flags straight to `SimilaritySearchFilters` so normalization (case-
+// insensitive extensions, KB-name-stripped glob, ALL-match tags) stays owned
+// by the shared engine rather than duplicated on the CLI.
+export function searchFiltersFromArgs(
+  args: Pick<SearchArgs, 'since' | 'until' | 'extensions' | 'pathGlob' | 'tags'>,
+): SimilaritySearchFilters | undefined {
+  if (!hasRecencyFilter(args) && !hasMetadataFilter(args)) return undefined;
+  return {
+    since: args.since,
+    until: args.until,
+    extensions: args.extensions.length > 0 ? args.extensions : undefined,
+    pathGlob: args.pathGlob,
+    tags: args.tags.length > 0 ? args.tags : undefined,
+  };
 }
 
 function parseNonEmptyComponent(raw: string, prefix: string): string {
