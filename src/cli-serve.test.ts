@@ -7,6 +7,7 @@ import {
   appendDaemonAdmissionMetrics,
   createDaemonCommandHandlers,
   formatStatsRunResultAsOpenMetrics,
+  gracefulDrain,
   parseServeArgs,
   runServeStatus,
   startDaemonServer,
@@ -14,8 +15,10 @@ import {
 import {
   DaemonAdmissionGate,
   resolveDaemonAdmissionConfig,
+  resolveDaemonDrainTimeoutMs,
   DEFAULT_DAEMON_MAX_CONCURRENCY,
   DEFAULT_DAEMON_QUEUE_MAX,
+  DEFAULT_DAEMON_DRAIN_TIMEOUT_MS,
 } from './daemon-admission.js';
 import { fetchDaemonHealth, runDaemonCommand, type DaemonRunResult } from './daemon-client.js';
 import type { KbStatsPayload } from './kb-stats.js';
@@ -605,6 +608,153 @@ describe('kb serve daemon admission control', () => {
       release();
       await daemon.stop();
     }
+  });
+});
+
+describe('kb serve graceful drain on shutdown (issue #735)', () => {
+  const originalDrainTimeout = process.env.KB_DAEMON_DRAIN_TIMEOUT_MS;
+
+  afterEach(() => {
+    if (originalDrainTimeout === undefined) delete process.env.KB_DAEMON_DRAIN_TIMEOUT_MS;
+    else process.env.KB_DAEMON_DRAIN_TIMEOUT_MS = originalDrainTimeout;
+  });
+
+  it('resolves the drain timeout from KB_DAEMON_DRAIN_TIMEOUT_MS with a sane default', () => {
+    expect(resolveDaemonDrainTimeoutMs({})).toBe(DEFAULT_DAEMON_DRAIN_TIMEOUT_MS);
+    expect(resolveDaemonDrainTimeoutMs({ KB_DAEMON_DRAIN_TIMEOUT_MS: '250' })).toBe(250);
+    expect(resolveDaemonDrainTimeoutMs({ KB_DAEMON_DRAIN_TIMEOUT_MS: '0' })).toBe(0);
+    // Malformed / negative values fall back to the default.
+    expect(resolveDaemonDrainTimeoutMs({ KB_DAEMON_DRAIN_TIMEOUT_MS: 'nope' })).toBe(
+      DEFAULT_DAEMON_DRAIN_TIMEOUT_MS,
+    );
+    expect(resolveDaemonDrainTimeoutMs({ KB_DAEMON_DRAIN_TIMEOUT_MS: '-5' })).toBe(
+      DEFAULT_DAEMON_DRAIN_TIMEOUT_MS,
+    );
+  });
+
+  it('closing the admission gate refuses new work but resolves whenIdle after in-flight drains', async () => {
+    const gate = new DaemonAdmissionGate({ maxConcurrency: 1, queueMax: 0 });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const inflight = gate.run(async () => {
+      await held;
+    });
+    expect(inflight).not.toBeNull();
+    expect(gate.inFlight).toBe(1);
+
+    gate.close();
+    expect(gate.isClosed).toBe(true);
+
+    let idle = false;
+    const drained = gate.whenIdle().then(() => {
+      idle = true;
+    });
+    // Still in-flight, so the drain promise has not resolved yet.
+    await Promise.resolve();
+    expect(idle).toBe(false);
+
+    release();
+    await inflight;
+    await drained;
+    expect(idle).toBe(true);
+    expect(gate.inFlight).toBe(0);
+  });
+
+  it('drains the in-flight request while refusing new requests during shutdown', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let resolveStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const handler = async (): Promise<DaemonRunResult> => {
+      resolveStarted();
+      await held;
+      return { exitCode: 0, stdout: 'drained\n', stderr: '' };
+    };
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      admission: { maxConcurrency: 4, queueMax: 10 },
+      handlers: { search: handler, list: handler, stats: handler },
+    });
+
+    try {
+      // A request is accepted and parked inside the handler (in-flight).
+      const inflight = request(daemon.url, {
+        method: 'POST',
+        path: '/v1/run',
+        body: { command: 'search', args: ['q'] },
+      });
+      await started;
+
+      // Begin the same graceful drain the SIGINT/SIGTERM handler runs.
+      const drainDone = gracefulDrain(daemon, 5000);
+
+      // A NEW request arriving mid-drain is refused with 503 + Connection: close.
+      const refused = await request(daemon.url, {
+        method: 'POST',
+        path: '/v1/run',
+        body: { command: 'search', args: ['q'] },
+      });
+      expect(refused.statusCode).toBe(503);
+      expect(refused.headers.connection).toBe('close');
+      expect(JSON.parse(refused.body)).toMatchObject({ error: 'draining' });
+
+      // The in-flight request is allowed to finish rather than being aborted.
+      release();
+      const completed = await inflight;
+      expect(completed.statusCode).toBe(200);
+      expect(JSON.parse(completed.body)).toMatchObject({ exitCode: 0, stdout: 'drained\n' });
+
+      // Drain completes and the server is stopped (no longer accepting).
+      await drainDone;
+      expect(daemon.server.listening).toBe(false);
+    } finally {
+      release();
+      await daemon.stop();
+    }
+  });
+
+  it('force-stops after the drain timeout when a request will not finish', async () => {
+    const held = new Promise<void>(() => {
+      // Never resolves — simulates a wedged request.
+    });
+    let resolveStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const handler = async (): Promise<DaemonRunResult> => {
+      resolveStarted();
+      await held;
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      admission: { maxConcurrency: 1, queueMax: 0 },
+      handlers: { search: handler, list: handler, stats: handler },
+    });
+
+    // Park a request that never completes.
+    void request(daemon.url, {
+      method: 'POST',
+      path: '/v1/run',
+      body: { command: 'search', args: ['q'] },
+    }).catch(() => undefined);
+    await started;
+
+    // With a tiny drain budget, gracefulDrain must not hang on the wedged
+    // request — it stops the server once the bounded wait elapses.
+    const before = Date.now();
+    await gracefulDrain(daemon, 50);
+    expect(Date.now() - before).toBeLessThan(5000);
+    expect(daemon.admission.inFlight).toBe(1); // request still wedged, but we moved on
+    expect(daemon.server.listening).toBe(false);
   });
 });
 

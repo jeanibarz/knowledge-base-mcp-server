@@ -25,6 +25,7 @@ import {
   DaemonAdmissionGate,
   DAEMON_RETRY_AFTER_SECONDS,
   resolveDaemonAdmissionConfig,
+  resolveDaemonDrainTimeoutMs,
   type DaemonAdmissionConfig,
 } from './daemon-admission.js';
 import {
@@ -149,6 +150,11 @@ export interface ResidentDaemon {
   url: URL;
   stop: () => Promise<void>;
   closed: Promise<void>;
+  /**
+   * Admission gate (issue #648). Exposed so the shutdown path (issue #735)
+   * can close it to new requests and await `whenIdle()` before stopping.
+   */
+  admission: DaemonAdmissionGate;
 }
 
 const DEFAULT_SERVE_ARGS: ServeArgs = {
@@ -182,8 +188,21 @@ export async function runServe(rest: string[]): Promise<number> {
   }
 
   process.stdout.write(`kb serve: listening on ${daemon.url.href}\n`);
+  const drainTimeoutMs = resolveDaemonDrainTimeoutMs();
+  let shuttingDown = false;
   const stop = () => {
-    void daemon.stop();
+    if (shuttingDown) return;
+    shuttingDown = true;
+    // Hard backstop: a request wedged past the drain budget must never block
+    // exit. Give `server.close()` a short grace beyond the drain window, then
+    // force-exit with the success code (`kb serve` exits 0 on a clean stop).
+    const forceExit = setTimeout(() => {
+      process.exit(0);
+    }, drainTimeoutMs + DRAIN_FORCE_EXIT_GRACE_MS);
+    forceExit.unref();
+    void gracefulDrain(daemon, drainTimeoutMs).finally(() => {
+      clearTimeout(forceExit);
+    });
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
@@ -191,6 +210,50 @@ export async function runServe(rest: string[]): Promise<number> {
   process.off('SIGINT', stop);
   process.off('SIGTERM', stop);
   return 0;
+}
+
+/** Grace beyond the drain budget for `server.close()` before force-exit. */
+const DRAIN_FORCE_EXIT_GRACE_MS = 1000;
+
+/**
+ * Graceful shutdown for the resident daemon (issue #735):
+ *   1. close the admission gate so NEW requests are refused (503),
+ *   2. wait — bounded by `drainTimeoutMs` — for in-flight requests to finish,
+ *   3. if the wait timed out with work still in-flight, forcibly close open
+ *      sockets so `server.close()` cannot hang on a wedged request,
+ *   4. stop the server (closing the listening socket).
+ * Exported so the SIGINT/SIGTERM handler and tests share one drain routine.
+ */
+export async function gracefulDrain(
+  daemon: ResidentDaemon,
+  drainTimeoutMs: number,
+): Promise<void> {
+  daemon.admission.close();
+  const drained = await waitForInFlightDrain(daemon.admission, drainTimeoutMs);
+  if (!drained) {
+    // Budget exhausted with requests still in flight: sever the lingering
+    // connections so the pending `server.close()` resolves. The outer
+    // process-level force-exit remains the last-resort backstop.
+    daemon.server.closeAllConnections?.();
+  }
+  await daemon.stop();
+}
+
+/** Resolve to `true` once idle, or `false` if the bounded wait elapses first. */
+function waitForInFlightDrain(
+  admission: DaemonAdmissionGate,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (admission.inFlight === 0) return Promise.resolve(true);
+  if (timeoutMs <= 0) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    timer.unref();
+    void admission.whenIdle().then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
 }
 
 /**
@@ -392,6 +455,7 @@ export async function startDaemonServer(
       });
     }),
     closed,
+    admission,
   };
 
   function resetIdleTimer(): void {
@@ -734,6 +798,13 @@ async function handleRequest(
     writeJson(res, 400, { error: 'read_only_daemon', message: 'kb serve does not run search --refresh' });
     return;
   }
+  if (admission.isClosed) {
+    // Graceful shutdown in progress (issue #735): refuse NEW work so the
+    // daemon can drain its in-flight requests and exit. Health/metrics
+    // probes above stay reachable.
+    rejectDraining(res);
+    return;
+  }
 
   const accepted = admission.run(async () => {
     try {
@@ -763,6 +834,19 @@ function rejectOverloaded(res: http.ServerResponse): void {
   writeJson(res, 429, {
     error: 'too_many_requests',
     message: 'kb serve: daemon at capacity; retry after backoff',
+  });
+}
+
+/**
+ * Shutdown rejection (issue #735): the daemon is draining in-flight work on
+ * SIGINT/SIGTERM and no longer admits new requests. Reply `503` and ask the
+ * client to close the connection so the socket does not linger during exit.
+ */
+function rejectDraining(res: http.ServerResponse): void {
+  res.setHeader('Connection', 'close');
+  writeJson(res, 503, {
+    error: 'draining',
+    message: 'kb serve: daemon is shutting down; retry against a fresh daemon',
   });
 }
 
