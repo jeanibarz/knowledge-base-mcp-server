@@ -42,7 +42,7 @@ import { runPicker } from './cli-search-picker.js';
 import { parseColorMode, resolveColorEnabled, type ColorMode } from './color.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
-import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+import { extractVerbosity, loadManagerForModel, loadWithJsonRetry, type Verbosity } from './cli-shared.js';
 import {
   compactTimingPayload,
   elapsedMs,
@@ -308,6 +308,12 @@ Indexing:
                         100 MiB, prints a nonblocking refresh preflight to
                         stderr before embedding starts.
 
+Verbosity:
+  --quiet, -q           Suppress the freshness footer and refresh progress,
+                        leaving only results and errors (ideal for \`| jq\`).
+                        Combines with --format=json.
+  --verbose, -v         Surface extra diagnostics (equivalent to --timing).
+
 Input:
   --stdin               Read query from stdin (multi-line safe).
   -i, --interactive     Open an interactive results picker (TTY only; ignored
@@ -367,6 +373,7 @@ interface SearchArgs {
   batchJsonl: boolean;
   noCache: boolean;
   freshness: boolean;
+  verbosity: Verbosity;
   highlight: SearchHighlightMode;
   snippetLines?: number;
   color: ColorMode;
@@ -422,6 +429,33 @@ export function createRunSearchDeps(overrides: Partial<RunSearchDeps> = {}): Run
   return { ...DEFAULT_RUN_SEARCH_DEPS, ...overrides };
 }
 
+/**
+ * Issue #739 — fold the resolved verbosity level into the concrete output
+ * knobs `runSearch` already understands. `--quiet` reuses the existing
+ * `--no-freshness` lever (dropping the freshness footer / JSON staleness) and
+ * silences refresh progress; `--verbose` turns on the same per-stage timing
+ * diagnostics as `--timing`. An explicit `--timing`/`--no-freshness` a user
+ * also passed still holds — this only tightens the defaults.
+ */
+function applySearchVerbosity(parsed: SearchArgs): void {
+  if (parsed.verbosity === 'quiet') {
+    parsed.freshness = false;
+  } else if (parsed.verbosity === 'verbose') {
+    parsed.timing = true;
+  }
+}
+
+/**
+ * The stderr sink for refresh progress lines. `--quiet` swallows them (they are
+ * routine progress, not a result or error); every other level writes to stderr
+ * so stdout stays clean for the result.
+ */
+export function refreshProgressWriter(verbosity: Verbosity): (line: string) => void {
+  return verbosity === 'quiet'
+    ? () => {}
+    : (line) => { process.stderr.write(line); };
+}
+
 export async function runSearch(
   rest: string[],
   deps: RunSearchDeps = DEFAULT_RUN_SEARCH_DEPS,
@@ -435,6 +469,7 @@ export async function runSearch(
     process.stderr.write(`kb search: ${(err as Error).message}\n`);
     return 2;
   }
+  applySearchVerbosity(parsed);
 
   if (parsed.stdin && parsed.query === null) {
     if (parsed.batchJsonl) {
@@ -607,7 +642,7 @@ export async function runSearch(
         await manager.initialize();
         await withRetrievalViewsForIngest(parsed.retrievalViews, () =>
           manager.updateIndex(parsed.kb, {
-            onProgress: createRefreshProgressReporter(timing),
+            onProgress: createRefreshProgressReporter(timing, refreshProgressWriter(parsed.verbosity)),
             force: parsed.retrievalViews !== undefined,
           }),
         );
@@ -961,6 +996,9 @@ async function runAdvancedDenseSearch(input: {
 
 export function parseSearchArgs(rest: string[]): SearchArgs {
   let snippetExplicit = false;
+  // Issue #739 — resolve the shared --quiet/--verbose flags first, then parse
+  // the command-specific flags from what remains.
+  const { verbosity, rest: args } = extractVerbosity(rest);
   const out: SearchArgs = {
     query: null,
     k: 10,
@@ -976,6 +1014,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     batchJsonl: false,
     noCache: false,
     freshness: true,
+    verbosity,
     highlight: 'auto',
     color: 'auto',
     colorExplicit: false,
@@ -992,7 +1031,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     decomposeProvider: 'rule',
     decomposeBudget: {},
   };
-  for (const raw of rest) {
+  for (const raw of args) {
     if (raw === '--refresh') { out.refresh = true; continue; }
     if (raw === '--stdin')   { out.stdin = true; continue; }
     if (raw === '--group-by-source') { out.groupBySource = true; continue; }
@@ -2227,7 +2266,7 @@ async function loadBatchIndex(
         await printRefreshPreflightIfLarge(activeModelId, state.manager, row.kb, row.format);
         await state.manager.initialize();
         await state.manager.updateIndex(row.kb, {
-          onProgress: createRefreshProgressReporter(timing),
+          onProgress: createRefreshProgressReporter(timing, refreshProgressWriter(row.verbosity)),
         });
       });
       state.refreshedScopes.add(scopeKey);
@@ -2744,7 +2783,7 @@ async function runHybridSearch(
         await manager.initialize();
         await withRetrievalViewsForIngest(parsed.retrievalViews, () =>
           manager.updateIndex(parsed.kb, {
-            onProgress: createRefreshProgressReporter(timing),
+            onProgress: createRefreshProgressReporter(timing, refreshProgressWriter(parsed.verbosity)),
             force: parsed.retrievalViews !== undefined,
           }),
         );

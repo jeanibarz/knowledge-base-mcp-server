@@ -46,6 +46,7 @@ describe('parseAskArgs', () => {
       interactive: false,
       noStream: false,
       timing: true,
+      verbosity: 'normal',
       saveTranscript: true,
       title: 'Incident answer',
       yes: true,
@@ -1445,5 +1446,73 @@ describe('kb ask --interactive routing', () => {
       if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
       else process.env.KB_LLM_ENDPOINT = previousEndpoint;
     }
+  });
+});
+
+describe('kb ask global verbosity (#739)', () => {
+  async function runAskMarkdown(extraArgs: string[]): Promise<string> {
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    const stdout: string[] = [];
+    const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
+      const manager = {
+        modelDir: '/tmp/kb-ask-verbosity',
+        initialize: jest.fn(async () => {}),
+        updateIndex: jest.fn(async () => {}),
+        similaritySearch: jest.fn(async () => [
+          {
+            pageContent: 'Rollback is approved by the on-call lead.',
+            metadata: {
+              knowledgeBase: 'ops',
+              relativePath: 'rollback.md',
+              loc: { lines: { from: 1, to: 4 } },
+            },
+            score: 0.1,
+          },
+        ]),
+      };
+      const deps: RunAskDeps = {
+        bootstrapLayout: jest.fn(async () => {}),
+        resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+        loadManagerForModel: jest.fn(async () => manager as never),
+        loadWithJsonRetry: jest.fn(async () => {}),
+        withWriteLock: jest.fn(async <T>(_resource: string, action: () => Promise<T>) => action()) as RunAskDeps['withWriteLock'],
+        callChatCompletion: jest.fn(async () => ({
+          content: 'The on-call lead approves rollback.',
+          model: 'qwen3',
+          raw: {},
+        })),
+        createTranscriptNote: createAskTranscriptNote,
+        knowledgeBasesRootDir: '/tmp/kb-ask-verbosity-root',
+      };
+      const code = await runAsk(['Who approves rollback?', '--kb=ops', '--no-stream', ...extraArgs], deps);
+      expect(code).toBe(0);
+      return stdout.join('');
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+    }
+  }
+
+  it('prints the LLM/context footers in normal mode', async () => {
+    const out = await runAskMarkdown([]);
+    expect(out).toContain('The on-call lead approves rollback.');
+    expect(out).toContain('> _LLM:');
+    expect(out).toContain('> _Context:');
+  });
+
+  it('--quiet drops the LLM/context footers, keeping the answer and sources', async () => {
+    const out = await runAskMarkdown(['--quiet']);
+    expect(out).toContain('The on-call lead approves rollback.');
+    expect(out).toContain('## Sources');
+    expect(out).not.toContain('> _LLM:');
+    expect(out).not.toContain('> _Context:');
   });
 });

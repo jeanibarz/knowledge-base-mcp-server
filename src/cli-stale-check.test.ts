@@ -25,6 +25,12 @@ describe('parseStaleCheckArgs', () => {
     const a = parseStaleCheckArgs(['--no-cache', '--verbose']);
     expect(a.noCache).toBe(true);
     expect(a.verbose).toBe(true);
+    expect(a.quiet).toBe(false);
+  });
+  it('defers --quiet / -q to the shared verbosity mechanism (#739)', () => {
+    expect(parseStaleCheckArgs(['--quiet'])).toMatchObject({ quiet: true, verbose: false });
+    expect(parseStaleCheckArgs(['-q'])).toMatchObject({ quiet: true, verbose: false });
+    expect(parseStaleCheckArgs(['-v'])).toMatchObject({ quiet: false, verbose: true });
   });
 });
 
@@ -268,5 +274,32 @@ describe('formatReport', () => {
     expect(out).toContain('L7');
     expect(out).toContain('HTTP 404');
     expect(out).toContain('Summary: 2 stale reference(s) in 1 file(s)');
+  });
+
+  it('--quiet drops the summary footer, keeping only the stale-reference lines (#739)', () => {
+    const report = {
+      kbs: ['ops'],
+      files: [{
+        kb: 'ops',
+        relPath: 'a.md',
+        results: [
+          { type: 'tilde-path' as const, value: '~/x', line: 3, status: 'MISSING' as const, detail: 'gone' },
+        ],
+      }],
+      totals: { filesScanned: 1, referencesChecked: 1, staleReferences: 1, filesWithStale: 1 },
+    };
+    const out = formatReport(report, { quiet: true });
+    expect(out).toContain('ops/a.md');
+    expect(out).toContain('L3');
+    expect(out).not.toContain('Summary:');
+  });
+
+  it('--quiet emits nothing when there is no drift (#739)', () => {
+    const out = formatReport({
+      kbs: ['ops'],
+      files: [{ kb: 'ops', relPath: 'a.md', results: [] }],
+      totals: { filesScanned: 1, referencesChecked: 0, staleReferences: 0, filesWithStale: 0 },
+    }, { quiet: true });
+    expect(out).toBe('');
   });
 });

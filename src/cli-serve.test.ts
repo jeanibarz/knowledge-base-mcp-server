@@ -972,4 +972,30 @@ describe('kb serve status', () => {
     const result = await captureStatus(['--bogus']);
     expect(result.code).toBe(2);
   });
+
+  it('--quiet drops the "start one with" hint when unreachable (#739)', async () => {
+    const daemon = await startDaemonServer({ port: 0, idleTimeoutMs: 0 });
+    const url = daemon.url.href;
+    await daemon.stop();
+    process.env.KB_DAEMON_URL = url;
+
+    const chunks: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+      chunks.push(String(chunk));
+      const callback = rest.find((arg): arg is (err?: Error) => void => typeof arg === 'function');
+      if (callback) callback();
+      return true;
+    }) as typeof process.stdout.write;
+    let code: number;
+    try {
+      code = await runServeStatus([], 'quiet');
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    const stdout = chunks.join('');
+    expect(code).toBe(3);
+    expect(stdout).toContain(`no daemon reachable at ${url}`);
+    expect(stdout).not.toContain('start one with');
+  });
 });

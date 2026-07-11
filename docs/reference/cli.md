@@ -86,6 +86,9 @@ Options:
                         commands: /sources, /kb <name>, /save, /refresh, /reset, /exit.
   --no-stream           Wait for the full answer before printing markdown output.
   --timing              Include elapsed milliseconds for retrieval and LLM stages.
+  --quiet, -q           Suppress the thinking spinner and the LLM/context
+                        footers, leaving only the answer and sources.
+  --verbose, -v         Surface extra diagnostics (equivalent to --timing).
   --stdin               Read question from stdin.
   --save-transcript     Save the question, answer, citations, and provenance
                         as a new markdown note. Requires --kb and --yes.
@@ -1158,6 +1161,9 @@ Options:
                         a reindex inside 06:00-10:30 UTC or when the
                         run is estimated to cross that window.
   --format=md|json      Output format for `status` (default: md).
+  --quiet, -q           Suppress the rebuild progress spinner, leaving only
+                        the summary and errors.
+  --verbose, -v         Reserved for extra diagnostics.
   --help, -h            Show this help.
 
 Exit codes:
@@ -1520,6 +1526,12 @@ Indexing:
                         100 MiB, prints a nonblocking refresh preflight to
                         stderr before embedding starts.
 
+Verbosity:
+  --quiet, -q           Suppress the freshness footer and refresh progress,
+                        leaving only results and errors (ideal for `| jq`).
+                        Combines with --format=json.
+  --verbose, -v         Surface extra diagnostics (equivalent to --timing).
+
 Input:
   --stdin               Read query from stdin (multi-line safe).
   -i, --interactive     Open an interactive results picker (TTY only; ignored
@@ -1570,6 +1582,9 @@ Options:
   --warm                    Pre-warm the active model, FAISS index, and
                             lexical indexes before the daemon reports ready.
   --json                    `kb serve status`: emit the daemon health JSON.
+  --quiet, -q               Suppress the "listening on" line (and the `status`
+                            "start one with" hint), leaving only errors.
+  --verbose, -v             Reserved for extra diagnostics.
   --help, -h                Show this help.
 
 Environment:
@@ -1603,7 +1618,7 @@ Scan markdown notes for path / URL references that no longer resolve.
 kb stale-check — find broken references in markdown notes (read-only)
 
 Usage:
-  kb stale-check [--kb=<name>] [--no-cache] [--verbose|-v]
+  kb stale-check [--kb=<name>] [--no-cache] [--quiet|-q] [--verbose|-v]
 
 Walks every `.md` / `.markdown` file under one or all KBs and extracts:
   - tilde-rooted absolute paths       (`~/foo/bar`)
@@ -1621,6 +1636,8 @@ Options:
   --kb=<name>           Scope to one knowledge base. Omit for all KBs.
   --no-cache            Bypass the URL cache for this run; freshly probe
                         every URL and overwrite cached entries.
+  --quiet, -q           Suppress the summary footer, leaving only the
+                        broken/error reference lines (empty when clean).
   --verbose, -v         Include OK references in the report (default:
                         only print broken/error references).
   --help, -h            Show this help.
