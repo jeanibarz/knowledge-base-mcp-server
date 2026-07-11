@@ -51,6 +51,7 @@ import { WHERE_HELP, runWhere } from './cli-where.js';
 import { daemonUrlFromEnv, tryRunDaemonCommand } from './daemon-client.js';
 import { emitCanonicalLog } from './canonical-log.js';
 import { buildDaemonSearchArgs, resolveSearchPager } from './cli-pager.js';
+import { exitCodeDocs, formatExitCodesHelp } from './cli-exit-codes.js';
 
 // ----- Subcommand registry --------------------------------------------------
 
@@ -81,11 +82,6 @@ interface HelpManifestCommand {
 
 interface HelpManifestDefinition {
   name: string;
-  description: string;
-}
-
-interface HelpManifestExitCode {
-  code: number;
   description: string;
 }
 
@@ -179,10 +175,8 @@ Environment:
                             Provider-specific config; see the provider's docs.
 
 Exit codes:
-  0   success (results found or empty)
-  1   runtime / index error
-  2   argv / env / model-resolution error
-  3   \`kb remember\` similarity guard refused to write
+${formatExitCodesHelp()}
+  Some commands document additional command-specific codes; see \`kb <command> --help\`.
 `;
 }
 
@@ -420,7 +414,7 @@ function buildTopLevelHelpManifest() {
     usage: extractUsageLines(HELP),
     commands: SUBCOMMANDS.map(buildCommandHelpManifest),
     environment: extractDefinitionList(HELP, 'Environment:'),
-    exit_codes: extractExitCodes(HELP),
+    exit_codes: exitCodeDocs(),
     stability: 'stable' as const,
   };
 }
@@ -594,23 +588,6 @@ function pushDefinitions(
   })).filter((definition) => definition.name !== '');
   definitions.push(...current);
   return current;
-}
-
-function extractExitCodes(help: string): HelpManifestExitCode[] {
-  const lines = help.split('\n');
-  const headingIndex = lines.findIndex((line) => line.trim() === 'Exit codes:');
-  if (headingIndex === -1) return [];
-  const exitCodes: HelpManifestExitCode[] = [];
-  for (const line of lines.slice(headingIndex + 1)) {
-    if (line.trim() === '') {
-      if (exitCodes.length > 0) break;
-      continue;
-    }
-    const match = /^ {2}(\d+)\s{2,}(.*)$/.exec(line);
-    if (!match) break;
-    exitCodes.push({ code: Number(match[1]), description: match[2].trim() });
-  }
-  return exitCodes;
 }
 
 function isContinuationLine(line: string): boolean {

@@ -53,6 +53,7 @@ export async function loadWithJsonRetry(manager: FaissIndexManager): Promise<voi
 }
 
 export interface CapturedProcessOutput {
+  /** Process exit code from the captured handler; see the `EXIT` taxonomy in `./cli-exit-codes.js`. */
   exitCode: number;
   stdout: string;
   stderr: string;
