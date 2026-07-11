@@ -1,6 +1,6 @@
 # RFC 020 — Retrieval Evaluation & Public-Benchmark Strategy
 
-**Status:** Partially implemented (M0–M2 benchmark infrastructure largely built — BEIR matrix, MLflow ledger, compare leaderboard under benchmarks/)
+**Status:** Partially implemented. M0–M2 infrastructure is built; M3/M4 infrastructure is also landed, with a real RAG scorecard and MTEB results committed. M3 acceptance remains pending a production-model BRIGHT run; milestone completion is tracked below.
 **Depends on:** #206 (hybrid RRF), RFC 017 (contextual retrieval), RFC 018 (relevance gating), RFC 019 (cross-encoder reranker), RFC 013 (multi-model support)
 **Composes with:** existing `src/retrieval-eval.ts` fixture framework, `benchmarks/beir/` harness, `benchmarks/observability/mlflow.ts`
 **Tracks:** retrieval quality *as a measured, defensible, reproducible quantity* — and a path to public leaderboard standing without sacrificing zero-shot generality
@@ -179,14 +179,14 @@ Each item below is gated by §3/§5 and (for the large ones) deferred to its own
 
 ## Milestones and acceptance metrics
 
-| Milestone | Deliverable | Acceptance metric |
-|---|---|---|
-| **M0** | BEIR runner supports `dense` + `hybrid` modes (calling `src/` paths); CI-subset baselines recorded; **chunk size/overlap sweep** (Tier-0) | SciFact `hybrid` nDCG@10 recorded and **> lexical 0.669** by a §3-significant margin; chunk-size sensitivity curve (nDCG@10 + precision@10) recorded on ≥2 CI datasets |
-| **M1** | `hybrid+rerank` + `+contextual` modes; bootstrap/t-test comparator with Bonferroni/wild-cluster correction (§3) | Each enabled stage's contribution on the CI subset is measured and significance-tested *with multiple-comparison correction* (gain or no-change, per stage) |
-| **M2** | Full BEIR matrix sweep + MLflow ledger + `compare/` leaderboard view; **BEIR headline** report; per-domain breakdown + Δ_g vs unseen-generality set (§6) | Multi-domain mean nDCG@10 for the shipped pipeline recorded and reproducible from commit+env; Δ_g reported |
-| **M3** | CI quality gate live; **BRIGHT** adapter + report | Gate fails a seeded regression in test; BRIGHT nDCG recorded for hybrid+rerank vs dense baseline |
-| **M4** | End-to-end RAG eval, **fully human-label-free** (Tier 1 gold-answer/supporting-fact metrics → Tier 2 NLI/semantic → Tier 3 multi-judge panel w/ unsupervised self-consistency calibration → Tier 4 automated bias probes — §5); **MTEB** submission of active embedding model | e2e scorecard recorded on held-out gold-bearing QA; panel self-consistency confidence + per-judge probe-measured bias coefficients reported (no human labels); MTEB result obtained for the default model |
-| **M5** | First Tier-1 technique adjudicated through the full harness | A ship/no-ship decision backed by §3 significance, stated MDE, observed delta vs `2 * SE`, and §5 e2e veto (+ per-domain gate for reranker changes) |
+| Milestone | Implementation / acceptance status | Deliverable | Acceptance metric |
+|---|---|---|---|
+| **M0** | Infrastructure landed | BEIR runner supports `dense` + `hybrid` modes (calling `src/` paths); CI-subset baselines recorded; **chunk size/overlap sweep** (Tier-0) | SciFact `hybrid` nDCG@10 recorded and **> lexical 0.669** by a §3-significant margin; chunk-size sensitivity curve (nDCG@10 + precision@10) recorded on ≥2 CI datasets |
+| **M1** | Infrastructure landed | `hybrid+rerank` + `+contextual` modes; bootstrap/t-test comparator with Bonferroni/wild-cluster correction (§3) | Each enabled stage's contribution on the CI subset is measured and significance-tested *with multiple-comparison correction* (gain or no-change, per stage) |
+| **M2** | Infrastructure landed; real-run evidence remains run-specific | Full BEIR matrix sweep + MLflow ledger + `compare/` leaderboard view; **BEIR headline** report; per-domain breakdown + Δ_g vs unseen-generality set (§6) | Multi-domain mean nDCG@10 for the shipped pipeline recorded and reproducible from commit+env; Δ_g reported |
+| **M3** | Infrastructure landed; acceptance pending | CI quality gate live; **BRIGHT** adapter + report | Gate fails a seeded regression in test; BRIGHT nDCG recorded for hybrid+rerank vs dense baseline. The adapter/runner/report are tested, but `benchmarks/bright/README.md` records the production-model comparison as pending. |
+| **M4** | Infrastructure and real-run artifacts landed | End-to-end RAG eval, **fully human-label-free** (Tier 1 gold-answer/supporting-fact metrics → Tier 2 NLI/semantic → Tier 3 multi-judge panel w/ unsupervised self-consistency calibration → Tier 4 automated bias probes — §5); **MTEB** submission of active embedding model | The RAG scorecard is committed under `benchmarks/results/rag-eval/`; MTEB results are committed under `benchmarks/results/mteb/`. Public leaderboard submission remains an operator/release decision. |
+| **M5** | Adjudication infrastructure and artifacts landed; technique decisions remain experiment-specific | First Tier-1 technique adjudicated through the full harness | A ship/no-ship decision backed by §3 significance, stated MDE, observed delta vs `2 * SE`, and §5 e2e veto (+ per-domain gate for reranker changes) |
 
 ### M4 implementation note
 
