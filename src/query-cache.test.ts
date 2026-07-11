@@ -26,6 +26,131 @@ function sha256(buffer: Buffer): string {
 }
 
 describe('query embedding cache (#214)', () => {
+  it('coalesces concurrent identical misses when single-flight is enabled', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-single-flight-');
+    try {
+      let calls = 0;
+      let release!: (embedding: number[]) => void;
+      const pending = new Promise<number[]>((resolve) => {
+        release = resolve;
+      });
+      const cache = new QueryEmbeddingCache({ indexPath, lruMax: 8, singleFlight: true });
+      const embed = async (): Promise<number[]> => {
+        calls += 1;
+        return pending;
+      };
+
+      const first = cache.getOrCompute({ modelId: 'fake__one', query: 'same query', embed });
+      const second = cache.getOrCompute({ modelId: 'fake__one', query: 'same query', embed });
+      await new Promise((resolve) => setImmediate(resolve));
+      release([1.25, 2.5]);
+
+      const results = await Promise.all([first, second]);
+      expect(calls).toBe(1);
+      expect(results.map((result) => result.embedding)).toEqual([[1.25, 2.5], [1.25, 2.5]]);
+
+      const paths = queryCachePaths({ indexPath, modelId: 'fake__one', query: 'same query' });
+      cache.clearMemory();
+      await Promise.all([fsp.unlink(paths.metaPath), fsp.unlink(paths.vectorPath)]);
+      await cache.getOrCompute({ modelId: 'fake__one', query: 'same query', embed });
+      expect(calls).toBe(2);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('leaves concurrent identical misses independent by default', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-single-flight-off-');
+    try {
+      let calls = 0;
+      let release!: (embedding: number[]) => void;
+      let markBothStarted!: () => void;
+      const pending = new Promise<number[]>((resolve) => {
+        release = resolve;
+      });
+      const bothStarted = new Promise<void>((resolve) => {
+        markBothStarted = resolve;
+      });
+      const cache = new QueryEmbeddingCache({ indexPath, lruMax: 8 });
+      const embed = async (): Promise<number[]> => {
+        calls += 1;
+        if (calls === 2) markBothStarted();
+        return pending;
+      };
+
+      const first = cache.getOrCompute({ modelId: 'fake__one', query: 'same query', embed });
+      const second = cache.getOrCompute({ modelId: 'fake__one', query: 'same query', embed });
+      await bothStarted;
+      release([1, 2]);
+      await Promise.all([first, second]);
+      expect(calls).toBe(2);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('clears a rejected single-flight so the next call can retry', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-single-flight-reject-');
+    try {
+      let calls = 0;
+      let reject!: (error: Error) => void;
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const pending = new Promise<number[]>((_resolve, rejectPromise) => {
+        reject = rejectPromise;
+      });
+      const cache = new QueryEmbeddingCache({ indexPath, lruMax: 8, singleFlight: true });
+      const embed = async (): Promise<number[]> => {
+        calls += 1;
+        if (calls === 1) {
+          markStarted();
+          return pending;
+        }
+        return [3, 4];
+      };
+
+      const first = cache.getOrCompute({ modelId: 'fake__one', query: 'retry me', embed });
+      const second = cache.getOrCompute({ modelId: 'fake__one', query: 'retry me', embed });
+      await started;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(calls).toBe(1);
+      reject(new Error('transient failure'));
+      await expect(Promise.all([first, second])).rejects.toThrow('transient failure');
+      await expect(cache.getOrCompute({ modelId: 'fake__one', query: 'retry me', embed }))
+        .resolves.toMatchObject({ embedding: [3, 4], status: 'miss' });
+      expect(calls).toBe(2);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('does not coalesce bypassed or disabled lookups', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-single-flight-exclusions-');
+    try {
+      for (const options of [
+        { singleFlight: true },
+        { singleFlight: true, enabled: false },
+      ]) {
+        let calls = 0;
+        const cache = new QueryEmbeddingCache({ indexPath, lruMax: 8, ...options });
+        const embed = async (): Promise<number[]> => {
+          calls += 1;
+          await new Promise((resolve) => setImmediate(resolve));
+          return [calls];
+        };
+        await Promise.all([
+          cache.getOrCompute({ modelId: 'fake__one', query: 'excluded', bypass: true, embed }),
+          cache.getOrCompute({ modelId: 'fake__one', query: 'excluded', bypass: true, embed }),
+        ]);
+        expect(calls).toBe(2);
+      }
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
   it('round-trips a query embedding through the disk tier across cache instances', async () => {
     const indexPath = await tempIndexPath('kb-query-cache-roundtrip-');
     try {

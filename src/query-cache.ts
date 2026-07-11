@@ -50,6 +50,7 @@ export interface QueryCacheOptions {
   enabled?: boolean;
   lruMax?: number;
   diskMaxBytes?: number;
+  singleFlight?: boolean;
 }
 
 interface CacheMeta {
@@ -96,7 +97,9 @@ export class QueryEmbeddingCache {
   private readonly indexPath: string;
   private readonly enabled: boolean;
   private readonly diskMaxBytes: number;
+  private readonly singleFlight: boolean;
   private readonly l1: LruVectorCache;
+  private readonly inFlight = new Map<string, Promise<number[]>>();
   private hitsL1 = 0;
   private hitsDisk = 0;
   private misses = 0;
@@ -108,6 +111,7 @@ export class QueryEmbeddingCache {
     this.indexPath = options.indexPath ?? FAISS_INDEX_PATH;
     this.enabled = options.enabled ?? KB_QUERY_CACHE_ENABLED;
     this.diskMaxBytes = options.diskMaxBytes ?? KB_QUERY_CACHE_DISK_MAX_BYTES;
+    this.singleFlight = options.singleFlight ?? false;
     this.l1 = new LruVectorCache(options.lruMax ?? KB_QUERY_CACHE_LRU_MAX);
   }
 
@@ -168,17 +172,29 @@ export class QueryEmbeddingCache {
     }
 
     this.misses += 1;
-    const embedding = await args.embed();
-    const stableEmbedding = toFloat32Numbers(embedding);
-    this.l1.set(paths.cacheKey, stableEmbedding);
-    try {
-      await this.writeDisk(paths, stableEmbedding);
-      this.writes += 1;
-      await this.enforceDiskLimit();
-    } catch (err) {
-      logger.warn(`query embedding cache write skipped for ${args.modelId}: ${(err as Error).message}`);
+    let pending = this.singleFlight ? this.inFlight.get(paths.cacheKey) : undefined;
+    const ownsFlight = pending === undefined;
+    if (pending === undefined) {
+      pending = (async () => {
+        const embedding = await args.embed();
+        const stableEmbedding = toFloat32Numbers(embedding);
+        this.l1.set(paths.cacheKey, stableEmbedding);
+        try {
+          await this.writeDisk(paths, stableEmbedding);
+          this.writes += 1;
+          await this.enforceDiskLimit();
+        } catch (err) {
+          logger.warn(`query embedding cache write skipped for ${args.modelId}: ${(err as Error).message}`);
+        }
+        return stableEmbedding;
+      })();
+      if (this.singleFlight) this.inFlight.set(paths.cacheKey, pending);
     }
-    return record(stableEmbedding, 'miss', 'miss');
+    try {
+      return record(await pending, 'miss', 'miss');
+    } finally {
+      if (this.singleFlight && ownsFlight) this.inFlight.delete(paths.cacheKey);
+    }
   }
 
   async stats(): Promise<QueryCacheStats> {
