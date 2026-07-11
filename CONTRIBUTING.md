@@ -34,6 +34,8 @@ Please use the [Feature Request issue template](./.github/ISSUE_TEMPLATE/feature
 
 Use `npm run check` before opening a PR; it runs the TypeScript build, ESLint, the full Jest suite, and documentation anchor verifier.
 
+For local configuration, copy [`.env.example`](./.env.example) to `.env`. The template is generated from `CONFIG_SCHEMA`; after changing the schema, run `npm run docs:generate-env-example` and commit the result.
+
 ## Local Git Hooks
 
 `npm run dev:setup` points git at the tracked [`.githooks/`](./.githooks/) directory (`git config core.hooksPath .githooks`). Two lifecycle hooks then run automatically:
