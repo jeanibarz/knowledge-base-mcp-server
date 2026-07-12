@@ -1,4 +1,7 @@
 import { execFileSync } from 'node:child_process';
+import * as path from 'node:path';
+
+const configRoot = path.resolve(__dirname, '..');
 
 describe('Jest serial project configuration', () => {
   it('keeps both projects aligned across E2E modes', () => {
@@ -41,6 +44,7 @@ describe('Jest serial project configuration', () => {
         ],
         {
           encoding: 'utf8',
+          cwd: configRoot,
           env: { ...process.env, KB_RUN_E2E: e2eEnabled ? '1' : '0' },
         },
       );
