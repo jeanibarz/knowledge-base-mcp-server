@@ -2,7 +2,12 @@ import { describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { describeKnowledgeBase, extractKbDescription, listKnowledgeBases } from './kb-fs.js';
+import {
+  describeKnowledgeBase,
+  extractKbDescription,
+  listKnowledgeBases,
+  resolveKnowledgeBaseDir,
+} from './kb-fs.js';
 
 describe('listKnowledgeBases', () => {
   it('returns names of subdirectories, filtering dot-prefixed entries', async () => {
@@ -35,6 +40,31 @@ describe('listKnowledgeBases', () => {
     await expect(
       listKnowledgeBases('/nonexistent/path/that/should/not/exist'),
     ).rejects.toThrow();
+  });
+});
+
+describe('resolveKnowledgeBaseDir unknown-name diagnostics (FR-CLI-832)', () => {
+  it('includes the closest available KB and a bounded list in KB_NOT_FOUND', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-fs-suggest-'));
+    try {
+      for (const name of ['alpha', 'beta', 'delta', 'gamma', 'theta', 'epsilon', 'zeta']) {
+        await fsp.mkdir(path.join(tempDir, name));
+      }
+
+      try {
+        await resolveKnowledgeBaseDir(tempDir, 'alpah');
+        throw new Error('expected resolveKnowledgeBaseDir to reject');
+      } catch (err) {
+        expect(err).toMatchObject({ code: 'KB_NOT_FOUND' });
+        expect((err as Error).message).toBe(
+          `Knowledge base "alpah" not found under ${tempDir}.\n` +
+          'Available knowledge bases: alpha, beta, zeta, delta, gamma.\n' +
+          'Did you mean alpha?',
+        );
+      }
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

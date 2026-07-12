@@ -1,7 +1,10 @@
 import { describe, expect, it } from '@jest/globals';
 import {
+  closestSuggestion,
   createVerbosityPrinter,
   extractVerbosity,
+  formatKnowledgeBaseSuggestions,
+  rankSuggestions,
   renderRecords,
 } from './cli-shared.js';
 
@@ -28,6 +31,29 @@ describe('renderRecords', () => {
       { name: 'beta', count: 2 },
     ], 'ndjson')).toBe(
       '{"name":"alpha","count":1}\n{"name":"beta","count":2}\n',
+    );
+  });
+});
+
+describe('knowledge-base typo suggestions (FR-CLI-832)', () => {
+  it('ranks candidates by Levenshtein distance with deterministic tie-breaking', () => {
+    expect(rankSuggestions('alpah', ['beta', 'alpha', 'alps', 'alpha'])).toEqual([
+      { value: 'alps', distance: 2 },
+      { value: 'alpha', distance: 2 },
+      { value: 'beta', distance: 4 },
+    ]);
+  });
+
+  it('returns the nearest suggestion for a transposed typo', () => {
+    expect(closestSuggestion('alpah', ['alpha', 'beta'])).toEqual({ value: 'alpha', distance: 2 });
+  });
+
+  it('formats a bounded list and nearest-match line', () => {
+    expect(formatKnowledgeBaseSuggestions('alpah', [
+      'zeta', 'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'theta',
+    ])).toBe(
+      'Available knowledge bases: alpha, beta, zeta, delta, gamma.\n' +
+      'Did you mean alpha?',
     );
   });
 });
