@@ -56,6 +56,12 @@ describe('knowledge-base typo suggestions (FR-CLI-832)', () => {
       'Did you mean alpha?',
     );
   });
+
+  it('omits the nearest-match line for distant candidates', () => {
+    const output = formatKnowledgeBaseSuggestions('zzzzzzzz', ['alpha', 'beta']);
+    expect(output).toContain('Available knowledge bases:');
+    expect(output).not.toContain('Did you mean');
+  });
 });
 
 describe('extractVerbosity (issue #739)', () => {

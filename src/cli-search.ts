@@ -562,9 +562,9 @@ export async function runSearch(
       }
     : null;
   const effectiveParsed: SearchArgs = { ...parsed, mode: effectiveMode };
-  if (effectiveMode === 'dense' && parsed.kb !== undefined && deps.resolveKnowledgeBaseDir !== undefined) {
+  if (effectiveMode === 'dense') {
     try {
-      await deps.resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, parsed.kb);
+      await validateDenseKnowledgeBase(parsed.kb, deps);
     } catch (err) {
       return reportFailure(classifyKbSearchError(err), parsed.format);
     }
@@ -2084,6 +2084,26 @@ async function runBatchJsonlSearch(
       exitCode = Math.max(exitCode, 2);
       continue;
     }
+    try {
+      await validateDenseKnowledgeBase(row.kb, deps);
+    } catch (err) {
+      const failure = classifyKbSearchError(err);
+      writeBatchEnvelope({
+        schema_version: BATCH_JSONL_SCHEMA_VERSION,
+        line: lineNumber,
+        ok: false,
+        query,
+        kb: row.kb ?? null,
+        error: {
+          code: failure.code,
+          category: failure.category,
+          message: failure.message,
+          next_action: failure.next_action,
+        },
+      });
+      exitCode = Math.max(exitCode, exitCodeForFailure(failure));
+      continue;
+    }
     const taskContextCheck = inspectBatchTaskContext(row);
     for (const warning of taskContextCheck.warnings) {
       process.stderr.write(`kb search: ${warning}\n`);
@@ -2233,6 +2253,14 @@ async function runBatchJsonlSearch(
   }
 
   return exitCode;
+}
+
+async function validateDenseKnowledgeBase(
+  knowledgeBaseName: string | undefined,
+  deps: RunSearchDeps,
+): Promise<void> {
+  if (knowledgeBaseName === undefined || deps.resolveKnowledgeBaseDir === undefined) return;
+  await deps.resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
 }
 
 async function resolveBatchActiveModel(

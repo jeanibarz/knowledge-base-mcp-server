@@ -2,6 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { KBError } from './errors.js';
 import {
   describeKnowledgeBase,
   extractKbDescription,
@@ -51,19 +52,28 @@ describe('resolveKnowledgeBaseDir unknown-name diagnostics (FR-CLI-832)', () => 
         await fsp.mkdir(path.join(tempDir, name));
       }
 
-      try {
-        await resolveKnowledgeBaseDir(tempDir, 'alpah');
-        throw new Error('expected resolveKnowledgeBaseDir to reject');
-      } catch (err) {
-        expect(err).toMatchObject({ code: 'KB_NOT_FOUND' });
-        expect((err as Error).message).toBe(
-          `Knowledge base "alpah" not found under ${tempDir}.\n` +
-          'Available knowledge bases: alpha, beta, zeta, delta, gamma.\n' +
-          'Did you mean alpha?',
-        );
-      }
+      const pending = resolveKnowledgeBaseDir(tempDir, 'alpah');
+      await expect(pending).rejects.toBeInstanceOf(KBError);
+      await expect(pending).rejects.toThrow(
+        `Knowledge base "alpah" not found under ${tempDir}.\n` +
+        'Available knowledge bases: alpha, beta, zeta, delta, gamma.\n' +
+        'Did you mean alpha?',
+      );
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the original diagnostic when available KBs cannot be enumerated', async () => {
+    const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-fs-file-root-'));
+    const rootFile = path.join(rootDir, 'root');
+    try {
+      await fsp.writeFile(rootFile, 'not a directory');
+      await expect(resolveKnowledgeBaseDir(rootFile, 'missing')).rejects.toThrow(
+        `Knowledge base "missing" not found under ${rootFile}.`,
+      );
+    } finally {
+      await fsp.rm(rootDir, { recursive: true, force: true });
     }
   });
 });

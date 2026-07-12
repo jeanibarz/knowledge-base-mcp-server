@@ -1711,6 +1711,22 @@ describe('runSearch timing guard (#331)', () => {
     expect(out.stderr).toContain('Did you mean alpha?');
   });
 
+  it('preserves the lexical not-found prefix when the KB root cannot be enumerated', async () => {
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => ({} as FaissIndexManager)),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => []),
+      listKnowledgeBases: jest.fn(async () => { throw new Error('readdir failed'); }),
+    };
+
+    const out = await captureSearchOutput(['query', '--mode=lexical', '--kb=alpah'], deps);
+
+    expect(out.code).toBe(2);
+    expect(out.stderr).toBe('kb search (lexical): KB not found: alpah\n');
+  });
+
   it('reports the enriched KB_NOT_FOUND diagnostic for an unknown dense scope', async () => {
     const { deps, manager } = makeDeps();
     const message =
@@ -1726,6 +1742,32 @@ describe('runSearch timing guard (#331)', () => {
 
     expect(out.code).toBe(2);
     expect(out.stderr).toContain(message);
+    expect(manager.similaritySearch).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown KB in a batch JSONL row before retrieval', async () => {
+    const { deps, manager } = makeDeps();
+    const resolveKnowledgeBaseDir = jest.fn(async () => {
+      throw new KBError('KB_NOT_FOUND', 'unknown KB with suggestions');
+    });
+    deps.resolveKnowledgeBaseDir = resolveKnowledgeBaseDir;
+
+    const out = await captureSearchOutput(
+      ['--batch-jsonl'],
+      deps,
+      '{"query":"query","kb":"alpah"}\n',
+    );
+
+    expect(out.code).toBe(2);
+    expect(JSON.parse(out.stdout)).toMatchObject({
+      line: 1,
+      ok: false,
+      kb: 'alpah',
+      error: {
+        code: 'KB_NOT_FOUND',
+        message: 'unknown KB with suggestions',
+      },
+    });
     expect(manager.similaritySearch).not.toHaveBeenCalled();
   });
 
