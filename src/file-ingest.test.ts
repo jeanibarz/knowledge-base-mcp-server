@@ -177,6 +177,7 @@ describe('buildChunkDocuments → metadata-sidecar contract (#283)', () => {
 
       const documents = await buildChunkDocuments(filePath, content, kbName);
 
+      expect(documents.length).toBeGreaterThan(0);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(documents.every((document) => document.metadata.contextual_preface === undefined)).toBe(true);
     } finally {

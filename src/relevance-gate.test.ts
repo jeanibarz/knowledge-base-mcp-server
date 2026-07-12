@@ -1,3 +1,6 @@
+import * as fsp from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { applyRelevanceGate, emitRelevanceGateDecision } from './relevance-gate.js';
 import type { RelevanceGateConfig } from './config/relevance-gate.js';
@@ -330,6 +333,92 @@ describe('relevance gate', () => {
     expect(result.results).toEqual([protectedRow, safeRow]);
     expect(result.verdict.input_count).toBe(2);
     expect(result.verdict.output_count).toBe(2);
+  });
+
+  it('hydrates current source policy before judging stale indexed candidates', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-policy-'));
+    try {
+      const source = path.join(tempDir, 'private.md');
+      await fsp.writeFile(source, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: true',
+        '---',
+        '',
+        'sensitive source body',
+      ].join('\n'), 'utf-8');
+      const protectedRow = candidate(source, 0, 0.1, 'sensitive source body');
+      const safeRow = candidate('/kb/public-source.md', 0, 0.2, 'public deployment rollback checklist');
+      const fetchImpl = fakeFetchJson(JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: idOf(safeRow), decision: 'keep', reason: 'rollback checklist' }],
+      }));
+
+      const result = await applyRelevanceGate({
+        query: 'stale source policy hydration',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [protectedRow, safeRow],
+        config: config(),
+        fetchImpl,
+      });
+
+      const body = JSON.parse(((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+      const userMessage = body.messages.find((message: { role: string }) => message.role === 'user');
+      expect(userMessage.content).not.toContain('sensitive source body');
+      expect(result.results.map((row) => row.pageContent)).toEqual([
+        'sensitive source body',
+        'public deployment rollback checklist',
+      ]);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips the judge when every candidate is no_llm_context', async () => {
+    const protectedRow = candidate('/kb/private-only.md', 0, 0.1, 'private only body');
+    protectedRow.metadata = {
+      ...protectedRow.metadata,
+      frontmatter: { kb_policy: { no_llm_context: true } },
+    };
+    const fetchImpl = fakeFetchJson('{"overall":"relevant","verdicts":[]}');
+
+    const result = await applyRelevanceGate({
+      query: 'all policy excluded',
+      taskContext: 'please answer a deployment rollback question with precise operational context',
+      candidates: [protectedRow],
+      config: config(),
+      fetchImpl,
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result.results).toEqual([protectedRow]);
+    expect(result.verdict.judge).toEqual({
+      status: 'skipped',
+      reason: 'all candidates excluded by no_llm_context policy',
+    });
+  });
+
+  it('does not replay a pre-policy verdict after a candidate becomes protected', async () => {
+    const row = candidate('/kb/policy-cache.md', 0, 0.1, 'policy cache body');
+    const input = {
+      query: 'policy cache invalidation',
+      taskContext: 'please answer a deployment rollback question with precise operational context',
+      candidates: [row],
+      config: config({ emptyVerdictEnabled: true }),
+      fetchImpl: fakeFetchJson('{"overall":"no-relevant-context","verdicts":[]}'),
+    };
+
+    await expect(applyRelevanceGate(input)).resolves.toMatchObject({ results: [] });
+
+    row.metadata = {
+      ...row.metadata,
+      frontmatter: { kb_policy: { no_llm_context: true } },
+    };
+    const protectedFetch = fakeFetchJson('{"overall":"relevant","verdicts":[]}');
+    const result = await applyRelevanceGate({ ...input, fetchImpl: protectedFetch });
+
+    expect(protectedFetch).not.toHaveBeenCalled();
+    expect(result.results).toEqual([row]);
   });
 
   it('redacts secrets from judge request content when outbound redaction is enabled', async () => {

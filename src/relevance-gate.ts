@@ -1,7 +1,9 @@
+import * as fsp from 'fs/promises';
 import { createHash } from 'crypto';
 import type { Document } from '@langchain/core/documents';
 import { emitCanonicalLog, type CanonicalProcess, type CanonicalSearchMode } from './canonical-log.js';
 import { resolveRelevanceGateConfig, type RelevanceGateConfig } from './config/relevance-gate.js';
+import { parseFrontmatter } from './frontmatter.js';
 import { applyInjectionGuard } from './injection-guard.js';
 import { chunkIdFromMetadata } from './rrf.js';
 import { computeAutoThreshold } from './search-core.js';
@@ -15,7 +17,7 @@ import {
   type RelevanceGateVerdict,
 } from './relevance-gate-schema.js';
 import { relevanceGateMetrics } from './relevance-gate-metrics.js';
-import { excludesLlmContext } from './sensitivity-policy.js';
+import { excludesLlmContext, normalizeKbSensitivityPolicy } from './sensitivity-policy.js';
 
 export type RelevanceGateOverride = 'on' | 'off' | undefined;
 
@@ -144,7 +146,12 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
     };
   }
 
-  const rows = input.candidates.map((candidate, originalIndex) => ({
+  const hydratedCandidates = await hydrateSensitivityPoliciesFromSource(input.candidates);
+  const effectiveInput: RelevanceGateInput<T> = {
+    ...input,
+    candidates: hydratedCandidates,
+  };
+  const rows = effectiveInput.candidates.map((candidate, originalIndex) => ({
     id: chunkIdFromMetadata(candidate.metadata as Record<string, unknown>),
     result: candidate,
     originalIndex,
@@ -157,22 +164,22 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   );
   const gateRowIds = new Set(gateRows.map((row) => row.id));
   const lexicalHitIds = new Set(
-    Array.from(input.lexicalHitIds ?? []).filter((id) => gateRowIds.has(id)),
+    Array.from(effectiveInput.lexicalHitIds ?? []).filter((id) => gateRowIds.has(id)),
   );
 
-  const cacheKey = buildCacheKey(input, config, lexicalHitIds);
+  const cacheKey = buildCacheKey(effectiveInput, config, lexicalHitIds);
   const cached = verdictCache.get(cacheKey);
   if (cached !== undefined) {
     relevanceGateMetrics.record(cached.verdict, input.process);
     return {
-      results: replayVerdict(input.candidates, cached),
+      results: replayVerdict(effectiveInput.candidates, cached),
       verdict: cached.verdict,
       observability: cached.observability,
     };
   }
 
   const dropped: DropRecord[] = [];
-  const afterA1 = applyA1(gateRows, input.denseDistanceById, config.scoreFloor, dropped);
+  const afterA1 = applyA1(gateRows, effectiveInput.denseDistanceById, config.scoreFloor, dropped);
   const taskContext = normalizeTaskContext(input.taskContext);
   let survivors: CandidateRow<T>[];
   let judge: RelevanceGateVerdict['judge'];
@@ -185,10 +192,10 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
     survivors = [];
     judge = { status: 'skipped', reason: 'all candidates excluded by no_llm_context policy' };
   } else if (!hasTaskSignal(taskContext, config.minTaskContextTokens)) {
-    survivors = applyA2(afterA1, dropped, input.denseDistanceById);
+    survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
     judge = { status: 'skipped', reason: 'task_context absent or too short' };
   } else if (config.judgeEndpoint === undefined) {
-    survivors = applyA2(afterA1, dropped, input.denseDistanceById);
+    survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
     judge = { status: 'failed', reason: 'KB_GATE_LLM_ENDPOINT unset; degraded to A2' };
   } else {
     const judged = await applyStageB({
@@ -208,7 +215,7 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
     judgePromptHash = judged.judgePromptHash;
     shuffledOrder = judged.shuffledOrder;
     if (judged.degraded) {
-      survivors = applyA2(afterA1, dropped, input.denseDistanceById);
+      survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
     }
   }
 
@@ -224,7 +231,7 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   const verdict = buildVerdict({
     state,
     lowConfidence,
-    inputCount: input.candidates.length,
+    inputCount: effectiveInput.candidates.length,
     outputCount: results.length,
     dropped,
     judge,
@@ -520,6 +527,52 @@ function buildVerdict(input: {
     judge: input.judge,
     empty_verdict_enabled: input.emptyVerdictEnabled,
   };
+}
+
+async function hydrateSensitivityPoliciesFromSource<T extends RelevanceGateCandidate>(
+  candidates: T[],
+): Promise<T[]> {
+  const policyBySource = new Map<string, ReturnType<typeof normalizeKbSensitivityPolicy>>();
+
+  return Promise.all(candidates.map(async (candidate) => {
+    const metadata = candidate.metadata as Record<string, unknown>;
+    // An indexed positive policy is already safe to honor. For candidates
+    // without that positive marker, refresh from source so a frontmatter edit
+    // made after indexing cannot leak content into the judge prompt.
+    if (excludesLlmContext(metadata)) return candidate;
+
+    const source = metadata.source;
+    if (typeof source !== 'string' || source.length === 0) return candidate;
+
+    let policy = policyBySource.get(source);
+    if (!policyBySource.has(source)) {
+      try {
+        const content = await fsp.readFile(source, 'utf-8');
+        policy = normalizeKbSensitivityPolicy(parseFrontmatter(content).frontmatter.kb_policy);
+      } catch {
+        policy = undefined;
+      }
+      policyBySource.set(source, policy);
+    }
+
+    if (policy === undefined) return candidate;
+
+    const frontmatter = metadata.frontmatter;
+    const frontmatterObject =
+      frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter)
+        ? frontmatter as Record<string, unknown>
+        : {};
+    return {
+      ...candidate,
+      metadata: {
+        ...metadata,
+        frontmatter: {
+          ...frontmatterObject,
+          kb_policy: policy,
+        },
+      },
+    };
+  }));
 }
 
 function buildCacheKey<T extends RelevanceGateCandidate>(
