@@ -244,7 +244,7 @@ describe('search chaos suite', () => {
 
       const timing: import('../../../src/FaissIndexManager.js').SimilaritySearchTiming = {};
       const results = await manager.similaritySearch(
-        'queue recovery',
+        'queue worker',
         1,
         2,
         workspace.kbName,
