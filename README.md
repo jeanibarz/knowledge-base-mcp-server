@@ -672,7 +672,7 @@ Exit codes mirror the CLI's existing convention — `2` for configuration and in
 
 - Set `LOG_FILE` to capture structured logs (JSON-RPC traffic continues to use stdout). This is especially helpful when diagnosing MCP handshake errors because all diagnostic messages are written to stderr and the optional log file.
 - Permission errors when creating or updating the FAISS index are surfaced with explicit messages in both the console and the log file. Verify that the process can write to `FAISS_INDEX_PATH` and the `.index` directories inside each knowledge base.
-- Run `npm test` to execute the Jest suite (serialised with `--runInBand`) that covers logger fallback behaviour and FAISS permission handling.
+- Run `npm test` to build the project, then run the parallel Jest project with `--maxWorkers=4` followed by the serial project with `--runInBand`; the suite covers logger fallback behaviour and FAISS permission handling.
 
 ## Security
 
