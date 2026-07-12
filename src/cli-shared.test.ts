@@ -7,6 +7,7 @@ import {
   rankSuggestions,
   renderRecords,
 } from './cli-shared.js';
+import { levenshteinDistance as coreLevenshteinDistance } from './suggestion-core.js';
 
 describe('renderRecords', () => {
   it('quotes CSV fields using RFC-4180 escaping', () => {
@@ -46,6 +47,7 @@ describe('knowledge-base typo suggestions (FR-CLI-832)', () => {
 
   it('returns the nearest suggestion for a transposed typo', () => {
     expect(closestSuggestion('alpah', ['alpha', 'beta'])).toEqual({ value: 'alpha', distance: 2 });
+    expect(coreLevenshteinDistance('alpah', 'alpha')).toBe(2);
   });
 
   it('formats a bounded list and nearest-match line', () => {
