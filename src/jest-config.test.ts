@@ -57,6 +57,10 @@ describe('Jest serial project configuration', () => {
       ];
 
       expect(serial?.testMatch).toEqual(expectedSerialTestMatch);
+      expect(serial?.testPathIgnorePatterns).toEqual([
+        '/node_modules/',
+        ...(e2eEnabled ? [] : ['<rootDir>/src/e2e/']),
+      ]);
       expect(parallel?.testPathIgnorePatterns).toEqual([
         '/node_modules/',
         ...serialPathPatterns,
