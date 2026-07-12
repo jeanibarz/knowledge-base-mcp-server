@@ -497,6 +497,40 @@ describe('relevance gate', () => {
         'malformed policy body must never reach the relevance judge',
         'public deployment rollback checklist',
       ]);
+
+      await fsp.writeFile(malformedSource, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: maybe',
+        '  resource_read: deny',
+        '---',
+        '',
+        'invalid no_llm_context body must never reach the relevance judge',
+      ].join('\n'), 'utf-8');
+      const invalidPolicyRow = indexedCandidate(
+        malformedSource,
+        0,
+        0.1,
+        'invalid no_llm_context body must never reach the relevance judge',
+      );
+      const invalidPolicyFetch = fakeFetchJson(JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: idOf(safeRow), decision: 'keep', reason: 'rollback checklist' }],
+      }));
+      const invalidPolicyResult = await applyRelevanceGate({
+        query: 'invalid no_llm_context policy',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [invalidPolicyRow, safeRow],
+        config: config(),
+        fetchImpl: invalidPolicyFetch,
+      });
+      const invalidPolicyBody = JSON.parse(((invalidPolicyFetch as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+      expect(invalidPolicyBody.messages.every((message: { content: string }) =>
+        !message.content.includes('invalid no_llm_context body must never reach the relevance judge'))).toBe(true);
+      expect(invalidPolicyResult.results.map((row) => row.pageContent)).toEqual([
+        'invalid no_llm_context body must never reach the relevance judge',
+        'public deployment rollback checklist',
+      ]);
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }

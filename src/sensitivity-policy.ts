@@ -21,9 +21,15 @@ export function normalizeKbSensitivityPolicy(
   const raw = value as Record<string, unknown>;
   const policy: KbSensitivityPolicy = {};
 
+  const hasNoLlmContext = Object.prototype.hasOwnProperty.call(raw, 'no_llm_context');
   const noLlmContext = parseBoolean(raw.no_llm_context);
   if (noLlmContext !== undefined) {
     policy.no_llm_context = noLlmContext;
+  } else if (hasNoLlmContext) {
+    // A malformed confidentiality control must fail closed. Keeping the
+    // marker true prevents a valid sibling policy field from accidentally
+    // turning an unparseable no_llm_context value into LLM-eligible content.
+    policy.no_llm_context = true;
   }
 
   const resourceRead = parseResourceReadPolicy(raw.resource_read);
