@@ -1060,6 +1060,20 @@ Report envelope:
     "source": "not_configured",
     "detail": "KB_RELEVANCE_GATE is not enabled"
   },
+  "llm_calls": {
+    "ask": {
+      "count": 3,
+      "errors": 0,
+      "prompt_tokens": 420,
+      "completion_tokens": 96,
+      "latency_ms": {
+        "buckets": [0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0],
+        "count": 3,
+        "sum_ms": 42.5,
+        "since_started_at": "2026-05-03T15:30:00.000Z"
+      }
+    }
+  },
   "cli": {
     "version": "0.2.2",
     "package_root": "/path/to/package",
@@ -1109,6 +1123,9 @@ Stable fields:
   configured but unhealthy gate is surfaced as a `warn` entry in `checks[]`
   because retrieval remains fail-soft while the top-level row retains its
   `error` status.
+- `llm_calls`: object keyed by the bounded `ask`, `gate`, or `preface`
+  operation. Each entry contains calls, errors, reported prompt/completion
+  token totals, and a process-lifetime latency histogram.
 - `cli`: `version`, `package_root`, `invoked_path`, and
   `symlinked_checkout_path`.
 - `git`: either `null` or an object with `branch`, `head`, `origin_main`, and

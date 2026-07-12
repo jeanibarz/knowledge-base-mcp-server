@@ -36,6 +36,7 @@ import {
 } from './kb-fs.js';
 import { logger } from './logger.js';
 import {
+  llmCallMetrics,
   providerCallMetrics,
   quantileFromBuckets,
   rerankMetrics,
@@ -43,6 +44,8 @@ import {
   writeLockMetrics,
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
+  type LlmCallMetrics,
+  type LlmCallMetricsSnapshot,
   type RerankMetrics,
   type RerankMetricsSnapshot,
   type SearchLatencyMetrics,
@@ -134,6 +137,13 @@ export interface KbStatsPayload {
    */
   provider_calls: Record<string, ProviderCallSnapshot>;
   /**
+   * Issue #831 — process-lifetime chat-completion counters and latency
+   * histograms keyed only by the bounded ask/gate/preface operation enum.
+   * Optional for consumers that construct older payload fixtures by hand;
+   * `computeKbStats` always emits the field.
+   */
+  llm_calls?: LlmCallMetricsSnapshot;
+  /**
    * Issue #597 — process-lifetime latency histograms for daemon-served
    * search requests and their bounded per-stage timings. Empty until this
    * serving process handles a search request.
@@ -202,6 +212,8 @@ export interface ComputeKbStatsOptions {
    * singleton is read.
    */
   metrics?: ProviderCallMetrics;
+  /** Issue #831 — test seam for chat-completion telemetry. */
+  llmMetrics?: LlmCallMetrics;
   /** Issue #597 — test seam for daemon-served search latency telemetry. */
   searchMetrics?: SearchLatencyMetrics;
   /** Issue #689 — test seam for reranker-stage telemetry. */
@@ -290,6 +302,7 @@ export async function computeKbStats(
   }
 
   const metricsSource = options.metrics ?? providerCallMetrics;
+  const llmMetricsSource = options.llmMetrics ?? llmCallMetrics;
   const searchMetricsSource = options.searchMetrics ?? searchLatencyMetrics;
   const rerankMetricsSource = options.rerankMetrics ?? rerankMetrics;
   const writeLockMetricsSource = options.writeLockMetrics ?? writeLockMetrics;
@@ -332,6 +345,7 @@ export async function computeKbStats(
       uptime_ms: Date.now() - options.startedAt,
     },
     provider_calls: metricsSource.snapshot(),
+    llm_calls: llmMetricsSource.snapshot(),
     search_latency: searchMetricsSnapshot,
     query_cache: await queryEmbeddingCache.stats(),
     relevance_gate: relevanceGateMetrics.snapshot(),

@@ -4,6 +4,7 @@ import {
   instrumentEmbeddingsClient,
   KbSearchFailureMetrics,
   LATENCY_BUCKET_BOUNDS_MS,
+  LlmCallMetrics,
   ProviderCallMetrics,
   quantileFromBuckets,
   RerankMetrics,
@@ -143,6 +144,55 @@ describe('ProviderCallMetrics', () => {
     metrics.reset();
     expect(metrics.snapshot()).toEqual({});
     expect(metrics.knownModelIds()).toEqual([]);
+  });
+});
+
+describe('LlmCallMetrics (issue #831)', () => {
+  it('records bounded operation counters, token totals, and latency histograms', () => {
+    const startMs = 1_700_000_000_000;
+    const metrics = new LlmCallMetrics({ now: () => startMs });
+    metrics.record('ask', { latencyMs: 12, ok: true, promptTokens: 10, completionTokens: 4 });
+    metrics.record('ask', { latencyMs: 300, ok: false });
+    metrics.record('gate', { latencyMs: 5, ok: true, promptTokens: 8, completionTokens: 2 });
+
+    const snapshot = metrics.snapshot();
+    expect(snapshot.ask).toMatchObject({
+      count: 2,
+      errors: 1,
+      prompt_tokens: 10,
+      completion_tokens: 4,
+      latency_ms: {
+        count: 2,
+        sum_ms: 312,
+        buckets: [0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0],
+        since_started_at: new Date(startMs).toISOString(),
+      },
+    });
+    expect(snapshot.gate).toMatchObject({
+      count: 1,
+      errors: 0,
+      prompt_tokens: 8,
+      completion_tokens: 2,
+    });
+    expect(snapshot.preface).toBeUndefined();
+  });
+
+  it('keeps token totals null until a provider reports each token type', () => {
+    const metrics = new LlmCallMetrics({ now: () => 1 });
+    metrics.record('preface', { latencyMs: 1, ok: true });
+    metrics.record('preface', { latencyMs: 2, ok: true, promptTokens: null, completionTokens: 0 });
+
+    expect(metrics.snapshot().preface).toMatchObject({
+      prompt_tokens: null,
+      completion_tokens: 0,
+    });
+  });
+
+  it('reset() clears all operation state', () => {
+    const metrics = new LlmCallMetrics();
+    metrics.record('ask', { latencyMs: 1, ok: true });
+    metrics.reset();
+    expect(metrics.snapshot()).toEqual({});
   });
 });
 

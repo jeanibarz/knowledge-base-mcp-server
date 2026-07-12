@@ -4,6 +4,7 @@ import {
   formatDenseSearchLatencySection,
   formatContextualSection,
   formatFilesystemSection,
+  formatStatsMarkdown,
   formatRemoteTransportSection,
   runStats,
   type RunStatsDeps,
@@ -342,6 +343,28 @@ describe('kb stats CLI', () => {
     expect(out).toContain('- Index path: `/tmp/kb-index`');
     expect(out).toContain('## Relevance Gate');
     expect(out).toContain('- Gated queries: 0');
+  });
+
+  it('shows bounded LLM call counters and token totals in markdown stats', () => {
+    const p = payload();
+    p.llm_calls = {
+      ask: {
+        count: 2,
+        errors: 1,
+        prompt_tokens: 20,
+        completion_tokens: 7,
+        latency_ms: {
+          buckets: [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+          count: 1,
+          sum_ms: 5,
+          since_started_at: '2026-06-12T10:00:00.000Z',
+        },
+      },
+    };
+
+    expect(formatStatsMarkdown(p)).toContain(
+      'ask: calls=2, errors=1, p50=2 ms, p95=2.9 ms, prompt_tokens=20, completion_tokens=7',
+    );
   });
 
   it('renders dense faiss_search latency and a suggest-only ANN hint when p95 is high', () => {

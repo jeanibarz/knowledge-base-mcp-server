@@ -39,6 +39,29 @@ export interface ProviderCallSnapshot {
   since_started_at: string;
 }
 
+/**
+ * Fixed operation labels for chat-completion telemetry. Keep this enum small:
+ * prompt text, KB names, model strings, and request ids must never become
+ * metric labels.
+ */
+export type LlmCallOperation = 'ask' | 'gate' | 'preface';
+
+export const LLM_CALL_OPERATIONS: readonly LlmCallOperation[] = ['ask', 'gate', 'preface'];
+
+export function isLlmCallOperation(value: string): value is LlmCallOperation {
+  return (LLM_CALL_OPERATIONS as readonly string[]).includes(value);
+}
+
+export interface LlmCallSnapshot {
+  count: number;
+  errors: number;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  latency_ms: LatencyHistogramSnapshot;
+}
+
+export type LlmCallMetricsSnapshot = Partial<Record<LlmCallOperation, LlmCallSnapshot>>;
+
 interface MetricsState {
   /**
    * Bucket counts; length = LATENCY_BUCKET_BOUNDS_MS.length + 1. The
@@ -140,6 +163,28 @@ function snapshotHistogram(state: HistogramState): LatencyHistogramSnapshot {
     sum_ms: roundLatency(state.sumMs),
     since_started_at: new Date(state.startedAtMs).toISOString(),
   };
+}
+
+function emptyLlmState(now: number): LlmMetricsState {
+  return {
+    count: 0,
+    errors: 0,
+    promptTokensSum: 0,
+    promptTokensReported: false,
+    completionTokensSum: 0,
+    completionTokensReported: false,
+    latency: emptyHistogramState(now),
+  };
+}
+
+interface LlmMetricsState {
+  count: number;
+  errors: number;
+  promptTokensSum: number;
+  promptTokensReported: boolean;
+  completionTokensSum: number;
+  completionTokensReported: boolean;
+  latency: HistogramState;
 }
 
 /**
@@ -272,6 +317,70 @@ export class ProviderCallMetrics {
    */
   knownModelIds(): string[] {
     return Array.from(this.states.keys()).sort();
+  }
+}
+
+/**
+ * Process-lifetime registry of chat-completion telemetry by bounded
+ * operation. One record represents one logical `callChatCompletion` call,
+ * including any retries inside that call. Token usage is best-effort because
+ * OpenAI-compatible providers may omit it, especially for streaming.
+ */
+export class LlmCallMetrics {
+  private readonly states = new Map<LlmCallOperation, LlmMetricsState>();
+  private readonly now: () => number;
+
+  constructor(options: { now?: () => number } = {}) {
+    this.now = options.now ?? Date.now;
+  }
+
+  record(
+    operation: LlmCallOperation,
+    sample: {
+      latencyMs: number;
+      ok: boolean;
+      promptTokens?: number | null;
+      completionTokens?: number | null;
+    },
+  ): void {
+    if (!isLlmCallOperation(operation)) return;
+    let state = this.states.get(operation);
+    if (state === undefined) {
+      state = emptyLlmState(this.now());
+      this.states.set(operation, state);
+    }
+    state.count += 1;
+    if (!sample.ok) state.errors += 1;
+    recordHistogramSample(state.latency, sample.latencyMs);
+
+    const promptTokens = normalizeTokenCount(sample.promptTokens);
+    if (promptTokens !== null) {
+      state.promptTokensSum += promptTokens;
+      state.promptTokensReported = true;
+    }
+    const completionTokens = normalizeTokenCount(sample.completionTokens);
+    if (completionTokens !== null) {
+      state.completionTokensSum += completionTokens;
+      state.completionTokensReported = true;
+    }
+  }
+
+  snapshot(): LlmCallMetricsSnapshot {
+    const out: LlmCallMetricsSnapshot = {};
+    for (const [operation, state] of this.states.entries()) {
+      out[operation] = {
+        count: state.count,
+        errors: state.errors,
+        prompt_tokens: state.promptTokensReported ? state.promptTokensSum : null,
+        completion_tokens: state.completionTokensReported ? state.completionTokensSum : null,
+        latency_ms: snapshotHistogram(state.latency),
+      };
+    }
+    return out;
+  }
+
+  reset(): void {
+    this.states.clear();
   }
 }
 
@@ -526,6 +635,11 @@ function clampCount(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
+function normalizeTokenCount(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) return null;
+  return Math.floor(value);
+}
+
 /**
  * Round a latency to 3 significant decimal places. The histogram
  * resolution is bounded by bucket width, so reporting full
@@ -541,6 +655,8 @@ function roundLatency(latencyMs: number): number {
  * fresh `ProviderCallMetrics` or call `reset()` between cases.
  */
 export const providerCallMetrics = new ProviderCallMetrics();
+
+export const llmCallMetrics = new LlmCallMetrics();
 
 export const searchLatencyMetrics = new SearchLatencyMetrics();
 

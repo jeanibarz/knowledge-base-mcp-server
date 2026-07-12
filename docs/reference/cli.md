@@ -1674,9 +1674,9 @@ Usage:
 Mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
 Includes filesystem enumeration diagnostics, process-lifetime relevance-gate
-counters when the gate has run, and a Contextual Retrieval section with per-KB
-preface coverage and failure counts (by error code) when contextual-preface
-sidecars exist.
+counters when the gate has run, chat-completion counters by operation, and a
+Contextual Retrieval section with per-KB preface coverage and failure counts
+(by error code) when contextual-preface sidecars exist.
 Strictly read-only — does not refresh the index.
 
 Options:
@@ -1686,7 +1686,7 @@ Options:
                         underlying `KbStatsPayload` shape verbatim; delimited
                         formats emit one row per knowledge base. `openmetrics`
                         emits a daemonless Prometheus/OpenMetrics text exposition
-                        of the corpus, index, provider, cache, rerank, and
+                        of the corpus, index, provider, LLM, cache, rerank, and
                         relevance-gate families derived from this one-shot run —
                         pipe-clean on stdout for cron scrapers and node-exporter
                         textfile collectors. Daemon-instance gauges (admission

@@ -183,6 +183,7 @@ export function createLocalLlmQueryDecomposer(
         const result = await callChatCompletion({
           endpoint,
           model,
+          operation: 'ask',
           temperature: 0,
           timeoutMs: options.timeoutMs ?? 30_000,
           retry: false,
@@ -211,6 +212,7 @@ export function createLocalLlmQueryDecomposer(
         const result = await callChatCompletion({
           endpoint,
           model: options.model ?? process.env.KB_DECOMPOSE_LLM_MODEL ?? process.env.KB_LLM_MODEL,
+          operation: 'ask',
           temperature: 0,
           timeoutMs: options.timeoutMs ?? 30_000,
           retry: false,

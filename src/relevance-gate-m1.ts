@@ -472,12 +472,14 @@ async function answerAndGrade(
 ): Promise<GraderVerdict> {
   const answered = await callChatCompletion({
     endpoint: options.endpoint,
+    operation: 'gate',
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildAnswerMessages(c.query, kept),
     temperature: 0.2,
   }, options.fetchImpl ?? fetch);
   const graded = await callChatCompletion({
     endpoint: options.endpoint,
+    operation: 'gate',
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildGraderMessages(c.query, c.referenceAnswer, answered.content),
     temperature: 0,
@@ -702,6 +704,7 @@ async function gradeAnswer(
 ): Promise<GraderVerdict> {
   const graded = await callChatCompletion({
     endpoint: options.endpoint,
+    operation: 'gate',
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildGraderMessages(query, referenceAnswer, answer),
     temperature: 0,

@@ -98,6 +98,7 @@ export async function judgeRelevance(options: RelevanceJudgeOptions): Promise<Re
   const response = await callChatCompletion({
     endpoint: options.endpoint,
     model: options.model,
+    operation: 'gate',
     temperature: 0,
     timeoutMs: options.timeoutMs,
     messages,

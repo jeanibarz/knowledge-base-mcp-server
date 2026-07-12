@@ -6,9 +6,11 @@ import {
 } from './provider-breaker.js';
 import {
   LATENCY_BUCKET_BOUNDS_MS,
+  isLlmCallOperation,
   kbSearchFailureMetrics,
   type KbSearchFailureSnapshot,
   type LatencyHistogramSnapshot,
+  type LlmCallMetricsSnapshot,
   type RerankMetricsSnapshot,
   type SearchLatencyMetricsSnapshot,
   type SearchLatencyMode,
@@ -130,6 +132,27 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     help: 'Embedding provider call latency p99 by model id, in milliseconds.',
     labels: ['model_id'],
     emittedWhen: 'Emitted once per embedding model observed by the process.',
+  },
+  {
+    name: 'kb_llm_calls_total',
+    type: 'counter',
+    help: 'Chat-completion calls by bounded operation.',
+    labels: ['operation'],
+    emittedWhen: 'Emitted once per chat operation observed by the process.',
+  },
+  {
+    name: 'kb_llm_call_errors_total',
+    type: 'counter',
+    help: 'Chat-completion call errors by bounded operation.',
+    labels: ['operation'],
+    emittedWhen: 'Emitted once per chat operation observed by the process.',
+  },
+  {
+    name: 'kb_llm_tokens_total',
+    type: 'counter',
+    help: 'Reported prompt and completion tokens consumed by chat-completion calls.',
+    labels: ['operation', 'token_type'],
+    emittedWhen: 'Emitted once per operation and token type after the provider reports usage.',
   },
   {
     name: 'kb_provider_circuit_state',
@@ -307,6 +330,13 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     emittedWhen: 'Emitted after daemon-served search requests are observed.',
   },
   {
+    name: 'kb_llm_call_latency_ms',
+    type: 'histogram',
+    help: 'Chat-completion call latency in milliseconds by bounded operation.',
+    labels: ['le', 'operation'],
+    emittedWhen: 'Emitted after chat-completion calls are observed.',
+  },
+  {
     name: 'kb_search_stage_duration_ms',
     type: 'histogram',
     help: 'Daemon-served search stage latency in milliseconds.',
@@ -434,6 +464,7 @@ export function formatKbStatsOpenMetrics(
           value: snapshot.tokens_in ?? 0,
         }))),
     ...providerLatencyMetrics(payload),
+    ...llmCallCounterMetrics(payload.llm_calls),
     ...searchLatencyCounterMetrics(payload.search_latency),
     ...searchDegradedCounterMetrics(payload.search_latency),
     ...kbSearchFailureCounterMetrics(kbSearchFailures),
@@ -470,6 +501,7 @@ export function formatKbStatsOpenMetrics(
     }
   }
   lines.push(...searchLatencyHistogramLines(payload.search_latency));
+  lines.push(...llmCallLatencyHistogramLines(payload.llm_calls));
   lines.push(...rerankLatencyHistogramLines(payload.rerank));
   lines.push(...writeLockHistogramLines(payload.write_locks));
   lines.push('# EOF');
@@ -491,6 +523,46 @@ function providerLatencyMetrics(payload: KbStatsPayload): MetricDefinition[] {
       labels: { model_id: modelId },
       value: snapshot.latency_ms[field],
     }))));
+}
+
+function llmCallCounterMetrics(snapshot: LlmCallMetricsSnapshot | undefined): MetricDefinition[] {
+  const callSamples: MetricSample[] = [];
+  const errorSamples: MetricSample[] = [];
+  const tokenSamples: MetricSample[] = [];
+  for (const [operation, row] of Object.entries(snapshot ?? {})) {
+    if (!isLlmCallOperation(operation) || row === undefined) continue;
+    const labels = { operation };
+    callSamples.push({ name: 'kb_llm_calls_total', labels, value: row.count });
+    errorSamples.push({ name: 'kb_llm_call_errors_total', labels, value: row.errors });
+    if (row.prompt_tokens !== null) {
+      tokenSamples.push({
+        name: 'kb_llm_tokens_total',
+        labels: { ...labels, token_type: 'prompt' },
+        value: row.prompt_tokens,
+      });
+    }
+    if (row.completion_tokens !== null) {
+      tokenSamples.push({
+        name: 'kb_llm_tokens_total',
+        labels: { ...labels, token_type: 'completion' },
+        value: row.completion_tokens,
+      });
+    }
+  }
+  return [
+    defineMetric('kb_llm_calls_total', callSamples),
+    defineMetric('kb_llm_call_errors_total', errorSamples),
+    defineMetric('kb_llm_tokens_total', tokenSamples),
+  ];
+}
+
+function llmCallLatencyHistogramLines(snapshot: LlmCallMetricsSnapshot | undefined): string[] {
+  const rows: HistogramRow[] = [];
+  for (const [operation, row] of Object.entries(snapshot ?? {})) {
+    if (!isLlmCallOperation(operation) || row === undefined) continue;
+    rows.push({ labels: { operation }, histogram: row.latency_ms });
+  }
+  return renderHistogramFamily({ name: 'kb_llm_call_latency_ms', rows });
 }
 
 const PROVIDER_CIRCUIT_STATE_VALUE: Record<ProviderCircuitState, number> = {

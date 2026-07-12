@@ -450,6 +450,52 @@ describe('computeKbStats', () => {
     }
   });
 
+  it('surfaces bounded chat-completion telemetry in the stats payload (issue #831)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-llm-metrics-'));
+    try {
+      await fsp.mkdir(path.join(tempDir, 'alpha'));
+      await fsp.writeFile(path.join(tempDir, 'alpha', 'a.md'), 'a');
+
+      const { computeKbStats } = await freshKbStats({
+        KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+        FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+      });
+      const { LlmCallMetrics } = await import('./metrics.js');
+      const llmMetrics = new LlmCallMetrics({ now: () => 1_700_000_000_000 });
+
+      const empty = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        llmMetrics,
+      });
+      expect(empty.llm_calls).toEqual({});
+
+      llmMetrics.record('ask', {
+        latencyMs: 12,
+        ok: true,
+        promptTokens: 20,
+        completionTokens: 7,
+      });
+      llmMetrics.record('gate', { latencyMs: 5, ok: false });
+
+      const populated = await computeKbStats(makeManager({}) as any, {
+        serverVersion: '0.0.0',
+        startedAt: Date.now(),
+        llmMetrics,
+      });
+      expect(populated.llm_calls?.ask).toMatchObject({
+        count: 1,
+        errors: 0,
+        prompt_tokens: 20,
+        completion_tokens: 7,
+        latency_ms: { count: 1, sum_ms: 12 },
+      });
+      expect(populated.llm_calls?.gate).toMatchObject({ count: 1, errors: 1 });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('surfaces write-lock wait and hold telemetry when recorded (issue #714)', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-write-locks-'));
     try {
