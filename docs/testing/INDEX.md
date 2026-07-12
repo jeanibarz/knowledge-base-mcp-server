@@ -33,7 +33,7 @@ The serial project is the explicit escape hatch for suites with shared process, 
 - `tests/stress/**/*.test.ts` remains in the serial project because stress scenarios are process- and resource-sensitive even when skipped by default.
 - `src/e2e/**/*.test.ts` joins the serial project only when `KB_RUN_E2E=1`.
 
-New tests should stay in the parallel project unless they require one of those shared resources. Add a test to the serial project by listing its path in `jest.config.js` and documenting the reason in this section.
+New tests should stay in the parallel project unless they require one of those shared resources. Add a test to the serial project by listing its `<rootDir>/...` path once in `serialTestPathPatterns` in `jest.config.js` and documenting the reason in this section. Use a path without a trailing slash for one exact test file; use a directory path with a trailing slash (for example, `<rootDir>/tests/stress/`) for a recursive test directory. The parallel project's ignore patterns and the serial project's `testMatch` are derived from that single list, so there is no second list to keep in sync.
 
 ## Test Corpus Builder
 
