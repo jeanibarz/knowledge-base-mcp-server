@@ -32,7 +32,7 @@ node build/index.js    # runs the server over stdio (clients launch it this way)
 
 ### Verification beyond `npm test`
 
-The Jest suite is broad but still does **not** exercise every live MCP wire path or real embedding provider. For changes that touch tool handlers, embedding configuration, or transports, run the opt-in stdio E2E harness with `KB_RUN_E2E=1 npm test` (or `KB_RUN_E2E=1 jest src/e2e`). For HTTP/SSE changes, run `npm run dev:remote -- --transport=http` or `--transport=sse`.
+The Jest suite is broad but still does **not** exercise every live MCP wire path or real embedding provider. For changes that touch tool handlers, embedding configuration, or transports, run the opt-in stdio E2E harness with `KB_RUN_E2E=1 npm test`. The harness uses fake embeddings; embedding-provider or model changes also need a representative check against the configured real provider/API, and tool changes outside the harness need representative `tools/call` requests. For HTTP/SSE changes, run `npm run dev:remote -- --transport=http` or `--transport=sse`.
 
 If a bug or improvement surfaces during that E2E pass, record it as an issue (see below) — it will not be caught by `npm test` alone.
 
