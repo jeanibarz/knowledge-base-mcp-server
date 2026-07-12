@@ -40,9 +40,15 @@ import {
 } from './formatter.js';
 import { runPicker } from './cli-search-picker.js';
 import { parseColorMode, resolveColorEnabled, type ColorMode } from './color.js';
-import { listKnowledgeBases } from './kb-fs.js';
+import { listKnowledgeBases, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
-import { extractVerbosity, loadManagerForModel, loadWithJsonRetry, type Verbosity } from './cli-shared.js';
+import {
+  extractVerbosity,
+  formatKnowledgeBaseSuggestions,
+  loadManagerForModel,
+  loadWithJsonRetry,
+  type Verbosity,
+} from './cli-shared.js';
 import {
   compactTimingPayload,
   elapsedMs,
@@ -405,6 +411,8 @@ export interface RunSearchDeps {
   writeOutput?: typeof writeMaybePagedOutput;
   computeStaleness?: typeof computeStaleness;
   listLexicalKbs?: typeof listLexicalKbs;
+  listKnowledgeBases?: typeof listKnowledgeBases;
+  resolveKnowledgeBaseDir?: typeof resolveKnowledgeBaseDir;
   loadLexicalIndex?: typeof LexicalIndex.load;
   runLexicalLeg?: typeof runLexicalLeg;
   onSearchTiming?: (record: {
@@ -422,6 +430,8 @@ const DEFAULT_RUN_SEARCH_DEPS: RunSearchDeps = {
   loadWithJsonRetry,
   computeStaleness,
   listLexicalKbs,
+  listKnowledgeBases,
+  resolveKnowledgeBaseDir,
   runLexicalLeg,
 };
 
@@ -552,6 +562,13 @@ export async function runSearch(
       }
     : null;
   const effectiveParsed: SearchArgs = { ...parsed, mode: effectiveMode };
+  if (effectiveMode === 'dense') {
+    try {
+      await validateDenseKnowledgeBase(parsed.kb, deps);
+    } catch (err) {
+      return reportFailure(classifyKbSearchError(err), parsed.format);
+    }
+  }
   if (hasNeighborContext(parsed) && effectiveMode !== 'dense') {
     process.stderr.write('kb search: neighbor context expansion is only supported with --mode=dense\n');
     return 2;
@@ -2067,6 +2084,26 @@ async function runBatchJsonlSearch(
       exitCode = Math.max(exitCode, 2);
       continue;
     }
+    try {
+      await validateDenseKnowledgeBase(row.kb, deps);
+    } catch (err) {
+      const failure = classifyKbSearchError(err);
+      writeBatchEnvelope({
+        schema_version: BATCH_JSONL_SCHEMA_VERSION,
+        line: lineNumber,
+        ok: false,
+        query,
+        kb: row.kb ?? null,
+        error: {
+          code: failure.code,
+          category: failure.category,
+          message: failure.message,
+          next_action: failure.next_action,
+        },
+      });
+      exitCode = Math.max(exitCode, exitCodeForFailure(failure));
+      continue;
+    }
     const taskContextCheck = inspectBatchTaskContext(row);
     for (const warning of taskContextCheck.warnings) {
       process.stderr.write(`kb search: ${warning}\n`);
@@ -2216,6 +2253,14 @@ async function runBatchJsonlSearch(
   }
 
   return exitCode;
+}
+
+async function validateDenseKnowledgeBase(
+  knowledgeBaseName: string | undefined,
+  deps: RunSearchDeps,
+): Promise<void> {
+  if (knowledgeBaseName === undefined || deps.resolveKnowledgeBaseDir === undefined) return;
+  await deps.resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, knowledgeBaseName);
 }
 
 async function resolveBatchActiveModel(
@@ -2564,6 +2609,14 @@ async function runLexicalSearch(
   }
   if (parsed.kb && kbs.length === 0) {
     process.stderr.write(`kb search (lexical): KB not found: ${parsed.kb}\n`);
+    try {
+      const available = await (deps.listKnowledgeBases ?? listKnowledgeBases)(KNOWLEDGE_BASES_ROOT_DIR);
+      const suggestions = formatKnowledgeBaseSuggestions(parsed.kb, available);
+      if (suggestions) process.stderr.write(`${suggestions}\n`);
+    } catch {
+      // Keep the original lexical not-found diagnostic when the root cannot
+      // be enumerated.
+    }
     return 2;
   }
 

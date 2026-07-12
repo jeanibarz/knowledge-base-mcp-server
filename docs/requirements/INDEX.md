@@ -209,6 +209,22 @@
 **Linked Tests:** TS-CLI-383
 **Dependencies:** RFC012
 
+### FR-CLI-832: Unknown Knowledge-Base Suggestions
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall explain an unknown knowledge-base name with a bounded list of available knowledge bases and, when sufficiently close, a nearest-name suggestion.
+**Rationale:** A mistyped `--kb` value currently forces users to run `kb list` separately and retry, unlike the CLI's existing command and flag typo guidance.
+
+**Acceptance Criteria:**
+- [x] Given an unknown `--kb` value, when `kb search` runs in dense mode, then stderr shall include the available knowledge-base list and a nearest-name suggestion when one passes the shared Levenshtein threshold.
+- [x] Given an unknown `--kb` value, when `kb search --mode=lexical` runs, then stderr shall include the same bounded list and suggestion behavior.
+- [x] Given many available knowledge bases, when an unknown name is reported, then the list shall remain bounded and ordered by closeness with deterministic tie-breaking.
+- [x] Given a valid knowledge-base name or a root that cannot be enumerated, then existing successful behavior and the original not-found diagnostic shall remain unchanged.
+
+**Linked Tests:** TS-CLI-832
+**Dependencies:** Existing `listKnowledgeBases` and Levenshtein typo-suggestion logic.
+
 ### FR-CLI-833: Safe Note Tag Mutation
 **Status:** Implemented
 **Priority:** Medium

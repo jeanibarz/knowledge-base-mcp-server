@@ -13,6 +13,7 @@ import {
   type FilesystemEnumerationDiagnostics,
 } from './file-utils.js';
 import { filterIngestablePaths } from './ingest-filter.js';
+import { formatKnowledgeBaseSuggestions } from './suggestion-core.js';
 
 /**
  * Issue #160 step 3 — single home for "is this rel path safe to join
@@ -523,10 +524,7 @@ export async function resolveKnowledgeBaseDir(
     path.isAbsolute(knowledgeBaseName) ||
     hasPathSeparator(knowledgeBaseName)
   ) {
-    throw new KBError(
-      'KB_NOT_FOUND',
-      `Knowledge base "${knowledgeBaseName}" not found under ${rootDir}.`,
-    );
+    throw await knowledgeBaseNotFound(rootDir, knowledgeBaseName);
   }
 
   const rootReal = await realpathIfExists(rootDir);
@@ -541,18 +539,12 @@ export async function resolveKnowledgeBaseDir(
   } catch (error: unknown) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === 'ENOENT' || code === 'ENOTDIR') {
-      throw new KBError(
-        'KB_NOT_FOUND',
-        `Knowledge base "${knowledgeBaseName}" not found under ${rootDir}.`,
-      );
+      throw await knowledgeBaseNotFound(rootDir, knowledgeBaseName);
     }
     throw error;
   }
   if (!stat.isDirectory()) {
-    throw new KBError(
-      'KB_NOT_FOUND',
-      `Knowledge base "${knowledgeBaseName}" not found under ${rootDir}.`,
-    );
+    throw await knowledgeBaseNotFound(rootDir, knowledgeBaseName);
   }
 
   const kbReal = await fsp.realpath(kbDir);
@@ -563,4 +555,17 @@ export async function resolveKnowledgeBaseDir(
     );
   }
   return kbDir;
+}
+
+async function knowledgeBaseNotFound(rootDir: string, knowledgeBaseName: string): Promise<KBError> {
+  let available: string[] = [];
+  try {
+    available = await listKnowledgeBases(rootDir);
+  } catch {
+    // Preserve the original not-found diagnostic when the root cannot be
+    // enumerated (for example, a transient permission error).
+  }
+  const suggestions = formatKnowledgeBaseSuggestions(knowledgeBaseName, available);
+  const base = `Knowledge base "${knowledgeBaseName}" not found under ${rootDir}.`;
+  return new KBError('KB_NOT_FOUND', suggestions ? `${base}\n${suggestions}` : base);
 }

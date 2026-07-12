@@ -21,6 +21,7 @@ import {
   type ScoredDocument as EngineScoredDocument,
 } from './search-filters.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
+import { KBError } from './errors.js';
 import { compactTimingPayload, type TimingPayload } from './timing-core.js';
 import type { ScoredDocument } from './formatter.js';
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
@@ -1690,6 +1691,84 @@ describe('runSearch timing guard (#331)', () => {
     expect(out.stdout).toContain('> _Lexical status: 1 KB(s), 0 error(s), unit=chunk._');
     expect(out.stdout).not.toContain('## Semantic Search Results');
     expect(lexicalIndex.query).toHaveBeenCalledWith('query', 10, { unit: 'chunk' });
+  });
+
+  it('reports available KBs and the nearest suggestion for an unknown lexical scope', async () => {
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => ({} as FaissIndexManager)),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => []),
+      listKnowledgeBases: jest.fn(async () => ['alpha', 'beta', 'delta', 'gamma', 'theta', 'epsilon']),
+    };
+
+    const out = await captureSearchOutput(['query', '--mode=lexical', '--kb=alpah'], deps);
+
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain('kb search (lexical): KB not found: alpah');
+    expect(out.stderr).toContain('Available knowledge bases: alpha, beta, delta, gamma, theta.');
+    expect(out.stderr).toContain('Did you mean alpha?');
+  });
+
+  it('preserves the lexical not-found prefix when the KB root cannot be enumerated', async () => {
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => ({} as FaissIndexManager)),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => []),
+      listKnowledgeBases: jest.fn(async () => { throw new Error('readdir failed'); }),
+    };
+
+    const out = await captureSearchOutput(['query', '--mode=lexical', '--kb=alpah'], deps);
+
+    expect(out.code).toBe(2);
+    expect(out.stderr).toBe('kb search (lexical): KB not found: alpah\n');
+  });
+
+  it('reports the enriched KB_NOT_FOUND diagnostic for an unknown dense scope', async () => {
+    const { deps, manager } = makeDeps();
+    const message =
+      `Knowledge base "alpah" not found under ${KNOWLEDGE_BASES_ROOT_DIR}.\n` +
+      'Available knowledge bases: alpha, beta, zeta, delta, gamma.\n' +
+      'Did you mean alpha?';
+    const resolveKnowledgeBaseDir = jest.fn(async () => {
+      throw new KBError('KB_NOT_FOUND', message);
+    });
+    deps.resolveKnowledgeBaseDir = resolveKnowledgeBaseDir;
+
+    const out = await captureSearchOutput(['query', '--kb=alpah'], deps);
+
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain(message);
+    expect(manager.similaritySearch).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown KB in a batch JSONL row before retrieval', async () => {
+    const { deps, manager } = makeDeps();
+    const resolveKnowledgeBaseDir = jest.fn(async () => {
+      throw new KBError('KB_NOT_FOUND', 'unknown KB with suggestions');
+    });
+    deps.resolveKnowledgeBaseDir = resolveKnowledgeBaseDir;
+
+    const out = await captureSearchOutput(
+      ['--batch-jsonl'],
+      deps,
+      '{"query":"query","kb":"alpah"}\n',
+    );
+
+    expect(out.code).toBe(2);
+    expect(JSON.parse(out.stdout)).toMatchObject({
+      line: 1,
+      ok: false,
+      kb: 'alpah',
+      error: {
+        code: 'KB_NOT_FOUND',
+        message: 'unknown KB with suggestions',
+      },
+    });
+    expect(manager.similaritySearch).not.toHaveBeenCalled();
   });
 
   it('wires --lexical-unit=source through lexical search JSON output', async () => {

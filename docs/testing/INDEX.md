@@ -179,6 +179,14 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `tagNote` shall atomically apply a mutation and `kb tags` shall report the resulting tag set.
 - The CLI smoke matrix shall verify the built command's JSON dry-run output and argument-error path without an embedding backend.
 
+### TS-CLI-832: Unknown Knowledge-Base Suggestions
+**Requirement:** FR-CLI-832
+
+**Test Cases:**
+- `rankSuggestions` and `closestSuggestion` shall use the shared Levenshtein ranking with deterministic tie-breaking and support the documented typo example.
+- `resolveKnowledgeBaseDir` shall include a bounded, closeness-ordered available-KB list and nearest-name suggestion in `KB_NOT_FOUND` errors.
+- Lexical `kb search --kb=<unknown>` shall preserve its error prefix and include the same available-KB list and suggestion.
+
 ### TS-ASK-382: Cited Ask Transcript Records
 **Requirement:** FR-ASK-382
 

@@ -3,6 +3,16 @@ import { parseModelId, readStoredIndexType, readStoredModelName } from './active
 import type { EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
 
+export {
+  closestSuggestion,
+  formatKnowledgeBaseSuggestions,
+  levenshteinDistance,
+  rankSuggestions,
+  suggestionDistanceThreshold,
+  MAX_KNOWLEDGE_BASE_SUGGESTIONS,
+  type ClosestSuggestion,
+} from './suggestion-core.js';
+
 /**
  * RFC 013: load a FaissIndexManager for the given model_id. Resolves the
  * (provider, modelName) pair from the model's `model_name.txt` so the

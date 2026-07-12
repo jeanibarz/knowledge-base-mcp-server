@@ -2,7 +2,13 @@ import { describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { describeKnowledgeBase, extractKbDescription, listKnowledgeBases } from './kb-fs.js';
+import { KBError } from './errors.js';
+import {
+  describeKnowledgeBase,
+  extractKbDescription,
+  listKnowledgeBases,
+  resolveKnowledgeBaseDir,
+} from './kb-fs.js';
 
 describe('listKnowledgeBases', () => {
   it('returns names of subdirectories, filtering dot-prefixed entries', async () => {
@@ -35,6 +41,40 @@ describe('listKnowledgeBases', () => {
     await expect(
       listKnowledgeBases('/nonexistent/path/that/should/not/exist'),
     ).rejects.toThrow();
+  });
+});
+
+describe('resolveKnowledgeBaseDir unknown-name diagnostics (FR-CLI-832)', () => {
+  it('includes the closest available KB and a bounded list in KB_NOT_FOUND', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-fs-suggest-'));
+    try {
+      for (const name of ['alpha', 'beta', 'delta', 'gamma', 'theta', 'epsilon', 'zeta']) {
+        await fsp.mkdir(path.join(tempDir, name));
+      }
+
+      const pending = resolveKnowledgeBaseDir(tempDir, 'alpah');
+      await expect(pending).rejects.toBeInstanceOf(KBError);
+      await expect(pending).rejects.toThrow(
+        `Knowledge base "alpah" not found under ${tempDir}.\n` +
+        'Available knowledge bases: alpha, beta, zeta, delta, gamma.\n' +
+        'Did you mean alpha?',
+      );
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the original diagnostic when available KBs cannot be enumerated', async () => {
+    const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-fs-file-root-'));
+    const rootFile = path.join(rootDir, 'root');
+    try {
+      await fsp.writeFile(rootFile, 'not a directory');
+      await expect(resolveKnowledgeBaseDir(rootFile, 'missing')).rejects.toThrow(
+        `Knowledge base "missing" not found under ${rootFile}.`,
+      );
+    } finally {
+      await fsp.rm(rootDir, { recursive: true, force: true });
+    }
   });
 });
 

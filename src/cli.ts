@@ -53,6 +53,7 @@ import { daemonUrlFromEnv, tryRunDaemonCommand } from './daemon-client.js';
 import { emitCanonicalLog } from './canonical-log.js';
 import { buildDaemonSearchArgs, resolveSearchPager } from './cli-pager.js';
 import { exitCodeDocs, formatExitCodesHelp } from './cli-exit-codes.js';
+import { closestSuggestion } from './cli-shared.js';
 
 // ----- Subcommand registry --------------------------------------------------
 
@@ -194,11 +195,6 @@ function wantsHelp(args: readonly string[]): boolean {
   return args.some((a) => a === '--help' || a === '-h');
 }
 
-interface ClosestSuggestion {
-  value: string;
-  distance: number;
-}
-
 interface UnknownFlagSuggestion {
   raw: string;
   suggestion: string;
@@ -338,47 +334,6 @@ function flagNameFromArg(raw: string): string | null {
 
 function formatUnknownFlagMessage(command: string, unknown: UnknownFlagSuggestion): string {
   return `kb ${command}: unknown flag: ${unknown.raw}\nDid you mean ${unknown.suggestion}?\n`;
-}
-
-function closestSuggestion(input: string, candidates: readonly string[]): ClosestSuggestion | undefined {
-  let best: ClosestSuggestion | undefined;
-  for (const candidate of candidates) {
-    const distance = levenshteinDistance(input, candidate);
-    if (
-      best === undefined
-      || distance < best.distance
-      || (distance === best.distance && candidate.length < best.value.length)
-      || (distance === best.distance && candidate.length === best.value.length && candidate < best.value)
-    ) {
-      best = { value: candidate, distance };
-    }
-  }
-  if (best === undefined || best.distance > suggestionDistanceThreshold(input)) return undefined;
-  return best;
-}
-
-function suggestionDistanceThreshold(input: string): number {
-  return Math.max(1, Math.floor(input.length / 3));
-}
-
-function levenshteinDistance(a: string, b: string): number {
-  const rows = a.length + 1;
-  const cols = b.length + 1;
-  const dp = Array.from({ length: rows }, () => new Array<number>(cols).fill(0));
-  for (let i = 0; i < rows; i++) dp[i][0] = i;
-  for (let j = 0; j < cols; j++) dp[0][j] = j;
-
-  for (let i = 1; i < rows; i++) {
-    for (let j = 1; j < cols; j++) {
-      const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[i][j] = Math.min(
-        dp[i - 1][j] + 1,
-        dp[i][j - 1] + 1,
-        dp[i - 1][j - 1] + substitutionCost,
-      );
-    }
-  }
-  return dp[a.length][b.length];
 }
 
 function parseHelpArgs(rest: readonly string[]): HelpArgs {
