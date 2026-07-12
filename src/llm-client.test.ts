@@ -8,6 +8,7 @@ import {
   parseRetryAfterMs,
   probeLlmEndpoint,
 } from './llm-client.js';
+import { llmCallMetrics } from './metrics.js';
 import { providerBreakerRegistry } from './provider-breaker.js';
 
 describe('llm-client', () => {
@@ -26,6 +27,7 @@ describe('llm-client', () => {
       else process.env[k] = saved[k];
     }
     providerBreakerRegistry.reset();
+    llmCallMetrics.reset();
   });
 
   it('normalizes base URLs to chat-completions endpoints', () => {
@@ -49,6 +51,44 @@ describe('llm-client', () => {
     expect(result.model).toBe('local-model');
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
     expect(calls[0][0]).toBe('http://127.0.0.1:8080/v1/chat/completions');
+  });
+
+  it('records bounded operation metrics and parses prompt/completion usage', async () => {
+    const fetchMock = jest.fn(async () => new Response(JSON.stringify({
+      model: 'local-model',
+      choices: [{ message: { content: 'answer' } }],
+      usage: { prompt_tokens: 17, completion_tokens: 5 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    const result = await callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      operation: 'gate',
+      messages: [{ role: 'user', content: 'q' }],
+    }, fetchMock as unknown as typeof fetch);
+
+    expect(result.usage).toEqual({ promptTokens: 17, completionTokens: 5 });
+    expect(llmCallMetrics.snapshot().gate).toMatchObject({
+      count: 1,
+      errors: 0,
+      prompt_tokens: 17,
+      completion_tokens: 5,
+    });
+  });
+
+  it('records failed calls in the selected operation without swallowing the error', async () => {
+    const fetchMock = jest.fn(async () => new Response(
+      JSON.stringify({ error: { message: 'unavailable' } }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } },
+    ));
+
+    await expect(callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      operation: 'preface',
+      messages: [{ role: 'user', content: 'q' }],
+      retry: false,
+    }, fetchMock as unknown as typeof fetch)).rejects.toMatchObject({ status: 503 });
+
+    expect(llmCallMetrics.snapshot().preface).toMatchObject({ count: 1, errors: 1 });
   });
 
   it('retries a transient network failure and returns the later success', async () => {
@@ -76,6 +116,7 @@ describe('llm-client', () => {
     expect(result.content).toBe('recovered');
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(delays).toEqual([50]);
+    expect(llmCallMetrics.snapshot().ask).toMatchObject({ count: 1, errors: 0 });
   });
 
   it('streams OpenAI-compatible SSE deltas and returns the final content', async () => {
@@ -84,6 +125,7 @@ describe('llm-client', () => {
     const fetchMock = jest.fn(async () => new Response(streamBody([
       'data: {"model":"local-model","choices":[{"delta":{"content":"hello "}}]}\n\n',
       'data: {"model":"local-model","choices":[{"delta":{"content":"world"}}]}\n\n',
+      'data: {"model":"local-model","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":2}}\n\n',
       'data: [DONE]\n\n',
     ]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
 
@@ -101,6 +143,13 @@ describe('llm-client', () => {
 
     expect(result.content).toBe('hello world');
     expect(result.model).toBe('local-model');
+    expect(result.usage).toEqual({ promptTokens: 11, completionTokens: 2 });
+    expect(llmCallMetrics.snapshot().ask).toMatchObject({
+      count: 1,
+      errors: 0,
+      prompt_tokens: 11,
+      completion_tokens: 2,
+    });
     expect(tokens).toEqual(['hello ', 'world']);
     expect(events).toEqual(['first', 'hello ', 'world']);
     const body = JSON.parse((fetchMock.mock.calls as unknown as Array<[string, RequestInit]>)[0][1].body as string) as {
@@ -274,6 +323,7 @@ describe('llm-client', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(delays).toEqual([100]);
+    expect(llmCallMetrics.snapshot().ask).toMatchObject({ count: 1, errors: 1 });
   });
 
   it('opens the provider circuit after repeated transient failures and skips retries while open', async () => {
@@ -436,6 +486,7 @@ describe('llm-client', () => {
     expect(result.health_ok).toBe(true);
     expect(result.chat_ok).toBe(true);
     expect(result.detail).toContain('health check skipped');
+    expect(llmCallMetrics.snapshot()).toEqual({});
     const urls = (fetchMock.mock.calls as unknown as Array<[string, RequestInit]>).map((c) => c[0]);
     expect(urls.some((u) => u.endsWith('/health'))).toBe(false);
   });
@@ -498,6 +549,7 @@ describe('llm-client', () => {
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
     const chatRequest = calls.find(([url]) => !url.endsWith('/health'))!;
     expect(JSON.parse(chatRequest[1].body as string)).toMatchObject({ model: 'gate-model' });
+    expect(llmCallMetrics.snapshot()).toEqual({});
   });
 });
 

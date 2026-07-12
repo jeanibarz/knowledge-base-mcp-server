@@ -69,8 +69,12 @@ import {
   type KbStatsPayload,
 } from './kb-stats.js';
 import {
+  llmCallMetrics,
   providerCallMetrics,
+  quantileFromBuckets,
   searchLatencyMetrics,
+  type LlmCallMetrics,
+  type LlmCallMetricsSnapshot,
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
   type SearchLatencyMetrics,
@@ -484,6 +488,8 @@ export interface DoctorReport {
    * model_id; otherwise it is OK.
    */
   provider_calls: Record<string, ProviderCallSnapshot>;
+  /** Issue #831 — bounded chat-completion telemetry by ask/gate/preface operation. */
+  llm_calls?: LlmCallMetricsSnapshot;
   /**
    * Issue #747 — per-key snapshot of the shared provider circuit breaker
    * (embedding + LLM paths). Empty `[]` until a breaker has admitted a
@@ -510,6 +516,8 @@ export interface BuildDoctorReportOptions {
    * singleton is read.
    */
   providerCallMetrics?: ProviderCallMetrics;
+  /** Issue #831 — test seam for chat-completion telemetry. */
+  llmCallMetrics?: LlmCallMetrics;
   /** Issue #747 — test seam for the shared provider circuit breaker registry. */
   providerBreaker?: ProviderBreakerRegistry;
   /** Issue #604 — test seam for daemon-served search latency telemetry. */
@@ -1629,6 +1637,8 @@ export async function buildDoctorReport(
 
   const metricsSource = options.providerCallMetrics ?? providerCallMetrics;
   const providerCalls = metricsSource.snapshot();
+  const llmMetricsSource = options.llmCallMetrics ?? llmCallMetrics;
+  const llmCalls = llmMetricsSource.snapshot();
   // Issue #210 — only emit the row when at least one call has been
   // observed; otherwise the doctor on a fresh process would always show
   // a noisy "no telemetry yet" line.
@@ -1770,6 +1780,7 @@ export async function buildDoctorReport(
     last_index_update: lastIndexUpdate,
     reindex_trigger: reindexTrigger,
     provider_calls: providerCalls,
+    llm_calls: llmCalls,
     provider_circuits: providerCircuits,
     dense_search_latency: denseSearchLatency,
     integrity,
@@ -2936,6 +2947,24 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
         `  model=${modelId} calls=${row.count} errors=${row.errors}` +
         ` p50=${row.latency_ms.p50}ms p95=${row.latency_ms.p95}ms` +
         ` p99=${row.latency_ms.p99}ms ${tokens}${errorMarker}`,
+      );
+    }
+  }
+  lines.push('');
+  lines.push('LLM calls:');
+  const llmCalls = Object.entries(report.llm_calls ?? {})
+    .filter((entry): entry is [string, NonNullable<typeof entry[1]>] => entry[1] !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (llmCalls.length === 0) {
+    lines.push('  (no LLM calls observed)');
+  } else {
+    for (const [operation, row] of llmCalls) {
+      const p95 = quantileFromBuckets(row.latency_ms.buckets, row.latency_ms.count, 0.95);
+      const promptTokens = row.prompt_tokens === null ? 'n/a' : String(row.prompt_tokens);
+      const completionTokens = row.completion_tokens === null ? 'n/a' : String(row.completion_tokens);
+      lines.push(
+        `  operation=${operation} calls=${row.count} errors=${row.errors} ` +
+        `p95=${p95}ms prompt_tokens=${promptTokens} completion_tokens=${completionTokens}`,
       );
     }
   }

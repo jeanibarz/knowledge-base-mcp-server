@@ -1,5 +1,6 @@
 import { callFakeChatCompletion, isFakeLlmEnabled } from './llm-fake-stub.js';
 import { resolveLlmProvider } from './config/llm-provider.js';
+import { llmCallMetrics, type LlmCallOperation } from './metrics.js';
 import { providerBreakerRegistry } from './provider-breaker.js';
 
 export interface LlmChatMessage {
@@ -10,6 +11,8 @@ export interface LlmChatMessage {
 export interface ChatCompletionOptions {
   endpoint: string;
   model?: string;
+  /** Bounded observability label; null suppresses metrics for readiness probes. */
+  operation?: LlmCallOperation | null;
   messages: LlmChatMessage[];
   temperature?: number;
   timeoutMs?: number;
@@ -37,6 +40,12 @@ export interface ChatCompletionResult {
   content: string;
   model: string | null;
   raw: unknown;
+  usage?: ChatCompletionUsage;
+}
+
+export interface ChatCompletionUsage {
+  promptTokens: number | null;
+  completionTokens: number | null;
 }
 
 export interface LlmProbeResult {
@@ -135,52 +144,71 @@ export async function callChatCompletion(
   options: ChatCompletionOptions,
   fetchImpl: FetchLike = fetch,
 ): Promise<ChatCompletionResult> {
-  if (isFakeLlmEnabled()) {
-    return callFakeChatCompletion(options);
-  }
+  const startedAt = performanceNow();
+  const operation = options.operation === null ? null : options.operation ?? 'ask';
+  let result: ChatCompletionResult | undefined;
+  let succeeded = false;
+  try {
+    if (isFakeLlmEnabled()) {
+      result = withParsedUsage(await callFakeChatCompletion(options));
+      succeeded = true;
+      return result;
+    }
 
-  const endpoint = normalizeChatEndpoint(options.endpoint);
-  // Resolve auth/model from the environment when the caller did not pass them
-  // explicitly, so every call site (contextual prefaces, the gate judge, the
-  // probe) picks up the OpenRouter provider switch centrally.
-  const provider = resolveLlmProvider();
-  const apiKey = options.apiKey ?? provider.apiKey;
-  const remote = apiKey !== undefined;
-  const payload: Record<string, unknown> = {
-    model: options.model ?? provider.model ?? 'local-model',
-    messages: options.messages,
-    temperature: options.temperature ?? 0.2,
-    stream: options.stream !== undefined,
-  };
-  // `chat_template_kwargs` is a llama.cpp / vLLM extension; hosted providers
-  // (OpenRouter) reject or ignore unknown body fields, so only send it locally.
-  if (!remote) {
-    payload.chat_template_kwargs = { enable_thinking: false };
-  }
+    const endpoint = normalizeChatEndpoint(options.endpoint);
+    // Resolve auth/model from the environment when the caller did not pass them
+    // explicitly, so every call site (contextual prefaces, the gate judge, the
+    // probe) picks up the OpenRouter provider switch centrally.
+    const provider = resolveLlmProvider();
+    const apiKey = options.apiKey ?? provider.apiKey;
+    const remote = apiKey !== undefined;
+    const payload: Record<string, unknown> = {
+      model: options.model ?? provider.model ?? 'local-model',
+      messages: options.messages,
+      temperature: options.temperature ?? 0.2,
+      stream: options.stream !== undefined,
+    };
+    // `chat_template_kwargs` is a llama.cpp / vLLM extension; hosted providers
+    // (OpenRouter) reject or ignore unknown body fields, so only send it locally.
+    if (!remote) {
+      payload.chat_template_kwargs = { enable_thinking: false };
+    }
 
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (apiKey !== undefined) {
-    headers.Authorization = `Bearer ${apiKey}`;
-    headers['X-Title'] = options.appTitle ?? provider.appTitle;
-    const referer = options.httpReferer ?? provider.httpReferer;
-    if (referer !== undefined) headers['HTTP-Referer'] = referer;
-  }
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (apiKey !== undefined) {
+      headers.Authorization = `Bearer ${apiKey}`;
+      headers['X-Title'] = options.appTitle ?? provider.appTitle;
+      const referer = options.httpReferer ?? provider.httpReferer;
+      if (referer !== undefined) headers['HTTP-Referer'] = referer;
+    }
 
-  const retryPolicy = resolveRetryPolicy(options.retry);
-  const breakerKey = llmProviderBreakerKey(provider.provider, endpoint, String(payload.model));
-  return providerBreakerRegistry.run(
-    breakerKey,
-    () => callChatCompletionWithRetry({
-      endpoint,
-      payload,
-      headers,
-      timeoutMs: options.timeoutMs,
-      stream: options.stream,
-      retryPolicy,
-      fetchImpl,
-    }),
-    { shouldRecordFailure: (err) => err instanceof LlmClientError && isTransientLlmClientError(err) },
-  );
+    const retryPolicy = resolveRetryPolicy(options.retry);
+    const breakerKey = llmProviderBreakerKey(provider.provider, endpoint, String(payload.model));
+    result = withParsedUsage(await providerBreakerRegistry.run(
+      breakerKey,
+      () => callChatCompletionWithRetry({
+        endpoint,
+        payload,
+        headers,
+        timeoutMs: options.timeoutMs,
+        stream: options.stream,
+        retryPolicy,
+        fetchImpl,
+      }),
+      { shouldRecordFailure: (err) => err instanceof LlmClientError && isTransientLlmClientError(err) },
+    ));
+    succeeded = true;
+    return result;
+  } finally {
+    if (operation !== null) {
+      llmCallMetrics.record(operation, {
+        latencyMs: performanceNow() - startedAt,
+        ok: succeeded,
+        promptTokens: result?.usage?.promptTokens,
+        completionTokens: result?.usage?.completionTokens,
+      });
+    }
+  }
 }
 
 interface ChatCompletionWithRetryOptions {
@@ -597,6 +625,7 @@ export async function probeLlmEndpoint(
     await callChatCompletion({
       endpoint: chatEndpoint,
       model: options.model,
+      operation: null,
       messages: [
         { role: 'system', content: 'Reply with exactly: ok' },
         { role: 'user', content: 'health check' },
@@ -630,6 +659,53 @@ function extractAssistantContent(data: unknown): string | null {
   if (!Array.isArray(choices) || choices.length === 0) return null;
   const first = choices[0] as { message?: { content?: unknown } };
   return typeof first.message?.content === 'string' ? first.message.content : null;
+}
+
+function performanceNow(): number {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function withParsedUsage(result: ChatCompletionResult): ChatCompletionResult {
+  const usage = extractChatUsage(result.raw);
+  return usage === undefined ? result : { ...result, usage };
+}
+
+function extractChatUsage(raw: unknown): ChatCompletionUsage | undefined {
+  const candidates: unknown[] = [];
+  if (isRecord(raw)) {
+    if (raw.usage !== undefined) candidates.push(raw.usage);
+    if (Array.isArray(raw.events)) {
+      for (let index = raw.events.length - 1; index >= 0; index -= 1) {
+        const event = raw.events[index];
+        if (isRecord(event) && event.usage !== undefined) candidates.push(event.usage);
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (!isRecord(candidate)) continue;
+    const promptTokens = parseTokenCount(candidate.prompt_tokens ?? candidate.promptTokens);
+    const completionTokens = parseTokenCount(candidate.completion_tokens ?? candidate.completionTokens);
+    if (promptTokens !== undefined || completionTokens !== undefined) {
+      return {
+        promptTokens: promptTokens ?? null,
+        completionTokens: completionTokens ?? null,
+      };
+    }
+  }
+  return undefined;
+}
+
+function parseTokenCount(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.floor(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function extractErrorMessage(data: unknown): string {

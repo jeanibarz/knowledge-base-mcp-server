@@ -79,6 +79,22 @@
 
 ## Observability
 
+### FR-OBS-831: Chat-completion telemetry
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall record process-lifetime chat-completion call, error, latency, and provider-reported token metrics by the bounded `ask`, `gate`, and `preface` operations, and expose them through `kb_stats`, `kb stats`, `kb doctor`, and the OpenMetrics exporter.
+**Rationale:** Chat generation is the largest and most variable LLM cost surface, but previously had no operator-visible latency, failure, or token-spend signal.
+
+**Acceptance Criteria:**
+- [x] Given a chat-completion success or failure, when the call finishes, then the corresponding operation counter, error counter, and latency histogram shall be updated, including calls that exhaust retries.
+- [x] Given an OpenAI-compatible response with `usage.prompt_tokens` or `usage.completion_tokens`, when metrics are exported, then the reported token totals shall be emitted by operation and token type.
+- [x] Given arbitrary query content, KB names, model strings, or request ids, when metrics are exported, then none shall become labels; operation labels remain limited to `ask`, `gate`, and `preface`.
+- [x] Given `kb stats` or `kb doctor`, when chat calls have been observed, then the human-readable output shall show per-operation calls, errors, latency, and token totals.
+
+**Linked Tests:** TS-OBS-831
+**Dependencies:** FR-STATS-230, FR-STATS-469
+
 ### FR-OBS-835: Relevance-gate endpoint readiness
 **Status:** Implemented
 **Priority:** Medium

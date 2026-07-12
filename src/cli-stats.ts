@@ -19,6 +19,7 @@ import {
   type KbStatsContextualPrefaceBlock,
   type KbStatsPayload,
 } from './kb-stats.js';
+import { quantileFromBuckets } from './metrics.js';
 import { formatKbStatsOpenMetrics } from './prometheus-export.js';
 import { readBuildInfo, type BuildInfo } from './build-info.js';
 
@@ -32,9 +33,9 @@ Usage:
 Mirrors the MCP \`kb_stats\` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
 Includes filesystem enumeration diagnostics, process-lifetime relevance-gate
-counters when the gate has run, and a Contextual Retrieval section with per-KB
-preface coverage and failure counts (by error code) when contextual-preface
-sidecars exist.
+counters when the gate has run, chat-completion counters by operation, and a
+Contextual Retrieval section with per-KB preface coverage and failure counts
+(by error code) when contextual-preface sidecars exist.
 Strictly read-only — does not refresh the index.
 
 Options:
@@ -44,7 +45,7 @@ Options:
                         underlying \`KbStatsPayload\` shape verbatim; delimited
                         formats emit one row per knowledge base. \`openmetrics\`
                         emits a daemonless Prometheus/OpenMetrics text exposition
-                        of the corpus, index, provider, cache, rerank, and
+                        of the corpus, index, provider, LLM, cache, rerank, and
                         relevance-gate families derived from this one-shot run —
                         pipe-clean on stdout for cron scrapers and node-exporter
                         textfile collectors. Daemon-instance gauges (admission
@@ -265,9 +266,34 @@ export function formatStatsMarkdown(payload: KbStatsPayload): string {
       `${formatInteger(payload.relevance_gate.judge_window.size)}, ` +
       `warn>${formatRate(payload.relevance_gate.judge_window.warn_threshold)})`,
     '',
+    ...formatLlmCallSection(payload),
     ...formatRemoteTransportSection(payload),
     ...formatContextualSection(payload),
   ].join('\n');
+}
+
+export function formatLlmCallSection(payload: KbStatsPayload): string[] {
+  const calls = payload.llm_calls ?? {};
+  const operations = Object.entries(calls).sort(([a], [b]) => a.localeCompare(b));
+  const lines = ['## LLM Calls', ''];
+  if (operations.length === 0) {
+    lines.push('- No chat-completion calls observed.', '');
+    return lines;
+  }
+
+  for (const [operation, row] of operations) {
+    if (row === undefined) continue;
+    const p50 = quantileFromBuckets(row.latency_ms.buckets, row.latency_ms.count, 0.5);
+    const p95 = quantileFromBuckets(row.latency_ms.buckets, row.latency_ms.count, 0.95);
+    lines.push(
+      `- ${operation}: calls=${formatInteger(row.count)}, errors=${formatInteger(row.errors)}, ` +
+      `p50=${p50} ms, p95=${p95} ms, ` +
+      `prompt_tokens=${row.prompt_tokens === null ? 'n/a' : formatInteger(row.prompt_tokens)}, ` +
+      `completion_tokens=${row.completion_tokens === null ? 'n/a' : formatInteger(row.completion_tokens)}`,
+    );
+  }
+  lines.push('');
+  return lines;
 }
 
 export function formatDenseSearchLatencySection(payload: KbStatsPayload): string[] {

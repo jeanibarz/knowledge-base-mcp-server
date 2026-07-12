@@ -86,6 +86,15 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 
 ## Observability
 
+### TS-OBS-831: Chat-completion telemetry
+**Requirement:** FR-OBS-831
+
+**Test Cases:**
+- `LlmCallMetrics` shall count successes and errors by the bounded `ask`, `gate`, and `preface` operation labels and retain latency histograms.
+- `callChatCompletion` shall parse prompt/completion usage when present and record one logical call across internal retries.
+- `computeKbStats` and `kb doctor` shall expose the counters and token totals without turning query text or model strings into labels.
+- The OpenMetrics formatter shall emit `kb_llm_calls_total`, `kb_llm_call_errors_total`, `kb_llm_tokens_total`, and `kb_llm_call_latency_ms` with bounded labels.
+
 ### TS-OBS-835: Relevance-gate endpoint readiness
 **Requirement:** FR-OBS-835
 
@@ -328,7 +337,7 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 **Requirement:** FR-STATS-469
 
 **Test Cases:**
-- The OpenMetrics formatter shall serialize KB, provider-call, query-cache, relevance-gate, and remote-transport stats with bounded labels and a terminal `# EOF`.
+- The OpenMetrics formatter shall serialize KB, provider-call, LLM-call, query-cache, relevance-gate, and remote-transport stats with bounded labels and a terminal `# EOF`.
 - `kb serve` shall mount `GET /metrics` only when `KB_METRICS_EXPORT=on`.
 - HTTP and SSE transports shall mount `GET /metrics` behind the existing bearer-token auth gate when `KB_METRICS_EXPORT=on`.
 

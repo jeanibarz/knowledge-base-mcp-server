@@ -51,8 +51,8 @@ kb stats --format=openmetrics | curl --data-binary @- http://pushgateway:9091/me
 The output is pipe-clean on stdout (diagnostics go to stderr). It covers the
 process-derivable families — corpus (`kb_knowledge_base_*`), index
 (`kb_index_embedding_dimensions`, `kb_build_info`), provider
-(`kb_provider_*`), query cache (`kb_query_cache_*`), rerank (`kb_rerank_*`),
-search-latency, and relevance-gate counters.
+(`kb_provider_*`), chat LLM (`kb_llm_*`), query cache (`kb_query_cache_*`),
+rerank (`kb_rerank_*`), search-latency, and relevance-gate counters.
 
 Daemon-instance-only gauges are **omitted** rather than emitted as misleading
 zeros, because they only have meaning inside a running daemon:
@@ -75,6 +75,8 @@ The v1 exporter keeps labels bounded:
 |---|---|---|
 | `kb` | `kb_knowledge_base_*` | registered knowledge bases |
 | `model_id` | `kb_provider_call*` | registered embedding models observed by the process |
+| `operation` | `kb_llm_*` | fixed `ask`, `gate`, `preface` chat paths |
+| `token_type` | `kb_llm_tokens_total` | fixed `prompt`, `completion` usage types |
 | `kind` | `kb_provider_circuit_*` | `embedding`, `llm`, `unknown` |
 | `provider` | `kb_provider_circuit_*` | configured embedding/LLM provider names |
 | `mode` | `kb_search_*` | `dense`, `lexical`, `hybrid`, `auto`, `unknown` |
@@ -93,6 +95,7 @@ labels.
 | `kb_build_info` | package version and source/build commit for the serving process |
 | `kb_knowledge_base_*` | file counts, chunk counts, indexed bytes, quarantine counts by KB |
 | `kb_provider_call*` | provider call counts, errors, token totals when reported, p50/p95/p99 latency |
+| `kb_llm_*` | chat-completion call/error counters, reported prompt/completion tokens, and latency histograms by operation |
 | `kb_provider_circuit_*` | provider circuit-breaker state gauge (0=closed, 1=half-open, 2=open) and cumulative open-transition counter, by `kind`/`provider` |
 | `kb_search_requests_total` | daemon-served search request totals by mode/status |
 | `kb_search_request_duration_ms` | end-to-end daemon-served search request latency histogram |

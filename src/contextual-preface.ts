@@ -786,6 +786,7 @@ async function callPrefaceLlm(args: {
     try {
       const result = await callChatCompletion({
         endpoint: args.endpoint,
+        operation: 'preface',
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: userMessage },

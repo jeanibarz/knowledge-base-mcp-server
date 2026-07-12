@@ -257,6 +257,7 @@ async function runM1Mode(
   try {
     await callChatCompletion({
       endpoint,
+      operation: 'gate',
       ...(args.model !== undefined ? { model: args.model } : {}),
       messages: [
         { role: 'system', content: 'Reply with exactly: ok' },
@@ -395,6 +396,7 @@ async function answerWithLlm(
 ): Promise<{ answer: string; model: string }> {
   const result = await callChatCompletion({
     endpoint: options.endpoint,
+    operation: 'gate',
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildAnswerMessages(fixtureCase, sim.kept),
     temperature: 0.2,
@@ -410,6 +412,7 @@ async function gradeWithLlm(
 ): Promise<GraderVerdict> {
   const result = await callChatCompletion({
     endpoint: options.endpoint,
+    operation: 'gate',
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildGraderMessages(query, referenceAnswer, answer),
     temperature: 0,

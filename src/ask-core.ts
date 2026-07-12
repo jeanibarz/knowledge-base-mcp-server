@@ -626,6 +626,7 @@ export async function answerWithEvidence(
         'kb.llm_source': target.source,
       }, () => deps.callChatCompletion({
         endpoint: target.profile.endpoint,
+        operation: 'ask',
         messages: outbound.messages,
         temperature: ASK_TEMPERATURE,
         ...(args.onAnswerToken !== undefined

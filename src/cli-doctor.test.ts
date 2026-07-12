@@ -2401,6 +2401,49 @@ describe('kb doctor', () => {
         await fsp.rm(tempDir, { recursive: true, force: true });
       }
     });
+
+    it('renders bounded chat-completion telemetry without adding a health check', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-metrics-'));
+      try {
+        const rootDir = path.join(tempDir, 'kbs');
+        const faissDir = path.join(tempDir, '.faiss');
+        await fsp.mkdir(rootDir, { recursive: true });
+        await fsp.mkdir(faissDir, { recursive: true });
+        const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+        });
+        const { LlmCallMetrics } = await import('./metrics.js');
+        const llmMetrics = new LlmCallMetrics({ now: () => 1_700_000_000_000 });
+        llmMetrics.record('ask', {
+          latencyMs: 12,
+          ok: true,
+          promptTokens: 20,
+          completionTokens: 7,
+        });
+        llmMetrics.record('gate', { latencyMs: 5, ok: false });
+
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+          llmCallMetrics: llmMetrics,
+        });
+        expect(report.llm_calls?.ask).toMatchObject({ count: 1, errors: 0, prompt_tokens: 20 });
+        expect(report.llm_calls?.gate).toMatchObject({ count: 1, errors: 1 });
+        expect(report.checks.some((check) => check.name === 'llm_calls')).toBe(false);
+        expect(formatDoctorMarkdown(report)).toContain(
+          'operation=ask calls=1 errors=0 p95=29ms prompt_tokens=20 completion_tokens=7',
+        );
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('provider circuit breaker check (issue #747)', () => {

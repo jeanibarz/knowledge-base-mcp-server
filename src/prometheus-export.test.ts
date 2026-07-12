@@ -53,6 +53,43 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text.endsWith('# EOF\n')).toBe(true);
   });
 
+  it('renders bounded LLM operation counters, token counters, and latency histogram', () => {
+    const payload = samplePayload();
+    payload.llm_calls = {
+      ask: {
+        count: 3,
+        errors: 1,
+        prompt_tokens: 42,
+        completion_tokens: 9,
+        latency_ms: histogramSnapshot(80),
+      },
+      gate: {
+        count: 1,
+        errors: 0,
+        prompt_tokens: null,
+        completion_tokens: null,
+        latency_ms: histogramSnapshot(12),
+      },
+    };
+
+    const text = formatKbStatsOpenMetrics(payload);
+
+    expect(text).toContain('# TYPE kb_llm_calls counter');
+    expect(text).toContain('kb_llm_calls_total{operation="ask"} 3');
+    expect(text).toContain('kb_llm_call_errors_total{operation="ask"} 1');
+    expect(text).toContain('kb_llm_calls_total{operation="gate"} 1');
+    expect(text).toContain('kb_llm_call_errors_total{operation="gate"} 0');
+    expect(text).toContain('kb_llm_tokens_total{operation="ask",token_type="completion"} 9');
+    expect(text).toContain('kb_llm_tokens_total{operation="ask",token_type="prompt"} 42');
+    expect(text).not.toContain('token_type="gate"');
+    expect(text).toContain('# TYPE kb_llm_call_latency_ms histogram');
+    expect(text).toContain('kb_llm_call_latency_ms_bucket{le="100",operation="ask"} 1');
+    expect(text).toContain('kb_llm_call_latency_ms_bucket{le="30",operation="gate"} 1');
+    expect(text).toContain('kb_llm_call_latency_ms_sum{operation="ask"} 80');
+    expect(text).toContain('kb_llm_call_latency_ms_sum{operation="gate"} 12');
+    expect(text).toContain('kb_llm_call_latency_ms_count{operation="ask"} 1');
+  });
+
   it('emits provider token counters only when the provider reports token usage', () => {
     const payload = samplePayload();
     payload.provider_calls['ollama__nomic-embed-text-latest'].tokens_in = 42;
