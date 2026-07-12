@@ -28,8 +28,10 @@ Tier 1 is an in-process LRU with `KB_QUERY_CACHE_LRU_MAX` defaulting to 256.
 Tier 2 stores vectors under
 `$FAISS_INDEX_PATH/cache/queries/<model_id>/<sha>.f32` with a
 `<sha>.meta.json` sidecar. Writes use a model-cache-directory lock plus
-tmp-and-rename so readers do not consume partial files. Corrupt or incomplete
-entries are unlinked and treated as misses.
+tmp-and-rename so readers do not consume partial files. Read I/O failures are
+treated as misses without deleting entries; entries that are successfully read
+but fail parsing, schema, checksum, or value validation are unlinked and
+treated as misses.
 
 Operators can bypass the cache with `KB_QUERY_CACHE=off`, `kb search
 --no-cache`, and `kb compare --no-cache`.

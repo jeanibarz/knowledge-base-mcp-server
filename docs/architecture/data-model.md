@@ -137,9 +137,11 @@ The pre-RFC-014 layout is `models/<model_id>/faiss.index/{faiss.index,docstore.j
 `$FAISS_INDEX_PATH/cache/queries/<model_id>/` stores optional query-vector cache
 entries. Each query key is a SHA-256 over schema version, `model_id`, and the
 normalized query. The vector is stored as `<sha>.f32`; metadata is stored as
-`<sha>.meta.json`. The cache is a latency/cost optimization only: corrupt or
-incomplete entries are removed and treated as misses. Operators can disable it
-with `KB_QUERY_CACHE=off` or per-call CLI flags where supported.
+`<sha>.meta.json`. The cache is a latency/cost optimization only: read I/O
+failures are treated as misses without deleting entries, while entries that
+fail parsing, schema, checksum, or value validation are removed and treated as
+misses. Operators can disable it with `KB_QUERY_CACHE=off` or per-call CLI
+flags where supported.
 
 ### Query decomposition cache
 

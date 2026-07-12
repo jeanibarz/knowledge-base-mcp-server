@@ -149,10 +149,8 @@ export class AnswerCache {
     let raw: string;
     try {
       raw = await fsp.readFile(file, 'utf-8');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        await this.recordCorrupt(file);
-      }
+    } catch {
+      // A read failure may be transient; keep the entry for a later attempt.
       this.misses += 1;
       return null;
     }

@@ -75,6 +75,10 @@ describe('answer cache key (#656)', () => {
 
 describe('AnswerCache storage (#656)', () => {
   let dir: string;
+  const itPosixNonRoot =
+    process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0)
+      ? it.skip
+      : it;
 
   beforeEach(async () => {
     dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-answer-cache-'));
@@ -88,6 +92,7 @@ describe('AnswerCache storage (#656)', () => {
     const cache = new AnswerCache({ enabled: true, indexPath: dir });
     const key = computeAnswerCacheKey(baseKeyInput());
     expect(await cache.get(key)).toBeNull();
+    expect((await cache.stats()).corruptions).toBe(0);
     await cache.set(key, { answer: 'cached answer', model: 'qwen3' });
     expect(await cache.get(key)).toEqual({ answer: 'cached answer', model: 'qwen3' });
     const stats = await cache.stats();
@@ -124,6 +129,24 @@ describe('AnswerCache storage (#656)', () => {
     expect(await cache.get(key)).toBeNull();
     await expect(fsp.access(file)).rejects.toBeDefined();
     expect((await cache.stats()).corruptions).toBe(1);
+  });
+
+  itPosixNonRoot('TS-CACHE-830: treats transient disk read errors as misses without evicting the entry', async () => {
+    const cache = new AnswerCache({ enabled: true, indexPath: dir });
+    const key = computeAnswerCacheKey(baseKeyInput());
+    await cache.set(key, { answer: 'cached answer', model: 'qwen3' });
+    const file = path.join(answerCacheDir(dir), `${key}.json`);
+    const original = await fsp.readFile(file);
+    await fsp.chmod(file, 0o000);
+    try {
+      expect(await cache.get(key)).toBeNull();
+      expect((await cache.stats()).corruptions).toBe(0);
+    } finally {
+      if (await fsp.access(file).then(() => true).catch(() => false)) {
+        await fsp.chmod(file, 0o600);
+      }
+    }
+    expect(await fsp.readFile(file)).toEqual(original);
   });
 
   it('evicts oldest entries when over the disk cap', async () => {

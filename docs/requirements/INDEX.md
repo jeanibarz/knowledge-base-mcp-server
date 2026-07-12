@@ -209,6 +209,22 @@
 **Linked Tests:** TS-SEARCH-374
 **Dependencies:** RFC019
 
+### NFR-CACHE-830: Conservative Disk Cache Read Failures
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The disk-backed rerank-score, query-embedding, and answer caches shall treat read I/O failures as cache misses without evicting entries, while evicting entries that fail parsing, schema, checksum, or value validation.
+**Rationale:** Transient filesystem failures should not turn valid, expensive-to-recompute cache records into permanent misses.
+
+**Acceptance Criteria:**
+- [x] Given a cached entry and a transient read failure such as `EACCES` or `EIO`, when the cache is read, then it shall return a miss without evicting the entry or recording corruption.
+- [x] Given malformed JSON or a failed schema, checksum, or value validation, when the cache is read, then it shall record corruption and evict the entry.
+- [x] Given a missing entry, when the cache is read, then it shall return a miss without recording corruption.
+- [x] Given the existing cache test suites, when they run, then valid disk hits, eviction, and corruption handling shall remain green.
+
+**Linked Tests:** TS-CACHE-830
+**Dependencies:** Existing rerank-score, query-embedding, and answer cache storage paths.
+
 ### FR-CLI-383: Machine-Readable Help Manifest
 **Status:** Implemented
 **Priority:** Medium

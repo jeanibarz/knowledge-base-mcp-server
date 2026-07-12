@@ -217,11 +217,16 @@ export class QueryEmbeddingCache {
 
   private async readDisk(paths: QueryCachePaths): Promise<number[] | null> {
     let meta: CacheMeta;
+    let raw: string;
     try {
-      const raw = await fsp.readFile(paths.metaPath, 'utf-8');
+      raw = await fsp.readFile(paths.metaPath, 'utf-8');
+    } catch {
+      // A read failure may be transient; keep the entry for a later attempt.
+      return null;
+    }
+    try {
       meta = JSON.parse(raw) as CacheMeta;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    } catch {
       await this.recordCorrupt(paths);
       return null;
     }
@@ -238,9 +243,8 @@ export class QueryEmbeddingCache {
     let buffer: Buffer;
     try {
       buffer = await fsp.readFile(paths.vectorPath);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      await this.recordCorrupt(paths);
+    } catch {
+      // A read failure may be transient; keep the entry for a later attempt.
       return null;
     }
     if (buffer.byteLength !== meta.dim * 4) {

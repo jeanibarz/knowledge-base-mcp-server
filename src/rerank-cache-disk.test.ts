@@ -19,11 +19,17 @@ async function tempIndexPath(prefix: string): Promise<string> {
 const MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
 
 describe('DiskTieredRerankScoreCache (#646)', () => {
+  const itPosixNonRoot =
+    process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0)
+      ? it.skip
+      : it;
+
   it('persists scores across cache instances via the disk tier', async () => {
     const indexPath = await tempIndexPath('kb-rerank-cache-roundtrip-');
     try {
       const first = new DiskTieredRerankScoreCache({ indexPath, enabled: true });
       expect(first.get(MODEL, 'how do rollbacks work', 'candidate body')).toBeNull();
+      expect(first.stats().corruptions).toBe(0);
       first.set(MODEL, 'how do rollbacks work', 'candidate body', 0.875);
 
       // A fresh instance has a cold L1 but must recover the score from disk.
@@ -114,6 +120,27 @@ describe('DiskTieredRerankScoreCache (#646)', () => {
       expect(cache.get(MODEL, 'broken', 'body')).toBeNull();
       expect(cache.stats().corruptions).toBe(1);
       expect(fs.existsSync(file)).toBe(false);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  itPosixNonRoot('TS-CACHE-830: treats transient disk read errors as misses without evicting the entry', async () => {
+    const indexPath = await tempIndexPath('kb-rerank-cache-transient-read-');
+    try {
+      const cache = new DiskTieredRerankScoreCache({ indexPath, enabled: true, l1Max: 0 });
+      cache.set(MODEL, 'transient', 'body', 0.5);
+      const key = rerankScoreCacheKey(MODEL, 'transient', 'body');
+      const file = path.join(rerankScoreCacheRoot(indexPath), key.slice(0, 2), `${key}.json`);
+      const original = fs.readFileSync(file);
+      fs.chmodSync(file, 0o000);
+      try {
+        expect(cache.get(MODEL, 'transient', 'body')).toBeNull();
+        expect(cache.stats().corruptions).toBe(0);
+      } finally {
+        if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
+      }
+      expect(fs.readFileSync(file)).toEqual(original);
     } finally {
       await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
     }

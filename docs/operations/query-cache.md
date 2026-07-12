@@ -208,11 +208,14 @@ Values such as `off`, `false`, `0`, and `disabled` turn the cache off.
 **Corruption counters increase.**
 
 `kb stats --format=json` reports query-cache corruption count. A corrupt entry
-is deleted and treated as a miss, so the next successful request should rewrite
-it. Repeated corruption usually means a filesystem or permission problem under
-`$FAISS_INDEX_PATH/cache/queries`; capture `kb stats --format=json`,
-`kb doctor --format=json`, and the relevant canonical log line before filing a
-bug.
+that fails parsing or validation is deleted and treated as a miss, so the next
+successful request should rewrite it. A transient read I/O failure such as
+`EACCES` or `EIO` is instead a miss that is not counted as corruption: the
+entry is retained for a later retry. Repeated corruption usually means a
+filesystem or permission problem under `$FAISS_INDEX_PATH/cache/queries`;
+capture `kb stats
+--format=json`, `kb doctor --format=json`, and the relevant canonical log line
+before filing a bug.
 
 **Disk budget does not shrink immediately.**
 

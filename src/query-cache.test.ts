@@ -26,6 +26,11 @@ function sha256(buffer: Buffer): string {
 }
 
 describe('query embedding cache (#214)', () => {
+  const itPosixNonRoot =
+    process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0)
+      ? it.skip
+      : it;
+
   it('coalesces concurrent identical misses when single-flight is enabled', async () => {
     const indexPath = await tempIndexPath('kb-query-cache-single-flight-');
     try {
@@ -165,6 +170,7 @@ describe('query embedding cache (#214)', () => {
         },
       });
       expect(miss.status).toBe('miss');
+      expect((await first.stats()).corruptions).toBe(0);
       expect(miss.telemetry).toMatchObject({
         enabled: true,
         outcome: 'miss',
@@ -281,6 +287,82 @@ describe('query embedding cache (#214)', () => {
       const stats = await cache.stats();
       expect(stats.corruptions).toBe(1);
       expect(await fsp.readFile(paths.vectorPath)).toHaveLength(4);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  itPosixNonRoot('TS-CACHE-830: treats transient metadata read errors as misses without evicting the entry', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-transient-read-');
+    try {
+      const cache = new QueryEmbeddingCache({ indexPath, lruMax: 8 });
+      await cache.getOrCompute({
+        modelId: 'fake__one',
+        query: 'transient',
+        embed: async () => [1, 2],
+      });
+      const paths = queryCachePaths({ indexPath, modelId: 'fake__one', query: 'transient' });
+      const originalMeta = await fsp.readFile(paths.metaPath);
+      const originalVector = await fsp.readFile(paths.vectorPath);
+      cache.clearMemory();
+      await fsp.chmod(paths.metaPath, 0o000);
+      try {
+        let embedCalls = 0;
+        await expect(cache.getOrCompute({
+          modelId: 'fake__one',
+          query: 'transient',
+          embed: async () => {
+            embedCalls += 1;
+            throw new Error('embedding unavailable');
+          },
+        })).rejects.toThrow('embedding unavailable');
+        expect(embedCalls).toBe(1);
+        expect((await cache.stats()).corruptions).toBe(0);
+      } finally {
+        if (await fsp.access(paths.metaPath).then(() => true).catch(() => false)) {
+          await fsp.chmod(paths.metaPath, 0o600);
+        }
+      }
+      expect(await fsp.readFile(paths.metaPath)).toEqual(originalMeta);
+      expect(await fsp.readFile(paths.vectorPath)).toEqual(originalVector);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  itPosixNonRoot('TS-CACHE-830: treats transient vector read errors as misses without evicting the entry', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-transient-vector-read-');
+    try {
+      const cache = new QueryEmbeddingCache({ indexPath, lruMax: 8 });
+      await cache.getOrCompute({
+        modelId: 'fake__one',
+        query: 'transient vector',
+        embed: async () => [1, 2],
+      });
+      const paths = queryCachePaths({ indexPath, modelId: 'fake__one', query: 'transient vector' });
+      const originalMeta = await fsp.readFile(paths.metaPath);
+      const originalVector = await fsp.readFile(paths.vectorPath);
+      cache.clearMemory();
+      await fsp.chmod(paths.vectorPath, 0o000);
+      try {
+        let embedCalls = 0;
+        await expect(cache.getOrCompute({
+          modelId: 'fake__one',
+          query: 'transient vector',
+          embed: async () => {
+            embedCalls += 1;
+            throw new Error('embedding unavailable');
+          },
+        })).rejects.toThrow('embedding unavailable');
+        expect(embedCalls).toBe(1);
+        expect((await cache.stats()).corruptions).toBe(0);
+      } finally {
+        if (await fsp.access(paths.vectorPath).then(() => true).catch(() => false)) {
+          await fsp.chmod(paths.vectorPath, 0o600);
+        }
+      }
+      expect(await fsp.readFile(paths.metaPath)).toEqual(originalMeta);
+      expect(await fsp.readFile(paths.vectorPath)).toEqual(originalVector);
     } finally {
       await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
     }
