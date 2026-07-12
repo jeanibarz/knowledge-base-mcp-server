@@ -543,6 +543,9 @@ async function hydrateSensitivityPoliciesFromSource<T extends RelevanceGateCandi
     const metadata = candidate.metadata as Record<string, unknown>;
     const source = metadata.source;
     if (typeof source !== 'string' || source.trim().length === 0) {
+      // Without a source path the current frontmatter policy cannot be
+      // verified, so retain the result only as retrieval data and exclude it
+      // from every LLM prompt.
       return excludesLlmContext(metadata)
         ? candidate
         : markLlmContextExcluded(candidate, metadata);

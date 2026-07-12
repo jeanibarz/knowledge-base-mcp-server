@@ -21,6 +21,10 @@
 // the committed hand-authored set; for a production-grounded measurement,
 // regenerate the candidate sets from real `kb search` canonical logs.
 
+import * as fsp from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { createHash } from 'crypto';
 import { Document } from '@langchain/core/documents';
 import { callChatCompletion, type LlmChatMessage } from './llm-client.js';
 import type { RelevanceGateConfig } from './config/relevance-gate.js';
@@ -398,7 +402,10 @@ export function effectiveTaskContext(c: GateEvalCase): string {
   return `Answering a knowledge-base user question and deciding which retrieved notes are relevant: ${c.query}`;
 }
 
-function caseToGateCandidates(c: GateEvalCase): {
+function caseToGateCandidates(
+  c: GateEvalCase,
+  fixtureSourcePaths: ReadonlyMap<string, string>,
+): {
   candidates: RelevanceGateCandidate[];
   denseDistanceById: Map<string, number>;
   lexicalHitIds: Set<string>;
@@ -407,10 +414,16 @@ function caseToGateCandidates(c: GateEvalCase): {
   const denseDistanceById = new Map<string, number>();
   const lexicalHitIds = new Set<string>();
   c.candidates.forEach((cand, idx) => {
-    const id = `${cand.source}#${idx}`;
+    const sourcePath = fixtureSourcePaths.get(cand.source) ?? cand.source;
+    const id = `${sourcePath}#${idx}`;
     candidates.push(new Document({
       pageContent: cand.content,
-      metadata: { source: cand.source, chunkIndex: idx, fixtureId: cand.id },
+      metadata: {
+        source: sourcePath,
+        fixture_source: cand.source,
+        chunkIndex: idx,
+        fixtureId: cand.id,
+      },
     }));
     if (cand.denseDistance !== undefined) denseDistanceById.set(id, cand.denseDistance);
     if (cand.lexicalHit) lexicalHitIds.add(id);
@@ -489,9 +502,42 @@ async function answerAndGrade(
 
 function keptToSnippets(results: ReadonlyArray<RelevanceGateCandidate>): Array<{ source: string; content: string }> {
   return results.map((r) => ({
-    source: typeof r.metadata.source === 'string' ? r.metadata.source : 'unknown',
+    source: typeof r.metadata.fixture_source === 'string'
+      ? r.metadata.fixture_source
+      : typeof r.metadata.source === 'string' ? r.metadata.source : 'unknown',
     content: r.pageContent,
   }));
+}
+
+interface MaterializedFixtureSources {
+  root: string;
+  bySource: Map<string, string>;
+}
+
+/**
+ * M1 candidates use report-friendly symbolic source names rather than paths
+ * on disk. Give the real gate an empty, policy-free source file to hydrate so
+ * the canary exercises normal source verification without disabling the
+ * production fail-closed boundary.
+ */
+async function materializeFixtureSources(fixture: GateEvalFixture): Promise<MaterializedFixtureSources> {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-m1-sources-'));
+  const bySource = new Map<string, string>();
+  try {
+    for (const c of fixture.cases) {
+      for (const candidate of c.candidates) {
+        if (bySource.has(candidate.source)) continue;
+        const filename = `${createHash('sha256').update(candidate.source).digest('hex')}.md`;
+        const sourcePath = path.join(root, filename);
+        await fsp.writeFile(sourcePath, '', 'utf-8');
+        bySource.set(candidate.source, sourcePath);
+      }
+    }
+    return { root, bySource };
+  } catch (error) {
+    await fsp.rm(root, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** Run the real gate over every fixture case and grade raw-vs-gated downstream answers. */
@@ -511,11 +557,13 @@ export async function runM1Canary(
   let synthesizedTaskContextCount = 0;
   let hasAnswerRecalled = 0;
   let distantRecalled = 0;
+  const fixtureSources = await materializeFixtureSources(fixture);
 
-  for (const c of fixture.cases) {
+  try {
+    for (const c of fixture.cases) {
     if (c.taskContext === undefined || c.taskContext.trim() === '') synthesizedTaskContextCount += 1;
     const taskContext = effectiveTaskContext(c);
-    const { candidates, denseDistanceById, lexicalHitIds } = caseToGateCandidates(c);
+    const { candidates, denseDistanceById, lexicalHitIds } = caseToGateCandidates(c, fixtureSources.bySource);
 
     const gated = await applyRelevanceGate({
       query: c.query,
@@ -579,22 +627,25 @@ export async function runM1Canary(
     });
   }
 
-  const hasAnswerTotal = fixture.cases.filter((c) => c.bucket === 'has-answer').length;
-  const distantTotal = fixture.cases.filter((c) => c.fixtureClass === 'answer-present-but-distant').length;
-  return {
-    caseResults,
-    caseDetails,
-    recall: {
-      hasAnswerTotal,
-      hasAnswerRecalled,
-      distantTotal,
-      distantRecalled,
-      recallRate: hasAnswerTotal === 0 ? 1 : hasAnswerRecalled / hasAnswerTotal,
-      distantRecallRate: distantTotal === 0 ? 1 : distantRecalled / distantTotal,
-    },
-    judgeDegradeCount,
-    synthesizedTaskContextCount,
-  };
+    const hasAnswerTotal = fixture.cases.filter((c) => c.bucket === 'has-answer').length;
+    const distantTotal = fixture.cases.filter((c) => c.fixtureClass === 'answer-present-but-distant').length;
+    return {
+      caseResults,
+      caseDetails,
+      recall: {
+        hasAnswerTotal,
+        hasAnswerRecalled,
+        distantTotal,
+        distantRecalled,
+        recallRate: hasAnswerTotal === 0 ? 1 : hasAnswerRecalled / hasAnswerTotal,
+        distantRecallRate: distantTotal === 0 ? 1 : distantRecalled / distantTotal,
+      },
+      judgeDegradeCount,
+      synthesizedTaskContextCount,
+    };
+  } finally {
+    await fsp.rm(fixtureSources.root, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------

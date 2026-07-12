@@ -2254,7 +2254,9 @@ describe('runSearch timing guard (#331)', () => {
 
   it('keeps no_llm_context chunks out of the CLI relevance judge prompt', async () => {
     const previousGateEndpoint = process.env.KB_GATE_LLM_ENDPOINT;
+    const previousFake = process.env.KB_LLM_FAKE;
     process.env.KB_GATE_LLM_ENDPOINT = 'http://judge.invalid/v1/chat/completions';
+    delete process.env.KB_LLM_FAKE;
     const fixtureDir = await fsp.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'kb-gate-policy-cli-'));
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
       model: 'judge-model',
@@ -2311,6 +2313,8 @@ describe('runSearch timing guard (#331)', () => {
       fetchSpy.mockRestore();
       if (previousGateEndpoint === undefined) delete process.env.KB_GATE_LLM_ENDPOINT;
       else process.env.KB_GATE_LLM_ENDPOINT = previousGateEndpoint;
+      if (previousFake === undefined) delete process.env.KB_LLM_FAKE;
+      else process.env.KB_LLM_FAKE = previousFake;
       await fsp.rm(fixtureDir, { recursive: true, force: true });
     }
   });

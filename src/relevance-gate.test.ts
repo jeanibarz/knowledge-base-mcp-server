@@ -457,6 +457,44 @@ describe('relevance gate', () => {
     }
   });
 
+  it('fails closed when a candidate has no source metadata', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-missing-source-'));
+    try {
+      const safeSource = path.join(tempDir, 'public.md');
+      await fsp.writeFile(safeSource, 'public deployment rollback checklist', 'utf-8');
+      const missingSourceRow = indexedCandidate(
+        '',
+        0,
+        0.1,
+        'missing source body must never reach the relevance judge',
+      );
+      delete missingSourceRow.metadata.source;
+      const safeRow = indexedCandidate(safeSource, 0, 0.2, 'public deployment rollback checklist');
+      const fetchImpl = fakeFetchJson(JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: idOf(safeRow), decision: 'keep', reason: 'rollback checklist' }],
+      }));
+
+      const result = await applyRelevanceGate({
+        query: 'missing source policy',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [missingSourceRow, safeRow],
+        config: config(),
+        fetchImpl,
+      });
+
+      const body = JSON.parse(((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+      expect(body.messages.every((message: { content: string }) =>
+        !message.content.includes('missing source body must never reach the relevance judge'))).toBe(true);
+      expect(result.results.map((row) => row.pageContent)).toEqual([
+        'missing source body must never reach the relevance judge',
+        'public deployment rollback checklist',
+      ]);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when a stale candidate source has malformed policy frontmatter', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-malformed-policy-'));
     try {

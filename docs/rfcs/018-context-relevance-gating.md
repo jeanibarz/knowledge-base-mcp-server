@@ -126,6 +126,12 @@ The statistical relevance decision when there is no usable task context. Reuses 
 
 Runs when `task_context` is present and above the minimum-signal threshold. **One batched LLM call** sees the task context, the query, and the surviving candidates (up to `KB_GATE_JUDGE_INPUT` = 10; if more survive A1, the lowest-ranked overflow is **kept un-judged**, never silently dropped — recorded with `stage: "B-input-overflow"`, consistent with bias-toward-keep). It returns JSON:
 
+Before this call, the gate applies each candidate's current `kb_policy`. Candidates
+with `no_llm_context: true`, and candidates whose source policy cannot be verified,
+remain in the retrieval result but are omitted from the judge prompt. If every
+candidate is excluded this way, Stage B is skipped and the original retrieval
+order is preserved.
+
 ```json
 {
   "overall": "relevant" | "partial" | "no-relevant-context",

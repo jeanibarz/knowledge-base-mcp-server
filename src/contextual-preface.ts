@@ -105,8 +105,8 @@ export interface PrefaceResolveArgs {
 
 /**
  * Resolve one preface per chunk. Returns an array aligned to `chunks`;
- * each element is the preface text, or `null` when generation failed
- * (the caller falls back to embedding the chunk verbatim).
+ * each element is the preface text, or `null` when generation failed or the
+ * document policy skipped LLM work (the caller embeds the chunk verbatim).
  *
  * Side effect: dirty sidecars are persisted to disk under
  * `withSidecarLock` before returning. The M0b CLI may later defer the

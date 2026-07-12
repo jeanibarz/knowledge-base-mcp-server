@@ -29,7 +29,7 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { isContextualRetrievalEnabled } from './config/contextual-preface.js';
 import { resolveContextualPrefaces, sha256 as contextualPrefaceSha256 } from './contextual-preface.js';
 import { handleFsOperationError } from './error-utils.js';
-import { parseFrontmatter } from './frontmatter.js';
+import { parseFrontmatter, parseFrontmatterStrict } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
 import { applyExtractedTextLimit } from './loaders.js';
 import { logger } from './logger.js';
@@ -241,6 +241,16 @@ export async function buildChunkDocuments(
 
   const boundedContent = applyExtractedTextLimit(filePath, content);
   const { tags, body, frontmatter } = parseFrontmatter(boundedContent);
+  // The tolerant ingestion parser deliberately keeps malformed documents
+  // indexable, but an unparseable policy cannot be trusted at an LLM boundary.
+  // Validate separately so malformed frontmatter fails closed without
+  // changing the parser's legacy body-preservation behavior.
+  let frontmatterSafeForLlm = true;
+  try {
+    parseFrontmatterStrict(boundedContent);
+  } catch {
+    frontmatterSafeForLlm = false;
+  }
   const relativePath = path
     .relative(KNOWLEDGE_BASES_ROOT_DIR, filePath)
     .split(path.sep)
@@ -250,7 +260,9 @@ export async function buildChunkDocuments(
   // other string-valued keys into `extras`. Non-string-valued keys are
   // dropped (FAILSAFE YAML produces strings, arrays, or maps — the last
   // two are not whitelisted and have no safe scalar representation here).
-  const liftedFrontmatter = liftFrontmatter(frontmatter, filePath);
+  const liftedFrontmatter = frontmatterSafeForLlm
+    ? liftFrontmatter(frontmatter, filePath)
+    : { kb_policy: { no_llm_context: true } };
 
   // RFC 011 §5.3.4: detect a sibling PDF for `.md` files. Once per file,
   // before the splitter loop; attached to every chunk via the metadata
@@ -283,8 +295,10 @@ export async function buildChunkDocuments(
   }
 
   // RFC 017 — contextual-retrieval prefaces. Gated off by default; when
-  // enabled, we call the LLM once per chunk (cached) to produce a short
-  // context paragraph that gets prepended for embedding only. The
+  // enabled, we call the LLM once per eligible chunk (cached) to produce a
+  // short context paragraph that gets prepended for embedding only. Chunks
+  // excluded by kb_policy.no_llm_context receive no preface and never reach
+  // the LLM. The
   // `pageContent` returned here stays byte-identical; the preface lives
   // on `metadata.contextual_preface` for `FaissStoreAdapter` and
   // `LexicalIndex.refresh` to consume via the shared `embeddingText`

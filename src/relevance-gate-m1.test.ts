@@ -2,7 +2,12 @@ import { describe, expect, it } from '@jest/globals';
 import * as fs from 'fs';
 import * as path from 'path';
 import yaml from 'js-yaml';
-import { normalizeGateEvalFixture, type GateEvalAggregate, type GateEvalCase } from './relevance-gate-eval.js';
+import {
+  normalizeGateEvalFixture,
+  type GateEvalAggregate,
+  type GateEvalCase,
+  type GateEvalFixture,
+} from './relevance-gate-eval.js';
 import {
   analyzeBm25Veto,
   decideGoNoGo,
@@ -10,6 +15,7 @@ import {
   formatFloorSweepMarkdown,
   formatPositionSwapMarkdown,
   parseFloorSweepSpec,
+  runM1Canary,
   runFloorSweep,
   runPositionSwapProbe,
   type M1RecallSummary,
@@ -89,6 +95,64 @@ describe('effectiveTaskContext', () => {
     const synthesized = effectiveTaskContext(withoutCtx);
     expect(synthesized).toContain(withoutCtx.query);
     expect(synthesized.split(/\s+/).length).toBeGreaterThanOrEqual(8);
+  });
+});
+
+describe('runM1Canary', () => {
+  it('judges symbolic fixture sources through materialized policy-free files', async () => {
+    const m1Fixture: GateEvalFixture = {
+      epsilon: 0.1,
+      hasAnswerTolerance: 0,
+      gateSim: { scoreFloor: 0.95, noGoodAnswerFloor: 0.95, judgeInputCap: 10 },
+      cases: [{
+        name: 'synthetic source verification',
+        kb: 'codeops',
+        query: 'how does the synthetic source work',
+        taskContext: 'answer a precise question about the synthetic source behavior',
+        bucket: 'has-answer',
+        fixtureClass: 'standard',
+        referenceAnswer: 'The synthetic source contains the answer.',
+        answerSources: ['codeops/synthetic.md'],
+        candidates: [{
+          id: 'c1',
+          source: 'codeops/synthetic.md',
+          content: 'The synthetic source contains the answer.',
+          denseDistance: 0.1,
+          lexicalHit: false,
+        }],
+      }],
+    };
+    let gateJudgeCalls = 0;
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        messages?: Array<{ content?: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? '';
+      let content: string;
+      if (system.startsWith('You grade an answer')) {
+        content = 'correct';
+      } else if (system.startsWith('Answer the question')) {
+        content = 'The synthetic source contains the answer.';
+      } else {
+        gateJudgeCalls += 1;
+        content = JSON.stringify({ overall: 'relevant', verdicts: [] });
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content } }], model: 'm1-test-judge' }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+
+    const result = await runM1Canary(m1Fixture, {
+      endpoint: 'http://m1.test/v1/chat/completions',
+      scoreFloor: 0.95,
+      floorSweepSpec: '0.80:1.10:0.05',
+      fetchImpl,
+    });
+
+    expect(gateJudgeCalls).toBe(2);
+    expect(result.caseDetails[0].judgeStatus).toBe('succeeded');
+    expect(result.caseDetails[0].answerSourceKept).toBe(true);
   });
 });
 
