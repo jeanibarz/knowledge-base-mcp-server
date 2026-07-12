@@ -48,6 +48,8 @@ export interface LlmProbeResult {
 }
 
 export interface LlmProbeOptions {
+  /** Model to use for the probe when the endpoint has a feature-specific model. */
+  model?: string;
   healthTimeoutMs?: number;
   chatTimeoutMs?: number;
 }
@@ -594,6 +596,7 @@ export async function probeLlmEndpoint(
   try {
     await callChatCompletion({
       endpoint: chatEndpoint,
+      model: options.model,
       messages: [
         { role: 'system', content: 'Reply with exactly: ok' },
         { role: 'user', content: 'health check' },

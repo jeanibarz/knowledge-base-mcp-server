@@ -1051,6 +1051,15 @@ Report envelope:
     "detail": "ready; profile=local-research-agent; source=profile; ...",
     "next_action": null
   },
+  "gate_llm_endpoint": {
+    "name": "gate_llm_endpoint",
+    "kind": "http",
+    "status": "skipped",
+    "configured": false,
+    "target": null,
+    "source": "not_configured",
+    "detail": "KB_RELEVANCE_GATE is not enabled"
+  },
   "cli": {
     "version": "0.2.2",
     "package_root": "/path/to/package",
@@ -1094,6 +1103,12 @@ Stable fields:
   resolved profile/ownership when known. `health_ok` checks the derived
   `/health` URL and `chat_ok` checks an OpenAI-compatible chat completion.
   `next_action` is `null` when ready, otherwise a human-readable repair hint.
+- `gate_llm_endpoint`: explicitly configured relevance-gate judge readiness.
+  `status` is `ok`, `error`, or `skipped`; the row is skipped when the gate is
+  disabled, the explicit endpoint is unset, or the fake judge is active. A
+  configured but unhealthy gate is surfaced as a `warn` entry in `checks[]`
+  because retrieval remains fail-soft while the top-level row retains its
+  `error` status.
 - `cli`: `version`, `package_root`, `invoked_path`, and
   `symlinked_checkout_path`.
 - `git`: either `null` or an object with `branch`, `head`, `origin_main`, and
@@ -1112,6 +1127,9 @@ Stable fields:
   `failure_count` / `failures[]` entries with `phase: "enumeration"` and make
   the summary `status: "partial"` rather than silently treating skipped
   directories as absent.
+
+Source and test anchors: `src/cli-doctor.ts:1446-1776`,
+`src/cli-doctor.test.ts:717-1084`.
 
 Stdout/stderr and exit codes:
 
@@ -1296,14 +1314,18 @@ schema instead of the full report:
 ```
 
 Endpoint rows use `status: "ok" | "warn" | "error" | "skipped"`. The current
-row names are `mcp_bind`, `kb_daemon`, `embedding_ollama`, and
-`llm_endpoint`. Skipped rows mean the relevant endpoint is not configured in
-the current process environment/profile state. The command exits `1` only when
-the focused endpoint report has overall `status: "error"`.
+row names are `mcp_bind`, `kb_daemon`, `embedding_ollama`, `llm_endpoint`, and
+`gate_llm_endpoint`. The gate row is probed only when
+`KB_RELEVANCE_GATE=on` and `KB_GATE_LLM_ENDPOINT` is explicitly configured.
+Skipped rows mean the relevant endpoint is not configured, the gate is
+disabled, or the fake judge is active in the current process environment/profile
+state. The command exits `1` only when the focused endpoint report has overall
+`status: "error"`.
 
 Source and test anchors: `src/cli-doctor.ts:92-146`,
 `src/cli-doctor.ts:347-418`, `src/cli-doctor.ts:421-743`,
-`src/cli-doctor.ts:1365-1452`, `src/cli-doctor.test.ts:923-1120`,
+`src/cli-doctor.ts:711-731`, `src/cli-doctor.ts:972-1032`,
+`src/cli-doctor.test.ts:1425-1715`,
 `src/cli-json-contracts.test.ts:215-237`.
 
 ## `kb diagnose`

@@ -458,7 +458,8 @@ Options:
                         (also included in the aggregate report).
   --endpoints           Check only configured local bind/connect endpoint
                         readiness (MCP bind target, KB_DAEMON_URL,
-                        Ollama embedding endpoint, and KB_LLM_ENDPOINT/profile).
+                        Ollama embedding endpoint, KB_LLM_ENDPOINT/profile, and
+                        the enabled relevance-gate KB_GATE_LLM_ENDPOINT).
   --locks               Check only FAISS/model write-lock paths, including
                         owner metadata when available and stale-lock guidance.
   --kb-symlinks         Inventory symlinks under KB roots without following

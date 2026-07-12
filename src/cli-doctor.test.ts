@@ -21,6 +21,12 @@ const originalEnv = {
   REINDEX_TRIGGER_POLL_MS: process.env.REINDEX_TRIGGER_POLL_MS,
   KB_FS_WATCH: process.env.KB_FS_WATCH,
   KB_LLM_ENDPOINT: process.env.KB_LLM_ENDPOINT,
+  KB_LLM_PROVIDER: process.env.KB_LLM_PROVIDER,
+  KB_LLM_FAKE: process.env.KB_LLM_FAKE,
+  KB_RELEVANCE_GATE: process.env.KB_RELEVANCE_GATE,
+  KB_GATE_LLM_ENDPOINT: process.env.KB_GATE_LLM_ENDPOINT,
+  KB_GATE_LLM_MODEL: process.env.KB_GATE_LLM_MODEL,
+  KB_GATE_LLM_TIMEOUT_MS: process.env.KB_GATE_LLM_TIMEOUT_MS,
   KB_LLM_CONFIG_DIR: process.env.KB_LLM_CONFIG_DIR,
   KB_LLM_STATE_DIR: process.env.KB_LLM_STATE_DIR,
   KB_RERANK: process.env.KB_RERANK,
@@ -727,6 +733,8 @@ describe('kb doctor', () => {
         HUGGINGFACE_API_KEY: 'test-key',
         KB_LLM_CONFIG_DIR: llmConfigDir,
         KB_LLM_STATE_DIR: llmStateDir,
+        KB_RELEVANCE_GATE: 'off',
+        KB_GATE_LLM_ENDPOINT: '',
       });
       const { createExternalProfile, writeActiveProfile, writeProfile } = await import('./llm-profiles.js');
       const profile = await createExternalProfile(
@@ -769,11 +777,84 @@ describe('kb doctor', () => {
         status: 'ok',
         detail: expect.stringContaining('ready; profile=local-research-agent'),
       });
+      expect(report.gate_llm_endpoint).toMatchObject({
+        status: 'skipped',
+        configured: false,
+        source: 'not_configured',
+      });
       const markdown = formatDoctorMarkdown(report);
       expect(markdown).toContain('LLM endpoint:');
       expect(markdown).toContain('source: profile');
       expect(markdown).toContain('managed_by: local-research-agent');
       expect(markdown).toContain('chat_ok: yes');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('includes relevance-gate readiness in the full doctor report', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-gate-full-report-'));
+    try {
+      const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+      const llmConfigDir = path.join(tempDir, 'llm-config');
+      const llmStateDir = path.join(tempDir, 'llm-state');
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+        KB_LLM_CONFIG_DIR: llmConfigDir,
+        KB_LLM_STATE_DIR: llmStateDir,
+        KB_LLM_ENDPOINT: '',
+        KB_LLM_PROVIDER: 'local',
+        KB_LLM_FAKE: 'off',
+        KB_RELEVANCE_GATE: 'on',
+        KB_GATE_LLM_ENDPOINT: 'http://127.0.0.1:9090',
+        KB_GATE_LLM_MODEL: 'gate-model',
+        KB_GATE_LLM_TIMEOUT_MS: '100',
+      });
+      const probed: string[] = [];
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: async (endpoint) => {
+          probed.push(endpoint);
+          const gate = endpoint.startsWith('http://127.0.0.1:9090/');
+          return {
+            endpoint,
+            health_url: endpoint.replace(/\/v1\/chat\/completions$/, '/health'),
+            health_ok: !gate,
+            chat_ok: !gate,
+            detail: gate
+              ? 'health failed: gate unavailable'
+              : 'health and chat completion succeeded',
+          };
+        },
+      });
+
+      expect(probed).toEqual([
+        'http://127.0.0.1:8080/v1/chat/completions',
+        'http://127.0.0.1:9090/v1/chat/completions',
+      ]);
+      expect(report.status).toBe('warn');
+      expect(report.gate_llm_endpoint).toMatchObject({
+        name: 'gate_llm_endpoint',
+        kind: 'http',
+        status: 'error',
+        configured: true,
+        target: 'http://127.0.0.1:9090/v1/chat/completions',
+        source: 'env',
+        detail: expect.stringContaining('gate unavailable'),
+      });
+      expect(report.checks).toContainEqual({
+        name: 'gate_llm_endpoint',
+        status: 'warn',
+        detail: expect.stringContaining('gate unavailable'),
+      });
+      expect(formatDoctorMarkdown(report)).toContain('Gate LLM endpoint:');
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
@@ -798,6 +879,8 @@ describe('kb doctor', () => {
         HUGGINGFACE_API_KEY: 'test-key',
         KB_LLM_CONFIG_DIR: llmConfigDir,
         KB_LLM_STATE_DIR: llmStateDir,
+        KB_RELEVANCE_GATE: 'off',
+        KB_GATE_LLM_ENDPOINT: '',
       });
       const { createManagedProfile, writeActiveProfile, writeProfile } = await import('./llm-profiles.js');
       const modelPath = path.join(tempDir, 'model.gguf');
@@ -871,6 +954,8 @@ describe('kb doctor', () => {
         KB_LLM_CONFIG_DIR: llmConfigDir,
         KB_LLM_STATE_DIR: llmStateDir,
         KB_LLM_ENDPOINT: 'http://127.0.0.1:9999',
+        KB_RELEVANCE_GATE: 'off',
+        KB_GATE_LLM_ENDPOINT: '',
       });
       const { createExternalProfile, writeActiveProfile, writeProfile } = await import('./llm-profiles.js');
       const profile = await createExternalProfile('active-profile', 'http://127.0.0.1:8080');
@@ -913,6 +998,7 @@ describe('kb doctor', () => {
   it('uses the production LLM endpoint probe when no test probe is injected', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-default-probe-'));
     const oldFetch = global.fetch;
+    const timeoutSpy = jest.spyOn(global, 'setTimeout');
     try {
       const rootDir = path.join(tempDir, 'kbs');
       const faissDir = path.join(tempDir, '.faiss');
@@ -942,6 +1028,12 @@ describe('kb doctor', () => {
         KB_LLM_CONFIG_DIR: llmConfigDir,
         KB_LLM_STATE_DIR: llmStateDir,
         KB_LLM_ENDPOINT: '',
+        KB_LLM_PROVIDER: 'local',
+        KB_LLM_FAKE: 'off',
+        KB_RELEVANCE_GATE: 'on',
+        KB_GATE_LLM_ENDPOINT: 'http://127.0.0.1:9090',
+        KB_GATE_LLM_MODEL: 'gate-model',
+        KB_GATE_LLM_TIMEOUT_MS: '100',
       });
 
       const report = await buildDoctorReport({
@@ -962,6 +1054,19 @@ describe('kb doctor', () => {
         health_ok: true,
         chat_ok: true,
       });
+      expect(report.gate_llm_endpoint).toMatchObject({
+        status: 'ok',
+        configured: true,
+        target: 'http://127.0.0.1:9090/v1/chat/completions',
+      });
+      const calls = fetchMock.mock.calls as unknown as Array<[
+        string | URL | Request,
+        RequestInit | undefined,
+      ]>;
+      const gateChatCall = calls.find(([input]) => String(input) === 'http://127.0.0.1:9090/v1/chat/completions');
+      expect(gateChatCall).toBeDefined();
+      expect(JSON.parse(String(gateChatCall?.[1]?.body))).toMatchObject({ model: 'gate-model' });
+      expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 100);
       expect(fetchMock).toHaveBeenCalledWith(
         'http://127.0.0.1:8080/health',
         expect.objectContaining({ method: 'GET' }),
@@ -971,6 +1076,7 @@ describe('kb doctor', () => {
         expect.objectContaining({ method: 'POST' }),
       );
     } finally {
+      timeoutSpy.mockRestore();
       global.fetch = oldFetch;
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
@@ -1253,6 +1359,8 @@ describe('kb doctor', () => {
         EMBEDDING_PROVIDER: 'ollama',
         OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
         KB_LLM_ENDPOINT: 'http://127.0.0.1:8080',
+        KB_RELEVANCE_GATE: 'off',
+        KB_GATE_LLM_ENDPOINT: '',
         KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
         KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
       });
@@ -1298,6 +1406,11 @@ describe('kb doctor', () => {
           status: 'ok',
           target: 'http://127.0.0.1:8080/v1/chat/completions',
         }),
+        expect.objectContaining({
+          name: 'gate_llm_endpoint',
+          status: 'skipped',
+          configured: false,
+        }),
       ]);
       const markdown = formatEndpointReadinessMarkdown(report);
       expect(markdown).toContain('Endpoint readiness:');
@@ -1305,6 +1418,298 @@ describe('kb doctor', () => {
       expect(JSON.parse(JSON.stringify(report)).schema_version).toBe('kb.doctor.endpoints.v1');
     } finally {
       await closeServer(reserved).catch(() => undefined);
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('probes a configured gate endpoint and preserves ask endpoint behavior', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-gate-endpoint-'));
+    try {
+      const probed: string[] = [];
+      const probedModels: Array<string | undefined> = [];
+      const probedTimeouts: Array<number | undefined> = [];
+      let gateHealthOk = true;
+      let gateChatOk = true;
+      const { buildEndpointReadinessReport } = await freshDoctor({
+        MCP_TRANSPORT: 'stdio',
+        KB_DAEMON_URL: '',
+        EMBEDDING_PROVIDER: 'huggingface',
+        OLLAMA_BASE_URL: '',
+        KB_LLM_ENDPOINT: 'http://127.0.0.1:8080',
+        KB_LLM_PROVIDER: 'local',
+        KB_LLM_FAKE: 'off',
+        KB_RELEVANCE_GATE: 'on',
+        KB_GATE_LLM_ENDPOINT: 'http://127.0.0.1:9090',
+        KB_GATE_LLM_MODEL: 'gate-model',
+        KB_GATE_LLM_TIMEOUT_MS: '100',
+        KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
+        KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+      });
+
+      const probe = async (
+        endpoint: string,
+        options?: { model?: string; chatTimeoutMs?: number },
+      ) => {
+        probed.push(endpoint);
+        probedModels.push(options?.model);
+        probedTimeouts.push(options?.chatTimeoutMs);
+        const gate = endpoint.startsWith('http://127.0.0.1:9090/');
+        return {
+          endpoint,
+          health_url: `${endpoint.replace(/\/v1\/chat\/completions$/, '')}/health`,
+          health_ok: !gate || gateHealthOk,
+          chat_ok: !gate || gateChatOk,
+          detail: gate && (!gateHealthOk || !gateChatOk)
+            ? 'health failed: gate unavailable'
+            : 'health and chat completion succeeded',
+        };
+      };
+
+      const healthyReport = await buildEndpointReadinessReport({ llmEndpointProbe: probe });
+
+      expect(healthyReport.status).toBe('ok');
+      expect(healthyReport.endpoints).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'llm_endpoint',
+          status: 'ok',
+          target: 'http://127.0.0.1:8080/v1/chat/completions',
+        }),
+        expect.objectContaining({
+          name: 'gate_llm_endpoint',
+          status: 'ok',
+          configured: true,
+          source: 'env',
+          target: 'http://127.0.0.1:9090/v1/chat/completions',
+        }),
+      ]));
+
+      gateHealthOk = false;
+      const unhealthyReport = await buildEndpointReadinessReport({ llmEndpointProbe: probe });
+
+      expect(unhealthyReport.status).toBe('error');
+      expect(probed).toEqual([
+        'http://127.0.0.1:8080/v1/chat/completions',
+        'http://127.0.0.1:9090/v1/chat/completions',
+        'http://127.0.0.1:8080/v1/chat/completions',
+        'http://127.0.0.1:9090/v1/chat/completions',
+      ]);
+      expect(probedModels).toEqual([undefined, 'gate-model', undefined, 'gate-model']);
+      expect(probedTimeouts).toEqual([undefined, 100, undefined, 100]);
+      expect(unhealthyReport.endpoints).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'llm_endpoint',
+          status: 'ok',
+          target: 'http://127.0.0.1:8080/v1/chat/completions',
+        }),
+        expect.objectContaining({
+          name: 'gate_llm_endpoint',
+          status: 'error',
+          configured: true,
+          source: 'env',
+          target: 'http://127.0.0.1:9090/v1/chat/completions',
+          detail: expect.stringContaining('gate unavailable'),
+        }),
+      ]));
+
+      gateHealthOk = true;
+      gateChatOk = false;
+      const chatUnhealthyReport = await buildEndpointReadinessReport({ llmEndpointProbe: probe });
+      expect(chatUnhealthyReport.status).toBe('error');
+      expect(chatUnhealthyReport.endpoints).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'gate_llm_endpoint',
+          status: 'error',
+          target: 'http://127.0.0.1:9090/v1/chat/completions',
+          detail: expect.stringContaining('gate unavailable'),
+        }),
+      ]));
+
+      const rejectedReport = await buildEndpointReadinessReport({
+        llmEndpointProbe: async (endpoint) => {
+          if (endpoint.startsWith('http://127.0.0.1:9090/')) {
+            throw new Error('connection reset');
+          }
+          return healthyLlmProbe(endpoint);
+        },
+      });
+
+      expect(rejectedReport.status).toBe('error');
+      expect(rejectedReport.endpoints).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'gate_llm_endpoint',
+          status: 'error',
+          configured: true,
+          target: 'http://127.0.0.1:9090/v1/chat/completions',
+          source: 'env',
+          detail: 'Gate LLM endpoint probe failed: connection reset',
+        }),
+      ]));
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the default probe with the gate model and timeout', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-gate-endpoint-default-probe-'));
+    try {
+      const { buildEndpointReadinessReport } = await freshDoctor({
+        MCP_TRANSPORT: 'stdio',
+        KB_DAEMON_URL: '',
+        EMBEDDING_PROVIDER: 'huggingface',
+        OLLAMA_BASE_URL: '',
+        KB_LLM_ENDPOINT: '',
+        KB_LLM_PROVIDER: 'local',
+        KB_LLM_FAKE: 'off',
+        KB_RELEVANCE_GATE: 'on',
+        KB_GATE_LLM_ENDPOINT: 'http://127.0.0.1:9090',
+        KB_GATE_LLM_MODEL: 'gate-model',
+        KB_GATE_LLM_TIMEOUT_MS: '100',
+        KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
+        KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+      });
+      const fetchMock = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/health')) {
+          expect(init?.method).toBe('GET');
+          return new Response('{"status":"ok"}', { status: 200 });
+        }
+        expect(init?.method).toBe('POST');
+        expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'gate-model' });
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: 'ok' } }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
+
+      const report = await buildEndpointReadinessReport({
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      });
+
+      expect(report.status).toBe('ok');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(report.endpoints).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'gate_llm_endpoint',
+          status: 'ok',
+          configured: true,
+          target: 'http://127.0.0.1:9090/v1/chat/completions',
+        }),
+      ]));
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['disabled', 'off', 'http://127.0.0.1:9090'],
+    ['unset', 'on', ''],
+  ])('skips the gate endpoint when the gate is %s', async (_caseName, gateSetting, endpoint) => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-gate-endpoint-skipped-'));
+    try {
+      const probe = jest.fn(healthyLlmProbe);
+      const { buildEndpointReadinessReport } = await freshDoctor({
+        MCP_TRANSPORT: 'stdio',
+        KB_DAEMON_URL: '',
+        EMBEDDING_PROVIDER: 'huggingface',
+        OLLAMA_BASE_URL: '',
+        KB_LLM_ENDPOINT: '',
+        KB_RELEVANCE_GATE: gateSetting,
+        KB_GATE_LLM_ENDPOINT: endpoint,
+        KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
+        KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+      });
+
+      const report = await buildEndpointReadinessReport({ llmEndpointProbe: probe });
+
+      expect(report.status).toBe('ok');
+      expect(probe).not.toHaveBeenCalled();
+      expect(report.endpoints).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'llm_endpoint',
+          status: 'skipped',
+          configured: false,
+        }),
+        expect.objectContaining({
+          name: 'gate_llm_endpoint',
+          status: 'skipped',
+          configured: false,
+          source: 'not_configured',
+          target: null,
+        }),
+      ]));
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips an unset gate endpoint while retaining an explicitly configured ask endpoint', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-gate-endpoint-ask-configured-'));
+    try {
+      const probe = jest.fn(healthyLlmProbe);
+      const { buildEndpointReadinessReport } = await freshDoctor({
+        MCP_TRANSPORT: 'stdio',
+        KB_DAEMON_URL: '',
+        EMBEDDING_PROVIDER: 'huggingface',
+        OLLAMA_BASE_URL: '',
+        KB_LLM_ENDPOINT: 'http://127.0.0.1:8080',
+        KB_RELEVANCE_GATE: 'on',
+        KB_GATE_LLM_ENDPOINT: '',
+        KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
+        KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+      });
+
+      const report = await buildEndpointReadinessReport({ llmEndpointProbe: probe });
+
+      expect(report.status).toBe('ok');
+      expect(probe).toHaveBeenCalledWith('http://127.0.0.1:8080/v1/chat/completions');
+      expect(report.endpoints).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'llm_endpoint',
+          status: 'ok',
+          target: 'http://127.0.0.1:8080/v1/chat/completions',
+        }),
+        expect.objectContaining({
+          name: 'gate_llm_endpoint',
+          status: 'skipped',
+          configured: false,
+          target: null,
+        }),
+      ]));
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips a configured gate endpoint when the fake judge is active', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-gate-endpoint-fake-'));
+    try {
+      const probe = jest.fn(healthyLlmProbe);
+      const { buildEndpointReadinessReport } = await freshDoctor({
+        MCP_TRANSPORT: 'stdio',
+        KB_DAEMON_URL: '',
+        EMBEDDING_PROVIDER: 'huggingface',
+        OLLAMA_BASE_URL: '',
+        KB_LLM_ENDPOINT: '',
+        KB_LLM_FAKE: 'on',
+        KB_RELEVANCE_GATE: 'on',
+        KB_GATE_LLM_ENDPOINT: 'http://127.0.0.1:9090',
+        KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
+        KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+      });
+
+      const report = await buildEndpointReadinessReport({ llmEndpointProbe: probe });
+
+      expect(report.status).toBe('ok');
+      expect(probe).not.toHaveBeenCalled();
+      expect(report.endpoints).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'gate_llm_endpoint',
+          status: 'skipped',
+          configured: false,
+          target: null,
+          detail: 'KB_LLM_FAKE is enabled; the gate uses the in-process fake judge',
+        }),
+      ]));
+    } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
   });
@@ -1321,6 +1726,8 @@ describe('kb doctor', () => {
         EMBEDDING_PROVIDER: 'huggingface',
         OLLAMA_BASE_URL: '',
         KB_LLM_ENDPOINT: '',
+        KB_RELEVANCE_GATE: 'off',
+        KB_GATE_LLM_ENDPOINT: '',
         KB_LLM_CONFIG_DIR: path.join(os.tmpdir(), 'kb-doctor-endpoints-empty-config'),
         KB_LLM_STATE_DIR: path.join(os.tmpdir(), 'kb-doctor-endpoints-empty-state'),
       });
@@ -1349,6 +1756,11 @@ describe('kb doctor', () => {
         }),
         expect.objectContaining({
           name: 'llm_endpoint',
+          status: 'skipped',
+          configured: false,
+        }),
+        expect.objectContaining({
+          name: 'gate_llm_endpoint',
           status: 'skipped',
           configured: false,
         }),
@@ -1409,6 +1821,8 @@ describe('kb doctor', () => {
         EMBEDDING_PROVIDER: 'huggingface',
         OLLAMA_BASE_URL: '',
         KB_LLM_ENDPOINT: '',
+        KB_RELEVANCE_GATE: 'off',
+        KB_GATE_LLM_ENDPOINT: '',
         KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
         KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
       });

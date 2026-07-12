@@ -304,7 +304,10 @@ kb logs recent --limit=50 --format=json \
                  and (.gate.degraded == true or .gate.degrade_reason != null))
         | {ts, request_id, process, cmd, tool, kb_scope, result_count, gate}'
 
-kb doctor --format=json | jq '.llm_endpoint'
+kb doctor --format=json | jq '.llm_endpoint, .gate_llm_endpoint'
+kb doctor --endpoints --format=json \
+  | jq '.endpoints[]
+        | select(.name == "llm_endpoint" or .name == "gate_llm_endpoint")'
 kb llm status --format=json
 ```
 

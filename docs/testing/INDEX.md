@@ -86,6 +86,15 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 
 ## Observability
 
+### TS-OBS-835: Relevance-gate endpoint readiness
+**Requirement:** FR-OBS-835
+
+**Test Cases:**
+- `buildDoctorReport` and `buildEndpointReadinessReport` shall probe and report a healthy `gate_llm_endpoint` when the gate is enabled with an explicit gate endpoint.
+- `buildDoctorReport` shall surface an unhealthy gate endpoint as a warning check while preserving the endpoint row's error status.
+- `buildEndpointReadinessReport` shall report an unhealthy `gate_llm_endpoint` without changing the ask-endpoint result when the gate probe fails.
+- `buildEndpointReadinessReport` shall skip the gate entry when the gate is disabled or its explicit endpoint is unset.
+
 ### TS-OBS-470: Config Schema Validation
 **Requirement:** FR-OBS-470
 
