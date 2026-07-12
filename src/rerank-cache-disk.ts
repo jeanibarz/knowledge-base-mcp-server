@@ -176,9 +176,8 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
     let raw: string;
     try {
       raw = fs.readFileSync(file, 'utf-8');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      this.recordCorrupt(file);
+    } catch {
+      // A read failure may be transient; keep the entry for a later attempt.
       return null;
     }
     let record: RerankScoreRecord;
