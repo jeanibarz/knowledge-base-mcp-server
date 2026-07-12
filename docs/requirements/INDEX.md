@@ -254,7 +254,7 @@
 **Linked Tests:** TS-SEARCH-192
 **Dependencies:** RFC005
 
-### TS-CHAOS-001: Search-time index corruption degrades safely
+### NFR-SEARCH-834: Query-time index corruption degrades safely
 **Status:** Implemented
 **Priority:** Medium
 
@@ -275,7 +275,7 @@ graceful-degradation contract.
   partial result and never an uncaught throw.
 - [x] The scenario runs deterministically through `npm run test:chaos`.
 
-**Linked Tests:** [TS-CHAOS-001](../../tests/chaos/scenarios/search-faults.test.ts)
+**Linked Tests:** [TS-SEARCH-834](../../tests/chaos/scenarios/search-faults.test.ts)
 **Dependencies:** Existing chaos fault harness and search degradation paths.
 
 ## Relevance Gate (RFC 018)

@@ -2,4 +2,4 @@
 
 The canonical requirements catalog is maintained in
 [`requirements/INDEX.md`](requirements/INDEX.md). Search-time index corruption
-is tracked by [TS-CHAOS-001](requirements/INDEX.md#ts-chaos-001-search-time-index-corruption-degrades-safely).
+is tracked by [NFR-SEARCH-834](requirements/INDEX.md#nfr-search-834-query-time-index-corruption-degrades-safely).
