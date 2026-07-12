@@ -70,6 +70,7 @@ kb import-url --kb=research https://example.com/article   # snapshot a URL into 
 kb superseded --kb=work       # read-only review for obsolete/contradicted notes
 kb tags --kb=work             # read-only: list frontmatter facet values (tags/status/type) with counts
 kb tags --facet=status --format=json  # discover the vocabulary for kb search --status filters
+kb tag work/runbooks/deploy.md --add=verified  # dry-run; add --yes to apply the tag change
 kb feedback add --kb=work --query="rollback procedure" --source=runbooks/deploy.md --verdict=relevant
 kb feedback promote --kb=work --query="rollback procedure" --fixture=docs/testing/feedback-fixture.yml --yes  # promote ledger entries into an eval fixture
 kb eval retrieval-eval.yml     # run fixture-driven retrieval checks
@@ -144,6 +145,8 @@ Note: `KB_RERANK_DEVICE` (e.g. `cuda`, `cpu`) and `KB_RERANK_DTYPE` (e.g. `fp32`
 `kb import-url --kb=<name> <url>` snapshots a web page or PDF into one new KB note while preserving provenance. It fetches the URL over http(s), routes HTML and PDF responses through the same loaders the indexer uses, and writes a note whose YAML frontmatter records `source_url`, `fetched_at`, `content_sha256`, `content_type`, `http_status`, and `byte_count`. The fetch is guarded: only http/https schemes are allowed, redirects are followed manually and re-validated per hop (`--max-redirects`, default 5), responses are size-capped (`--max-bytes`, default 8 MiB) and time-bounded (`--timeout`, default 30000 ms), and private/loopback/link-local addresses are refused unless `--allow-local-network` is passed (SSRF guard). The note path defaults to a slug of the page title; pass `--note=<path.md>` to choose it, `--title` to override the title, and `--refresh` to re-index afterwards. It refuses to overwrite an existing note.
 
 `kb superseded --kb=<name>` is a read-only active-forgetting review. It scans markdown frontmatter for explicit contradiction, deprecated/dormant lifecycle status, stale verification dates, and low-confidence active notes, then uses the existing semantic index to add conservative newer-neighbor evidence when available. Use `--format=json` for agent workflows and `--include-clean` when you need a full inventory.
+
+`kb tag <kb>/<note> --add=<tag> [--remove=<tag>]` safely maintains one note's frontmatter tag array. The default is a dry-run; repeat `--add` or `--remove` for several tags and pass `--yes` to commit the change through the atomic writer and the KB's `.kb-policy.json` mutation policy. The note body is preserved byte-for-byte and malformed frontmatter is rejected before writing. Run `kb search --refresh` before expecting an existing index's tag filter to see the new value; `kb tags` reads note files directly.
 
 `kb feedback add --kb=<name> --query="<text>" --source=<kb-relative-path> --verdict=relevant|irrelevant|stale|misleading [--relevance=0..3] [--chunk-id=<id>]` appends a relevance judgment to the per-KB ledger (`<kb>/.index/relevance-feedback.jsonl`). `kb feedback list --kb=<name>` reviews recent entries, and `kb feedback promote --kb=<name> --query="<text>" --fixture=<path.yml> --yes` materialises every ledger row for a query into a retrieval-eval case so accumulated judgments become regression coverage. See [`docs/operations/feedback-workflow.md`](docs/operations/feedback-workflow.md).
 

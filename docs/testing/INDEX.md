@@ -168,6 +168,17 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `kb help <command> --format=json` shall preserve the existing unknown-command stderr error and exit code when the command is not registered.
 - `kb help` without `--format=json` shall preserve the existing human-readable help output.
 
+### TS-CLI-833: Safe Note Tag Mutation
+**Requirement:** FR-CLI-833
+
+**Test Cases:**
+- `parseTagArgs` shall parse positional note selectors, repeated add/remove flags, formats, and explicit confirmation while rejecting incomplete or unknown arguments.
+- `applyTagUpdates` shall apply stable add/remove set semantics, preserve the note body, create a tags array when needed, and reject malformed frontmatter.
+- The strict frontmatter helpers shall reject missing fences and non-mapping YAML and shall validate the generated body boundary.
+- `tagNote` shall leave dry-runs, malformed notes, denied policies, traversal selectors, and hidden/non-Markdown targets unchanged.
+- `tagNote` shall atomically apply a mutation and `kb tags` shall report the resulting tag set.
+- The CLI smoke matrix shall verify the built command's JSON dry-run output and argument-error path without an embedding backend.
+
 ### TS-ASK-382: Cited Ask Transcript Records
 **Requirement:** FR-ASK-382
 
