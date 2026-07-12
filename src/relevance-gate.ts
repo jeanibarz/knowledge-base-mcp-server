@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import type { Document } from '@langchain/core/documents';
 import { emitCanonicalLog, type CanonicalProcess, type CanonicalSearchMode } from './canonical-log.js';
 import { resolveRelevanceGateConfig, type RelevanceGateConfig } from './config/relevance-gate.js';
-import { parseFrontmatter } from './frontmatter.js';
+import { parseFrontmatterStrict } from './frontmatter.js';
 import { applyInjectionGuard } from './injection-guard.js';
 import { chunkIdFromMetadata } from './rrf.js';
 import { computeAutoThreshold } from './search-core.js';
@@ -532,47 +532,89 @@ function buildVerdict(input: {
 async function hydrateSensitivityPoliciesFromSource<T extends RelevanceGateCandidate>(
   candidates: T[],
 ): Promise<T[]> {
-  const policyBySource = new Map<string, ReturnType<typeof normalizeKbSensitivityPolicy>>();
+  type SourcePolicy = {
+    readable: boolean;
+    policy: ReturnType<typeof normalizeKbSensitivityPolicy>;
+  };
+  const policyBySource = new Map<string, SourcePolicy>();
 
   return Promise.all(candidates.map(async (candidate) => {
     const metadata = candidate.metadata as Record<string, unknown>;
-    // An indexed positive policy is already safe to honor. For candidates
-    // without that positive marker, refresh from source so a frontmatter edit
-    // made after indexing cannot leak content into the judge prompt.
-    if (excludesLlmContext(metadata)) return candidate;
-
     const source = metadata.source;
     if (typeof source !== 'string' || source.length === 0) return candidate;
 
-    let policy = policyBySource.get(source);
+    let sourcePolicy = policyBySource.get(source);
     if (!policyBySource.has(source)) {
       try {
         const content = await fsp.readFile(source, 'utf-8');
-        policy = normalizeKbSensitivityPolicy(parseFrontmatter(content).frontmatter.kb_policy);
+        const frontmatter = parseFrontmatterStrict(content).frontmatter;
+        sourcePolicy = {
+          readable: true,
+          policy: normalizeKbSensitivityPolicy(frontmatter.kb_policy),
+        };
       } catch {
-        policy = undefined;
+        sourcePolicy = { readable: false, policy: undefined };
       }
-      policyBySource.set(source, policy);
+      policyBySource.set(source, sourcePolicy);
     }
 
-    if (policy === undefined) return candidate;
+    if (sourcePolicy === undefined || !sourcePolicy.readable) {
+      // A candidate whose source cannot be verified is preserved for retrieval
+      // but excluded from every LLM prompt. This boundary must fail closed.
+      return excludesLlmContext(metadata)
+        ? candidate
+        : markLlmContextExcluded(candidate, metadata);
+    }
 
     const frontmatter = metadata.frontmatter;
     const frontmatterObject =
       frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter)
         ? frontmatter as Record<string, unknown>
         : {};
+    if (sourcePolicy.policy === undefined && !Object.prototype.hasOwnProperty.call(frontmatterObject, 'kb_policy')) {
+      return candidate;
+    }
+    const hydratedFrontmatter = { ...frontmatterObject };
+    if (sourcePolicy.policy === undefined) {
+      delete hydratedFrontmatter.kb_policy;
+    } else {
+      hydratedFrontmatter.kb_policy = sourcePolicy.policy;
+    }
     return {
       ...candidate,
       metadata: {
         ...metadata,
         frontmatter: {
-          ...frontmatterObject,
-          kb_policy: policy,
+          ...hydratedFrontmatter,
         },
       },
     };
   }));
+}
+
+function markLlmContextExcluded<T extends RelevanceGateCandidate>(
+  candidate: T,
+  metadata: Record<string, unknown>,
+): T {
+  const frontmatter = metadata.frontmatter;
+  const frontmatterObject =
+    frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter)
+      ? frontmatter as Record<string, unknown>
+      : {};
+  const existingPolicy = normalizeKbSensitivityPolicy(frontmatterObject.kb_policy) ?? {};
+  return {
+    ...candidate,
+    metadata: {
+      ...metadata,
+      frontmatter: {
+        ...frontmatterObject,
+        kb_policy: {
+          ...existingPolicy,
+          no_llm_context: true,
+        },
+      },
+    },
+  };
 }
 
 function buildCacheKey<T extends RelevanceGateCandidate>(

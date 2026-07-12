@@ -68,7 +68,7 @@ Why it matters:
 - The MCP `retrieve_knowledge` tool accepts `extensions`, `path_glob`, and **`tags`** filters (`src/KnowledgeBaseServer.ts:107-122`). `tags` filter on the lifted frontmatter — chunks without `tags` in frontmatter will not match a `tags=[...]` filter. If you want a note findable as `tag:onboarding`, write `tags: [onboarding]`.
 - Non-whitelisted string keys land in `frontmatter.extras` (visible only when `FRONTMATTER_EXTRAS_WIRE_VISIBLE=1`). Use them for workflow-specific keys; don't expect filterability.
 - Non-string values for whitelisted keys (numbers, arrays, maps) are dropped silently *unless* the type is in the schema. Stick to scalars and short arrays.
-- `kb_policy` is a typed policy map. `no_llm_context: true` keeps matching chunks out of `kb ask` and MCP `ask_knowledge` prompt context, `resource_read: deny` blocks MCP `resources/read`, and `resource_read: local_only` allows stdio/local reads while blocking HTTP/SSE resource reads.
+- `kb_policy` is a typed policy map. `no_llm_context: true` keeps matching chunks out of `kb ask`, contextual-preface ingest, relevance-gate judging, and MCP `ask_knowledge` prompt context, `resource_read: deny` blocks MCP `resources/read`, and `resource_read: local_only` allows stdio/local reads while blocking HTTP/SSE resource reads.
 - **Frontmatter doesn't help dense retrieval** unless you also put the same words in the body. A note with `tags: [rollback]` in frontmatter only is invisible to a query for "rollback" against the dense embedding — the embedder never saw it.
 
 ## 4. Content boundaries

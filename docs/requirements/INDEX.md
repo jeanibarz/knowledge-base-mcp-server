@@ -357,6 +357,7 @@ graceful-degradation contract.
 - [x] Given mixed gated candidates, when relevance judging runs, then no policy-excluded candidate content shall appear in the judge messages.
 - [x] Given policy-excluded candidates, when the relevance gate runs, then those candidates shall remain in the result set without being judged.
 - [x] Given non-sensitive chunks, when either path runs, then existing preface generation and judge behavior shall remain unchanged.
+- [x] Given a stale candidate whose source policy cannot be read or parsed, when relevance judging runs, then the candidate shall remain retrievable but shall be excluded from the judge prompt.
 
 **Linked Tests:** TS-SEC-829 (`src/contextual-preface.test.ts`, `src/file-ingest.test.ts`, `src/relevance-gate.test.ts`)
 **Dependencies:** Existing `excludesLlmContext` sensitivity-policy helper.
