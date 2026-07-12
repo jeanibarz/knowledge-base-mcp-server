@@ -194,6 +194,14 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `computeStaleness` shall preserve global modified and new file counts for unscoped searches.
 - `formatFreshnessFooter` and JSON payload tests shall verify scoped fields remain distinct from global fields.
 
+### TS-SEARCH-834: Query-time index corruption degradation
+**Requirement:** NFR-SEARCH-834
+
+**Test Cases:**
+- `kb search` shall classify a corrupt active FAISS artifact as an indexing failure rather than throw an uncaught error.
+- The lexical retrieval leg shall classify torn per-KB lexical JSON as a per-KB failure and preserve partial-result semantics.
+- Dense retrieval shall return matching documents via post-filter overfetch when the metadata sidecar is missing or short.
+
 ## Relevance Gate (RFC 018)
 
 ### TS-LLM-465: Fake LLM Fixture
