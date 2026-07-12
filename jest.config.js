@@ -17,6 +17,16 @@ const baseTestMatch = [
   '**/tests/stress/**/*.test.ts',
 ];
 
+const serialTestMatchFromPath = (pathPattern) => {
+  const relativePath = pathPattern
+    .replace(/^<rootDir>\//, '')
+    .replace(/\/$/, '');
+
+  return pathPattern.endsWith('/')
+    ? `**/${relativePath}/**/*.test.ts`
+    : `**/${relativePath}`;
+};
+
 const serialTestPathPatterns = [
   '<rootDir>/src/FaissIndexManager.test.ts',
   '<rootDir>/src/KnowledgeBaseServer.test.ts',
@@ -32,6 +42,8 @@ const serialTestPathPatterns = [
   '<rootDir>/tests/stress/',
   ...(e2eEnabled ? ['<rootDir>/src/e2e/'] : []),
 ];
+
+const serialTestMatch = serialTestPathPatterns.map(serialTestMatchFromPath);
 
 const baseConfig = {
   preset: 'ts-jest',
@@ -125,21 +137,7 @@ export default {
     {
       ...baseConfig,
       displayName: 'serial',
-      testMatch: [
-        '**/src/FaissIndexManager.test.ts',
-        '**/src/KnowledgeBaseServer.test.ts',
-        '**/src/cli-doctor.test.ts',
-        '**/src/docstore-cas.integration.test.ts',
-        '**/src/docstore-cas.test.ts',
-        '**/src/recursive-fs-watch.test.ts',
-        '**/src/reindex-runner.test.ts',
-        '**/src/transport/http.test.ts',
-        '**/src/transport/sse.test.ts',
-        '**/src/triggerWatcher.test.ts',
-        '**/src/write-lock.test.ts',
-        '**/tests/stress/**/*.test.ts',
-        ...(e2eEnabled ? ['**/src/e2e/**/*.test.ts'] : []),
-      ],
+      testMatch: serialTestMatch,
       testPathIgnorePatterns: [
         '/node_modules/',
         ...(e2eEnabled ? [] : ['<rootDir>/src/e2e/']),
