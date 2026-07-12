@@ -79,6 +79,23 @@
 
 ## Observability
 
+### FR-OBS-835: Relevance-gate endpoint readiness
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall report the explicitly configured relevance-gate LLM endpoint in `kb doctor` and `kb doctor --endpoints` when the gate is enabled, and shall skip that entry when the gate is disabled or the endpoint is unset.
+**Rationale:** Operators need the doctor preflight to detect an unavailable judge endpoint before gated retrieval silently degrades, without treating an intentionally disabled or unconfigured gate as a failure.
+
+**Acceptance Criteria:**
+- [x] Given `KB_RELEVANCE_GATE=on` and `KB_GATE_LLM_ENDPOINT` set, when `kb doctor` or endpoint readiness runs, then it shall probe and report a distinct `gate_llm_endpoint` entry.
+- [x] Given a reachable gate endpoint, when endpoint readiness runs, then the gate entry shall be healthy.
+- [x] Given an unreachable or unhealthy gate endpoint, when endpoint readiness runs, then the gate entry shall report an error.
+- [x] Given the gate is disabled or `KB_GATE_LLM_ENDPOINT` is unset, when endpoint readiness runs, then the gate entry shall be skipped rather than failed.
+- [x] Given any gate configuration, when endpoint readiness runs, then the existing ask-endpoint entry shall retain its behavior.
+
+**Linked Tests:** TS-OBS-835
+**Dependencies:** FR-GATE-379
+
 ### FR-OBS-470: Config Schema Validation
 **Status:** Implemented
 **Priority:** High

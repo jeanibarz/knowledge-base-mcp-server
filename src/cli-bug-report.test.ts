@@ -74,6 +74,15 @@ function minimalDoctorReport(): DoctorReport {
       detail: 'not configured',
       next_action: null,
     },
+    gate_llm_endpoint: {
+      name: 'gate_llm_endpoint',
+      kind: 'http',
+      status: 'skipped',
+      configured: false,
+      target: null,
+      source: 'not_configured',
+      detail: 'not configured',
+    },
     reranker: {
       enabled: false,
       model: 'reranker',

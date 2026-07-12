@@ -87,7 +87,12 @@ import {
   type ExtractionCacheInventory,
 } from './extraction-cache.js';
 import { inspectReindexTriggerFilesystem } from './triggerWatcher.js';
-import { deriveHealthUrl, probeLlmEndpoint, type LlmProbeResult } from './llm-client.js';
+import {
+  deriveHealthUrl,
+  probeLlmEndpoint,
+  type LlmProbeOptions,
+  type LlmProbeResult,
+} from './llm-client.js';
 import {
   createExternalProfile,
   readActiveProfileName,
@@ -95,6 +100,8 @@ import {
   resolveProfile,
   type LlmProfile,
 } from './llm-profiles.js';
+import { resolveRelevanceGateConfig } from './config/relevance-gate.js';
+import { isFakeLlmEnabled } from './llm-fake-stub.js';
 import { resolveRerankerConfig } from './config/reranker.js';
 import {
   backendForIndexType,
@@ -170,7 +177,8 @@ Options:
                         (also included in the aggregate report).
   --endpoints           Check only configured local bind/connect endpoint
                         readiness (MCP bind target, KB_DAEMON_URL,
-                        Ollama embedding endpoint, and KB_LLM_ENDPOINT/profile).
+                        Ollama embedding endpoint, KB_LLM_ENDPOINT/profile, and
+                        the enabled relevance-gate KB_GATE_LLM_ENDPOINT).
   --locks               Check only FAISS/model write-lock paths, including
                         owner metadata when available and stale-lock guidance.
   --kb-symlinks         Inventory symlinks under KB roots without following
@@ -214,7 +222,7 @@ export type EmbeddingCanaryHealthStatus = HealthStatus | 'not_recorded' | 'skipp
 type DoctorDaemonStatsPayload = Pick<KbStatsPayload, 'dense_search_latency'>;
 
 export interface EndpointReadinessEntry {
-  name: 'mcp_bind' | 'kb_daemon' | 'embedding_ollama' | 'llm_endpoint';
+  name: 'mcp_bind' | 'kb_daemon' | 'embedding_ollama' | 'llm_endpoint' | 'gate_llm_endpoint';
   kind: 'bind' | 'http';
   status: EndpointHealthStatus;
   configured: boolean;
@@ -409,6 +417,7 @@ export interface DoctorReport {
     detail: string;
     next_action: string | null;
   };
+  gate_llm_endpoint: EndpointReadinessEntry;
   reranker: {
     enabled: boolean;
     model: string;
@@ -533,7 +542,10 @@ export type BackendHealthCheck = (
   provider: string,
   modelName: string,
 ) => Promise<{ healthy: boolean; detail: string }>;
-export type LlmEndpointProbe = (endpoint: string) => Promise<LlmProbeResult>;
+export type LlmEndpointProbe = (
+  endpoint: string,
+  probeOptions?: LlmProbeOptions,
+) => Promise<LlmProbeResult>;
 
 export async function runDoctor(rest: string[]): Promise<number> {
   let parsed: DoctorArgs;
@@ -701,16 +713,18 @@ export async function buildEndpointReadinessReport(
   options: BuildEndpointReadinessReportOptions = {},
 ): Promise<EndpointReadinessReport> {
   const fetchImpl = options.fetchImpl ?? fetch;
+  const llmEndpointProbe: LlmEndpointProbe = (options.llmEndpointProbe
+    ?? ((endpoint, probeOptions) => probeLlmEndpoint(endpoint, fetchImpl, {
+      healthTimeoutMs: DOCTOR_LLM_HEALTH_TIMEOUT_MS,
+      chatTimeoutMs: DOCTOR_LLM_CHAT_TIMEOUT_MS,
+      ...probeOptions,
+    })));
   const entries: EndpointReadinessEntry[] = [];
   entries.push(await readMcpBindEndpointHealth());
   entries.push(await readKbDaemonEndpointHealth(fetchImpl));
   entries.push(await readOllamaEndpointHealth(fetchImpl));
-  entries.push(await readConfiguredLlmEndpointHealth(
-    options.llmEndpointProbe ?? ((endpoint) => probeLlmEndpoint(endpoint, fetchImpl, {
-      healthTimeoutMs: DOCTOR_LLM_HEALTH_TIMEOUT_MS,
-      chatTimeoutMs: DOCTOR_LLM_CHAT_TIMEOUT_MS,
-    })),
-  ));
+  entries.push(await readConfiguredLlmEndpointHealth(llmEndpointProbe));
+  entries.push(await readConfiguredGateLlmEndpointHealth(llmEndpointProbe));
   return {
     schema_version: 'kb.doctor.endpoints.v1',
     status: summarizeEndpointStatus(entries),
@@ -952,6 +966,71 @@ async function readConfiguredLlmEndpointHealth(
       target: target.profile.endpoint,
       source: target.source,
       detail: `LLM endpoint probe failed: ${(err as Error).message}`,
+    };
+  }
+}
+
+async function readConfiguredGateLlmEndpointHealth(
+  check: LlmEndpointProbe,
+): Promise<EndpointReadinessEntry> {
+  const gateConfig = resolveRelevanceGateConfig();
+  const gateEnabled = gateConfig.enabled;
+  const fakeLlmEnabled = isFakeLlmEnabled();
+  const endpoint = process.env.KB_GATE_LLM_ENDPOINT?.trim();
+  if (!gateEnabled || !endpoint || fakeLlmEnabled) {
+    return {
+      name: 'gate_llm_endpoint',
+      kind: 'http',
+      status: 'skipped',
+      configured: false,
+      target: null,
+      source: 'not_configured',
+      detail: fakeLlmEnabled
+        ? 'KB_LLM_FAKE is enabled; the gate uses the in-process fake judge'
+        : !gateEnabled
+          ? 'KB_RELEVANCE_GATE is not enabled'
+          : 'KB_GATE_LLM_ENDPOINT is not configured',
+    };
+  }
+
+  let profile: LlmProfile;
+  try {
+    profile = await createExternalProfile('gate', endpoint);
+  } catch (err) {
+    return {
+      name: 'gate_llm_endpoint',
+      kind: 'http',
+      status: 'error',
+      configured: true,
+      target: endpoint,
+      source: 'invalid',
+      detail: `KB_GATE_LLM_ENDPOINT configuration is invalid: ${(err as Error).message}`,
+    };
+  }
+
+  try {
+    const probe = await check(profile.endpoint, {
+      model: gateConfig.judgeModel,
+      chatTimeoutMs: gateConfig.judgeTimeoutMs,
+    });
+    return {
+      name: 'gate_llm_endpoint',
+      kind: 'http',
+      status: probe.health_ok && probe.chat_ok ? 'ok' : 'error',
+      configured: true,
+      target: probe.endpoint,
+      source: 'env',
+      detail: formatLlmEndpointDetail(profile, 'env', probe),
+    };
+  } catch (err) {
+    return {
+      name: 'gate_llm_endpoint',
+      kind: 'http',
+      status: 'error',
+      configured: true,
+      target: profile.endpoint,
+      source: 'env',
+      detail: `Gate LLM endpoint probe failed: ${(err as Error).message}`,
     };
   }
 }
@@ -1532,6 +1611,14 @@ export async function buildDoctorReport(
     status: llmEndpoint.status,
     detail: llmEndpoint.detail,
   });
+  const gateLlmEndpoint = await readConfiguredGateLlmEndpointHealth(
+    options.llmEndpointProbe ?? defaultLlmEndpointProbe,
+  );
+  checks.push({
+    name: 'gate_llm_endpoint',
+    status: gateLlmEndpoint.status === 'error' ? 'warn' : 'ok',
+    detail: gateLlmEndpoint.detail,
+  });
 
   const reranker = await readRerankerHealth();
   checks.push({
@@ -1676,6 +1763,7 @@ export async function buildDoctorReport(
     incomplete_models: incompleteModels,
     backend,
     llm_endpoint: llmEndpoint,
+    gate_llm_endpoint: gateLlmEndpoint,
     reranker,
     cli,
     git,
@@ -2414,10 +2502,14 @@ async function resolveDoctorLlmTarget(): Promise<{
   };
 }
 
-async function defaultLlmEndpointProbe(endpoint: string): Promise<LlmProbeResult> {
+async function defaultLlmEndpointProbe(
+  endpoint: string,
+  probeOptions?: LlmProbeOptions,
+): Promise<LlmProbeResult> {
   return probeLlmEndpoint(endpoint, fetch, {
     healthTimeoutMs: DOCTOR_LLM_HEALTH_TIMEOUT_MS,
     chatTimeoutMs: DOCTOR_LLM_CHAT_TIMEOUT_MS,
+    ...probeOptions,
   });
 }
 
@@ -2734,6 +2826,12 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   if (report.llm_endpoint.next_action !== null) {
     lines.push(`  next_action: ${report.llm_endpoint.next_action}`);
   }
+  lines.push('Gate LLM endpoint:');
+  lines.push(`  status: ${report.gate_llm_endpoint.status}`);
+  lines.push(`  configured: ${report.gate_llm_endpoint.configured ? 'yes' : 'no'}`);
+  lines.push(`  source: ${report.gate_llm_endpoint.source}`);
+  lines.push(`  endpoint: ${report.gate_llm_endpoint.target ?? '<unconfigured>'}`);
+  lines.push(`  detail: ${report.gate_llm_endpoint.detail}`);
   lines.push('Reranker:');
   lines.push(`  enabled: ${report.reranker.enabled ? 'yes' : 'no'}`);
   lines.push(`  model: ${report.reranker.model}`);

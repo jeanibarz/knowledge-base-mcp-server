@@ -470,7 +470,11 @@ describe('llm-client', () => {
     expect(LlmClientError).toBeDefined();
   });
 
-  it('probes health and chat completion', async () => {
+  it('probes health and chat completion with an explicit model', async () => {
+    process.env.KB_LLM_PROVIDER = 'local';
+    process.env.KB_LLM_FAKE = 'off';
+    const healthTimeoutSpy = jest.spyOn(AbortSignal, 'timeout');
+    const chatTimeoutSpy = jest.spyOn(global, 'setTimeout');
     const fetchMock = jest.fn(async (url: string) => {
       if (url.endsWith('/health')) {
         return new Response('{"status":"ok"}', { status: 200 });
@@ -480,9 +484,20 @@ describe('llm-client', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
 
-    const result = await probeLlmEndpoint('http://127.0.0.1:8080', fetchMock as unknown as typeof fetch);
+    const result = await probeLlmEndpoint(
+      'http://127.0.0.1:8080',
+      fetchMock as unknown as typeof fetch,
+      { model: 'gate-model', healthTimeoutMs: 456, chatTimeoutMs: 123 },
+    );
+    expect(healthTimeoutSpy).toHaveBeenCalledWith(456);
+    expect(chatTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 123);
+    healthTimeoutSpy.mockRestore();
+    chatTimeoutSpy.mockRestore();
     expect(result.health_ok).toBe(true);
     expect(result.chat_ok).toBe(true);
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    const chatRequest = calls.find(([url]) => !url.endsWith('/health'))!;
+    expect(JSON.parse(chatRequest[1].body as string)).toMatchObject({ model: 'gate-model' });
   });
 });
 

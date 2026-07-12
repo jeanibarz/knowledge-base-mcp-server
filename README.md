@@ -641,9 +641,9 @@ kb doctor --kb-symlinks  # KB-root symlink inventory and target classification
 kb doctor --bug-report=/tmp  # redacted support bundle directory
 ```
 
-The report covers active-model resolution, FAISS index version + mtime, the latest in-process index-update summary, per-KB stale counts, embedding-backend reachability (Ollama / HuggingFace / OpenAI), local LLM endpoint readiness, CLI version, and local git state. The command exits non-zero when any required retrieval check fails (active model unresolved, index missing, backend unreachable); LLM endpoint failures are WARN rows because search can remain healthy while `kb ask` is not ready.
+The report covers active-model resolution, FAISS index version + mtime, the latest in-process index-update summary, per-KB stale counts, embedding-backend reachability (Ollama / HuggingFace / OpenAI), ask and relevance-gate LLM endpoint readiness, CLI version, and local git state. The command exits non-zero when any required retrieval check fails (active model unresolved, index missing, backend unreachable); LLM endpoint failures are WARN rows because search can remain healthy while `kb ask` or the optional relevance gate is not ready.
 
-Use `kb doctor --endpoints` when you only need configured local endpoint readiness before starting or wiring clients. It checks MCP bind address/port availability, configured `KB_DAEMON_URL` health, configured Ollama embedding reachability, and configured `KB_LLM_ENDPOINT` or active LLM profile readiness without loading the full index health report.
+Use `kb doctor --endpoints` when you only need configured local endpoint readiness before starting or wiring clients. It checks MCP bind address/port availability, configured `KB_DAEMON_URL` health, configured Ollama embedding reachability, configured `KB_LLM_ENDPOINT` or active LLM profile readiness, and the explicitly configured `KB_GATE_LLM_ENDPOINT` when `KB_RELEVANCE_GATE=on`. The gate row is skipped when the gate is disabled, its endpoint is unset, or the fake judge is active; the command does not load the full index health report.
 
 Use `kb doctor --locks` when refresh or model writes report lock contention. It scans per-model `.kb-write.lock` paths, reports lock age, recorded owner PID/command for new locks, stale suspicion, and conservative next actions without deleting any lock file.
 

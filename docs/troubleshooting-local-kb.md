@@ -17,9 +17,9 @@ kb doctor --kb-symlinks
 kb doctor --bug-report=/tmp
 ```
 
-`kb doctor` reports active-model resolution, index path and version, stale file counts, embedding backend health, local LLM endpoint readiness for `kb ask`, CLI package and symlink state, git drift for linked checkouts, and the latest index-update summary. Use it before deleting index files, changing client configuration, or debugging local LLM answers.
+`kb doctor` reports active-model resolution, index path and version, stale file counts, embedding backend health, ask and relevance-gate LLM endpoint readiness, CLI package and symlink state, git drift for linked checkouts, and the latest index-update summary. Use it before deleting index files, changing client configuration, or debugging local LLM answers.
 
-Use `kb doctor --endpoints` for the narrower port/URL preflight: MCP bind target availability, configured `KB_DAEMON_URL`, configured Ollama embedding endpoint, and configured `KB_LLM_ENDPOINT` or active LLM profile.
+Use `kb doctor --endpoints` for the narrower port/URL preflight: MCP bind target availability, configured `KB_DAEMON_URL`, configured Ollama embedding endpoint, configured `KB_LLM_ENDPOINT` or active LLM profile, and the explicitly configured `KB_GATE_LLM_ENDPOINT` when `KB_RELEVANCE_GATE=on`.
 
 Use `kb doctor --locks` for write-lock contention. It reports per-model lock path, age, recorded owner PID/command when available, whether that PID is still live, stale suspicion, and the next safe action. It never removes lock files.
 
