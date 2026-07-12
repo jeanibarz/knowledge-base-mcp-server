@@ -534,31 +534,28 @@ async function hydrateSensitivityPoliciesFromSource<T extends RelevanceGateCandi
 ): Promise<T[]> {
   type SourcePolicy = {
     readable: boolean;
+    valid: boolean;
     policy: ReturnType<typeof normalizeKbSensitivityPolicy>;
   };
-  const policyBySource = new Map<string, SourcePolicy>();
+  const policyBySource = new Map<string, Promise<SourcePolicy>>();
 
   return Promise.all(candidates.map(async (candidate) => {
     const metadata = candidate.metadata as Record<string, unknown>;
     const source = metadata.source;
-    if (typeof source !== 'string' || source.length === 0) return candidate;
-
-    let sourcePolicy = policyBySource.get(source);
-    if (!policyBySource.has(source)) {
-      try {
-        const content = await fsp.readFile(source, 'utf-8');
-        const frontmatter = parseFrontmatterStrict(content).frontmatter;
-        sourcePolicy = {
-          readable: true,
-          policy: normalizeKbSensitivityPolicy(frontmatter.kb_policy),
-        };
-      } catch {
-        sourcePolicy = { readable: false, policy: undefined };
-      }
-      policyBySource.set(source, sourcePolicy);
+    if (typeof source !== 'string' || source.trim().length === 0) {
+      return excludesLlmContext(metadata)
+        ? candidate
+        : markLlmContextExcluded(candidate, metadata);
     }
 
-    if (sourcePolicy === undefined || !sourcePolicy.readable) {
+    let sourcePolicyPromise = policyBySource.get(source);
+    if (sourcePolicyPromise === undefined) {
+      sourcePolicyPromise = readSensitivityPolicy(source);
+      policyBySource.set(source, sourcePolicyPromise);
+    }
+    const sourcePolicy = await sourcePolicyPromise;
+
+    if (!sourcePolicy.readable || !sourcePolicy.valid) {
       // A candidate whose source cannot be verified is preserved for retrieval
       // but excluded from every LLM prompt. This boundary must fail closed.
       return excludesLlmContext(metadata)
@@ -590,6 +587,31 @@ async function hydrateSensitivityPoliciesFromSource<T extends RelevanceGateCandi
       },
     };
   }));
+}
+
+async function readSensitivityPolicy(source: string): Promise<{
+  readable: boolean;
+  valid: boolean;
+  policy: ReturnType<typeof normalizeKbSensitivityPolicy>;
+}> {
+  try {
+    const content = await fsp.readFile(source, 'utf-8');
+    const frontmatter = parseFrontmatterStrict(content).frontmatter;
+    const hasPolicy = Object.prototype.hasOwnProperty.call(frontmatter, 'kb_policy');
+    const rawPolicy = frontmatter.kb_policy;
+    const policy = normalizeKbSensitivityPolicy(rawPolicy);
+    const emptyPolicy = rawPolicy !== null
+      && typeof rawPolicy === 'object'
+      && !Array.isArray(rawPolicy)
+      && Object.keys(rawPolicy as Record<string, unknown>).length === 0;
+    return {
+      readable: true,
+      valid: !hasPolicy || policy !== undefined || emptyPolicy,
+      policy,
+    };
+  } catch {
+    return { readable: false, valid: false, policy: undefined };
+  }
 }
 
 function markLlmContextExcluded<T extends RelevanceGateCandidate>(

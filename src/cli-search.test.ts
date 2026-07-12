@@ -2252,6 +2252,69 @@ describe('runSearch timing guard (#331)', () => {
     }
   });
 
+  it('keeps no_llm_context chunks out of the CLI relevance judge prompt', async () => {
+    const previousGateEndpoint = process.env.KB_GATE_LLM_ENDPOINT;
+    process.env.KB_GATE_LLM_ENDPOINT = 'http://judge.invalid/v1/chat/completions';
+    const fixtureDir = await fsp.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'kb-gate-policy-cli-'));
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      model: 'judge-model',
+      choices: [{ message: { content: JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: `${fixtureDir}/public.md#0`, decision: 'keep', reason: 'public rollback' }],
+      }) } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+    try {
+      const privateSource = path.join(fixtureDir, 'private.md');
+      const publicSource = path.join(fixtureDir, 'public.md');
+      await fsp.writeFile(privateSource, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: true',
+        '---',
+        '',
+        'private CLI candidate must never reach the judge',
+      ].join('\n'), 'utf-8');
+      await fsp.writeFile(publicSource, 'public rollback checklist', 'utf-8');
+      const { deps, manager } = makeDeps();
+      manager.similaritySearch.mockResolvedValueOnce([
+        {
+          pageContent: 'private CLI candidate must never reach the judge',
+          metadata: { source: privateSource, relativePath: 'ops/private.md', chunkIndex: 0 },
+          score: 0.1,
+        },
+        {
+          pageContent: 'public rollback checklist',
+          metadata: { source: publicSource, relativePath: 'ops/public.md', chunkIndex: 0 },
+          score: 0.2,
+        },
+      ] as never);
+
+      const out = await captureSearchOutput([
+        'rollback',
+        '--gate',
+        '--task-context=answer the rollback question with current operational constraints',
+        '--format=json',
+        '--no-freshness',
+      ], deps);
+
+      expect(out.code).toBe(0);
+      const payload = JSON.parse(out.stdout);
+      expect(payload.results.map((result: { metadata: { relativePath: string } }) => result.metadata.relativePath)).toEqual([
+        'ops/private.md',
+        'ops/public.md',
+      ]);
+      const requestBody = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
+      expect(requestBody.messages.every((message: { content: string }) =>
+        !message.content.includes('private CLI candidate must never reach the judge'))).toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
+      if (previousGateEndpoint === undefined) delete process.env.KB_GATE_LLM_ENDPOINT;
+      else process.env.KB_GATE_LLM_ENDPOINT = previousGateEndpoint;
+      await fsp.rm(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
   it('ignores invalid reranker-only topN config when dense mode cannot rerank', async () => {
     const { deps } = makeDeps();
     const previousRerank = process.env.KB_RERANK;

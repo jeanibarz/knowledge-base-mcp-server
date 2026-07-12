@@ -230,9 +230,10 @@ npm run bench:tune -- --replay-config=/tmp/kb-scifact-lexical-best.json
 
 Notes can opt out of LLM prompt packing with this YAML frontmatter:
 `kb_policy: { no_llm_context: true }`. Search can still return the chunk, but
-`kb ask`, contextual-preface ingest, relevance-gate judging, and MCP
-`ask_knowledge` skip it before calling the LLM and report
-`context_packing.policy_filtered_chunks`.
+`kb ask` and MCP `ask_knowledge` skip it before calling the LLM and report
+`context_packing.policy_filtered_chunks`. Contextual-preface ingest and
+relevance-gate judging also exclude it from their LLM prompts while preserving
+the chunk as retrieval data.
 
 For offline development, set `KB_LLM_FAKE=on` to route `kb ask`, RFC 018 relevance-gate judge calls, and RFC 017 contextual-preface generation to a deterministic in-process fake LLM. Use `npm run dev:mockllm -- --port=18080` when a client needs an OpenAI-compatible localhost endpoint instead. Rules can be customized with `KB_LLM_FAKE_RULES`; see [docs/testing/fake-llm.md](docs/testing/fake-llm.md).
 

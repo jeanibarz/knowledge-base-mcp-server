@@ -191,6 +191,39 @@ describe('buildChunkDocuments → metadata-sidecar contract (#283)', () => {
     }
   });
 
+  it('still generates contextual prefatory metadata for non-sensitive documents', async () => {
+    const previousRetrieval = process.env.KB_CONTEXTUAL_RETRIEVAL;
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    const previousFake = process.env.KB_LLM_FAKE;
+    process.env.KB_CONTEXTUAL_RETRIEVAL = 'on';
+    delete process.env.KB_LLM_ENDPOINT;
+    process.env.KB_LLM_FAKE = 'on';
+
+    try {
+      const kbName = 'docs';
+      const kbDir = path.join(workspaceUnderRoot as string, kbName, 'public');
+      await fsp.mkdir(kbDir, { recursive: true });
+      const filePath = path.join(kbDir, 'runbook.md');
+      const content = [
+        '# Public deployment runbook',
+        '',
+        'Rollback approval requires the release lead.',
+      ].join('\n');
+      await fsp.writeFile(filePath, content, 'utf-8');
+
+      const documents = await buildChunkDocuments(filePath, content, kbName);
+
+      expect(documents.some((document) => typeof document.metadata.contextual_preface === 'string')).toBe(true);
+    } finally {
+      if (previousRetrieval === undefined) delete process.env.KB_CONTEXTUAL_RETRIEVAL;
+      else process.env.KB_CONTEXTUAL_RETRIEVAL = previousRetrieval;
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+      if (previousFake === undefined) delete process.env.KB_LLM_FAKE;
+      else process.env.KB_LLM_FAKE = previousFake;
+    }
+  });
+
   it('refresh re-ingest of the same file regenerates documents that map to fresh rows', async () => {
     const kbName = 'docs';
     const kbDir = path.join(workspaceUnderRoot as string, 'refresh', kbName);
