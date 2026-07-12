@@ -302,6 +302,9 @@ export async function buildChunkDocuments(
         documentHash: contextualPrefaceSha256(body),
         documentBody: body,
         chunks: documents.map((doc) => doc.pageContent),
+        ...(liftedFrontmatter !== undefined
+          ? { metadata: { frontmatter: liftedFrontmatter } }
+          : {}),
       });
     } catch (err) {
       // resolveContextualPrefaces is engineered to never throw on

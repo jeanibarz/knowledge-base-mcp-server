@@ -343,6 +343,24 @@ graceful-degradation contract.
 **Linked Tests:** [TS-SEARCH-834](../../tests/chaos/scenarios/search-faults.test.ts)
 **Dependencies:** Existing chaos fault harness and search degradation paths.
 
+## LLM Egress and Relevance Gate
+
+### NFR-SEC-829: `no_llm_context` LLM Egress Enforcement
+**Status:** Implemented
+**Priority:** Critical
+
+**Requirement:** The system shall exclude chunks marked `kb_policy.no_llm_context: true` from every LLM prompt generated during contextual-preface ingest and relevance-gate judging, while preserving those chunks as unjudged retrieval results.
+**Rationale:** The sensitivity policy is a confidentiality control. A chunk explicitly marked as unavailable to LLMs must not reach either indexing-time preface generation or query-time relevance judging.
+
+**Acceptance Criteria:**
+- [x] Given a chunk with `kb_policy.no_llm_context: true`, when contextual-preface ingest runs, then it shall produce no preface and shall not pass the document body to the LLM.
+- [x] Given mixed gated candidates, when relevance judging runs, then no policy-excluded candidate content shall appear in the judge messages.
+- [x] Given policy-excluded candidates, when the relevance gate runs, then those candidates shall remain in the result set without being judged.
+- [x] Given non-sensitive chunks, when either path runs, then existing preface generation and judge behavior shall remain unchanged.
+
+**Linked Tests:** TS-SEC-829 (`src/contextual-preface.test.ts`, `src/file-ingest.test.ts`, `src/relevance-gate.test.ts`)
+**Dependencies:** Existing `excludesLlmContext` sensitivity-policy helper.
+
 ## Relevance Gate (RFC 018)
 
 ### FR-GATE-EVAL-369: Gate Validation Harness

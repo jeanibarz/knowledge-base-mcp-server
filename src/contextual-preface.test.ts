@@ -111,6 +111,27 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     expect(FETCH_MOCK).not.toHaveBeenCalled();
   });
 
+  it('returns nulls and skips LLM for no_llm_context metadata', async () => {
+    FETCH_MOCK.mockImplementation(async () => llmResponse('must not be generated'));
+    const { resolveContextualPrefaces } = await loadModule();
+
+    const result = await resolveContextualPrefaces({
+      source: '/tmp/alpha/sensitive.md',
+      knowledgeBaseName: 'alpha',
+      documentHash: 'sensitive-doc-hash',
+      documentBody: 'sensitive body must never reach an LLM',
+      chunks: ['sensitive chunk'],
+      metadata: {
+        frontmatter: {
+          kb_policy: { no_llm_context: true },
+        },
+      },
+    });
+
+    expect(result).toEqual([null]);
+    expect(FETCH_MOCK).not.toHaveBeenCalled();
+  });
+
   it('generates deterministic prefaces with KB_LLM_FAKE without a real endpoint', async () => {
     setEnv('KB_LLM_ENDPOINT', undefined);
     setEnv('KB_LLM_FAKE', 'on');

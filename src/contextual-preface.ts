@@ -50,6 +50,7 @@ import { KBError } from './errors.js';
 import { callChatCompletion, LlmClientError } from './llm-client.js';
 import { logger } from './logger.js';
 import { retrievalViewText } from './retrieval-views.js';
+import { excludesLlmContext } from './sensitivity-policy.js';
 import { withSidecarLock } from './write-lock.js';
 
 export const GENERATOR_VERSION = 'contextual-preface.v2';
@@ -98,6 +99,8 @@ export interface PrefaceResolveArgs {
   documentHash: string;
   documentBody: string;
   chunks: string[];
+  /** Chunk metadata used to enforce document-level LLM egress policy. */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -114,6 +117,10 @@ export async function resolveContextualPrefaces(
   args: PrefaceResolveArgs,
 ): Promise<(string | null)[]> {
   if (args.chunks.length === 0) return [];
+
+  if (excludesLlmContext(args.metadata)) {
+    return args.chunks.map(() => null);
+  }
 
   const endpoint = resolveContextualLlmEndpoint();
   if (endpoint === null) {

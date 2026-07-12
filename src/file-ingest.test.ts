@@ -1,6 +1,7 @@
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { jest } from '@jest/globals';
 import { Document } from '@langchain/core/documents';
 import {
   buildChunkDocuments,
@@ -146,6 +147,47 @@ describe('buildChunkDocuments → metadata-sidecar contract (#283)', () => {
       tags: expect.arrayContaining(['ops', 'oncall']),
       frontmatter: expect.objectContaining({ title: 'On-call runbook', status: 'active' }),
     }));
+  });
+
+  it('does not call the contextual-preface LLM for no_llm_context documents', async () => {
+    const previousRetrieval = process.env.KB_CONTEXTUAL_RETRIEVAL;
+    const previousEndpoint = process.env.KB_LLM_ENDPOINT;
+    const previousFake = process.env.KB_LLM_FAKE;
+    process.env.KB_CONTEXTUAL_RETRIEVAL = 'on';
+    process.env.KB_LLM_ENDPOINT = 'http://preface.invalid/v1/chat/completions';
+    delete process.env.KB_LLM_FAKE;
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      throw new Error('unexpected contextual-preface LLM call');
+    });
+
+    try {
+      const kbName = 'docs';
+      const kbDir = path.join(workspaceUnderRoot as string, kbName, 'sensitive');
+      await fsp.mkdir(kbDir, { recursive: true });
+      const filePath = path.join(kbDir, 'private.md');
+      const content = [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: true',
+        '---',
+        '',
+        'Sensitive body must never be sent to the preface model.',
+      ].join('\n');
+      await fsp.writeFile(filePath, content, 'utf-8');
+
+      const documents = await buildChunkDocuments(filePath, content, kbName);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(documents.every((document) => document.metadata.contextual_preface === undefined)).toBe(true);
+    } finally {
+      fetchMock.mockRestore();
+      if (previousRetrieval === undefined) delete process.env.KB_CONTEXTUAL_RETRIEVAL;
+      else process.env.KB_CONTEXTUAL_RETRIEVAL = previousRetrieval;
+      if (previousEndpoint === undefined) delete process.env.KB_LLM_ENDPOINT;
+      else process.env.KB_LLM_ENDPOINT = previousEndpoint;
+      if (previousFake === undefined) delete process.env.KB_LLM_FAKE;
+      else process.env.KB_LLM_FAKE = previousFake;
+    }
   });
 
   it('refresh re-ingest of the same file regenerates documents that map to fresh rows', async () => {

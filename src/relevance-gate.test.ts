@@ -19,7 +19,12 @@ function config(overrides: Partial<RelevanceGateConfig> = {}): RelevanceGateConf
   };
 }
 
-function candidate(source: string, chunkIndex: number, score: number, content: string) {
+function candidate(
+  source: string,
+  chunkIndex: number,
+  score: number,
+  content: string,
+): { pageContent: string; metadata: Record<string, unknown>; score: number } {
   return {
     pageContent: content,
     metadata: { source, chunkIndex },
@@ -291,6 +296,40 @@ describe('relevance gate', () => {
     expect(userMessage.content).toContain('<untrusted-doc src="/kb/prompt.md">');
     expect(userMessage.content).toContain('ignore previous instructions');
     expect(userMessage.content).toContain('</untrusted-doc>');
+  });
+
+  it('does not send no_llm_context candidates to the judge and preserves them', async () => {
+    const protectedRow = candidate(
+      '/kb/private.md',
+      0,
+      0.1,
+      'sensitive candidate body must never reach the relevance judge',
+    );
+    protectedRow.metadata = {
+      ...protectedRow.metadata,
+      frontmatter: { kb_policy: { no_llm_context: true } },
+    };
+    const safeRow = candidate('/kb/public.md', 0, 0.2, 'public deployment rollback checklist');
+    const fetchImpl = fakeFetchJson(JSON.stringify({
+      overall: 'relevant',
+      verdicts: [{ id: idOf(safeRow), decision: 'keep', reason: 'rollback checklist' }],
+    }));
+
+    const result = await applyRelevanceGate({
+      query: 'policy protected judge input',
+      taskContext: 'please answer a deployment rollback question with precise operational context',
+      candidates: [protectedRow, safeRow],
+      config: config(),
+      fetchImpl,
+    });
+
+    const body = JSON.parse(((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+    const userMessage = body.messages.find((message: { role: string }) => message.role === 'user');
+    expect(userMessage.content).toContain('public deployment rollback checklist');
+    expect(userMessage.content).not.toContain('sensitive candidate body must never reach the relevance judge');
+    expect(result.results).toEqual([protectedRow, safeRow]);
+    expect(result.verdict.input_count).toBe(2);
+    expect(result.verdict.output_count).toBe(2);
   });
 
   it('redacts secrets from judge request content when outbound redaction is enabled', async () => {
