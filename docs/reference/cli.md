@@ -9,7 +9,7 @@ surface. Run `npm run build && node scripts/gen-cli-reference.mjs` after
 changing a command or its help text, and commit the result. The
 `docs:check-cli` gate (part of `npm run check`) fails if this file drifts.
 
-The `kb` CLI exposes 37 commands.
+The `kb` CLI exposes 38 commands.
 
 ## Commands
 
@@ -49,6 +49,7 @@ The `kb` CLI exposes 37 commands.
 | [`kb stale-check`](#kb-stale-check) | Scan markdown notes for path / URL references that no longer resolve. |
 | [`kb stats`](#kb-stats) | Read-only index/corpus stats (mirrors the MCP kb_stats payload). |
 | [`kb superseded`](#kb-superseded) | Scan a KB for obsolete / contradicted / deprecated / stale notes. |
+| [`kb tag`](#kb-tag) | Add or remove frontmatter tags on one KB note. |
 | [`kb tags`](#kb-tags) | Enumerate frontmatter facet values (tags/status/type) with counts. |
 | [`kb verify`](#kb-verify) | Run slow integrity checks for persisted indexes and sidecars. |
 | [`kb where`](#kb-where) | Recommend the best KB and file for a given topic. |
@@ -1739,6 +1740,51 @@ Examples:
   kb superseded --kb=work
   kb superseded --kb=work --format=json
   kb superseded --kb=work --include-clean --k=10
+```
+
+## `kb tag`
+
+Add or remove frontmatter tags on one KB note.
+
+```text
+kb tag — add or remove frontmatter tags on one note
+
+Usage:
+  kb tag <chunk-id|kb://uri|kb-relative-path>
+          [--add=<tag>] [--remove=<tag>] [--format=md|json] [--yes]
+
+The selector uses the same forms as kb open: a KB-prefixed note path,
+kb:// URI, or chunk id. A line/chunk fragment identifies the note but is
+not part of the file path. Multiple --add and --remove flags are allowed.
+
+Default behavior is a dry-run: the proposed before/after tag set is printed
+and the note is left byte-identical. Pass --yes to apply the change through
+the durable atomic write path. Adding and removing the same tag in one call
+is deterministic: removal wins.
+
+Notes:
+  Tagging updates the note immediately; search indexes see the new tags after
+  a later kb search --refresh. The kb tags facet reads note files directly.
+
+Options:
+  --add=<tag>             Add a tag (repeatable). Existing order is kept.
+  --remove=<tag>          Remove a tag (repeatable).
+  --format=md|json        Output format (default: md).
+  --yes                   Required to write; without it the command is a dry-run.
+  --help, -h              Show this help.
+
+Environment:
+  KNOWLEDGE_BASES_ROOT_DIR  Root directory containing one folder per KB.
+
+Exit codes:
+  0   preview or mutation completed
+  1   note, frontmatter, or write-policy error
+  2   invalid selector or command arguments
+
+Examples:
+  kb tag work/runbooks/deploy.md --add=rollback
+  kb tag kb://work/runbooks/deploy.md --remove=stale --yes
+  kb tag work/runbooks/deploy.md#L12-L24 --add=verified --format=json --yes
 ```
 
 ## `kb tags`

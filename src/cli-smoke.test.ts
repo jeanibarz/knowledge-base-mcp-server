@@ -25,6 +25,7 @@ const SUBCOMMANDS = [
   'stale-check',
   'superseded',
   'tags',
+  'tag',
   'promote',
   'quarantine',
   'where',
@@ -275,6 +276,22 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
       },
     },
     {
+      name: 'tag JSON previews a note mutation without an embedding backend',
+      subcommand: 'tag',
+      args: ['tag', 'alpha/note.md', '--add=smoke', '--format=json'],
+      assert: (result) => {
+        expect(result.code).toBe(0);
+        expect(parseStdoutJson(result)).toMatchObject({
+          schemaVersion: 'kb.tag.v1',
+          knowledgeBase: 'alpha',
+          relativePath: 'note.md',
+          applied: false,
+          before: [],
+          after: ['smoke'],
+        });
+      },
+    },
+    {
       name: 'quarantine list JSON emits an empty entries array',
       subcommand: 'quarantine',
       args: ['quarantine', 'list', '--format=json'],
@@ -349,6 +366,7 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
     { subcommand: 'eval-gate', args: ['eval-gate'], expected: 'missing <fixture>' },
     { subcommand: 'where', args: ['where'], expected: 'missing --topic=<query>' },
     { subcommand: 'tags', args: ['tags', '--format=xml'], expected: 'invalid --format' },
+    { subcommand: 'tag', args: ['tag'], expected: 'missing <chunk-id' },
     { subcommand: 'promote', args: ['promote'], expected: 'missing --kb=<name>' },
     { subcommand: 'reindex', args: ['reindex'], expected: '--with-context is required' },
     { subcommand: 'completion', args: ['completion'], expected: 'expected one shell' },

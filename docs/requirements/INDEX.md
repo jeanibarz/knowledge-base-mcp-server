@@ -209,6 +209,23 @@
 **Linked Tests:** TS-CLI-383
 **Dependencies:** RFC012
 
+### FR-CLI-833: Safe Note Tag Mutation
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall provide `kb tag <note>` to preview and, only after explicit confirmation, atomically add or remove tags in one note's YAML frontmatter while preserving the note body and honoring the per-KB write policy.
+**Rationale:** Tags are used for retrieval filters and facet discovery, but manual YAML edits are error-prone and can corrupt a note or bypass the KB's write policy.
+
+**Acceptance Criteria:**
+- [x] Given a valid note, when `kb tag <note> --add <tag>` or `--remove <tag>` runs without `--yes`, then the command shall print the proposed tag change and leave the note byte-identical.
+- [x] Given a valid note and `--yes`, when tags are added or removed, then only the `tags:` frontmatter value shall change and the body below the closing fence shall remain byte-identical.
+- [x] Given malformed or invalid frontmatter, when a tag mutation is requested, then the command shall reject it before any write.
+- [x] Given a KB whose `.kb-policy.json` denies mutations, when `kb tag ... --yes` runs, then the command shall fail without changing the note.
+- [x] Given a successful mutation, when the note is parsed by `kb tags`, then the resulting tag set shall be reported for that note.
+
+**Linked Tests:** TS-CLI-833
+**Dependencies:** Existing `parseFrontmatter`, `file-mutation`, and `kb-write-policy` helpers.
+
 ### FR-ASK-382: Cited Ask Transcript Records
 **Status:** Implemented
 **Priority:** Medium
