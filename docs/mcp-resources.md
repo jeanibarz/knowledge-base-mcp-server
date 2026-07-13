@@ -21,7 +21,7 @@ The no-parameter request remains backward-compatible: it returns the full concre
 | `cursor` | Standard MCP pagination cursor returned as `nextCursor`; it is opaque and includes the original filters and page size. |
 | `limit` or `pageSize` | Positive integer page size. Values above 1000 are capped to 1000. |
 | `kbName` | Restrict listing to one knowledge base. `knowledgeBase` and `knowledge_base_name` are accepted aliases. |
-| `prefix` | Restrict listing to KB-relative paths beginning with this prefix, such as `runbooks/` or `notes/2026-`. |
+| `prefix` | Restrict listing to KB-relative paths. Segment-complete prefixes scope a subtree; a partial final segment is also supported for compatibility, such as `runbooks/` or `notes/2026-`. |
 
 Paginated response shape:
 

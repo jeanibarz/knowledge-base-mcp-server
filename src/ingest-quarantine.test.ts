@@ -73,6 +73,45 @@ describe('ingest quarantine manifest', () => {
     }
   });
 
+  it('can read a manifest without creating the global sidecar lock directory', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-quarantine-readonly-'));
+    try {
+      const kbPath = path.join(tempDir, 'kb');
+      await fsp.mkdir(kbPath, { recursive: true });
+      const q = await freshQuarantine(tempDir);
+
+      await expect(q.listIngestQuarantine(kbPath, { useLock: false })).resolves.toEqual([]);
+      await expect(fsp.stat(path.join(tempDir, '.faiss')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves POSIX backslashes in relative paths', async () => {
+    if (path.sep !== '/') return;
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-quarantine-posix-'));
+    try {
+      const kbPath = path.join(tempDir, 'kb');
+      await fsp.mkdir(kbPath, { recursive: true });
+      const q = await freshQuarantine(tempDir);
+      const relativePath = 'secret\\file.md';
+
+      const record = await q.recordIngestFailure({
+        kbPath,
+        relativePath,
+        error: new Error('poison input'),
+      });
+
+      expect(record.relative_path).toBe(relativePath);
+      await expect(q.getIngestQuarantineRecord(kbPath, relativePath)).resolves.toMatchObject({
+        relative_path: relativePath,
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('dead-letters after max retries, ack allows one forced retry, and success removes the entry', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-quarantine-dlq-'));
     try {

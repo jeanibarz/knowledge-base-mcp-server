@@ -9,7 +9,7 @@ surface. Run `npm run build && node scripts/gen-cli-reference.mjs` after
 changing a command or its help text, and commit the result. The
 `docs:check-cli` gate (part of `npm run check`) fails if this file drifts.
 
-The `kb` CLI exposes 38 commands.
+The `kb` CLI exposes 39 commands.
 
 ## Commands
 
@@ -35,6 +35,7 @@ The `kb` CLI exposes 38 commands.
 | [`kb list`](#kb-list) | List available knowledge bases. |
 | [`kb llm`](#kb-llm) | Configure local LLM endpoints and managed warm model services. |
 | [`kb logs`](#kb-logs) | Inspect historical canonical request logs. |
+| [`kb ls`](#kb-ls) | List ingestable documents in one or all knowledge bases. |
 | [`kb models`](#kb-models) | Manage embedding models (list, add, set-active, remove). |
 | [`kb open`](#kb-open) | Resolve a chunk id / kb:// URI / result path to its source file. |
 | [`kb promote`](#kb-promote) | Review and update lifecycle frontmatter on a KB note. |
@@ -885,6 +886,44 @@ Examples:
   kb logs recent --limit=5 --format=json
   kb logs show --request-id=maw6d3qfabcd1234
   kb logs show --query-sha=0123456789abcdef
+```
+
+## `kb ls`
+
+List ingestable documents in one or all knowledge bases.
+
+```text
+kb ls — list ingestable documents in one or all knowledge bases
+
+Usage:
+  kb ls [<kb>] [--prefix=<path>] [--long] [--format=md|json]
+
+Short output lists one KB-relative path per ingestable, non-quarantined document.
+Without a positional KB, paths are prefixed with their knowledge-base name so
+output from multiple KBs remains unambiguous. Long output uses a separate KB
+column. The listing is read-only and follows the same ingest filters and
+quarantine state as MCP resources/list. Control characters in short paths are
+escaped so each document remains on one output line.
+
+Options:
+  --prefix=<path>       Restrict the listing to a KB-relative subtree.
+  --long                Include tier, status, type, and filesystem mtime.
+  --format=md|json      Output format (default: md). JSON uses the stable
+                        kb.ls.v1 shape.
+  --help, -h            Show this help.
+
+Environment:
+  KNOWLEDGE_BASES_ROOT_DIR  Root directory containing one folder per KB.
+
+Exit codes:
+  0   listing printed (possibly empty)
+  1   knowledge-base or filesystem error
+  2   invalid argument
+
+Examples:
+  kb ls work
+  kb ls work --prefix=projects/active
+  kb ls --long --format=json
 ```
 
 ## `kb models`

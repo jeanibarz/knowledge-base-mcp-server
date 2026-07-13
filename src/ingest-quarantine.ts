@@ -50,12 +50,20 @@ export interface IngestRetryDecision {
   record: IngestQuarantineRecord | null;
 }
 
+export interface ListIngestQuarantineOptions {
+  /** Avoid creating the global sidecar lock directory for read-only callers. */
+  useLock?: boolean;
+}
+
 export function quarantineManifestPath(kbPath: string): string {
   return path.join(kbPath, '.index', INGEST_QUARANTINE_FILENAME);
 }
 
-export async function listIngestQuarantine(kbPath: string): Promise<IngestQuarantineRecord[]> {
-  return readManifest(kbPath);
+export async function listIngestQuarantine(
+  kbPath: string,
+  options: ListIngestQuarantineOptions = {},
+): Promise<IngestQuarantineRecord[]> {
+  return options.useLock === false ? readManifestUnlocked(kbPath) : readManifest(kbPath);
 }
 
 export async function getIngestQuarantineRecord(
@@ -329,5 +337,7 @@ function normalizeRelativePath(relativePath: string): string {
     throw new Error(`invalid quarantine relative path: ${JSON.stringify(relativePath)}`);
   }
   assertNoTraversal(relativePath);
-  return relativePath.replace(/\\/g, '/');
+  // A backslash is a valid filename character on POSIX. Only translate it
+  // when it is the host platform's path separator, as on Windows.
+  return path.sep === '\\' ? relativePath.replace(/\\/g, '/') : relativePath;
 }

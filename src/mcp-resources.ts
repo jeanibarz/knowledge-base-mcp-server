@@ -18,22 +18,19 @@ import {
   type ListResourcesRequest,
   type ListResourcesResult,
   type ReadResourceResult,
-  type Resource,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { INGEST_EXCLUDE_PATHS, INGEST_EXTRA_EXTENSIONS } from './config/ingest.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { toError } from './error-utils.js';
-import { getFilesRecursively } from './file-utils.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { filterIngestablePaths } from './ingest-filter.js';
 import { listIngestQuarantine } from './ingest-quarantine.js';
+import { resolveKbPath } from './kb-fs.js';
 import {
-  assertNoTraversal,
-  enumerateIngestableKbFiles,
-  listKnowledgeBases,
-  resolveKbPath,
-} from './kb-fs.js';
+  listKnowledgeBaseDocuments,
+  normalizeDocumentPrefix,
+} from './kb-document-listing.js';
 import { isValidKbName } from './kb-paths.js';
 import {
   decideResourceRead,
@@ -211,12 +208,10 @@ function decodeListResourcesCursor(raw: string): ListResourcesCursor {
   if (prefix.includes('\0')) {
     throw new Error('invalid resources/list cursor');
   }
-  if (prefix.length > 0) {
-    try {
-      assertNoTraversal(prefix);
-    } catch {
-      throw new Error('invalid resources/list cursor');
-    }
+  try {
+    normalizeDocumentPrefix(prefix);
+  } catch {
+    throw new Error('invalid resources/list cursor');
   }
 
   const limit = (parsed as { limit: number }).limit;
@@ -245,17 +240,11 @@ function normalizeListResourcesOptions(
     readStringOption(options, 'kbName') ??
     readStringOption(options, 'knowledgeBase') ??
     readStringOption(options, 'knowledge_base_name');
-  const explicitPrefix = readStringOption(options, 'prefix') ?? '';
+  const explicitPrefix = normalizeDocumentPrefix(readStringOption(options, 'prefix'));
   const explicitLimit = options?.limit ?? options?.pageSize;
 
   if (explicitKbName !== undefined && !isValidKbName(explicitKbName)) {
     throw new Error('invalid KB name in resources/list filter');
-  }
-  if (explicitPrefix.includes('\0')) {
-    throw new Error('resources/list prefix contains null byte');
-  }
-  if (explicitPrefix.length > 0) {
-    assertNoTraversal(explicitPrefix);
   }
   if (explicitLimit !== undefined && (!Number.isInteger(explicitLimit) || explicitLimit <= 0)) {
     throw new Error('resources/list limit must be a positive integer');
@@ -292,72 +281,6 @@ function normalizeListResourcesOptions(
   };
 }
 
-function normalizeRelativePath(filePath: string, kbPath: string): string {
-  return path
-    .relative(kbPath, filePath)
-    .split(path.sep)
-    .join('/');
-}
-
-async function listCandidatePathsForPrefix(kbPath: string, prefix: string): Promise<string[]> {
-  const normalizedPrefix = prefix.replace(/\\/g, '/');
-  const prefixSegments = normalizedPrefix.split('/').filter((segment) => segment.length > 0);
-  let searchRelativeDir = '';
-  if (normalizedPrefix.endsWith('/')) {
-    searchRelativeDir = prefixSegments.join('/');
-  } else if (prefixSegments.length > 1) {
-    searchRelativeDir = prefixSegments.slice(0, -1).join('/');
-  }
-
-  const searchRoot = path.join(kbPath, searchRelativeDir);
-  let stat;
-  try {
-    stat = await fsp.stat(searchRoot);
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      return [];
-    }
-    throw error;
-  }
-  if (!stat.isDirectory()) {
-    return [];
-  }
-
-  return getFilesRecursively(searchRoot);
-}
-
-async function listResourcesForKb(
-  kbName: string,
-  prefix: string,
-): Promise<Resource[]> {
-  const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
-  const candidates = await listCandidatePathsForPrefix(kbPath, prefix);
-  const filePaths = filterIngestablePaths(candidates, kbPath, {
-    extraExtensions: INGEST_EXTRA_EXTENSIONS,
-    excludePaths: INGEST_EXCLUDE_PATHS,
-  });
-  const quarantined = new Set(
-    (await listIngestQuarantine(kbPath)).map((record) => record.relative_path),
-  );
-  const resources: Resource[] = [];
-
-  for (const filePath of filePaths.sort()) {
-    const relativePath = normalizeRelativePath(filePath, kbPath);
-    if (prefix.length > 0 && !relativePath.startsWith(prefix)) continue;
-    if (quarantined.has(relativePath)) continue;
-
-    resources.push({
-      uri: buildResourceUri(kbName, relativePath),
-      name: relativePath,
-      description: `Document in knowledge base "${kbName}"`,
-      mimeType: mimeTypeForResource(filePath),
-    });
-  }
-
-  return resources;
-}
-
 /**
  * `resources/list` body. No-option calls preserve the original full listing:
  * every registered KB under `KNOWLEDGE_BASES_ROOT_DIR` contributes one
@@ -366,75 +289,36 @@ async function listResourcesForKb(
  */
 export async function listResources(options?: ListResourcesOptions): Promise<ListResourcesResult> {
   const normalizedOptions = normalizeListResourcesOptions(options);
-  const resources: Resource[] = [];
-  let matchedCount = 0;
-  const appendResource = (resource: Resource): void => {
-    if (normalizedOptions.limit === undefined) {
-      resources.push(resource);
-      return;
-    }
-    if (
-      matchedCount >= normalizedOptions.offset &&
-      resources.length <= normalizedOptions.limit
-    ) {
-      resources.push(resource);
-    }
-    matchedCount += 1;
-  };
-  const pageHasLookahead = (): boolean =>
-    normalizedOptions.limit !== undefined && resources.length > normalizedOptions.limit;
-
-  const knowledgeBases = normalizedOptions.kbName === undefined
-    ? (await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR)).sort().filter(isValidKbName)
-    : [normalizedOptions.kbName];
-
-  if (normalizedOptions.prefix.length === 0) {
-    for (const kbName of knowledgeBases) {
-      const [enumeration] = await enumerateIngestableKbFiles(
-        KNOWLEDGE_BASES_ROOT_DIR,
-        [kbName],
-        {
-          extraExtensions: INGEST_EXTRA_EXTENSIONS,
-          excludePaths: INGEST_EXCLUDE_PATHS,
-        },
-      );
-      if (enumeration === undefined) continue;
-      const { kbPath, filePaths } = enumeration;
-      const quarantined = new Set(
-        (await listIngestQuarantine(kbPath)).map((record) => record.relative_path),
-      );
-      for (const filePath of filePaths.sort()) {
-        const relativePath = normalizeRelativePath(filePath, kbPath);
-        if (quarantined.has(relativePath)) continue;
-
-        appendResource({
-          uri: buildResourceUri(kbName, relativePath),
-          name: relativePath,
-          description: `Document in knowledge base "${kbName}"`,
-          mimeType: mimeTypeForResource(filePath),
-        });
-        if (pageHasLookahead()) break;
-      }
-      if (pageHasLookahead()) break;
-    }
-  } else {
-    for (const kbName of knowledgeBases) {
-      const kbResources = await listResourcesForKb(kbName, normalizedOptions.prefix);
-      for (const resource of kbResources) {
-        appendResource(resource);
-        if (pageHasLookahead()) break;
-      }
-      if (pageHasLookahead()) break;
-    }
-  }
+  const listing = await listKnowledgeBaseDocuments({
+    rootDir: KNOWLEDGE_BASES_ROOT_DIR,
+    ...(normalizedOptions.kbName !== undefined ? { kbName: normalizedOptions.kbName } : {}),
+    prefix: normalizedOptions.prefix,
+    prefixMode: 'resource-prefix',
+    failOnEnumerationError: false,
+    skipMissingKb: true,
+    ...(normalizedOptions.limit !== undefined
+      ? { maxDocuments: normalizedOptions.offset + normalizedOptions.limit + 1 }
+      : {}),
+    extraExtensions: INGEST_EXTRA_EXTENSIONS,
+    excludePaths: INGEST_EXCLUDE_PATHS,
+  });
+  const resources = listing.documents.map((document) => ({
+    uri: buildResourceUri(document.kbName, document.relativePath),
+    name: document.relativePath,
+    description: `Document in knowledge base "${document.kbName}"`,
+    mimeType: mimeTypeForResource(document.absolutePath),
+  }));
 
   if (normalizedOptions.limit === undefined) {
     return { resources };
   }
 
-  const pageResources = resources.slice(0, normalizedOptions.limit);
+  const pageResources = resources.slice(
+    normalizedOptions.offset,
+    normalizedOptions.offset + normalizedOptions.limit,
+  );
   const nextOffset = normalizedOptions.offset + pageResources.length;
-  const nextCursor = pageHasLookahead()
+  const nextCursor = nextOffset < resources.length
     ? encodeListResourcesCursor({
       v: 1,
       offset: nextOffset,

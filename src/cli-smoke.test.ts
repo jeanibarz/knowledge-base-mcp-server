@@ -9,6 +9,7 @@ const cliPath = path.join(process.cwd(), 'build', 'cli.js');
 
 const SUBCOMMANDS = [
   'list',
+  'ls',
   'search',
   'open',
   'serve',
@@ -120,7 +121,8 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
     name: string;
     subcommand: Subcommand;
     args: string[];
-    assert: (result: RunResult) => void;
+    setup?: () => void | Promise<void>;
+    assert: (result: RunResult) => void | Promise<void>;
   }> = [
     {
       name: 'list emits a stable JSON array',
@@ -129,6 +131,54 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
       assert: (result) => {
         expect(result.code).toBe(0);
         expect(parseStdoutJson(result)).toEqual([{ name: 'alpha' }]);
+      },
+    },
+    {
+      name: 'ls emits a stable JSON document inventory',
+      subcommand: 'ls',
+      args: ['ls', 'alpha', '--format=json'],
+      assert: (result) => {
+        expect(result.code).toBe(0);
+        expect(parseStdoutJson(result)).toEqual({
+          schemaVersion: 'kb.ls.v1',
+          knowledgeBases: ['alpha'],
+          prefix: null,
+          documents: [{ knowledgeBase: 'alpha', path: 'note.md' }],
+        });
+      },
+    },
+    {
+      name: 'ls long JSON includes frontmatter metadata',
+      subcommand: 'ls',
+      args: ['ls', 'alpha', '--long', '--format=json'],
+      setup: async () => {
+        await corpus.writeFile(
+          'alpha/metadata.md',
+          '---\ntier: durable\nstatus: active\ntype: note\n---\n# Metadata\n',
+        );
+      },
+      assert: (result) => {
+        expect(result.code).toBe(0);
+        const body = parseStdoutJson(result) as {
+          documents: Array<Record<string, unknown>>;
+        };
+        expect(body.documents).toHaveLength(2);
+        expect(body.documents.find((document) => document.path === 'note.md')).toEqual(expect.objectContaining({
+          knowledgeBase: 'alpha',
+          path: 'note.md',
+          tier: null,
+          status: null,
+          type: null,
+          mtime: expect.any(String),
+        }));
+        expect(body.documents.find((document) => document.path === 'metadata.md')).toEqual(expect.objectContaining({
+          knowledgeBase: 'alpha',
+          path: 'metadata.md',
+          tier: 'durable',
+          status: 'active',
+          type: 'note',
+          mtime: expect.any(String),
+        }));
       },
     },
     {
@@ -340,10 +390,45 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
     },
   ];
 
-  describe.each(outputCases)('$name', ({ args, assert }) => {
-    it('exercises the representative output path', () => {
-      assert(runCli(args));
+  describe.each(outputCases)('$name', ({ args, setup, assert }) => {
+    it('exercises the representative output path', async () => {
+      await setup?.();
+      await assert(runCli(args));
     });
+  });
+
+  it('ls scopes a prefix and enumerates multiple KBs through the spawned CLI', async () => {
+    await corpus.writeFile('alpha/projects/active/current.md', '# Current\n');
+    await corpus.writeFile('alpha/projects/active-old/old.md', '# Old\n');
+    await corpus.writeFile('beta/other.md', '# Other\n');
+
+    const all = runCli(['ls', '--format=json']);
+    expect(all.code).toBe(0);
+    expect(parseStdoutJson(all)).toMatchObject({
+      knowledgeBases: ['alpha', 'beta'],
+      documents: [
+        { knowledgeBase: 'alpha', path: 'note.md' },
+        { knowledgeBase: 'alpha', path: 'projects/active-old/old.md' },
+        { knowledgeBase: 'alpha', path: 'projects/active/current.md' },
+        { knowledgeBase: 'beta', path: 'other.md' },
+      ],
+    });
+
+    const scoped = runCli(['ls', 'alpha', '--prefix=projects/active', '--format=json']);
+    expect(scoped.code).toBe(0);
+    expect(parseStdoutJson(scoped)).toMatchObject({
+      knowledgeBases: ['alpha'],
+      prefix: 'projects/active',
+      documents: [{ knowledgeBase: 'alpha', path: 'projects/active/current.md' }],
+    });
+  });
+
+  it('ls reports unknown knowledge bases with exit code 1 and stderr', () => {
+    const result = runCli(['ls', 'missing']);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('not found');
   });
 
   const invalidArgCases: Array<{
@@ -352,6 +437,8 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
     expected: string;
   }> = [
     { subcommand: 'list', args: ['list', '--format=xml'], expected: 'invalid --format' },
+    { subcommand: 'ls', args: ['ls', '--format=xml'], expected: 'invalid --format' },
+    { subcommand: 'ls', args: ['ls', '../outside'], expected: 'invalid KB name' },
     { subcommand: 'search', args: ['search', 'alpha', '--threshold=nope'], expected: 'invalid --threshold' },
     { subcommand: 'open', args: ['open'], expected: 'missing <chunk-id' },
     { subcommand: 'serve', args: ['serve', '--bogus'], expected: 'unknown flag: --bogus' },

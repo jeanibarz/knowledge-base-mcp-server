@@ -29,6 +29,7 @@ import { FEEDBACK_HELP, runFeedback } from './cli-feedback.js';
 import { IMPORT_URL_HELP, runImportUrl } from './cli-import-url.js';
 import { INSPECT_HELP, runInspect } from './cli-inspect.js';
 import { LIST_HELP, runList } from './cli-list.js';
+import { LS_HELP, runLs } from './cli-ls.js';
 import { LLM_HELP, runLlm } from './cli-llm.js';
 import { LOGS_HELP, runLogs } from './cli-logs.js';
 import { MODELS_HELP, runModels } from './cli-models.js';
@@ -103,6 +104,7 @@ const NON_OPTION_HELP_SECTIONS = new Set([
 
 const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'list',         summary: 'List available knowledge bases.',                                         help: LIST_HELP,         handler: runList },
+  { name: 'ls',           summary: 'List ingestable documents in one or all knowledge bases.',                help: LS_HELP,           handler: runLs },
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },
   { name: 'open',         summary: 'Resolve a chunk id / kb:// URI / result path to its source file.',        help: OPEN_HELP,         handler: runOpen },
   { name: 'cite',         summary: 'Export BibTeX or CSL-JSON from note frontmatter.',                       help: CITE_HELP,         handler: runCite },
