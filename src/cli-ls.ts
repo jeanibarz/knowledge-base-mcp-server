@@ -248,7 +248,7 @@ function escapeLinePath(value: string): string {
 }
 
 function escapeControlCharacters(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f\u2028\u2029]/gu, (character) => {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu, (character) => {
     switch (character) {
       case '\b': return '\\b';
       case '\t': return '\\t';

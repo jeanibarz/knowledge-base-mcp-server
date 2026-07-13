@@ -178,6 +178,22 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
     await expect(listKnowledgeBaseDocuments({ rootDir })).rejects.toThrow('resolves outside');
   });
 
+  it('does not treat an in-root KB symlink as a second inventory', async () => {
+    const rootDir = await makeRoot();
+    await writeFile(rootDir, 'work/logs/secret.md', '# Secret\n');
+    await fsp.symlink(
+      path.join(rootDir, 'work', 'logs'),
+      path.join(rootDir, 'alias'),
+      'dir',
+    );
+
+    const listing = await listKnowledgeBaseDocuments({ rootDir });
+    expect(listing.knowledgeBases).toEqual(['work']);
+    expect(listing.documents).toEqual([]);
+    await expect(listKnowledgeBaseDocuments({ rootDir, kbName: 'alias' }))
+      .rejects.toThrow('is a symlink');
+  });
+
   it('rejects prefix roots that resolve outside the knowledge-base root', async () => {
     const rootDir = await makeRoot();
     const outsideDir = path.join(tempDir!, 'outside-prefix');
@@ -292,14 +308,14 @@ describe('TS-CLI-857: report formatting', () => {
       scopedKb: 'work',
       documents: [{
         knowledgeBase: 'work',
-        path: 'odd\r\u001b[31m.md',
+        path: 'odd\r\u001b[31m\u0085.md',
         tier: 'durable',
         status: null,
         type: null,
         mtime: '2026-07-13T08:00:00.000Z',
       }],
     }, 'md');
-    expect(markdown).toContain('odd\\r\\u001b[31m.md');
+    expect(markdown).toContain('odd\\r\\u001b[31m\\u0085.md');
     const pathWithBackslashPipe = String.raw`foo\|bar.md`;
     const tableWithBackslashPipe = formatLsReport({
       knowledgeBases: ['work'],

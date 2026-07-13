@@ -104,7 +104,15 @@ export async function listKnowledgeBaseDocuments(
     // directory symlink may pass listKnowledgeBases() but point outside the
     // configured root, which must never become an enumerable document scope.
     try {
-      await resolveKnowledgeBaseDir(options.rootDir, kbName);
+      const resolvedKbPath = await resolveKnowledgeBaseDir(options.rootDir, kbName);
+      if ((await fsp.lstat(resolvedKbPath)).isSymbolicLink()) {
+        if (options.kbName !== undefined) {
+          throw new Error(
+            `knowledge base ${JSON.stringify(kbName)} is a symlink and cannot be listed`,
+          );
+        }
+        continue;
+      }
     } catch (error: unknown) {
       const skipMissing = options.skipMissingKb ?? options.kbName === undefined;
       if (skipMissing && (error as { code?: unknown }).code === 'KB_NOT_FOUND') continue;
@@ -233,9 +241,15 @@ async function listKnowledgeBaseDirectories(rootDir: string): Promise<string[]> 
   const directories: string[] = [];
   for (const candidate of candidates) {
     try {
-      if ((await fsp.stat(path.join(rootDir, candidate))).isDirectory()) {
-        directories.push(candidate);
+      const candidatePath = path.join(rootDir, candidate);
+      const entry = await fsp.lstat(candidatePath);
+      if (entry.isSymbolicLink()) {
+        // Preserve resolveKnowledgeBaseDir's outside-root guard, but do not
+        // expose an in-root symlink alias as a second KB inventory.
+        await resolveKnowledgeBaseDir(rootDir, candidate);
+        continue;
       }
+      if (entry.isDirectory()) directories.push(candidate);
     } catch (error: unknown) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
       if (code === 'ENOENT' || code === 'ENOTDIR') continue;
