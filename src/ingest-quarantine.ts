@@ -337,5 +337,7 @@ function normalizeRelativePath(relativePath: string): string {
     throw new Error(`invalid quarantine relative path: ${JSON.stringify(relativePath)}`);
   }
   assertNoTraversal(relativePath);
-  return relativePath.replace(/\\/g, '/');
+  // A backslash is a valid filename character on POSIX. Only translate it
+  // when it is the host platform's path separator, as on Windows.
+  return path.sep === '\\' ? relativePath.replace(/\\/g, '/') : relativePath;
 }

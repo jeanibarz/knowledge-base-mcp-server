@@ -21,11 +21,12 @@ export const LS_HELP = `kb ls — list ingestable documents in one or all knowle
 Usage:
   kb ls [<kb>] [--prefix=<path>] [--long] [--format=md|json]
 
-Lists one KB-relative path per ingestable, non-quarantined document. Without a
-positional KB, paths are prefixed with their knowledge-base name so output from
-multiple KBs remains unambiguous. The listing is read-only and follows the same
-ingest filters and quarantine state as MCP resources/list. Control characters in
-short paths are escaped so each document remains on one output line.
+Short output lists one KB-relative path per ingestable, non-quarantined document.
+Without a positional KB, paths are prefixed with their knowledge-base name so
+output from multiple KBs remains unambiguous. Long output uses a separate KB
+column. The listing is read-only and follows the same ingest filters and
+quarantine state as MCP resources/list. Control characters in short paths are
+escaped so each document remains on one output line.
 
 Options:
   --prefix=<path>       Restrict the listing to a KB-relative subtree.
