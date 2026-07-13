@@ -7,10 +7,10 @@ Zooming into the package from [`c4-container.md`](./c4-container.md). The curren
 ```mermaid
 flowchart TB
   Entry["index.ts<br/>server process entrypoint"]
-  CLI["cli.ts<br/>37-command kb dispatcher"]
+  CLI["cli.ts<br/>39-command kb dispatcher"]
 
   subgraph cli["CLI command families"]
-    ReadCli["read/search<br/>list, search, open, related, stats, explain, where"]
+    ReadCli["read/search<br/>list, ls, search, open, related, stats, explain, where"]
     WriteCli["KB writes<br/>remember, capture, import-url, ask --save-transcript"]
     OpsCli["operations<br/>doctor, logs, backup, restore, verify, quarantine, stale-check, superseded, promote"]
     EvalCli["evaluation<br/>eval, eval-gate, feedback, research"]
@@ -44,6 +44,7 @@ flowchart TB
     DocstoreCas["docstore-cas.ts<br/>docstore hardlink CAS"]
     FileIngest["file-ingest.ts / loaders.ts<br/>chunking, manifests, loaders"]
     KbFs["kb-fs.ts / kb-paths.ts / ingest-filter.ts<br/>KB enumeration and path safety"]
+    KbListing["kb-document-listing.ts<br/>shared ingest/quarantine-filtered inventory"]
   end
 
   subgraph cross["Cross-cutting"]
@@ -61,6 +62,7 @@ flowchart TB
   CLI --> EvalCli
   CLI --> ModelCli
   ReadCli --> CliShared
+  ReadCli --> KbListing
   ReadCli --> Decompose
   WriteCli --> CliShared
   OpsCli --> CliShared
@@ -104,6 +106,8 @@ flowchart TB
   SearchCore --> Metrics
   KBS --> Errors
   FIM --> Errors
+  Resources --> KbListing
+  KbListing --> KbFs
 ```
 
 ## Components
@@ -115,7 +119,7 @@ flowchart TB
 | MCP tool specs | `src/mcp-tool-specs.ts` | Single source of truth for MCP tool names, descriptions, input schemas, and ingest gating. | Used by server registration and generated `docs/reference/mcp-tools.md`. |
 | MCP resources and prompts | `src/mcp-resources.ts`, `src/mcp-prompts.ts` | Expose `kb://` source-document list/read and optional prompt templates. | Registered from `KnowledgeBaseServer.buildMcpServer()`. |
 | Remote transports | `src/transport/http.ts`, `src/transport/sse.ts`, `src/transport/base-http-host.ts`, `src/transport-config.ts` | Host streamable HTTP/SSE sessions with bearer auth, origin checks, backoff, per-session MCP logging levels, runtime counters, and health/metrics endpoints. | Selected by `MCP_TRANSPORT`. |
-| CLI dispatcher | `src/cli.ts` | Loads package `.env`, owns help/version/daemon routing, and dispatches 38 subcommands from the `SUBCOMMANDS` registry. | Package `kb` bin and generated `docs/reference/cli.md`. |
+| CLI dispatcher | `src/cli.ts` | Loads package `.env`, owns help/version/daemon routing, and dispatches 39 subcommands from the `SUBCOMMANDS` registry. | Package `kb` bin and generated `docs/reference/cli.md`. |
 | CLI command modules | `src/cli-*.ts` | Implement shell workflows: search/list/open/related, ask/remember/capture/import-url, model management, diagnostics, logs, backup/restore, eval/feedback/research, daemon/service helpers, cache, config, and completion. | Called only by `src/cli.ts` or other CLI modules. |
 | Shared CLI/core helpers | `src/cli-shared.ts`, `src/*-core.ts` | Keep command-independent logic reusable by CLI, MCP, tests, and benchmarks. | Used by CLI handlers and selected server paths. |
 | FAISS index manager | `src/FaissIndexManager.ts` | Model-scoped owner of embedding clients, ingest/update, sidecars, backend load/save, similarity search, stats, and chunk metadata shaping. | Constructed by CLI shared loading, `ManagerRegistry`, and read-only server helpers. |
@@ -128,6 +132,7 @@ flowchart TB
 | Answering and relevance | `src/ask-core.ts`, `src/llm-client.ts`, `src/relevance-gate.ts`, `src/reranker.ts` | Pack retrieval context, call local/OpenAI-compatible LLMs, optionally gate/rerank candidates, and report timing/provenance. | Used by CLI `ask`, MCP `ask_knowledge`, MCP/CLI retrieval, eval-gate. |
 | Formatting and content guard | `src/formatter.ts`, `src/injection-guard.ts`, `src/kb-shield.ts` | Sanitize metadata, format markdown/JSON retrieval output, and tag/wrap untrusted retrieved content. | Used by CLI and MCP retrieval surfaces. |
 | KB filesystem helpers | `src/kb-fs.ts`, `src/kb-paths.ts`, `src/file-utils.ts`, `src/ingest-filter.ts` | List KBs, validate names/paths, walk files, hash content, and apply inclusion/exclusion rules. | Used by CLI, MCP resources/writes, and FAISS manager. |
+| Document inventory | `src/kb-document-listing.ts` | Share deterministic ingestable, non-quarantined document enumeration and prefix matching between `kb ls` and `resources/list`. | Used by CLI `ls` and MCP resources/list. |
 | Locking and lifecycle | `src/write-lock.ts`, `src/manager-registry.ts`, `src/triggerWatcher.ts`, `src/recursive-fs-watch.ts` | Serialize mutating index/sidecar paths, cache managers per model, and trigger refreshes from polling/fs-watch inputs. | Used by server and CLI mutation/refresh flows. |
 | Observability and diagnostics | `src/logger.ts`, `src/canonical-log.ts`, `src/metrics.ts`, `src/prometheus-export.ts`, `src/otel-trace.ts`, `src/kb-stats.ts` | Keep stdout clean, emit canonical events, expose stats/metrics/traces, and power doctor/logs/stats surfaces. | Used across CLI/MCP runtime modules. |
 | Configuration and errors | `src/config/*.ts`, `src/errors.ts`, `src/error-utils.ts`, `src/ollama-error.ts` | Resolve env/config defaults, validate schemas, and translate provider/filesystem failures into stable operator-facing errors. | Imported by runtime modules and generated config docs. |
