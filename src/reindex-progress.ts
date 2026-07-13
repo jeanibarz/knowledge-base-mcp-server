@@ -32,6 +32,7 @@ import {
 import { writeFileAtomicDurable } from './file-utils.js';
 import { logger } from './logger.js';
 import { checkReindexRunState } from './reindex-runner.js';
+import { readLlmContextPolicy } from './sensitivity-policy.js';
 
 // Filename of the progress ledger under FAISS_INDEX_PATH. Unlike
 // `.reindex.run.json`, this file is never deleted — it is the durable
@@ -56,16 +57,16 @@ export interface ReindexProgressFile {
 export interface ReindexProgressKb {
   knowledge_base: string;
   /**
-   * Files with a chunk manifest under `<kb>/.index/` — the denominator
-   * the reindex walks. Approximate while a run is in flight (manifests
-   * are rewritten during the rebuild).
+   * Eligible files with a chunk manifest under `<kb>/.index/` — the
+   * denominator the contextual-preface work walks. Sources explicitly marked
+   * `kb_policy.no_llm_context` are not pending LLM work.
    */
   files_indexed: number;
-  /** Files that have a contextual-preface sidecar (the reindex reached them). */
+  /** Eligible files that have a contextual-preface sidecar. */
   files_with_sidecar: number;
   files_complete: number;
   files_incomplete: number;
-  /** `max(0, files_indexed - files_with_sidecar)` — files not yet started. */
+  /** `max(0, files_indexed - files_with_sidecar)` — eligible files not yet started. */
   files_pending: number;
   chunks_resolved: number;
   chunks_failed: number;
@@ -115,7 +116,7 @@ export function reindexProgressFilePath(): string {
   return path.join(FAISS_INDEX_PATH, REINDEX_PROGRESS_FILENAME);
 }
 
-/** Count chunk manifests under `<kb>/.index/` — one per indexed file. */
+/** Count eligible chunk manifests under `<kb>/.index/` — one per indexed file. */
 async function countIndexedFiles(kb: string): Promise<number> {
   const indexDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, '.index');
   let entries: Array<import('fs').Dirent>;
@@ -124,7 +125,22 @@ async function countIndexedFiles(kb: string): Promise<number> {
   } catch {
     return 0;
   }
-  return entries.filter((e) => e.isFile() && e.name.endsWith('.chunks.json')).length;
+  const manifests = entries.filter((e) => e.isFile() && e.name.endsWith('.chunks.json'));
+  let eligible = 0;
+  for (const manifest of manifests) {
+    const source = path.join(
+      KNOWLEDGE_BASES_ROOT_DIR,
+      kb,
+      manifest.name.replace(/\.chunks\.json$/, ''),
+    );
+    if (!(await isPolicyExcludedSource(source))) eligible += 1;
+  }
+  return eligible;
+}
+
+async function isPolicyExcludedSource(source: string): Promise<boolean> {
+  const snapshot = await readLlmContextPolicy(source);
+  return snapshot.readable && snapshot.valid && snapshot.policy?.no_llm_context === true;
 }
 
 function fileStatusOf(status: ContextualSidecarStatus): ReindexFileStatus {
@@ -165,7 +181,11 @@ export async function computeReindexProgress(
   const kbs: ReindexProgressKb[] = [];
   for (const name of [...names].sort()) {
     if (filter && !filter.has(name)) continue;
-    const files: ReindexProgressFile[] = (byKb.get(name) ?? [])
+    const eligibleStatuses: ContextualSidecarStatus[] = [];
+    for (const status of byKb.get(name) ?? []) {
+      if (!(await isPolicyExcludedSource(status.source))) eligibleStatuses.push(status);
+    }
+    const files: ReindexProgressFile[] = eligibleStatuses
       .map((status) => ({
         source: status.source,
         status: fileStatusOf(status),

@@ -72,6 +72,7 @@ const prefaces = await resolveContextualPrefaces({
   documentHash,
   documentBody: body,
   chunks: documents.map(d => d.pageContent),
+  metadata: { frontmatter: {} },
 });
 
 // Eventually-consistent check: if the file mutated between loadFile() and the
@@ -111,6 +112,8 @@ export async function resolveContextualPrefaces(args: {
   documentHash: string;
   documentBody: string;
   chunks: string[];
+  // Optional legacy metadata; the resolver always verifies `source` directly
+  // before sidecar use and before every LLM attempt.
   metadata?: Record<string, unknown>;
 }): Promise<(string | null)[]>;
 
@@ -140,11 +143,11 @@ Sidecar shape:
 
 ```json
 {
-  "schema_version": "contextual-preface.v1",
+  "schema_version": "contextual-preface.sidecar.v1",
   "source": "/home/jean/knowledge_bases/operating-environment/local-research-agent.md",
   "knowledge_base": "operating-environment",
   "document_hash": "<sha256>",
-  "generator": "contextual-preface.v1",
+  "generator": "contextual-preface.v2",
   "model": "qwen3.6-35b-a3b",
   "chunk_size": 1000,
   "chunk_overlap": 200,
@@ -298,7 +301,7 @@ Hard-coded constants (not env vars):
       "coverage_pct": 96.6,
       "cache_bytes": 18211,
       "model": "qwen3.6-35b-a3b",
-      "generator": "contextual-preface.v1",
+      "generator": "contextual-preface.v2",
       "failures": {
         "retry_pending": 1,
         "by_error_code": { "llm_unreachable": 1, "truncated_doc": 1 }

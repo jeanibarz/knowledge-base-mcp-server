@@ -782,11 +782,10 @@ async function hydrateSensitivityPoliciesFromSource(
     const metadata = result.metadata as Record<string, unknown>;
     const source = metadata.source;
     if (typeof source !== 'string' || source.trim().length === 0) {
-      // Some transport-level callers provide retrieval-shaped documents
-      // without a persisted source path. There is no current file to read in
-      // that case, so preserve their indexed metadata; persisted index
-      // results carry `source` and take the authoritative path below.
-      return result;
+      // Without a current source file the indexed policy cannot be verified.
+      // Preserve the retrieval result, but mark it ineligible for every LLM
+      // prompt rather than treating missing provenance as public content.
+      return markLlmContextExcluded(result, metadata);
     }
 
     let sourcePolicyPromise = policyBySource.get(source);
@@ -858,7 +857,7 @@ async function assertCurrentLlmContext(
   await Promise.all(metadataList.map(async (metadata) => {
     const source = metadata.source;
     if (typeof source !== 'string' || source.trim().length === 0) {
-      return;
+      throw new AskPolicyBoundaryError();
     }
     let sourcePolicyPromise = policyBySource.get(source);
     if (sourcePolicyPromise === undefined) {

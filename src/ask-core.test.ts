@@ -14,7 +14,7 @@ interface ManagerResult {
 
 function makeManager(
   content: string,
-  source: string,
+  source: string | undefined,
   frontmatter: Record<string, unknown> = {},
 ): { similaritySearch: jest.Mock } & Record<string, unknown> {
   return {
@@ -27,7 +27,7 @@ function makeManager(
         metadata: {
           knowledgeBase: 'ops',
           relativePath: 'deploys.md',
-          source,
+          ...(source !== undefined ? { source } : {}),
           frontmatter,
           loc: { lines: { from: 10, to: 18 } },
         },
@@ -147,5 +147,24 @@ describe('executeAsk answer cache read-through (#656)', () => {
     expect(call).toHaveBeenCalledTimes(1);
     const callArgs = call.mock.calls as unknown as Array<[unknown]>;
     expect(JSON.stringify(callArgs[0][0])).not.toContain('Secret deploy details');
+  });
+
+  it('fails closed when retrieved evidence has no source provenance', async () => {
+    const cache = new AnswerCache({ enabled: false, indexPath: dir });
+    const call = jest.fn(async () => ({ content: 'answer', model: 'qwen3', raw: {} }));
+
+    const result = await executeAsk(
+      askArgs('What changed?'),
+      makeDeps(cache, makeManager('Unverified private context', undefined), call),
+      Date.now(),
+    );
+
+    expect(result.context_packing).toMatchObject({
+      included_chunks: 0,
+      excluded_chunks: 1,
+      policy_filtered_chunks: 1,
+    });
+    const callArgs = call.mock.calls as unknown as Array<[unknown]>;
+    expect(JSON.stringify(callArgs[0][0])).not.toContain('Unverified private context');
   });
 });

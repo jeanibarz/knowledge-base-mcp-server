@@ -235,6 +235,22 @@ describe('cache-aware reindex estimate (#408)', () => {
     expect(est).toEqual({ total_chunks: 4, cache_hits: 2, retry_skips: 0, cold_chunks: 2 });
   });
 
+  it('does not price protected sources as contextual-preface work', async () => {
+    await writeManifest('alpha', 'private', 3);
+    const source = path.join(tempDir, 'kbs', 'alpha', 'private');
+    await fsp.mkdir(path.dirname(source), { recursive: true });
+    await fsp.writeFile(source, [
+      '---',
+      'kb_policy:',
+      '  no_llm_context: true',
+      '---',
+      'private body',
+    ].join('\n'));
+
+    const est = await runner.estimateContextualReindexWork(['alpha']);
+    expect(est).toEqual({ total_chunks: 0, cache_hits: 0, retry_skips: 0, cold_chunks: 0 });
+  });
+
   it('adds embedding rebuild cost to cold-preface cost for the LRA-window guard', async () => {
     // 1000 chunks × 8s = 8000s (~2h13m) would cross 06:00 UTC from a
     // 04:00 start.

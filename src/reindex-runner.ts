@@ -51,6 +51,7 @@ import { FaissIndexManager, type IndexUpdateSummary } from './FaissIndexManager.
 import { writeFileAtomicDurable } from './file-utils.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
+import { readLlmContextPolicy } from './sensitivity-policy.js';
 
 // RFC 017 §5 step 1 — cold-case per-chunk cost upper bound. Used by the
 // self-runtime estimator. Tuned to 8s based on cold KV-cache miss
@@ -411,11 +412,17 @@ export async function estimateContextualReindexWork(
     for (const manifestPath of await collectChunkManifestPaths(indexDir)) {
       const chunkCount = await readManifestChunkCount(manifestPath);
       if (chunkCount <= 0) continue;
-      totalChunks += chunkCount;
       // The manifest path mirrors the source layout:
       // `<kb>/.index/<rel>.chunks.json` → source `<kb>/<rel>`.
       const rel = path.relative(indexDir, manifestPath).replace(/\.chunks\.json$/, '');
       const source = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, rel);
+      const sourcePolicy = await readLlmContextPolicy(source);
+      if (sourcePolicy.readable && sourcePolicy.valid && sourcePolicy.policy?.no_llm_context === true) {
+        // Protected sources are retrieval/index inputs, but they deliberately
+        // have no contextual-preface LLM work to price or resume.
+        continue;
+      }
+      totalChunks += chunkCount;
       const tally = await classifyContextualSidecarChunks(source, kb, chunkCount, nowMs);
       cacheHits += tally.cache_hits;
       retrySkips += tally.retry_skips;

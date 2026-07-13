@@ -122,11 +122,11 @@ export async function resolveContextualPrefaces(
     return args.chunks.map(() => null);
   }
 
-  // File-ingest supplies metadata for every source. Re-read the source policy
-  // before touching the sidecar so a stale in-memory snapshot cannot authorize
-  // cache hits or LLM work after the file becomes protected.
-  const verifyCurrentPolicy = args.metadata !== undefined;
-  if (verifyCurrentPolicy && !(await currentSourceAllowsLlm(args.source))) {
+  // Re-read the source policy before touching the sidecar so a stale or
+  // omitted in-memory snapshot cannot authorize cache hits or LLM work after
+  // the file becomes protected.
+  const verifyCurrentPolicy = true;
+  if (!(await currentSourceAllowsLlm(args.source))) {
     return args.chunks.map(() => null);
   }
 
@@ -146,6 +146,11 @@ export async function resolveContextualPrefaces(
   // Read existing sidecar (if any).
   const sidecarPath = sidecarPathFor(args.source, args.knowledgeBaseName);
   const existing = await readSidecar(sidecarPath);
+  // Sidecar I/O is awaited. Recheck after it so a policy flip during the read
+  // cannot turn an old cached preface into an outbound-context authorization.
+  if (!(await currentSourceAllowsLlm(args.source))) {
+    return args.chunks.map(() => null);
+  }
 
   // Walk chunks: cache-hit, retry-after-not-yet-elapsed, or LLM call.
   const truncatedDoc = args.documentBody.length > CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS

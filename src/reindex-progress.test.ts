@@ -152,6 +152,23 @@ describe('computeReindexProgress', () => {
     expect(kb.files_pending).toBe(0);
   });
 
+  it('does not count a protected source as pending contextual work', async () => {
+    await writeSidecar('alpha', 'file-0', [{ preface: 'ctx' }]);
+    await writeManifests('alpha', 2);
+    const protectedSource = path.join(kbsDir, 'alpha', 'file-0');
+    await fsp.writeFile(protectedSource, [
+      '---',
+      'kb_policy:',
+      '  no_llm_context: true',
+      '---',
+      'private',
+    ].join('\n'));
+
+    const kb = (await progress.computeReindexProgress()).kbs[0];
+    expect(kb.files_indexed).toBe(1);
+    expect(kb.files_pending).toBe(1);
+  });
+
   it('aggregates multiple KBs, sorted by name, into totals', async () => {
     await writeSidecar('zeta', 'z.md', [{ preface: 'ctx' }]);
     await writeSidecar('alpha', 'a.md', [

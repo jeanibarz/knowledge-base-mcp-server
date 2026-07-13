@@ -53,6 +53,17 @@ beforeEach(async () => {
   setEnv('KB_CONTEXTUAL_RETRIEVAL', 'on');
   setEnv('KB_LLM_ENDPOINT', 'http://127.0.0.1:0/v1/chat/completions');
   setEnv('KB_CONTEXTUAL_MAX_TOKENS', '120');
+  for (const name of [
+    'foo.md',
+    'sensitive.md',
+    'runbook.md',
+    'note.md',
+    'oversized.md',
+    'repeated-oversized.md',
+    'stale-oversized.md',
+  ]) {
+    await fsp.writeFile(path.join(tempDir, name), '# test source\n', 'utf-8');
+  }
   jest.resetModules();
   global.fetch = FETCH_MOCK as unknown as typeof fetch;
   FETCH_MOCK.mockReset();
@@ -101,7 +112,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     setEnv('KB_LLM_ENDPOINT', undefined);
     const { resolveContextualPrefaces } = await loadModule();
     const result = await resolveContextualPrefaces({
-      source: '/tmp/foo.md',
+      source: path.join(tempDir, 'foo.md'),
       knowledgeBaseName: 'alpha',
       documentHash: 'h0',
       documentBody: 'body',
@@ -116,7 +127,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     const { resolveContextualPrefaces } = await loadModule();
 
     const result = await resolveContextualPrefaces({
-      source: '/tmp/alpha/sensitive.md',
+      source: path.join(tempDir, 'sensitive.md'),
       knowledgeBaseName: 'alpha',
       documentHash: 'sensitive-doc-hash',
       documentBody: 'sensitive body must never reach an LLM',
@@ -151,7 +162,6 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
       documentHash: 'current-policy-hash',
       documentBody: 'current protected body',
       chunks: ['current protected chunk'],
-      metadata: { frontmatter: {} },
     });
 
     expect(result).toEqual([null]);
@@ -165,7 +175,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     const { resolveContextualPrefaces } = await loadModule();
 
     const result = await resolveContextualPrefaces({
-      source: '/tmp/alpha/runbook.md',
+      source: path.join(tempDir, 'runbook.md'),
       knowledgeBaseName: 'alpha',
       documentHash: 'doc-hash-fake',
       documentBody: [
@@ -187,7 +197,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
   it('calls the LLM once per chunk and writes a sidecar that round-trips', async () => {
     FETCH_MOCK.mockImplementation(async () => llmResponse('section 2 preface text'));
     const { resolveContextualPrefaces, sidecarPathFor } = await loadModule();
-    const source = '/tmp/alpha/note.md';
+    const source = path.join(tempDir, 'note.md');
 
     const result = await resolveContextualPrefaces({
       source,
@@ -217,7 +227,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     FETCH_MOCK.mockImplementation(async () => llmResponse('preface'));
     const { resolveContextualPrefaces } = await loadModule();
     const args = {
-      source: '/tmp/alpha/note.md',
+      source: path.join(tempDir, 'note.md'),
       knowledgeBaseName: 'alpha',
       documentHash: 'doc-hash-v1',
       documentBody: 'body',
@@ -237,7 +247,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     FETCH_MOCK.mockImplementation(async () => llmResponse('preface'));
     const { resolveContextualPrefaces } = await loadModule();
     const base = {
-      source: '/tmp/alpha/note.md',
+      source: path.join(tempDir, 'note.md'),
       knowledgeBaseName: 'alpha',
       documentBody: 'body',
       chunks: ['chunk-a'],
@@ -252,7 +262,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
   it('generates prefaces for oversized-document chunks that fit in the context prefix', async () => {
     FETCH_MOCK.mockImplementation(async () => llmResponse('oversized preface'));
     const { GENERATOR_VERSION, resolveContextualPrefaces, sidecarPathFor } = await loadModule();
-    const source = '/tmp/alpha/oversized.md';
+    const source = path.join(tempDir, 'oversized.md');
     const inWindowChunk = 'in-window chunk';
     const boundaryChunk = 'boundary chunk';
     const outOfWindowChunk = 'out-of-window chunk';
@@ -299,7 +309,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
   it('records truncated_doc for repeated chunk text that also occurs beyond the context prefix', async () => {
     FETCH_MOCK.mockImplementation(async () => llmResponse('should not be used'));
     const { resolveContextualPrefaces, sidecarPathFor } = await loadModule();
-    const source = '/tmp/alpha/repeated-oversized.md';
+    const source = path.join(tempDir, 'repeated-oversized.md');
     const repeatedChunk = 'ambiguous repeated chunk';
     const documentBody = [
       repeatedChunk,
@@ -325,7 +335,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
   it('invalidates old v1 truncated_doc entries so in-prefix chunks self-heal', async () => {
     FETCH_MOCK.mockImplementation(async () => llmResponse('recovered preface'));
     const { GENERATOR_VERSION, resolveContextualPrefaces, sha256, sidecarPathFor } = await loadModule();
-    const source = '/tmp/alpha/stale-oversized.md';
+    const source = path.join(tempDir, 'stale-oversized.md');
     const chunk = 'recoverable in-prefix chunk';
     const documentBody = `${chunk}${'x'.repeat(CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS)}`;
     const sidecarPath = sidecarPathFor(source, 'alpha');
@@ -375,7 +385,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
       throw new Error('network unreachable');
     });
     const { resolveContextualPrefaces, sidecarPathFor } = await loadModule();
-    const source = '/tmp/alpha/note.md';
+    const source = path.join(tempDir, 'note.md');
 
     const result = await resolveContextualPrefaces({
       source,
@@ -402,7 +412,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     });
     const { resolveContextualPrefaces } = await loadModule();
     const args = {
-      source: '/tmp/alpha/note.md',
+      source: path.join(tempDir, 'note.md'),
       knowledgeBaseName: 'alpha',
       documentHash: 'h',
       documentBody: 'b',
@@ -420,7 +430,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
       llmResponse("I cannot fulfill this request"),
     );
     const { resolveContextualPrefaces, sidecarPathFor } = await loadModule();
-    const source = '/tmp/alpha/note.md';
+    const source = path.join(tempDir, 'note.md');
 
     const result = await resolveContextualPrefaces({
       source,
@@ -448,7 +458,7 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     );
     const { resolveContextualPrefaces } = await loadModule();
     const result = await resolveContextualPrefaces({
-      source: '/tmp/alpha/note.md',
+      source: path.join(tempDir, 'note.md'),
       knowledgeBaseName: 'alpha',
       documentHash: 'h',
       documentBody: 'b',
