@@ -142,6 +142,7 @@ export async function collectLsReport(options: CollectLsReportOptions): Promise<
     ...(options.kb !== undefined ? { kbName: options.kb } : {}),
     ...(options.prefix !== undefined ? { prefix: options.prefix } : {}),
     failOnEnumerationError: true,
+    skipMissingKb: false,
   });
   const documents = options.long === true
     ? await mapBounded(

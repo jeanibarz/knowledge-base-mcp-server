@@ -6,9 +6,8 @@ import {
   collectLsReport,
   formatLsReport,
   parseLsArgs,
-  LS_SCHEMA_VERSION,
 } from './cli-ls.js';
-import { listKnowledgeBaseDocuments } from './kb-document-listing.js';
+import { documentMatchesPrefix, listKnowledgeBaseDocuments } from './kb-document-listing.js';
 
 describe('TS-CLI-857: kb ls argument parsing', () => {
   it('defaults to all KBs, plain paths, and short output', () => {
@@ -59,6 +58,14 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
     await fsp.mkdir(path.dirname(fullPath), { recursive: true });
     await fsp.writeFile(fullPath, content, 'utf8');
   }
+
+  it('keeps CLI subtree and resources/list compatibility prefixes distinct', () => {
+    expect(documentMatchesPrefix('docs/guide.md', 'docs')).toBe(true);
+    expect(documentMatchesPrefix('docs2/guide.md', 'docs')).toBe(false);
+    expect(documentMatchesPrefix('projects/active-old/old.md', 'projects/active')).toBe(false);
+    expect(documentMatchesPrefix('docs/guide.md', 'docs/g', 'resource-prefix')).toBe(true);
+    expect(documentMatchesPrefix('guide.md', 'guide', 'resource-prefix')).toBe(true);
+  });
 
   it('shares ingest and quarantine rules while applying a true subtree prefix', async () => {
     const rootDir = await makeRoot();
@@ -134,6 +141,21 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
 
     await expect(listKnowledgeBaseDocuments({ rootDir })).rejects.toThrow('resolves outside');
   });
+
+  it('rejects prefix roots that resolve outside the knowledge-base root', async () => {
+    const rootDir = await makeRoot();
+    const outsideDir = path.join(tempDir!, 'outside-prefix');
+    await fsp.mkdir(outsideDir, { recursive: true });
+    await fsp.writeFile(path.join(outsideDir, 'secret.md'), '# Outside\n', 'utf8');
+    await fsp.mkdir(path.join(rootDir, 'work'), { recursive: true });
+    await fsp.symlink(outsideDir, path.join(rootDir, 'work', 'link'), 'dir');
+
+    await expect(listKnowledgeBaseDocuments({
+      rootDir,
+      kbName: 'work',
+      prefix: 'link/',
+    })).rejects.toThrow('resolves outside');
+  });
 });
 
 describe('TS-CLI-857: report formatting', () => {
@@ -177,7 +199,7 @@ describe('TS-CLI-857: report formatting', () => {
       documents: Array<Record<string, unknown>>;
     };
     expect(json).toMatchObject({
-      schemaVersion: LS_SCHEMA_VERSION,
+      schemaVersion: 'kb.ls.v1',
       knowledgeBases: ['work'],
       documents: [{
         knowledgeBase: 'work',

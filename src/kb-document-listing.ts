@@ -5,6 +5,7 @@
 // other. The returned order is deterministic so callers can page or pipe it
 // without adding their own sorting rules.
 
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { INGEST_EXCLUDE_PATHS, INGEST_EXTRA_EXTENSIONS } from './config/ingest.js';
 import {
@@ -18,7 +19,6 @@ import { filterIngestablePaths } from './ingest-filter.js';
 import { isValidKbName } from './kb-paths.js';
 import { listIngestQuarantine } from './ingest-quarantine.js';
 import { getFilesRecursivelyWithDiagnostics } from './file-utils.js';
-import * as fsp from 'fs/promises';
 
 export interface KnowledgeBaseDocument {
   kbName: string;
@@ -78,7 +78,7 @@ export function documentMatchesPrefix(
   if (prefix.endsWith('/')) return relativePath.startsWith(prefix);
   if (!relativePath.startsWith(prefix)) return false;
   if (relativePath.length === prefix.length || relativePath[prefix.length] === '/') return true;
-  return prefixMode === 'resource-prefix' && prefix.includes('/');
+  return prefixMode === 'resource-prefix';
 }
 
 export async function listKnowledgeBaseDocuments(
@@ -181,6 +181,15 @@ async function enumerateKbForPrefix(
     return { kbName, kbPath, filePaths: [], diagnostics: { failure_count: 0, failures: [] } };
   }
 
+  const kbRealPath = await fsp.realpath(kbPath);
+  const searchRealPath = await fsp.realpath(searchRoot);
+  if (!isPathWithin(kbRealPath, searchRealPath)) {
+    throw new Error(
+      `document listing prefix ${JSON.stringify(prefix)} resolves outside ` +
+      `knowledge base ${JSON.stringify(kbName)}`,
+    );
+  }
+
   const enumeration = await getFilesRecursivelyWithDiagnostics(searchRoot);
   return {
     kbName,
@@ -217,5 +226,14 @@ function normalizeRelativePath(filePath: string, kbPath: string): string {
 }
 
 function compareStrings(a: string, b: string): number {
-  return a.localeCompare(b);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function isPathWithin(rootPath: string, candidatePath: string): boolean {
+  const relativePath = path.relative(rootPath, candidatePath);
+  return relativePath === '' || (
+    relativePath !== '..' &&
+    !relativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relativePath)
+  );
 }
