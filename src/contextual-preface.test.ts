@@ -279,6 +279,62 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     expect(sidecar.model).toBe('new-model');
   });
 
+  it('keys the sidecar on the configured model, not a versioned response echo', async () => {
+    // Providers may answer a request for `gpt-4o` with `gpt-4o-2024-08-06`.
+    // The sidecar must record the *configured* id, because that is what
+    // `sidecarModelMatchesCurrentProvider` compares against. Recording the echo
+    // would mismatch on every subsequent run and re-preface the whole corpus,
+    // forever.
+    setEnv('KB_LLM_MODEL', 'gpt-4o');
+    FETCH_MOCK.mockImplementation(async () => llmResponse('preface', 'gpt-4o-2024-08-06'));
+    const { resolveContextualPrefaces, sidecarPathFor } = await loadModule();
+    const args = {
+      source: path.join(tempDir, 'note.md'),
+      knowledgeBaseName: 'alpha',
+      documentHash: 'doc-hash-v1',
+      documentBody: 'body',
+      chunks: ['chunk-a'],
+    };
+
+    await resolveContextualPrefaces(args);
+    expect(FETCH_MOCK).toHaveBeenCalledTimes(1);
+
+    const sidecar = JSON.parse(
+      await fsp.readFile(sidecarPathFor(args.source, args.knowledgeBaseName), 'utf-8'),
+    ) as { model?: string };
+    expect(sidecar.model).toBe('gpt-4o');
+
+    // Same config, same content: the second run must be a cache hit.
+    FETCH_MOCK.mockClear();
+    await resolveContextualPrefaces(args);
+    expect(FETCH_MOCK).not.toHaveBeenCalled();
+  });
+
+  it('still records the response model when no model is configured', async () => {
+    // With no configured identifier the response model is the only stable one,
+    // so it stays authoritative (and must still round-trip as a cache hit).
+    setEnv('KB_LLM_MODEL', undefined);
+    FETCH_MOCK.mockImplementation(async () => llmResponse('preface', 'local-resolved'));
+    const { resolveContextualPrefaces, sidecarPathFor } = await loadModule();
+    const args = {
+      source: path.join(tempDir, 'note.md'),
+      knowledgeBaseName: 'alpha',
+      documentHash: 'doc-hash-v1',
+      documentBody: 'body',
+      chunks: ['chunk-a'],
+    };
+
+    await resolveContextualPrefaces(args);
+    const sidecar = JSON.parse(
+      await fsp.readFile(sidecarPathFor(args.source, args.knowledgeBaseName), 'utf-8'),
+    ) as { model?: string };
+    expect(sidecar.model).toBe('local-resolved');
+
+    FETCH_MOCK.mockClear();
+    await resolveContextualPrefaces(args);
+    expect(FETCH_MOCK).not.toHaveBeenCalled();
+  });
+
   it('invalidates the cache when documentHash changes', async () => {
     FETCH_MOCK.mockImplementation(async () => llmResponse('preface'));
     const { resolveContextualPrefaces } = await loadModule();

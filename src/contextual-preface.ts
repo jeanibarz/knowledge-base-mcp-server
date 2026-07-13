@@ -169,7 +169,11 @@ export async function resolveContextualPrefaces(
   const nowMs = Date.now();
   const resolved: (string | null)[] = new Array(args.chunks.length);
   const newEntries: SidecarChunkEntry[] = new Array(args.chunks.length);
-  let modelSeen: string | null = resolveLlmProvider().model ?? existing?.model ?? null;
+  // The sidecar's `model` is a cache key, so it must record the same identifier
+  // `sidecarModelMatchesCurrentProvider` compares against — the *configured*
+  // model. See the guard on `result.model` below.
+  const configuredModel = resolveLlmProvider().model;
+  let modelSeen: string | null = configuredModel ?? existing?.model ?? null;
   let cacheHits = 0;
   let llmCalls = 0;
   let failures = 0;
@@ -272,7 +276,14 @@ export async function resolveContextualPrefaces(
         chunkText: args.chunks[i],
         isLlmContextAllowed: () => currentSourceAllowsLlm(args.source),
       });
-      if (result.model !== null) modelSeen = result.model;
+      // Only adopt the response model when nothing is configured. A provider may
+      // echo a normalized/versioned id (request `gpt-4o` -> response
+      // `gpt-4o-2024-08-06`); recording that while
+      // `sidecarModelMatchesCurrentProvider` compares against the configured
+      // `gpt-4o` would invalidate every sidecar on the next run and re-preface
+      // the whole corpus, on every run, forever. With no configured model the
+      // response is the only stable identifier, so it stays authoritative.
+      if (configuredModel === undefined && result.model !== null) modelSeen = result.model;
       newEntries[i] = {
         chunk_index: i,
         chunk_hash: chunkHash,
