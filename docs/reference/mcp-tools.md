@@ -18,7 +18,7 @@ The server exposes 9 tools, 3 of which are only registered when `KB_INGEST_ENABL
 | Tool | Gated | Description |
 | --- | --- | --- |
 | [`list_knowledge_bases`](#list_knowledge_bases) | — | Lists the available knowledge bases. |
-| [`retrieve_knowledge`](#retrieve_knowledge) | — | Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided. |
+| [`retrieve_knowledge`](#retrieve_knowledge) | — | Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion. |
 | [`ask_knowledge`](#ask_knowledge) | — | Answers a question from retrieved knowledge-base context using the configured local OpenAI-compatible LLM endpoint. Returns a structured payload with answer, citations, context-packing diagnostics, abstention_reason, LLM provenance, retrieval model, and optional timing. Use retrieve_knowledge when you only need raw chunks. |
 | [`list_models`](#list_models) | — | Lists the embedding models registered for retrieval. Returns an array of {model_id, provider, model_name, active}. Use the model_id as the optional `model_name` argument to retrieve_knowledge to query a specific model instead of the active default. |
 | [`kb_stats`](#kb_stats) | — | Reports observability stats for the knowledge base index: per-KB file_count, chunk_count, total_bytes_indexed and last_updated_at; the active embedding provider/model/dim; the on-disk index_path; server version/commit/uptime; process-lifetime chat-completion calls with bounded provider/model attribution, attempts/retries, cache outcomes, and answer impact; answer-cache counters; and HTTP/SSE transport counters when a remote transport is active. Pass `knowledge_base_name` to scope to a single KB; omit it to get an entry per registered KB. |
@@ -35,7 +35,7 @@ _No input parameters._
 
 ## `retrieve_knowledge`
 
-Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.
+Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.
 
 | Field | Type | Required | Constraints | Description |
 | --- | --- | --- | --- | --- |

@@ -11,7 +11,7 @@ import { initializeProjectConfig } from './project-config.js';
 initializeProjectConfig();
 
 export const DEFAULT_RETRIEVE_KNOWLEDGE_DESCRIPTION =
-  'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.';
+  'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.';
 export const RETRIEVE_KNOWLEDGE_DESCRIPTION =
   process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION && process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION.length > 0
     ? process.env.RETRIEVE_KNOWLEDGE_DESCRIPTION
