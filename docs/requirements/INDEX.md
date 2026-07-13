@@ -247,6 +247,22 @@
 **Linked Tests:** TS-SEARCH-374
 **Dependencies:** RFC019
 
+### FR-SEARCH-853: Hybrid metadata filter correctness
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** Hybrid retrieval shall apply the `extensions`, `path_glob`, `tags`, `since`, and `until` metadata filters to lexical candidates before RRF fusion, with the same AND semantics used by dense retrieval and bounded lexical overfetch when filters are present.
+**Rationale:** A filtered hybrid query must not return a lexical-only chunk outside the caller's requested metadata boundary.
+
+**Acceptance Criteria:**
+- [x] Given a hybrid query with a tag filter, when a lexical-only hit lacks the required tag, then that hit shall be absent from the fused results.
+- [x] Given hybrid queries with `extensions`, `path_glob`, `since`, or `until`, when lexical-only hits violate the corresponding filter, then those hits shall be absent from the fused results.
+- [x] Given a filtered lexical leg, when the first lexical candidates are rejected, then the leg shall query a bounded larger candidate pool before clipping the valid results to its requested fetch size.
+- [x] Given hybrid retrieval documentation and inline comments, when metadata filters are described, then they shall state that filters apply before fusion and that the similarity threshold remains dense-only.
+
+**Linked Tests:** TS-SEARCH-853
+**Dependencies:** FR-SEARCH-374
+
 ### NFR-CACHE-830: Conservative Disk Cache Read Failures
 **Status:** Implemented
 **Priority:** Medium

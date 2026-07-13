@@ -11,7 +11,10 @@
 // always vs when-empty) and its per-KB error semantics, since those are
 // the only behaviours the adapters had to reimplement consistently.
 
-import { describe, expect, it, jest } from '@jest/globals';
+import * as fsp from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 
 import {
   HYBRID_FETCH_CAP,
@@ -177,6 +180,8 @@ describe('fuseHybridResults', () => {
 interface FakeIndexOptions {
   numFiles: number;
   hits: LexicalSearchResult[];
+  /** Return only the requested top-k, as a real lexical index does. */
+  limitHits?: boolean;
   /** When set, the next `query` rejects with this error. */
   failQuery?: Error;
   /** When set, the next `refresh` rejects with this error. */
@@ -191,9 +196,9 @@ function makeFakeIndex(opts: FakeIndexOptions) {
     return { added: 1, updated: 0, removed: 0, failed: 0, totalFiles: files, totalChunks: 1 };
   });
   const save = jest.fn(async () => {});
-  const query = jest.fn(async (_q: string, _k: number) => {
+  const query = jest.fn(async (_q: string, k: number) => {
     if (opts.failQuery) throw opts.failQuery;
-    return opts.hits;
+    return opts.limitHits ? opts.hits.slice(0, k) : opts.hits;
   });
   const numFiles = jest.fn(() => files);
   const idx = { refresh, save, query, numFiles } as unknown as LexicalIndex;
@@ -209,7 +214,76 @@ function lexicalHit(source: string, score: number): LexicalSearchResult {
   return { pageContent: `${source}::body`, metadata: { source, chunkIndex: 0 }, score };
 }
 
+const filterTempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(filterTempDirs.map((dir) => fsp.rm(dir, { recursive: true, force: true })));
+  filterTempDirs.length = 0;
+});
+
 describe('runLexicalLeg', () => {
+  it('FR-SEARCH-853: applies metadata filters to lexical hits before fusion', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-hybrid-filter-'));
+    filterTempDirs.push(root);
+
+    const makeSource = async (relativePath: string, mtimeIso: string): Promise<string> => {
+      const source = path.join(root, relativePath);
+      await fsp.mkdir(path.dirname(source), { recursive: true });
+      await fsp.writeFile(source, 'content', 'utf-8');
+      const mtime = new Date(mtimeIso);
+      await fsp.utimes(source, mtime, mtime);
+      return source;
+    };
+    const validSource = await makeSource('runbooks/valid.md', '2026-07-10T00:00:00Z');
+    const wrongTagSource = await makeSource('runbooks/wrong-tag.md', '2026-07-10T00:00:00Z');
+    const wrongExtensionSource = await makeSource('runbooks/wrong-extension.txt', '2026-07-10T00:00:00Z');
+    const wrongPathSource = await makeSource('notes/wrong-path.md', '2026-07-10T00:00:00Z');
+    const tooOldSource = await makeSource('runbooks/too-old.md', '2026-06-01T00:00:00Z');
+    const tooNewSource = await makeSource('runbooks/too-new.md', '2026-08-01T00:00:00Z');
+
+    const hit = (
+      source: string,
+      relativePath: string,
+      extension: string,
+      tags: string[],
+      score: number,
+    ): LexicalSearchResult => ({
+      pageContent: `${relativePath}::body`,
+      metadata: { source, relativePath: `kb/${relativePath}`, extension, tags, chunkIndex: 0 },
+      score,
+    });
+    const hits = [
+      hit(wrongTagSource, 'runbooks/wrong-tag.md', '.md', ['other'], 100),
+      hit(wrongExtensionSource, 'runbooks/wrong-extension.txt', '.txt', ['adr'], 90),
+      hit(wrongPathSource, 'notes/wrong-path.md', '.md', ['adr'], 80),
+      hit(tooOldSource, 'runbooks/too-old.md', '.md', ['adr'], 70),
+      hit(tooNewSource, 'runbooks/too-new.md', '.md', ['adr'], 60),
+      hit(validSource, 'runbooks/valid.md', '.md', ['adr'], 1),
+    ];
+    const index = makeFakeIndex({ numFiles: 1, hits, limitHits: true });
+
+    const result = await runLexicalLeg({
+      kbs: [{ kbName: 'kb-a', kbPath: path.join(root, 'kb-a') }],
+      query: 'q',
+      fetchK: 5,
+      refresh: 'when-empty',
+      filters: {
+        extensions: ['md'],
+        pathGlob: 'runbooks/**',
+        tags: ['adr'],
+        since: '2026-07-01',
+        until: '2026-07-31',
+      },
+      loadIndex: async () => index.idx,
+    });
+
+    expect(index.query).toHaveBeenCalledWith('q', 20, expect.objectContaining({ unit: 'chunk' }));
+    expect(result.hits.map((h) => h.metadata.relativePath)).toEqual(['kb/runbooks/valid.md']);
+
+    const fused = fuseHybridResults({ denseResults: [], lexicalResults: result.hits, k: 5 });
+    expect(fused.map((h) => h.metadata.relativePath)).toEqual(['kb/runbooks/valid.md']);
+  });
+
   it('refreshes only when the index is empty under refresh="when-empty"', async () => {
     const empty = makeFakeIndex({ numFiles: 0, hits: [lexicalHit('a.md', 0.9)] });
     const populated = makeFakeIndex({ numFiles: 5, hits: [lexicalHit('b.md', 0.8)] });

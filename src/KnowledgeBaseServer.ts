@@ -1278,10 +1278,10 @@ export class KnowledgeBaseServer {
    * shape as the dense path.
    *
    * Notes:
-   * - Threshold and metadata POST-filters are dense-only knobs and are NOT
-   *   applied to the hybrid output. They will be re-introduced in a follow-up
-   *   if user demand exceeds the byte-compat win — keeping them off here
-   *   means hybrid does not silently filter chunks the lexical leg returned.
+   * - The similarity threshold remains a dense-only knob because lexical
+   *   scores use a BM25 scale. Metadata POST-filters are applied to both legs
+   *   before fusion, so hybrid cannot return a lexical-only chunk outside the
+   *   requested metadata boundary.
    * - The lexical index is auto-refreshed on first use per KB (when empty).
    *   `kb search --refresh` (CLI) is the explicit refresh path; the MCP
    *   server keeps the dense `updateIndex` invariant from the dense path.
@@ -1357,6 +1357,7 @@ export class KnowledgeBaseServer {
         query,
         fetchK,
         refresh: 'when-empty',
+        filters,
         onError: (kbName, err) => {
           logger.warn(`hybrid: lexical leg failed for KB "${kbName}": ${err.message}`);
         },
