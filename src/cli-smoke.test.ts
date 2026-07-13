@@ -361,6 +361,40 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
     });
   });
 
+  it('ls scopes a prefix and enumerates multiple KBs through the spawned CLI', async () => {
+    await corpus.writeFile('alpha/projects/active/current.md', '# Current\n');
+    await corpus.writeFile('alpha/projects/active-old/old.md', '# Old\n');
+    await corpus.writeFile('beta/other.md', '# Other\n');
+
+    const all = runCli(['ls', '--format=json']);
+    expect(all.code).toBe(0);
+    expect(parseStdoutJson(all)).toMatchObject({
+      knowledgeBases: ['alpha', 'beta'],
+      documents: [
+        { knowledgeBase: 'alpha', path: 'note.md' },
+        { knowledgeBase: 'alpha', path: 'projects/active-old/old.md' },
+        { knowledgeBase: 'alpha', path: 'projects/active/current.md' },
+        { knowledgeBase: 'beta', path: 'other.md' },
+      ],
+    });
+
+    const scoped = runCli(['ls', 'alpha', '--prefix=projects/active', '--format=json']);
+    expect(scoped.code).toBe(0);
+    expect(parseStdoutJson(scoped)).toMatchObject({
+      knowledgeBases: ['alpha'],
+      prefix: 'projects/active',
+      documents: [{ knowledgeBase: 'alpha', path: 'projects/active/current.md' }],
+    });
+  });
+
+  it('ls reports unknown knowledge bases with exit code 1 and stderr', () => {
+    const result = runCli(['ls', 'missing']);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('not found');
+  });
+
   const invalidArgCases: Array<{
     subcommand: Subcommand;
     args: string[];

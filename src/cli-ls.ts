@@ -1,6 +1,7 @@
 // `kb ls` — read-only inventory of ingestable, non-quarantined documents.
 
 import * as fsp from 'fs/promises';
+import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import {
   listKnowledgeBaseDocuments,
@@ -139,9 +140,14 @@ export async function collectLsReport(options: CollectLsReportOptions): Promise<
     rootDir: options.rootDir,
     ...(options.kb !== undefined ? { kbName: options.kb } : {}),
     ...(options.prefix !== undefined ? { prefix: options.prefix } : {}),
+    failOnEnumerationError: true,
   });
   const documents = options.long === true
-    ? await Promise.all(listing.documents.map(toLongDocument))
+    ? await mapBounded(
+      listing.documents,
+      resolveFsConcurrency(),
+      async (document) => toLongDocument(document),
+    )
     : listing.documents.map(toShortDocument);
 
   return {

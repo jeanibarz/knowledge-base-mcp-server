@@ -18,7 +18,6 @@ import {
   type ListResourcesRequest,
   type ListResourcesResult,
   type ReadResourceResult,
-  type Resource,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { INGEST_EXCLUDE_PATHS, INGEST_EXTRA_EXTENSIONS } from './config/ingest.js';
@@ -294,6 +293,11 @@ export async function listResources(options?: ListResourcesOptions): Promise<Lis
     rootDir: KNOWLEDGE_BASES_ROOT_DIR,
     ...(normalizedOptions.kbName !== undefined ? { kbName: normalizedOptions.kbName } : {}),
     prefix: normalizedOptions.prefix,
+    prefixMode: 'resource-prefix',
+    failOnEnumerationError: false,
+    ...(normalizedOptions.limit !== undefined
+      ? { maxDocuments: normalizedOptions.offset + normalizedOptions.limit + 1 }
+      : {}),
     extraExtensions: INGEST_EXTRA_EXTENSIONS,
     excludePaths: INGEST_EXCLUDE_PATHS,
   });

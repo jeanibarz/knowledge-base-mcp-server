@@ -67,6 +67,8 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
     await writeFile(rootDir, 'work/docs/reference.txt', 'reference\n');
     await writeFile(rootDir, 'work/docs/skip.pdf', 'not enabled by default\n');
     await writeFile(rootDir, 'work/docs2/not-in-prefix.md', '# Other\n');
+    await writeFile(rootDir, 'work/projects/active/current.md', '# Current\n');
+    await writeFile(rootDir, 'work/projects/active-old/old.md', '# Old\n');
     await writeFile(rootDir, 'work/logs/ignored.md', '# Log\n');
     await writeFile(rootDir, 'work/.hidden.md', '# Hidden\n');
     await writeFile(rootDir, 'work/docs/quarantined.md', '# Quarantined\n');
@@ -89,13 +91,34 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
       'docs/reference.txt',
     ]);
 
+    const nestedScoped = await listKnowledgeBaseDocuments({
+      rootDir,
+      kbName: 'work',
+      prefix: 'projects/active',
+    });
+    expect(nestedScoped.documents.map((document) => document.relativePath)).toEqual([
+      'projects/active/current.md',
+    ]);
+
     const all = await listKnowledgeBaseDocuments({ rootDir });
     expect(all.documents.map((document) => `${document.kbName}/${document.relativePath}`)).toEqual([
       'other/elsewhere.md',
       'work/docs/guide.md',
       'work/docs/reference.txt',
       'work/docs2/not-in-prefix.md',
+      'work/projects/active-old/old.md',
+      'work/projects/active/current.md',
     ]);
+  });
+
+  it('rejects knowledge-base roots that resolve outside the configured root', async () => {
+    const rootDir = await makeRoot();
+    const outsideDir = path.join(tempDir!, 'outside');
+    await fsp.mkdir(outsideDir, { recursive: true });
+    await fsp.writeFile(path.join(outsideDir, 'leaked.md'), '# Outside\n', 'utf8');
+    await fsp.symlink(outsideDir, path.join(rootDir, 'evil'), 'dir');
+
+    await expect(listKnowledgeBaseDocuments({ rootDir })).rejects.toThrow('resolves outside');
   });
 });
 
@@ -150,8 +173,10 @@ describe('TS-CLI-857: report formatting', () => {
     expect(json.documents[0].mtime).toEqual(expect.any(String));
 
     const markdown = formatLsReport(report, 'md');
+    const mtime = report.documents[0]?.mtime;
+    expect(mtime).toEqual(expect.any(String));
     expect(markdown).toContain('| KB | Path | Tier | Status | Type | Modified |');
-    expect(markdown).toContain('| work | guide.md | durable | active | guide |');
+    expect(markdown).toContain(`| work | guide.md | durable | active | guide | ${mtime} |`);
   });
 
   it('renders scoped short output as KB-relative paths and all-KB output with a KB prefix', async () => {

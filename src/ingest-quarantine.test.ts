@@ -73,6 +73,21 @@ describe('ingest quarantine manifest', () => {
     }
   });
 
+  it('can read a manifest without creating the global sidecar lock directory', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-quarantine-readonly-'));
+    try {
+      const kbPath = path.join(tempDir, 'kb');
+      await fsp.mkdir(kbPath, { recursive: true });
+      const q = await freshQuarantine(tempDir);
+
+      await expect(q.listIngestQuarantine(kbPath, { useLock: false })).resolves.toEqual([]);
+      await expect(fsp.stat(path.join(tempDir, '.faiss')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('dead-letters after max retries, ack allows one forced retry, and success removes the entry', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-quarantine-dlq-'));
     try {

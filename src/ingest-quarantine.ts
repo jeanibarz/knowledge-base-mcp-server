@@ -50,12 +50,20 @@ export interface IngestRetryDecision {
   record: IngestQuarantineRecord | null;
 }
 
+export interface ListIngestQuarantineOptions {
+  /** Avoid creating the global sidecar lock directory for read-only callers. */
+  useLock?: boolean;
+}
+
 export function quarantineManifestPath(kbPath: string): string {
   return path.join(kbPath, '.index', INGEST_QUARANTINE_FILENAME);
 }
 
-export async function listIngestQuarantine(kbPath: string): Promise<IngestQuarantineRecord[]> {
-  return readManifest(kbPath);
+export async function listIngestQuarantine(
+  kbPath: string,
+  options: ListIngestQuarantineOptions = {},
+): Promise<IngestQuarantineRecord[]> {
+  return options.useLock === false ? readManifestUnlocked(kbPath) : readManifest(kbPath);
 }
 
 export async function getIngestQuarantineRecord(
