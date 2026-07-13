@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import * as path from 'path';
 import {
   executeAsk,
   redactOutboundMessages,
@@ -8,6 +9,8 @@ import {
 } from './ask-core.js';
 import { logger } from './logger.js';
 import { nowMs } from './timing-core.js';
+
+const ELIGIBLE_SOURCE = path.join(process.cwd(), 'package.json');
 
 // A fake GitHub personal-access token shaped to match redactSecrets'
 // provider_token pattern. It must never survive to the outbound payload nor
@@ -23,7 +26,7 @@ function buildDeps(capture: { messages?: Array<{ role: string; content: string }
       {
         // Chunk text carries a leaked credential straight from the index.
         pageContent: `Deploy notes: export GITHUB_TOKEN=${FAKE_SECRET} then run.`,
-        metadata: { knowledgeBase: 'ops', relativePath: 'deploy.md' },
+        metadata: { knowledgeBase: 'ops', relativePath: 'deploy.md', source: ELIGIBLE_SOURCE },
         score: 0.9,
       },
     ]),

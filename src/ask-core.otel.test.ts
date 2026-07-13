@@ -64,7 +64,11 @@ function makeManager(content: string): Record<string, unknown> {
     similaritySearch: jest.fn(async (): Promise<ManagerResult[]> => [
       {
         pageContent: content,
-        metadata: { knowledgeBase: 'ops', relativePath: 'deploys.md' },
+        metadata: {
+          knowledgeBase: 'ops',
+          relativePath: 'deploys.md',
+          source: path.join(process.cwd(), 'package.json'),
+        },
         score: 0.1234,
       },
     ]),

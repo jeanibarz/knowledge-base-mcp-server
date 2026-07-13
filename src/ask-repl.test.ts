@@ -1,4 +1,5 @@
 import { describe, expect, it, jest } from '@jest/globals';
+import * as path from 'path';
 import { Readable, Writable } from 'stream';
 import {
   buildHistoryContext,
@@ -13,6 +14,8 @@ import { AnswerCache } from './ask-answer-cache.js';
 import type { AskExecutionArgs, AskKnowledgeResult, RunAskCoreDeps } from './ask-core.js';
 import type { ChatCompletionOptions, ChatCompletionResult } from './llm-client.js';
 
+const ELIGIBLE_SOURCE = path.join(process.cwd(), 'package.json');
+
 // --- fixtures (mirrors the manager/deps shape in ask-core.test.ts) ----------
 
 function makeManager(): { similaritySearch: jest.Mock } & Record<string, unknown> {
@@ -26,6 +29,7 @@ function makeManager(): { similaritySearch: jest.Mock } & Record<string, unknown
         metadata: {
           knowledgeBase: 'ops',
           relativePath: 'deploys.md',
+          source: ELIGIBLE_SOURCE,
           loc: { lines: { from: 10, to: 18 } },
         },
         score: 0.1234,
