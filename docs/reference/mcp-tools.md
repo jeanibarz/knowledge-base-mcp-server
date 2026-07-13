@@ -41,7 +41,7 @@ Retrieves similar chunks from the knowledge base based on a query. Optionally, i
 | --- | --- | --- | --- | --- |
 | `query` | string | yes | max 8192 chars | The search query to use for retrieving similar chunks from the knowledge base. |
 | `knowledge_base_name` | string | no | — | The name of the knowledge base to search. If omitted, all available knowledge bases are considered. |
-| `threshold` | number | no | — | The maximum similarity score threshold for returned dense documents. Defaults to 2 if not specified; in hybrid mode, the similarity threshold remains dense-only while metadata filters apply to lexical candidates before fusion. |
+| `threshold` | number | no | — | The maximum similarity score threshold for returned dense documents. Defaults to 2 if not specified; in hybrid mode, the threshold is not applied because both legs are over-fetched for fusion, while metadata filters apply to both legs before fusion. |
 | `model_name` | string | no | — | The model_id of an alternate embedding model to query (e.g. "openai__text-embedding-3-small"). If omitted, the active model is used. Run list_models for available ids. |
 | `extensions` | array of string | no | max 64 items | Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional. In hybrid mode, applied to lexical candidates before fusion. |
 | `path_glob` | string | no | max 1024 chars | Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching. In hybrid mode, applied to lexical candidates before fusion. |

@@ -296,11 +296,11 @@ function hasRetrievalFilters(
   filters: { extensions?: string[]; pathGlob?: string; tags?: string[]; since?: string; until?: string } | undefined,
 ): boolean {
   return filters !== undefined && (
-    (filters.extensions?.length ?? 0) > 0 ||
-    filters.pathGlob !== undefined ||
-    (filters.tags?.length ?? 0) > 0 ||
-    filters.since !== undefined ||
-    filters.until !== undefined
+    (filters.extensions?.some((value) => value.trim().length > 0) ?? false) ||
+    (typeof filters.pathGlob === 'string' && filters.pathGlob.length > 0) ||
+    (filters.tags?.some((value) => value.trim().length > 0) ?? false) ||
+    (typeof filters.since === 'string' && filters.since.length > 0) ||
+    (typeof filters.until === 'string' && filters.until.length > 0)
   );
 }
 
@@ -918,9 +918,14 @@ export class KnowledgeBaseServer {
     const knowledgeBaseName: string | undefined = args.knowledge_base_name;
     const threshold: number | undefined = args.threshold;
     const modelNameOverride: string | undefined = args.model_name;
-    const filters = (args.extensions || args.path_glob || args.tags || args.since || args.until)
-      ? { extensions: args.extensions, pathGlob: args.path_glob, tags: args.tags, since: args.since, until: args.until }
-      : undefined;
+    const candidateFilters = {
+      extensions: args.extensions,
+      pathGlob: args.path_glob,
+      tags: args.tags,
+      since: args.since,
+      until: args.until,
+    };
+    const filters = hasRetrievalFilters(candidateFilters) ? candidateFilters : undefined;
     const searchMode: 'dense' | 'hybrid' = args.search_mode ?? 'dense';
     const taskContext = args.task_context;
     const gateOverride: RelevanceGateOverride = args.gate;
@@ -1278,10 +1283,10 @@ export class KnowledgeBaseServer {
    * shape as the dense path.
    *
    * Notes:
-   * - The similarity threshold remains a dense-only knob because lexical
-   *   scores use a BM25 scale. Metadata POST-filters are applied to both legs
-   *   before fusion, so hybrid cannot return a lexical-only chunk outside the
-   *   requested metadata boundary.
+   * - Hybrid overfetches both legs for fusion, so the similarity threshold is
+   *   not applied in hybrid mode because fused scores are not dense scores.
+   *   Metadata POST-filters are applied to both legs before fusion, so hybrid
+   *   cannot return a lexical-only chunk outside the requested boundary.
    * - Unfiltered lexical retrieval is auto-refreshed on first use per KB
    *   (when empty). Filtered hybrid retrieval refreshes every KB so persisted
    *   tags, extensions, and paths reflect current source files; `kb search
@@ -1341,8 +1346,10 @@ export class KnowledgeBaseServer {
 
       // Lexical leg — BM25 over the same chunks the FAISS path embeds, but
       // managed independently (the lexical index is model-agnostic and lives
-      // under `${FAISS_INDEX_PATH}/lexical/<kb>/`). Auto-refresh on first use
-      // per KB; explicit refresh is the CLI's job (`kb search --refresh`).
+      // under `${FAISS_INDEX_PATH}/lexical/<kb>/`). Unfiltered calls refresh
+      // on first use per KB; filtered calls refresh every KB so persisted
+      // metadata is current. Explicit unfiltered refresh is the CLI's job
+      // (`kb search --refresh`).
       const allKbNames = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
       const kbNames = knowledgeBaseName
         ? allKbNames.filter((name) => name === knowledgeBaseName)

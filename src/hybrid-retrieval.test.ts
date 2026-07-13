@@ -27,7 +27,7 @@ import {
   type HybridChunk,
   type LexicalKb,
 } from './hybrid-retrieval.js';
-import type { LexicalIndex, LexicalSearchResult } from './lexical-index.js';
+import type { LexicalIndex, LexicalQueryOptions, LexicalSearchResult } from './lexical-index.js';
 import { kbSearchFailureMetrics } from './metrics.js';
 import { logger } from './logger.js';
 import { DEFAULT_C } from './rrf.js';
@@ -196,7 +196,7 @@ function makeFakeIndex(opts: FakeIndexOptions) {
     return { added: 1, updated: 0, removed: 0, failed: 0, totalFiles: files, totalChunks: 1 };
   });
   const save = jest.fn(async () => {});
-  const query = jest.fn(async (_q: string, k: number) => {
+  const query = jest.fn(async (_q: string, k: number, _options?: LexicalQueryOptions) => {
     if (opts.failQuery) throw opts.failQuery;
     return opts.limitHits ? opts.hits.slice(0, k) : opts.hits;
   });
@@ -282,17 +282,58 @@ describe('runLexicalLeg', () => {
     });
 
     expect(index.refresh).toHaveBeenCalledTimes(1);
+    expect(index.save).toHaveBeenCalledTimes(1);
+    expect(result.refreshed).toBe(1);
     expect(index.query).toHaveBeenCalledWith('q', 8, expect.objectContaining({ unit: 'chunk' }));
     expect(result.hits.map((h) => h.metadata.relativePath)).toEqual([
       'kb/runbooks/valid.md',
       'kb/runbooks/valid-second.md',
     ]);
 
-    const fused = fuseHybridResults({ denseResults: [], lexicalResults: result.hits, k: 2 });
+    expect(result.hits.map((h) => h.score)).toEqual([3, 2.5]);
+    const fused = fuseHybridResults({
+      denseResults: [lexicalHit('dense.md', 0.1)],
+      lexicalResults: result.hits,
+      k: 2,
+    });
     expect(fused.map((h) => h.metadata.relativePath)).toEqual([
+      undefined,
       'kb/runbooks/valid.md',
-      'kb/runbooks/valid-second.md',
     ]);
+  });
+
+  it('serializes concurrent filtered refreshes for the same KB', async () => {
+    let activeRefreshes = 0;
+    let maxActiveRefreshes = 0;
+    const refresh = jest.fn(async () => {
+      activeRefreshes += 1;
+      maxActiveRefreshes = Math.max(maxActiveRefreshes, activeRefreshes);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeRefreshes -= 1;
+      return { added: 0, updated: 0, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 };
+    });
+    const save = jest.fn(async () => {});
+    const query = jest.fn(async (_q: string, _k: number, _options?: LexicalQueryOptions) => []);
+    const idx = {
+      refresh,
+      save,
+      query,
+      numFiles: jest.fn(() => 1),
+    } as unknown as LexicalIndex;
+    const options = {
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 2,
+      refresh: 'when-empty' as const,
+      filters: { tags: ['adr'] },
+      loadIndex: async () => idx,
+    };
+
+    await Promise.all([runLexicalLeg(options), runLexicalLeg(options)]);
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(maxActiveRefreshes).toBe(1);
   });
 
   it('refreshes only when the index is empty under refresh="when-empty"', async () => {

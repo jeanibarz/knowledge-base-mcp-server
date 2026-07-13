@@ -307,13 +307,13 @@ export async function runLexicalLeg(opts: LexicalLegOptions): Promise<LexicalLeg
       knowledgeBasesRootDir: KNOWLEDGE_BASES_ROOT_DIR,
       filters: opts.filters,
     });
-  // Filter metadata is persisted in the lexical index. Refresh filtered
-  // requests so frontmatter changes cannot leave stale tags/extensions/path
-  // metadata eligible for fusion; unfiltered MCP/eval calls keep when-empty.
-  const lexicalRefreshPolicy = opts.filters === undefined ? opts.refresh : 'always';
-  const lexicalQueryK = lexicalPostFilter === undefined
-    ? opts.fetchK
-    : hybridFetchK(opts.fetchK);
+  // Filter metadata is persisted in the lexical index. Refresh effective
+  // filtered requests so frontmatter changes cannot leave stale
+  // tags/extensions/path metadata eligible for fusion; unfiltered MCP/eval
+  // calls keep when-empty.
+  const hasEffectiveFilter = lexicalPostFilter?.requiresOverfetch === true;
+  const lexicalRefreshPolicy = hasEffectiveFilter ? 'always' : opts.refresh;
+  const lexicalQueryK = hasEffectiveFilter ? hybridFetchK(opts.fetchK) : opts.fetchK;
   let refreshed = 0;
   const failedKbs: string[] = [];
   const all: LexicalSearchResult[] = [];
@@ -327,14 +327,10 @@ export async function runLexicalLeg(opts: LexicalLegOptions): Promise<LexicalLeg
           await idx.save();
           refreshed += 1;
         };
-        if (opts.filters === undefined) {
-          await refreshAndSave();
-        } else {
-          // Filtered requests refresh persisted metadata. Serialize that
-          // refresh/save per KB because LexicalIndex.save uses one shared
-          // index.json.tmp path for atomic replacement.
-          await withWriteLock(path.dirname(lexicalIndexFilePath(kbName)), refreshAndSave);
-        }
+        // LexicalIndex.save uses one shared index.json.tmp path for atomic
+        // replacement. Serialize every refresh/save per KB, including the
+        // legacy unfiltered refresh-on-empty path.
+        await withWriteLock(path.dirname(lexicalIndexFilePath(kbName)), refreshAndSave);
       }
       const hits = await idx.query(opts.query, lexicalQueryK, {
         unit: opts.rankingUnit ?? 'chunk',

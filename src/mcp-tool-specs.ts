@@ -66,15 +66,15 @@ const boundedGlobString = () =>
 export const RETRIEVE_KNOWLEDGE_INPUT = {
   query: boundedQueryString().describe('The search query to use for retrieving similar chunks from the knowledge base.'),
   knowledge_base_name: z.string().optional().describe('The name of the knowledge base to search. If omitted, all available knowledge bases are considered.'),
-  threshold: z.number().optional().describe('The maximum similarity score threshold for returned dense documents. Defaults to 2 if not specified; in hybrid mode, the similarity threshold remains dense-only while metadata filters apply to lexical candidates before fusion.'),
+  threshold: z.number().optional().describe('The maximum similarity score threshold for returned dense documents. Defaults to 2 if not specified; in hybrid mode, the threshold is not applied because both legs are over-fetched for fusion, while metadata filters apply to both legs before fusion.'),
   // RFC 013 M3 §4.5 — optional override of the active embedding model.
   // When omitted, the server uses the model recorded in active.txt.
   // When passed, must be a registered model_id (see list_models).
   model_name: z.string().optional().describe('The model_id of an alternate embedding model to query (e.g. "openai__text-embedding-3-small"). If omitted, the active model is used. Run list_models for available ids.'),
   // Issue #53 / #853 — metadata POST-filters. Applied to dense candidates
   // before return and lexical candidates before hybrid fusion, ANDed with
-  // each other and with knowledge_base_name. The similarity threshold is
-  // dense-only because lexical scores use a different scale.
+  // each other and with knowledge_base_name. Hybrid overfetches both legs for
+  // fusion, so the dense threshold is not applied to the fused results.
   extensions: boundedFilterArray().optional().describe('Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional. In hybrid mode, applied to lexical candidates before fusion.'),
   path_glob: boundedGlobString().optional().describe('Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching. In hybrid mode, applied to lexical candidates before fusion.'),
   tags: boundedFilterArray().optional().describe('Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter. In hybrid mode, applied to lexical candidates before fusion.'),

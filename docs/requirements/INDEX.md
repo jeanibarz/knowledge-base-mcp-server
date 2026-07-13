@@ -258,9 +258,9 @@
 - [x] Given a hybrid query with a tag filter, when a lexical-only hit lacks the required tag, then that hit shall be absent from the fused results.
 - [x] Given hybrid queries with `extensions`, `path_glob`, `since`, or `until`, when lexical-only hits violate the corresponding filter, then those hits shall be absent from the fused results.
 - [x] Given a filtered lexical leg, when the first lexical candidates are rejected, then the leg shall query a bounded larger candidate pool before clipping the valid results to its requested fetch size.
-- [x] Given hybrid retrieval documentation and inline comments, when metadata filters are described, then they shall state that filters apply before fusion and that the similarity threshold remains dense-only.
+- [x] Given hybrid retrieval documentation and inline comments, when metadata filters are described, then they shall state that filters apply before fusion and that the similarity threshold is not applied in hybrid mode.
 
-**Linked Tests:** TS-SEARCH-853 (`src/hybrid-retrieval.test.ts`)
+**Linked Tests:** TS-SEARCH-853 (`src/hybrid-retrieval.test.ts`, `src/KnowledgeBaseServer.test.ts`)
 **Dependencies:** FR-SEARCH-374
 
 ### NFR-CACHE-830: Conservative Disk Cache Read Failures

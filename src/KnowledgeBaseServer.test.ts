@@ -1591,7 +1591,19 @@ describe('KnowledgeBaseServer handlers', () => {
       '---\ntags: [other]\n---\nHYBRID_FILTER_QUERY wrong result\n',
     );
     updateIndexMock.mockResolvedValue(undefined);
-    similaritySearchMock.mockResolvedValue([]);
+    similaritySearchMock.mockResolvedValue([
+      {
+        pageContent: 'HYBRID_FILTER_QUERY dense valid result',
+        metadata: {
+          source: path.join(alphaDir, 'runbooks', 'valid.md'),
+          relativePath: 'alpha/runbooks/valid.md',
+          extension: '.md',
+          tags: ['adr'],
+          chunkIndex: 0,
+        },
+        score: 0.1,
+      },
+    ]);
 
     const server = await freshServer();
     const result = await server['handleRetrieveKnowledge']({
@@ -1602,6 +1614,14 @@ describe('KnowledgeBaseServer handlers', () => {
     });
 
     expect(result.isError).toBeUndefined();
+    expect(similaritySearchMock).toHaveBeenCalledWith(
+      'HYBRID_FILTER_QUERY',
+      40,
+      Number.POSITIVE_INFINITY,
+      'alpha',
+      expect.objectContaining({ tags: ['adr'] }),
+      expect.any(Object),
+    );
     const text: string = result.content[0].text;
     expect(text).toContain('valid result');
     expect(text).not.toContain('wrong result');
