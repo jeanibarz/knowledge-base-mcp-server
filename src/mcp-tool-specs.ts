@@ -66,7 +66,7 @@ const boundedGlobString = () =>
 export const RETRIEVE_KNOWLEDGE_INPUT = {
   query: boundedQueryString().describe('The search query to use for retrieving similar chunks from the knowledge base.'),
   knowledge_base_name: z.string().optional().describe('The name of the knowledge base to search. If omitted, all available knowledge bases are considered.'),
-  threshold: z.number().optional().describe('The maximum similarity score threshold for returned documents. Defaults to 2 if not specified.'),
+  threshold: z.number().optional().describe('The maximum similarity score threshold for returned dense documents. Defaults to 2 if not specified; in hybrid mode, the similarity threshold remains dense-only while metadata filters apply to lexical candidates before fusion.'),
   // RFC 013 M3 §4.5 — optional override of the active embedding model.
   // When omitted, the server uses the model recorded in active.txt.
   // When passed, must be a registered model_id (see list_models).

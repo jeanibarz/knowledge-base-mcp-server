@@ -1578,6 +1578,35 @@ describe('KnowledgeBaseServer handlers', () => {
     });
   });
 
+  it('handleRetrieveKnowledge applies metadata filters to hybrid lexical results (#853)', async () => {
+    const tempDir = await setRetrieveEnv();
+    const alphaDir = path.join(tempDir, 'alpha');
+    await fsp.mkdir(path.join(alphaDir, 'runbooks'), { recursive: true });
+    await fsp.writeFile(
+      path.join(alphaDir, 'runbooks', 'valid.md'),
+      '---\ntags: [adr]\n---\nHYBRID_FILTER_QUERY valid result\n',
+    );
+    await fsp.writeFile(
+      path.join(alphaDir, 'runbooks', 'wrong-tag.md'),
+      '---\ntags: [other]\n---\nHYBRID_FILTER_QUERY wrong result\n',
+    );
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'HYBRID_FILTER_QUERY',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+      tags: ['adr'],
+    });
+
+    expect(result.isError).toBeUndefined();
+    const text: string = result.content[0].text;
+    expect(text).toContain('valid result');
+    expect(text).not.toContain('wrong result');
+  });
+
   it('handleRetrieveKnowledge fails closed on provider errors by default', async () => {
     const tempDir = await setRetrieveEnv();
     await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });

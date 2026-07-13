@@ -260,7 +260,7 @@
 - [x] Given a filtered lexical leg, when the first lexical candidates are rejected, then the leg shall query a bounded larger candidate pool before clipping the valid results to its requested fetch size.
 - [x] Given hybrid retrieval documentation and inline comments, when metadata filters are described, then they shall state that filters apply before fusion and that the similarity threshold remains dense-only.
 
-**Linked Tests:** TS-SEARCH-853
+**Linked Tests:** TS-SEARCH-853 (`src/hybrid-retrieval.test.ts`)
 **Dependencies:** FR-SEARCH-374
 
 ### NFR-CACHE-830: Conservative Disk Cache Read Failures

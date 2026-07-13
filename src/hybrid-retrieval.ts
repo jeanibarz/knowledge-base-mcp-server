@@ -218,7 +218,7 @@ export type LexicalRefreshPolicy = 'always' | 'when-empty';
 export interface LexicalLegOptions {
   kbs: ReadonlyArray<LexicalKb>;
   query: string;
-  /** Per-KB top-k handed to `LexicalIndex.query`, then merged + clipped. */
+  /** Final per-KB clip size after filtered overfetch, then merged + clipped. */
   fetchK: number;
   /**
    * `'always'` mirrors `kb search --refresh` — refresh + save before every
@@ -278,8 +278,10 @@ export interface LexicalLegResult {
  *
  *   1. Load the per-KB index.
  *   2. Refresh + save when policy says so (always, or when the index is empty).
+ *      Filtered calls always refresh so persisted metadata reflects current
+ *      source frontmatter and paths.
  *   3. Query the top-`fetchK` hits and accumulate them. When metadata filters
- *      are present, use a bounded overfetch pool before applying the shared
+ *      are present, query a bounded larger pool before applying the shared
  *      post-filter so rejected hits do not consume every lexical slot.
  *
  * After the iteration, the merged valid hits are score-sorted descending and
@@ -299,16 +301,20 @@ export async function runLexicalLeg(opts: LexicalLegOptions): Promise<LexicalLeg
       knowledgeBasesRootDir: KNOWLEDGE_BASES_ROOT_DIR,
       filters: opts.filters,
     });
+  // Filter metadata is persisted in the lexical index. Refresh filtered
+  // requests so frontmatter changes cannot leave stale tags/extensions/path
+  // metadata eligible for fusion; unfiltered MCP/eval calls keep when-empty.
+  const lexicalRefreshPolicy = opts.filters === undefined ? opts.refresh : 'always';
   const lexicalQueryK = lexicalPostFilter === undefined
     ? opts.fetchK
-    : Math.max(opts.fetchK, Math.min(opts.fetchK * HYBRID_FETCH_MULTIPLIER, HYBRID_FETCH_CAP));
+    : hybridFetchK(opts.fetchK);
   let refreshed = 0;
   const failedKbs: string[] = [];
   const all: LexicalSearchResult[] = [];
   for (const { kbName, kbPath } of opts.kbs) {
     try {
       const idx = await load(kbName, kbPath);
-      const shouldRefresh = opts.refresh === 'always' || idx.numFiles() === 0;
+      const shouldRefresh = lexicalRefreshPolicy === 'always' || idx.numFiles() === 0;
       if (shouldRefresh) {
         await idx.refresh();
         await idx.save();

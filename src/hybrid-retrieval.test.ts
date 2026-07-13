@@ -222,7 +222,7 @@ afterEach(async () => {
 });
 
 describe('runLexicalLeg', () => {
-  it('FR-SEARCH-853: applies metadata filters to lexical hits before fusion', async () => {
+  it('TS-SEARCH-853: applies metadata filters to lexical hits before fusion', async () => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-hybrid-filter-'));
     filterTempDirs.push(root);
 
@@ -235,6 +235,8 @@ describe('runLexicalLeg', () => {
       return source;
     };
     const validSource = await makeSource('runbooks/valid.md', '2026-07-10T00:00:00Z');
+    const validSecondSource = await makeSource('runbooks/valid-second.md', '2026-07-10T00:00:00Z');
+    const validThirdSource = await makeSource('runbooks/valid-third.md', '2026-07-10T00:00:00Z');
     const wrongTagSource = await makeSource('runbooks/wrong-tag.md', '2026-07-10T00:00:00Z');
     const wrongExtensionSource = await makeSource('runbooks/wrong-extension.txt', '2026-07-10T00:00:00Z');
     const wrongPathSource = await makeSource('notes/wrong-path.md', '2026-07-10T00:00:00Z');
@@ -258,14 +260,16 @@ describe('runLexicalLeg', () => {
       hit(wrongPathSource, 'notes/wrong-path.md', '.md', ['adr'], 80),
       hit(tooOldSource, 'runbooks/too-old.md', '.md', ['adr'], 70),
       hit(tooNewSource, 'runbooks/too-new.md', '.md', ['adr'], 60),
-      hit(validSource, 'runbooks/valid.md', '.md', ['adr'], 1),
+      hit(validSource, 'runbooks/valid.md', '.md', ['adr'], 3),
+      hit(validSecondSource, 'runbooks/valid-second.md', '.md', ['adr'], 2.5),
+      hit(validThirdSource, 'runbooks/valid-third.md', '.md', ['adr'], 2),
     ];
     const index = makeFakeIndex({ numFiles: 1, hits, limitHits: true });
 
     const result = await runLexicalLeg({
       kbs: [{ kbName: 'kb-a', kbPath: path.join(root, 'kb-a') }],
       query: 'q',
-      fetchK: 5,
+      fetchK: 2,
       refresh: 'when-empty',
       filters: {
         extensions: ['md'],
@@ -277,11 +281,18 @@ describe('runLexicalLeg', () => {
       loadIndex: async () => index.idx,
     });
 
-    expect(index.query).toHaveBeenCalledWith('q', 20, expect.objectContaining({ unit: 'chunk' }));
-    expect(result.hits.map((h) => h.metadata.relativePath)).toEqual(['kb/runbooks/valid.md']);
+    expect(index.refresh).toHaveBeenCalledTimes(1);
+    expect(index.query).toHaveBeenCalledWith('q', 8, expect.objectContaining({ unit: 'chunk' }));
+    expect(result.hits.map((h) => h.metadata.relativePath)).toEqual([
+      'kb/runbooks/valid.md',
+      'kb/runbooks/valid-second.md',
+    ]);
 
-    const fused = fuseHybridResults({ denseResults: [], lexicalResults: result.hits, k: 5 });
-    expect(fused.map((h) => h.metadata.relativePath)).toEqual(['kb/runbooks/valid.md']);
+    const fused = fuseHybridResults({ denseResults: [], lexicalResults: result.hits, k: 2 });
+    expect(fused.map((h) => h.metadata.relativePath)).toEqual([
+      'kb/runbooks/valid.md',
+      'kb/runbooks/valid-second.md',
+    ]);
   });
 
   it('refreshes only when the index is empty under refresh="when-empty"', async () => {
