@@ -117,22 +117,36 @@ export function reindexProgressFilePath(): string {
   return path.join(FAISS_INDEX_PATH, REINDEX_PROGRESS_FILENAME);
 }
 
-/** Count policy-eligible chunk manifests under `<kb>/.index/`. */
-async function countIndexedFiles(kb: string): Promise<number> {
-  const indexDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, '.index');
+/** Recursively collect chunk manifests under `<kb>/.index/`. */
+async function collectChunkManifestPaths(indexDir: string): Promise<string[]> {
   let entries: Array<import('fs').Dirent>;
   try {
     entries = await fsp.readdir(indexDir, { withFileTypes: true });
   } catch {
-    return 0;
+    return [];
   }
-  const manifests = entries.filter((e) => e.isFile() && e.name.endsWith('.chunks.json'));
+  const manifests: string[] = [];
+  for (const entry of entries) {
+    const fullPath = path.join(indexDir, entry.name);
+    if (entry.isDirectory()) {
+      manifests.push(...await collectChunkManifestPaths(fullPath));
+    } else if (entry.isFile() && entry.name.endsWith('.chunks.json')) {
+      manifests.push(fullPath);
+    }
+  }
+  return manifests;
+}
+
+/** Count policy-eligible chunk manifests under `<kb>/.index/`. */
+async function countIndexedFiles(kb: string): Promise<number> {
+  const indexDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, '.index');
   let eligible = 0;
-  for (const manifest of manifests) {
+  for (const manifestPath of await collectChunkManifestPaths(indexDir)) {
+    const relativeManifest = path.relative(indexDir, manifestPath);
     const source = path.join(
       KNOWLEDGE_BASES_ROOT_DIR,
       kb,
-      manifest.name.replace(/\.chunks\.json$/, ''),
+      relativeManifest.replace(/\.chunks\.json$/, ''),
     );
     if (!(await isPolicyExcludedSource(source))) eligible += 1;
   }

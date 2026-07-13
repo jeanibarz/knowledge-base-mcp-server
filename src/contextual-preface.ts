@@ -484,14 +484,13 @@ export async function aggregateContextualSidecarStats(
       recordSidecar();
       continue;
     }
-    // A source can become policy-protected after its sidecar was written.
-    // Keep the diagnostic rollup aligned with reindex progress: stale
-    // protected sidecars are not current contextual work. Older/manual
-    // fixtures without a source field remain readable for backwards
-    // compatibility and are handled as before.
+    // A source can become protected, unreadable, or malformed after its
+    // sidecar was written. Keep the diagnostic rollup fail-closed and aligned
+    // with reindex progress. Older/manual fixtures without a source field
+    // remain readable for backwards compatibility and are handled as before.
     if (typeof parsed.source === 'string') {
       const sourcePolicy = await readLlmContextPolicy(parsed.source);
-      if (sourcePolicy.readable && sourcePolicy.valid && sourcePolicy.policy?.no_llm_context === true) {
+      if (!sourcePolicy.readable || !sourcePolicy.valid || sourcePolicy.policy?.no_llm_context === true) {
         continue;
       }
     }

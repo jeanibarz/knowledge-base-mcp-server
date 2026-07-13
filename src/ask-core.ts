@@ -281,6 +281,8 @@ export interface AskEvidence {
   results: SearchResultDocument[];
   /** Effective retrieval mode used to gather the evidence (auto → dense/hybrid). */
   searchMode: EffectiveSearchMode;
+  /** Source paths represented in the most recent answer prompt (REPL-internal). */
+  llmContextSourcePaths?: string[];
 }
 
 /**
@@ -394,7 +396,10 @@ export async function retrieveAskEvidence(
           return decision;
         });
         gateCandidates = gate.results;
-        results = [...gateCandidates, ...policyExcluded];
+        const gatedSet = new Set(gateCandidates);
+        results = results.filter((result) =>
+          policyExcluded.includes(result) || gatedSet.has(result),
+        );
         emitRelevanceGateDecision({
           process: 'mcp',
           query: args.question,
@@ -528,6 +533,7 @@ export async function answerWithEvidence(
   // before packing so a source that became protected cannot enter this turn's
   // answer prompt through stale in-memory metadata.
   const results = await hydrateSensitivityPoliciesFromSource(evidence.results);
+  evidence.results = results;
 
   let target: LlmTarget;
   try {
@@ -556,6 +562,11 @@ export async function answerWithEvidence(
     formatSpan.setAttribute('kb.excluded_chunks', packed.payload.excluded_chunks);
     return packed;
   });
+  evidence.llmContextSourcePaths = [...new Set(
+    packedContext.included
+      .map((snippet) => snippet.result.metadata.source)
+      .filter((source): source is string => typeof source === 'string' && source.trim() !== ''),
+  )];
   if (timing) {
     timing.context_budget_tokens = packedContext.payload.budget_tokens;
     timing.context_estimated_tokens = packedContext.payload.estimated_tokens;

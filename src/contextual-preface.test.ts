@@ -562,6 +562,9 @@ describe('aggregateContextualSidecarStats — #409 cache / failure diagnostics',
     await writeSidecar(mod, 'protected', 'private.json', [
       { chunk_index: 0, chunk_hash: 'h0', preface: 'stale ctx' },
     ], { source });
+    await writeSidecar(mod, 'protected', 'missing.json', [
+      { chunk_index: 0, chunk_hash: 'h1', preface: 'orphaned ctx' },
+    ], { source: path.join(tempDir, 'missing.md') });
 
     const stats = await mod.aggregateContextualSidecarStats('protected');
     expect(stats.sidecar_count).toBe(0);

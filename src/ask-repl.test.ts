@@ -1,4 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
+import * as fsp from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import { Readable, Writable } from 'stream';
 import {
@@ -18,7 +20,7 @@ const ELIGIBLE_SOURCE = path.join(process.cwd(), 'package.json');
 
 // --- fixtures (mirrors the manager/deps shape in ask-core.test.ts) ----------
 
-function makeManager(): { similaritySearch: jest.Mock } & Record<string, unknown> {
+function makeManager(source = ELIGIBLE_SOURCE): { similaritySearch: jest.Mock } & Record<string, unknown> {
   return {
     modelDir: '/tmp/kb-ask-repl-model',
     initialize: jest.fn(async () => {}),
@@ -29,7 +31,7 @@ function makeManager(): { similaritySearch: jest.Mock } & Record<string, unknown
         metadata: {
           knowledgeBase: 'ops',
           relativePath: 'deploys.md',
-          source: ELIGIBLE_SOURCE,
+          source,
           loc: { lines: { from: 10, to: 18 } },
         },
         score: 0.1234,
@@ -94,12 +96,13 @@ async function runScript(
   lines: string[],
   options: {
     kb?: string;
+    source?: string;
     call?: ChatMock;
     saveTranscript?: (input: SaveTranscriptInput) => Promise<SaveTranscriptResult>;
     env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<ReplHarness & { code: number }> {
-  const manager = makeManager();
+  const manager = makeManager(options.source);
   const call = options.call ?? staticAnswer();
   const out = sink();
   const err = sink();
@@ -178,6 +181,36 @@ describe('runAskRepl loop', () => {
     expect(h.manager.similaritySearch).toHaveBeenCalledTimes(1);
     expect(h.call).toHaveBeenCalledTimes(2);
     expect(h.out.text()).toContain('A grounded answer.');
+  });
+
+  it('drops follow-up history when its grounding source becomes protected', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ask-repl-policy-'));
+    const source = path.join(tempDir, 'note.md');
+    await fsp.writeFile(source, '# public source\n', 'utf-8');
+    const seenMessages: string[] = [];
+    const call = jest.fn(async (options: ChatCompletionOptions) => {
+      seenMessages.push(options.messages.map((message) => String(message.content)).join('\n'));
+      await options.beforeAttempt?.();
+      if (seenMessages.length === 1) {
+        await fsp.writeFile(source, [
+          '---',
+          'kb_policy:',
+          '  no_llm_context: true',
+          '---',
+          'private source',
+        ].join('\n'), 'utf-8');
+      }
+      return { content: 'A grounded answer.', model: 'qwen3', raw: {} };
+    }) as unknown as ChatMock;
+
+    try {
+      const h = await runScript(['q1', 'q2', '/exit'], { kb: 'ops', source, call });
+      expect(h.code).toBe(0);
+      expect(seenMessages).toHaveLength(2);
+      expect(seenMessages[1]).not.toContain('A: A grounded answer.');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('re-retrieves after /refresh', async () => {

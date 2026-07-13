@@ -15,6 +15,7 @@ import {
   type AskKnowledgeResult,
   type RunAskCoreDeps,
 } from './ask-core.js';
+import { readLlmContextPolicy } from './sensitivity-policy.js';
 import { nowMs } from './timing-core.js';
 
 /** Default number of prior Q/A exchanges folded into follow-up context. */
@@ -49,6 +50,8 @@ export type ReplCommand =
 export interface ReplHistoryTurn {
   question: string;
   answer: string;
+  /** Absolute source paths used to ground this answer, if any. */
+  sourcePaths?: string[];
 }
 
 export interface AskReplSession {
@@ -178,6 +181,22 @@ function truncate(value: string, cap: number): string {
   return compact.length > cap ? `${compact.slice(0, cap - 1)}…` : compact;
 }
 
+/** Drop prior answers whose grounding source is no longer LLM-eligible. */
+async function filterHistoryByCurrentPolicy(history: ReplHistoryTurn[]): Promise<void> {
+  const retained: ReplHistoryTurn[] = [];
+  for (const turn of history) {
+    // In-memory history without provenance cannot be proven safe after a
+    // policy change, so fail closed and omit the answer from the next prompt.
+    if (turn.sourcePaths === undefined) continue;
+    const eligible = await Promise.all(turn.sourcePaths.map(async (source) => {
+      const snapshot = await readLlmContextPolicy(source);
+      return snapshot.readable && snapshot.valid && snapshot.policy?.no_llm_context !== true;
+    }));
+    if (eligible.every(Boolean)) retained.push(turn);
+  }
+  history.splice(0, history.length, ...retained);
+}
+
 export async function runAskRepl(opts: RunAskReplOptions): Promise<number> {
   const input = opts.input ?? process.stdin;
   const output = opts.output ?? process.stdout;
@@ -213,6 +232,7 @@ export async function runAskRepl(opts: RunAskReplOptions): Promise<number> {
         session.evidence = await retrieveAskEvidence(retrievalArgs, opts.coreDeps);
         session.forceRescan = false;
       }
+      await filterHistoryByCurrentPolicy(session.history);
       let streamed = false;
       const answerArgs: AskExecutionArgs = {
         ...buildTurnArgs(text, false, true),
@@ -227,7 +247,11 @@ export async function runAskRepl(opts: RunAskReplOptions): Promise<number> {
 
       session.lastResult = result;
       session.lastQuestion = text;
-      session.history.push({ question: text, answer: result.answer });
+      session.history.push({
+        question: text,
+        answer: result.answer,
+        sourcePaths: session.evidence?.llmContextSourcePaths ?? [],
+      });
       if (session.history.length > historyLimit) {
         session.history.splice(0, session.history.length - historyLimit);
       }

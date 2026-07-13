@@ -20,6 +20,9 @@
 // report and never halts the implementation chain.
 
 import * as fsp from 'fs/promises';
+import { createHash } from 'crypto';
+import * as os from 'os';
+import * as path from 'path';
 import yaml from 'js-yaml';
 import { callChatCompletion, probeLlmEndpoint, type LlmChatMessage } from './llm-client.js';
 import {
@@ -54,6 +57,7 @@ import {
   toM1JsonReport,
   type M1RunOptions,
 } from './relevance-gate-m1.js';
+import { readLlmContextPolicy } from './sensitivity-policy.js';
 
 export const EVAL_GATE_HELP = `kb eval-gate — RFC 018 relevance-gate validation + M1 canary harness
 
@@ -194,8 +198,15 @@ export async function runEvalGate(rest: string[]): Promise<number> {
   let graderModel = 'offline-causal-model';
 
   if (mode === 'live' && endpoint !== undefined) {
+    let fixtureSources: LiveFixtureSources | null = null;
     try {
-      const live = await runLiveGateEval(fixture, calibration, { endpoint, model: args.model });
+      fixtureSources = await materializeLiveFixtureSources(fixture);
+      const live = await runLiveGateEval(
+        fixture,
+        calibration,
+        { endpoint, model: args.model },
+        fixtureSources.bySource,
+      );
       caseResults = live.caseResults;
       admissibility = live.admissibility;
       answererModel = live.model;
@@ -206,6 +217,10 @@ export async function runEvalGate(rest: string[]): Promise<number> {
       );
       mode = 'simulation';
       caseResults = runSimulatedGateEval(fixture);
+    } finally {
+      if (fixtureSources !== null) {
+        await fsp.rm(fixtureSources.root, { recursive: true, force: true });
+      }
     }
   } else {
     caseResults = runSimulatedGateEval(fixture);
@@ -351,10 +366,73 @@ interface LiveOptions {
   model?: string;
 }
 
+interface LiveFixtureSources {
+  root: string;
+  bySource: Map<string, string>;
+}
+
+/**
+ * M0 fixtures normally use symbolic source names. Materialize those names as
+ * empty, policy-free files so live evaluation exercises the same source-policy
+ * boundary as production callers; preserve real paths so protected fixtures
+ * fail closed rather than being replaced with public stand-ins.
+ */
+async function materializeLiveFixtureSources(
+  fixture: Pick<GateEvalFixture, 'cases'>,
+): Promise<LiveFixtureSources> {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-eval-gate-sources-'));
+  const bySource = new Map<string, string>();
+  try {
+    for (const fixtureCase of fixture.cases) {
+      for (const candidate of fixtureCase.candidates) {
+        if (bySource.has(candidate.source)) continue;
+        try {
+          await fsp.access(candidate.source);
+          bySource.set(candidate.source, candidate.source);
+          continue;
+        } catch {
+          // Symbolic fixture source — create a readable policy-free file.
+        }
+        const filename = `${createHash('sha256').update(candidate.source).digest('hex')}.md`;
+        const sourcePath = path.join(root, filename);
+        await fsp.writeFile(sourcePath, '', 'utf-8');
+        bySource.set(candidate.source, sourcePath);
+      }
+    }
+    return { root, bySource };
+  } catch (error) {
+    await fsp.rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function sourcePathsForCandidates(
+  candidates: readonly GateEvalCandidate[],
+  sourceMap: ReadonlyMap<string, string>,
+): string[] {
+  const paths = new Set<string>();
+  for (const candidate of candidates) {
+    const source = sourceMap.get(candidate.source);
+    if (source === undefined) throw new Error(`missing live-eval source provenance for ${candidate.source}`);
+    paths.add(source);
+  }
+  return [...paths];
+}
+
+async function assertLiveFixtureSourcesAllowed(sourcePaths: readonly string[]): Promise<void> {
+  await Promise.all(sourcePaths.map(async (source) => {
+    const snapshot = await readLlmContextPolicy(source);
+    if (!snapshot.readable || !snapshot.valid || snapshot.policy?.no_llm_context === true) {
+      throw new Error(`live evaluation source policy excludes LLM work: ${source}`);
+    }
+  }));
+}
+
 async function runLiveGateEval(
   fixture: GateEvalFixture,
   calibration: GraderCalibrationFixture | null,
   options: LiveOptions,
+  sourceMap: ReadonlyMap<string, string>,
 ): Promise<{ caseResults: GateEvalCaseResult[]; admissibility: GraderAdmissibility | null; model: string }> {
   const caseResults: GateEvalCaseResult[] = [];
   let model = options.model ?? 'local-model';
@@ -363,13 +441,15 @@ async function runLiveGateEval(
     const sims = simulateAllVariants(fixtureCase, fixture);
     const conditions: GradedCondition[] = [];
     for (const variant of GATE_VARIANTS) {
-      const answered = await answerWithLlm(fixtureCase, sims[variant], options);
+      const sourcePaths = sourcePathsForCandidates(sims[variant].kept, sourceMap);
+      const answered = await answerWithLlm(fixtureCase, sims[variant], options, sourcePaths);
       model = answered.model;
       const verdict = await gradeWithLlm(
         fixtureCase.query,
         fixtureCase.referenceAnswer,
         answered.answer,
         options,
+        sourcePaths,
       );
       conditions.push({ variant, verdict });
     }
@@ -393,13 +473,17 @@ async function answerWithLlm(
   fixtureCase: GateEvalCase,
   sim: GateSimResult,
   options: LiveOptions,
+  sourcePaths: readonly string[],
 ): Promise<{ answer: string; model: string }> {
+  const assertPolicy = () => assertLiveFixtureSourcesAllowed(sourcePaths);
+  await assertPolicy();
   const result = await callChatCompletion({
     endpoint: options.endpoint,
     operation: 'gate',
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildAnswerMessages(fixtureCase, sim.kept),
     temperature: 0.2,
+    beforeAttempt: assertPolicy,
   });
   return { answer: result.content, model: result.model ?? options.model ?? 'local-model' };
 }
@@ -409,13 +493,19 @@ async function gradeWithLlm(
   referenceAnswer: string,
   answer: string,
   options: LiveOptions,
+  sourcePaths?: readonly string[],
 ): Promise<GraderVerdict> {
+  const assertPolicy = sourcePaths === undefined
+    ? undefined
+    : () => assertLiveFixtureSourcesAllowed(sourcePaths);
+  await assertPolicy?.();
   const result = await callChatCompletion({
     endpoint: options.endpoint,
     operation: 'gate',
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildGraderMessages(query, referenceAnswer, answer),
     temperature: 0,
+    ...(assertPolicy !== undefined ? { beforeAttempt: assertPolicy } : {}),
   });
   return parseGraderVerdict(result.content);
 }

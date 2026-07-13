@@ -172,6 +172,21 @@ describe('computeReindexProgress', () => {
     expect(kb.files_pending).toBe(1);
   });
 
+  it('counts nested manifests in contextual progress', async () => {
+    await writeSidecar('alpha', path.join('nested', 'note.md'), [{ preface: 'ctx' }]);
+    const indexDir = path.join(kbsDir, 'alpha', '.index', 'nested');
+    await fsp.mkdir(indexDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(indexDir, 'note.md.chunks.json'),
+      JSON.stringify({ chunks: [{}] }),
+    );
+
+    const kb = (await progress.computeReindexProgress({ knowledgeBases: ['alpha'] })).kbs[0];
+    expect(kb.files_indexed).toBe(1);
+    expect(kb.files_with_sidecar).toBe(1);
+    expect(kb.files_pending).toBe(0);
+  });
+
   it('aggregates multiple KBs, sorted by name, into totals', async () => {
     await writeSidecar('zeta', 'z.md', [{ preface: 'ctx' }]);
     await writeSidecar('alpha', 'a.md', [
