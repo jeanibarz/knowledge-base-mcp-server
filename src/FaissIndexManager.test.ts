@@ -891,10 +891,18 @@ describe('FaissIndexManager permission handling', () => {
     const manifest = JSON.parse(
       await fsp.readFile(pendingManifestPathIn(process.env.FAISS_INDEX_PATH!), 'utf-8'),
     ) as {
+      schema_version: string;
+      owner: { pid: number; hostname: string; started_at: string };
       phase: string;
       pending_hash_writes: Array<{ path: string; hash: string }>;
       pending_chunk_manifest_writes: Array<{ path: string; manifest: { source_sha256: string } }>;
     };
+    expect(manifest.schema_version).toBe('kb.pending-sidecar-commit.v2');
+    expect(manifest.owner).toMatchObject({
+      pid: process.pid,
+      hostname: os.hostname(),
+      started_at: expect.any(String),
+    });
     expect(manifest.phase).toBe('save-complete');
     expect(manifest.pending_hash_writes).toEqual([{ path: sidecarPath, hash: sourceHash }]);
     expect(manifest.pending_chunk_manifest_writes).toEqual([
@@ -943,6 +951,161 @@ describe('FaissIndexManager permission handling', () => {
     await expect(fsp.stat(path.join(defaultKb, '.index')))
       .rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fsp.stat(pendingManifestPathIn(faissDir)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('leaves a save-started manifest intact while its same-host owner is alive', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pending-live-owner-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(path.join(defaultKb, '.index'), { recursive: true });
+    const sidecarPath = path.join(defaultKb, '.index', 'doc.md');
+    await fsp.writeFile(sidecarPath, 'b'.repeat(64));
+
+    const faissDir = path.join(tempDir, '.faiss');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    await seedVersionedIndex(faissDir);
+    await fsp.writeFile(
+      pendingManifestPathIn(faissDir),
+      JSON.stringify({
+        schema_version: 'kb.pending-sidecar-commit.v2',
+        owner: {
+          pid: process.pid,
+          hostname: os.hostname(),
+          started_at: new Date().toISOString(),
+        },
+        phase: 'save-started',
+        pending_hash_writes: [{ path: sidecarPath, hash: 'c'.repeat(64) }],
+        pending_chunk_manifest_writes: [],
+      }),
+      'utf-8',
+    );
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    await expect(fsp.stat(path.join(modelDirIn(faissDir), 'index'))).resolves.toBeTruthy();
+    await expect(fsp.stat(versionedIndexPathIn(faissDir))).resolves.toBeTruthy();
+    await expect(fsp.readFile(sidecarPath, 'utf-8')).resolves.toBe('b'.repeat(64));
+    await expect(fsp.stat(pendingManifestPathIn(faissDir))).resolves.toBeTruthy();
+    expect(loadMock).toHaveBeenCalledWith(versionedIndexPathIn(faissDir), expect.anything());
+  });
+
+  it('purges a save-started manifest owned by a foreign host', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pending-foreign-owner-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(path.join(defaultKb, '.index'), { recursive: true });
+    const sidecarPath = path.join(defaultKb, '.index', 'doc.md');
+    await fsp.writeFile(sidecarPath, 'b'.repeat(64));
+
+    const faissDir = path.join(tempDir, '.faiss');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    await seedVersionedIndex(faissDir);
+    await fsp.writeFile(
+      pendingManifestPathIn(faissDir),
+      JSON.stringify({
+        schema_version: 'kb.pending-sidecar-commit.v2',
+        owner: {
+          pid: process.pid,
+          hostname: `${os.hostname()}-foreign`,
+          started_at: new Date().toISOString(),
+        },
+        phase: 'save-started',
+        pending_hash_writes: [{ path: sidecarPath, hash: 'c'.repeat(64) }],
+        pending_chunk_manifest_writes: [],
+      }),
+      'utf-8',
+    );
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+
+    await expect(fsp.stat(path.join(modelDirIn(faissDir), 'index')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(versionedIndexPathIn(faissDir)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(path.join(defaultKb, '.index')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fsp.stat(pendingManifestPathIn(faissDir)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('waits for a slow writer before initializing another manager (#851)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pending-slow-save-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'doc.md');
+    await fsp.writeFile(docPath, '# Title\n\nInitial content.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { withWriteLock } = await import('./write-lock.js');
+    const writer = new FaissIndexManager();
+    await writer.initialize();
+    await withWriteLock(writer.modelDir, () => writer.updateIndex());
+
+    await fsp.writeFile(docPath, '# Title\n\nUpdated content while saving.');
+    let resolveSaveStarted!: () => void;
+    const saveStarted = new Promise<void>((resolve) => {
+      resolveSaveStarted = resolve;
+    });
+    let releaseSave!: () => void;
+    const saveReleased = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    saveMock.mockImplementation(async () => {
+      resolveSaveStarted();
+      await saveReleased;
+    });
+
+    const writerUpdate = withWriteLock(writer.modelDir, () => writer.updateIndex());
+    await saveStarted;
+
+    const pendingManifest = JSON.parse(
+      await fsp.readFile(pendingManifestPathIn(process.env.FAISS_INDEX_PATH!), 'utf-8'),
+    ) as { phase: string; owner: { pid: number; hostname: string } };
+    expect(pendingManifest).toMatchObject({
+      phase: 'save-started',
+      owner: { pid: process.pid, hostname: os.hostname() },
+    });
+
+    const reader = new FaissIndexManager();
+    let writerReleased = false;
+    let loadedBeforeWriterRelease = false;
+    loadMock.mockImplementation(() => {
+      loadedBeforeWriterRelease ||= !writerReleased;
+    });
+    const readerInitialization = reader.initialize();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(loadedBeforeWriterRelease).toBe(false);
+
+    writerReleased = true;
+    releaseSave();
+    await writerUpdate;
+    await readerInitialization;
+
+    await expect(fsp.readFile(path.join(defaultKb, '.index', 'doc.md'), 'utf-8'))
+      .resolves.toBe(sha256Hex('# Title\n\nUpdated content while saving.'));
+    await expect(fsp.stat(pendingManifestPathIn(process.env.FAISS_INDEX_PATH!)))
       .rejects.toMatchObject({ code: 'ENOENT' });
   });
 

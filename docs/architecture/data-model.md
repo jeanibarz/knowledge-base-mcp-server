@@ -78,12 +78,13 @@ The path structure mirrors the source tree under `<kb>/`: a file at `<kb>/a/b/c.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | `kb.pending-sidecar-commit.v1` | Parser guard. |
+| `schema_version` | `kb.pending-sidecar-commit.v1` or `kb.pending-sidecar-commit.v2` | Parser guard; writers use v2 and readers retain v1 compatibility. |
+| `owner` | `{pid, hostname, started_at}` (v2) | Identifies the writer that owns an in-progress save; absent on legacy v1 manifests. |
 | `phase` | `save-started` or `save-complete` | Whether the FAISS save has been confirmed. |
 | `pending_hash_writes` | array of `{path, hash}` | Absolute hash sidecar paths plus source sha256. |
 | `pending_chunk_manifest_writes` | array of `{path, manifest}` | Absolute chunk-manifest sidecar paths plus manifest JSON. |
 
-Normal completion removes the manifest after all sidecars are durable. On startup, `save-complete` rolls forward by writing the sidecars and removing the manifest. `save-started` is intentionally conservative: recovery purges the persisted store and stale sidecars so the next update rebuilds instead of risking duplicate vectors or hashes for missing vectors.
+Normal completion removes the manifest after all sidecars are durable. On startup, recovery runs under the model write lock. `save-complete` rolls forward by writing the sidecars and removing the manifest. A v2 `save-started` manifest with a live owner on the same host is left intact while that writer finishes; ownerless, malformed, dead, or foreign-host manifests are treated conservatively and purge the persisted store and stale sidecars so the next update rebuilds instead of risking duplicate vectors or hashes for missing vectors.
 
 ### Model registry
 

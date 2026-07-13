@@ -23,12 +23,10 @@
 //     only while the contextual-preface estimate still has cold chunks.
 //  6. Delete `.reindex.run.json` on success or failure.
 //
-// What this file does NOT do:
-//  - Acquire the per-model write lock directly. `updateIndex` already
-//    acquires `withWriteLock(modelDir, ...)` internally per RFC 013.
-//    M0b's pre-flight check via `.reindex.run.json` is the *cooperative*
-//    coordination signal for the trigger watcher; the strict
-//    serialization remains the same lock the watcher already respects.
+// The manager initialization and update are both serialized under the
+// per-model write lock. The `.reindex.run.json` file remains the
+// *cooperative* coordination signal for the trigger watcher, while the lock
+// is the strict serialization boundary for every writer.
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
@@ -52,6 +50,10 @@ import { writeFileAtomicDurable } from './file-utils.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
 import { readLlmContextPolicy } from './sensitivity-policy.js';
+import { isPidAlive } from './process-liveness.js';
+import { withWriteLock } from './write-lock.js';
+
+export { isPidAlive } from './process-liveness.js';
 
 // RFC 017 §5 step 1 — cold-case per-chunk cost upper bound. Used by the
 // self-runtime estimator. Tuned to 8s based on cold KV-cache miss
@@ -247,22 +249,6 @@ async function deleteRunState(): Promise<void> {
     if (code !== 'ENOENT' && code !== 'ENOTDIR') {
       logger.warn(`RFC 017 M0b: failed to remove run-state file: ${(err as Error).message}`);
     }
-  }
-}
-
-export function isPidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    // `process.kill(pid, 0)` does not deliver a signal — it returns
-    // normally if the PID exists and the caller may signal it, throws
-    // ESRCH if absent.
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    // EPERM means the process exists but we don't have permission to
-    // signal it (e.g. owned by another user). Still alive.
-    return code === 'EPERM';
   }
 }
 
@@ -576,7 +562,9 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
       summary = await options.runUpdateIndex({ force: shouldForceRebuild });
     } else {
       const manager = options.manager ?? (await createManagerForReindex());
-      summary = await runManagerUpdateIndex(manager, { force: shouldForceRebuild });
+      summary = await withWriteLock(manager.modelDir, () =>
+        runManagerUpdateIndex(manager, { force: shouldForceRebuild }),
+      );
     }
   } catch (err) {
     await deleteRunState();
