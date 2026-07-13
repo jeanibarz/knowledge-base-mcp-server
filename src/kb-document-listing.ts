@@ -87,7 +87,7 @@ export async function listKnowledgeBaseDocuments(
 ): Promise<KnowledgeBaseDocumentListing> {
   const prefix = normalizeDocumentPrefix(options.prefix);
   const knowledgeBases = options.kbName === undefined
-    ? (await listKnowledgeBases(options.rootDir)).filter(isValidKbName).sort(compareStrings)
+    ? await listKnowledgeBaseDirectories(options.rootDir)
     : [validateKbName(options.kbName)];
 
   const documents: KnowledgeBaseDocument[] = [];
@@ -166,6 +166,9 @@ async function enumerateKbForPrefix(
   options: ListKnowledgeBaseDocumentsOptions,
 ): Promise<KbFileEnumeration> {
   const kbPath = path.join(rootDir, kbName);
+  if (prefix.split('/').some((segment) => segment.startsWith('.'))) {
+    return { kbName, kbPath, filePaths: [], diagnostics: { failure_count: 0, failures: [] } };
+  }
   const searchRelativeDir = prefixSearchRelativeDir(prefix, options.prefixMode);
   const searchRoot = path.join(kbPath, searchRelativeDir);
   let stat;
@@ -201,6 +204,23 @@ async function enumerateKbForPrefix(
     }),
     diagnostics: enumeration.diagnostics,
   };
+}
+
+async function listKnowledgeBaseDirectories(rootDir: string): Promise<string[]> {
+  const candidates = (await listKnowledgeBases(rootDir)).filter(isValidKbName);
+  const directories: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      if ((await fsp.stat(path.join(rootDir, candidate))).isDirectory()) {
+        directories.push(candidate);
+      }
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+      throw error;
+    }
+  }
+  return directories.sort(compareStrings);
 }
 
 function prefixSearchRelativeDir(

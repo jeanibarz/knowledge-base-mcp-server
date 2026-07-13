@@ -438,6 +438,7 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
   }> = [
     { subcommand: 'list', args: ['list', '--format=xml'], expected: 'invalid --format' },
     { subcommand: 'ls', args: ['ls', '--format=xml'], expected: 'invalid --format' },
+    { subcommand: 'ls', args: ['ls', '../outside'], expected: 'invalid KB name' },
     { subcommand: 'search', args: ['search', 'alpha', '--threshold=nope'], expected: 'invalid --threshold' },
     { subcommand: 'open', args: ['open'], expected: 'missing <chunk-id' },
     { subcommand: 'serve', args: ['serve', '--bogus'], expected: 'unknown flag: --bogus' },

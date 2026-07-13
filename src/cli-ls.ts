@@ -9,6 +9,7 @@ import {
   type KnowledgeBaseDocument,
 } from './kb-document-listing.js';
 import { parseFrontmatter } from './frontmatter.js';
+import { isValidKbName } from './kb-paths.js';
 
 export const LS_SCHEMA_VERSION = 'kb.ls.v1';
 // parseFrontmatter bounds JavaScript characters, while this reader bounds UTF-8
@@ -104,6 +105,7 @@ export function parseLsArgs(rest: readonly string[]): LsArgs {
     }
     if (raw.startsWith('--')) throw new Error(`unknown option '${raw}'`);
     if (kb !== undefined) throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
+    if (!isValidKbName(raw)) throw new Error(`invalid KB name: ${JSON.stringify(raw)}`);
     kb = raw;
   }
 

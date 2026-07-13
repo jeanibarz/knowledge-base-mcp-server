@@ -36,6 +36,7 @@ describe('TS-CLI-857: kb ls argument parsing', () => {
     expect(() => parseLsArgs(['--format=xml'])).toThrow('invalid --format');
     expect(() => parseLsArgs(['--prefix='])).toThrow('--prefix=<path>');
     expect(() => parseLsArgs(['--prefix=../secret'])).toThrow('path escapes KB root');
+    expect(() => parseLsArgs(['../outside'])).toThrow('invalid KB name');
     expect(() => parseLsArgs(['one', 'two'])).toThrow('unexpected argument');
   });
 });
@@ -81,8 +82,10 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
     await writeFile(rootDir, 'work/projects/active-old/old.md', '# Old\n');
     await writeFile(rootDir, 'work/logs/ignored.md', '# Log\n');
     await writeFile(rootDir, 'work/.hidden.md', '# Hidden\n');
+    await writeFile(rootDir, 'work/.private/secret.md', '# Hidden\n');
     await writeFile(rootDir, 'work/docs/quarantined.md', '# Quarantined\n');
     await writeFile(rootDir, 'other/elsewhere.md', '# Elsewhere\n');
+    await fsp.writeFile(path.join(rootDir, 'not-a-knowledge-base'), 'ignore me\n', 'utf8');
 
     await fsp.mkdir(path.join(rootDir, 'work', '.index'), { recursive: true });
     await fsp.writeFile(
@@ -124,6 +127,13 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
     expect(nestedScoped.documents.map((document) => document.relativePath)).toEqual([
       'projects/active/current.md',
     ]);
+
+    const hiddenScoped = await listKnowledgeBaseDocuments({
+      rootDir,
+      kbName: 'work',
+      prefix: '.private',
+    });
+    expect(hiddenScoped.documents).toEqual([]);
 
     const canonicalizedScoped = await listKnowledgeBaseDocuments({
       rootDir,
