@@ -355,6 +355,7 @@ export async function promoteApply(opts: PromoteApplyOptions): Promise<PromoteAp
   }
 
   const updates = materializeUpdates(opts.updates, opts.now ?? new Date());
+  const kbDir = await resolveKnowledgeBaseDir(opts.rootDir, opts.kb);
 
   // Read once for dry-run preview; rewriteFileAtomically re-reads under the
   // mutation lock for the actual write so concurrent edits are caught there.
@@ -364,10 +365,10 @@ export async function promoteApply(opts: PromoteApplyOptions): Promise<PromoteAp
   if (opts.apply && preview.changed.length > 0) {
     await rewriteFileAtomically(documentPath, (current) =>
       applyFrontmatterUpdates(current, updates).newContent,
+      { kbDir },
     );
   }
 
-  const kbDir = await resolveKnowledgeBaseDir(opts.rootDir, opts.kb);
   const relPath = path.relative(kbDir, documentPath).split(path.sep).join('/');
   return {
     kb: opts.kb,

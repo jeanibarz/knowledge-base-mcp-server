@@ -15,6 +15,7 @@ import {
   packAskContext,
 } from './ask-core.js';
 import { callChatCompletion, LlmClientError } from './llm-client.js';
+import { KB_WRITE_POLICY_FILENAME } from './kb-write-policy.js';
 
 const ELIGIBLE_SOURCE = path.join(process.cwd(), 'package.json');
 
@@ -286,6 +287,26 @@ describe('ask transcript records', () => {
     }
   });
 
+  it('rejects transcript writes when the target KB policy denies mutations', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ask-transcript-policy-'));
+    try {
+      const kbDir = path.join(root, 'ops');
+      await fsp.mkdir(kbDir, { recursive: true });
+      await fsp.writeFile(
+        path.join(kbDir, KB_WRITE_POLICY_FILENAME),
+        '{"mutations":"deny"}\n',
+        'utf-8',
+      );
+
+      await expect(createAskTranscriptNote(root, 'ops', 'Denied answer', '# Body\n'))
+        .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      await expect(fsp.stat(path.join(kbDir, 'denied-answer.md')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('writes a transcript through the runAsk CLI path', async () => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ask-run-'));
     const previousEndpoint = process.env.KB_LLM_ENDPOINT;
@@ -384,6 +405,31 @@ describe('ask transcript records', () => {
         undefined,
         undefined,
       );
+
+      stdout.length = 0;
+      stderr.length = 0;
+      await fsp.writeFile(
+        path.join(root, 'ops', KB_WRITE_POLICY_FILENAME),
+        '{"mutations":"deny"}\n',
+        'utf-8',
+      );
+      const deniedCode = await runAsk([
+        'What changed?',
+        '--kb=ops',
+        '--format=json',
+        '--save-transcript',
+        '--title=Denied answer',
+        '--yes',
+      ], deps);
+      expect(deniedCode).toBe(1);
+      expect(JSON.parse(stdout.join(''))).toMatchObject({
+        error: {
+          code: 'ASK_TRANSCRIPT_WRITE_FAILED',
+          message: expect.stringContaining('KB write policy denies mutations'),
+        },
+      });
+      await expect(fsp.stat(path.join(root, 'ops', 'denied-answer.md')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       stdoutSpy.mockRestore();
       stderrSpy.mockRestore();

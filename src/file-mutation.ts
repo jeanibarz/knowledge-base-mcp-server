@@ -9,7 +9,7 @@ interface AtomicWriteHooks {
 }
 
 interface FileMutationOptions {
-  kbDir?: string;
+  kbDir: string;
 }
 
 const FILE_MUTATION_LOCK_OPTS: Omit<properLockfile.LockOptions, 'lockfilePath'> = {
@@ -20,7 +20,7 @@ const FILE_MUTATION_LOCK_OPTS: Omit<properLockfile.LockOptions, 'lockfilePath'> 
 export async function appendFileAtomically(
   targetPath: string,
   content: string,
-  options: FileMutationOptions = {},
+  options: FileMutationOptions,
 ): Promise<void> {
   await rewriteFileAtomically(targetPath, (original) => `${original}${content}`, options);
 }
@@ -28,20 +28,71 @@ export async function appendFileAtomically(
 export async function rewriteFileAtomically(
   targetPath: string,
   rewrite: (original: string) => string | Promise<string>,
-  options: FileMutationOptions = {},
+  options: FileMutationOptions,
 ): Promise<void> {
+  await assertKbWritePolicyAllowsMutation(options.kbDir, targetPath);
   await withFileMutationLock(targetPath, async () => {
-    if (options.kbDir !== undefined) {
-      await assertKbWritePolicyAllowsMutation(options.kbDir, targetPath);
-    }
+    // Re-check after acquiring the file lock so a policy changed while this
+    // operation was waiting cannot be bypassed by the initial preflight.
+    await assertKbWritePolicyAllowsMutation(options.kbDir, targetPath);
     const stat = await fsp.stat(targetPath);
     if (!stat.isFile()) {
       throw new Error(`append target is not a file: ${JSON.stringify(path.basename(targetPath))}`);
     }
 
     const original = await fsp.readFile(targetPath, 'utf-8');
-    await atomicWriteFile(targetPath, await rewrite(original), stat.mode);
+    const nextContent = await rewrite(original);
+    // Re-check after content generation and immediately before publishing so
+    // a policy change during an expensive rewrite cannot be bypassed.
+    await assertKbWritePolicyAllowsMutation(options.kbDir, targetPath);
+    await atomicWriteFile(targetPath, nextContent, stat.mode);
   });
+}
+
+/**
+ * Create a new managed file without exposing a partially written target.
+ *
+ * The policy check intentionally runs before parent-directory creation. This
+ * keeps the guarded helper a chokepoint for new KB notes, including callers
+ * that need to create nested note directories.
+ */
+export async function createFileAtomically(
+  targetPath: string,
+  data: string,
+  options: FileMutationOptions,
+): Promise<void> {
+  await assertKbWritePolicyAllowsMutation(options.kbDir, targetPath);
+  try {
+    await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === 'EEXIST') {
+      throw Object.assign(
+        new Error(`cannot create parent directory for ${JSON.stringify(targetPath)}`),
+        { code: 'ENOTDIR', cause: error },
+      );
+    }
+    throw error;
+  }
+
+  const tempPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  try {
+    const handle = await fsp.open(tempPath, 'wx');
+    try {
+      await handle.writeFile(data, 'utf-8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    // Re-check immediately before publishing the complete note. A policy can
+    // be edited directly while extraction or LLM work is still in progress;
+    // in that case discard the staged file instead of linking it into the KB.
+    await assertKbWritePolicyAllowsMutation(options.kbDir, targetPath);
+    // A hard link gives the create operation no-overwrite semantics while
+    // making the complete file visible in one filesystem operation.
+    await fsp.link(tempPath, targetPath);
+  } finally {
+    await fsp.unlink(tempPath).catch(() => {});
+  }
 }
 
 export async function atomicWriteFile(

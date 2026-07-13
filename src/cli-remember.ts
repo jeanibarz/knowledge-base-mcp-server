@@ -9,8 +9,12 @@ import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-
 import { withSidecarLock, withWriteLock } from './write-lock.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { appendSectionInDocument, listHeadings, parseHeadingSpec } from './markdown-section.js';
-import { appendFileAtomically, atomicWriteFile, rewriteFileAtomically } from './file-mutation.js';
-import { assertKbWritePolicyAllowsMutation } from './kb-write-policy.js';
+import {
+  appendFileAtomically,
+  atomicWriteFile,
+  createFileAtomically,
+  rewriteFileAtomically,
+} from './file-mutation.js';
 import {
   DEFAULT_SIMILAR_K,
   DEFAULT_SIMILAR_THRESHOLD,
@@ -937,15 +941,8 @@ async function createNewNote(kbName: string, title: string, content: string): Pr
   const relativePath = `${slugifyTitle(title)}.md`;
   const documentPath = await resolveKbPath(KNOWLEDGE_BASES_ROOT_DIR, kbName, relativePath, { mustExist: false });
   const kbDir = await resolveKnowledgeBaseDir(KNOWLEDGE_BASES_ROOT_DIR, kbName);
-  await assertKbWritePolicyAllowsMutation(kbDir, documentPath);
-  await fsp.mkdir(path.dirname(documentPath), { recursive: true });
   try {
-    const handle = await fsp.open(documentPath, 'wx');
-    try {
-      await handle.writeFile(content, 'utf-8');
-    } finally {
-      await handle.close();
-    }
+    await createFileAtomically(documentPath, content, { kbDir });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
       throw new Error(`refusing to overwrite existing note: ${relativePath}`);

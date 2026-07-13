@@ -2,7 +2,12 @@ import { describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { appendFileAtomically, atomicWriteFile, rewriteFileAtomically } from './file-mutation.js';
+import {
+  appendFileAtomically,
+  atomicWriteFile,
+  createFileAtomically,
+  rewriteFileAtomically,
+} from './file-mutation.js';
 import { KB_WRITE_POLICY_FILENAME } from './kb-write-policy.js';
 
 describe('file mutation helpers', () => {
@@ -13,7 +18,7 @@ describe('file mutation helpers', () => {
       await fsp.writeFile(target, 'first\n', 'utf-8');
       await fsp.chmod(target, 0o600);
 
-      await appendFileAtomically(target, 'second\n');
+      await appendFileAtomically(target, 'second\n', { kbDir: tempDir });
 
       await expect(fsp.readFile(target, 'utf-8')).resolves.toBe('first\nsecond\n');
       expect((await fsp.stat(target)).mode & 0o777).toBe(0o600);
@@ -31,7 +36,10 @@ describe('file mutation helpers', () => {
       await fsp.writeFile(target, 'base\n', 'utf-8');
 
       await Promise.all(
-        Array.from({ length: 12 }, (_, i) => appendFileAtomically(target, `entry-${i}\n`)),
+        Array.from(
+          { length: 12 },
+          (_, i) => appendFileAtomically(target, `entry-${i}\n`, { kbDir: tempDir }),
+        ),
       );
 
       const lines = (await fsp.readFile(target, 'utf-8')).trimEnd().split('\n');
@@ -51,8 +59,12 @@ describe('file mutation helpers', () => {
       await fsp.writeFile(target, '# Note\n\nbody\n', 'utf-8');
 
       await Promise.all([
-        appendFileAtomically(target, '\nEOF append\n'),
-        rewriteFileAtomically(target, (original) => original.replace('body\n', 'body\nsection insert\n')),
+        appendFileAtomically(target, '\nEOF append\n', { kbDir: tempDir }),
+        rewriteFileAtomically(
+          target,
+          (original) => original.replace('body\n', 'body\nsection insert\n'),
+          { kbDir: tempDir },
+        ),
       ]);
 
       await expect(fsp.readFile(target, 'utf-8')).resolves.toBe(
@@ -119,6 +131,71 @@ describe('file mutation helpers', () => {
         code: 'PERMISSION_DENIED',
       });
       await expect(fsp.readFile(target, 'utf-8')).resolves.toBe('{"mutations":"allow"}\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rechecks the policy after generating rewritten content', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-file-mutation-policy-race-'));
+    try {
+      const kbDir = path.join(tempDir, 'alpha');
+      const target = path.join(kbDir, 'note.md');
+      const policyPath = path.join(kbDir, KB_WRITE_POLICY_FILENAME);
+      await fsp.mkdir(kbDir, { recursive: true });
+      await fsp.writeFile(target, 'old\n', 'utf-8');
+
+      await expect(
+        rewriteFileAtomically(
+          target,
+          async () => {
+            await fsp.writeFile(policyPath, '{"mutations":"deny"}\n', 'utf-8');
+            return 'new\n';
+          },
+          { kbDir },
+        ),
+      ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      await expect(fsp.readFile(target, 'utf-8')).resolves.toBe('old\n');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates new files atomically and checks the KB policy before creating parents', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-file-mutation-create-'));
+    try {
+      const kbDir = path.join(tempDir, 'alpha');
+      const allowedTarget = path.join(kbDir, 'notes', 'allowed.md');
+      await fsp.mkdir(kbDir, { recursive: true });
+
+      await expect(createFileAtomically(allowedTarget, 'allowed\n', { kbDir })).resolves.toBeUndefined();
+      await expect(fsp.readFile(allowedTarget, 'utf-8')).resolves.toBe('allowed\n');
+
+      await fsp.writeFile(
+        path.join(kbDir, KB_WRITE_POLICY_FILENAME),
+        '{"mutations":"allow"}\n',
+        'utf-8',
+      );
+      const explicitAllowedTarget = path.join(kbDir, 'notes', 'explicit-allow.md');
+      await expect(createFileAtomically(explicitAllowedTarget, 'explicit\n', { kbDir }))
+        .resolves.toBeUndefined();
+      await expect(createFileAtomically(explicitAllowedTarget, 'replacement\n', { kbDir }))
+        .rejects.toMatchObject({ code: 'EEXIST' });
+      await expect(fsp.readFile(explicitAllowedTarget, 'utf-8')).resolves.toBe('explicit\n');
+      const leftovers = (await fsp.readdir(path.dirname(explicitAllowedTarget)))
+        .filter((name) => name.includes('.kb-tmp.'));
+      expect(leftovers).toEqual([]);
+
+      await fsp.writeFile(
+        path.join(kbDir, KB_WRITE_POLICY_FILENAME),
+        '{"mutations":"deny"}\n',
+        'utf-8',
+      );
+      const deniedTarget = path.join(kbDir, 'new', 'denied.md');
+      await expect(createFileAtomically(deniedTarget, 'denied\n', { kbDir })).rejects.toMatchObject({
+        code: 'PERMISSION_DENIED',
+      });
+      await expect(fsp.stat(path.dirname(deniedTarget))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
