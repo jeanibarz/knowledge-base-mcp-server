@@ -58,13 +58,25 @@
 // ever moves.
 
 import * as path from 'path';
-import { LexicalIndex, type LexicalRankingUnit, type LexicalSearchResult } from './lexical-index.js';
+import type { Document } from '@langchain/core/documents';
+import {
+  LexicalIndex,
+  lexicalIndexFilePath,
+  type LexicalRankingUnit,
+  type LexicalSearchResult,
+} from './lexical-index.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
 import { kbSearchFailureMetrics } from './metrics.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
 import type { RetrievalViewKind } from './retrieval-views.js';
+import { withWriteLock } from './write-lock.js';
+import {
+  createSimilaritySearchPostFilter,
+  type ScoredDocument,
+  type SimilaritySearchFilters,
+} from './search-filters.js';
 
 export const HYBRID_FETCH_MULTIPLIER = 4;
 export const HYBRID_FETCH_CAP = 200;
@@ -212,7 +224,7 @@ export type LexicalRefreshPolicy = 'always' | 'when-empty';
 export interface LexicalLegOptions {
   kbs: ReadonlyArray<LexicalKb>;
   query: string;
-  /** Per-KB top-k handed to `LexicalIndex.query`, then merged + clipped. */
+  /** Final per-KB clip size after filtered overfetch, then merged + clipped. */
   fetchK: number;
   /**
    * `'always'` mirrors `kb search --refresh` — refresh + save before every
@@ -223,6 +235,12 @@ export interface LexicalLegOptions {
   refresh: LexicalRefreshPolicy;
   rankingUnit?: LexicalRankingUnit;
   retrievalViews?: RetrievalViewKind[];
+  /**
+   * Metadata filters to apply to lexical hits before they enter the fused
+   * candidate pool. The threshold is intentionally not applied here because
+   * lexical scores use a BM25 scale rather than dense L2 distance.
+   */
+  filters?: SimilaritySearchFilters;
   /**
    * Called when a per-KB load/refresh/query throws. Per-KB failures are not
    * fatal — the leg continues with the remaining KBs. The hook lets each
@@ -266,9 +284,13 @@ export interface LexicalLegResult {
  *
  *   1. Load the per-KB index.
  *   2. Refresh + save when policy says so (always, or when the index is empty).
- *   3. Query the top-`fetchK` hits and accumulate them.
+ *      Filtered calls always refresh so persisted metadata reflects current
+ *      source frontmatter and paths.
+ *   3. Query the top-`fetchK` hits and accumulate them. When metadata filters
+ *      are present, query a bounded larger pool before applying the shared
+ *      post-filter so rejected hits do not consume every lexical slot.
  *
- * After the iteration, the merged hits are score-sorted descending and
+ * After the iteration, the merged valid hits are score-sorted descending and
  * clipped to `fetchK`. Per-KB failures are routed to `onError` (or, when the
  * caller supplies none, to a default warning logger so they are never silently
  * swallowed — issue #737), counted in the returned `failed`, recorded in
@@ -278,23 +300,54 @@ export interface LexicalLegResult {
 export async function runLexicalLeg(opts: LexicalLegOptions): Promise<LexicalLegResult> {
   const load = opts.loadIndex ?? LexicalIndex.load.bind(LexicalIndex);
   const onError = opts.onError ?? defaultLexicalLegOnError;
+  const lexicalPostFilter = opts.filters === undefined
+    ? undefined
+    : createSimilaritySearchPostFilter({
+      threshold: Number.POSITIVE_INFINITY,
+      knowledgeBasesRootDir: KNOWLEDGE_BASES_ROOT_DIR,
+      filters: opts.filters,
+    });
+  // Filter metadata is persisted in the lexical index. Refresh effective
+  // filtered requests so frontmatter changes cannot leave stale
+  // tags/extensions/path metadata eligible for fusion; unfiltered MCP/eval
+  // calls keep when-empty.
+  const hasEffectiveFilter = lexicalPostFilter?.requiresOverfetch === true;
+  const lexicalRefreshPolicy = hasEffectiveFilter ? 'always' : opts.refresh;
+  const lexicalQueryK = hasEffectiveFilter ? hybridFetchK(opts.fetchK) : opts.fetchK;
   let refreshed = 0;
   const failedKbs: string[] = [];
   const all: LexicalSearchResult[] = [];
   for (const { kbName, kbPath } of opts.kbs) {
     try {
       const idx = await load(kbName, kbPath);
-      const shouldRefresh = opts.refresh === 'always' || idx.numFiles() === 0;
+      const shouldRefresh = lexicalRefreshPolicy === 'always' || idx.numFiles() === 0;
       if (shouldRefresh) {
-        await idx.refresh();
-        await idx.save();
-        refreshed += 1;
+        const refreshAndSave = async (): Promise<void> => {
+          await idx.refresh();
+          await idx.save();
+          refreshed += 1;
+        };
+        // LexicalIndex.save uses one shared index.json.tmp path for atomic
+        // replacement. Serialize every refresh/save per KB, including the
+        // legacy unfiltered refresh-on-empty path.
+        await withWriteLock(path.dirname(lexicalIndexFilePath(kbName)), refreshAndSave);
       }
-      const hits = await idx.query(opts.query, opts.fetchK, {
+      const hits = await idx.query(opts.query, lexicalQueryK, {
         unit: opts.rankingUnit ?? 'chunk',
         retrievalViews: opts.retrievalViews,
       });
-      for (const h of hits) all.push(h);
+      if (lexicalPostFilter === undefined) {
+        for (const h of hits) all.push(h);
+      } else {
+        const rows = hits.map((hit) => ({
+          hit,
+          row: [hit as unknown as Document, hit.score] as ScoredDocument,
+        }));
+        const acceptedRows = new Set(lexicalPostFilter.apply(rows.map(({ row }) => row)));
+        for (const { hit, row } of rows) {
+          if (acceptedRows.has(row)) all.push(hit);
+        }
+      }
     } catch (err) {
       failedKbs.push(kbName);
       kbSearchFailureMetrics.record(kbName);

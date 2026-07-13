@@ -11,7 +11,10 @@
 // always vs when-empty) and its per-KB error semantics, since those are
 // the only behaviours the adapters had to reimplement consistently.
 
-import { describe, expect, it, jest } from '@jest/globals';
+import * as fsp from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 
 import {
   HYBRID_FETCH_CAP,
@@ -24,7 +27,7 @@ import {
   type HybridChunk,
   type LexicalKb,
 } from './hybrid-retrieval.js';
-import type { LexicalIndex, LexicalSearchResult } from './lexical-index.js';
+import type { LexicalIndex, LexicalQueryOptions, LexicalSearchResult } from './lexical-index.js';
 import { kbSearchFailureMetrics } from './metrics.js';
 import { logger } from './logger.js';
 import { DEFAULT_C } from './rrf.js';
@@ -177,6 +180,8 @@ describe('fuseHybridResults', () => {
 interface FakeIndexOptions {
   numFiles: number;
   hits: LexicalSearchResult[];
+  /** Return only the requested top-k, as a real lexical index does. */
+  limitHits?: boolean;
   /** When set, the next `query` rejects with this error. */
   failQuery?: Error;
   /** When set, the next `refresh` rejects with this error. */
@@ -191,9 +196,9 @@ function makeFakeIndex(opts: FakeIndexOptions) {
     return { added: 1, updated: 0, removed: 0, failed: 0, totalFiles: files, totalChunks: 1 };
   });
   const save = jest.fn(async () => {});
-  const query = jest.fn(async (_q: string, _k: number) => {
+  const query = jest.fn(async (_q: string, k: number, _options?: LexicalQueryOptions) => {
     if (opts.failQuery) throw opts.failQuery;
-    return opts.hits;
+    return opts.limitHits ? opts.hits.slice(0, k) : opts.hits;
   });
   const numFiles = jest.fn(() => files);
   const idx = { refresh, save, query, numFiles } as unknown as LexicalIndex;
@@ -209,7 +214,208 @@ function lexicalHit(source: string, score: number): LexicalSearchResult {
   return { pageContent: `${source}::body`, metadata: { source, chunkIndex: 0 }, score };
 }
 
+const filterTempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(filterTempDirs.map((dir) => fsp.rm(dir, { recursive: true, force: true })));
+  filterTempDirs.length = 0;
+});
+
 describe('runLexicalLeg', () => {
+  it('TS-SEARCH-853: applies metadata filters to lexical hits before fusion', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-hybrid-filter-'));
+    filterTempDirs.push(root);
+
+    const makeSource = async (relativePath: string, mtimeIso: string): Promise<string> => {
+      const source = path.join(root, relativePath);
+      await fsp.mkdir(path.dirname(source), { recursive: true });
+      await fsp.writeFile(source, 'content', 'utf-8');
+      const mtime = new Date(mtimeIso);
+      await fsp.utimes(source, mtime, mtime);
+      return source;
+    };
+    const validSource = await makeSource('runbooks/valid.md', '2026-07-10T00:00:00Z');
+    const validSecondSource = await makeSource('runbooks/valid-second.md', '2026-07-10T00:00:00Z');
+    const validThirdSource = await makeSource('runbooks/valid-third.md', '2026-07-10T00:00:00Z');
+    const wrongTagSource = await makeSource('runbooks/wrong-tag.md', '2026-07-10T00:00:00Z');
+    const wrongExtensionSource = await makeSource('runbooks/wrong-extension.txt', '2026-07-10T00:00:00Z');
+    const wrongPathSource = await makeSource('notes/wrong-path.md', '2026-07-10T00:00:00Z');
+    const tooOldSource = await makeSource('runbooks/too-old.md', '2026-06-01T00:00:00Z');
+    const tooNewSource = await makeSource('runbooks/too-new.md', '2026-08-01T00:00:00Z');
+
+    const hit = (
+      source: string,
+      relativePath: string,
+      extension: string,
+      tags: string[],
+      score: number,
+    ): LexicalSearchResult => ({
+      pageContent: `${relativePath}::body`,
+      metadata: { source, relativePath: `kb/${relativePath}`, extension, tags, chunkIndex: 0 },
+      score,
+    });
+    const hits = [
+      hit(wrongTagSource, 'runbooks/wrong-tag.md', '.md', ['other'], 100),
+      hit(wrongExtensionSource, 'runbooks/wrong-extension.txt', '.txt', ['adr'], 90),
+      hit(wrongPathSource, 'notes/wrong-path.md', '.md', ['adr'], 80),
+      hit(tooOldSource, 'runbooks/too-old.md', '.md', ['adr'], 70),
+      hit(tooNewSource, 'runbooks/too-new.md', '.md', ['adr'], 60),
+      hit(validSource, 'runbooks/valid.md', '.md', ['adr'], 3),
+      hit(validSecondSource, 'runbooks/valid-second.md', '.md', ['adr'], 2.5),
+      hit(validThirdSource, 'runbooks/valid-third.md', '.md', ['adr'], 2),
+    ];
+    let metadataFresh = false;
+    const refresh = jest.fn(async () => {
+      metadataFresh = true;
+      return { added: 0, updated: 1, removed: 0, failed: 0, totalFiles: 1, totalChunks: hits.length };
+    });
+    const save = jest.fn(async () => {});
+    const query = jest.fn(async (_q: string, k: number, _options?: LexicalQueryOptions) => {
+      const candidates = metadataFresh
+        ? hits
+        : hits.map((candidate) => ({
+            ...candidate,
+            metadata: { ...candidate.metadata, tags: ['stale'] },
+          }));
+      return candidates.slice(0, k);
+    });
+    const index = {
+      idx: {
+        refresh,
+        save,
+        query,
+        numFiles: jest.fn(() => 1),
+      } as unknown as LexicalIndex,
+      refresh,
+      save,
+      query,
+    };
+
+    const result = await runLexicalLeg({
+      kbs: [{ kbName: 'kb-a', kbPath: path.join(root, 'kb-a') }],
+      query: 'q',
+      fetchK: 2,
+      refresh: 'when-empty',
+      filters: {
+        extensions: ['md'],
+        pathGlob: 'runbooks/**',
+        tags: ['adr'],
+        since: '2026-07-01',
+        until: '2026-07-31',
+      },
+      loadIndex: async () => index.idx,
+    });
+
+    expect(index.refresh).toHaveBeenCalledTimes(1);
+    expect(index.save).toHaveBeenCalledTimes(1);
+    expect(metadataFresh).toBe(true);
+    expect(result.refreshed).toBe(1);
+    expect(index.query).toHaveBeenCalledWith('q', 8, expect.objectContaining({ unit: 'chunk' }));
+    expect(result.hits.map((h) => h.metadata.relativePath)).toEqual([
+      'kb/runbooks/valid.md',
+      'kb/runbooks/valid-second.md',
+    ]);
+
+    expect(result.hits.map((h) => h.score)).toEqual([3, 2.5]);
+    const fused = fuseHybridResults({
+      denseResults: [lexicalHit('dense.md', 0.1)],
+      lexicalResults: result.hits,
+      k: 2,
+    });
+    expect(fused.map((h) => h.metadata.relativePath)).toEqual([
+      undefined,
+      'kb/runbooks/valid.md',
+    ]);
+  });
+
+  it('caps filtered lexical overfetch at the shared hybrid fetch limit', async () => {
+    const index = makeFakeIndex({ numFiles: 1, hits: [], limitHits: true });
+
+    await runLexicalLeg({
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 51,
+      refresh: 'when-empty',
+      filters: { tags: ['adr'] },
+      loadIndex: async () => index.idx,
+    });
+
+    expect(index.query).toHaveBeenCalledWith('q', HYBRID_FETCH_CAP, expect.objectContaining({ unit: 'chunk' }));
+  });
+
+  it('serializes concurrent filtered refreshes for the same KB', async () => {
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+    const holdWriteLock = async (): Promise<void> => {
+      activeWrites += 1;
+      maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeWrites -= 1;
+    };
+    const refresh = jest.fn(async () => {
+      await holdWriteLock();
+      return { added: 0, updated: 0, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 };
+    });
+    const save = jest.fn(async () => holdWriteLock());
+    const query = jest.fn(async (_q: string, _k: number, _options?: LexicalQueryOptions) => []);
+    const idx = {
+      refresh,
+      save,
+      query,
+      numFiles: jest.fn(() => 1),
+    } as unknown as LexicalIndex;
+    const options = {
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 2,
+      refresh: 'when-empty' as const,
+      filters: { tags: ['adr'] },
+      loadIndex: async () => idx,
+    };
+
+    await Promise.all([runLexicalLeg(options), runLexicalLeg(options)]);
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(maxActiveWrites).toBe(1);
+  });
+
+  it('serializes concurrent unfiltered refreshes for an empty KB', async () => {
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+    const holdWriteLock = async (): Promise<void> => {
+      activeWrites += 1;
+      maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeWrites -= 1;
+    };
+    const refresh = jest.fn(async () => {
+      await holdWriteLock();
+      return { added: 1, updated: 0, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 };
+    });
+    const save = jest.fn(async () => holdWriteLock());
+    const query = jest.fn(async (_q: string, _k: number, _options?: LexicalQueryOptions) => []);
+    const idx = {
+      refresh,
+      save,
+      query,
+      numFiles: jest.fn(() => 0),
+    } as unknown as LexicalIndex;
+    const options = {
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 2,
+      refresh: 'when-empty' as const,
+      loadIndex: async () => idx,
+    };
+
+    await Promise.all([runLexicalLeg(options), runLexicalLeg(options)]);
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(maxActiveWrites).toBe(1);
+  });
+
   it('refreshes only when the index is empty under refresh="when-empty"', async () => {
     const empty = makeFakeIndex({ numFiles: 0, hits: [lexicalHit('a.md', 0.9)] });
     const populated = makeFakeIndex({ numFiles: 5, hits: [lexicalHit('b.md', 0.8)] });

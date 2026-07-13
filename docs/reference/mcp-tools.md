@@ -18,7 +18,7 @@ The server exposes 9 tools, 3 of which are only registered when `KB_INGEST_ENABL
 | Tool | Gated | Description |
 | --- | --- | --- |
 | [`list_knowledge_bases`](#list_knowledge_bases) | — | Lists the available knowledge bases. |
-| [`retrieve_knowledge`](#retrieve_knowledge) | — | Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided. |
+| [`retrieve_knowledge`](#retrieve_knowledge) | — | Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion. |
 | [`ask_knowledge`](#ask_knowledge) | — | Answers a question from retrieved knowledge-base context using the configured local OpenAI-compatible LLM endpoint. Returns a structured payload with answer, citations, context-packing diagnostics, abstention_reason, LLM provenance, retrieval model, and optional timing. Use retrieve_knowledge when you only need raw chunks. |
 | [`list_models`](#list_models) | — | Lists the embedding models registered for retrieval. Returns an array of {model_id, provider, model_name, active}. Use the model_id as the optional `model_name` argument to retrieve_knowledge to query a specific model instead of the active default. |
 | [`kb_stats`](#kb_stats) | — | Reports observability stats for the knowledge base index: per-KB file_count, chunk_count, total_bytes_indexed and last_updated_at; the active embedding provider/model/dim; the on-disk index_path; server version/commit/uptime; process-lifetime chat-completion calls with bounded provider/model attribution, attempts/retries, cache outcomes, and answer impact; answer-cache counters; and HTTP/SSE transport counters when a remote transport is active. Pass `knowledge_base_name` to scope to a single KB; omit it to get an entry per registered KB. |
@@ -35,19 +35,19 @@ _No input parameters._
 
 ## `retrieve_knowledge`
 
-Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.
+Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.
 
 | Field | Type | Required | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `query` | string | yes | max 8192 chars | The search query to use for retrieving similar chunks from the knowledge base. |
 | `knowledge_base_name` | string | no | — | The name of the knowledge base to search. If omitted, all available knowledge bases are considered. |
-| `threshold` | number | no | — | The maximum similarity score threshold for returned documents. Defaults to 2 if not specified. |
+| `threshold` | number | no | — | The maximum similarity score threshold for returned dense documents. Defaults to 2 if not specified; in hybrid mode, the threshold is not applied because both legs are over-fetched for fusion, while metadata filters apply to both legs before fusion. |
 | `model_name` | string | no | — | The model_id of an alternate embedding model to query (e.g. "openai__text-embedding-3-small"). If omitted, the active model is used. Run list_models for available ids. |
-| `extensions` | array of string | no | max 64 items | Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional. |
-| `path_glob` | string | no | max 1024 chars | Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching. |
-| `tags` | array of string | no | max 64 items | Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter. |
-| `since` | string | no | — | Limit dense results to chunks whose current source-file mtime is at or after this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. |
-| `until` | string | no | — | Limit dense results to chunks whose current source-file mtime is at or before this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. |
+| `extensions` | array of string | no | max 64 items | Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional. In hybrid mode, applied to lexical candidates before fusion. |
+| `path_glob` | string | no | max 1024 chars | Limit results to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching. In hybrid mode, applied to lexical candidates before fusion. |
+| `tags` | array of string | no | max 64 items | Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter. In hybrid mode, applied to lexical candidates before fusion. |
+| `since` | string | no | — | Limit results to chunks whose current source-file mtime is at or after this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. In hybrid mode, applied to lexical candidates before fusion. |
+| `until` | string | no | — | Limit results to chunks whose current source-file mtime is at or before this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. In hybrid mode, applied to lexical candidates before fusion. |
 | `context_before` | integer | no | min 0; max 5 | Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense semantic match. Defaults to 0. |
 | `context_after` | integer | no | min 0; max 5 | Opt-in neighbor context: include up to this many following chunks from the same source around each dense semantic match. Defaults to 0. |
 | `context_window` | integer | no | min 0; max 5 | Shorthand for setting context_before and context_after to the same value. Defaults to 0. |

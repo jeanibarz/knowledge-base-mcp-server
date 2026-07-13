@@ -1578,6 +1578,68 @@ describe('KnowledgeBaseServer handlers', () => {
     });
   });
 
+  it('handleRetrieveKnowledge applies metadata filters to hybrid lexical results (#853)', async () => {
+    const tempDir = await setRetrieveEnv();
+    const alphaDir = path.join(tempDir, 'alpha');
+    await fsp.mkdir(path.join(alphaDir, 'runbooks'), { recursive: true });
+    await fsp.writeFile(
+      path.join(alphaDir, 'runbooks', 'valid.md'),
+      '---\ntags: [adr]\n---\nHYBRID_FILTER_QUERY valid result\n',
+    );
+    await fsp.writeFile(
+      path.join(alphaDir, 'runbooks', 'wrong-tag.md'),
+      '---\ntags: [other]\n---\nHYBRID_FILTER_QUERY wrong result\n',
+    );
+    updateIndexMock.mockResolvedValue(undefined);
+    const denseCandidate = {
+      pageContent: 'HYBRID_FILTER_QUERY dense candidate',
+      metadata: {
+        source: '/kb/dense.md',
+        relativePath: 'alpha/dense.md',
+        extension: '.md',
+        tags: ['other'],
+        chunkIndex: 0,
+      },
+      score: 0.1,
+    };
+    similaritySearchMock.mockImplementation(async (...args: unknown[]) => {
+      const filters = args[4] as { tags?: readonly string[] } | undefined;
+      return filters?.tags?.includes('adr') ? [] : [denseCandidate];
+    });
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'HYBRID_FILTER_QUERY',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+      tags: ['adr'],
+      extensions: ['.md'],
+      path_glob: 'runbooks/**',
+      since: '2020-01-01',
+      until: '2099-01-01',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(similaritySearchMock).toHaveBeenCalledWith(
+      'HYBRID_FILTER_QUERY',
+      40,
+      Number.POSITIVE_INFINITY,
+      'alpha',
+      expect.objectContaining({
+        extensions: ['.md'],
+        pathGlob: 'runbooks/**',
+        tags: ['adr'],
+        since: '2020-01-01',
+        until: '2099-01-01',
+      }),
+      expect.any(Object),
+    );
+    const text: string = result.content[0].text;
+    expect(text).toContain('HYBRID_FILTER_QUERY valid result');
+    expect(text).not.toContain('HYBRID_FILTER_QUERY dense candidate');
+    expect(text).not.toContain('wrong result');
+  });
+
   it('handleRetrieveKnowledge fails closed on provider errors by default', async () => {
     const tempDir = await setRetrieveEnv();
     await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
@@ -2643,7 +2705,7 @@ describe('KnowledgeBaseServer handlers', () => {
       'Lists the available knowledge bases.'
     );
     expect(describeOf(server, 'retrieve_knowledge')).toBe(
-      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
+      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.'
     );
     expect(describeOf(server, 'ask_knowledge')).toContain('Answers a question from retrieved knowledge-base context');
     expect(describeOf(server, 'ask_knowledge')).toContain('abstention_reason');
@@ -2676,7 +2738,7 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(describeOf(server, 'list_knowledge_bases')).toBe('custom list desc');
     // retrieve_knowledge must not be affected by the list override.
     expect(describeOf(server, 'retrieve_knowledge')).toBe(
-      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
+      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.'
     );
   });
 
@@ -2688,7 +2750,7 @@ describe('KnowledgeBaseServer handlers', () => {
     const server = await freshServer();
 
     expect(describeOf(server, 'retrieve_knowledge')).toBe(
-      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
+      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.'
     );
     expect(describeOf(server, 'list_knowledge_bases')).toBe(
       'Lists the available knowledge bases.'

@@ -1,4 +1,5 @@
 import * as fsp from 'fs/promises';
+import * as path from 'path';
 import {
   FaissIndexManager,
   type IndexUpdateProgress,
@@ -58,7 +59,12 @@ import {
   recordRefreshProgressTiming,
   type TimingPayload,
 } from './timing-core.js';
-import { LexicalIndex, type LexicalRankingUnit, type LexicalSearchResult } from './lexical-index.js';
+import {
+  LexicalIndex,
+  lexicalIndexFilePath,
+  type LexicalRankingUnit,
+  type LexicalSearchResult,
+} from './lexical-index.js';
 import {
   HYBRID_RRF_C,
   fuseHybridResultsWithDiagnostics,
@@ -181,20 +187,20 @@ Output normally ends with a freshness footer (markdown) or staleness fields
 Scope:
   --kb=<name>           Scope to one knowledge base. Omit to search ALL KBs.
   --model=<id>          Override the active model for this call (RFC 013).
-  --since=<time>        Dense-only: keep chunks whose current source-file
+  --since=<time>        Dense/hybrid: keep chunks whose current source-file
                         mtime is at or after this bound. Accepts durations
                         like 30d/24h or ISO dates/timestamps.
-  --until=<time>        Dense-only: keep chunks whose current source-file
+  --until=<time>        Dense/hybrid: keep chunks whose current source-file
                         mtime is at or before this bound. File mtime can
                         differ from indexed-content time on stale indexes.
-  --tag=<name>          Dense-only: keep only chunks whose source file has
+  --tag=<name>          Dense/hybrid: keep only chunks whose source file has
                         the given tag in its YAML frontmatter. Repeatable;
                         multiple tags are ANDed (a chunk must carry ALL of
                         them), mirroring retrieve_knowledge.
-  --extension=<ext>     Dense-only: keep only chunks whose source file has
+  --extension=<ext>     Dense/hybrid: keep only chunks whose source file has
                         one of these extensions (e.g. .md, .pdf).
                         Case-insensitive; leading dot optional. Repeatable.
-  --path-glob=<glob>    Dense-only: keep only chunks whose KB-internal
+  --path-glob=<glob>    Dense/hybrid: keep only chunks whose KB-internal
                         relative path matches this glob (e.g. "runbooks/**").
                         The KB-name segment is stripped before matching.
 
@@ -573,12 +579,12 @@ export async function runSearch(
     process.stderr.write('kb search: neighbor context expansion is only supported with --mode=dense\n');
     return 2;
   }
-  if (hasRecencyFilter(parsed) && effectiveMode !== 'dense') {
-    process.stderr.write('kb search: --since/--until are only supported with --mode=dense\n');
+  if (hasRecencyFilter(parsed) && effectiveMode !== 'dense' && effectiveMode !== 'hybrid') {
+    process.stderr.write('kb search: --since/--until are only supported with --mode=dense or --mode=hybrid\n');
     return 2;
   }
-  if (hasMetadataFilter(parsed) && effectiveMode !== 'dense') {
-    process.stderr.write('kb search: --tag/--extension/--path-glob are only supported with --mode=dense\n');
+  if (hasMetadataFilter(parsed) && effectiveMode !== 'dense' && effectiveMode !== 'hybrid') {
+    process.stderr.write('kb search: --tag/--extension/--path-glob are only supported with --mode=dense or --mode=hybrid\n');
     return 2;
   }
   if (parsed.candidatePoolK !== undefined && effectiveMode !== 'hybrid') {
@@ -1240,7 +1246,8 @@ function hasMetadataFilter(args: Pick<SearchArgs, 'extensions' | 'pathGlob' | 't
 
 // Mirror the MCP `retrieve_knowledge` filter semantics exactly (#790): the
 // engine ANDs `extensions`/`path_glob`/`tags` with each other and with the
-// KB scope + threshold, and requires ALL tags to be present. We hand the
+// KB scope + dense threshold when that threshold applies, and requires ALL
+// tags to be present. We hand the
 // parsed flags straight to `SimilaritySearchFilters` so normalization (case-
 // insensitive extensions, KB-name-stripped glob, ALL-match tags) stays owned
 // by the shared engine rather than duplicated on the CLI.
@@ -2635,8 +2642,14 @@ async function runLexicalSearch(
     let refreshSummary: LexicalKbResult['refreshSummary'] = null;
     if (parsed.refresh || index.numFiles() === 0) {
       try {
-        refreshSummary = await withRetrievalViewsForIngest(parsed.retrievalViews, () => index.refresh());
-        await index.save();
+        refreshSummary = await withWriteLock(
+          path.dirname(lexicalIndexFilePath(kbName)),
+          () => withRetrievalViewsForIngest(parsed.retrievalViews, async () => {
+            const summary = await index.refresh();
+            await index.save();
+            return summary;
+          }),
+        );
       } catch (err) {
         perKb.push({ kbName, kbPath, refreshSummary: null, hits: [], error: err as Error });
         continue;
@@ -2808,6 +2821,7 @@ async function runHybridSearch(
   const candidatePoolK = resolveCandidatePoolK(parsed.k, parsed.candidatePoolK);
   const highRecallEnabled = candidatePoolK !== null;
   const fetchK = candidatePoolK ?? hybridFetchK(parsed.k);
+  const filters = searchFiltersFromArgs(parsed);
 
   let activeModelId: string | null = null;
   try {
@@ -2884,7 +2898,7 @@ async function runHybridSearch(
         fetchK,
         Number.POSITIVE_INFINITY,
         parsed.kb,
-        undefined,
+        filters,
         denseTiming,
         { noCache: parsed.noCache, retrievalViews: parsed.retrievalViews },
       )
@@ -2908,6 +2922,7 @@ async function runHybridSearch(
         fetchK,
         refresh: parsed.refresh ? 'always' : 'when-empty',
         rankingUnit: parsed.lexicalUnit,
+        filters,
         retrievalViews: parsed.retrievalViews,
         loadIndex: deps.loadLexicalIndex,
         onError: (kbName, err) => {

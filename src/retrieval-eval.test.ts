@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import yaml from 'js-yaml';
@@ -17,6 +17,8 @@ import {
   type RetrievalEvalCase,
 } from './retrieval-eval.js';
 import { setRerankerFactoryForTests } from './reranker.js';
+import * as hybridRetrieval from './hybrid-retrieval.js';
+import { LexicalIndex } from './lexical-index.js';
 
 const FRESH: Staleness = { indexMtime: '2026-05-09T08:00:00.000Z', modifiedFiles: 0, newFiles: 0 };
 const STALE: Staleness = { indexMtime: '2026-05-09T08:00:00.000Z', modifiedFiles: 1, newFiles: 0 };
@@ -314,6 +316,49 @@ describe('resolveRetrievalEvalMode', () => {
 });
 
 describe('retrieveForRetrievalEvalCase', () => {
+  it('serializes concurrent default lexical refresh/save operations', async () => {
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+    const holdWrite = async (): Promise<void> => {
+      activeWrites += 1;
+      maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeWrites -= 1;
+    };
+    const lexicalIndex = {
+      numFiles: jest.fn(() => 0),
+      refresh: jest.fn(async () => {
+        await holdWrite();
+        return { added: 0, updated: 1, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 };
+      }),
+      save: jest.fn(async () => holdWrite()),
+      query: jest.fn(async () => []),
+    } as unknown as LexicalIndex;
+    const listLexicalKbs = jest.spyOn(hybridRetrieval, 'listLexicalKbs').mockResolvedValue([
+      { kbName: 'eval-lock-853', kbPath: '/kb/eval-lock-853' },
+    ]);
+    const load = jest.spyOn(LexicalIndex, 'load').mockResolvedValue(lexicalIndex);
+
+    try {
+      const context = {
+        defaultK: 10,
+        defaultThreshold: 2,
+        manager: { similaritySearch: jest.fn(async () => []) },
+      };
+      await Promise.all([
+        retrieveForRetrievalEvalCase(fixtureCase({ query: 'q' }), context, 'lexical'),
+        retrieveForRetrievalEvalCase(fixtureCase({ query: 'q' }), context, 'lexical'),
+      ]);
+    } finally {
+      load.mockRestore();
+      listLexicalKbs.mockRestore();
+    }
+
+    expect(maxActiveWrites).toBe(1);
+    expect(lexicalIndex.refresh).toHaveBeenCalledTimes(2);
+    expect(lexicalIndex.save).toHaveBeenCalledTimes(2);
+  });
+
   it('reranks the hybrid runtime path before returning eval results', async () => {
     const previousRerank = process.env.KB_RERANK;
     const previousTopN = process.env.KB_RERANK_TOP_N;

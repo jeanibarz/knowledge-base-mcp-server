@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { minimatch } from 'minimatch';
 import type { FaissIndexManager } from './FaissIndexManager.js';
 import type { ScoredDocument } from './formatter.js';
@@ -8,7 +9,7 @@ import {
   type SearchMode,
   type Staleness,
 } from './search-core.js';
-import { LexicalIndex, type LexicalSearchResult } from './lexical-index.js';
+import { LexicalIndex, lexicalIndexFilePath, type LexicalSearchResult } from './lexical-index.js';
 import {
   fuseHybridResults,
   hybridFetchK,
@@ -22,6 +23,7 @@ import {
   parseRetrievalViews,
   type RetrievalViewKind,
 } from './retrieval-views.js';
+import { withWriteLock } from './write-lock.js';
 
 export type StalePolicy = 'allow_stale' | 'fresh' | 'stale';
 
@@ -584,8 +586,13 @@ async function retrieveLexical(
   for (const { kbName, kbPath } of kbs) {
     const index = await LexicalIndex.load(kbName, kbPath);
     if (index.numFiles() === 0) {
-      await withRetrievalViewsForEvalIngest(retrievalViews, () => index.refresh());
-      await index.save();
+      await withWriteLock(
+        path.dirname(lexicalIndexFilePath(kbName)),
+        () => withRetrievalViewsForEvalIngest(retrievalViews, async () => {
+          await index.refresh();
+          await index.save();
+        }),
+      );
     }
     merged.push(...await index.query(query, k, { retrievalViews }));
   }
