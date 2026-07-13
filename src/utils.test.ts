@@ -257,6 +257,12 @@ describe('parseFrontmatter', () => {
     expect(result.body).toBe('Body\r\n');
   });
 
+  it('recognizes frontmatter after a UTF-8 BOM', () => {
+    const result = parseFrontmatter('\uFEFF---\nkb_policy:\n  no_llm_context: true\n---\nProtected body\n');
+    expect(result.frontmatter).toEqual({ kb_policy: { no_llm_context: 'true' } });
+    expect(result.body).toBe('Protected body\n');
+  });
+
   it('returns `{ tags: [] }` when frontmatter lacks a `tags` key', () => {
     const content = '---\ntitle: hello\n---\nBody\n';
     const result = parseFrontmatter(content);

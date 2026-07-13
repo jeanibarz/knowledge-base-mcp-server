@@ -69,8 +69,10 @@ the health GET for remote providers and judge readiness by the chat call alone.
 ## Privacy note
 
 With `openrouter`, the **content sent to the model leaves your machine** — for
-contextual prefaces that means each chunk's text is sent to OpenRouter. This is a
-deliberate shift from the local-first default; embeddings still run locally.
+contextual prefaces that means each eligible chunk's text is sent to OpenRouter.
+Sources marked `kb_policy.no_llm_context: true` remain retrieval-only and are not
+sent. This is a deliberate shift from the local-first default; embeddings still
+run locally.
 
 ## Behavioral differences (local vs remote)
 

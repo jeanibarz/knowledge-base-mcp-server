@@ -50,7 +50,7 @@ import { KBError } from './errors.js';
 import { callChatCompletion, LlmClientError } from './llm-client.js';
 import { logger } from './logger.js';
 import { retrievalViewText } from './retrieval-views.js';
-import { excludesLlmContext } from './sensitivity-policy.js';
+import { excludesLlmContext, readLlmContextPolicy } from './sensitivity-policy.js';
 import { withSidecarLock } from './write-lock.js';
 
 export const GENERATOR_VERSION = 'contextual-preface.v2';
@@ -119,6 +119,14 @@ export async function resolveContextualPrefaces(
   if (args.chunks.length === 0) return [];
 
   if (excludesLlmContext(args.metadata)) {
+    return args.chunks.map(() => null);
+  }
+
+  // File-ingest supplies metadata for every source. Re-read the source policy
+  // before touching the sidecar so a stale in-memory snapshot cannot authorize
+  // cache hits or LLM work after the file becomes protected.
+  const verifyCurrentPolicy = args.metadata !== undefined;
+  if (verifyCurrentPolicy && !(await currentSourceAllowsLlm(args.source))) {
     return args.chunks.map(() => null);
   }
 
@@ -217,14 +225,24 @@ export async function resolveContextualPrefaces(
   // the endpoint — so a dead LLM is not hammered once per remaining chunk.
   let timeouts = 0;
   let breakerTripped = false;
+  let policyBoundaryBlocked = false;
   await mapBounded(pending, resolveContextualConcurrency(), async ({ index: i, chunkHash }) => {
-    if (breakerTripped) {
+    if (breakerTripped || policyBoundaryBlocked) {
       newEntries[i] = makeFailureEntry(i, chunkHash, 'llm_unreachable');
       resolved[i] = null;
       failures += 1;
       return;
     }
     try {
+      // Recheck immediately before each outbound call. This is the policy
+      // version check at the actual LLM boundary; no await occurs between it
+      // and constructing the request in callPrefaceLlm.
+      if (verifyCurrentPolicy && !(await currentSourceAllowsLlm(args.source))) {
+        policyBoundaryBlocked = true;
+        resolved[i] = null;
+        failures += 1;
+        return;
+      }
       const result = await callPrefaceLlm({
         endpoint,
         documentBody: truncatedDoc,
@@ -272,6 +290,11 @@ export async function resolveContextualPrefaces(
   );
 
   return resolved;
+}
+
+async function currentSourceAllowsLlm(source: string): Promise<boolean> {
+  const snapshot = await readLlmContextPolicy(source);
+  return snapshot.readable && snapshot.valid && snapshot.policy?.no_llm_context !== true;
 }
 
 // ---------------------------------------------------------------------------

@@ -165,7 +165,7 @@ describe('buildChunkDocuments → metadata-sidecar contract (#283)', () => {
       const kbDir = path.join(workspaceUnderRoot as string, kbName, 'sensitive');
       await fsp.mkdir(kbDir, { recursive: true });
       const filePath = path.join(kbDir, 'private.md');
-      const content = [
+      const content = '\uFEFF' + [
         '---',
         'kb_policy:',
         '  no_llm_context: true',

@@ -111,6 +111,7 @@ export async function resolveContextualPrefaces(args: {
   documentHash: string;
   documentBody: string;
   chunks: string[];
+  metadata?: Record<string, unknown>;
 }): Promise<(string | null)[]>;
 
 // Used by both the dense embedder (FaissStoreAdapter) and the BM25 lexical
@@ -247,7 +248,7 @@ Behavior:
    - **FAISS index (embedding-cheap, initially whole-corpus):** while the contextual estimate still has `cold_chunks`, the single `index.vN+1/` staging tree under the model dir is built up in memory as the reindex walks every KB and is **atomically swapped exactly once at the end of the entire run** per RFC 014. Once the contextual sidecar cache is warm, follow-up runs delegate to the normal non-forced `updateIndex()` path so unchanged files are skipped and changed/appended files use the existing incremental update path. If a changed file cannot be represented safely without vector deletion, `updateIndex()` still falls back to a full rebuild.
 
    Per-KB walk:
-   a. For each file in the KB, re-run `buildChunkDocuments` with contextual retrieval on. `resolveContextualPrefaces` reads the on-disk sidecar (cache hits from prior runs) and calls the LLM only for misses.
+   a. For each file in the KB, re-run `buildChunkDocuments` with contextual retrieval on. Eligible files have `resolveContextualPrefaces` read the on-disk sidecar (cache hits from prior runs) and call the LLM only for misses; policy-excluded files return all-null without sidecar I/O or LLM calls.
    b. Re-embed the chunks via the §3 path; append to the in-memory `index.vN+1` staging store. Verify `ntotal === docstore.size` invariant after each batch.
    c. **At the end of this KB:** persist all newly-generated sidecars for this KB to disk under `withSidecarLock` (tmp + rename per source file, `mkdir -p` on subdirs). Update `.reindex.run.json` with `last_completed_kb`, `kbs_done`.
    d. Continue to the next KB. The staging FAISS index keeps accumulating; it is **not** touched on disk yet.

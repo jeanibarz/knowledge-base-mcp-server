@@ -132,6 +132,32 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     expect(FETCH_MOCK).not.toHaveBeenCalled();
   });
 
+  it('rechecks the current source policy before contextual LLM work', async () => {
+    FETCH_MOCK.mockImplementation(async () => llmResponse('must not be generated'));
+    const { resolveContextualPrefaces } = await loadModule();
+    const source = path.join(tempDir, 'current-policy.md');
+    await fsp.writeFile(source, [
+      '---',
+      'kb_policy:',
+      '  no_llm_context: true',
+      '---',
+      '',
+      'current protected body',
+    ].join('\n'), 'utf-8');
+
+    const result = await resolveContextualPrefaces({
+      source,
+      knowledgeBaseName: 'alpha',
+      documentHash: 'current-policy-hash',
+      documentBody: 'current protected body',
+      chunks: ['current protected chunk'],
+      metadata: { frontmatter: {} },
+    });
+
+    expect(result).toEqual([null]);
+    expect(FETCH_MOCK).not.toHaveBeenCalled();
+  });
+
   it('generates deterministic prefaces with KB_LLM_FAKE without a real endpoint', async () => {
     setEnv('KB_LLM_ENDPOINT', undefined);
     setEnv('KB_LLM_FAKE', 'on');

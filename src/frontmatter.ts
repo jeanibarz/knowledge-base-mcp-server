@@ -31,8 +31,13 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
     return { tags: [], body: content, frontmatter: {} };
   }
 
+  // A UTF-8 BOM is not part of the document's frontmatter. Normalize it
+  // before looking for the opening fence so a protected policy cannot be
+  // hidden behind an editor-added BOM.
+  const normalizedContent = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+
   // Opening fence must be `---\n` (or `---\r\n`) at byte 0.
-  const openMatch = content.match(/^---\r?\n/);
+  const openMatch = normalizedContent.match(/^---\r?\n/);
   if (!openMatch) {
     return { tags: [], body: content, frontmatter: {} };
   }
@@ -41,8 +46,8 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
   // Search for the closing fence within the size cap. The closing fence
   // `---` must sit at the start of a line - either at position 0 of the
   // slice (empty frontmatter: `---\n---\n`) or right after a `\n`.
-  const searchLimit = Math.min(content.length, FRONTMATTER_MAX_BYTES);
-  const searchSlice = content.slice(openEnd, searchLimit);
+  const searchLimit = Math.min(normalizedContent.length, FRONTMATTER_MAX_BYTES);
+  const searchSlice = normalizedContent.slice(openEnd, searchLimit);
   const closeMatch = searchSlice.match(/(^|\n)---(\r?\n|$)/);
   if (!closeMatch || closeMatch.index === undefined) {
     return { tags: [], body: content, frontmatter: {} };
@@ -54,7 +59,7 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
   const yamlEnd = leadNL === '\n' ? closeMatch.index : 0;
   const fenceEnd = closeMatch.index + closeMatch[0].length;
   const yamlRaw = searchSlice.slice(0, yamlEnd);
-  const body = content.slice(openEnd + fenceEnd);
+  const body = normalizedContent.slice(openEnd + fenceEnd);
 
   let parsed: unknown;
   try {
@@ -108,14 +113,15 @@ export function parseFrontmatterStrict(content: string): StrictParsedFrontmatter
     throw new Error('malformed frontmatter: note content must be text');
   }
 
-  const openMatch = content.match(/^---\r?\n/);
+  const normalizedContent = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+  const openMatch = normalizedContent.match(/^---\r?\n/);
   if (!openMatch) {
     return { frontmatter: {}, body: content, hasFence: false };
   }
 
   const openEnd = openMatch[0].length;
-  const searchLimit = Math.min(content.length, FRONTMATTER_MAX_BYTES);
-  const searchSlice = content.slice(openEnd, searchLimit);
+  const searchLimit = Math.min(normalizedContent.length, FRONTMATTER_MAX_BYTES);
+  const searchSlice = normalizedContent.slice(openEnd, searchLimit);
   const closeMatch = searchSlice.match(/(^|\n)---(\r?\n|$)/);
   if (!closeMatch || closeMatch.index === undefined) {
     throw new Error('malformed frontmatter: missing closing "---" fence');
@@ -139,7 +145,7 @@ export function parseFrontmatterStrict(content: string): StrictParsedFrontmatter
 
   return {
     frontmatter: parsed as Record<string, unknown>,
-    body: content.slice(openEnd + fenceEnd),
+    body: normalizedContent.slice(openEnd + fenceEnd),
     hasFence: true,
   };
 }

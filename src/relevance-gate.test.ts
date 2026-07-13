@@ -500,7 +500,7 @@ describe('relevance gate', () => {
     try {
       const malformedSource = path.join(tempDir, 'malformed.md');
       const safeSource = path.join(tempDir, 'public.md');
-      await fsp.writeFile(malformedSource, [
+      await fsp.writeFile(malformedSource, '\uFEFF' + [
         '---',
         'kb_policy: true',
         '---',

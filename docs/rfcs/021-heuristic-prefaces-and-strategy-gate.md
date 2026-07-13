@@ -346,7 +346,8 @@ rebuilds, zero LLM calls.
   fixtures), no-headings/no-title fallbacks, duplicate-chunk fail-closed, >48k-char doc,
   overlap-midpoint tie-break.
 - `src/file-ingest.ts` — resolve `KB_CONTEXTUAL_STRATEGY` at the `buildChunkDocuments` seam;
-  dispatch heuristic inline / LLM path unchanged; write the per-KB strategy manifest
+  dispatch heuristic inline / LLM path unchanged, retaining the shared
+  `no_llm_context` egress guard; write the per-KB strategy manifest
   (`kb.strategy-manifest.v1`) on heuristic runs.
 - `src/config/schema.ts` — `KB_CONTEXTUAL_STRATEGY` enum with **startup validation** (invalid
   value = config error, never a silent default).
@@ -361,7 +362,8 @@ rebuilds, zero LLM calls.
 - `docs/testing/fixtures/` — expanded canary fixtures (~25/archetype, provenance-labeled,
   coreference quota in archetype 1, `expected_chunk_hint` in archetype 4).
 - `docs/rfcs/021-gate-results/` — machine-readable gate artifacts.
-- `src/contextual-preface.ts` — **no changes** (LLM path untouched; dispatch happens above it).
+- `src/contextual-preface.ts` — no heuristic-dispatch changes; the existing LLM
+  path retains the shared `no_llm_context` egress guard.
 
 ## Edge cases
 
@@ -435,7 +437,8 @@ rebuilds, zero LLM calls.
   the `KB_CONTEXTUAL_STRATEGY` schema enum — pure additive code, zero blast radius. **PR 2:** the
   `buildChunkDocuments` dispatch seam, manifest write, strategy-aware estimator, reindex output
   line, structured trail-miss log — the ingest-hot-path change lands alone, reviewable as a
-  single concern. Accept: existing contextual-preface tests untouched and green; a heuristic
+  single concern. Accept: existing contextual-preface behavior and policy-guard tests remain
+  green; a heuristic
   reindex of one shelf completes with **zero LLM calls** (endpoint-call counter) and correct
   `estimated_seconds`; the manifest file is written and correct (direct read assertion — the
   `kb stats`/`kb doctor` surfaces land later at their own milestones).

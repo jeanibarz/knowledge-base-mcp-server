@@ -298,8 +298,7 @@ export async function buildChunkDocuments(
   // enabled, we call the LLM once per eligible chunk (cached) to produce a
   // short context paragraph that gets prepended for embedding only. Chunks
   // excluded by kb_policy.no_llm_context receive no preface and never reach
-  // the LLM. The
-  // `pageContent` returned here stays byte-identical; the preface lives
+  // the LLM. The `pageContent` returned here stays byte-identical; the preface lives
   // on `metadata.contextual_preface` for `FaissStoreAdapter` and
   // `LexicalIndex.refresh` to consume via the shared `embeddingText`
   // helper. When the feature is off, no LLM calls fire and the metadata
@@ -316,9 +315,7 @@ export async function buildChunkDocuments(
         documentHash: contextualPrefaceSha256(body),
         documentBody: body,
         chunks: documents.map((doc) => doc.pageContent),
-        ...(liftedFrontmatter !== undefined
-          ? { metadata: { frontmatter: liftedFrontmatter } }
-          : {}),
+        metadata: { frontmatter: liftedFrontmatter ?? {} },
       });
     } catch (err) {
       // resolveContextualPrefaces is engineered to never throw on

@@ -1,3 +1,6 @@
+import * as fsp from 'fs/promises';
+import { parseFrontmatterStrict } from './frontmatter.js';
+
 export type KbResourceReadPolicy = 'allow' | 'local_only' | 'deny';
 export type KbResourceReadAccess = 'local' | 'remote';
 
@@ -10,6 +13,37 @@ export interface KbSensitivityPolicy {
 export interface KbResourceReadDecision {
   allowed: boolean;
   reason?: 'resource_read_deny' | 'resource_read_local_only';
+}
+
+export interface LlmContextPolicySnapshot {
+  readable: boolean;
+  valid: boolean;
+  policy: KbSensitivityPolicy | undefined;
+}
+
+/**
+ * Read the current source policy at an LLM boundary. A missing, unreadable,
+ * or malformed source is deliberately not equivalent to a policy-free file.
+ */
+export async function readLlmContextPolicy(source: string): Promise<LlmContextPolicySnapshot> {
+  try {
+    const content = await fsp.readFile(source, 'utf-8');
+    const frontmatter = parseFrontmatterStrict(content).frontmatter;
+    const hasPolicy = Object.prototype.hasOwnProperty.call(frontmatter, 'kb_policy');
+    const rawPolicy = frontmatter.kb_policy;
+    const policy = normalizeKbSensitivityPolicy(rawPolicy);
+    const emptyPolicy = rawPolicy !== null
+      && typeof rawPolicy === 'object'
+      && !Array.isArray(rawPolicy)
+      && Object.keys(rawPolicy as Record<string, unknown>).length === 0;
+    return {
+      readable: true,
+      valid: !hasPolicy || policy !== undefined || emptyPolicy,
+      policy,
+    };
+  } catch {
+    return { readable: false, valid: false, policy: undefined };
+  }
 }
 
 export function normalizeKbSensitivityPolicy(
