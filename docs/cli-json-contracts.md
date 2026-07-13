@@ -103,6 +103,48 @@ Stdout/stderr and exit codes:
   exit `2`.
 - `kb help` without `--format=json` keeps the existing human-readable output.
 
+## `kb ls`
+
+Invocation:
+
+```bash
+kb ls [<kb>] [--prefix=<path>] [--long] --format=json
+```
+
+Success payload:
+
+```json
+{
+  "schemaVersion": "kb.ls.v1",
+  "knowledgeBases": ["work"],
+  "prefix": "projects/active",
+  "documents": [
+    {
+      "knowledgeBase": "work",
+      "path": "projects/active/guide.md",
+      "tier": "durable",
+      "status": "active",
+      "type": "guide",
+      "mtime": "2026-07-13T08:00:00.000Z"
+    }
+  ]
+}
+```
+
+Stable fields:
+
+- `schemaVersion`: literal `kb.ls.v1`.
+- `knowledgeBases`: deterministic valid KB names included in the scope.
+- `prefix`: the normalized KB-relative prefix, or `null` when unscoped.
+- `documents`: deterministic documents with `knowledgeBase` and KB-relative
+  `path`.
+- With `--long`, each document also includes `tier`, `status`, `type`, and
+  filesystem `mtime`; frontmatter fields are `null` when absent.
+
+Success is exit `0` with an empty `documents` array when no files match.
+Invalid arguments exit `2`; KB and filesystem failures exit `1` with an empty
+stdout.
+
 ## `kb inspect`
 
 Invocation:

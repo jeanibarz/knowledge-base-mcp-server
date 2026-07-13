@@ -189,6 +189,15 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `kb help <command> --format=json` shall preserve the existing unknown-command stderr error and exit code when the command is not registered.
 - `kb help` without `--format=json` shall preserve the existing human-readable help output.
 
+### TS-CLI-857: Knowledge-Base Document Listing
+**Requirement:** FR-CLI-857
+
+**Test Cases:**
+- `parseLsArgs` shall parse KB, subtree prefix, long metadata, and Markdown/JSON format options while rejecting invalid values and traversal.
+- The shared document inventory shall apply ingest filters, quarantine entries, deterministic ordering, strict subtree boundaries, and safe KB-root containment.
+- `collectLsReport` and `formatLsReport` shall render KB-relative paths, long frontmatter/mtime metadata, and the stable `kb.ls.v1` JSON shape.
+- The CLI smoke matrix shall exercise all-KB and prefix-scoped `kb ls` subprocess output plus unknown-KB and invalid-argument exit paths.
+
 ### TS-CLI-833: Safe Note Tag Mutation
 **Requirement:** FR-CLI-833
 
