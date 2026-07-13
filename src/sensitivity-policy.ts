@@ -15,8 +15,14 @@ export interface KbResourceReadDecision {
 export function normalizeKbSensitivityPolicy(
   value: unknown,
 ): KbSensitivityPolicy | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (value === undefined) {
     return undefined;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    // An explicit non-mapping policy cannot be inspected safely. Preserve
+    // retrieval while preventing any LLM-boundary caller from treating it as
+    // a policy-free document.
+    return { no_llm_context: true };
   }
   const raw = value as Record<string, unknown>;
   const policy: KbSensitivityPolicy = {};
@@ -44,7 +50,8 @@ export function normalizeKbSensitivityPolicy(
     }
   }
 
-  return Object.keys(policy).length > 0 ? policy : undefined;
+  if (Object.keys(policy).length > 0) return policy;
+  return Object.keys(raw).length > 0 ? { no_llm_context: true } : undefined;
 }
 
 export function sensitivityPolicyFromMetadata(
