@@ -17,3 +17,17 @@ reports/mutation/
 # Local evolution chain controls
 STOP
 .chain-heartbeat
+
+# Per-run agent state (kookr issue targeting, ralph loop verdicts). Machine-local
+# and rewritten every run — the checked-in copy would always be someone else's stale target.
+.kookr-issue-state
+.kookr-target
+.kookr-target-title
+.kookr-target-title.json
+.ralph-verdict-*.json
+
+# Playwright MCP page snapshots (tool output, not project data)
+.playwright-mcp/
+
+# Ad-hoc logging-throughput probe output (synthetic payloads, ~7MB/run)
+probe-concurrent-*.jsonl
