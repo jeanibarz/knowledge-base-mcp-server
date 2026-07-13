@@ -386,7 +386,9 @@ async function readManifestChunkCount(manifestPath: string): Promise<number> {
  *
  * The cache-aware runtime estimate adds cold-preface work to the possible
  * whole-index embedding rebuild. A first-ever reindex (no sidecars) yields
- * `cold_chunks === total_chunks`; a warm cache still retains embedding cost.
+ * `cold_chunks === total_chunks` when all sources are LLM-eligible; protected
+ * sources remain in `total_chunks` but contribute no cold LLM work. A warm
+ * cache still retains embedding cost.
  */
 export async function estimateContextualReindexWork(
   kbs: readonly string[],

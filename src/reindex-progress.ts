@@ -107,9 +107,9 @@ export interface ReindexProgress {
 export interface ComputeReindexProgressOptions {
   /**
    * Restrict the report to these KB names. An empty / omitted list
-   * reports every KB that has at least one contextual sidecar. A named
-   * KB with no sidecars is still reported (with zero counts) so a
-   * resume check on a specific KB is never silently empty.
+   * reports every registered KB, including KBs that have at least one
+   * contextual sidecar. A named KB with no sidecars is still reported (with
+   * zero counts) so a resume check on a specific KB is never silently empty.
    */
   knowledgeBases?: readonly string[];
 }
