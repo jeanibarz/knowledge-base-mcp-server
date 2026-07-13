@@ -16,6 +16,8 @@ import { isValidModelId } from './model-id.js';
 
 export const QUERY_CACHE_SCHEMA_VERSION = 'kb-query-cache.v1';
 
+const DISK_SIZE_RECONCILE_INTERVAL = 64;
+
 export type QueryCacheLookupStatus = 'hit_l1' | 'hit_disk' | 'miss' | 'bypass' | 'disabled';
 export type QueryCacheOutcome = 'memory_hit' | 'disk_hit' | 'miss' | 'bypass' | 'disabled';
 
@@ -61,6 +63,11 @@ interface CacheMeta {
   vector_sha256?: string;
 }
 
+interface DiskWriteResult {
+  previousSize: number;
+  size: number;
+}
+
 class LruVectorCache {
   private readonly values = new Map<string, number[]>();
   constructor(private readonly maxEntries: number) {}
@@ -100,6 +107,9 @@ export class QueryEmbeddingCache {
   private readonly singleFlight: boolean;
   private readonly l1: LruVectorCache;
   private readonly inFlight = new Map<string, Promise<number[]>>();
+  private diskBytes: number | undefined;
+  private diskSizeInitialization: Promise<void> | undefined;
+  private writesSinceReconcile = 0;
   private hitsL1 = 0;
   private hitsDisk = 0;
   private misses = 0;
@@ -180,10 +190,13 @@ export class QueryEmbeddingCache {
         const stableEmbedding = toFloat32Numbers(embedding);
         this.l1.set(paths.cacheKey, stableEmbedding);
         try {
-          await this.writeDisk(paths, stableEmbedding);
+          await this.ensureDiskSize();
+          const write = await this.writeDisk(paths, stableEmbedding);
           this.writes += 1;
+          this.applyDiskWrite(write);
           await this.enforceDiskLimit();
         } catch (err) {
+          this.diskBytes = undefined;
           logger.warn(`query embedding cache write skipped for ${args.modelId}: ${(err as Error).message}`);
         }
         return stableEmbedding;
@@ -198,6 +211,7 @@ export class QueryEmbeddingCache {
   }
 
   async stats(): Promise<QueryCacheStats> {
+    await this.ensureDiskSize();
     const hits = this.hitsL1 + this.hitsDisk;
     const misses = this.misses;
     const total = hits + misses;
@@ -211,7 +225,7 @@ export class QueryEmbeddingCache {
       writes: this.writes,
       corruptions: this.corruptions,
       l1_size: this.l1.size,
-      disk_size_bytes: await queryCacheDiskSizeBytes(this.indexPath),
+      disk_size_bytes: this.diskBytes ?? 0,
     };
   }
 
@@ -269,7 +283,7 @@ export class QueryEmbeddingCache {
     return out;
   }
 
-  private async writeDisk(paths: QueryCachePaths, embedding: readonly number[]): Promise<void> {
+  private async writeDisk(paths: QueryCachePaths, embedding: readonly number[]): Promise<DiskWriteResult> {
     await fsp.mkdir(paths.modelCacheDir, { recursive: true });
     const release = await properLockfile.lock(paths.modelCacheDir, {
       lockfilePath: path.join(paths.modelCacheDir, '.kb-query-cache.lock'),
@@ -279,6 +293,7 @@ export class QueryEmbeddingCache {
     const vectorTmp = `${paths.vectorPath}.${process.pid}.${Date.now()}.tmp`;
     const metaTmp = `${paths.metaPath}.${process.pid}.${Date.now()}.tmp`;
     try {
+      const previousSize = await fileSizeIfPresent(paths.vectorPath);
       const buffer = Buffer.allocUnsafe(embedding.length * 4);
       embedding.forEach((value, index) => buffer.writeFloatLE(value, index * 4));
       const meta: CacheMeta = {
@@ -292,6 +307,7 @@ export class QueryEmbeddingCache {
       await fsp.rename(vectorTmp, paths.vectorPath);
       await fsp.writeFile(metaTmp, `${JSON.stringify(meta, null, 2)}\n`, 'utf-8');
       await fsp.rename(metaTmp, paths.metaPath);
+      return { previousSize, size: buffer.byteLength };
     } finally {
       await Promise.all([
         fsp.unlink(vectorTmp).catch(() => undefined),
@@ -305,6 +321,7 @@ export class QueryEmbeddingCache {
 
   private async recordCorrupt(paths: QueryCachePaths): Promise<void> {
     this.corruptions += 1;
+    this.diskBytes = undefined;
     await Promise.all([
       fsp.unlink(paths.vectorPath).catch(() => undefined),
       fsp.unlink(paths.metaPath).catch(() => undefined),
@@ -313,16 +330,48 @@ export class QueryEmbeddingCache {
 
   private async enforceDiskLimit(): Promise<void> {
     if (this.diskMaxBytes <= 0) return;
-    const root = queryCacheRoot(this.indexPath);
-    const files = await listCacheVectorFiles(root);
+    if (this.diskBytes === undefined || this.writesSinceReconcile >= DISK_SIZE_RECONCILE_INTERVAL) {
+      await this.reconcileDiskSize();
+    }
+    if (this.diskBytes === undefined || this.diskBytes <= this.diskMaxBytes) return;
+
+    const files = await listCacheVectorFiles(queryCacheRoot(this.indexPath));
     let total = files.reduce((sum, file) => sum + file.size, 0);
-    if (total <= this.diskMaxBytes) return;
     files.sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const file of files) {
       if (total <= this.diskMaxBytes) break;
       await fsp.unlink(file.path).catch(() => undefined);
       await fsp.unlink(file.path.replace(/\.f32$/, '.meta.json')).catch(() => undefined);
       total -= file.size;
+    }
+    this.diskBytes = total;
+    this.writesSinceReconcile = 0;
+  }
+
+  private applyDiskWrite(write: DiskWriteResult): void {
+    if (this.diskBytes !== undefined) {
+      this.diskBytes += write.size - write.previousSize;
+    }
+    this.writesSinceReconcile += 1;
+  }
+
+  private async ensureDiskSize(): Promise<void> {
+    if (this.diskBytes !== undefined) return;
+    if (this.diskSizeInitialization === undefined) {
+      this.diskSizeInitialization = this.reconcileDiskSize().finally(() => {
+        this.diskSizeInitialization = undefined;
+      });
+    }
+    await this.diskSizeInitialization;
+  }
+
+  private async reconcileDiskSize(): Promise<void> {
+    try {
+      this.diskBytes = await queryCacheDiskSizeBytes(this.indexPath);
+      this.writesSinceReconcile = 0;
+    } catch (err) {
+      this.diskBytes = undefined;
+      logger.warn(`query embedding cache size reconciliation skipped: ${(err as Error).message}`);
     }
   }
 }
@@ -396,6 +445,15 @@ function sha256Buffer(buffer: Buffer): string {
 
 function isSha256Hex(value: string): boolean {
   return /^[0-9a-f]{64}$/.test(value);
+}
+
+async function fileSizeIfPresent(file: string): Promise<number> {
+  try {
+    return (await fsp.stat(file)).size;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw err;
+  }
 }
 
 async function listCacheVectorFiles(root: string): Promise<Array<{ path: string; size: number; mtimeMs: number }>> {

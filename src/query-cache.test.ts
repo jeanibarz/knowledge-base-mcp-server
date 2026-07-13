@@ -1,12 +1,14 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
+import fspDefault from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
   QueryEmbeddingCache,
   normalizeQueryForCache,
   queryCachePaths,
+  queryCacheDiskSizeBytes,
 } from './query-cache.js';
 import { isQueryCacheEnabled } from './config/cache.js';
 
@@ -214,6 +216,103 @@ describe('query embedding cache (#214)', () => {
       const meta = JSON.parse(await fsp.readFile(paths.metaPath, 'utf-8')) as { vector_sha256?: string };
       expect(meta.vector_sha256).toMatch(/^[0-9a-f]{64}$/);
       expect(meta.vector_sha256).toBe(sha256(await fsp.readFile(paths.vectorPath)));
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('does not rescan the disk tree for each hot-path miss write', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-amortized-');
+    const readdirSpy = jest.spyOn(fspDefault, 'readdir');
+    try {
+      await fsp.mkdir(path.join(indexPath, 'cache', 'queries', 'fake__one'), { recursive: true });
+      const cache = new QueryEmbeddingCache({ indexPath, lruMax: 0 });
+
+      await cache.getOrCompute({
+        modelId: 'fake__one',
+        query: 'first',
+        embed: async () => [1, 2],
+      });
+      const scansAfterFirstWrite = readdirSpy.mock.calls.length;
+
+      await cache.getOrCompute({
+        modelId: 'fake__one',
+        query: 'second',
+        embed: async () => [3, 4],
+      });
+
+      expect(readdirSpy.mock.calls.length).toBe(scansAfterFirstWrite);
+    } finally {
+      readdirSpy.mockRestore();
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('keeps incremental byte accounting aligned with a ground-truth rescan', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-accounting-');
+    try {
+      const cache = new QueryEmbeddingCache({ indexPath, lruMax: 0 });
+      for (const [query, embedding] of [
+        ['first', [1, 2]],
+        ['second', [3, 4, 5]],
+        ['third', [6]],
+      ] as const) {
+        await cache.getOrCompute({
+          modelId: 'fake__one',
+          query,
+          embed: async () => Array.from(embedding),
+        });
+        expect((await cache.stats()).disk_size_bytes).toBe(await queryCacheDiskSizeBytes(indexPath));
+      }
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('enforces the disk byte cap while maintaining incremental accounting', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-evict-');
+    try {
+      const probe = new QueryEmbeddingCache({ indexPath, lruMax: 0 });
+      await probe.getOrCompute({
+        modelId: 'fake__one',
+        query: 'probe',
+        embed: async () => [0.1, 0.2, 0.3],
+      });
+      const entryBytes = await queryCacheDiskSizeBytes(indexPath);
+      expect(entryBytes).toBeGreaterThan(0);
+      await fsp.rm(path.join(indexPath, 'cache', 'queries'), { recursive: true, force: true });
+
+      const cache = new QueryEmbeddingCache({
+        indexPath,
+        lruMax: 0,
+        diskMaxBytes: Math.floor(entryBytes * 2.5),
+      });
+      for (const [query, embedding] of [
+        ['q1', [0.11, 0.12, 0.13]],
+        ['q2', [0.21, 0.22, 0.23]],
+        ['q3', [0.31, 0.32, 0.33]],
+      ] as const) {
+        await cache.getOrCompute({
+          modelId: 'fake__one',
+          query,
+          embed: async () => Array.from(embedding),
+        });
+        expect((await cache.stats()).disk_size_bytes).toBe(await queryCacheDiskSizeBytes(indexPath));
+      }
+
+      expect((await cache.stats()).disk_size_bytes).toBeLessThanOrEqual(Math.floor(entryBytes * 2.5));
+      await expect(cache.getOrCompute({
+        modelId: 'fake__one',
+        query: 'q1',
+        embed: async () => [9, 9, 9],
+      })).resolves.toMatchObject({ status: 'miss' });
+      await expect(cache.getOrCompute({
+        modelId: 'fake__one',
+        query: 'q3',
+        embed: async () => {
+          throw new Error('q3 should remain cached');
+        },
+      })).resolves.toMatchObject({ status: 'hit_disk' });
     } finally {
       await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
     }

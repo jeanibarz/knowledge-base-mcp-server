@@ -95,9 +95,12 @@ case. Because the query text is not written to disk, operators should use
 ## Disk-Budget Tuning
 
 `KB_QUERY_CACHE_DISK_MAX_MB` caps query-vector files per index path. The default
-is `64`. Budget enforcement happens after a successful cache write:
+is `64`. Budget enforcement happens after a successful cache write. The cache
+keeps a running total of vector bytes, initialized from one directory
+reconciliation and updated by write and eviction deltas. It periodically
+reconciles again, or reconciles immediately if accounting becomes unknown:
 
-1. The process lists `.f32` vector files under `cache/queries`.
+1. The process uses the running total unless a reconciliation is due.
 2. If total vector bytes exceed the budget, it deletes the oldest vector files
    by mtime.
 3. It also deletes the matching `.meta.json` sidecar for each pruned vector.

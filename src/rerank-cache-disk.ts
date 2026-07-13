@@ -24,6 +24,8 @@ export const RERANK_SCORE_CACHE_SCHEMA_VERSION = 'kb-rerank-score-cache.v1';
 
 export const DEFAULT_RERANK_CACHE_L1_MAX = 4096;
 
+const DISK_SIZE_RECONCILE_INTERVAL = 64;
+
 export interface DiskTieredRerankScoreCacheOptions {
   indexPath?: string;
   enabled?: boolean;
@@ -45,6 +47,11 @@ export interface RerankScoreCacheStats {
 interface RerankScoreRecord {
   schema_version: typeof RERANK_SCORE_CACHE_SCHEMA_VERSION;
   score: number;
+}
+
+interface DiskWriteResult {
+  previousSize: number;
+  size: number;
 }
 
 /**
@@ -84,6 +91,8 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
   private readonly diskMaxBytes: number;
   private readonly l1Max: number;
   private readonly l1 = new Map<string, number>();
+  private diskBytes: number | undefined;
+  private writesSinceReconcile = 0;
   private l1Hits = 0;
   private diskHits = 0;
   private misses = 0;
@@ -95,6 +104,7 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
     this.cacheRoot = rerankScoreCacheRoot(options.indexPath ?? FAISS_INDEX_PATH);
     this.diskMaxBytes = options.diskMaxBytes ?? KB_RERANK_CACHE_DISK_MAX_BYTES;
     this.l1Max = options.l1Max ?? DEFAULT_RERANK_CACHE_L1_MAX;
+    this.diskBytes = this.reconcileDiskSize();
   }
 
   get(modelId: string, query: string, candidateText: string): number | null {
@@ -124,10 +134,12 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
     const key = rerankScoreCacheKey(modelId, query, candidateText);
     this.l1Set(key, score);
     try {
-      this.writeDisk(key, score);
+      const write = this.writeDisk(key, score);
       this.writes += 1;
+      this.applyDiskWrite(write);
       this.enforceDiskLimit();
     } catch (err) {
+      this.diskBytes = undefined;
       logger.warn(`rerank score cache write skipped: ${(err as Error).message}`);
     }
   }
@@ -150,7 +162,8 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
   }
 
   diskSizeBytes(): number {
-    return listEntryFiles(this.cacheRoot).reduce((sum, file) => sum + file.size, 0);
+    if (this.diskBytes === undefined) this.diskBytes = this.reconcileDiskSize();
+    return this.diskBytes ?? 0;
   }
 
   private l1Set(key: string, value: number): void {
@@ -200,13 +213,15 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
     return record.score;
   }
 
-  private writeDisk(key: string, score: number): void {
+  private writeDisk(key: string, score: number): DiskWriteResult {
     const file = this.entryPath(key);
+    const previousSize = fileSizeIfPresent(file);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const record: RerankScoreRecord = { schema_version: RERANK_SCORE_CACHE_SCHEMA_VERSION, score };
+    const serialized = `${JSON.stringify(record)}\n`;
     const tmp = `${file}.${process.pid}.tmp`;
     try {
-      fs.writeFileSync(tmp, `${JSON.stringify(record)}\n`, 'utf-8');
+      fs.writeFileSync(tmp, serialized, 'utf-8');
       fs.renameSync(tmp, file);
     } catch (err) {
       try {
@@ -216,12 +231,14 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
       }
       throw err;
     }
+    return { previousSize, size: Buffer.byteLength(serialized, 'utf-8') };
   }
 
   private recordCorrupt(file: string): void {
     this.corruptions += 1;
     try {
       fs.unlinkSync(file);
+      this.diskBytes = undefined;
     } catch {
       // best-effort: a missing/locked corrupt file is fine to ignore
     }
@@ -229,9 +246,13 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
 
   private enforceDiskLimit(): void {
     if (this.diskMaxBytes <= 0) return;
+    if (this.diskBytes === undefined || this.writesSinceReconcile >= DISK_SIZE_RECONCILE_INTERVAL) {
+      this.diskBytes = this.reconcileDiskSize();
+    }
+    if (this.diskBytes === undefined || this.diskBytes <= this.diskMaxBytes) return;
+
     const files = listEntryFiles(this.cacheRoot);
     let total = files.reduce((sum, file) => sum + file.size, 0);
-    if (total <= this.diskMaxBytes) return;
     // Evict oldest-first by mtime until back under the bound.
     files.sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const file of files) {
@@ -243,6 +264,35 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
         // already gone or locked by another process — skip it
       }
     }
+    this.diskBytes = total;
+    this.writesSinceReconcile = 0;
+  }
+
+  private applyDiskWrite(write: DiskWriteResult): void {
+    if (this.diskBytes !== undefined) {
+      this.diskBytes += write.size - write.previousSize;
+    }
+    this.writesSinceReconcile += 1;
+  }
+
+  private reconcileDiskSize(): number | undefined {
+    try {
+      const total = listEntryFiles(this.cacheRoot).reduce((sum, file) => sum + file.size, 0);
+      this.writesSinceReconcile = 0;
+      return total;
+    } catch (err) {
+      logger.warn(`rerank score cache size reconciliation skipped: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+}
+
+function fileSizeIfPresent(file: string): number {
+  try {
+    return fs.statSync(file).size;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw err;
   }
 }
 
