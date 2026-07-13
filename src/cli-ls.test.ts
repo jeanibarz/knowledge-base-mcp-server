@@ -86,6 +86,11 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
     await writeFile(rootDir, 'work/docs/quarantined.md', '# Quarantined\n');
     await writeFile(rootDir, 'other/elsewhere.md', '# Elsewhere\n');
     await fsp.writeFile(path.join(rootDir, 'not-a-knowledge-base'), 'ignore me\n', 'utf8');
+    await fsp.symlink(
+      path.join(rootDir, 'work', 'logs'),
+      path.join(rootDir, 'work', 'log-alias'),
+      'dir',
+    );
 
     await fsp.mkdir(path.join(rootDir, 'work', '.index'), { recursive: true });
     await fsp.writeFile(
@@ -134,6 +139,13 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
       prefix: '.private',
     });
     expect(hiddenScoped.documents).toEqual([]);
+
+    const symlinkScoped = await listKnowledgeBaseDocuments({
+      rootDir,
+      kbName: 'work',
+      prefix: 'log-alias/',
+    });
+    expect(symlinkScoped.documents).toEqual([]);
 
     const canonicalizedScoped = await listKnowledgeBaseDocuments({
       rootDir,
@@ -288,5 +300,20 @@ describe('TS-CLI-857: report formatting', () => {
       }],
     }, 'md');
     expect(markdown).toContain('odd\\r\\u001b[31m.md');
+    const pathWithBackslashPipe = String.raw`foo\|bar.md`;
+    const tableWithBackslashPipe = formatLsReport({
+      knowledgeBases: ['work'],
+      prefix: null,
+      scopedKb: 'work',
+      documents: [{
+        knowledgeBase: 'work',
+        path: pathWithBackslashPipe,
+        tier: 'durable',
+        status: null,
+        type: null,
+        mtime: '2026-07-13T08:00:00.000Z',
+      }],
+    }, 'md');
+    expect(tableWithBackslashPipe).toContain(String.raw`foo\\\|bar.md`);
   });
 });

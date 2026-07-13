@@ -167,6 +167,9 @@ async function enumerateKbForPrefix(
 ): Promise<KbFileEnumeration> {
   const kbPath = path.join(rootDir, kbName);
   if (prefix.split('/').some((segment) => segment.startsWith('.'))) {
+    // The ingest walker excludes dot-prefixed entries. Keep a prefixed walk
+    // aligned with that rule instead of treating a hidden directory as a new
+    // walk root and exposing files beneath it.
     return { kbName, kbPath, filePaths: [], diagnostics: { failure_count: 0, failures: [] } };
   }
   const searchRelativeDir = prefixSearchRelativeDir(prefix, options.prefixMode);
@@ -194,6 +197,13 @@ async function enumerateKbForPrefix(
     );
   }
 
+  // The unprefixed ingest walk does not follow child symlinks. Refusing any
+  // symlink component here keeps lexical ingest exclusions (for example
+  // `logs/**`) from being bypassed through an in-KB alias such as `log-alias`.
+  if (await pathContainsSymlink(kbPath, searchRoot)) {
+    return { kbName, kbPath, filePaths: [], diagnostics: { failure_count: 0, failures: [] } };
+  }
+
   const enumeration = await getFilesRecursivelyWithDiagnostics(searchRoot);
   return {
     kbName,
@@ -204,6 +214,18 @@ async function enumerateKbForPrefix(
     }),
     diagnostics: enumeration.diagnostics,
   };
+}
+
+async function pathContainsSymlink(rootPath: string, candidatePath: string): Promise<boolean> {
+  const relativePath = path.relative(rootPath, candidatePath);
+  if (relativePath.length === 0) return false;
+
+  let currentPath = rootPath;
+  for (const segment of relativePath.split(path.sep)) {
+    currentPath = path.join(currentPath, segment);
+    if ((await fsp.lstat(currentPath)).isSymbolicLink()) return true;
+  }
+  return false;
 }
 
 async function listKnowledgeBaseDirectories(rootDir: string): Promise<string[]> {

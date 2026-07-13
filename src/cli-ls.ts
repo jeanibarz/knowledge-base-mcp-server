@@ -240,7 +240,7 @@ function hasLongFields(documents: readonly LsDocument[]): boolean {
 }
 
 function escapeTableCell(value: string): string {
-  return escapeControlCharacters(value).replaceAll('|', '\\|');
+  return escapeControlCharacters(value.replaceAll('\\', '\\\\')).replaceAll('|', '\\|');
 }
 
 function escapeLinePath(value: string): string {
