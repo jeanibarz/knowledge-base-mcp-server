@@ -21,6 +21,10 @@
 // the committed hand-authored set; for a production-grounded measurement,
 // regenerate the candidate sets from real `kb search` canonical logs.
 
+import * as fsp from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { createHash } from 'crypto';
 import { Document } from '@langchain/core/documents';
 import { callChatCompletion, type LlmChatMessage } from './llm-client.js';
 import type { RelevanceGateConfig } from './config/relevance-gate.js';
@@ -34,6 +38,7 @@ import {
   type RelevanceJudgeCandidate,
   type RelevanceJudgeOverall,
 } from './relevance-judge.js';
+import { excludesLlmContext, readLlmContextPolicy } from './sensitivity-policy.js';
 import {
   aggregateGateEval,
   computeGraderAdmissibility,
@@ -235,11 +240,35 @@ export interface PositionSwapProbe {
   recommendation: string;
 }
 
-function toJudgeCandidates(candidates: readonly GateEvalCandidate[]): RelevanceJudgeCandidate[] {
-  return candidates.map((c) => ({
-    id: c.id,
-    content: c.content,
-    metadata: { source: c.source },
+function toJudgeCandidates(
+  candidates: readonly GateEvalCandidate[],
+  fixtureSourcePaths: ReadonlyMap<string, string>,
+): RelevanceJudgeCandidate[] {
+  return candidates.map((c) => {
+    const sourcePath = fixtureSourcePaths.get(c.source);
+    if (sourcePath === undefined) {
+      throw new Error(`missing M1 fixture source provenance for ${c.source}`);
+    }
+    return {
+      id: c.id,
+      content: c.content,
+      metadata: {
+        source: sourcePath,
+        fixture_source: c.source,
+      },
+    };
+  });
+}
+
+function toM1PolicySnippets(candidates: readonly RelevanceJudgeCandidate[]): M1Snippet[] {
+  return candidates.map((candidate) => ({
+    source: typeof candidate.metadata.fixture_source === 'string'
+      ? candidate.metadata.fixture_source
+      : String(candidate.metadata.source ?? 'unknown'),
+    policySource: typeof candidate.metadata.source === 'string'
+      ? candidate.metadata.source
+      : undefined,
+    content: candidate.content,
   }));
 }
 
@@ -251,56 +280,68 @@ function toJudgeCandidates(candidates: readonly GateEvalCandidate[]): RelevanceJ
 export async function runPositionSwapProbe(
   cases: readonly GateEvalCase[],
   options: M1RunOptions,
+  sourcePaths?: ReadonlyMap<string, string>,
 ): Promise<PositionSwapProbe> {
   const results: PositionSwapCaseResult[] = [];
-  for (const c of cases) {
-    const candidates = toJudgeCandidates(c.candidates);
-    const taskContext = effectiveTaskContext(c);
-    const seed = `m1-position-swap:${c.name}`;
-    try {
-      const forward = await judgeRelevance({
-        endpoint: options.endpoint,
-        ...(options.model !== undefined ? { model: options.model } : {}),
-        timeoutMs: M1_JUDGE_TIMEOUT_MS,
-        query: c.query,
-        taskContext,
-        candidates,
-        seed,
-        ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
-      });
-      const reversed = await judgeRelevance({
-        endpoint: options.endpoint,
-        ...(options.model !== undefined ? { model: options.model } : {}),
-        timeoutMs: M1_JUDGE_TIMEOUT_MS,
-        query: c.query,
-        taskContext,
-        candidates: [...candidates].reverse(),
-        seed,
-        ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
-      });
-      const keepF = keepSet(forward.verdicts);
-      const keepR = keepSet(reversed.verdicts);
-      const fEmpty = forward.overall === 'no-relevant-context';
-      const rEmpty = reversed.overall === 'no-relevant-context';
-      results.push({
-        name: c.name,
-        forwardOverall: forward.overall,
-        reversedOverall: reversed.overall,
-        overallAgree: forward.overall === reversed.overall,
-        keepSetAgree: setsEqual(keepF, keepR),
-        emptyVerdictOrderSensitive: fEmpty !== rEmpty,
-      });
-    } catch (err) {
-      results.push({
-        name: c.name,
-        forwardOverall: 'error',
-        reversedOverall: 'error',
-        overallAgree: false,
-        keepSetAgree: false,
-        emptyVerdictOrderSensitive: false,
-        error: err instanceof RelevanceJudgeError ? err.message : (err as Error).message,
-      });
+  const fixtureSources = await materializeFixtureSources(
+    { cases: [...cases], ...(sourcePaths !== undefined ? { sourcePaths } : {}) },
+    options.fetchImpl !== undefined,
+  );
+  try {
+    for (const c of cases) {
+      const candidates = toJudgeCandidates(c.candidates, fixtureSources.bySource);
+      const taskContext = effectiveTaskContext(c);
+      const seed = `m1-position-swap:${c.name}`;
+      try {
+        const assertPolicy = () => assertM1LlmContextAllowed(toM1PolicySnippets(candidates));
+        await assertPolicy();
+        const forward = await judgeRelevance({
+          endpoint: options.endpoint,
+          ...(options.model !== undefined ? { model: options.model } : {}),
+          timeoutMs: M1_JUDGE_TIMEOUT_MS,
+          query: c.query,
+          taskContext,
+          candidates,
+          seed,
+          ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+        });
+        await assertPolicy();
+        const reversed = await judgeRelevance({
+          endpoint: options.endpoint,
+          ...(options.model !== undefined ? { model: options.model } : {}),
+          timeoutMs: M1_JUDGE_TIMEOUT_MS,
+          query: c.query,
+          taskContext,
+          candidates: [...candidates].reverse(),
+          seed,
+          ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+        });
+        const keepF = keepSet(forward.verdicts);
+        const keepR = keepSet(reversed.verdicts);
+        const fEmpty = forward.overall === 'no-relevant-context';
+        const rEmpty = reversed.overall === 'no-relevant-context';
+        results.push({
+          name: c.name,
+          forwardOverall: forward.overall,
+          reversedOverall: reversed.overall,
+          overallAgree: forward.overall === reversed.overall,
+          keepSetAgree: setsEqual(keepF, keepR),
+          emptyVerdictOrderSensitive: fEmpty !== rEmpty,
+        });
+      } catch (err) {
+        results.push({
+          name: c.name,
+          forwardOverall: 'error',
+          reversedOverall: 'error',
+          overallAgree: false,
+          keepSetAgree: false,
+          emptyVerdictOrderSensitive: false,
+          error: err instanceof RelevanceJudgeError ? err.message : (err as Error).message,
+        });
+      }
     }
+  } finally {
+    await fsp.rm(fixtureSources.root, { recursive: true, force: true });
   }
 
   const scoredCases = results.filter((r) => r.error === undefined);
@@ -398,7 +439,10 @@ export function effectiveTaskContext(c: GateEvalCase): string {
   return `Answering a knowledge-base user question and deciding which retrieved notes are relevant: ${c.query}`;
 }
 
-function caseToGateCandidates(c: GateEvalCase): {
+function caseToGateCandidates(
+  c: GateEvalCase,
+  fixtureSourcePaths: ReadonlyMap<string, string>,
+): {
   candidates: RelevanceGateCandidate[];
   denseDistanceById: Map<string, number>;
   lexicalHitIds: Set<string>;
@@ -407,10 +451,19 @@ function caseToGateCandidates(c: GateEvalCase): {
   const denseDistanceById = new Map<string, number>();
   const lexicalHitIds = new Set<string>();
   c.candidates.forEach((cand, idx) => {
-    const id = `${cand.source}#${idx}`;
+    const sourcePath = fixtureSourcePaths.get(cand.source);
+    if (sourcePath === undefined) {
+      throw new Error(`missing M1 fixture source provenance for ${cand.source}`);
+    }
+    const id = `${sourcePath}#${idx}`;
     candidates.push(new Document({
       pageContent: cand.content,
-      metadata: { source: cand.source, chunkIndex: idx, fixtureId: cand.id },
+      metadata: {
+        source: sourcePath,
+        fixture_source: cand.source,
+        chunkIndex: idx,
+        fixtureId: cand.id,
+      },
     }));
     if (cand.denseDistance !== undefined) denseDistanceById.set(id, cand.denseDistance);
     if (cand.lexicalHit) lexicalHitIds.add(id);
@@ -431,7 +484,13 @@ function m1GateConfig(options: M1RunOptions, emptyVerdictEnabled: boolean): Rele
   };
 }
 
-function buildAnswerMessages(query: string, kept: ReadonlyArray<{ source: string; content: string }>): LlmChatMessage[] {
+interface M1Snippet {
+  source: string;
+  content: string;
+  policySource?: string;
+}
+
+function buildAnswerMessages(query: string, kept: ReadonlyArray<M1Snippet>): LlmChatMessage[] {
   const context = kept.length === 0
     ? '(no knowledge-base context was retrieved)'
     : kept.map((c, idx) => `Snippet ${idx + 1} [${c.source}]\n${c.content}`).join('\n\n---\n\n');
@@ -467,7 +526,7 @@ function buildGraderMessages(query: string, referenceAnswer: string, answer: str
 
 async function answerAndGrade(
   c: GateEvalCase,
-  kept: ReadonlyArray<{ source: string; content: string }>,
+  kept: ReadonlyArray<M1Snippet>,
   options: M1RunOptions,
 ): Promise<GraderVerdict> {
   const answered = await callChatCompletion({
@@ -476,6 +535,7 @@ async function answerAndGrade(
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildAnswerMessages(c.query, kept),
     temperature: 0.2,
+    beforeAttempt: () => assertM1LlmContextAllowed(kept),
   }, options.fetchImpl ?? fetch);
   const graded = await callChatCompletion({
     endpoint: options.endpoint,
@@ -483,15 +543,89 @@ async function answerAndGrade(
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildGraderMessages(c.query, c.referenceAnswer, answered.content),
     temperature: 0,
+    beforeAttempt: () => assertM1LlmContextAllowed(kept),
   }, options.fetchImpl ?? fetch);
   return parseGraderVerdict(graded.content);
 }
 
-function keptToSnippets(results: ReadonlyArray<RelevanceGateCandidate>): Array<{ source: string; content: string }> {
-  return results.map((r) => ({
-    source: typeof r.metadata.source === 'string' ? r.metadata.source : 'unknown',
-    content: r.pageContent,
+function keptToSnippets(results: ReadonlyArray<RelevanceGateCandidate>): M1Snippet[] {
+  return results
+    .filter((r) => !excludesLlmContext(r.metadata as Record<string, unknown>))
+    .map((r) => ({
+      source: typeof r.metadata.fixture_source === 'string'
+        ? r.metadata.fixture_source
+        : typeof r.metadata.source === 'string' ? r.metadata.source : 'unknown',
+      policySource: typeof r.metadata.source === 'string' ? r.metadata.source : undefined,
+      content: r.pageContent,
+    }));
+}
+
+async function assertM1LlmContextAllowed(
+  snippets: ReadonlyArray<M1Snippet>,
+): Promise<void> {
+  const policyBySource = new Map<string, Promise<Awaited<ReturnType<typeof readLlmContextPolicy>>>>();
+  await Promise.all(snippets.map(async (snippet) => {
+    const source = snippet.policySource;
+    if (source === undefined) throw new Error('M1 source policy provenance is missing');
+    let policyPromise = policyBySource.get(source);
+    if (policyPromise === undefined) {
+      policyPromise = readLlmContextPolicy(source);
+      policyBySource.set(source, policyPromise);
+    }
+    const policy = await policyPromise;
+    if (!policy.readable || !policy.valid || policy.policy?.no_llm_context === true) {
+      throw new Error('M1 source policy excludes LLM work');
+    }
   }));
+}
+
+interface MaterializedFixtureSources {
+  root: string;
+  bySource: Map<string, string>;
+}
+
+/**
+ * M1 unit fixtures may use report-friendly symbolic source names rather than
+ * paths on disk. Tests that inject a fetch implementation may materialize
+ * those names as empty policy-free files; production runs omit that seam and
+ * leave missing provenance absent so the real gate fails closed.
+ */
+async function materializeFixtureSources(
+  fixture: Pick<GateEvalFixture, 'cases' | 'sourcePaths'>,
+  allowSyntheticSources: boolean,
+): Promise<MaterializedFixtureSources> {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-m1-sources-'));
+  const bySource = new Map<string, string>();
+  try {
+    for (const c of fixture.cases) {
+      for (const candidate of c.candidates) {
+        if (bySource.has(candidate.source)) continue;
+        const mappedSource = fixture.sourcePaths?.get(candidate.source);
+        if (fixture.sourcePaths !== undefined) {
+          if (mappedSource === undefined) continue;
+          try {
+            await fsp.access(mappedSource);
+            bySource.set(candidate.source, mappedSource);
+          } catch {
+            // Keep the source absent so policy verification fails closed.
+          }
+          continue;
+        }
+        // Production callers must provide explicit provenance. Only tests
+        // that inject a fetch implementation may use policy-free synthetic
+        // witnesses for symbolic fixture source names.
+        if (!allowSyntheticSources) continue;
+        const filename = `${createHash('sha256').update(candidate.source).digest('hex')}.md`;
+        const sourcePath = path.join(root, filename);
+        await fsp.writeFile(sourcePath, '', 'utf-8');
+        bySource.set(candidate.source, sourcePath);
+      }
+    }
+    return { root, bySource };
+  } catch (error) {
+    await fsp.rm(root, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** Run the real gate over every fixture case and grade raw-vs-gated downstream answers. */
@@ -511,90 +645,98 @@ export async function runM1Canary(
   let synthesizedTaskContextCount = 0;
   let hasAnswerRecalled = 0;
   let distantRecalled = 0;
+  const fixtureSources = await materializeFixtureSources(
+    fixture,
+    options.fetchImpl !== undefined,
+  );
 
-  for (const c of fixture.cases) {
-    if (c.taskContext === undefined || c.taskContext.trim() === '') synthesizedTaskContextCount += 1;
-    const taskContext = effectiveTaskContext(c);
-    const { candidates, denseDistanceById, lexicalHitIds } = caseToGateCandidates(c);
+  try {
+    for (const c of fixture.cases) {
+      if (c.taskContext === undefined || c.taskContext.trim() === '') synthesizedTaskContextCount += 1;
+      const taskContext = effectiveTaskContext(c);
+      const { candidates, denseDistanceById, lexicalHitIds } = caseToGateCandidates(c, fixtureSources.bySource);
 
-    const gated = await applyRelevanceGate({
-      query: c.query,
-      taskContext,
-      candidates,
-      denseDistanceById,
-      lexicalHitIds,
-      gateOverride: 'on',
-      config: m1GateConfig(options, true),
-      ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
-    });
-    const gatedNoEmpty = await applyRelevanceGate({
-      query: c.query,
-      taskContext,
-      candidates,
-      denseDistanceById,
-      lexicalHitIds,
-      gateOverride: 'on',
-      config: m1GateConfig(options, false),
-      ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
-    });
+      const gated = await applyRelevanceGate({
+        query: c.query,
+        taskContext,
+        candidates,
+        denseDistanceById,
+        lexicalHitIds,
+        gateOverride: 'on',
+        config: m1GateConfig(options, true),
+        ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+      });
+      const gatedNoEmpty = await applyRelevanceGate({
+        query: c.query,
+        taskContext,
+        candidates,
+        denseDistanceById,
+        lexicalHitIds,
+        gateOverride: 'on',
+        config: m1GateConfig(options, false),
+        ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+      });
 
-    if (gated.verdict.judge.status === 'failed') judgeDegradeCount += 1;
+      if (gated.verdict.judge.status === 'failed') judgeDegradeCount += 1;
 
-    const rawVerdict = await answerAndGrade(c, keptToSnippets(candidates), options);
-    const gatedVerdict = await answerAndGrade(c, keptToSnippets(gated.results), options);
-    const gneVerdict = await answerAndGrade(c, keptToSnippets(gatedNoEmpty.results), options);
-    const conditions: GradedCondition[] = [
-      { variant: 'raw', verdict: rawVerdict },
-      { variant: 'gated', verdict: gatedVerdict },
-      { variant: 'gated-no-empty', verdict: gneVerdict },
-    ];
+      const rawVerdict = await answerAndGrade(c, keptToSnippets(candidates), options);
+      const gatedVerdict = await answerAndGrade(c, keptToSnippets(gated.results), options);
+      const gneVerdict = await answerAndGrade(c, keptToSnippets(gatedNoEmpty.results), options);
+      const conditions: GradedCondition[] = [
+        { variant: 'raw', verdict: rawVerdict },
+        { variant: 'gated', verdict: gatedVerdict },
+        { variant: 'gated-no-empty', verdict: gneVerdict },
+      ];
 
-    const keptSources = new Set(keptToSnippets(gated.results).map((s) => s.source));
-    const answerSourceKept = c.bucket === 'has-answer'
-      ? c.answerSources.some((s) => keptSources.has(s))
-      : null;
-    if (c.bucket === 'has-answer' && answerSourceKept === true) hasAnswerRecalled += 1;
-    if (c.fixtureClass === 'answer-present-but-distant' && answerSourceKept === true) distantRecalled += 1;
+      const keptSources = new Set(keptToSnippets(gated.results).map((s) => s.source));
+      const answerSourceKept = c.bucket === 'has-answer'
+        ? c.answerSources.some((s) => keptSources.has(s))
+        : null;
+      if (c.bucket === 'has-answer' && answerSourceKept === true) hasAnswerRecalled += 1;
+      if (c.fixtureClass === 'answer-present-but-distant' && answerSourceKept === true) distantRecalled += 1;
 
-    caseResults.push({
-      name: c.name,
-      kb: c.kb,
-      bucket: c.bucket,
-      fixtureClass: c.fixtureClass,
-      gatedVerdict: gated.verdict.state,
-      emptyFired: gated.verdict.state === 'no-relevant-context',
-      conditions,
-    });
-    caseDetails.push({
-      name: c.name,
-      kb: c.kb,
-      bucket: c.bucket,
-      fixtureClass: c.fixtureClass,
-      gateState: gated.verdict.state,
-      lowConfidence: gated.verdict.low_confidence,
-      judgeStatus: gated.verdict.judge.status,
-      inputCount: gated.verdict.input_count,
-      keptCount: gated.verdict.output_count,
-      answerSourceKept,
-    });
+      caseResults.push({
+        name: c.name,
+        kb: c.kb,
+        bucket: c.bucket,
+        fixtureClass: c.fixtureClass,
+        gatedVerdict: gated.verdict.state,
+        emptyFired: gated.verdict.state === 'no-relevant-context',
+        conditions,
+      });
+      caseDetails.push({
+        name: c.name,
+        kb: c.kb,
+        bucket: c.bucket,
+        fixtureClass: c.fixtureClass,
+        gateState: gated.verdict.state,
+        lowConfidence: gated.verdict.low_confidence,
+        judgeStatus: gated.verdict.judge.status,
+        inputCount: gated.verdict.input_count,
+        keptCount: gated.verdict.output_count,
+        answerSourceKept,
+      });
+    }
+
+    const hasAnswerTotal = fixture.cases.filter((c) => c.bucket === 'has-answer').length;
+    const distantTotal = fixture.cases.filter((c) => c.fixtureClass === 'answer-present-but-distant').length;
+    return {
+      caseResults,
+      caseDetails,
+      recall: {
+        hasAnswerTotal,
+        hasAnswerRecalled,
+        distantTotal,
+        distantRecalled,
+        recallRate: hasAnswerTotal === 0 ? 1 : hasAnswerRecalled / hasAnswerTotal,
+        distantRecallRate: distantTotal === 0 ? 1 : distantRecalled / distantTotal,
+      },
+      judgeDegradeCount,
+      synthesizedTaskContextCount,
+    };
+  } finally {
+    await fsp.rm(fixtureSources.root, { recursive: true, force: true });
   }
-
-  const hasAnswerTotal = fixture.cases.filter((c) => c.bucket === 'has-answer').length;
-  const distantTotal = fixture.cases.filter((c) => c.fixtureClass === 'answer-present-but-distant').length;
-  return {
-    caseResults,
-    caseDetails,
-    recall: {
-      hasAnswerTotal,
-      hasAnswerRecalled,
-      distantTotal,
-      distantRecalled,
-      recallRate: hasAnswerTotal === 0 ? 1 : hasAnswerRecalled / hasAnswerTotal,
-      distantRecallRate: distantTotal === 0 ? 1 : distantRecalled / distantTotal,
-    },
-    judgeDegradeCount,
-    synthesizedTaskContextCount,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -719,7 +861,7 @@ export async function runM1(
   options: M1RunOptions,
 ): Promise<M1CanaryResult> {
   const canary = await runM1Canary(fixture, options);
-  const positionSwap = await runPositionSwapProbe(fixture.cases, options);
+  const positionSwap = await runPositionSwapProbe(fixture.cases, options, fixture.sourcePaths);
   const floorSweep = runFloorSweep(fixture, parseFloorSweepSpec(options.floorSweepSpec));
   const bm25 = analyzeBm25Veto(fixture);
 

@@ -126,6 +126,12 @@ The statistical relevance decision when there is no usable task context. Reuses 
 
 Runs when `task_context` is present and above the minimum-signal threshold. **One batched LLM call** sees the task context, the query, and the surviving candidates (up to `KB_GATE_JUDGE_INPUT` = 10; if more survive A1, the lowest-ranked overflow is **kept un-judged**, never silently dropped — recorded with `stage: "B-input-overflow"`, consistent with bias-toward-keep). It returns JSON:
 
+Before this call, the gate applies each candidate's current `kb_policy`. Candidates
+with `no_llm_context: true`, and candidates whose source policy cannot be verified,
+remain in the retrieval result but are omitted from the judge prompt. If every
+candidate is excluded this way, Stage B is skipped and the original retrieval
+order is preserved.
+
 ```json
 {
   "overall": "relevant" | "partial" | "no-relevant-context",
@@ -205,7 +211,7 @@ The gate **never**: blocks the response beyond `KB_GATE_LLM_TIMEOUT_MS`; returns
 
 ### 9. In-memory verdict cache
 
-A small in-memory `Map`, process-lifetime, bounded LRU (no disk tier — v2's L2 cache was cut: the key includes `task_context`, which changes nearly every turn, so cross-session hit rate is ~0). Key = `sha256(judge_prompt_template_hash | judge_model_id | normalize(task_context) | normalize(query) | sorted(candidate_content_sha256[]))`. `normalize()` is NFKC + trim + collapse-whitespace, unit-tested not to collide distinct contexts. The prompt-template hash is computed at process start from the actual template string — it cannot drift from the prompt. The cache stores the **resolved `gate_verdict`** (the gate's final decision after the §5/§6 orchestration), not the raw judge response — a cache hit replays the decision, it does not re-enter the orchestration with a stale intermediate. The §5 candidate shuffle is seeded deterministically from this key, so a recomputed verdict matches a cached one.
+A small in-memory `Map`, process-lifetime, bounded LRU (no disk tier — v2's L2 cache was cut: the key includes `task_context`, which changes nearly every turn, so cross-session hit rate is ~0). Key = `sha256(judge_prompt_template_hash | judge_model_id | normalize(task_context) | normalize(query) | sorted(candidate_content_sha256[] with hydrated policy_no_llm_context state))`. `normalize()` is NFKC + trim + collapse-whitespace, unit-tested not to collide distinct contexts. The prompt-template hash is computed at process start from the actual template string — it cannot drift from the prompt. The cache stores the **resolved `gate_verdict`** (the gate's final decision after the §5/§6 orchestration), not the raw judge response — a cache hit replays the decision, it does not re-enter the orchestration with a stale intermediate. The §5 candidate shuffle is seeded deterministically from this key, so a recomputed verdict matches a cached one.
 
 ### 10. Configuration surface
 

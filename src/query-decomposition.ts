@@ -4,6 +4,7 @@ import { chunkIdFromMetadata } from './rrf.js';
 import { DiskTieredDecompositionCache } from './decomposition-cache.js';
 import type { DecompositionCache } from './decomposition-cache.js';
 import { resolveLlmProvider } from './config/llm-provider.js';
+import { readLlmContextPolicy } from './sensitivity-policy.js';
 
 export const QUERY_DECOMPOSITION_SCHEMA_VERSION = 'kb.search.query-decomposition.v1';
 
@@ -91,6 +92,13 @@ export interface LocalLlmQueryDecomposerOptions {
   model?: string;
   timeoutMs?: number;
   cache?: DecompositionCache;
+}
+
+class QueryDecompositionPolicyBoundaryError extends Error {
+  constructor() {
+    super('query-decomposition evidence policy changed before LLM attempt');
+    this.name = 'QueryDecompositionPolicyBoundaryError';
+  }
 }
 
 const PROVIDER_TIMEOUT = Symbol('query-decomposition-provider-timeout');
@@ -208,7 +216,22 @@ export function createLocalLlmQueryDecomposer(
     async judgeSufficiency(query, evidence, history) {
       const endpoint = resolveLocalLlmEndpoint(options);
       if (endpoint === null) return fallback.judgeSufficiency(query, evidence, history);
+      const llmEvidence = await filterLlmSafeEvidence(evidence);
+      if (evidence.length > 0 && llmEvidence.length === 0) {
+        return fallback.judgeSufficiency(query, [], history);
+      }
+      const assertEvidencePolicy = async (): Promise<void> => {
+        const current = await filterLlmSafeEvidence(evidence);
+        const currentIds = new Set(current.map((entry) => entry.id));
+        if (
+          current.length !== llmEvidence.length ||
+          llmEvidence.some((entry) => !currentIds.has(entry.id))
+        ) {
+          throw new QueryDecompositionPolicyBoundaryError();
+        }
+      };
       try {
+        await assertEvidencePolicy();
         const result = await callChatCompletion({
           endpoint,
           model: options.model ?? process.env.KB_DECOMPOSE_LLM_MODEL ?? process.env.KB_LLM_MODEL,
@@ -226,7 +249,7 @@ export function createLocalLlmQueryDecomposer(
               content: JSON.stringify({
                 query,
                 subqueries: history.map((entry) => entry.query),
-                evidence: evidence.slice(0, 20).map((entry) => ({
+                evidence: llmEvidence.slice(0, 20).map((entry) => ({
                   id: entry.id,
                   source: entry.source,
                   text: entry.content.slice(0, 800),
@@ -234,16 +257,43 @@ export function createLocalLlmQueryDecomposer(
               }),
             },
           ],
+          beforeAttempt: assertEvidencePolicy,
         });
         const parsed = parseLlmSufficiency(result.content);
-        return parsed ?? fallback.judgeSufficiency(query, evidence, history);
-      } catch {
+        return parsed ?? fallback.judgeSufficiency(query, llmEvidence, history);
+      } catch (err) {
         // Local LLM sufficiency is best-effort for the same offline path as
         // decompose(): keep the bounded loop deterministic on provider failure.
-        return fallback.judgeSufficiency(query, evidence, history);
+        if (err instanceof QueryDecompositionPolicyBoundaryError) {
+          return fallback.judgeSufficiency(query, [], history);
+        }
+        return fallback.judgeSufficiency(query, llmEvidence, history);
       }
     },
   };
+}
+
+async function filterLlmSafeEvidence(
+  evidence: readonly QueryDecompositionEvidence[],
+): Promise<QueryDecompositionEvidence[]> {
+  const policyBySource = new Map<string, Promise<Awaited<ReturnType<typeof readLlmContextPolicy>>>>();
+  const safe: QueryDecompositionEvidence[] = [];
+  for (const entry of evidence) {
+    const metadataSource = entry.metadata.source;
+    const source = typeof metadataSource === 'string' && metadataSource.trim() !== ''
+      ? metadataSource
+      : entry.source;
+    if (source === null || source.trim() === '') continue;
+    let policyPromise = policyBySource.get(source);
+    if (policyPromise === undefined) {
+      policyPromise = readLlmContextPolicy(source);
+      policyBySource.set(source, policyPromise);
+    }
+    const policy = await policyPromise;
+    if (!policy.readable || !policy.valid || policy.policy?.no_llm_context === true) continue;
+    safe.push(entry);
+  }
+  return safe;
 }
 
 export async function runQueryDecomposition(

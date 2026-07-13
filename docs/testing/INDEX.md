@@ -252,6 +252,16 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `resources/read` shall reject Markdown resources with `kb_policy.resource_read: deny`.
 - `resources/read` shall reject `kb_policy.resource_read: local_only` when the MCP transport is HTTP/SSE and allow it for local stdio reads.
 
+### TS-SEC-829: `no_llm_context` LLM Egress Enforcement
+**Requirement:** NFR-SEC-829
+
+**Test Cases:**
+- Contextual-preface ingest shall skip LLM calls and prefaces for documents marked `kb_policy.no_llm_context: true`.
+- The relevance-gate judge prompt shall exclude protected candidate content while retaining non-sensitive candidates.
+- The relevance gate shall preserve all-protected candidates as unjudged results and shall not replay a pre-policy verdict after a candidate becomes protected.
+- The relevance gate shall hydrate current source-file policy before judging candidates whose index metadata is stale.
+- The relevance gate shall fail closed, preserving but not judging candidates whose source policy cannot be read or parsed.
+
 ### TS-GATE-EVAL-369: M0 Gate Validation Harness
 **Requirement:** FR-GATE-EVAL-369
 

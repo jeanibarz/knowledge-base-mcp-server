@@ -35,6 +35,8 @@ async function writeSidecar(
   chunks: ChunkSpec[],
 ): Promise<void> {
   const source = path.join(kbsDir, kb, basename);
+  await fsp.mkdir(path.dirname(source), { recursive: true });
+  await fsp.writeFile(source, '# public source\n');
   const dir = path.join(faissDir, '.contextual-prefaces', kb);
   await fsp.mkdir(dir, { recursive: true });
   const flat = source.replace(/^\/+/, '').replace(/\//g, '__SEP__');
@@ -64,6 +66,7 @@ async function writeManifests(kb: string, count: number): Promise<void> {
   const indexDir = path.join(kbsDir, kb, '.index');
   await fsp.mkdir(indexDir, { recursive: true });
   for (let i = 0; i < count; i += 1) {
+    await fsp.writeFile(path.join(kbsDir, kb, `file-${i}`), '# public source\n');
     await fsp.writeFile(
       path.join(indexDir, `file-${i}.chunks.json`),
       JSON.stringify({ chunks: [{}] }),
@@ -152,6 +155,38 @@ describe('computeReindexProgress', () => {
     expect(kb.files_pending).toBe(0);
   });
 
+  it('does not count a protected source as pending contextual work', async () => {
+    await writeSidecar('alpha', 'file-0', [{ preface: 'ctx' }]);
+    await writeManifests('alpha', 2);
+    const protectedSource = path.join(kbsDir, 'alpha', 'file-0');
+    await fsp.writeFile(protectedSource, [
+      '---',
+      'kb_policy:',
+      '  no_llm_context: true',
+      '---',
+      'private',
+    ].join('\n'));
+
+    const kb = (await progress.computeReindexProgress()).kbs[0];
+    expect(kb.files_indexed).toBe(1);
+    expect(kb.files_pending).toBe(1);
+  });
+
+  it('counts nested manifests in contextual progress', async () => {
+    await writeSidecar('alpha', path.join('nested', 'note.md'), [{ preface: 'ctx' }]);
+    const indexDir = path.join(kbsDir, 'alpha', '.index', 'nested');
+    await fsp.mkdir(indexDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(indexDir, 'note.md.chunks.json'),
+      JSON.stringify({ chunks: [{}] }),
+    );
+
+    const kb = (await progress.computeReindexProgress({ knowledgeBases: ['alpha'] })).kbs[0];
+    expect(kb.files_indexed).toBe(1);
+    expect(kb.files_with_sidecar).toBe(1);
+    expect(kb.files_pending).toBe(0);
+  });
+
   it('aggregates multiple KBs, sorted by name, into totals', async () => {
     await writeSidecar('zeta', 'z.md', [{ preface: 'ctx' }]);
     await writeSidecar('alpha', 'a.md', [
@@ -183,6 +218,18 @@ describe('computeReindexProgress', () => {
       knowledge_base: 'missing',
       files_with_sidecar: 0,
       files_complete: 0,
+    });
+  });
+
+  it('includes indexed KBs with no sidecars in an unscoped report', async () => {
+    await writeManifests('beta', 2);
+    const result = await progress.computeReindexProgress();
+    expect(result.kbs).toHaveLength(1);
+    expect(result.kbs[0]).toMatchObject({
+      knowledge_base: 'beta',
+      files_indexed: 2,
+      files_with_sidecar: 0,
+      files_pending: 2,
     });
   });
 

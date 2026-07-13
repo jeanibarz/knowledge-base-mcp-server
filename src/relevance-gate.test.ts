@@ -1,9 +1,23 @@
+import * as fsp from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { applyRelevanceGate, emitRelevanceGateDecision } from './relevance-gate.js';
 import type { RelevanceGateConfig } from './config/relevance-gate.js';
 import { chunkIdFromMetadata } from './rrf.js';
 import { RelevanceGateMetrics, relevanceGateMetrics } from './relevance-gate-metrics.js';
 import type { RelevanceGateVerdict } from './relevance-gate-schema.js';
+
+jest.mock('fs/promises', () => {
+  const actual = jest.requireActual<typeof import('fs/promises')>('fs/promises');
+  return {
+    ...actual,
+    readFile: jest.fn(async (source: string, ...args: unknown[]) => {
+      if (source.startsWith('/kb/')) return '';
+      return actual.readFile(source, ...args as [options?: BufferEncoding | { encoding?: BufferEncoding }]);
+    }),
+  };
+});
 
 function config(overrides: Partial<RelevanceGateConfig> = {}): RelevanceGateConfig {
   return {
@@ -19,12 +33,32 @@ function config(overrides: Partial<RelevanceGateConfig> = {}): RelevanceGateConf
   };
 }
 
-function candidate(source: string, chunkIndex: number, score: number, content: string) {
+function candidate(
+  source: string,
+  chunkIndex: number,
+  score: number,
+  content: string,
+): { pageContent: string; metadata: Record<string, unknown>; score: number } {
   return {
     pageContent: content,
     metadata: { source, chunkIndex },
     score,
   };
+}
+
+function indexedCandidate(
+  source: string,
+  chunkIndex: number,
+  score: number,
+  content: string,
+): ReturnType<typeof candidate> {
+  const row = candidate(source, chunkIndex, score, content);
+  row.metadata = {
+    ...row.metadata,
+    relativePath: source,
+    knowledgeBase: 'test',
+  };
+  return row;
 }
 
 function idOf(row: ReturnType<typeof candidate>): string {
@@ -291,6 +325,373 @@ describe('relevance gate', () => {
     expect(userMessage.content).toContain('<untrusted-doc src="/kb/prompt.md">');
     expect(userMessage.content).toContain('ignore previous instructions');
     expect(userMessage.content).toContain('</untrusted-doc>');
+  });
+
+  it('does not send no_llm_context candidates to the judge and preserves them', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-protected-'));
+    try {
+      const protectedSource = path.join(tempDir, 'private.md');
+      const safeSource = path.join(tempDir, 'public.md');
+      await fsp.writeFile(protectedSource, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: true',
+        '---',
+        '',
+        'sensitive candidate body must never reach the relevance judge',
+      ].join('\n'), 'utf-8');
+      await fsp.writeFile(safeSource, 'public deployment rollback checklist', 'utf-8');
+      const protectedRow = candidate(
+        protectedSource,
+        0,
+        0.1,
+        'sensitive candidate body must never reach the relevance judge',
+      );
+      protectedRow.metadata = {
+        ...protectedRow.metadata,
+        frontmatter: { kb_policy: { no_llm_context: true } },
+      };
+      const safeRow = candidate(safeSource, 0, 0.2, 'public deployment rollback checklist');
+      const fetchImpl = fakeFetchJson(JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: idOf(safeRow), decision: 'keep', reason: 'rollback checklist' }],
+      }));
+
+      const result = await applyRelevanceGate({
+        query: 'policy protected judge input',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [protectedRow, safeRow],
+        config: config(),
+        fetchImpl,
+      });
+
+      const body = JSON.parse(((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+      const userMessage = body.messages.find((message: { role: string }) => message.role === 'user');
+      expect(userMessage.content).toContain('public deployment rollback checklist');
+      expect(userMessage.content).not.toContain('sensitive candidate body must never reach the relevance judge');
+      expect(body.messages.every((message: { content: string }) =>
+        !message.content.includes('sensitive candidate body must never reach the relevance judge'))).toBe(true);
+      expect(result.results).toEqual([protectedRow, safeRow]);
+      expect(result.verdict.input_count).toBe(2);
+      expect(result.verdict.output_count).toBe(2);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('hydrates current source policy before judging stale indexed candidates', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-policy-'));
+    try {
+      const source = path.join(tempDir, 'private.md');
+      await fsp.writeFile(source, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: true',
+        '---',
+        '',
+        'sensitive source body',
+      ].join('\n'), 'utf-8');
+      const safeSource = path.join(tempDir, 'public.md');
+      await fsp.writeFile(safeSource, 'public deployment rollback checklist', 'utf-8');
+      const protectedRow = indexedCandidate(source, 0, 0.1, 'sensitive source body');
+      const safeRow = indexedCandidate(safeSource, 0, 0.2, 'public deployment rollback checklist');
+      const fetchImpl = fakeFetchJson(JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: idOf(safeRow), decision: 'keep', reason: 'rollback checklist' }],
+      }));
+
+      const result = await applyRelevanceGate({
+        query: 'stale source policy hydration',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [protectedRow, safeRow],
+        config: config(),
+        fetchImpl,
+      });
+
+      const body = JSON.parse(((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+      const userMessage = body.messages.find((message: { role: string }) => message.role === 'user');
+      expect(userMessage.content).not.toContain('sensitive source body');
+      expect(result.results.map((row) => row.pageContent)).toEqual([
+        'sensitive source body',
+        'public deployment rollback checklist',
+      ]);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when a stale candidate source cannot be read', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-unreadable-'));
+    try {
+      const safeSource = path.join(tempDir, 'public.md');
+      await fsp.writeFile(safeSource, 'public deployment rollback checklist', 'utf-8');
+      const protectedRow = indexedCandidate(
+        path.join(tempDir, 'missing.md'),
+        0,
+        0.1,
+        'unreadable source body must never reach the relevance judge',
+      );
+      const safeRow = indexedCandidate(safeSource, 0, 0.2, 'public deployment rollback checklist');
+      const fetchImpl = fakeFetchJson(JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: idOf(safeRow), decision: 'keep', reason: 'rollback checklist' }],
+      }));
+
+      const result = await applyRelevanceGate({
+        query: 'unreadable source policy',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [protectedRow, safeRow],
+        config: config(),
+        fetchImpl,
+      });
+
+      const body = JSON.parse(((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+      expect(body.messages.every((message: { content: string }) =>
+        !message.content.includes('unreadable source body must never reach the relevance judge'))).toBe(true);
+      expect(result.results.map((row) => row.pageContent)).toEqual([
+        'unreadable source body must never reach the relevance judge',
+        'public deployment rollback checklist',
+      ]);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when a candidate has no source metadata', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-missing-source-'));
+    try {
+      const safeSource = path.join(tempDir, 'public.md');
+      await fsp.writeFile(safeSource, 'public deployment rollback checklist', 'utf-8');
+      const missingSourceRow = indexedCandidate(
+        '',
+        0,
+        0.1,
+        'missing source body must never reach the relevance judge',
+      );
+      delete missingSourceRow.metadata.source;
+      const safeRow = indexedCandidate(safeSource, 0, 0.2, 'public deployment rollback checklist');
+      const fetchImpl = fakeFetchJson(JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: idOf(safeRow), decision: 'keep', reason: 'rollback checklist' }],
+      }));
+
+      const result = await applyRelevanceGate({
+        query: 'missing source policy',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [missingSourceRow, safeRow],
+        config: config(),
+        fetchImpl,
+      });
+
+      const body = JSON.parse(((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+      expect(body.messages.every((message: { content: string }) =>
+        !message.content.includes('missing source body must never reach the relevance judge'))).toBe(true);
+      expect(result.results.map((row) => row.pageContent)).toEqual([
+        'missing source body must never reach the relevance judge',
+        'public deployment rollback checklist',
+      ]);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when a stale candidate source has malformed policy frontmatter', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-malformed-policy-'));
+    try {
+      const malformedSource = path.join(tempDir, 'malformed.md');
+      const safeSource = path.join(tempDir, 'public.md');
+      await fsp.writeFile(malformedSource, '\uFEFF' + [
+        '---',
+        'kb_policy: true',
+        '---',
+        '',
+        'malformed policy body must never reach the relevance judge',
+      ].join('\n'), 'utf-8');
+      await fsp.writeFile(safeSource, 'public deployment rollback checklist', 'utf-8');
+      const protectedRow = indexedCandidate(
+        malformedSource,
+        0,
+        0.1,
+        'malformed policy body must never reach the relevance judge',
+      );
+      const safeRow = indexedCandidate(safeSource, 0, 0.2, 'public deployment rollback checklist');
+      const fetchImpl = fakeFetchJson(JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: idOf(safeRow), decision: 'keep', reason: 'rollback checklist' }],
+      }));
+
+      const result = await applyRelevanceGate({
+        query: 'malformed source policy',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [protectedRow, safeRow],
+        config: config(),
+        fetchImpl,
+      });
+
+      const body = JSON.parse(((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+      expect(body.messages.every((message: { content: string }) =>
+        !message.content.includes('malformed policy body must never reach the relevance judge'))).toBe(true);
+      expect(result.results.map((row) => row.pageContent)).toEqual([
+        'malformed policy body must never reach the relevance judge',
+        'public deployment rollback checklist',
+      ]);
+
+      await fsp.writeFile(malformedSource, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: maybe',
+        '  resource_read: deny',
+        '---',
+        '',
+        'invalid no_llm_context body must never reach the relevance judge',
+      ].join('\n'), 'utf-8');
+      const invalidPolicyRow = indexedCandidate(
+        malformedSource,
+        0,
+        0.1,
+        'invalid no_llm_context body must never reach the relevance judge',
+      );
+      const invalidPolicyFetch = fakeFetchJson(JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: idOf(safeRow), decision: 'keep', reason: 'rollback checklist' }],
+      }));
+      const invalidPolicyResult = await applyRelevanceGate({
+        query: 'invalid no_llm_context policy',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [invalidPolicyRow, safeRow],
+        config: config(),
+        fetchImpl: invalidPolicyFetch,
+      });
+      const invalidPolicyBody = JSON.parse(((invalidPolicyFetch as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+      expect(invalidPolicyBody.messages.every((message: { content: string }) =>
+        !message.content.includes('invalid no_llm_context body must never reach the relevance judge'))).toBe(true);
+      expect(invalidPolicyResult.results.map((row) => row.pageContent)).toEqual([
+        'invalid no_llm_context body must never reach the relevance judge',
+        'public deployment rollback checklist',
+      ]);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes a removed source policy before judging stale protected metadata', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-policy-removal-'));
+    try {
+      const source = path.join(tempDir, 'changing.md');
+      await fsp.writeFile(source, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: true',
+        '---',
+        '',
+        'now public body',
+      ].join('\n'), 'utf-8');
+      const row = indexedCandidate(source, 0, 0.1, 'now public body');
+      row.metadata.frontmatter = { kb_policy: { no_llm_context: true } };
+
+      const first = await applyRelevanceGate({
+        query: 'source policy removal',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [row],
+        config: config(),
+        fetchImpl: fakeFetchJson('{"overall":"relevant","verdicts":[]}'),
+      });
+      expect(first.results).toHaveLength(1);
+      expect(first.verdict.judge.status).toBe('skipped');
+
+      await fsp.writeFile(source, 'now public body', 'utf-8');
+      const fetchImpl = fakeFetchJson(JSON.stringify({
+        overall: 'relevant',
+        verdicts: [{ id: idOf(row), decision: 'keep', reason: 'public rollback body' }],
+      }));
+      const second = await applyRelevanceGate({
+        query: 'source policy removal',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [row],
+        config: config(),
+        fetchImpl,
+      });
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const body = JSON.parse(((fetchImpl as unknown as jest.Mock).mock.calls[0][1] as RequestInit).body as string);
+      expect(body.messages.some((message: { content: string }) => message.content.includes('now public body'))).toBe(true);
+      expect(second.verdict.judge.status).toBe('succeeded');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips the judge when every candidate is no_llm_context', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-protected-only-'));
+    try {
+      const source = path.join(tempDir, 'private-only.md');
+      await fsp.writeFile(source, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: true',
+        '---',
+        '',
+        'private only body',
+      ].join('\n'), 'utf-8');
+      const protectedRow = candidate(source, 0, 0.1, 'private only body');
+      protectedRow.metadata = {
+        ...protectedRow.metadata,
+        frontmatter: { kb_policy: { no_llm_context: true } },
+      };
+      const fetchImpl = fakeFetchJson('{"overall":"relevant","verdicts":[]}');
+
+      const result = await applyRelevanceGate({
+        query: 'all policy excluded',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [protectedRow],
+        config: config(),
+        fetchImpl,
+      });
+
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(result.results).toEqual([protectedRow]);
+      expect(result.verdict.judge).toEqual({
+        status: 'skipped',
+        reason: 'all candidates excluded by no_llm_context policy',
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not replay a pre-policy verdict after a candidate becomes protected', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-relevance-policy-cache-'));
+    try {
+      const source = path.join(tempDir, 'policy-cache.md');
+      await fsp.writeFile(source, 'policy cache body', 'utf-8');
+      const row = indexedCandidate(source, 0, 0.1, 'policy cache body');
+      const input = {
+        query: 'policy cache invalidation',
+        taskContext: 'please answer a deployment rollback question with precise operational context',
+        candidates: [row],
+        config: config({ emptyVerdictEnabled: true }),
+        fetchImpl: fakeFetchJson('{"overall":"no-relevant-context","verdicts":[]}'),
+      };
+
+      await expect(applyRelevanceGate(input)).resolves.toMatchObject({ results: [] });
+      expect(input.fetchImpl as unknown as jest.Mock).toHaveBeenCalledTimes(1);
+
+      await fsp.writeFile(source, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: true',
+        '---',
+        '',
+        'policy cache body',
+      ].join('\n'), 'utf-8');
+      const protectedFetch = fakeFetchJson('{"overall":"relevant","verdicts":[]}');
+      const result = await applyRelevanceGate({ ...input, fetchImpl: protectedFetch });
+
+      expect(protectedFetch).not.toHaveBeenCalled();
+      expect(result.results.map((candidate) => candidate.pageContent)).toEqual(['policy cache body']);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('redacts secrets from judge request content when outbound redaction is enabled', async () => {

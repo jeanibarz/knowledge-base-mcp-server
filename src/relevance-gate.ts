@@ -15,6 +15,11 @@ import {
   type RelevanceGateVerdict,
 } from './relevance-gate-schema.js';
 import { relevanceGateMetrics } from './relevance-gate-metrics.js';
+import {
+  excludesLlmContext,
+  normalizeKbSensitivityPolicy,
+  readLlmContextPolicy,
+} from './sensitivity-policy.js';
 
 export type RelevanceGateOverride = 'on' | 'off' | undefined;
 
@@ -83,6 +88,13 @@ interface DropRecord {
   reason: string;
 }
 
+interface CandidatePartition<T extends RelevanceGateCandidate> {
+  rows: CandidateRow<T>[];
+  policyExcludedRows: CandidateRow<T>[];
+  gateRows: CandidateRow<T>[];
+  lexicalHitIds: Set<string>;
+}
+
 interface CachedGateDecision {
   verdict: RelevanceGateVerdict;
   resultIds: Set<string>;
@@ -143,26 +155,36 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
     };
   }
 
-  const cacheKey = buildCacheKey(input, config);
+  const hydratedCandidates = await hydrateSensitivityPoliciesFromSource(input.candidates);
+  // A second read is deliberately immediately before cache-key construction
+  // and lookup. A source may change while retrieval metadata is prepared; a
+  // stale public verdict must never be replayed for newly protected content.
+  const boundaryHydratedCandidates = await hydrateSensitivityPoliciesFromSource(hydratedCandidates);
+  const effectiveInput: RelevanceGateInput<T> = {
+    ...input,
+    candidates: boundaryHydratedCandidates,
+  };
+  let {
+    rows,
+    policyExcludedRows,
+    gateRows,
+    lexicalHitIds,
+  } = partitionCandidates(effectiveInput);
+
+  let cacheKey = buildCacheKey(effectiveInput, config, lexicalHitIds);
   const cached = verdictCache.get(cacheKey);
   if (cached !== undefined) {
     relevanceGateMetrics.record(cached.verdict, input.process);
     return {
-      results: replayVerdict(input.candidates, cached),
+      results: replayVerdict(effectiveInput.candidates, cached),
       verdict: cached.verdict,
       observability: cached.observability,
     };
   }
 
-  const rows = input.candidates.map((candidate, originalIndex) => ({
-    id: chunkIdFromMetadata(candidate.metadata as Record<string, unknown>),
-    result: candidate,
-    originalIndex,
-  }));
   const dropped: DropRecord[] = [];
-  const afterA1 = applyA1(rows, input.denseDistanceById, config.scoreFloor, dropped);
+  let afterA1: CandidateRow<T>[] = [];
   const taskContext = normalizeTaskContext(input.taskContext);
-  const lexicalHitIds = input.lexicalHitIds ?? new Set<string>();
   let survivors: CandidateRow<T>[];
   let judge: RelevanceGateVerdict['judge'];
   let judgePromptHash: string | null = null;
@@ -170,47 +192,64 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   let lowConfidence = false;
   let state: RelevanceGateVerdict['state'] = 'injected';
 
-  if (!hasTaskSignal(taskContext, config.minTaskContextTokens)) {
-    survivors = applyA2(afterA1, dropped, input.denseDistanceById);
+  if (gateRows.length === 0) {
+    survivors = [];
+    judge = { status: 'skipped', reason: 'all candidates excluded by no_llm_context policy' };
+  } else if (!hasTaskSignal(taskContext, config.minTaskContextTokens)) {
+    afterA1 = applyA1(gateRows, effectiveInput.denseDistanceById, config.scoreFloor, dropped);
+    survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
     judge = { status: 'skipped', reason: 'task_context absent or too short' };
   } else if (config.judgeEndpoint === undefined) {
-    survivors = applyA2(afterA1, dropped, input.denseDistanceById);
+    afterA1 = applyA1(gateRows, effectiveInput.denseDistanceById, config.scoreFloor, dropped);
+    survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
     judge = { status: 'failed', reason: 'KB_GATE_LLM_ENDPOINT unset; degraded to A2' };
   } else {
-    const judged = await applyStageB({
-      rows: afterA1,
-      dropped,
-      query: input.query,
-      taskContext: guardTaskContext(taskContext),
-      lexicalHitIds,
-      config,
-      seed: cacheKey,
-      fetchImpl: input.fetchImpl,
-    });
-    survivors = judged.survivors;
-    judge = judged.judge;
-    state = judged.state;
-    if (judged.lowConfidence) lowConfidence = true;
-    judgePromptHash = judged.judgePromptHash;
-    shuffledOrder = judged.shuffledOrder;
-    if (judged.degraded) {
-      survivors = applyA2(afterA1, dropped, input.denseDistanceById);
+    // Re-read immediately before the LLM path starts. The synchronous
+    // partition and prompt-candidate construction that follow this await use
+    // the latest observed policy, rather than the cache-preparation snapshot.
+    effectiveInput.candidates = await hydrateSensitivityPoliciesFromSource(effectiveInput.candidates);
+    ({ rows, policyExcludedRows, gateRows, lexicalHitIds } = partitionCandidates(effectiveInput));
+    cacheKey = buildCacheKey(effectiveInput, config, lexicalHitIds);
+    afterA1 = applyA1(gateRows, effectiveInput.denseDistanceById, config.scoreFloor, dropped);
+    if (gateRows.length === 0) {
+      survivors = [];
+      judge = { status: 'skipped', reason: 'all candidates excluded by no_llm_context policy' };
+    } else {
+      const judged = await applyStageB({
+        rows: afterA1,
+        dropped,
+        query: input.query,
+        taskContext: guardTaskContext(taskContext),
+        lexicalHitIds,
+        config,
+        seed: cacheKey,
+        fetchImpl: input.fetchImpl,
+      });
+      survivors = judged.survivors;
+      judge = judged.judge;
+      state = judged.state;
+      if (judged.lowConfidence) lowConfidence = true;
+      judgePromptHash = judged.judgePromptHash;
+      shuffledOrder = judged.shuffledOrder;
+      if (judged.degraded) {
+        survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
+      }
     }
   }
 
-  if (state !== 'no-relevant-context' && survivors.length === 0) {
-    const rescued = rows[0];
+  if (state !== 'no-relevant-context' && survivors.length === 0 && gateRows.length > 0) {
+    const rescued = gateRows[0];
     survivors = [rescued];
     lowConfidence = true;
   }
 
-  const results = survivors
-    .sort((a, b) => a.originalIndex - b.originalIndex)
-    .map((row) => row.result);
+  const outputRows = [...survivors, ...policyExcludedRows]
+    .sort((a, b) => a.originalIndex - b.originalIndex);
+  const results = outputRows.map((row) => row.result);
   const verdict = buildVerdict({
     state,
     lowConfidence,
-    inputCount: input.candidates.length,
+    inputCount: effectiveInput.candidates.length,
     outputCount: results.length,
     dropped,
     judge,
@@ -221,7 +260,7 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
     taskContext: input.taskContext,
     config,
     rows,
-    survivors,
+    survivors: outputRows,
     dropped,
     judge,
     judgePromptHash,
@@ -230,7 +269,7 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   relevanceGateMetrics.record(verdict, input.process);
   verdictCache.set(cacheKey, {
     verdict,
-    resultIds: new Set(survivors.map((row) => row.id)),
+    resultIds: new Set(outputRows.map((row) => row.id)),
     observability,
   });
   return { results, verdict, observability };
@@ -394,6 +433,14 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
       candidates: judgeCandidates,
       seed: input.seed,
       fetchImpl: input.fetchImpl,
+      beforeAttempt: async () => {
+        const latest = await hydrateSensitivityPoliciesFromSource(
+          judgedRows.map((row) => row.result),
+        );
+        if (latest.some((candidate) => excludesLlmContext(candidate.metadata as Record<string, unknown>))) {
+          throw new RelevancePolicyBoundaryError();
+        }
+      },
     });
   } catch (err) {
     return {
@@ -476,6 +523,13 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
   };
 }
 
+class RelevancePolicyBoundaryError extends Error {
+  constructor() {
+    super('source policy excluded relevance-judge LLM work');
+    this.name = 'RelevancePolicyBoundaryError';
+  }
+}
+
 function replayVerdict<T extends RelevanceGateCandidate>(
   candidates: T[],
   cached: CachedGateDecision,
@@ -485,6 +539,27 @@ function replayVerdict<T extends RelevanceGateCandidate>(
     const id = chunkIdFromMetadata(candidate.metadata as Record<string, unknown>);
     return cached.resultIds.has(id);
   });
+}
+
+function partitionCandidates<T extends RelevanceGateCandidate>(
+  input: RelevanceGateInput<T>,
+): CandidatePartition<T> {
+  const rows = input.candidates.map((candidate, originalIndex) => ({
+    id: chunkIdFromMetadata(candidate.metadata as Record<string, unknown>),
+    result: candidate,
+    originalIndex,
+  }));
+  const policyExcludedRows = rows.filter((row) =>
+    excludesLlmContext(row.result.metadata as Record<string, unknown>),
+  );
+  const gateRows = rows.filter((row) =>
+    !excludesLlmContext(row.result.metadata as Record<string, unknown>),
+  );
+  const gateRowIds = new Set(gateRows.map((row) => row.id));
+  const lexicalHitIds = new Set(
+    Array.from(input.lexicalHitIds ?? []).filter((id) => gateRowIds.has(id)),
+  );
+  return { rows, policyExcludedRows, gateRows, lexicalHitIds };
 }
 
 function buildVerdict(input: {
@@ -508,9 +583,93 @@ function buildVerdict(input: {
   };
 }
 
+async function hydrateSensitivityPoliciesFromSource<T extends RelevanceGateCandidate>(
+  candidates: T[],
+): Promise<T[]> {
+  const policyBySource = new Map<string, Promise<Awaited<ReturnType<typeof readLlmContextPolicy>>>>();
+
+  return Promise.all(candidates.map(async (candidate) => {
+    const metadata = candidate.metadata as Record<string, unknown>;
+    const source = metadata.source;
+    if (typeof source !== 'string' || source.trim().length === 0) {
+      // Without a source path the current frontmatter policy cannot be
+      // verified, so retain the result only as retrieval data and exclude it
+      // from every LLM prompt.
+      return excludesLlmContext(metadata)
+        ? candidate
+        : markLlmContextExcluded(candidate, metadata);
+    }
+
+    let sourcePolicyPromise = policyBySource.get(source);
+    if (sourcePolicyPromise === undefined) {
+      sourcePolicyPromise = readLlmContextPolicy(source);
+      policyBySource.set(source, sourcePolicyPromise);
+    }
+    const sourcePolicy = await sourcePolicyPromise;
+
+    if (!sourcePolicy.readable || !sourcePolicy.valid) {
+      // A candidate whose source cannot be verified is preserved for retrieval
+      // but excluded from every LLM prompt. This boundary must fail closed.
+      return excludesLlmContext(metadata)
+        ? candidate
+        : markLlmContextExcluded(candidate, metadata);
+    }
+
+    const frontmatter = metadata.frontmatter;
+    const frontmatterObject =
+      frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter)
+        ? frontmatter as Record<string, unknown>
+        : {};
+    if (sourcePolicy.policy === undefined && !Object.prototype.hasOwnProperty.call(frontmatterObject, 'kb_policy')) {
+      return candidate;
+    }
+    const hydratedFrontmatter = { ...frontmatterObject };
+    if (sourcePolicy.policy === undefined) {
+      delete hydratedFrontmatter.kb_policy;
+    } else {
+      hydratedFrontmatter.kb_policy = sourcePolicy.policy;
+    }
+    return {
+      ...candidate,
+      metadata: {
+        ...metadata,
+        frontmatter: {
+          ...hydratedFrontmatter,
+        },
+      },
+    };
+  }));
+}
+
+function markLlmContextExcluded<T extends RelevanceGateCandidate>(
+  candidate: T,
+  metadata: Record<string, unknown>,
+): T {
+  const frontmatter = metadata.frontmatter;
+  const frontmatterObject =
+    frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter)
+      ? frontmatter as Record<string, unknown>
+      : {};
+  const existingPolicy = normalizeKbSensitivityPolicy(frontmatterObject.kb_policy) ?? {};
+  return {
+    ...candidate,
+    metadata: {
+      ...metadata,
+      frontmatter: {
+        ...frontmatterObject,
+        kb_policy: {
+          ...existingPolicy,
+          no_llm_context: true,
+        },
+      },
+    },
+  };
+}
+
 function buildCacheKey<T extends RelevanceGateCandidate>(
   input: RelevanceGateInput<T>,
   config: RelevanceGateConfig,
+  lexicalHitIds: ReadonlySet<string>,
 ): string {
   const hash = createHash('sha256');
   hash.update(input.query);
@@ -524,7 +683,7 @@ function buildCacheKey<T extends RelevanceGateCandidate>(
     model: config.judgeModel ?? '',
     empty: config.emptyVerdictEnabled,
   }));
-  for (const lexicalId of Array.from(input.lexicalHitIds ?? []).sort()) {
+  for (const lexicalId of Array.from(lexicalHitIds).sort()) {
     hash.update('\0lexical:');
     hash.update(lexicalId);
   }
@@ -536,6 +695,8 @@ function buildCacheKey<T extends RelevanceGateCandidate>(
     hash.update(String(input.denseDistanceById?.get(id) ?? ''));
     hash.update('\0');
     hash.update(candidate.pageContent);
+    hash.update('\0policy_no_llm_context:');
+    hash.update(String(excludesLlmContext(candidate.metadata as Record<string, unknown>)));
   }
   return hash.digest('hex');
 }

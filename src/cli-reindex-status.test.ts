@@ -28,6 +28,8 @@ async function writeSidecar(
   chunks: Array<{ preface: string | null; error_code?: string }>,
 ): Promise<void> {
   const source = path.join(kbsDir, kb, basename);
+  await fsp.mkdir(path.dirname(source), { recursive: true });
+  await fsp.writeFile(source, '# public source\n');
   const dir = path.join(faissDir, '.contextual-prefaces', kb);
   await fsp.mkdir(dir, { recursive: true });
   const flat = source.replace(/^\/+/, '').replace(/\//g, '__SEP__');

@@ -2033,6 +2033,7 @@ describe('KnowledgeBaseServer handlers', () => {
         metadata: {
           knowledgeBase: 'ops',
           relativePath: 'runbooks/rollback.md',
+          source: path.join(process.cwd(), 'package.json'),
           loc: { lines: { from: 4, to: 8 } },
         },
         score: 0.1,

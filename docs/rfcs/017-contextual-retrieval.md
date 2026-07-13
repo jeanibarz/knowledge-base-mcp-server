@@ -29,6 +29,7 @@ Make embeddings stored in FAISS reflect each chunk's position in its source docu
 Concretely:
 
 - At ingest, generate a 50-150 token "where in this document does this chunk sit" preface per chunk via the warm local LLM.
+- A document marked `kb_policy.no_llm_context: true` never sends its chunks or body to the contextual-preface LLM; its chunks remain retrievable and verbatim.
 - Embed `{preface}\n\n{original_chunk}` — the preface is part of the embedding input.
 - Store the **original chunk** in the docstore unchanged. Callers continue to see the source passage verbatim.
 - Cache prefaces in a content-addressed sidecar so re-running ingest on unchanged files is a free cache hit, not a re-burn of the LLM.
@@ -71,6 +72,7 @@ const prefaces = await resolveContextualPrefaces({
   documentHash,
   documentBody: body,
   chunks: documents.map(d => d.pageContent),
+  metadata: { frontmatter: {} },
 });
 
 // Eventually-consistent check: if the file mutated between loadFile() and the
@@ -102,7 +104,7 @@ return documents;
 New module `src/contextual-preface.ts`. Exports:
 
 ```ts
-// Returns one preface per chunk (null = generation failed, embed verbatim).
+// Returns one preface per chunk (null = policy skip or generation failure; embed verbatim).
 // Logging is emitted internally via the canonical log; the function does not
 // surface a stats object — callers don't need it.
 export async function resolveContextualPrefaces(args: {
@@ -110,6 +112,9 @@ export async function resolveContextualPrefaces(args: {
   documentHash: string;
   documentBody: string;
   chunks: string[];
+  // Optional legacy metadata; the resolver always verifies `source` directly
+  // before sidecar use and before every LLM attempt.
+  metadata?: Record<string, unknown>;
 }): Promise<(string | null)[]>;
 
 // Used by both the dense embedder (FaissStoreAdapter) and the BM25 lexical
@@ -124,8 +129,11 @@ export function embeddingText(doc: Document): string {
 
 **Flow:**
 
-1. Read `<faiss_index_path>/.contextual-prefaces/<kb-name>/<relative-path>.json` if present. **All reads and writes of this directory are wrapped in `withSidecarLock` from `src/write-lock.ts:135`** — the same primitive RFC 016 uses for docstore CAS. The per-model `withWriteLock` does not protect cross-model sidecar collisions on shared paths.
-2. For each chunk:
+1. Read `<faiss_index_path>/.contextual-prefaces/<kb-name>/<relative-path>.json` if present. Sidecar writes are atomic and wrapped in `withSidecarLock` from `src/write-lock.ts:135` — the same primitive RFC 016 uses for docstore CAS. The per-model `withWriteLock` does not protect cross-model sidecar collisions on shared paths; readers consume the last complete JSON snapshot.
+2. If the source is policy-excluded (its current policy sets
+   `kb_policy.no_llm_context: true`), return all `null` values without reading
+   or writing the contextual sidecar or calling the LLM. Otherwise, for each
+   eligible chunk:
    - Compute `chunkHash = sha256(chunk)`.
    - If sidecar has a record at index `i` with matching `chunkHash`, `chunkIndex == i`, **non-null `preface`**, matching `generator`, matching `model`, matching `documentHash`, matching `chunk_size` + `chunk_overlap` env values → cache hit; reuse.
    - Else → call the LLM (§4). On success, slot into the result. **On failure** (`preface: null`), do **not** mark this as a permanent cache hit; future runs treat it as retryable subject to a per-error retry-after deadline (§Failure modes).
@@ -135,11 +143,11 @@ Sidecar shape:
 
 ```json
 {
-  "schema_version": "contextual-preface.v1",
+  "schema_version": "contextual-preface.sidecar.v1",
   "source": "/home/jean/knowledge_bases/operating-environment/local-research-agent.md",
   "knowledge_base": "operating-environment",
   "document_hash": "<sha256>",
-  "generator": "contextual-preface.v1",
+  "generator": "contextual-preface.v2",
   "model": "qwen3.6-35b-a3b",
   "chunk_size": 1000,
   "chunk_overlap": 200,
@@ -225,15 +233,15 @@ kb reindex --with-context [--kb=<name>…] [--force]
 > The M0b runner delegates to `FaissIndexManager.updateIndex(undefined,
 > { force: true })`, which always rebuilds the whole single-index-per-model
 > FAISS index (step 6 — a per-KB rebuild would orphan the other shelves'
-> vectors). `--kb` only narrows the chunk-count estimate (step 1) and the
-> cron-window guard arithmetic, and validates that the named KBs exist
-> (unknown name → exit 2). A genuinely scoped rebuild is deferred to a
-> follow-up.
+> vectors). `--kb` validates that the named KBs exist (unknown name → exit 2)
+> but the estimate, cron-window guard arithmetic, progress summary, and
+> rebuild all cover every registered KB. A genuinely scoped rebuild is
+> deferred to a follow-up.
 
 Behavior:
 
-1. **Self-runtime estimator.** Count total chunks across in-scope KBs from existing chunk manifests. Multiply by **8s** (cold-case per-chunk cost — the worst case, not the floor) for the upper bound. If `now + estimated_runtime` would cross 06:00 UTC, refuse to start unless `--force`. Logged as `reindex.start` with `estimated_seconds`.
-   - **Cache-aware refinement (#408).** Pricing *every* chunk at 8s over-estimates a reindex that follows a partial or successful contextual run, since valid per-source preface sidecars (`${FAISS_INDEX_PATH}/.contextual-prefaces/`) make those chunks cache hits with no LLM call. The estimator therefore classifies each manifest chunk against its sidecar — `cache_hits`, `retry_skips` (a recorded failure whose `next_retry_after` has not elapsed), and `cold_chunks` — and prices only `cold_chunks` at 8s. It mirrors the resolver's cheap global cache-key checks (`generator`, `chunk_size`, `chunk_overlap`) so a `GENERATOR_VERSION` bump correctly resets every chunk to cold, but it does not recompute per-chunk hashes: a sidecar stale against an edited source is still counted as a hit. This is a scheduling heuristic, not a correctness invariant — the rebuild re-validates every entry. A first-ever reindex (no sidecars) yields `cold_chunks == total_chunks`, identical to the original estimate.
+1. **Self-runtime estimator.** Count total chunks across every registered KB from existing chunk manifests for the possible whole-index embedding rebuild, and count eligible chunks for cold contextual-preface work. Price cold contextual-preface chunks at **8s** and the total embedding rebuild at the configured **30ms/chunk** throughput estimate. If `now + estimated_runtime` would cross 06:00 UTC, refuse to start unless `--force`. Logged as `reindex.start` with `estimated_seconds`.
+   - **Cache-aware refinement (#408).** Pricing *every* eligible chunk at 8s over-estimates a reindex that follows a partial or successful contextual run, since valid per-source preface sidecars (`${FAISS_INDEX_PATH}/.contextual-prefaces/`) make those chunks cache hits with no LLM call. The estimator therefore classifies each eligible manifest chunk against its sidecar — `cache_hits`, `retry_skips` (a recorded failure whose `next_retry_after` has not elapsed), and `cold_chunks` — and prices only `cold_chunks` at 8s. Sources that are unreadable, malformed, invalid, or marked `no_llm_context` remain part of the whole-index embedding total but contribute no contextual-preface work. It mirrors the resolver's cheap global cache-key checks (`generator`, configured `model`, `chunk_size`, `chunk_overlap`) so a generator or model change correctly resets every chunk to cold, but it does not recompute per-chunk hashes: a sidecar stale against an edited source is still counted as a hit. This is a scheduling heuristic, not a correctness invariant — the rebuild re-validates every entry. A first-ever reindex with only eligible sources yields `cold_chunks == eligible_chunks`; `total_chunks` may also include embedding-only protected sources.
 2. **LRA cron guard.** Check `new Date().getUTCHours()` + `getUTCMinutes()` explicitly. Inside 06:00-10:30 UTC, refuse unless `--force`.
 3. **Per-model lock with reindex-appropriate tuning.** `withWriteLock` today has `stale: 10_000`, `update: 5_000` — designed for sub-second MCP writes; would go stale during long `addVectors` batches. The reindex path acquires the lock with extended parameters (`stale: 60_000`, `update: 15_000`) so a busy GC pause or large batch doesn't drop the lock. The reindex holds the lock for the full run. MCP `updateIndex` calls during a reindex will see `WriteLockContentionError`; callers must tolerate this (we adjust the MCP retry envelope from 5 attempts in 10s to 30 attempts over 5 minutes — still fails for the multi-hour case, see Open Questions).
 4. **`.reindex.run.json` with PID liveness.** Written at lock acquisition with `pid`, `started_at`, `kbs_in_scope`. On the next startup (any `kb_stats`, `kb reindex`, or trigger watcher invocation), if the file exists, check whether the `pid` is still alive (`process.kill(pid, 0)` semantics). If dead, treat the file as stale, delete it, and emit `reindex.zombie-cleanup` log line. This defeats the zombie-file failure mode where SIGKILL leaves the file claiming `in_progress` forever.
@@ -243,7 +251,7 @@ Behavior:
    - **FAISS index (embedding-cheap, initially whole-corpus):** while the contextual estimate still has `cold_chunks`, the single `index.vN+1/` staging tree under the model dir is built up in memory as the reindex walks every KB and is **atomically swapped exactly once at the end of the entire run** per RFC 014. Once the contextual sidecar cache is warm, follow-up runs delegate to the normal non-forced `updateIndex()` path so unchanged files are skipped and changed/appended files use the existing incremental update path. If a changed file cannot be represented safely without vector deletion, `updateIndex()` still falls back to a full rebuild.
 
    Per-KB walk:
-   a. For each file in the KB, re-run `buildChunkDocuments` with contextual retrieval on. `resolveContextualPrefaces` reads the on-disk sidecar (cache hits from prior runs) and calls the LLM only for misses.
+   a. For each file in the KB, re-run `buildChunkDocuments` with contextual retrieval on. Eligible files have `resolveContextualPrefaces` read the on-disk sidecar (cache hits from prior runs) and call the LLM only for misses; policy-excluded files return all-null without sidecar I/O or LLM calls.
    b. Re-embed the chunks via the §3 path; append to the in-memory `index.vN+1` staging store. Verify `ntotal === docstore.size` invariant after each batch.
    c. **At the end of this KB:** persist all newly-generated sidecars for this KB to disk under `withSidecarLock` (tmp + rename per source file, `mkdir -p` on subdirs). Update `.reindex.run.json` with `last_completed_kb`, `kbs_done`.
    d. Continue to the next KB. The staging FAISS index keeps accumulating; it is **not** touched on disk yet.
@@ -293,7 +301,7 @@ Hard-coded constants (not env vars):
       "coverage_pct": 96.6,
       "cache_bytes": 18211,
       "model": "qwen3.6-35b-a3b",
-      "generator": "contextual-preface.v1",
+      "generator": "contextual-preface.v2",
       "failures": {
         "retry_pending": 1,
         "by_error_code": { "llm_unreachable": 1, "truncated_doc": 1 }

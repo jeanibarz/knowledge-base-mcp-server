@@ -158,7 +158,7 @@ Note: `KB_RERANK_DEVICE` (e.g. `cuda`, `cpu`) and `KB_RERANK_DTYPE` (e.g. `fp32`
 
 `kb serve` runs the loopback CLI daemon used by clients that pass `--daemon` for warm reads. The bare `kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000] [--warm]` brings it up; `--warm` or `KB_DAEMON_PREWARM=on` pre-loads the active model, FAISS index, and lexical indexes before readiness. `kb serve status [--json]` reports reachability, pid, idle timeout, supported commands, and prewarm state at the configured `KB_DAEMON_URL` (defaults to `http://127.0.0.1:17799`); SIGINT or SIGTERM stops it. CLI commands fall back to direct in-process execution when the daemon is unavailable. See [`docs/operations/daemon-lifecycle.md`](docs/operations/daemon-lifecycle.md).
 
-`kb reindex --with-context` rebuilds the FAISS index with RFC 017 contextual prefaces (requires `KB_CONTEXTUAL_RETRIEVAL=on` and an `KB_LLM_ENDPOINT`). `kb reindex status` reads the `.reindex.run.json` ledger and reports the current or most recent run (kb scope, model, started/finished timestamps, chunks processed, cache hit rate, and any failure code). The `--kb=<name>` flag is a guard/estimator hint only — the rebuild always covers the entire single-index-per-model FAISS layout (see RFC 017 §5).
+`kb reindex --with-context` rebuilds the FAISS index with RFC 017 contextual prefaces (requires `KB_CONTEXTUAL_RETRIEVAL=on` and an `KB_LLM_ENDPOINT`). `kb reindex status` reads the durable run-state and per-source sidecar ledgers and reports liveness, eligible indexed files, sidecar coverage, pending files, resolved/failed chunks, and failure codes. The `--kb=<name>` flag is a guard/estimator hint only — the rebuild always covers the entire single-index-per-model FAISS layout (see RFC 017 §5).
 
 Set `KB_INGEST_SECRET_SCAN=on` to scan chunks and frontmatter metadata for credential-shaped content before they are embedded. Hits are quarantined with reason `secret_detected`, skipped before FAISS writes, and can be inspected with `kb quarantine list --reason=secret_detected`; use `KB_SECRET_SCAN_BYPASS_KBS=trusted-kb,...` only for shelves that intentionally store credential examples. See [Ingest Secret Scan](docs/operations/secret-scan.md).
 
@@ -231,7 +231,9 @@ npm run bench:tune -- --replay-config=/tmp/kb-scifact-lexical-best.json
 Notes can opt out of LLM prompt packing with this YAML frontmatter:
 `kb_policy: { no_llm_context: true }`. Search can still return the chunk, but
 `kb ask` and MCP `ask_knowledge` skip it before calling the LLM and report
-`context_packing.policy_filtered_chunks`.
+`context_packing.policy_filtered_chunks`. Contextual-preface ingest and
+relevance-gate judging also exclude it from their LLM prompts while preserving
+the chunk as retrieval data.
 
 For offline development, set `KB_LLM_FAKE=on` to route `kb ask`, RFC 018 relevance-gate judge calls, and RFC 017 contextual-preface generation to a deterministic in-process fake LLM. Use `npm run dev:mockllm -- --port=18080` when a client needs an OpenAI-compatible localhost endpoint instead. Rules can be customized with `KB_LLM_FAKE_RULES`; see [docs/testing/fake-llm.md](docs/testing/fake-llm.md).
 

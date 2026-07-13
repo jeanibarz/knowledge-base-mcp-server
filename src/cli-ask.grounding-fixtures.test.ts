@@ -8,6 +8,8 @@ import {
   type RunAskDeps,
 } from './cli-ask.js';
 
+const ELIGIBLE_SOURCE = path.join(process.cwd(), 'package.json');
+
 type FakeRetrievalDoc = {
   pageContent: string;
   metadata: Record<string, unknown>;
@@ -255,6 +257,7 @@ function retrievalDoc(input: {
     metadata: {
       knowledgeBase: 'ops',
       relativePath: input.path,
+      source: ELIGIBLE_SOURCE,
       loc: { lines: loc },
       chunk_id: input.chunkId,
     },

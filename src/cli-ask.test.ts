@@ -16,6 +16,8 @@ import {
 } from './ask-core.js';
 import { callChatCompletion, LlmClientError } from './llm-client.js';
 
+const ELIGIBLE_SOURCE = path.join(process.cwd(), 'package.json');
+
 describe('parseAskArgs', () => {
   it('parses retrieval and LLM options', () => {
     expect(parseAskArgs([
@@ -311,6 +313,7 @@ describe('ask transcript records', () => {
             metadata: {
               knowledgeBase: 'ops',
               relativePath: 'deploys.md',
+              source: ELIGIBLE_SOURCE,
               loc: { lines: { from: 10, to: 18 } },
             },
             score: 0.1234,
@@ -450,7 +453,7 @@ describe('ask transcript records', () => {
         similaritySearch: jest.fn(async () => [
           {
             pageContent: 'Rollback approval requires the release lead.',
-            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md' },
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md', source: ELIGIBLE_SOURCE },
             score: 0.1,
           },
         ]),
@@ -513,7 +516,7 @@ describe('ask transcript records', () => {
         similaritySearch: jest.fn(async () => [
           {
             pageContent: 'Rollback approval requires the release lead.',
-            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md' },
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md', source: ELIGIBLE_SOURCE },
             score: 0.1,
           },
         ]),
@@ -585,17 +588,17 @@ describe('ask transcript records', () => {
         similaritySearch: jest.fn(async () => [
           {
             pageContent: `${'Useful first sentence. '.repeat(20)}${'tail '.repeat(160)}`,
-            metadata: { knowledgeBase: 'ops', relativePath: 'long.md' },
+            metadata: { knowledgeBase: 'ops', relativePath: 'long.md', source: ELIGIBLE_SOURCE },
             score: 0.9,
           },
           {
             pageContent: 'short second snippet',
-            metadata: { knowledgeBase: 'ops', relativePath: 'second.md' },
+            metadata: { knowledgeBase: 'ops', relativePath: 'second.md', source: ELIGIBLE_SOURCE },
             score: 0.8,
           },
           {
             pageContent: 'x'.repeat(1200),
-            metadata: { knowledgeBase: 'ops', relativePath: 'overflow.md' },
+            metadata: { knowledgeBase: 'ops', relativePath: 'overflow.md', source: ELIGIBLE_SOURCE },
             score: 0.7,
           },
         ]),
@@ -682,7 +685,7 @@ describe('ask transcript records', () => {
         similaritySearch: jest.fn(async () => [
           {
             pageContent: 'Rollback approval requires the release lead.',
-            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md' },
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md', source: ELIGIBLE_SOURCE },
             score: 0.1,
           },
         ]),
@@ -746,12 +749,12 @@ describe('ask transcript records', () => {
         similaritySearch: jest.fn(async () => [
           {
             pageContent: `${'Useful first sentence. '.repeat(20)}${'tail '.repeat(160)}`,
-            metadata: { knowledgeBase: 'ops', relativePath: 'long.md' },
+            metadata: { knowledgeBase: 'ops', relativePath: 'long.md', source: ELIGIBLE_SOURCE },
             score: 0.9,
           },
           {
             pageContent: 'x'.repeat(1200),
-            metadata: { knowledgeBase: 'ops', relativePath: 'overflow.md' },
+            metadata: { knowledgeBase: 'ops', relativePath: 'overflow.md', source: ELIGIBLE_SOURCE },
             score: 0.7,
           },
         ]),
@@ -820,7 +823,7 @@ describe('ask transcript records', () => {
         similaritySearch: jest.fn(async () => [
           {
             pageContent: 'Rollback approval requires the release lead.',
-            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md' },
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md', source: ELIGIBLE_SOURCE },
             score: 0.1,
           },
         ]),
@@ -891,7 +894,7 @@ describe('ask transcript records', () => {
         similaritySearch: jest.fn(async () => [
           {
             pageContent: 'Rollback approval requires the release lead.',
-            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md' },
+            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md', source: ELIGIBLE_SOURCE },
             score: 0.1,
           },
         ]),
@@ -1247,7 +1250,7 @@ describe('kb ask grounding fixtures', () => {
         similaritySearch: jest.fn(async () => [
           {
             pageContent: 'Rollback approval requires the release lead.',
-            metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/public.md' },
+          metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/public.md', source: ELIGIBLE_SOURCE },
             score: 0.1,
           },
           {
@@ -1353,7 +1356,17 @@ function createAskFixtureHarness(options: AskFixtureHarnessOptions) {
     updateIndex: jest.fn(async () => {}),
     similaritySearch: jest.fn(async () => options.results.map((result) => ({
       pageContent: result.content,
-      metadata: result.metadata,
+      metadata: (() => {
+        const frontmatter = result.metadata.frontmatter;
+        const policy = frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter)
+          ? (frontmatter as Record<string, unknown>).kb_policy
+          : undefined;
+        const policyExcluded = policy && typeof policy === 'object' && !Array.isArray(policy)
+          && (policy as Record<string, unknown>).no_llm_context === true;
+        return policyExcluded
+          ? result.metadata
+          : { ...result.metadata, source: result.metadata.source ?? ELIGIBLE_SOURCE };
+      })(),
       score: result.score,
     }))),
   };
@@ -1416,7 +1429,7 @@ describe('kb ask --interactive routing', () => {
       similaritySearch: jest.fn(async () => [
         {
           pageContent: 'Rollback needs the release lead.',
-          metadata: { knowledgeBase: 'ops', relativePath: 'rollback.md' },
+          metadata: { knowledgeBase: 'ops', relativePath: 'rollback.md', source: ELIGIBLE_SOURCE },
           score: 0.1,
         },
       ]),
@@ -1495,6 +1508,7 @@ describe('kb ask global verbosity (#739)', () => {
             metadata: {
               knowledgeBase: 'ops',
               relativePath: 'rollback.md',
+              source: ELIGIBLE_SOURCE,
               loc: { lines: { from: 1, to: 4 } },
             },
             score: 0.1,

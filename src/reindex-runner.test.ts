@@ -159,6 +159,7 @@ describe('self-runtime estimator', () => {
     const kbsDir = path.join(tempDir, 'kbs');
     const indexDir = path.join(kbsDir, 'alpha', '.index');
     await fsp.mkdir(indexDir, { recursive: true });
+    await fsp.writeFile(path.join(kbsDir, 'alpha', 'note'), '# public source\n');
     // 1000 chunks × 8s = 8000s ≈ 2h13m. Starting at 04:00 UTC would
     // cross 06:00 UTC.
     await fsp.writeFile(
@@ -188,6 +189,9 @@ describe('cache-aware reindex estimate (#408)', () => {
   async function writeManifest(kb: string, relPath: string, chunkCount: number): Promise<void> {
     const manifestPath = path.join(tempDir, 'kbs', kb, '.index', `${relPath}.chunks.json`);
     await fsp.mkdir(path.dirname(manifestPath), { recursive: true });
+    const source = path.join(tempDir, 'kbs', kb, relPath);
+    await fsp.mkdir(path.dirname(source), { recursive: true });
+    await fsp.writeFile(source, '# public source\n');
     await fsp.writeFile(manifestPath, JSON.stringify({ chunks: new Array(chunkCount).fill({}) }));
   }
 
@@ -233,6 +237,22 @@ describe('cache-aware reindex estimate (#408)', () => {
     ]);
     const est = await runner.estimateContextualReindexWork(['alpha']);
     expect(est).toEqual({ total_chunks: 4, cache_hits: 2, retry_skips: 0, cold_chunks: 2 });
+  });
+
+  it('does not price protected sources as contextual-preface work', async () => {
+    await writeManifest('alpha', 'private', 3);
+    const source = path.join(tempDir, 'kbs', 'alpha', 'private');
+    await fsp.mkdir(path.dirname(source), { recursive: true });
+    await fsp.writeFile(source, [
+      '---',
+      'kb_policy:',
+      '  no_llm_context: true',
+      '---',
+      'private body',
+    ].join('\n'));
+
+    const est = await runner.estimateContextualReindexWork(['alpha']);
+    expect(est).toEqual({ total_chunks: 3, cache_hits: 0, retry_skips: 0, cold_chunks: 0 });
   });
 
   it('adds embedding rebuild cost to cold-preface cost for the LRA-window guard', async () => {
@@ -353,6 +373,35 @@ describe('cache-aware reindex estimate (#408)', () => {
     expect(result.outcome).toBe('completed');
     expect(result.contextual_estimate).toMatchObject({ cache_hits: 4, cold_chunks: 0 });
     expect(refreshMode).toEqual({ force: false });
+  });
+
+  it('keeps --kb validation while estimating and refreshing the global corpus', async () => {
+    await writeManifest('alpha', 'warm', 2);
+    await writeManifest('beta', 'cold', 3);
+    const cp = (await import('./contextual-preface.js')) as ContextualPrefaceModule;
+    await writeSidecar(cp, 'alpha', 'warm', [
+      { chunk_index: 0, chunk_hash: 'h0', preface: 'ctx 0' },
+      { chunk_index: 1, chunk_hash: 'h1', preface: 'ctx 1' },
+    ]);
+    let refreshMode: { force: boolean } | null = null;
+
+    const result = await runner.runReindex({
+      knowledgeBases: ['alpha'],
+      force: true,
+      runUpdateIndex: async (args) => {
+        refreshMode = args;
+        return makeNeverRunSummary();
+      },
+    });
+
+    expect(result.kbs_attempted).toBe(2);
+    expect(result.contextual_estimate).toEqual({
+      total_chunks: 5,
+      cache_hits: 2,
+      retry_skips: 0,
+      cold_chunks: 3,
+    });
+    expect(refreshMode).toEqual({ force: true });
   });
 });
 

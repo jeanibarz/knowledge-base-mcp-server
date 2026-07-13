@@ -211,7 +211,7 @@ type ChunkMetadata = {
 | `extension` | `string` lowercase extension, including dot | yes | `path.extname(filePath).toLowerCase()` at `src/file-ingest.ts:55`, `:92-98` | visible |
 | `chunkIndex` | `number` zero-based ordinal within the source file | yes | loop index at `src/file-ingest.ts:91-99` | visible; formatter uses it as fallback location |
 | `tags` | `string[]` | yes | `parseFrontmatter(content)` at `src/file-ingest.ts:68`, `:92-100` | visible |
-| `frontmatter` | `LiftedFrontmatter` | no | `liftFrontmatter(frontmatter, filePath)` at `src/file-ingest.ts:74-100` | visible after sanitization; `extras` hidden by default |
+| `frontmatter` | `LiftedFrontmatter` | no | `liftFrontmatter(frontmatter, filePath)` at `src/file-ingest.ts:242-265`; malformed frontmatter falls back to `{ kb_policy: { no_llm_context: true } }` for LLM-boundary safety | visible after sanitization; `extras` hidden by default |
 | `pdf_path` | `string` KB-relative POSIX path | no | `detectSiblingPdfPath` for markdown files at `src/file-ingest.ts:80-101` | visible |
 | `contextual_preface` | `string` | no | `resolveContextualPrefaces` when contextual retrieval is enabled in `src/file-ingest.ts` | stored for embedding/lexical input; not a source-content replacement |
 

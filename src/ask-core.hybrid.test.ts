@@ -1,4 +1,5 @@
 import { describe, expect, it, jest, beforeEach, afterEach } from '@jest/globals';
+import * as path from 'path';
 
 import {
   executeAsk,
@@ -16,7 +17,16 @@ interface Doc {
 }
 
 function denseDoc(source: string, content: string, score: number): Doc {
-  return { pageContent: content, metadata: { knowledgeBase: 'ops', relativePath: source, source, chunkIndex: 0 }, score };
+  const policySource = source.endsWith('/a.md')
+    ? path.join(process.cwd(), 'src/ask-core.ts')
+    : source.endsWith('/b.md')
+      ? path.join(process.cwd(), 'src/ask-core.test.ts')
+      : path.join(process.cwd(), 'src/ask-core.hybrid.test.ts');
+  return {
+    pageContent: content,
+    metadata: { knowledgeBase: 'ops', relativePath: source, source: policySource, chunkIndex: 0 },
+    score,
+  };
 }
 
 function makeManager(denseResults: Doc[]): { similaritySearch: jest.Mock } & Record<string, unknown> {

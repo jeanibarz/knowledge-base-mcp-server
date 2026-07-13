@@ -53,6 +53,14 @@ describe('normalizeGateEvalFixture', () => {
     expect(fixture.cases[1].fixtureClass).toBe('standard');
   });
 
+  it('preserves explicit source provenance for live runs', () => {
+    const fixture = normalizeGateEvalFixture({
+      ...minimal,
+      source_paths: { 'x.md': '/tmp/source-policy.md' },
+    });
+    expect(fixture.sourcePaths).toEqual(new Map([['x.md', '/tmp/source-policy.md']]));
+  });
+
   it('requires >= 2 structurally different KBs', () => {
     const oneKb = { cases: [minimal.cases[0], { ...minimal.cases[1], kb: 'k1' }] };
     expect(() => normalizeGateEvalFixture(oneKb)).toThrow(/>= 2 structurally different KBs/);

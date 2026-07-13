@@ -12,6 +12,7 @@ adopts a "validate before build" posture.
 |---|---|
 | `queries.yml` | The query set — 15 queries across 2 structurally different KBs (`codeops`, `prose`), each with a replayed candidate set. |
 | `grader-calibration.yml` | Human-labelled answers used to pre-register the LLM grader's admissibility (live mode only). |
+| `source-policy.md` | Explicit public provenance witness mapped by `queries.yml` for live M0/M1 policy checks. |
 
 ## What `queries.yml` contains
 
@@ -31,6 +32,10 @@ adopts a "validate before build" posture.
   (`nomic-embed-text`: in-domain 0.43–0.74, out-of-domain 1.00–1.09, A1
   floor 0.95). They are hand-authored; for a production-grounded run,
   regenerate the candidate sets from real `kb search` canonical logs.
+- **Live provenance.** `queries.yml` maps every replayed source name to the
+  public `source-policy.md` witness. Live M0/M1 runs fail closed for any source
+  not explicitly mapped or whose mapped policy cannot be read; the witness
+  does not stand in for the candidate's source content.
 
 ## Running the harness
 

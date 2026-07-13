@@ -43,10 +43,11 @@ Behavior:
   - Refuses to start inside the LRA cron window (06:00-10:30 UTC) or
     when the estimated runtime would cross it; pass --force to bypass
     both guards.
-  - The runtime estimate is cache-aware: only chunks without a valid
-    contextual-preface sidecar are priced at the 8s cold-LLM ceiling, so
-    a reindex resumed after a partial run is not blocked for work it
-    would skip. The breakdown is reported as \`contextual_estimate\`.
+  - The runtime estimate is cache-aware: only eligible chunks without a valid
+    contextual-preface sidecar are priced at the 8s cold-LLM ceiling, while
+    all chunks retain the embedding-rebuild cost. A reindex resumed after a
+    partial run is not blocked for contextual work it would skip. The
+    breakdown is reported as \`contextual_estimate\`.
   - Writes a run-state file at \`$FAISS_INDEX_PATH/.reindex.run.json\`
     so the trigger watcher (RFC 014) defers its own updates until the
     reindex finishes. The file is deleted on exit (and zombie-cleaned
@@ -54,9 +55,11 @@ Behavior:
   - Delegates the actual refresh to \`FaissIndexManager.updateIndex()\`
     using \`force: true\` only while contextual-preface chunks are cold.
     Warm follow-up runs use \`force: false\`, the same incremental
-    machinery as \`kb search --refresh\`. The \`undefined\` scope argument
-    is deliberate for forced backfills: the rebuild is global and
-    \`--kb\` never narrows it (see below).
+    machinery as \`kb search --refresh\`. Sources marked
+    \`kb_policy.no_llm_context: true\` are intentionally skipped: they do not
+    create preface sidecars and must not be counted as pending LLM work. The
+    \`undefined\` scope argument is deliberate for forced backfills: the rebuild
+    is global and \`--kb\` never narrows it (see below).
   - When \`KB_CONTEXTUAL_RETRIEVAL=on\`, prints a \`contextual:\` line
     summarising preface coverage and failures (covered / failed /
     retry-pending chunks, with an error-code breakdown) read back from
@@ -71,8 +74,8 @@ Notes:
   index; it also materializes the rollup to
   \`$FAISS_INDEX_PATH/.reindex.progress.json\`. To resume an interrupted
   reindex, re-run \`kb reindex --with-context\`: completed files are
-  served from the sidecar cache and only pending / failed chunks call
-  the LLM.
+  served from the sidecar cache and only eligible pending / failed chunks call
+  the LLM; policy-excluded sources do not create sidecars.
 
 Options:
   --with-context        Required in M0b. Required for the CLI to do
@@ -83,12 +86,12 @@ Options:
                         model with every KB co-located, so a partial
                         forced rebuild would orphan the other shelves'
                         vectors; cold backfills therefore remain global.
-                        --kb only narrows the chunk-count estimate and
-                        the cron-window guard arithmetic, and is
-                        validated against registered KBs (unknown name
-                        -> exit 2). Repeat for multiple KBs. Default:
-                        every registered KB. Status: limit the report to
-                        this KB.
+                        --kb validates a requested shelf but does not narrow
+                        the estimate or cron-window guard: both cover every
+                        registered KB because the actual update is global
+                        (unknown name -> exit 2). Repeat for multiple KBs.
+                        Default: every registered KB. Status: limit the
+                        report to this KB.
   --force               Bypass the LRA cron window guard AND the
                         self-runtime-budget guard. Required to start
                         a reindex inside 06:00-10:30 UTC or when the

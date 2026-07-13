@@ -7,6 +7,7 @@ import {
 import { resolveLlmProvider } from './config/llm-provider.js';
 import { wrapUntrustedContent } from './injection-guard.js';
 import { redactSecrets } from './redaction.js';
+import { excludesLlmContext, readLlmContextPolicy } from './sensitivity-policy.js';
 
 export interface RelevanceJudgeCandidate {
   id: string;
@@ -23,6 +24,8 @@ export interface RelevanceJudgeOptions {
   candidates: RelevanceJudgeCandidate[];
   seed: string;
   fetchImpl?: typeof fetch;
+  /** Guard invoked immediately before each provider attempt, including retries. */
+  beforeAttempt?: () => void | Promise<void>;
 }
 
 export type RelevanceJudgeOverall = 'relevant' | 'partial' | 'no-relevant-context';
@@ -58,6 +61,13 @@ export class RelevanceJudgeError extends Error {
   }
 }
 
+class RelevanceJudgePolicyBoundaryError extends Error {
+  constructor() {
+    super('source policy excluded relevance-judge LLM work');
+    this.name = 'RelevanceJudgePolicyBoundaryError';
+  }
+}
+
 interface RawJudgeResponse {
   overall?: unknown;
   verdicts?: unknown;
@@ -90,6 +100,9 @@ const REDACT_TRUTHY_VALUES = new Set(['on', 'true', '1', 'yes']);
 const REDACT_FALSY_VALUES = new Set(['off', 'false', '0', 'no']);
 
 export async function judgeRelevance(options: RelevanceJudgeOptions): Promise<RelevanceJudgeResult> {
+  // Reject unverifiable/protected candidates before constructing the prompt;
+  // the shared boundary callback below repeats this check for retries.
+  await assertCandidatesLlmContextAllowed(options.candidates);
   const shuffled = deterministicShuffle(options.candidates, options.seed);
   const messages = redactJudgeMessages(
     buildJudgeMessages(options.query, options.taskContext, shuffled),
@@ -102,6 +115,10 @@ export async function judgeRelevance(options: RelevanceJudgeOptions): Promise<Re
     temperature: 0,
     timeoutMs: options.timeoutMs,
     messages,
+    beforeAttempt: async () => {
+      await assertCandidatesLlmContextAllowed(options.candidates);
+      await options.beforeAttempt?.();
+    },
   }, options.fetchImpl ?? fetch);
 
   return {
@@ -109,6 +126,30 @@ export async function judgeRelevance(options: RelevanceJudgeOptions): Promise<Re
     shuffledIds: shuffled.map((candidate) => candidate.id),
     promptHash: hashPrompt(messages),
   };
+}
+
+async function assertCandidatesLlmContextAllowed(
+  candidates: readonly RelevanceJudgeCandidate[],
+): Promise<void> {
+  const policyBySource = new Map<string, Promise<Awaited<ReturnType<typeof readLlmContextPolicy>>>>();
+  await Promise.all(candidates.map(async (candidate) => {
+    if (excludesLlmContext(candidate.metadata)) {
+      throw new RelevanceJudgePolicyBoundaryError();
+    }
+    const source = candidate.metadata.source;
+    if (typeof source !== 'string' || source.trim().length === 0) {
+      throw new RelevanceJudgePolicyBoundaryError();
+    }
+    let sourcePolicyPromise = policyBySource.get(source);
+    if (sourcePolicyPromise === undefined) {
+      sourcePolicyPromise = readLlmContextPolicy(source);
+      policyBySource.set(source, sourcePolicyPromise);
+    }
+    const sourcePolicy = await sourcePolicyPromise;
+    if (!sourcePolicy.readable || !sourcePolicy.valid || sourcePolicy.policy?.no_llm_context === true) {
+      throw new RelevanceJudgePolicyBoundaryError();
+    }
+  }));
 }
 
 function resolveJudgeRedactionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {

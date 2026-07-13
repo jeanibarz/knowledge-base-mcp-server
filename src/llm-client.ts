@@ -20,6 +20,11 @@ export interface ChatCompletionOptions {
   /** Retry policy for transient provider/network failures. Set to false to disable. */
   retry?: false | LlmRetryOptions;
   /**
+   * Guard invoked immediately before each provider attempt, including retries.
+   * Callers that protect prompt content can throw to abort without retrying.
+   */
+  beforeAttempt?: () => void | Promise<void>;
+  /**
    * Bearer API key for hosted providers (e.g. OpenRouter). When omitted it is
    * resolved from the environment via {@link resolveLlmProvider}. Sent as
    * `Authorization: Bearer <key>` and never logged.
@@ -150,6 +155,7 @@ export async function callChatCompletion(
   let succeeded = false;
   try {
     if (isFakeLlmEnabled()) {
+      await options.beforeAttempt?.();
       result = withParsedUsage(await callFakeChatCompletion(options));
       succeeded = true;
       return result;
@@ -194,6 +200,7 @@ export async function callChatCompletion(
         stream: options.stream,
         retryPolicy,
         fetchImpl,
+        beforeAttempt: options.beforeAttempt,
       }),
       { shouldRecordFailure: (err) => err instanceof LlmClientError && isTransientLlmClientError(err) },
     ));
@@ -219,6 +226,7 @@ interface ChatCompletionWithRetryOptions {
   stream?: ChatCompletionStreamOptions;
   retryPolicy: ResolvedRetryPolicy | null;
   fetchImpl: FetchLike;
+  beforeAttempt?: () => void | Promise<void>;
 }
 
 async function callChatCompletionWithRetry(
@@ -227,6 +235,9 @@ async function callChatCompletionWithRetry(
   let totalRetryDelayMs = 0;
   let emittedStreamToken = false;
   for (let attempt = 0; ; attempt += 1) {
+    // Keep caller-owned boundary failures outside the retry catch. A policy
+    // guard must be able to abort even when it uses an LlmClientError subclass.
+    await options.beforeAttempt?.();
     try {
       return await callChatCompletionOnce(options.endpoint, options.payload, options.headers, options.timeoutMs, options.stream, () => {
         emittedStreamToken = true;

@@ -51,6 +51,7 @@ import { FaissIndexManager, type IndexUpdateSummary } from './FaissIndexManager.
 import { writeFileAtomicDurable } from './file-utils.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
+import { readLlmContextPolicy } from './sensitivity-policy.js';
 
 // RFC 017 §5 step 1 — cold-case per-chunk cost upper bound. Used by the
 // self-runtime estimator. Tuned to 8s based on cold KV-cache miss
@@ -77,12 +78,13 @@ export const REINDEX_RUN_SCHEMA_VERSION = 'reindex-run.v1';
 
 export interface ReindexOptions {
   /**
-   * KB names used for the chunk-count estimate and the cron-window guard
-   * arithmetic — NOT a scoped rebuild. `updateIndex` is always invoked
-   * with an `undefined` (whole-corpus) scope; see `runManagerUpdateIndex`.
-   * A partial rebuild would orphan the other shelves' vectors in the
-   * single-index-per-model FAISS layout. Empty array means "every
-   * registered KB".
+   * KB names supplied by the CLI. They are validated in production, but the
+   * estimate, guard arithmetic, summary, and actual update all use every
+   * registered KB because `updateIndex` is always invoked with an `undefined`
+   * (whole-corpus) scope; see `runManagerUpdateIndex`. A partial rebuild would
+   * orphan the other shelves' vectors in the single-index-per-model FAISS
+   * layout. Empty array means "every registered KB". The `resolveKbs` test
+   * seam may return a deterministic scope.
    */
   knowledgeBases: readonly string[];
   /**
@@ -113,9 +115,10 @@ export interface ReindexOptions {
 /**
  * RFC 017 §5 step 1 (cache-aware refinement, #408) — breakdown of the
  * contextual-preface work the runtime estimate is built from. `cold_chunks`
- * is the count priced at the 8s cold-LLM ceiling; every `total_chunks` entry
- * is also priced at the embedding rebuild rate because the incremental FAISS
- * path may rebuild the whole index.
+ * is the eligible-source count priced at the 8s cold-LLM ceiling; every
+ * `total_chunks` entry, including policy-excluded sources, is also priced at
+ * the embedding rebuild rate because the incremental FAISS path may rebuild
+ * the whole index.
  */
 export interface ContextualReindexEstimate {
   /** Total chunks across all in-scope KBs, summed from chunk manifests. */
@@ -294,8 +297,8 @@ export async function checkReindexRunState(): Promise<{
 
 async function resolveKbsInScope(opts: ReindexOptions): Promise<string[]> {
   if (opts.resolveKbs) return opts.resolveKbs();
+  const registered = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
   if (opts.knowledgeBases.length > 0) {
-    const registered = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
     const missing = opts.knowledgeBases.filter((kb) => !registered.includes(kb));
     if (missing.length > 0) {
       throw new KBError(
@@ -303,9 +306,11 @@ async function resolveKbsInScope(opts: ReindexOptions): Promise<string[]> {
         `Unknown knowledge base(s): ${missing.join(', ')}. Run \`kb list\` to see registered KBs.`,
       );
     }
-    return [...opts.knowledgeBases];
   }
-  return listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+  // `--kb` is a validation/reporting hint only. The FAISS layout is one
+  // global index per model, so the update and its safety estimate must cover
+  // every registered shelf even when the caller names one shelf.
+  return registered;
 }
 
 /**
@@ -319,21 +324,8 @@ export async function estimateChunkCountForKbs(kbs: readonly string[]): Promise<
   let total = 0;
   for (const kb of kbs) {
     const indexDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, '.index');
-    let entries: Array<import('fs').Dirent> = [];
-    try {
-      entries = await fsp.readdir(indexDir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.chunks.json')) continue;
-      try {
-        const raw = await fsp.readFile(path.join(indexDir, entry.name), 'utf-8');
-        const parsed = JSON.parse(raw) as { chunks?: unknown };
-        if (Array.isArray(parsed.chunks)) total += parsed.chunks.length;
-      } catch {
-        // best-effort
-      }
+    for (const manifestPath of await collectChunkManifestPaths(indexDir)) {
+      total += await readManifestChunkCount(manifestPath);
     }
   }
   return total;
@@ -394,7 +386,9 @@ async function readManifestChunkCount(manifestPath: string): Promise<number> {
  *
  * The cache-aware runtime estimate adds cold-preface work to the possible
  * whole-index embedding rebuild. A first-ever reindex (no sidecars) yields
- * `cold_chunks === total_chunks`; a warm cache still retains embedding cost.
+ * `cold_chunks === total_chunks` when all sources are LLM-eligible; protected
+ * sources remain in `total_chunks` but contribute no cold LLM work. A warm
+ * cache still retains embedding cost.
  */
 export async function estimateContextualReindexWork(
   kbs: readonly string[],
@@ -411,11 +405,19 @@ export async function estimateContextualReindexWork(
     for (const manifestPath of await collectChunkManifestPaths(indexDir)) {
       const chunkCount = await readManifestChunkCount(manifestPath);
       if (chunkCount <= 0) continue;
-      totalChunks += chunkCount;
       // The manifest path mirrors the source layout:
       // `<kb>/.index/<rel>.chunks.json` → source `<kb>/<rel>`.
       const rel = path.relative(indexDir, manifestPath).replace(/\.chunks\.json$/, '');
       const source = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, rel);
+      totalChunks += chunkCount;
+      const sourcePolicy = await readLlmContextPolicy(source);
+      if (!sourcePolicy.readable || !sourcePolicy.valid || sourcePolicy.policy?.no_llm_context === true) {
+        // Protected sources are retrieval/index inputs, but they deliberately
+        // have no contextual-preface LLM work to price or resume. Keep their
+        // chunks in total_chunks because the FAISS rebuild still processes the
+        // whole corpus.
+        continue;
+      }
       const tally = await classifyContextualSidecarChunks(source, kb, chunkCount, nowMs);
       cacheHits += tally.cache_hits;
       retrySkips += tally.retry_skips;

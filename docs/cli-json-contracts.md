@@ -2248,9 +2248,10 @@ Invocation:
 kb reindex status [--kb=<name>...] [--format=json]
 ```
 
-`kb reindex status` is a read-only command (RFC 017 #407). It rolls the
+`kb reindex status` is a reporting command (RFC 017 #407). It reads the
 contextual-preface sidecars under `$FAISS_INDEX_PATH/.contextual-prefaces/`
-into a per-KB / per-file progress ledger so an operator can see, after a
+and may clean up a stale reindex run-state file or write the durable progress
+ledger. It reports a per-KB / per-file snapshot so an operator can see, after a
 SIGINT, crash, or host reboot, which files completed their LLM preface work
 and which still need it.
 
@@ -2312,8 +2313,10 @@ Stable fields:
 
 Notes:
 
-- `files_indexed` counts chunk manifests under `<kb>/.index/` and is the
-  denominator the reindex walks; `files_pending` is
+- `files_indexed` counts chunk manifests whose current source policy is
+  readable, valid, and not `kb_policy.no_llm_context: true`; it is the
+  denominator for contextual-preface work. Unreadable, malformed, invalid,
+  and policy-protected sources are not pending LLM work. `files_pending` is
   `max(0, files_indexed - files_with_sidecar)`. Both are approximate while a
   reindex is in flight.
 - `--kb=<name>` (repeatable) restricts the report. A named KB with no sidecars

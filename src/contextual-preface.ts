@@ -12,8 +12,8 @@
 //   2. `resolveContextualPrefaces` — cache-then-LLM resolver. Reads the
 //      per-source sidecar under `withSidecarLock`, calls the LLM only for
 //      misses, and returns `(string | null)[]` aligned to the input
-//      `chunks` array. Failures land as `null`; the next reindex retries
-//      after a per-error backoff.
+//      `chunks` array. Policy-skipped chunks and failures land as `null`; only
+//      failures are retried after a per-error backoff.
 //   3. `persistContextualSidecars` — buffered sidecar writes. The CLI
 //      (M0b) flushes per-KB at end-of-KB; M0a's `buildChunkDocuments`
 //      flushes per-file inline since there's no run-orchestrator yet.
@@ -46,10 +46,12 @@ import {
 import { mapBounded } from './bounded-concurrency.js';
 import { resolveChunkSize } from './config/indexing.js';
 import { FAISS_INDEX_PATH } from './config/paths.js';
+import { resolveLlmProvider } from './config/llm-provider.js';
 import { KBError } from './errors.js';
 import { callChatCompletion, LlmClientError } from './llm-client.js';
 import { logger } from './logger.js';
 import { retrievalViewText } from './retrieval-views.js';
+import { excludesLlmContext, readLlmContextPolicy } from './sensitivity-policy.js';
 import { withSidecarLock } from './write-lock.js';
 
 export const GENERATOR_VERSION = 'contextual-preface.v2';
@@ -98,12 +100,14 @@ export interface PrefaceResolveArgs {
   documentHash: string;
   documentBody: string;
   chunks: string[];
+  /** Chunk metadata used to enforce document-level LLM egress policy. */
+  metadata?: Record<string, unknown>;
 }
 
 /**
  * Resolve one preface per chunk. Returns an array aligned to `chunks`;
- * each element is the preface text, or `null` when generation failed
- * (the caller falls back to embedding the chunk verbatim).
+ * each element is the preface text, or `null` when generation failed or the
+ * document policy skipped LLM work (the caller embeds the chunk verbatim).
  *
  * Side effect: dirty sidecars are persisted to disk under
  * `withSidecarLock` before returning. The M0b CLI may later defer the
@@ -114,6 +118,17 @@ export async function resolveContextualPrefaces(
   args: PrefaceResolveArgs,
 ): Promise<(string | null)[]> {
   if (args.chunks.length === 0) return [];
+
+  if (excludesLlmContext(args.metadata)) {
+    return args.chunks.map(() => null);
+  }
+
+  // Re-read the source policy before touching the sidecar so a stale or
+  // omitted in-memory snapshot cannot authorize cache hits or LLM work after
+  // the file becomes protected.
+  if (!(await currentSourceAllowsLlm(args.source))) {
+    return args.chunks.map(() => null);
+  }
 
   const endpoint = resolveContextualLlmEndpoint();
   if (endpoint === null) {
@@ -131,6 +146,11 @@ export async function resolveContextualPrefaces(
   // Read existing sidecar (if any).
   const sidecarPath = sidecarPathFor(args.source, args.knowledgeBaseName);
   const existing = await readSidecar(sidecarPath);
+  // Sidecar I/O is awaited. Recheck after it so a policy flip during the read
+  // cannot turn an old cached preface into an outbound-context authorization.
+  if (!(await currentSourceAllowsLlm(args.source))) {
+    return args.chunks.map(() => null);
+  }
 
   // Walk chunks: cache-hit, retry-after-not-yet-elapsed, or LLM call.
   const truncatedDoc = args.documentBody.length > CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS
@@ -141,7 +161,7 @@ export async function resolveContextualPrefaces(
   const nowMs = Date.now();
   const resolved: (string | null)[] = new Array(args.chunks.length);
   const newEntries: SidecarChunkEntry[] = new Array(args.chunks.length);
-  let modelSeen: string | null = existing?.model ?? null;
+  let modelSeen: string | null = resolveLlmProvider().model ?? existing?.model ?? null;
   let cacheHits = 0;
   let llmCalls = 0;
   let failures = 0;
@@ -167,6 +187,7 @@ export async function resolveContextualPrefaces(
       cached.chunk_hash === chunkHash &&
       existing.document_hash === args.documentHash &&
       existing.generator === GENERATOR_VERSION &&
+      sidecarModelMatchesCurrentProvider(existing.model) &&
       existing.chunk_size === chunkSize &&
       existing.chunk_overlap === chunkOverlap;
 
@@ -210,7 +231,13 @@ export async function resolveContextualPrefaces(
   // the endpoint — so a dead LLM is not hammered once per remaining chunk.
   let timeouts = 0;
   let breakerTripped = false;
+  let policyBoundaryBlocked = false;
   await mapBounded(pending, resolveContextualConcurrency(), async ({ index: i, chunkHash }) => {
+    if (policyBoundaryBlocked) {
+      resolved[i] = null;
+      failures += 1;
+      return;
+    }
     if (breakerTripped) {
       newEntries[i] = makeFailureEntry(i, chunkHash, 'llm_unreachable');
       resolved[i] = null;
@@ -218,10 +245,20 @@ export async function resolveContextualPrefaces(
       return;
     }
     try {
+      // Recheck immediately before each outbound call. This is the policy
+      // version check at the actual LLM boundary; no await occurs between it
+      // and constructing the request in callPrefaceLlm.
+      if (!(await currentSourceAllowsLlm(args.source))) {
+        policyBoundaryBlocked = true;
+        resolved[i] = null;
+        failures += 1;
+        return;
+      }
       const result = await callPrefaceLlm({
         endpoint,
         documentBody: truncatedDoc,
         chunkText: args.chunks[i],
+        isLlmContextAllowed: () => currentSourceAllowsLlm(args.source),
       });
       if (result.model !== null) modelSeen = result.model;
       newEntries[i] = {
@@ -233,6 +270,12 @@ export async function resolveContextualPrefaces(
       resolved[i] = result.preface;
       llmCalls += 1;
     } catch (err) {
+      if (err instanceof ContextualPolicyBoundaryError) {
+        policyBoundaryBlocked = true;
+        resolved[i] = null;
+        failures += 1;
+        return;
+      }
       const errorCode = classifyLlmError(err);
       newEntries[i] = makeFailureEntry(i, chunkHash, errorCode);
       resolved[i] = null;
@@ -265,6 +308,18 @@ export async function resolveContextualPrefaces(
   );
 
   return resolved;
+}
+
+async function currentSourceAllowsLlm(source: string): Promise<boolean> {
+  const snapshot = await readLlmContextPolicy(source);
+  return snapshot.readable && snapshot.valid && snapshot.policy?.no_llm_context !== true;
+}
+
+class ContextualPolicyBoundaryError extends Error {
+  constructor() {
+    super('source policy excluded contextual-preface LLM work');
+    this.name = 'ContextualPolicyBoundaryError';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -408,22 +463,40 @@ export async function aggregateContextualSidecarStats(
     } catch {
       continue;
     }
-    stats.sidecar_count += 1;
-    stats.cache_bytes += st.size;
-    if (st.mtimeMs > latestMtime) latestMtime = st.mtimeMs;
+    const recordSidecar = (): void => {
+      stats.sidecar_count += 1;
+      stats.cache_bytes += st.size;
+      if (st.mtimeMs > latestMtime) latestMtime = st.mtimeMs;
+    };
 
     let raw: string;
     try {
       raw = await fsp.readFile(filePath, 'utf-8');
     } catch {
+      recordSidecar();
       continue;
     }
-    let parsed: { chunks?: unknown; model?: unknown };
+    let parsed: { chunks?: unknown; model?: unknown; source?: unknown };
     try {
-      parsed = JSON.parse(raw) as { chunks?: unknown; model?: unknown };
+      parsed = JSON.parse(raw) as { chunks?: unknown; model?: unknown; source?: unknown };
     } catch {
+      // Preserve the existing operator diagnostic: a corrupt sidecar is
+      // still visible in the byte/count rollup even though it contributes no
+      // chunk counters.
+      recordSidecar();
       continue;
     }
+    // A source can become protected, unreadable, or malformed after its
+    // sidecar was written. Keep the diagnostic rollup fail-closed and aligned
+    // with reindex progress. Older/manual fixtures without a source field
+    // remain readable for backwards compatibility and are handled as before.
+    if (typeof parsed.source === 'string') {
+      const sourcePolicy = await readLlmContextPolicy(parsed.source);
+      if (!sourcePolicy.readable || !sourcePolicy.valid || sourcePolicy.policy?.no_llm_context === true) {
+        continue;
+      }
+    }
+    recordSidecar();
     if (typeof parsed.model === 'string') stats.model = parsed.model;
     if (!Array.isArray(parsed.chunks)) continue;
 
@@ -546,6 +619,7 @@ export async function classifyContextualSidecarChunks(
   const { chunkSize, chunkOverlap } = resolveChunkSize();
   if (
     sidecar.generator !== GENERATOR_VERSION ||
+    !sidecarModelMatchesCurrentProvider(sidecar.model) ||
     sidecar.chunk_size !== chunkSize ||
     sidecar.chunk_overlap !== chunkOverlap
   ) {
@@ -638,9 +712,22 @@ function isSidecarFile(value: unknown): value is SidecarFile {
   if (v.schema_version !== SIDECAR_SCHEMA_VERSION) return false;
   if (typeof v.source !== 'string' || typeof v.knowledge_base !== 'string') return false;
   if (typeof v.document_hash !== 'string' || typeof v.generator !== 'string') return false;
+  if (v.model !== null && typeof v.model !== 'string') return false;
   if (typeof v.chunk_size !== 'number' || typeof v.chunk_overlap !== 'number') return false;
   if (!Array.isArray(v.chunks)) return false;
   return v.chunks.every(isSidecarChunkEntry);
+}
+
+/**
+ * A local provider without an explicit model does not expose a stable model
+ * identifier before the first request; the response model recorded in the
+ * sidecar is therefore authoritative in that configuration. Remote providers
+ * and explicitly configured local models do expose a stable identifier, so a
+ * model change invalidates the sidecar before any cached preface is reused.
+ */
+function sidecarModelMatchesCurrentProvider(sidecarModel: string | null): boolean {
+  const configuredModel = resolveLlmProvider().model;
+  return configuredModel === undefined || sidecarModel === configuredModel;
 }
 
 function isSidecarChunkEntry(value: unknown): value is SidecarChunkEntry {
@@ -777,6 +864,7 @@ async function callPrefaceLlm(args: {
   endpoint: string;
   documentBody: string;
   chunkText: string;
+  isLlmContextAllowed?: () => Promise<boolean>;
 }): Promise<LlmCallResult> {
   const userMessage = buildUserMessage(args.documentBody, args.chunkText);
   const maxTokens = resolveContextualMaxTokens();
@@ -784,6 +872,9 @@ async function callPrefaceLlm(args: {
   let lastError: unknown = null;
   for (let attempt = 0; attempt <= CONTEXTUAL_RETRY_LIMIT; attempt += 1) {
     try {
+      if (args.isLlmContextAllowed !== undefined && !(await args.isLlmContextAllowed())) {
+        throw new ContextualPolicyBoundaryError();
+      }
       const result = await callChatCompletion({
         endpoint: args.endpoint,
         operation: 'preface',
@@ -793,6 +884,15 @@ async function callPrefaceLlm(args: {
         ],
         temperature: 0.2,
         timeoutMs: CONTEXTUAL_LLM_TIMEOUT_MS,
+        ...(args.isLlmContextAllowed !== undefined
+          ? {
+              beforeAttempt: async () => {
+                if (!(await args.isLlmContextAllowed!())) {
+                  throw new ContextualPolicyBoundaryError();
+                }
+              },
+            }
+          : {}),
       });
       const cleaned = cleanPrefaceText(result.content, maxTokens);
       if (cleaned === null) {
@@ -800,6 +900,7 @@ async function callPrefaceLlm(args: {
       }
       return { preface: cleaned, model: result.model };
     } catch (err) {
+      if (err instanceof ContextualPolicyBoundaryError) throw err;
       lastError = err;
       if (attempt < CONTEXTUAL_RETRY_LIMIT) {
         // Honor a server-advised Retry-After (e.g. OpenRouter 429), capped at
