@@ -141,6 +141,7 @@
 - [x] Given valid known environment variables, when `kb config validate --format=json` runs, then the system shall emit a `kb.config-validate.v1` report with per-variable `ok` findings and exit 0.
 - [x] Given invalid type, enum, URL, or range values, when validation runs, then the system shall emit per-variable `error` findings and exit 1.
 - [x] Given static dependencies such as HTTP/SSE transport without a usable auth token, relevance gating without any judge endpoint, or contextual retrieval without an LLM endpoint, when validation runs, then the system shall emit dependency findings without probing live endpoints.
+- [x] Given `KB_CHUNK_OVERLAP` greater than or equal to `KB_CHUNK_SIZE`, when validation runs, then the system shall emit an error naming both variables and the required strict-less-than constraint.
 - [x] Given `--file=<path>`, when validation runs, then the system shall parse that `.env` file instead of `process.env` and report the file path as the value source.
 - [x] Given no `--format=json`, when validation runs, then the system shall emit a human-readable markdown table with the same verdicts.
 
