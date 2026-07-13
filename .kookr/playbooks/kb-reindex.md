@@ -167,16 +167,21 @@ Two lines routinely get misread as regressions:
 ## Changing the preface model — read first
 
 **Do not switch the preface model (e.g. to OpenRouter/DeepSeek) as part of this
-nightly job.** The preface cache does not include `model` in its validity check
-(`src/contextual-preface.ts:163-171`), despite a header comment claiming it does.
-Consequence: whichever model wrote a preface owns that chunk **permanently**. A
-model switch would convert only the chunks of files that happen to be stale that
-night and silently leave every unchanged file on the old model — a mixed-model
-corpus with no signal that it happened.
+nightly job.**
 
-That is tracked as **issue #860**. A real model migration requires #860 fixed (or
-a `GENERATOR_VERSION` bump), followed by a deliberate full re-preface of ~32.5k
-chunks. That is a scheduled migration, not a nightly incremental.
+The switch itself is *safe*: `model` is part of the sidecar cache key
+(`sidecarModelMatchesCurrentProvider`, `src/contextual-preface.ts`), so changing
+`KB_LLM_MODEL` correctly invalidates every preface written by the old model
+instead of silently keeping it. There is no mixed-model-corpus hazard.
+
+That is precisely why it must not run *here*. Invalidating every sidecar means
+re-prefacing the **entire corpus** (~32.5k chunks), not just the night's changed
+files — a multi-hour job at the nightly concurrency, which will collide with the
+research-agent window and be refused by the guard (or, worse, run right up to it).
+
+A model migration is a deliberate, scheduled operation: change the config, run the
+full re-preface out of band, confirm coverage with `kb stats`, and only then
+resume the nightly cadence.
 
 ## Success criteria
 
