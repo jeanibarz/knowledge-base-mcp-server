@@ -12,6 +12,8 @@ const originalEnv = {
   HUGGINGFACE_MODEL_NAME: process.env.HUGGINGFACE_MODEL_NAME,
   HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
   KB_ACTIVE_MODEL: process.env.KB_ACTIVE_MODEL,
+  KB_CHUNK_SIZE: process.env.KB_CHUNK_SIZE,
+  KB_CHUNK_OVERLAP: process.env.KB_CHUNK_OVERLAP,
   KB_INDEX_VERSION_RETENTION: process.env.KB_INDEX_VERSION_RETENTION,
   KB_FLAT_SEARCH_P95_ADVISORY_MS: process.env.KB_FLAT_SEARCH_P95_ADVISORY_MS,
   KB_AGE_BUDGET_HOURS: process.env.KB_AGE_BUDGET_HOURS,
@@ -170,6 +172,45 @@ async function captureStdout(run: () => Promise<number>): Promise<{ code: number
 
 describe('kb doctor', () => {
   const itOnPosix = process.platform === 'win32' ? it.skip : it;
+
+  it('surfaces cross-field chunking validation errors', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-chunking-config-'));
+    try {
+      const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'fake',
+        KB_CHUNK_SIZE: '500',
+        KB_CHUNK_OVERLAP: '600',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        embeddingCanaryCheck: async () => ({
+          status: 'skipped',
+          canary_id: null,
+          recorded_at: null,
+          dimensions: null,
+          similarity: null,
+          threshold: 0,
+          detail: 'skipped for test',
+          next_action: null,
+        }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+      });
+
+      const configCheck = report.checks.find((check) => check.name === 'config');
+      expect(configCheck).toMatchObject({ status: 'error' });
+      expect(configCheck?.detail).toContain('KB_CHUNK_OVERLAP must be less than KB_CHUNK_SIZE');
+      expect(formatDoctorMarkdown(report)).toMatch(/ERROR\s+config:/);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
 
   itOnPosix('reports safe FAISS index permissions without warnings', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-perms-safe-'));

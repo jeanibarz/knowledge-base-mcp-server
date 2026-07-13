@@ -123,6 +123,7 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `validateConfigEnv` shall emit `ok` findings for valid known env vars and summarize report counts.
 - `validateConfigEnv` shall emit `error` findings for invalid booleans, enums, numbers, ranges, and URLs.
 - `validateConfigEnv` shall emit static dependency findings for gated features missing their companion endpoint/token settings.
+- `validateConfigEnv` and `kb doctor` shall reject `KB_CHUNK_OVERLAP >= KB_CHUNK_SIZE` with a finding that names both variables and the strict-less-than constraint.
 - `parseDotEnvText` shall parse comments, `export`, quoted values, escapes, and inline comments for `kb config validate --file`.
 - `kb config validate` shall expose JSON and markdown reports and map errors to exit code 1.
 

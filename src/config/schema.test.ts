@@ -132,6 +132,24 @@ describe('config schema validation (FR-OBS-470)', () => {
     ]));
   });
 
+  it.each(['500', '600'])('rejects chunk overlap that is not smaller than chunk size (%s)', (overlap) => {
+    const report = validateConfigEnv({
+      KB_CHUNK_SIZE: '500',
+      KB_CHUNK_OVERLAP: overlap,
+    }, { source: '/tmp/chunking.env' });
+
+    expect(report.status).toBe('error');
+    expect(report.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'KB_CHUNK_OVERLAP',
+        status: 'error',
+        kind: 'dependency',
+        source: '/tmp/chunking.env',
+        message: expect.stringContaining('KB_CHUNK_OVERLAP must be less than KB_CHUNK_SIZE'),
+      }),
+    ]));
+  });
+
   it('accepts MCP_AUTH_TOKEN_FILE as the remote transport bearer source', () => {
     const report = validateConfigEnv({
       MCP_TRANSPORT: 'http',

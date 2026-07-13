@@ -529,6 +529,19 @@ function validateDependencies(
   source: string,
 ): ConfigFinding[] {
   const findings: ConfigFinding[] = [];
+  const chunkSize = effectiveIntegerValue(env, 'KB_CHUNK_SIZE');
+  const chunkOverlap = effectiveIntegerValue(env, 'KB_CHUNK_OVERLAP');
+  if (chunkSize !== null && chunkSize > 0 && chunkOverlap !== null && chunkOverlap >= 0 && chunkOverlap >= chunkSize) {
+    findings.push(finding(
+      'KB_CHUNK_OVERLAP',
+      'error',
+      'dependency',
+      source,
+      String(chunkOverlap),
+      'KB_CHUNK_OVERLAP must be less than KB_CHUNK_SIZE ' +
+        `(expected KB_CHUNK_OVERLAP < KB_CHUNK_SIZE; received KB_CHUNK_OVERLAP=${chunkOverlap}, KB_CHUNK_SIZE=${chunkSize})`,
+    ));
+  }
   if (isOn('KB_RERANK', env.KB_RERANK) && !isNonEmpty(env.KB_RERANK_MODEL)) {
     findings.push(finding(
       'KB_RERANK_MODEL',
@@ -584,6 +597,16 @@ function validateDependencies(
     }
   }
   return findings;
+}
+
+function effectiveIntegerValue(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  name: string,
+): number | null {
+  const value = effectiveValue(env, name);
+  if (value === null) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : null;
 }
 
 function validateUnknownControlledVars(

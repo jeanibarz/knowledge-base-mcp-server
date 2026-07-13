@@ -123,6 +123,10 @@ import {
   DEFAULT_MCP_PORT,
 } from './transport-config.js';
 import {
+  validateConfigEnv,
+  type ConfigValidateReport,
+} from './config/schema.js';
+import {
   formatIntegrityMarkdown,
   integrityExitCode,
   verifyIntegrity,
@@ -1461,6 +1465,12 @@ export async function buildDoctorReport(
   options: BuildDoctorReportOptions = {},
 ): Promise<DoctorReport> {
   const checks: DoctorReport['checks'] = [];
+  const configValidation = validateConfigEnv(process.env);
+  checks.push({
+    name: 'config',
+    status: configValidation.status,
+    detail: formatConfigValidationCheckDetail(configValidation),
+  });
   let activeModelId: string | null = null;
   let activeProvider: string | null = null;
   let activeModelName: string | null = null;
@@ -2665,6 +2675,22 @@ function summarizeStatus(checks: DoctorReport['checks']): HealthStatus {
   if (checks.some((c) => c.status === 'error')) return 'error';
   if (checks.some((c) => c.status === 'warn')) return 'warn';
   return 'ok';
+}
+
+function formatConfigValidationCheckDetail(report: ConfigValidateReport): string {
+  if (report.status === 'ok') {
+    return `configuration schema validation passed (${report.counts.ok} finding(s))`;
+  }
+  const problems = report.findings
+    .filter((finding) => finding.status !== 'ok')
+    .map((finding) => `${finding.name}: ${finding.message}`)
+    .slice(0, 8);
+  const omitted = report.counts.warn + report.counts.error - problems.length;
+  return [
+    `configuration schema validation ${report.status}`,
+    problems.join('; '),
+    omitted > 0 ? `(${omitted} additional finding(s) omitted)` : '',
+  ].filter((part) => part !== '').join(': ');
 }
 
 function indexVersionFromPath(binaryPath: string): string {
