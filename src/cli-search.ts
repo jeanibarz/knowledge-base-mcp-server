@@ -1,4 +1,5 @@
 import * as fsp from 'fs/promises';
+import * as path from 'path';
 import {
   FaissIndexManager,
   type IndexUpdateProgress,
@@ -58,7 +59,12 @@ import {
   recordRefreshProgressTiming,
   type TimingPayload,
 } from './timing-core.js';
-import { LexicalIndex, type LexicalRankingUnit, type LexicalSearchResult } from './lexical-index.js';
+import {
+  LexicalIndex,
+  lexicalIndexFilePath,
+  type LexicalRankingUnit,
+  type LexicalSearchResult,
+} from './lexical-index.js';
 import {
   HYBRID_RRF_C,
   fuseHybridResultsWithDiagnostics,
@@ -2635,8 +2641,14 @@ async function runLexicalSearch(
     let refreshSummary: LexicalKbResult['refreshSummary'] = null;
     if (parsed.refresh || index.numFiles() === 0) {
       try {
-        refreshSummary = await withRetrievalViewsForIngest(parsed.retrievalViews, () => index.refresh());
-        await index.save();
+        refreshSummary = await withWriteLock(
+          path.dirname(lexicalIndexFilePath(kbName)),
+          () => withRetrievalViewsForIngest(parsed.retrievalViews, async () => {
+            const summary = await index.refresh();
+            await index.save();
+            return summary;
+          }),
+        );
       } catch (err) {
         perKb.push({ kbName, kbPath, refreshSummary: null, hits: [], error: err as Error });
         continue;

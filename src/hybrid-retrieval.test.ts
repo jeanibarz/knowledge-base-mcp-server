@@ -303,16 +303,19 @@ describe('runLexicalLeg', () => {
   });
 
   it('serializes concurrent filtered refreshes for the same KB', async () => {
-    let activeRefreshes = 0;
-    let maxActiveRefreshes = 0;
-    const refresh = jest.fn(async () => {
-      activeRefreshes += 1;
-      maxActiveRefreshes = Math.max(maxActiveRefreshes, activeRefreshes);
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+    const holdWriteLock = async (): Promise<void> => {
+      activeWrites += 1;
+      maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
       await new Promise((resolve) => setTimeout(resolve, 10));
-      activeRefreshes -= 1;
+      activeWrites -= 1;
+    };
+    const refresh = jest.fn(async () => {
+      await holdWriteLock();
       return { added: 0, updated: 0, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 };
     });
-    const save = jest.fn(async () => {});
+    const save = jest.fn(async () => holdWriteLock());
     const query = jest.fn(async (_q: string, _k: number, _options?: LexicalQueryOptions) => []);
     const idx = {
       refresh,
@@ -333,7 +336,43 @@ describe('runLexicalLeg', () => {
 
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(save).toHaveBeenCalledTimes(2);
-    expect(maxActiveRefreshes).toBe(1);
+    expect(maxActiveWrites).toBe(1);
+  });
+
+  it('serializes concurrent unfiltered refreshes for an empty KB', async () => {
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+    const holdWriteLock = async (): Promise<void> => {
+      activeWrites += 1;
+      maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeWrites -= 1;
+    };
+    const refresh = jest.fn(async () => {
+      await holdWriteLock();
+      return { added: 1, updated: 0, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 };
+    });
+    const save = jest.fn(async () => holdWriteLock());
+    const query = jest.fn(async (_q: string, _k: number, _options?: LexicalQueryOptions) => []);
+    const idx = {
+      refresh,
+      save,
+      query,
+      numFiles: jest.fn(() => 0),
+    } as unknown as LexicalIndex;
+    const options = {
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 2,
+      refresh: 'when-empty' as const,
+      loadIndex: async () => idx,
+    };
+
+    await Promise.all([runLexicalLeg(options), runLexicalLeg(options)]);
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(maxActiveWrites).toBe(1);
   });
 
   it('refreshes only when the index is empty under refresh="when-empty"', async () => {

@@ -1593,12 +1593,12 @@ describe('KnowledgeBaseServer handlers', () => {
     updateIndexMock.mockResolvedValue(undefined);
     similaritySearchMock.mockResolvedValue([
       {
-        pageContent: 'HYBRID_FILTER_QUERY dense valid result',
+        pageContent: 'HYBRID_FILTER_QUERY dense candidate',
         metadata: {
-          source: path.join(alphaDir, 'runbooks', 'valid.md'),
-          relativePath: 'alpha/runbooks/valid.md',
+          source: '/kb/dense.md',
+          relativePath: 'alpha/dense.md',
           extension: '.md',
-          tags: ['adr'],
+          tags: ['other'],
           chunkIndex: 0,
         },
         score: 0.1,
@@ -1623,7 +1623,7 @@ describe('KnowledgeBaseServer handlers', () => {
       expect.any(Object),
     );
     const text: string = result.content[0].text;
-    expect(text).toContain('valid result');
+    expect(text).toContain('HYBRID_FILTER_QUERY valid result');
     expect(text).not.toContain('wrong result');
   });
 
