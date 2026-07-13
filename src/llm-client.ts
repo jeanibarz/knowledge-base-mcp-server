@@ -1,6 +1,10 @@
 import { callFakeChatCompletion, isFakeLlmEnabled } from './llm-fake-stub.js';
 import { resolveLlmProvider } from './config/llm-provider.js';
-import { llmCallMetrics, type LlmCallOperation } from './metrics.js';
+import {
+  llmCallMetrics,
+  normalizeLlmProvider,
+  type LlmCallOperation,
+} from './metrics.js';
 import { providerBreakerRegistry } from './provider-breaker.js';
 
 export interface LlmChatMessage {
@@ -19,6 +23,8 @@ export interface ChatCompletionOptions {
   stream?: ChatCompletionStreamOptions;
   /** Retry policy for transient provider/network failures. Set to false to disable. */
   retry?: false | LlmRetryOptions;
+  /** Optional response validator; transient validation failures consume retries. */
+  validateResponse?: (result: ChatCompletionResult) => void;
   /**
    * Guard invoked immediately before each provider attempt, including retries.
    * Callers that protect prompt content can throw to abort without retrying.
@@ -151,12 +157,19 @@ export async function callChatCompletion(
 ): Promise<ChatCompletionResult> {
   const startedAt = performanceNow();
   const operation = options.operation === null ? null : options.operation ?? 'ask';
+  const providerResolution = resolveLlmProvider();
+  const fake = isFakeLlmEnabled();
+  const providerLabel = fake ? 'fake' : normalizeLlmProvider(providerResolution.provider);
+  const requestedModel = options.model ?? providerResolution.model ?? 'local-model';
+  let attempts = 0;
   let result: ChatCompletionResult | undefined;
   let succeeded = false;
   try {
-    if (isFakeLlmEnabled()) {
+    if (fake) {
       await options.beforeAttempt?.();
+      attempts += 1;
       result = withParsedUsage(await callFakeChatCompletion(options));
+      options.validateResponse?.(result);
       succeeded = true;
       return result;
     }
@@ -165,11 +178,11 @@ export async function callChatCompletion(
     // Resolve auth/model from the environment when the caller did not pass them
     // explicitly, so every call site (contextual prefaces, the gate judge, the
     // probe) picks up the OpenRouter provider switch centrally.
-    const provider = resolveLlmProvider();
+    const provider = providerResolution;
     const apiKey = options.apiKey ?? provider.apiKey;
     const remote = apiKey !== undefined;
     const payload: Record<string, unknown> = {
-      model: options.model ?? provider.model ?? 'local-model',
+      model: requestedModel,
       messages: options.messages,
       temperature: options.temperature ?? 0.2,
       stream: options.stream !== undefined,
@@ -201,6 +214,8 @@ export async function callChatCompletion(
         retryPolicy,
         fetchImpl,
         beforeAttempt: options.beforeAttempt,
+        validateResponse: options.validateResponse,
+        onAttempt: () => { attempts += 1; },
       }),
       { shouldRecordFailure: (err) => err instanceof LlmClientError && isTransientLlmClientError(err) },
     ));
@@ -213,6 +228,9 @@ export async function callChatCompletion(
         ok: succeeded,
         promptTokens: result?.usage?.promptTokens,
         completionTokens: result?.usage?.completionTokens,
+        attempts,
+        provider: providerLabel,
+        model: result?.model ?? requestedModel,
       });
     }
   }
@@ -227,6 +245,8 @@ interface ChatCompletionWithRetryOptions {
   retryPolicy: ResolvedRetryPolicy | null;
   fetchImpl: FetchLike;
   beforeAttempt?: () => void | Promise<void>;
+  validateResponse?: (result: ChatCompletionResult) => void;
+  onAttempt?: () => void;
 }
 
 async function callChatCompletionWithRetry(
@@ -238,10 +258,13 @@ async function callChatCompletionWithRetry(
     // Keep caller-owned boundary failures outside the retry catch. A policy
     // guard must be able to abort even when it uses an LlmClientError subclass.
     await options.beforeAttempt?.();
+    options.onAttempt?.();
     try {
-      return await callChatCompletionOnce(options.endpoint, options.payload, options.headers, options.timeoutMs, options.stream, () => {
+      const result = await callChatCompletionOnce(options.endpoint, options.payload, options.headers, options.timeoutMs, options.stream, () => {
         emittedStreamToken = true;
       }, options.fetchImpl);
+      options.validateResponse?.(result);
+      return result;
     } catch (err) {
       if (
         !(err instanceof LlmClientError) ||

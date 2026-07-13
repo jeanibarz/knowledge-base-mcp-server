@@ -196,6 +196,7 @@ describe('query embedding cache (#214)', () => {
       });
       expect(memoryHit.embedding).toEqual([1.25, 2.5, 3.75]);
       expect(calls).toBe(1);
+      expect((await first.stats()).outcomes).toEqual({ hit: 1, miss: 1, not_applicable: 0 });
 
       const second = new QueryEmbeddingCache({ indexPath, lruMax: 8 });
       const hit = await second.getOrCompute({
@@ -210,6 +211,7 @@ describe('query embedding cache (#214)', () => {
       expect(hit.telemetry.outcome).toBe('disk_hit');
       expect(hit.embedding).toEqual([1.25, 2.5, 3.75]);
       expect(calls).toBe(1);
+      expect((await second.stats()).outcomes).toEqual({ hit: 1, miss: 0, not_applicable: 0 });
 
       const paths = queryCachePaths({ indexPath, modelId: 'fake__one', query: 'hello world' });
       const meta = JSON.parse(await fsp.readFile(paths.metaPath, 'utf-8')) as { vector_sha256?: string };

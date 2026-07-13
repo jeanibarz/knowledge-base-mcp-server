@@ -50,6 +50,7 @@ import { resolveLlmProvider } from './config/llm-provider.js';
 import { KBError } from './errors.js';
 import { callChatCompletion, LlmClientError } from './llm-client.js';
 import { logger } from './logger.js';
+import { llmCallMetrics, type LlmCallMetrics } from './metrics.js';
 import { retrievalViewText } from './retrieval-views.js';
 import { excludesLlmContext, readLlmContextPolicy } from './sensitivity-policy.js';
 import { withSidecarLock } from './write-lock.js';
@@ -102,6 +103,8 @@ export interface PrefaceResolveArgs {
   chunks: string[];
   /** Chunk metadata used to enforce document-level LLM egress policy. */
   metadata?: Record<string, unknown>;
+  /** Optional workflow-metrics seam; production uses the process singleton. */
+  llmMetrics?: LlmCallMetrics;
 }
 
 /**
@@ -117,9 +120,11 @@ export interface PrefaceResolveArgs {
 export async function resolveContextualPrefaces(
   args: PrefaceResolveArgs,
 ): Promise<(string | null)[]> {
+  const llmMetrics = args.llmMetrics ?? llmCallMetrics;
   if (args.chunks.length === 0) return [];
 
   if (excludesLlmContext(args.metadata)) {
+    llmMetrics.recordCacheOutcome('preface', 'not_applicable');
     return args.chunks.map(() => null);
   }
 
@@ -127,6 +132,7 @@ export async function resolveContextualPrefaces(
   // omitted in-memory snapshot cannot authorize cache hits or LLM work after
   // the file becomes protected.
   if (!(await currentSourceAllowsLlm(args.source))) {
+    llmMetrics.recordCacheOutcome('preface', 'not_applicable');
     return args.chunks.map(() => null);
   }
 
@@ -138,6 +144,7 @@ export async function resolveContextualPrefaces(
     logger.warn(
       'RFC 017: KB_CONTEXTUAL_RETRIEVAL=on but KB_LLM_ENDPOINT is unset; ingesting without prefaces',
     );
+    llmMetrics.recordCacheOutcome('preface', 'not_applicable');
     return args.chunks.map(() => null);
   }
 
@@ -149,6 +156,7 @@ export async function resolveContextualPrefaces(
   // Sidecar I/O is awaited. Recheck after it so a policy flip during the read
   // cannot turn an old cached preface into an outbound-context authorization.
   if (!(await currentSourceAllowsLlm(args.source))) {
+    llmMetrics.recordCacheOutcome('preface', 'not_applicable');
     return args.chunks.map(() => null);
   }
 
@@ -196,6 +204,7 @@ export async function resolveContextualPrefaces(
       resolved[i] = cached!.preface;
       newEntries[i] = cached!;
       cacheHits += 1;
+      llmMetrics.recordCacheOutcome('preface', 'hit');
       continue;
     }
 
@@ -206,6 +215,7 @@ export async function resolveContextualPrefaces(
         resolved[i] = null;
         newEntries[i] = cached!;
         cacheHits += 1; // counted as a hit because we skipped the LLM
+        llmMetrics.recordCacheOutcome('preface', 'hit');
         continue;
       }
     }
@@ -217,10 +227,12 @@ export async function resolveContextualPrefaces(
       newEntries[i] = makeFailureEntry(i, chunkHash, 'truncated_doc');
       resolved[i] = null;
       failures += 1;
+      llmMetrics.recordCacheOutcome('preface', 'not_applicable');
       continue;
     }
 
     pending.push({ index: i, chunkHash });
+    llmMetrics.recordCacheOutcome('preface', 'miss');
   }
 
   // Pass 2 (bounded-concurrent LLM): issue preface calls for the remaining
@@ -269,6 +281,8 @@ export async function resolveContextualPrefaces(
       };
       resolved[i] = result.preface;
       llmCalls += 1;
+      // Prefaces affect embeddings/indexing, not the final answer prompt.
+      llmMetrics.recordAnswerImpact('preface', 'not_used');
     } catch (err) {
       if (err instanceof ContextualPolicyBoundaryError) {
         policyBoundaryBlocked = true;
@@ -281,6 +295,7 @@ export async function resolveContextualPrefaces(
       resolved[i] = null;
       failures += 1;
       llmCalls += 1;
+      llmMetrics.recordAnswerImpact('preface', 'not_used');
       if (isTimeoutError(err)) {
         timeouts += 1;
         if (timeouts >= CONTEXTUAL_CONSECUTIVE_TIMEOUT_LIMIT && !breakerTripped) {
@@ -868,52 +883,51 @@ async function callPrefaceLlm(args: {
 }): Promise<LlmCallResult> {
   const userMessage = buildUserMessage(args.documentBody, args.chunkText);
   const maxTokens = resolveContextualMaxTokens();
-
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt <= CONTEXTUAL_RETRY_LIMIT; attempt += 1) {
-    try {
-      if (args.isLlmContextAllowed !== undefined && !(await args.isLlmContextAllowed())) {
-        throw new ContextualPolicyBoundaryError();
-      }
-      const result = await callChatCompletion({
-        endpoint: args.endpoint,
-        operation: 'preface',
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: userMessage },
-        ],
-        temperature: 0.2,
-        timeoutMs: CONTEXTUAL_LLM_TIMEOUT_MS,
-        ...(args.isLlmContextAllowed !== undefined
-          ? {
-              beforeAttempt: async () => {
-                if (!(await args.isLlmContextAllowed!())) {
-                  throw new ContextualPolicyBoundaryError();
-                }
-              },
-            }
-          : {}),
-      });
-      const cleaned = cleanPrefaceText(result.content, maxTokens);
-      if (cleaned === null) {
-        throw new LlmClientError('preface response failed sanity checks (empty / refusal / oversize)');
-      }
-      return { preface: cleaned, model: result.model };
-    } catch (err) {
-      if (err instanceof ContextualPolicyBoundaryError) throw err;
-      lastError = err;
-      if (attempt < CONTEXTUAL_RETRY_LIMIT) {
-        // Honor a server-advised Retry-After (e.g. OpenRouter 429), capped at
-        // 60s; otherwise a 1s + jitter backoff.
-        const retryAfterMs =
-          err instanceof LlmClientError && err.retryAfterMs !== undefined
-            ? Math.min(err.retryAfterMs, 60_000)
-            : 1_000 + Math.random() * 500;
-        await delay(retryAfterMs);
-      }
-    }
+  if (args.isLlmContextAllowed !== undefined && !(await args.isLlmContextAllowed())) {
+    throw new ContextualPolicyBoundaryError();
   }
-  throw lastError instanceof Error ? lastError : new LlmClientError(String(lastError));
+
+  const result = await callChatCompletion({
+    endpoint: args.endpoint,
+    operation: 'preface',
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: userMessage },
+    ],
+    temperature: 0.2,
+    timeoutMs: CONTEXTUAL_LLM_TIMEOUT_MS,
+    retry: {
+      maxRetries: CONTEXTUAL_RETRY_LIMIT,
+      baseDelayMs: 1_000,
+      maxDelayMs: 60_000,
+      maxTotalDelayMs: 60_000,
+      random: () => 1,
+    },
+    validateResponse: (response) => {
+      if (cleanPrefaceText(response.content, maxTokens) === null) {
+        throw new LlmClientError(
+          'preface response failed sanity checks (empty / refusal / oversize)',
+          { transient: true },
+        );
+      }
+    },
+    ...(args.isLlmContextAllowed !== undefined
+      ? {
+          beforeAttempt: async () => {
+            if (!(await args.isLlmContextAllowed!())) {
+              throw new ContextualPolicyBoundaryError();
+            }
+          },
+        }
+      : {}),
+  });
+  const cleaned = cleanPrefaceText(result.content, maxTokens);
+  if (cleaned === null) {
+    // The validator above makes this unreachable, but keep the postcondition
+    // explicit if the client implementation changes.
+    throw new LlmClientError('preface response failed sanity checks', { transient: false });
+  }
+  return { preface: cleaned, model: result.model };
 }
 
 function buildUserMessage(documentBody: string, chunkText: string): string {
@@ -1014,10 +1028,6 @@ function findChunkDocumentSpan(
 function parseIsoToMs(iso: string): number | null {
   const parsed = Date.parse(iso);
   return Number.isNaN(parsed) ? null : parsed;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // Re-exports so callers don't have to import config plus this module.

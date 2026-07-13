@@ -90,6 +90,14 @@ function payload(): KbStatsPayload {
       l1_size: 0,
       disk_size_bytes: 0,
     },
+    answer_cache: {
+      hits: 2,
+      misses: 3,
+      writes: 3,
+      corruptions: 0,
+      disk_size_bytes: 128,
+      outcomes: { hit: 2, miss: 3, not_applicable: 0 },
+    },
     relevance_gate: {
       gated_queries: 0,
       verdict_injected: 0,
@@ -353,6 +361,26 @@ describe('kb stats CLI', () => {
         errors: 1,
         prompt_tokens: 20,
         completion_tokens: 7,
+        attempts: 3,
+        retries: 1,
+        cache_outcomes: { hit: 1, miss: 2, not_applicable: 0 },
+        answer_impact: { used: 1, not_used: 1, unknown: 0 },
+        attribution: [{
+          provider: 'openrouter',
+          model: 'deepseek',
+          count: 2,
+          errors: 1,
+          attempts: 3,
+          retries: 1,
+          prompt_tokens: 20,
+          completion_tokens: 7,
+          latency_ms: {
+            buckets: [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            count: 1,
+            sum_ms: 5,
+            since_started_at: '2026-06-12T10:00:00.000Z',
+          },
+        }],
         latency_ms: {
           buckets: [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
           count: 1,
@@ -365,6 +393,9 @@ describe('kb stats CLI', () => {
     expect(formatStatsMarkdown(p)).toContain(
       'ask: calls=2, errors=1, p50=2 ms, p95=2.9 ms, prompt_tokens=20, completion_tokens=7',
     );
+    expect(formatStatsMarkdown(p)).toContain('attempts=3, retries=1, cache_outcomes=hit=1,miss=2,not_applicable=0');
+    expect(formatStatsMarkdown(p)).toContain('answer_impact=not_used=1,unknown=0,used=1, attribution=openrouter/deepseek:2/3/1');
+    expect(formatStatsMarkdown(p)).toContain('- answer_cache: hits=2, misses=3, writes=3');
   });
 
   it('renders dense faiss_search latency and a suggest-only ANN hint when p95 is high', () => {

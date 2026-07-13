@@ -5,6 +5,8 @@ import {
   KbSearchFailureMetrics,
   LATENCY_BUCKET_BOUNDS_MS,
   LlmCallMetrics,
+  normalizeLlmModel,
+  normalizeLlmProvider,
   ProviderCallMetrics,
   quantileFromBuckets,
   RerankMetrics,
@@ -193,6 +195,58 @@ describe('LlmCallMetrics (issue #831)', () => {
     metrics.record('ask', { latencyMs: 1, ok: true });
     metrics.reset();
     expect(metrics.snapshot()).toEqual({});
+  });
+
+  it('keeps provider/model attribution bounded and separates logical calls from attempts', () => {
+    const metrics = new LlmCallMetrics({ now: () => 1_700_000_000_000 });
+    metrics.record('ask', {
+      latencyMs: 12,
+      ok: true,
+      attempts: 3,
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash:free-with-arbitrary-user-suffix',
+    });
+    metrics.record('ask', {
+      latencyMs: 2,
+      ok: true,
+      provider: 'a-provider-name-that-is-not-a-label',
+      model: 'a-user-controlled-model-name',
+    });
+
+    expect(metrics.snapshot().ask).toMatchObject({ count: 2, attempts: 4, retries: 2 });
+    expect(metrics.snapshot().ask?.attribution).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: 'openrouter', model: 'deepseek', count: 1, attempts: 3, retries: 2 }),
+      expect.objectContaining({ provider: 'unknown', model: 'other', count: 1, attempts: 1, retries: 0 }),
+    ]));
+    expect(JSON.stringify(metrics.snapshot())).not.toContain('deepseek-v4-flash');
+    expect(JSON.stringify(metrics.snapshot())).not.toContain('user-controlled');
+  });
+
+  it('records cache outcomes and workflow-declared answer impact without creating calls', () => {
+    const metrics = new LlmCallMetrics();
+    metrics.recordCacheOutcome('ask', 'hit');
+    metrics.recordCacheOutcome('ask', 'miss');
+    metrics.recordCacheOutcome('ask', 'not_applicable');
+    metrics.recordAnswerImpact('ask', 'used');
+    metrics.recordAnswerImpact('ask', 'not_used');
+    metrics.recordAnswerImpact('ask', 'unknown');
+
+    expect(metrics.snapshot().ask).toMatchObject({
+      count: 0,
+      attempts: 0,
+      retries: 0,
+      cache_outcomes: { hit: 1, miss: 1, not_applicable: 1 },
+      answer_impact: { used: 1, not_used: 1, unknown: 1 },
+      attribution: [],
+    });
+  });
+
+  it('normalizes only the finite provider and model families', () => {
+    expect(normalizeLlmProvider('openrouter')).toBe('openrouter');
+    expect(normalizeLlmProvider('arbitrary-provider')).toBe('unknown');
+    expect(normalizeLlmModel('Qwen/Qwen3-32B', 'local')).toBe('qwen');
+    expect(normalizeLlmModel('gpt-5.4-preview', 'openrouter')).toBe('gpt');
+    expect(normalizeLlmModel('anything', 'fake')).toBe('fake');
   });
 });
 

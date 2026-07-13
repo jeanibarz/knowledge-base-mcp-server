@@ -6,10 +6,15 @@ import {
 } from './provider-breaker.js';
 import {
   LATENCY_BUCKET_BOUNDS_MS,
+  LLM_MODELS,
+  LLM_PROVIDERS,
+  isLlmAnswerImpact,
+  isLlmCacheOutcome,
   isLlmCallOperation,
   kbSearchFailureMetrics,
   type KbSearchFailureSnapshot,
   type LatencyHistogramSnapshot,
+  type LlmCallAttributionSnapshot,
   type LlmCallMetricsSnapshot,
   type RerankMetricsSnapshot,
   type SearchLatencyMetricsSnapshot,
@@ -155,6 +160,69 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     emittedWhen: 'Emitted once per operation and token type after the provider reports usage.',
   },
   {
+    name: 'kb_llm_attempts_total',
+    type: 'counter',
+    help: 'Provider attempts made by bounded chat-completion operation.',
+    labels: ['operation'],
+    emittedWhen: 'Emitted once per chat operation observed by the process.',
+  },
+  {
+    name: 'kb_llm_retries_total',
+    type: 'counter',
+    help: 'Provider retries after the first attempt by bounded chat-completion operation.',
+    labels: ['operation'],
+    emittedWhen: 'Emitted once per chat operation observed by the process.',
+  },
+  {
+    name: 'kb_llm_cache_outcomes_total',
+    type: 'counter',
+    help: 'Workflow-boundary cache outcomes for chat-completion paths.',
+    labels: ['operation', 'outcome'],
+    emittedWhen: 'Emitted after a chat workflow records a bounded cache outcome.',
+  },
+  {
+    name: 'kb_llm_answer_impact_total',
+    type: 'counter',
+    help: 'Workflow-declared impact of chat-completion results on the answer path.',
+    labels: ['operation', 'impact'],
+    emittedWhen: 'Emitted after a chat workflow records bounded answer impact.',
+  },
+  {
+    name: 'kb_llm_attributed_calls_total',
+    type: 'counter',
+    help: 'Logical chat-completion calls by operation, bounded provider, and coarse model family.',
+    labels: ['operation', 'provider', 'model'],
+    emittedWhen: 'Emitted once per observed operation/provider/coarse-model combination.',
+  },
+  {
+    name: 'kb_llm_attributed_call_errors_total',
+    type: 'counter',
+    help: 'Chat-completion logical call errors by operation, bounded provider, and coarse model family.',
+    labels: ['operation', 'provider', 'model'],
+    emittedWhen: 'Emitted once per observed operation/provider/coarse-model combination.',
+  },
+  {
+    name: 'kb_llm_attributed_attempts_total',
+    type: 'counter',
+    help: 'Provider attempts by operation, bounded provider, and coarse model family.',
+    labels: ['operation', 'provider', 'model'],
+    emittedWhen: 'Emitted once per observed operation/provider/coarse-model combination.',
+  },
+  {
+    name: 'kb_llm_attributed_retries_total',
+    type: 'counter',
+    help: 'Provider retries by operation, bounded provider, and coarse model family.',
+    labels: ['operation', 'provider', 'model'],
+    emittedWhen: 'Emitted once per observed operation/provider/coarse-model combination.',
+  },
+  {
+    name: 'kb_llm_attributed_tokens_total',
+    type: 'counter',
+    help: 'Reported chat-completion tokens by operation, bounded provider, coarse model family, and token type.',
+    labels: ['operation', 'provider', 'model', 'token_type'],
+    emittedWhen: 'Emitted after a provider reports usage for an attributed call.',
+  },
+  {
     name: 'kb_provider_circuit_state',
     type: 'gauge',
     help: 'Provider circuit-breaker state (0=closed, 1=half-open, 2=open) by provider and kind; the worst state is reported when several keys share a provider/kind.',
@@ -237,6 +305,41 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     help: 'Query embedding cache disk usage in bytes.',
     labels: [],
     emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_query_cache_outcomes_total',
+    type: 'counter',
+    help: 'Coarse query embedding cache workflow outcomes.',
+    labels: ['outcome'],
+    emittedWhen: 'Always emitted.',
+  },
+  {
+    name: 'kb_answer_cache_hits_total',
+    type: 'counter',
+    help: 'Answer cache hits.',
+    labels: [],
+    emittedWhen: 'Emitted when answer-cache stats are available.',
+  },
+  {
+    name: 'kb_answer_cache_misses_total',
+    type: 'counter',
+    help: 'Answer cache misses.',
+    labels: [],
+    emittedWhen: 'Emitted when answer-cache stats are available.',
+  },
+  {
+    name: 'kb_answer_cache_outcomes_total',
+    type: 'counter',
+    help: 'Coarse answer-cache workflow outcomes.',
+    labels: ['outcome'],
+    emittedWhen: 'Emitted when answer-cache stats are available.',
+  },
+  {
+    name: 'kb_answer_cache_disk_size_bytes',
+    type: 'gauge',
+    help: 'Answer cache disk usage in bytes.',
+    labels: [],
+    emittedWhen: 'Emitted when answer-cache stats are available.',
   },
   {
     name: 'kb_relevance_gate_queries_total',
@@ -335,6 +438,13 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     help: 'Chat-completion call latency in milliseconds by bounded operation.',
     labels: ['le', 'operation'],
     emittedWhen: 'Emitted after chat-completion calls are observed.',
+  },
+  {
+    name: 'kb_llm_attributed_call_latency_ms',
+    type: 'histogram',
+    help: 'Chat-completion logical call latency in milliseconds by operation, bounded provider, and coarse model family.',
+    labels: ['le', 'operation', 'provider', 'model'],
+    emittedWhen: 'Emitted after attributed chat-completion calls are observed.',
   },
   {
     name: 'kb_search_stage_duration_ms',
@@ -472,7 +582,9 @@ export function formatKbStatsOpenMetrics(
     defineMetric('kb_query_cache_hits_total', [{ name: 'kb_query_cache_hits_total', value: payload.query_cache.hits }]),
     defineMetric('kb_query_cache_misses_total', [{ name: 'kb_query_cache_misses_total', value: payload.query_cache.misses }]),
     defineMetric('kb_query_cache_bypasses_total', [{ name: 'kb_query_cache_bypasses_total', value: payload.query_cache.bypasses }]),
+    defineMetric('kb_query_cache_outcomes_total', queryCacheOutcomeSamples(payload.query_cache)),
     defineMetric('kb_query_cache_disk_size_bytes', [{ name: 'kb_query_cache_disk_size_bytes', value: payload.query_cache.disk_size_bytes }]),
+    ...answerCacheMetrics(payload.answer_cache),
     defineMetric('kb_relevance_gate_queries_total', [{ name: 'kb_relevance_gate_queries_total', value: payload.relevance_gate.gated_queries }]),
     defineMetric('kb_relevance_gate_verdict_injected_total', [{
         name: 'kb_relevance_gate_verdict_injected_total',
@@ -529,11 +641,38 @@ function llmCallCounterMetrics(snapshot: LlmCallMetricsSnapshot | undefined): Me
   const callSamples: MetricSample[] = [];
   const errorSamples: MetricSample[] = [];
   const tokenSamples: MetricSample[] = [];
+  const attemptSamples: MetricSample[] = [];
+  const retrySamples: MetricSample[] = [];
+  const cacheOutcomeSamples: MetricSample[] = [];
+  const answerImpactSamples: MetricSample[] = [];
   for (const [operation, row] of Object.entries(snapshot ?? {})) {
     if (!isLlmCallOperation(operation) || row === undefined) continue;
     const labels = { operation };
     callSamples.push({ name: 'kb_llm_calls_total', labels, value: row.count });
     errorSamples.push({ name: 'kb_llm_call_errors_total', labels, value: row.errors });
+    const attempts = row.attempts ?? row.count;
+    attemptSamples.push({ name: 'kb_llm_attempts_total', labels, value: attempts });
+    retrySamples.push({
+      name: 'kb_llm_retries_total',
+      labels,
+      value: row.retries ?? Math.max(0, attempts - row.count),
+    });
+    for (const [outcome, count] of Object.entries(row.cache_outcomes ?? {})) {
+      if (!isLlmCacheOutcome(outcome) || count === undefined) continue;
+      cacheOutcomeSamples.push({
+        name: 'kb_llm_cache_outcomes_total',
+        labels: { ...labels, outcome },
+        value: count,
+      });
+    }
+    for (const [impact, count] of Object.entries(row.answer_impact ?? {})) {
+      if (!isLlmAnswerImpact(impact) || count === undefined) continue;
+      answerImpactSamples.push({
+        name: 'kb_llm_answer_impact_total',
+        labels: { ...labels, impact },
+        value: count,
+      });
+    }
     if (row.prompt_tokens !== null) {
       tokenSamples.push({
         name: 'kb_llm_tokens_total',
@@ -553,16 +692,103 @@ function llmCallCounterMetrics(snapshot: LlmCallMetricsSnapshot | undefined): Me
     defineMetric('kb_llm_calls_total', callSamples),
     defineMetric('kb_llm_call_errors_total', errorSamples),
     defineMetric('kb_llm_tokens_total', tokenSamples),
+    defineMetric('kb_llm_attempts_total', attemptSamples),
+    defineMetric('kb_llm_retries_total', retrySamples),
+    defineMetric('kb_llm_cache_outcomes_total', cacheOutcomeSamples),
+    defineMetric('kb_llm_answer_impact_total', answerImpactSamples),
+    ...llmAttributedCounterMetrics(snapshot),
+  ];
+}
+
+function llmAttributedCounterMetrics(snapshot: LlmCallMetricsSnapshot | undefined): MetricDefinition[] {
+  const callSamples: MetricSample[] = [];
+  const errorSamples: MetricSample[] = [];
+  const attemptSamples: MetricSample[] = [];
+  const retrySamples: MetricSample[] = [];
+  const tokenSamples: MetricSample[] = [];
+  for (const [operation, row] of Object.entries(snapshot ?? {})) {
+    if (!isLlmCallOperation(operation) || row === undefined) continue;
+    for (const attribution of row.attribution ?? []) {
+      const labels = attributedLabels(operation, attribution);
+      callSamples.push({ name: 'kb_llm_attributed_calls_total', labels, value: attribution.count });
+      errorSamples.push({ name: 'kb_llm_attributed_call_errors_total', labels, value: attribution.errors });
+      attemptSamples.push({ name: 'kb_llm_attributed_attempts_total', labels, value: attribution.attempts });
+      retrySamples.push({ name: 'kb_llm_attributed_retries_total', labels, value: attribution.retries });
+      if (attribution.prompt_tokens !== null) {
+        tokenSamples.push({
+          name: 'kb_llm_attributed_tokens_total',
+          labels: { ...labels, token_type: 'prompt' },
+          value: attribution.prompt_tokens,
+        });
+      }
+      if (attribution.completion_tokens !== null) {
+        tokenSamples.push({
+          name: 'kb_llm_attributed_tokens_total',
+          labels: { ...labels, token_type: 'completion' },
+          value: attribution.completion_tokens,
+        });
+      }
+    }
+  }
+  return [
+    defineMetric('kb_llm_attributed_calls_total', callSamples),
+    defineMetric('kb_llm_attributed_call_errors_total', errorSamples),
+    defineMetric('kb_llm_attributed_attempts_total', attemptSamples),
+    defineMetric('kb_llm_attributed_retries_total', retrySamples),
+    defineMetric('kb_llm_attributed_tokens_total', tokenSamples),
   ];
 }
 
 function llmCallLatencyHistogramLines(snapshot: LlmCallMetricsSnapshot | undefined): string[] {
   const rows: HistogramRow[] = [];
+  const attributedRows: HistogramRow[] = [];
   for (const [operation, row] of Object.entries(snapshot ?? {})) {
     if (!isLlmCallOperation(operation) || row === undefined) continue;
     rows.push({ labels: { operation }, histogram: row.latency_ms });
+    for (const attribution of row.attribution ?? []) {
+      attributedRows.push({ labels: attributedLabels(operation, attribution), histogram: attribution.latency_ms });
+    }
   }
-  return renderHistogramFamily({ name: 'kb_llm_call_latency_ms', rows });
+  return [
+    ...renderHistogramFamily({ name: 'kb_llm_call_latency_ms', rows }),
+    ...renderHistogramFamily({ name: 'kb_llm_attributed_call_latency_ms', rows: attributedRows }),
+  ];
+}
+
+function attributedLabels(
+  operation: string,
+  attribution: LlmCallAttributionSnapshot,
+): Record<string, string> {
+  const provider = LLM_PROVIDERS.includes(attribution.provider) ? attribution.provider : 'unknown';
+  const model = LLM_MODELS.includes(attribution.model) ? attribution.model : 'unknown';
+  return { operation, provider, model };
+}
+
+function queryCacheOutcomeSamples(payload: KbStatsPayload['query_cache']): MetricSample[] {
+  const outcomes = payload.outcomes ?? {
+    hit: payload.hits,
+    miss: payload.misses,
+    not_applicable: payload.bypasses,
+  };
+  return Object.entries(outcomes).map(([outcome, value]) => ({
+    name: 'kb_query_cache_outcomes_total',
+    labels: { outcome },
+    value: value ?? 0,
+  }));
+}
+
+function answerCacheMetrics(stats: KbStatsPayload['answer_cache']): MetricDefinition[] {
+  if (stats === undefined) return [];
+  return [
+    defineMetric('kb_answer_cache_hits_total', [{ name: 'kb_answer_cache_hits_total', value: stats.hits }]),
+    defineMetric('kb_answer_cache_misses_total', [{ name: 'kb_answer_cache_misses_total', value: stats.misses }]),
+    defineMetric('kb_answer_cache_outcomes_total', Object.entries(stats.outcomes).map(([outcome, value]) => ({
+      name: 'kb_answer_cache_outcomes_total',
+      labels: { outcome },
+      value,
+    }))),
+    defineMetric('kb_answer_cache_disk_size_bytes', [{ name: 'kb_answer_cache_disk_size_bytes', value: stats.disk_size_bytes }]),
+  ];
 }
 
 const PROVIDER_CIRCUIT_STATE_VALUE: Record<ProviderCircuitState, number> = {

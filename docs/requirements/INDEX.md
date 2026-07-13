@@ -95,6 +95,24 @@
 **Linked Tests:** TS-OBS-831
 **Dependencies:** FR-STATS-230, FR-STATS-469
 
+### FR-OBS-859: LLM provider, retry, cache, and answer attribution
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall extend process-lifetime chat-completion telemetry with bounded provider/coarse-model attribution, logical-call versus provider-attempt/retry accounting, workflow-boundary cache outcomes, and workflow-declared answer impact, and shall expose the additive telemetry through `kb_stats`, `kb stats`, `kb doctor`, and OpenMetrics without changing existing operation-only contracts.
+**Rationale:** Operation-only counters show how often chat paths run but cannot distinguish provider/model mix, retry cost, cache effectiveness, or whether an LLM result was consumed by the answer workflow.
+
+**Acceptance Criteria:**
+- [x] Given a logical chat call, when telemetry is recorded, then its provider and normalized coarse model family are present in bounded attribution rows and raw provider model strings are absent from metric labels.
+- [x] Given internal provider retries, when telemetry is recorded, then one logical call has multiple attempts and the corresponding retry count without inflating the logical call count.
+- [x] Given an answer, gate, preface, or query-cache workflow boundary, when cache evaluation completes, then it records exactly one bounded `hit`, `miss`, or `not_applicable` outcome; an answer-cache hit does not create an LLM provider call.
+- [x] Given a workflow consumes, discards, or cannot determine the effect of an LLM result, when it completes, then it records `used`, `not_used`, or `unknown` answer impact.
+- [x] Given the current retrieval implementation, when the LLM paths are audited, then no distinct retrieval-summarization path is present and the documentation records `retrieval_summary` as not applicable for this issue.
+- [x] Given `kb stats`, `kb doctor`, or OpenMetrics output, when attributed telemetry exists, then attempts, retries, cache outcomes, answer impact, provider, and coarse model are operator-visible with bounded labels.
+
+**Linked Tests:** TS-OBS-859
+**Dependencies:** FR-OBS-831, FR-STATS-230, FR-STATS-469
+
 ### FR-OBS-835: Relevance-gate endpoint readiness
 **Status:** Implemented
 **Priority:** Medium

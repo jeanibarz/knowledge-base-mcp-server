@@ -52,12 +52,114 @@ export function isLlmCallOperation(value: string): value is LlmCallOperation {
   return (LLM_CALL_OPERATIONS as readonly string[]).includes(value);
 }
 
-export interface LlmCallSnapshot {
+/**
+ * Bounded provider labels for chat-completion telemetry. Unknown providers are
+ * deliberately collapsed so a future configuration value cannot create an
+ * unbounded metric label set.
+ */
+export type LlmProvider = 'local' | 'openrouter' | 'fake' | 'unknown';
+
+export const LLM_PROVIDERS: readonly LlmProvider[] = ['local', 'openrouter', 'fake', 'unknown'];
+
+/** Coarse model families used for telemetry; raw model strings never escape this boundary. */
+export type LlmModel =
+  | 'local'
+  | 'fake'
+  | 'deepseek'
+  | 'qwen'
+  | 'llama'
+  | 'gpt'
+  | 'claude'
+  | 'gemini'
+  | 'mistral'
+  | 'other'
+  | 'unknown';
+
+export const LLM_MODELS: readonly LlmModel[] = [
+  'local',
+  'fake',
+  'deepseek',
+  'qwen',
+  'llama',
+  'gpt',
+  'claude',
+  'gemini',
+  'mistral',
+  'other',
+  'unknown',
+];
+
+export type LlmCacheOutcome = 'hit' | 'miss' | 'not_applicable';
+export type LlmAnswerImpact = 'used' | 'not_used' | 'unknown';
+
+export const LLM_CACHE_OUTCOMES: readonly LlmCacheOutcome[] = ['hit', 'miss', 'not_applicable'];
+export const LLM_ANSWER_IMPACTS: readonly LlmAnswerImpact[] = ['used', 'not_used', 'unknown'];
+
+export function isLlmCacheOutcome(value: string): value is LlmCacheOutcome {
+  return (LLM_CACHE_OUTCOMES as readonly string[]).includes(value);
+}
+
+export function isLlmAnswerImpact(value: string): value is LlmAnswerImpact {
+  return (LLM_ANSWER_IMPACTS as readonly string[]).includes(value);
+}
+
+export function normalizeLlmProvider(value: string | null | undefined): LlmProvider {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'local') return 'local';
+  if (normalized === 'openrouter') return 'openrouter';
+  if (normalized === 'fake') return 'fake';
+  return 'unknown';
+}
+
+/**
+ * Map a configured or provider-returned model string to a finite family. The
+ * original string is intentionally not retained in telemetry.
+ */
+export function normalizeLlmModel(
+  value: string | null | undefined,
+  provider?: LlmProvider | string | null,
+): LlmModel {
+  const normalizedProvider = normalizeLlmProvider(provider);
+  if (normalizedProvider === 'fake') return 'fake';
+  const model = value?.trim().toLowerCase() ?? '';
+  if (model === '') return normalizedProvider === 'local' ? 'local' : 'unknown';
+  if (model.includes('deepseek')) return 'deepseek';
+  if (model.includes('qwen')) return 'qwen';
+  if (model.includes('llama')) return 'llama';
+  if (/\b(?:gpt|o[1-4](?:-mini|-preview)?)\b/.test(model)) return 'gpt';
+  if (model.includes('claude') || model.includes('anthropic')) return 'claude';
+  if (model.includes('gemini') || model.includes('google')) return 'gemini';
+  if (model.includes('mistral') || model.includes('mixtral')) return 'mistral';
+  if (model === 'local' || model === 'local-model' || model.startsWith('local-')) return 'local';
+  return 'other';
+}
+
+export interface LlmCallAttributionSnapshot {
+  provider: LlmProvider;
+  model: LlmModel;
   count: number;
   errors: number;
+  attempts: number;
+  retries: number;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   latency_ms: LatencyHistogramSnapshot;
+}
+
+export interface LlmCallSnapshot {
+  count: number;
+  errors: number;
+  /** Logical calls and provider-level attempts are deliberately separate. */
+  attempts?: number;
+  retries?: number;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  latency_ms: LatencyHistogramSnapshot;
+  /** Counts recorded by workflow boundaries, not inferred by the client. */
+  cache_outcomes?: Partial<Record<LlmCacheOutcome, number>>;
+  answer_impact?: Partial<Record<LlmAnswerImpact, number>>;
+  /** One bounded row per operation/provider/coarse-model combination. */
+  attribution?: LlmCallAttributionSnapshot[];
 }
 
 export type LlmCallMetricsSnapshot = Partial<Record<LlmCallOperation, LlmCallSnapshot>>;
@@ -169,17 +271,41 @@ function emptyLlmState(now: number): LlmMetricsState {
   return {
     count: 0,
     errors: 0,
+    attempts: 0,
+    retries: 0,
     promptTokensSum: 0,
     promptTokensReported: false,
     completionTokensSum: 0,
     completionTokensReported: false,
     latency: emptyHistogramState(now),
+    cacheOutcomes: new Map(),
+    answerImpact: new Map(),
+    attribution: new Map(),
   };
 }
 
 interface LlmMetricsState {
   count: number;
   errors: number;
+  attempts: number;
+  retries: number;
+  promptTokensSum: number;
+  promptTokensReported: boolean;
+  completionTokensSum: number;
+  completionTokensReported: boolean;
+  latency: HistogramState;
+  cacheOutcomes: Map<LlmCacheOutcome, number>;
+  answerImpact: Map<LlmAnswerImpact, number>;
+  attribution: Map<string, LlmAttributionState>;
+}
+
+interface LlmAttributionState {
+  provider: LlmProvider;
+  model: LlmModel;
+  count: number;
+  errors: number;
+  attempts: number;
+  retries: number;
   promptTokensSum: number;
   promptTokensReported: boolean;
   completionTokensSum: number;
@@ -341,6 +467,11 @@ export class LlmCallMetrics {
       ok: boolean;
       promptTokens?: number | null;
       completionTokens?: number | null;
+      /** Actual provider attempts; defaults to one for legacy callers. */
+      attempts?: number;
+      /** Provider kind and raw model are normalized to bounded values here. */
+      provider?: string | null;
+      model?: string | null;
     },
   ): void {
     if (!isLlmCallOperation(operation)) return;
@@ -349,8 +480,14 @@ export class LlmCallMetrics {
       state = emptyLlmState(this.now());
       this.states.set(operation, state);
     }
+    const attempts = normalizeAttemptCount(sample.attempts);
+    const retries = Math.max(0, attempts - 1);
+    const provider = normalizeLlmProvider(sample.provider);
+    const model = normalizeLlmModel(sample.model, provider);
     state.count += 1;
     if (!sample.ok) state.errors += 1;
+    state.attempts += attempts;
+    state.retries += retries;
     recordHistogramSample(state.latency, sample.latencyMs);
 
     const promptTokens = normalizeTokenCount(sample.promptTokens);
@@ -363,6 +500,52 @@ export class LlmCallMetrics {
       state.completionTokensSum += completionTokens;
       state.completionTokensReported = true;
     }
+
+    const attributionKey = `${provider}\u0000${model}`;
+    let attribution = state.attribution.get(attributionKey);
+    if (attribution === undefined) {
+      attribution = {
+        provider,
+        model,
+        count: 0,
+        errors: 0,
+        attempts: 0,
+        retries: 0,
+        promptTokensSum: 0,
+        promptTokensReported: false,
+        completionTokensSum: 0,
+        completionTokensReported: false,
+        latency: emptyHistogramState(this.now()),
+      };
+      state.attribution.set(attributionKey, attribution);
+    }
+    attribution.count += 1;
+    if (!sample.ok) attribution.errors += 1;
+    attribution.attempts += attempts;
+    attribution.retries += retries;
+    recordHistogramSample(attribution.latency, sample.latencyMs);
+    if (promptTokens !== null) {
+      attribution.promptTokensSum += promptTokens;
+      attribution.promptTokensReported = true;
+    }
+    if (completionTokens !== null) {
+      attribution.completionTokensSum += completionTokens;
+      attribution.completionTokensReported = true;
+    }
+  }
+
+  /** Record a cache decision at a workflow boundary without creating a call. */
+  recordCacheOutcome(operation: LlmCallOperation, outcome: LlmCacheOutcome): void {
+    if (!isLlmCallOperation(operation) || !isLlmCacheOutcome(outcome)) return;
+    const state = this.getOrCreateState(operation);
+    state.cacheOutcomes.set(outcome, (state.cacheOutcomes.get(outcome) ?? 0) + 1);
+  }
+
+  /** Record whether a workflow used an LLM result in its final answer path. */
+  recordAnswerImpact(operation: LlmCallOperation, impact: LlmAnswerImpact): void {
+    if (!isLlmCallOperation(operation) || !isLlmAnswerImpact(impact)) return;
+    const state = this.getOrCreateState(operation);
+    state.answerImpact.set(impact, (state.answerImpact.get(impact) ?? 0) + 1);
   }
 
   snapshot(): LlmCallMetricsSnapshot {
@@ -371,9 +554,26 @@ export class LlmCallMetrics {
       out[operation] = {
         count: state.count,
         errors: state.errors,
+        attempts: state.attempts,
+        retries: state.retries,
         prompt_tokens: state.promptTokensReported ? state.promptTokensSum : null,
         completion_tokens: state.completionTokensReported ? state.completionTokensSum : null,
         latency_ms: snapshotHistogram(state.latency),
+        cache_outcomes: mapCounts(state.cacheOutcomes),
+        answer_impact: mapCounts(state.answerImpact),
+        attribution: [...state.attribution.values()]
+          .sort((a, b) => `${a.provider}\u0000${a.model}`.localeCompare(`${b.provider}\u0000${b.model}`))
+          .map((row) => ({
+            provider: row.provider,
+            model: row.model,
+            count: row.count,
+            errors: row.errors,
+            attempts: row.attempts,
+            retries: row.retries,
+            prompt_tokens: row.promptTokensReported ? row.promptTokensSum : null,
+            completion_tokens: row.completionTokensReported ? row.completionTokensSum : null,
+            latency_ms: snapshotHistogram(row.latency),
+          })),
       };
     }
     return out;
@@ -381,6 +581,15 @@ export class LlmCallMetrics {
 
   reset(): void {
     this.states.clear();
+  }
+
+  private getOrCreateState(operation: LlmCallOperation): LlmMetricsState {
+    let state = this.states.get(operation);
+    if (state === undefined) {
+      state = emptyLlmState(this.now());
+      this.states.set(operation, state);
+    }
+    return state;
   }
 }
 
@@ -638,6 +847,18 @@ function clampCount(value: number): number {
 function normalizeTokenCount(value: number | null | undefined): number | null {
   if (value === null || value === undefined || !Number.isFinite(value) || value < 0) return null;
   return Math.floor(value);
+}
+
+function normalizeAttemptCount(value: number | null | undefined): number {
+  if (value === undefined || value === null) return 1;
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return Math.floor(value);
+}
+
+function mapCounts<T extends string>(counts: Map<T, number>): Partial<Record<T, number>> {
+  const out: Partial<Record<T, number>> = {};
+  for (const [key, value] of counts.entries()) out[key] = value;
+  return out;
 }
 
 /**

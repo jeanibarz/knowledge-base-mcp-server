@@ -33,7 +33,9 @@ Usage:
 Mirrors the MCP \`kb_stats\` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
 Includes filesystem enumeration diagnostics, process-lifetime relevance-gate
-counters when the gate has run, chat-completion counters by operation, and a
+counters when the gate has run, chat-completion counters by operation with
+bounded provider/coarse-model attribution, attempts/retries, cache outcomes,
+and workflow-declared answer impact, plus answer-cache counters, and a
 Contextual Retrieval section with per-KB preface coverage and failure counts
 (by error code) when contextual-preface sidecars exist.
 Strictly read-only — does not refresh the index.
@@ -289,11 +291,32 @@ export function formatLlmCallSection(payload: KbStatsPayload): string[] {
       `- ${operation}: calls=${formatInteger(row.count)}, errors=${formatInteger(row.errors)}, ` +
       `p50=${p50} ms, p95=${p95} ms, ` +
       `prompt_tokens=${row.prompt_tokens === null ? 'n/a' : formatInteger(row.prompt_tokens)}, ` +
-      `completion_tokens=${row.completion_tokens === null ? 'n/a' : formatInteger(row.completion_tokens)}`,
+      `completion_tokens=${row.completion_tokens === null ? 'n/a' : formatInteger(row.completion_tokens)}, ` +
+      `attempts=${formatInteger(row.attempts ?? row.count)}, ` +
+      `retries=${formatInteger(row.retries ?? Math.max(0, (row.attempts ?? row.count) - row.count))}, ` +
+      `cache_outcomes=${formatBoundedCounts(row.cache_outcomes)}, ` +
+      `answer_impact=${formatBoundedCounts(row.answer_impact)}, ` +
+      `attribution=${(row.attribution ?? [])
+        .map((entry) => `${entry.provider}/${entry.model}:${entry.count}/${entry.attempts}/${entry.retries}`)
+        .join(',') || 'none'}`,
+    );
+  }
+  if (payload.answer_cache !== undefined) {
+    const cache = payload.answer_cache;
+    lines.push(
+      `- answer_cache: hits=${formatInteger(cache.hits)}, misses=${formatInteger(cache.misses)}, ` +
+      `writes=${formatInteger(cache.writes)}, outcomes=${formatBoundedCounts(cache.outcomes)}, ` +
+      `disk_size_bytes=${formatInteger(cache.disk_size_bytes)}`,
     );
   }
   lines.push('');
   return lines;
+}
+
+function formatBoundedCounts(counts: Record<string, number> | undefined): string {
+  if (counts === undefined) return 'none';
+  const entries = Object.entries(counts).sort(([a], [b]) => a.localeCompare(b));
+  return entries.length === 0 ? 'none' : entries.map(([key, value]) => `${key}=${value}`).join(',');
 }
 
 export function formatDenseSearchLatencySection(payload: KbStatsPayload): string[] {

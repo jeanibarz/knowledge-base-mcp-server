@@ -61,6 +61,7 @@ import {
   nowMs,
   type TimingPayload,
 } from './timing-core.js';
+import { llmCallMetrics, type LlmCallMetrics } from './metrics.js';
 import {
   excludesLlmContext,
   normalizeKbSensitivityPolicy,
@@ -214,6 +215,8 @@ export interface RunAskCoreDeps {
   callChatCompletion: (options: ChatCompletionOptions) => Promise<ChatCompletionResult>;
   /** Optional answer-cache override (#656). Defaults to the env-configured singleton. */
   answerCache?: AnswerCache;
+  /** Optional workflow-metrics override; production uses the process singleton. */
+  llmMetrics?: LlmCallMetrics;
   /** Lexical-leg KB enumeration for hybrid/lexical modes (#732). Injectable for tests. */
   listLexicalKbs?: typeof listLexicalKbs;
   /** Lexical-leg BM25 runner for hybrid/lexical modes (#732). Injectable for tests. */
@@ -593,6 +596,7 @@ export async function answerWithEvidence(
   // implicitly invalidates the entry. Caching is opt-in because temperature>0
   // trades freshness for speed.
   const answerCache = deps.answerCache ?? defaultAnswerCache;
+  const llmMetrics = deps.llmMetrics ?? llmCallMetrics;
   const answerCacheKey = computeAnswerCacheKey({
     query: args.question,
     embeddingModel: activeModelId,
@@ -613,6 +617,9 @@ export async function answerWithEvidence(
   let cacheStatus: AnswerCacheStatus = answerCache.enabled ? 'miss' : 'disabled';
 
   const cached = await answerCache.get(answerCacheKey);
+  llmMetrics.recordCacheOutcome('ask', cached === null
+    ? (answerCache.enabled ? 'miss' : 'not_applicable')
+    : 'hit');
   if (cached !== null) {
     cacheStatus = 'hit';
     answer = cached.answer;
@@ -679,12 +686,14 @@ export async function answerWithEvidence(
       answer = response.content;
       llmModel = response.model;
     } catch (err) {
+      llmMetrics.recordAnswerImpact('ask', 'unknown');
       const failure = classifyKbAskError(err, 'llm-chat');
       throw new AskExecutionError(failure.message, exitCodeForFailure(failure), failure);
     }
 
     await answerCache.set(answerCacheKey, { answer, model: llmModel });
   }
+  llmMetrics.recordAnswerImpact('ask', 'used');
   if (timing) timing.cache = cacheStatus;
 
   if (timing) timing.total_ms = elapsedMs(totalStartedAt);
