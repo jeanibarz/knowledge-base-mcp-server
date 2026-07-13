@@ -292,6 +292,24 @@
 **Linked Tests:** TS-CLI-833
 **Dependencies:** Existing `parseFrontmatter`, `file-mutation`, and `kb-write-policy` helpers.
 
+### FR-CLI-857: Knowledge-Base Document Listing
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall provide a read-only `kb ls` command that lists ingestable, non-quarantined documents by knowledge base, with optional subtree, metadata, and machine-readable output filters.
+**Rationale:** CLI users need to discover KB-relative paths before using commands such as `kb remember --append`, `kb promote`, `kb cite`, and `kb feedback --source`; the MCP resources surface already exposes this inventory but the CLI does not.
+
+**Acceptance Criteria:**
+- [x] Given an existing knowledge base, when `kb ls <kb>` runs, then stdout shall contain one KB-relative path for every ingestable, non-quarantined document.
+- [x] Given no positional knowledge base, when `kb ls` runs, then stdout shall identify documents from every valid knowledge base with deterministic ordering.
+- [x] Given `--prefix=<path>`, when listing runs, then only documents in that KB-relative subtree shall be returned and traversal escapes shall be rejected.
+- [x] Given `--long`, when listing runs, then output shall include each document's `tier`, `status`, `type`, and filesystem `mtime` metadata.
+- [x] Given `--format=json`, when listing runs, then stdout shall be valid `kb.ls.v1` JSON with stable knowledge-base, path, and optional long metadata fields.
+- [x] Given ingest filters or quarantine entries already used by `resources/list`, when listing runs, then the CLI shall apply the same exclusions.
+
+**Linked Tests:** TS-CLI-857
+**Dependencies:** Existing `enumerateIngestableKbFiles`, ingest filters, quarantine manifest, and `parseFrontmatter`.
+
 ### FR-ASK-382: Cited Ask Transcript Records
 **Status:** Implemented
 **Priority:** Medium
