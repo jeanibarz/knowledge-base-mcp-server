@@ -549,6 +549,27 @@ describe('aggregateContextualSidecarStats — #409 cache / failure diagnostics',
     expect(stats.retry_pending_chunks).toBe(1);
   });
 
+  it('does not count a sidecar whose source is now protected', async () => {
+    const mod = await loadModule();
+    const source = path.join(tempDir, 'protected.md');
+    await fsp.writeFile(source, [
+      '---',
+      'kb_policy:',
+      '  no_llm_context: true',
+      '---',
+      'private source',
+    ].join('\n'), 'utf-8');
+    await writeSidecar(mod, 'protected', 'private.json', [
+      { chunk_index: 0, chunk_hash: 'h0', preface: 'stale ctx' },
+    ], { source });
+
+    const stats = await mod.aggregateContextualSidecarStats('protected');
+    expect(stats.sidecar_count).toBe(0);
+    expect(stats.covered_chunks).toBe(0);
+    expect(stats.cache_bytes).toBe(0);
+    expect(stats.latest_sidecar_at).toBeNull();
+  });
+
   it('skips a corrupt sidecar but still counts its bytes and readable siblings', async () => {
     const mod = await loadModule();
     await writeSidecar(mod, 'gamma', 'good.json', [

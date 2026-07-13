@@ -7,7 +7,7 @@ import {
 import { resolveLlmProvider } from './config/llm-provider.js';
 import { wrapUntrustedContent } from './injection-guard.js';
 import { redactSecrets } from './redaction.js';
-import { readLlmContextPolicy } from './sensitivity-policy.js';
+import { excludesLlmContext, readLlmContextPolicy } from './sensitivity-policy.js';
 
 export interface RelevanceJudgeCandidate {
   id: string;
@@ -133,6 +133,9 @@ async function assertCandidatesLlmContextAllowed(
 ): Promise<void> {
   const policyBySource = new Map<string, Promise<Awaited<ReturnType<typeof readLlmContextPolicy>>>>();
   await Promise.all(candidates.map(async (candidate) => {
+    if (excludesLlmContext(candidate.metadata)) {
+      throw new RelevanceJudgePolicyBoundaryError();
+    }
     const source = candidate.metadata.source;
     if (typeof source !== 'string' || source.trim().length === 0) {
       throw new RelevanceJudgePolicyBoundaryError();

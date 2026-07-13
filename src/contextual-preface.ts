@@ -125,7 +125,6 @@ export async function resolveContextualPrefaces(
   // Re-read the source policy before touching the sidecar so a stale or
   // omitted in-memory snapshot cannot authorize cache hits or LLM work after
   // the file becomes protected.
-  const verifyCurrentPolicy = true;
   if (!(await currentSourceAllowsLlm(args.source))) {
     return args.chunks.map(() => null);
   }
@@ -247,7 +246,7 @@ export async function resolveContextualPrefaces(
       // Recheck immediately before each outbound call. This is the policy
       // version check at the actual LLM boundary; no await occurs between it
       // and constructing the request in callPrefaceLlm.
-      if (verifyCurrentPolicy && !(await currentSourceAllowsLlm(args.source))) {
+      if (!(await currentSourceAllowsLlm(args.source))) {
         policyBoundaryBlocked = true;
         resolved[i] = null;
         failures += 1;
@@ -257,9 +256,7 @@ export async function resolveContextualPrefaces(
         endpoint,
         documentBody: truncatedDoc,
         chunkText: args.chunks[i],
-        ...(verifyCurrentPolicy
-          ? { isLlmContextAllowed: () => currentSourceAllowsLlm(args.source) }
-          : {}),
+        isLlmContextAllowed: () => currentSourceAllowsLlm(args.source),
       });
       if (result.model !== null) modelSeen = result.model;
       newEntries[i] = {
@@ -464,22 +461,41 @@ export async function aggregateContextualSidecarStats(
     } catch {
       continue;
     }
-    stats.sidecar_count += 1;
-    stats.cache_bytes += st.size;
-    if (st.mtimeMs > latestMtime) latestMtime = st.mtimeMs;
+    const recordSidecar = (): void => {
+      stats.sidecar_count += 1;
+      stats.cache_bytes += st.size;
+      if (st.mtimeMs > latestMtime) latestMtime = st.mtimeMs;
+    };
 
     let raw: string;
     try {
       raw = await fsp.readFile(filePath, 'utf-8');
     } catch {
+      recordSidecar();
       continue;
     }
-    let parsed: { chunks?: unknown; model?: unknown };
+    let parsed: { chunks?: unknown; model?: unknown; source?: unknown };
     try {
-      parsed = JSON.parse(raw) as { chunks?: unknown; model?: unknown };
+      parsed = JSON.parse(raw) as { chunks?: unknown; model?: unknown; source?: unknown };
     } catch {
+      // Preserve the existing operator diagnostic: a corrupt sidecar is
+      // still visible in the byte/count rollup even though it contributes no
+      // chunk counters.
+      recordSidecar();
       continue;
     }
+    // A source can become policy-protected after its sidecar was written.
+    // Keep the diagnostic rollup aligned with reindex progress: stale
+    // protected sidecars are not current contextual work. Older/manual
+    // fixtures without a source field remain readable for backwards
+    // compatibility and are handled as before.
+    if (typeof parsed.source === 'string') {
+      const sourcePolicy = await readLlmContextPolicy(parsed.source);
+      if (sourcePolicy.readable && sourcePolicy.valid && sourcePolicy.policy?.no_llm_context === true) {
+        continue;
+      }
+    }
+    recordSidecar();
     if (typeof parsed.model === 'string') stats.model = parsed.model;
     if (!Array.isArray(parsed.chunks)) continue;
 

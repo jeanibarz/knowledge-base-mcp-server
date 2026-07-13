@@ -35,6 +35,8 @@ async function writeSidecar(
   chunks: ChunkSpec[],
 ): Promise<void> {
   const source = path.join(kbsDir, kb, basename);
+  await fsp.mkdir(path.dirname(source), { recursive: true });
+  await fsp.writeFile(source, '# public source\n');
   const dir = path.join(faissDir, '.contextual-prefaces', kb);
   await fsp.mkdir(dir, { recursive: true });
   const flat = source.replace(/^\/+/, '').replace(/\//g, '__SEP__');
@@ -64,6 +66,7 @@ async function writeManifests(kb: string, count: number): Promise<void> {
   const indexDir = path.join(kbsDir, kb, '.index');
   await fsp.mkdir(indexDir, { recursive: true });
   for (let i = 0; i < count; i += 1) {
+    await fsp.writeFile(path.join(kbsDir, kb, `file-${i}`), '# public source\n');
     await fsp.writeFile(
       path.join(indexDir, `file-${i}.chunks.json`),
       JSON.stringify({ chunks: [{}] }),

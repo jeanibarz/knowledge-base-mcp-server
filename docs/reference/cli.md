@@ -1123,10 +1123,11 @@ Behavior:
   - Refuses to start inside the LRA cron window (06:00-10:30 UTC) or
     when the estimated runtime would cross it; pass --force to bypass
     both guards.
-  - The runtime estimate is cache-aware: only chunks without a valid
-    contextual-preface sidecar are priced at the 8s cold-LLM ceiling, so
-    a reindex resumed after a partial run is not blocked for work it
-    would skip. The breakdown is reported as `contextual_estimate`.
+  - The runtime estimate is cache-aware: only eligible chunks without a valid
+    contextual-preface sidecar are priced at the 8s cold-LLM ceiling, while
+    all chunks retain the embedding-rebuild cost. A reindex resumed after a
+    partial run is not blocked for contextual work it would skip. The
+    breakdown is reported as `contextual_estimate`.
   - Writes a run-state file at `$FAISS_INDEX_PATH/.reindex.run.json`
     so the trigger watcher (RFC 014) defers its own updates until the
     reindex finishes. The file is deleted on exit (and zombie-cleaned

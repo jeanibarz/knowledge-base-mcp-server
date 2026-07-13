@@ -159,6 +159,7 @@ describe('self-runtime estimator', () => {
     const kbsDir = path.join(tempDir, 'kbs');
     const indexDir = path.join(kbsDir, 'alpha', '.index');
     await fsp.mkdir(indexDir, { recursive: true });
+    await fsp.writeFile(path.join(kbsDir, 'alpha', 'note'), '# public source\n');
     // 1000 chunks × 8s = 8000s ≈ 2h13m. Starting at 04:00 UTC would
     // cross 06:00 UTC.
     await fsp.writeFile(
@@ -188,6 +189,9 @@ describe('cache-aware reindex estimate (#408)', () => {
   async function writeManifest(kb: string, relPath: string, chunkCount: number): Promise<void> {
     const manifestPath = path.join(tempDir, 'kbs', kb, '.index', `${relPath}.chunks.json`);
     await fsp.mkdir(path.dirname(manifestPath), { recursive: true });
+    const source = path.join(tempDir, 'kbs', kb, relPath);
+    await fsp.mkdir(path.dirname(source), { recursive: true });
+    await fsp.writeFile(source, '# public source\n');
     await fsp.writeFile(manifestPath, JSON.stringify({ chunks: new Array(chunkCount).fill({}) }));
   }
 
@@ -248,7 +252,7 @@ describe('cache-aware reindex estimate (#408)', () => {
     ].join('\n'));
 
     const est = await runner.estimateContextualReindexWork(['alpha']);
-    expect(est).toEqual({ total_chunks: 0, cache_hits: 0, retry_skips: 0, cold_chunks: 0 });
+    expect(est).toEqual({ total_chunks: 3, cache_hits: 0, retry_skips: 0, cold_chunks: 0 });
   });
 
   it('adds embedding rebuild cost to cold-preface cost for the LRA-window guard', async () => {

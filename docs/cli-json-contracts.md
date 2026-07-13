@@ -2312,8 +2312,10 @@ Stable fields:
 
 Notes:
 
-- `files_indexed` counts chunk manifests under `<kb>/.index/` and is the
-  denominator the reindex walks; `files_pending` is
+- `files_indexed` counts chunk manifests whose current source policy is
+  readable, valid, and not `kb_policy.no_llm_context: true`; it is the
+  denominator for contextual-preface work. Unreadable, malformed, invalid,
+  and policy-protected sources are not pending LLM work. `files_pending` is
   `max(0, files_indexed - files_with_sidecar)`. Both are approximate while a
   reindex is in flight.
 - `--kb=<name>` (repeatable) restricts the report. A named KB with no sidecars

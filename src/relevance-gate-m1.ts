@@ -38,6 +38,7 @@ import {
   type RelevanceJudgeCandidate,
   type RelevanceJudgeOverall,
 } from './relevance-judge.js';
+import { excludesLlmContext, readLlmContextPolicy } from './sensitivity-policy.js';
 import {
   aggregateGateEval,
   computeGraderAdmissibility,
@@ -455,7 +456,13 @@ function m1GateConfig(options: M1RunOptions, emptyVerdictEnabled: boolean): Rele
   };
 }
 
-function buildAnswerMessages(query: string, kept: ReadonlyArray<{ source: string; content: string }>): LlmChatMessage[] {
+interface M1Snippet {
+  source: string;
+  content: string;
+  policySource?: string;
+}
+
+function buildAnswerMessages(query: string, kept: ReadonlyArray<M1Snippet>): LlmChatMessage[] {
   const context = kept.length === 0
     ? '(no knowledge-base context was retrieved)'
     : kept.map((c, idx) => `Snippet ${idx + 1} [${c.source}]\n${c.content}`).join('\n\n---\n\n');
@@ -491,7 +498,7 @@ function buildGraderMessages(query: string, referenceAnswer: string, answer: str
 
 async function answerAndGrade(
   c: GateEvalCase,
-  kept: ReadonlyArray<{ source: string; content: string }>,
+  kept: ReadonlyArray<M1Snippet>,
   options: M1RunOptions,
 ): Promise<GraderVerdict> {
   const answered = await callChatCompletion({
@@ -500,6 +507,7 @@ async function answerAndGrade(
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildAnswerMessages(c.query, kept),
     temperature: 0.2,
+    beforeAttempt: () => assertM1LlmContextAllowed(kept),
   }, options.fetchImpl ?? fetch);
   const graded = await callChatCompletion({
     endpoint: options.endpoint,
@@ -507,16 +515,39 @@ async function answerAndGrade(
     ...(options.model !== undefined ? { model: options.model } : {}),
     messages: buildGraderMessages(c.query, c.referenceAnswer, answered.content),
     temperature: 0,
+    beforeAttempt: () => assertM1LlmContextAllowed(kept),
   }, options.fetchImpl ?? fetch);
   return parseGraderVerdict(graded.content);
 }
 
-function keptToSnippets(results: ReadonlyArray<RelevanceGateCandidate>): Array<{ source: string; content: string }> {
-  return results.map((r) => ({
-    source: typeof r.metadata.fixture_source === 'string'
-      ? r.metadata.fixture_source
-      : typeof r.metadata.source === 'string' ? r.metadata.source : 'unknown',
-    content: r.pageContent,
+function keptToSnippets(results: ReadonlyArray<RelevanceGateCandidate>): M1Snippet[] {
+  return results
+    .filter((r) => !excludesLlmContext(r.metadata as Record<string, unknown>))
+    .map((r) => ({
+      source: typeof r.metadata.fixture_source === 'string'
+        ? r.metadata.fixture_source
+        : typeof r.metadata.source === 'string' ? r.metadata.source : 'unknown',
+      policySource: typeof r.metadata.source === 'string' ? r.metadata.source : undefined,
+      content: r.pageContent,
+    }));
+}
+
+async function assertM1LlmContextAllowed(
+  snippets: ReadonlyArray<M1Snippet>,
+): Promise<void> {
+  const policyBySource = new Map<string, Promise<Awaited<ReturnType<typeof readLlmContextPolicy>>>>();
+  await Promise.all(snippets.map(async (snippet) => {
+    const source = snippet.policySource;
+    if (source === undefined) throw new Error('M1 source policy provenance is missing');
+    let policyPromise = policyBySource.get(source);
+    if (policyPromise === undefined) {
+      policyPromise = readLlmContextPolicy(source);
+      policyBySource.set(source, policyPromise);
+    }
+    const policy = await policyPromise;
+    if (!policy.readable || !policy.valid || policy.policy?.no_llm_context === true) {
+      throw new Error('M1 source policy excludes LLM work');
+    }
   }));
 }
 
@@ -540,6 +571,14 @@ async function materializeFixtureSources(
     for (const c of fixture.cases) {
       for (const candidate of c.candidates) {
         if (bySource.has(candidate.source)) continue;
+        try {
+          await fsp.access(candidate.source);
+          bySource.set(candidate.source, candidate.source);
+          continue;
+        } catch {
+          // Fixture sources are usually symbolic names, so materialize a
+          // policy-free file for the real gate's source verification.
+        }
         const filename = `${createHash('sha256').update(candidate.source).digest('hex')}.md`;
         const sourcePath = path.join(root, filename);
         await fsp.writeFile(sourcePath, '', 'utf-8');

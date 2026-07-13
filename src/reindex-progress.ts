@@ -59,7 +59,8 @@ export interface ReindexProgressKb {
   /**
    * Eligible files with a chunk manifest under `<kb>/.index/` — the
    * denominator the contextual-preface work walks. Sources explicitly marked
-   * `kb_policy.no_llm_context` are not pending LLM work.
+   * `kb_policy.no_llm_context`, or whose current policy is unreadable,
+   * malformed, or otherwise invalid, are not pending LLM work.
    */
   files_indexed: number;
   /** Eligible files that have a contextual-preface sidecar. */
@@ -116,7 +117,7 @@ export function reindexProgressFilePath(): string {
   return path.join(FAISS_INDEX_PATH, REINDEX_PROGRESS_FILENAME);
 }
 
-/** Count eligible chunk manifests under `<kb>/.index/` — one per indexed file. */
+/** Count policy-eligible chunk manifests under `<kb>/.index/`. */
 async function countIndexedFiles(kb: string): Promise<number> {
   const indexDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, '.index');
   let entries: Array<import('fs').Dirent>;
@@ -140,7 +141,7 @@ async function countIndexedFiles(kb: string): Promise<number> {
 
 async function isPolicyExcludedSource(source: string): Promise<boolean> {
   const snapshot = await readLlmContextPolicy(source);
-  return snapshot.readable && snapshot.valid && snapshot.policy?.no_llm_context === true;
+  return !snapshot.readable || !snapshot.valid || snapshot.policy?.no_llm_context === true;
 }
 
 function fileStatusOf(status: ContextualSidecarStatus): ReindexFileStatus {

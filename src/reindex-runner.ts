@@ -114,9 +114,10 @@ export interface ReindexOptions {
 /**
  * RFC 017 §5 step 1 (cache-aware refinement, #408) — breakdown of the
  * contextual-preface work the runtime estimate is built from. `cold_chunks`
- * is the count priced at the 8s cold-LLM ceiling; every `total_chunks` entry
- * is also priced at the embedding rebuild rate because the incremental FAISS
- * path may rebuild the whole index.
+ * is the eligible-source count priced at the 8s cold-LLM ceiling; every
+ * `total_chunks` entry, including policy-excluded sources, is also priced at
+ * the embedding rebuild rate because the incremental FAISS path may rebuild
+ * the whole index.
  */
 export interface ContextualReindexEstimate {
   /** Total chunks across all in-scope KBs, summed from chunk manifests. */
@@ -416,13 +417,15 @@ export async function estimateContextualReindexWork(
       // `<kb>/.index/<rel>.chunks.json` → source `<kb>/<rel>`.
       const rel = path.relative(indexDir, manifestPath).replace(/\.chunks\.json$/, '');
       const source = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, rel);
+      totalChunks += chunkCount;
       const sourcePolicy = await readLlmContextPolicy(source);
-      if (sourcePolicy.readable && sourcePolicy.valid && sourcePolicy.policy?.no_llm_context === true) {
+      if (!sourcePolicy.readable || !sourcePolicy.valid || sourcePolicy.policy?.no_llm_context === true) {
         // Protected sources are retrieval/index inputs, but they deliberately
-        // have no contextual-preface LLM work to price or resume.
+        // have no contextual-preface LLM work to price or resume. Keep their
+        // chunks in total_chunks because the FAISS rebuild still processes the
+        // whole corpus.
         continue;
       }
-      totalChunks += chunkCount;
       const tally = await classifyContextualSidecarChunks(source, kb, chunkCount, nowMs);
       cacheHits += tally.cache_hits;
       retrySkips += tally.retry_skips;
