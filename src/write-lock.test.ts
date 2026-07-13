@@ -85,6 +85,28 @@ describe('withWriteLock', () => {
     expect(events).toEqual(['slow:start', 'slow:end', 'fast:start', 'fast:end']);
   });
 
+  it('allows nested acquisition for a resource held by the same async flow', async () => {
+    jest.resetModules();
+    const { withWriteLock, writeLockOwnerPathFor, writeLockPathFor } = await import('./write-lock.js');
+    const events: string[] = [];
+
+    await withWriteLock(tempDir, async () => {
+      events.push('outer:start');
+      await withWriteLock(tempDir, async () => {
+        await expect(fsp.stat(writeLockPathFor(tempDir))).resolves.toBeTruthy();
+        const owner = JSON.parse(
+          await fsp.readFile(writeLockOwnerPathFor(tempDir), 'utf-8'),
+        ) as { pid: number };
+        expect(owner.pid).toBe(process.pid);
+        events.push('inner');
+      });
+      await expect(fsp.stat(writeLockPathFor(tempDir))).resolves.toBeTruthy();
+      events.push('outer:end');
+    });
+
+    expect(events).toEqual(['outer:start', 'inner', 'outer:end']);
+  });
+
   it('releases the lock even if fn throws', async () => {
     jest.resetModules();
     const { withWriteLock } = await import('./write-lock.js');

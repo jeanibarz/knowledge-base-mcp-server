@@ -12,6 +12,7 @@
 // concurrent operations on different models.
 
 import * as fsp from 'fs/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import * as os from 'os';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
@@ -36,6 +37,11 @@ const WRITE_LOCK_OPTS_BASE: Omit<properLockfile.LockOptions, 'lockfilePath'> = {
   // RFC 012 §4.8.3 slow-path behavior.
   retries: { retries: 5, factor: 1.5, minTimeout: 100, maxTimeout: 1000 },
 };
+
+// Callers commonly initialize a manager inside the write-lock callback that
+// will immediately update it. Recovery now also uses this lock, so track
+// locks held by the current async flow and make that nesting re-entrant.
+const heldWriteLocks = new AsyncLocalStorage<ReadonlySet<string>>();
 
 export const WRITE_LOCK_OWNER_SCHEMA_VERSION = 'kb.write-lock-owner.v1';
 
@@ -89,6 +95,10 @@ function isLockContentionError(err: unknown): boolean {
  * Throws if the lock can't be acquired within the retry budget.
  */
 export async function withWriteLock<T>(resource: string, fn: () => Promise<T>): Promise<T> {
+  const resourceKey = path.resolve(resource);
+  const currentLocks = heldWriteLocks.getStore();
+  if (currentLocks?.has(resourceKey)) return fn();
+
   // proper-lockfile requires the locked resource path to exist; mkdir-p
   // handles both first-run and subdirectory cases (M1+M2's per-model dirs).
   await fsp.mkdir(resource, { recursive: true });
@@ -116,33 +126,37 @@ export async function withWriteLock<T>(resource: string, fn: () => Promise<T>): 
   const waitMs = performanceNow() - waitStart;
   await writeLockOwnerMetadata(ownerPath);
   const holdStart = performanceNow();
-  let holdMs = 0;
-  let canonicalError: CanonicalError | undefined;
-  try {
-    return await fn();
-  } catch (err) {
-    canonicalError = classifyCanonicalError(err);
-    throw err;
-  } finally {
-    holdMs = performanceNow() - holdStart;
-    writeLockMetrics.record({ resourceKind, waitMs, holdMs });
-    emitWriteLockTiming({
-      resourceKind,
-      waitMs,
-      holdMs,
-      error: canonicalError,
-    });
+  const nextLocks = new Set(currentLocks ?? []);
+  nextLocks.add(resourceKey);
+  return heldWriteLocks.run(nextLocks, async () => {
+    let holdMs = 0;
+    let canonicalError: CanonicalError | undefined;
     try {
-      await fsp.rm(ownerPath, { force: true });
+      return await fn();
     } catch (err) {
-      logger.warn(`Error removing write lock owner metadata: ${(err as Error).message}`);
+      canonicalError = classifyCanonicalError(err);
+      throw err;
+    } finally {
+      holdMs = performanceNow() - holdStart;
+      writeLockMetrics.record({ resourceKind, waitMs, holdMs });
+      emitWriteLockTiming({
+        resourceKind,
+        waitMs,
+        holdMs,
+        error: canonicalError,
+      });
+      try {
+        await fsp.rm(ownerPath, { force: true });
+      } catch (err) {
+        logger.warn(`Error removing write lock owner metadata: ${(err as Error).message}`);
+      }
+      try {
+        await release();
+      } catch (err) {
+        logger.warn(`Error releasing write lock: ${(err as Error).message}`);
+      }
     }
-    try {
-      await release();
-    } catch (err) {
-      logger.warn(`Error releasing write lock: ${(err as Error).message}`);
-    }
-  }
+  });
 }
 
 /**

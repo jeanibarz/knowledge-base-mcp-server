@@ -24,7 +24,8 @@ stateDiagram-v2
   Initializing --> Failed: provider/config/load failure
 
   Recovering --> Loaded: save-complete manifest rolls sidecars forward
-  Recovering --> Empty: save-started manifest purges ambiguous store
+  Recovering --> Loaded: live same-host owner preserves store while writer finishes
+  Recovering --> Empty: ownerless/dead/foreign save-started manifest purges ambiguous store
 
   Empty --> Building: updateIndex() finds ingestable chunks
   Loaded --> Updating: updateIndex() finds append-safe changed chunks
@@ -51,7 +52,9 @@ stateDiagram-v2
 | `Constructed -> Initializing` | `initialize()` creates the embedding client and model directory as needed. | `src/FaissIndexManager.ts` |
 | `Initializing -> Loaded` | `loadFaissStoreAtomic` loads `index -> index.vN/` or legacy `faiss.index/`. | `src/faiss-store-layout.ts` |
 | `Initializing -> Empty` | No persisted store exists for the model. | `src/FaissIndexManager.ts` |
-| `Initializing -> Recovering` | Pending sidecar commit manifest exists. | `src/pending-sidecar-commit.ts` |
+| `Initializing -> Recovering` | Pending sidecar commit manifest exists; recovery takes the model write lock. | `src/pending-sidecar-commit.ts`, `src/FaissIndexManager.ts` |
+| `Recovering -> Loaded` | A live v2 owner on the same host still owns a `save-started` manifest, so recovery leaves the store and manifest intact. | `src/pending-sidecar-commit.ts`, `src/FaissIndexManager.ts` |
+| `Recovering -> Empty` | A legacy/ownerless, malformed, dead, or foreign-host `save-started` manifest is ambiguous, so recovery purges the store and stale sidecars. | `src/FaissIndexManager.ts` |
 | `Empty -> Building` | First refresh finds chunks for a model with no loaded index. | `src/FaissIndexManager.ts` |
 | `Loaded -> Updating` | Changed files can be appended without deleting stale vectors. | `src/file-ingest.ts`, `src/FaissIndexManager.ts` |
 | `Loaded -> Rebuilding` | Force reindex, stale freshness manifest, missing chunk manifest, or chunk drift that cannot be append-only. | `src/FaissIndexManager.ts`, `src/freshness-manifest.ts` |

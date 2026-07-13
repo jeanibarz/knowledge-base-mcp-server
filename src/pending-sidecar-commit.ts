@@ -1,4 +1,5 @@
 import * as fsp from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import {
   isChunkManifest,
@@ -6,14 +7,26 @@ import {
   type PendingChunkManifestWrite,
   type PendingSidecarWrite,
 } from './file-ingest.js';
+import { isPidAlive } from './process-liveness.js';
 
 export const PENDING_SIDECAR_COMMIT_FILENAME = 'pending-manifest.json';
-export const PENDING_SIDECAR_COMMIT_SCHEMA_VERSION = 'kb.pending-sidecar-commit.v1';
+export const PENDING_SIDECAR_COMMIT_LEGACY_SCHEMA_VERSION = 'kb.pending-sidecar-commit.v1';
+export const PENDING_SIDECAR_COMMIT_SCHEMA_VERSION = 'kb.pending-sidecar-commit.v2';
 
 export type PendingSidecarCommitPhase = 'save-started' | 'save-complete';
 
+export interface PendingSidecarCommitOwner {
+  pid: number;
+  hostname: string;
+  started_at: string;
+}
+
 export interface PendingSidecarCommitManifest {
-  schema_version: typeof PENDING_SIDECAR_COMMIT_SCHEMA_VERSION;
+  schema_version:
+    | typeof PENDING_SIDECAR_COMMIT_LEGACY_SCHEMA_VERSION
+    | typeof PENDING_SIDECAR_COMMIT_SCHEMA_VERSION;
+  /** Absent on v1 manifests written by older builds. */
+  owner?: PendingSidecarCommitOwner;
   phase: PendingSidecarCommitPhase;
   pending_hash_writes: PendingSidecarWrite[];
   pending_chunk_manifest_writes: PendingChunkManifestWrite[];
@@ -54,6 +67,18 @@ function parsePhase(value: unknown): PendingSidecarCommitPhase | null {
   return null;
 }
 
+function parseOwner(value: unknown): PendingSidecarCommitOwner | null {
+  if (!isRecord(value)) return null;
+  if (!Number.isInteger(value.pid) || (value.pid as number) <= 0) return null;
+  if (typeof value.hostname !== 'string' || value.hostname.length === 0) return null;
+  if (typeof value.started_at !== 'string' || value.started_at.length === 0) return null;
+  return {
+    pid: value.pid as number,
+    hostname: value.hostname,
+    started_at: value.started_at,
+  };
+}
+
 export function pendingSidecarCommitManifestPath(modelDir: string): string {
   return path.join(modelDir, PENDING_SIDECAR_COMMIT_FILENAME);
 }
@@ -78,7 +103,9 @@ export async function readPendingSidecarCommitManifest(
     return null;
   }
   if (!isRecord(parsed)) return null;
-  if (parsed.schema_version !== PENDING_SIDECAR_COMMIT_SCHEMA_VERSION) return null;
+  const isLegacySchema = parsed.schema_version === PENDING_SIDECAR_COMMIT_LEGACY_SCHEMA_VERSION;
+  const isCurrentSchema = parsed.schema_version === PENDING_SIDECAR_COMMIT_SCHEMA_VERSION;
+  if (!isLegacySchema && !isCurrentSchema) return null;
   const phase = parsePhase(parsed.phase);
   if (phase === null) return null;
   if (!Array.isArray(parsed.pending_hash_writes)) return null;
@@ -94,12 +121,31 @@ export async function readPendingSidecarCommitManifest(
     return null;
   }
 
+  const owner = isCurrentSchema ? parseOwner(parsed.owner) ?? undefined : undefined;
+  const schemaVersion = isLegacySchema
+    ? PENDING_SIDECAR_COMMIT_LEGACY_SCHEMA_VERSION
+    : PENDING_SIDECAR_COMMIT_SCHEMA_VERSION;
   return {
-    schema_version: PENDING_SIDECAR_COMMIT_SCHEMA_VERSION,
+    schema_version: schemaVersion,
+    ...(owner === undefined ? {} : { owner }),
     phase,
     pending_hash_writes: pendingHashWrites as PendingSidecarWrite[],
     pending_chunk_manifest_writes: pendingChunkManifestWrites as PendingChunkManifestWrite[],
   };
+}
+
+export function createPendingSidecarCommitOwner(): PendingSidecarCommitOwner {
+  return {
+    pid: process.pid,
+    hostname: os.hostname(),
+    started_at: new Date().toISOString(),
+  };
+}
+
+export function isPendingSidecarCommitOwnerAlive(
+  owner: PendingSidecarCommitOwner,
+): boolean {
+  return owner.hostname === os.hostname() && isPidAlive(owner.pid);
 }
 
 export async function writePendingSidecarCommitManifest(options: {
@@ -107,12 +153,14 @@ export async function writePendingSidecarCommitManifest(options: {
   phase: PendingSidecarCommitPhase;
   pendingHashWrites: ReadonlyArray<PendingSidecarWrite>;
   pendingChunkManifestWrites: ReadonlyArray<PendingChunkManifestWrite>;
+  owner?: PendingSidecarCommitOwner;
 }): Promise<void> {
   const {
     modelDir,
     phase,
     pendingHashWrites,
     pendingChunkManifestWrites,
+    owner = createPendingSidecarCommitOwner(),
   } = options;
   await fsp.mkdir(modelDir, { recursive: true });
   const manifestPath = pendingSidecarCommitManifestPath(modelDir);
@@ -122,6 +170,7 @@ export async function writePendingSidecarCommitManifest(options: {
   );
   const payload: PendingSidecarCommitManifest = {
     schema_version: PENDING_SIDECAR_COMMIT_SCHEMA_VERSION,
+    owner,
     phase,
     pending_hash_writes: pendingHashWrites.map((entry) => ({ ...entry })),
     pending_chunk_manifest_writes: pendingChunkManifestWrites.map((entry) => ({

@@ -5,7 +5,7 @@ import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import { Document } from "@langchain/core/documents";
 import { emitCanonicalLog, type CanonicalProcess } from './canonical-log.js';
 import { createEmbeddingsClient, type EmbeddingsClient } from './embedding-provider.js';
-import { handleFsOperationError, toError } from './error-utils.js';
+import { handleFsOperationError, isPermissionError, toError } from './error-utils.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
 import {
   buildChunkManifest,
@@ -71,6 +71,8 @@ import {
 } from './freshness-manifest.js';
 import {
   clearPendingSidecarCommitManifest,
+  createPendingSidecarCommitOwner,
+  isPendingSidecarCommitOwnerAlive,
   readPendingSidecarCommitManifest,
   writePendingSidecarCommitManifest,
 } from './pending-sidecar-commit.js';
@@ -97,7 +99,7 @@ import {
   type MetadataSidecarRow,
 } from './metadata-sidecar.js';
 import { queryEmbeddingCache, type QueryCacheLookupStatus, type QueryCacheTelemetry } from './query-cache.js';
-import { withSidecarLock } from './write-lock.js';
+import { withSidecarLock, withWriteLock } from './write-lock.js';
 import { FaissStoreAdapter, type EmbeddedDocumentsBatch } from './faiss-store-adapter.js';
 import { HnswIndexAdapter } from './hnsw-index-adapter.js';
 import type { SearchIndexAdapter } from './search-index-adapter.js';
@@ -746,7 +748,14 @@ export class FaissIndexManager {
         }
       }
       if (!readOnly) {
-        await this.recoverPendingSidecarCommit();
+        try {
+          await withWriteLock(this.modelDir, () => this.recoverPendingSidecarCommit());
+        } catch (error) {
+          if (isPermissionError(error)) {
+            handleFsOperationError('acquire the FAISS model write lock in', this.modelDir, error);
+          }
+          throw error;
+        }
       }
       // RFC 013: no model-switch wipe at initialize time. Each model has its
       // own dir; a different provider+model goes to a different `models/<id>/`.
@@ -996,6 +1005,14 @@ export class FaissIndexManager {
     if (pending === null) return;
 
     if (pending.phase === 'save-started') {
+      if (pending.owner !== undefined && isPendingSidecarCommitOwnerAlive(pending.owner)) {
+        logger.warn(
+          `Pending sidecar commit for model ${this.modelId} is still owned by ` +
+            `a live writer on ${pending.owner.hostname} (pid=${pending.owner.pid}); ` +
+            `leaving the manifest and persisted store intact until that writer finishes.`,
+        );
+        return;
+      }
       logger.warn(
         `Pending sidecar commit for model ${this.modelId} was interrupted before ` +
           `the FAISS save was confirmed. Removing the persisted store and stale ` +
@@ -2435,6 +2452,9 @@ export class FaissIndexManager {
         const shouldPersistPendingSidecarCommit =
           indexMutated &&
           (pendingHashWrites.length > 0 || pendingChunkManifestWrites.length > 0);
+        const pendingSidecarCommitOwner = shouldPersistPendingSidecarCommit
+          ? createPendingSidecarCommitOwner()
+          : undefined;
         if (indexMutated) {
           let faissStoreCommitted = false;
           try {
@@ -2452,18 +2472,25 @@ export class FaissIndexManager {
                 phase: 'save-started',
                 pendingHashWrites,
                 pendingChunkManifestWrites,
+                owner: pendingSidecarCommitOwner,
               });
             }
             await this.atomicSave({
               onCommitted: shouldPersistPendingSidecarCommit
                 ? async () => {
-                    faissStoreCommitted = true;
+                    // The save-started marker remains ambiguous until the
+                    // save-complete marker is durable. If this write fails
+                    // after the symlink swap, the finally block must clear
+                    // the live-owner marker instead of leaving recovery to
+                    // mistake a failed save for an active writer.
                     await writePendingSidecarCommitManifest({
                       modelDir: this.modelDir,
                       phase: 'save-complete',
                       pendingHashWrites,
                       pendingChunkManifestWrites,
+                      owner: pendingSidecarCommitOwner,
                     });
+                    faissStoreCommitted = true;
                   }
                 : undefined,
             });

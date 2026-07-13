@@ -410,6 +410,31 @@ describe('cache-aware reindex estimate (#408)', () => {
 // ---------------------------------------------------------------------------
 
 describe('.reindex.run.json + PID liveness', () => {
+  it('holds the model write lock while updating the manager', async () => {
+    const modelDir = path.join(tempDir, 'faiss', 'models', 'test-model');
+    let lockedDuringUpdate = false;
+    const manager = {
+      modelDir,
+      updateIndex: async () => {
+        lockedDuringUpdate = await fsp
+          .stat(path.join(modelDir, '.kb-write.lock'))
+          .then(() => true)
+          .catch(() => false);
+      },
+      getLastIndexUpdateSummary: () => makeNeverRunSummary(),
+    } as unknown as import('./FaissIndexManager.js').FaissIndexManager;
+
+    const result = await runner.runReindex({
+      knowledgeBases: [],
+      force: true,
+      resolveKbs: async () => ['alpha'],
+      manager,
+    });
+
+    expect(result.outcome).toBe('completed');
+    expect(lockedDuringUpdate).toBe(true);
+  });
+
   it('writes the run-state file during a run and removes it on success', async () => {
     let stateAtMidRun: unknown = null;
     const result = await runner.runReindex({
