@@ -9,7 +9,6 @@ import {
   LS_SCHEMA_VERSION,
 } from './cli-ls.js';
 import { listKnowledgeBaseDocuments } from './kb-document-listing.js';
-import { recordIngestFailure } from './ingest-quarantine.js';
 
 describe('TS-CLI-857: kb ls argument parsing', () => {
   it('defaults to all KBs, plain paths, and short output', () => {
@@ -24,7 +23,7 @@ describe('TS-CLI-857: kb ls argument parsing', () => {
   it('parses a positional KB, subtree, long metadata, and JSON output', () => {
     expect(parseLsArgs(['work', '--prefix=docs/', '--long', '--format=json'])).toEqual({
       kb: 'work',
-      prefix: 'docs',
+      prefix: 'docs/',
       long: true,
       format: 'json',
     });
@@ -74,11 +73,26 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
     await writeFile(rootDir, 'work/docs/quarantined.md', '# Quarantined\n');
     await writeFile(rootDir, 'other/elsewhere.md', '# Elsewhere\n');
 
-    await recordIngestFailure({
-      kbPath: path.join(rootDir, 'work'),
-      relativePath: 'docs/quarantined.md',
-      error: new Error('fixture failure'),
-    });
+    await fsp.mkdir(path.join(rootDir, 'work', '.index'), { recursive: true });
+    await fsp.writeFile(
+      path.join(rootDir, 'work', '.index', 'quarantine.jsonl'),
+      `${JSON.stringify({
+        schema_version: 'ingest-quarantine.v1',
+        relative_path: 'docs/quarantined.md',
+        source_sha256: null,
+        error_category: 'input',
+        error_code: 'EINVAL',
+        error_fingerprint: `sha256:${'0'.repeat(64)}`,
+        first_seen_at: '2026-07-13T08:00:00.000Z',
+        last_attempted_at: '2026-07-13T08:00:00.000Z',
+        retry_count: 1,
+        next_retry_at: '2026-07-13T08:01:00.000Z',
+        ack: false,
+        dead_lettered_at: null,
+        message: 'fixture failure',
+      })}\n`,
+      'utf8',
+    );
 
     const scoped = await listKnowledgeBaseDocuments({
       rootDir,
@@ -136,11 +150,14 @@ describe('TS-CLI-857: report formatting', () => {
     tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ls-format-'));
     const rootDir = path.join(tempDir, 'kbs');
     await fsp.mkdir(path.join(rootDir, 'work'), { recursive: true });
+    const guidePath = path.join(rootDir, 'work', 'guide.md');
     await fsp.writeFile(
-      path.join(rootDir, 'work', 'guide.md'),
+      guidePath,
       '---\ntier: durable\nstatus: active\ntype: guide\n---\n# Guide\n',
       'utf8',
     );
+    const expectedMtime = new Date('2026-07-13T08:00:00.000Z');
+    await fsp.utimes(guidePath, expectedMtime, expectedMtime);
 
     const report = await collectLsReport({ rootDir, kb: 'work', long: true });
     expect(report.documents).toEqual([
@@ -174,7 +191,7 @@ describe('TS-CLI-857: report formatting', () => {
 
     const markdown = formatLsReport(report, 'md');
     const mtime = report.documents[0]?.mtime;
-    expect(mtime).toEqual(expect.any(String));
+    expect(mtime).toBe(expectedMtime.toISOString());
     expect(markdown).toContain('| KB | Path | Tier | Status | Type | Modified |');
     expect(markdown).toContain(`| work | guide.md | durable | active | guide | ${mtime} |`);
   });

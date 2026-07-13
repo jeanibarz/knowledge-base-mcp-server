@@ -10,15 +10,18 @@ import { INGEST_EXCLUDE_PATHS, INGEST_EXTRA_EXTENSIONS } from './config/ingest.j
 import {
   assertNoTraversal,
   enumerateIngestableKbFiles,
+  type KbFileEnumeration,
   listKnowledgeBases,
   resolveKnowledgeBaseDir,
 } from './kb-fs.js';
+import { filterIngestablePaths } from './ingest-filter.js';
 import { isValidKbName } from './kb-paths.js';
 import { listIngestQuarantine } from './ingest-quarantine.js';
+import { getFilesRecursivelyWithDiagnostics } from './file-utils.js';
+import * as fsp from 'fs/promises';
 
 export interface KnowledgeBaseDocument {
   kbName: string;
-  kbPath: string;
   absolutePath: string;
   relativePath: string;
 }
@@ -35,6 +38,8 @@ export interface ListKnowledgeBaseDocumentsOptions {
   failOnEnumerationError?: boolean;
   /** Stop after this many sorted matches; used to retain MCP lookahead pagination. */
   maxDocuments?: number;
+  /** Treat a missing/stale KB name as an empty scope for MCP compatibility. */
+  skipMissingKb?: boolean;
 }
 
 export interface KnowledgeBaseDocumentListing {
@@ -52,8 +57,10 @@ export function normalizeDocumentPrefix(raw: string | undefined): string {
   if (prefix.length === 0) return '';
 
   assertNoTraversal(prefix);
-  const normalized = prefix.replace(/\\/g, '/').replace(/\/+$/g, '');
-  return normalized;
+  const normalized = prefix.replace(/\\/g, '/');
+  const withoutTrailingSlash = normalized.replace(/\/+$/g, '');
+  return withoutTrailingSlash.length === 0 ? '' :
+    (normalized.endsWith('/') ? `${withoutTrailingSlash}/` : withoutTrailingSlash);
 }
 
 /**
@@ -68,6 +75,7 @@ export function documentMatchesPrefix(
   prefixMode: 'subtree' | 'resource-prefix' = 'subtree',
 ): boolean {
   if (prefix.length === 0) return true;
+  if (prefix.endsWith('/')) return relativePath.startsWith(prefix);
   if (!relativePath.startsWith(prefix)) return false;
   if (relativePath.length === prefix.length || relativePath[prefix.length] === '/') return true;
   return prefixMode === 'resource-prefix' && prefix.includes('/');
@@ -89,19 +97,29 @@ export async function listKnowledgeBaseDocuments(
     throw new Error('maxDocuments must be a positive integer');
   }
   let reachedMax = false;
+  const resolvedKnowledgeBases: string[] = [];
   for (const kbName of knowledgeBases) {
     // Resolve every discovered KB before walking it. In particular, a
     // directory symlink may pass listKnowledgeBases() but point outside the
     // configured root, which must never become an enumerable document scope.
-    await resolveKnowledgeBaseDir(options.rootDir, kbName);
-    const [enumeration] = await enumerateIngestableKbFiles(
-      options.rootDir,
-      [kbName],
-      {
-        extraExtensions: options.extraExtensions ?? INGEST_EXTRA_EXTENSIONS,
-        excludePaths: options.excludePaths ?? INGEST_EXCLUDE_PATHS,
-      },
-    );
+    try {
+      await resolveKnowledgeBaseDir(options.rootDir, kbName);
+    } catch (error: unknown) {
+      const skipMissing = options.skipMissingKb ?? options.kbName === undefined;
+      if (skipMissing && (error as { code?: unknown }).code === 'KB_NOT_FOUND') continue;
+      throw error;
+    }
+    resolvedKnowledgeBases.push(kbName);
+    const enumeration = prefix.length === 0
+      ? (await enumerateIngestableKbFiles(
+        options.rootDir,
+        [kbName],
+        {
+          extraExtensions: options.extraExtensions ?? INGEST_EXTRA_EXTENSIONS,
+          excludePaths: options.excludePaths ?? INGEST_EXCLUDE_PATHS,
+        },
+      ))[0]
+      : await enumerateKbForPrefix(options.rootDir, kbName, prefix, options);
     if (enumeration === undefined) continue;
     if ((options.failOnEnumerationError ?? true) && enumeration.diagnostics.failure_count > 0) {
       const sample = enumeration.diagnostics.failures[0];
@@ -123,7 +141,6 @@ export async function listKnowledgeBaseDocuments(
       ) continue;
       documents.push({
         kbName: enumeration.kbName,
-        kbPath: enumeration.kbPath,
         absolutePath,
         relativePath,
       });
@@ -138,7 +155,54 @@ export async function listKnowledgeBaseDocuments(
   documents.sort((a, b) =>
     compareStrings(a.kbName, b.kbName) || compareStrings(a.relativePath, b.relativePath),
   );
-  return { knowledgeBases, documents, prefix };
+  return { knowledgeBases: resolvedKnowledgeBases, documents, prefix };
+}
+
+async function enumerateKbForPrefix(
+  rootDir: string,
+  kbName: string,
+  prefix: string,
+  options: ListKnowledgeBaseDocumentsOptions,
+): Promise<KbFileEnumeration> {
+  const kbPath = path.join(rootDir, kbName);
+  const searchRelativeDir = prefixSearchRelativeDir(prefix, options.prefixMode);
+  const searchRoot = path.join(kbPath, searchRelativeDir);
+  let stat;
+  try {
+    stat = await fsp.stat(searchRoot);
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return { kbName, kbPath, filePaths: [], diagnostics: { failure_count: 0, failures: [] } };
+    }
+    throw error;
+  }
+  if (!stat.isDirectory()) {
+    return { kbName, kbPath, filePaths: [], diagnostics: { failure_count: 0, failures: [] } };
+  }
+
+  const enumeration = await getFilesRecursivelyWithDiagnostics(searchRoot);
+  return {
+    kbName,
+    kbPath,
+    filePaths: filterIngestablePaths(enumeration.files, kbPath, {
+      extraExtensions: options.extraExtensions ?? INGEST_EXTRA_EXTENSIONS,
+      excludePaths: options.excludePaths ?? INGEST_EXCLUDE_PATHS,
+    }),
+    diagnostics: enumeration.diagnostics,
+  };
+}
+
+function prefixSearchRelativeDir(
+  prefix: string,
+  prefixMode: ListKnowledgeBaseDocumentsOptions['prefixMode'],
+): string {
+  if (prefix.endsWith('/')) return prefix.slice(0, -1);
+  if (prefixMode === 'resource-prefix') {
+    const segments = prefix.split('/');
+    return segments.length > 1 ? segments.slice(0, -1).join('/') : '';
+  }
+  return prefix;
 }
 
 function validateKbName(kbName: string): string {

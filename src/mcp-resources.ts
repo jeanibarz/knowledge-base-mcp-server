@@ -295,6 +295,7 @@ export async function listResources(options?: ListResourcesOptions): Promise<Lis
     prefix: normalizedOptions.prefix,
     prefixMode: 'resource-prefix',
     failOnEnumerationError: false,
+    skipMissingKb: true,
     ...(normalizedOptions.limit !== undefined
       ? { maxDocuments: normalizedOptions.offset + normalizedOptions.limit + 1 }
       : {}),

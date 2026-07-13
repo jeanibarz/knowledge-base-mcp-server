@@ -12,6 +12,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { resolveKnowledgeBaseDir } from './kb-fs.js';
 
 export const LS_SCHEMA_VERSION = 'kb.ls.v1';
+const FRONTMATTER_READ_BYTES = 8192;
 
 export const LS_HELP = `kb ls — list ingestable documents in one or all knowledge bases
 
@@ -199,11 +200,11 @@ function toShortDocument(document: KnowledgeBaseDocument): LsDocument {
 }
 
 async function toLongDocument(document: KnowledgeBaseDocument): Promise<LsDocument> {
-  const [stats, content] = await Promise.all([
+  const [stats, frontmatterContent] = await Promise.all([
     fsp.stat(document.absolutePath),
-    fsp.readFile(document.absolutePath, 'utf8'),
+    readFrontmatterPrefix(document.absolutePath),
   ]);
-  const frontmatter = parseFrontmatter(content).frontmatter;
+  const frontmatter = parseFrontmatter(frontmatterContent).frontmatter;
   return {
     ...toShortDocument(document),
     tier: frontmatterString(frontmatter.tier),
@@ -211,6 +212,17 @@ async function toLongDocument(document: KnowledgeBaseDocument): Promise<LsDocume
     type: frontmatterString(frontmatter.type),
     mtime: stats.mtime.toISOString(),
   };
+}
+
+async function readFrontmatterPrefix(filePath: string): Promise<string> {
+  const handle = await fsp.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(FRONTMATTER_READ_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await handle.close();
+  }
 }
 
 function frontmatterString(value: unknown): string | null {

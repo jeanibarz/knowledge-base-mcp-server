@@ -121,7 +121,7 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
     name: string;
     subcommand: Subcommand;
     args: string[];
-    assert: (result: RunResult) => void;
+    assert: (result: RunResult) => void | Promise<void>;
   }> = [
     {
       name: 'list emits a stable JSON array',
@@ -144,6 +144,31 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
           prefix: null,
           documents: [{ knowledgeBase: 'alpha', path: 'note.md' }],
         });
+      },
+    },
+    {
+      name: 'ls long JSON includes frontmatter metadata',
+      subcommand: 'ls',
+      args: ['ls', 'alpha', '--long', '--format=json'],
+      assert: async () => {
+        await corpus.writeFile(
+          'alpha/metadata.md',
+          '---\ntier: durable\nstatus: active\ntype: note\n---\n# Metadata\n',
+        );
+        const result = runCli(['ls', 'alpha', '--long', '--format=json']);
+        expect(result.code).toBe(0);
+        const body = parseStdoutJson(result) as {
+          documents: Array<Record<string, unknown>>;
+        };
+        expect(body.documents).toHaveLength(2);
+        expect(body.documents.find((document) => document.path === 'metadata.md')).toEqual(expect.objectContaining({
+          knowledgeBase: 'alpha',
+          path: 'metadata.md',
+          tier: 'durable',
+          status: 'active',
+          type: 'note',
+          mtime: expect.any(String),
+        }));
       },
     },
     {
@@ -356,8 +381,8 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
   ];
 
   describe.each(outputCases)('$name', ({ args, assert }) => {
-    it('exercises the representative output path', () => {
-      assert(runCli(args));
+    it('exercises the representative output path', async () => {
+      await assert(runCli(args));
     });
   });
 
