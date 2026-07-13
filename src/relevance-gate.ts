@@ -156,9 +156,13 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   }
 
   const hydratedCandidates = await hydrateSensitivityPoliciesFromSource(input.candidates);
+  // A second read is deliberately immediately before cache-key construction
+  // and lookup. A source may change while retrieval metadata is prepared; a
+  // stale public verdict must never be replayed for newly protected content.
+  const boundaryHydratedCandidates = await hydrateSensitivityPoliciesFromSource(hydratedCandidates);
   const effectiveInput: RelevanceGateInput<T> = {
     ...input,
-    candidates: hydratedCandidates,
+    candidates: boundaryHydratedCandidates,
   };
   let {
     rows,

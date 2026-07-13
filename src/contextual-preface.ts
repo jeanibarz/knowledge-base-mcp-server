@@ -12,8 +12,8 @@
 //   2. `resolveContextualPrefaces` — cache-then-LLM resolver. Reads the
 //      per-source sidecar under `withSidecarLock`, calls the LLM only for
 //      misses, and returns `(string | null)[]` aligned to the input
-//      `chunks` array. Failures land as `null`; the next reindex retries
-//      after a per-error backoff.
+//      `chunks` array. Policy-skipped chunks and failures land as `null`; only
+//      failures are retried after a per-error backoff.
 //   3. `persistContextualSidecars` — buffered sidecar writes. The CLI
 //      (M0b) flushes per-KB at end-of-KB; M0a's `buildChunkDocuments`
 //      flushes per-file inline since there's no run-orchestrator yet.
@@ -227,7 +227,12 @@ export async function resolveContextualPrefaces(
   let breakerTripped = false;
   let policyBoundaryBlocked = false;
   await mapBounded(pending, resolveContextualConcurrency(), async ({ index: i, chunkHash }) => {
-    if (breakerTripped || policyBoundaryBlocked) {
+    if (policyBoundaryBlocked) {
+      resolved[i] = null;
+      failures += 1;
+      return;
+    }
+    if (breakerTripped) {
       newEntries[i] = makeFailureEntry(i, chunkHash, 'llm_unreachable');
       resolved[i] = null;
       failures += 1;
@@ -247,6 +252,9 @@ export async function resolveContextualPrefaces(
         endpoint,
         documentBody: truncatedDoc,
         chunkText: args.chunks[i],
+        ...(verifyCurrentPolicy
+          ? { isLlmContextAllowed: () => currentSourceAllowsLlm(args.source) }
+          : {}),
       });
       if (result.model !== null) modelSeen = result.model;
       newEntries[i] = {
@@ -258,6 +266,12 @@ export async function resolveContextualPrefaces(
       resolved[i] = result.preface;
       llmCalls += 1;
     } catch (err) {
+      if (err instanceof ContextualPolicyBoundaryError) {
+        policyBoundaryBlocked = true;
+        resolved[i] = null;
+        failures += 1;
+        return;
+      }
       const errorCode = classifyLlmError(err);
       newEntries[i] = makeFailureEntry(i, chunkHash, errorCode);
       resolved[i] = null;
@@ -295,6 +309,13 @@ export async function resolveContextualPrefaces(
 async function currentSourceAllowsLlm(source: string): Promise<boolean> {
   const snapshot = await readLlmContextPolicy(source);
   return snapshot.readable && snapshot.valid && snapshot.policy?.no_llm_context !== true;
+}
+
+class ContextualPolicyBoundaryError extends Error {
+  constructor() {
+    super('source policy excluded contextual-preface LLM work');
+    this.name = 'ContextualPolicyBoundaryError';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -807,6 +828,7 @@ async function callPrefaceLlm(args: {
   endpoint: string;
   documentBody: string;
   chunkText: string;
+  isLlmContextAllowed?: () => Promise<boolean>;
 }): Promise<LlmCallResult> {
   const userMessage = buildUserMessage(args.documentBody, args.chunkText);
   const maxTokens = resolveContextualMaxTokens();
@@ -814,6 +836,9 @@ async function callPrefaceLlm(args: {
   let lastError: unknown = null;
   for (let attempt = 0; attempt <= CONTEXTUAL_RETRY_LIMIT; attempt += 1) {
     try {
+      if (args.isLlmContextAllowed !== undefined && !(await args.isLlmContextAllowed())) {
+        throw new ContextualPolicyBoundaryError();
+      }
       const result = await callChatCompletion({
         endpoint: args.endpoint,
         operation: 'preface',
@@ -830,6 +855,7 @@ async function callPrefaceLlm(args: {
       }
       return { preface: cleaned, model: result.model };
     } catch (err) {
+      if (err instanceof ContextualPolicyBoundaryError) throw err;
       lastError = err;
       if (attempt < CONTEXTUAL_RETRY_LIMIT) {
         // Honor a server-advised Retry-After (e.g. OpenRouter 429), capped at

@@ -127,13 +127,13 @@ export function embeddingText(doc: Document): string {
 **Flow:**
 
 1. Read `<faiss_index_path>/.contextual-prefaces/<kb-name>/<relative-path>.json` if present. **All reads and writes of this directory are wrapped in `withSidecarLock` from `src/write-lock.ts:135`** — the same primitive RFC 016 uses for docstore CAS. The per-model `withWriteLock` does not protect cross-model sidecar collisions on shared paths.
-2. For each eligible chunk (a source whose current policy does not set
-   `kb_policy.no_llm_context: true`):
+2. If the source is policy-excluded (its current policy sets
+   `kb_policy.no_llm_context: true`), return all `null` values without reading
+   or writing the contextual sidecar or calling the LLM. Otherwise, for each
+   eligible chunk:
    - Compute `chunkHash = sha256(chunk)`.
    - If sidecar has a record at index `i` with matching `chunkHash`, `chunkIndex == i`, **non-null `preface`**, matching `generator`, matching `model`, matching `documentHash`, matching `chunk_size` + `chunk_overlap` env values → cache hit; reuse.
    - Else → call the LLM (§4). On success, slot into the result. **On failure** (`preface: null`), do **not** mark this as a permanent cache hit; future runs treat it as retryable subject to a per-error retry-after deadline (§Failure modes).
-   - For a policy-excluded source, return `null` without reading/writing the
-     contextual sidecar or calling the LLM.
 3. Per-file sidecar writes happen **per-KB at the end of that KB's walk** (§5 step 6c), not per-file inline and not at end-of-run. The in-memory cost per run is bounded by the largest KB's sidecar buffer, not the whole corpus.
 
 Sidecar shape:

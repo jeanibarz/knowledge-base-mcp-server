@@ -34,7 +34,7 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
   // A UTF-8 BOM is not part of the document's frontmatter. Normalize it
   // before looking for the opening fence so a protected policy cannot be
   // hidden behind an editor-added BOM.
-  const normalizedContent = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+  const normalizedContent = content.replace(/^\uFEFF+/, '');
 
   // Opening fence must be `---\n` (or `---\r\n`) at byte 0.
   const openMatch = normalizedContent.match(/^---\r?\n/);
@@ -113,7 +113,7 @@ export function parseFrontmatterStrict(content: string): StrictParsedFrontmatter
     throw new Error('malformed frontmatter: note content must be text');
   }
 
-  const normalizedContent = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+  const normalizedContent = content.replace(/^\uFEFF+/, '');
   const openMatch = normalizedContent.match(/^---\r?\n/);
   if (!openMatch) {
     return { frontmatter: {}, body: content, hasFence: false };

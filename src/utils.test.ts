@@ -258,7 +258,7 @@ describe('parseFrontmatter', () => {
   });
 
   it('recognizes frontmatter after a UTF-8 BOM', () => {
-    const result = parseFrontmatter('\uFEFF---\nkb_policy:\n  no_llm_context: true\n---\nProtected body\n');
+    const result = parseFrontmatter('\uFEFF\uFEFF---\nkb_policy:\n  no_llm_context: true\n---\nProtected body\n');
     expect(result.frontmatter).toEqual({ kb_policy: { no_llm_context: 'true' } });
     expect(result.body).toBe('Protected body\n');
   });
