@@ -55,6 +55,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     // Each subcommand appears as a top-level entry in the new clean list.
     for (const sub of [
       'list',
+      'ls',
       'search',
       'open',
       'cite',
@@ -105,6 +106,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
   // for every registered subcommand on stdout with exit 0.
   describe.each([
     ['list', 'kb list'],
+    ['ls', 'kb ls'],
     ['search', 'kb search'],
     ['open', 'kb open'],
     ['cite', 'kb cite'],
@@ -218,6 +220,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     const names = manifest.commands.map((command) => command.name);
     expect(names).toEqual([
       'list',
+      'ls',
       'search',
       'open',
       'cite',

@@ -9,6 +9,7 @@ const cliPath = path.join(process.cwd(), 'build', 'cli.js');
 
 const SUBCOMMANDS = [
   'list',
+  'ls',
   'search',
   'open',
   'serve',
@@ -129,6 +130,20 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
       assert: (result) => {
         expect(result.code).toBe(0);
         expect(parseStdoutJson(result)).toEqual([{ name: 'alpha' }]);
+      },
+    },
+    {
+      name: 'ls emits a stable JSON document inventory',
+      subcommand: 'ls',
+      args: ['ls', 'alpha', '--format=json'],
+      assert: (result) => {
+        expect(result.code).toBe(0);
+        expect(parseStdoutJson(result)).toEqual({
+          schemaVersion: 'kb.ls.v1',
+          knowledgeBases: ['alpha'],
+          prefix: null,
+          documents: [{ knowledgeBase: 'alpha', path: 'note.md' }],
+        });
       },
     },
     {
@@ -352,6 +367,7 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
     expected: string;
   }> = [
     { subcommand: 'list', args: ['list', '--format=xml'], expected: 'invalid --format' },
+    { subcommand: 'ls', args: ['ls', '--format=xml'], expected: 'invalid --format' },
     { subcommand: 'search', args: ['search', 'alpha', '--threshold=nope'], expected: 'invalid --threshold' },
     { subcommand: 'open', args: ['open'], expected: 'missing <chunk-id' },
     { subcommand: 'serve', args: ['serve', '--bogus'], expected: 'unknown flag: --bogus' },
