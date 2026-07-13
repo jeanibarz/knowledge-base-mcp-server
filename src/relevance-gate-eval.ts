@@ -138,12 +138,14 @@ export function normalizeGateEvalFixture(input: unknown): GateEvalFixture {
     );
   }
 
+  const sourcePaths = normalizeSourcePaths(input.source_paths);
   return {
     epsilon: readOptionalPositiveNumber(input, 'epsilon') ?? DEFAULT_EPSILON,
     hasAnswerTolerance:
       readOptionalNonNegativeNumber(input, 'has_answer_tolerance') ?? DEFAULT_HAS_ANSWER_TOLERANCE,
     gateSim: normalizeGateSimConfig(input.gate_sim),
     cases,
+    ...(sourcePaths !== undefined ? { sourcePaths } : {}),
   };
 }
 
@@ -172,6 +174,19 @@ function normalizeGateSimConfig(raw: unknown): GateSimConfig {
     judgeInputCap:
       readOptionalPositiveInteger(raw, 'judge_input_cap') ?? DEFAULT_GATE_SIM_CONFIG.judgeInputCap,
   };
+}
+
+function normalizeSourcePaths(raw: unknown): ReadonlyMap<string, string> | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new Error('source_paths must be an object mapping fixture source names to files');
+  const sourcePaths = new Map<string, string>();
+  for (const [source, mapped] of Object.entries(raw)) {
+    if (source.trim() === '' || typeof mapped !== 'string' || mapped.trim() === '') {
+      throw new Error('source_paths must map non-empty source names to non-empty file paths');
+    }
+    sourcePaths.set(source, mapped);
+  }
+  return sourcePaths;
 }
 
 function normalizeCase(raw: unknown, n: number): GateEvalCase {

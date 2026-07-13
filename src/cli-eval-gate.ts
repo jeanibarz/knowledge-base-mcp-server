@@ -380,20 +380,12 @@ async function resolveLiveFixtureSources(
   for (const fixtureCase of fixture.cases) {
     for (const candidate of fixtureCase.candidates) {
       if (bySource.has(candidate.source)) continue;
+      if (fixture.sourcePaths === undefined) continue;
       const mappedSource = fixture.sourcePaths?.get(candidate.source);
-      if (fixture.sourcePaths !== undefined) {
-        if (mappedSource === undefined) continue;
-        try {
-          await fsp.access(mappedSource);
-          bySource.set(candidate.source, mappedSource);
-        } catch {
-          // Keep the source absent so sourcePathsForCandidates fails closed.
-        }
-        continue;
-      }
+      if (mappedSource === undefined) continue;
       try {
-        await fsp.access(candidate.source);
-        bySource.set(candidate.source, candidate.source);
+        await fsp.access(mappedSource);
+        bySource.set(candidate.source, mappedSource);
       } catch {
         // Keep the source absent so sourcePathsForCandidates fails closed.
       }

@@ -76,8 +76,13 @@ exits with code `2` — that is by design: a simulated M1 would be misleading.
 
 | File | Purpose |
 | --- | --- |
-| `queries.yml` | The labelled-queries fixture. Each case has `query`, `kb`, optional `task_context`, and a `gate_sim` block (the threshold surgery to apply). |
+| `queries.yml` | The labelled-queries fixture. Each case has `query`, `kb`, optional `task_context`, and a `gate_sim` block (the threshold surgery to apply). Its top-level `source_paths` map gives every symbolic candidate source an explicit on-disk provenance path for live runs. |
 | `grader-calibration.yml` | Grader/human agreement fixture used as an admissibility threshold for live M0 and M1 runs. |
+| `source-policy.md` | The policy-free provenance witness used by the committed fixture; it is not candidate content. |
+
+Live M0/M1 evaluation requires explicit `source_paths` provenance. Missing or
+unreadable mappings fail closed before any candidate content is sent to an LLM.
+Relative paths are resolved from the fixture directory by `kb eval-gate`.
 
 Use the shipped fixture as a starting point and add your own cases as the gate
 matures.

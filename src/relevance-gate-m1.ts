@@ -242,16 +242,22 @@ export interface PositionSwapProbe {
 
 function toJudgeCandidates(
   candidates: readonly GateEvalCandidate[],
-  fixtureSourcePaths?: ReadonlyMap<string, string>,
+  fixtureSourcePaths: ReadonlyMap<string, string>,
 ): RelevanceJudgeCandidate[] {
-  return candidates.map((c) => ({
-    id: c.id,
-    content: c.content,
-    metadata: {
-      source: fixtureSourcePaths?.get(c.source) ?? c.source,
-      fixture_source: c.source,
-    },
-  }));
+  return candidates.map((c) => {
+    const sourcePath = fixtureSourcePaths.get(c.source);
+    if (sourcePath === undefined) {
+      throw new Error(`missing M1 fixture source provenance for ${c.source}`);
+    }
+    return {
+      id: c.id,
+      content: c.content,
+      metadata: {
+        source: sourcePath,
+        fixture_source: c.source,
+      },
+    };
+  });
 }
 
 function toM1PolicySnippets(candidates: readonly RelevanceJudgeCandidate[]): M1Snippet[] {
@@ -445,7 +451,10 @@ function caseToGateCandidates(
   const denseDistanceById = new Map<string, number>();
   const lexicalHitIds = new Set<string>();
   c.candidates.forEach((cand, idx) => {
-    const sourcePath = fixtureSourcePaths.get(cand.source) ?? cand.source;
+    const sourcePath = fixtureSourcePaths.get(cand.source);
+    if (sourcePath === undefined) {
+      throw new Error(`missing M1 fixture source provenance for ${cand.source}`);
+    }
     const id = `${sourcePath}#${idx}`;
     candidates.push(new Document({
       pageContent: cand.content,
@@ -602,13 +611,9 @@ async function materializeFixtureSources(
           }
           continue;
         }
-        try {
-          await fsp.access(candidate.source);
-          bySource.set(candidate.source, candidate.source);
-          continue;
-        } catch {
-          // Test-only symbolic fixture source.
-        }
+        // Production callers must provide explicit provenance. Only tests
+        // that inject a fetch implementation may use policy-free synthetic
+        // witnesses for symbolic fixture source names.
         if (!allowSyntheticSources) continue;
         const filename = `${createHash('sha256').update(candidate.source).digest('hex')}.md`;
         const sourcePath = path.join(root, filename);
