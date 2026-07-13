@@ -20,9 +20,6 @@
 // report and never halts the implementation chain.
 
 import * as fsp from 'fs/promises';
-import { createHash } from 'crypto';
-import * as os from 'os';
-import * as path from 'path';
 import yaml from 'js-yaml';
 import { callChatCompletion, probeLlmEndpoint, type LlmChatMessage } from './llm-client.js';
 import {
@@ -198,9 +195,8 @@ export async function runEvalGate(rest: string[]): Promise<number> {
   let graderModel = 'offline-causal-model';
 
   if (mode === 'live' && endpoint !== undefined) {
-    let fixtureSources: LiveFixtureSources | null = null;
     try {
-      fixtureSources = await materializeLiveFixtureSources(fixture);
+      const fixtureSources = await resolveLiveFixtureSources(fixture);
       const live = await runLiveGateEval(
         fixture,
         calibration,
@@ -217,10 +213,6 @@ export async function runEvalGate(rest: string[]): Promise<number> {
       );
       mode = 'simulation';
       caseResults = runSimulatedGateEval(fixture);
-    } finally {
-      if (fixtureSources !== null) {
-        await fsp.rm(fixtureSources.root, { recursive: true, force: true });
-      }
     }
   } else {
     caseResults = runSimulatedGateEval(fixture);
@@ -367,43 +359,30 @@ interface LiveOptions {
 }
 
 interface LiveFixtureSources {
-  root: string;
   bySource: Map<string, string>;
 }
 
 /**
- * M0 fixtures normally use symbolic source names. Materialize those names as
- * empty, policy-free files so live evaluation exercises the same source-policy
- * boundary as production callers; preserve real paths so protected fixtures
- * fail closed rather than being replaced with public stand-ins.
+ * Resolve real fixture source paths for live evaluation. Symbolic or missing
+ * sources are deliberately omitted: source-policy verification must fail
+ * closed rather than turning missing provenance into a synthetic public file.
  */
-async function materializeLiveFixtureSources(
+async function resolveLiveFixtureSources(
   fixture: Pick<GateEvalFixture, 'cases'>,
 ): Promise<LiveFixtureSources> {
-  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-eval-gate-sources-'));
   const bySource = new Map<string, string>();
-  try {
-    for (const fixtureCase of fixture.cases) {
-      for (const candidate of fixtureCase.candidates) {
-        if (bySource.has(candidate.source)) continue;
-        try {
-          await fsp.access(candidate.source);
-          bySource.set(candidate.source, candidate.source);
-          continue;
-        } catch {
-          // Symbolic fixture source — create a readable policy-free file.
-        }
-        const filename = `${createHash('sha256').update(candidate.source).digest('hex')}.md`;
-        const sourcePath = path.join(root, filename);
-        await fsp.writeFile(sourcePath, '', 'utf-8');
-        bySource.set(candidate.source, sourcePath);
+  for (const fixtureCase of fixture.cases) {
+    for (const candidate of fixtureCase.candidates) {
+      if (bySource.has(candidate.source)) continue;
+      try {
+        await fsp.access(candidate.source);
+        bySource.set(candidate.source, candidate.source);
+      } catch {
+        // Keep the source absent so sourcePathsForCandidates fails closed.
       }
     }
-    return { root, bySource };
-  } catch (error) {
-    await fsp.rm(root, { recursive: true, force: true });
-    throw error;
   }
+  return { bySource };
 }
 
 function sourcePathsForCandidates(

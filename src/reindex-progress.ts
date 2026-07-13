@@ -31,6 +31,7 @@ import {
 } from './contextual-preface.js';
 import { writeFileAtomicDurable } from './file-utils.js';
 import { logger } from './logger.js';
+import { listKnowledgeBases } from './kb-fs.js';
 import { checkReindexRunState } from './reindex-runner.js';
 import { readLlmContextPolicy } from './sensitivity-policy.js';
 
@@ -191,6 +192,13 @@ export async function computeReindexProgress(
       : null;
 
   const names = new Set<string>(byKb.keys());
+  if (filter === null) {
+    try {
+      for (const name of await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR)) names.add(name);
+    } catch {
+      // A missing KB root means there is no indexed corpus to report.
+    }
+  }
   if (filter) for (const name of filter) names.add(name);
 
   const kbs: ReindexProgressKb[] = [];

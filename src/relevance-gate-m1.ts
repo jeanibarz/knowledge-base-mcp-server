@@ -264,7 +264,10 @@ export async function runPositionSwapProbe(
   options: M1RunOptions,
 ): Promise<PositionSwapProbe> {
   const results: PositionSwapCaseResult[] = [];
-  const fixtureSources = await materializeFixtureSources({ cases: [...cases] });
+  const fixtureSources = await materializeFixtureSources(
+    { cases: [...cases] },
+    options.fetchImpl !== undefined,
+  );
   try {
     for (const c of cases) {
       const candidates = toJudgeCandidates(c.candidates, fixtureSources.bySource);
@@ -557,13 +560,14 @@ interface MaterializedFixtureSources {
 }
 
 /**
- * M1 candidates use report-friendly symbolic source names rather than paths
- * on disk. Give the real gate an empty, policy-free source file to hydrate so
- * the canary exercises normal source verification without disabling the
- * production fail-closed boundary.
+ * M1 unit fixtures may use report-friendly symbolic source names rather than
+ * paths on disk. Tests that inject a fetch implementation may materialize
+ * those names as empty policy-free files; production runs omit that seam and
+ * leave missing provenance absent so the real gate fails closed.
  */
 async function materializeFixtureSources(
   fixture: Pick<GateEvalFixture, 'cases'>,
+  allowSyntheticSources: boolean,
 ): Promise<MaterializedFixtureSources> {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-m1-sources-'));
   const bySource = new Map<string, string>();
@@ -576,9 +580,9 @@ async function materializeFixtureSources(
           bySource.set(candidate.source, candidate.source);
           continue;
         } catch {
-          // Fixture sources are usually symbolic names, so materialize a
-          // policy-free file for the real gate's source verification.
+          // Test-only symbolic fixture source.
         }
+        if (!allowSyntheticSources) continue;
         const filename = `${createHash('sha256').update(candidate.source).digest('hex')}.md`;
         const sourcePath = path.join(root, filename);
         await fsp.writeFile(sourcePath, '', 'utf-8');
@@ -609,7 +613,10 @@ export async function runM1Canary(
   let synthesizedTaskContextCount = 0;
   let hasAnswerRecalled = 0;
   let distantRecalled = 0;
-  const fixtureSources = await materializeFixtureSources(fixture);
+  const fixtureSources = await materializeFixtureSources(
+    fixture,
+    options.fetchImpl !== undefined,
+  );
 
   try {
     for (const c of fixture.cases) {

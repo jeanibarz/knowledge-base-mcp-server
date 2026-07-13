@@ -2248,9 +2248,10 @@ Invocation:
 kb reindex status [--kb=<name>...] [--format=json]
 ```
 
-`kb reindex status` is a read-only command (RFC 017 #407). It rolls the
+`kb reindex status` is a reporting command (RFC 017 #407). It reads the
 contextual-preface sidecars under `$FAISS_INDEX_PATH/.contextual-prefaces/`
-into a per-KB / per-file progress ledger so an operator can see, after a
+and may clean up a stale reindex run-state file or write the durable progress
+ledger. It reports a per-KB / per-file snapshot so an operator can see, after a
 SIGINT, crash, or host reboot, which files completed their LLM preface work
 and which still need it.
 

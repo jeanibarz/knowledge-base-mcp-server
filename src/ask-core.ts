@@ -97,6 +97,8 @@ export interface AskExecutionArgs {
   refresh: boolean;
   timing: boolean;
   taskContext?: string;
+  /** Source paths represented in caller-supplied task context (REPL-internal). */
+  taskContextSourcePaths?: readonly string[];
   gate?: RelevanceGateOverride;
   /** Retrieval mode. Defaults to {@link DEFAULT_ASK_SEARCH_MODE} ('auto'). */
   searchMode?: SearchMode;
@@ -285,6 +287,14 @@ export interface AskEvidence {
   llmContextSourcePaths?: string[];
 }
 
+function askResultIdentity(result: SearchResultDocument): string {
+  const metadata = result.metadata as Record<string, unknown>;
+  return JSON.stringify([
+    chunkIdFromMetadata(metadata),
+    result.pageContent,
+  ]);
+}
+
 /**
  * Retrieval half of {@link executeAsk}: resolves the active embedding model and
  * returns the retrieved evidence. Split out so the interactive REPL (#649) can
@@ -396,9 +406,11 @@ export async function retrieveAskEvidence(
           return decision;
         });
         gateCandidates = gate.results;
-        const gatedSet = new Set(gateCandidates);
+        const allowedResultKeys = new Set(
+          [...gateCandidates, ...policyExcluded].map(askResultIdentity),
+        );
         results = results.filter((result) =>
-          policyExcluded.includes(result) || gatedSet.has(result),
+          allowedResultKeys.has(askResultIdentity(result)),
         );
         emitRelevanceGateDecision({
           process: 'mcp',
@@ -640,6 +652,7 @@ export async function answerWithEvidence(
       }, async () => {
         const assertPolicy = () => assertCurrentLlmContext(
           packedContext.included.map((snippet) => snippet.result.metadata),
+          args.taskContextSourcePaths,
         );
         await assertPolicy();
         return deps.callChatCompletion({
@@ -863,13 +876,16 @@ function markLlmContextExcluded(
 
 async function assertCurrentLlmContext(
   metadataList: readonly Record<string, unknown>[],
+  taskContextSourcePaths: readonly string[] = [],
 ): Promise<void> {
   const policyBySource = new Map<string, Promise<Awaited<ReturnType<typeof readLlmContextPolicy>>>>();
-  await Promise.all(metadataList.map(async (metadata) => {
+  const sources = new Set<string>(taskContextSourcePaths);
+  for (const metadata of metadataList) {
     const source = metadata.source;
-    if (typeof source !== 'string' || source.trim().length === 0) {
-      throw new AskPolicyBoundaryError();
-    }
+    if (typeof source !== 'string' || source.trim().length === 0) throw new AskPolicyBoundaryError();
+    sources.add(source);
+  }
+  await Promise.all([...sources].map(async (source) => {
     let sourcePolicyPromise = policyBySource.get(source);
     if (sourcePolicyPromise === undefined) {
       sourcePolicyPromise = readLlmContextPolicy(source);

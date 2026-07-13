@@ -154,6 +154,37 @@ describe('runM1Canary', () => {
     expect(result.caseDetails[0].judgeStatus).toBe('succeeded');
     expect(result.caseDetails[0].answerSourceKept).toBe(true);
   });
+
+  it('fails closed for missing production fixture provenance', async () => {
+    const m1Fixture: GateEvalFixture = {
+      epsilon: 0.1,
+      hasAnswerTolerance: 0,
+      gateSim: { scoreFloor: 0.95, noGoodAnswerFloor: 0.95, judgeInputCap: 10 },
+      cases: [{
+        name: 'missing source verification',
+        kb: 'codeops',
+        query: 'what is in the missing source',
+        taskContext: 'answer using the retrieved source',
+        bucket: 'has-answer',
+        fixtureClass: 'standard',
+        referenceAnswer: 'The source contains the answer.',
+        answerSources: ['definitely-missing.md'],
+        candidates: [{
+          id: 'c1',
+          source: '/definitely-missing-kb-source.md',
+          content: 'The source contains the answer.',
+          denseDistance: 0.1,
+          lexicalHit: false,
+        }],
+      }],
+    };
+
+    await expect(runM1Canary(m1Fixture, {
+      endpoint: 'http://m1.test/v1/chat/completions',
+      scoreFloor: 0.95,
+      floorSweepSpec: '0.80:1.10:0.05',
+    })).rejects.toThrow(/policy|provenance|source/i);
+  });
 });
 
 describe('decideGoNoGo', () => {

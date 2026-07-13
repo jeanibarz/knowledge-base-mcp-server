@@ -46,6 +46,7 @@ import {
 import { mapBounded } from './bounded-concurrency.js';
 import { resolveChunkSize } from './config/indexing.js';
 import { FAISS_INDEX_PATH } from './config/paths.js';
+import { resolveLlmProvider } from './config/llm-provider.js';
 import { KBError } from './errors.js';
 import { callChatCompletion, LlmClientError } from './llm-client.js';
 import { logger } from './logger.js';
@@ -160,7 +161,7 @@ export async function resolveContextualPrefaces(
   const nowMs = Date.now();
   const resolved: (string | null)[] = new Array(args.chunks.length);
   const newEntries: SidecarChunkEntry[] = new Array(args.chunks.length);
-  let modelSeen: string | null = existing?.model ?? null;
+  let modelSeen: string | null = resolveLlmProvider().model ?? existing?.model ?? null;
   let cacheHits = 0;
   let llmCalls = 0;
   let failures = 0;
@@ -186,6 +187,7 @@ export async function resolveContextualPrefaces(
       cached.chunk_hash === chunkHash &&
       existing.document_hash === args.documentHash &&
       existing.generator === GENERATOR_VERSION &&
+      sidecarModelMatchesCurrentProvider(existing.model) &&
       existing.chunk_size === chunkSize &&
       existing.chunk_overlap === chunkOverlap;
 
@@ -617,6 +619,7 @@ export async function classifyContextualSidecarChunks(
   const { chunkSize, chunkOverlap } = resolveChunkSize();
   if (
     sidecar.generator !== GENERATOR_VERSION ||
+    !sidecarModelMatchesCurrentProvider(sidecar.model) ||
     sidecar.chunk_size !== chunkSize ||
     sidecar.chunk_overlap !== chunkOverlap
   ) {
@@ -709,9 +712,22 @@ function isSidecarFile(value: unknown): value is SidecarFile {
   if (v.schema_version !== SIDECAR_SCHEMA_VERSION) return false;
   if (typeof v.source !== 'string' || typeof v.knowledge_base !== 'string') return false;
   if (typeof v.document_hash !== 'string' || typeof v.generator !== 'string') return false;
+  if (v.model !== null && typeof v.model !== 'string') return false;
   if (typeof v.chunk_size !== 'number' || typeof v.chunk_overlap !== 'number') return false;
   if (!Array.isArray(v.chunks)) return false;
   return v.chunks.every(isSidecarChunkEntry);
+}
+
+/**
+ * A local provider without an explicit model does not expose a stable model
+ * identifier before the first request; the response model recorded in the
+ * sidecar is therefore authoritative in that configuration. Remote providers
+ * and explicitly configured local models do expose a stable identifier, so a
+ * model change invalidates the sidecar before any cached preface is reused.
+ */
+function sidecarModelMatchesCurrentProvider(sidecarModel: string | null): boolean {
+  const configuredModel = resolveLlmProvider().model;
+  return configuredModel === undefined || sidecarModel === configuredModel;
 }
 
 function isSidecarChunkEntry(value: unknown): value is SidecarChunkEntry {

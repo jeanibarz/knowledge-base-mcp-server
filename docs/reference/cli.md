@@ -1166,12 +1166,12 @@ Options:
                         model with every KB co-located, so a partial
                         forced rebuild would orphan the other shelves'
                         vectors; cold backfills therefore remain global.
-                        --kb only narrows the chunk-count estimate and
-                        the cron-window guard arithmetic, and is
-                        validated against registered KBs (unknown name
-                        -> exit 2). Repeat for multiple KBs. Default:
-                        every registered KB. Status: limit the report to
-                        this KB.
+                        --kb validates a requested shelf but does not narrow
+                        the estimate or cron-window guard: both cover every
+                        registered KB because the actual update is global
+                        (unknown name -> exit 2). Repeat for multiple KBs.
+                        Default: every registered KB. Status: limit the
+                        report to this KB.
   --force               Bypass the LRA cron window guard AND the
                         self-runtime-budget guard. Required to start
                         a reindex inside 06:00-10:30 UTC or when the

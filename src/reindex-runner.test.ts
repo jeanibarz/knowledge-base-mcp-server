@@ -374,6 +374,35 @@ describe('cache-aware reindex estimate (#408)', () => {
     expect(result.contextual_estimate).toMatchObject({ cache_hits: 4, cold_chunks: 0 });
     expect(refreshMode).toEqual({ force: false });
   });
+
+  it('keeps --kb validation while estimating and refreshing the global corpus', async () => {
+    await writeManifest('alpha', 'warm', 2);
+    await writeManifest('beta', 'cold', 3);
+    const cp = (await import('./contextual-preface.js')) as ContextualPrefaceModule;
+    await writeSidecar(cp, 'alpha', 'warm', [
+      { chunk_index: 0, chunk_hash: 'h0', preface: 'ctx 0' },
+      { chunk_index: 1, chunk_hash: 'h1', preface: 'ctx 1' },
+    ]);
+    let refreshMode: { force: boolean } | null = null;
+
+    const result = await runner.runReindex({
+      knowledgeBases: ['alpha'],
+      force: true,
+      runUpdateIndex: async (args) => {
+        refreshMode = args;
+        return makeNeverRunSummary();
+      },
+    });
+
+    expect(result.kbs_attempted).toBe(2);
+    expect(result.contextual_estimate).toEqual({
+      total_chunks: 5,
+      cache_hits: 2,
+      retry_skips: 0,
+      cold_chunks: 3,
+    });
+    expect(refreshMode).toEqual({ force: true });
+  });
 });
 
 // ---------------------------------------------------------------------------

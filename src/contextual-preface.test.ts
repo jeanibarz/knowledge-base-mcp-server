@@ -41,6 +41,8 @@ beforeEach(async () => {
     KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
     KB_CONTEXTUAL_RETRIEVAL: process.env.KB_CONTEXTUAL_RETRIEVAL,
     KB_LLM_ENDPOINT: process.env.KB_LLM_ENDPOINT,
+    KB_LLM_PROVIDER: process.env.KB_LLM_PROVIDER,
+    KB_LLM_MODEL: process.env.KB_LLM_MODEL,
     KB_LLM_FAKE: process.env.KB_LLM_FAKE,
     KB_LOG_FORMAT: process.env.KB_LOG_FORMAT,
     KB_CONTEXTUAL_MAX_TOKENS: process.env.KB_CONTEXTUAL_MAX_TOKENS,
@@ -52,6 +54,8 @@ beforeEach(async () => {
   setEnv('KNOWLEDGE_BASES_ROOT_DIR', path.join(tempDir, 'kbs'));
   setEnv('KB_CONTEXTUAL_RETRIEVAL', 'on');
   setEnv('KB_LLM_ENDPOINT', 'http://127.0.0.1:0/v1/chat/completions');
+  setEnv('KB_LLM_PROVIDER', undefined);
+  setEnv('KB_LLM_MODEL', undefined);
   setEnv('KB_CONTEXTUAL_MAX_TOKENS', '120');
   for (const name of [
     'foo.md',
@@ -74,10 +78,10 @@ afterEach(async () => {
   await fsp.rm(tempDir, { recursive: true, force: true });
 });
 
-function llmResponse(content: string): Response {
+function llmResponse(content: string, model = 'mock-llm'): Response {
   return new Response(
     JSON.stringify({
-      model: 'mock-llm',
+      model,
       choices: [{ message: { content } }],
     }),
     { status: 200, headers: { 'content-type': 'application/json' } },
@@ -241,6 +245,30 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     const second = await resolveContextualPrefaces(args);
     expect(second).toEqual(['preface', 'preface']);
     expect(FETCH_MOCK).not.toHaveBeenCalled();
+  });
+
+  it('invalidates cached prefaces when the configured LLM model changes', async () => {
+    FETCH_MOCK.mockImplementation(async () => llmResponse('preface'));
+    const { resolveContextualPrefaces } = await loadModule();
+    const args = {
+      source: path.join(tempDir, 'note.md'),
+      knowledgeBaseName: 'alpha',
+      documentHash: 'doc-hash-v1',
+      documentBody: 'body',
+      chunks: ['chunk-a'],
+    };
+
+    await resolveContextualPrefaces(args);
+    FETCH_MOCK.mockClear();
+    setEnv('KB_LLM_MODEL', 'new-model');
+    FETCH_MOCK.mockImplementation(async () => llmResponse('preface', 'new-model'));
+    await resolveContextualPrefaces(args);
+
+    expect(FETCH_MOCK).toHaveBeenCalledTimes(1);
+    const sidecar = JSON.parse(
+      await fsp.readFile((await loadModule()).sidecarPathFor(args.source, args.knowledgeBaseName), 'utf-8'),
+    ) as { model?: string };
+    expect(sidecar.model).toBe('new-model');
   });
 
   it('invalidates the cache when documentHash changes', async () => {

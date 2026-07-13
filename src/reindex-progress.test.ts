@@ -221,6 +221,18 @@ describe('computeReindexProgress', () => {
     });
   });
 
+  it('includes indexed KBs with no sidecars in an unscoped report', async () => {
+    await writeManifests('beta', 2);
+    const result = await progress.computeReindexProgress();
+    expect(result.kbs).toHaveLength(1);
+    expect(result.kbs[0]).toMatchObject({
+      knowledge_base: 'beta',
+      files_indexed: 2,
+      files_with_sidecar: 0,
+      files_pending: 2,
+    });
+  });
+
   it('skips a corrupt sidecar instead of throwing', async () => {
     await writeSidecar('alpha', 'good.md', [{ preface: 'ctx' }]);
     const corruptDir = path.join(faissDir, '.contextual-prefaces', 'alpha');

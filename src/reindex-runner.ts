@@ -78,12 +78,13 @@ export const REINDEX_RUN_SCHEMA_VERSION = 'reindex-run.v1';
 
 export interface ReindexOptions {
   /**
-   * KB names used for the chunk-count estimate and the cron-window guard
-   * arithmetic — NOT a scoped rebuild. `updateIndex` is always invoked
-   * with an `undefined` (whole-corpus) scope; see `runManagerUpdateIndex`.
-   * A partial rebuild would orphan the other shelves' vectors in the
-   * single-index-per-model FAISS layout. Empty array means "every
-   * registered KB".
+   * KB names supplied by the CLI. They are validated in production, but the
+   * estimate, guard arithmetic, summary, and actual update all use every
+   * registered KB because `updateIndex` is always invoked with an `undefined`
+   * (whole-corpus) scope; see `runManagerUpdateIndex`. A partial rebuild would
+   * orphan the other shelves' vectors in the single-index-per-model FAISS
+   * layout. Empty array means "every registered KB". The `resolveKbs` test
+   * seam may return a deterministic scope.
    */
   knowledgeBases: readonly string[];
   /**
@@ -296,8 +297,8 @@ export async function checkReindexRunState(): Promise<{
 
 async function resolveKbsInScope(opts: ReindexOptions): Promise<string[]> {
   if (opts.resolveKbs) return opts.resolveKbs();
+  const registered = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
   if (opts.knowledgeBases.length > 0) {
-    const registered = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
     const missing = opts.knowledgeBases.filter((kb) => !registered.includes(kb));
     if (missing.length > 0) {
       throw new KBError(
@@ -305,9 +306,11 @@ async function resolveKbsInScope(opts: ReindexOptions): Promise<string[]> {
         `Unknown knowledge base(s): ${missing.join(', ')}. Run \`kb list\` to see registered KBs.`,
       );
     }
-    return [...opts.knowledgeBases];
   }
-  return listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+  // `--kb` is a validation/reporting hint only. The FAISS layout is one
+  // global index per model, so the update and its safety estimate must cover
+  // every registered shelf even when the caller names one shelf.
+  return registered;
 }
 
 /**
@@ -321,21 +324,8 @@ export async function estimateChunkCountForKbs(kbs: readonly string[]): Promise<
   let total = 0;
   for (const kb of kbs) {
     const indexDir = path.join(KNOWLEDGE_BASES_ROOT_DIR, kb, '.index');
-    let entries: Array<import('fs').Dirent> = [];
-    try {
-      entries = await fsp.readdir(indexDir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.chunks.json')) continue;
-      try {
-        const raw = await fsp.readFile(path.join(indexDir, entry.name), 'utf-8');
-        const parsed = JSON.parse(raw) as { chunks?: unknown };
-        if (Array.isArray(parsed.chunks)) total += parsed.chunks.length;
-      } catch {
-        // best-effort
-      }
+    for (const manifestPath of await collectChunkManifestPaths(indexDir)) {
+      total += await readManifestChunkCount(manifestPath);
     }
   }
   return total;

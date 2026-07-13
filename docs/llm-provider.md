@@ -69,8 +69,9 @@ the health GET for remote providers and judge readiness by the chat call alone.
 ## Privacy note
 
 With `openrouter`, the **content sent to the model leaves your machine** — for
-contextual prefaces that means each eligible source document body and chunk
-text are sent to OpenRouter.
+contextual prefaces that means up to the first 48,000 characters of each
+eligible source document body plus the current chunk text are sent to
+OpenRouter.
 Sources marked `kb_policy.no_llm_context: true` remain retrieval-only and are not
 sent. This is a deliberate shift from the local-first default; embeddings still
 run locally.

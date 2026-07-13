@@ -233,9 +233,11 @@ export async function runAskRepl(opts: RunAskReplOptions): Promise<number> {
         session.forceRescan = false;
       }
       await filterHistoryByCurrentPolicy(session.history);
+      const taskContextSourcePaths = session.history.flatMap((turn) => turn.sourcePaths ?? []);
       let streamed = false;
       const answerArgs: AskExecutionArgs = {
         ...buildTurnArgs(text, false, true),
+        ...(taskContextSourcePaths.length > 0 ? { taskContextSourcePaths } : {}),
         onAnswerToken: (token: string) => {
           streamed = true;
           output.write(token);
