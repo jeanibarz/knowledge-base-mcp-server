@@ -9,10 +9,11 @@ import {
   type KnowledgeBaseDocument,
 } from './kb-document-listing.js';
 import { parseFrontmatter } from './frontmatter.js';
-import { resolveKnowledgeBaseDir } from './kb-fs.js';
 
 export const LS_SCHEMA_VERSION = 'kb.ls.v1';
-const FRONTMATTER_READ_BYTES = 8192;
+// parseFrontmatter bounds JavaScript characters, while this reader bounds UTF-8
+// bytes. Four bytes per character covers the maximum UTF-8 width.
+const FRONTMATTER_READ_BYTES = 8192 * 4;
 
 export const LS_HELP = `kb ls — list ingestable documents in one or all knowledge bases
 
@@ -23,7 +24,7 @@ Lists one KB-relative path per ingestable, non-quarantined document. Without a
 positional KB, paths are prefixed with their knowledge-base name so output from
 multiple KBs remains unambiguous. The listing is read-only and follows the same
 ingest filters and quarantine state as MCP resources/list. Control characters in
-short paths are JSON-escaped so each document remains on one output line.
+short paths are escaped so each document remains on one output line.
 
 Options:
   --prefix=<path>       Restrict the listing to a KB-relative subtree.
@@ -134,10 +135,6 @@ export async function runLs(rest: string[] = []): Promise<number> {
 }
 
 export async function collectLsReport(options: CollectLsReportOptions): Promise<LsReport> {
-  if (options.kb !== undefined) {
-    await resolveKnowledgeBaseDir(options.rootDir, options.kb);
-  }
-
   const listing = await listKnowledgeBaseDocuments({
     rootDir: options.rootDir,
     ...(options.kb !== undefined ? { kbName: options.kb } : {}),
@@ -241,10 +238,22 @@ function hasLongFields(documents: readonly LsDocument[]): boolean {
 }
 
 function escapeTableCell(value: string): string {
-  return value.replaceAll('|', '\\|').replaceAll('\n', ' ');
+  return escapeControlCharacters(value).replaceAll('|', '\\|');
 }
 
 function escapeLinePath(value: string): string {
-  const encoded = JSON.stringify(value);
-  return encoded.slice(1, -1);
+  return escapeControlCharacters(value);
+}
+
+function escapeControlCharacters(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f\u2028\u2029]/gu, (character) => {
+    switch (character) {
+      case '\b': return '\\b';
+      case '\t': return '\\t';
+      case '\n': return '\\n';
+      case '\f': return '\\f';
+      case '\r': return '\\r';
+      default: return `\\u${character.codePointAt(0)!.toString(16).padStart(4, '0')}`;
+    }
+  });
 }

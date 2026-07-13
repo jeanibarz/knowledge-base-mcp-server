@@ -902,7 +902,7 @@ Lists one KB-relative path per ingestable, non-quarantined document. Without a
 positional KB, paths are prefixed with their knowledge-base name so output from
 multiple KBs remains unambiguous. The listing is read-only and follows the same
 ingest filters and quarantine state as MCP resources/list. Control characters in
-short paths are JSON-escaped so each document remains on one output line.
+short paths are escaped so each document remains on one output line.
 
 Options:
   --prefix=<path>       Restrict the listing to a KB-relative subtree.

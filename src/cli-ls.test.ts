@@ -189,7 +189,7 @@ describe('TS-CLI-857: report formatting', () => {
     const guidePath = path.join(rootDir, 'work', 'guide.md');
     await fsp.writeFile(
       guidePath,
-      '---\ntier: durable\nstatus: active\ntype: guide\n---\n# Guide\n',
+      `---\ntier: durable\nstatus: active\ntype: guide\npadding: ${'界'.repeat(3000)}\n---\n# Guide\n`,
       'utf8',
     );
     const expectedMtime = new Date('2026-07-13T08:00:00.000Z');
@@ -254,5 +254,29 @@ describe('TS-CLI-857: report formatting', () => {
       scopedKb: 'work',
       documents: [{ knowledgeBase: 'work', path: 'odd\nname.md' }],
     }, 'md')).toBe('odd\\nname.md\n');
+
+    expect(formatLsReport({
+      knowledgeBases: ['work'],
+      prefix: null,
+      scopedKb: 'work',
+      documents: [{ knowledgeBase: 'work', path: 'quote"and\\slash.md' }],
+    }, 'md')).toBe('quote"and\\slash.md\n');
+  });
+
+  it('escapes control characters in long markdown cells', () => {
+    const markdown = formatLsReport({
+      knowledgeBases: ['work'],
+      prefix: null,
+      scopedKb: 'work',
+      documents: [{
+        knowledgeBase: 'work',
+        path: 'odd\r\u001b[31m.md',
+        tier: 'durable',
+        status: null,
+        type: null,
+        mtime: '2026-07-13T08:00:00.000Z',
+      }],
+    }, 'md');
+    expect(markdown).toContain('odd\\r\\u001b[31m.md');
   });
 });
