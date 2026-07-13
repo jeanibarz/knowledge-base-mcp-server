@@ -1591,19 +1591,21 @@ describe('KnowledgeBaseServer handlers', () => {
       '---\ntags: [other]\n---\nHYBRID_FILTER_QUERY wrong result\n',
     );
     updateIndexMock.mockResolvedValue(undefined);
-    similaritySearchMock.mockResolvedValue([
-      {
-        pageContent: 'HYBRID_FILTER_QUERY dense candidate',
-        metadata: {
-          source: '/kb/dense.md',
-          relativePath: 'alpha/dense.md',
-          extension: '.md',
-          tags: ['other'],
-          chunkIndex: 0,
-        },
-        score: 0.1,
+    const denseCandidate = {
+      pageContent: 'HYBRID_FILTER_QUERY dense candidate',
+      metadata: {
+        source: '/kb/dense.md',
+        relativePath: 'alpha/dense.md',
+        extension: '.md',
+        tags: ['other'],
+        chunkIndex: 0,
       },
-    ]);
+      score: 0.1,
+    };
+    similaritySearchMock.mockImplementation(async (...args: unknown[]) => {
+      const filters = args[4] as { tags?: readonly string[] } | undefined;
+      return filters?.tags?.includes('adr') ? [] : [denseCandidate];
+    });
 
     const server = await freshServer();
     const result = await server['handleRetrieveKnowledge']({
@@ -1611,6 +1613,10 @@ describe('KnowledgeBaseServer handlers', () => {
       knowledge_base_name: 'alpha',
       search_mode: 'hybrid',
       tags: ['adr'],
+      extensions: ['.md'],
+      path_glob: 'runbooks/**',
+      since: '2020-01-01',
+      until: '2099-01-01',
     });
 
     expect(result.isError).toBeUndefined();
@@ -1619,11 +1625,18 @@ describe('KnowledgeBaseServer handlers', () => {
       40,
       Number.POSITIVE_INFINITY,
       'alpha',
-      expect.objectContaining({ tags: ['adr'] }),
+      expect.objectContaining({
+        extensions: ['.md'],
+        pathGlob: 'runbooks/**',
+        tags: ['adr'],
+        since: '2020-01-01',
+        until: '2099-01-01',
+      }),
       expect.any(Object),
     );
     const text: string = result.content[0].text;
     expect(text).toContain('HYBRID_FILTER_QUERY valid result');
+    expect(text).not.toContain('HYBRID_FILTER_QUERY dense candidate');
     expect(text).not.toContain('wrong result');
   });
 

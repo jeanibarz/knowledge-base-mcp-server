@@ -264,7 +264,32 @@ describe('runLexicalLeg', () => {
       hit(validSecondSource, 'runbooks/valid-second.md', '.md', ['adr'], 2.5),
       hit(validThirdSource, 'runbooks/valid-third.md', '.md', ['adr'], 2),
     ];
-    const index = makeFakeIndex({ numFiles: 1, hits, limitHits: true });
+    let metadataFresh = false;
+    const refresh = jest.fn(async () => {
+      metadataFresh = true;
+      return { added: 0, updated: 1, removed: 0, failed: 0, totalFiles: 1, totalChunks: hits.length };
+    });
+    const save = jest.fn(async () => {});
+    const query = jest.fn(async (_q: string, k: number, _options?: LexicalQueryOptions) => {
+      const candidates = metadataFresh
+        ? hits
+        : hits.map((candidate) => ({
+            ...candidate,
+            metadata: { ...candidate.metadata, tags: ['stale'] },
+          }));
+      return candidates.slice(0, k);
+    });
+    const index = {
+      idx: {
+        refresh,
+        save,
+        query,
+        numFiles: jest.fn(() => 1),
+      } as unknown as LexicalIndex,
+      refresh,
+      save,
+      query,
+    };
 
     const result = await runLexicalLeg({
       kbs: [{ kbName: 'kb-a', kbPath: path.join(root, 'kb-a') }],
@@ -283,6 +308,7 @@ describe('runLexicalLeg', () => {
 
     expect(index.refresh).toHaveBeenCalledTimes(1);
     expect(index.save).toHaveBeenCalledTimes(1);
+    expect(metadataFresh).toBe(true);
     expect(result.refreshed).toBe(1);
     expect(index.query).toHaveBeenCalledWith('q', 8, expect.objectContaining({ unit: 'chunk' }));
     expect(result.hits.map((h) => h.metadata.relativePath)).toEqual([
@@ -300,6 +326,21 @@ describe('runLexicalLeg', () => {
       undefined,
       'kb/runbooks/valid.md',
     ]);
+  });
+
+  it('caps filtered lexical overfetch at the shared hybrid fetch limit', async () => {
+    const index = makeFakeIndex({ numFiles: 1, hits: [], limitHits: true });
+
+    await runLexicalLeg({
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 51,
+      refresh: 'when-empty',
+      filters: { tags: ['adr'] },
+      loadIndex: async () => index.idx,
+    });
+
+    expect(index.query).toHaveBeenCalledWith('q', HYBRID_FETCH_CAP, expect.objectContaining({ unit: 'chunk' }));
   });
 
   it('serializes concurrent filtered refreshes for the same KB', async () => {

@@ -1702,6 +1702,42 @@ describe('runSearch timing guard (#331)', () => {
     expect(lexicalIndex.query).toHaveBeenCalledWith('query', 10, { unit: 'chunk' });
   });
 
+  it('serializes concurrent direct lexical refresh/save operations', async () => {
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+    const holdWrite = async (): Promise<void> => {
+      activeWrites += 1;
+      maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeWrites -= 1;
+    };
+    const lexicalIndex = {
+      numFiles: jest.fn(() => 1),
+      refresh: jest.fn(async () => {
+        await holdWrite();
+        return { added: 0, updated: 1, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 };
+      }),
+      save: jest.fn(async () => holdWrite()),
+      query: jest.fn(async () => []),
+    } as unknown as LexicalIndex;
+    const deps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => ({} as FaissIndexManager)),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'kb-cli-lock-853', kbPath: '/kb/kb-cli-lock-853' }]),
+      loadLexicalIndex: jest.fn(async () => lexicalIndex),
+      writeOutput: jest.fn(async () => {}),
+    } as unknown as RunSearchDeps;
+
+    const args = ['query', '--mode=lexical', '--refresh', '--format=compact', '--no-freshness'];
+    await expect(Promise.all([runSearch(args, deps), runSearch(args, deps)])).resolves.toEqual([0, 0]);
+
+    expect(lexicalIndex.refresh).toHaveBeenCalledTimes(2);
+    expect(lexicalIndex.save).toHaveBeenCalledTimes(2);
+    expect(maxActiveWrites).toBe(1);
+  });
+
   it('reports available KBs and the nearest suggestion for an unknown lexical scope', async () => {
     const deps: RunSearchDeps = {
       bootstrapLayout: jest.fn(async () => {}),
