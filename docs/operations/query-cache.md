@@ -21,7 +21,7 @@ Implementation anchors: `src/query-cache.ts::QueryEmbeddingCache`,
 | Task | Command or setting | Notes |
 | --- | --- | --- |
 | See per-request cache state | `kb search "query" --format=json --timing` | Inspect `query_cache` and `timing.query_cache*`. |
-| See runtime counters | `kb stats --format=json` | Inspect `.query_cache` for this process' hits, misses, bypasses, and corruptions; disk bytes are read from the cache directory. |
+| See runtime counters | `kb stats --format=json` | Inspect `.query_cache` for this process' hits, misses, bypasses, and corruptions; disk bytes use a running total initialized and periodically reconciled from the cache directory. |
 | Trace a request later | `KB_LOG_FORMAT=both LOG_FILE=/tmp/kb.log kb search "query"` | Read with `kb logs show --request-id=<id> --format=json`. |
 | Bypass one CLI search | `kb search "query" --no-cache` | Also supported by `kb related` and `kb compare`. |
 | Disable for a process | `KB_QUERY_CACHE=off kb search "query"` | Use for provider debugging or one-shot correctness probes. |
@@ -95,9 +95,12 @@ case. Because the query text is not written to disk, operators should use
 ## Disk-Budget Tuning
 
 `KB_QUERY_CACHE_DISK_MAX_MB` caps query-vector files per index path. The default
-is `64`. Budget enforcement happens after a successful cache write:
+is `64`. Budget enforcement happens after a successful cache write. The cache
+keeps a running total of vector bytes, initialized from one directory
+reconciliation and updated by write and eviction deltas. It periodically
+reconciles again, or reconciles immediately if accounting becomes unknown:
 
-1. The process lists `.f32` vector files under `cache/queries`.
+1. The process uses the running total unless a reconciliation is due.
 2. If total vector bytes exceed the budget, it deletes the oldest vector files
    by mtime.
 3. It also deletes the matching `.meta.json` sidecar for each pruned vector.

@@ -1,6 +1,6 @@
-import { describe, expect, it } from '@jest/globals';
-import * as fs from 'fs';
-import * as fsp from 'fs/promises';
+import { describe, expect, it, jest } from '@jest/globals';
+import fs from 'fs';
+import fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
@@ -17,6 +17,24 @@ async function tempIndexPath(prefix: string): Promise<string> {
 }
 
 const MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
+
+function rescanRerankDiskSizeBytes(indexPath: string): number {
+  const root = rerankScoreCacheRoot(indexPath);
+  let total = 0;
+  const walk = (dir: string): void => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(child);
+      } else if (entry.isFile() && entry.name.endsWith('.json')) {
+        total += fs.statSync(child).size;
+      }
+    }
+  };
+  walk(root);
+  return total;
+}
 
 describe('DiskTieredRerankScoreCache (#646)', () => {
   const itPosixNonRoot =
@@ -77,6 +95,44 @@ describe('DiskTieredRerankScoreCache (#646)', () => {
     }
   });
 
+  it('does not rescan the disk tree for each hot-path write', () => {
+    const indexPath = path.join(os.tmpdir(), `kb-rerank-cache-amortized-${process.pid}`);
+    const readdirSpy = jest.spyOn(fs, 'readdirSync');
+    try {
+      const cache = new DiskTieredRerankScoreCache({ indexPath, enabled: true });
+      const scansAfterConstruction = readdirSpy.mock.calls.length;
+
+      for (let index = 0; index < 40; index += 1) {
+        cache.set(MODEL, `query-${index}`, `candidate-${index}`, index / 100);
+      }
+
+      expect(readdirSpy.mock.calls.length).toBe(scansAfterConstruction);
+    } finally {
+      readdirSpy.mockRestore();
+      fs.rmSync(indexPath, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps incremental byte accounting aligned with a ground-truth rescan', async () => {
+    const indexPath = await tempIndexPath('kb-rerank-cache-accounting-');
+    try {
+      const cache = new DiskTieredRerankScoreCache({ indexPath, enabled: true });
+      cache.set(MODEL, 'q1', 'first', 0.11);
+      expect(cache.diskSizeBytes()).toBe(rescanRerankDiskSizeBytes(indexPath));
+
+      cache.set(MODEL, 'q1', 'first', 123456789.12345678);
+      expect(cache.diskSizeBytes()).toBe(rescanRerankDiskSizeBytes(indexPath));
+
+      cache.set(MODEL, 'q2', 'second', 0.22);
+      expect(cache.diskSizeBytes()).toBe(rescanRerankDiskSizeBytes(indexPath));
+
+      cache.set(MODEL, 'q3', 'third', 0.33);
+      expect(cache.diskSizeBytes()).toBe(rescanRerankDiskSizeBytes(indexPath));
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
   it('enforces the disk size bound by evicting oldest entries', async () => {
     const indexPath = await tempIndexPath('kb-rerank-cache-evict-');
     try {
@@ -96,11 +152,14 @@ describe('DiskTieredRerankScoreCache (#646)', () => {
       });
 
       cache.set(MODEL, 'q1', 'first', 0.11);
+      expect(cache.diskSizeBytes()).toBe(rescanRerankDiskSizeBytes(indexPath));
       cache.set(MODEL, 'q2', 'second', 0.22);
+      expect(cache.diskSizeBytes()).toBe(rescanRerankDiskSizeBytes(indexPath));
       cache.set(MODEL, 'q3', 'third', 0.33);
 
       // Three entries exceed the ~2.5-entry bound, so the oldest (q1) is gone.
       expect(cache.diskSizeBytes()).toBeLessThanOrEqual(Math.floor(entryBytes * 2.5));
+      expect(cache.diskSizeBytes()).toBe(rescanRerankDiskSizeBytes(indexPath));
       expect(cache.get(MODEL, 'q1', 'first')).toBeNull();
       expect(cache.get(MODEL, 'q3', 'third')).toBe(0.33);
     } finally {
