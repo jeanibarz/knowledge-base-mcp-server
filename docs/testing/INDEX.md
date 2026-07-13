@@ -327,6 +327,14 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - Judge failures (timeout, non-JSON, bad model id) shall degrade to retrieval rather than failing the search.
 - `KB_GATE_EMPTY_VERDICT=on` shall let the gate return an empty set; the default `off` shall fall back to the pre-gate top-k.
 
+### TS-GATE-852: Hybrid Lexical-Only Relevance Scoring
+**Requirement:** FR-GATE-852
+
+**Test Cases:**
+- `applyRelevanceGate` shall keep lexical-only hybrid candidates outside the dense-distance A2 knee when the dense-distance map is partial.
+- `applyRelevanceGate` shall apply the dense A1 score floor to recorded dense distances while preserving candidates that have only lexical evidence.
+- The endpoint-unset and Stage-B-degraded paths shall preserve lexical-only candidates while applying the knee only to candidates with dense distances.
+
 ### TS-GATE-422: Untrusted Task-Context Policy
 **Requirement:** FR-GATE-422
 

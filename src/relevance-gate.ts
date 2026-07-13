@@ -208,11 +208,23 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
     survivors = [];
     judge = { status: 'skipped', reason: 'all candidates excluded by no_llm_context policy' };
   } else if (!hasTaskSignal(taskContext, config.minTaskContextTokens)) {
-    afterA1 = applyA1(gateRows, effectiveInput.denseDistanceById, config.scoreFloor, dropped);
+    afterA1 = applyA1(
+      gateRows,
+      effectiveInput.denseDistanceById,
+      config.scoreFloor,
+      dropped,
+      lexicalHitIds,
+    );
     survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
     judge = { status: 'skipped', reason: 'task_context absent or too short' };
   } else if (config.judgeEndpoint === undefined) {
-    afterA1 = applyA1(gateRows, effectiveInput.denseDistanceById, config.scoreFloor, dropped);
+    afterA1 = applyA1(
+      gateRows,
+      effectiveInput.denseDistanceById,
+      config.scoreFloor,
+      dropped,
+      lexicalHitIds,
+    );
     survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
     judge = { status: 'failed', reason: 'KB_GATE_LLM_ENDPOINT unset; degraded to A2' };
   } else {
@@ -222,7 +234,13 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
     effectiveInput.candidates = await hydrateSensitivityPoliciesFromSource(effectiveInput.candidates);
     ({ rows, policyExcludedRows, gateRows, lexicalHitIds } = partitionCandidates(effectiveInput));
     cacheKey = buildCacheKey(effectiveInput, config, lexicalHitIds);
-    afterA1 = applyA1(gateRows, effectiveInput.denseDistanceById, config.scoreFloor, dropped);
+    afterA1 = applyA1(
+      gateRows,
+      effectiveInput.denseDistanceById,
+      config.scoreFloor,
+      dropped,
+      lexicalHitIds,
+    );
     if (gateRows.length === 0) {
       survivors = [];
       judge = { status: 'skipped', reason: 'all candidates excluded by no_llm_context policy' };
@@ -348,10 +366,17 @@ function applyA1<T extends RelevanceGateCandidate>(
   denseDistanceById: ReadonlyMap<string, number> | undefined,
   scoreFloor: number,
   dropped: DropRecord[],
+  lexicalHitIds: ReadonlySet<string>,
 ): CandidateRow<T>[] {
   const survivors: CandidateRow<T>[] = [];
   const stageDrops: DropRecord[] = [];
   for (const row of rows) {
+    if (isLexicalOnlyRow(row, denseDistanceById, lexicalHitIds)) {
+      // A lexical-only hit has no L2 distance. Keep it as independent lexical
+      // evidence instead of silently treating its fused rank as a distance.
+      survivors.push(row);
+      continue;
+    }
     const distance = denseDistanceById?.get(row.id);
     if (distance === undefined) {
       survivors.push(row);
@@ -385,14 +410,24 @@ function applyA2<T extends RelevanceGateCandidate>(
   denseDistanceById?: ReadonlyMap<string, number>,
 ): CandidateRow<T>[] {
   if (rows.length <= 1) return rows;
-  const scored = rows.map((row) => ({
+
+  const scoredRows = denseDistanceById === undefined
+    ? rows
+    : rows.filter((row) => denseDistanceById.has(row.id));
+
+  // A2's knee detector is defined over L2 distances. In hybrid mode, rows
+  // without a dense distance are lexical-only (or otherwise unscored) and
+  // must not distort that distribution with their fused-array position.
+  if (scoredRows.length <= 1) return rows;
+
+  const scored = scoredRows.map((row) => ({
     row,
     score:
       denseDistanceById === undefined
         ? typeof row.result.score === 'number'
           ? row.result.score
           : row.originalIndex
-        : denseDistanceById.get(row.id) ?? row.originalIndex,
+        : denseDistanceById.get(row.id)!,
   }));
   scored.sort((a, b) => a.score - b.score);
   const decision = computeAutoThreshold(scored.map((entry) => entry.score));
@@ -406,7 +441,20 @@ function applyA2<T extends RelevanceGateCandidate>(
       });
     }
   }
-  return rows.filter((row) => keepIds.has(row.id));
+  if (denseDistanceById === undefined) {
+    return rows.filter((row) => keepIds.has(row.id));
+  }
+  return rows.filter((row) => !denseDistanceById.has(row.id) || keepIds.has(row.id));
+}
+
+function isLexicalOnlyRow<T extends RelevanceGateCandidate>(
+  row: CandidateRow<T>,
+  denseDistanceById: ReadonlyMap<string, number> | undefined,
+  lexicalHitIds: ReadonlySet<string>,
+): boolean {
+  return denseDistanceById !== undefined
+    && lexicalHitIds.has(row.id)
+    && !denseDistanceById.has(row.id);
 }
 
 async function applyStageB<T extends RelevanceGateCandidate>(input: {

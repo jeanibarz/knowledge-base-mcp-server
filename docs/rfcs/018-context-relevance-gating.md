@@ -122,6 +122,8 @@ The statistical relevance decision when there is no usable task context. Reuses 
 
 **Input-contract caveat (round-1/2 finding).** `computeAutoThreshold` was designed for a raw FAISS top-K list; the gate feeds it a post-A1 survivor list that may be small or flat. M0a pins and unit-tests A2 on survivor lists of size 1, 2, 3 and flat distributions: size 1 → keep it; flat → keep all. **A2 alone never empties the set.**
 
+In hybrid mode, `denseDistanceById` is intentionally partial: lexical-only candidates have no L2 distance. A2 computes its knee only from candidates with recorded dense distances and preserves rows absent from that map; it never substitutes a fused-array position for a dense distance.
+
 ### 5. Stage B — LLM relevance judge
 
 Runs when `task_context` is present and above the minimum-signal threshold. **One batched LLM call** sees the task context, the query, and the surviving candidates (up to `KB_GATE_JUDGE_INPUT` = 10; if more survive A1, the lowest-ranked overflow is **kept un-judged**, never silently dropped — recorded with `stage: "B-input-overflow"`, consistent with bias-toward-keep). It returns JSON:
@@ -270,7 +272,7 @@ This RFC delivers the kb-mcp-server mechanism; the Kookr-side hook is cross-repo
 | Stale `task_context` | none in-band — server cannot detect it | §11 freshness contract makes the hook responsible; documented silent-false-drop source. |
 | Degenerate / adversarial `task_context` | token count; ADR 0010 injection-guard over `task_context` + structural delimiting in the judge prompt | degenerate → statistical path; injected instructions inside delimited data regions are treated as data. |
 | Judge latency exceeds budget | `judge_degrade_rate` in `kb stats` + WARN alarm at 10% | default raised to 8000 ms; a persistently high rate is alarmed, not silent — `on` is then effectively the statistical path and the operator is told. |
-| Hybrid mode, candidates lack a dense leg | absent from `denseDistanceById` | A1 passes them; the BM25 floor + A2/B decide; the lexical leg is the §6 independent witness. |
+| Hybrid mode, candidates lack a dense leg | absent from `denseDistanceById` | A1 passes them and A2 excludes them from the dense-distance knee; Stage B may still judge them; the lexical leg is the §6 independent witness. |
 | `denseDistanceById` missing an expected dense-leg distance | gate asserts finite distance for dense-contributed ids | throws at the gate boundary (programmer error) rather than silently disabling A1. |
 | `computeAutoThreshold` fed a tiny/flat survivor list | — | M0a pins and tests A2 for sizes 1/2/3 and flat; A2 alone never empties the set. |
 | Gate-internal exception | caught at the gate boundary | degrade to passing the raw retrieval set through, `verdict: bypassed`, error logged. Retrieval never breaks. |
