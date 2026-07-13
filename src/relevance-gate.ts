@@ -86,6 +86,13 @@ interface DropRecord {
   reason: string;
 }
 
+interface CandidatePartition<T extends RelevanceGateCandidate> {
+  rows: CandidateRow<T>[];
+  policyExcludedRows: CandidateRow<T>[];
+  gateRows: CandidateRow<T>[];
+  lexicalHitIds: Set<string>;
+}
+
 interface CachedGateDecision {
   verdict: RelevanceGateVerdict;
   resultIds: Set<string>;
@@ -147,25 +154,20 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   }
 
   const hydratedCandidates = await hydrateSensitivityPoliciesFromSource(input.candidates);
+  // Re-read the source policy immediately before constructing cache keys and
+  // judge candidates. A file can change while retrieval metadata is being
+  // prepared; the latest observed policy must win at this LLM boundary.
+  const boundaryHydratedCandidates = await hydrateSensitivityPoliciesFromSource(hydratedCandidates);
   const effectiveInput: RelevanceGateInput<T> = {
     ...input,
-    candidates: hydratedCandidates,
+    candidates: boundaryHydratedCandidates,
   };
-  const rows = effectiveInput.candidates.map((candidate, originalIndex) => ({
-    id: chunkIdFromMetadata(candidate.metadata as Record<string, unknown>),
-    result: candidate,
-    originalIndex,
-  }));
-  const policyExcludedRows = rows.filter((row) =>
-    excludesLlmContext(row.result.metadata as Record<string, unknown>),
-  );
-  const gateRows = rows.filter((row) =>
-    !excludesLlmContext(row.result.metadata as Record<string, unknown>),
-  );
-  const gateRowIds = new Set(gateRows.map((row) => row.id));
-  const lexicalHitIds = new Set(
-    Array.from(effectiveInput.lexicalHitIds ?? []).filter((id) => gateRowIds.has(id)),
-  );
+  const {
+    rows,
+    policyExcludedRows,
+    gateRows,
+    lexicalHitIds,
+  } = partitionCandidates(effectiveInput);
 
   const cacheKey = buildCacheKey(effectiveInput, config, lexicalHitIds);
   const cached = verdictCache.get(cacheKey);
@@ -506,6 +508,27 @@ function replayVerdict<T extends RelevanceGateCandidate>(
     const id = chunkIdFromMetadata(candidate.metadata as Record<string, unknown>);
     return cached.resultIds.has(id);
   });
+}
+
+function partitionCandidates<T extends RelevanceGateCandidate>(
+  input: RelevanceGateInput<T>,
+): CandidatePartition<T> {
+  const rows = input.candidates.map((candidate, originalIndex) => ({
+    id: chunkIdFromMetadata(candidate.metadata as Record<string, unknown>),
+    result: candidate,
+    originalIndex,
+  }));
+  const policyExcludedRows = rows.filter((row) =>
+    excludesLlmContext(row.result.metadata as Record<string, unknown>),
+  );
+  const gateRows = rows.filter((row) =>
+    !excludesLlmContext(row.result.metadata as Record<string, unknown>),
+  );
+  const gateRowIds = new Set(gateRows.map((row) => row.id));
+  const lexicalHitIds = new Set(
+    Array.from(input.lexicalHitIds ?? []).filter((id) => gateRowIds.has(id)),
+  );
+  return { rows, policyExcludedRows, gateRows, lexicalHitIds };
 }
 
 function buildVerdict(input: {
