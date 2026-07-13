@@ -200,6 +200,8 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - Hybrid retrieval shall apply `extensions`, `path_glob`, `tags`, `since`, and `until` to lexical candidates before RRF fusion with the same AND semantics as dense retrieval.
 - Filtered lexical retrieval shall refresh current source metadata, use bounded overfetch, preserve lexical scores without applying the dense similarity threshold, and clip accepted hits to the requested fetch size.
 - The `retrieve_knowledge` hybrid handler shall exclude a lexical-only hit that violates the requested metadata filter.
+- `kb search --mode=hybrid` shall forward all five metadata filters to both the dense search and lexical pre-fusion leg.
+- Concurrent default lexical refresh/save operations in `kb eval` shall be serialized per KB across the shared temporary index path.
 
 ### TS-CLI-383: Machine-Readable Help Manifest
 **Requirement:** FR-CLI-383

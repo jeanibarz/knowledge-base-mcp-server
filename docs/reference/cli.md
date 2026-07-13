@@ -1448,20 +1448,20 @@ Output normally ends with a freshness footer (markdown) or staleness fields
 Scope:
   --kb=<name>           Scope to one knowledge base. Omit to search ALL KBs.
   --model=<id>          Override the active model for this call (RFC 013).
-  --since=<time>        Dense-only: keep chunks whose current source-file
+  --since=<time>        Dense/hybrid: keep chunks whose current source-file
                         mtime is at or after this bound. Accepts durations
                         like 30d/24h or ISO dates/timestamps.
-  --until=<time>        Dense-only: keep chunks whose current source-file
+  --until=<time>        Dense/hybrid: keep chunks whose current source-file
                         mtime is at or before this bound. File mtime can
                         differ from indexed-content time on stale indexes.
-  --tag=<name>          Dense-only: keep only chunks whose source file has
+  --tag=<name>          Dense/hybrid: keep only chunks whose source file has
                         the given tag in its YAML frontmatter. Repeatable;
                         multiple tags are ANDed (a chunk must carry ALL of
                         them), mirroring retrieve_knowledge.
-  --extension=<ext>     Dense-only: keep only chunks whose source file has
+  --extension=<ext>     Dense/hybrid: keep only chunks whose source file has
                         one of these extensions (e.g. .md, .pdf).
                         Case-insensitive; leading dot optional. Repeatable.
-  --path-glob=<glob>    Dense-only: keep only chunks whose KB-internal
+  --path-glob=<glob>    Dense/hybrid: keep only chunks whose KB-internal
                         relative path matches this glob (e.g. "runbooks/**").
                         The KB-name segment is stripped before matching.
 

@@ -1595,13 +1595,45 @@ describe('runSearch timing guard (#331)', () => {
     expect(out.stderr).toContain('--candidate-pool-k is only supported with --mode=hybrid');
   });
 
-  it('rejects metadata filters outside dense mode (#790)', async () => {
-    const { deps } = makeDeps();
+  it('forwards all metadata filters through both hybrid legs (#853)', async () => {
+    const { deps, manager } = makeDeps();
+    deps.listLexicalKbs = jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]);
+    deps.runLexicalLeg = jest.fn(async () => ({ refreshed: 0, failed: 0, hits: [] }));
 
-    const out = await captureSearchOutput(['query', '--mode=hybrid', '--tag=ops'], deps);
+    const out = await captureSearchOutput([
+      'query',
+      '--mode=hybrid',
+      '--tag=ops',
+      '--extension=.md',
+      '--path-glob=runbooks/**',
+      '--since=2026-06-01',
+      '--until=2026-06-02',
+      '--format=json',
+      '--no-freshness',
+    ], deps);
 
-    expect(out.code).toBe(2);
-    expect(out.stderr).toContain('--tag/--extension/--path-glob are only supported with --mode=dense');
+    expect(out.code).toBe(0);
+    const expectedFilters = {
+      extensions: ['.md'],
+      pathGlob: 'runbooks/**',
+      since: '2026-06-01',
+      tags: ['ops'],
+      until: '2026-06-02',
+    };
+    expect(manager.similaritySearch).toHaveBeenCalledWith(
+      'query',
+      40,
+      Number.POSITIVE_INFINITY,
+      undefined,
+      expectedFilters,
+      expect.any(Object),
+      { noCache: false, retrievalViews: undefined },
+    );
+    expect(deps.runLexicalLeg).toHaveBeenCalledWith(expect.objectContaining({
+      query: 'query',
+      fetchK: 40,
+      filters: expectedFilters,
+    }));
   });
 
   it('forwards metadata filters into dense similaritySearch (#790)', async () => {

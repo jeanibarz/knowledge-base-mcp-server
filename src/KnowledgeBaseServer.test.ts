@@ -2705,7 +2705,7 @@ describe('KnowledgeBaseServer handlers', () => {
       'Lists the available knowledge bases.'
     );
     expect(describeOf(server, 'retrieve_knowledge')).toBe(
-      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
+      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.'
     );
     expect(describeOf(server, 'ask_knowledge')).toContain('Answers a question from retrieved knowledge-base context');
     expect(describeOf(server, 'ask_knowledge')).toContain('abstention_reason');
@@ -2738,7 +2738,7 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(describeOf(server, 'list_knowledge_bases')).toBe('custom list desc');
     // retrieve_knowledge must not be affected by the list override.
     expect(describeOf(server, 'retrieve_knowledge')).toBe(
-      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
+      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.'
     );
   });
 
@@ -2750,7 +2750,7 @@ describe('KnowledgeBaseServer handlers', () => {
     const server = await freshServer();
 
     expect(describeOf(server, 'retrieve_knowledge')).toBe(
-      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned with a score below a threshold of 2. A different threshold can optionally be provided.'
+      'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.'
     );
     expect(describeOf(server, 'list_knowledge_bases')).toBe(
       'Lists the available knowledge bases.'

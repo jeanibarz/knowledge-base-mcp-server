@@ -259,8 +259,10 @@
 - [x] Given hybrid queries with `extensions`, `path_glob`, `since`, or `until`, when lexical-only hits violate the corresponding filter, then those hits shall be absent from the fused results.
 - [x] Given a filtered lexical leg, when the first lexical candidates are rejected, then the leg shall query a bounded larger candidate pool before clipping the valid results to its requested fetch size.
 - [x] Given hybrid retrieval documentation and inline comments, when metadata filters are described, then they shall state that filters apply before fusion and that the similarity threshold is not applied in hybrid mode.
+- [x] Given `kb search --mode=hybrid` metadata flags, when the CLI dispatches retrieval, then all five filters shall reach both the dense leg and the lexical pre-fusion leg.
+- [x] Given concurrent default lexical refreshes from `kb eval`, when they target the same KB, then refresh and save shall be serialized around the shared temporary index path.
 
-**Linked Tests:** TS-SEARCH-853 (`src/hybrid-retrieval.test.ts`, `src/KnowledgeBaseServer.test.ts`)
+**Linked Tests:** TS-SEARCH-853 (`src/hybrid-retrieval.test.ts`, `src/KnowledgeBaseServer.test.ts`, `src/cli-search.test.ts`, `src/retrieval-eval.test.ts`)
 **Dependencies:** FR-SEARCH-374
 
 ### NFR-CACHE-830: Conservative Disk Cache Read Failures
