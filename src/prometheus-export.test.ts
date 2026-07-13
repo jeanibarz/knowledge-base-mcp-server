@@ -31,6 +31,10 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('kb_search_request_duration_ms_sum{mode="dense",status="success"} 80');
     expect(text).toContain('kb_search_request_duration_ms_count{mode="dense",status="success"} 1');
     expect(text).toContain('kb_search_degraded_total{mode="hybrid",reason="provider_timeout"} 2');
+    expect(text).toContain('kb_answer_cache_hits_total 2');
+    expect(text).toContain('kb_answer_cache_misses_total 3');
+    expect(text).toContain('kb_answer_cache_outcomes_total{outcome="not_applicable"} 1');
+    expect(text).toContain('kb_answer_cache_disk_size_bytes 2048');
     expect(text).toContain('# TYPE kb_search_stage_duration_ms histogram');
     expect(text).toContain('kb_search_stage_duration_ms_bucket{le="30",mode="dense",stage="embed_query",status="success"} 1');
     expect(text).toContain('kb_search_stage_duration_ms_sum{mode="dense",stage="embed_query",status="success"} 12');
@@ -59,8 +63,23 @@ describe('formatKbStatsOpenMetrics', () => {
       ask: {
         count: 3,
         errors: 1,
+        attempts: 5,
+        retries: 2,
         prompt_tokens: 42,
         completion_tokens: 9,
+        cache_outcomes: { hit: 1, miss: 2 },
+        answer_impact: { used: 2, unknown: 1 },
+        attribution: [{
+          provider: 'openrouter',
+          model: 'deepseek',
+          count: 3,
+          errors: 1,
+          attempts: 5,
+          retries: 2,
+          prompt_tokens: 42,
+          completion_tokens: 9,
+          latency_ms: histogramSnapshot(80),
+        }],
         latency_ms: histogramSnapshot(80),
       },
       gate: {
@@ -79,8 +98,15 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('kb_llm_call_errors_total{operation="ask"} 1');
     expect(text).toContain('kb_llm_calls_total{operation="gate"} 1');
     expect(text).toContain('kb_llm_call_errors_total{operation="gate"} 0');
+    expect(text).toContain('kb_llm_attempts_total{operation="ask"} 5');
+    expect(text).toContain('kb_llm_retries_total{operation="ask"} 2');
+    expect(text).toContain('kb_llm_cache_outcomes_total{operation="ask",outcome="hit"} 1');
+    expect(text).toContain('kb_llm_answer_impact_total{impact="used",operation="ask"} 2');
     expect(text).toContain('kb_llm_tokens_total{operation="ask",token_type="completion"} 9');
     expect(text).toContain('kb_llm_tokens_total{operation="ask",token_type="prompt"} 42');
+    expect(text).toContain('kb_llm_attributed_calls_total{model="deepseek",operation="ask",provider="openrouter"} 3');
+    expect(text).toContain('kb_llm_attributed_attempts_total{model="deepseek",operation="ask",provider="openrouter"} 5');
+    expect(text).toContain('kb_llm_attributed_tokens_total{model="deepseek",operation="ask",provider="openrouter",token_type="completion"} 9');
     expect(text).not.toContain('token_type="gate"');
     expect(text).toContain('# TYPE kb_llm_call_latency_ms histogram');
     expect(text).toContain('kb_llm_call_latency_ms_bucket{le="100",operation="ask"} 1');
@@ -88,6 +114,8 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('kb_llm_call_latency_ms_sum{operation="ask"} 80');
     expect(text).toContain('kb_llm_call_latency_ms_sum{operation="gate"} 12');
     expect(text).toContain('kb_llm_call_latency_ms_count{operation="ask"} 1');
+    expect(text).toContain('# TYPE kb_llm_attributed_call_latency_ms histogram');
+    expect(text).toContain('kb_llm_attributed_call_latency_ms_bucket{le="100",model="deepseek",operation="ask",provider="openrouter"} 1');
   });
 
   it('emits provider token counters only when the provider reports token usage', () => {
@@ -98,6 +126,7 @@ describe('formatKbStatsOpenMetrics', () => {
 
     expect(text).toContain('# TYPE kb_provider_tokens_in counter');
     expect(text).toContain('kb_provider_tokens_in_total{model_id="ollama__nomic-embed-text-latest"} 42');
+    expect(text).toContain('kb_query_cache_outcomes_total{outcome="hit"} 5');
   });
 
   it('renders provider circuit-breaker state and open-transition counters (issue #747)', () => {
@@ -255,6 +284,14 @@ function samplePayload(): KbStatsPayload {
       corruptions: 0,
       l1_size: 4,
       disk_size_bytes: 1024,
+    },
+    answer_cache: {
+      hits: 2,
+      misses: 3,
+      writes: 3,
+      corruptions: 0,
+      disk_size_bytes: 2048,
+      outcomes: { hit: 2, miss: 3, not_applicable: 1 },
     },
     relevance_gate: {
       gated_queries: 2,

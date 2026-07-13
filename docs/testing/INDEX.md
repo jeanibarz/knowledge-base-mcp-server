@@ -95,6 +95,18 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `computeKbStats` and `kb doctor` shall expose the counters and token totals without turning query text or model strings into labels.
 - The OpenMetrics formatter shall emit `kb_llm_calls_total`, `kb_llm_call_errors_total`, `kb_llm_tokens_total`, and `kb_llm_call_latency_ms` with bounded labels.
 
+### TS-OBS-859: LLM attribution and workflow outcomes
+**Requirement:** FR-OBS-859
+
+**Test Cases:**
+- `LlmCallMetrics` shall normalize provider/model values into bounded attribution rows and keep logical calls separate from provider attempts and retries.
+- `callChatCompletion` shall record one logical call with the actual attempt and retry totals, including transient response-validation retries.
+- Ask, relevance-gate, and contextual-preface boundaries shall record cache outcomes and answer impact, while an answer-cache hit shall avoid a provider call.
+- Query and answer caches shall expose bounded hit/miss/not-applicable outcomes in their stats snapshots.
+- `kb_stats`, `kb stats`, and `kb doctor` shall render attempts, retries, cache outcomes, answer impact, and bounded provider/model attribution.
+- The OpenMetrics formatter shall emit the corresponding bounded operation, attribution, cache, impact, and cache-disk metric families without raw provider/model labels.
+- The retrieval audit shall document that no distinct `retrieval_summary` path exists and is not applicable.
+
 ### TS-OBS-835: Relevance-gate endpoint readiness
 **Requirement:** FR-OBS-835
 

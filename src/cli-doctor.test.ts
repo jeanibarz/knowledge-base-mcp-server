@@ -2423,8 +2423,14 @@ describe('kb doctor', () => {
           ok: true,
           promptTokens: 20,
           completionTokens: 7,
+          attempts: 2,
+          provider: 'openrouter',
+          model: 'deepseek-chat',
         });
         llmMetrics.record('gate', { latencyMs: 5, ok: false });
+        const { AnswerCache } = await import('./ask-answer-cache.js');
+        const answerCache = new AnswerCache({ enabled: false, indexPath: faissDir });
+        await answerCache.get('0'.repeat(64));
 
         const report = await buildDoctorReport({
           backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
@@ -2433,13 +2439,22 @@ describe('kb doctor', () => {
           packageVersion: '9.9.9',
           llmEndpointProbe: healthyLlmProbe,
           llmCallMetrics: llmMetrics,
+          answerCache,
         });
         expect(report.llm_calls?.ask).toMatchObject({ count: 1, errors: 0, prompt_tokens: 20 });
         expect(report.llm_calls?.gate).toMatchObject({ count: 1, errors: 1 });
+        expect(report.llm_calls?.ask).toMatchObject({
+          attempts: 2,
+          retries: 1,
+          attribution: [expect.objectContaining({ provider: 'openrouter', model: 'deepseek', attempts: 2 })],
+        });
+        expect(report.answer_cache?.outcomes).toEqual({ hit: 0, miss: 0, not_applicable: 1 });
         expect(report.checks.some((check) => check.name === 'llm_calls')).toBe(false);
         expect(formatDoctorMarkdown(report)).toContain(
           'operation=ask calls=1 errors=0 p95=29ms prompt_tokens=20 completion_tokens=7',
         );
+        expect(formatDoctorMarkdown(report)).toContain('attempts=2 retries=1');
+        expect(formatDoctorMarkdown(report)).toContain('Answer cache: hits=0 misses=0 writes=0');
       } finally {
         await fsp.rm(tempDir, { recursive: true, force: true });
       }

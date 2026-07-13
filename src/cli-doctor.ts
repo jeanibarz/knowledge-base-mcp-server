@@ -68,6 +68,7 @@ import {
   type KbStatsDenseSearchLatencySummary,
   type KbStatsPayload,
 } from './kb-stats.js';
+import { defaultAnswerCache, type AnswerCache, type AnswerCacheStats } from './ask-answer-cache.js';
 import {
   llmCallMetrics,
   providerCallMetrics,
@@ -490,6 +491,8 @@ export interface DoctorReport {
   provider_calls: Record<string, ProviderCallSnapshot>;
   /** Issue #831 — bounded chat-completion telemetry by ask/gate/preface operation. */
   llm_calls?: LlmCallMetricsSnapshot;
+  /** Issue #859 — answer-cache counters and workflow-boundary outcomes. */
+  answer_cache?: AnswerCacheStats;
   /**
    * Issue #747 — per-key snapshot of the shared provider circuit breaker
    * (embedding + LLM paths). Empty `[]` until a breaker has admitted a
@@ -518,6 +521,8 @@ export interface BuildDoctorReportOptions {
   providerCallMetrics?: ProviderCallMetrics;
   /** Issue #831 — test seam for chat-completion telemetry. */
   llmCallMetrics?: LlmCallMetrics;
+  /** Issue #859 — test seam for answer-cache telemetry. */
+  answerCache?: AnswerCache;
   /** Issue #747 — test seam for the shared provider circuit breaker registry. */
   providerBreaker?: ProviderBreakerRegistry;
   /** Issue #604 — test seam for daemon-served search latency telemetry. */
@@ -1639,6 +1644,8 @@ export async function buildDoctorReport(
   const providerCalls = metricsSource.snapshot();
   const llmMetricsSource = options.llmCallMetrics ?? llmCallMetrics;
   const llmCalls = llmMetricsSource.snapshot();
+  const answerCacheSource = options.answerCache ?? defaultAnswerCache;
+  const answerCache = await answerCacheSource.stats();
   // Issue #210 — only emit the row when at least one call has been
   // observed; otherwise the doctor on a fresh process would always show
   // a noisy "no telemetry yet" line.
@@ -1781,6 +1788,7 @@ export async function buildDoctorReport(
     reindex_trigger: reindexTrigger,
     provider_calls: providerCalls,
     llm_calls: llmCalls,
+    answer_cache: answerCache,
     provider_circuits: providerCircuits,
     dense_search_latency: denseSearchLatency,
     integrity,
@@ -2964,11 +2972,26 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
       const completionTokens = row.completion_tokens === null ? 'n/a' : String(row.completion_tokens);
       lines.push(
         `  operation=${operation} calls=${row.count} errors=${row.errors} ` +
-        `p95=${p95}ms prompt_tokens=${promptTokens} completion_tokens=${completionTokens}`,
+        `p95=${p95}ms prompt_tokens=${promptTokens} completion_tokens=${completionTokens} ` +
+        `attempts=${row.attempts ?? row.count} ` +
+        `retries=${row.retries ?? Math.max(0, (row.attempts ?? row.count) - row.count)} ` +
+        `cache_outcomes=${formatBoundedCounts(row.cache_outcomes)} ` +
+        `answer_impact=${formatBoundedCounts(row.answer_impact)} ` +
+        `attribution=${(row.attribution ?? [])
+          .map((entry) => `${entry.provider}/${entry.model}:${entry.count}/${entry.attempts}/${entry.retries}`)
+          .join(',') || 'none'}`,
       );
     }
   }
   lines.push('');
+  if (report.answer_cache !== undefined) {
+    const cache = report.answer_cache;
+    lines.push(
+      `Answer cache: hits=${cache.hits} misses=${cache.misses} writes=${cache.writes} ` +
+      `outcomes=${formatBoundedCounts(cache.outcomes)} disk_size_bytes=${cache.disk_size_bytes}`,
+    );
+    lines.push('');
+  }
   lines.push('Provider circuit breakers:');
   if (report.provider_circuits.length === 0) {
     lines.push('  (no provider breakers tracked)');
@@ -3028,6 +3051,12 @@ function formatBytes(bytes: number | null): string {
 function formatNullableBoolean(value: boolean | null): string {
   if (value === null) return 'unknown';
   return value ? 'yes' : 'no';
+}
+
+function formatBoundedCounts(counts: Record<string, number> | undefined): string {
+  if (counts === undefined) return 'none';
+  const entries = Object.entries(counts).sort(([a], [b]) => a.localeCompare(b));
+  return entries.length === 0 ? 'none' : entries.map(([key, value]) => `${key}=${value}`).join(',');
 }
 
 function formatReindexTriggerFreshness(

@@ -15,6 +15,7 @@ import {
   type RelevanceGateVerdict,
 } from './relevance-gate-schema.js';
 import { relevanceGateMetrics } from './relevance-gate-metrics.js';
+import { llmCallMetrics, type LlmCallMetrics } from './metrics.js';
 import {
   excludesLlmContext,
   normalizeKbSensitivityPolicy,
@@ -37,6 +38,8 @@ export interface RelevanceGateInput<T extends RelevanceGateCandidate = Relevance
   config?: RelevanceGateConfig;
   fetchImpl?: typeof fetch;
   process?: CanonicalProcess;
+  /** Optional workflow-metrics override; production uses the process singleton. */
+  llmMetrics?: LlmCallMetrics;
 }
 
 export interface RelevanceGateResult<T extends RelevanceGateCandidate = RelevanceGateCandidate> {
@@ -106,9 +109,11 @@ const verdictCache = new Map<string, CachedGateDecision>();
 export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   input: RelevanceGateInput<T>,
 ): Promise<RelevanceGateResult<T>> {
+  const llmMetrics = input.llmMetrics ?? llmCallMetrics;
   const config = input.config ?? resolveRelevanceGateConfig();
   const enabled = input.gateOverride === 'on' || (config.enabled && input.gateOverride !== 'off');
   if (!enabled) {
+    llmMetrics.recordCacheOutcome('gate', 'not_applicable');
     const verdict = buildVerdict({
       state: 'bypassed',
       inputCount: input.candidates.length,
@@ -132,6 +137,7 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   }
 
   if (input.candidates.length === 0) {
+    llmMetrics.recordCacheOutcome('gate', 'not_applicable');
     const verdict = buildVerdict({
       state: 'empty-index',
       inputCount: 0,
@@ -174,6 +180,8 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   let cacheKey = buildCacheKey(effectiveInput, config, lexicalHitIds);
   const cached = verdictCache.get(cacheKey);
   if (cached !== undefined) {
+    llmMetrics.recordCacheOutcome('gate', 'hit');
+    llmMetrics.recordAnswerImpact('gate', 'used');
     relevanceGateMetrics.record(cached.verdict, input.process);
     return {
       results: replayVerdict(effectiveInput.candidates, cached),
@@ -181,6 +189,10 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
       observability: cached.observability,
     };
   }
+
+  // A missing verdict is a workflow cache miss even when the gate later
+  // completes without invoking its optional LLM judge.
+  llmMetrics.recordCacheOutcome('gate', 'miss');
 
   const dropped: DropRecord[] = [];
   let afterA1: CandidateRow<T>[] = [];
@@ -224,6 +236,7 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
         config,
         seed: cacheKey,
         fetchImpl: input.fetchImpl,
+        llmMetrics,
       });
       survivors = judged.survivors;
       judge = judged.judge;
@@ -405,6 +418,7 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
   config: RelevanceGateConfig;
   seed: string;
   fetchImpl?: typeof fetch;
+  llmMetrics: LlmCallMetrics;
 }): Promise<{
   survivors: CandidateRow<T>[];
   judge: RelevanceGateVerdict['judge'];
@@ -443,6 +457,7 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
       },
     });
   } catch (err) {
+    input.llmMetrics.recordAnswerImpact('gate', 'not_used');
     return {
       survivors: input.rows,
       judge: { status: 'failed', reason: `judge failed; degraded to A2: ${(err as Error).message}` },
@@ -453,6 +468,8 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
       shuffledOrder: [],
     };
   }
+
+  input.llmMetrics.recordAnswerImpact('gate', 'used');
 
   if (result.overall === 'partial') {
     return {

@@ -12,6 +12,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS } from './config/contextual-preface.js';
+import { LlmCallMetrics } from './metrics.js';
 
 const FETCH_MOCK = jest.fn();
 
@@ -230,12 +231,14 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
   it('hits the cache on a second call with identical inputs', async () => {
     FETCH_MOCK.mockImplementation(async () => llmResponse('preface'));
     const { resolveContextualPrefaces } = await loadModule();
+    const llmMetrics = new LlmCallMetrics();
     const args = {
       source: path.join(tempDir, 'note.md'),
       knowledgeBaseName: 'alpha',
       documentHash: 'doc-hash-v1',
       documentBody: 'body',
       chunks: ['chunk-a', 'chunk-b'],
+      llmMetrics,
     };
 
     await resolveContextualPrefaces(args);
@@ -245,6 +248,11 @@ describe('resolveContextualPrefaces — LLM call + sidecar', () => {
     const second = await resolveContextualPrefaces(args);
     expect(second).toEqual(['preface', 'preface']);
     expect(FETCH_MOCK).not.toHaveBeenCalled();
+    expect(llmMetrics.snapshot().preface).toMatchObject({
+      count: 0,
+      cache_outcomes: { hit: 2, miss: 2 },
+      answer_impact: { not_used: 2 },
+    });
   });
 
   it('invalidates cached prefaces when the configured LLM model changes', async () => {

@@ -5,6 +5,7 @@ import * as path from 'path';
 
 import { executeAsk, type AskExecutionArgs, type RunAskCoreDeps } from './ask-core.js';
 import { AnswerCache } from './ask-answer-cache.js';
+import { LlmCallMetrics } from './metrics.js';
 
 interface ManagerResult {
   pageContent: string;
@@ -41,6 +42,7 @@ function makeDeps(
   answerCache: AnswerCache,
   manager: ReturnType<typeof makeManager>,
   callChatCompletion: jest.Mock,
+  llmMetrics: LlmCallMetrics = new LlmCallMetrics(),
 ): RunAskCoreDeps {
   return {
     bootstrapLayout: jest.fn(async () => {}),
@@ -50,6 +52,7 @@ function makeDeps(
     withWriteLock: (jest.fn(async <T>(_resource: string, action: () => Promise<T>) => action())) as RunAskCoreDeps['withWriteLock'],
     callChatCompletion: callChatCompletion as unknown as RunAskCoreDeps['callChatCompletion'],
     answerCache,
+    llmMetrics,
   };
 }
 
@@ -83,18 +86,24 @@ describe('executeAsk answer cache read-through (#656)', () => {
   it('serves an identical call from cache and invokes the LLM only once', async () => {
     const cache = new AnswerCache({ enabled: true, indexPath: dir });
     const call = jest.fn(async () => ({ content: 'cached answer', model: 'qwen3', raw: {} }));
+    const llmMetrics = new LlmCallMetrics();
 
     const source = path.join(dir, 'deploys.md');
-    const first = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('The deploy switched models.', source), call), Date.now());
+    const first = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('The deploy switched models.', source), call, llmMetrics), Date.now());
     expect(first.answer).toBe('cached answer');
     expect((first.timing as Record<string, unknown>).cache).toBe('miss');
 
-    const second = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('The deploy switched models.', source), call), Date.now());
+    const second = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('The deploy switched models.', source), call, llmMetrics), Date.now());
     expect(second.answer).toBe('cached answer');
     expect(second.llm.model).toBe('qwen3');
     expect((second.timing as Record<string, unknown>).cache).toBe('hit');
 
     expect(call).toHaveBeenCalledTimes(1);
+    expect(llmMetrics.snapshot().ask).toMatchObject({
+      count: 0,
+      cache_outcomes: { hit: 1, miss: 1 },
+      answer_impact: { used: 2 },
+    });
   });
 
   it('misses when the retrieved context changes', async () => {

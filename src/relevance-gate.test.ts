@@ -7,6 +7,7 @@ import type { RelevanceGateConfig } from './config/relevance-gate.js';
 import { chunkIdFromMetadata } from './rrf.js';
 import { RelevanceGateMetrics, relevanceGateMetrics } from './relevance-gate-metrics.js';
 import type { RelevanceGateVerdict } from './relevance-gate-schema.js';
+import { LlmCallMetrics } from './metrics.js';
 
 jest.mock('fs/promises', () => {
   const actual = jest.requireActual<typeof import('fs/promises')>('fs/promises');
@@ -213,6 +214,28 @@ describe('relevance gate', () => {
     expect(vetoed.results).toEqual(rows);
     expect(vetoed.verdict.state).toBe('injected');
     expect(vetoed.verdict.judge.reason).toContain('vetoed');
+  });
+
+  it('records gate cache outcomes and answer impact across a cached judge decision', async () => {
+    const rows = [candidate('/kb/metrics-cache.md', 0, 0.2, 'deployment rollback')];
+    const llmMetrics = new LlmCallMetrics();
+    const input = {
+      query: 'gate metrics cache',
+      taskContext: 'please answer a deployment rollback question with precise operational context',
+      candidates: rows,
+      config: config({ emptyVerdictEnabled: true }),
+      fetchImpl: fakeFetchJson('{"overall":"relevant","verdicts":[{"id":"/kb/metrics-cache.md#0","decision":"keep","reason":"rollback"}]}'),
+      llmMetrics,
+    };
+
+    await applyRelevanceGate(input);
+    await applyRelevanceGate(input);
+
+    expect(llmMetrics.snapshot().gate).toMatchObject({
+      count: 0,
+      cache_outcomes: { hit: 1, miss: 1 },
+      answer_impact: { used: 2 },
+    });
   });
 
   it('degrades to A2 when the judge fails or returns malformed JSON', async () => {

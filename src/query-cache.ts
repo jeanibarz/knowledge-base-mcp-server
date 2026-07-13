@@ -39,6 +39,12 @@ export interface QueryCacheStats {
   corruptions: number;
   l1_size: number;
   disk_size_bytes: number;
+  /** Coarse workflow-boundary outcomes; detailed L1/disk values remain above. */
+  outcomes?: {
+    hit: number;
+    miss: number;
+    not_applicable: number;
+  };
 }
 
 interface QueryCacheRecord {
@@ -117,6 +123,11 @@ export class QueryEmbeddingCache {
   private bypasses = 0;
   private writes = 0;
   private corruptions = 0;
+  private readonly outcomeCounts = {
+    hit: 0,
+    miss: 0,
+    not_applicable: 0,
+  };
 
   constructor(options: QueryCacheOptions = {}) {
     this.indexPath = options.indexPath ?? FAISS_INDEX_PATH;
@@ -142,24 +153,31 @@ export class QueryEmbeddingCache {
       status: QueryCacheLookupStatus,
       outcome: QueryCacheOutcome,
       enabled: boolean = this.enabled,
-    ): QueryCacheRecord => ({
-      embedding,
-      status,
-      telemetry: {
-        enabled,
-        outcome,
-        model_id: args.modelId,
-        elapsed_ms: Date.now() - startedAt,
-      },
-    });
+    ): QueryCacheRecord => {
+      return {
+        embedding,
+        status,
+        telemetry: {
+          enabled,
+          outcome,
+          model_id: args.modelId,
+          elapsed_ms: Date.now() - startedAt,
+        },
+      };
+    };
+    const recordOutcome = (outcome: 'hit' | 'miss' | 'not_applicable'): void => {
+      this.outcomeCounts[outcome] += 1;
+    };
 
     if (!this.enabled) {
       this.bypasses += 1;
+      recordOutcome('not_applicable');
       return record(await args.embed(), 'disabled', 'disabled', false);
     }
 
     if (args.bypass === true) {
       this.bypasses += 1;
+      recordOutcome('not_applicable');
       return record(await args.embed(), 'bypass', 'bypass');
     }
 
@@ -172,6 +190,7 @@ export class QueryEmbeddingCache {
     const memoryHit = this.l1.get(paths.cacheKey);
     if (memoryHit !== null) {
       this.hitsL1 += 1;
+      recordOutcome('hit');
       return record(memoryHit, 'hit_l1', 'memory_hit');
     }
 
@@ -179,10 +198,12 @@ export class QueryEmbeddingCache {
     if (diskHit !== null) {
       this.hitsDisk += 1;
       this.l1.set(paths.cacheKey, diskHit);
+      recordOutcome('hit');
       return record(diskHit.slice(), 'hit_disk', 'disk_hit');
     }
 
     this.misses += 1;
+    recordOutcome('miss');
     let pending = this.singleFlight ? this.inFlight.get(paths.cacheKey) : undefined;
     const ownsFlight = pending === undefined;
     if (pending === undefined) {
@@ -230,6 +251,7 @@ export class QueryEmbeddingCache {
       corruptions: this.corruptions,
       l1_size: this.l1.size,
       disk_size_bytes: this.diskBytes ?? 0,
+      outcomes: { ...this.outcomeCounts },
     };
   }
 

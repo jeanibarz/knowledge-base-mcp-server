@@ -98,6 +98,7 @@ describe('AnswerCache storage (#656)', () => {
     const stats = await cache.stats();
     expect(stats.writes).toBe(1);
     expect(stats.hits).toBe(1);
+    expect(stats.outcomes).toEqual({ hit: 1, miss: 1, not_applicable: 0 });
     expect(stats.disk_size_bytes).toBeGreaterThan(0);
   });
 
@@ -118,6 +119,7 @@ describe('AnswerCache storage (#656)', () => {
     await cache.set(key, { answer: 'a', model: null });
     expect(await cache.get(key)).toBeNull();
     expect(await fsp.readdir(answerCacheDir(dir)).catch(() => [])).toEqual([]);
+    expect((await cache.stats()).outcomes).toEqual({ hit: 0, miss: 0, not_applicable: 1 });
   });
 
   it('drops and misses on a corrupt entry', async () => {

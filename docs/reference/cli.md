@@ -1677,7 +1677,9 @@ Usage:
 Mirrors the MCP `kb_stats` payload for local shell use: per-KB file/chunk/byte
 counts, last-indexed time, embedding model, index path, and version context.
 Includes filesystem enumeration diagnostics, process-lifetime relevance-gate
-counters when the gate has run, chat-completion counters by operation, and a
+counters when the gate has run, chat-completion counters by operation with
+bounded provider/coarse-model attribution, attempts/retries, cache outcomes,
+and workflow-declared answer impact, plus answer-cache counters, and a
 Contextual Retrieval section with per-KB preface coverage and failure counts
 (by error code) when contextual-preface sidecars exist.
 Strictly read-only — does not refresh the index.

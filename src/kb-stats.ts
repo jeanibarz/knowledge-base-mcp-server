@@ -60,6 +60,7 @@ import {
   type ProviderCircuitSnapshot,
 } from './provider-breaker.js';
 import { queryEmbeddingCache, type QueryCacheStats } from './query-cache.js';
+import { defaultAnswerCache, type AnswerCache, type AnswerCacheStats } from './ask-answer-cache.js';
 import {
   relevanceGateMetrics,
   type RelevanceGateMetricsSnapshot,
@@ -143,6 +144,8 @@ export interface KbStatsPayload {
    * `computeKbStats` always emits the field.
    */
   llm_calls?: LlmCallMetricsSnapshot;
+  /** Issue #859 — process-lifetime answer-cache counters and coarse outcomes. */
+  answer_cache?: AnswerCacheStats;
   /**
    * Issue #597 — process-lifetime latency histograms for daemon-served
    * search requests and their bounded per-stage timings. Empty until this
@@ -214,6 +217,8 @@ export interface ComputeKbStatsOptions {
   metrics?: ProviderCallMetrics;
   /** Issue #831 — test seam for chat-completion telemetry. */
   llmMetrics?: LlmCallMetrics;
+  /** Issue #859 — test seam for answer-cache telemetry. */
+  answerCache?: AnswerCache;
   /** Issue #597 — test seam for daemon-served search latency telemetry. */
   searchMetrics?: SearchLatencyMetrics;
   /** Issue #689 — test seam for reranker-stage telemetry. */
@@ -303,6 +308,7 @@ export async function computeKbStats(
 
   const metricsSource = options.metrics ?? providerCallMetrics;
   const llmMetricsSource = options.llmMetrics ?? llmCallMetrics;
+  const answerCacheSource = options.answerCache ?? defaultAnswerCache;
   const searchMetricsSource = options.searchMetrics ?? searchLatencyMetrics;
   const rerankMetricsSource = options.rerankMetrics ?? rerankMetrics;
   const writeLockMetricsSource = options.writeLockMetrics ?? writeLockMetrics;
@@ -346,6 +352,7 @@ export async function computeKbStats(
     },
     provider_calls: metricsSource.snapshot(),
     llm_calls: llmMetricsSource.snapshot(),
+    answer_cache: await answerCacheSource.stats(),
     search_latency: searchMetricsSnapshot,
     query_cache: await queryEmbeddingCache.stats(),
     relevance_gate: relevanceGateMetrics.snapshot(),

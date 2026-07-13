@@ -28,6 +28,7 @@ import { logger } from './logger.js';
 export const ANSWER_CACHE_SCHEMA_VERSION = 'kb-answer-cache.v1';
 
 export type AnswerCacheStatus = 'hit' | 'miss' | 'disabled';
+export type AnswerCacheOutcome = 'hit' | 'miss' | 'not_applicable';
 
 /** One packed-context chunk reduced to its stable fingerprint inputs. */
 export interface AnswerContextChunk {
@@ -79,6 +80,8 @@ export interface AnswerCacheStats {
   writes: number;
   corruptions: number;
   disk_size_bytes: number;
+  /** One workflow-boundary outcome per answer-cache lookup. */
+  outcomes: Record<AnswerCacheOutcome, number>;
 }
 
 const ANSWER_CACHE_FILE_RE = /^[a-f0-9]{64}\.json$/;
@@ -136,6 +139,11 @@ export class AnswerCache {
   private misses = 0;
   private writes = 0;
   private corruptions = 0;
+  private readonly outcomeCounts: Record<AnswerCacheOutcome, number> = {
+    hit: 0,
+    miss: 0,
+    not_applicable: 0,
+  };
 
   constructor(options: AnswerCacheOptions = {}) {
     this.indexPath = options.indexPath ?? FAISS_INDEX_PATH;
@@ -144,7 +152,10 @@ export class AnswerCache {
   }
 
   async get(key: string): Promise<AnswerCacheRecord | null> {
-    if (!this.enabled) return null;
+    if (!this.enabled) {
+      this.outcomeCounts.not_applicable += 1;
+      return null;
+    }
     const file = this.entryPath(key);
     let raw: string;
     try {
@@ -152,6 +163,7 @@ export class AnswerCache {
     } catch {
       // A read failure may be transient; keep the entry for a later attempt.
       this.misses += 1;
+      this.outcomeCounts.miss += 1;
       return null;
     }
     let record: StoredAnswerRecord;
@@ -160,6 +172,7 @@ export class AnswerCache {
     } catch {
       await this.recordCorrupt(file);
       this.misses += 1;
+      this.outcomeCounts.miss += 1;
       return null;
     }
     if (
@@ -169,9 +182,11 @@ export class AnswerCache {
     ) {
       await this.recordCorrupt(file);
       this.misses += 1;
+      this.outcomeCounts.miss += 1;
       return null;
     }
     this.hits += 1;
+    this.outcomeCounts.hit += 1;
     // Best-effort LRU: touch mtime so the disk cap evicts least-recently-used.
     await fsp.utimes(file, new Date(), new Date()).catch(() => undefined);
     return {
@@ -223,6 +238,7 @@ export class AnswerCache {
       writes: this.writes,
       corruptions: this.corruptions,
       disk_size_bytes: await answerCacheDiskSizeBytes(this.indexPath),
+      outcomes: { ...this.outcomeCounts },
     };
   }
 

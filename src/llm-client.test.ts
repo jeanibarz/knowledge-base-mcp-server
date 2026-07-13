@@ -116,7 +116,10 @@ describe('llm-client', () => {
     expect(result.content).toBe('recovered');
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(delays).toEqual([50]);
-    expect(llmCallMetrics.snapshot().ask).toMatchObject({ count: 1, errors: 0 });
+    expect(llmCallMetrics.snapshot().ask).toMatchObject({ count: 1, errors: 0, attempts: 2, retries: 1 });
+    expect(llmCallMetrics.snapshot().ask?.attribution).toEqual([
+      expect.objectContaining({ provider: 'local', model: 'local', count: 1, attempts: 2, retries: 1 }),
+    ]);
   });
 
   it('runs the boundary guard before every retry attempt', async () => {
