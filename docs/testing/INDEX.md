@@ -193,6 +193,14 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `formatRetrievalAsJson` shall include `rerank_score` when a retrieval result carries a reranker score.
 - `kb eval` shall compare `KB_RERANK=off` and `KB_RERANK=on` ranked metrics before any default-on rollout.
 
+### TS-SEARCH-853: Hybrid Metadata Filter Correctness
+**Requirement:** FR-SEARCH-853
+
+**Test Cases:**
+- Hybrid retrieval shall apply `extensions`, `path_glob`, `tags`, `since`, and `until` to lexical candidates before RRF fusion with the same AND semantics as dense retrieval.
+- Filtered lexical retrieval shall refresh current source metadata, use bounded overfetch, preserve lexical scores without applying the dense similarity threshold, and clip accepted hits to the requested fetch size.
+- The `retrieve_knowledge` hybrid handler shall exclude a lexical-only hit that violates the requested metadata filter.
+
 ### TS-CLI-383: Machine-Readable Help Manifest
 **Requirement:** FR-CLI-383
 

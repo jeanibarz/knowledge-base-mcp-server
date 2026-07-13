@@ -1282,9 +1282,10 @@ export class KnowledgeBaseServer {
    *   scores use a BM25 scale. Metadata POST-filters are applied to both legs
    *   before fusion, so hybrid cannot return a lexical-only chunk outside the
    *   requested metadata boundary.
-   * - The lexical index is auto-refreshed on first use per KB (when empty).
-   *   `kb search --refresh` (CLI) is the explicit refresh path; the MCP
-   *   server keeps the dense `updateIndex` invariant from the dense path.
+   * - Unfiltered lexical retrieval is auto-refreshed on first use per KB
+   *   (when empty). Filtered hybrid retrieval refreshes every KB so persisted
+   *   tags, extensions, and paths reflect current source files; `kb search
+   *   --refresh` (CLI) remains the explicit unfiltered refresh path.
    * - Returns the same wire envelope as the dense handler with one added
    *   markdown header line `> _Mode: hybrid (RRF c=60)_` so an inspecting
    *   agent can attribute the ranking. JSON-shaped output is unchanged since

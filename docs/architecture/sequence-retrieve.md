@@ -53,8 +53,8 @@ index first. It then runs:
 - a dense FAISS leg against the selected model;
 - a lexical BM25 leg over the same KB scope;
 - metadata filters (`extensions`, `path_glob`, `tags`, `since`, and `until`)
-  applied to lexical candidates before fusion; the similarity threshold remains
-  dense-only;
+  applied to lexical candidates before fusion after refreshing filtered lexical
+  indexes; the similarity threshold remains dense-only;
 - Reciprocal Rank Fusion with `c=60`;
 - optional cross-encoder reranking when enabled;
 - the relevance gate when enabled.

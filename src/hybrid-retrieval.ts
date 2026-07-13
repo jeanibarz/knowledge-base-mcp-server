@@ -59,13 +59,19 @@
 
 import * as path from 'path';
 import type { Document } from '@langchain/core/documents';
-import { LexicalIndex, type LexicalRankingUnit, type LexicalSearchResult } from './lexical-index.js';
+import {
+  LexicalIndex,
+  lexicalIndexFilePath,
+  type LexicalRankingUnit,
+  type LexicalSearchResult,
+} from './lexical-index.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
 import { kbSearchFailureMetrics } from './metrics.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
 import type { RetrievalViewKind } from './retrieval-views.js';
+import { withWriteLock } from './write-lock.js';
 import {
   createSimilaritySearchPostFilter,
   type ScoredDocument,
@@ -316,9 +322,19 @@ export async function runLexicalLeg(opts: LexicalLegOptions): Promise<LexicalLeg
       const idx = await load(kbName, kbPath);
       const shouldRefresh = lexicalRefreshPolicy === 'always' || idx.numFiles() === 0;
       if (shouldRefresh) {
-        await idx.refresh();
-        await idx.save();
-        refreshed += 1;
+        const refreshAndSave = async (): Promise<void> => {
+          await idx.refresh();
+          await idx.save();
+          refreshed += 1;
+        };
+        if (opts.filters === undefined) {
+          await refreshAndSave();
+        } else {
+          // Filtered requests refresh persisted metadata. Serialize that
+          // refresh/save per KB because LexicalIndex.save uses one shared
+          // index.json.tmp path for atomic replacement.
+          await withWriteLock(path.dirname(lexicalIndexFilePath(kbName)), refreshAndSave);
+        }
       }
       const hits = await idx.query(opts.query, lexicalQueryK, {
         unit: opts.rankingUnit ?? 'chunk',
