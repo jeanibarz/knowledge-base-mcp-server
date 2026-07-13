@@ -145,6 +145,9 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `FaissIndexManager.updateIndex` shall retain a failed summary when save persistence throws.
 - `computeKbStats` shall include the manager's latest update summary in the payload.
 - `buildDoctorReport` and `formatDoctorMarkdown` shall include the latest update summary.
+- `formatKbStatsOpenMetrics` shall emit the bounded index-update timestamp, one-hot status, failure-count snapshot, and duration families for success, partial, failed, and never-run summaries.
+- `buildDoctorReport` shall grade partial, failed, non-zero-failure, warning, and skipped-file summaries as non-OK and keep fresh-index staleness non-OK; it shall retain an OK `index_update` check for clean and never-run summaries.
+- A fresh-process doctor report shall load a persisted partial summary and grade its `index_update` and `staleness` checks as non-OK.
 
 ### TS-OBS-315: Persisted Last Index Update Summary
 **Requirement:** FR-OBS-315

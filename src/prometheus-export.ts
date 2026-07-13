@@ -97,6 +97,34 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     emittedWhen: 'Always emitted.',
   },
   {
+    name: 'kb_index_last_update_timestamp_seconds',
+    type: 'gauge',
+    help: 'Unix timestamp of the latest completed index update, or 0 when no update has completed.',
+    labels: [],
+    emittedWhen: 'Always emitted from the latest index update summary.',
+  },
+  {
+    name: 'kb_index_update_status',
+    type: 'gauge',
+    help: 'One-hot status of the latest index update (1 for the current status, 0 otherwise).',
+    labels: ['status'],
+    emittedWhen: 'Always emitted once per bounded index update status.',
+  },
+  {
+    name: 'kb_index_update_failures',
+    type: 'gauge',
+    help: 'Failure count recorded by the latest index update; this is a snapshot, not a cumulative counter.',
+    labels: [],
+    emittedWhen: 'Always emitted from the latest index update summary.',
+  },
+  {
+    name: 'kb_index_update_duration_seconds',
+    type: 'gauge',
+    help: 'Duration of the latest completed index update in seconds, or 0 when unavailable.',
+    labels: [],
+    emittedWhen: 'Always emitted from the latest index update summary.',
+  },
+  {
     name: 'kb_provider_calls_total',
     type: 'counter',
     help: 'Embedding provider calls by model id.',
@@ -556,6 +584,7 @@ export function formatKbStatsOpenMetrics(
         name: 'kb_index_embedding_dimensions',
         value: payload.embedding.dim ?? 0,
       }]),
+    ...indexUpdateMetrics(payload.last_index_update),
     defineMetric('kb_provider_calls_total', Object.entries(payload.provider_calls).map(([modelId, snapshot]) => ({
         name: 'kb_provider_calls_total',
         labels: { model_id: modelId },
@@ -635,6 +664,48 @@ function providerLatencyMetrics(payload: KbStatsPayload): MetricDefinition[] {
       labels: { model_id: modelId },
       value: snapshot.latency_ms[field],
     }))));
+}
+
+const INDEX_UPDATE_STATUS_VALUES = {
+  success: true,
+  partial: true,
+  failed: true,
+  never_run: true,
+} satisfies Record<KbStatsPayload['last_index_update']['status'], true>;
+const INDEX_UPDATE_STATUSES = Object.keys(INDEX_UPDATE_STATUS_VALUES) as Array<
+  KbStatsPayload['last_index_update']['status']
+>;
+
+function indexUpdateMetrics(
+  summary: KbStatsPayload['last_index_update'],
+): MetricDefinition[] {
+  const finishedAtMs = summary.finished_at === null ? NaN : Date.parse(summary.finished_at);
+  const timestampSeconds = Number.isFinite(finishedAtMs)
+    ? Math.max(0, finishedAtMs / 1000)
+    : 0;
+  const durationSeconds = summary.duration_ms === null
+    ? 0
+    : Math.max(0, summary.duration_ms / 1000);
+
+  return [
+    defineMetric('kb_index_last_update_timestamp_seconds', [{
+      name: 'kb_index_last_update_timestamp_seconds',
+      value: timestampSeconds,
+    }]),
+    defineMetric('kb_index_update_status', INDEX_UPDATE_STATUSES.map((status) => ({
+      name: 'kb_index_update_status',
+      labels: { status },
+      value: summary.status === status ? 1 : 0,
+    }))),
+    defineMetric('kb_index_update_failures', [{
+      name: 'kb_index_update_failures',
+      value: Math.max(0, summary.failure_count),
+    }]),
+    defineMetric('kb_index_update_duration_seconds', [{
+      name: 'kb_index_update_duration_seconds',
+      value: durationSeconds,
+    }]),
+  ];
 }
 
 function llmCallCounterMetrics(snapshot: LlmCallMetricsSnapshot | undefined): MetricDefinition[] {

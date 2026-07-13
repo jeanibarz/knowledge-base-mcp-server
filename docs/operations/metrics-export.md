@@ -50,7 +50,7 @@ kb stats --format=openmetrics | curl --data-binary @- http://pushgateway:9091/me
 
 The output is pipe-clean on stdout (diagnostics go to stderr). It covers the
 process-derivable families — corpus (`kb_knowledge_base_*`), index
-(`kb_index_embedding_dimensions`, `kb_build_info`), provider
+(`kb_index_*`, `kb_build_info`), provider
 (`kb_provider_*`), chat LLM (`kb_llm_*` and bounded attribution), query and
 answer cache (`kb_query_cache_*`, `kb_answer_cache_*`), rerank
 (`kb_rerank_*`), search-latency, and relevance-gate counters.
@@ -86,7 +86,7 @@ The v1 exporter keeps labels bounded:
 | `provider` | `kb_provider_circuit_*` | configured embedding/LLM provider names |
 | `mode` | `kb_search_*` | `dense`, `lexical`, `hybrid`, `auto`, `unknown` |
 | `stage` | `kb_search_stage_duration_ms` | fixed search timing stage names |
-| `status` | `kb_search_*` | `success`, `error` |
+| `status` | `kb_index_update_status`, `kb_search_*` | index: `success`, `partial`, `failed`, `never_run`; search: `success`, `error` |
 | `resource_kind` | `kb_write_lock_*` | `active_index`, `model_index`, `other` |
 | `version`, `commit` | `kb_build_info` | one serving process build identity |
 
@@ -99,6 +99,7 @@ labels.
 |---|---|
 | `kb_build_info` | package version and source/build commit for the serving process |
 | `kb_knowledge_base_*` | file counts, chunk counts, indexed bytes, quarantine counts by KB |
+| `kb_index_*` | latest index-update completion timestamp, one-hot status, failure-count snapshot, and duration in seconds |
 | `kb_provider_call*` | provider call counts, errors, token totals when reported, p50/p95/p99 latency |
 | `kb_llm_*` | chat-completion logical call/error/attempt/retry counters, reported prompt/completion tokens, workflow cache outcomes, answer impact, and latency histograms by operation |
 | `kb_llm_attributed_*` | logical calls, attempts, retries, token totals, and latency grouped by bounded provider and coarse model family |

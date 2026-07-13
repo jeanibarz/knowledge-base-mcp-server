@@ -111,6 +111,21 @@ function persistedSuccessSummary(): IndexUpdateSummary {
   };
 }
 
+function partialIndexUpdateSummary(): IndexUpdateSummary {
+  return {
+    ...persistedSuccessSummary(),
+    status: 'partial',
+    finished_at: '2026-05-12T10:00:05.000Z',
+    failure_count: 37,
+    failures: [{
+      relative_path: 'failed.md',
+      phase: 'indexing',
+      code: 'EMBEDDING_FAILED',
+      message: 'embedding failed',
+    }],
+  };
+}
+
 async function healthyLlmProbe(endpoint: string) {
   return {
     endpoint,
@@ -391,6 +406,11 @@ describe('kb doctor', () => {
         status: 'ok',
         detail: expect.stringContaining('1 cache entry'),
       });
+      expect(report.checks).toContainEqual({
+        name: 'index_update',
+        status: 'ok',
+        detail: 'latest index update is success (scope=global, 0 failure(s))',
+      });
       expect(report.backend).toMatchObject({ healthy: true, detail: 'backend ok' });
       expect(report.last_index_update).toMatchObject({
         status: 'success',
@@ -457,9 +477,226 @@ describe('kb doctor', () => {
         status: 'ok',
         detail: expect.stringContaining('not recorded'),
       });
+      expect(report.checks).toContainEqual({
+        name: 'index_update',
+        status: 'ok',
+        detail: 'no completed index update recorded',
+      });
       const markdown = formatDoctorMarkdown(report);
       expect(markdown).toContain('Embedding canary:');
       expect(markdown).toContain('status: not_recorded');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('grades a partial rebuild and keeps fresh-index staleness non-ok', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-partial-index-update-'));
+    try {
+      const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+      const { buildDoctorReport, formatDoctorMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+        lastIndexUpdateSummary: partialIndexUpdateSummary(),
+      });
+
+      expect(report.status).toBe('warn');
+      expect(report.checks).toContainEqual({
+        name: 'index_update',
+        status: 'warn',
+        detail: 'latest index update is partial (scope=global, 37 failure(s))',
+      });
+      expect(report.checks).toContainEqual({
+        name: 'staleness',
+        status: 'warn',
+        detail: expect.stringContaining('latest index update is partial with 37 failure(s)'),
+      });
+      expect(formatDoctorMarkdown(report)).toMatch(/WARN\s+index_update:/);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('grades a non-zero failure count even when the summary status is success', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-index-update-failures-'));
+    try {
+      const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+      const summary = persistedSuccessSummary();
+      summary.failure_count = 2;
+      const { buildDoctorReport } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+        lastIndexUpdateSummary: summary,
+      });
+
+      expect(report.checks).toContainEqual({
+        name: 'index_update',
+        status: 'warn',
+        detail: 'latest index update is success (scope=global, 2 failure(s))',
+      });
+      expect(report.checks.find((check) => check.name === 'staleness')?.status).toBe('warn');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('grades a failed index update as an error and keeps staleness non-ok', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-failed-index-update-'));
+    try {
+      const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+      const summary = persistedSuccessSummary();
+      summary.status = 'failed';
+      summary.failure_count = 1;
+      summary.failures = [{
+        relative_path: 'failed.md',
+        phase: 'save',
+        code: 'INDEX_SAVE_FAILED',
+        message: 'index save failed',
+      }];
+      const { buildDoctorReport } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+        lastIndexUpdateSummary: summary,
+      });
+
+      expect(report.status).toBe('error');
+      expect(report.checks).toContainEqual({
+        name: 'index_update',
+        status: 'error',
+        detail: 'latest index update is failed (scope=global, 1 failure(s))',
+      });
+      expect(report.checks.find((check) => check.name === 'staleness')?.status).toBe('warn');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('grades deferred or skipped files as an incomplete index update', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-index-update-deferrals-'));
+    try {
+      const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+      const summary = persistedSuccessSummary();
+      summary.warning_count = 1;
+      summary.files_skipped = 1;
+      const { buildDoctorReport } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+        lastIndexUpdateSummary: summary,
+      });
+
+      expect(report.checks).toContainEqual({
+        name: 'index_update',
+        status: 'warn',
+        detail: 'latest index update is success (scope=global, 0 failure(s), 1 warning(s), 1 skipped file(s))',
+      });
+      expect(report.checks).toContainEqual({
+        name: 'staleness',
+        status: 'warn',
+        detail: expect.stringContaining(
+          'latest index update is success with 0 failure(s), 1 warning(s), 1 skipped file(s)',
+        ),
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('grades a persisted partial index update in a fresh doctor process', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-persisted-partial-update-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(path.join(rootDir, 'alpha'), { recursive: true });
+      await fsp.writeFile(path.join(rootDir, 'alpha', 'a.md'), 'alpha');
+      const modelDir = await seedRegisteredModel(faissDir);
+      await fsp.writeFile(
+        path.join(modelDir, 'last-index-update.json'),
+        JSON.stringify({
+          schema_version: 'kb.last-index-update.v1',
+          summary: partialIndexUpdateSummary(),
+        }),
+      );
+
+      const { buildDoctorReport, runDoctor } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        packageRoot: tempDir,
+        invokedPath: null,
+        packageVersion: '9.9.9',
+        llmEndpointProbe: healthyLlmProbe,
+      });
+
+      expect(report.last_index_update.status).toBe('partial');
+      expect(report.checks).toContainEqual({
+        name: 'index_update',
+        status: 'warn',
+        detail: 'latest index update is partial (scope=global, 37 failure(s))',
+      });
+      expect(report.checks.find((check) => check.name === 'staleness')?.status).toBe('warn');
+
+      const routed = await captureStdout(() => runDoctor(['--format=json']));
+      const routedReport = JSON.parse(routed.stdout) as {
+        status: string;
+        last_index_update: { status: string };
+        checks: Array<{ name: string; status: string }>;
+      };
+      expect(routed.code).toBe(routedReport.status === 'error' ? 1 : 0);
+      expect(routedReport).toMatchObject({
+        last_index_update: { status: 'partial' },
+        checks: expect.arrayContaining([
+          expect.objectContaining({ name: 'index_update', status: 'warn' }),
+        ]),
+      });
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }

@@ -1519,6 +1519,16 @@ export async function buildDoctorReport(
     detail: formatExtractionCacheCheckDetail(extractionCache),
   });
 
+  const lastIndexUpdate = options.lastIndexUpdateSummary
+    ?? (await FaissIndexManager.readPersistedIndexUpdateSummary(activeModelId))
+    ?? createNeverRunIndexUpdateSummary(activeModelId);
+  const indexUpdateStatus = indexUpdateCheckStatus(lastIndexUpdate);
+  checks.push({
+    name: 'index_update',
+    status: indexUpdateStatus,
+    detail: formatIndexUpdateCheckDetail(lastIndexUpdate),
+  });
+
   const staleResult = await computeStaleCountsByKb(
     activeModelId,
     index.mtime === null ? null : Date.parse(index.mtime),
@@ -1527,9 +1537,12 @@ export async function buildDoctorReport(
   const staleTotal = Object.values(staleCounts)
     .reduce((sum, row) => sum + row.modified_files + row.new_files, 0);
   const enumerationFailureCount = staleResult.filesystem.enumeration_failures.failure_count;
+  const indexUpdateNeedsAttention = indexUpdateStatus !== 'ok';
   checks.push({
     name: 'staleness',
-    status: staleTotal === 0 && enumerationFailureCount === 0 ? 'ok' : 'warn',
+    status: staleTotal === 0 && enumerationFailureCount === 0 && !indexUpdateNeedsAttention
+      ? 'ok'
+      : 'warn',
     detail: [
       staleTotal === 0
         ? 'no modified or new ingestable files detected'
@@ -1537,6 +1550,9 @@ export async function buildDoctorReport(
       ...(enumerationFailureCount === 0
         ? []
         : [`${enumerationFailureCount} filesystem enumeration failure(s)`]),
+      ...(indexUpdateNeedsAttention
+        ? [formatIndexUpdateAttentionDetail(lastIndexUpdate)]
+        : []),
     ].join('; '),
   });
 
@@ -1733,9 +1749,6 @@ export async function buildDoctorReport(
     symlinked_checkout_path: detectSymlinkedCheckoutPath(packageRoot, invokedPath),
   };
   const git = await readGitState(packageRoot);
-  const lastIndexUpdate = options.lastIndexUpdateSummary
-    ?? (await FaissIndexManager.readPersistedIndexUpdateSummary(activeModelId))
-    ?? createNeverRunIndexUpdateSummary(activeModelId);
   const reindexTrigger = await readReindexTriggerHealth(index.mtime);
   checks.push({
     name: 'reindex_trigger',
@@ -3071,6 +3084,37 @@ function formatReindexTriggerFreshness(
     return `trigger newer than active index (trigger=${triggerMtime}, index=${indexMtime})`;
   }
   return `trigger not newer than active index (trigger=${triggerMtime}, index=${indexMtime})`;
+}
+
+function indexUpdateCheckStatus(summary: IndexUpdateSummary): HealthStatus {
+  if (summary.status === 'failed') return 'error';
+  if (
+    summary.status === 'partial' ||
+    summary.failure_count > 0 ||
+    summary.warning_count > 0 ||
+    summary.files_skipped > 0
+  ) return 'warn';
+  return 'ok';
+}
+
+function formatIndexUpdateCheckDetail(summary: IndexUpdateSummary): string {
+  if (summary.status === 'never_run') {
+    return 'no completed index update recorded';
+  }
+  const scope = summary.scope ?? '<unknown scope>';
+  return `latest index update is ${summary.status} (scope=${scope}, ${formatIndexUpdateCounts(summary)})`;
+}
+
+function formatIndexUpdateAttentionDetail(summary: IndexUpdateSummary): string {
+  return `latest index update is ${summary.status} with ${formatIndexUpdateCounts(summary)}`;
+}
+
+function formatIndexUpdateCounts(summary: IndexUpdateSummary): string {
+  return [
+    `${summary.failure_count} failure(s)`,
+    ...(summary.warning_count > 0 ? [`${summary.warning_count} warning(s)`] : []),
+    ...(summary.files_skipped > 0 ? [`${summary.files_skipped} skipped file(s)`] : []),
+  ].join(', ');
 }
 
 function formatLastIndexUpdate(summary: IndexUpdateSummary): string {

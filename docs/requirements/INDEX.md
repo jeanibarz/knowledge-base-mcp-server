@@ -168,13 +168,15 @@
 **Status:** Implemented
 **Priority:** High
 
-**Requirement:** The system shall expose the latest in-process `updateIndex` run summary through `kb_stats` and `kb doctor`.
+**Requirement:** The system shall expose the latest in-process `updateIndex` run summary through `kb_stats`, `kb doctor`, and the OpenMetrics exporter, and shall grade incomplete or failed index updates as unhealthy in doctor diagnostics.
 
 **Acceptance Criteria:**
 - [x] Given no update has run in the current process, when stats or doctor output is requested, then the latest update status is `never_run`.
 - [x] Given an index update runs, when stats are requested, then the payload reports the run scope, model id, timestamps, duration, file counters, chunk counters, save outcome, sidecar outcome, and capped failure summaries.
 - [x] Given an index update completes with recoverable loader failures, when stats are requested, then the status is `partial` and failure summaries do not expose absolute paths.
 - [x] Given an index update throws, when stats are requested after the failure, then the latest update status is `failed`.
+- [x] Given a latest update summary, when the OpenMetrics exporter is scraped, then it emits the completion timestamp, one-hot status, failure-count snapshot, and duration with bounded status labels.
+- [x] Given a latest update summary with `partial` or `failed` status, a non-zero `failure_count`, `warning_count`, or `files_skipped`, when `kb doctor` runs, then the `index_update` check is non-OK and a freshly rewritten incomplete index does not make the `staleness` check green.
 
 **Linked Tests:** TS-OBS-237
 **Dependencies:** FR-SEARCH-192
