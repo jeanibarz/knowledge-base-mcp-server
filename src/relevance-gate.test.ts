@@ -160,6 +160,7 @@ describe('relevance gate', () => {
 
     const result = await applyRelevanceGate({
       query: 'hybrid lexical-only knee',
+      taskContext: 'please answer an exact identifier question with precise operational context',
       candidates: rows,
       denseDistanceById: new Map([
         [idOf(denseNear), 0.1],
@@ -170,6 +171,31 @@ describe('relevance gate', () => {
     });
 
     expect(result.results).toEqual(rows);
+    expect(result.verdict.dropped).toEqual([]);
+  });
+
+  it('keeps lexical-only hybrid candidates out of A2 after Stage B degradation', async () => {
+    const denseNear = candidate('/kb/dense-near-degraded.md', 0, 0.1, 'near dense result');
+    const lexicalOnly = candidate('/kb/lexical-only-degraded.md', 0, 0.2, 'exact identifier match');
+    const denseFar = candidate('/kb/dense-far-degraded.md', 0, 0.2, 'far dense result');
+    const rows = [denseNear, lexicalOnly, denseFar];
+
+    const result = await applyRelevanceGate({
+      query: 'hybrid lexical-only judge degradation',
+      taskContext: 'please answer an exact identifier question with precise operational context',
+      candidates: rows,
+      denseDistanceById: new Map([
+        [idOf(denseNear), 0.1],
+        [idOf(denseFar), 0.2],
+      ]),
+      lexicalHitIds: new Set([idOf(lexicalOnly)]),
+      config: config({ scoreFloor: 2 }),
+      fetchImpl: fakeFetchJson('not-json'),
+    });
+
+    expect(result.results).toEqual(rows);
+    expect(result.verdict.judge.status).toBe('failed');
+    expect(result.verdict.judge.reason).toContain('degraded to A2');
     expect(result.verdict.dropped).toEqual([]);
   });
 

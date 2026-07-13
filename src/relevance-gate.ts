@@ -215,7 +215,7 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
       dropped,
       lexicalHitIds,
     );
-    survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById, lexicalHitIds);
+    survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
     judge = { status: 'skipped', reason: 'task_context absent or too short' };
   } else if (config.judgeEndpoint === undefined) {
     afterA1 = applyA1(
@@ -225,7 +225,7 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
       dropped,
       lexicalHitIds,
     );
-    survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById, lexicalHitIds);
+    survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
     judge = { status: 'failed', reason: 'KB_GATE_LLM_ENDPOINT unset; degraded to A2' };
   } else {
     // Re-read immediately before the LLM path starts. The synchronous
@@ -263,7 +263,7 @@ export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
       judgePromptHash = judged.judgePromptHash;
       shuffledOrder = judged.shuffledOrder;
       if (judged.degraded) {
-        survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById, lexicalHitIds);
+        survivors = applyA2(afterA1, dropped, effectiveInput.denseDistanceById);
       }
     }
   }
@@ -408,18 +408,12 @@ function applyA2<T extends RelevanceGateCandidate>(
   rows: CandidateRow<T>[],
   dropped: DropRecord[],
   denseDistanceById?: ReadonlyMap<string, number>,
-  lexicalHitIds: ReadonlySet<string> = new Set(),
 ): CandidateRow<T>[] {
   if (rows.length <= 1) return rows;
 
-  const lexicalOnlyIds = new Set(
-    rows
-      .filter((row) => isLexicalOnlyRow(row, denseDistanceById, lexicalHitIds))
-      .map((row) => row.id),
-  );
   const scoredRows = denseDistanceById === undefined
     ? rows
-    : rows.filter((row) => denseDistanceById.has(row.id) && !lexicalOnlyIds.has(row.id));
+    : rows.filter((row) => denseDistanceById.has(row.id));
 
   // A2's knee detector is defined over L2 distances. In hybrid mode, rows
   // without a dense distance are lexical-only (or otherwise unscored) and
