@@ -22,7 +22,8 @@ Usage:
 Lists one KB-relative path per ingestable, non-quarantined document. Without a
 positional KB, paths are prefixed with their knowledge-base name so output from
 multiple KBs remains unambiguous. The listing is read-only and follows the same
-ingest filters and quarantine state as MCP resources/list.
+ingest filters and quarantine state as MCP resources/list. Control characters in
+short paths are JSON-escaped so each document remains on one output line.
 
 Options:
   --prefix=<path>       Restrict the listing to a KB-relative subtree.
@@ -172,9 +173,9 @@ export function formatLsReport(report: LsReport, format: 'md' | 'json'): string 
 
   if (!hasLongFields(report.documents)) {
     const paths = report.documents.map((document) =>
-      report.scopedKb === undefined
+      escapeLinePath(report.scopedKb === undefined
         ? `${document.knowledgeBase}/${document.path}`
-        : document.path,
+        : document.path),
     );
     return paths.length === 0 ? '' : `${paths.join('\n')}\n`;
   }
@@ -241,4 +242,9 @@ function hasLongFields(documents: readonly LsDocument[]): boolean {
 
 function escapeTableCell(value: string): string {
   return value.replaceAll('|', '\\|').replaceAll('\n', ' ');
+}
+
+function escapeLinePath(value: string): string {
+  const encoded = JSON.stringify(value);
+  return encoded.slice(1, -1);
 }

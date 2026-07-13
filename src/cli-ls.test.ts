@@ -7,7 +7,10 @@ import {
   formatLsReport,
   parseLsArgs,
 } from './cli-ls.js';
-import { documentMatchesPrefix, listKnowledgeBaseDocuments } from './kb-document-listing.js';
+import {
+  documentMatchesPrefix,
+  listKnowledgeBaseDocuments,
+} from './kb-document-listing.js';
 
 describe('TS-CLI-857: kb ls argument parsing', () => {
   it('defaults to all KBs, plain paths, and short output', () => {
@@ -26,6 +29,7 @@ describe('TS-CLI-857: kb ls argument parsing', () => {
       long: true,
       format: 'json',
     });
+    expect(parseLsArgs(['--prefix=./docs//sub/']).prefix).toBe('docs/sub/');
   });
 
   it('rejects invalid formats, empty values, traversal, and extra positionals', () => {
@@ -119,6 +123,16 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
     });
     expect(nestedScoped.documents.map((document) => document.relativePath)).toEqual([
       'projects/active/current.md',
+    ]);
+
+    const canonicalizedScoped = await listKnowledgeBaseDocuments({
+      rootDir,
+      kbName: 'work',
+      prefix: './docs//',
+    });
+    expect(canonicalizedScoped.documents.map((document) => document.relativePath)).toEqual([
+      'docs/guide.md',
+      'docs/reference.txt',
     ]);
 
     const all = await listKnowledgeBaseDocuments({ rootDir });
@@ -231,5 +245,14 @@ describe('TS-CLI-857: report formatting', () => {
 
     const all = await collectLsReport({ rootDir });
     expect(formatLsReport(all, 'md')).toBe('other/else.md\nwork/guide.md\n');
+  });
+
+  it('keeps control characters in short paths on one output line', () => {
+    expect(formatLsReport({
+      knowledgeBases: ['work'],
+      prefix: null,
+      scopedKb: 'work',
+      documents: [{ knowledgeBase: 'work', path: 'odd\nname.md' }],
+    }, 'md')).toBe('odd\\nname.md\n');
   });
 });

@@ -57,7 +57,8 @@ export function normalizeDocumentPrefix(raw: string | undefined): string {
   if (prefix.length === 0) return '';
 
   assertNoTraversal(prefix);
-  const normalized = prefix.replace(/\\/g, '/');
+  const normalized = path.posix.normalize(prefix.replace(/\\/g, '/'));
+  if (normalized === '.' || normalized === './') return '';
   const withoutTrailingSlash = normalized.replace(/\/+$/g, '');
   return withoutTrailingSlash.length === 0 ? '' :
     (normalized.endsWith('/') ? `${withoutTrailingSlash}/` : withoutTrailingSlash);
