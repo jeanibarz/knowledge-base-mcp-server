@@ -22,6 +22,7 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';
 import { loadManagerForModel } from './cli-shared.js';
 import { assertNoTraversal, resolveKbPath, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { loadFile } from './loaders.js';
+import { createFileAtomically } from './file-mutation.js';
 import { withWriteLock } from './write-lock.js';
 import {
   buildSnapshotNote,
@@ -342,14 +343,9 @@ async function createSnapshotNote(
   content: string,
 ): Promise<string> {
   const documentPath = await resolveKbPath(rootDir, kbName, relativePath, { mustExist: false });
-  await fsp.mkdir(path.dirname(documentPath), { recursive: true });
+  const kbDir = await resolveKnowledgeBaseDir(rootDir, kbName);
   try {
-    const handle = await fsp.open(documentPath, 'wx');
-    try {
-      await handle.writeFile(content, 'utf-8');
-    } finally {
-      await handle.close();
-    }
+    await createFileAtomically(documentPath, content, { kbDir });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
       throw new Error(
@@ -358,7 +354,6 @@ async function createSnapshotNote(
     }
     throw err;
   }
-  const kbDir = await resolveKnowledgeBaseDir(rootDir, kbName);
   return path.relative(kbDir, documentPath).split(path.sep).join('/');
 }
 

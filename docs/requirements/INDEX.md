@@ -7,6 +7,23 @@
   [RFC 018 relevance gating](../rfcs/018-context-relevance-gating.md),
   [RFC 019 cross-encoder reranker](../rfcs/019-cross-encoder-reranker.md)
 
+## Security
+
+### NFR-POLICY-854: Per-KB mutation policy enforcement
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall enforce each knowledge base's `.kb-policy.json` mutation decision before every CLI path creates or rewrites a note, including URL imports, promotion updates, and ask-transcript persistence.
+**Rationale:** A read-only knowledge base is a safety boundary for retrieved content. Any unguarded writer can inject or alter data despite the operator's explicit policy.
+
+**Acceptance Criteria:**
+- [x] Given a knowledge base with `{"mutations":"deny"}`, when `kb import-url`, `kb promote --yes`, or ask transcript persistence writes, then the operation is rejected before the target changes.
+- [x] Given a knowledge base with no policy file or `{"mutations":"allow"}`, when a managed note write runs, then the operation retains its existing behavior.
+- [x] Given a managed file mutation helper call, when its required knowledge-base context is omitted at compile time, then the call is rejected by TypeScript rather than silently skipping policy enforcement.
+
+**Linked Tests:** TS-POLICY-854
+**Dependencies:** None
+
 ## Indexing
 
 ### NFR-BENCH-712: KB CLI Evolution Harness
@@ -321,7 +338,7 @@
 **Rationale:** Generated answers are useful durable knowledge only when the saved record includes the original question, answer, citations, source chunk identifiers, LLM provenance, retrieval metadata, and write-path safeguards.
 
 **Acceptance Criteria:**
-- [x] Given `kb ask --save-transcript --kb=<name> --yes`, when retrieval and LLM answering succeed, then the system writes a new markdown note in the target knowledge base containing the question, answer, citations, source chunk ids, LLM endpoint/profile/model, retrieval model, and timing metadata when available.
+- [x] Given `kb ask --save-transcript --kb=<name> --yes` and a target KB with no policy file or `{"mutations":"allow"}`, when retrieval and LLM answering succeed, then the system writes a new markdown note in the target knowledge base containing the question, answer, citations, source chunk ids, LLM endpoint/profile/model, retrieval model, and timing metadata when available.
 - [x] Given `--save-transcript` without `--yes`, when argument validation runs, then the system refuses to write and exits with an input error.
 - [x] Given `--save-transcript` without `--kb=<name>`, when argument validation runs, then the system refuses the call because no transcript target is defined.
 - [x] Given a transcript title whose slug already exists, when the write path runs, then the system refuses to overwrite the existing note.

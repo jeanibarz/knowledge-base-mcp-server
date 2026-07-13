@@ -84,6 +84,17 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `normalizeChunkTextForEmbedding` shall collapse insignificant Unicode and whitespace differences before indexing dedupe.
 - `FaissIndexManager.updateIndex` shall call the embedding provider with unique normalized changed-file chunk text while preserving every duplicate source metadata entry in the FAISS insertion path.
 
+## Security
+
+### TS-POLICY-854: Per-KB mutation policy enforcement
+**Requirement:** NFR-POLICY-854
+
+**Test Cases:**
+- `createFileAtomically` shall enforce the target KB policy before creating parent directories or the new note.
+- `rewriteFileAtomically` and `appendFileAtomically` shall require KB context and reject denied mutations without changing the target.
+- `promoteApply` shall reject apply-mode rewrites in a policy-denied KB while leaving the note unchanged.
+- `runImportUrl` and `createAskTranscriptNote` shall reject new notes in a policy-denied KB.
+
 ## Observability
 
 ### TS-OBS-831: Chat-completion telemetry

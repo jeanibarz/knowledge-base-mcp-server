@@ -1,8 +1,8 @@
 import * as crypto from 'crypto';
-import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import { resolveActiveModel } from './active-model.js';
+import { createFileAtomically } from './file-mutation.js';
 import {
   auditEnabled,
   recordMutation,
@@ -579,26 +579,15 @@ export async function createAskTranscriptNote(
 ): Promise<string> {
   const relativePath = `${slugifyTitle(title, { fallback: 'ask-transcript' })}.md`;
   const documentPath = await resolveKbPath(rootDir, kbName, relativePath, { mustExist: false });
-  await fsp.mkdir(path.dirname(documentPath), { recursive: true });
-  const tmpPath = `${documentPath}.kb-tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  const kbDir = await resolveKnowledgeBaseDir(rootDir, kbName);
   try {
-    const handle = await fsp.open(tmpPath, 'wx');
-    try {
-      await handle.writeFile(content, 'utf-8');
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await fsp.link(tmpPath, documentPath);
+    await createFileAtomically(documentPath, content, { kbDir });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
       throw new Error(`refusing to overwrite existing transcript: ${relativePath}`);
     }
     throw err;
-  } finally {
-    await fsp.unlink(tmpPath).catch(() => {});
   }
-  const kbDir = await resolveKnowledgeBaseDir(rootDir, kbName);
   return path.relative(kbDir, documentPath).split(path.sep).join('/');
 }
 

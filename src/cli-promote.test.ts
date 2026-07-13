@@ -16,6 +16,7 @@ import {
   type SemanticCandidateSearcher,
 } from './cli-promote.js';
 import { parseFrontmatter } from './frontmatter.js';
+import { KB_WRITE_POLICY_FILENAME } from './kb-write-policy.js';
 
 // ---------------------------------------------------------------------------
 // parsePromoteArgs
@@ -315,6 +316,30 @@ describe('promoteApply', () => {
       // Body survives.
       expect(after).toContain('# Retry policy');
       expect(after).toContain('Use exponential backoff.');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('rejects apply writes when the KB policy denies mutations', async () => {
+    const { rootDir, cleanup } = await makeTmpKb();
+    try {
+      const filePath = path.join(rootDir, 'ops', 'patterns', 'retry.md');
+      const before = await fsp.readFile(filePath, 'utf-8');
+      await fsp.writeFile(
+        path.join(rootDir, 'ops', KB_WRITE_POLICY_FILENAME),
+        '{"mutations":"deny"}\n',
+        'utf-8',
+      );
+
+      await expect(promoteApply({
+        rootDir,
+        kb: 'ops',
+        relativePath: 'patterns/retry.md',
+        updates: { tier: 'validated' },
+        apply: true,
+      })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      await expect(fsp.readFile(filePath, 'utf-8')).resolves.toBe(before);
     } finally {
       await cleanup();
     }

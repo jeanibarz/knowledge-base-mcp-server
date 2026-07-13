@@ -10,6 +10,7 @@ import {
   type RunImportUrlDeps,
 } from './cli-import-url.js';
 import { UrlSnapshotError, type UrlFetcher, type UrlSnapshot } from './url-snapshot.js';
+import { KB_WRITE_POLICY_FILENAME } from './kb-write-policy.js';
 
 // ---------------------------------------------------------------------------
 // parseImportUrlArgs
@@ -183,6 +184,25 @@ describe('runImportUrl', () => {
       expect(body).toContain('The paragraph body text.');
       // HTML tags must not leak into the snapshot body.
       expect(body).not.toContain('<p>');
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  it('rejects new notes when the target KB policy denies mutations', async () => {
+    const h = await makeHarness(fixedFetcher(snapshotOf('<title>Denied</title><p>x</p>', 'text/html')));
+    try {
+      await fsp.writeFile(
+        path.join(h.rootDir, 'research', KB_WRITE_POLICY_FILENAME),
+        '{"mutations":"deny"}\n',
+        'utf-8',
+      );
+
+      const code = await runImportUrl(['--kb=research', 'https://example.com/denied'], h.deps);
+      expect(code).toBe(1);
+      expect(h.stderr()).toMatch(/KB write policy denies mutations/);
+      await expect(fsp.stat(path.join(h.rootDir, 'research', 'denied.md')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await h.cleanup();
     }
