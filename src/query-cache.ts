@@ -107,6 +107,7 @@ export class QueryEmbeddingCache {
   private readonly singleFlight: boolean;
   private readonly l1: LruVectorCache;
   private readonly inFlight = new Map<string, Promise<number[]>>();
+  private diskWriteQueue: Promise<void> = Promise.resolve();
   private diskBytes: number | undefined;
   private diskSizeInitialization: Promise<void> | undefined;
   private writesSinceReconcile = 0;
@@ -190,11 +191,13 @@ export class QueryEmbeddingCache {
         const stableEmbedding = toFloat32Numbers(embedding);
         this.l1.set(paths.cacheKey, stableEmbedding);
         try {
-          await this.ensureDiskSize();
-          const write = await this.writeDisk(paths, stableEmbedding);
-          this.writes += 1;
-          this.applyDiskWrite(write);
-          await this.enforceDiskLimit();
+          await this.withDiskWriteQueue(async () => {
+            await this.ensureDiskSize();
+            const write = await this.writeDisk(paths, stableEmbedding);
+            this.writes += 1;
+            this.applyDiskWrite(write);
+            await this.enforceDiskLimit();
+          });
         } catch (err) {
           this.diskBytes = undefined;
           logger.warn(`query embedding cache write skipped for ${args.modelId}: ${(err as Error).message}`);
@@ -211,6 +214,7 @@ export class QueryEmbeddingCache {
   }
 
   async stats(): Promise<QueryCacheStats> {
+    await this.diskWriteQueue;
     await this.ensureDiskSize();
     const hits = this.hitsL1 + this.hitsDisk;
     const misses = this.misses;
@@ -340,12 +344,30 @@ export class QueryEmbeddingCache {
     files.sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const file of files) {
       if (total <= this.diskMaxBytes) break;
-      await fsp.unlink(file.path).catch(() => undefined);
+      const vectorRemoved = await fsp.unlink(file.path).then(
+        () => true,
+        (err: unknown) => (err as NodeJS.ErrnoException).code === 'ENOENT',
+      );
+      if (!vectorRemoved) continue;
       await fsp.unlink(file.path.replace(/\.f32$/, '.meta.json')).catch(() => undefined);
       total -= file.size;
     }
     this.diskBytes = total;
     this.writesSinceReconcile = 0;
+  }
+
+  private async withDiskWriteQueue<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.diskWriteQueue;
+    let release!: () => void;
+    this.diskWriteQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   private applyDiskWrite(write: DiskWriteResult): void {

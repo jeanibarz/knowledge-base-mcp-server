@@ -236,9 +236,11 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
 
   private recordCorrupt(file: string): void {
     this.corruptions += 1;
+    // The corrupt entry may have been removed or changed by another process;
+    // force a reconciliation before relying on the running total again.
+    this.diskBytes = undefined;
     try {
       fs.unlinkSync(file);
-      this.diskBytes = undefined;
     } catch {
       // best-effort: a missing/locked corrupt file is fine to ignore
     }

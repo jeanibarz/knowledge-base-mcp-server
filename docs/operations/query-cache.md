@@ -21,7 +21,7 @@ Implementation anchors: `src/query-cache.ts::QueryEmbeddingCache`,
 | Task | Command or setting | Notes |
 | --- | --- | --- |
 | See per-request cache state | `kb search "query" --format=json --timing` | Inspect `query_cache` and `timing.query_cache*`. |
-| See runtime counters | `kb stats --format=json` | Inspect `.query_cache` for this process' hits, misses, bypasses, and corruptions; disk bytes are read from the cache directory. |
+| See runtime counters | `kb stats --format=json` | Inspect `.query_cache` for this process' hits, misses, bypasses, and corruptions; disk bytes use a running total initialized and periodically reconciled from the cache directory. |
 | Trace a request later | `KB_LOG_FORMAT=both LOG_FILE=/tmp/kb.log kb search "query"` | Read with `kb logs show --request-id=<id> --format=json`. |
 | Bypass one CLI search | `kb search "query" --no-cache` | Also supported by `kb related` and `kb compare`. |
 | Disable for a process | `KB_QUERY_CACHE=off kb search "query"` | Use for provider debugging or one-shot correctness probes. |

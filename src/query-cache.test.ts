@@ -1,7 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import * as crypto from 'crypto';
-import * as fsp from 'fs/promises';
-import fspDefault from 'fs/promises';
+import fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
@@ -223,7 +222,7 @@ describe('query embedding cache (#214)', () => {
 
   it('does not rescan the disk tree for each hot-path miss write', async () => {
     const indexPath = await tempIndexPath('kb-query-cache-amortized-');
-    const readdirSpy = jest.spyOn(fspDefault, 'readdir');
+    const readdirSpy = jest.spyOn(fsp, 'readdir');
     try {
       await fsp.mkdir(path.join(indexPath, 'cache', 'queries', 'fake__one'), { recursive: true });
       const cache = new QueryEmbeddingCache({ indexPath, lruMax: 0 });
@@ -301,6 +300,9 @@ describe('query embedding cache (#214)', () => {
       }
 
       expect((await cache.stats()).disk_size_bytes).toBeLessThanOrEqual(Math.floor(entryBytes * 2.5));
+      const q1Paths = queryCachePaths({ indexPath, modelId: 'fake__one', query: 'q1' });
+      await expect(fsp.access(q1Paths.vectorPath)).rejects.toThrow();
+      await expect(fsp.access(q1Paths.metaPath)).rejects.toThrow();
       await expect(cache.getOrCompute({
         modelId: 'fake__one',
         query: 'q1',

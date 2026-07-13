@@ -1,7 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import * as fs from 'fs';
-import fsDefault from 'fs';
-import * as fsp from 'fs/promises';
+import fs from 'fs';
+import fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
@@ -98,7 +97,7 @@ describe('DiskTieredRerankScoreCache (#646)', () => {
 
   it('does not rescan the disk tree for each hot-path write', () => {
     const indexPath = path.join(os.tmpdir(), `kb-rerank-cache-amortized-${process.pid}`);
-    const readdirSpy = jest.spyOn(fsDefault, 'readdirSync');
+    const readdirSpy = jest.spyOn(fs, 'readdirSync');
     try {
       const cache = new DiskTieredRerankScoreCache({ indexPath, enabled: true });
       const scansAfterConstruction = readdirSpy.mock.calls.length;
@@ -119,6 +118,9 @@ describe('DiskTieredRerankScoreCache (#646)', () => {
     try {
       const cache = new DiskTieredRerankScoreCache({ indexPath, enabled: true });
       cache.set(MODEL, 'q1', 'first', 0.11);
+      expect(cache.diskSizeBytes()).toBe(rescanRerankDiskSizeBytes(indexPath));
+
+      cache.set(MODEL, 'q1', 'first', 123456789.12345678);
       expect(cache.diskSizeBytes()).toBe(rescanRerankDiskSizeBytes(indexPath));
 
       cache.set(MODEL, 'q2', 'second', 0.22);
