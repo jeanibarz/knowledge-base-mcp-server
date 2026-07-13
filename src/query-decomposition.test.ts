@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import * as fsp from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import {
   createLocalLlmQueryDecomposer,
   createRuleBasedQueryDecomposer,
@@ -83,6 +86,77 @@ describe('LLM query decomposition cache (#736)', () => {
     await provider.decompose('alpha and beta');
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(cache.set).not.toHaveBeenCalled();
+  });
+
+  it('keeps protected and unverifiable evidence out of sufficiency prompts', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-query-decomposition-policy-'));
+    try {
+      const protectedSource = path.join(tempDir, 'protected.md');
+      const publicSource = path.join(tempDir, 'public.md');
+      await fsp.writeFile(protectedSource, [
+        '---',
+        'kb_policy:',
+        '  no_llm_context: true',
+        '---',
+        'secret evidence',
+      ].join('\n'));
+      await fsp.writeFile(publicSource, 'public evidence');
+
+      const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"sufficient":true,"missing_aspects":[]}' } }],
+          model: 'model-a',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ));
+      const provider = createLocalLlmQueryDecomposer(undefined, {
+        endpoint: 'http://llm.test',
+        model: 'model-a',
+      });
+
+      await expect(provider.judgeSufficiency('what is documented?', [
+        {
+          id: 'protected',
+          source: protectedSource,
+          chunkIndex: 0,
+          score: 0.1,
+          firstSeenSubquery: 'what is documented?',
+          retrieverQueryCount: 1,
+          content: 'secret evidence',
+          metadata: { source: protectedSource },
+        },
+        {
+          id: 'public',
+          source: publicSource,
+          chunkIndex: 0,
+          score: 0.2,
+          firstSeenSubquery: 'what is documented?',
+          retrieverQueryCount: 1,
+          content: 'public evidence',
+          metadata: { source: publicSource },
+        },
+        {
+          id: 'missing',
+          source: path.join(tempDir, 'missing.md'),
+          chunkIndex: 0,
+          score: 0.3,
+          firstSeenSubquery: 'what is documented?',
+          retrieverQueryCount: 1,
+          content: 'unverifiable evidence',
+          metadata: { source: path.join(tempDir, 'missing.md') },
+        },
+      ], [])).resolves.toEqual({ sufficient: true, missingAspects: [] });
+
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? '{}')) as {
+        messages?: Array<{ content?: string }>;
+      };
+      const prompt = body.messages?.[1]?.content ?? '';
+      expect(prompt).toContain('public evidence');
+      expect(prompt).not.toContain('secret evidence');
+      expect(prompt).not.toContain('unverifiable evidence');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

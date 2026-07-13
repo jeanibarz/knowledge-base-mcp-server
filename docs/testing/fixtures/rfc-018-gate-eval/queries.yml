@@ -31,6 +31,29 @@ gate_sim:
   no_good_answer_floor: 0.95
   judge_input_cap: 10
 
+# Live M0/M1 runs require explicit on-disk provenance before any candidate
+# content can reach an LLM. The replayed candidate text is the fixture's
+# source-of-truth; this public policy witness only authorizes that test data.
+source_paths:
+  codeops/atomic-faiss-save.md: source-policy.md
+  codeops/auth-and-errors.md: source-policy.md
+  codeops/current-rollback.md: source-policy.md
+  codeops/doctor-health.md: source-policy.md
+  codeops/duplicate-canonical.md: source-policy.md
+  codeops/embedding-provider.md: source-policy.md
+  codeops/faiss-store-layout.md: source-policy.md
+  codeops/hybrid-tokens.md: source-policy.md
+  codeops/injection-guard.md: source-policy.md
+  codeops/per-file-hash-sidecars.md: source-policy.md
+  codeops/prune-index-versions.md: source-policy.md
+  codeops/reindex-trigger.md: source-policy.md
+  prose/context-rot.md: source-policy.md
+  prose/contextual-retrieval.md: source-policy.md
+  prose/cross-encoder-reranker.md: source-policy.md
+  prose/llm-judge-reliability.md: source-policy.md
+  prose/onboarding-notes.md: source-policy.md
+  prose/retrieval-tradeoffs.md: source-policy.md
+
 cases:
   # ===== codeops — has-answer, standard =====================================
   - name: codeops - atomic faiss save mechanism

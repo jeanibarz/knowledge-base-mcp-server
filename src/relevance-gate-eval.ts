@@ -88,6 +88,8 @@ export interface GateEvalFixture {
   hasAnswerTolerance: number;
   gateSim: GateSimConfig;
   cases: GateEvalCase[];
+  /** Explicit on-disk provenance used by live M0/M1 runs; absent means fail closed. */
+  sourcePaths?: ReadonlyMap<string, string>;
 }
 
 /** One grader-calibration row: a fixed answer with its human label (#369). */

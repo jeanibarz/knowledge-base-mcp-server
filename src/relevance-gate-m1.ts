@@ -254,6 +254,18 @@ function toJudgeCandidates(
   }));
 }
 
+function toM1PolicySnippets(candidates: readonly RelevanceJudgeCandidate[]): M1Snippet[] {
+  return candidates.map((candidate) => ({
+    source: typeof candidate.metadata.fixture_source === 'string'
+      ? candidate.metadata.fixture_source
+      : String(candidate.metadata.source ?? 'unknown'),
+    policySource: typeof candidate.metadata.source === 'string'
+      ? candidate.metadata.source
+      : undefined,
+    content: candidate.content,
+  }));
+}
+
 /**
  * Run the Stage B judge twice per case — forward and with the candidate list
  * reversed — and measure verdict disagreement. RFC 018 §5 cut v3's A/B-swapped
@@ -262,10 +274,11 @@ function toJudgeCandidates(
 export async function runPositionSwapProbe(
   cases: readonly GateEvalCase[],
   options: M1RunOptions,
+  sourcePaths?: ReadonlyMap<string, string>,
 ): Promise<PositionSwapProbe> {
   const results: PositionSwapCaseResult[] = [];
   const fixtureSources = await materializeFixtureSources(
-    { cases: [...cases] },
+    { cases: [...cases], ...(sourcePaths !== undefined ? { sourcePaths } : {}) },
     options.fetchImpl !== undefined,
   );
   try {
@@ -274,6 +287,8 @@ export async function runPositionSwapProbe(
       const taskContext = effectiveTaskContext(c);
       const seed = `m1-position-swap:${c.name}`;
       try {
+        const assertPolicy = () => assertM1LlmContextAllowed(toM1PolicySnippets(candidates));
+        await assertPolicy();
         const forward = await judgeRelevance({
           endpoint: options.endpoint,
           ...(options.model !== undefined ? { model: options.model } : {}),
@@ -284,6 +299,7 @@ export async function runPositionSwapProbe(
           seed,
           ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
         });
+        await assertPolicy();
         const reversed = await judgeRelevance({
           endpoint: options.endpoint,
           ...(options.model !== undefined ? { model: options.model } : {}),
@@ -566,7 +582,7 @@ interface MaterializedFixtureSources {
  * leave missing provenance absent so the real gate fails closed.
  */
 async function materializeFixtureSources(
-  fixture: Pick<GateEvalFixture, 'cases'>,
+  fixture: Pick<GateEvalFixture, 'cases' | 'sourcePaths'>,
   allowSyntheticSources: boolean,
 ): Promise<MaterializedFixtureSources> {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-m1-sources-'));
@@ -575,6 +591,17 @@ async function materializeFixtureSources(
     for (const c of fixture.cases) {
       for (const candidate of c.candidates) {
         if (bySource.has(candidate.source)) continue;
+        const mappedSource = fixture.sourcePaths?.get(candidate.source);
+        if (fixture.sourcePaths !== undefined) {
+          if (mappedSource === undefined) continue;
+          try {
+            await fsp.access(mappedSource);
+            bySource.set(candidate.source, mappedSource);
+          } catch {
+            // Keep the source absent so policy verification fails closed.
+          }
+          continue;
+        }
         try {
           await fsp.access(candidate.source);
           bySource.set(candidate.source, candidate.source);
@@ -829,7 +856,7 @@ export async function runM1(
   options: M1RunOptions,
 ): Promise<M1CanaryResult> {
   const canary = await runM1Canary(fixture, options);
-  const positionSwap = await runPositionSwapProbe(fixture.cases, options);
+  const positionSwap = await runPositionSwapProbe(fixture.cases, options, fixture.sourcePaths);
   const floorSweep = runFloorSweep(fixture, parseFloorSweepSpec(options.floorSweepSpec));
   const bm25 = analyzeBm25Veto(fixture);
 

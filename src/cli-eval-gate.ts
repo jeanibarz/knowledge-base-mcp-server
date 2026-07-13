@@ -20,6 +20,7 @@
 // report and never halts the implementation chain.
 
 import * as fsp from 'fs/promises';
+import * as path from 'path';
 import yaml from 'js-yaml';
 import { callChatCompletion, probeLlmEndpoint, type LlmChatMessage } from './llm-client.js';
 import {
@@ -163,7 +164,12 @@ export async function runEvalGate(rest: string[]): Promise<number> {
   let fixture: GateEvalFixture;
   let calibration: GraderCalibrationFixture | null = null;
   try {
-    fixture = normalizeGateEvalFixture(await loadYaml(args.fixturePath));
+    const rawFixture = await loadYaml(args.fixturePath);
+    fixture = withFixtureSourcePaths(
+      normalizeGateEvalFixture(rawFixture),
+      rawFixture,
+      args.fixturePath,
+    );
     if (args.calibrationPath !== undefined) {
       calibration = normalizeGraderCalibrationFixture(await loadYaml(args.calibrationPath));
     }
@@ -368,12 +374,23 @@ interface LiveFixtureSources {
  * closed rather than turning missing provenance into a synthetic public file.
  */
 async function resolveLiveFixtureSources(
-  fixture: Pick<GateEvalFixture, 'cases'>,
+  fixture: Pick<GateEvalFixture, 'cases' | 'sourcePaths'>,
 ): Promise<LiveFixtureSources> {
   const bySource = new Map<string, string>();
   for (const fixtureCase of fixture.cases) {
     for (const candidate of fixtureCase.candidates) {
       if (bySource.has(candidate.source)) continue;
+      const mappedSource = fixture.sourcePaths?.get(candidate.source);
+      if (fixture.sourcePaths !== undefined) {
+        if (mappedSource === undefined) continue;
+        try {
+          await fsp.access(mappedSource);
+          bySource.set(candidate.source, mappedSource);
+        } catch {
+          // Keep the source absent so sourcePathsForCandidates fails closed.
+        }
+        continue;
+      }
       try {
         await fsp.access(candidate.source);
         bySource.set(candidate.source, candidate.source);
@@ -383,6 +400,28 @@ async function resolveLiveFixtureSources(
     }
   }
   return { bySource };
+}
+
+function withFixtureSourcePaths(
+  fixture: GateEvalFixture,
+  rawFixture: unknown,
+  fixturePath: string,
+): GateEvalFixture {
+  if (typeof rawFixture !== 'object' || rawFixture === null || Array.isArray(rawFixture)) return fixture;
+  const rawPaths = (rawFixture as Record<string, unknown>).source_paths;
+  if (rawPaths === undefined) return fixture;
+  if (typeof rawPaths !== 'object' || rawPaths === null || Array.isArray(rawPaths)) {
+    throw new Error('source_paths must be an object mapping fixture source names to files');
+  }
+  const baseDir = path.dirname(path.resolve(fixturePath));
+  const sourcePaths = new Map<string, string>();
+  for (const [source, mapped] of Object.entries(rawPaths as Record<string, unknown>)) {
+    if (source.trim() === '' || typeof mapped !== 'string' || mapped.trim() === '') {
+      throw new Error('source_paths must map non-empty source names to non-empty file paths');
+    }
+    sourcePaths.set(source, path.resolve(baseDir, mapped));
+  }
+  return { ...fixture, sourcePaths };
 }
 
 function sourcePathsForCandidates(
