@@ -848,6 +848,15 @@ async function callPrefaceLlm(args: {
         ],
         temperature: 0.2,
         timeoutMs: CONTEXTUAL_LLM_TIMEOUT_MS,
+        ...(args.isLlmContextAllowed !== undefined
+          ? {
+              beforeAttempt: async () => {
+                if (!(await args.isLlmContextAllowed!())) {
+                  throw new ContextualPolicyBoundaryError();
+                }
+              },
+            }
+          : {}),
       });
       const cleaned = cleanPrefaceText(result.content, maxTokens);
       if (cleaned === null) {

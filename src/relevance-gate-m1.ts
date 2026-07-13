@@ -239,11 +239,17 @@ export interface PositionSwapProbe {
   recommendation: string;
 }
 
-function toJudgeCandidates(candidates: readonly GateEvalCandidate[]): RelevanceJudgeCandidate[] {
+function toJudgeCandidates(
+  candidates: readonly GateEvalCandidate[],
+  fixtureSourcePaths?: ReadonlyMap<string, string>,
+): RelevanceJudgeCandidate[] {
   return candidates.map((c) => ({
     id: c.id,
     content: c.content,
-    metadata: { source: c.source },
+    metadata: {
+      source: fixtureSourcePaths?.get(c.source) ?? c.source,
+      fixture_source: c.source,
+    },
   }));
 }
 
@@ -257,54 +263,59 @@ export async function runPositionSwapProbe(
   options: M1RunOptions,
 ): Promise<PositionSwapProbe> {
   const results: PositionSwapCaseResult[] = [];
-  for (const c of cases) {
-    const candidates = toJudgeCandidates(c.candidates);
-    const taskContext = effectiveTaskContext(c);
-    const seed = `m1-position-swap:${c.name}`;
-    try {
-      const forward = await judgeRelevance({
-        endpoint: options.endpoint,
-        ...(options.model !== undefined ? { model: options.model } : {}),
-        timeoutMs: M1_JUDGE_TIMEOUT_MS,
-        query: c.query,
-        taskContext,
-        candidates,
-        seed,
-        ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
-      });
-      const reversed = await judgeRelevance({
-        endpoint: options.endpoint,
-        ...(options.model !== undefined ? { model: options.model } : {}),
-        timeoutMs: M1_JUDGE_TIMEOUT_MS,
-        query: c.query,
-        taskContext,
-        candidates: [...candidates].reverse(),
-        seed,
-        ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
-      });
-      const keepF = keepSet(forward.verdicts);
-      const keepR = keepSet(reversed.verdicts);
-      const fEmpty = forward.overall === 'no-relevant-context';
-      const rEmpty = reversed.overall === 'no-relevant-context';
-      results.push({
-        name: c.name,
-        forwardOverall: forward.overall,
-        reversedOverall: reversed.overall,
-        overallAgree: forward.overall === reversed.overall,
-        keepSetAgree: setsEqual(keepF, keepR),
-        emptyVerdictOrderSensitive: fEmpty !== rEmpty,
-      });
-    } catch (err) {
-      results.push({
-        name: c.name,
-        forwardOverall: 'error',
-        reversedOverall: 'error',
-        overallAgree: false,
-        keepSetAgree: false,
-        emptyVerdictOrderSensitive: false,
-        error: err instanceof RelevanceJudgeError ? err.message : (err as Error).message,
-      });
+  const fixtureSources = await materializeFixtureSources({ cases: [...cases] });
+  try {
+    for (const c of cases) {
+      const candidates = toJudgeCandidates(c.candidates, fixtureSources.bySource);
+      const taskContext = effectiveTaskContext(c);
+      const seed = `m1-position-swap:${c.name}`;
+      try {
+        const forward = await judgeRelevance({
+          endpoint: options.endpoint,
+          ...(options.model !== undefined ? { model: options.model } : {}),
+          timeoutMs: M1_JUDGE_TIMEOUT_MS,
+          query: c.query,
+          taskContext,
+          candidates,
+          seed,
+          ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+        });
+        const reversed = await judgeRelevance({
+          endpoint: options.endpoint,
+          ...(options.model !== undefined ? { model: options.model } : {}),
+          timeoutMs: M1_JUDGE_TIMEOUT_MS,
+          query: c.query,
+          taskContext,
+          candidates: [...candidates].reverse(),
+          seed,
+          ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+        });
+        const keepF = keepSet(forward.verdicts);
+        const keepR = keepSet(reversed.verdicts);
+        const fEmpty = forward.overall === 'no-relevant-context';
+        const rEmpty = reversed.overall === 'no-relevant-context';
+        results.push({
+          name: c.name,
+          forwardOverall: forward.overall,
+          reversedOverall: reversed.overall,
+          overallAgree: forward.overall === reversed.overall,
+          keepSetAgree: setsEqual(keepF, keepR),
+          emptyVerdictOrderSensitive: fEmpty !== rEmpty,
+        });
+      } catch (err) {
+        results.push({
+          name: c.name,
+          forwardOverall: 'error',
+          reversedOverall: 'error',
+          overallAgree: false,
+          keepSetAgree: false,
+          emptyVerdictOrderSensitive: false,
+          error: err instanceof RelevanceJudgeError ? err.message : (err as Error).message,
+        });
+      }
     }
+  } finally {
+    await fsp.rm(fixtureSources.root, { recursive: true, force: true });
   }
 
   const scoredCases = results.filter((r) => r.error === undefined);
@@ -520,7 +531,9 @@ interface MaterializedFixtureSources {
  * the canary exercises normal source verification without disabling the
  * production fail-closed boundary.
  */
-async function materializeFixtureSources(fixture: GateEvalFixture): Promise<MaterializedFixtureSources> {
+async function materializeFixtureSources(
+  fixture: Pick<GateEvalFixture, 'cases'>,
+): Promise<MaterializedFixtureSources> {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-m1-sources-'));
   const bySource = new Map<string, string>();
   try {
@@ -561,71 +574,71 @@ export async function runM1Canary(
 
   try {
     for (const c of fixture.cases) {
-    if (c.taskContext === undefined || c.taskContext.trim() === '') synthesizedTaskContextCount += 1;
-    const taskContext = effectiveTaskContext(c);
-    const { candidates, denseDistanceById, lexicalHitIds } = caseToGateCandidates(c, fixtureSources.bySource);
+      if (c.taskContext === undefined || c.taskContext.trim() === '') synthesizedTaskContextCount += 1;
+      const taskContext = effectiveTaskContext(c);
+      const { candidates, denseDistanceById, lexicalHitIds } = caseToGateCandidates(c, fixtureSources.bySource);
 
-    const gated = await applyRelevanceGate({
-      query: c.query,
-      taskContext,
-      candidates,
-      denseDistanceById,
-      lexicalHitIds,
-      gateOverride: 'on',
-      config: m1GateConfig(options, true),
-      ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
-    });
-    const gatedNoEmpty = await applyRelevanceGate({
-      query: c.query,
-      taskContext,
-      candidates,
-      denseDistanceById,
-      lexicalHitIds,
-      gateOverride: 'on',
-      config: m1GateConfig(options, false),
-      ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
-    });
+      const gated = await applyRelevanceGate({
+        query: c.query,
+        taskContext,
+        candidates,
+        denseDistanceById,
+        lexicalHitIds,
+        gateOverride: 'on',
+        config: m1GateConfig(options, true),
+        ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+      });
+      const gatedNoEmpty = await applyRelevanceGate({
+        query: c.query,
+        taskContext,
+        candidates,
+        denseDistanceById,
+        lexicalHitIds,
+        gateOverride: 'on',
+        config: m1GateConfig(options, false),
+        ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+      });
 
-    if (gated.verdict.judge.status === 'failed') judgeDegradeCount += 1;
+      if (gated.verdict.judge.status === 'failed') judgeDegradeCount += 1;
 
-    const rawVerdict = await answerAndGrade(c, keptToSnippets(candidates), options);
-    const gatedVerdict = await answerAndGrade(c, keptToSnippets(gated.results), options);
-    const gneVerdict = await answerAndGrade(c, keptToSnippets(gatedNoEmpty.results), options);
-    const conditions: GradedCondition[] = [
-      { variant: 'raw', verdict: rawVerdict },
-      { variant: 'gated', verdict: gatedVerdict },
-      { variant: 'gated-no-empty', verdict: gneVerdict },
-    ];
+      const rawVerdict = await answerAndGrade(c, keptToSnippets(candidates), options);
+      const gatedVerdict = await answerAndGrade(c, keptToSnippets(gated.results), options);
+      const gneVerdict = await answerAndGrade(c, keptToSnippets(gatedNoEmpty.results), options);
+      const conditions: GradedCondition[] = [
+        { variant: 'raw', verdict: rawVerdict },
+        { variant: 'gated', verdict: gatedVerdict },
+        { variant: 'gated-no-empty', verdict: gneVerdict },
+      ];
 
-    const keptSources = new Set(keptToSnippets(gated.results).map((s) => s.source));
-    const answerSourceKept = c.bucket === 'has-answer'
-      ? c.answerSources.some((s) => keptSources.has(s))
-      : null;
-    if (c.bucket === 'has-answer' && answerSourceKept === true) hasAnswerRecalled += 1;
-    if (c.fixtureClass === 'answer-present-but-distant' && answerSourceKept === true) distantRecalled += 1;
+      const keptSources = new Set(keptToSnippets(gated.results).map((s) => s.source));
+      const answerSourceKept = c.bucket === 'has-answer'
+        ? c.answerSources.some((s) => keptSources.has(s))
+        : null;
+      if (c.bucket === 'has-answer' && answerSourceKept === true) hasAnswerRecalled += 1;
+      if (c.fixtureClass === 'answer-present-but-distant' && answerSourceKept === true) distantRecalled += 1;
 
-    caseResults.push({
-      name: c.name,
-      kb: c.kb,
-      bucket: c.bucket,
-      fixtureClass: c.fixtureClass,
-      gatedVerdict: gated.verdict.state,
-      emptyFired: gated.verdict.state === 'no-relevant-context',
-      conditions,
-    });
-    caseDetails.push({
-      name: c.name,
-      kb: c.kb,
-      bucket: c.bucket,
-      fixtureClass: c.fixtureClass,
-      gateState: gated.verdict.state,
-      lowConfidence: gated.verdict.low_confidence,
-      judgeStatus: gated.verdict.judge.status,
-      inputCount: gated.verdict.input_count,
-      keptCount: gated.verdict.output_count,
-      answerSourceKept,
-    });
-  }
+      caseResults.push({
+        name: c.name,
+        kb: c.kb,
+        bucket: c.bucket,
+        fixtureClass: c.fixtureClass,
+        gatedVerdict: gated.verdict.state,
+        emptyFired: gated.verdict.state === 'no-relevant-context',
+        conditions,
+      });
+      caseDetails.push({
+        name: c.name,
+        kb: c.kb,
+        bucket: c.bucket,
+        fixtureClass: c.fixtureClass,
+        gateState: gated.verdict.state,
+        lowConfidence: gated.verdict.low_confidence,
+        judgeStatus: gated.verdict.judge.status,
+        inputCount: gated.verdict.input_count,
+        keptCount: gated.verdict.output_count,
+        answerSourceKept,
+      });
+    }
 
     const hasAnswerTotal = fixture.cases.filter((c) => c.bucket === 'has-answer').length;
     const distantTotal = fixture.cases.filter((c) => c.fixtureClass === 'answer-present-but-distant').length;

@@ -12,7 +12,11 @@ interface ManagerResult {
   score: number;
 }
 
-function makeManager(content: string): { similaritySearch: jest.Mock } & Record<string, unknown> {
+function makeManager(
+  content: string,
+  source: string,
+  frontmatter: Record<string, unknown> = {},
+): { similaritySearch: jest.Mock } & Record<string, unknown> {
   return {
     modelDir: '/tmp/kb-ask-core-model',
     initialize: jest.fn(async () => {}),
@@ -23,6 +27,8 @@ function makeManager(content: string): { similaritySearch: jest.Mock } & Record<
         metadata: {
           knowledgeBase: 'ops',
           relativePath: 'deploys.md',
+          source,
+          frontmatter,
           loc: { lines: { from: 10, to: 18 } },
         },
         score: 0.1234,
@@ -64,6 +70,7 @@ describe('executeAsk answer cache read-through (#656)', () => {
 
   beforeEach(async () => {
     dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ask-core-'));
+    await fsp.writeFile(path.join(dir, 'deploys.md'), '# Deploys\n', 'utf-8');
     process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
   });
 
@@ -77,11 +84,12 @@ describe('executeAsk answer cache read-through (#656)', () => {
     const cache = new AnswerCache({ enabled: true, indexPath: dir });
     const call = jest.fn(async () => ({ content: 'cached answer', model: 'qwen3', raw: {} }));
 
-    const first = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('The deploy switched models.'), call), Date.now());
+    const source = path.join(dir, 'deploys.md');
+    const first = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('The deploy switched models.', source), call), Date.now());
     expect(first.answer).toBe('cached answer');
     expect((first.timing as Record<string, unknown>).cache).toBe('miss');
 
-    const second = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('The deploy switched models.'), call), Date.now());
+    const second = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('The deploy switched models.', source), call), Date.now());
     expect(second.answer).toBe('cached answer');
     expect(second.llm.model).toBe('qwen3');
     expect((second.timing as Record<string, unknown>).cache).toBe('hit');
@@ -92,9 +100,10 @@ describe('executeAsk answer cache read-through (#656)', () => {
   it('misses when the retrieved context changes', async () => {
     const cache = new AnswerCache({ enabled: true, indexPath: dir });
     const call = jest.fn(async () => ({ content: 'answer', model: 'qwen3', raw: {} }));
+    const source = path.join(dir, 'deploys.md');
 
-    await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('Original context.'), call), Date.now());
-    const second = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('Completely different context.'), call), Date.now());
+    await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('Original context.', source), call), Date.now());
+    const second = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('Completely different context.', source), call), Date.now());
 
     expect((second.timing as Record<string, unknown>).cache).toBe('miss');
     expect(call).toHaveBeenCalledTimes(2);
@@ -103,13 +112,40 @@ describe('executeAsk answer cache read-through (#656)', () => {
   it('is disabled by default — every call invokes the LLM', async () => {
     const cache = new AnswerCache({ enabled: false, indexPath: dir });
     const call = jest.fn(async () => ({ content: 'answer', model: 'qwen3', raw: {} }));
+    const source = path.join(dir, 'deploys.md');
 
-    const first = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('Same context.'), call), Date.now());
-    const second = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('Same context.'), call), Date.now());
+    const first = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('Same context.', source), call), Date.now());
+    const second = await executeAsk(askArgs('What changed?'), makeDeps(cache, makeManager('Same context.', source), call), Date.now());
 
     expect((first.timing as Record<string, unknown>).cache).toBe('disabled');
     expect((second.timing as Record<string, unknown>).cache).toBe('disabled');
     expect(call).toHaveBeenCalledTimes(2);
     expect(await fsp.readdir(path.join(dir, 'cache', 'answers')).catch(() => [])).toEqual([]);
+  });
+
+  it('rechecks the source policy when indexed metadata is stale', async () => {
+    const cache = new AnswerCache({ enabled: false, indexPath: dir });
+    const call = jest.fn(async () => ({ content: 'answer', model: 'qwen3', raw: {} }));
+    const source = path.join(dir, 'deploys.md');
+    await fsp.writeFile(source, '---\nkb_policy:\n  no_llm_context: true\n---\nSecret deploy details\n', 'utf-8');
+
+    const result = await executeAsk(
+      askArgs('What changed?'),
+      makeDeps(
+        cache,
+        makeManager(
+          'Secret deploy details',
+          source,
+          { kb_policy: { no_llm_context: false } },
+        ),
+        call,
+      ),
+      Date.now(),
+    );
+
+    expect(result.context_packing.policy_filtered_chunks).toBe(1);
+    expect(call).toHaveBeenCalledTimes(1);
+    const callArgs = call.mock.calls as unknown as Array<[unknown]>;
+    expect(JSON.stringify(callArgs[0][0])).not.toContain('Secret deploy details');
   });
 });

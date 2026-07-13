@@ -119,6 +119,33 @@ describe('llm-client', () => {
     expect(llmCallMetrics.snapshot().ask).toMatchObject({ count: 1, errors: 0 });
   });
 
+  it('runs the boundary guard before every retry attempt', async () => {
+    const fetchMock = jest.fn(async () => new Response(
+      JSON.stringify({ error: { message: 'warming up' } }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } },
+    ));
+    let guardCalls = 0;
+
+    await expect(callChatCompletion({
+      endpoint: 'http://127.0.0.1:8080',
+      messages: [{ role: 'user', content: 'protected prompt' }],
+      beforeAttempt: () => {
+        guardCalls += 1;
+        if (guardCalls === 2) throw new Error('policy changed');
+      },
+      retry: {
+        maxRetries: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 0,
+        maxTotalDelayMs: 1,
+        sleep: async () => {},
+      },
+    }, fetchMock as unknown as typeof fetch)).rejects.toThrow('policy changed');
+
+    expect(guardCalls).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('streams OpenAI-compatible SSE deltas and returns the final content', async () => {
     const tokens: string[] = [];
     const events: string[] = [];

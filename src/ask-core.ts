@@ -1,4 +1,3 @@
-import * as fsp from 'fs/promises';
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
 import type { SearchResultDocument } from './FaissIndexManager.js';
 import type { resolveActiveModel } from './active-model.js';
@@ -12,7 +11,6 @@ import {
   type RedactionSummary,
 } from './redaction.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
-import { parseFrontmatter } from './frontmatter.js';
 import { resolveInjectionGuardOptions } from './injection-guard.js';
 import { FAKE_LLM_ENDPOINT, isFakeLlmEnabled } from './llm-fake-stub.js';
 import {
@@ -66,7 +64,7 @@ import {
 import {
   excludesLlmContext,
   normalizeKbSensitivityPolicy,
-  sensitivityPolicyFromMetadata,
+  readLlmContextPolicy,
 } from './sensitivity-policy.js';
 import { withSpan } from './otel-trace.js';
 
@@ -525,7 +523,11 @@ export async function answerWithEvidence(
   totalStartedAt: number,
   timing: TimingPayload | null = null,
 ): Promise<AskKnowledgeResult> {
-  const { activeModelId, results, searchMode } = evidence;
+  const { activeModelId, searchMode } = evidence;
+  // Follow-up turns can reuse evidence across an arbitrary delay. Rehydrate
+  // before packing so a source that became protected cannot enter this turn's
+  // answer prompt through stale in-memory metadata.
+  const results = await hydrateSensitivityPoliciesFromSource(evidence.results);
 
   let target: LlmTarget;
   try {
@@ -624,22 +626,29 @@ export async function answerWithEvidence(
         'kb.llm_profile': target.profile.name,
         'kb.llm_mode': target.profile.mode,
         'kb.llm_source': target.source,
-      }, () => deps.callChatCompletion({
-        endpoint: target.profile.endpoint,
-        operation: 'ask',
-        messages: outbound.messages,
-        temperature: ASK_TEMPERATURE,
-        ...(args.onAnswerToken !== undefined
-          ? {
-              stream: {
-                onToken: args.onAnswerToken,
-                onFirstToken: () => {
-                  if (timing) timing.llm_first_token_ms = elapsedMs(startedAt);
+      }, async () => {
+        const assertPolicy = () => assertCurrentLlmContext(
+          packedContext.included.map((snippet) => snippet.result.metadata),
+        );
+        await assertPolicy();
+        return deps.callChatCompletion({
+          endpoint: target.profile.endpoint,
+          operation: 'ask',
+          messages: outbound.messages,
+          temperature: ASK_TEMPERATURE,
+          beforeAttempt: assertPolicy,
+          ...(args.onAnswerToken !== undefined
+            ? {
+                stream: {
+                  onToken: args.onAnswerToken,
+                  onFirstToken: () => {
+                    if (timing) timing.llm_first_token_ms = elapsedMs(startedAt);
+                  },
                 },
-              },
-            }
-          : {}),
-      }));
+              }
+            : {}),
+        });
+      });
       if (timing) {
         timing.llm_total_ms = elapsedMs(startedAt);
       }
@@ -767,32 +776,24 @@ export function redactOutboundMessages(
 async function hydrateSensitivityPoliciesFromSource(
   results: SearchResultDocument[],
 ): Promise<SearchResultDocument[]> {
-  const policyBySource = new Map<string, ReturnType<typeof normalizeKbSensitivityPolicy>>();
+  const policyBySource = new Map<string, Promise<Awaited<ReturnType<typeof readLlmContextPolicy>>>>();
 
   return Promise.all(results.map(async (result) => {
     const metadata = result.metadata as Record<string, unknown>;
-    if (sensitivityPolicyFromMetadata(metadata) !== undefined) {
-      return result;
-    }
-
     const source = metadata.source;
-    if (typeof source !== 'string' || source.length === 0) {
-      return result;
+    if (typeof source !== 'string' || source.trim().length === 0) {
+      return markLlmContextExcluded(result, metadata);
     }
 
-    let policy = policyBySource.get(source);
-    if (!policyBySource.has(source)) {
-      try {
-        const content = await fsp.readFile(source, 'utf-8');
-        policy = normalizeKbSensitivityPolicy(parseFrontmatter(content).frontmatter.kb_policy);
-      } catch {
-        policy = undefined;
-      }
-      policyBySource.set(source, policy);
+    let sourcePolicyPromise = policyBySource.get(source);
+    if (sourcePolicyPromise === undefined) {
+      sourcePolicyPromise = readLlmContextPolicy(source);
+      policyBySource.set(source, sourcePolicyPromise);
     }
+    const sourcePolicy = await sourcePolicyPromise;
 
-    if (policy === undefined) {
-      return result;
+    if (!sourcePolicy.readable || !sourcePolicy.valid) {
+      return markLlmContextExcluded(result, metadata);
     }
 
     const frontmatter = metadata.frontmatter;
@@ -800,17 +801,78 @@ async function hydrateSensitivityPoliciesFromSource(
       frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter)
         ? frontmatter as Record<string, unknown>
         : {};
+    if (sourcePolicy.policy === undefined && !Object.prototype.hasOwnProperty.call(frontmatterObject, 'kb_policy')) {
+      return result;
+    }
+    const hydratedFrontmatter = { ...frontmatterObject };
+    if (sourcePolicy.policy === undefined) {
+      delete hydratedFrontmatter.kb_policy;
+    } else {
+      hydratedFrontmatter.kb_policy = sourcePolicy.policy;
+    }
     return {
       ...result,
       metadata: {
         ...metadata,
         frontmatter: {
-          ...frontmatterObject,
-          kb_policy: policy,
+          ...hydratedFrontmatter,
         },
       },
     };
   }));
+}
+
+function markLlmContextExcluded(
+  result: SearchResultDocument,
+  metadata: Record<string, unknown>,
+): SearchResultDocument {
+  const frontmatter = metadata.frontmatter;
+  const frontmatterObject =
+    frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter)
+      ? frontmatter as Record<string, unknown>
+      : {};
+  const existingPolicy = normalizeKbSensitivityPolicy(frontmatterObject.kb_policy) ?? {};
+  return {
+    ...result,
+    metadata: {
+      ...metadata,
+      frontmatter: {
+        ...frontmatterObject,
+        kb_policy: {
+          ...existingPolicy,
+          no_llm_context: true,
+        },
+      },
+    },
+  };
+}
+
+async function assertCurrentLlmContext(
+  metadataList: readonly Record<string, unknown>[],
+): Promise<void> {
+  const policyBySource = new Map<string, Promise<Awaited<ReturnType<typeof readLlmContextPolicy>>>>();
+  await Promise.all(metadataList.map(async (metadata) => {
+    const source = metadata.source;
+    if (typeof source !== 'string' || source.trim().length === 0) {
+      throw new AskPolicyBoundaryError();
+    }
+    let sourcePolicyPromise = policyBySource.get(source);
+    if (sourcePolicyPromise === undefined) {
+      sourcePolicyPromise = readLlmContextPolicy(source);
+      policyBySource.set(source, sourcePolicyPromise);
+    }
+    const sourcePolicy = await sourcePolicyPromise;
+    if (!sourcePolicy.readable || !sourcePolicy.valid || sourcePolicy.policy?.no_llm_context === true) {
+      throw new AskPolicyBoundaryError();
+    }
+  }));
+}
+
+class AskPolicyBoundaryError extends Error {
+  constructor() {
+    super('source policy excluded ask LLM work');
+    this.name = 'AskPolicyBoundaryError';
+  }
 }
 
 async function resolveLlmTarget(args: Pick<AskExecutionArgs, 'endpoint' | 'llmProfile'>): Promise<LlmTarget> {

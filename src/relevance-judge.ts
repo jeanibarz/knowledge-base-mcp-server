@@ -23,6 +23,8 @@ export interface RelevanceJudgeOptions {
   candidates: RelevanceJudgeCandidate[];
   seed: string;
   fetchImpl?: typeof fetch;
+  /** Guard invoked immediately before each provider attempt, including retries. */
+  beforeAttempt?: () => void | Promise<void>;
 }
 
 export type RelevanceJudgeOverall = 'relevant' | 'partial' | 'no-relevant-context';
@@ -102,6 +104,7 @@ export async function judgeRelevance(options: RelevanceJudgeOptions): Promise<Re
     temperature: 0,
     timeoutMs: options.timeoutMs,
     messages,
+    beforeAttempt: options.beforeAttempt,
   }, options.fetchImpl ?? fetch);
 
   return {

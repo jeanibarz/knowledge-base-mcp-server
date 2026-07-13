@@ -433,6 +433,14 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
       candidates: judgeCandidates,
       seed: input.seed,
       fetchImpl: input.fetchImpl,
+      beforeAttempt: async () => {
+        const latest = await hydrateSensitivityPoliciesFromSource(
+          judgedRows.map((row) => row.result),
+        );
+        if (latest.some((candidate) => excludesLlmContext(candidate.metadata as Record<string, unknown>))) {
+          throw new RelevancePolicyBoundaryError();
+        }
+      },
     });
   } catch (err) {
     return {
@@ -513,6 +521,13 @@ async function applyStageB<T extends RelevanceGateCandidate>(input: {
     judgePromptHash: result.promptHash,
     shuffledOrder: result.shuffledIds,
   };
+}
+
+class RelevancePolicyBoundaryError extends Error {
+  constructor() {
+    super('source policy excluded relevance-judge LLM work');
+    this.name = 'RelevancePolicyBoundaryError';
+  }
 }
 
 function replayVerdict<T extends RelevanceGateCandidate>(

@@ -54,9 +54,11 @@ Behavior:
   - Delegates the actual refresh to \`FaissIndexManager.updateIndex()\`
     using \`force: true\` only while contextual-preface chunks are cold.
     Warm follow-up runs use \`force: false\`, the same incremental
-    machinery as \`kb search --refresh\`. The \`undefined\` scope argument
-    is deliberate for forced backfills: the rebuild is global and
-    \`--kb\` never narrows it (see below).
+    machinery as \`kb search --refresh\`. Sources marked
+    \`kb_policy.no_llm_context: true\` are intentionally skipped: they do not
+    create preface sidecars and must not be counted as pending LLM work. The
+    \`undefined\` scope argument is deliberate for forced backfills: the rebuild
+    is global and \`--kb\` never narrows it (see below).
   - When \`KB_CONTEXTUAL_RETRIEVAL=on\`, prints a \`contextual:\` line
     summarising preface coverage and failures (covered / failed /
     retry-pending chunks, with an error-code breakdown) read back from
@@ -71,8 +73,8 @@ Notes:
   index; it also materializes the rollup to
   \`$FAISS_INDEX_PATH/.reindex.progress.json\`. To resume an interrupted
   reindex, re-run \`kb reindex --with-context\`: completed files are
-  served from the sidecar cache and only pending / failed chunks call
-  the LLM.
+  served from the sidecar cache and only eligible pending / failed chunks call
+  the LLM; policy-excluded sources do not create sidecars.
 
 Options:
   --with-context        Required in M0b. Required for the CLI to do
