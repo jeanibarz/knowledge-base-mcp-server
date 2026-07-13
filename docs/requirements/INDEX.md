@@ -467,6 +467,21 @@ graceful-degradation contract.
 **Linked Tests:** TS-GATE-379
 **Dependencies:** RFC018
 
+### FR-GATE-852: Hybrid lexical-only relevance scoring
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The relevance gate shall apply dense-distance Stage A thresholds only to candidates with a recorded dense distance and shall preserve lexical-only candidates as independent lexical evidence in hybrid retrieval.
+**Rationale:** Lexical-only hybrid candidates have no L2 distance. Treating their fused-array position as an L2 distance creates a false knee and removes exact-token matches from gated results.
+
+**Acceptance Criteria:**
+- [x] Given hybrid candidates with a partial dense-distance map, when A2 computes its distribution knee, then lexical-only candidates shall not participate in the dense-distance distribution and shall remain eligible for the result set.
+- [x] Given a hybrid candidate without a dense distance, when A1 applies the dense score floor, then the candidate shall be explicitly handled as lexical-only evidence rather than being silently scored by a non-distance value.
+- [x] Given the RFC 018 gate evaluation fixture, when the mixed-scale fix is evaluated, then it shall produce no regression in the existing gate quality checks.
+
+**Linked Tests:** TS-GATE-852 (`src/relevance-gate.test.ts`)
+**Dependencies:** FR-GATE-379
+
 ### FR-GATE-422: Untrusted Task-Context Policy
 **Status:** Implemented
 **Priority:** High

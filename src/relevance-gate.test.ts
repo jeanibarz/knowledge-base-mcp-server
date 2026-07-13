@@ -152,6 +152,47 @@ describe('relevance gate', () => {
     expect(result.results).toEqual(knee.slice(0, 2));
   });
 
+  it('keeps lexical-only hybrid candidates out of the dense A2 knee', async () => {
+    const denseNear = candidate('/kb/dense-near.md', 0, 0.1, 'near dense result');
+    const lexicalOnly = candidate('/kb/lexical-only.md', 0, 0.2, 'exact identifier match');
+    const denseFar = candidate('/kb/dense-far.md', 0, 0.2, 'far dense result');
+    const rows = [denseNear, lexicalOnly, denseFar];
+
+    const result = await applyRelevanceGate({
+      query: 'hybrid lexical-only knee',
+      candidates: rows,
+      denseDistanceById: new Map([
+        [idOf(denseNear), 0.1],
+        [idOf(denseFar), 0.2],
+      ]),
+      lexicalHitIds: new Set([idOf(lexicalOnly)]),
+      config: config({ judgeEndpoint: undefined, scoreFloor: 2 }),
+    });
+
+    expect(result.results).toEqual(rows);
+    expect(result.verdict.dropped).toEqual([]);
+  });
+
+  it('keeps lexical-only hybrid candidates outside the dense A1 score floor', async () => {
+    const denseFar = candidate('/kb/dense-far-a1.md', 0, 1.2, 'far dense result');
+    const lexicalOnly = candidate('/kb/lexical-only-a1.md', 0, 0.1, 'exact identifier match');
+
+    const result = await applyRelevanceGate({
+      query: 'hybrid lexical-only score floor',
+      candidates: [denseFar, lexicalOnly],
+      denseDistanceById: new Map([[idOf(denseFar), 1.2]]),
+      lexicalHitIds: new Set([idOf(lexicalOnly)]),
+      config: config({ judgeEndpoint: undefined, scoreFloor: 0.95 }),
+    });
+
+    expect(result.results).toEqual([lexicalOnly]);
+    expect(result.verdict.dropped).toEqual([{
+      id: idOf(denseFar),
+      stage: 'A1-score-floor',
+      reason: 'dense distance 1.2000 > floor 0.95',
+    }]);
+  });
+
   it('keeps the empty verdict disabled by default from the M0 handoff', async () => {
     const rows = [candidate('/kb/a.md', 0, 0.2, 'deployment rollback')];
     const result = await applyRelevanceGate({
