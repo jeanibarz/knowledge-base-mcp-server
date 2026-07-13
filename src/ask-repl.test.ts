@@ -213,6 +213,65 @@ describe('runAskRepl loop', () => {
     }
   });
 
+  it('retains task-context provenance across refreshes', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-ask-repl-history-provenance-'));
+    const sourceA = path.join(tempDir, 'source-a.md');
+    const sourceB = path.join(tempDir, 'source-b.md');
+    await fsp.writeFile(sourceA, '# public source A\n', 'utf-8');
+    await fsp.writeFile(sourceB, '# public source B\n', 'utf-8');
+    const manager = makeManager(sourceA);
+    let retrievalCount = 0;
+    manager.similaritySearch.mockImplementation(async () => {
+      const source = retrievalCount++ === 0 ? sourceA : sourceB;
+      return [{
+        pageContent: `retrieved from ${source}`,
+        metadata: {
+          knowledgeBase: 'ops',
+          relativePath: path.basename(source),
+          source,
+        },
+        score: 0.1234,
+      }];
+    });
+    const seenMessages: string[] = [];
+    const call = jest.fn(async (options: ChatCompletionOptions) => {
+      seenMessages.push(options.messages.map((message) => String(message.content)).join('\n'));
+      await options.beforeAttempt?.();
+      if (seenMessages.length === 2) {
+        await fsp.writeFile(sourceA, [
+          '---',
+          'kb_policy:',
+          '  no_llm_context: true',
+          '---',
+          'private source A',
+        ].join('\n'), 'utf-8');
+      }
+      return {
+        content: `answer ${seenMessages.length} carries prior context`,
+        model: 'qwen3',
+        raw: {},
+      };
+    }) as unknown as ChatMock;
+    const out = sink();
+    const err = sink();
+
+    try {
+      const code = await runAskRepl({
+        baseArgs: baseArgs('ops'),
+        coreDeps: makeCoreDeps(manager, call),
+        input: scripted(['q1', '/refresh', 'q2', 'q3', '/exit']),
+        output: out.stream,
+        errOutput: err.stream,
+        env: { NO_COLOR: '1' },
+      });
+      expect(code).toBe(0);
+      expect(seenMessages).toHaveLength(3);
+      expect(seenMessages[2]).not.toContain('answer 2 carries prior context');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('re-retrieves after /refresh', async () => {
     const h = await runScript(['q1', '/refresh', 'q2', '/exit'], { kb: 'ops' });
     expect(h.manager.similaritySearch).toHaveBeenCalledTimes(2);

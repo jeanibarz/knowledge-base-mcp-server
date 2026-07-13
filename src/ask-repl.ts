@@ -249,10 +249,14 @@ export async function runAskRepl(opts: RunAskReplOptions): Promise<number> {
 
       session.lastResult = result;
       session.lastQuestion = text;
+      const currentTurnSourcePaths = [...new Set([
+        ...taskContextSourcePaths,
+        ...(session.evidence?.llmContextSourcePaths ?? []),
+      ])];
       session.history.push({
         question: text,
         answer: result.answer,
-        sourcePaths: session.evidence?.llmContextSourcePaths ?? [],
+        sourcePaths: currentTurnSourcePaths,
       });
       if (session.history.length > historyLimit) {
         session.history.splice(0, session.history.length - historyLimit);
