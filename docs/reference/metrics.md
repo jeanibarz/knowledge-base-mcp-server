@@ -19,6 +19,10 @@ Histogram rows list the base family name; scrapes emit `_bucket`, `_sum`, and `_
 | <code>kb_knowledge_base_quarantined_chunks</code> | <code>gauge</code> | <code>kb</code> | Number of quarantined chunks by knowledge base. | Emitted once per knowledge base with quarantined chunks. |
 | <code>kb_server_uptime_ms</code> | <code>gauge</code> | _none_ | Process uptime in milliseconds for the serving process. | Always emitted. |
 | <code>kb_index_embedding_dimensions</code> | <code>gauge</code> | _none_ | Embedding dimension of the active FAISS index, or 0 when unknown. | Always emitted. |
+| <code>kb_index_last_update_timestamp_seconds</code> | <code>gauge</code> | _none_ | Unix timestamp of the latest completed index update, or 0 when no update has completed. | Always emitted from the latest index update summary. |
+| <code>kb_index_update_status</code> | <code>gauge</code> | <code>status</code> | One-hot status of the latest index update (1 for the current status, 0 otherwise). | Always emitted once per bounded index update status. |
+| <code>kb_index_update_failures</code> | <code>gauge</code> | _none_ | Failure count recorded by the latest index update; this is a snapshot, not a cumulative counter. | Always emitted from the latest index update summary. |
+| <code>kb_index_update_duration_seconds</code> | <code>gauge</code> | _none_ | Duration of the latest completed index update in seconds, or 0 when unavailable. | Always emitted from the latest index update summary. |
 | <code>kb_provider_calls_total</code> | <code>counter</code> | <code>model_id</code> | Embedding provider calls by model id. | Emitted once per embedding model observed by the process. |
 | <code>kb_provider_call_errors_total</code> | <code>counter</code> | <code>model_id</code> | Embedding provider call errors by model id. | Emitted once per embedding model observed by the process. |
 | <code>kb_provider_tokens_in_total</code> | <code>counter</code> | <code>model_id</code> | Reported input tokens consumed by embedding provider calls. | Emitted once per model after the provider reports token usage. |

@@ -247,6 +247,10 @@ describe('kb stats CLI', () => {
     expect(out).toContain('kb_knowledge_base_files{kb="alpha"} 2');
     expect(out).toContain('kb_knowledge_base_files{kb="beta"} 1');
     expect(out).toContain('kb_knowledge_base_chunks{kb="alpha"} 4');
+    expect(out).toContain('kb_index_last_update_timestamp_seconds 0');
+    expect(out).toContain('kb_index_update_status{status="never_run"} 1');
+    expect(out).toContain('kb_index_update_failures 0');
+    expect(out).toContain('kb_index_update_duration_seconds 0');
     expect(out.endsWith('# EOF\n')).toBe(true);
     // Local index state must still be loaded (no daemon short-circuit here).
     expect(deps.computeKbStats).toHaveBeenCalledTimes(1);

@@ -112,6 +112,7 @@ kb doctor --format=json  # for agent shells
 - **Active model resolved.** Without one, `retrieve_knowledge` errors with `ACTIVE_MODEL_UNRESOLVED`.
 - **FAISS index version + mtime.** "Last built more than your last write" means the next `kb search --refresh` will re-embed.
 - **Per-KB stale counts.** A non-zero `modified_files` or `new_files` for a KB you just wrote to is expected; one for a KB you didn't touch is signal.
+- **Latest index-update health.** A partial or failed update, a non-zero failure/warning count, or skipped files appears in the `index_update` row and keeps the staleness check non-OK until a clean update succeeds.
 - **Embedding-backend reachability.** If you're on Ollama, `ollama serve` must be running; if on OpenAI, `OPENAI_API_KEY` must be set.
 
 The exit code is non-zero when any required check fails, so `kb doctor && kb search ...` is a safe gate from a script.

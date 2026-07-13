@@ -18,6 +18,17 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('# TYPE kb_build_info gauge');
     expect(text).toContain('kb_build_info{commit="abc123def456",version="0.0.0-test"} 1');
     expect(text).toContain('# TYPE kb_knowledge_base_chunks gauge');
+    expect(text).toContain('# TYPE kb_index_last_update_timestamp_seconds gauge');
+    expect(text).toContain(
+      `kb_index_last_update_timestamp_seconds ${Date.parse('2026-05-21T00:00:01.000Z') / 1000}`,
+    );
+    expect(text).toContain('# TYPE kb_index_update_status gauge');
+    for (const status of ['success', 'partial', 'failed', 'never_run'] as const) {
+      expect(text).toContain(`kb_index_update_status{status="${status}"} ${status === 'success' ? 1 : 0}`);
+    }
+    expect(text).toContain('# TYPE kb_index_update_failures gauge');
+    expect(text).toContain('kb_index_update_failures 0');
+    expect(text).toContain('kb_index_update_duration_seconds 1');
     expect(text).toContain('# TYPE kb_provider_calls counter');
     expect(text).not.toContain('# TYPE kb_provider_calls_total counter');
     expect(text).toContain('kb_knowledge_base_chunks{kb="ops\\\\team\\"a\\nline"} 7');
@@ -127,6 +138,68 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('# TYPE kb_provider_tokens_in counter');
     expect(text).toContain('kb_provider_tokens_in_total{model_id="ollama__nomic-embed-text-latest"} 42');
     expect(text).toContain('kb_query_cache_outcomes_total{outcome="hit"} 5');
+  });
+
+  it('exports the latest partial index update as a scrapeable failure signal', () => {
+    const payload = samplePayload();
+    payload.last_index_update = {
+      ...payload.last_index_update,
+      status: 'partial',
+      finished_at: '2026-05-21T00:01:02.000Z',
+      duration_ms: 12_500,
+      failure_count: 37,
+    };
+
+    const text = formatKbStatsOpenMetrics(payload);
+
+    for (const status of ['success', 'partial', 'failed', 'never_run'] as const) {
+      expect(text).toContain(`kb_index_update_status{status="${status}"} ${status === 'partial' ? 1 : 0}`);
+    }
+    expect(text).toContain('kb_index_update_failures 37');
+    expect(text).toContain('kb_index_update_duration_seconds 12.5');
+    expect(text).toContain(
+      `kb_index_last_update_timestamp_seconds ${Date.parse('2026-05-21T00:01:02.000Z') / 1000}`,
+    );
+  });
+
+  it('exports failed and never-run summaries with zero timing values when unavailable', () => {
+    for (const status of ['failed', 'never_run'] as const) {
+      const payload = samplePayload();
+      payload.last_index_update = {
+        ...payload.last_index_update,
+        status,
+        finished_at: null,
+        duration_ms: null,
+        failure_count: status === 'failed' ? 1 : 0,
+      };
+
+      const text = formatKbStatsOpenMetrics(payload);
+
+      for (const candidate of ['success', 'partial', 'failed', 'never_run'] as const) {
+        expect(text).toContain(
+          `kb_index_update_status{status="${candidate}"} ${candidate === status ? 1 : 0}`,
+        );
+      }
+      expect(text).toContain(`kb_index_update_failures ${status === 'failed' ? 1 : 0}`);
+      expect(text).toContain('kb_index_last_update_timestamp_seconds 0');
+      expect(text).toContain('kb_index_update_duration_seconds 0');
+    }
+  });
+
+  it('normalizes malformed timestamps and negative index-update values', () => {
+    const payload = samplePayload();
+    payload.last_index_update = {
+      ...payload.last_index_update,
+      finished_at: 'not-a-timestamp',
+      duration_ms: -100,
+      failure_count: -4,
+    };
+
+    const text = formatKbStatsOpenMetrics(payload);
+
+    expect(text).toContain('kb_index_last_update_timestamp_seconds 0');
+    expect(text).toContain('kb_index_update_failures 0');
+    expect(text).toContain('kb_index_update_duration_seconds 0');
   });
 
   it('renders provider circuit-breaker state and open-transition counters (issue #747)', () => {
