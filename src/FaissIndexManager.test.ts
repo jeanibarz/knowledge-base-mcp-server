@@ -2,6 +2,7 @@ import * as fsp from 'fs/promises';
 import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
+import { createMockEmbeddings } from './test-support/embeddings.js';
 
 // RFC 013 M1+M2: per-model layout. Default test config (huggingface +
 // BAAI/bge-small-en-v1.5) maps to this model_id slug.
@@ -50,6 +51,10 @@ const loadMock = jest.fn();
 const similaritySearchMock = jest.fn();
 const embedDocumentsMock = jest.fn(async (texts: string[]) => texts.map(mockVectorForText));
 const embedQueryMock = jest.fn(async (text: string) => mockVectorForText(text));
+const mockEmbeddings = createMockEmbeddings({
+  embedDocuments: embedDocumentsMock,
+  embedQuery: embedQueryMock,
+});
 const embeddingConstructorMock = jest.fn();
 const ollamaEmbeddingConstructorMock = jest.fn();
 const openAIEmbeddingConstructorMock = jest.fn();
@@ -164,8 +169,8 @@ jest.mock('@langchain/community/embeddings/hf', () => ({
     constructor(public _config: unknown) {
       embeddingConstructorMock(_config);
     }
-    embedDocuments = embedDocumentsMock;
-    embedQuery = embedQueryMock;
+    embedDocuments = mockEmbeddings.embedDocuments;
+    embedQuery = mockEmbeddings.embedQuery;
   },
 }));
 
@@ -175,8 +180,8 @@ jest.mock('@langchain/ollama', () => ({
     constructor(public _config: unknown) {
       ollamaEmbeddingConstructorMock(_config);
     }
-    embedDocuments = embedDocumentsMock;
-    embedQuery = embedQueryMock;
+    embedDocuments = mockEmbeddings.embedDocuments;
+    embedQuery = mockEmbeddings.embedQuery;
   },
 }));
 
@@ -186,8 +191,8 @@ jest.mock('@langchain/openai', () => ({
     constructor(public _config: unknown) {
       openAIEmbeddingConstructorMock(_config);
     }
-    embedDocuments = embedDocumentsMock;
-    embedQuery = embedQueryMock;
+    embedDocuments = mockEmbeddings.embedDocuments;
+    embedQuery = mockEmbeddings.embedQuery;
   },
 }));
 

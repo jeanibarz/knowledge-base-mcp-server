@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { createMockEmbeddings } from '../../../src/test-support/embeddings.js';
 import {
   createManualGate,
   createStressWorkspace,
@@ -16,6 +17,11 @@ import {
   type StressWorkspace,
 } from '../stress-harness.js';
 
+const mockEmbeddings = createMockEmbeddings({
+  embedDocuments: async (texts: string[]): Promise<number[][]> => texts.map(vectorForText),
+  embedQuery: async (text: string): Promise<number[]> => vectorForText(text),
+});
+
 const stressDescribe = process.env.KB_RUN_STRESS === '1' ? describe : describe.skip;
 
 jest.mock('@langchain/community/vectorstores/faiss', () => ({
@@ -26,13 +32,8 @@ jest.mock('@langchain/community/vectorstores/faiss', () => ({
 jest.mock('@langchain/community/embeddings/hf', () => ({
   __esModule: true,
   HuggingFaceInferenceEmbeddings: class MockEmbedding {
-    async embedDocuments(texts: string[]): Promise<number[][]> {
-      return texts.map(vectorForText);
-    }
-
-    async embedQuery(text: string): Promise<number[]> {
-      return vectorForText(text);
-    }
+    embedDocuments = mockEmbeddings.embedDocuments;
+    embedQuery = mockEmbeddings.embedQuery;
   },
 }));
 
