@@ -1,5 +1,5 @@
 import { callFakeChatCompletion, isFakeLlmEnabled } from './llm-fake-stub.js';
-import { resolveLlmProvider } from './config/llm-provider.js';
+import { resolveLlmProvider, type LlmProviderKind } from './config/llm-provider.js';
 import {
   llmCallMetrics,
   normalizeLlmProvider,
@@ -65,6 +65,12 @@ export interface LlmProbeResult {
   health_ok: boolean;
   chat_ok: boolean;
   detail: string;
+  /** Provider selected for the probe; optional for injected legacy test probes. */
+  provider?: LlmProviderKind | 'fake';
+  /** Configured/requested model, or the response model when no model was configured. */
+  model?: string | null;
+  /** Present when the environment contains a likely provider-configuration drift. */
+  warning?: string;
 }
 
 export interface LlmProbeOptions {
@@ -632,10 +638,15 @@ export async function probeLlmEndpoint(
 ): Promise<LlmProbeResult> {
   const chatEndpoint = normalizeChatEndpoint(endpoint);
   const healthUrl = deriveHealthUrl(chatEndpoint);
+  const providerResolution = resolveLlmProvider();
+  const fake = isFakeLlmEnabled();
+  const provider: LlmProbeResult['provider'] = fake ? 'fake' : providerResolution.provider;
+  const configuredModel = options.model ?? providerResolution.model ?? null;
+  const warning = fake ? undefined : providerResolution.warning;
   // Hosted providers (OpenRouter) expose no `/health` route; a GET there 404s.
   // Skip the health probe for remote providers and judge readiness by the chat
   // call alone.
-  const remote = resolveLlmProvider().remote;
+  const remote = providerResolution.remote;
   let healthOk = false;
   let healthDetail = '';
   if (remote) {
@@ -656,7 +667,7 @@ export async function probeLlmEndpoint(
   }
 
   try {
-    await callChatCompletion({
+    const chat = await callChatCompletion({
       endpoint: chatEndpoint,
       model: options.model,
       operation: null,
@@ -675,6 +686,9 @@ export async function probeLlmEndpoint(
       detail: remote
         ? `chat completion succeeded; ${healthDetail}`
         : (healthOk ? 'health and chat completion succeeded' : `chat completion succeeded; ${healthDetail}`),
+      provider,
+      model: configuredModel ?? chat.model,
+      ...(warning !== undefined ? { warning } : {}),
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -684,6 +698,9 @@ export async function probeLlmEndpoint(
       health_ok: healthOk,
       chat_ok: false,
       detail: `${healthDetail}; chat failed: ${msg}`,
+      provider,
+      model: configuredModel,
+      ...(warning !== undefined ? { warning } : {}),
     };
   }
 }

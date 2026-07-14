@@ -103,6 +103,44 @@ Stdout/stderr and exit codes:
   exit `2`.
 - `kb help` without `--format=json` keeps the existing human-readable output.
 
+## `kb llm probe`
+
+Invocation:
+
+```bash
+kb llm probe [--endpoint=<url>]
+kb llm probe --expect-provider <provider> --expect-model <model>
+```
+
+Success or failed-probe payload:
+
+```json
+{
+  "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+  "health_url": "http://127.0.0.1:11434/health",
+  "provider": "local",
+  "model": "qwen3:4b-instruct-2507-q4_K_M",
+  "health_ok": false,
+  "chat_ok": true,
+  "detail": "chat completion succeeded; health HTTP 404"
+}
+```
+
+Stable fields are `endpoint`, `health_url`, `provider`, `model`,
+`health_ok`, `chat_ok`, and `detail`. `endpoint` and `health_url` are
+normalized URLs. `provider` is the resolved LLM provider (`local`,
+`openrouter`, or `fake` in test mode); `model` is the configured/requested
+model, or the response model when no model was configured. `health_ok` is a
+local health-route check and may be false for otherwise usable providers such
+as Ollama; `chat_ok` is the OpenAI-compatible completion check.
+
+Optional `warning` is present when the environment contains a likely provider
+configuration drift, such as an OpenRouter API key while the provider resolves
+to local. `--expect-provider` and `--expect-model` make the probe fail with
+exit `1` when the resolved identity does not match; each flag accepts either
+`--flag=value` or a space-separated value. Without expectations, exit `0`
+means the chat probe succeeded and exit `1` means it failed.
+
 ## `kb ls`
 
 Invocation:
