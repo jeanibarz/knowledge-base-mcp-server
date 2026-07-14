@@ -51,7 +51,7 @@ import { listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
 import { readLlmContextPolicy } from './sensitivity-policy.js';
 import { isPidAlive } from './process-liveness.js';
-import { withWriteLock } from './write-lock.js';
+import { WriteLockContentionError, withWriteLock } from './write-lock.js';
 
 export { isPidAlive } from './process-liveness.js';
 
@@ -554,20 +554,43 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
   try {
     if (options.runUpdateIndex) {
       // Test seam (or an injecting caller): bypass manager construction
-      // entirely. `createManagerForReindex()` calls `initialize()`, which
-      // resolves the embedding provider and throws when no provider key
-      // is configured (e.g. in CI) — even though the real `updateIndex`
-      // is being mocked here. The manager is only consumed by the
-      // non-seam path below, so construct it lazily there.
+      // and initialization entirely. A real manager resolves the embedding
+      // provider during `initialize()`, which throws when no provider key is
+      // configured (e.g. in CI) even when `updateIndex` is mocked here.
       summary = await options.runUpdateIndex({ force: shouldForceRebuild });
     } else {
-      const manager = options.manager ?? (await createManagerForReindex());
-      summary = await withWriteLock(manager.modelDir, () =>
-        runManagerUpdateIndex(manager, { force: shouldForceRebuild }),
-      );
+      const manager = options.manager ?? new FaissIndexManager();
+      summary = await withWriteLock(manager.modelDir, async () => {
+        // Initialization can recover a pending sidecar commit and repair the
+        // persisted index, so keep it under the same lock as updateIndex.
+        // The lock primitive is re-entrant for this async flow.
+        if (options.manager === undefined) await manager.initialize();
+        return runManagerUpdateIndex(manager, { force: shouldForceRebuild });
+      });
     }
   } catch (err) {
     await deleteRunState();
+    if (err instanceof WriteLockContentionError) {
+      emitCanonicalLog({
+        process: 'cli',
+        cmd: 'reindex.exit',
+        took_ms: Date.now() - startedAtMs,
+        result_count: 0,
+        k: kbs.length,
+        error: { code: 'REINDEX_LOCK_HELD', category: 'lock' },
+      });
+      return {
+        outcome: 'lock_held',
+        kbs_attempted: kbs.length,
+        total_chunks_estimate: totalChunks,
+        estimated_seconds: estimatedSeconds,
+        contextual_estimate: estimate,
+        took_ms: Date.now() - startedAtMs,
+        reason: err.message,
+        summary: null,
+        contextual: null,
+      };
+    }
     emitCanonicalLog({
       process: 'cli',
       cmd: 'reindex.exit',
@@ -620,12 +643,6 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
     summary,
     contextual: await summarizeContextualOutcome(kbs),
   };
-}
-
-async function createManagerForReindex(): Promise<FaissIndexManager> {
-  const manager = new FaissIndexManager();
-  await manager.initialize();
-  return manager;
 }
 
 async function runManagerUpdateIndex(

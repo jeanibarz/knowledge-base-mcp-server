@@ -6,10 +6,11 @@
 // `updateIndex` call is mocked via the `runUpdateIndex` test seam, so
 // no real embedding provider or FAISS native code runs.
 
-import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import * as properLockfile from 'proper-lockfile';
 
 type RunnerModule = typeof import('./reindex-runner.js');
 
@@ -433,6 +434,63 @@ describe('.reindex.run.json + PID liveness', () => {
 
     expect(result.outcome).toBe('completed');
     expect(lockedDuringUpdate).toBe(true);
+  });
+
+  it('initializes the default manager under the model write lock', async () => {
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    let lockedDuringInitialize = false;
+    const initialize = jest.spyOn(FaissIndexManager.prototype, 'initialize')
+      .mockImplementation(async function (this: { modelDir: string }) {
+        lockedDuringInitialize = await fsp
+          .stat(path.join(this.modelDir, '.kb-write.lock'))
+          .then(() => true)
+          .catch(() => false);
+      });
+    const updateIndex = jest.spyOn(FaissIndexManager.prototype, 'updateIndex')
+      .mockImplementation(async () => undefined);
+    const getLastIndexUpdateSummary = jest
+      .spyOn(FaissIndexManager.prototype, 'getLastIndexUpdateSummary')
+      .mockReturnValue(makeNeverRunSummary());
+
+    try {
+      const result = await runner.runReindex({
+        knowledgeBases: [],
+        force: true,
+        resolveKbs: async () => ['alpha'],
+      });
+
+      expect(result.outcome).toBe('completed');
+      expect(lockedDuringInitialize).toBe(true);
+    } finally {
+      initialize.mockRestore();
+      updateIndex.mockRestore();
+      getLastIndexUpdateSummary.mockRestore();
+    }
+  });
+
+  it('reports model lock contention as lock_held', async () => {
+    const modelDir = path.join(tempDir, 'faiss', 'models', 'test-model');
+    const lockPath = path.join(modelDir, '.kb-write.lock');
+    await fsp.mkdir(modelDir, { recursive: true });
+    const release = await properLockfile.lock(modelDir, { lockfilePath: lockPath });
+    try {
+      const result = await runner.runReindex({
+        knowledgeBases: [],
+        force: true,
+        resolveKbs: async () => ['alpha'],
+        manager: {
+          modelDir,
+          updateIndex: async () => undefined,
+          getLastIndexUpdateSummary: () => makeNeverRunSummary(),
+        } as unknown as import('./FaissIndexManager.js').FaissIndexManager,
+      });
+
+      expect(result.outcome).toBe('lock_held');
+      expect(result.reason).toContain('Refresh lock is already held');
+    } finally {
+      await release();
+    }
+    await expect(fsp.access(runner.runStateFilePath())).rejects.toThrow();
   });
 
   it('writes the run-state file during a run and removes it on success', async () => {
