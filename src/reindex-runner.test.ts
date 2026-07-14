@@ -6,7 +6,7 @@
 // `updateIndex` call is mocked via the `runUpdateIndex` test seam, so
 // no real embedding provider or FAISS native code runs.
 
-import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -434,6 +434,38 @@ describe('.reindex.run.json + PID liveness', () => {
 
     expect(result.outcome).toBe('completed');
     expect(lockedDuringUpdate).toBe(true);
+  });
+
+  it('initializes the default manager under the model write lock', async () => {
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    let lockedDuringInitialize = false;
+    const initialize = jest.spyOn(FaissIndexManager.prototype, 'initialize')
+      .mockImplementation(async function (this: { modelDir: string }) {
+        lockedDuringInitialize = await fsp
+          .stat(path.join(this.modelDir, '.kb-write.lock'))
+          .then(() => true)
+          .catch(() => false);
+      });
+    const updateIndex = jest.spyOn(FaissIndexManager.prototype, 'updateIndex')
+      .mockImplementation(async () => undefined);
+    const getLastIndexUpdateSummary = jest
+      .spyOn(FaissIndexManager.prototype, 'getLastIndexUpdateSummary')
+      .mockReturnValue(makeNeverRunSummary());
+
+    try {
+      const result = await runner.runReindex({
+        knowledgeBases: [],
+        force: true,
+        resolveKbs: async () => ['alpha'],
+      });
+
+      expect(result.outcome).toBe('completed');
+      expect(lockedDuringInitialize).toBe(true);
+    } finally {
+      initialize.mockRestore();
+      updateIndex.mockRestore();
+      getLastIndexUpdateSummary.mockRestore();
+    }
   });
 
   it('reports model lock contention as lock_held', async () => {
