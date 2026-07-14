@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import * as properLockfile from 'proper-lockfile';
 
 type RunnerModule = typeof import('./reindex-runner.js');
 
@@ -433,6 +434,31 @@ describe('.reindex.run.json + PID liveness', () => {
 
     expect(result.outcome).toBe('completed');
     expect(lockedDuringUpdate).toBe(true);
+  });
+
+  it('reports model lock contention as lock_held', async () => {
+    const modelDir = path.join(tempDir, 'faiss', 'models', 'test-model');
+    const lockPath = path.join(modelDir, '.kb-write.lock');
+    await fsp.mkdir(modelDir, { recursive: true });
+    const release = await properLockfile.lock(modelDir, { lockfilePath: lockPath });
+    try {
+      const result = await runner.runReindex({
+        knowledgeBases: [],
+        force: true,
+        resolveKbs: async () => ['alpha'],
+        manager: {
+          modelDir,
+          updateIndex: async () => undefined,
+          getLastIndexUpdateSummary: () => makeNeverRunSummary(),
+        } as unknown as import('./FaissIndexManager.js').FaissIndexManager,
+      });
+
+      expect(result.outcome).toBe('lock_held');
+      expect(result.reason).toContain('Refresh lock is already held');
+    } finally {
+      await release();
+    }
+    await expect(fsp.access(runner.runStateFilePath())).rejects.toThrow();
   });
 
   it('writes the run-state file during a run and removes it on success', async () => {
