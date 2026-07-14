@@ -47,6 +47,8 @@ export interface LlmProviderResolution {
   model?: string;
   /** True when the active endpoint has no `/health` route (skip health probe). */
   remote: boolean;
+  /** Operator-facing hint for a likely OpenRouter provider configuration drift. */
+  warning?: string;
 }
 
 function firstNonEmpty(...values: (string | undefined)[]): string | undefined {
@@ -64,6 +66,10 @@ export function resolveLlmProvider(
   const appTitle = firstNonEmpty(env.KB_LLM_APP_TITLE) ?? KB_LLM_APP_TITLE_DEFAULT;
   const httpReferer = firstNonEmpty(env.KB_LLM_HTTP_REFERER);
   const configuredModel = firstNonEmpty(env.KB_LLM_MODEL);
+  const hasOpenRouterKey = firstNonEmpty(env.KB_OPENROUTER_API_KEY, env.OPENROUTER_API_KEY) !== undefined;
+  const warning = provider === 'local' && hasOpenRouterKey
+    ? 'OpenRouter API key is configured but KB_LLM_PROVIDER resolves to local; set KB_LLM_PROVIDER=openrouter to use OpenRouter.'
+    : undefined;
 
   if (provider === 'openrouter') {
     const apiKey = firstNonEmpty(env.KB_OPENROUTER_API_KEY, env.OPENROUTER_API_KEY);
@@ -83,5 +89,6 @@ export function resolveLlmProvider(
     ...(httpReferer !== undefined ? { httpReferer } : {}),
     ...(configuredModel !== undefined ? { model: configuredModel } : {}),
     remote: false,
+    ...(warning !== undefined ? { warning } : {}),
   };
 }

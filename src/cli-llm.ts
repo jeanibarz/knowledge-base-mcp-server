@@ -24,7 +24,7 @@ export const LLM_HELP = `kb llm — manage local LLM endpoints for kb ask
 
 Usage:
   kb llm status [--profile=<name>] [--format=md|json]
-  kb llm probe [--endpoint=<url>]
+  kb llm probe [--endpoint=<url>] [--expect-provider=<provider>] [--expect-model=<model>]
   kb llm use-endpoint <url> [--profile=<name>]
   kb llm install --profile=<name> --runner=llama-server --bin=<path> --model=<gguf-path> [--port=8091] [--ctx=32768] [--ngl=99] [--runner-arg=<arg>] [--start]
   kb llm start [--profile=<name>]
@@ -36,6 +36,11 @@ Usage:
 
 External profiles are reuse-only. Stop, restart, uninstall, and reap never
 touch external services such as local-research-agent's llama-server.
+
+kb llm probe accepts both --expect-provider=<provider> and
+--expect-provider <provider> (and the equivalent model flag). It exits 1
+when the chat probe fails or an expectation does not match the resolved
+provider/model.
 `;
 
 export async function runLlm(rest: string[]): Promise<number> {
@@ -97,14 +102,57 @@ async function runStatus(rest: string[]): Promise<number> {
 
 async function runProbe(rest: string[]): Promise<number> {
   let endpoint = process.env.KB_LLM_ENDPOINT || 'http://127.0.0.1:8080/v1/chat/completions';
-  for (const raw of rest) {
-    if (raw.startsWith('--endpoint=')) { endpoint = raw.slice('--endpoint='.length); continue; }
+  let expectedProvider: string | undefined;
+  let expectedModel: string | undefined;
+  for (let index = 0; index < rest.length; index += 1) {
+    const raw = rest[index];
+    if (raw.startsWith('--endpoint=')) { endpoint = requireProbeOptionValue(raw.slice('--endpoint='.length), '--endpoint'); continue; }
+    if (raw === '--endpoint') {
+      endpoint = requireProbeOptionValue(rest[++index], '--endpoint');
+      continue;
+    }
+    if (raw.startsWith('--expect-provider=')) {
+      expectedProvider = requireProbeOptionValue(raw.slice('--expect-provider='.length), '--expect-provider');
+      continue;
+    }
+    if (raw === '--expect-provider') {
+      expectedProvider = requireProbeOptionValue(rest[++index], '--expect-provider');
+      continue;
+    }
+    if (raw.startsWith('--expect-model=')) {
+      expectedModel = requireProbeOptionValue(raw.slice('--expect-model='.length), '--expect-model');
+      continue;
+    }
+    if (raw === '--expect-model') {
+      expectedModel = requireProbeOptionValue(rest[++index], '--expect-model');
+      continue;
+    }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
     throw new Error(`unexpected argument: ${raw}`);
   }
   const result = await probeLlmEndpoint(endpoint);
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  return result.chat_ok ? 0 : 1;
+  const expectationFailures: string[] = [];
+  if (expectedProvider !== undefined && result.provider !== expectedProvider) {
+    expectationFailures.push(`expected provider '${expectedProvider}', resolved '${result.provider ?? 'unknown'}'`);
+  }
+  if (expectedModel !== undefined && result.model !== expectedModel) {
+    expectationFailures.push(`expected model '${expectedModel}', resolved '${result.model ?? 'unknown'}'`);
+  }
+  const output = expectationFailures.length === 0
+    ? result
+    : {
+      ...result,
+      detail: `${result.detail}; expectation failed: ${expectationFailures.join('; ')}`,
+    };
+  process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+  return result.chat_ok && expectationFailures.length === 0 ? 0 : 1;
+}
+
+function requireProbeOptionValue(value: string | undefined, flag: string): string {
+  if (value === undefined || value.trim() === '' || value.startsWith('--')) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
 }
 
 async function runUseEndpoint(rest: string[]): Promise<number> {

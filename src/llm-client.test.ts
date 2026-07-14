@@ -513,6 +513,8 @@ describe('llm-client', () => {
     });
 
     const result = await probeLlmEndpoint('https://openrouter.ai/api/v1/chat/completions', fetchMock as unknown as typeof fetch);
+    expect(result.provider).toBe('openrouter');
+    expect(result.model).toBe('deepseek/deepseek-v4-flash');
     expect(result.health_ok).toBe(true);
     expect(result.chat_ok).toBe(true);
     expect(result.detail).toContain('health check skipped');
@@ -576,10 +578,33 @@ describe('llm-client', () => {
     chatTimeoutSpy.mockRestore();
     expect(result.health_ok).toBe(true);
     expect(result.chat_ok).toBe(true);
+    expect(result.provider).toBe('local');
+    expect(result.model).toBe('gate-model');
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
     const chatRequest = calls.find(([url]) => !url.endsWith('/health'))!;
     expect(JSON.parse(chatRequest[1].body as string)).toMatchObject({ model: 'gate-model' });
     expect(llmCallMetrics.snapshot()).toEqual({});
+  });
+
+  it('warns when an OpenRouter key is configured while the provider resolves local', async () => {
+    delete process.env.KB_LLM_FAKE;
+    delete process.env.KB_LLM_PROVIDER;
+    process.env.KB_OPENROUTER_API_KEY = 'sk-or-test-key';
+    delete process.env.OPENROUTER_API_KEY;
+    process.env.KB_LLM_MODEL = 'qwen3:4b-instruct-2507-q4_K_M';
+
+    const fetchMock = jest.fn(async (url: string) => {
+      if (url.endsWith('/health')) return new Response('{"status":"ok"}', { status: 200 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const result = await probeLlmEndpoint('http://127.0.0.1:8080', fetchMock as unknown as typeof fetch);
+    expect(result.provider).toBe('local');
+    expect(result.model).toBe('qwen3:4b-instruct-2507-q4_K_M');
+    expect(result.warning).toContain('KB_LLM_PROVIDER resolves to local');
   });
 });
 

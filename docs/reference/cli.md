@@ -822,7 +822,7 @@ kb llm — manage local LLM endpoints for kb ask
 
 Usage:
   kb llm status [--profile=<name>] [--format=md|json]
-  kb llm probe [--endpoint=<url>]
+  kb llm probe [--endpoint=<url>] [--expect-provider=<provider>] [--expect-model=<model>]
   kb llm use-endpoint <url> [--profile=<name>]
   kb llm install --profile=<name> --runner=llama-server --bin=<path> --model=<gguf-path> [--port=8091] [--ctx=32768] [--ngl=99] [--runner-arg=<arg>] [--start]
   kb llm start [--profile=<name>]
@@ -834,6 +834,11 @@ Usage:
 
 External profiles are reuse-only. Stop, restart, uninstall, and reap never
 touch external services such as local-research-agent's llama-server.
+
+kb llm probe accepts both --expect-provider=<provider> and
+--expect-provider <provider> (and the equivalent model flag). It exits 1
+when the chat probe fails or an expectation does not match the resolved
+provider/model.
 ```
 
 ## `kb logs`
