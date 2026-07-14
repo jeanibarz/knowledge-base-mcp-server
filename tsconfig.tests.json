@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "tsBuildInfoFile": "build/.tsbuildinfo.tests"
+  },
+  "include": [
+    "src/**/*.test.ts",
+    "src/test-support/**/*.ts",
+    "tests/**/*.ts"
+  ],
+  "exclude": ["node_modules", "build"]
+}

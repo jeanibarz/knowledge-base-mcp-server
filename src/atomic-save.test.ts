@@ -15,6 +15,7 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
+import { createMockEmbeddings } from './test-support/embeddings.js';
 
 const DEFAULT_MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
 
@@ -29,6 +30,7 @@ const similaritySearchMock = jest.fn();
 // at save-time is written into BOTH `faiss.index` and `docstore.json` so a
 // torn read (one file from save N, other from save N+1) is detectable.
 let nextGen = 0;
+const mockEmbeddings = createMockEmbeddings();
 
 function incrementGen(): number {
   nextGen += 1;
@@ -105,13 +107,8 @@ jest.mock('@langchain/community/embeddings/hf', () => ({
   HuggingFaceInferenceEmbeddings: class MockEmbedding {
     constructor(public _config: unknown) {}
 
-    async embedDocuments(texts: string[]) {
-      return texts.map(() => [1, 0, 0]);
-    }
-
-    async embedQuery(_text: string) {
-      return [1, 0, 0];
-    }
+    embedDocuments = mockEmbeddings.embedDocuments;
+    embedQuery = mockEmbeddings.embedQuery;
   },
 }));
 

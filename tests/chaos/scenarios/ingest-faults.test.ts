@@ -3,6 +3,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import type { Document } from '@langchain/core/documents';
+import { createMockEmbeddings } from '../../../src/test-support/embeddings.js';
 import {
   activeIndexSymlink,
   chunkManifestPath,
@@ -36,6 +37,10 @@ const mockEmbedDocuments = jest.fn(async (texts: string[]) => {
   return texts.map(mockVectorForText);
 });
 const mockEmbedQuery = jest.fn(async (text: string) => mockVectorForText(text));
+const mockEmbeddings = createMockEmbeddings({
+  embedDocuments: mockEmbedDocuments,
+  embedQuery: mockEmbedQuery,
+});
 const mockSave = jest.fn();
 const mockAddVectors = jest.fn();
 const mockLoad = jest.fn();
@@ -104,8 +109,8 @@ class MockFaissStore {
 jest.mock('@langchain/community/embeddings/hf', () => ({
   __esModule: true,
   HuggingFaceInferenceEmbeddings: class MockEmbedding {
-    embedDocuments = mockEmbedDocuments;
-    embedQuery = mockEmbedQuery;
+    embedDocuments = mockEmbeddings.embedDocuments;
+    embedQuery = mockEmbeddings.embedQuery;
   },
 }));
 
