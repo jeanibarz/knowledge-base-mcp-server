@@ -294,7 +294,18 @@ async function readManifestUnlocked(kbPath: string): Promise<IngestQuarantineRec
   const records: IngestQuarantineRecord[] = [];
   for (const line of raw.split(/\r?\n/)) {
     if (line.trim() === '') continue;
-    const parsed = JSON.parse(line) as Partial<IngestQuarantineRecord>;
+    let parsed: Partial<IngestQuarantineRecord>;
+    try {
+      parsed = JSON.parse(line) as Partial<IngestQuarantineRecord>;
+    } catch {
+      // A non-parseable line is almost always a torn write (crash mid-append)
+      // or other byte-level corruption. Skip rather than aborting the whole
+      // quarantine read — shouldRetryIngest consults this on the ingest hot
+      // path, so a single bad line used to brick reindex of the entire KB.
+      // Well-formed-but-schema-invalid lines still fall through to
+      // isManifestRecord below and are filtered without throwing.
+      continue;
+    }
     if (isManifestRecord(parsed)) records.push(parsed);
   }
   records.sort((a, b) => a.relative_path.localeCompare(b.relative_path));
