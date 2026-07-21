@@ -55,6 +55,7 @@ import { emitCanonicalLog } from './canonical-log.js';
 import { buildDaemonSearchArgs, resolveSearchPager } from './cli-pager.js';
 import { exitCodeDocs, formatExitCodesHelp } from './cli-exit-codes.js';
 import { closestSuggestion } from './cli-shared.js';
+import { shutdownOtel } from './otel-trace.js';
 
 // ----- Subcommand registry --------------------------------------------------
 
@@ -670,9 +671,12 @@ function isMainModule(): boolean {
 }
 
 if (isMainModule()) {
-  void main(process.argv).then((code) => {
+  // Flush OTEL spans before exit so one-shot CLI commands (kb ask, etc.)
+  // actually export — BatchSpanProcessor otherwise drops them (issue #879).
+  void main(process.argv).then(async (code) => {
+    await shutdownOtel();
     process.exit(code);
-  }).catch((err) => {
+  }).catch(async (err) => {
     // Catastrophic top-level (transitive import failure, etc.). Emit a
     // hint about half-installed npm i -g (RFC §7 F11).
     const msg = (err as Error)?.message ?? String(err);
@@ -684,6 +688,7 @@ if (isMainModule()) {
     } else {
       process.stderr.write(`kb: fatal: ${msg}\n`);
     }
+    await shutdownOtel();
     process.exit(1);
   });
 }
