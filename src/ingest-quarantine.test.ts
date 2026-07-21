@@ -195,4 +195,67 @@ describe('ingest quarantine manifest', () => {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('skips torn/malformed JSONL lines and still returns valid quarantine records', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-quarantine-torn-'));
+    try {
+      const kbPath = path.join(tempDir, 'kb');
+      await fsp.mkdir(kbPath, { recursive: true });
+      const q = await freshQuarantine(tempDir);
+
+      const good = await q.recordIngestFailure({
+        kbPath,
+        relativePath: 'good.md',
+        sourceHash: 'hash-good',
+        error: Object.assign(new Error('poison'), { code: 'EINVAL' }),
+        now: new Date('2026-05-12T10:00:00.000Z'),
+      });
+      const second = await q.recordIngestFailure({
+        kbPath,
+        relativePath: 'also-good.md',
+        sourceHash: 'hash-also',
+        error: Object.assign(new Error('still poison'), { code: 'EACCES' }),
+        now: new Date('2026-05-12T10:01:00.000Z'),
+      });
+
+      const manifestPath = path.join(kbPath, '.index', 'quarantine.jsonl');
+      // Compose a dirty manifest: valid rows + interior garbage + torn tail +
+      // schema-invalid-but-parseable JSON. Mimics crash/corruption without
+      // changing the writer.
+      const expected = [good, second].sort((a, b) => a.relative_path.localeCompare(b.relative_path));
+      await fsp.writeFile(
+        manifestPath,
+        [
+          JSON.stringify(good),
+          'this is not json at all',
+          JSON.stringify(second),
+          '{"schema_version":"ingest-quarant', // torn / truncated line
+          '{"schema_version":"wrong.v0","relative_path":"ignored.md"}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      await expect(q.listIngestQuarantine(kbPath)).resolves.toEqual(expected);
+      await expect(q.listIngestQuarantine(kbPath, { useLock: false })).resolves.toEqual(expected);
+
+      // Hot-path consumer must not throw either.
+      await expect(q.shouldRetryIngest(kbPath, 'good.md', {
+        sourceHash: 'hash-good',
+        now: new Date('2026-05-12T10:00:30.000Z'),
+      })).resolves.toMatchObject({
+        retry: false,
+        reason: 'backoff_active',
+      });
+      await expect(q.shouldRetryIngest(kbPath, 'unrelated.md', {
+        sourceHash: 'x',
+        now: new Date('2026-05-12T10:00:00.000Z'),
+      })).resolves.toMatchObject({
+        retry: true,
+        reason: 'no_record',
+      });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
