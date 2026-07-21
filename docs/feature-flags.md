@@ -75,6 +75,7 @@ both checks.
 | Gate empty verdict | `KB_GATE_EMPTY_VERDICT` | `off` | Gate terminal verdict | Implemented, opt-in after false-empty findings | none | `KB_GATE_EMPTY_VERDICT=on kb search "query" --gate --task-context="current task"` |
 | Gate judge endpoint | `KB_GATE_LLM_ENDPOINT` | falls back to `KB_LLM_ENDPOINT`; unset means statistical path/degrade | Gate stage B | Implemented | none | `KB_GATE_LLM_ENDPOINT=http://127.0.0.1:8080/v1/chat/completions kb search "query" --gate --task-context="current task"` |
 | Gate judge model | `KB_GATE_LLM_MODEL` | falls back to `KB_LLM_MODEL`; otherwise endpoint default | Gate stage B | Implemented | none | `KB_GATE_LLM_MODEL=<model> kb search "query" --gate --task-context="current task"` |
+| Gate verdict-cache LRU max | `KB_GATE_VERDICT_CACHE_MAX` | `256` | Process-global gate verdict LRU under long-lived `kb serve` | Implemented; `0` disables the memory cache | process lifetime | `KB_GATE_VERDICT_CACHE_MAX=512 kb serve` |
 
 ## Contextual Retrieval at Ingest
 

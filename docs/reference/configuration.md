@@ -78,6 +78,7 @@ Run `npm run docs:generate-config-reference` after changing the schema.
 | <code>KB_GATE_LLM_MODEL</code> | <code>string</code> | _unset_ |  |  | kept as set |  |
 | <code>KB_GATE_TASK_CONTEXT_MODE</code> | <code>enum</code> | <code>warn</code> | <code>off</code>, <code>warn</code>, <code>strict</code> |  | uses default |  |
 | <code>KB_GATE_TASK_CONTEXT_ARGV_MAX</code> | <code>integer</code> | <code>600</code> |  | >= <code>1</code> | uses default |  |
+| <code>KB_GATE_VERDICT_CACHE_MAX</code> | <code>integer</code> | <code>256</code> |  | >= <code>0</code> | uses default | Maximum relevance-gate verdict entries retained in the process LRU; 0 disables the memory cache. |
 | <code>KB_RERANK</code> | <code>boolean</code> | <code>off</code> | <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code> |  | uses default | Enables optional cross-encoder reranking. |
 | <code>KB_RERANK_MODEL</code> | <code>string</code> | <code>Xenova/ms-marco-MiniLM-L-6-v2</code> |  |  | kept as empty |  |
 | <code>KB_RERANK_TOP_N</code> | <code>integer</code> | <code>40</code> |  | >= <code>1</code>; <= <code>1000</code>; digits only | uses default |  |
