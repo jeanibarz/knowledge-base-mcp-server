@@ -421,6 +421,7 @@ function samplePayload(): KbStatsPayload {
       },
       auth_failures: 1,
       origin_denials: 1,
+      host_denials: 0,
       last_error: null,
     },
   };

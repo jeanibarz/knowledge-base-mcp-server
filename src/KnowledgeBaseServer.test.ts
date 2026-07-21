@@ -546,6 +546,7 @@ describe('KnowledgeBaseServer handlers', () => {
       },
       auth_failures: 1,
       origin_denials: 1,
+      host_denials: 0,
       last_error: {
         at: '2026-05-20T07:00:00.000Z',
         message: 'socket parse error',
@@ -595,6 +596,7 @@ describe('KnowledgeBaseServer handlers', () => {
         },
         auth_failures: 1,
         origin_denials: 0,
+        host_denials: 0,
         last_error: null,
       }),
     } as any;

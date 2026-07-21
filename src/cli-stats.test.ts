@@ -502,6 +502,7 @@ describe('kb stats CLI', () => {
       },
       auth_failures: 2,
       origin_denials: 1,
+      host_denials: 3,
       last_error: {
         at: '2026-05-20T07:00:00.000Z',
         message: 'client socket error',
@@ -519,6 +520,7 @@ describe('kb stats CLI', () => {
     expect(out).toContain('- Requests: total=12, in_flight=4, 1xx=0, 2xx=8, 3xx=0, 4xx=3, 5xx=1');
     expect(out).toContain('- Auth failures: 2');
     expect(out).toContain('- Origin denials: 1');
+    expect(out).toContain('- Host denials: 3');
     expect(out).toContain('- Last error: 2026-05-20T07:00:00.000Z client socket error');
   });
 

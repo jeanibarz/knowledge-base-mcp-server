@@ -328,6 +328,7 @@ describe('StreamableHttpHost — endpoints', () => {
       requests_total: 0,
       auth_failures: 0,
       origin_denials: 0,
+      host_denials: 0,
       last_error: null,
     });
 
@@ -364,6 +365,7 @@ describe('StreamableHttpHost — endpoints', () => {
     expect(stats.response_status_buckets['4xx']).toBeGreaterThanOrEqual(2);
     expect(stats.auth_failures).toBe(1);
     expect(stats.origin_denials).toBe(1);
+    expect(stats.host_denials).toBe(0);
     expect(stats.last_error?.message).toEqual(expect.any(String));
   });
 
@@ -615,6 +617,7 @@ describe('StreamableHttpHost — endpoints', () => {
   it('rejects a forged Host header with 403 when the allow-list is active', async () => {
     const started = await startHost({ allowedHosts: [`127.0.0.1:1`, 'localhost'] });
     stop = started.stop;
+    expect(started.host.getRuntimeStats().host_denials).toBe(0);
     const res = await request(started.port, {
       method: 'POST',
       path: '/mcp',
@@ -625,6 +628,7 @@ describe('StreamableHttpHost — endpoints', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(res.body).toBe('Host not allowed');
+    expect(started.host.getRuntimeStats().host_denials).toBe(1);
   });
 
   it('accepts a request whose Host is on the allow-list', async () => {
@@ -638,6 +642,7 @@ describe('StreamableHttpHost — endpoints', () => {
       headers: { Host: 'TRUSTED.example' },
     });
     expect(res.statusCode).toBe(401);
+    expect(started.host.getRuntimeStats().host_denials).toBe(0);
   });
 
   it('rejects a request with no Host header when the allow-list is active', async () => {

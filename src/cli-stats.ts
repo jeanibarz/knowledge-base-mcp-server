@@ -417,6 +417,7 @@ export function formatRemoteTransportSection(payload: KbStatsPayload): string[] 
       `in_flight=${formatInteger(stats.in_flight_requests)}, ${bucketSummary}`,
     `- Auth failures: ${formatInteger(stats.auth_failures)}`,
     `- Origin denials: ${formatInteger(stats.origin_denials)}`,
+    `- Host denials: ${formatInteger(stats.host_denials)}`,
     `- Last error: ${lastError}`,
     '',
   ];

@@ -122,6 +122,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     emptyResponseStatusBuckets();
   private authFailures = 0;
   private originDenials = 0;
+  private hostDenials = 0;
   private lastError: TransportRuntimeErrorSnapshot | null = null;
   protected server?: http.Server;
   protected inFlight = 0;
@@ -217,6 +218,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       response_status_buckets: { ...this.responseStatusBuckets },
       auth_failures: this.authFailures,
       origin_denials: this.originDenials,
+      host_denials: this.hostDenials,
       last_error: this.lastError === null ? null : { ...this.lastError },
     };
   }
@@ -433,6 +435,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     //     or no bind host derived). /health short-circuited earlier and stays
     //     reachable by infra probes with arbitrary Host headers.
     if (this.hostAllowList.size > 0 && !this.isAllowedHost(req.headers.host)) {
+      this.hostDenials += 1;
       respond(res, 403, 'Host not allowed');
       finalize(403);
       return;
