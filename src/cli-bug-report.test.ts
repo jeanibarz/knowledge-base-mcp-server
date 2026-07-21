@@ -189,12 +189,44 @@ describe('doctor bug-report bundle', () => {
         'runtime.json',
         'stats.json',
       ]);
+      expect(result.intended_directory_mode).toBe('0700');
+      expect(result.intended_file_mode).toBe('0600');
       const runtime = await fsp.readFile(path.join(result.bundle_dir, 'runtime.json'), 'utf-8');
       expect(runtime).toContain('"name": "OPENAI_API_KEY"');
       expect(runtime).toContain('[REDACTED]');
       const bundleText = await readBundleText(result.bundle_dir, result.files);
       expect(bundleText).not.toContain('sk-proj-secretsecretsecretsecret');
       expect(bundleText).not.toContain('abcdefghijklmnop');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  const itOnPosix = process.platform === 'win32' ? it.skip : it;
+
+  itOnPosix('creates the bundle directory 0700 and files 0600', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-bug-report-perms-'));
+    try {
+      const result = await createDoctorBugReportBundle({
+        outputParentDir: tempDir,
+        buildDoctorReport: async () => minimalDoctorReport(),
+        runStats: async () => 0,
+        runLogs: async () => 0,
+      });
+
+      expect(modeOf(await fsp.stat(result.bundle_dir))).toBe('0700');
+      for (const file of result.files) {
+        expect(modeOf(await fsp.stat(path.join(result.bundle_dir, file)))).toBe('0600');
+      }
+
+      const manifest = JSON.parse(
+        await fsp.readFile(path.join(result.bundle_dir, 'manifest.json'), 'utf-8'),
+      ) as {
+        intended_directory_mode: string;
+        intended_file_mode: string;
+      };
+      expect(manifest.intended_directory_mode).toBe('0700');
+      expect(manifest.intended_file_mode).toBe('0600');
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
@@ -247,4 +279,8 @@ async function readBundleText(bundleDir: string, files: string[]): Promise<strin
     files.map((file) => fsp.readFile(path.join(bundleDir, file), 'utf-8')),
   );
   return contents.join('\n');
+}
+
+function modeOf(stats: { mode: number }): string {
+  return (stats.mode & 0o777).toString(8).padStart(4, '0');
 }

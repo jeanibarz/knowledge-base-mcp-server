@@ -281,6 +281,8 @@ const docAssertions: Record<DocumentedCommand, (examples: unknown[]) => void> = 
       bundle_dir: expect.any(String),
       created_at: expect.any(String),
       files: expect.any(Array),
+      intended_directory_mode: '0700',
+      intended_file_mode: '0600',
       redaction_summary: expect.any(Object),
     });
     expect(record(examples[4])).toMatchObject({
