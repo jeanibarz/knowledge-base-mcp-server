@@ -14,6 +14,7 @@ import {
 // ts-jest cannot transform). We exercise the parser end-to-end via the
 // child-process tests in cli.test.ts instead.
 import type { ScoredDocument } from './formatter.js';
+import { slugifyTitle } from './slug.js';
 
 const cliPath = path.join(process.cwd(), 'build', 'cli.js');
 
@@ -179,3 +180,78 @@ describe('kb remember write policy', () => {
     }
   });
 });
+
+describe('kb remember non-Latin titles (issue #890)', () => {
+  it('creates distinct files for two different non-Latin titles', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-non-latin-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(rootDir, 'project');
+      await fsp.mkdir(kbDir, { recursive: true });
+
+      const titleA = '第一个笔记';
+      const titleB = '第二个笔记';
+      const env = { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir };
+
+      const r1 = runCli(
+        ['remember', '--kb=project', `--title=${titleA}`, '--stdin', '--yes', '--no-check-similar'],
+        env,
+        '# 第一个\n\nbody a\n',
+      );
+      const r2 = runCli(
+        ['remember', '--kb=project', `--title=${titleB}`, '--stdin', '--yes', '--no-check-similar'],
+        env,
+        '# 第二个\n\nbody b\n',
+      );
+
+      expect(r1.code).toBe(0);
+      expect(r2.code).toBe(0);
+
+      const pathA = `${slugifyTitle(titleA)}.md`;
+      const pathB = `${slugifyTitle(titleB)}.md`;
+      expect(pathA).not.toBe(pathB);
+      expect(pathA).not.toBe('note.md');
+      expect(pathB).not.toBe('note.md');
+
+      await expect(fsp.readFile(path.join(kbDir, pathA), 'utf-8')).resolves.toContain('body a');
+      await expect(fsp.readFile(path.join(kbDir, pathB), 'utf-8')).resolves.toContain('body b');
+      await expect(fsp.stat(path.join(kbDir, 'note.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('still refuses to overwrite when the same non-Latin title is remembered twice', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-remember-non-latin-dup-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      const kbDir = path.join(rootDir, 'project');
+      await fsp.mkdir(kbDir, { recursive: true });
+
+      const title = '同じタイトル';
+      const env = { KNOWLEDGE_BASES_ROOT_DIR: rootDir, FAISS_INDEX_PATH: faissDir };
+      const relativePath = `${slugifyTitle(title)}.md`;
+
+      const r1 = runCli(
+        ['remember', '--kb=project', `--title=${title}`, '--stdin', '--yes', '--no-check-similar'],
+        env,
+        '# once\n',
+      );
+      const r2 = runCli(
+        ['remember', '--kb=project', `--title=${title}`, '--stdin', '--yes', '--no-check-similar'],
+        env,
+        '# twice\n',
+      );
+
+      expect(r1.code).toBe(0);
+      expect(r2.code).toBe(1);
+      expect(r2.stderr).toContain(`refusing to overwrite existing note: ${relativePath}`);
+      await expect(fsp.readFile(path.join(kbDir, relativePath), 'utf-8')).resolves.toContain('# once');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
