@@ -12,6 +12,7 @@ const originalEnv = {
   EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
   HUGGINGFACE_MODEL_NAME: process.env.HUGGINGFACE_MODEL_NAME,
   KB_ACTIVE_MODEL: process.env.KB_ACTIVE_MODEL,
+  KB_MIN_FREE_DISK_BYTES: process.env.KB_MIN_FREE_DISK_BYTES,
 };
 
 const MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
@@ -195,6 +196,94 @@ describe('kb restore', () => {
 
       await expect(restore.restoreBackup({ fromDir: path.join(faissDir, 'snapshots', 'bad') }))
         .rejects.toThrow(/unsafe restore source/);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // Issue #908 — disk-space preflight before any staging write.
+  it('refuses with INSUFFICIENT_DISK_SPACE before staging when free space is short', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-restore-disk-'));
+    try {
+      const faissDir = path.join(tmp, '.faiss');
+      const outputDir = path.join(tmp, 'snapshot');
+      const modelDir = path.join(faissDir, 'models', MODEL_ID);
+      // Zero margin so ambient free space always clears the backup preflight.
+      process.env.KB_MIN_FREE_DISK_BYTES = '0';
+      const { backup } = await freshModules(faissDir);
+      await seedModelVersion({
+        faissDir,
+        version: 'index.v1',
+        faissBytes: 'backup-faiss',
+        docstoreBytes: 'backup-docstore',
+        makeActive: true,
+      });
+      await backup.createBackup({ outputDir, modelId: MODEL_ID });
+      await seedModelVersion({
+        faissDir,
+        version: 'index.v2',
+        faissBytes: 'live-faiss',
+        docstoreBytes: 'live-docstore',
+        makeActive: true,
+      });
+
+      // Impossible margin forces restore preflight to refuse.
+      process.env.KB_MIN_FREE_DISK_BYTES = String(Number.MAX_SAFE_INTEGER);
+      const { restore } = await freshModules(faissDir);
+
+      let thrown: unknown;
+      try {
+        await restore.restoreBackup({ fromDir: outputDir });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeDefined();
+      const { KBError } = await import('./errors.js');
+      expect(thrown).toBeInstanceOf(KBError);
+      expect((thrown as InstanceType<typeof KBError>).code).toBe('INSUFFICIENT_DISK_SPACE');
+      expect((thrown as Error).message).toMatch(/Insufficient disk space for restore/);
+      expect((thrown as Error).message).toMatch(/need ~/);
+      expect((thrown as Error).message).toMatch(/have .* free/);
+      // Live state untouched: still index.v2, no new version, no staging leftovers.
+      expect(await fsp.readlink(path.join(modelDir, 'index'))).toBe('index.v2');
+      await expect(fsp.stat(path.join(modelDir, 'index.v3'))).rejects.toMatchObject({ code: 'ENOENT' });
+      const leftovers = (await fsp.readdir(modelDir)).filter((name) => name.includes('.restore.tmp.'));
+      expect(leftovers).toEqual([]);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('proceeds with a normal restore when free space is sufficient', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-restore-disk-ok-'));
+    try {
+      const faissDir = path.join(tmp, '.faiss');
+      const outputDir = path.join(tmp, 'snapshot');
+      const modelDir = path.join(faissDir, 'models', MODEL_ID);
+      process.env.KB_MIN_FREE_DISK_BYTES = '0';
+      const { backup, restore } = await freshModules(faissDir);
+      await seedModelVersion({
+        faissDir,
+        version: 'index.v1',
+        faissBytes: 'good-faiss',
+        docstoreBytes: 'good-docstore',
+        makeActive: true,
+      });
+      await backup.createBackup({ outputDir, modelId: MODEL_ID });
+      await seedModelVersion({
+        faissDir,
+        version: 'index.v2',
+        faissBytes: 'live-faiss',
+        docstoreBytes: 'live-docstore',
+        makeActive: true,
+      });
+
+      const result = await restore.restoreBackup({ fromDir: outputDir });
+      expect(result.restoredVersion).toBe('index.v3');
+      expect(await fsp.readlink(path.join(modelDir, 'index'))).toBe('index.v3');
+      expect(await fsp.readFile(path.join(modelDir, 'index.v3', 'faiss.index'), 'utf-8')).toBe(
+        'good-faiss',
+      );
     } finally {
       await fsp.rm(tmp, { recursive: true, force: true });
     }

@@ -131,11 +131,12 @@ export const KB_ERROR_CODE_DOCS: Record<KBErrorCode, KBErrorCodeDoc> = {
     transient: false,
   },
   INSUFFICIENT_DISK_SPACE: {
-    meaning: 'A write-heavy reindex/ingest preflight estimated more bytes than the volume can hold.',
+    meaning:
+      'A write-heavy preflight (reindex, backup, or restore) estimated more bytes than the target volume can hold.',
     cause:
-      'Estimated index/sidecar bytes plus the `KB_MIN_FREE_DISK_BYTES` margin exceed the `statfs`-reported free space under `$FAISS_INDEX_PATH`; the run refused before writing.',
+      'Estimated source footprint times the operation factor, plus the `KB_MIN_FREE_DISK_BYTES` margin, exceeds the `statfs`-reported free space on the target directory (`$FAISS_INDEX_PATH` for reindex/restore, backup `--output` parent for backup); the run refused before writing.',
     remedy:
-      'Free disk space under `$FAISS_INDEX_PATH` (prune old index versions, clear caches) or lower `KB_MIN_FREE_DISK_BYTES`, then retry.',
+      'Free disk space on the target volume (prune old index versions, clear caches, choose a roomier `--output`) or lower `KB_MIN_FREE_DISK_BYTES`, then retry.',
     transient: false,
   },
 };

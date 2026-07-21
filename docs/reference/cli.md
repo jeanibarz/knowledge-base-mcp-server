@@ -124,6 +124,10 @@ Copies the selected model's active index.vN directory and model sidecars into
 a new backup directory, then writes backup-manifest.json with SHA-256 checksums.
 The backup command holds the model write lock during the snapshot.
 
+Disk-space preflight (#908): refuses with INSUFFICIENT_DISK_SPACE before any
+snapshot copy when the output volume cannot hold ~1.5× the active version
+footprint plus the KB_MIN_FREE_DISK_BYTES margin (default 512 MiB).
+
 Options:
   --output=<dir>      Destination directory. It must not already exist and
                       must be outside $FAISS_INDEX_PATH.
@@ -133,7 +137,7 @@ Options:
 
 Exit codes:
   0   backup written
-  1   runtime or filesystem error
+  1   runtime, disk-space preflight, or filesystem error
   2   invalid arguments
 ```
 
@@ -1420,6 +1424,10 @@ backup, creates a new index.vN directory, and atomically swaps the model's
 index symlink. V1 is an offline/local restore path: stop kb serve and other
 long-running readers before restoring.
 
+Disk-space preflight (#908): refuses with INSUFFICIENT_DISK_SPACE before any
+staging write when the target volume cannot hold ~2× the backup footprint
+plus the KB_MIN_FREE_DISK_BYTES margin (default 512 MiB).
+
 Options:
   --from=<dir>   Backup directory created by kb backup. It must be outside
                  $FAISS_INDEX_PATH.
@@ -1427,7 +1435,7 @@ Options:
 
 Exit codes:
   0   restore applied
-  1   validation or filesystem error
+  1   validation, disk-space preflight, or filesystem error
   2   invalid arguments
 ```
 

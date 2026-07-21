@@ -185,7 +185,7 @@ export async function runReindexCli(rest: string[]): Promise<number> {
   // volume cannot hold the estimate (+ margin) instead of failing with a
   // raw ENOSPC partway through an expensive run.
   try {
-    await assertSufficientDiskSpace(FAISS_INDEX_PATH);
+    await assertSufficientDiskSpace(FAISS_INDEX_PATH, { operation: 'reindex' });
   } catch (err) {
     if (err instanceof KBError && err.code === 'INSUFFICIENT_DISK_SPACE') {
       process.stderr.write(`kb reindex: ${err.message}\n`);

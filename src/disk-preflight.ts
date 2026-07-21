@@ -1,29 +1,31 @@
-// Issue #645 — disk-space preflight guard for write-heavy reindex/ingest.
+// Disk-space preflight guard for write-heavy CLI paths (#645 reindex/ingest,
+// #908 backup/restore).
 //
-// A `kb reindex --with-context` triggers a full rebuild that writes a new
-// FAISS index version, docstore JSON, contextual-preface sidecars, and
-// lexical indexes under `$FAISS_INDEX_PATH` — all *before* the atomic swap
-// (RFC 014). If the volume runs out of space mid-write the operation
-// surfaces as a raw `ENOSPC` after an expensive partial run, leaving an
-// abandoned half-written version on disk.
+// Write-heavy operations (full reindex, backup snapshot, restore staging)
+// copy or rebuild multi-GB trees under a target directory. If the volume
+// runs out of space mid-write the failure surfaces as a raw `ENOSPC` after
+// an expensive partial run, leaving abandoned half-written state on disk.
 //
 // This module is the *preventive* complement to the `disk-full` chaos test
-// (#473): it estimates how many bytes the rebuild will need, compares that
+// (#473): it estimates how many bytes the write will need, compares that
 // (plus a safety margin) against the `statfs`-reported available bytes, and
 // throws a typed `KBError('INSUFFICIENT_DISK_SPACE', …)` with an actionable
 // "need ~X, have Y" message before any write starts.
 //
 // Design notes (see PR for alternatives):
-//  - Estimate = current on-disk footprint under `$FAISS_INDEX_PATH` × an
-//    empirical factor. A full reindex writes a fresh version roughly the
-//    size of the committed one; the factor covers the temporary overlap of
-//    old + new version during the atomic swap and sidecar growth. A
-//    first-ever reindex (empty dir) estimates 0, so only the margin gates it.
+//  - Estimate = source on-disk footprint × an empirical factor. For reindex
+//    the source is the current index tree under `$FAISS_INDEX_PATH`; for
+//    backup/restore callers pass `currentBytes` from the active version or
+//    backup manifest. The factor covers temporary staging/overlap (old +
+//    new version, staging + final). A first-ever reindex (empty dir)
+//    estimates 0, so only the margin gates it.
 //  - Margin is `KB_MIN_FREE_DISK_BYTES` (default 512 MiB), kept conservative
 //    and tunable so this is not a hard surprise.
 //  - `fs.promises.statfs` is on all supported Node versions; if it is
 //    unavailable or fails, the guard degrades gracefully (skips, logs a
-//    warning) rather than blocking a reindex on a portability gap.
+//    warning) rather than blocking a write on a portability gap. Callers
+//    that may target a missing directory should mkdir it first so ENOENT
+//    is not mistaken for an unsupported filesystem.
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
@@ -156,12 +158,22 @@ export interface DiskPreflightOptions {
   estimateFactor?: number;
   /** Test seam: statfs implementation. */
   statfs?: StatfsFn;
-  /** Test seam: precomputed current on-disk footprint of `dir`. */
+  /**
+   * Precomputed source footprint in bytes. When set, skips walking `dir` for
+   * size and uses this value × {@link estimateFactor} as the write estimate.
+   * Callers that size a *source* path (backup, active version) while checking
+   * free space on a different *target* dir should pass this.
+   */
   currentBytes?: number;
+  /**
+   * Short label for the refusing operation in the error message
+   * (e.g. "reindex", "restore", "backup"). Defaults to "write".
+   */
+  operation?: string;
 }
 
 /**
- * Preflight guard: estimate the bytes a write-heavy reindex/ingest against
+ * Preflight guard: estimate the bytes a write-heavy operation against
  * `dir` will need and refuse up front when the filesystem cannot hold it.
  *
  * Throws `KBError('INSUFFICIENT_DISK_SPACE', …)` with a "need ~X, have Y"
@@ -171,6 +183,10 @@ export interface DiskPreflightOptions {
  * If `statfs` is unavailable or fails (older runtimes, exotic filesystems),
  * the guard degrades gracefully: it logs a warning and returns a permissive
  * estimate rather than blocking the operation on a portability gap.
+ *
+ * Used by reindex (#645), restore, and backup (#908). Pass `currentBytes`
+ * when the write estimate comes from a source other than `dir` itself
+ * (e.g. a backup tree or active index.vN footprint).
  */
 export async function assertSufficientDiskSpace(
   dir: string,
@@ -178,6 +194,7 @@ export async function assertSufficientDiskSpace(
 ): Promise<DiskSpaceEstimate> {
   const margin = options.minFreeBytes ?? resolveMinFreeDiskBytes();
   const factor = options.estimateFactor ?? DEFAULT_REINDEX_ESTIMATE_FACTOR;
+  const operation = options.operation?.trim() || 'write';
 
   const currentBytes = options.currentBytes ?? (await directorySizeBytes(dir));
   const estimatedBytes = Math.ceil(currentBytes * factor);
@@ -202,7 +219,7 @@ export async function assertSufficientDiskSpace(
   if (!estimate.sufficient) {
     throw new KBError(
       'INSUFFICIENT_DISK_SPACE',
-      `Insufficient disk space for reindex at "${dir}": need ~${formatBytes(estimate.required_bytes)} ` +
+      `Insufficient disk space for ${operation} at "${dir}": need ~${formatBytes(estimate.required_bytes)} ` +
         `(estimate ${formatBytes(estimate.estimated_bytes)} + ${formatBytes(estimate.margin_bytes)} margin), ` +
         `have ${formatBytes(estimate.available_bytes)} free. ` +
         `Free up space or lower KB_MIN_FREE_DISK_BYTES (current margin ${estimate.margin_bytes} bytes).`,
