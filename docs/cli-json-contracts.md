@@ -2415,3 +2415,143 @@ Stdout/stderr and exit codes:
 Source and test anchors: `src/cli-reindex.ts::runReindexStatusCli`,
 `src/reindex-progress.ts::computeReindexProgress`,
 `src/cli-reindex-status.test.ts`, `src/reindex-progress.test.ts`.
+
+## `kb compare`
+
+Invocation:
+
+```bash
+kb compare <query> <model_a> <model_b> [--k=<int>] [--kb=<name>] [--no-cache] --format=json
+```
+
+Success envelope:
+
+```json
+{
+  "schema_version": "kb.compare.v1",
+  "query": "rollback procedure",
+  "model_a": "ollama__nomic-embed-text",
+  "model_b": "openai__text-embedding-3-small",
+  "k": 10,
+  "knowledge_base": null,
+  "rows": [
+    {
+      "rank_a": 1,
+      "rank_b": 2,
+      "score_a": 0.12,
+      "score_b": 0.34,
+      "in_both": true,
+      "source": "work/runbooks/deploy.md"
+    },
+    {
+      "rank_a": 2,
+      "rank_b": null,
+      "score_a": 0.45,
+      "score_b": null,
+      "in_both": false,
+      "source": "work/runbooks/rollback.md"
+    }
+  ]
+}
+```
+
+Stable fields:
+
+- `schema_version`: currently `kb.compare.v1`.
+- `query`: the query string exactly as supplied.
+- `model_a` / `model_b`: resolved model ids used for each leg.
+- `k`: the per-model top-K limit used for both legs.
+- `knowledge_base`: the `--kb=<name>` scope, or `null` when searching all KBs.
+- `rows[]`: joined rank/score table, sorted by best rank in either column
+  (same ordering as the markdown table).
+- `rows[].rank_a` / `rank_b`: 1-based rank within that model's top-K, or
+  `null` when the hit is only present on the other model.
+- `rows[].score_a` / `score_b`: per-model L2 distance (not cross-comparable),
+  or `null` when the hit is missing from that leg.
+- `rows[].in_both`: `true` when the same join key (`source` + chunk index)
+  appears in both legs. Multi-chunk documents can produce multiple rows that
+  share a `source` path; chunk index is used for joining but is not emitted
+  as a separate field (matching the historical markdown table).
+- `rows[].source`: document source path from the hit metadata.
+
+Stdout/stderr and exit codes:
+
+- Success JSON is stdout with exit `0`.
+- Argument / model-resolution errors print `kb compare: ...` to stderr and
+  exit `2`.
+- Layout/index/search failures print `kb compare: ...` to stderr and exit `1`.
+- Without `--format=json`, the historical markdown table is unchanged.
+
+Source and test anchors: `src/cli-compare.ts`, `src/cli-compare.test.ts`.
+
+## `kb stale-check`
+
+Invocation:
+
+```bash
+kb stale-check [--kb=<name>] [--no-cache] [--quiet|-q] [--verbose|-v] --format=json
+```
+
+Success envelope:
+
+```json
+{
+  "schema_version": "kb.stale-check.v1",
+  "knowledge_bases": ["ops"],
+  "totals": {
+    "files_scanned": 12,
+    "references_checked": 40,
+    "stale_references": 2,
+    "files_with_stale": 1
+  },
+  "broken_references": [
+    {
+      "knowledge_base": "ops",
+      "path": "runbooks/deploy.md",
+      "line": 14,
+      "type": "tilde-path",
+      "value": "~/missing/path.md",
+      "status": "MISSING",
+      "detail": "parent dir missing"
+    },
+    {
+      "knowledge_base": "ops",
+      "path": "runbooks/deploy.md",
+      "line": 22,
+      "type": "url",
+      "value": "https://example.invalid/doc",
+      "status": "HTTP_ERROR",
+      "detail": "HTTP 404"
+    }
+  ]
+}
+```
+
+Stable fields:
+
+- `schema_version`: currently `kb.stale-check.v1`.
+- `knowledge_bases`: KB names included in the scan (sorted when unscoped).
+- `totals.files_scanned`, `totals.references_checked`,
+  `totals.stale_references`, `totals.files_with_stale`: integer counters
+  matching the markdown summary.
+- `broken_references[]`: one object per broken/error reference, in scan order.
+  Machine-readable status codes are `MISSING`, `HTTP_ERROR`, and `TIMEOUT`
+  (the same codes used in the markdown report).
+- Entry fields: `knowledge_base`, `path` (KB-relative), `line`, `type`
+  (`tilde-path` | `rel-path` | `url`), `value`, `status`, and optional
+  `detail` when a more specific reason is available.
+- Optional `references[]`: present only with `--verbose`; every checked
+  reference (including `OK` / `SKIPPED`), same entry shape as
+  `broken_references[]`.
+
+Stdout/stderr and exit codes:
+
+- Success JSON is stdout with exit `0` (including when `broken_references` is
+  empty).
+- Argument errors print `kb stale-check: ...` to stderr and exit `2`.
+- Runtime/KB failures print `kb stale-check: ...` to stderr and exit `1`.
+- `--quiet` only affects markdown output (drops the summary footer); JSON
+  always includes `totals`.
+- Without `--format=json`, the historical markdown report is unchanged.
+
+Source and test anchors: `src/cli-stale-check.ts`, `src/cli-stale-check.test.ts`.
