@@ -221,4 +221,83 @@ describe('readResource sensitivity policy', () => {
       else process.env.MCP_TRANSPORT = previousTransport;
     }
   });
+
+  it('fails closed on remote read when frontmatter YAML is malformed around a deny marker', async () => {
+    await fsp.mkdir(kbDir, { recursive: true });
+    await fsp.writeFile(path.join(kbDir, 'malformed-deny.md'), [
+      '---',
+      'kb_policy:',
+      '  resource_read: deny',
+      '  broken: [unclosed',
+      '---',
+      '# Secret body that must not leak',
+      '',
+      'classified payload',
+    ].join('\n'), 'utf-8');
+
+    await expect(readResource(buildResourceUri(kbName, 'malformed-deny.md'), { access: 'remote' }))
+      .rejects.toThrow(/resource blocked by kb_policy\.resource_read.*unreadable or malformed/);
+  });
+
+  it('fails closed when the frontmatter closing fence sits past the 8 KB scan window', async () => {
+    await fsp.mkdir(kbDir, { recursive: true });
+    // Opening fence + padding + policy + closing fence exceed FRONTMATTER_MAX_BYTES
+    // so the lenient parser would drop the policy; strict parse must fail closed.
+    const padding = `# ${'x'.repeat(9000)}\n`;
+    await fsp.writeFile(path.join(kbDir, 'oversized.md'), [
+      '---',
+      padding.trimEnd(),
+      'kb_policy:',
+      '  resource_read: deny',
+      '---',
+      '# Should not be readable remotely',
+    ].join('\n'), 'utf-8');
+
+    await expect(readResource(buildResourceUri(kbName, 'oversized.md'), { access: 'remote' }))
+      .rejects.toThrow(/resource blocked by kb_policy\.resource_read.*unreadable or malformed/);
+  });
+
+  it('fails closed on typo resource_read values instead of allowing', async () => {
+    await fsp.mkdir(kbDir, { recursive: true });
+    for (const [name, value] of [
+      ['typo-denied.md', 'denied'],
+      ['typo-private.md', 'private'],
+      ['typo-no.md', 'no'],
+    ] as const) {
+      await fsp.writeFile(path.join(kbDir, name), [
+        '---',
+        'kb_policy:',
+        `  resource_read: ${value}`,
+        '---',
+        '# Typo policy body',
+      ].join('\n'), 'utf-8');
+
+      await expect(readResource(buildResourceUri(kbName, name), { access: 'remote' }))
+        .rejects.toThrow(/resource blocked by kb_policy\.resource_read/);
+      await expect(readResource(buildResourceUri(kbName, name), { access: 'local' }))
+        .rejects.toThrow(/resource blocked by kb_policy\.resource_read/);
+    }
+  });
+
+  it('still allows local stdio reads of well-formed resource_read=allow notes', async () => {
+    await fsp.mkdir(kbDir, { recursive: true });
+    await fsp.writeFile(path.join(kbDir, 'allow.md'), [
+      '---',
+      'kb_policy:',
+      '  resource_read: allow',
+      '---',
+      '# Public',
+      '',
+      'open note body',
+    ].join('\n'), 'utf-8');
+
+    await expect(readResource(buildResourceUri(kbName, 'allow.md'), { access: 'local' }))
+      .resolves.toMatchObject({
+        contents: [{ text: expect.stringContaining('open note body') }],
+      });
+    await expect(readResource(buildResourceUri(kbName, 'allow.md'), { access: 'remote' }))
+      .resolves.toMatchObject({
+        contents: [{ text: expect.stringContaining('open note body') }],
+      });
+  });
 });
