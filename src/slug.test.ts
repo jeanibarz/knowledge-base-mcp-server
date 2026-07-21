@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash } from 'crypto';
 import { describe, expect, it } from '@jest/globals';
 import { slugifyTitle } from './slug.js';
 
@@ -62,8 +62,17 @@ describe('slugifyTitle', () => {
 
   it('is deterministic for the same non-Latin title', () => {
     const title = '同じタイトル';
-    expect(slugifyTitle(title)).toBe(slugifyTitle(title));
-    expect(slugifyTitle(title)).toBe(`note-${expectedHash(title)}`);
+    // Two independent calls must both match the independent hash oracle.
+    const once = slugifyTitle(title);
+    const twice = slugifyTitle(title);
+    expect(once).toBe(twice);
+    expect(once).toBe(`note-${expectedHash(title)}`);
+  });
+
+  it('does not apply maxLength to the empty-slug hash stem', () => {
+    const title = '中文';
+    // Truncating the fingerprint would raise collision risk; keep full stem.
+    expect(slugifyTitle(title, { maxLength: 4 })).toBe(`note-${expectedHash(title)}`);
   });
 
   it('keeps mixed Latin+script titles readable when any ASCII alnum remains', () => {
