@@ -156,12 +156,22 @@ export interface DiskPreflightOptions {
   estimateFactor?: number;
   /** Test seam: statfs implementation. */
   statfs?: StatfsFn;
-  /** Test seam: precomputed current on-disk footprint of `dir`. */
+  /**
+   * Precomputed source footprint in bytes. When set, skips walking `dir` for
+   * size and uses this value × {@link estimateFactor} as the write estimate.
+   * Callers that size a *source* path (backup, active version) while checking
+   * free space on a different *target* dir should pass this.
+   */
   currentBytes?: number;
+  /**
+   * Short label for the refusing operation in the error message
+   * (e.g. "reindex", "restore", "backup"). Defaults to "write".
+   */
+  operation?: string;
 }
 
 /**
- * Preflight guard: estimate the bytes a write-heavy reindex/ingest against
+ * Preflight guard: estimate the bytes a write-heavy operation against
  * `dir` will need and refuse up front when the filesystem cannot hold it.
  *
  * Throws `KBError('INSUFFICIENT_DISK_SPACE', …)` with a "need ~X, have Y"
@@ -171,6 +181,10 @@ export interface DiskPreflightOptions {
  * If `statfs` is unavailable or fails (older runtimes, exotic filesystems),
  * the guard degrades gracefully: it logs a warning and returns a permissive
  * estimate rather than blocking the operation on a portability gap.
+ *
+ * Used by reindex (#645), restore, and backup (#908). Pass `currentBytes`
+ * when the write estimate comes from a source other than `dir` itself
+ * (e.g. a backup tree or active index.vN footprint).
  */
 export async function assertSufficientDiskSpace(
   dir: string,
@@ -178,6 +192,7 @@ export async function assertSufficientDiskSpace(
 ): Promise<DiskSpaceEstimate> {
   const margin = options.minFreeBytes ?? resolveMinFreeDiskBytes();
   const factor = options.estimateFactor ?? DEFAULT_REINDEX_ESTIMATE_FACTOR;
+  const operation = options.operation?.trim() || 'write';
 
   const currentBytes = options.currentBytes ?? (await directorySizeBytes(dir));
   const estimatedBytes = Math.ceil(currentBytes * factor);
@@ -202,7 +217,7 @@ export async function assertSufficientDiskSpace(
   if (!estimate.sufficient) {
     throw new KBError(
       'INSUFFICIENT_DISK_SPACE',
-      `Insufficient disk space for reindex at "${dir}": need ~${formatBytes(estimate.required_bytes)} ` +
+      `Insufficient disk space for ${operation} at "${dir}": need ~${formatBytes(estimate.required_bytes)} ` +
         `(estimate ${formatBytes(estimate.estimated_bytes)} + ${formatBytes(estimate.margin_bytes)} margin), ` +
         `have ${formatBytes(estimate.available_bytes)} free. ` +
         `Free up space or lower KB_MIN_FREE_DISK_BYTES (current margin ${estimate.margin_bytes} bytes).`,

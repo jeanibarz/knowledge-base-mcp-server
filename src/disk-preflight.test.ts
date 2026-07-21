@@ -144,7 +144,7 @@ describe('assertSufficientDiskSpace (issue #645)', () => {
   });
 
   it('throws a typed INSUFFICIENT_DISK_SPACE KBError when space is short', async () => {
-    expect.assertions(4);
+    expect.assertions(5);
     try {
       await assertSufficientDiskSpace('/index', {
         currentBytes: 4 * MiB,
@@ -155,9 +155,27 @@ describe('assertSufficientDiskSpace (issue #645)', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(KBError);
       expect((err as KBError).code).toBe('INSUFFICIENT_DISK_SPACE');
+      // Default operation label is "write" (shared by reindex/restore/backup).
+      expect((err as KBError).message).toMatch(/Insufficient disk space for write at/);
       // need = 6 MiB estimate + 2 MiB margin = 8 MiB; have 5 MiB.
       expect((err as KBError).message).toMatch(/need ~8 MiB/);
       expect((err as KBError).message).toMatch(/have 5 MiB free/);
+    }
+  });
+
+  it('embeds the optional operation label in the error message', async () => {
+    expect.assertions(2);
+    try {
+      await assertSufficientDiskSpace('/index', {
+        currentBytes: 4 * MiB,
+        estimateFactor: 1.5,
+        minFreeBytes: 2 * MiB,
+        statfs: okStatfs(5 * MiB),
+        operation: 'restore',
+      });
+    } catch (err) {
+      expect(err).toBeInstanceOf(KBError);
+      expect((err as KBError).message).toMatch(/Insufficient disk space for restore at/);
     }
   });
 

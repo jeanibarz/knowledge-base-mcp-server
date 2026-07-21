@@ -11,8 +11,16 @@ import {
   validateBackupDirectory,
   type BackupManifest,
 } from './cli-backup.js';
+import { assertSufficientDiskSpace } from './disk-preflight.js';
 
 const PENDING_SIDECAR_COMMIT_FILENAME = 'pending-manifest.json';
+
+/**
+ * Multiplier on the backup footprint for restore preflight (#908).
+ * Staging holds a full copy while the new index.vN is materialised; keep
+ * this ≥1 so we never under-count peak temporary coexistence.
+ */
+export const RESTORE_DISK_ESTIMATE_FACTOR = 1.5;
 
 export const RESTORE_HELP = `kb restore — restore a checksum-validated index directory snapshot
 
@@ -25,6 +33,10 @@ backup, creates a new index.vN directory, and atomically swaps the model's
 index symlink. V1 is an offline/local restore path: stop kb serve and other
 long-running readers before restoring.
 
+Disk-space preflight (#908): refuses with INSUFFICIENT_DISK_SPACE before any
+staging write when the target volume cannot hold ~1.5× the backup footprint
+plus the KB_MIN_FREE_DISK_BYTES margin (default 512 MiB).
+
 Options:
   --from=<dir>   Backup directory created by kb backup. It must be outside
                  $FAISS_INDEX_PATH.
@@ -32,7 +44,7 @@ Options:
 
 Exit codes:
   0   restore applied
-  1   validation or filesystem error
+  1   validation, disk-space preflight, or filesystem error
   2   invalid arguments
 `;
 
@@ -94,6 +106,19 @@ export async function restoreBackup(args: RestoreArgs): Promise<RestoreResult> {
   // partial backups without creating lock directories or staging files.
   const manifest = await validateBackupDirectory(fromDir);
   const modelDirPath = modelDir(manifest.model_id);
+
+  // #908 — disk-space preflight. Restore stages the full backup then
+  // materialises a new index.vN under the model store; refuse before any
+  // staging write when free space cannot hold source footprint × factor
+  // plus the margin. Source size comes from the validated manifest so we
+  // do not re-walk the backup tree; free space is checked on the FAISS root.
+  const sourceBytes = manifest.files.reduce((sum, file) => sum + file.bytes, 0);
+  await assertSufficientDiskSpace(FAISS_INDEX_PATH, {
+    currentBytes: sourceBytes,
+    estimateFactor: RESTORE_DISK_ESTIMATE_FACTOR,
+    operation: 'restore',
+  });
+
   const tempRoot = path.join(modelDirPath, `.restore.tmp.${process.pid}.${Date.now()}`);
   let finalVersionDir: string | null = null;
   let swapped = false;

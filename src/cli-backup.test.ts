@@ -10,6 +10,7 @@ const originalEnv = {
   EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
   HUGGINGFACE_MODEL_NAME: process.env.HUGGINGFACE_MODEL_NAME,
   KB_ACTIVE_MODEL: process.env.KB_ACTIVE_MODEL,
+  KB_MIN_FREE_DISK_BYTES: process.env.KB_MIN_FREE_DISK_BYTES,
 };
 
 const MODEL_ID = 'huggingface__BAAI-bge-small-en-v1.5';
@@ -171,6 +172,59 @@ describe('kb backup', () => {
         outputDir: path.join(faissDir, 'snapshots', 'bad'),
         modelId: MODEL_ID,
       })).rejects.toThrow(/unsafe backup destination/);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // Issue #908 — disk-space preflight before any snapshot copy.
+  it('refuses with INSUFFICIENT_DISK_SPACE before writing the snapshot when free space is short', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-backup-disk-'));
+    try {
+      const faissDir = path.join(tmp, '.faiss');
+      const outputDir = path.join(tmp, 'snapshot');
+      await seedModel(faissDir);
+      // Impossible margin forces the preflight to refuse regardless of real free space.
+      process.env.KB_MIN_FREE_DISK_BYTES = String(Number.MAX_SAFE_INTEGER);
+      const backup = await freshBackupModule(faissDir);
+
+      let thrown: unknown;
+      try {
+        await backup.createBackup({ outputDir, modelId: MODEL_ID });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeDefined();
+      const { KBError } = await import('./errors.js');
+      expect(thrown).toBeInstanceOf(KBError);
+      expect((thrown as InstanceType<typeof KBError>).code).toBe('INSUFFICIENT_DISK_SPACE');
+      expect((thrown as Error).message).toMatch(/Insufficient disk space for backup/);
+      expect((thrown as Error).message).toMatch(/need ~/);
+      expect((thrown as Error).message).toMatch(/have .* free/);
+      // No published output and no leftover tmp dir.
+      await expect(fsp.stat(outputDir)).rejects.toMatchObject({ code: 'ENOENT' });
+      const leftovers = (await fsp.readdir(tmp)).filter((name) => name.includes('.tmp.'));
+      expect(leftovers).toEqual([]);
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('proceeds with a normal backup when free space is sufficient', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-backup-disk-ok-'));
+    try {
+      const faissDir = path.join(tmp, '.faiss');
+      const outputDir = path.join(tmp, 'snapshot');
+      await seedModel(faissDir);
+      // Explicit small margin so ambient free space always clears the guard.
+      process.env.KB_MIN_FREE_DISK_BYTES = '0';
+      const backup = await freshBackupModule(faissDir);
+
+      const result = await backup.createBackup({ outputDir, modelId: MODEL_ID });
+      expect(result.manifest.model_id).toBe(MODEL_ID);
+      expect(await fsp.readFile(path.join(outputDir, 'backup-manifest.json'), 'utf-8')).toMatch(
+        /kb\.backup\.v1/,
+      );
     } finally {
       await fsp.rm(tmp, { recursive: true, force: true });
     }

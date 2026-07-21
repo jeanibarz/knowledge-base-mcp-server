@@ -3,6 +3,7 @@
 import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { assertSufficientDiskSpace, directorySizeBytes } from './disk-preflight.js';
 
 export const BACKUP_MANIFEST_FILENAME = 'backup-manifest.json';
 export const BACKUP_MANIFEST_SCHEMA_VERSION = 'kb.backup.v1';
@@ -11,6 +12,13 @@ export const INDEX_INTEGRITY_MANIFEST_FILENAME = 'integrity.json';
 const FRESHNESS_MANIFEST_FILE = 'freshness.json';
 const METADATA_SIDECAR_FILENAME = 'metadata-sidecar.jsonl';
 const PENDING_SIDECAR_COMMIT_FILENAME = 'pending-manifest.json';
+
+/**
+ * Multiplier on the active-version footprint for backup preflight (#908).
+ * The snapshot is written to a sibling tmp dir then renamed into place;
+ * factor ≥1 covers the full copy plus small manifest overhead.
+ */
+export const BACKUP_DISK_ESTIMATE_FACTOR = 1.5;
 
 export const BACKUP_HELP = `kb backup — create a checksum-validated index directory snapshot
 
@@ -21,6 +29,10 @@ Copies the selected model's active index.vN directory and model sidecars into
 a new backup directory, then writes backup-manifest.json with SHA-256 checksums.
 The backup command holds the model write lock during the snapshot.
 
+Disk-space preflight (#908): refuses with INSUFFICIENT_DISK_SPACE before any
+snapshot copy when the output volume cannot hold ~1.5× the active version
+footprint plus the KB_MIN_FREE_DISK_BYTES margin (default 512 MiB).
+
 Options:
   --output=<dir>      Destination directory. It must not already exist and
                       must be outside $FAISS_INDEX_PATH.
@@ -30,7 +42,7 @@ Options:
 
 Exit codes:
   0   backup written
-  1   runtime or filesystem error
+  1   runtime, disk-space preflight, or filesystem error
   2   invalid arguments
 `;
 
@@ -132,6 +144,18 @@ export async function createBackup(args: BackupArgs): Promise<BackupResult> {
       const versionDir = path.join(modelDirPath, activeVersion);
       await assertRequiredIndexFiles(versionDir);
 
+      // #908 — disk-space preflight. Backup copies the active version and
+      // model-root sidecars into a sibling tmp dir before rename; refuse
+      // before mkdir/copy when the output volume cannot hold source
+      // footprint × factor plus the margin. Free space is checked on the
+      // output parent (same FS as the eventual snapshot).
+      const sourceBytes = await estimateBackupSourceBytes(modelDirPath, versionDir);
+      await assertSufficientDiskSpace(parent, {
+        currentBytes: sourceBytes,
+        estimateFactor: BACKUP_DISK_ESTIMATE_FACTOR,
+        operation: 'backup',
+      });
+
       await fsp.mkdir(tmpDir, { recursive: true });
       const modelRel = path.posix.join('models', modelId);
       await copyPath(versionDir, path.join(tmpDir, ...modelRel.split('/'), activeVersion));
@@ -228,6 +252,24 @@ async function assertSafeNewOutputDir(outputDir: string, faissIndexPath: string)
   if (await pathExists(outputDir)) {
     throw new Error('unsafe backup destination: --output directory already exists; choose a new directory');
   }
+}
+
+/**
+ * On-disk footprint of the files `createBackup` will copy: the active
+ * index.vN tree plus any present model-root sidecars. Best-effort; missing
+ * optional sidecars contribute 0.
+ */
+async function estimateBackupSourceBytes(modelDirPath: string, versionDir: string): Promise<number> {
+  let total = await directorySizeBytes(versionDir);
+  for (const name of MODEL_ROOT_ARTIFACTS) {
+    try {
+      const st = await fsp.stat(path.join(modelDirPath, name));
+      if (st.isFile()) total += st.size;
+    } catch {
+      // optional / missing — not required for the estimate
+    }
+  }
+  return total;
 }
 
 async function assertNoIncompleteModelState(modelId: string): Promise<void> {
