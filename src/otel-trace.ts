@@ -64,6 +64,14 @@ const NOOP_SPAN_HANDLE: SpanHandle = { setAttribute() { /* no-op */ } };
 let cachedTracer: MinimalTracer | null | undefined;
 let initPromise: Promise<MinimalTracer | null> | null = null;
 let testTracer: MinimalTracer | null | undefined;
+// Retained so CLI/server teardown can forceFlush + shutdown (issue #879).
+// Without this handle BatchSpanProcessor drops every span on short-lived exit.
+let activeProvider: MinimalTracerProvider | null = null;
+// Serializes concurrent shutdownOtel() calls (SIGINT + SIGTERM races).
+let shutdownPromise: Promise<void> | null = null;
+
+/** Default bound so an unreachable OTLP collector cannot hang process exit. */
+export const OTEL_SHUTDOWN_TIMEOUT_MS = 2000;
 
 /** Whether `KB_OTEL_TRACES` opts the process into trace export. */
 export function isOtelTracesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -88,13 +96,18 @@ async function lazyImport(specifier: string): Promise<any> {
 interface OtlpExporterModule {
   OTLPTraceExporter: new (config?: Record<string, unknown>) => object;
 }
+/** Minimal provider surface needed for export flush + clean shutdown. */
+export interface MinimalTracerProvider {
+  register(): void;
+  getTracer(name: string): MinimalTracer;
+  forceFlush(): Promise<void>;
+  shutdown(): Promise<void>;
+}
+
 // `@opentelemetry/sdk-trace-node` re-exports the span processors from
 // `@opentelemetry/sdk-trace-base`, so we only need the one optional package.
 interface SdkNodeModule {
-  NodeTracerProvider: new (config: Record<string, unknown>) => {
-    register(): void;
-    getTracer(name: string): MinimalTracer;
-  };
+  NodeTracerProvider: new (config: Record<string, unknown>) => MinimalTracerProvider;
   BatchSpanProcessor: new (exporter: object) => object;
 }
 interface ResourcesModule {
@@ -123,6 +136,9 @@ async function initTracerProvider(): Promise<MinimalTracer | null> {
     // Registers the global tracer + async-context manager so child spans nest
     // under the active parent span across `await` boundaries.
     provider.register();
+    // Keep the provider so teardown can forceFlush/shutdown (issue #879).
+    // Without this, BatchSpanProcessor never exports before short-lived exit.
+    activeProvider = provider;
     logger.info(`OpenTelemetry tracing enabled (service.name=${serviceName}, OTLP/HTTP exporter)`);
     return provider.getTracer(INSTRUMENTATION_SCOPE);
   } catch (err) {
@@ -132,6 +148,94 @@ async function initTracerProvider(): Promise<MinimalTracer | null> {
       + `Install the optional @opentelemetry/* packages to enable trace export. (${message})`,
     );
     return null;
+  }
+}
+
+/**
+ * Race `promise` against `timeoutMs`. Resolves with `'timeout'` if the bound
+ * elapses first; never leaves a dangling timer that keeps the event loop alive.
+ */
+function raceWithTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<T | 'timeout'> {
+  if (timeoutMs <= 0) {
+    // Budget exhausted: abandon the work without attaching a race timer, but
+    // still attach a no-op catch so a late rejection is not unhandled.
+    void promise.catch(() => { /* abandoned after timeout budget */ });
+    return Promise.resolve('timeout');
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    // Don't keep the process alive solely for the flush deadline.
+    timer.unref();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
+}
+
+/**
+ * Flush pending spans and shut down the tracer provider (issue #879).
+ *
+ * Short-lived CLI processes exit before BatchSpanProcessor's scheduled export
+ * fires; without an explicit forceFlush every span is dropped. Bounded by
+ * `timeoutMs` so an unreachable OTLP collector cannot hang process exit.
+ *
+ * Safe to call when tracing was never enabled (no-op) and safe to call more
+ * than once (subsequent calls no-op after the first completes).
+ */
+export async function shutdownOtel(
+  timeoutMs: number = OTEL_SHUTDOWN_TIMEOUT_MS,
+): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  const provider = activeProvider;
+  if (provider === null) return;
+  // Drop the handle first so concurrent callers see a no-op while we drain.
+  activeProvider = null;
+  cachedTracer = null;
+  initPromise = null;
+
+  shutdownPromise = (async () => {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    const remaining = (): number => Math.max(0, deadline - Date.now());
+
+    try {
+      const flushOutcome = await raceWithTimeout(provider.forceFlush(), remaining());
+      if (flushOutcome === 'timeout') {
+        logger.warn(
+          `OpenTelemetry forceFlush timed out after ${timeoutMs}ms; continuing shutdown`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`OpenTelemetry forceFlush failed: ${message}`);
+    }
+
+    try {
+      const shutdownOutcome = await raceWithTimeout(provider.shutdown(), remaining());
+      if (shutdownOutcome === 'timeout') {
+        logger.warn(
+          `OpenTelemetry provider shutdown timed out after ${timeoutMs}ms`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`OpenTelemetry provider shutdown failed: ${message}`);
+    }
+  })();
+
+  try {
+    await shutdownPromise;
+  } finally {
+    shutdownPromise = null;
   }
 }
 
@@ -197,11 +301,24 @@ export function setOtelTracerForTesting(tracer: MinimalTracer | null | undefined
   testTracer = tracer;
 }
 
+/**
+ * Test seam: install a provider so {@link shutdownOtel} can be exercised without
+ * booting the real SDK. Pass `null`/`undefined` to clear.
+ */
+export function setOtelProviderForTesting(
+  provider: MinimalTracerProvider | null | undefined,
+): void {
+  activeProvider = provider ?? null;
+  shutdownPromise = null;
+}
+
 /** Test seam: drop any cached tracer so the next call re-resolves from env. */
 export function resetOtelForTesting(): void {
   cachedTracer = undefined;
   initPromise = null;
   testTracer = undefined;
+  activeProvider = null;
+  shutdownPromise = null;
 }
 
 export type { MinimalSpan as OtelSpanLike, MinimalTracer as OtelTracerLike };

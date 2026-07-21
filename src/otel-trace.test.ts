@@ -3,8 +3,11 @@ import { afterEach, describe, expect, it } from '@jest/globals';
 import {
   isOtelTracesEnabled,
   resetOtelForTesting,
+  setOtelProviderForTesting,
   setOtelTracerForTesting,
+  shutdownOtel,
   withSpan,
+  type MinimalTracerProvider,
   type OtelSpanLike,
   type OtelTracerLike,
 } from './otel-trace.js';
@@ -171,5 +174,111 @@ describe('withSpan', () => {
       expect(allValues).not.toContain(secretQuery);
       expect(spans[0].attributes).toEqual({ 'kb.k': 8, 'kb.result_count': 2 });
     });
+  });
+});
+
+/**
+ * Fake provider that records forceFlush / shutdown order for issue #879.
+ */
+function makeFakeProvider(opts?: {
+  /** forceFlush hangs forever (no timer — no open-handle risk). */
+  hangFlush?: boolean;
+  flushError?: Error;
+  shutdownError?: Error;
+}): {
+  provider: MinimalTracerProvider;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const provider: MinimalTracerProvider = {
+    register() { /* unused */ },
+    getTracer() {
+      throw new Error('getTracer not used in shutdown tests');
+    },
+    async forceFlush() {
+      calls.push('forceFlush:start');
+      if (opts?.hangFlush) {
+        // Never settles — exercises the timeout bound without leaving a timer.
+        await new Promise<void>(() => { /* hang */ });
+      }
+      if (opts?.flushError) throw opts.flushError;
+      calls.push('forceFlush:done');
+    },
+    async shutdown() {
+      calls.push('shutdown:start');
+      if (opts?.shutdownError) throw opts.shutdownError;
+      calls.push('shutdown:done');
+    },
+  };
+  return { provider, calls };
+}
+
+describe('shutdownOtel (issue #879)', () => {
+  afterEach(() => {
+    resetOtelForTesting();
+  });
+
+  it('is a no-op when no provider was installed', async () => {
+    await expect(shutdownOtel()).resolves.toBeUndefined();
+  });
+
+  it('awaits forceFlush then shutdown on the teardown path', async () => {
+    const { provider, calls } = makeFakeProvider();
+    setOtelProviderForTesting(provider);
+
+    await shutdownOtel(1000);
+
+    expect(calls).toEqual([
+      'forceFlush:start',
+      'forceFlush:done',
+      'shutdown:start',
+      'shutdown:done',
+    ]);
+  });
+
+  it('does not hang when forceFlush never resolves (timeout-bounded)', async () => {
+    const { provider, calls } = makeFakeProvider({ hangFlush: true });
+    setOtelProviderForTesting(provider);
+
+    const started = Date.now();
+    // Leave residual budget after the 50ms flush timeout so shutdown still runs.
+    await shutdownOtel(80);
+    const elapsed = Date.now() - started;
+
+    // Must return near the bound; allow some CI slack.
+    expect(elapsed).toBeLessThan(500);
+    expect(elapsed).toBeGreaterThanOrEqual(40);
+    expect(calls[0]).toBe('forceFlush:start');
+    // forceFlush did not complete before the deadline.
+    expect(calls).not.toContain('forceFlush:done');
+    // Teardown continues to shutdown with remaining budget.
+    expect(calls).toContain('shutdown:start');
+    expect(calls).toContain('shutdown:done');
+  });
+
+  it('swallows forceFlush errors and still attempts shutdown', async () => {
+    const { provider, calls } = makeFakeProvider({
+      flushError: new Error('collector unreachable'),
+    });
+    setOtelProviderForTesting(provider);
+
+    await expect(shutdownOtel(1000)).resolves.toBeUndefined();
+    expect(calls).toEqual([
+      'forceFlush:start',
+      'shutdown:start',
+      'shutdown:done',
+    ]);
+  });
+
+  it('is idempotent after a successful flush', async () => {
+    const { provider, calls } = makeFakeProvider();
+    setOtelProviderForTesting(provider);
+
+    await shutdownOtel(1000);
+    await shutdownOtel(1000);
+
+    // Second call must not re-invoke the provider.
+    expect(calls.filter((c) => c === 'forceFlush:start')).toHaveLength(1);
+    expect(calls.filter((c) => c === 'shutdown:start')).toHaveLength(1);
   });
 });

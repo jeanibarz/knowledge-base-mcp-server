@@ -247,6 +247,10 @@ export async function gracefulDrain(
     daemon.server.closeAllConnections?.();
   }
   await daemon.stop();
+  // OTEL flush is intentionally NOT here: force-exit is drainTimeoutMs+1s and
+  // shutdownOtel can take up to OTEL_SHUTDOWN_TIMEOUT_MS (2s). Flushing inside
+  // gracefulDrain races process.exit mid-export. `kb serve` returns to
+  // cli.ts which awaits shutdownOtel() after force-exit is cleared (issue #879).
 }
 
 /** Resolve to `true` once idle, or `false` if the bounded wait elapses first. */

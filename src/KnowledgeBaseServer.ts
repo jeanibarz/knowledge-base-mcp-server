@@ -142,7 +142,7 @@ import {
   type DenseDegradationReason,
 } from './search-core.js';
 import { parseRecencyFilterRange } from './search-filters.js';
-import { withSpan } from './otel-trace.js';
+import { shutdownOtel, withSpan } from './otel-trace.js';
 import {
   applyRelevanceGate,
   emitRelevanceGateDecision,
@@ -1953,6 +1953,13 @@ export class KnowledgeBaseServer {
       await this.mcp.close();
     } catch (err) {
       logger.warn(`Error closing root mcp: ${(err as Error).message}`);
+    }
+    // Flush pending OTLP spans before process exit (issue #879). Bounded so a
+    // dead collector cannot hang SIGINT/SIGTERM drain.
+    try {
+      await shutdownOtel();
+    } catch (err) {
+      logger.warn(`Error during OpenTelemetry shutdown: ${(err as Error).message}`);
     }
   }
 }
