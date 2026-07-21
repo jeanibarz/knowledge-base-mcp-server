@@ -366,6 +366,7 @@ describe('SseHost — endpoints', () => {
   it('rejects a forged Host header on /sse when the allow-list is active', async () => {
     const started = await startHost({ allowedHosts: ['trusted.example'] });
     stop = started.stop;
+    expect(started.host.getRuntimeStats().host_denials).toBe(0);
     const res = await request(started.port, {
       method: 'GET',
       path: '/sse',
@@ -376,6 +377,21 @@ describe('SseHost — endpoints', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(res.body).toBe('Host not allowed');
+    expect(started.host.getRuntimeStats().host_denials).toBe(1);
+  });
+
+  it('does not bump host_denials for an allowed Host on /sse', async () => {
+    const started = await startHost({ allowedHosts: ['trusted.example'] });
+    stop = started.stop;
+    // Use openSseStream — request() would hang waiting for SSE body end.
+    const stream = await openSseStream(started.port, {
+      Host: 'trusted.example',
+      Authorization: `Bearer ${VALID_TOKEN}`,
+    });
+    expect(stream.statusCode).toBe(200);
+    expect(started.host.getRuntimeStats().host_denials).toBe(0);
+    stream.close();
+    await waitFor(() => started.host.sessionCount === 0);
   });
 
   it('exposes process-lifetime SSE transport counters', async () => {
@@ -415,6 +431,7 @@ describe('SseHost — endpoints', () => {
     expect(stats.response_status_buckets['4xx']).toBe(2);
     expect(stats.auth_failures).toBe(1);
     expect(stats.origin_denials).toBe(1);
+    expect(stats.host_denials).toBe(0);
   });
 
   it('serves authenticated OpenMetrics text at GET /metrics when enabled', async () => {
