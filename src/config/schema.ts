@@ -230,6 +230,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_GATE_LLM_MODEL', kind: 'string' },
   { name: 'KB_GATE_TASK_CONTEXT_MODE', kind: 'enum', values: ['off', 'warn', 'strict'], default: 'warn' },
   { name: 'KB_GATE_TASK_CONTEXT_ARGV_MAX', kind: 'integer', default: '600', min: 1 },
+  { name: 'KB_GATE_VERDICT_CACHE_MAX', kind: 'integer', default: '256', min: 0, description: 'Maximum relevance-gate verdict entries retained in the process LRU; 0 disables the memory cache.' },
 
   { name: 'KB_RERANK', kind: 'boolean', default: 'off', description: 'Enables optional cross-encoder reranking.' },
   { name: 'KB_RERANK_MODEL', kind: 'string', default: DEFAULT_RERANK_MODEL },

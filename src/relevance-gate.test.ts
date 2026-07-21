@@ -2,7 +2,14 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { applyRelevanceGate, emitRelevanceGateDecision } from './relevance-gate.js';
+import {
+  applyRelevanceGate,
+  emitRelevanceGateDecision,
+  resolveGateVerdictCacheMax,
+  DEFAULT_GATE_VERDICT_CACHE_MAX,
+  __getRelevanceGateVerdictCacheSizeForTests,
+  __resetRelevanceGateVerdictCacheForTests,
+} from './relevance-gate.js';
 import type { RelevanceGateConfig } from './config/relevance-gate.js';
 import { chunkIdFromMetadata } from './rrf.js';
 import { RelevanceGateMetrics, relevanceGateMetrics } from './relevance-gate-metrics.js';
@@ -90,6 +97,7 @@ function metricVerdict(overrides: Partial<RelevanceGateVerdict> = {}): Relevance
 describe('relevance gate', () => {
   beforeEach(() => {
     relevanceGateMetrics.reset();
+    __resetRelevanceGateVerdictCacheForTests();
   });
 
   it('bypasses by default when the feature flag is off', async () => {
@@ -319,6 +327,179 @@ describe('relevance gate', () => {
       cache_outcomes: { hit: 1, miss: 1 },
       answer_impact: { used: 2 },
     });
+  });
+
+  it('bounds the process-global verdict cache and evicts the oldest entry (#899)', async () => {
+    __resetRelevanceGateVerdictCacheForTests({ maxEntries: 2 });
+
+    const taskContext = 'please answer a deployment rollback question with precise operational context';
+    const makeInput = (query: string, source: string) => {
+      const rows = [candidate(source, 0, 0.2, 'deployment rollback')];
+      return {
+        query,
+        taskContext,
+        candidates: rows,
+        config: config({ emptyVerdictEnabled: true }),
+        fetchImpl: fakeFetchJson(
+          `{"overall":"relevant","verdicts":[{"id":"${source}#0","decision":"keep","reason":"rollback"}]}`,
+        ),
+      };
+    };
+
+    await applyRelevanceGate(makeInput('verdict-cache-a', '/kb/verdict-a.md'));
+    await applyRelevanceGate(makeInput('verdict-cache-b', '/kb/verdict-b.md'));
+    expect(__getRelevanceGateVerdictCacheSizeForTests()).toBe(2);
+
+    await applyRelevanceGate(makeInput('verdict-cache-c', '/kb/verdict-c.md'));
+    expect(__getRelevanceGateVerdictCacheSizeForTests()).toBe(2);
+
+    // B and C remain; oldest (A) was evicted. Check retained hits before re-inserting A.
+    const metricsB = new LlmCallMetrics();
+    await applyRelevanceGate({ ...makeInput('verdict-cache-b', '/kb/verdict-b.md'), llmMetrics: metricsB });
+    expect(metricsB.snapshot().gate).toMatchObject({
+      cache_outcomes: { hit: 1 },
+    });
+
+    const metricsC = new LlmCallMetrics();
+    await applyRelevanceGate({ ...makeInput('verdict-cache-c', '/kb/verdict-c.md'), llmMetrics: metricsC });
+    expect(metricsC.snapshot().gate).toMatchObject({
+      cache_outcomes: { hit: 1 },
+    });
+
+    const metricsA = new LlmCallMetrics();
+    await applyRelevanceGate({ ...makeInput('verdict-cache-a', '/kb/verdict-a.md'), llmMetrics: metricsA });
+    expect(metricsA.snapshot().gate).toMatchObject({
+      cache_outcomes: { miss: 1 },
+    });
+    // A re-insert still respects the cap (evicts an older retained entry).
+    expect(__getRelevanceGateVerdictCacheSizeForTests()).toBe(2);
+  });
+
+  it('promotes a re-accessed verdict so a newer insert evicts the colder entry (#899)', async () => {
+    __resetRelevanceGateVerdictCacheForTests({ maxEntries: 2 });
+    const taskContext = 'please answer a deployment rollback question with precise operational context';
+    const makeInput = (query: string, source: string) => {
+      const rows = [candidate(source, 0, 0.2, 'deployment rollback')];
+      return {
+        query,
+        taskContext,
+        candidates: rows,
+        config: config(),
+        fetchImpl: fakeFetchJson(
+          `{"overall":"relevant","verdicts":[{"id":"${source}#0","decision":"keep","reason":"rollback"}]}`,
+        ),
+      };
+    };
+
+    await applyRelevanceGate(makeInput('lru-promote-a', '/kb/lru-a.md'));
+    await applyRelevanceGate(makeInput('lru-promote-b', '/kb/lru-b.md'));
+    // Touch A so B is the colder (eviction) candidate.
+    await applyRelevanceGate(makeInput('lru-promote-a', '/kb/lru-a.md'));
+    await applyRelevanceGate(makeInput('lru-promote-c', '/kb/lru-c.md'));
+    expect(__getRelevanceGateVerdictCacheSizeForTests()).toBe(2);
+
+    const metricsA = new LlmCallMetrics();
+    await applyRelevanceGate({ ...makeInput('lru-promote-a', '/kb/lru-a.md'), llmMetrics: metricsA });
+    expect(metricsA.snapshot().gate).toMatchObject({ cache_outcomes: { hit: 1 } });
+
+    const metricsB = new LlmCallMetrics();
+    await applyRelevanceGate({ ...makeInput('lru-promote-b', '/kb/lru-b.md'), llmMetrics: metricsB });
+    expect(metricsB.snapshot().gate).toMatchObject({ cache_outcomes: { miss: 1 } });
+  });
+
+  it('disables the process verdict cache when maxEntries is 0 (#899)', async () => {
+    __resetRelevanceGateVerdictCacheForTests({ maxEntries: 0 });
+    const rows = [candidate('/kb/disabled-cache.md', 0, 0.2, 'deployment rollback')];
+    const fetchImpl = fakeFetchJson(
+      '{"overall":"relevant","verdicts":[{"id":"/kb/disabled-cache.md#0","decision":"keep","reason":"rollback"}]}',
+    );
+    const input = {
+      query: 'disabled verdict cache',
+      taskContext: 'please answer a deployment rollback question with precise operational context',
+      candidates: rows,
+      config: config(),
+      fetchImpl,
+    };
+
+    await applyRelevanceGate(input);
+    expect(__getRelevanceGateVerdictCacheSizeForTests()).toBe(0);
+
+    const llmMetrics = new LlmCallMetrics();
+    await applyRelevanceGate({ ...input, llmMetrics });
+    expect(__getRelevanceGateVerdictCacheSizeForTests()).toBe(0);
+    expect(llmMetrics.snapshot().gate).toMatchObject({
+      cache_outcomes: { miss: 1 },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a recently-set verdict as a hit while under the cap (#899)', async () => {
+    __resetRelevanceGateVerdictCacheForTests({ maxEntries: 4 });
+    const taskContext = 'please answer a deployment rollback question with precise operational context';
+    // Fill near capacity so the target hit is not an empty-cache special case.
+    for (const n of [1, 2, 3]) {
+      await applyRelevanceGate({
+        query: `filler verdict ${n}`,
+        taskContext,
+        candidates: [candidate(`/kb/filler-${n}.md`, 0, 0.2, 'deployment rollback')],
+        config: config(),
+        fetchImpl: fakeFetchJson(
+          `{"overall":"relevant","verdicts":[{"id":"/kb/filler-${n}.md#0","decision":"keep","reason":"rollback"}]}`,
+        ),
+      });
+    }
+
+    const rows = [candidate('/kb/recent-hit.md', 0, 0.2, 'deployment rollback')];
+    const fetchImpl = fakeFetchJson(
+      '{"overall":"relevant","verdicts":[{"id":"/kb/recent-hit.md#0","decision":"keep","reason":"rollback"}]}',
+    );
+    const input = {
+      query: 'recent verdict hit',
+      taskContext,
+      candidates: rows,
+      config: config(),
+      fetchImpl,
+    };
+
+    await applyRelevanceGate(input);
+    expect(__getRelevanceGateVerdictCacheSizeForTests()).toBe(4);
+
+    const llmMetrics = new LlmCallMetrics();
+    const second = await applyRelevanceGate({ ...input, llmMetrics });
+    expect(second.results).toEqual(rows);
+    expect(llmMetrics.snapshot().gate).toMatchObject({
+      cache_outcomes: { hit: 1 },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes a test-reset hook that clears the verdict cache (#899)', async () => {
+    const rows = [candidate('/kb/reset-hook.md', 0, 0.2, 'deployment rollback')];
+    await applyRelevanceGate({
+      query: 'reset-hook seed',
+      taskContext: 'please answer a deployment rollback question with precise operational context',
+      candidates: rows,
+      config: config(),
+      fetchImpl: fakeFetchJson(
+        '{"overall":"relevant","verdicts":[{"id":"/kb/reset-hook.md#0","decision":"keep","reason":"rollback"}]}',
+      ),
+    });
+    expect(__getRelevanceGateVerdictCacheSizeForTests()).toBe(1);
+
+    __resetRelevanceGateVerdictCacheForTests();
+    expect(__getRelevanceGateVerdictCacheSizeForTests()).toBe(0);
+  });
+
+  it('parses KB_GATE_VERDICT_CACHE_MAX with a sensible default (#899)', () => {
+    // Pass explicit raw strings so the default-parameter env read cannot flake.
+    expect(resolveGateVerdictCacheMax('')).toBe(DEFAULT_GATE_VERDICT_CACHE_MAX);
+    expect(resolveGateVerdictCacheMax('   ')).toBe(DEFAULT_GATE_VERDICT_CACHE_MAX);
+    expect(resolveGateVerdictCacheMax('512')).toBe(512);
+    expect(resolveGateVerdictCacheMax('2.9')).toBe(2);
+    expect(resolveGateVerdictCacheMax('0')).toBe(0);
+    expect(resolveGateVerdictCacheMax('-3')).toBe(DEFAULT_GATE_VERDICT_CACHE_MAX);
+    expect(resolveGateVerdictCacheMax('Infinity')).toBe(DEFAULT_GATE_VERDICT_CACHE_MAX);
+    expect(resolveGateVerdictCacheMax('not-a-number')).toBe(DEFAULT_GATE_VERDICT_CACHE_MAX);
   });
 
   it('degrades to A2 when the judge fails or returns malformed JSON', async () => {

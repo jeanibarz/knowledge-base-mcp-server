@@ -104,7 +104,92 @@ interface CachedGateDecision {
   observability: RelevanceGateObservability;
 }
 
-const verdictCache = new Map<string, CachedGateDecision>();
+/** Default process-LRU cap for gate verdicts under long-lived `kb serve` (#899). */
+export const DEFAULT_GATE_VERDICT_CACHE_MAX = 256;
+
+/**
+ * Maximum retained verdict-cache entries. Reads `KB_GATE_VERDICT_CACHE_MAX`;
+ * non-finite / negative values fall back to the default; `0` disables caching.
+ */
+export function resolveGateVerdictCacheMax(
+  raw: string | undefined = process.env.KB_GATE_VERDICT_CACHE_MAX,
+): number {
+  const parsed = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_GATE_VERDICT_CACHE_MAX;
+  return Math.floor(parsed);
+}
+
+/**
+ * Bounded LRU over insertion order. Map keeps insertion order; get/set re-touch
+ * so recently used entries survive eviction under `kb serve`.
+ */
+class VerdictCacheLru {
+  private readonly values = new Map<string, CachedGateDecision>();
+  private maxEntries: number;
+
+  constructor(maxEntries: number = resolveGateVerdictCacheMax()) {
+    this.maxEntries = maxEntries;
+  }
+
+  get size(): number {
+    return this.values.size;
+  }
+
+  get(key: string): CachedGateDecision | undefined {
+    const value = this.values.get(key);
+    if (value === undefined) return undefined;
+    this.values.delete(key);
+    this.values.set(key, value);
+    return value;
+  }
+
+  set(key: string, value: CachedGateDecision): void {
+    if (this.maxEntries <= 0) return;
+    if (this.values.has(key)) this.values.delete(key);
+    this.values.set(key, value);
+    while (this.values.size > this.maxEntries) {
+      const oldest = this.values.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.values.delete(oldest);
+    }
+  }
+
+  clear(): void {
+    this.values.clear();
+  }
+
+  setMaxEntries(maxEntries: number): void {
+    this.maxEntries = maxEntries;
+    if (this.maxEntries <= 0) {
+      this.values.clear();
+      return;
+    }
+    while (this.values.size > this.maxEntries) {
+      const oldest = this.values.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.values.delete(oldest);
+    }
+  }
+}
+
+const verdictCache = new VerdictCacheLru();
+
+/** Clears the process-global verdict cache (and optionally retunes the cap) for tests. */
+export function __resetRelevanceGateVerdictCacheForTests(options?: {
+  maxEntries?: number;
+}): void {
+  if (options?.maxEntries !== undefined) {
+    verdictCache.setMaxEntries(options.maxEntries);
+  } else {
+    verdictCache.setMaxEntries(resolveGateVerdictCacheMax());
+  }
+  verdictCache.clear();
+}
+
+/** Process-global verdict-cache size; for tests only. */
+export function __getRelevanceGateVerdictCacheSizeForTests(): number {
+  return verdictCache.size;
+}
 
 export async function applyRelevanceGate<T extends RelevanceGateCandidate>(
   input: RelevanceGateInput<T>,
