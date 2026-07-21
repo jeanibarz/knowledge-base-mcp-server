@@ -18,6 +18,8 @@ import type { DoctorReport } from './cli-doctor.js';
 const BUG_REPORT_SCHEMA_VERSION = 'kb.doctor.bug_report.v1';
 const DEFAULT_LOG_LIMIT = 50;
 const COMMAND_STDERR_TAIL_BYTES = 16 * 1024;
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 
 export interface DoctorBugReportOptions {
   outputParentDir?: string;
@@ -35,6 +37,8 @@ export interface DoctorBugReportResult {
   bundle_dir: string;
   created_at: string;
   files: string[];
+  intended_directory_mode: '0700';
+  intended_file_mode: '0600';
   redaction_summary: RedactionSummary;
 }
 
@@ -61,21 +65,24 @@ export async function createDoctorBugReportBundle(
   const createdAt = now.toISOString();
   const parentDir = path.resolve(options.cwd ?? process.cwd(), options.outputParentDir ?? '.');
   const bundleDir = path.join(parentDir, `kb-bug-report-${formatBundleTimestamp(now)}`);
-  await fsp.mkdir(bundleDir, { recursive: false });
+  await fsp.mkdir(bundleDir, { recursive: false, mode: PRIVATE_DIR_MODE });
+  if (isPosixPermissionsSupported()) {
+    await fsp.chmod(bundleDir, PRIVATE_DIR_MODE);
+  }
 
   const written: WrittenFile[] = [];
   const writeJson = async (name: string, value: unknown): Promise<void> => {
     const redacted = redactJsonValue(value);
-    await fsp.writeFile(
-      path.join(bundleDir, name),
+    await writePrivateUtf8File(
+      bundleDir,
+      name,
       `${JSON.stringify(redacted.value, null, 2)}\n`,
-      'utf-8',
     );
     written.push({ name, redaction: redacted.redaction });
   };
   const writeText = async (name: string, text: string): Promise<void> => {
     const redacted = redactSecrets(text);
-    await fsp.writeFile(path.join(bundleDir, name), redacted.text, 'utf-8');
+    await writePrivateUtf8File(bundleDir, name, redacted.text);
     written.push({ name, redaction: redacted.summary });
   };
 
@@ -109,17 +116,35 @@ export async function createDoctorBugReportBundle(
     bundle_dir: bundleDir,
     created_at: createdAt,
     files: [],
+    intended_directory_mode: '0700',
+    intended_file_mode: '0600',
     redaction_summary: manifestRedaction,
   };
   await writeText('README.md', buildReadme(createdAt, options.command !== undefined));
   manifest.files = [...written.map((file) => file.name), 'manifest.json'].sort();
-  await fsp.writeFile(
-    path.join(bundleDir, 'manifest.json'),
+  await writePrivateUtf8File(
+    bundleDir,
+    'manifest.json',
     `${JSON.stringify(manifest, null, 2)}\n`,
-    'utf-8',
   );
 
   return manifest;
+}
+
+async function writePrivateUtf8File(
+  bundleDir: string,
+  relativePath: string,
+  body: string,
+): Promise<void> {
+  const filePath = path.join(bundleDir, relativePath);
+  await fsp.writeFile(filePath, body, { encoding: 'utf-8', mode: PRIVATE_FILE_MODE });
+  if (isPosixPermissionsSupported()) {
+    await fsp.chmod(filePath, PRIVATE_FILE_MODE);
+  }
+}
+
+function isPosixPermissionsSupported(): boolean {
+  return process.platform !== 'win32';
 }
 
 async function defaultBuildDoctorReport(): Promise<DoctorReport> {

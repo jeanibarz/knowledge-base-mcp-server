@@ -1355,7 +1355,9 @@ Stable KB symlink report fields:
 under `<dir>` (default: current directory). The bundle contains:
 
 - `manifest.json`: schema `kb.doctor.bug_report.v1`, created timestamp, file
-  list, bundle path, and aggregate redaction counts.
+  list, bundle path, intended POSIX modes (`0700` directory / `0600` files),
+  and aggregate redaction counts. The directory and files are created with
+  those private modes on POSIX hosts.
 - `doctor.json`: redacted aggregate doctor report.
 - `stats.json`: captured `kb stats --format=json` payload or failure metadata.
 - `logs-recent.json`: recent canonical log summaries when a log file is
@@ -1377,6 +1379,8 @@ prints the manifest shape:
   "bundle_dir": "/tmp/kb-bug-report-20260522T010203Z",
   "created_at": "2026-05-22T01:02:03.000Z",
   "files": ["README.md", "doctor.json", "manifest.json", "runtime.json"],
+  "intended_directory_mode": "0700",
+  "intended_file_mode": "0600",
   "redaction_summary": {
     "enabled": true,
     "total": 1,
