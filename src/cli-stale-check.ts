@@ -19,10 +19,12 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { listKnowledgeBases, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { extractVerbosity } from './cli-shared.js';
 
+export const STALE_CHECK_SCHEMA_VERSION = 'kb.stale-check.v1' as const;
+
 export const STALE_CHECK_HELP = `kb stale-check — find broken references in markdown notes (read-only)
 
 Usage:
-  kb stale-check [--kb=<name>] [--no-cache] [--quiet|-q] [--verbose|-v]
+  kb stale-check [--kb=<name>] [--no-cache] [--quiet|-q] [--verbose|-v] [--format=md|json]
 
 Walks every \`.md\` / \`.markdown\` file under one or all KBs and extracts:
   - tilde-rooted absolute paths       (\`~/foo/bar\`)
@@ -42,14 +44,19 @@ Options:
                         every URL and overwrite cached entries.
   --quiet, -q           Suppress the summary footer, leaving only the
                         broken/error reference lines (empty when clean).
+                        No effect on \`--format=json\` (totals always included).
   --verbose, -v         Include OK references in the report (default:
                         only print broken/error references).
+  --format=md|json      Output format (default: md). \`json\` emits a stable
+                        broken-reference report documented in
+                        docs/cli-json-contracts.md.
   --help, -h            Show this help.
 
 Examples:
   kb stale-check
   kb stale-check --kb=work
   kb stale-check --no-cache --verbose
+  kb stale-check --format=json
 `;
 
 export type ReferenceType = 'tilde-path' | 'rel-path' | 'url';
@@ -120,7 +127,11 @@ export async function runStaleCheck(rest: string[]): Promise<number> {
       cachePath: parsed.noCache ? null : cachePath,
       verbose: parsed.verbose,
     });
-    process.stdout.write(formatReport(report, { quiet: parsed.quiet }));
+    process.stdout.write(formatReport(report, {
+      quiet: parsed.quiet,
+      format: parsed.format,
+      verbose: parsed.verbose,
+    }));
     return 0;
   } catch (err) {
     process.stderr.write(`kb stale-check: ${(err as Error).message}\n`);
@@ -128,13 +139,14 @@ export async function runStaleCheck(rest: string[]): Promise<number> {
   }
 }
 
-interface ParsedArgs {
+export interface ParsedArgs {
   kb?: string;
   noCache: boolean;
   /** Include OK references in the report (shared --verbose / -v). */
   verbose: boolean;
   /** Suppress the summary footer, leaving only broken references (--quiet / -q). */
   quiet: boolean;
+  format: 'md' | 'json';
 }
 
 export function parseStaleCheckArgs(rest: string[]): ParsedArgs {
@@ -147,12 +159,21 @@ export function parseStaleCheckArgs(rest: string[]): ParsedArgs {
     noCache: false,
     verbose: verbosity === 'verbose',
     quiet: verbosity === 'quiet',
+    format: 'md',
   };
   for (const raw of args) {
     if (raw === '--no-cache') { out.noCache = true; continue; }
     if (raw.startsWith('--kb=')) {
       out.kb = raw.slice('--kb='.length);
       if (out.kb.length === 0) throw new Error('--kb=<name> requires a non-empty value');
+      continue;
+    }
+    if (raw.startsWith('--format=')) {
+      const value = raw.slice('--format='.length);
+      if (value !== 'md' && value !== 'json') {
+        throw new Error(`invalid --format value '${value}' (expected md or json)`);
+      }
+      out.format = value;
       continue;
     }
     if (raw.startsWith('--')) throw new Error(`unknown flag: ${raw}`);
@@ -514,12 +535,93 @@ function isStale(r: ReferenceResult): boolean {
   return r.status === 'MISSING' || r.status === 'HTTP_ERROR' || r.status === 'TIMEOUT';
 }
 
+export interface BrokenReferenceEntry {
+  knowledge_base: string;
+  path: string;
+  line: number;
+  type: ReferenceType;
+  value: string;
+  /** Machine-readable status code: MISSING | HTTP_ERROR | TIMEOUT (or OK when verbose). */
+  status: ReferenceStatus;
+  detail?: string;
+}
+
+export interface StaleCheckJsonReport {
+  schema_version: typeof STALE_CHECK_SCHEMA_VERSION;
+  knowledge_bases: string[];
+  totals: {
+    files_scanned: number;
+    references_checked: number;
+    stale_references: number;
+    files_with_stale: number;
+  };
+  /** Broken/error references only — the machine-readable counterpart of the md report body. */
+  broken_references: BrokenReferenceEntry[];
+  /**
+   * Present only with `--verbose`: every checked reference (OK + broken), in
+   * scan order. Absent in the default JSON shape so scripts can rely on
+   * `broken_references` alone.
+   */
+  references?: BrokenReferenceEntry[];
+}
+
 export interface FormatReportOptions {
   /** Issue #739 — drop the trailing summary footer, leaving only stale refs. */
   quiet?: boolean;
+  format?: 'md' | 'json';
+  /** When true (and format=json), also emit the full `references` array. */
+  verbose?: boolean;
+}
+
+export function toStaleCheckJsonReport(
+  report: StaleCheckReport,
+  options: { verbose?: boolean } = {},
+): StaleCheckJsonReport {
+  const broken_references: BrokenReferenceEntry[] = [];
+  const references: BrokenReferenceEntry[] = [];
+
+  for (const file of report.files) {
+    for (const r of file.results) {
+      const entry: BrokenReferenceEntry = {
+        knowledge_base: file.kb,
+        path: file.relPath,
+        line: r.line,
+        type: r.type,
+        value: r.value,
+        status: r.status,
+        ...(r.detail !== undefined ? { detail: r.detail } : {}),
+      };
+      if (options.verbose) {
+        references.push(entry);
+      }
+      if (isStale(r)) {
+        broken_references.push(entry);
+      }
+    }
+  }
+
+  const payload: StaleCheckJsonReport = {
+    schema_version: STALE_CHECK_SCHEMA_VERSION,
+    knowledge_bases: report.kbs,
+    totals: {
+      files_scanned: report.totals.filesScanned,
+      references_checked: report.totals.referencesChecked,
+      stale_references: report.totals.staleReferences,
+      files_with_stale: report.totals.filesWithStale,
+    },
+    broken_references,
+  };
+  if (options.verbose) {
+    payload.references = references;
+  }
+  return payload;
 }
 
 export function formatReport(report: StaleCheckReport, options: FormatReportOptions = {}): string {
+  if (options.format === 'json') {
+    return `${JSON.stringify(toStaleCheckJsonReport(report, { verbose: options.verbose }), null, 2)}\n`;
+  }
+
   const lines: string[] = [];
   for (const file of report.files) {
     const stale = file.results.filter(isStale);

@@ -8,6 +8,8 @@ import {
   formatReport,
   parseStaleCheckArgs,
   staleCheck,
+  STALE_CHECK_SCHEMA_VERSION,
+  toStaleCheckJsonReport,
   type UrlChecker,
 } from './cli-stale-check.js';
 
@@ -31,6 +33,16 @@ describe('parseStaleCheckArgs', () => {
     expect(parseStaleCheckArgs(['--quiet'])).toMatchObject({ quiet: true, verbose: false });
     expect(parseStaleCheckArgs(['-q'])).toMatchObject({ quiet: true, verbose: false });
     expect(parseStaleCheckArgs(['-v'])).toMatchObject({ quiet: false, verbose: true });
+  });
+  it('defaults format to md and accepts --format=json', () => {
+    expect(parseStaleCheckArgs([]).format).toBe('md');
+    expect(parseStaleCheckArgs(['--format=json']).format).toBe('json');
+    expect(parseStaleCheckArgs(['--format=md']).format).toBe('md');
+  });
+  it('rejects invalid --format', () => {
+    expect(() => parseStaleCheckArgs(['--format=csv'])).toThrow(
+      "invalid --format value 'csv' (expected md or json)",
+    );
   });
 });
 
@@ -301,5 +313,107 @@ describe('formatReport', () => {
       totals: { filesScanned: 1, referencesChecked: 0, staleReferences: 0, filesWithStale: 0 },
     }, { quiet: true });
     expect(out).toBe('');
+  });
+
+  it('--format=json emits a stable broken-reference envelope (#895)', () => {
+    const report = {
+      kbs: ['ops'],
+      files: [{
+        kb: 'ops',
+        relPath: 'a.md',
+        results: [
+          { type: 'tilde-path' as const, value: '~/x', line: 3, status: 'MISSING' as const, detail: 'gone' },
+          { type: 'url' as const, value: 'https://ok.example', line: 4, status: 'OK' as const },
+          { type: 'url' as const, value: 'https://e.invalid', line: 7, status: 'HTTP_ERROR' as const, detail: 'HTTP 404' },
+        ],
+      }],
+      totals: { filesScanned: 1, referencesChecked: 3, staleReferences: 2, filesWithStale: 1 },
+    };
+    const out = formatReport(report, { format: 'json' });
+    const parsed = JSON.parse(out);
+    expect(parsed).toEqual({
+      schema_version: STALE_CHECK_SCHEMA_VERSION,
+      knowledge_bases: ['ops'],
+      totals: {
+        files_scanned: 1,
+        references_checked: 3,
+        stale_references: 2,
+        files_with_stale: 1,
+      },
+      broken_references: [
+        {
+          knowledge_base: 'ops',
+          path: 'a.md',
+          line: 3,
+          type: 'tilde-path',
+          value: '~/x',
+          status: 'MISSING',
+          detail: 'gone',
+        },
+        {
+          knowledge_base: 'ops',
+          path: 'a.md',
+          line: 7,
+          type: 'url',
+          value: 'https://e.invalid',
+          status: 'HTTP_ERROR',
+          detail: 'HTTP 404',
+        },
+      ],
+    });
+    expect(parsed.references).toBeUndefined();
+    expect(out.endsWith('\n')).toBe(true);
+  });
+
+  it('--format=json --verbose also includes the full references array', () => {
+    const report = {
+      kbs: ['ops'],
+      files: [{
+        kb: 'ops',
+        relPath: 'a.md',
+        results: [
+          { type: 'url' as const, value: 'https://ok.example', line: 1, status: 'OK' as const },
+          { type: 'tilde-path' as const, value: '~/x', line: 2, status: 'MISSING' as const },
+        ],
+      }],
+      totals: { filesScanned: 1, referencesChecked: 2, staleReferences: 1, filesWithStale: 1 },
+    };
+    const parsed = toStaleCheckJsonReport(report, { verbose: true });
+    expect(parsed.broken_references).toHaveLength(1);
+    expect(parsed.references).toEqual([
+      {
+        knowledge_base: 'ops',
+        path: 'a.md',
+        line: 1,
+        type: 'url',
+        value: 'https://ok.example',
+        status: 'OK',
+      },
+      {
+        knowledge_base: 'ops',
+        path: 'a.md',
+        line: 2,
+        type: 'tilde-path',
+        value: '~/x',
+        status: 'MISSING',
+      },
+    ]);
+  });
+
+  it('default markdown output is unchanged when format is omitted', () => {
+    const report = {
+      kbs: ['ops'],
+      files: [{
+        kb: 'ops',
+        relPath: 'a.md',
+        results: [
+          { type: 'tilde-path' as const, value: '~/x', line: 3, status: 'MISSING' as const, detail: 'gone' },
+        ],
+      }],
+      totals: { filesScanned: 1, referencesChecked: 1, staleReferences: 1, filesWithStale: 1 },
+    };
+    expect(formatReport(report)).toBe(formatReport(report, { format: 'md' }));
+    expect(formatReport(report)).toContain('Summary:');
+    expect(formatReport(report)).not.toContain('schema_version');
   });
 });

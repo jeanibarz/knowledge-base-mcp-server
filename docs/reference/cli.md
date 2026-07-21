@@ -268,7 +268,7 @@ Side-by-side rank/score table for two embedding models.
 kb compare — side-by-side rank/score table for two embedding models
 
 Usage:
-  kb compare <query> <model_a> <model_b> [--k=<int>] [--kb=<name>] [--no-cache]
+  kb compare <query> <model_a> <model_b> [--k=<int>] [--kb=<name>] [--no-cache] [--format=md|json]
 
 Runs the same query against two registered models' indexes and prints a
 joined table of `rank_a / rank_b / score_a / score_b / in_both / source`,
@@ -287,11 +287,14 @@ Options:
   --k=<int>             Top-K results per model (default: 10).
   --kb=<name>           Scope to one knowledge base. Omit to search ALL KBs.
   --no-cache            Bypass the query-embedding cache for both model legs.
+  --format=md|json      Output format (default: md). `json` emits a stable
+                        rank/score object documented in docs/cli-json-contracts.md.
   --help, -h            Show this help.
 
 Examples:
   kb compare "rollback procedure" ollama__nomic-embed-text openai__text-embedding-3-small
   kb compare "deploy" ollama__nomic-embed-text huggingface__bge-small-en --k=5 --kb=work
+  kb compare "deploy" ollama__nomic-embed-text huggingface__bge-small-en --format=json
 ```
 
 ## `kb completion`
@@ -1678,7 +1681,7 @@ Scan markdown notes for path / URL references that no longer resolve.
 kb stale-check — find broken references in markdown notes (read-only)
 
 Usage:
-  kb stale-check [--kb=<name>] [--no-cache] [--quiet|-q] [--verbose|-v]
+  kb stale-check [--kb=<name>] [--no-cache] [--quiet|-q] [--verbose|-v] [--format=md|json]
 
 Walks every `.md` / `.markdown` file under one or all KBs and extracts:
   - tilde-rooted absolute paths       (`~/foo/bar`)
@@ -1698,14 +1701,19 @@ Options:
                         every URL and overwrite cached entries.
   --quiet, -q           Suppress the summary footer, leaving only the
                         broken/error reference lines (empty when clean).
+                        No effect on `--format=json` (totals always included).
   --verbose, -v         Include OK references in the report (default:
                         only print broken/error references).
+  --format=md|json      Output format (default: md). `json` emits a stable
+                        broken-reference report documented in
+                        docs/cli-json-contracts.md.
   --help, -h            Show this help.
 
 Examples:
   kb stale-check
   kb stale-check --kb=work
   kb stale-check --no-cache --verbose
+  kb stale-check --format=json
 ```
 
 ## `kb stats`
