@@ -208,7 +208,7 @@ describe('kb restore', () => {
       const faissDir = path.join(tmp, '.faiss');
       const outputDir = path.join(tmp, 'snapshot');
       const modelDir = path.join(faissDir, 'models', MODEL_ID);
-      // Create backup with default margin so snapshot succeeds.
+      // Zero margin so ambient free space always clears the backup preflight.
       process.env.KB_MIN_FREE_DISK_BYTES = '0';
       const { backup } = await freshModules(faissDir);
       await seedModelVersion({

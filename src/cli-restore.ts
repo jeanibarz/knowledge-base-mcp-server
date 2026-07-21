@@ -17,10 +17,12 @@ const PENDING_SIDECAR_COMMIT_FILENAME = 'pending-manifest.json';
 
 /**
  * Multiplier on the backup footprint for restore preflight (#908).
- * Staging holds a full copy while the new index.vN is materialised; keep
- * this ≥1 so we never under-count peak temporary coexistence.
+ * Peak free space during restore is roughly one full staged copy, then a
+ * rename of the version dir plus atomicReplaceFile's temporary second copy
+ * of each model-root artifact. Factor 2 covers staging + that temporary
+ * root-artifact peak without under-counting when sidecars are large.
  */
-export const RESTORE_DISK_ESTIMATE_FACTOR = 1.5;
+export const RESTORE_DISK_ESTIMATE_FACTOR = 2;
 
 export const RESTORE_HELP = `kb restore — restore a checksum-validated index directory snapshot
 
@@ -34,7 +36,7 @@ index symlink. V1 is an offline/local restore path: stop kb serve and other
 long-running readers before restoring.
 
 Disk-space preflight (#908): refuses with INSUFFICIENT_DISK_SPACE before any
-staging write when the target volume cannot hold ~1.5× the backup footprint
+staging write when the target volume cannot hold ~2× the backup footprint
 plus the KB_MIN_FREE_DISK_BYTES margin (default 512 MiB).
 
 Options:
@@ -106,26 +108,30 @@ export async function restoreBackup(args: RestoreArgs): Promise<RestoreResult> {
   // partial backups without creating lock directories or staging files.
   const manifest = await validateBackupDirectory(fromDir);
   const modelDirPath = modelDir(manifest.model_id);
-
-  // #908 — disk-space preflight. Restore stages the full backup then
-  // materialises a new index.vN under the model store; refuse before any
-  // staging write when free space cannot hold source footprint × factor
-  // plus the margin. Source size comes from the validated manifest so we
-  // do not re-walk the backup tree; free space is checked on the FAISS root.
-  const sourceBytes = manifest.files.reduce((sum, file) => sum + file.bytes, 0);
-  await assertSufficientDiskSpace(FAISS_INDEX_PATH, {
-    currentBytes: sourceBytes,
-    estimateFactor: RESTORE_DISK_ESTIMATE_FACTOR,
-    operation: 'restore',
-  });
-
   const tempRoot = path.join(modelDirPath, `.restore.tmp.${process.pid}.${Date.now()}`);
   let finalVersionDir: string | null = null;
   let swapped = false;
 
+  // Ensure the FAISS root exists so statfs has a real target. A wiped
+  // $FAISS_INDEX_PATH is a realistic restore scenario; without this,
+  // assertSufficientDiskSpace treats ENOENT as a portability skip and
+  // would permit the run on a full volume.
+  await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
+
   try {
     return await withWriteLock(modelDirPath, async () => {
       await assertSafeLiveDestination(manifest.model_id);
+
+      // #908 — disk-space preflight (inside the lock, before any staging
+      // write). Source size comes from the validated manifest so we do not
+      // re-walk the backup tree; free space is checked on the FAISS root.
+      const sourceBytes = manifest.files.reduce((sum, file) => sum + file.bytes, 0);
+      await assertSufficientDiskSpace(FAISS_INDEX_PATH, {
+        currentBytes: sourceBytes,
+        estimateFactor: RESTORE_DISK_ESTIMATE_FACTOR,
+        operation: 'restore',
+      });
+
       await copyManifestFilesToStaging(fromDir, tempRoot, manifest);
       await verifyStagedFiles(tempRoot, manifest);
 

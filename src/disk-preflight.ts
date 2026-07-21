@@ -1,29 +1,31 @@
-// Issue #645 — disk-space preflight guard for write-heavy reindex/ingest.
+// Disk-space preflight guard for write-heavy CLI paths (#645 reindex/ingest,
+// #908 backup/restore).
 //
-// A `kb reindex --with-context` triggers a full rebuild that writes a new
-// FAISS index version, docstore JSON, contextual-preface sidecars, and
-// lexical indexes under `$FAISS_INDEX_PATH` — all *before* the atomic swap
-// (RFC 014). If the volume runs out of space mid-write the operation
-// surfaces as a raw `ENOSPC` after an expensive partial run, leaving an
-// abandoned half-written version on disk.
+// Write-heavy operations (full reindex, backup snapshot, restore staging)
+// copy or rebuild multi-GB trees under a target directory. If the volume
+// runs out of space mid-write the failure surfaces as a raw `ENOSPC` after
+// an expensive partial run, leaving abandoned half-written state on disk.
 //
 // This module is the *preventive* complement to the `disk-full` chaos test
-// (#473): it estimates how many bytes the rebuild will need, compares that
+// (#473): it estimates how many bytes the write will need, compares that
 // (plus a safety margin) against the `statfs`-reported available bytes, and
 // throws a typed `KBError('INSUFFICIENT_DISK_SPACE', …)` with an actionable
 // "need ~X, have Y" message before any write starts.
 //
 // Design notes (see PR for alternatives):
-//  - Estimate = current on-disk footprint under `$FAISS_INDEX_PATH` × an
-//    empirical factor. A full reindex writes a fresh version roughly the
-//    size of the committed one; the factor covers the temporary overlap of
-//    old + new version during the atomic swap and sidecar growth. A
-//    first-ever reindex (empty dir) estimates 0, so only the margin gates it.
+//  - Estimate = source on-disk footprint × an empirical factor. For reindex
+//    the source is the current index tree under `$FAISS_INDEX_PATH`; for
+//    backup/restore callers pass `currentBytes` from the active version or
+//    backup manifest. The factor covers temporary staging/overlap (old +
+//    new version, staging + final). A first-ever reindex (empty dir)
+//    estimates 0, so only the margin gates it.
 //  - Margin is `KB_MIN_FREE_DISK_BYTES` (default 512 MiB), kept conservative
 //    and tunable so this is not a hard surprise.
 //  - `fs.promises.statfs` is on all supported Node versions; if it is
 //    unavailable or fails, the guard degrades gracefully (skips, logs a
-//    warning) rather than blocking a reindex on a portability gap.
+//    warning) rather than blocking a write on a portability gap. Callers
+//    that may target a missing directory should mkdir it first so ENOENT
+//    is not mistaken for an unsupported filesystem.
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';

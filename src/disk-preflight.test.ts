@@ -155,7 +155,7 @@ describe('assertSufficientDiskSpace (issue #645)', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(KBError);
       expect((err as KBError).code).toBe('INSUFFICIENT_DISK_SPACE');
-      // Default operation label is "write" (shared by reindex/restore/backup).
+      // Default operation label when `operation` is omitted/blank.
       expect((err as KBError).message).toMatch(/Insufficient disk space for write at/);
       // need = 6 MiB estimate + 2 MiB margin = 8 MiB; have 5 MiB.
       expect((err as KBError).message).toMatch(/need ~8 MiB/);
