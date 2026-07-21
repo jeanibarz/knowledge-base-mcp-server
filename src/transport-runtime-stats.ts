@@ -17,6 +17,7 @@ export interface TransportRuntimeStatsSnapshot {
   response_status_buckets: Record<ResponseStatusBucket, number>;
   auth_failures: number;
   origin_denials: number;
+  host_denials: number;
   last_error: TransportRuntimeErrorSnapshot | null;
 }
 
