@@ -23,7 +23,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { INGEST_EXCLUDE_PATHS, INGEST_EXTRA_EXTENSIONS } from './config/ingest.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { toError } from './error-utils.js';
-import { parseFrontmatter } from './frontmatter.js';
+import { parseFrontmatterStrict } from './frontmatter.js';
 import { filterIngestablePaths } from './ingest-filter.js';
 import { listIngestQuarantine } from './ingest-quarantine.js';
 import { resolveKbPath } from './kb-fs.js';
@@ -37,6 +37,7 @@ import {
   normalizeKbSensitivityPolicy,
   resolveResourceReadAccess,
   type KbResourceReadAccess,
+  type KbSensitivityPolicy,
 } from './sensitivity-policy.js';
 
 export interface ListResourcesOptions {
@@ -404,8 +405,20 @@ function assertResourceReadPolicy(input: {
   relativePath: string;
   access: KbResourceReadAccess;
 }): void {
-  const parsed = parseFrontmatter(input.text);
-  const policy = normalizeKbSensitivityPolicy(parsed.frontmatter.kb_policy);
+  // Mirror the LLM-egress boundary: parse strictly so malformed YAML, an
+  // oversized frontmatter block, or a missing closing fence cannot silently
+  // drop a resource_read deny/local_only control and fail open.
+  let policy: KbSensitivityPolicy | undefined;
+  try {
+    const parsed = parseFrontmatterStrict(input.text);
+    policy = normalizeKbSensitivityPolicy(parsed.frontmatter.kb_policy);
+  } catch {
+    throw new Error(
+      `resource blocked by kb_policy.resource_read: ${JSON.stringify(input.relativePath)} `
+      + '(resource frontmatter is unreadable or malformed)',
+    );
+  }
+
   const decision = decideResourceRead(policy, input.access);
   if (decision.allowed) return;
 
