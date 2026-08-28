@@ -67,6 +67,38 @@ describe('config schema validation (FR-OBS-470)', () => {
     expect(report.findings.every((finding) => finding.source === '/tmp/bad.env')).toBe(true);
   });
 
+  it('suggests a nearby schema name for an unknown controlled variable', () => {
+    const report = validateConfigEnv({
+      KB_CHUNK_SIZ: '1000',
+    }, { source: '/tmp/typo.env' });
+
+    expect(report.status).toBe('warn');
+    expect(report.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'KB_CHUNK_SIZ',
+        status: 'warn',
+        kind: 'unknown',
+        source: '/tmp/typo.env',
+        message: expect.stringContaining('Did you mean KB_CHUNK_SIZE?'),
+      }),
+    ]));
+  });
+
+  it('does not suggest a schema name for an unrelated controlled variable', () => {
+    const report = validateConfigEnv({
+      KB_COMPLETELY_UNRELATED_OPTION: 'enabled',
+    });
+
+    const unknown = report.findings.find(
+      (finding) => finding.name === 'KB_COMPLETELY_UNRELATED_OPTION',
+    );
+    expect(unknown).toEqual(expect.objectContaining({
+      status: 'warn',
+      kind: 'unknown',
+    }));
+    expect(unknown?.message).not.toContain('Did you mean');
+  });
+
   it('matches strict runtime parsers for reranker booleans and digit-only integers', () => {
     const report = validateConfigEnv({
       KB_RERANK: 'yes',

@@ -37,6 +37,7 @@ import {
   DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
   MAX_DAEMON_CLIENT_TIMEOUT_MS,
 } from '../daemon-client.js';
+import { closestSuggestion } from '../suggestion-core.js';
 
 export type ConfigFindingStatus = 'ok' | 'warn' | 'error';
 export type ConfigValueKind =
@@ -310,6 +311,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'OTEL_SERVICE_NAME', kind: 'string', docDefault: 'knowledge-base-mcp-server', description: 'Standard OpenTelemetry service.name attached to exported traces when KB_OTEL_TRACES is enabled.' },
 ] as const;
 
+const SCHEMA_NAMES = CONFIG_SCHEMA.map((spec) => spec.name);
 const SCHEMA_BY_NAME = new Map(CONFIG_SCHEMA.map((spec) => [spec.name, spec]));
 
 export function validateConfigEnv(
@@ -619,13 +621,15 @@ function validateUnknownControlledVars(
     if (SCHEMA_BY_NAME.has(name)) continue;
     if (dynamicSpecForName(name) !== null) continue;
     if (!isControlledEnvName(name)) continue;
+    const suggestion = closestSuggestion(name, SCHEMA_NAMES)?.value;
     findings.push(finding(
       name,
       'warn',
       'unknown',
       source,
       '<set>',
-      'not in kb config schema; check spelling or add it to src/config/schema.ts',
+      'not in kb config schema; check spelling or add it to src/config/schema.ts' +
+        (suggestion === undefined ? '' : `. Did you mean ${suggestion}?`),
     ));
   }
   return findings;
