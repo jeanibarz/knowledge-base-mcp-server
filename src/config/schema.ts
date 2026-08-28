@@ -37,6 +37,7 @@ import {
   DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
   MAX_DAEMON_CLIENT_TIMEOUT_MS,
 } from '../daemon-client.js';
+import { closestSuggestion, levenshteinDistance } from '../suggestion-core.js';
 
 export type ConfigFindingStatus = 'ok' | 'warn' | 'error';
 export type ConfigValueKind =
@@ -310,6 +311,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'OTEL_SERVICE_NAME', kind: 'string', docDefault: 'knowledge-base-mcp-server', description: 'Standard OpenTelemetry service.name attached to exported traces when KB_OTEL_TRACES is enabled.' },
 ] as const;
 
+const SCHEMA_NAMES = CONFIG_SCHEMA.map((spec) => spec.name);
 const SCHEMA_BY_NAME = new Map(CONFIG_SCHEMA.map((spec) => [spec.name, spec]));
 
 export function validateConfigEnv(
@@ -619,16 +621,51 @@ function validateUnknownControlledVars(
     if (SCHEMA_BY_NAME.has(name)) continue;
     if (dynamicSpecForName(name) !== null) continue;
     if (!isControlledEnvName(name)) continue;
+    const suggestion = suggestSchemaName(name);
     findings.push(finding(
       name,
       'warn',
       'unknown',
       source,
       '<set>',
-      'not in kb config schema; check spelling or add it to src/config/schema.ts',
+      'not in kb config schema; check spelling or add it to src/config/schema.ts' +
+        (suggestion === undefined ? '' : `. Did you mean ${suggestion}?`),
     ));
   }
   return findings;
+}
+
+function suggestSchemaName(name: string): string | undefined {
+  // Shared env-name prefixes make distance alone too permissive. Limit hints to
+  // typo shapes that do not guess between distinct configuration concepts.
+  const candidates = SCHEMA_NAMES.filter((candidate) => isLikelySchemaNameTypo(name, candidate));
+  const nearest = closestSuggestion(name, candidates);
+  if (nearest === undefined) return undefined;
+
+  const hasTie = candidates.some((candidate) => (
+    candidate !== nearest.value
+    && levenshteinDistance(name, candidate) === nearest.distance
+  ));
+  return hasTie ? undefined : nearest.value;
+}
+
+function isLikelySchemaNameTypo(input: string, candidate: string): boolean {
+  if (Math.abs(input.length - candidate.length) === 1) {
+    return levenshteinDistance(input, candidate) === 1;
+  }
+  if (input.length !== candidate.length) return false;
+
+  let firstMismatch = -1;
+  let secondMismatch = -1;
+  for (let i = 0; i < input.length; i++) {
+    if (input[i] === candidate[i]) continue;
+    if (firstMismatch === -1) firstMismatch = i;
+    else if (secondMismatch === -1) secondMismatch = i;
+    else return false;
+  }
+  return secondMismatch === firstMismatch + 1
+    && input[firstMismatch] === candidate[secondMismatch]
+    && input[secondMismatch] === candidate[firstMismatch];
 }
 
 function dynamicSpecForName(name: string): ConfigSpec | null {
