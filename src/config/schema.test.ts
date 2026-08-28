@@ -67,19 +67,23 @@ describe('config schema validation (FR-OBS-470)', () => {
     expect(report.findings.every((finding) => finding.source === '/tmp/bad.env')).toBe(true);
   });
 
-  it('suggests a nearby schema name for an unknown controlled variable', () => {
+  it.each([
+    ['KB_CHUNK_SIZ', 'KB_CHUNK_SIZE'],
+    ['KB_QUERY_CACHE_LURU_MAX', 'KB_QUERY_CACHE_LRU_MAX'],
+    ['KB_CHUNK_SIEZ', 'KB_CHUNK_SIZE'],
+  ])('suggests %s as a typo for %s', (name, expected) => {
     const report = validateConfigEnv({
-      KB_CHUNK_SIZ: '1000',
+      [name]: '1000',
     }, { source: '/tmp/typo.env' });
 
     expect(report.status).toBe('warn');
     expect(report.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        name: 'KB_CHUNK_SIZ',
+        name,
         status: 'warn',
         kind: 'unknown',
         source: '/tmp/typo.env',
-        message: expect.stringContaining('Did you mean KB_CHUNK_SIZE?'),
+        message: expect.stringContaining(`Did you mean ${expected}?`),
       }),
     ]));
   });
@@ -88,6 +92,8 @@ describe('config schema validation (FR-OBS-470)', () => {
     'KB_CACHE_SIZE',
     'OPENAI_BASE_URL',
     'HUGGINGFACE_TIMEOUT',
+    'MCP_HOST',
+    'KB_DAEMON_POST',
   ])('does not suggest a schema name for unrelated controlled variable %s', (name) => {
     const report = validateConfigEnv({
       [name]: 'enabled',
