@@ -84,13 +84,17 @@ describe('config schema validation (FR-OBS-470)', () => {
     ]));
   });
 
-  it('does not suggest a schema name for an unrelated controlled variable', () => {
+  it.each([
+    'KB_CACHE_SIZE',
+    'OPENAI_BASE_URL',
+    'HUGGINGFACE_TIMEOUT',
+  ])('does not suggest a schema name for unrelated controlled variable %s', (name) => {
     const report = validateConfigEnv({
-      KB_COMPLETELY_UNRELATED_OPTION: 'enabled',
+      [name]: 'enabled',
     });
 
     const unknown = report.findings.find(
-      (finding) => finding.name === 'KB_COMPLETELY_UNRELATED_OPTION',
+      (finding) => finding.name === name,
     );
     expect(unknown).toEqual(expect.objectContaining({
       status: 'warn',

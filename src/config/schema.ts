@@ -313,6 +313,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
 
 const SCHEMA_NAMES = CONFIG_SCHEMA.map((spec) => spec.name);
 const SCHEMA_BY_NAME = new Map(CONFIG_SCHEMA.map((spec) => [spec.name, spec]));
+const MAX_SCHEMA_NAME_SUGGESTION_DISTANCE = 2;
 
 export function validateConfigEnv(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
@@ -621,7 +622,11 @@ function validateUnknownControlledVars(
     if (SCHEMA_BY_NAME.has(name)) continue;
     if (dynamicSpecForName(name) !== null) continue;
     if (!isControlledEnvName(name)) continue;
-    const suggestion = closestSuggestion(name, SCHEMA_NAMES)?.value;
+    const nearest = closestSuggestion(name, SCHEMA_NAMES);
+    // Shared env-name prefixes make the generic length-based threshold too permissive.
+    const suggestion = nearest !== undefined && nearest.distance <= MAX_SCHEMA_NAME_SUGGESTION_DISTANCE
+      ? nearest.value
+      : undefined;
     findings.push(finding(
       name,
       'warn',
