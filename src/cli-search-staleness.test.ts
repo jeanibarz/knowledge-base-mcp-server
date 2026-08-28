@@ -62,7 +62,13 @@ describe('computeStaleness', () => {
       await fsp.writeFile(betaModified, '# Beta modified\n', 'utf-8');
 
       await fsp.mkdir(path.join(kbRoot, 'alpha', '.index'), { recursive: true });
-      await fsp.writeFile(path.join(kbRoot, 'alpha', '.index', 'fresh.hash'), 'hash', 'utf-8');
+      await fsp.writeFile(
+        path.join(kbRoot, 'alpha', '.index', 'fresh.md'),
+        'a'.repeat(64),
+        'utf-8',
+      );
+      await fsp.writeFile(path.join(kbRoot, 'alpha', '.index', 'fresh.md.chunks.json'), '{}', 'utf-8');
+      await fsp.writeFile(path.join(kbRoot, 'alpha', '.index', 'quarantine.jsonl'), '', 'utf-8');
 
       const beforeIndex = new Date('2026-05-03T15:00:00.000Z');
       const indexTime = new Date('2026-05-03T15:30:00.000Z');
