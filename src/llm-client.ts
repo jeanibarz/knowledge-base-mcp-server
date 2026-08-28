@@ -677,6 +677,7 @@ export async function probeLlmEndpoint(
       ],
       temperature: 0,
       timeoutMs: options.chatTimeoutMs ?? 15_000,
+      retry: false,
     }, fetchImpl);
     return {
       endpoint: chatEndpoint,
