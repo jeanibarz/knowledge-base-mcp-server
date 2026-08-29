@@ -531,7 +531,7 @@ npm install -g @jeanibarz/knowledge-base-mcp-server@latest
 
 ## Usage
 
-> **Writing notes that retrieve well?** See [`docs/authoring-knowledge.md`](docs/authoring-knowledge.md) — six-section guide on chunk-friendly markdown, frontmatter taxonomy that lifts into filters, content-boundary safety, and when to split a KB. For query-time neighbor windows around dense matches, see [`docs/search-neighbor-context.md`](docs/search-neighbor-context.md).
+> **Writing notes that retrieve well?** See [`docs/authoring-knowledge.md`](docs/authoring-knowledge.md) — a seven-section guide to chunk-friendly markdown, frontmatter taxonomy, content-boundary safety, KB organization, and the authoring lifecycle. For query-time neighbor windows around dense matches, see [`docs/search-neighbor-context.md`](docs/search-neighbor-context.md).
 
 The MCP server exposes the current tool set registered by `src/KnowledgeBaseServer.ts`:
 
