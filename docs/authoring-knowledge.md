@@ -1,6 +1,6 @@
 # Authoring notes that retrieve well
 
-This is a short, opinionated guide for **KB authors** — the humans (and agents) who write the markdown the server retrieves. It is **not** a contributor guide for the repo (see [`CONTRIBUTING.md`](../CONTRIBUTING.md)) and **not** an agent runbook (see [`CLAUDE.md`](../CLAUDE.md)). Six sections, one page; cap maintained on purpose.
+This is a short, opinionated guide for **KB authors** — the humans (and agents) who write the markdown the server retrieves. It is **not** a contributor guide for the repo (see [`CONTRIBUTING.md`](../CONTRIBUTING.md)) and **not** an agent runbook (see [`CLAUDE.md`](../CLAUDE.md)). Seven sections, one page; cap maintained on purpose.
 
 The server pipeline is short:
 
@@ -98,7 +98,53 @@ Append to an existing KB when the new notes look exactly like the existing ones 
 
 `kb where --topic="<one-line description>"` (added in #141) reads each KB's `README.md` and recommends a target — useful when you're not sure.
 
-## 6. `kb doctor` as the author's checkpoint
+## 6. Curate notes through their lifecycle
+
+The CLI supports the full path from collecting material to reviewing and promoting it. The examples below use a `work` KB; replace that name and the note paths with your own. See the [generated CLI reference](reference/cli.md) for every option and its current behavior.
+
+### Collect material
+
+Import a web page or PDF when you need a provenance-tagged snapshot. The command refuses to overwrite an existing note and blocks private or loopback addresses by default.
+
+```bash
+kb import-url --kb=work https://example.com/handbook --note=imports/handbook.md --refresh
+```
+
+Capture command output when the result belongs in an existing note. `kb capture` invokes the command without a shell, redacts common credentials by default, and requires the `--` separator before the command and its arguments.
+
+```bash
+kb capture --kb=work --append=runbooks/deploy.md --note="deployment snapshot" -- \
+  kubectl get deployment api -o yaml
+```
+
+### Classify and promote
+
+Add or remove frontmatter tags with `kb tag`. It previews the change unless you pass `--yes`; refresh the index afterwards before expecting tag-filtered search to see the update.
+
+```bash
+kb tag work/runbooks/deploy.md --add=deployment --add=operations --yes
+kb search "deployment" --kb=work --refresh
+```
+
+Use `kb promote` when review evidence justifies a stronger lifecycle tier. Apply mode is also a dry-run without `--yes`, so preview by omitting that flag before committing the frontmatter update.
+
+```bash
+kb promote --kb=work --path=runbooks/deploy.md --tier=validated \
+  --review-status=approved --last-verified-at=now --yes
+```
+
+### Review for decay
+
+Run the two read-only scans periodically. `kb superseded` finds lifecycle signals such as contradictions, deprecated status, stale verification dates, and low confidence. `kb stale-check` probes path and URL references that no longer resolve.
+
+```bash
+kb superseded --kb=work
+kb stale-check --kb=work
+```
+
+Treat both reports as review queues, not automatic deletion instructions. Update, demote, or remove a note only after checking the evidence.
+
+## 7. `kb doctor` as the author's checkpoint
 
 After any non-trivial bulk write — adding a batch of notes, importing scraped docs, restructuring filenames — run:
 
