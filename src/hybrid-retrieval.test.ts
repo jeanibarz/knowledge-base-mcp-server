@@ -168,6 +168,40 @@ describe('fuseHybridResults', () => {
     expect(out[0].score).toBeCloseTo(1 / (1 + 1), 12);
   });
 
+  it('FR-SEARCH-912: changes fused order with per-retriever weights', () => {
+    const dense = [chunk('dense-a.md', 0, 0.1), chunk('dense-b.md', 0, 0.2)];
+    const lexical = [chunk('lexical-a.md', 0, 10), chunk('lexical-b.md', 0, 9)];
+
+    const out = fuseHybridResults({
+      denseResults: dense,
+      lexicalResults: lexical,
+      k: 4,
+      weights: { dense: 0.5, lexical: 2 },
+    });
+
+    expect(out.map((result) => result.metadata.source)).toEqual([
+      'lexical-a.md',
+      'lexical-b.md',
+      'dense-a.md',
+      'dense-b.md',
+    ]);
+  });
+
+  it('FR-SEARCH-912: keeps the default output byte-equal to explicit 1:1 weights', () => {
+    const dense = [chunk('a.md', 0, 0.9), chunk('b.md', 0, 0.8)];
+    const lexical = [chunk('b.md', 0, 0.7), chunk('c.md', 0, 0.6)];
+
+    const defaultOutput = fuseHybridResults({ denseResults: dense, lexicalResults: lexical, k: 3 });
+    const explicitOutput = fuseHybridResults({
+      denseResults: dense,
+      lexicalResults: lexical,
+      k: 3,
+      weights: { dense: 1, lexical: 1 },
+    });
+
+    expect(JSON.stringify(defaultOutput)).toBe(JSON.stringify(explicitOutput));
+  });
+
   it('rejects non-positive k', () => {
     expect(() =>
       fuseHybridResults({ denseResults: [], lexicalResults: [], k: 0 }),

@@ -435,6 +435,29 @@ describe('parseSearchArgs high-recall candidates (#576)', () => {
   });
 });
 
+describe('parseSearchArgs hybrid RRF weights (FR-SEARCH-912)', () => {
+  it('accepts finite non-negative dense and lexical weights', () => {
+    expect(parseSearchArgs([
+      'query',
+      '--mode=hybrid',
+      '--dense-weight=0.25',
+      '--lexical-weight=2',
+    ])).toMatchObject({
+      rrfWeights: { dense: 0.25, lexical: 2 },
+    });
+  });
+
+  it.each([
+    '--dense-weight=-1',
+    '--dense-weight=',
+    '--dense-weight=NaN',
+    '--lexical-weight=Infinity',
+    '--lexical-weight=nope',
+  ])('rejects malformed weight %s', (flag) => {
+    expect(() => parseSearchArgs(['query', '--mode=hybrid', flag])).toThrow(/invalid --(?:dense|lexical)-weight/);
+  });
+});
+
 describe('parseSearchArgs query decomposition (#577)', () => {
   it('accepts bounded decomposition controls', () => {
     expect(parseSearchArgs([
@@ -2006,6 +2029,58 @@ describe('runSearch timing guard (#331)', () => {
       rankingUnit: 'source',
       loadIndex: deps.loadLexicalIndex,
     }));
+  });
+
+  it('FR-SEARCH-912: applies per-call RRF weights to hybrid results', async () => {
+    const manager = {
+      modelDir: '/tmp/kb-test-model',
+      initialize: jest.fn(async () => {}),
+      updateIndex: jest.fn(async () => {}),
+      similaritySearch: jest.fn(async () => [{
+        pageContent: 'dense-only candidate',
+        metadata: {
+          source: '/kb/alpha/dense.md',
+          knowledgeBase: 'alpha',
+          relativePath: 'alpha/dense.md',
+          chunkIndex: 0,
+        },
+        score: 0.1,
+      }]),
+    } as unknown as FaissIndexManager;
+    const deps: RunSearchDeps = {
+      bootstrapLayout: jest.fn(async () => {}),
+      resolveActiveModel: jest.fn(async () => 'ollama__nomic-embed-text-latest'),
+      loadManagerForModel: jest.fn(async () => manager),
+      loadWithJsonRetry: jest.fn(async () => {}),
+      listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
+      runLexicalLeg: jest.fn(async () => ({
+        refreshed: 0,
+        failed: 0,
+        hits: [{
+          pageContent: 'lexical-only candidate',
+          metadata: {
+            source: '/kb/alpha/lexical.md',
+            knowledgeBase: 'alpha',
+            relativePath: 'alpha/lexical.md',
+            chunkIndex: 0,
+          },
+          score: 10,
+        }],
+      })),
+    };
+
+    const out = await captureSearchOutput([
+      'query',
+      '--mode=hybrid',
+      '--dense-weight=0',
+      '--lexical-weight=1',
+      '--format=json',
+      '--no-freshness',
+    ], deps);
+
+    expect(out.code).toBe(0);
+    expect(out.stdout).toContain('lexical-only candidate');
+    expect(out.stdout).not.toContain('dense-only candidate');
   });
 
   it('runs the hybrid lexical leg through an injected lexical index loader', async () => {

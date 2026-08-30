@@ -122,6 +122,8 @@ export interface FuseHybridResultsArgs {
   k: number;
   /** Override the RRF smoothing constant. Defaults to `HYBRID_RRF_C` (60). */
   c?: number;
+  /** Per-retriever RRF weights. Missing entries preserve the default weight 1. */
+  weights?: Record<string, number>;
 }
 
 export interface FuseHybridResultsOutput {
@@ -164,7 +166,7 @@ export function fuseHybridResultsWithDiagnostics(args: FuseHybridResultsArgs): F
     retriever: 'lexical',
     results: lexicalResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
   };
-  const fused = reciprocalRankFusion([denseList, lexicalList], { c });
+  const fused = reciprocalRankFusion([denseList, lexicalList], { c, weights: args.weights });
 
   const byId = new Map<string, HybridChunk>();
   for (const r of lexicalResults) byId.set(chunkIdFromMetadata(r.metadata), r);

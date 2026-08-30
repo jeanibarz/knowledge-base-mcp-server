@@ -57,6 +57,7 @@ import {
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
+  KB_HYBRID_RRF_WEIGHTS,
 } from './config/retrieval.js';
 import {
   INGEST_EXCLUDE_PATHS,
@@ -1411,6 +1412,7 @@ export class KnowledgeBaseServer {
             denseResults,
             lexicalResults,
             k: rerankConfig.enabled ? Math.max(HYBRID_TOP_K, rerankConfig.topN) : HYBRID_TOP_K,
+            weights: KB_HYBRID_RRF_WEIGHTS,
           })
         : {
             results: lexicalResults.slice(0, rerankConfig.enabled ? Math.max(HYBRID_TOP_K, rerankConfig.topN) : HYBRID_TOP_K),

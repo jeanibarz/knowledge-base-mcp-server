@@ -2,6 +2,7 @@ import * as path from 'path';
 import { minimatch } from 'minimatch';
 import type { FaissIndexManager } from './FaissIndexManager.js';
 import type { ScoredDocument } from './formatter.js';
+import { KB_HYBRID_RRF_WEIGHTS } from './config/retrieval.js';
 import {
   resolveAutoSearchMode,
   type AutoSearchModeDecision,
@@ -627,6 +628,7 @@ async function retrieveHybrid(
     denseResults,
     lexicalResults,
     k: rerankConfig.enabled ? Math.max(k, rerankConfig.topN) : k,
+    weights: KB_HYBRID_RRF_WEIGHTS,
   });
   const reranked = await applyRerankerIfEnabled({
     query: fixtureCase.query,

@@ -2,6 +2,35 @@ import { initializeProjectConfig } from './project-config.js';
 
 initializeProjectConfig();
 
+export const DEFAULT_HYBRID_RRF_WEIGHT = 1;
+
+export interface HybridRrfWeights extends Record<string, number> {
+  dense: number;
+  lexical: number;
+}
+
+/** Parse one RRF retriever weight while preserving the equal-weight default. */
+export function parseHybridRrfWeight(raw: string | undefined, source: string): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_HYBRID_RRF_WEIGHT;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`invalid ${source}=${JSON.stringify(raw)} (expected a finite non-negative number)`);
+  }
+  return value;
+}
+
+/** Resolve the process-wide dense/lexical RRF weighting policy. */
+export function resolveHybridRrfWeights(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): HybridRrfWeights {
+  return {
+    dense: parseHybridRrfWeight(env.KB_HYBRID_DENSE_WEIGHT, 'KB_HYBRID_DENSE_WEIGHT'),
+    lexical: parseHybridRrfWeight(env.KB_HYBRID_LEXICAL_WEIGHT, 'KB_HYBRID_LEXICAL_WEIGHT'),
+  };
+}
+
+export const KB_HYBRID_RRF_WEIGHTS: HybridRrfWeights = resolveHybridRrfWeights();
+
 /**
  * When false (default), `frontmatter.extras` is stripped from every
  * `retrieve_knowledge` response before JSON serialization. Extras hold
