@@ -515,6 +515,44 @@ describe('runLexicalLeg', () => {
     expect(result.hits.map((hit) => hit.metadata.source)).toEqual(['refreshed.md']);
   });
 
+  it('NFR-SEARCH-910: gives concurrent readers a coherent cached snapshot during refresh', async () => {
+    const cached = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('persisted.md', 0.8)] });
+    const fresh = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('refreshed.md', 0.9)] });
+    let cachedSnapshot = cached.idx;
+    let releaseRefresh!: () => void;
+    let markRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    fresh.refresh.mockImplementationOnce(async () => {
+      markRefreshStarted();
+      await new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
+      });
+      return { added: 0, updated: 1, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 };
+    });
+    const options = {
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 10,
+      loadIndex: async () => cachedSnapshot,
+      loadFreshIndex: async () => fresh.idx,
+      invalidateIndex: (): void => {
+        cachedSnapshot = fresh.idx;
+      },
+    };
+
+    const refresh = runLexicalLeg({ ...options, refresh: 'always' });
+    await refreshStarted;
+    const concurrentReader = await runLexicalLeg({ ...options, refresh: 'when-empty' });
+    expect(concurrentReader.hits.map((hit) => hit.metadata.source)).toEqual(['persisted.md']);
+
+    releaseRefresh();
+    await expect(refresh).resolves.toMatchObject({ refreshed: 1, failed: 0 });
+    const laterReader = await runLexicalLeg({ ...options, refresh: 'when-empty' });
+    expect(laterReader.hits.map((hit) => hit.metadata.source)).toEqual(['refreshed.md']);
+  });
+
   it('survives per-KB load/query failures, counts them in failed, and notifies onError', async () => {
     const ok = makeFakeIndex({ numFiles: 5, hits: [lexicalHit('a.md', 0.9)] });
     const failingQuery = makeFakeIndex({

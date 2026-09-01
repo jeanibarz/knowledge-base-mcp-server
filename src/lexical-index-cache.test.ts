@@ -55,7 +55,21 @@ describe('LexicalIndexCache', () => {
     expect(loadIndex).toHaveBeenCalledTimes(1);
   });
 
-  it('reloads when the persisted lexical index metadata changes', async () => {
+  it.each([
+    {
+      field: 'mtime',
+      replacementBody: '{"files":{"a":1}}',
+      replacementMtime: new Date('2026-01-02T00:00:00Z'),
+    },
+    {
+      field: 'size',
+      replacementBody: '{"files":{"a":1,"b":2}}',
+      replacementMtime: new Date('2026-01-01T00:00:00Z'),
+    },
+  ])('reloads when the persisted lexical index $field changes', async ({
+    replacementBody,
+    replacementMtime,
+  }) => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-cache-reload-'));
     const faissDir = path.join(tempDir, 'faiss');
     await writePersistedIndex(faissDir, 'alpha', '{"files":{"a":1}}', new Date('2026-01-01T00:00:00Z'));
@@ -71,8 +85,8 @@ describe('LexicalIndexCache', () => {
     await writePersistedIndex(
       faissDir,
       'alpha',
-      '{"files":{"a":1,"b":2}}',
-      new Date('2026-01-02T00:00:00Z'),
+      replacementBody,
+      replacementMtime,
     );
     await expect(cache.load('alpha', '/kb/alpha')).resolves.toBe(second);
 
@@ -98,7 +112,7 @@ describe('LexicalIndexCache', () => {
     expect(loadIndex).toHaveBeenCalledTimes(2);
   });
 
-  it('NFR-SEARCH-910: observes content persisted by an explicit refresh', async () => {
+  it('NFR-SEARCH-910: keeps the warm snapshot stable until fresh refresh persistence', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-cache-refresh-'));
     const faissDir = path.join(tempDir, 'faiss');
     const kbDir = path.join(tempDir, 'kbs', 'alpha');
@@ -119,16 +133,21 @@ describe('LexicalIndexCache', () => {
       .toContain('ORIGINAL_CACHE_TOKEN');
 
     await fsp.writeFile(sourcePath, 'REFRESHED_CACHE_TOKEN with a different persisted size');
-    const refreshTarget = await cache.load('alpha', kbDir);
-    expect(refreshTarget).toBe(warm);
+    const refreshTarget = await cache.loadFresh('alpha', kbDir);
+    expect(refreshTarget).not.toBe(warm);
     await refreshTarget.refresh();
+    const concurrentReader = await cache.load('alpha', kbDir);
+    expect(concurrentReader).toBe(warm);
+    expect((await concurrentReader.query('ORIGINAL_CACHE_TOKEN', 5))[0].pageContent)
+      .toContain('ORIGINAL_CACHE_TOKEN');
     await refreshTarget.save();
+    cache.invalidate('alpha', kbDir);
 
     const reloaded = await cache.load('alpha', kbDir);
     expect(reloaded).not.toBe(warm);
     expect((await reloaded.query('REFRESHED_CACHE_TOKEN', 5))[0].pageContent)
       .toContain('REFRESHED_CACHE_TOKEN');
-    expect(loadSpy).toHaveBeenCalledTimes(2);
+    expect(loadSpy).toHaveBeenCalledTimes(3);
   });
 
   it('does not cache missing persisted lexical index files', async () => {
@@ -188,6 +207,39 @@ describe('LexicalIndexCache', () => {
     expect(a).toBe(index);
     expect(b).toBe(index);
     expect(loadIndex).toHaveBeenCalledTimes(1);
+  });
+
+  it('NFR-SEARCH-910: does not remember a parse that finishes after invalidation', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-cache-stale-load-'));
+    const faissDir = path.join(tempDir, 'faiss');
+    await writePersistedIndex(faissDir, 'alpha', '{"files":{"a":1}}', new Date('2026-01-01T00:00:00Z'));
+    const { LexicalIndexCache } = await freshCache(faissDir);
+    const stale = fakeIndex(1);
+    const current = fakeIndex(2);
+    let releaseStaleLoad!: () => void;
+    let markStaleLoadStarted!: () => void;
+    const staleLoadStarted = new Promise<void>((resolve) => {
+      markStaleLoadStarted = resolve;
+    });
+    const loadIndex = jest.fn<() => Promise<LexicalIndex>>()
+      .mockImplementationOnce(async () => {
+        markStaleLoadStarted();
+        await new Promise<void>((resolve) => {
+          releaseStaleLoad = resolve;
+        });
+        return stale;
+      })
+      .mockResolvedValue(current);
+    const cache = new LexicalIndexCache({ loadIndex });
+
+    const overlappingLoad = cache.load('alpha', '/kb/alpha');
+    await staleLoadStarted;
+    cache.invalidate('alpha', '/kb/alpha');
+    releaseStaleLoad();
+
+    await expect(overlappingLoad).resolves.toBe(current);
+    await expect(cache.load('alpha', '/kb/alpha')).resolves.toBe(current);
+    expect(loadIndex).toHaveBeenCalledTimes(2);
   });
 
   it('NFR-SEARCH-910: evicts the least-recently-used parsed index at the configured bound', async () => {

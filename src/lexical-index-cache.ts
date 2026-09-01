@@ -15,6 +15,7 @@ interface CacheEntry {
 interface InFlightLoad {
   metadata: LexicalIndexMetadata;
   promise: Promise<LexicalIndex>;
+  token: { valid: boolean };
 }
 
 export interface LexicalIndexCacheOptions {
@@ -52,8 +53,9 @@ export class LexicalIndexCache {
       return pending.promise;
     }
 
-    const promise = this.loadStable(kbName, kbPath, key, metadata);
-    this.inFlight.set(key, { metadata, promise });
+    const token = { valid: true };
+    const promise = this.loadStable(kbName, kbPath, key, metadata, token);
+    this.inFlight.set(key, { metadata, promise, token });
     try {
       return await promise;
     } finally {
@@ -70,7 +72,13 @@ export class LexicalIndexCache {
 
   /** Drop a cached snapshot after a successful refresh has replaced its file. */
   invalidate(kbName: string, kbPath: string): void {
-    this.entries.delete(this.cacheKey(kbName, kbPath));
+    const key = this.cacheKey(kbName, kbPath);
+    this.entries.delete(key);
+    const pending = this.inFlight.get(key);
+    if (pending) {
+      pending.token.valid = false;
+      this.inFlight.delete(key);
+    }
   }
 
   private async loadStable(
@@ -78,6 +86,7 @@ export class LexicalIndexCache {
     kbPath: string,
     key: string,
     initialMetadata: LexicalIndexMetadata,
+    token: { valid: boolean },
   ): Promise<LexicalIndex> {
     let metadata = initialMetadata;
     // Require the index file metadata to stay stable across parse. If a writer
@@ -86,6 +95,7 @@ export class LexicalIndexCache {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const index = await this.loadIndex(kbName, kbPath);
       const afterLoad = await this.readMetadata(kbName);
+      if (!token.valid) return this.load(kbName, kbPath);
       if (sameMetadata(metadata, afterLoad)) {
         this.remember(key, index, afterLoad);
         return index;
@@ -95,6 +105,7 @@ export class LexicalIndexCache {
 
     const index = await this.loadIndex(kbName, kbPath);
     const finalMetadata = await this.readMetadata(kbName);
+    if (!token.valid) return this.load(kbName, kbPath);
     if (sameMetadata(metadata, finalMetadata)) {
       this.remember(key, index, finalMetadata);
     }
