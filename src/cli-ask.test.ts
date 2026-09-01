@@ -209,11 +209,11 @@ describe('packAskContext', () => {
 
     const packed = packAskContext([
       retrievalResult('guarded.md', wrapped),
-    ], 130);
+    ], 180);
     const rebuilt = packed.included[0].text;
     expect(packed.payload.truncated_chunks).toBe(1);
     expect(rebuilt.match(/<\/untrusted-doc>/g)).toHaveLength(1);
-    expect(rebuilt).toContain('<\u2060/untrusted-doc>');
+    expect(rebuilt).not.toContain('before </untrusted-doc>');
     expect(rebuilt).toContain('[truncated]\n</untrusted-doc>');
   });
 
@@ -229,7 +229,7 @@ describe('packAskContext', () => {
 
       expect(splitInjectionGuardWrapper(wrapped)?.content).toBe(content);
       expect(wrapped.match(/\[END\]/g)).toHaveLength(1);
-      expect(wrapped).toContain('[\u2060END]');
+      expect(wrapped).not.toContain('before [END]');
     } finally {
       if (previousOpen === undefined) delete process.env.KB_INJECTION_GUARD_WRAP_OPEN;
       else process.env.KB_INJECTION_GUARD_WRAP_OPEN = previousOpen;

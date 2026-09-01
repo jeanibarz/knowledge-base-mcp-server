@@ -15,7 +15,7 @@ The server already treats `$KNOWLEDGE_BASES_ROOT_DIR` as a content trust boundar
 Add a small retrieval-time content guard at the formatter boundary:
 
 - Default `KB_INJECTION_GUARD=tag`: scan each returned chunk and add additive `metadata.injection_signals`.
-- `KB_INJECTION_GUARD=wrap`: wrap returned chunk content in an `<untrusted-doc src="...">` envelope without adding signal metadata. Exact configured opening and closing delimiters embedded in chunk content are reversibly broken with a word joiner so only the trusted outer envelope contains them verbatim.
+- `KB_INJECTION_GUARD=wrap`: wrap returned chunk content in an `<untrusted-doc src="...">` envelope without adding signal metadata. Exact configured opening and closing delimiters embedded in chunk content are transformed by a reversible reserved-character codec so only the trusted outer envelope contains them verbatim. Multi-codepoint delimiters are separated between codepoints; single-codepoint delimiters use reserved substitutes. A codec signature and escaping preserve pre-existing reserved characters during restoration outside the trust boundary.
 - `KB_INJECTION_GUARD=both`: scan and wrap.
 - `KB_INJECTION_GUARD=off`: preserve the historical content and metadata shape.
 - `KB_INJECTION_GUARD_BYPASS_KBS`: comma-separated KB names that skip both detection and wrapping.
@@ -51,6 +51,7 @@ Tradeoffs:
 - Detection is heuristic and incomplete.
 - Default metadata shape changes by adding `injection_signals: []` even when no signals are found.
 - Wrap mode changes chunk content and can affect byte-sensitive evaluations.
+- Neutralized delimiter occurrences add invisible separator codepoints and therefore consume additional context-budget characters until restored outside the wrapper boundary.
 
 ## Validation
 

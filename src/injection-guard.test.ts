@@ -4,6 +4,7 @@ import {
   detectInjectionSignals,
   neutralizeWrapperDelimiters,
   resolveInjectionGuardOptions,
+  restoreWrapperDelimiters,
   wrapUntrustedContent,
   type InjectionSignalKind,
 } from './injection-guard.js';
@@ -126,8 +127,8 @@ describe('wrapUntrustedContent', () => {
 
     expect(wrapped.match(/<untrusted-doc src=/g)).toHaveLength(1);
     expect(wrapped.match(/<\/untrusted-doc>/g)).toHaveLength(1);
-    expect(wrapped).toContain('<\u2060untrusted-doc src="{source}">');
-    expect(wrapped).toContain('<\u2060/untrusted-doc>');
+    expect(wrapped).not.toContain('\n<untrusted-doc src="{source}">');
+    expect(wrapped).not.toContain('</untrusted-doc> after');
   });
 
   it('NFR-SEC-907: neutralizes custom delimiters and preserves existing joiners', () => {
@@ -135,10 +136,31 @@ describe('wrapUntrustedContent', () => {
     const content = 'before [BEGIN] existing \u2060 marker [END] after';
     const neutralized = neutralizeWrapperDelimiters(content, options);
 
-    expect(neutralized).toBe('before [\u2060BEGIN] existing \u2060\u2060 marker [\u2060END] after');
-    expect(wrapUntrustedContent(content, {}, options)).toBe(
-      '[BEGIN]\nbefore [\u2060BEGIN] existing \u2060\u2060 marker [\u2060END] after\n[END]',
-    );
+    expect(neutralized).not.toContain('[BEGIN]');
+    expect(neutralized).not.toContain('[END]');
+    expect(restoreWrapperDelimiters(neutralized, options)).toBe(content);
+    expect(wrapUntrustedContent(content, {}, options).match(/\[BEGIN\]|\[END\]/g))
+      .toEqual(['[BEGIN]', '[END]']);
+  });
+
+  it('NFR-SEC-907: neutralizes overlapping custom delimiter occurrences', () => {
+    const options = { wrapOpen: '[BEGIN]', wrapClose: 'aa' };
+    const content = 'before aaa attacker text after';
+    const wrapped = wrapUntrustedContent(content, {}, options);
+
+    expect(wrapped.match(/aa/g)).toHaveLength(1);
+    expect(restoreWrapperDelimiters(neutralizeWrapperDelimiters(content, options), options))
+      .toBe(content);
+  });
+
+  it('NFR-SEC-907: neutralizes one-codepoint custom delimiters', () => {
+    const options = { wrapOpen: '[BEGIN]', wrapClose: 'x' };
+    const content = 'before x attacker text after';
+    const wrapped = wrapUntrustedContent(content, {}, options);
+
+    expect(wrapped.match(/x/g)).toHaveLength(1);
+    expect(restoreWrapperDelimiters(neutralizeWrapperDelimiters(content, options), options))
+      .toBe(content);
   });
 });
 

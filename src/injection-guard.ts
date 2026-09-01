@@ -28,7 +28,26 @@ export interface GuardedChunk {
 
 const DEFAULT_WRAP_OPEN = '<untrusted-doc src="{source}">';
 const DEFAULT_WRAP_CLOSE = '</untrusted-doc>';
-const WRAPPER_DELIMITER_BREAK = '\u2060';
+const WRAPPER_CODEC_CANDIDATES = [
+  0x2060, // word joiner
+  0x2061, // function application
+  0x2062, // invisible times
+  0x2063, // invisible separator
+  0x2064, // invisible plus
+  0x200B, // zero-width space
+  0x200C, // zero-width non-joiner
+  0x200D, // zero-width joiner
+];
+
+interface WrapperDelimiterCodec {
+  delimiters: string[];
+  escape: string;
+  signature: string;
+  break: string;
+  reserved: Set<string>;
+  singleDelimiterCodes: Map<string, string>;
+  delimitersBySingleCode: Map<string, string>;
+}
 
 const SYSTEM_ROLE_MARKERS = [
   /<\|im_start\|>/i,
@@ -111,15 +130,38 @@ export function neutralizeWrapperDelimiters(
   content: string,
   options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
 ): string {
-  // Doubling preserves word joiners that belong to the document. A single
-  // inserted joiner therefore remains an unambiguous, reversible delimiter break.
-  let neutralized = content.replaceAll(
-    WRAPPER_DELIMITER_BREAK,
-    WRAPPER_DELIMITER_BREAK.repeat(2),
-  );
-  for (const delimiter of configuredDelimiters(options)) {
-    if (delimiter.includes(WRAPPER_DELIMITER_BREAK)) continue;
-    neutralized = neutralized.replaceAll(delimiter, breakDelimiter(delimiter));
+  const codec = createWrapperDelimiterCodec(options);
+  const needsEncoding = codec.delimiters.some((delimiter) => content.includes(delimiter)) ||
+    [...codec.reserved].some((reserved) => content.includes(reserved));
+  if (!needsEncoding) return content;
+
+  let neutralized = codec.escape + codec.signature;
+  for (let offset = 0; offset < content.length;) {
+    const current = codepointAt(content, offset);
+    if (codec.reserved.has(current)) {
+      neutralized += codec.escape + current;
+      offset += current.length;
+      continue;
+    }
+
+    const delimiter = codec.delimiters.find((candidate) =>
+      content.startsWith(candidate, offset)
+    );
+    if (delimiter === undefined) {
+      neutralized += current;
+      offset += current.length;
+      continue;
+    }
+
+    const singleCode = codec.singleDelimiterCodes.get(delimiter);
+    if (singleCode !== undefined) {
+      neutralized += singleCode;
+    } else {
+      for (const char of delimiter) {
+        neutralized += codec.singleDelimiterCodes.get(char) ?? `${char}${codec.break}`;
+      }
+    }
+    offset += delimiter.length;
   }
   return neutralized;
 }
@@ -130,15 +172,37 @@ export function restoreWrapperDelimiters(
 ): string {
   // Call only after content has left the wrapper trust boundary. Any caller
   // rebuilding an envelope must neutralize the restored text again first.
-  let restored = content;
-  for (const delimiter of configuredDelimiters(options)) {
-    if (delimiter.includes(WRAPPER_DELIMITER_BREAK)) continue;
-    restored = restored.replaceAll(breakDelimiter(delimiter), delimiter);
+  const codec = createWrapperDelimiterCodec(options);
+  const prefix = codec.escape + codec.signature;
+  if (!content.startsWith(prefix)) return content;
+
+  let restored = '';
+  for (let offset = prefix.length; offset < content.length;) {
+    const current = codepointAt(content, offset);
+    if (current === codec.escape) {
+      const escapedOffset = offset + current.length;
+      if (escapedOffset >= content.length) {
+        restored += current;
+        offset = escapedOffset;
+        continue;
+      }
+      const escaped = codepointAt(content, escapedOffset);
+      if (codec.reserved.has(escaped)) {
+        restored += escaped;
+        offset = escapedOffset + escaped.length;
+        continue;
+      }
+    }
+
+    if (current === codec.break) {
+      offset += current.length;
+      continue;
+    }
+    const singleDelimiter = codec.delimitersBySingleCode.get(current);
+    restored += singleDelimiter ?? current;
+    offset += current.length;
   }
-  return restored.replaceAll(
-    WRAPPER_DELIMITER_BREAK.repeat(2),
-    WRAPPER_DELIMITER_BREAK,
-  );
+  return restored;
 }
 
 export function applyInjectionGuard(
@@ -215,13 +279,62 @@ function configuredDelimiters(
 ): string[] {
   return [...new Set([options.wrapOpen, options.wrapClose])]
     .filter((delimiter) => delimiter !== '')
-    .sort((left, right) => left.length - right.length);
+    .sort((left, right) => right.length - left.length);
 }
 
-function breakDelimiter(delimiter: string): string {
-  const firstCodepoint = [...delimiter][0];
-  if (firstCodepoint === undefined) return delimiter;
-  return `${firstCodepoint}${WRAPPER_DELIMITER_BREAK}${delimiter.slice(firstCodepoint.length)}`;
+function createWrapperDelimiterCodec(
+  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+): WrapperDelimiterCodec {
+  const delimiters = configuredDelimiters(options);
+  const singleDelimiters = delimiters.filter((delimiter) => [...delimiter].length === 1);
+  const reservedChars = selectWrapperCodecCharacters(delimiters, 3 + singleDelimiters.length);
+  const [escape, signature, delimiterBreak, ...singleCodes] = reservedChars;
+  if (escape === undefined || signature === undefined || delimiterBreak === undefined) {
+    throw new Error('Unable to reserve wrapper delimiter codec characters');
+  }
+  const singleDelimiterCodes = new Map<string, string>();
+  const delimitersBySingleCode = new Map<string, string>();
+  for (const [index, delimiter] of singleDelimiters.entries()) {
+    const code = singleCodes[index];
+    if (code === undefined) {
+      throw new Error('Unable to reserve a single-character delimiter code');
+    }
+    singleDelimiterCodes.set(delimiter, code);
+    delimitersBySingleCode.set(code, delimiter);
+  }
+  return {
+    delimiters,
+    escape,
+    signature,
+    break: delimiterBreak,
+    reserved: new Set(reservedChars),
+    singleDelimiterCodes,
+    delimitersBySingleCode,
+  };
+}
+
+function selectWrapperCodecCharacters(delimiters: string[], count: number): string[] {
+  const delimiterCharacters = new Set(delimiters.flatMap((delimiter) => [...delimiter]));
+  const selected: string[] = [];
+  const consider = (codepoint: number): void => {
+    const char = String.fromCodePoint(codepoint);
+    if (!delimiterCharacters.has(char)) selected.push(char);
+  };
+
+  for (const codepoint of WRAPPER_CODEC_CANDIDATES) {
+    if (selected.length >= count) break;
+    consider(codepoint);
+  }
+  for (let codepoint = 0xE000; selected.length < count && codepoint <= 0xF8FF; codepoint += 1) {
+    consider(codepoint);
+  }
+  return selected;
+}
+
+function codepointAt(value: string, offset: number): string {
+  const codepoint = value.codePointAt(offset);
+  if (codepoint === undefined) return '';
+  return String.fromCodePoint(codepoint);
 }
 
 function addSignal(
