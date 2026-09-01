@@ -267,6 +267,14 @@ export interface LexicalLegOptions {
    * default loads via `LexicalIndex.load`.
    */
   loadIndex?: (kbName: string, kbPath: string) => Promise<LexicalIndex>;
+  /**
+   * Load an uncached snapshot before refresh mutates the index. Keeping refresh
+   * work separate lets concurrent readers continue using one coherent cached
+   * snapshot until the refreshed file is persisted atomically.
+   */
+  loadFreshIndex?: (kbName: string, kbPath: string) => Promise<LexicalIndex>;
+  /** Invalidate a cached snapshot after a refreshed index is persisted. */
+  invalidateIndex?: (kbName: string, kbPath: string) => void | Promise<void>;
 }
 
 export interface LexicalLegResult {
@@ -307,6 +315,7 @@ export interface LexicalLegResult {
  */
 export async function runLexicalLeg(opts: LexicalLegOptions): Promise<LexicalLegResult> {
   const load = opts.loadIndex ?? LexicalIndex.load.bind(LexicalIndex);
+  const loadFresh = opts.loadFreshIndex ?? LexicalIndex.load.bind(LexicalIndex);
   const onError = opts.onError ?? defaultLexicalLegOnError;
   const lexicalPostFilter = opts.filters === undefined
     ? undefined
@@ -327,13 +336,20 @@ export async function runLexicalLeg(opts: LexicalLegOptions): Promise<LexicalLeg
   const all: LexicalSearchResult[] = [];
   for (const { kbName, kbPath } of opts.kbs) {
     try {
-      const idx = await load(kbName, kbPath);
+      let idx = await load(kbName, kbPath);
       const shouldRefresh = lexicalRefreshPolicy === 'always' || idx.numFiles() === 0;
       if (shouldRefresh) {
         const refreshAndSave = async (): Promise<void> => {
-          await idx.refresh();
-          await idx.save();
-          refreshed += 1;
+          // Refresh a new snapshot rather than the cached object. A failed
+          // refresh/save can then be discarded, and concurrent queries keep
+          // seeing the last coherent persisted snapshot.
+          idx = await loadFresh(kbName, kbPath);
+          if (lexicalRefreshPolicy === 'always' || idx.numFiles() === 0) {
+            await idx.refresh();
+            await idx.save();
+            await opts.invalidateIndex?.(kbName, kbPath);
+            refreshed += 1;
+          }
         };
         // LexicalIndex.save uses one shared index.json.tmp path for atomic
         // replacement. Serialize every refresh/save per KB, including the

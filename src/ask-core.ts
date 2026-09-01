@@ -42,6 +42,7 @@ import {
   listLexicalKbs,
   runLexicalLeg,
   type HybridChunk,
+  type LexicalLegOptions,
 } from './hybrid-retrieval.js';
 import {
   applyRerankerIfEnabled,
@@ -224,6 +225,12 @@ export interface RunAskCoreDeps {
   listLexicalKbs?: typeof listLexicalKbs;
   /** Lexical-leg BM25 runner for hybrid/lexical modes (#732). Injectable for tests. */
   runLexicalLeg?: typeof runLexicalLeg;
+  /** Server-lifetime parsed-index loader shared with retrieve_knowledge (#910). */
+  loadLexicalIndex?: NonNullable<LexicalLegOptions['loadIndex']>;
+  /** Uncached loader used for refreshes so cached readers keep a stable snapshot. */
+  loadFreshLexicalIndex?: NonNullable<LexicalLegOptions['loadFreshIndex']>;
+  /** Cache invalidator called only after a refreshed index is persisted. */
+  invalidateLexicalIndex?: NonNullable<LexicalLegOptions['invalidateIndex']>;
 }
 
 interface LlmTarget {
@@ -472,6 +479,9 @@ async function retrieveHybridOrLexical(input: {
     query: args.question,
     fetchK,
     refresh: args.refresh ? 'always' : 'when-empty',
+    loadIndex: deps.loadLexicalIndex,
+    loadFreshIndex: deps.loadFreshLexicalIndex,
+    invalidateIndex: deps.invalidateLexicalIndex,
     onError: (kbName, err) => {
       logger.warn(`kb ask (${effectiveMode} lexical leg): ${kbName} — ${err.message}`);
     },

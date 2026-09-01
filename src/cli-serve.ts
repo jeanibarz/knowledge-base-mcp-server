@@ -132,6 +132,8 @@ export interface StartDaemonServerOptions extends Partial<ServeArgs> {
 
 export interface DaemonCommandHandlerOptions {
   lexicalIndexLoader?: (kbName: string, kbPath: string) => Promise<LexicalIndex>;
+  lexicalIndexFreshLoader?: (kbName: string, kbPath: string) => Promise<LexicalIndex>;
+  lexicalIndexInvalidator?: (kbName: string, kbPath: string) => void | Promise<void>;
   denseIndexMetadataReader?: (modelId: string) => Promise<DenseIndexMetadata>;
   knowledgeBasesRootDir?: string;
   listKnowledgeBasesImpl?: typeof listKnowledgeBases;
@@ -607,6 +609,8 @@ async function cleanupSocketPath(socketPath: string | null): Promise<void> {
 export function createDaemonCommandHandlers(options: DaemonCommandHandlerOptions = {}): DaemonCommandHandlers {
   const cache = new LexicalIndexCache();
   const loadLexicalIndex = options.lexicalIndexLoader ?? cache.load.bind(cache);
+  const loadFreshLexicalIndex = options.lexicalIndexFreshLoader ?? cache.loadFresh.bind(cache);
+  const invalidateLexicalIndex = options.lexicalIndexInvalidator ?? cache.invalidate.bind(cache);
   const defaultSearchDeps = createRunSearchDeps();
   type SearchManager = Awaited<ReturnType<RunSearchDeps['loadManagerForModel']>>;
   const baseLoadManagerForModel = options.loadManagerForModel ?? defaultSearchDeps.loadManagerForModel;
@@ -641,6 +645,8 @@ export function createDaemonCommandHandlers(options: DaemonCommandHandlerOptions
     loadManagerForModel,
     loadWithJsonRetry,
     loadLexicalIndex,
+    loadFreshLexicalIndex,
+    invalidateLexicalIndex,
     onSearchTiming: (record) => {
       searchLatencyMetrics.record({
         mode: record.mode,

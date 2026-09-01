@@ -163,6 +163,7 @@ import { buildTransportReadinessPayload } from './transport-readiness.js';
 import { AskExecutionError, askKnowledge } from './ask-core.js';
 import { callChatCompletion } from './llm-client.js';
 import { readBuildInfo } from './build-info.js';
+import { LexicalIndexCache } from './lexical-index-cache.js';
 
 const SERVER_NAME = 'knowledge-base-server';
 const SERVER_VERSION = '0.1.0';
@@ -326,6 +327,10 @@ export class KnowledgeBaseServer {
   // per call so a future M3 `model_name` override drops in without
   // redesign.
   private readonly managers = new ManagerRegistry();
+  private readonly lexicalIndexCache = new LexicalIndexCache();
+  private readonly loadLexicalIndex = this.lexicalIndexCache.load.bind(this.lexicalIndexCache);
+  private readonly loadFreshLexicalIndex = this.lexicalIndexCache.loadFresh.bind(this.lexicalIndexCache);
+  private readonly invalidateLexicalIndex = this.lexicalIndexCache.invalidate.bind(this.lexicalIndexCache);
   private activeWarmupPromise: Promise<void> | null = null;
   private httpHost?: StreamableHttpHost;
   private sseHost?: SseHost;
@@ -1252,6 +1257,9 @@ export class KnowledgeBaseServer {
           loadReadOnlyIndex: async () => {},
           withWriteLock,
           callChatCompletion,
+          loadLexicalIndex: this.loadLexicalIndex,
+          loadFreshLexicalIndex: this.loadFreshLexicalIndex,
+          invalidateLexicalIndex: this.invalidateLexicalIndex,
         }, report);
         return {
           content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
@@ -1367,6 +1375,9 @@ export class KnowledgeBaseServer {
         fetchK,
         refresh: 'when-empty',
         filters,
+        loadIndex: this.loadLexicalIndex,
+        loadFreshIndex: this.loadFreshLexicalIndex,
+        invalidateIndex: this.invalidateLexicalIndex,
         onError: (kbName, err) => {
           logger.warn(`hybrid: lexical leg failed for KB "${kbName}": ${err.message}`);
         },
@@ -1562,6 +1573,9 @@ export class KnowledgeBaseServer {
       query: input.query,
       fetchK: input.fetchK,
       refresh: 'when-empty',
+      loadIndex: this.loadLexicalIndex,
+      loadFreshIndex: this.loadFreshLexicalIndex,
+      invalidateIndex: this.invalidateLexicalIndex,
       onError: (kbName, err) => {
         logger.warn(`degraded lexical-only: lexical leg failed for KB "${kbName}": ${err.message}`);
       },

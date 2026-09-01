@@ -429,6 +429,8 @@ export interface RunSearchDeps {
   listKnowledgeBases?: typeof listKnowledgeBases;
   resolveKnowledgeBaseDir?: typeof resolveKnowledgeBaseDir;
   loadLexicalIndex?: typeof LexicalIndex.load;
+  loadFreshLexicalIndex?: typeof LexicalIndex.load;
+  invalidateLexicalIndex?: (kbName: string, kbPath: string) => void | Promise<void>;
   runLexicalLeg?: typeof runLexicalLeg;
   onSearchTiming?: (record: {
     mode: EffectiveSearchMode;
@@ -2964,6 +2966,8 @@ async function runHybridSearch(
         filters,
         retrievalViews: parsed.retrievalViews,
         loadIndex: deps.loadLexicalIndex,
+        loadFreshIndex: deps.loadFreshLexicalIndex,
+        invalidateIndex: deps.invalidateLexicalIndex,
         onError: (kbName, err) => {
           process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${err.message}\n`);
         },
