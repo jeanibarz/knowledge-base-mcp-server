@@ -222,6 +222,8 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
 
   { name: 'KB_RELEVANCE_GATE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables recall-negative relevance gating by default.' },
   { name: 'KB_DENSE_DEGRADE_ON_PROVIDER_ERROR', kind: 'boolean', default: 'off', booleanValues: ['on', 'off'], truthyValues: ['on'], description: 'Allows dense and hybrid retrieval to degrade to lexical-only results during transient provider errors.' },
+  { name: 'KB_HYBRID_DENSE_WEIGHT', kind: 'number', default: '1', min: 0, description: 'Dense retriever weight for hybrid Reciprocal Rank Fusion. Validate non-default values with BEIR/BRIGHT before deployment.' },
+  { name: 'KB_HYBRID_LEXICAL_WEIGHT', kind: 'number', default: '1', min: 0, description: 'Lexical retriever weight for hybrid Reciprocal Rank Fusion. Validate non-default values with BEIR/BRIGHT before deployment.' },
   { name: 'KB_GATE_EMPTY_VERDICT', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_GATE_SCORE_FLOOR', kind: 'number', default: '0.95', min: 0, max: 1 },
   { name: 'KB_GATE_JUDGE_INPUT', kind: 'integer', default: '10', min: 1, max: 1000 },

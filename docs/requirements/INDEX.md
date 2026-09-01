@@ -294,6 +294,23 @@
 **Linked Tests:** TS-SEARCH-853 (`src/hybrid-retrieval.test.ts`, `src/KnowledgeBaseServer.test.ts`, `src/cli-search.test.ts`, `src/retrieval-eval.test.ts`)
 **Dependencies:** FR-SEARCH-374
 
+### FR-SEARCH-912: Configurable hybrid RRF weights
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The system shall let operators configure non-negative dense and lexical Reciprocal Rank Fusion weights globally and override both weights per `kb search` call while preserving the existing equal-weight ranking by default.
+**Rationale:** Exact-token corpora and prose-heavy corpora benefit from different hybrid retrieval biases, while a `1:1` default avoids changing existing results.
+
+**Acceptance Criteria:**
+- [x] Given no weight configuration, when hybrid results are fused, then the serialized fused output shall equal an explicit `dense: 1, lexical: 1` fusion byte-for-byte.
+- [x] Given valid `KB_HYBRID_DENSE_WEIGHT` and `KB_HYBRID_LEXICAL_WEIGHT` values, when any production hybrid retrieval surface fuses results, then it shall apply those weights.
+- [x] Given `--dense-weight` and `--lexical-weight` on `kb search`, when hybrid retrieval runs, then those per-call values shall override the corresponding environment defaults.
+- [x] Given a negative, non-finite, or malformed configured weight, when configuration or CLI arguments are parsed, then the system shall reject it with a diagnostic naming the invalid setting.
+- [x] Given a non-default weight during BEIR and BRIGHT harness execution, when the harness reaches production hybrid fusion, then it shall complete without a harness regression.
+
+**Linked Tests:** TS-SEARCH-912 (`src/config.test.ts`, `src/config/schema.test.ts`, `src/hybrid-retrieval.test.ts`, `src/cli-search.test.ts`, `src/retrieval-eval.test.ts`, `benchmarks/beir/run.dense.test.ts`, `benchmarks/bright/run.test.ts`, `benchmarks/beir/matrix.test.ts`, `benchmarks/observability/mlflow.test.ts`)
+**Dependencies:** FR-SEARCH-374
+
 ### NFR-SEARCH-910: Server-lifetime lexical-index reuse
 **Status:** Implemented
 **Priority:** Medium

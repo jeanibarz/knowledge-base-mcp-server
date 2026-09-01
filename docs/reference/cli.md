@@ -1504,6 +1504,10 @@ Result tuning:
   --mode=dense|lexical|hybrid|auto
                         Retrieval mode (default: dense). `hybrid` fuses
                         dense + BM25 via reciprocal rank fusion (#206).
+  --dense-weight=<float>
+                        Hybrid RRF dense weight (default: KB_HYBRID_DENSE_WEIGHT or 1).
+  --lexical-weight=<float>
+                        Hybrid RRF lexical weight (default: KB_HYBRID_LEXICAL_WEIGHT or 1).
   --lexical-unit=chunk|source
                         BM25 ranking unit for lexical and hybrid modes.
                         chunk ranks each chunk; source ranks each source file

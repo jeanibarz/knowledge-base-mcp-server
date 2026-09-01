@@ -29,6 +29,7 @@
 // is the strict serialization boundary for every writer.
 
 import * as fsp from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 
 import {
@@ -77,6 +78,27 @@ export const REINDEX_GUARD_WINDOW_END_UTC = { hour: 10, minute: 30 };
 // Filename of the run-status file under FAISS_INDEX_PATH.
 export const REINDEX_RUN_FILENAME = '.reindex.run.json';
 export const REINDEX_RUN_SCHEMA_VERSION = 'reindex-run.v1';
+
+/**
+ * Issue #906 — bounded max age of a run-state file before it is treated as
+ * stale and reclaimable, regardless of whether its recorded PID currently
+ * looks alive.
+ *
+ * The run-state's `process.kill(pid, 0)` probe is unsound across two failure
+ * modes that an unclean kill (SIGKILL/OOM/power loss) leaves behind: the OS can
+ * recycle the dead PID onto an unrelated process (false "alive"), and on a
+ * shared/NFS `FAISS_INDEX_PATH` a PID from another host is meaningless here.
+ * This age bound is the last-resort fallback that recovers from both.
+ *
+ * `wouldCrossLraWindow` already refuses to *start* a reindex that would run
+ * past the next 06:00 UTC LRA window, so a legitimately-started reindex is
+ * bounded to well under a day. 24 h is a deliberately generous outer bound:
+ * long enough that no genuine reindex is ever reclaimed mid-flight, short
+ * enough that a zombie state self-heals within a day without operator
+ * intervention. It mirrors the intent of the write-lock's mtime staleness
+ * (`WRITE_LOCK_STALE_MS`, guarding the same directory) at reindex timescale.
+ */
+export const REINDEX_RUN_STALE_MS = 24 * 60 * 60 * 1_000;
 
 export interface ReindexOptions {
   /**
@@ -173,6 +195,15 @@ interface RunStateFile {
   pid: number;
   started_at: string;
   kbs_in_scope: string[];
+  /**
+   * Issue #906 — host that started the reindex (`os.hostname()`). New writes
+   * always set it; the field is optional only so legacy `reindex-run.v1`
+   * files written before #906 (no `hostname`) still parse. When absent we
+   * cannot do a cross-host check and fall back to PID-liveness plus the age
+   * bound, exactly as before. When present and different from the local host,
+   * the recorded PID is unverifiable here and the state is reclaimed.
+   */
+  hostname?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +262,9 @@ async function readRunState(): Promise<RunStateFile | null> {
     if (parsed?.schema_version !== REINDEX_RUN_SCHEMA_VERSION) return null;
     if (typeof parsed.pid !== 'number' || typeof parsed.started_at !== 'string') return null;
     if (!Array.isArray(parsed.kbs_in_scope)) return null;
+    // `hostname` is optional (absent in legacy v1 files); reject only a
+    // present-but-wrong-typed value so a corrupt field can't masquerade.
+    if (parsed.hostname !== undefined && typeof parsed.hostname !== 'string') return null;
     return parsed as RunStateFile;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -254,10 +288,23 @@ async function deleteRunState(): Promise<void> {
 
 /**
  * RFC 017 §5 — read the run-state file and decide whether a reindex is
- * currently active. Cleans up zombie state files (PID is dead) as a
- * side effect; returns `{alive: false, state: null}` after cleanup.
- * Called by both the reindex CLI (refuses to start when alive) and the
- * trigger watcher (defers updateIndex when alive).
+ * currently active. Cleans up unreclaimable state files as a side effect;
+ * returns `{alive: false, state: null}` after cleanup. Called by both the
+ * reindex CLI (refuses to start when alive) and the trigger watcher (defers
+ * updateIndex when alive).
+ *
+ * Issue #906 — the state is reclaimed (deleted, treated as not-alive) when
+ * any of the following holds, checked in this order:
+ *   1. Age bound: `started_at` is older than `REINDEX_RUN_STALE_MS`. This is
+ *      the fallback that recovers a false-alive recycled PID — after an
+ *      unclean kill the OS may reuse the dead PID for an unrelated process,
+ *      so `process.kill(pid, 0)` lies; a state this old is stale regardless.
+ *   2. Cross-host: the recorded `hostname` differs from the local host. On a
+ *      shared/NFS `FAISS_INDEX_PATH` a PID from another host cannot be
+ *      liveness-checked here, so it must not block indefinitely.
+ *   3. Dead PID: same host (or legacy no-host) and `process.kill(pid, 0)`
+ *      reports the PID gone — the original zombie-cleanup path.
+ * Only a recent, same-host, live PID keeps blocking.
  */
 export async function checkReindexRunState(): Promise<{
   alive: boolean;
@@ -265,16 +312,55 @@ export async function checkReindexRunState(): Promise<{
 }> {
   const state = await readRunState();
   if (state === null) return { alive: false, state: null };
+
+  // 1. Age bound. Catches the recycled-PID false-alive case: an unclean kill
+  //    leaves the file behind and the OS later reuses the PID, so liveness
+  //    lies — but no genuine reindex runs past this bound.
+  const startedMs = Date.parse(state.started_at);
+  const ageMs = Number.isFinite(startedMs) ? Date.now() - startedMs : Number.POSITIVE_INFINITY;
+  if (ageMs > REINDEX_RUN_STALE_MS) {
+    logger.warn(
+      `Issue #906: reclaiming stale reindex run-state (age ${Math.round(ageMs / 1_000)}s ` +
+        `> ${Math.round(REINDEX_RUN_STALE_MS / 1_000)}s, pid=${state.pid}, ` +
+        `host=${state.hostname ?? 'unknown'}); a prior reindex likely died uncleanly.`,
+    );
+    await reclaimRunState(state, 'aged-out');
+    return { alive: false, state: null };
+  }
+
+  // 2. Cross-host. A PID recorded by another host is meaningless on this one;
+  //    we cannot probe it, so treat the state as reclaimable and log loudly.
+  const localHost = os.hostname();
+  if (state.hostname !== undefined && state.hostname !== localHost) {
+    logger.warn(
+      `Issue #906: reclaiming reindex run-state from a different host ` +
+        `(recorded host=${state.hostname}, local host=${localHost}, pid=${state.pid}); ` +
+        `its PID cannot be liveness-checked here.`,
+    );
+    await reclaimRunState(state, 'foreign-host');
+    return { alive: false, state: null };
+  }
+
+  // 3. Same host (or legacy no-host): fall back to PID liveness.
   if (isPidAlive(state.pid)) return { alive: true, state };
 
+  await reclaimRunState(state, 'dead-pid');
+  return { alive: false, state: null };
+}
+
+/**
+ * Emit the reclaim audit record and delete the run-state file. `reason`
+ * distinguishes the #906 staleness paths (`aged-out`, `foreign-host`) from
+ * the original dead-PID zombie cleanup in the canonical log.
+ */
+async function reclaimRunState(state: RunStateFile, reason: string): Promise<void> {
   emitCanonicalLog({
     process: 'cli',
     cmd: 'reindex.zombie-cleanup',
     took_ms: 0,
-    top_sources: [String(state.pid), state.started_at],
+    top_sources: [reason, String(state.pid), state.hostname ?? 'unknown', state.started_at],
   });
   await deleteRunState();
-  return { alive: false, state: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +626,10 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
     pid: process.pid,
     started_at: new Date().toISOString(),
     kbs_in_scope: [...kbs],
+    // Issue #906 — record the host so a run-state on a shared/NFS index dir
+    // can be reclaimed from another host, and a false-alive recycled PID on
+    // the same host is caught by the age bound in `checkReindexRunState`.
+    hostname: os.hostname(),
   };
   await writeRunState(state);
 
