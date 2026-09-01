@@ -15,12 +15,12 @@ The server already treats `$KNOWLEDGE_BASES_ROOT_DIR` as a content trust boundar
 Add a small retrieval-time content guard at the formatter boundary:
 
 - Default `KB_INJECTION_GUARD=tag`: scan each returned chunk and add additive `metadata.injection_signals`.
-- `KB_INJECTION_GUARD=wrap`: wrap returned chunk content in an `<untrusted-doc src="...">` envelope without adding signal metadata.
+- `KB_INJECTION_GUARD=wrap`: wrap returned chunk content in an `<untrusted-doc src="...">` envelope without adding signal metadata. Exact configured opening and closing delimiters embedded in chunk content are reversibly broken with a word joiner so only the trusted outer envelope contains them verbatim.
 - `KB_INJECTION_GUARD=both`: scan and wrap.
 - `KB_INJECTION_GUARD=off`: preserve the historical content and metadata shape.
 - `KB_INJECTION_GUARD_BYPASS_KBS`: comma-separated KB names that skip both detection and wrapping.
 
-The v0 detector is deterministic and local. It checks for system-role markers, common instruction-override phrases, Unicode bidi controls, zero-width controls, and Unicode tag characters. It never blocks, strips, rewrites, or calls an LLM classifier.
+The v0 detector is deterministic and local. It checks for system-role markers, common instruction-override phrases, the configured closing wrapper delimiter, Unicode bidi controls, zero-width controls, and Unicode tag characters. It never blocks, strips, rewrites, or calls an LLM classifier. Wrap mode separately neutralizes configured delimiter tokens because wrapping is already an explicit content-rewriting mode.
 
 ## Decision Drivers
 
@@ -43,6 +43,7 @@ Positive:
 
 - Retrieved chunks now carry visible injection indicators by default.
 - Operators can opt into explicit untrusted-content delimiters.
+- Embedded configured delimiter tokens cannot terminate the outer wrapper early.
 - Historical output remains available with `KB_INJECTION_GUARD=off`.
 
 Tradeoffs:
