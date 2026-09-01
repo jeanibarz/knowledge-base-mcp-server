@@ -242,6 +242,63 @@ describe('LexicalIndexCache', () => {
     expect(loadIndex).toHaveBeenCalledTimes(2);
   });
 
+  it('NFR-SEARCH-910: fences a displaced parse across metadata change and invalidation', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-cache-displaced-load-'));
+    const faissDir = path.join(tempDir, 'faiss');
+    const originalMtime = new Date('2026-01-01T00:00:00Z');
+    await writePersistedIndex(faissDir, 'alpha', '{"files":{"a":1}}', originalMtime);
+    const { LexicalIndexCache } = await freshCache(faissDir);
+    const stale = fakeIndex(1);
+    const displaced = fakeIndex(2);
+    const current = fakeIndex(3);
+    let releaseStaleLoad!: () => void;
+    let releaseDisplacedLoad!: () => void;
+    let markStaleLoadStarted!: () => void;
+    let markDisplacedLoadStarted!: () => void;
+    const staleLoadStarted = new Promise<void>((resolve) => {
+      markStaleLoadStarted = resolve;
+    });
+    const displacedLoadStarted = new Promise<void>((resolve) => {
+      markDisplacedLoadStarted = resolve;
+    });
+    const loadIndex = jest.fn<() => Promise<LexicalIndex>>()
+      .mockImplementationOnce(async () => {
+        markStaleLoadStarted();
+        await new Promise<void>((resolve) => {
+          releaseStaleLoad = resolve;
+        });
+        return stale;
+      })
+      .mockImplementationOnce(async () => {
+        markDisplacedLoadStarted();
+        await new Promise<void>((resolve) => {
+          releaseDisplacedLoad = resolve;
+        });
+        return displaced;
+      })
+      .mockResolvedValue(current);
+    const cache = new LexicalIndexCache({ loadIndex });
+
+    const firstLoad = cache.load('alpha', '/kb/alpha');
+    await staleLoadStarted;
+    await writePersistedIndex(
+      faissDir,
+      'alpha',
+      '{"files":{"a":1,"b":2}}',
+      new Date('2026-01-02T00:00:00Z'),
+    );
+    const replacementLoad = cache.load('alpha', '/kb/alpha');
+    await displacedLoadStarted;
+    cache.invalidate('alpha', '/kb/alpha');
+    releaseStaleLoad();
+    releaseDisplacedLoad();
+
+    await expect(firstLoad).resolves.toBe(current);
+    await expect(replacementLoad).resolves.toBe(current);
+    await expect(cache.load('alpha', '/kb/alpha')).resolves.toBe(current);
+    expect(loadIndex).toHaveBeenCalledTimes(3);
+  });
+
   it('NFR-SEARCH-910: evicts the least-recently-used parsed index at the configured bound', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-cache-lru-'));
     const faissDir = path.join(tempDir, 'faiss');

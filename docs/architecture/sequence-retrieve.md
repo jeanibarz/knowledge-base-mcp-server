@@ -53,13 +53,19 @@ index first. It then runs:
 - a dense FAISS leg against the selected model;
 - a lexical BM25 leg over the same KB scope;
 - metadata filters (`extensions`, `path_glob`, `tags`, `since`, and `until`)
-  applied by `runLexicalLeg` (`src/hybrid-retrieval.ts:303-352`) to lexical
+  applied by `runLexicalLeg` (`src/hybrid-retrieval.ts:308-365`) to lexical
   candidates before fusion after refreshing filtered lexical indexes; the
   similarity threshold is not applied in hybrid mode because both legs are
   over-fetched for fusion;
 - Reciprocal Rank Fusion with `c=60`;
 - optional cross-encoder reranking when enabled;
 - the relevance gate when enabled.
+
+The server resolves lexical indexes through a bounded `LexicalIndexCache`
+shared by `retrieve_knowledge` and `ask_knowledge`. Reads reuse a parsed
+snapshot while its persisted modification time and size remain unchanged.
+Refreshes mutate a separate uncached snapshot and invalidate the cached reader
+only after persistence succeeds.
 
 Hybrid currently rejects neighbor-context expansion because context expansion is
 implemented against dense semantic matches only.

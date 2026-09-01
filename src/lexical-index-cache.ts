@@ -52,6 +52,12 @@ export class LexicalIndexCache {
     if (pending && sameMetadata(pending.metadata, metadata)) {
       return pending.promise;
     }
+    if (pending) {
+      // Metadata changed while the older parse was in flight. Retire its
+      // token before replacing the tracked load so a later invalidation also
+      // fences that displaced parse from repopulating the cache.
+      pending.token.valid = false;
+    }
 
     const token = { valid: true };
     const promise = this.loadStable(kbName, kbPath, key, metadata, token);
