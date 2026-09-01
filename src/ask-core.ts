@@ -11,7 +11,11 @@ import {
   type RedactionSummary,
 } from './redaction.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
-import { resolveInjectionGuardOptions } from './injection-guard.js';
+import {
+  neutralizeWrapperDelimiters,
+  resolveInjectionGuardOptions,
+  restoreWrapperDelimiters,
+} from './injection-guard.js';
 import { FAKE_LLM_ENDPOINT, isFakeLlmEnabled } from './llm-fake-stub.js';
 import {
   createExternalProfile,
@@ -1128,14 +1132,16 @@ function truncateContentToTokenBudget(value: string, budgetTokens: number): stri
     if (availableInnerTokens <= 0) return '';
     const inner = truncatePlainTextToTokenBudget(wrapped.content, availableInnerTokens);
     if (inner.trim() === '') return '';
-    return `${wrapped.open}\n${inner}\n${marker}\n${wrapped.close}`;
+    const options = resolveInjectionGuardOptions();
+    const neutralizedInner = neutralizeWrapperDelimiters(inner, options);
+    return `${wrapped.open}\n${neutralizedInner}\n${marker}\n${wrapped.close}`;
   }
   const markerTokens = estimateTokens('\n[truncated]');
   const truncated = truncatePlainTextToTokenBudget(value, budgetTokens - markerTokens);
   return truncated.trim() === '' ? '' : `${truncated}\n[truncated]`;
 }
 
-function splitInjectionGuardWrapper(value: string): { open: string; content: string; close: string } | null {
+export function splitInjectionGuardWrapper(value: string): { open: string; content: string; close: string } | null {
   const options = resolveInjectionGuardOptions();
   const close = options.wrapClose;
   const trimmed = value.trim();
@@ -1145,7 +1151,8 @@ function splitInjectionGuardWrapper(value: string): { open: string; content: str
   const open = trimmed.slice(0, firstNewline);
   if (!matchesConfiguredWrapOpen(open, options.wrapOpen)) return null;
   const contentEnd = trimmed.length - close.length;
-  const content = trimmed.slice(firstNewline + 1, contentEnd).replace(/\n$/, '');
+  const neutralizedContent = trimmed.slice(firstNewline + 1, contentEnd).replace(/\n$/, '');
+  const content = restoreWrapperDelimiters(neutralizedContent, options);
   return { open, content, close };
 }
 

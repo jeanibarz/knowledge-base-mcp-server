@@ -3,6 +3,7 @@ export type InjectionGuardMode = 'off' | 'tag' | 'wrap' | 'both';
 export type InjectionSignalKind =
   | 'system_role_marker'
   | 'instruction_override'
+  | 'wrapper_delimiter'
   | 'unicode_bidi'
   | 'zero_width'
   | 'unicode_tag';
@@ -27,6 +28,7 @@ export interface GuardedChunk {
 
 const DEFAULT_WRAP_OPEN = '<untrusted-doc src="{source}">';
 const DEFAULT_WRAP_CLOSE = '</untrusted-doc>';
+const WRAPPER_DELIMITER_BREAK = '\u2060';
 
 const SYSTEM_ROLE_MARKERS = [
   /<\|im_start\|>/i,
@@ -54,7 +56,10 @@ export function resolveInjectionGuardOptions(
   };
 }
 
-export function detectInjectionSignals(content: string): InjectionSignal[] {
+export function detectInjectionSignals(
+  content: string,
+  options: Pick<InjectionGuardOptions, 'wrapClose'> = { wrapClose: DEFAULT_WRAP_CLOSE },
+): InjectionSignal[] {
   const signals: InjectionSignal[] = [];
   const seen = new Set<string>();
 
@@ -66,6 +71,10 @@ export function detectInjectionSignals(content: string): InjectionSignal[] {
   for (const pattern of INSTRUCTION_OVERRIDES) {
     const match = content.match(pattern)?.[0];
     if (match !== undefined) addSignal(signals, seen, { kind: 'instruction_override', match });
+  }
+
+  if (options.wrapClose !== '' && content.includes(options.wrapClose)) {
+    addSignal(signals, seen, { kind: 'wrapper_delimiter', match: options.wrapClose });
   }
 
   for (const char of content) {
@@ -94,7 +103,42 @@ export function wrapUntrustedContent(
 ): string {
   const source = escapeAttributeValue(getChunkSource(metadata));
   const open = options.wrapOpen.replaceAll('{source}', source);
-  return `${open}\n${content}\n${options.wrapClose}`;
+  const neutralizedContent = neutralizeWrapperDelimiters(content, options);
+  return `${open}\n${neutralizedContent}\n${options.wrapClose}`;
+}
+
+export function neutralizeWrapperDelimiters(
+  content: string,
+  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+): string {
+  // Doubling preserves word joiners that belong to the document. A single
+  // inserted joiner therefore remains an unambiguous, reversible delimiter break.
+  let neutralized = content.replaceAll(
+    WRAPPER_DELIMITER_BREAK,
+    WRAPPER_DELIMITER_BREAK.repeat(2),
+  );
+  for (const delimiter of configuredDelimiters(options)) {
+    if (delimiter.includes(WRAPPER_DELIMITER_BREAK)) continue;
+    neutralized = neutralized.replaceAll(delimiter, breakDelimiter(delimiter));
+  }
+  return neutralized;
+}
+
+export function restoreWrapperDelimiters(
+  content: string,
+  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+): string {
+  // Call only after content has left the wrapper trust boundary. Any caller
+  // rebuilding an envelope must neutralize the restored text again first.
+  let restored = content;
+  for (const delimiter of configuredDelimiters(options)) {
+    if (delimiter.includes(WRAPPER_DELIMITER_BREAK)) continue;
+    restored = restored.replaceAll(breakDelimiter(delimiter), delimiter);
+  }
+  return restored.replaceAll(
+    WRAPPER_DELIMITER_BREAK.repeat(2),
+    WRAPPER_DELIMITER_BREAK,
+  );
 }
 
 export function applyInjectionGuard(
@@ -109,7 +153,7 @@ export function applyInjectionGuard(
   const shouldTag = options.mode === 'tag' || options.mode === 'both';
   const shouldWrap = options.mode === 'wrap' || options.mode === 'both';
   const guardedMetadata = shouldTag
-    ? { ...metadata, injection_signals: detectInjectionSignals(content) }
+    ? { ...metadata, injection_signals: detectInjectionSignals(content, options) }
     : metadata;
   const guardedContent = shouldWrap
     ? wrapUntrustedContent(content, metadata, options)
@@ -164,6 +208,20 @@ function escapeAttributeValue(value: string): string {
     .replaceAll('"', '&quot;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
+}
+
+function configuredDelimiters(
+  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+): string[] {
+  return [...new Set([options.wrapOpen, options.wrapClose])]
+    .filter((delimiter) => delimiter !== '')
+    .sort((left, right) => left.length - right.length);
+}
+
+function breakDelimiter(delimiter: string): string {
+  const firstCodepoint = [...delimiter][0];
+  if (firstCodepoint === undefined) return delimiter;
+  return `${firstCodepoint}${WRAPPER_DELIMITER_BREAK}${delimiter.slice(firstCodepoint.length)}`;
 }
 
 function addSignal(

@@ -9,6 +9,22 @@
 
 ## Security
 
+### NFR-SEC-907: Injection-guard wrapper delimiter integrity
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall neutralize configured injection-guard wrapper delimiters inside untrusted chunk content while preserving the outer wrapper and losslessly restoring content only while it is outside the wrapper trust boundary.
+**Rationale:** An embedded closing delimiter can terminate the untrusted-content envelope early and present the remaining document text as trusted instructions.
+
+**Acceptance Criteria:**
+- [x] Given content containing the default opening or closing wrapper delimiter, when wrap mode renders the content, then only the trusted outer envelope contains either delimiter verbatim.
+- [x] Given custom wrapper delimiters, when wrap mode renders content containing those delimiters, then the embedded occurrences are neutralized without changing the configured outer envelope.
+- [x] Given neutralized wrapped content, when ask-context truncation splits and rebuilds the wrapper, then the inner content is restored for processing and neutralized again before returning to the trust boundary.
+- [x] Given content containing the configured closing delimiter, when injection signals are detected, then a wrapper-delimiter signal identifies the exact token.
+
+**Linked Tests:** TS-SEC-907 (`src/injection-guard.test.ts`, `src/cli-ask.test.ts`)
+**Dependencies:** ADR0010
+
 ### NFR-POLICY-854: Per-KB mutation policy enforcement
 **Status:** Implemented
 **Priority:** High
