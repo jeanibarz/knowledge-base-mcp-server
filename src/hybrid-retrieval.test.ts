@@ -304,6 +304,7 @@ describe('runLexicalLeg', () => {
         until: '2026-07-31',
       },
       loadIndex: async () => index.idx,
+      loadFreshIndex: async () => index.idx,
     });
 
     expect(index.refresh).toHaveBeenCalledTimes(1);
@@ -338,6 +339,7 @@ describe('runLexicalLeg', () => {
       refresh: 'when-empty',
       filters: { tags: ['adr'] },
       loadIndex: async () => index.idx,
+      loadFreshIndex: async () => index.idx,
     });
 
     expect(index.query).toHaveBeenCalledWith('q', HYBRID_FETCH_CAP, expect.objectContaining({ unit: 'chunk' }));
@@ -371,6 +373,7 @@ describe('runLexicalLeg', () => {
       refresh: 'when-empty' as const,
       filters: { tags: ['adr'] },
       loadIndex: async () => idx,
+      loadFreshIndex: async () => idx,
     };
 
     await Promise.all([runLexicalLeg(options), runLexicalLeg(options)]);
@@ -407,6 +410,7 @@ describe('runLexicalLeg', () => {
       fetchK: 2,
       refresh: 'when-empty' as const,
       loadIndex: async () => idx,
+      loadFreshIndex: async () => idx,
     };
 
     await Promise.all([runLexicalLeg(options), runLexicalLeg(options)]);
@@ -429,6 +433,7 @@ describe('runLexicalLeg', () => {
       fetchK: 10,
       refresh: 'when-empty',
       loadIndex,
+      loadFreshIndex: loadIndex,
     });
 
     expect(empty.refresh).toHaveBeenCalledTimes(1);
@@ -450,10 +455,64 @@ describe('runLexicalLeg', () => {
       fetchK: 10,
       refresh: 'always',
       loadIndex,
+      loadFreshIndex: loadIndex,
     });
     expect(populated.refresh).toHaveBeenCalledTimes(1);
     expect(populated.save).toHaveBeenCalledTimes(1);
     expect(result.refreshed).toBe(1);
+  });
+
+  it('NFR-SEARCH-910: discards a fresh snapshot when persistence fails', async () => {
+    const cached = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('persisted.md', 0.8)] });
+    const fresh = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('unpersisted.md', 0.9)] });
+    fresh.save.mockRejectedValueOnce(new Error('save failed'));
+    const invalidateIndex = jest.fn((_kbName: string, _kbPath: string): void => {});
+
+    const failedRefresh = await runLexicalLeg({
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 10,
+      refresh: 'always',
+      loadIndex: async () => cached.idx,
+      loadFreshIndex: async () => fresh.idx,
+      invalidateIndex,
+    });
+    const laterQuery = await runLexicalLeg({
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 10,
+      refresh: 'when-empty',
+      loadIndex: async () => cached.idx,
+      loadFreshIndex: async () => fresh.idx,
+      invalidateIndex,
+    });
+
+    expect(failedRefresh.failed).toBe(1);
+    expect(invalidateIndex).not.toHaveBeenCalled();
+    expect(cached.refresh).not.toHaveBeenCalled();
+    expect(laterQuery.hits.map((hit) => hit.metadata.source)).toEqual(['persisted.md']);
+  });
+
+  it('NFR-SEARCH-910: invalidates the cached snapshot only after refresh persistence', async () => {
+    const cached = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('persisted.md', 0.8)] });
+    const fresh = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('refreshed.md', 0.9)] });
+    const invalidateIndex = jest.fn((_kbName: string, _kbPath: string): void => {});
+
+    const result = await runLexicalLeg({
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 10,
+      refresh: 'always',
+      loadIndex: async () => cached.idx,
+      loadFreshIndex: async () => fresh.idx,
+      invalidateIndex,
+    });
+
+    expect(fresh.refresh).toHaveBeenCalledTimes(1);
+    expect(fresh.save).toHaveBeenCalledTimes(1);
+    expect(invalidateIndex).toHaveBeenCalledWith('kb-a', '/tmp/fake/kb-a');
+    expect(cached.refresh).not.toHaveBeenCalled();
+    expect(result.hits.map((hit) => hit.metadata.source)).toEqual(['refreshed.md']);
   });
 
   it('survives per-KB load/query failures, counts them in failed, and notifies onError', async () => {

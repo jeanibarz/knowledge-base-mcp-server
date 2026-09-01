@@ -52,7 +52,7 @@ export class LexicalIndexCache {
       return pending.promise;
     }
 
-    const promise = this.loadFresh(kbName, kbPath, key, metadata);
+    const promise = this.loadStable(kbName, kbPath, key, metadata);
     this.inFlight.set(key, { metadata, promise });
     try {
       return await promise;
@@ -63,7 +63,17 @@ export class LexicalIndexCache {
     }
   }
 
-  private async loadFresh(
+  /** Load an uncached snapshot for refresh work that may mutate the index. */
+  async loadFresh(kbName: string, kbPath: string): Promise<LexicalIndex> {
+    return this.loadIndex(kbName, kbPath);
+  }
+
+  /** Drop a cached snapshot after a successful refresh has replaced its file. */
+  invalidate(kbName: string, kbPath: string): void {
+    this.entries.delete(this.cacheKey(kbName, kbPath));
+  }
+
+  private async loadStable(
     kbName: string,
     kbPath: string,
     key: string,

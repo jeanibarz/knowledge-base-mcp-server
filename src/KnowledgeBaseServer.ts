@@ -328,6 +328,8 @@ export class KnowledgeBaseServer {
   private readonly managers = new ManagerRegistry();
   private readonly lexicalIndexCache = new LexicalIndexCache();
   private readonly loadLexicalIndex = this.lexicalIndexCache.load.bind(this.lexicalIndexCache);
+  private readonly loadFreshLexicalIndex = this.lexicalIndexCache.loadFresh.bind(this.lexicalIndexCache);
+  private readonly invalidateLexicalIndex = this.lexicalIndexCache.invalidate.bind(this.lexicalIndexCache);
   private activeWarmupPromise: Promise<void> | null = null;
   private httpHost?: StreamableHttpHost;
   private sseHost?: SseHost;
@@ -1255,6 +1257,8 @@ export class KnowledgeBaseServer {
           withWriteLock,
           callChatCompletion,
           loadLexicalIndex: this.loadLexicalIndex,
+          loadFreshLexicalIndex: this.loadFreshLexicalIndex,
+          invalidateLexicalIndex: this.invalidateLexicalIndex,
         }, report);
         return {
           content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
@@ -1371,6 +1375,8 @@ export class KnowledgeBaseServer {
         refresh: 'when-empty',
         filters,
         loadIndex: this.loadLexicalIndex,
+        loadFreshIndex: this.loadFreshLexicalIndex,
+        invalidateIndex: this.invalidateLexicalIndex,
         onError: (kbName, err) => {
           logger.warn(`hybrid: lexical leg failed for KB "${kbName}": ${err.message}`);
         },
@@ -1566,6 +1572,8 @@ export class KnowledgeBaseServer {
       fetchK: input.fetchK,
       refresh: 'when-empty',
       loadIndex: this.loadLexicalIndex,
+      loadFreshIndex: this.loadFreshLexicalIndex,
+      invalidateIndex: this.invalidateLexicalIndex,
       onError: (kbName, err) => {
         logger.warn(`degraded lexical-only: lexical leg failed for KB "${kbName}": ${err.message}`);
       },

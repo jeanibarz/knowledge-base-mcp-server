@@ -1641,6 +1641,9 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(first.isError).toBeUndefined();
     expect(second.isError).toBeUndefined();
     expect(ask.isError).toBeUndefined();
+    expect(first.content[0].text).toContain('LEXICAL_CACHE_TOKEN');
+    expect(second.content[0].text).toContain('LEXICAL_CACHE_TOKEN');
+    expect(JSON.parse(ask.content[0].text as string).answer).toContain('LEXICAL_CACHE_TOKEN');
     expect(loadSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -1722,7 +1725,7 @@ describe('KnowledgeBaseServer handlers', () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_UNAVAILABLE');
+    expect(JSON.parse(result.content[0].text as string).error.code).toBe('PROVIDER_UNAVAILABLE');
     expect((result as any).structuredContent?.degraded).toBeUndefined();
   });
 
@@ -1847,7 +1850,7 @@ describe('KnowledgeBaseServer handlers', () => {
     const { LexicalIndex } = await import('./lexical-index.js');
     jest.spyOn(LexicalIndex, 'load').mockRejectedValueOnce(new Error('broken lexical index'));
     const { KnowledgeBaseServer } = await import('./KnowledgeBaseServer.js');
-    const server: any = new KnowledgeBaseServer();
+    const server = new KnowledgeBaseServer();
     const { KBError } = await import('./errors.js');
     similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_UNAVAILABLE', 'embedding provider unavailable'));
 
@@ -1857,7 +1860,7 @@ describe('KnowledgeBaseServer handlers', () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_UNAVAILABLE');
+    expect(JSON.parse(result.content[0].text as string).error.code).toBe('PROVIDER_UNAVAILABLE');
     expect((result as any).structuredContent?.degraded).toBeUndefined();
   });
 

@@ -44,6 +44,8 @@ interface HybridDepsOverrides {
   listLexicalKbs?: jest.Mock;
   runLexicalLeg?: jest.Mock;
   loadLexicalIndex?: RunAskCoreDeps['loadLexicalIndex'];
+  loadFreshLexicalIndex?: RunAskCoreDeps['loadFreshLexicalIndex'];
+  invalidateLexicalIndex?: RunAskCoreDeps['invalidateLexicalIndex'];
   callChatCompletion?: jest.Mock;
 }
 
@@ -65,6 +67,8 @@ function makeDeps(overrides: HybridDepsOverrides): RunAskCoreDeps {
     listLexicalKbs: listLexicalKbs as unknown as RunAskCoreDeps['listLexicalKbs'],
     runLexicalLeg: runLexicalLeg as unknown as RunAskCoreDeps['runLexicalLeg'],
     loadLexicalIndex: overrides.loadLexicalIndex,
+    loadFreshLexicalIndex: overrides.loadFreshLexicalIndex,
+    invalidateLexicalIndex: overrides.invalidateLexicalIndex,
   };
 }
 
@@ -145,17 +149,27 @@ describe('ask retrieval modes (#732)', () => {
   it('NFR-SEARCH-910: forwards the shared lexical loader to the ask lexical leg', async () => {
     const manager = makeManager([]);
     const loadLexicalIndex = jest.fn<NonNullable<RunAskCoreDeps['loadLexicalIndex']>>();
+    const loadFreshLexicalIndex = jest.fn<NonNullable<RunAskCoreDeps['loadFreshLexicalIndex']>>();
+    const invalidateLexicalIndex = jest.fn<NonNullable<RunAskCoreDeps['invalidateLexicalIndex']>>();
     const runLexicalLeg = jest.fn(async () => ({
       hits: [denseDoc('runbooks/only.md', 'Lexical-only hit.', 4.0)],
       refreshed: 0,
       failed: 0,
     }));
-    const deps = makeDeps({ manager, runLexicalLeg, loadLexicalIndex });
+    const deps = makeDeps({
+      manager,
+      runLexicalLeg,
+      loadLexicalIndex,
+      loadFreshLexicalIndex,
+      invalidateLexicalIndex,
+    });
 
     await executeAsk(askArgs('INDEX_NOT_INITIALIZED', { searchMode: 'lexical' }), deps, Date.now());
 
     expect(runLexicalLeg).toHaveBeenCalledWith(expect.objectContaining({
       loadIndex: loadLexicalIndex,
+      loadFreshIndex: loadFreshLexicalIndex,
+      invalidateIndex: invalidateLexicalIndex,
     }));
   });
 

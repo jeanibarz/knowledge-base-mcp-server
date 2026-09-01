@@ -79,6 +79,58 @@ describe('LexicalIndexCache', () => {
     expect(loadIndex).toHaveBeenCalledTimes(2);
   });
 
+  it('reloads after explicit invalidation even when persisted metadata is unchanged', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-cache-invalidate-'));
+    const faissDir = path.join(tempDir, 'faiss');
+    await writePersistedIndex(faissDir, 'alpha', '{"files":{"a":1}}', new Date('2026-01-01T00:00:00Z'));
+    const { LexicalIndexCache } = await freshCache(faissDir);
+    const first = fakeIndex(1);
+    const second = fakeIndex(2);
+    const loadIndex = jest.fn<() => Promise<LexicalIndex>>()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    const cache = new LexicalIndexCache({ loadIndex });
+
+    await expect(cache.load('alpha', '/kb/alpha')).resolves.toBe(first);
+    cache.invalidate('alpha', '/kb/alpha');
+    await expect(cache.load('alpha', '/kb/alpha')).resolves.toBe(second);
+
+    expect(loadIndex).toHaveBeenCalledTimes(2);
+  });
+
+  it('NFR-SEARCH-910: observes content persisted by an explicit refresh', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-cache-refresh-'));
+    const faissDir = path.join(tempDir, 'faiss');
+    const kbDir = path.join(tempDir, 'kbs', 'alpha');
+    const sourcePath = path.join(kbDir, 'doc.md');
+    await fsp.mkdir(kbDir, { recursive: true });
+    await fsp.writeFile(sourcePath, 'ORIGINAL_CACHE_TOKEN');
+
+    const { LexicalIndexCache } = await freshCache(faissDir);
+    const { LexicalIndex } = await import('./lexical-index.js');
+    const seed = await LexicalIndex.load('alpha', kbDir);
+    await seed.refresh();
+    await seed.save();
+
+    const loadSpy = jest.spyOn(LexicalIndex, 'load');
+    const cache = new LexicalIndexCache();
+    const warm = await cache.load('alpha', kbDir);
+    expect((await warm.query('ORIGINAL_CACHE_TOKEN', 5))[0].pageContent)
+      .toContain('ORIGINAL_CACHE_TOKEN');
+
+    await fsp.writeFile(sourcePath, 'REFRESHED_CACHE_TOKEN with a different persisted size');
+    const refreshTarget = await cache.load('alpha', kbDir);
+    expect(refreshTarget).toBe(warm);
+    await refreshTarget.refresh();
+    await refreshTarget.save();
+
+    const reloaded = await cache.load('alpha', kbDir);
+    expect(reloaded).not.toBe(warm);
+    expect((await reloaded.query('REFRESHED_CACHE_TOKEN', 5))[0].pageContent)
+      .toContain('REFRESHED_CACHE_TOKEN');
+    expect(loadSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('does not cache missing persisted lexical index files', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-cache-missing-'));
     const faissDir = path.join(tempDir, 'faiss');

@@ -224,6 +224,10 @@ export interface RunAskCoreDeps {
   runLexicalLeg?: typeof runLexicalLeg;
   /** Server-lifetime parsed-index loader shared with retrieve_knowledge (#910). */
   loadLexicalIndex?: NonNullable<LexicalLegOptions['loadIndex']>;
+  /** Uncached loader used for refreshes so cached readers keep a stable snapshot. */
+  loadFreshLexicalIndex?: NonNullable<LexicalLegOptions['loadFreshIndex']>;
+  /** Cache invalidator called only after a refreshed index is persisted. */
+  invalidateLexicalIndex?: NonNullable<LexicalLegOptions['invalidateIndex']>;
 }
 
 interface LlmTarget {
@@ -473,6 +477,8 @@ async function retrieveHybridOrLexical(input: {
     fetchK,
     refresh: args.refresh ? 'always' : 'when-empty',
     loadIndex: deps.loadLexicalIndex,
+    loadFreshIndex: deps.loadFreshLexicalIndex,
+    invalidateIndex: deps.invalidateLexicalIndex,
     onError: (kbName, err) => {
       logger.warn(`kb ask (${effectiveMode} lexical leg): ${kbName} — ${err.message}`);
     },
