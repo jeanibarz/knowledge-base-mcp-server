@@ -1139,6 +1139,13 @@ function truncateContentToTokenBudget(
   if (wrapped !== null) {
     const marker = '[truncated]';
     const options = resolveInjectionGuardOptions();
+    // Measure the candidate in characters, not tokens. `packAskContext` re-estimates
+    // the snippet header together with this content, and `estimateTokens` trims the
+    // header's trailing newline before dividing — so a candidate that exactly fills
+    // `budgetTokens * APPROX_CHARS_PER_TOKEN` characters can push the combined
+    // estimate one token over and get the whole chunk dropped rather than truncated.
+    // One character of slack is the worst case over all header lengths.
+    const maxCandidateChars = budgetTokens * APPROX_CHARS_PER_TOKEN - 1;
     let availableInnerTokens = budgetTokens -
       estimateTokens(`${wrapped.open}\n${marker}\n${wrapped.close}`);
     while (availableInnerTokens > 0) {
@@ -1149,8 +1156,8 @@ function truncateContentToTokenBudget(
         renderedWrapOpen: wrapped.open,
       });
       const candidate = `${wrapped.open}\n${neutralizedContent}\n${wrapped.close}`;
+      if (candidate.length <= maxCandidateChars) return candidate;
       const candidateTokens = estimateTokens(candidate);
-      if (candidateTokens <= budgetTokens) return candidate;
       // Back off proportionally rather than by the whole overshoot. Neutralizing
       // a delimiter roughly doubles it, so subtracting the full excess can drive
       // the inner budget straight to zero and drop a chunk that would still fit

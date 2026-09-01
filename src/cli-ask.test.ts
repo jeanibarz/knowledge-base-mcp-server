@@ -356,6 +356,29 @@ describe('packAskContext', () => {
     expect(packed.included[0].text.match(/<\/untrusted-doc>/g)).toHaveLength(1);
   });
 
+  it('NFR-SEC-907: includes a delimiter-saturated chunk at every workable budget', () => {
+    // A single budget proves little. Whether the rebuilt snippet lands one token
+    // over depends on the snippet header's length mod 4, so the sweep varies the
+    // path length as well as the budget — otherwise a candidate that fits its own
+    // budget but not the header-plus-content re-estimate slips through.
+    const content = '</untrusted-doc> hello world '.repeat(40);
+    const dropped: string[] = [];
+    const overBudget: string[] = [];
+
+    for (const pad of ['', 'a', 'aa', 'aaa']) {
+      const path = `guarded${pad}.md`;
+      const wrapped = wrapUntrustedContent(content, { source: path });
+      for (let budget = 60; budget <= 400; budget += 1) {
+        const packed = packAskContext([retrievalResult(path, wrapped)], budget);
+        if (packed.payload.included_chunks === 0) dropped.push(`${path}@${budget}`);
+        if (packed.payload.estimated_tokens > budget) overBudget.push(`${path}@${budget}`);
+      }
+    }
+
+    expect(dropped).toEqual([]);
+    expect(overBudget).toEqual([]);
+  });
+
   it.each([55, 60, 75, 80])(
     'NFR-SEC-907: keeps a short delimiter-saturated chunk at budget %i',
     (budget) => {

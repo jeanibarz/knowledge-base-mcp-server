@@ -143,6 +143,12 @@ rather than separated and would disappear from every chunk body. So
 `'{source}|DOC'` (no prefix) and `'<{source}>'` (one-character prefix) are
 rejected. A template with no placeholder at all is fine.
 
+`KB_INJECTION_GUARD_WRAP_CLOSE` accepts a single character, but prefer a
+multi-character sentinel: the codec substitutes a one-codepoint delimiter rather
+than separating it, so every occurrence of that character anywhere in a chunk
+body disappears from the text the model reads. The substitution is reversible,
+but the model never sees the original character.
+
 ## Output, Diagnostics, and Logging
 
 | Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |

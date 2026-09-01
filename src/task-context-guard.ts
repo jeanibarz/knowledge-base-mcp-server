@@ -14,7 +14,9 @@
 // context that carries known prompt-injection signals.
 //
 // Design contract:
-//   * Pure. No I/O, no global state. The same input yields the same result.
+//   * No I/O. The result is a function of the inspected input plus the
+//     injection-guard environment, which decides whether the wrapper-delimiter
+//     rule applies and which token it matches.
 //   * Reuses the ADR 0006 injection-guard detector (`detectInjectionSignals`)
 //     that the gate already runs over `task_context` — no new ruleset.
 //   * Off by opt-out: `KB_GATE_TASK_CONTEXT_MODE=off` restores the exact
