@@ -76,6 +76,7 @@ describe('BEIR ledger (RFC 020 §7)', () => {
         embedding: { provider: 'ollama', model: 'nomic-embed-text' },
         rerank: { enabled: true, model: 'Xenova/ms-marco-MiniLM-L-6-v2', topN: 40 },
         contextual: { enabled: false },
+        hybrid_rrf_weights: { dense: '0.5', lexical: '2' },
         chunking: { KB_CHUNK_SIZE: '1000', KB_CHUNK_OVERLAP: '200' },
         metrics: { ndcgAt10: 0.74, mapAt100: 0.6, precisionAt10: 0.09, recallAt10: 0.8, recallAt100: 0.9 },
         latency: { p50Ms: 12, p95Ms: 40, p99Ms: 55, meanMs: 18 },
@@ -94,6 +95,8 @@ describe('BEIR ledger (RFC 020 §7)', () => {
       model: 'nomic-embed-text',
       rerank_enabled: 'true',
       rerank_top_n: '40',
+      rrf_dense_weight: '0.5',
+      rrf_lexical_weight: '2',
       chunk_size: '1000',
       chunk_overlap: '200',
     });
@@ -115,6 +118,7 @@ describe('BEIR ledger (RFC 020 §7)', () => {
         embedding: null,
         rerank: null,
         contextual: null,
+        hybrid_rrf_weights: null,
         chunking: { KB_CHUNK_SIZE: null, KB_CHUNK_OVERLAP: null },
         metrics: { ndcgAt10: 0, mapAt100: 0, precisionAt10: 0, recallAt10: 0, recallAt100: 0 },
         latency: { p50Ms: 0, p95Ms: 0, p99Ms: 0, meanMs: 0 },
@@ -131,7 +135,13 @@ describe('BEIR ledger (RFC 020 §7)', () => {
         git_sha: 'matrix1',
         modes: ['lexical', 'hybrid'],
         datasets: ['scifact', 'arguana'],
-        env: { embedding_provider: 'ollama', rrf_c: '60', contextual: 'off' },
+        env: {
+          embedding_provider: 'ollama',
+          rrf_c: '60',
+          rrf_dense_weight: '0.5',
+          rrf_lexical_weight: '2',
+          contextual: 'off',
+        },
         perMode: [
           { mode: 'lexical', datasetsEvaluated: 2, datasetsRequested: 2, multiDomainMeanNdcgAt10: 0.55, multiDomainMeanPrecisionAt10: 0.1, multiDomainMeanRecallAt10: 0.6 },
           { mode: 'hybrid', datasetsEvaluated: 2, datasetsRequested: 2, multiDomainMeanNdcgAt10: 0.70, multiDomainMeanPrecisionAt10: 0.12, multiDomainMeanRecallAt10: 0.75 },
@@ -148,7 +158,13 @@ describe('BEIR ledger (RFC 020 §7)', () => {
       repoRoot: '/repo',
     }, config);
 
-    expect(payload.params).toMatchObject({ kind: 'beir-matrix', git_sha: 'matrix1', rrf_c: '60' });
+    expect(payload.params).toMatchObject({
+      kind: 'beir-matrix',
+      git_sha: 'matrix1',
+      rrf_c: '60',
+      rrf_dense_weight: '0.5',
+      rrf_lexical_weight: '2',
+    });
     expect(payload.metrics['headline.hybrid.mean_ndcg_at_10']).toBe(0.70);
     expect(payload.metrics['delta_g.hybrid']).toBe(0.1);
     expect(payload.artifacts).toEqual(['/tmp/matrix.json', '/tmp/matrix.md']);

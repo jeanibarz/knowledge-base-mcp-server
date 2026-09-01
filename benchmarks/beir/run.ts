@@ -56,6 +56,7 @@ const DATASET_URLS: Record<string, string> = {
   'webis-touche2020': 'https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/webis-touche2020.zip',
 };
 
+// v8 (FR-SEARCH-912): records the dense/lexical RRF weights that produced a run.
 // v7 (issue #603): added per-metric SE/CI/MDE noise-floor reporting.
 // v6 (retrieval frontier #579): added benchmark-only listwise, hard-negative,
 // and adaptive rerank bakeoff modes. v5 (retrieval frontier #578): added
@@ -65,7 +66,7 @@ const DATASET_URLS: Record<string, string> = {
 // `hybrid+rerank` / `hybrid+rerank+contextual`
 // modes plus `rerank` / `contextual` provenance blocks. v2 added `dense`/`hybrid`
 // + precision@10 + `embedding`; v1 was lexical-only.
-const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v7';
+const BENCHMARK_SCHEMA_VERSION = 'kb.beir-benchmark.v8';
 type LexicalUnit = 'chunk' | 'source';
 // RFC 020 §1 — the retrieval-mode space the runner can score. `lexical` is
 // credential-free (BM25 only), and `late` is a credential-free benchmark-only
@@ -113,6 +114,14 @@ function usesEmbeddingProvider(mode: BeirMode): boolean {
 // `KB_CONTEXTUAL_RETRIEVAL` ingest path — never a benchmark-only reimplementation.
 function beirSearchMode(mode: BeirMode): 'dense' | 'hybrid' {
   return mode === 'dense' ? 'dense' : 'hybrid';
+}
+
+// Only embedding-provider hybrid modes fuse the dense and lexical legs via RRF.
+// `dense` retrieves through the dense backend, and `lexical`/`late` never touch
+// the RRF path at all, so RRF weights are not applied to those runs and must not
+// be recorded as their provenance.
+function modeUsesHybridFusion(mode: BeirMode): boolean {
+  return usesEmbeddingProvider(mode) && beirSearchMode(mode) === 'hybrid';
 }
 
 function modeEnablesLateInteraction(mode: BeirMode): boolean {
@@ -324,6 +333,12 @@ interface BeirBenchmarkReport {
   contextual: {
     enabled: boolean;
   } | null;
+  // Hybrid fusion provenance. String values preserve the operator's exact
+  // numeric configuration in JSON, Markdown, and the MLflow ledger.
+  hybrid_rrf_weights: {
+    dense: string;
+    lexical: string;
+  } | null;
   // Benchmark-only late-interaction provenance for issue #578. Present for
   // `late` standalone and `hybrid+late` candidate rerank modes; null otherwise.
   late_interaction: LateInteractionResourceReport | null;
@@ -521,6 +536,12 @@ export async function runBeirBenchmark(
     embedding,
     rerank: stages.rerank,
     contextual: stages.contextual,
+    hybrid_rrf_weights: modeUsesHybridFusion(args.mode)
+      ? {
+          dense: rrfWeightEnvValue('KB_HYBRID_DENSE_WEIGHT'),
+          lexical: rrfWeightEnvValue('KB_HYBRID_LEXICAL_WEIGHT'),
+        }
+      : null,
     late_interaction: lateInteraction ?? null,
     reranker_bakeoff: rerankerBakeoff ?? null,
     ranking: {
@@ -1841,6 +1862,11 @@ function portablePath(filePath: string): string {
     : filePath;
 }
 
+function rrfWeightEnvValue(name: 'KB_HYBRID_DENSE_WEIGHT' | 'KB_HYBRID_LEXICAL_WEIGHT'): string {
+  const configured = process.env[name]?.trim();
+  return configured === undefined || configured === '' ? '1' : configured;
+}
+
 function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jsonPath: string): string {
   const { dataset, latency, metrics } = report;
   const stageSuffix = report.rerank?.enabled
@@ -1858,6 +1884,9 @@ function formatMarkdownReport(report: BeirBenchmarkReport, trecPath: string, jso
     '',
     `- Dataset: ${dataset.name} ${dataset.split}`,
     modeLine,
+    ...(report.hybrid_rrf_weights === null
+      ? []
+      : [`- RRF weights: dense=${report.hybrid_rrf_weights.dense}, lexical=${report.hybrid_rrf_weights.lexical}`]),
     `- Corpus documents: ${dataset.corpus_documents}`,
     `- Queries evaluated: ${dataset.queries_evaluated}`,
     `- nDCG@10: ${metrics.ndcgAt10}`,

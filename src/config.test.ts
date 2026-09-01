@@ -24,7 +24,10 @@ import {
   UnknownEmbeddingProviderError,
 } from './config/provider.js';
 import {
+  DEFAULT_HYBRID_RRF_WEIGHT,
   parseKBEditorUri,
+  parseHybridRrfWeight,
+  resolveHybridRrfWeights,
 } from './config/retrieval.js';
 import {
   parseKbFsWatchDebounceMs,
@@ -58,6 +61,30 @@ describe('large-file ingest bounds (#285)', () => {
     expect(parseKbLargeFilePolicy('error')).toBe('error');
     expect(() => parseKbLargeFilePolicy('quarantine')).toThrow(/KB_LARGE_FILE_POLICY/);
   });
+});
+
+describe('hybrid RRF weights (FR-SEARCH-912)', () => {
+  it('defaults both retrievers to equal weight', () => {
+    expect(parseHybridRrfWeight(undefined, 'KB_HYBRID_DENSE_WEIGHT')).toBe(DEFAULT_HYBRID_RRF_WEIGHT);
+    expect(parseHybridRrfWeight('  ', 'KB_HYBRID_LEXICAL_WEIGHT')).toBe(DEFAULT_HYBRID_RRF_WEIGHT);
+    expect(resolveHybridRrfWeights({})).toEqual({ dense: 1, lexical: 1 });
+  });
+
+  it('accepts finite non-negative decimal weights', () => {
+    expect(resolveHybridRrfWeights({
+      KB_HYBRID_DENSE_WEIGHT: '0.25',
+      KB_HYBRID_LEXICAL_WEIGHT: '2',
+    })).toEqual({ dense: 0.25, lexical: 2 });
+    expect(parseHybridRrfWeight('0', 'KB_HYBRID_DENSE_WEIGHT')).toBe(0);
+  });
+
+  it.each(['-1', 'NaN', 'Infinity', 'not-a-number'])(
+    'rejects invalid weight %s',
+    (raw) => {
+      expect(() => parseHybridRrfWeight(raw, 'KB_HYBRID_DENSE_WEIGHT'))
+        .toThrow(/invalid KB_HYBRID_DENSE_WEIGHT/);
+    },
+  );
 });
 
 describe('resolveIndexingBatchSize (issue #236 — INDEXING_BATCH_SIZE)', () => {

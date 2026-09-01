@@ -74,6 +74,8 @@ export interface RetrievalEnvSnapshot {
   embedding_provider: string | null;
   embedding_model: string | null;
   rrf_c: string;
+  rrf_dense_weight: string;
+  rrf_lexical_weight: string;
   rerank_model: string;
   rerank_top_n: string;
   chunk_size: string;
@@ -97,6 +99,8 @@ export function captureRetrievalEnv(
     embedding_provider: provider,
     embedding_model: options.model ?? null,
     rrf_c: nonEmpty(env.KB_RRF_C) ?? PRODUCTION_RRF_C,
+    rrf_dense_weight: nonEmpty(env.KB_HYBRID_DENSE_WEIGHT) ?? '1',
+    rrf_lexical_weight: nonEmpty(env.KB_HYBRID_LEXICAL_WEIGHT) ?? '1',
     rerank_model: nonEmpty(env.KB_RERANK_MODEL) ?? PRODUCTION_RERANK_MODEL,
     rerank_top_n: nonEmpty(env.KB_RERANK_TOP_N) ?? PRODUCTION_RERANK_TOP_N,
     chunk_size: nonEmpty(env.KB_CHUNK_SIZE) ?? PRODUCTION_CHUNK_SIZE,
@@ -386,7 +390,8 @@ export function formatMatrixMarkdown(report: MatrixReport): string {
     `- Generated: ${report.generated_at}`,
     `- Commit: \`${report.git_sha}\``,
     `- Embedding: ${report.env.embedding_provider ?? '(lexical/none)'} / ${report.env.embedding_model ?? '(default)'}`,
-    `- RRF c=${report.env.rrf_c}, rerank=${report.env.rerank_model} topN=${report.env.rerank_top_n}, ` +
+    `- RRF c=${report.env.rrf_c}, weights=dense:${report.env.rrf_dense_weight}/lexical:${report.env.rrf_lexical_weight}, ` +
+      `rerank=${report.env.rerank_model} topN=${report.env.rerank_top_n}, ` +
       `chunk=${report.env.chunk_size}/${report.env.chunk_overlap}, contextual=${report.env.contextual}`,
     '',
     '## Headline — multi-domain mean nDCG@10',

@@ -36,8 +36,8 @@ export interface MlflowCompareInput {
 }
 
 // RFC 020 §7 — the reproducibility ledger. A BEIR run is an MLflow run logged
-// with the git SHA, the full retrieval env (model IDs, RRF c, rerank model/topN,
-// chunk size/overlap, contextual on/off), the per-dataset metrics, the latency
+// with the git SHA, the full retrieval env (model IDs, RRF c and weights,
+// rerank model/topN, chunk size/overlap, contextual on/off), the per-dataset metrics, the latency
 // percentiles, and the TREC run-file artifact. The shapes below are the subset
 // of `BeirBenchmarkReport` / `MatrixReport` the ledger consumes — declared
 // structurally so this module stays decoupled from the benchmark runner.
@@ -49,6 +49,7 @@ export interface BeirLedgerReport {
   embedding: { provider: string; model: string } | null;
   rerank: { enabled: boolean; model: string; topN: number } | null;
   contextual: { enabled: boolean } | null;
+  hybrid_rrf_weights: { dense: string; lexical: string } | null;
   chunking: { KB_CHUNK_SIZE: string | null; KB_CHUNK_OVERLAP: string | null };
   metrics: {
     ndcgAt10: number;
@@ -188,6 +189,8 @@ export function beirRunMlflowPayload(input: MlflowBeirRunInput, config: MlflowCo
       rerank_model: report.rerank?.model ?? 'none',
       rerank_top_n: report.rerank?.topN ?? 0,
       contextual: report.contextual?.enabled ?? false,
+      rrf_dense_weight: report.hybrid_rrf_weights?.dense ?? 'none',
+      rrf_lexical_weight: report.hybrid_rrf_weights?.lexical ?? 'none',
       chunk_size: report.chunking.KB_CHUNK_SIZE ?? 'default',
       chunk_overlap: report.chunking.KB_CHUNK_OVERLAP ?? 'default',
     }),
