@@ -168,6 +168,71 @@ describe('fuseHybridResults', () => {
     expect(out[0].score).toBeCloseTo(1 / (1 + 1), 12);
   });
 
+  it('FR-SEARCH-912: changes fused order with per-retriever weights', () => {
+    const dense = [chunk('dense-a.md', 0, 0.1), chunk('dense-b.md', 0, 0.2)];
+    const lexical = [chunk('lexical-a.md', 0, 10), chunk('lexical-b.md', 0, 9)];
+
+    const out = fuseHybridResults({
+      denseResults: dense,
+      lexicalResults: lexical,
+      k: 4,
+      weights: { dense: 0.5, lexical: 2 },
+    });
+
+    expect(out.map((result) => result.metadata.source)).toEqual([
+      'lexical-a.md',
+      'lexical-b.md',
+      'dense-a.md',
+      'dense-b.md',
+    ]);
+    expect(out.map((result) => result.score)).toEqual([
+      2 / (DEFAULT_C + 1),
+      2 / (DEFAULT_C + 2),
+      0.5 / (DEFAULT_C + 1),
+      0.5 / (DEFAULT_C + 2),
+    ]);
+  });
+
+  it('FR-SEARCH-912: excludes zero-weight legs from downstream diagnostics', () => {
+    const sharedDense = chunk('shared.md', 0, 0.42, 'DENSE');
+    const sharedLexical = chunk('shared.md', 0, 8, 'LEXICAL');
+
+    const lexicalDisabled = fuseHybridResultsWithDiagnostics({
+      denseResults: [sharedDense],
+      lexicalResults: [sharedLexical, chunk('lexical-only.md', 0, 7)],
+      k: 2,
+      weights: { dense: 1, lexical: 0 },
+    });
+    expect(lexicalDisabled.results.map((result) => result.metadata.source)).toEqual(['shared.md']);
+    expect(lexicalDisabled.lexicalHitIds).toEqual(new Set());
+    expect(lexicalDisabled.denseDistanceById.get('shared.md#0')).toBe(0.42);
+
+    const denseDisabled = fuseHybridResultsWithDiagnostics({
+      denseResults: [sharedDense, chunk('dense-only.md', 0, 0.5)],
+      lexicalResults: [sharedLexical],
+      k: 2,
+      weights: { dense: 0, lexical: 1 },
+    });
+    expect(denseDisabled.results.map((result) => result.metadata.source)).toEqual(['shared.md']);
+    expect(denseDisabled.denseDistanceById).toEqual(new Map());
+    expect(denseDisabled.lexicalHitIds).toEqual(new Set(['shared.md#0']));
+  });
+
+  it('FR-SEARCH-912: keeps the default output byte-equal to explicit 1:1 weights', () => {
+    const dense = [chunk('a.md', 0, 0.9), chunk('b.md', 0, 0.8)];
+    const lexical = [chunk('b.md', 0, 0.7), chunk('c.md', 0, 0.6)];
+
+    const defaultOutput = fuseHybridResults({ denseResults: dense, lexicalResults: lexical, k: 3 });
+    const explicitOutput = fuseHybridResults({
+      denseResults: dense,
+      lexicalResults: lexical,
+      k: 3,
+      weights: { dense: 1, lexical: 1 },
+    });
+
+    expect(JSON.stringify(defaultOutput)).toBe(JSON.stringify(explicitOutput));
+  });
+
   it('rejects non-positive k', () => {
     expect(() =>
       fuseHybridResults({ denseResults: [], lexicalResults: [], k: 0 }),
@@ -304,6 +369,7 @@ describe('runLexicalLeg', () => {
         until: '2026-07-31',
       },
       loadIndex: async () => index.idx,
+      loadFreshIndex: async () => index.idx,
     });
 
     expect(index.refresh).toHaveBeenCalledTimes(1);
@@ -338,6 +404,7 @@ describe('runLexicalLeg', () => {
       refresh: 'when-empty',
       filters: { tags: ['adr'] },
       loadIndex: async () => index.idx,
+      loadFreshIndex: async () => index.idx,
     });
 
     expect(index.query).toHaveBeenCalledWith('q', HYBRID_FETCH_CAP, expect.objectContaining({ unit: 'chunk' }));
@@ -371,6 +438,7 @@ describe('runLexicalLeg', () => {
       refresh: 'when-empty' as const,
       filters: { tags: ['adr'] },
       loadIndex: async () => idx,
+      loadFreshIndex: async () => idx,
     };
 
     await Promise.all([runLexicalLeg(options), runLexicalLeg(options)]);
@@ -407,6 +475,7 @@ describe('runLexicalLeg', () => {
       fetchK: 2,
       refresh: 'when-empty' as const,
       loadIndex: async () => idx,
+      loadFreshIndex: async () => idx,
     };
 
     await Promise.all([runLexicalLeg(options), runLexicalLeg(options)]);
@@ -429,6 +498,7 @@ describe('runLexicalLeg', () => {
       fetchK: 10,
       refresh: 'when-empty',
       loadIndex,
+      loadFreshIndex: loadIndex,
     });
 
     expect(empty.refresh).toHaveBeenCalledTimes(1);
@@ -450,10 +520,102 @@ describe('runLexicalLeg', () => {
       fetchK: 10,
       refresh: 'always',
       loadIndex,
+      loadFreshIndex: loadIndex,
     });
     expect(populated.refresh).toHaveBeenCalledTimes(1);
     expect(populated.save).toHaveBeenCalledTimes(1);
     expect(result.refreshed).toBe(1);
+  });
+
+  it('NFR-SEARCH-910: discards a fresh snapshot when persistence fails', async () => {
+    const cached = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('persisted.md', 0.8)] });
+    const fresh = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('unpersisted.md', 0.9)] });
+    fresh.save.mockRejectedValueOnce(new Error('save failed'));
+    const invalidateIndex = jest.fn((_kbName: string, _kbPath: string): void => {});
+
+    const failedRefresh = await runLexicalLeg({
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 10,
+      refresh: 'always',
+      loadIndex: async () => cached.idx,
+      loadFreshIndex: async () => fresh.idx,
+      invalidateIndex,
+    });
+    const laterQuery = await runLexicalLeg({
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 10,
+      refresh: 'when-empty',
+      loadIndex: async () => cached.idx,
+      loadFreshIndex: async () => fresh.idx,
+      invalidateIndex,
+    });
+
+    expect(failedRefresh.failed).toBe(1);
+    expect(invalidateIndex).not.toHaveBeenCalled();
+    expect(cached.refresh).not.toHaveBeenCalled();
+    expect(laterQuery.hits.map((hit) => hit.metadata.source)).toEqual(['persisted.md']);
+  });
+
+  it('NFR-SEARCH-910: invalidates the cached snapshot only after refresh persistence', async () => {
+    const cached = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('persisted.md', 0.8)] });
+    const fresh = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('refreshed.md', 0.9)] });
+    const invalidateIndex = jest.fn((_kbName: string, _kbPath: string): void => {});
+
+    const result = await runLexicalLeg({
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 10,
+      refresh: 'always',
+      loadIndex: async () => cached.idx,
+      loadFreshIndex: async () => fresh.idx,
+      invalidateIndex,
+    });
+
+    expect(fresh.refresh).toHaveBeenCalledTimes(1);
+    expect(fresh.save).toHaveBeenCalledTimes(1);
+    expect(invalidateIndex).toHaveBeenCalledWith('kb-a', '/tmp/fake/kb-a');
+    expect(cached.refresh).not.toHaveBeenCalled();
+    expect(result.hits.map((hit) => hit.metadata.source)).toEqual(['refreshed.md']);
+  });
+
+  it('NFR-SEARCH-910: gives concurrent readers a coherent cached snapshot during refresh', async () => {
+    const cached = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('persisted.md', 0.8)] });
+    const fresh = makeFakeIndex({ numFiles: 1, hits: [lexicalHit('refreshed.md', 0.9)] });
+    let cachedSnapshot = cached.idx;
+    let releaseRefresh!: () => void;
+    let markRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    fresh.refresh.mockImplementationOnce(async () => {
+      markRefreshStarted();
+      await new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
+      });
+      return { added: 0, updated: 1, removed: 0, failed: 0, totalFiles: 1, totalChunks: 1 };
+    });
+    const options = {
+      kbs: [{ kbName: 'kb-a', kbPath: '/tmp/fake/kb-a' }],
+      query: 'q',
+      fetchK: 10,
+      loadIndex: async () => cachedSnapshot,
+      loadFreshIndex: async () => fresh.idx,
+      invalidateIndex: (): void => {
+        cachedSnapshot = fresh.idx;
+      },
+    };
+
+    const refresh = runLexicalLeg({ ...options, refresh: 'always' });
+    await refreshStarted;
+    const concurrentReader = await runLexicalLeg({ ...options, refresh: 'when-empty' });
+    expect(concurrentReader.hits.map((hit) => hit.metadata.source)).toEqual(['persisted.md']);
+
+    releaseRefresh();
+    await expect(refresh).resolves.toMatchObject({ refreshed: 1, failed: 0 });
+    const laterReader = await runLexicalLeg({ ...options, refresh: 'when-empty' });
+    expect(laterReader.hits.map((hit) => hit.metadata.source)).toEqual(['refreshed.md']);
   });
 
   it('survives per-KB load/query failures, counts them in failed, and notifies onError', async () => {

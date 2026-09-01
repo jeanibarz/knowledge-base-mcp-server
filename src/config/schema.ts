@@ -37,6 +37,7 @@ import {
   DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
   MAX_DAEMON_CLIENT_TIMEOUT_MS,
 } from '../daemon-client.js';
+import { closestSuggestion, levenshteinDistance } from '../suggestion-core.js';
 
 export type ConfigFindingStatus = 'ok' | 'warn' | 'error';
 export type ConfigValueKind =
@@ -221,6 +222,8 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
 
   { name: 'KB_RELEVANCE_GATE', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables recall-negative relevance gating by default.' },
   { name: 'KB_DENSE_DEGRADE_ON_PROVIDER_ERROR', kind: 'boolean', default: 'off', booleanValues: ['on', 'off'], truthyValues: ['on'], description: 'Allows dense and hybrid retrieval to degrade to lexical-only results during transient provider errors.' },
+  { name: 'KB_HYBRID_DENSE_WEIGHT', kind: 'number', default: '1', min: 0, description: 'Dense retriever weight for hybrid Reciprocal Rank Fusion. Validate non-default values with BEIR/BRIGHT before deployment.' },
+  { name: 'KB_HYBRID_LEXICAL_WEIGHT', kind: 'number', default: '1', min: 0, description: 'Lexical retriever weight for hybrid Reciprocal Rank Fusion. Validate non-default values with BEIR/BRIGHT before deployment.' },
   { name: 'KB_GATE_EMPTY_VERDICT', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_GATE_SCORE_FLOOR', kind: 'number', default: '0.95', min: 0, max: 1 },
   { name: 'KB_GATE_JUDGE_INPUT', kind: 'integer', default: '10', min: 1, max: 1000 },
@@ -310,6 +313,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'OTEL_SERVICE_NAME', kind: 'string', docDefault: 'knowledge-base-mcp-server', description: 'Standard OpenTelemetry service.name attached to exported traces when KB_OTEL_TRACES is enabled.' },
 ] as const;
 
+const SCHEMA_NAMES = CONFIG_SCHEMA.map((spec) => spec.name);
 const SCHEMA_BY_NAME = new Map(CONFIG_SCHEMA.map((spec) => [spec.name, spec]));
 
 export function validateConfigEnv(
@@ -619,16 +623,51 @@ function validateUnknownControlledVars(
     if (SCHEMA_BY_NAME.has(name)) continue;
     if (dynamicSpecForName(name) !== null) continue;
     if (!isControlledEnvName(name)) continue;
+    const suggestion = suggestSchemaName(name);
     findings.push(finding(
       name,
       'warn',
       'unknown',
       source,
       '<set>',
-      'not in kb config schema; check spelling or add it to src/config/schema.ts',
+      'not in kb config schema; check spelling or add it to src/config/schema.ts' +
+        (suggestion === undefined ? '' : `. Did you mean ${suggestion}?`),
     ));
   }
   return findings;
+}
+
+function suggestSchemaName(name: string): string | undefined {
+  // Shared env-name prefixes make distance alone too permissive. Limit hints to
+  // typo shapes that do not guess between distinct configuration concepts.
+  const candidates = SCHEMA_NAMES.filter((candidate) => isLikelySchemaNameTypo(name, candidate));
+  const nearest = closestSuggestion(name, candidates);
+  if (nearest === undefined) return undefined;
+
+  const hasTie = candidates.some((candidate) => (
+    candidate !== nearest.value
+    && levenshteinDistance(name, candidate) === nearest.distance
+  ));
+  return hasTie ? undefined : nearest.value;
+}
+
+function isLikelySchemaNameTypo(input: string, candidate: string): boolean {
+  if (Math.abs(input.length - candidate.length) === 1) {
+    return levenshteinDistance(input, candidate) === 1;
+  }
+  if (input.length !== candidate.length) return false;
+
+  let firstMismatch = -1;
+  let secondMismatch = -1;
+  for (let i = 0; i < input.length; i++) {
+    if (input[i] === candidate[i]) continue;
+    if (firstMismatch === -1) firstMismatch = i;
+    else if (secondMismatch === -1) secondMismatch = i;
+    else return false;
+  }
+  return secondMismatch === firstMismatch + 1
+    && input[firstMismatch] === candidate[secondMismatch]
+    && input[secondMismatch] === candidate[firstMismatch];
 }
 
 function dynamicSpecForName(name: string): ConfigSpec | null {

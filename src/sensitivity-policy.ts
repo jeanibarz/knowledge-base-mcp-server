@@ -54,9 +54,9 @@ export function normalizeKbSensitivityPolicy(
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     // An explicit non-mapping policy cannot be inspected safely. Preserve
-    // retrieval while preventing any LLM-boundary caller from treating it as
-    // a policy-free document.
-    return { no_llm_context: true };
+    // retrieval while preventing any LLM-boundary or resources/read caller
+    // from treating it as a policy-free document.
+    return { no_llm_context: true, resource_read: 'deny' };
   }
   const raw = value as Record<string, unknown>;
   const policy: KbSensitivityPolicy = {};
@@ -72,9 +72,14 @@ export function normalizeKbSensitivityPolicy(
     policy.no_llm_context = true;
   }
 
+  const hasResourceRead = Object.prototype.hasOwnProperty.call(raw, 'resource_read');
   const resourceRead = parseResourceReadPolicy(raw.resource_read);
   if (resourceRead !== undefined) {
     policy.resource_read = resourceRead;
+  } else if (hasResourceRead) {
+    // Typos and non-enum values (denied, private, no, …) must fail closed at
+    // the resources/read boundary rather than silently opening the gate.
+    policy.resource_read = 'deny';
   }
 
   if (typeof raw.sensitivity === 'string') {

@@ -17,7 +17,7 @@ import type {
   FreshnessScanScope,
   FreshnessScanSource,
 } from './timing-core.js';
-import { readFreshnessManifest } from './freshness-manifest.js';
+import { countHashSidecarFiles, readFreshnessManifest } from './freshness-manifest.js';
 import {
   aggregateEnumerationDiagnostics,
   enumerateIngestableKbFiles,
@@ -268,32 +268,12 @@ async function countStaleness(
     });
     modifiedFiles += modifiedFlags.reduce((sum, value) => sum + value, 0);
 
-    const sidecarCount = await countSidecarFiles(path.join(kbPath, '.index'));
+    const sidecarCount = await countHashSidecarFiles(kbPath, filePaths);
     if (filePaths.length > sidecarCount) {
       newFiles += filePaths.length - sidecarCount;
     }
   }
   return { modifiedFiles, newFiles };
-}
-
-async function countSidecarFiles(dir: string): Promise<number> {
-  let entries;
-  try {
-    entries = await fsp.readdir(dir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-  const childCounts = await mapBounded(entries, resolveFsConcurrency(), async (entry) => {
-    const entryPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      return countSidecarFiles(entryPath);
-    }
-    if (entry.isFile()) {
-      return 1;
-    }
-    return 0;
-  });
-  return childCounts.reduce((sum, value) => sum + value, 0);
 }
 
 function emptyStaleness(indexMtime: string | null, scopedKb?: string): Staleness {

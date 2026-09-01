@@ -523,6 +523,26 @@ describe('llm-client', () => {
     expect(urls.some((u) => u.endsWith('/health'))).toBe(false);
   });
 
+  it('reports a rejected remote probe after a single chat attempt', async () => {
+    delete process.env.KB_LLM_FAKE;
+    process.env.KB_LLM_PROVIDER = 'openrouter';
+    process.env.KB_OPENROUTER_API_KEY = 'sk-or-test-key';
+    const fetchMock = jest.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const result = await probeLlmEndpoint(
+      'https://openrouter.ai/api/v1/chat/completions',
+      fetchMock as unknown as typeof fetch,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      provider: 'openrouter',
+      health_ok: true,
+      chat_ok: false,
+    });
+    expect(result.detail).toContain('chat failed: local LLM request failed: ECONNREFUSED');
+  });
+
   it('parses Retry-After as delta-seconds and HTTP-date', () => {
     expect(parseRetryAfterMs('5')).toBe(5000);
     expect(parseRetryAfterMs('')).toBeUndefined();

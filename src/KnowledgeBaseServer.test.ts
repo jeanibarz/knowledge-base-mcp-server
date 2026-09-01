@@ -94,6 +94,8 @@ describe('KnowledgeBaseServer handlers', () => {
     INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
     INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
     KB_DENSE_DEGRADE_ON_PROVIDER_ERROR: process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
+    KB_HYBRID_DENSE_WEIGHT: process.env.KB_HYBRID_DENSE_WEIGHT,
+    KB_HYBRID_LEXICAL_WEIGHT: process.env.KB_HYBRID_LEXICAL_WEIGHT,
   };
 
   beforeEach(() => {
@@ -1580,6 +1582,101 @@ describe('KnowledgeBaseServer handlers', () => {
     });
   });
 
+  it('FR-SEARCH-912: applies process-wide weights to MCP hybrid retrieval', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tempDir, 'alpha', 'lexical.md'),
+      'WEIGHTED_MCP_QUERY lexical winner',
+    );
+    process.env.KB_HYBRID_DENSE_WEIGHT = '0';
+    process.env.KB_HYBRID_LEXICAL_WEIGHT = '2';
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([{
+      pageContent: 'dense candidate must be absent',
+      metadata: { source: '/kb/dense.md', chunkIndex: 0 },
+      score: 0.1,
+    }]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'WEIGHTED_MCP_QUERY',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('WEIGHTED_MCP_QUERY lexical winner');
+    expect(result.content[0].text).not.toContain('dense candidate must be absent');
+  });
+
+  it('NFR-SEARCH-910: reuses one parsed lexical index across retrieve and ask calls', async () => {
+    const tempDir = await setRetrieveEnv();
+    const alphaDir = path.join(tempDir, 'alpha');
+    const sourcePath = path.join(process.cwd(), 'package.json');
+    const lexicalIndexPath = path.join(
+      process.env.FAISS_INDEX_PATH!,
+      'lexical',
+      'alpha',
+      'index.json',
+    );
+    await fsp.mkdir(alphaDir, { recursive: true });
+    await fsp.mkdir(path.dirname(lexicalIndexPath), { recursive: true });
+    await fsp.writeFile(lexicalIndexPath, JSON.stringify({
+      version: 2,
+      kbName: 'alpha',
+      writtenAt: '2026-09-01T00:00:00.000Z',
+      files: {
+        'doc.md': {
+          sha256: 'test-sha',
+          chunks: [{
+            pageContent: 'LEXICAL_CACHE_TOKEN survives warm reuse.',
+            metadata: {
+              knowledgeBase: 'alpha',
+              relativePath: 'doc.md',
+              source: sourcePath,
+              chunkIndex: 0,
+            },
+          }],
+        },
+      },
+    }));
+    process.env.KB_LLM_FAKE = 'on';
+    delete process.env.KB_LLM_ENDPOINT;
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([]);
+
+    jest.resetModules();
+    const { LexicalIndex } = await import('./lexical-index.js');
+    const loadSpy = jest.spyOn(LexicalIndex, 'load');
+    const { KnowledgeBaseServer } = await import('./KnowledgeBaseServer.js');
+    const server = new KnowledgeBaseServer();
+
+    const first = await server['handleRetrieveKnowledge']({
+      query: 'LEXICAL_CACHE_TOKEN',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+    });
+    const second = await server['handleRetrieveKnowledge']({
+      query: 'LEXICAL_CACHE_TOKEN',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+    });
+    const ask = await server['handleAskKnowledge']({
+      query: 'LEXICAL_CACHE_TOKEN',
+      knowledge_base_name: 'alpha',
+      search_mode: 'lexical',
+    });
+
+    expect(first.isError).toBeUndefined();
+    expect(second.isError).toBeUndefined();
+    expect(ask.isError).toBeUndefined();
+    expect(first.content[0].text).toContain('LEXICAL_CACHE_TOKEN');
+    expect(second.content[0].text).toContain('LEXICAL_CACHE_TOKEN');
+    expect(JSON.parse(ask.content[0].text as string).answer).toContain('LEXICAL_CACHE_TOKEN');
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('handleRetrieveKnowledge applies metadata filters to hybrid lexical results (#853)', async () => {
     const tempDir = await setRetrieveEnv();
     const alphaDir = path.join(tempDir, 'alpha');
@@ -1658,7 +1755,7 @@ describe('KnowledgeBaseServer handlers', () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_UNAVAILABLE');
+    expect(JSON.parse(result.content[0].text as string).error.code).toBe('PROVIDER_UNAVAILABLE');
     expect((result as any).structuredContent?.degraded).toBeUndefined();
   });
 
@@ -1779,9 +1876,11 @@ describe('KnowledgeBaseServer handlers', () => {
     await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'Alpha fallback content');
     updateIndexMock.mockResolvedValue(undefined);
 
-    const server = await freshServer();
+    jest.resetModules();
     const { LexicalIndex } = await import('./lexical-index.js');
     jest.spyOn(LexicalIndex, 'load').mockRejectedValueOnce(new Error('broken lexical index'));
+    const { KnowledgeBaseServer } = await import('./KnowledgeBaseServer.js');
+    const server = new KnowledgeBaseServer();
     const { KBError } = await import('./errors.js');
     similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_UNAVAILABLE', 'embedding provider unavailable'));
 
@@ -1791,7 +1890,7 @@ describe('KnowledgeBaseServer handlers', () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content[0].text).error.code).toBe('PROVIDER_UNAVAILABLE');
+    expect(JSON.parse(result.content[0].text as string).error.code).toBe('PROVIDER_UNAVAILABLE');
     expect((result as any).structuredContent?.degraded).toBeUndefined();
   });
 

@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { constants as fsConstants } from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import {
@@ -14,6 +15,7 @@ import { writeFileAtomicDurable } from './file-utils.js';
 
 export const FRESHNESS_MANIFEST_SCHEMA_VERSION = 'kb.freshness-manifest.v1';
 export const FRESHNESS_MANIFEST_FILE = 'freshness.json';
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 
 export interface FreshnessManifestFilterConfig {
   baseExtensions?: readonly string[];
@@ -101,7 +103,7 @@ export async function writeFreshnessManifest(
         // File vanished between enumeration and stat; ignore it.
       }
     }
-    const sidecarCount = await countSidecarFiles(path.join(kbPath, '.index'));
+    const sidecarCount = await countHashSidecarFiles(kbPath, filePaths);
     entries[kbName] = {
       file_count: filePaths.length,
       sidecar_count: sidecarCount,
@@ -162,20 +164,32 @@ export async function readFreshnessManifest(
   return parsed;
 }
 
-export async function countSidecarFiles(dir: string): Promise<number> {
-  let entries;
-  try {
-    entries = await fsp.readdir(dir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
+/** Count ingestable sources with an exact mirrored hash sidecar under `.index`. */
+export async function countHashSidecarFiles(
+  kbPath: string,
+  filePaths: readonly string[],
+): Promise<number> {
   let count = 0;
-  for (const entry of entries) {
-    const entryPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      count += await countSidecarFiles(entryPath);
-    } else if (entry.isFile()) {
-      count += 1;
+  for (const filePath of filePaths) {
+    const relativePath = path.relative(kbPath, filePath);
+    const sidecarPath = path.join(kbPath, '.index', relativePath);
+    let handle: fsp.FileHandle | null = null;
+    try {
+      // Non-blocking open plus a bounded read keeps a FIFO or oversized
+      // same-named metadata file from hanging or inflating freshness scans.
+      handle = await fsp.open(sidecarPath, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size !== 64) continue;
+
+      const buffer = Buffer.alloc(64);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (bytesRead === buffer.length && SHA256_HEX_PATTERN.test(buffer.toString('utf-8'))) {
+        count += 1;
+      }
+    } catch {
+      // Missing or unreadable hash sidecars do not represent indexed sources.
+    } finally {
+      await handle?.close().catch(() => undefined);
     }
   }
   return count;
