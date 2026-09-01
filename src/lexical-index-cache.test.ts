@@ -253,13 +253,18 @@ describe('LexicalIndexCache', () => {
     const current = fakeIndex(3);
     let releaseStaleLoad!: () => void;
     let releaseDisplacedLoad!: () => void;
+    let releaseCurrentLoad!: () => void;
     let markStaleLoadStarted!: () => void;
     let markDisplacedLoadStarted!: () => void;
+    let markCurrentLoadStarted!: () => void;
     const staleLoadStarted = new Promise<void>((resolve) => {
       markStaleLoadStarted = resolve;
     });
     const displacedLoadStarted = new Promise<void>((resolve) => {
       markDisplacedLoadStarted = resolve;
+    });
+    const currentLoadStarted = new Promise<void>((resolve) => {
+      markCurrentLoadStarted = resolve;
     });
     const loadIndex = jest.fn<() => Promise<LexicalIndex>>()
       .mockImplementationOnce(async () => {
@@ -276,6 +281,13 @@ describe('LexicalIndexCache', () => {
         });
         return displaced;
       })
+      .mockImplementationOnce(async () => {
+        markCurrentLoadStarted();
+        await new Promise<void>((resolve) => {
+          releaseCurrentLoad = resolve;
+        });
+        return current;
+      })
       .mockResolvedValue(current);
     const cache = new LexicalIndexCache({ loadIndex });
 
@@ -290,8 +302,10 @@ describe('LexicalIndexCache', () => {
     const replacementLoad = cache.load('alpha', '/kb/alpha');
     await displacedLoadStarted;
     cache.invalidate('alpha', '/kb/alpha');
-    releaseStaleLoad();
     releaseDisplacedLoad();
+    await currentLoadStarted;
+    releaseStaleLoad();
+    releaseCurrentLoad();
 
     await expect(firstLoad).resolves.toBe(current);
     await expect(replacementLoad).resolves.toBe(current);

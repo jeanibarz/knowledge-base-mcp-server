@@ -62,10 +62,13 @@ index first. It then runs:
 - the relevance gate when enabled.
 
 The server resolves lexical indexes through a bounded `LexicalIndexCache`
-shared by `retrieve_knowledge` and `ask_knowledge`. Reads reuse a parsed
-snapshot while its persisted modification time and size remain unchanged.
-Refreshes mutate a separate uncached snapshot and invalidate the cached reader
-only after persistence succeeds.
+shared by `retrieve_knowledge` and `ask_knowledge`
+(`src/KnowledgeBaseServer.ts:329-332`, `src/KnowledgeBaseServer.ts:1259-1261`,
+`src/KnowledgeBaseServer.ts:1377-1379`). Reads reuse a parsed snapshot while its
+persisted modification time and size remain unchanged
+(`src/lexical-index-cache.ts:41-77`). Refreshes mutate a separate uncached
+snapshot and invalidate the cached reader only after persistence succeeds
+(`src/hybrid-retrieval.ts:331-343`, `src/lexical-index-cache.ts:80-93`).
 
 Hybrid currently rejects neighbor-context expansion because context expansion is
 implemented against dense semantic matches only.
