@@ -248,6 +248,17 @@ describe('wrapUntrustedContent', () => {
     )).toBe(content);
   });
 
+  it.each([
+    ['a padded opening delimiter', '[BEGIN {source}] ', '[END]'],
+    ['a padded closing delimiter', '[BEGIN {source}]', ' [END]'],
+  ])('NFR-SEC-907: rejects %s', (_case, wrapOpen, wrapClose) => {
+    expect(() => wrapUntrustedContent(
+      'attacker-controlled body',
+      { relativePath: 'doc.md' },
+      { wrapOpen, wrapClose },
+    )).toThrow('whitespace');
+  });
+
   it('NFR-SEC-907: rejects a one-character static prefix that the codec would erase', () => {
     // `<` would be substituted away, deleting every `<` from the chunk body.
     expect(() => wrapUntrustedContent(

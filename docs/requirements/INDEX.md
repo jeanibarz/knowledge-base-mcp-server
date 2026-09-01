@@ -35,7 +35,7 @@
 - [x] Given source metadata containing Unicode line separators, when wrap mode renders the source attribute, then it emits numeric entities rather than raw wrapper line breaks.
 - [x] Given content containing the configured closing delimiter, when injection signals are detected, then a wrapper-delimiter signal identifies the exact token.
 
-**Linked Tests:** TS-SEC-907 (`src/injection-guard.test.ts`, `src/cli-ask.test.ts`)
+**Linked Tests:** TS-SEC-907 (`src/injection-guard.test.ts`, `src/cli-ask.test.ts`, `src/task-context-guard.test.ts`)
 **Dependencies:** ADR0010
 
 ### NFR-POLICY-854: Per-KB mutation policy enforcement

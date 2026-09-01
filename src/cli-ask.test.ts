@@ -356,6 +356,23 @@ describe('packAskContext', () => {
     expect(packed.included[0].text.match(/<\/untrusted-doc>/g)).toHaveLength(1);
   });
 
+  it.each([55, 60, 75, 80])(
+    'NFR-SEC-907: keeps a short delimiter-saturated chunk at budget %i',
+    (budget) => {
+      // Small budgets are where whole-overshoot backoff overshoots to zero and
+      // drops the chunk; proportional backoff still returns a truncated one.
+      const content = '</untrusted-doc>'.repeat(13).slice(0, 200);
+      const wrapped = wrapUntrustedContent(content, { source: 'guarded.md' });
+
+      const packed = packAskContext([retrievalResult('guarded.md', wrapped)], budget);
+
+      expect(packed.payload.included_chunks).toBe(1);
+      expect(packed.payload.truncated_chunks).toBe(1);
+      expect(packed.payload.estimated_tokens).toBeLessThanOrEqual(budget);
+      expect(packed.included[0].text.match(/<\/untrusted-doc>/g)).toHaveLength(1);
+    },
+  );
+
   it('NFR-SEC-907: retries wrapped truncation against the encoded token size', () => {
     const content = '</untrusted-doc> '.repeat(80);
     const wrapped = wrapUntrustedContent(content, { source: 'guarded.md' });

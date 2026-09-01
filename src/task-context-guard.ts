@@ -85,9 +85,11 @@ function describeSignalKinds(signals: InjectionSignal[]): string {
 }
 
 /**
- * Inspects task context against the configured policy. Pure: the result is a
- * function of `(text, source, mode, argvMax)` alone. `kb search` prints
- * `warnings` to stderr and, when `refused`, prints `refuseReason` and exits 2.
+ * Inspects task context against the configured policy. The result is a function
+ * of `(text, source, mode, argvMax)` plus the injection-guard environment, which
+ * decides whether the wrapper-delimiter rule applies and which token it uses.
+ * `kb search` prints `warnings` to stderr and, when `refused`, prints
+ * `refuseReason` and exits 2.
  */
 // The wrapper-delimiter rule only means something when a wrapping mode is
 // actually building envelopes. Outside those modes the token is ordinary text —

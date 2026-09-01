@@ -132,6 +132,17 @@ wrap-close vars below.
 | Wrap-open sentinel | `KB_INJECTION_GUARD_WRAP_OPEN` | `<untrusted-doc src="{source}">` | Retrieval guard wrap modes | Implemented | none | `KB_INJECTION_GUARD=wrap KB_INJECTION_GUARD_WRAP_OPEN='<<UNTRUSTED:{source}>>' kb search "query"` |
 | Wrap-close sentinel | `KB_INJECTION_GUARD_WRAP_CLOSE` | `</untrusted-doc>` | Retrieval guard wrap modes | Implemented | none | `KB_INJECTION_GUARD=wrap KB_INJECTION_GUARD_WRAP_CLOSE='<<END>>' kb search "query"` |
 
+Wrap sentinels are validated when a chunk is wrapped, and an invalid pair fails
+closed rather than degrading to an ambiguous envelope. Both values must be
+non-empty, single-line, free of leading or trailing whitespace, and neither may
+contain the other. `KB_INJECTION_GUARD_WRAP_OPEN` may use at most one `{source}`
+placeholder, and must put static text on both sides of it — at least two
+characters before it, since a one-character prefix would be substituted away
+rather than separated and would disappear from every chunk body. So
+`'<<UNTRUSTED:{source}>>'` is valid, while `'SOURCE: {source}'` (no suffix),
+`'{source}|DOC'` (no prefix) and `'<{source}>'` (one-character prefix) are
+rejected. A template with no placeholder at all is fine.
+
 ## Output, Diagnostics, and Logging
 
 | Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
