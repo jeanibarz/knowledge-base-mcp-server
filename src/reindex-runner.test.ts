@@ -582,6 +582,103 @@ describe('.reindex.run.json + PID liveness', () => {
     // File should have been deleted by the zombie cleanup.
     await expect(fsp.access(runner.runStateFilePath())).rejects.toThrow();
   });
+
+  // --- Issue #906: guard against PID recycling + cross-host confusion ---
+
+  async function writeRunStateFile(fields: {
+    pid: number;
+    started_at: string;
+    hostname?: string;
+    kbs_in_scope?: string[];
+  }): Promise<void> {
+    await fsp.mkdir(path.dirname(runner.runStateFilePath()), { recursive: true });
+    await fsp.writeFile(
+      runner.runStateFilePath(),
+      JSON.stringify({
+        schema_version: runner.REINDEX_RUN_SCHEMA_VERSION,
+        pid: fields.pid,
+        started_at: fields.started_at,
+        kbs_in_scope: fields.kbs_in_scope ?? ['alpha'],
+        ...(fields.hostname === undefined ? {} : { hostname: fields.hostname }),
+      }),
+    );
+  }
+
+  it('#906 reclaims a recycled-PID false-alive run-state (live PID but aged out)', async () => {
+    // process.pid is alive, mirroring an OS-recycled PID that liveness would
+    // wrongly report as the reindex still running. The age bound overrides it.
+    const agedOut = new Date(Date.now() - runner.REINDEX_RUN_STALE_MS - 60_000).toISOString();
+    await writeRunStateFile({ pid: process.pid, started_at: agedOut, hostname: os.hostname() });
+    expect(runner.isPidAlive(process.pid)).toBe(true);
+
+    const check = await runner.checkReindexRunState();
+    expect(check.alive).toBe(false);
+    await expect(fsp.access(runner.runStateFilePath())).rejects.toThrow();
+  });
+
+  it('#906 reclaims a foreign-host run-state that cannot be liveness-checked', async () => {
+    // Recent timestamp so the age bound does not fire; a live local PID so the
+    // reclaim is driven purely by the host mismatch, not liveness.
+    await writeRunStateFile({
+      pid: process.pid,
+      started_at: new Date().toISOString(),
+      hostname: `${os.hostname()}-some-other-host`,
+    });
+
+    const check = await runner.checkReindexRunState();
+    expect(check.alive).toBe(false);
+    await expect(fsp.access(runner.runStateFilePath())).rejects.toThrow();
+  });
+
+  it('#906 reclaims an aged-out run-state at the max-reindex-age boundary', async () => {
+    // Just past the bound → reclaimed, even with a live same-host PID.
+    const justOver = new Date(Date.now() - runner.REINDEX_RUN_STALE_MS - 1_000).toISOString();
+    await writeRunStateFile({ pid: process.pid, started_at: justOver, hostname: os.hostname() });
+
+    const check = await runner.checkReindexRunState();
+    expect(check.alive).toBe(false);
+    await expect(fsp.access(runner.runStateFilePath())).rejects.toThrow();
+  });
+
+  it('#906 keeps a live, same-host, recent run-state blocking', async () => {
+    // Well inside the age bound, local host, live PID → still counts as active.
+    const recent = new Date(Date.now() - 5_000).toISOString();
+    await writeRunStateFile({ pid: process.pid, started_at: recent, hostname: os.hostname() });
+
+    const check = await runner.checkReindexRunState();
+    expect(check.alive).toBe(true);
+    expect(check.state?.pid).toBe(process.pid);
+    // The blocking state file must survive the check.
+    await expect(fsp.access(runner.runStateFilePath())).resolves.toBeUndefined();
+  });
+
+  it('#906 tolerates a legacy run-state with no hostname (age + PID fallback)', async () => {
+    // A recent legacy v1 file (no hostname) with a live PID still blocks —
+    // the cross-host check is skipped when the field is absent.
+    const recent = new Date(Date.now() - 5_000).toISOString();
+    await writeRunStateFile({ pid: process.pid, started_at: recent });
+
+    const check = await runner.checkReindexRunState();
+    expect(check.alive).toBe(true);
+    expect(check.state?.hostname).toBeUndefined();
+  });
+
+  it('#906 records the local hostname when it writes the run-state', async () => {
+    // Capture the run-state while updateIndex is executing (the runner deletes
+    // it on completion), and assert the hostname was persisted.
+    let capturedHostname: string | undefined;
+    await runner.runReindex({
+      knowledgeBases: [],
+      force: true,
+      resolveKbs: async () => ['alpha'],
+      runUpdateIndex: async () => {
+        const raw = await fsp.readFile(runner.runStateFilePath(), 'utf-8');
+        capturedHostname = (JSON.parse(raw) as { hostname?: string }).hostname;
+        return makeNeverRunSummary();
+      },
+    });
+    expect(capturedHostname).toBe(os.hostname());
+  });
 });
 
 // ---------------------------------------------------------------------------
