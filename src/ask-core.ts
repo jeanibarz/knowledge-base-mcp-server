@@ -1153,6 +1153,11 @@ function truncateContentToTokenBudget(value: string, budgetTokens: number): stri
 
 export function splitInjectionGuardWrapper(value: string): { open: string; content: string; close: string } | null {
   const options = resolveInjectionGuardOptions();
+  // Only wrapping modes produce an envelope. Without this gate a document that
+  // merely *documents* the guard's own syntax is mistaken for one in `tag` (the
+  // default) and `off` modes, and the truncation rebuild neutralizes its body —
+  // silently injecting codec characters into text the guard never wrapped.
+  if (options.mode !== 'wrap' && options.mode !== 'both') return null;
   const close = options.wrapClose;
   const trimmed = value.trim();
   if (!trimmed.endsWith(close)) return null;

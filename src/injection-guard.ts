@@ -130,7 +130,11 @@ export function wrapUntrustedContent(
   assertValidWrapperTemplate(options);
   const escapedSource = escapeAttributeValue(getChunkSource(metadata));
   const source = neutralizeWrapperDelimiters(escapedSource, options);
-  const open = options.wrapOpen.replaceAll('{source}', source);
+  // The replacer must stay a function: a string replacement would expand `$$`,
+  // `$&`, `` $` `` and `$'` substitution patterns, letting attacker-controlled
+  // source metadata re-inject raw fragments of the template *after* escaping and
+  // neutralization — a breakout through the opening delimiter (NFR-SEC-907).
+  const open = options.wrapOpen.replaceAll('{source}', () => source);
   assertValidWrapperEnvelope(options, open);
   const neutralizedContent = neutralizeWrapperDelimiters(content, {
     ...options,
@@ -302,10 +306,29 @@ function escapeAttributeValue(value: string): string {
     .replaceAll('\u2029', '&#8233;');
 }
 
+// The static text an opening template emits before its {source} placeholder.
+// Every valid rendering of the template starts with it, so neutralizing the
+// prefix is what stops untrusted text from forging an opening delimiter for
+// some *other* source — the rendered open for this chunk is not enough
+// (NFR-SEC-907). The suffix is deliberately left alone: it is typically a
+// common fragment such as `">` that occurs throughout legitimate documents,
+// and a forged header needs the prefix.
+function openTemplatePrefix(wrapOpen: string | undefined): string | undefined {
+  if (wrapOpen === undefined) return undefined;
+  const markerIndex = wrapOpen.indexOf('{source}');
+  if (markerIndex <= 0) return undefined;
+  return wrapOpen.slice(0, markerIndex);
+}
+
 function configuredDelimiters(
   options: WrapperDelimiterOptions,
 ): string[] {
-  return [...new Set([options.wrapOpen, options.renderedWrapOpen, options.wrapClose])]
+  return [...new Set([
+    options.wrapOpen,
+    options.renderedWrapOpen,
+    options.wrapClose,
+    openTemplatePrefix(options.wrapOpen),
+  ])]
     .filter((delimiter): delimiter is string => delimiter !== undefined)
     .filter((delimiter) => delimiter !== '')
     .sort((left, right) => right.length - left.length);

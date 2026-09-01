@@ -114,6 +114,21 @@ describe('parseAskArgs', () => {
 });
 
 describe('packAskContext', () => {
+  // Envelope splitting only runs in wrapping modes, so the wrapper tests below
+  // must opt in explicitly; the default is `tag`, which never wraps. Individual
+  // tests override this to assert the non-wrapping behavior.
+  let previousMode: string | undefined;
+
+  beforeEach(() => {
+    previousMode = process.env.KB_INJECTION_GUARD;
+    process.env.KB_INJECTION_GUARD = 'wrap';
+  });
+
+  afterEach(() => {
+    if (previousMode === undefined) delete process.env.KB_INJECTION_GUARD;
+    else process.env.KB_INJECTION_GUARD = previousMode;
+  });
+
   it('keeps ranked chunks within the token budget and excludes later overflow', () => {
     const packed = packAskContext([
       retrievalResult('alpha.md', 'A'.repeat(190)),
@@ -284,6 +299,23 @@ describe('packAskContext', () => {
       else process.env.KB_INJECTION_GUARD_WRAP_CLOSE = previousClose;
     }
   });
+
+  it.each(['tag', 'off'])(
+    'NFR-SEC-907: leaves envelope-shaped text untouched in %s mode',
+    (mode) => {
+      process.env.KB_INJECTION_GUARD = mode;
+      const body = `The guard emits </untrusted-doc> to close a chunk. ` +
+        'Documented syntax. '.repeat(80);
+      const envelopeShaped = `<untrusted-doc src="manual.md">\n${body}\n</untrusted-doc>`;
+
+      expect(splitInjectionGuardWrapper(envelopeShaped)).toBeNull();
+
+      const packed = packAskContext([retrievalResult('manual.md', envelopeShaped)], 180);
+      const rebuilt = packed.included[0].text;
+      expect(rebuilt).toContain('The guard emits </untrusted-doc> to close a chunk.');
+      expect(rebuilt).not.toMatch(/[\u200B-\u200D\u2060-\u2064]/u);
+    },
+  );
 
   it('NFR-SEC-907: retries wrapped truncation against the encoded token size', () => {
     const content = '</untrusted-doc> '.repeat(80);

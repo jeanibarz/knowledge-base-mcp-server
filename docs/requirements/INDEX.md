@@ -25,6 +25,9 @@
 - [x] Given a custom delimiter that occurs in the truncation marker, when ask-context truncation rebuilds the wrapper, then the marker is neutralized with the body and cannot terminate the envelope.
 - [x] Given delimiter-heavy wrapped content, when ask-context truncation rebuilds the wrapper, then it budgets the encoded payload and retains a safe truncated chunk that fits.
 - [x] Given an opening template with multiple `{source}` placeholders or no static delimiter, when wrap mode renders or ask-context truncation parses a chunk, then it rejects the structurally ambiguous template.
+- [x] Given source metadata containing a `$$`, `$&`, `` $` `` or `$'` substitution pattern, when wrap mode interpolates it into the opening template, then the metadata renders verbatim and no template fragment is re-injected after escaping.
+- [x] Given untrusted content or source metadata containing an opening delimiter rendered for a *different* source, when wrap mode renders the chunk, then that forged opening delimiter is neutralized.
+- [x] Given `tag` or `off` mode, when ask-context truncation processes chunk content shaped like an envelope, then the content is not parsed as a wrapper and its body is not rewritten.
 - [x] Given empty, Unicode-multiline, whitespace-padded, or mutually contained outer delimiters, when wrap mode renders a chunk, then it rejects the structurally ambiguous envelope.
 - [x] Given source metadata containing Unicode line separators, when wrap mode renders the source attribute, then it emits numeric entities rather than raw wrapper line breaks.
 - [x] Given content containing the configured closing delimiter, when injection signals are detected, then a wrapper-delimiter signal identifies the exact token.
