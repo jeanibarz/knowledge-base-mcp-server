@@ -1133,8 +1133,11 @@ function truncateContentToTokenBudget(value: string, budgetTokens: number): stri
     const inner = truncatePlainTextToTokenBudget(wrapped.content, availableInnerTokens);
     if (inner.trim() === '') return '';
     const options = resolveInjectionGuardOptions();
-    const neutralizedInner = neutralizeWrapperDelimiters(inner, options);
-    return `${wrapped.open}\n${neutralizedInner}\n${marker}\n${wrapped.close}`;
+    const neutralizedContent = neutralizeWrapperDelimiters(`${inner}\n${marker}`, {
+      ...options,
+      renderedWrapOpen: wrapped.open,
+    });
+    return `${wrapped.open}\n${neutralizedContent}\n${wrapped.close}`;
   }
   const markerTokens = estimateTokens('\n[truncated]');
   const truncated = truncatePlainTextToTokenBudget(value, budgetTokens - markerTokens);
@@ -1152,7 +1155,10 @@ export function splitInjectionGuardWrapper(value: string): { open: string; conte
   if (!matchesConfiguredWrapOpen(open, options.wrapOpen)) return null;
   const contentEnd = trimmed.length - close.length;
   const neutralizedContent = trimmed.slice(firstNewline + 1, contentEnd).replace(/\n$/, '');
-  const content = restoreWrapperDelimiters(neutralizedContent, options);
+  const content = restoreWrapperDelimiters(neutralizedContent, {
+    ...options,
+    renderedWrapOpen: open,
+  });
   return { open, content, close };
 }
 

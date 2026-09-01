@@ -238,6 +238,34 @@ describe('packAskContext', () => {
     }
   });
 
+  it('NFR-SEC-907: neutralizes a truncation marker that equals the closing delimiter', () => {
+    const previousOpen = process.env.KB_INJECTION_GUARD_WRAP_OPEN;
+    const previousClose = process.env.KB_INJECTION_GUARD_WRAP_CLOSE;
+    try {
+      process.env.KB_INJECTION_GUARD_WRAP_OPEN = '[BEGIN {source}]';
+      process.env.KB_INJECTION_GUARD_WRAP_CLOSE = '[truncated]';
+      const options = {
+        wrapOpen: '[BEGIN {source}]',
+        wrapClose: '[truncated]',
+      };
+      const wrapped = wrapUntrustedContent(
+        'long guarded context. '.repeat(80),
+        { source: 'guarded.md' },
+        options,
+      );
+
+      const packed = packAskContext([retrievalResult('guarded.md', wrapped)], 180);
+      const rebuilt = packed.included[0].text;
+      expect(packed.payload.truncated_chunks).toBe(1);
+      expect(rebuilt.match(/\[truncated\]/g)).toHaveLength(1);
+    } finally {
+      if (previousOpen === undefined) delete process.env.KB_INJECTION_GUARD_WRAP_OPEN;
+      else process.env.KB_INJECTION_GUARD_WRAP_OPEN = previousOpen;
+      if (previousClose === undefined) delete process.env.KB_INJECTION_GUARD_WRAP_CLOSE;
+      else process.env.KB_INJECTION_GUARD_WRAP_CLOSE = previousClose;
+    }
+  });
+
   it('excludes no_llm_context chunks before prompt packing and reports the policy count', () => {
     const packed = packAskContext([
       retrievalResult('public.md', 'public deployment context'),

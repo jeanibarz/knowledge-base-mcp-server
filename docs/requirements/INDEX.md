@@ -20,7 +20,10 @@
 - [x] Given content containing the default opening or closing wrapper delimiter, when wrap mode renders the content, then only the trusted outer envelope contains either delimiter verbatim.
 - [x] Given custom wrapper delimiters, when wrap mode renders content containing those delimiters, then the embedded occurrences are neutralized without changing the configured outer envelope.
 - [x] Given overlapping or single-codepoint custom delimiters, when wrap mode renders content containing those delimiters, then no embedded occurrence remains verbatim and restoration returns the original content.
+- [x] Given source metadata or chunk content containing a rendered opening or closing delimiter, when wrap mode renders the chunk, then only the trusted outer envelope contains those rendered tokens verbatim.
 - [x] Given neutralized wrapped content, when ask-context truncation splits and rebuilds the wrapper, then the inner content is restored for processing and neutralized again before returning to the trust boundary.
+- [x] Given a custom delimiter that occurs in the truncation marker, when ask-context truncation rebuilds the wrapper, then the marker is neutralized with the body and cannot terminate the envelope.
+- [x] Given empty, multiline, whitespace-padded, or mutually contained outer delimiters, when wrap mode renders a chunk, then it rejects the structurally ambiguous envelope.
 - [x] Given content containing the configured closing delimiter, when injection signals are detected, then a wrapper-delimiter signal identifies the exact token.
 
 **Linked Tests:** TS-SEC-907 (`src/injection-guard.test.ts`, `src/cli-ask.test.ts`)

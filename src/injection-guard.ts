@@ -21,6 +21,12 @@ export interface InjectionGuardOptions {
   wrapClose: string;
 }
 
+export interface WrapperDelimiterOptions {
+  wrapOpen: string;
+  wrapClose: string;
+  renderedWrapOpen?: string;
+}
+
 export interface GuardedChunk {
   content: string;
   metadata: Record<string, unknown>;
@@ -120,15 +126,20 @@ export function wrapUntrustedContent(
     wrapClose: DEFAULT_WRAP_CLOSE,
   },
 ): string {
-  const source = escapeAttributeValue(getChunkSource(metadata));
+  const escapedSource = escapeAttributeValue(getChunkSource(metadata));
+  const source = neutralizeWrapperDelimiters(escapedSource, options);
   const open = options.wrapOpen.replaceAll('{source}', source);
-  const neutralizedContent = neutralizeWrapperDelimiters(content, options);
+  assertValidWrapperEnvelope(open, options.wrapClose);
+  const neutralizedContent = neutralizeWrapperDelimiters(content, {
+    ...options,
+    renderedWrapOpen: open,
+  });
   return `${open}\n${neutralizedContent}\n${options.wrapClose}`;
 }
 
 export function neutralizeWrapperDelimiters(
   content: string,
-  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+  options: WrapperDelimiterOptions,
 ): string {
   const codec = createWrapperDelimiterCodec(options);
   const needsEncoding = codec.delimiters.some((delimiter) => content.includes(delimiter)) ||
@@ -168,7 +179,7 @@ export function neutralizeWrapperDelimiters(
 
 export function restoreWrapperDelimiters(
   content: string,
-  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+  options: WrapperDelimiterOptions,
 ): string {
   // Call only after content has left the wrapper trust boundary. Any caller
   // rebuilding an envelope must neutralize the restored text again first.
@@ -271,19 +282,22 @@ function escapeAttributeValue(value: string): string {
     .replaceAll('&', '&amp;')
     .replaceAll('"', '&quot;')
     .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
+    .replaceAll('>', '&gt;')
+    .replaceAll('\r', '&#13;')
+    .replaceAll('\n', '&#10;');
 }
 
 function configuredDelimiters(
-  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+  options: WrapperDelimiterOptions,
 ): string[] {
-  return [...new Set([options.wrapOpen, options.wrapClose])]
+  return [...new Set([options.wrapOpen, options.renderedWrapOpen, options.wrapClose])]
+    .filter((delimiter): delimiter is string => delimiter !== undefined)
     .filter((delimiter) => delimiter !== '')
     .sort((left, right) => right.length - left.length);
 }
 
 function createWrapperDelimiterCodec(
-  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+  options: WrapperDelimiterOptions,
 ): WrapperDelimiterCodec {
   const delimiters = configuredDelimiters(options);
   const singleDelimiters = delimiters.filter((delimiter) => [...delimiter].length === 1);
@@ -335,6 +349,30 @@ function codepointAt(value: string, offset: number): string {
   const codepoint = value.codePointAt(offset);
   if (codepoint === undefined) return '';
   return String.fromCodePoint(codepoint);
+}
+
+function assertValidWrapperEnvelope(open: string, close: string): void {
+  if (open === '' || close === '') {
+    throw new Error('Injection-guard wrapper delimiters must not be empty');
+  }
+  if (/\r|\n/.test(open) || /\r|\n/.test(close)) {
+    throw new Error('Injection-guard wrapper delimiters must be single-line');
+  }
+  if (open.trim() !== open || close.trim() !== close) {
+    throw new Error(
+      'Injection-guard wrapper delimiters must not have leading or trailing whitespace',
+    );
+  }
+  if (open.includes(close)) {
+    throw new Error(
+      'Invalid injection-guard wrapper: opening delimiter contains the closing delimiter',
+    );
+  }
+  if (close.includes(open)) {
+    throw new Error(
+      'Invalid injection-guard wrapper: closing delimiter contains the opening delimiter',
+    );
+  }
 }
 
 function addSignal(
