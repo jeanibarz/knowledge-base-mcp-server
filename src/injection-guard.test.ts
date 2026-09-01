@@ -196,6 +196,38 @@ describe('wrapUntrustedContent', () => {
       { wrapOpen: '[x]', wrapClose: 'x' },
     )).toThrow('opening delimiter contains the closing delimiter');
   });
+
+  it.each([
+    '[BEGIN {source}|{source}]',
+    '{source}',
+  ])('NFR-SEC-907: rejects an ambiguous opening template: %s', (wrapOpen) => {
+    expect(() => wrapUntrustedContent(
+      'attacker-controlled body',
+      { source: 'attack.md' },
+      { wrapOpen, wrapClose: '[END]' },
+    )).toThrow('opening template');
+  });
+
+  it.each([
+    { wrapOpen: '[BEGIN\u2028{source}]', wrapClose: '[END]' },
+    { wrapOpen: '[BEGIN {source}]', wrapClose: '[END]\u2029' },
+  ])('NFR-SEC-907: rejects Unicode line breaks in wrapper delimiters', (options) => {
+    expect(() => wrapUntrustedContent(
+      'attacker-controlled body',
+      { source: 'attack.md' },
+      options,
+    )).toThrow('single-line');
+  });
+
+  it('NFR-SEC-907: escapes Unicode line breaks in source metadata', () => {
+    const wrapped = wrapUntrustedContent('chunk body', {
+      relativePath: 'evil\u2028name\u2029.md',
+    });
+
+    expect(wrapped).not.toContain('\u2028');
+    expect(wrapped).not.toContain('\u2029');
+    expect(wrapped).toContain('evil&#8232;name&#8233;.md');
+  });
 });
 
 describe('applyInjectionGuard', () => {

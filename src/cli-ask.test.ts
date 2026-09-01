@@ -266,6 +266,38 @@ describe('packAskContext', () => {
     }
   });
 
+  it.each([
+    '{source}',
+    '[BEGIN {source}|{source}]',
+  ])('NFR-SEC-907: refuses to split an ambiguous opening template: %s', (wrapOpen) => {
+    const previousOpen = process.env.KB_INJECTION_GUARD_WRAP_OPEN;
+    const previousClose = process.env.KB_INJECTION_GUARD_WRAP_CLOSE;
+    try {
+      process.env.KB_INJECTION_GUARD_WRAP_OPEN = wrapOpen;
+      process.env.KB_INJECTION_GUARD_WRAP_CLOSE = '[END]';
+
+      expect(splitInjectionGuardWrapper('attacker-controlled\nbody\n[END]')).toBeNull();
+    } finally {
+      if (previousOpen === undefined) delete process.env.KB_INJECTION_GUARD_WRAP_OPEN;
+      else process.env.KB_INJECTION_GUARD_WRAP_OPEN = previousOpen;
+      if (previousClose === undefined) delete process.env.KB_INJECTION_GUARD_WRAP_CLOSE;
+      else process.env.KB_INJECTION_GUARD_WRAP_CLOSE = previousClose;
+    }
+  });
+
+  it('NFR-SEC-907: retries wrapped truncation against the encoded token size', () => {
+    const content = '</untrusted-doc> '.repeat(80);
+    const wrapped = wrapUntrustedContent(content, { source: 'guarded.md' });
+
+    const packed = packAskContext([retrievalResult('guarded.md', wrapped)], 180);
+
+    expect(packed.payload.included_chunks).toBe(1);
+    expect(packed.payload.excluded_chunks).toBe(0);
+    expect(packed.payload.truncated_chunks).toBe(1);
+    expect(packed.included[0].text.match(/<\/untrusted-doc>/g)).toHaveLength(1);
+    expect(packed.payload.estimated_tokens).toBeLessThanOrEqual(180);
+  });
+
   it('excludes no_llm_context chunks before prompt packing and reports the policy count', () => {
     const packed = packAskContext([
       retrievalResult('public.md', 'public deployment context'),

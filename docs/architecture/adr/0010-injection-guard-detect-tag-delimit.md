@@ -15,7 +15,7 @@ The server already treats `$KNOWLEDGE_BASES_ROOT_DIR` as a content trust boundar
 Add a small retrieval-time content guard at the formatter boundary:
 
 - Default `KB_INJECTION_GUARD=tag`: scan each returned chunk and add additive `metadata.injection_signals`.
-- `KB_INJECTION_GUARD=wrap`: wrap returned chunk content in an `<untrusted-doc src="...">` envelope without adding signal metadata. Configured and rendered opening and closing delimiters embedded in chunk content are transformed by a reversible reserved-character codec so only the trusted outer envelope contains them verbatim. Multi-codepoint delimiters are separated between codepoints; single-codepoint delimiters use reserved substitutes. A codec signature and escaping preserve pre-existing reserved characters during restoration outside the trust boundary. Source metadata is escaped and neutralized before interpolation, and trusted truncation markers are encoded together with the restored body before a wrapper is rebuilt.
+- `KB_INJECTION_GUARD=wrap`: wrap returned chunk content in an `<untrusted-doc src="...">` envelope without adding signal metadata. Configured and rendered opening and closing delimiters embedded in chunk content are transformed by a reversible reserved-character codec so only the trusted outer envelope contains them verbatim. Multi-codepoint delimiters are separated between codepoints; single-codepoint delimiters use reserved substitutes. A codec signature and escaping preserve pre-existing reserved characters during restoration outside the trust boundary. Source metadata is escaped (including Unicode line separators) and neutralized before interpolation. Trusted truncation markers are encoded together with the restored body, and truncation retries against the encoded size before a wrapper is rebuilt.
 - `KB_INJECTION_GUARD=both`: scan and wrap.
 - `KB_INJECTION_GUARD=off`: preserve the historical content and metadata shape.
 - `KB_INJECTION_GUARD_BYPASS_KBS`: comma-separated KB names that skip both detection and wrapping.
@@ -29,7 +29,7 @@ The v0 detector is deterministic and local. It checks for system-role markers, c
 - **Bypass for security corpora.** KBs that intentionally store injection examples can opt out by name to avoid noisy metadata and wrapped fixtures.
 - **No provider dependency.** Regex and Unicode-class checks avoid latency, cost, and model-provider trust expansion.
 - **Narrow implementation.** The formatter is the shared retrieval render path for MCP and CLI JSON/markdown/grouped outputs, so the guard does not need MCP schema or CLI command changes.
-- **Unambiguous envelope.** Wrap mode fails closed when configured delimiters are empty, multiline, whitespace-padded, or one outer delimiter contains the other; those shapes cannot provide a unique line-oriented trust boundary.
+- **Unambiguous envelope.** Wrap mode fails closed when configured delimiters are empty, contain any Unicode line break, are whitespace-padded, or one outer delimiter contains the other. An opening template may contain at most one `{source}` placeholder and must include a static delimiter instead of being only the placeholder. The truncation parser applies the same checks before recognizing an envelope.
 
 ## Considered and Rejected
 

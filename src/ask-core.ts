@@ -12,6 +12,7 @@ import {
 } from './redaction.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
 import {
+  isValidInjectionGuardWrapperEnvelope,
   neutralizeWrapperDelimiters,
   resolveInjectionGuardOptions,
   restoreWrapperDelimiters,
@@ -1128,16 +1129,22 @@ function truncateContentToTokenBudget(value: string, budgetTokens: number): stri
   const wrapped = splitInjectionGuardWrapper(value);
   if (wrapped !== null) {
     const marker = '[truncated]';
-    const availableInnerTokens = budgetTokens - estimateTokens(`${wrapped.open}\n${marker}\n${wrapped.close}`);
-    if (availableInnerTokens <= 0) return '';
-    const inner = truncatePlainTextToTokenBudget(wrapped.content, availableInnerTokens);
-    if (inner.trim() === '') return '';
     const options = resolveInjectionGuardOptions();
-    const neutralizedContent = neutralizeWrapperDelimiters(`${inner}\n${marker}`, {
-      ...options,
-      renderedWrapOpen: wrapped.open,
-    });
-    return `${wrapped.open}\n${neutralizedContent}\n${wrapped.close}`;
+    let availableInnerTokens = budgetTokens -
+      estimateTokens(`${wrapped.open}\n${marker}\n${wrapped.close}`);
+    while (availableInnerTokens > 0) {
+      const inner = truncatePlainTextToTokenBudget(wrapped.content, availableInnerTokens);
+      if (inner.trim() === '') return '';
+      const neutralizedContent = neutralizeWrapperDelimiters(`${inner}\n${marker}`, {
+        ...options,
+        renderedWrapOpen: wrapped.open,
+      });
+      const candidate = `${wrapped.open}\n${neutralizedContent}\n${wrapped.close}`;
+      const excessTokens = estimateTokens(candidate) - budgetTokens;
+      if (excessTokens <= 0) return candidate;
+      availableInnerTokens -= Math.max(1, excessTokens);
+    }
+    return '';
   }
   const markerTokens = estimateTokens('\n[truncated]');
   const truncated = truncatePlainTextToTokenBudget(value, budgetTokens - markerTokens);
@@ -1152,6 +1159,7 @@ export function splitInjectionGuardWrapper(value: string): { open: string; conte
   const firstNewline = trimmed.indexOf('\n');
   if (firstNewline <= 0) return null;
   const open = trimmed.slice(0, firstNewline);
+  if (!isValidInjectionGuardWrapperEnvelope(options, open)) return null;
   if (!matchesConfiguredWrapOpen(open, options.wrapOpen)) return null;
   const contentEnd = trimmed.length - close.length;
   const neutralizedContent = trimmed.slice(firstNewline + 1, contentEnd).replace(/\n$/, '');

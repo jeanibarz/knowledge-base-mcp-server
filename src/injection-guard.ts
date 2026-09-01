@@ -34,6 +34,7 @@ export interface GuardedChunk {
 
 const DEFAULT_WRAP_OPEN = '<untrusted-doc src="{source}">';
 const DEFAULT_WRAP_CLOSE = '</untrusted-doc>';
+const WRAPPER_LINE_BREAK = /[\r\n\v\f\u0085\u2028\u2029]/u;
 const WRAPPER_CODEC_CANDIDATES = [
   0x2060, // word joiner
   0x2061, // function application
@@ -126,15 +127,24 @@ export function wrapUntrustedContent(
     wrapClose: DEFAULT_WRAP_CLOSE,
   },
 ): string {
+  assertValidWrapperTemplate(options);
   const escapedSource = escapeAttributeValue(getChunkSource(metadata));
   const source = neutralizeWrapperDelimiters(escapedSource, options);
   const open = options.wrapOpen.replaceAll('{source}', source);
-  assertValidWrapperEnvelope(open, options.wrapClose);
+  assertValidWrapperEnvelope(options, open);
   const neutralizedContent = neutralizeWrapperDelimiters(content, {
     ...options,
     renderedWrapOpen: open,
   });
   return `${open}\n${neutralizedContent}\n${options.wrapClose}`;
+}
+
+export function isValidInjectionGuardWrapperEnvelope(
+  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+  renderedOpen: string,
+): boolean {
+  return wrapperTemplateError(options) === null &&
+    wrapperEnvelopeError(renderedOpen, options.wrapClose) === null;
 }
 
 export function neutralizeWrapperDelimiters(
@@ -284,7 +294,12 @@ function escapeAttributeValue(value: string): string {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('\r', '&#13;')
-    .replaceAll('\n', '&#10;');
+    .replaceAll('\n', '&#10;')
+    .replaceAll('\v', '&#11;')
+    .replaceAll('\f', '&#12;')
+    .replaceAll('\u0085', '&#133;')
+    .replaceAll('\u2028', '&#8232;')
+    .replaceAll('\u2029', '&#8233;');
 }
 
 function configuredDelimiters(
@@ -351,28 +366,48 @@ function codepointAt(value: string, offset: number): string {
   return String.fromCodePoint(codepoint);
 }
 
-function assertValidWrapperEnvelope(open: string, close: string): void {
-  if (open === '' || close === '') {
-    throw new Error('Injection-guard wrapper delimiters must not be empty');
+function assertValidWrapperTemplate(
+  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+): void {
+  const error = wrapperTemplateError(options);
+  if (error !== null) throw new Error(error);
+}
+
+function assertValidWrapperEnvelope(
+  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+  renderedOpen: string,
+): void {
+  const error = wrapperEnvelopeError(renderedOpen, options.wrapClose);
+  if (error !== null) throw new Error(error);
+}
+
+function wrapperTemplateError(
+  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
+): string | null {
+  const placeholderCount = options.wrapOpen.split('{source}').length - 1;
+  if (placeholderCount > 1 || options.wrapOpen === '{source}') {
+    return 'Invalid injection-guard opening template: use at most one {source} placeholder with a static delimiter';
   }
-  if (/\r|\n/.test(open) || /\r|\n/.test(close)) {
-    throw new Error('Injection-guard wrapper delimiters must be single-line');
+  return wrapperEnvelopeError(options.wrapOpen, options.wrapClose);
+}
+
+function wrapperEnvelopeError(open: string, close: string): string | null {
+  if (open === '' || close === '') {
+    return 'Injection-guard wrapper delimiters must not be empty';
+  }
+  if (WRAPPER_LINE_BREAK.test(open) || WRAPPER_LINE_BREAK.test(close)) {
+    return 'Injection-guard wrapper delimiters must be single-line';
   }
   if (open.trim() !== open || close.trim() !== close) {
-    throw new Error(
-      'Injection-guard wrapper delimiters must not have leading or trailing whitespace',
-    );
+    return 'Injection-guard wrapper delimiters must not have leading or trailing whitespace';
   }
   if (open.includes(close)) {
-    throw new Error(
-      'Invalid injection-guard wrapper: opening delimiter contains the closing delimiter',
-    );
+    return 'Invalid injection-guard wrapper: opening delimiter contains the closing delimiter';
   }
   if (close.includes(open)) {
-    throw new Error(
-      'Invalid injection-guard wrapper: closing delimiter contains the opening delimiter',
-    );
+    return 'Invalid injection-guard wrapper: closing delimiter contains the opening delimiter';
   }
+  return null;
 }
 
 function addSignal(
