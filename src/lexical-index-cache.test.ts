@@ -137,4 +137,31 @@ describe('LexicalIndexCache', () => {
     expect(b).toBe(index);
     expect(loadIndex).toHaveBeenCalledTimes(1);
   });
+
+  it('NFR-SEARCH-910: evicts the least-recently-used parsed index at the configured bound', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lexical-cache-lru-'));
+    const faissDir = path.join(tempDir, 'faiss');
+    const stableMtime = new Date('2026-01-01T00:00:00Z');
+    await Promise.all([
+      writePersistedIndex(faissDir, 'alpha', '{"files":{"a":1}}', stableMtime),
+      writePersistedIndex(faissDir, 'beta', '{"files":{"b":1}}', stableMtime),
+      writePersistedIndex(faissDir, 'gamma', '{"files":{"c":1}}', stableMtime),
+    ]);
+    const { LexicalIndexCache } = await freshCache(faissDir);
+    const loadIndex = jest.fn(async (_kbName: string, _kbPath: string) => fakeIndex(1));
+    const cache = new LexicalIndexCache({ maxEntries: 2, loadIndex });
+
+    await cache.load('alpha', '/kb/alpha');
+    await cache.load('beta', '/kb/beta');
+    await cache.load('alpha', '/kb/alpha');
+    await cache.load('gamma', '/kb/gamma');
+    await cache.load('beta', '/kb/beta');
+
+    expect(loadIndex.mock.calls.map(([kbName]) => kbName)).toEqual([
+      'alpha',
+      'beta',
+      'gamma',
+      'beta',
+    ]);
+  });
 });

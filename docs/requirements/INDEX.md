@@ -265,6 +265,23 @@
 **Linked Tests:** TS-SEARCH-853 (`src/hybrid-retrieval.test.ts`, `src/KnowledgeBaseServer.test.ts`, `src/cli-search.test.ts`, `src/retrieval-eval.test.ts`)
 **Dependencies:** FR-SEARCH-374
 
+### NFR-SEARCH-910: Server-lifetime lexical-index reuse
+**Status:** Implemented
+**Priority:** Medium
+
+**Requirement:** The long-lived MCP server shall reuse a bounded, persisted-metadata-validated parsed lexical index cache across `retrieve_knowledge` and `ask_knowledge` lexical legs.
+**Rationale:** Re-parsing the persisted lexical index and rebuilding BM25 postings for every query adds avoidable latency to warm MCP sessions.
+
+**Acceptance Criteria:**
+- [x] Given an unchanged persisted lexical index, when consecutive hybrid or lexical MCP queries use it, then the underlying index parser shall run only once per server lifetime.
+- [x] Given retrieve and ask calls on one server instance, when both use the same unchanged lexical index, then they shall share the same parsed-index cache.
+- [x] Given the persisted lexical index mtime or size changes, when the next query loads it, then the cache shall reload the index.
+- [x] Given an explicit refresh changes a cached lexical index, when later queries run, then they shall observe refreshed data rather than a stale parsed snapshot.
+- [x] Given more knowledge bases than the cache limit, when additional indexes are loaded, then least-recently-used entries shall be evicted.
+
+**Linked Tests:** TS-SEARCH-910 (`src/KnowledgeBaseServer.test.ts`, `src/ask-core.hybrid.test.ts`, `src/hybrid-retrieval.test.ts`, `src/lexical-index-cache.test.ts`)
+**Dependencies:** Existing `LexicalIndexCache` and `runLexicalLeg.loadIndex` seam.
+
 ### NFR-CACHE-830: Conservative Disk Cache Read Failures
 **Status:** Implemented
 **Priority:** Medium
