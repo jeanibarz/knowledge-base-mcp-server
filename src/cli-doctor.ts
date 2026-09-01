@@ -87,6 +87,7 @@ import {
   type ProviderCircuitSnapshot,
 } from './provider-breaker.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
+import { countHashSidecarFiles } from './freshness-manifest.js';
 import {
   inventoryExtractionCache,
   type ExtractionCacheInventory,
@@ -2287,7 +2288,7 @@ async function computeStaleCountsByKb(
         // Vanished between walk and stat; ignore in a read-only health check.
       }
     }
-    const sidecarCount = await countFiles(path.join(kbPath, '.index'));
+    const sidecarCount = await countHashSidecarFiles(kbPath, filePaths);
     const added = activeModelId === null || indexMtimeMs === null
       ? filePaths.length
       : Math.max(0, filePaths.length - sidecarCount);
@@ -2362,30 +2363,6 @@ async function computeAgeBudgetsByKb(
     };
   }
   return { byKb, configErrors };
-}
-
-async function countFiles(dir: string): Promise<number> {
-  let count = 0;
-  async function walk(target: string): Promise<void> {
-    let entries: Array<import('fs').Dirent>;
-    try {
-      entries = await fsp.readdir(target, { withFileTypes: true });
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'ENOTDIR') return;
-      throw err;
-    }
-    for (const entry of entries) {
-      const child = path.join(target, entry.name);
-      if (entry.isDirectory()) {
-        await walk(child);
-      } else if (entry.isFile()) {
-        count += 1;
-      }
-    }
-  }
-  await walk(dir);
-  return count;
 }
 
 async function readRerankerHealth(): Promise<DoctorReport['reranker']> {

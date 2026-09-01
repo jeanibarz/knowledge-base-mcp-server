@@ -7,7 +7,8 @@ import {
   parseArgs as parseBeirArgs,
   runBeirBenchmark,
   type BeirBenchmarkRunResult,
-  type LexicalIndexLike,
+  type BeirSearchBackend,
+  type LoadSearchBackendInput,
 } from '../beir/run.js';
 import { parseQrelsTsv } from '../beir/metrics.js';
 import type { BrightTaskData } from './adapter.js';
@@ -101,54 +102,100 @@ describe('runBright', () => {
     await fsp.rm(root, { recursive: true, force: true });
   });
 
-  it('drives the REAL BEIR runner (lexical) over the materialised BRIGHT data — same runner seam', async () => {
+  it('drives the real BEIR hybrid path with non-default RRF weights over materialised BRIGHT data', async () => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-bright-seam-'));
+    const previousDense = process.env.KB_HYBRID_DENSE_WEIGHT;
+    const previousLexical = process.env.KB_HYBRID_LEXICAL_WEIGHT;
+    process.env.KB_HYBRID_DENSE_WEIGHT = '0';
+    process.env.KB_HYBRID_LEXICAL_WEIGHT = '2';
     const deps: BrightRunDependencies = {
       loadTask: async () => TASK,
       gitSha: async () => 'test-sha',
       now: () => new Date('2026-06-08T00:00:00.000Z'),
-      // The injected runner is the genuine runBeirBenchmark with a mocked lexical
-      // index — so BRIGHT data flows through the production scorer, proving the
-      // adapter output is consumable by the unchanged BEIR runner.
+      // The injected runner is the genuine BEIR runner. Its backend calls the
+      // production retrieval-eval hybrid path with deterministic dense and
+      // lexical legs so the BRIGHT adapter, RRF weights, and scorer are all live.
       runBenchmark: (argv) => runBeirBenchmark(parseBeirArgs(argv), {
         gitSha: async () => 'test-sha',
         now: () => new Date('2026-06-08T00:00:00.000Z'),
         pythonVersion: async () => null,
         silenceServerLogger: async () => undefined,
-        loadSearchBackend: async () => { throw new Error('lexical mode must not load the dense backend'); },
-        loadLexicalIndex: async (_buildRoot, _kbName, kbPath): Promise<LexicalIndexLike> => {
-          const files = await fsp.readdir(kbPath);
+        loadLexicalIndex: async () => { throw new Error('hybrid backend supplies its lexical leg'); },
+        loadSearchBackend: async (input: LoadSearchBackendInput): Promise<BeirSearchBackend> => {
+          const evalModule = await import('../../src/retrieval-eval.js');
           return {
-            refresh: async () => ({ added: files.length, updated: 0, removed: 0, failed: 0, totalFiles: files.length, totalChunks: files.length }),
-            save: async () => undefined,
-            // Rank the gold document first for every query: the file whose name
-            // carries the gold doc id. b1→d-bio-1, b2→d-bio-2.
-            query: async (queryText) => {
-              const goldId = queryText.includes('light') ? 'd-bio-2' : 'd-bio-1';
-              const goldFile = files.find((f) => f.includes(goldId));
-              if (goldFile === undefined) throw new Error(`no file for ${goldId}`);
-              return [{ metadata: { source: path.join(kbPath, goldFile) }, score: 10 }];
+            implementation: 'production retrieval-eval hybrid path with deterministic legs',
+            prepare: async () => ({ files: TASK.documents.length, chunks: TASK.documents.length }),
+            search: async (query, fetchK) => {
+              const kbRoot = process.env.KNOWLEDGE_BASES_ROOT_DIR;
+              if (kbRoot === undefined) throw new Error('BEIR workspace root was not configured');
+              const kbPath = path.join(kbRoot, input.kbName);
+              const files = await fsp.readdir(kbPath);
+              const goldId = query.includes('light') ? 'd-bio-2' : 'd-bio-1';
+              const goldFile = files.find((file) => file.includes(goldId));
+              const distractorFile = files.find((file) => file.includes('d-bio-3'));
+              if (goldFile === undefined || distractorFile === undefined) {
+                throw new Error(`missing materialised BRIGHT files for ${goldId}`);
+              }
+              const makeDoc = (file: string, score: number) => ({
+                pageContent: file,
+                metadata: {
+                  source: path.join(kbPath, file),
+                  relativePath: `${input.kbName}/${file}`,
+                  knowledgeBase: input.kbName,
+                  chunkIndex: 0,
+                },
+                score,
+              });
+              const result = await evalModule.retrieveForRetrievalEvalCase({
+                name: 'bright',
+                query,
+                kb: input.kbName,
+                k: fetchK,
+                threshold: Number.POSITIVE_INFINITY,
+                requiredSources: [],
+                forbiddenSources: [],
+                expectedMetadata: [],
+                stalePolicy: 'allow_stale',
+              }, {
+                defaultK: fetchK,
+                defaultThreshold: Number.POSITIVE_INFINITY,
+                manager: { similaritySearch: async () => [makeDoc(distractorFile, 0.1)] },
+                retrieveLexical: async () => [makeDoc(goldFile, 10)],
+              }, 'hybrid');
+              return result.results.map((entry) => ({
+                metadata: entry.metadata,
+                score: entry.score ?? 0,
+              }));
             },
-            numChunks: () => files.length,
-            numFiles: () => files.length,
           };
         },
       }),
     };
 
-    const result = await runBright({
-      tasks: ['biology'],
-      modes: ['lexical'],
-      brightDir: '/unused',
-      split: 'test',
-      outputDir: path.join(root, 'out'),
-      datasetsDir: path.join(root, 'datasets'),
-      workspaceRoot: path.join(root, 'kb-beir-bright-seam'),
-      cacheDir: path.join(root, 'cache'),
-    }, deps);
+    let result: Awaited<ReturnType<typeof runBright>>;
+    try {
+      result = await runBright({
+        tasks: ['biology'],
+        modes: ['hybrid'],
+        brightDir: '/unused',
+        provider: 'fake',
+        split: 'test',
+        outputDir: path.join(root, 'out'),
+        datasetsDir: path.join(root, 'datasets'),
+        workspaceRoot: path.join(root, 'kb-beir-bright-seam'),
+        cacheDir: path.join(root, 'cache'),
+      }, deps);
+    } finally {
+      if (previousDense === undefined) delete process.env.KB_HYBRID_DENSE_WEIGHT;
+      else process.env.KB_HYBRID_DENSE_WEIGHT = previousDense;
+      if (previousLexical === undefined) delete process.env.KB_HYBRID_LEXICAL_WEIGHT;
+      else process.env.KB_HYBRID_LEXICAL_WEIGHT = previousLexical;
+    }
 
-    // Gold doc ranked first for both queries → perfect nDCG@10 through the real scorer.
-    expect(result.points[0]).toMatchObject({ task: 'biology', mode: 'lexical', ndcgAt10: 1, queriesEvaluated: 2 });
+    // Dense is disabled and the lexical leg ranks each gold doc first, so the
+    // production weighted fusion produces perfect nDCG through the real scorer.
+    expect(result.points[0]).toMatchObject({ task: 'biology', mode: 'hybrid', ndcgAt10: 1, queriesEvaluated: 2 });
 
     await fsp.rm(root, { recursive: true, force: true });
   });

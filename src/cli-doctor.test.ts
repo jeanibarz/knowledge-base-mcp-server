@@ -344,12 +344,17 @@ describe('kb doctor', () => {
       await fsp.mkdir(path.join(rootDir, 'beta', '.index'), { recursive: true });
       const alphaOld = path.join(rootDir, 'alpha', 'old.md');
       const alphaNewer = path.join(rootDir, 'alpha', 'newer.md');
+      const alphaNew = path.join(rootDir, 'alpha', 'new.md');
       const betaUnsided = path.join(rootDir, 'beta', 'unsidecarred.md');
       await fsp.writeFile(alphaOld, 'old');
       await fsp.writeFile(alphaNewer, 'newer');
+      await fsp.writeFile(alphaNew, 'new');
       await fsp.writeFile(betaUnsided, 'beta');
-      await fsp.writeFile(path.join(rootDir, 'alpha', '.index', 'old.md'), 'hash');
-      await fsp.writeFile(path.join(rootDir, 'alpha', '.index', 'newer.md'), 'hash');
+      await fsp.writeFile(path.join(rootDir, 'alpha', '.index', 'old.md'), 'a'.repeat(64));
+      await fsp.writeFile(path.join(rootDir, 'alpha', '.index', 'newer.md'), 'b'.repeat(64));
+      await fsp.writeFile(path.join(rootDir, 'alpha', '.index', 'old.md.chunks.json'), '{}');
+      await fsp.writeFile(path.join(rootDir, 'alpha', '.index', 'newer.md.chunks.json'), '{}');
+      await fsp.writeFile(path.join(rootDir, 'alpha', '.index', 'quarantine.jsonl'), '');
       await fsp.mkdir(extractionCacheDir, { recursive: true });
       const extractionCacheEntry = path.join(extractionCacheDir, `${'c'.repeat(64)}.txt`);
       await fsp.writeFile(extractionCacheEntry, 'cached extracted text');
@@ -371,6 +376,7 @@ describe('kb doctor', () => {
       await fsp.utimes(binaryPath, indexMs / 1000, indexMs / 1000);
       await fsp.utimes(alphaOld, oldMs / 1000, oldMs / 1000);
       await fsp.utimes(alphaNewer, newerMs / 1000, newerMs / 1000);
+      await fsp.utimes(alphaNew, oldMs / 1000, oldMs / 1000);
       await fsp.utimes(betaUnsided, oldMs / 1000, oldMs / 1000);
       await fsp.utimes(extractionCacheEntry, oldMs / 1000, oldMs / 1000);
       await fsp.mkdir(path.join(tempDir, 'build'), { recursive: true });
@@ -460,7 +466,7 @@ describe('kb doctor', () => {
         files_unchanged: 1,
       });
       expect(report.cli.symlinked_checkout_path).toBe(tempDir);
-      expect(report.stale_counts_by_kb.alpha).toEqual({ modified_files: 1, new_files: 0 });
+      expect(report.stale_counts_by_kb.alpha).toEqual({ modified_files: 1, new_files: 1 });
       expect(report.stale_counts_by_kb.beta).toEqual({ modified_files: 0, new_files: 1 });
       expect(report.quarantine_counts_by_kb).toEqual({ alpha: 0, beta: 0 });
       expect(report.incomplete_models).toEqual([]);
@@ -474,13 +480,14 @@ describe('kb doctor', () => {
       expect(markdown).toContain('Extracted-text cache:');
       expect(markdown).toContain(`path: ${extractionCacheDir}`);
       expect(markdown).toContain('entries: 1, bytes=21 B, exists=yes');
-      expect(markdown).toContain('alpha: 1 modified, 0 new');
+      expect(markdown).toContain('alpha: 1 modified, 1 new');
       expect(markdown).toContain('beta: 0 modified, 1 new');
       expect(markdown).toContain('Ingest quarantine by KB:\n  alpha: 0 quarantined\n  beta: 0 quarantined');
       expect(markdown).toContain('Incomplete model dirs:\n  (none)');
 
       const json = JSON.parse(JSON.stringify(report)) as typeof report;
       expect(json.stale_counts_by_kb.alpha.modified_files).toBe(1);
+      expect(json.stale_counts_by_kb.alpha.new_files).toBe(1);
       expect(json.quarantine_counts_by_kb.alpha).toBe(0);
       expect(json.last_index_update.saved).toBe(true);
     } finally {

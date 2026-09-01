@@ -144,19 +144,32 @@ describe('kb serve daemon', () => {
   it('injects a cached lexical loader into daemon-served search', async () => {
     const lexicalIndex = { numFiles: () => 1 } as unknown as LexicalIndex;
     const lexicalIndexLoader = jest.fn(async () => lexicalIndex);
+    const lexicalIndexFreshLoader = jest.fn(async () => lexicalIndex);
+    const lexicalIndexInvalidator = jest.fn((_kbName: string, _kbPath: string): void => {});
     const runSearchImpl = jest.fn(async (_args: string[], deps: RunSearchDeps = {} as RunSearchDeps) => {
       await expect(deps.loadLexicalIndex?.('alpha', '/kb/alpha')).resolves.toBe(lexicalIndex);
+      await expect(deps.loadFreshLexicalIndex?.('alpha', '/kb/alpha')).resolves.toBe(lexicalIndex);
+      await deps.invalidateLexicalIndex?.('alpha', '/kb/alpha');
       return 0;
     });
-    const handlers = createDaemonCommandHandlers({ lexicalIndexLoader, runSearchImpl });
+    const handlers = createDaemonCommandHandlers({
+      lexicalIndexLoader,
+      lexicalIndexFreshLoader,
+      lexicalIndexInvalidator,
+      runSearchImpl,
+    });
 
     const result = await handlers.search(['query', '--mode=hybrid']);
 
     expect(result).toEqual({ exitCode: 0, stdout: '', stderr: '' });
     expect(runSearchImpl).toHaveBeenCalledWith(['query', '--mode=hybrid'], expect.objectContaining({
       loadLexicalIndex: lexicalIndexLoader,
+      loadFreshLexicalIndex: lexicalIndexFreshLoader,
+      invalidateLexicalIndex: lexicalIndexInvalidator,
     }));
     expect(lexicalIndexLoader).toHaveBeenCalledWith('alpha', '/kb/alpha');
+    expect(lexicalIndexFreshLoader).toHaveBeenCalledWith('alpha', '/kb/alpha');
+    expect(lexicalIndexInvalidator).toHaveBeenCalledWith('alpha', '/kb/alpha');
   });
 
   it('prewarms the active model manager, FAISS index, and lexical indexes on demand', async () => {

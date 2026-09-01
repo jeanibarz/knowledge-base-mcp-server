@@ -24,7 +24,7 @@ describe('freshness manifest', () => {
     const beforeIndex = new Date('2026-05-03T15:00:00.000Z');
     const afterIndex = new Date('2026-05-03T16:00:00.000Z');
 
-    const alphaFresh = path.join(kbRoot, 'alpha', 'fresh.md');
+    const alphaFresh = path.join(kbRoot, 'alpha', 'notes', 'fresh.md');
     const alphaModified = path.join(kbRoot, 'alpha', 'modified.md');
     const betaNew = path.join(kbRoot, 'beta', 'new.md');
     await fsp.mkdir(path.dirname(alphaFresh), { recursive: true });
@@ -36,7 +36,22 @@ describe('freshness manifest', () => {
     await fsp.utimes(alphaModified, afterIndex, afterIndex);
     await fsp.utimes(betaNew, beforeIndex, beforeIndex);
     await fsp.mkdir(path.join(kbRoot, 'alpha', '.index'), { recursive: true });
-    await fsp.writeFile(path.join(kbRoot, 'alpha', '.index', 'fresh.md'), 'hash', 'utf-8');
+    await fsp.mkdir(path.join(kbRoot, 'alpha', '.index', 'notes'), { recursive: true });
+    await fsp.writeFile(
+      path.join(kbRoot, 'alpha', '.index', 'notes', 'fresh.md'),
+      'a'.repeat(64),
+      'utf-8',
+    );
+    await fsp.writeFile(
+      path.join(kbRoot, 'alpha', '.index', 'notes', 'fresh.md.chunks.json'),
+      '{}',
+      'utf-8',
+    );
+    await fsp.writeFile(
+      path.join(kbRoot, 'alpha', '.index', 'quarantine.jsonl'),
+      '',
+      'utf-8',
+    );
 
     const manifest = await writeFreshnessManifest({
       modelId: 'huggingface__test',
@@ -65,6 +80,34 @@ describe('freshness manifest', () => {
     expect(manifest.filter.base_extensions).not.toContain('.pdf');
     await expect(fsp.stat(freshnessManifestPath(modelDir))).resolves.toMatchObject({
       isFile: expect.any(Function),
+    });
+  });
+
+  it('does not count same-named quarantine metadata as a hash sidecar', async () => {
+    const tempDir = await mkTempDir();
+    const kbPath = path.join(tempDir, 'kbs', 'alpha');
+    const modelDir = path.join(tempDir, '.faiss', 'models', 'huggingface__test');
+    const sourcePath = path.join(kbPath, 'quarantine.jsonl');
+    await fsp.mkdir(path.join(kbPath, '.index'), { recursive: true });
+    await fsp.writeFile(sourcePath, '{"document":true}\n', 'utf-8');
+    await fsp.writeFile(
+      path.join(kbPath, '.index', 'quarantine.jsonl'),
+      '{"schema_version":"ingest-quarantine.v1"}\n',
+      'utf-8',
+    );
+
+    const manifest = await writeFreshnessManifest({
+      modelId: 'huggingface__test',
+      modelDir,
+      kbRootDir: path.join(tempDir, 'kbs'),
+      indexMtimeMs: Date.now(),
+      filterConfig: { extraExtensions: ['.jsonl'], excludePaths: [] },
+    });
+
+    expect(manifest.kbs.alpha).toMatchObject({
+      file_count: 1,
+      sidecar_count: 0,
+      new_files: 1,
     });
   });
 

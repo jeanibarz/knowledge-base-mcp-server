@@ -299,6 +299,12 @@ describe('BEIR runner dense/hybrid modes', () => {
         const retrieveCalls: Array<{ mode: string; query: string }> = [];
         const loadSearchBackend = (input: LoadSearchBackendInput): Promise<BeirSearchBackend> =>
           loadProductionFakeBackend(input, (m, q) => retrieveCalls.push({ mode: m, query: q }));
+        const savedDenseWeight = process.env.KB_HYBRID_DENSE_WEIGHT;
+        const savedLexicalWeight = process.env.KB_HYBRID_LEXICAL_WEIGHT;
+        if (mode === 'hybrid') {
+          process.env.KB_HYBRID_DENSE_WEIGHT = '0.5';
+          process.env.KB_HYBRID_LEXICAL_WEIGHT = '2';
+        }
 
         const args = parseArgs([
           '--dataset=tiny',
@@ -312,12 +318,23 @@ describe('BEIR runner dense/hybrid modes', () => {
           '--keep-workspace',
         ]);
 
-        const result = await runBeirBenchmark(args, { ...baseDeps, loadSearchBackend });
+        let result: Awaited<ReturnType<typeof runBeirBenchmark>>;
+        try {
+          result = await runBeirBenchmark(args, { ...baseDeps, loadSearchBackend });
+        } finally {
+          if (savedDenseWeight === undefined) delete process.env.KB_HYBRID_DENSE_WEIGHT;
+          else process.env.KB_HYBRID_DENSE_WEIGHT = savedDenseWeight;
+          if (savedLexicalWeight === undefined) delete process.env.KB_HYBRID_LEXICAL_WEIGHT;
+          else process.env.KB_HYBRID_LEXICAL_WEIGHT = savedLexicalWeight;
+        }
 
         // The runner drove the production entrypoint for this mode.
         expect(retrieveCalls).toContainEqual({ mode, query: 'alpha gravity wave detection' });
         expect(result.report.mode).toBe(mode);
         expect(result.report.embedding).toEqual({ provider: 'fake', model: 'fake-embeddings' });
+        expect(result.report.hybrid_rrf_weights).toEqual(mode === 'hybrid'
+          ? { dense: '0.5', lexical: '2' }
+          : null);
         // Both corpus docs fit in the top-10, so the relevant doc is always
         // recalled regardless of fake-embedding geometry.
         expect(result.report.metrics.recallAt10).toBe(1);
@@ -327,6 +344,11 @@ describe('BEIR runner dense/hybrid modes', () => {
 
         const trec = await fsp.readFile(result.trecPath, 'utf-8');
         expect(trec).toContain('q1 Q0 doc-alpha');
+        if (mode === 'hybrid') {
+          await expect(fsp.readFile(result.reportPath, 'utf-8')).resolves.toContain(
+            'RRF weights: dense=0.5, lexical=2',
+          );
+        }
       }, 60_000);
     }
   });

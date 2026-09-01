@@ -22,6 +22,9 @@ import {
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KB_EDITOR_URI,
+  parseHybridRrfWeight,
+  resolveHybridRrfWeights,
+  type HybridRrfWeights,
 } from './config/retrieval.js';
 import {
   KNOWLEDGE_BASES_ROOT_DIR,
@@ -227,6 +230,10 @@ Result tuning:
   --mode=dense|lexical|hybrid|auto
                         Retrieval mode (default: dense). \`hybrid\` fuses
                         dense + BM25 via reciprocal rank fusion (#206).
+  --dense-weight=<float>
+                        Hybrid RRF dense weight (default: KB_HYBRID_DENSE_WEIGHT or 1).
+  --lexical-weight=<float>
+                        Hybrid RRF lexical weight (default: KB_HYBRID_LEXICAL_WEIGHT or 1).
   --lexical-unit=chunk|source
                         BM25 ranking unit for lexical and hybrid modes.
                         chunk ranks each chunk; source ranks each source file
@@ -404,6 +411,8 @@ interface SearchArgs {
   lexicalUnit: LexicalRankingUnit;
   retrievalViews?: RetrievalViewKind[];
   candidatePoolK?: number;
+  rrfWeights: Partial<HybridRrfWeights>;
+  rrfWeightsExplicit: boolean;
   decompose: boolean;
   decomposeProvider: 'rule' | 'llm';
   decomposeBudget: Partial<QueryDecompositionBudget>;
@@ -420,6 +429,8 @@ export interface RunSearchDeps {
   listKnowledgeBases?: typeof listKnowledgeBases;
   resolveKnowledgeBaseDir?: typeof resolveKnowledgeBaseDir;
   loadLexicalIndex?: typeof LexicalIndex.load;
+  loadFreshLexicalIndex?: typeof LexicalIndex.load;
+  invalidateLexicalIndex?: (kbName: string, kbPath: string) => void | Promise<void>;
   runLexicalLeg?: typeof runLexicalLeg;
   onSearchTiming?: (record: {
     mode: EffectiveSearchMode;
@@ -510,6 +521,10 @@ export async function runSearch(
       process.stderr.write('kb search: --interactive cannot be combined with --batch-jsonl\n');
       return 2;
     }
+    if (parsed.rrfWeightsExplicit) {
+      process.stderr.write('kb search: --dense-weight/--lexical-weight are only supported with --mode=hybrid\n');
+      return 2;
+    }
     return runBatchJsonlSearch(parsed, deps, totalStartedAt);
   } else if (parsed.query === null) {
     process.stderr.write('kb search: missing <query> (or use --stdin)\n');
@@ -589,6 +604,10 @@ export async function runSearch(
   }
   if (parsed.candidatePoolK !== undefined && effectiveMode !== 'hybrid') {
     process.stderr.write('kb search: --candidate-pool-k is only supported with --mode=hybrid\n');
+    return 2;
+  }
+  if (parsed.rrfWeightsExplicit && effectiveMode !== 'hybrid') {
+    process.stderr.write('kb search: --dense-weight/--lexical-weight are only supported with --mode=hybrid\n');
     return 2;
   }
   if (parsed.decompose && effectiveMode !== 'hybrid') {
@@ -1050,6 +1069,8 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     extensions: [],
     tags: [],
     lexicalUnit: 'chunk',
+    rrfWeights: {},
+    rrfWeightsExplicit: false,
     decompose: false,
     decomposeProvider: 'rule',
     decomposeBudget: {},
@@ -1133,6 +1154,26 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
         throw new Error(`invalid --lexical-unit: ${raw} (expected 'chunk' or 'source')`);
       }
       out.lexicalUnit = v; continue;
+    }
+    if (raw.startsWith('--dense-weight=')) {
+      const value = raw.slice('--dense-weight='.length);
+      if (value.trim() === '') throw new Error(`invalid --dense-weight: ${raw}`);
+      out.rrfWeights.dense = parseHybridRrfWeight(
+        value,
+        '--dense-weight',
+      );
+      out.rrfWeightsExplicit = true;
+      continue;
+    }
+    if (raw.startsWith('--lexical-weight=')) {
+      const value = raw.slice('--lexical-weight='.length);
+      if (value.trim() === '') throw new Error(`invalid --lexical-weight: ${raw}`);
+      out.rrfWeights.lexical = parseHybridRrfWeight(
+        value,
+        '--lexical-weight',
+      );
+      out.rrfWeightsExplicit = true;
+      continue;
     }
     if (raw.startsWith('--retrieval-views=')) {
       out.retrievalViews = parseRetrievalViews(raw.slice('--retrieval-views='.length));
@@ -2925,6 +2966,8 @@ async function runHybridSearch(
         filters,
         retrievalViews: parsed.retrievalViews,
         loadIndex: deps.loadLexicalIndex,
+        loadFreshIndex: deps.loadFreshLexicalIndex,
+        invalidateIndex: deps.invalidateLexicalIndex,
         onError: (kbName, err) => {
           process.stderr.write(`kb search (hybrid lexical leg): ${kbName} — ${err.message}\n`);
         },
@@ -2944,10 +2987,15 @@ async function runHybridSearch(
       ? fetchK
       : resolvedRerankConfig.enabled ? Math.max(outputK, resolvedRerankConfig.topN) : outputK;
     const fusionStartedAt = nowMs();
+    const environmentRrfWeights = resolveHybridRrfWeights();
     const fusion = fuseHybridResultsWithDiagnostics({
       denseResults,
       lexicalResults,
       k: fusionK,
+      weights: {
+        dense: parsed.rrfWeights.dense ?? environmentRrfWeights.dense,
+        lexical: parsed.rrfWeights.lexical ?? environmentRrfWeights.lexical,
+      },
     });
     let ranked = fusion.results;
     let highRecallDiagnostics: HighRecallFilterDiagnostics | null = null;

@@ -21,7 +21,7 @@ Use **RRF with `c = 60`** as the default and only fuser for `--mode=hybrid` and 
 
 - **Score-distribution invariance.** Dense scores are FAISS L2 distances on float vectors; BM25 scores are TF-IDF aggregates over token frequencies. There is no principled normalization between them. RRF sidesteps the question entirely.
 - **Cross-model stability.** When users add a second embedding model (RFC 013 multi-model support), the dense score distribution shifts; RRF keeps fusion stable.
-- **One-knob simplicity.** Cormack's `c=60` choice has held up empirically across TREC corpora and inside LangChain's production retriever stack. The shipped surface keeps that constant and equal dense/lexical weights; neither setting is currently exposed as an operator environment variable.
+- **Conservative defaults.** Cormack's `c=60` choice has held up empirically across TREC corpora and inside LangChain's production retriever stack. The shipped surface keeps that constant and defaults dense/lexical weights to `1:1`.
 - **Existing convention.** RFC 006 §5.4 already chose RRF for the dense-multi-provider fusion path. Reusing the same combinator for sparse+dense keeps the codebase coherent and lets the eventual three-way (dense_A + dense_B + lexical) fusion in RFC 006's `deep` tier be a one-line extension instead of a redesign.
 - **Per-retriever weight headroom.** RRF accepts `w_r` weights without changing the math, so future ablations on `α` can land as `weights = { dense: α, lexical: 1-α }` without reworking the combinator.
 
@@ -35,8 +35,10 @@ Use **RRF with `c = 60`** as the default and only fuser for `--mode=hybrid` and 
 ## Implementation Notes
 
 - `src/rrf.ts` is the only place the RRF math lives. Pure function; unit-tested.
-- `c` is hard-coded to `60` at the call sites today. Surfacing it as `KB_HYBRID_RRF_C` is a small follow-up if operator demand surfaces.
-- Per-retriever weights are wired through `RRFOptions.weights` but not exposed via env var in v1. Default `dense: 1, lexical: 1`.
+- `c` remains hard-coded to `60`. Surfacing it as `KB_HYBRID_RRF_C` is a separate follow-up if operator demand surfaces.
+- `KB_HYBRID_DENSE_WEIGHT` and `KB_HYBRID_LEXICAL_WEIGHT` set process-wide non-negative weights. Both default to `1`, preserving the original fused output.
+- `kb search --dense-weight=<float> --lexical-weight=<float>` overrides the corresponding environment values for one hybrid query. Use a zero weight to isolate one leg during an evaluation.
+- Treat non-default weights as corpus-specific tuning. Run the BEIR/BRIGHT evaluation gate before deployment; exact-token corpora may benefit from a larger lexical weight, while prose-heavy corpora may favor dense retrieval.
 - Tie-break on equal `fusedScore` is **stable insertion order** of the contributing lists — dense first, then lexical. Documented in the unit tests.
 
 ## Validation

@@ -404,6 +404,41 @@ describe('retrieveForRetrievalEvalCase', () => {
       else process.env.KB_RERANK_TOP_N = previousTopN;
     }
   });
+
+  it('FR-SEARCH-912: applies process-wide weights at hybrid fusion time', async () => {
+    const previousDense = process.env.KB_HYBRID_DENSE_WEIGHT;
+    const previousLexical = process.env.KB_HYBRID_LEXICAL_WEIGHT;
+    process.env.KB_HYBRID_DENSE_WEIGHT = '0';
+    process.env.KB_HYBRID_LEXICAL_WEIGHT = '2';
+
+    try {
+      const result = await retrieveForRetrievalEvalCase(
+        fixtureCase({ k: 1, query: 'deployment notes' }),
+        {
+          defaultK: 10,
+          defaultThreshold: 2,
+          manager: {
+            similaritySearch: async () => [{
+              pageContent: 'content from /kb/dense-only.md',
+              metadata: { source: '/kb/dense-only.md', relativePath: '/kb/dense-only.md' },
+              score: 0.1,
+            }],
+          },
+          retrieveLexical: async () => [doc('/kb/lexical-only.md', 10)],
+        },
+        'hybrid',
+      );
+
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].metadata.source).toBe('/kb/lexical-only.md');
+      expect(result.results[0].score).toBeCloseTo(2 / 61, 12);
+    } finally {
+      if (previousDense === undefined) delete process.env.KB_HYBRID_DENSE_WEIGHT;
+      else process.env.KB_HYBRID_DENSE_WEIGHT = previousDense;
+      if (previousLexical === undefined) delete process.env.KB_HYBRID_LEXICAL_WEIGHT;
+      else process.env.KB_HYBRID_LEXICAL_WEIGHT = previousLexical;
+    }
+  });
 });
 
 describe('evaluateRetrievalCase', () => {
