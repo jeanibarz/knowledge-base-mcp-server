@@ -17,6 +17,7 @@ import {
   KB_EMBEDDING_TASK_PREFIXES,
   KB_FAKE_DIM,
   OLLAMA_BASE_URL,
+  OPENAI_BASE_URL,
 } from './config/provider.js';
 import { KBError } from './errors.js';
 import { logger } from './logger.js';
@@ -280,7 +281,7 @@ export function embeddingProviderBreakerKey(
 ): string | null {
   if (provider === 'fake') return null;
   if (provider === 'ollama') return `embedding:ollama:${OLLAMA_BASE_URL}:${modelName}`;
-  if (provider === 'openai') return `embedding:openai:https://api.openai.com/v1/embeddings:${modelName}`;
+  if (provider === 'openai') return `embedding:openai:${OPENAI_BASE_URL}/embeddings:${modelName}`;
   const endpointUrl = HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN
     ? HUGGINGFACE_ENDPOINT_URL
     : `https://router.huggingface.co/hf-inference/models/${modelName}/pipeline/feature-extraction`;
@@ -330,9 +331,15 @@ async function constructEmbeddingsClient(
       throw new KBError('PROVIDER_AUTH', 'OPENAI_API_KEY environment variable is required when using OpenAI provider');
     }
     const { OpenAIEmbeddings } = await import('@langchain/openai');
+    // OPENAI_BASE_URL targets OpenAI-compatible endpoints (self-hosted
+    // gateways, Volcengine Ark, …). Passed explicitly so the endpoint does
+    // not depend on the transitive openai SDK's own env fallback —
+    // @langchain/openai itself never reads the variable. Unset,
+    // OPENAI_BASE_URL is the official api.openai.com default.
     return new OpenAIEmbeddings({
       apiKey: openaiApiKey,
       model: modelName,
+      configuration: { baseURL: OPENAI_BASE_URL },
     });
   }
 

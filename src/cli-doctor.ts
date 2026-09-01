@@ -27,6 +27,7 @@ import {
 import {
   HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
   OLLAMA_BASE_URL,
+  OPENAI_BASE_URL_OVERRIDDEN,
 } from './config/provider.js';
 import {
   INGEST_EXCLUDE_PATHS,
@@ -2610,9 +2611,13 @@ async function defaultBackendHealthCheck(
   }
 
   if (provider === 'openai') {
-    return process.env.OPENAI_API_KEY
-      ? { healthy: true, detail: `OPENAI_API_KEY is set for ${modelName}` }
-      : { healthy: false, detail: 'OPENAI_API_KEY is not set' };
+    if (!process.env.OPENAI_API_KEY) {
+      return { healthy: false, detail: 'OPENAI_API_KEY is not set' };
+    }
+    const endpointNote = OPENAI_BASE_URL_OVERRIDDEN
+      ? 'custom endpoint configured'
+      : 'default api.openai.com endpoint';
+    return { healthy: true, detail: `OPENAI_API_KEY is set for ${modelName}; ${endpointNote}` };
   }
 
   if (provider === 'huggingface') {

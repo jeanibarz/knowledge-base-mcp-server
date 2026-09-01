@@ -149,3 +149,11 @@ export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'dengcao/Qwen3-Embedding
 // OpenAI configuration
 export const DEFAULT_OPENAI_MODEL_NAME = 'text-embedding-3-small';
 export const OPENAI_MODEL_NAME = process.env.OPENAI_MODEL_NAME || DEFAULT_OPENAI_MODEL_NAME;
+
+// OpenAI-compatible endpoints (self-hosted gateways, Azure OpenAI,
+// Volcengine Ark, OpenRouter, …). Overrides the base URL used by the OpenAI
+// embedding provider; unset keeps the official api.openai.com default. The
+// value must include the API version path (e.g. /v1).
+const OPENAI_BASE_URL_OVERRIDE = process.env.OPENAI_BASE_URL?.trim();
+export const OPENAI_BASE_URL_OVERRIDDEN = Boolean(OPENAI_BASE_URL_OVERRIDE);
+export const OPENAI_BASE_URL = OPENAI_BASE_URL_OVERRIDE || 'https://api.openai.com/v1';

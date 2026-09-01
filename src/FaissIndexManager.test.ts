@@ -336,6 +336,7 @@ describe('provider construction', () => {
     expect(openAIEmbeddingConstructorMock).toHaveBeenCalledWith({
       apiKey: 'test-openai-key',
       model: 'text-embedding-3-large',
+      configuration: { baseURL: 'https://api.openai.com/v1' },
     });
   });
 

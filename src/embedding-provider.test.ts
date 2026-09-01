@@ -8,6 +8,7 @@ const originalEnv = {
   KB_PROVIDER_BREAKER: process.env.KB_PROVIDER_BREAKER,
   HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
 };
 
 afterEach(() => {
@@ -325,6 +326,67 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
       state: 'closed',
       consecutive_failures: 0,
     })]);
+  });
+});
+
+describe('OpenAI arm — OPENAI_BASE_URL for OpenAI-compatible endpoints', () => {
+  // OpenAIEmbeddings sits two wrappers down (breaker → timeout → provider).
+  function unwrapToOpenAIEmbeddings(
+    client: unknown,
+  ): { clientConfig: { baseURL?: string } } {
+    const timeout = (client as { inner: unknown }).inner;
+    return (timeout as { inner: { clientConfig: { baseURL?: string } } }).inner;
+  }
+
+  it('derives the breaker key from OPENAI_BASE_URL so the key matches the endpoint actually called', async () => {
+    const { embeddingProviderBreakerKey } = await loadFresh({ OPENAI_BASE_URL: undefined });
+    expect(embeddingProviderBreakerKey('openai', 'text-embedding-3-small'))
+      .toBe('embedding:openai:https://api.openai.com/v1/embeddings:text-embedding-3-small');
+
+    const overridden = await loadFresh({
+      OPENAI_BASE_URL: 'https://ark.cn-beijing.volces.com/api/v3',
+    });
+    expect(overridden.embeddingProviderBreakerKey('openai', 'text-embedding-3-small'))
+      .toBe('embedding:openai:https://ark.cn-beijing.volces.com/api/v3/embeddings:text-embedding-3-small');
+  });
+
+  it('passes a custom OPENAI_BASE_URL through to the OpenAI client configuration', async () => {
+    const { createEmbeddingsClient } = await loadFresh({
+      OPENAI_API_KEY: 'test-openai-key',
+      OPENAI_BASE_URL: 'https://ark.cn-beijing.volces.com/api/v3',
+    });
+    const client = await createEmbeddingsClient({
+      provider: 'openai',
+      modelName: 'text-embedding-3-small',
+    });
+    expect(unwrapToOpenAIEmbeddings(client).clientConfig.baseURL)
+      .toBe('https://ark.cn-beijing.volces.com/api/v3');
+  });
+
+  it('keeps the official api.openai.com base URL when OPENAI_BASE_URL is unset', async () => {
+    const { createEmbeddingsClient } = await loadFresh({
+      OPENAI_API_KEY: 'test-openai-key',
+      OPENAI_BASE_URL: undefined,
+    });
+    const client = await createEmbeddingsClient({
+      provider: 'openai',
+      modelName: 'text-embedding-3-small',
+    });
+    expect(unwrapToOpenAIEmbeddings(client).clientConfig.baseURL)
+      .toBe('https://api.openai.com/v1');
+  });
+
+  it('treats a blank OPENAI_BASE_URL as unset', async () => {
+    const { createEmbeddingsClient } = await loadFresh({
+      OPENAI_API_KEY: 'test-openai-key',
+      OPENAI_BASE_URL: '   ',
+    });
+    const client = await createEmbeddingsClient({
+      provider: 'openai',
+      modelName: 'text-embedding-3-small',
+    });
+    expect(unwrapToOpenAIEmbeddings(client).clientConfig.baseURL)
+      .toBe('https://api.openai.com/v1');
   });
 });
 
