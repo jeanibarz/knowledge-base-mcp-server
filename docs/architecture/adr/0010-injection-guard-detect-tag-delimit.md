@@ -20,7 +20,7 @@ Add a small retrieval-time content guard at the formatter boundary:
 - `KB_INJECTION_GUARD=off`: preserve the historical content and metadata shape.
 - `KB_INJECTION_GUARD_BYPASS_KBS`: comma-separated KB names that skip both detection and wrapping.
 
-The v0 detector is deterministic and local. It checks for system-role markers, common instruction-override phrases, the configured closing wrapper delimiter, Unicode bidi controls, zero-width controls, and Unicode tag characters. It never blocks, strips, rewrites, or calls an LLM classifier. Wrap mode separately neutralizes configured delimiter tokens because wrapping is already an explicit content-rewriting mode.
+The v0 detector is deterministic and local. It checks for system-role markers, common instruction-override phrases, the configured closing wrapper delimiter (task-context inspection applies that rule only in wrapping modes, where an envelope actually exists), Unicode bidi controls, zero-width controls, and Unicode tag characters. It never blocks, strips, rewrites, or calls an LLM classifier. Wrap mode separately neutralizes configured delimiter tokens because wrapping is already an explicit content-rewriting mode.
 
 ## Decision Drivers
 
@@ -29,7 +29,7 @@ The v0 detector is deterministic and local. It checks for system-role markers, c
 - **Bypass for security corpora.** KBs that intentionally store injection examples can opt out by name to avoid noisy metadata and wrapped fixtures.
 - **No provider dependency.** Regex and Unicode-class checks avoid latency, cost, and model-provider trust expansion.
 - **Narrow implementation.** The formatter is the shared retrieval render path for MCP and CLI JSON/markdown/grouped outputs, so the guard does not need MCP schema or CLI command changes.
-- **Unambiguous envelope.** Wrap mode fails closed when configured delimiters are empty, contain any Unicode line break, are whitespace-padded, or one outer delimiter contains the other. An opening template may contain at most one `{source}` placeholder and must include a static delimiter instead of being only the placeholder. The truncation parser applies the same checks before recognizing an envelope, and only recognizes one at all in `wrap` and `both` modes so content that merely documents the guard's own syntax is never rewritten under `tag` or `off`. Source metadata is interpolated with a replacer function so `$` substitution patterns cannot re-inject template fragments after escaping, and the opening template's static prefix is neutralized in content and metadata so no rendering of the opening delimiter for another source can appear verbatim inside the envelope.
+- **Unambiguous envelope.** Wrap mode fails closed when configured delimiters are empty, contain any Unicode line break, are whitespace-padded, or one outer delimiter contains the other. An opening template may contain at most one `{source}` placeholder and must carry static delimiter text on both sides of it, at least two characters before it: without a prefix there is nothing to neutralize in untrusted content, without a suffix the truncation parser would accept any line that merely starts with the prefix, and a one-character prefix would be substituted away rather than separated, erasing that character from every chunk body. The truncation parser applies the same checks before recognizing an envelope, and only recognizes one at all in `wrap` and `both` modes, and never for a bypassed knowledge base, so content that merely documents the guard's own syntax is never rewritten where it was never wrapped. Source metadata is interpolated with a replacer function so `$` substitution patterns cannot re-inject template fragments after escaping, and the opening template's static prefix is neutralized in content and metadata so no rendering of the opening delimiter for another source can appear verbatim inside the envelope.
 
 ## Considered and Rejected
 
@@ -53,6 +53,7 @@ Tradeoffs:
 - Default metadata shape changes by adding `injection_signals: []` even when no signals are found.
 - Wrap mode changes chunk content and can affect byte-sensitive evaluations.
 - Neutralized delimiter occurrences add invisible separator codepoints and therefore consume additional context-budget characters until restored outside the wrapper boundary.
+- A single-codepoint closing delimiter is substituted rather than separated, so configuring one removes that character from the text the model reads. The default delimiters are multi-character and unaffected; a one-character *opening* prefix is rejected outright.
 
 ## Validation
 

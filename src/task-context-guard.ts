@@ -20,7 +20,11 @@
 //   * Off by opt-out: `KB_GATE_TASK_CONTEXT_MODE=off` restores the exact
 //     prior behaviour (no warnings, no refusal).
 
-import { detectInjectionSignals, type InjectionSignal } from './injection-guard.js';
+import {
+  detectInjectionSignals,
+  resolveInjectionGuardOptions,
+  type InjectionSignal,
+} from './injection-guard.js';
 
 /**
  * Policy applied to task context handed to the relevance gate:
@@ -85,6 +89,17 @@ function describeSignalKinds(signals: InjectionSignal[]): string {
  * function of `(text, source, mode, argvMax)` alone. `kb search` prints
  * `warnings` to stderr and, when `refused`, prints `refuseReason` and exits 2.
  */
+// The wrapper-delimiter rule only means something when a wrapping mode is
+// actually building envelopes. Outside those modes the token is ordinary text —
+// refusing a task context that merely mentions `</untrusted-doc>` would be a
+// false positive — and inside them it must be the *configured* token, not the
+// module default.
+function taskContextDetectionOptions(): { wrapClose: string } {
+  const options = resolveInjectionGuardOptions();
+  const wrapping = options.mode === 'wrap' || options.mode === 'both';
+  return { wrapClose: wrapping ? options.wrapClose : '' };
+}
+
 export function inspectTaskContext(input: {
   text: string;
   source: TaskContextSource;
@@ -100,7 +115,7 @@ export function inspectTaskContext(input: {
   if (input.mode === 'off' || input.text.trim() === '') return empty;
 
   const argvMax = input.argvMax ?? DEFAULT_TASK_CONTEXT_ARGV_MAX;
-  const injectionSignals = detectInjectionSignals(input.text);
+  const injectionSignals = detectInjectionSignals(input.text, taskContextDetectionOptions());
   const warnings: string[] = [];
 
   // Argv exposure: large or multi-line `--task-context` is prompt-like and

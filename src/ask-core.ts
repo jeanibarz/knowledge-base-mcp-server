@@ -12,6 +12,7 @@ import {
 } from './redaction.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
 import {
+  isInjectionGuardBypassed,
   isValidInjectionGuardWrapperEnvelope,
   neutralizeWrapperDelimiters,
   resolveInjectionGuardOptions,
@@ -1017,7 +1018,11 @@ export function packAskContext(
       const headerTokens = estimateTokens(header);
       const availableContentTokens = remaining - headerTokens;
       if (availableContentTokens > 0) {
-        const truncatedContent = truncateContentToTokenBudget(result.content, availableContentTokens);
+        const truncatedContent = truncateContentToTokenBudget(
+          result.content,
+          availableContentTokens,
+          result.metadata,
+        );
         if (truncatedContent.trim() !== '') {
           snippetText = buildAskSnippet(result, index + 1, truncatedContent);
           includedTokens = estimateTokens(snippetText);
@@ -1125,8 +1130,12 @@ function estimateTokens(value: string): number {
   return Math.max(1, Math.ceil(trimmed.length / APPROX_CHARS_PER_TOKEN));
 }
 
-function truncateContentToTokenBudget(value: string, budgetTokens: number): string {
-  const wrapped = splitInjectionGuardWrapper(value);
+function truncateContentToTokenBudget(
+  value: string,
+  budgetTokens: number,
+  metadata: Record<string, unknown> = {},
+): string {
+  const wrapped = splitInjectionGuardWrapper(value, metadata);
   if (wrapped !== null) {
     const marker = '[truncated]';
     const options = resolveInjectionGuardOptions();
@@ -1140,9 +1149,14 @@ function truncateContentToTokenBudget(value: string, budgetTokens: number): stri
         renderedWrapOpen: wrapped.open,
       });
       const candidate = `${wrapped.open}\n${neutralizedContent}\n${wrapped.close}`;
-      const excessTokens = estimateTokens(candidate) - budgetTokens;
-      if (excessTokens <= 0) return candidate;
-      availableInnerTokens -= Math.max(1, excessTokens);
+      const candidateTokens = estimateTokens(candidate);
+      if (candidateTokens <= budgetTokens) return candidate;
+      // Back off proportionally rather than by the whole overshoot. Neutralizing
+      // a delimiter roughly doubles it, so subtracting the full excess can drive
+      // the inner budget straight to zero and drop a chunk that would still fit
+      // at half the size. `- 1` guarantees the loop makes progress.
+      const scaledInnerTokens = Math.floor(availableInnerTokens * budgetTokens / candidateTokens);
+      availableInnerTokens = Math.min(availableInnerTokens - 1, Math.max(0, scaledInnerTokens));
     }
     return '';
   }
@@ -1151,13 +1165,19 @@ function truncateContentToTokenBudget(value: string, budgetTokens: number): stri
   return truncated.trim() === '' ? '' : `${truncated}\n[truncated]`;
 }
 
-export function splitInjectionGuardWrapper(value: string): { open: string; content: string; close: string } | null {
+export function splitInjectionGuardWrapper(
+  value: string,
+  metadata: Record<string, unknown> = {},
+): { open: string; content: string; close: string } | null {
   const options = resolveInjectionGuardOptions();
-  // Only wrapping modes produce an envelope. Without this gate a document that
-  // merely *documents* the guard's own syntax is mistaken for one in `tag` (the
-  // default) and `off` modes, and the truncation rebuild neutralizes its body —
-  // silently injecting codec characters into text the guard never wrapped.
+  // Only wrapping modes produce an envelope, and a bypassed knowledge base is
+  // never wrapped even in those. Without these gates a document that merely
+  // *documents* the guard's own syntax is mistaken for an envelope and the
+  // truncation rebuild neutralizes its body — silently injecting codec
+  // characters into text the guard never wrapped. Bypassed KBs are the security
+  // corpora most likely to contain literal envelopes.
   if (options.mode !== 'wrap' && options.mode !== 'both') return null;
+  if (isInjectionGuardBypassed(metadata, options)) return null;
   const close = options.wrapClose;
   const trimmed = value.trim();
   if (!trimmed.endsWith(close)) return null;

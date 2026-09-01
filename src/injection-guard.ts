@@ -319,6 +319,9 @@ function openTemplatePrefix(wrapOpen: string | undefined): string | undefined {
   if (markerIndex <= 0) return undefined;
   return wrapOpen.slice(0, markerIndex);
 }
+// A prefix-less template would slip past the neutralization above, so
+// `wrapperTemplateError` rejects that shape outright rather than relying on
+// this helper to fail safe.
 
 function configuredDelimiters(
   options: WrapperDelimiterOptions,
@@ -408,8 +411,26 @@ function wrapperTemplateError(
   options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
 ): string | null {
   const placeholderCount = options.wrapOpen.split('{source}').length - 1;
-  if (placeholderCount > 1 || options.wrapOpen === '{source}') {
+  if (placeholderCount > 1) {
     return 'Invalid injection-guard opening template: use at most one {source} placeholder with a static delimiter';
+  }
+  const markerIndex = options.wrapOpen.indexOf('{source}');
+  // Static text on both sides is what makes a rendered opening delimiter
+  // recognizable and forgery-resistant. Without a prefix there is nothing to
+  // neutralize in untrusted content, so any document could emit a valid-looking
+  // header; without a suffix the truncation parser would accept any first line
+  // that merely starts with the prefix.
+  if (
+    markerIndex === 0 ||
+    (markerIndex > 0 && markerIndex + '{source}'.length === options.wrapOpen.length)
+  ) {
+    return 'Invalid injection-guard opening template: the {source} placeholder needs static delimiter text on both sides';
+  }
+  // A one-codepoint prefix is substituted rather than separated by the codec, so
+  // it would be erased from every chunk body instead of merely broken up. Two
+  // codepoints is the shortest prefix the codec can neutralize faithfully.
+  if (markerIndex > 0 && [...options.wrapOpen.slice(0, markerIndex)].length < 2) {
+    return 'Invalid injection-guard opening template: the static text before {source} must be at least two characters';
   }
   return wrapperEnvelopeError(options.wrapOpen, options.wrapClose);
 }
