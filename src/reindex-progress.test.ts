@@ -255,7 +255,11 @@ describe('computeReindexProgress — run state', () => {
       JSON.stringify({
         schema_version: 'reindex-run.v1',
         pid,
-        started_at: '2026-05-19T11:00:00.000Z',
+        // Issue #906 — a genuinely-active reindex writes a recent timestamp on
+        // the local host. A fixed past date would now trip the staleness age
+        // bound in checkReindexRunState and be reclaimed regardless of liveness.
+        started_at: new Date().toISOString(),
+        hostname: os.hostname(),
         kbs_in_scope: ['alpha'],
       }),
     );
