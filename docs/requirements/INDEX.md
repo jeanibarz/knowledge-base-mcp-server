@@ -273,10 +273,10 @@
 **Rationale:** Re-parsing the persisted lexical index and rebuilding BM25 postings for every query adds avoidable latency to warm MCP sessions.
 
 **Acceptance Criteria:**
-- [x] Given an unchanged persisted lexical index, when consecutive hybrid or lexical MCP queries use it, then the underlying index parser shall run only once per server lifetime.
+- [x] Given an unchanged persisted lexical index that remains resident in the cache, when consecutive hybrid or lexical MCP queries use it, then they shall reuse its parsed snapshot; after metadata change or least-recently-used eviction, the next access may parse it again.
 - [x] Given retrieve and ask calls on one server instance, when both use the same unchanged lexical index, then they shall share the same parsed-index cache.
 - [x] Given the persisted lexical index mtime or size changes, when the next query loads it, then the cache shall reload the index.
-- [x] Given an explicit refresh changes a cached lexical index, when later queries run, then they shall observe refreshed data rather than a stale parsed snapshot.
+- [x] Given an empty-index or filter-triggered refresh persists a replacement, when later queries run, then they shall observe refreshed data rather than a stale parsed snapshot.
 - [x] Given more knowledge bases than the cache limit, when additional indexes are loaded, then least-recently-used entries shall be evicted.
 
 **Linked Tests:** TS-SEARCH-910 (`src/KnowledgeBaseServer.test.ts`, `src/ask-core.hybrid.test.ts`, `src/hybrid-retrieval.test.ts`, `src/lexical-index-cache.test.ts`)

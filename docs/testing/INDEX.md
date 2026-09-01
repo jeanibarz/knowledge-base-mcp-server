@@ -203,6 +203,17 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `kb search --mode=hybrid` shall forward all five metadata filters to both the dense search and lexical pre-fusion leg.
 - Concurrent default lexical refresh/save operations in `kb eval` shall be serialized per KB across the shared temporary index path.
 
+### TS-SEARCH-910: Server-lifetime Lexical Index Cache
+**Requirement:** NFR-SEARCH-910
+
+**Test Cases:**
+- Consecutive retrieve and ask calls on one MCP server shall reuse one resident parsed lexical snapshot while preserving lexical results.
+- Modification-time and file-size changes shall independently cause the next cache access to reload the persisted index.
+- Refresh shall use a fresh snapshot, retain the old cached snapshot after persistence failure, and expose the replacement only after persistence succeeds.
+- Invalidation shall prevent direct and metadata-displaced in-flight parses from repopulating a stale cache entry.
+- Loading beyond the configured bound shall evict the least-recently-used entry.
+- The resident search daemon shall forward fresh-load and invalidation hooks through its handler-lifetime cache.
+
 ### TS-CLI-383: Machine-Readable Help Manifest
 **Requirement:** FR-CLI-383
 
