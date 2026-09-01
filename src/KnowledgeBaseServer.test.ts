@@ -94,6 +94,8 @@ describe('KnowledgeBaseServer handlers', () => {
     INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
     INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
     KB_DENSE_DEGRADE_ON_PROVIDER_ERROR: process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
+    KB_HYBRID_DENSE_WEIGHT: process.env.KB_HYBRID_DENSE_WEIGHT,
+    KB_HYBRID_LEXICAL_WEIGHT: process.env.KB_HYBRID_LEXICAL_WEIGHT,
   };
 
   beforeEach(() => {
@@ -1578,6 +1580,34 @@ describe('KnowledgeBaseServer handlers', () => {
       input_count: 2,
       output_count: 2,
     });
+  });
+
+  it('FR-SEARCH-912: applies process-wide weights to MCP hybrid retrieval', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tempDir, 'alpha', 'lexical.md'),
+      'WEIGHTED_MCP_QUERY lexical winner',
+    );
+    process.env.KB_HYBRID_DENSE_WEIGHT = '0';
+    process.env.KB_HYBRID_LEXICAL_WEIGHT = '2';
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([{
+      pageContent: 'dense candidate must be absent',
+      metadata: { source: '/kb/dense.md', chunkIndex: 0 },
+      score: 0.1,
+    }]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'WEIGHTED_MCP_QUERY',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('WEIGHTED_MCP_QUERY lexical winner');
+    expect(result.content[0].text).not.toContain('dense candidate must be absent');
   });
 
   it('NFR-SEARCH-910: reuses one parsed lexical index across retrieve and ask calls', async () => {

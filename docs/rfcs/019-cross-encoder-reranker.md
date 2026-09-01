@@ -7,7 +7,7 @@
 
 ## Problem
 
-Hybrid retrieval (#206) fuses a dense (FAISS) leg and a lexical (BM25) leg with Reciprocal Rank Fusion. RRF is rank-based: the fused score is `Σ 1/(c + rank)` and carries **no calibrated relevance meaning** — the per-rank contribution at `c=60` is ≈ 0.016 and inter-rank spacing is ~0.00026. Two consequences:
+Hybrid retrieval (#206) fuses a dense (FAISS) leg and a lexical (BM25) leg with Reciprocal Rank Fusion. RRF is rank-based: the fused score is `Σ_r w_r/(c + rank_r)` and carries **no calibrated relevance meaning**. At the default `w_r=1` and `c=60`, the per-rank contribution is ≈ 0.016 and inter-rank spacing is ~0.00026. Two consequences:
 
 1. **Ordering is fusion-rank, not relevance.** A chunk ranks high because *both* legs ranked it reasonably, not because a model judged it actually answers the query. First-stage retrievers (dense bi-encoder, BM25) embed query and document *independently* — they never see the pair together, so they cannot model term-level interaction ("does this passage actually answer *this* question").
 

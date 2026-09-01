@@ -2,7 +2,10 @@ import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexMana
 import type { SearchResultDocument } from './FaissIndexManager.js';
 import type { resolveActiveModel } from './active-model.js';
 import { resolveLlmProvider } from './config/llm-provider.js';
-import { FRONTMATTER_EXTRAS_WIRE_VISIBLE } from './config/retrieval.js';
+import {
+  FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+  resolveHybridRrfWeights,
+} from './config/retrieval.js';
 import { logger } from './logger.js';
 import {
   combineRedactionSummaries,
@@ -515,6 +518,7 @@ async function retrieveHybridOrLexical(input: {
     denseResults,
     lexicalResults: lexical.hits,
     k: rerankConfig.enabled ? Math.max(args.k, rerankConfig.topN) : args.k,
+    weights: resolveHybridRrfWeights(),
   });
   const rerankResult = await withSpan('kb.ask.rerank', {
     'kb.candidates_in': fusion.results.length,
