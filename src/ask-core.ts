@@ -14,7 +14,13 @@ import {
   type RedactionSummary,
 } from './redaction.js';
 import { formatRetrievalAsJson, type RetrievalJsonResult } from './formatter.js';
-import { resolveInjectionGuardOptions } from './injection-guard.js';
+import {
+  isInjectionGuardBypassed,
+  isValidInjectionGuardWrapperEnvelope,
+  neutralizeWrapperDelimiters,
+  resolveInjectionGuardOptions,
+  restoreWrapperDelimiters,
+} from './injection-guard.js';
 import { FAKE_LLM_ENDPOINT, isFakeLlmEnabled } from './llm-fake-stub.js';
 import {
   createExternalProfile,
@@ -1016,7 +1022,11 @@ export function packAskContext(
       const headerTokens = estimateTokens(header);
       const availableContentTokens = remaining - headerTokens;
       if (availableContentTokens > 0) {
-        const truncatedContent = truncateContentToTokenBudget(result.content, availableContentTokens);
+        const truncatedContent = truncateContentToTokenBudget(
+          result.content,
+          availableContentTokens,
+          result.metadata,
+        );
         if (truncatedContent.trim() !== '') {
           snippetText = buildAskSnippet(result, index + 1, truncatedContent);
           includedTokens = estimateTokens(snippetText);
@@ -1124,32 +1134,75 @@ function estimateTokens(value: string): number {
   return Math.max(1, Math.ceil(trimmed.length / APPROX_CHARS_PER_TOKEN));
 }
 
-function truncateContentToTokenBudget(value: string, budgetTokens: number): string {
-  const wrapped = splitInjectionGuardWrapper(value);
+function truncateContentToTokenBudget(
+  value: string,
+  budgetTokens: number,
+  metadata: Record<string, unknown> = {},
+): string {
+  const wrapped = splitInjectionGuardWrapper(value, metadata);
   if (wrapped !== null) {
     const marker = '[truncated]';
-    const availableInnerTokens = budgetTokens - estimateTokens(`${wrapped.open}\n${marker}\n${wrapped.close}`);
-    if (availableInnerTokens <= 0) return '';
-    const inner = truncatePlainTextToTokenBudget(wrapped.content, availableInnerTokens);
-    if (inner.trim() === '') return '';
-    return `${wrapped.open}\n${inner}\n${marker}\n${wrapped.close}`;
+    const options = resolveInjectionGuardOptions();
+    // Measure the candidate in characters, not tokens. `packAskContext` re-estimates
+    // the snippet header together with this content, and `estimateTokens` trims the
+    // header's trailing newline before dividing — so a candidate that exactly fills
+    // `budgetTokens * APPROX_CHARS_PER_TOKEN` characters can push the combined
+    // estimate one token over and get the whole chunk dropped rather than truncated.
+    // One character of slack is the worst case over all header lengths.
+    const maxCandidateChars = budgetTokens * APPROX_CHARS_PER_TOKEN - 1;
+    let availableInnerTokens = budgetTokens -
+      estimateTokens(`${wrapped.open}\n${marker}\n${wrapped.close}`);
+    while (availableInnerTokens > 0) {
+      const inner = truncatePlainTextToTokenBudget(wrapped.content, availableInnerTokens);
+      if (inner.trim() === '') return '';
+      const neutralizedContent = neutralizeWrapperDelimiters(`${inner}\n${marker}`, {
+        ...options,
+        renderedWrapOpen: wrapped.open,
+      });
+      const candidate = `${wrapped.open}\n${neutralizedContent}\n${wrapped.close}`;
+      if (candidate.length <= maxCandidateChars) return candidate;
+      const candidateTokens = estimateTokens(candidate);
+      // Back off proportionally rather than by the whole overshoot. Neutralizing
+      // a delimiter roughly doubles it, so subtracting the full excess can drive
+      // the inner budget straight to zero and drop a chunk that would still fit
+      // at half the size. `- 1` guarantees the loop makes progress.
+      const scaledInnerTokens = Math.floor(availableInnerTokens * budgetTokens / candidateTokens);
+      availableInnerTokens = Math.min(availableInnerTokens - 1, Math.max(0, scaledInnerTokens));
+    }
+    return '';
   }
   const markerTokens = estimateTokens('\n[truncated]');
   const truncated = truncatePlainTextToTokenBudget(value, budgetTokens - markerTokens);
   return truncated.trim() === '' ? '' : `${truncated}\n[truncated]`;
 }
 
-function splitInjectionGuardWrapper(value: string): { open: string; content: string; close: string } | null {
+export function splitInjectionGuardWrapper(
+  value: string,
+  metadata: Record<string, unknown> = {},
+): { open: string; content: string; close: string } | null {
   const options = resolveInjectionGuardOptions();
+  // Only wrapping modes produce an envelope, and a bypassed knowledge base is
+  // never wrapped even in those. Without these gates a document that merely
+  // *documents* the guard's own syntax is mistaken for an envelope and the
+  // truncation rebuild neutralizes its body — silently injecting codec
+  // characters into text the guard never wrapped. Bypassed KBs are the security
+  // corpora most likely to contain literal envelopes.
+  if (options.mode !== 'wrap' && options.mode !== 'both') return null;
+  if (isInjectionGuardBypassed(metadata, options)) return null;
   const close = options.wrapClose;
   const trimmed = value.trim();
   if (!trimmed.endsWith(close)) return null;
   const firstNewline = trimmed.indexOf('\n');
   if (firstNewline <= 0) return null;
   const open = trimmed.slice(0, firstNewline);
+  if (!isValidInjectionGuardWrapperEnvelope(options, open)) return null;
   if (!matchesConfiguredWrapOpen(open, options.wrapOpen)) return null;
   const contentEnd = trimmed.length - close.length;
-  const content = trimmed.slice(firstNewline + 1, contentEnd).replace(/\n$/, '');
+  const neutralizedContent = trimmed.slice(firstNewline + 1, contentEnd).replace(/\n$/, '');
+  const content = restoreWrapperDelimiters(neutralizedContent, {
+    ...options,
+    renderedWrapOpen: open,
+  });
   return { open, content, close };
 }
 
