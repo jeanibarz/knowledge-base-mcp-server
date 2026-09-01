@@ -116,6 +116,14 @@ function beirSearchMode(mode: BeirMode): 'dense' | 'hybrid' {
   return mode === 'dense' ? 'dense' : 'hybrid';
 }
 
+// Only embedding-provider hybrid modes fuse the dense and lexical legs via RRF.
+// `dense` retrieves through the dense backend, and `lexical`/`late` never touch
+// the RRF path at all, so RRF weights are not applied to those runs and must not
+// be recorded as their provenance.
+function modeUsesHybridFusion(mode: BeirMode): boolean {
+  return usesEmbeddingProvider(mode) && beirSearchMode(mode) === 'hybrid';
+}
+
 function modeEnablesLateInteraction(mode: BeirMode): boolean {
   return mode === 'late' || mode === 'hybrid+late';
 }
@@ -528,7 +536,7 @@ export async function runBeirBenchmark(
     embedding,
     rerank: stages.rerank,
     contextual: stages.contextual,
-    hybrid_rrf_weights: beirSearchMode(args.mode) === 'hybrid'
+    hybrid_rrf_weights: modeUsesHybridFusion(args.mode)
       ? {
           dense: rrfWeightEnvValue('KB_HYBRID_DENSE_WEIGHT'),
           lexical: rrfWeightEnvValue('KB_HYBRID_LEXICAL_WEIGHT'),

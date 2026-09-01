@@ -52,7 +52,16 @@ describe('BEIR benchmark runner', () => {
       '--candidate-pool-k=10',
     ]);
 
-    const result = await runBeirBenchmark(args, {
+    // FR-SEARCH-912: even with non-default RRF weights configured, lexical mode
+    // never runs hybrid fusion, so it must NOT record hybrid_rrf_weights.
+    const savedDenseWeight = process.env.KB_HYBRID_DENSE_WEIGHT;
+    const savedLexicalWeight = process.env.KB_HYBRID_LEXICAL_WEIGHT;
+    process.env.KB_HYBRID_DENSE_WEIGHT = '0.5';
+    process.env.KB_HYBRID_LEXICAL_WEIGHT = '2';
+
+    let result: Awaited<ReturnType<typeof runBeirBenchmark>>;
+    try {
+      result = await runBeirBenchmark(args, {
       gitSha: async () => 'test-sha',
       now: () => new Date('2026-05-27T12:00:00.000Z'),
       pythonVersion: async () => 'Python 3.test',
@@ -85,7 +94,16 @@ describe('BEIR benchmark runner', () => {
           numFiles: () => 2,
         };
       },
-    });
+      });
+    } finally {
+      if (savedDenseWeight === undefined) delete process.env.KB_HYBRID_DENSE_WEIGHT;
+      else process.env.KB_HYBRID_DENSE_WEIGHT = savedDenseWeight;
+      if (savedLexicalWeight === undefined) delete process.env.KB_HYBRID_LEXICAL_WEIGHT;
+      else process.env.KB_HYBRID_LEXICAL_WEIGHT = savedLexicalWeight;
+    }
+
+    expect(result.report.mode).toBe('lexical');
+    expect(result.report.hybrid_rrf_weights).toBeNull();
 
     const json = JSON.parse(await fsp.readFile(result.jsonPath, 'utf-8')) as {
       git_sha: string;
