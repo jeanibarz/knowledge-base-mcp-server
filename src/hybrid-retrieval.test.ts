@@ -185,6 +185,37 @@ describe('fuseHybridResults', () => {
       'dense-a.md',
       'dense-b.md',
     ]);
+    expect(out.map((result) => result.score)).toEqual([
+      2 / (DEFAULT_C + 1),
+      2 / (DEFAULT_C + 2),
+      0.5 / (DEFAULT_C + 1),
+      0.5 / (DEFAULT_C + 2),
+    ]);
+  });
+
+  it('FR-SEARCH-912: excludes zero-weight legs from downstream diagnostics', () => {
+    const sharedDense = chunk('shared.md', 0, 0.42, 'DENSE');
+    const sharedLexical = chunk('shared.md', 0, 8, 'LEXICAL');
+
+    const lexicalDisabled = fuseHybridResultsWithDiagnostics({
+      denseResults: [sharedDense],
+      lexicalResults: [sharedLexical, chunk('lexical-only.md', 0, 7)],
+      k: 2,
+      weights: { dense: 1, lexical: 0 },
+    });
+    expect(lexicalDisabled.results.map((result) => result.metadata.source)).toEqual(['shared.md']);
+    expect(lexicalDisabled.lexicalHitIds).toEqual(new Set());
+    expect(lexicalDisabled.denseDistanceById.get('shared.md#0')).toBe(0.42);
+
+    const denseDisabled = fuseHybridResultsWithDiagnostics({
+      denseResults: [sharedDense, chunk('dense-only.md', 0, 0.5)],
+      lexicalResults: [sharedLexical],
+      k: 2,
+      weights: { dense: 0, lexical: 1 },
+    });
+    expect(denseDisabled.results.map((result) => result.metadata.source)).toEqual(['shared.md']);
+    expect(denseDisabled.denseDistanceById).toEqual(new Map());
+    expect(denseDisabled.lexicalHitIds).toEqual(new Set(['shared.md#0']));
   });
 
   it('FR-SEARCH-912: keeps the default output byte-equal to explicit 1:1 weights', () => {

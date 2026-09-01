@@ -444,6 +444,7 @@ describe('parseSearchArgs hybrid RRF weights (FR-SEARCH-912)', () => {
       '--lexical-weight=2',
     ])).toMatchObject({
       rrfWeights: { dense: 0.25, lexical: 2 },
+      rrfWeightsExplicit: true,
     });
   });
 
@@ -1616,6 +1617,24 @@ describe('runSearch timing guard (#331)', () => {
 
     expect(out.code).toBe(2);
     expect(out.stderr).toContain('--candidate-pool-k is only supported with --mode=hybrid');
+  });
+
+  it('rejects RRF weight controls outside hybrid mode', async () => {
+    const { deps } = makeDeps();
+
+    const out = await captureSearchOutput(['query', '--mode=dense', '--dense-weight=0'], deps);
+
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain('--dense-weight/--lexical-weight are only supported with --mode=hybrid');
+  });
+
+  it('rejects RRF weight controls in dense-only JSONL batch mode', async () => {
+    const { deps } = makeDeps();
+
+    const out = await captureSearchOutput(['--batch-jsonl', '--lexical-weight=2'], deps, '');
+
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain('--dense-weight/--lexical-weight are only supported with --mode=hybrid');
   });
 
   it('forwards all metadata filters through both hybrid legs (#853)', async () => {

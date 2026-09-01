@@ -147,7 +147,7 @@ Per the KB survey, the four checks above are necessary but **not sufficient** â€
 
 ### 7. Reproducibility ledger
 
-Every benchmark run is an MLflow run (`benchmarks/observability/mlflow.ts` already exists): logged with the git SHA, full env (model IDs, RRF `c`, rerank model/topN, chunk size/overlap, contextual on/off), per-dataset metrics, latency percentiles, and the TREC run-file artifact. A public "top ranking" claim is only credible if any third party can reproduce it from a commit + env; the ledger is that contract. The existing `benchmarks/compare/` HTML report becomes the human-facing leaderboard view across runs.
+Every benchmark run is an MLflow run (`benchmarks/observability/mlflow.ts` already exists): logged with the git SHA, full env (model IDs, RRF `c`, dense/lexical RRF weights, rerank model/topN, chunk size/overlap, contextual on/off), per-dataset metrics, latency percentiles, and the TREC run-file artifact. A public "top ranking" claim is only credible if any third party can reproduce it from a commit + env; the ledger is that contract. The existing `benchmarks/compare/` HTML report becomes the human-facing leaderboard view across runs.
 
 ### 8. Public-benchmark targets and submission paths
 

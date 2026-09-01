@@ -29,8 +29,6 @@ export function resolveHybridRrfWeights(
   };
 }
 
-export const KB_HYBRID_RRF_WEIGHTS: HybridRrfWeights = resolveHybridRrfWeights();
-
 /**
  * When false (default), `frontmatter.extras` is stripped from every
  * `retrieve_knowledge` response before JSON serialization. Extras hold

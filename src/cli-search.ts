@@ -22,8 +22,8 @@ import {
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KB_EDITOR_URI,
-  KB_HYBRID_RRF_WEIGHTS,
   parseHybridRrfWeight,
+  resolveHybridRrfWeights,
   type HybridRrfWeights,
 } from './config/retrieval.js';
 import {
@@ -411,7 +411,7 @@ interface SearchArgs {
   lexicalUnit: LexicalRankingUnit;
   retrievalViews?: RetrievalViewKind[];
   candidatePoolK?: number;
-  rrfWeights: HybridRrfWeights;
+  rrfWeights: Partial<HybridRrfWeights>;
   rrfWeightsExplicit: boolean;
   decompose: boolean;
   decomposeProvider: 'rule' | 'llm';
@@ -517,6 +517,10 @@ export async function runSearch(
     }
     if (parsed.interactive) {
       process.stderr.write('kb search: --interactive cannot be combined with --batch-jsonl\n');
+      return 2;
+    }
+    if (parsed.rrfWeightsExplicit) {
+      process.stderr.write('kb search: --dense-weight/--lexical-weight are only supported with --mode=hybrid\n');
       return 2;
     }
     return runBatchJsonlSearch(parsed, deps, totalStartedAt);
@@ -1063,7 +1067,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
     extensions: [],
     tags: [],
     lexicalUnit: 'chunk',
-    rrfWeights: { ...KB_HYBRID_RRF_WEIGHTS },
+    rrfWeights: {},
     rrfWeightsExplicit: false,
     decompose: false,
     decomposeProvider: 'rule',
@@ -2979,11 +2983,15 @@ async function runHybridSearch(
       ? fetchK
       : resolvedRerankConfig.enabled ? Math.max(outputK, resolvedRerankConfig.topN) : outputK;
     const fusionStartedAt = nowMs();
+    const environmentRrfWeights = resolveHybridRrfWeights();
     const fusion = fuseHybridResultsWithDiagnostics({
       denseResults,
       lexicalResults,
       k: fusionK,
-      weights: parsed.rrfWeights,
+      weights: {
+        dense: parsed.rrfWeights.dense ?? environmentRrfWeights.dense,
+        lexical: parsed.rrfWeights.lexical ?? environmentRrfWeights.lexical,
+      },
     });
     let ranked = fusion.results;
     let highRecallDiagnostics: HighRecallFilterDiagnostics | null = null;

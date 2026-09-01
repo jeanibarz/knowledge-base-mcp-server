@@ -81,10 +81,14 @@ function askArgs(question: string, overrides: Partial<AskExecutionArgs> = {}): A
 describe('ask retrieval modes (#732)', () => {
   const prevEndpoint = process.env.KB_LLM_ENDPOINT;
   const prevRerank = process.env.KB_RERANK;
+  const prevDenseWeight = process.env.KB_HYBRID_DENSE_WEIGHT;
+  const prevLexicalWeight = process.env.KB_HYBRID_LEXICAL_WEIGHT;
 
   beforeEach(() => {
     process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
     delete process.env.KB_RERANK;
+    delete process.env.KB_HYBRID_DENSE_WEIGHT;
+    delete process.env.KB_HYBRID_LEXICAL_WEIGHT;
   });
 
   afterEach(() => {
@@ -92,6 +96,10 @@ describe('ask retrieval modes (#732)', () => {
     else process.env.KB_LLM_ENDPOINT = prevEndpoint;
     if (prevRerank === undefined) delete process.env.KB_RERANK;
     else process.env.KB_RERANK = prevRerank;
+    if (prevDenseWeight === undefined) delete process.env.KB_HYBRID_DENSE_WEIGHT;
+    else process.env.KB_HYBRID_DENSE_WEIGHT = prevDenseWeight;
+    if (prevLexicalWeight === undefined) delete process.env.KB_HYBRID_LEXICAL_WEIGHT;
+    else process.env.KB_HYBRID_LEXICAL_WEIGHT = prevLexicalWeight;
   });
 
   it('mode=hybrid reaches the hybrid retrieval leg (dense over-fetch + lexical fusion)', async () => {
@@ -138,6 +146,24 @@ describe('ask retrieval modes (#732)', () => {
     expect(manager.similaritySearch).not.toHaveBeenCalled();
     expect(runLexicalLeg).toHaveBeenCalledTimes(1);
     expect(result.citations.map((c) => c.path)).toEqual(['runbooks/only.md']);
+  });
+
+  it('FR-SEARCH-912: applies process-wide weights to ask hybrid retrieval', async () => {
+    process.env.KB_HYBRID_DENSE_WEIGHT = '0';
+    process.env.KB_HYBRID_LEXICAL_WEIGHT = '2';
+    const manager = makeManager([denseDoc('runbooks/a.md', 'Dense hit.', 0.1)]);
+    const deps = makeDeps({
+      manager,
+      lexicalHits: [denseDoc('runbooks/b.md', 'Lexical hit.', 4)],
+    });
+
+    const result = await executeAsk(
+      askArgs('What changed?', { searchMode: 'hybrid', k: 1 }),
+      deps,
+      Date.now(),
+    );
+
+    expect(result.citations.map((citation) => citation.path)).toEqual(['runbooks/b.md']);
   });
 
   it('default mode stays dense for a prose query (backward compatible)', async () => {

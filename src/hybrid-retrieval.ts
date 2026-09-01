@@ -167,20 +167,26 @@ export function fuseHybridResultsWithDiagnostics(args: FuseHybridResultsArgs): F
     results: lexicalResults.map((r, i) => ({ id: chunkIdFromMetadata(r.metadata), rank: i + 1 })),
   };
   const fused = reciprocalRankFusion([denseList, lexicalList], { c, weights: args.weights });
+  const denseEnabled = (args.weights?.dense ?? 1) > 0;
+  const lexicalEnabled = (args.weights?.lexical ?? 1) > 0;
 
   const byId = new Map<string, HybridChunk>();
   for (const r of lexicalResults) byId.set(chunkIdFromMetadata(r.metadata), r);
   for (const r of denseResults) byId.set(chunkIdFromMetadata(r.metadata), r);
 
   const denseDistanceById = new Map<string, number>();
-  for (const r of denseResults) {
-    if (typeof r.score === 'number') {
-      denseDistanceById.set(chunkIdFromMetadata(r.metadata), r.score);
+  if (denseEnabled) {
+    for (const r of denseResults) {
+      if (typeof r.score === 'number') {
+        denseDistanceById.set(chunkIdFromMetadata(r.metadata), r.score);
+      }
     }
   }
   const lexicalHitIds = new Set<string>();
-  for (const r of lexicalResults) {
-    lexicalHitIds.add(chunkIdFromMetadata(r.metadata));
+  if (lexicalEnabled) {
+    for (const r of lexicalResults) {
+      lexicalHitIds.add(chunkIdFromMetadata(r.metadata));
+    }
   }
 
   const results: HybridChunk[] = [];

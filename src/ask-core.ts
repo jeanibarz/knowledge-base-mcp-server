@@ -4,7 +4,7 @@ import type { resolveActiveModel } from './active-model.js';
 import { resolveLlmProvider } from './config/llm-provider.js';
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
-  KB_HYBRID_RRF_WEIGHTS,
+  resolveHybridRrfWeights,
 } from './config/retrieval.js';
 import { logger } from './logger.js';
 import {
@@ -508,7 +508,7 @@ async function retrieveHybridOrLexical(input: {
     denseResults,
     lexicalResults: lexical.hits,
     k: rerankConfig.enabled ? Math.max(args.k, rerankConfig.topN) : args.k,
-    weights: KB_HYBRID_RRF_WEIGHTS,
+    weights: resolveHybridRrfWeights(),
   });
   const rerankResult = await withSpan('kb.ask.rerank', {
     'kb.candidates_in': fusion.results.length,

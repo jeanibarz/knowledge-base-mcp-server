@@ -79,6 +79,8 @@ describe('captureRetrievalEnv', () => {
       embedding_provider: 'ollama',
       embedding_model: 'nomic-embed-text',
       rrf_c: '60',
+      rrf_dense_weight: '1',
+      rrf_lexical_weight: '1',
       rerank_model: 'Xenova/ms-marco-MiniLM-L-6-v2',
       rerank_top_n: '40',
       chunk_size: '1000',
@@ -92,6 +94,8 @@ describe('captureRetrievalEnv', () => {
     const env = captureRetrievalEnv({}, {
       EMBEDDING_PROVIDER: 'ollama',
       KB_RRF_C: '90',
+      KB_HYBRID_DENSE_WEIGHT: '0.5',
+      KB_HYBRID_LEXICAL_WEIGHT: '2',
       KB_RERANK_MODEL: 'BAAI/bge-reranker-v2-m3',
       KB_RERANK_TOP_N: '20',
       KB_CHUNK_SIZE: '1500',
@@ -101,6 +105,8 @@ describe('captureRetrievalEnv', () => {
     expect(env).toMatchObject({
       embedding_provider: 'ollama',
       rrf_c: '90',
+      rrf_dense_weight: '0.5',
+      rrf_lexical_weight: '2',
       rerank_model: 'BAAI/bge-reranker-v2-m3',
       rerank_top_n: '20',
       chunk_size: '1500',

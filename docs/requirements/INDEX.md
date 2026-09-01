@@ -279,7 +279,7 @@
 - [x] Given a negative, non-finite, or malformed configured weight, when configuration or CLI arguments are parsed, then the system shall reject it with a diagnostic naming the invalid setting.
 - [x] Given a non-default weight during BEIR and BRIGHT harness execution, when the harness reaches production hybrid fusion, then it shall complete without a harness regression.
 
-**Linked Tests:** TS-SEARCH-912 (`src/config.test.ts`, `src/config/schema.test.ts`, `src/hybrid-retrieval.test.ts`, `src/cli-search.test.ts`, `benchmarks/beir/run.test.ts`, `benchmarks/bright/run.test.ts`)
+**Linked Tests:** TS-SEARCH-912 (`src/config.test.ts`, `src/config/schema.test.ts`, `src/hybrid-retrieval.test.ts`, `src/cli-search.test.ts`, `src/retrieval-eval.test.ts`, `benchmarks/beir/run.dense.test.ts`, `benchmarks/bright/run.test.ts`, `benchmarks/beir/matrix.test.ts`, `benchmarks/observability/mlflow.test.ts`)
 **Dependencies:** FR-SEARCH-374
 
 ### NFR-CACHE-830: Conservative Disk Cache Read Failures
