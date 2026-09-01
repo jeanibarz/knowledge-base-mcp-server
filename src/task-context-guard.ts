@@ -84,13 +84,6 @@ function describeSignalKinds(signals: InjectionSignal[]): string {
   return Array.from(new Set(signals.map((signal) => signal.kind))).sort().join(', ');
 }
 
-/**
- * Inspects task context against the configured policy. The result is a function
- * of `(text, source, mode, argvMax)` plus the injection-guard environment, which
- * decides whether the wrapper-delimiter rule applies and which token it uses.
- * `kb search` prints `warnings` to stderr and, when `refused`, prints
- * `refuseReason` and exits 2.
- */
 // The wrapper-delimiter rule only means something when a wrapping mode is
 // actually building envelopes. Outside those modes the token is ordinary text —
 // refusing a task context that merely mentions `</untrusted-doc>` would be a
@@ -102,6 +95,13 @@ function taskContextDetectionOptions(): { wrapClose: string } {
   return { wrapClose: wrapping ? options.wrapClose : '' };
 }
 
+/**
+ * Inspects task context against the configured policy. The result is a function
+ * of `(text, source, mode, argvMax)` plus the injection-guard environment, which
+ * decides whether the wrapper-delimiter rule applies and which token it uses.
+ * `kb search` prints `warnings` to stderr and, when `refused`, prints
+ * `refuseReason` and exits 2.
+ */
 export function inspectTaskContext(input: {
   text: string;
   source: TaskContextSource;
