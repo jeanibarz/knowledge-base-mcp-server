@@ -1986,6 +1986,8 @@ describe('runSearch timing guard (#331)', () => {
       loadWithJsonRetry: jest.fn(async () => {}),
       listLexicalKbs: jest.fn(async () => [{ kbName: 'alpha', kbPath: '/kb/alpha' }]),
       loadLexicalIndex: jest.fn(async () => ({ numFiles: () => 1 } as unknown as LexicalIndex)),
+      loadFreshLexicalIndex: jest.fn(async () => ({ numFiles: () => 1 } as unknown as LexicalIndex)),
+      invalidateLexicalIndex: jest.fn((_kbName: string, _kbPath: string): void => {}),
       runLexicalLeg: jest.fn(async () => ({
         refreshed: 0,
         failed: 0,
@@ -2005,6 +2007,8 @@ describe('runSearch timing guard (#331)', () => {
       query: 'query',
       rankingUnit: 'source',
       loadIndex: deps.loadLexicalIndex,
+      loadFreshIndex: deps.loadFreshLexicalIndex,
+      invalidateIndex: deps.invalidateLexicalIndex,
     }));
   });
 

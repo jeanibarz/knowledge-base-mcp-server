@@ -15,6 +15,7 @@ interface CacheEntry {
 interface InFlightLoad {
   metadata: LexicalIndexMetadata;
   promise: Promise<LexicalIndex>;
+  token: { valid: boolean };
 }
 
 export interface LexicalIndexCacheOptions {
@@ -51,9 +52,16 @@ export class LexicalIndexCache {
     if (pending && sameMetadata(pending.metadata, metadata)) {
       return pending.promise;
     }
+    if (pending) {
+      // Metadata changed while the older parse was in flight. Retire its
+      // token before replacing the tracked load so a later invalidation also
+      // fences that displaced parse from repopulating the cache.
+      pending.token.valid = false;
+    }
 
-    const promise = this.loadFresh(kbName, kbPath, key, metadata);
-    this.inFlight.set(key, { metadata, promise });
+    const token = { valid: true };
+    const promise = this.loadStable(kbName, kbPath, key, metadata, token);
+    this.inFlight.set(key, { metadata, promise, token });
     try {
       return await promise;
     } finally {
@@ -63,11 +71,28 @@ export class LexicalIndexCache {
     }
   }
 
-  private async loadFresh(
+  /** Load an uncached snapshot for refresh work that may mutate the index. */
+  async loadFresh(kbName: string, kbPath: string): Promise<LexicalIndex> {
+    return this.loadIndex(kbName, kbPath);
+  }
+
+  /** Drop a cached snapshot after a successful refresh has replaced its file. */
+  invalidate(kbName: string, kbPath: string): void {
+    const key = this.cacheKey(kbName, kbPath);
+    this.entries.delete(key);
+    const pending = this.inFlight.get(key);
+    if (pending) {
+      pending.token.valid = false;
+      this.inFlight.delete(key);
+    }
+  }
+
+  private async loadStable(
     kbName: string,
     kbPath: string,
     key: string,
     initialMetadata: LexicalIndexMetadata,
+    token: { valid: boolean },
   ): Promise<LexicalIndex> {
     let metadata = initialMetadata;
     // Require the index file metadata to stay stable across parse. If a writer
@@ -76,6 +101,7 @@ export class LexicalIndexCache {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const index = await this.loadIndex(kbName, kbPath);
       const afterLoad = await this.readMetadata(kbName);
+      if (!token.valid) return this.load(kbName, kbPath);
       if (sameMetadata(metadata, afterLoad)) {
         this.remember(key, index, afterLoad);
         return index;
@@ -85,6 +111,7 @@ export class LexicalIndexCache {
 
     const index = await this.loadIndex(kbName, kbPath);
     const finalMetadata = await this.readMetadata(kbName);
+    if (!token.valid) return this.load(kbName, kbPath);
     if (sameMetadata(metadata, finalMetadata)) {
       this.remember(key, index, finalMetadata);
     }
