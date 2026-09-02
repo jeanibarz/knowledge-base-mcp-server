@@ -20,8 +20,8 @@ node build/index.js    # runs the server over stdio (clients launch it this way)
 - **MCP tool surface:** tools are registered in `KnowledgeBaseServer.registerTools()`. Current tools include `list_knowledge_bases`, `retrieve_knowledge`, `ask_knowledge`, `list_models`, `kb_stats`, `diff_index`, `add_document`, `delete_document`, and `reindex_knowledge_base`.
 - **CLI surface:** `src/cli.ts` is the `kb` dispatcher. Command-specific behavior lives in `src/cli-*.ts`; shared command-independent logic belongs in `*-core.ts` helpers.
 - **Embeddings:** `FaissIndexManager` is constructed for a concrete `(provider, modelName)` pair. Provider defaults come from `EMBEDDING_PROVIDER` plus provider-specific model env vars.
-- **Index layout:** `$FAISS_INDEX_PATH/active.txt` selects a model id. Each model stores metadata and versioned FAISS data under `$FAISS_INDEX_PATH/models/<model_id>/`; `active-model.ts` is the layout authority.
-- **Indexing strategy:** per-file SHA256 and chunk manifests in `<kb>/.index/` decide what to re-embed. Mutating refreshes use per-model write locks plus versioned atomic saves.
+- **Index layout:** `$FAISS_INDEX_PATH/active.txt` selects a model id. Each model stores metadata and versioned FAISS data under `$FAISS_INDEX_PATH/models/<model_id>/`. See `active-model.ts` — it decides and enforces this layout, so read it before changing any index path.
+- **Indexing strategy:** per-file SHA256 hashes and chunk manifests in `<kb>/.index/` let a refresh skip content that has not changed, so re-indexing costs embedding calls only for what moved. To stop concurrent writers from corrupting an index, mutating refreshes take a per-model write lock and save new index versions atomically.
 - **Logging:** `logger.ts` writes **only to stderr** (and optionally `LOG_FILE`). Writing to stdout corrupts the JSON-RPC stream — this is a landed bug, never reintroduce `console.log` inside the server process.
 
 ### Conventions

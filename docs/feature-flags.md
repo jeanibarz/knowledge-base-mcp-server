@@ -41,17 +41,20 @@ markdown/JSON output shape, and when wider windows dilute results.
 `KB_DENSE_DEGRADE_ON_PROVIDER_ERROR=on` is fail-open only for classified
 transient embedding-provider failures (`PROVIDER_UNAVAILABLE` and
 `PROVIDER_TIMEOUT`). It does not hide `PROVIDER_AUTH`, validation, active-model,
-or index configuration errors. A degraded MCP response is lexical-only, sets
-`structuredContent.degraded: true` with a bounded `degrade_reason`, emits the
-same fields in the canonical search event, and increments
-`kb_search_degraded_total{mode,reason}` when metrics export is enabled. Query
+or index configuration errors. A degraded MCP response falls back to lexical-only results. It sets
+`structuredContent.degraded: true` and a bounded `degrade_reason` on the
+response, and logs those same two fields in the canonical search event. When
+metrics export is enabled it also increments
+`kb_search_degraded_total{mode,reason}`. Query
 embedding cache hits still return through the normal dense/hybrid path because
 no provider call failed.
 
 ## Relevance Gate
 
-The RFC 018 gate is recall-negative by design, so it is disabled unless an
-operator opts in. With no task context it uses the statistical path only; with
+The RFC 018 gate is disabled unless an operator opts in, because it trades
+recall for precision: in suppressing chunks that don't match the task, it can
+also discard genuinely relevant ones. That is the right trade only when a
+wrong-but-confident answer costs more than a missing one. With no task context it uses the statistical path only; with
 task context it may call an LLM judge. Any judge failure degrades to retrieval
 rather than failing the query.
 

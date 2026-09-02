@@ -1,18 +1,19 @@
 # Neighbor Context Search Windows
 
 `kb search` can include nearby chunks from the same source file around each
-dense semantic match:
+dense semantic match.
+
+Reach for this when the matching chunk is likely to be part of a longer note
+whose surrounding paragraphs carry the setup, commands, or caveats you need in
+order to act on the result — a rollback step is not much use without the
+preconditions above it. The ranked hit stays the semantic match; the neighbor
+chunks come back as extra context around that hit.
 
 ```bash
 kb search "rollback after failed deploy" --context-before=1 --context-after=2
 kb search "incident handoff checklist" --context-window=1
 kb search "rollback after failed deploy" --context-window=1 --format=json
 ```
-
-Use these flags when the matching chunk is likely to be part of a longer note
-whose surrounding paragraphs carry the setup, commands, or caveats needed to
-act on the result. The ranked hit stays the semantic match; the neighbor
-chunks are returned as extra context around that hit.
 
 ## Flag Behavior
 

@@ -19,8 +19,12 @@ strike the row through and add a one-line reason. A blank marked row fails CI.
 **Preflight the checklist locally before you open the PR.** The most common
 first-attempt CI failure is a PR body that was not built from
 [`.github/PULL_REQUEST_TEMPLATE.md`](./.github/PULL_REQUEST_TEMPLATE.md), so the
-`kookr:check:*` rows are absent. Draft your body into a file, then run the same
-verifier CI runs against it:
+`kookr:check:*` rows are absent. Those markers are read by *Kookr*, the
+maintainer's review-automation CLI, which the `PR checklist` workflow runs to
+verify each marked row against the actual diff. Kookr is not publicly
+distributed, so don't go looking for it — start from the template, keep the
+marker comments intact, and the workflow does the rest. Draft your body into a
+file, then run the same verifier CI runs against it:
 
 ```sh
 npm run pr-checklist -- pr-body.md          # verifies against origin/main
@@ -29,7 +33,9 @@ gh pr create --body-file pr-body.md         # only after it passes
 
 This catches a wrong-shape body in seconds instead of after a full CI cycle. CI
 remains authoritative; the preflight is a convenience that shells out to the
-Kookr CLI (set `KOOKR_BIN` if it is not on your `PATH`).
+Kookr CLI (set `KOOKR_BIN` if it is not on your `PATH`), so it is a no-op for
+contributors who don't have it — open the PR from the template and let CI check
+the rows.
 
 ## Reporting Bugs
 

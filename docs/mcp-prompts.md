@@ -51,8 +51,9 @@ than invent when the KB does not cover the request.
 
 The server advertises MCP `completion/complete` so clients can request argument
 suggestions. Prompt `knowledge_base_name` arguments complete from registered KB
-names. Model-style prompt arguments are completed from registered `model_id`
-values when a future prompt template declares one.
+names. None of the templates below take a model-style argument today; if one is
+added later, its values will complete from registered `model_id` values the
+same way `knowledge_base_name` does.
 
 ## Example: `prompts/get`
 
