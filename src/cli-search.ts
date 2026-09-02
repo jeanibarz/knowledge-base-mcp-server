@@ -293,7 +293,8 @@ Output:
                         For non-empty filtered dense searches, also surfaces
                         aggregate filter selectivity counters.
   --pager               Page markdown/compact output through KB_PAGER, PAGER,
-                        or less -R when stdout is a TTY.
+                        or less -R when stdout is a TTY. On Windows, falls back
+                        to more when less is not installed.
   --no-pager            Disable KB_PAGER for this search.
   --highlight=auto|always|never
                         Highlight query terms in markdown snippets with ANSI
