@@ -632,7 +632,7 @@ kb verify                          # slow integrity checks for persisted indexes
 
 ## Tune retrieval quality
 
-Plain dense retrieval is the default and needs no configuration. Four optional stages sit around it, all **off by default** because each trades something away. The complete flag matrix — defaults, per-call overrides, rollout status, validation commands — is in [docs/feature-flags.md](docs/feature-flags.md).
+Plain dense retrieval is the default and needs no configuration. Four further stages sit around it. Three are **off by default**, because each buys precision or safety at a cost you should choose deliberately; the fourth, the untrusted-content guard, is on. The complete flag matrix — defaults, per-call overrides, rollout status, validation commands — is in [docs/feature-flags.md](docs/feature-flags.md).
 
 ### Cross-encoder reranking
 
