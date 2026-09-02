@@ -251,7 +251,7 @@ Your client sees these tools (registered in `src/KnowledgeBaseServer.ts`):
 | Tool | What it's for |
 | --- | --- |
 | `list_knowledge_bases` | Discover which shelves exist, so the agent can scope a later search instead of guessing a name. |
-| `retrieve_knowledge` | The core semantic search — returns the passages most relevant to a query so an agent can ground its answer in your documents rather than in what the model already knows. Searches one knowledge base if `knowledge_base` is given, otherwise all of them. Returns at most 10 chunks by default, filtered by a similarity-score threshold of 2 (lower scores are closer matches); `threshold` loosens or tightens it. |
+| `retrieve_knowledge` | The core semantic search — returns the passages most relevant to a query so an agent can ground its answer in your documents rather than in what the model already knows. Searches one knowledge base if `knowledge_base` is given, otherwise all of them. Returns at most 10 chunks by default. `threshold` caps how far a match may be from the query (it is a *distance*, so lower is closer); the default of 2 is the far end of the scale and so rarely excludes anything on its own — lower it to make retrieval stricter, or see [relevance gating](#relevance-gating) for a stage designed to do that job properly. In hybrid mode the threshold is not applied at all, because both legs are over-fetched before fusion. |
 | `ask_knowledge` | Retrieve, then have a configured local or OpenAI-compatible LLM write an answer with citations — one call instead of retrieve-then-prompt. |
 | `list_models` | List the registered embedding models and which one is active. |
 | `kb_stats` | Read-only corpus, index, model, cache, and transport statistics — useful for a health check without touching the index. |
@@ -393,7 +393,7 @@ kb search "runbook rollback" --context-window=1
 
 | Operator | Use it when |
 | --- | --- |
-| `--diverse` | Your top results are near-duplicates from one file and you'd rather see coverage across sources. It reranks a bounded dense candidate pool for source-aware representative sampling. |
+| `--diverse` | Your top results are near-duplicates from one file and you'd rather see coverage across sources. It reranks a bounded pool of dense candidates to spread the results over more source files. |
 | `--anti-query="<text>"` | You want to push results away from a known-irrelevant neighbouring topic. Candidates close to the negative query are penalized, but only among candidates the positive query already supports. |
 | `--plus="<text>"` / `--minus="<text>"` | You want to nudge the query itself, adding positive and negative components to the query vector rather than filtering afterwards. |
 
@@ -448,9 +448,9 @@ kb ask "what changed in the daemonization notes?" --timing
 kb ask "what changed?" --kb=work --save-transcript --title="Ask - daemon changes" --yes
 ```
 
-**Keeping a note out of LLM prompts.** A note whose frontmatter contains `kb_policy: { no_llm_context: true }` still appears in search results, but `kb ask` and MCP `ask_knowledge` drop it before calling the LLM and report the count under `context_packing.policy_filtered_chunks`. Contextual-preface ingest and relevance-gate judging exclude it too, while keeping the chunk as ordinary retrieval data.
+**Keeping a note out of LLM prompts.** A note whose frontmatter contains `kb_policy: { no_llm_context: true }` still appears in search results, but `kb ask` and MCP `ask_knowledge` drop it before calling the LLM and report the count under `context_packing.policy_filtered_chunks`. [Contextual-preface ingest](#contextual-prefaces-at-ingest) and [relevance-gate](#relevance-gating) judging exclude it too, while keeping the chunk as ordinary retrieval data.
 
-**Developing offline.** `KB_LLM_FAKE=on` routes `kb ask`, relevance-gate judging, and contextual-preface generation to a deterministic in-process fake LLM — no endpoint required. When a client needs a real OpenAI-compatible localhost endpoint instead, run `npm run dev:mockllm -- --port=18080`. Rules are customizable via `KB_LLM_FAKE_RULES`; see [docs/testing/fake-llm.md](docs/testing/fake-llm.md).
+**Developing offline.** `KB_LLM_FAKE=on` routes `kb ask`, [relevance-gate](#relevance-gating) judging, and [contextual-preface](#contextual-prefaces-at-ingest) generation to a deterministic in-process fake LLM — no endpoint required. When a client needs a real OpenAI-compatible localhost endpoint instead, run `npm run dev:mockllm -- --port=18080`. Rules are customizable via `KB_LLM_FAKE_RULES`; see [docs/testing/fake-llm.md](docs/testing/fake-llm.md).
 
 **Managing a warm model.** If you want `kb` to own the model process rather than reuse someone else's:
 
@@ -579,7 +579,7 @@ kb feedback promote --kb=work --query="rollback procedure" \
 
 See [`docs/operations/feedback-workflow.md`](docs/operations/feedback-workflow.md).
 
-**`kb eval` — run fixture-driven retrieval checks.** A case can set `query`, and optionally `kb`, `required_sources`, `forbidden_sources`, `expected_metadata`, `max_duplicate_groups`, `stale_policy`, and `gate`. Failing *ungated* cases print warnings and exit 0; failing *gated* cases exit 1, which is what makes this usable in CI.
+**`kb eval` — run fixture-driven retrieval checks.** A case can set `query`, and optionally `kb`, `required_sources`, `forbidden_sources`, `expected_metadata`, `max_duplicate_groups`, `stale_policy`, and `gate`. A case's `gate` field is unrelated to [relevance gating](#relevance-gating) — here it means "should failing this case break the build". Failing *ungated* cases print warnings and exit 0; failing *gated* cases exit 1, which is what makes this usable in CI.
 
 ```yaml
 gate: false
@@ -624,7 +624,7 @@ kb verify                          # slow integrity checks for persisted indexes
 
 **`kb serve`** runs the loopback daemon that clients passing `--daemon` use for warm reads, so a query doesn't pay model and index load time on every invocation. `kb serve [--host=127.0.0.1] [--port=17799] [--idle-timeout-ms=300000] [--warm]` brings it up; `--warm` (or `KB_DAEMON_PREWARM=on`) pre-loads the active model, FAISS index, and lexical indexes before reporting ready. `kb serve status [--json]` reports reachability, pid, idle timeout, supported commands, and prewarm state at `KB_DAEMON_URL` (default `http://127.0.0.1:17799`). SIGINT or SIGTERM stops it, and CLI commands fall back to direct in-process execution whenever the daemon is unreachable. See [`docs/operations/daemon-lifecycle.md`](docs/operations/daemon-lifecycle.md).
 
-**`kb reindex`** rebuilds the index. `--with-context` adds contextual prefaces (requires `KB_CONTEXTUAL_RETRIEVAL=on` and a `KB_LLM_ENDPOINT`). `kb reindex status` reads the durable run-state and per-source sidecar ledgers to report liveness, eligible indexed files, sidecar coverage, pending files, resolved and failed chunks, and failure codes. Note that `--kb=<name>` is only a guard and estimator hint — a rebuild always covers the entire single-index-per-model layout ([RFC 017 §5](docs/rfcs/017-contextual-retrieval.md)).
+**`kb reindex`** rebuilds the index. `--with-context` adds [contextual prefaces](#contextual-prefaces-at-ingest) (requires `KB_CONTEXTUAL_RETRIEVAL=on` and a `KB_LLM_ENDPOINT`). `kb reindex status` reads the durable run-state and per-source sidecar ledgers to report liveness, eligible indexed files, sidecar coverage, pending files, resolved and failed chunks, and failure codes. Note that `--kb=<name>` is only a guard and estimator hint — a rebuild always covers the entire single-index-per-model layout ([RFC 017 §5](docs/rfcs/017-contextual-retrieval.md)).
 
 **`kb logs`** reads the structured request log emitted under `KB_LOG_FORMAT=canonical` or `both`. `kb logs show --request-id=<id>` pulls every line of one retrieval; `--query-sha=<hash>` follows a recurring query; `kb logs recent --limit=<n>` shows the latest entries. `--format=json` emits a report envelope, `--format=csv|tsv|ndjson` flat event rows for downstream tooling.
 
@@ -632,7 +632,27 @@ kb verify                          # slow integrity checks for persisted indexes
 
 ## Tune retrieval quality
 
-Plain dense retrieval is the default and needs no configuration. Four further stages sit around it. Three are **off by default**, because each buys precision or safety at a cost you should choose deliberately; the fourth, the untrusted-content guard, is on. The complete flag matrix — defaults, per-call overrides, rollout status, validation commands — is in [docs/feature-flags.md](docs/feature-flags.md).
+Plain dense retrieval is the default and needs no configuration. Five further stages sit around it. Four are **off by default**, because each buys precision or safety at a cost you should choose deliberately; the fifth, the untrusted-content guard, is on. The complete flag matrix — defaults, per-call overrides, rollout status, validation commands — is in [docs/feature-flags.md](docs/feature-flags.md).
+
+### Contextual prefaces at ingest
+
+Chunking a note breaks it into ~1000-character pieces, and the embedding model sees each piece alone. So a chunk reading
+
+> "We pin it to CPU because the 24 GB card is already maxed by the gate model."
+
+carries none of what makes it findable: *which* service is pinned, *which* card, *which* model. Its vector lands near other passages about "pinning" rather than near the GPU-contention question an operator would actually type. The note is indexed and still effectively invisible.
+
+A **contextual preface** fixes this at ingest rather than at query time. Before a chunk is embedded, an LLM writes a short passage — roughly 50–100 tokens — describing where that chunk sits in its document, and the preface is prepended to the text that gets vectorized. The chunk now embeds as what it *is about*, not just what it literally says. Anthropic, who published the technique, measured a 49% reduction in top-5 retrieval failures on a code-and-prose benchmark.
+
+Two things worth knowing before you turn it on. The text returned to callers is unchanged — prefaces affect the vector, never what `retrieve_knowledge` or `kb search` hands back. And the cost is real: one LLM call per chunk at ingest time. Generated prefaces are cached in per-source sidecars, so a reindex only pays for chunks that actually changed.
+
+```bash
+KB_CONTEXTUAL_RETRIEVAL=on     # plus a KB_LLM_ENDPOINT to generate against
+kb reindex --with-context      # backfill existing shelves
+kb reindex status              # sidecar coverage, pending files, failures
+```
+
+Design and rollout details are in [RFC 017](docs/rfcs/017-contextual-retrieval.md).
 
 ### Cross-encoder reranking
 
@@ -651,7 +671,7 @@ Enable it with `KB_RERANK=on`, or per call with `kb search --rerank` / `kb ask -
 
 ### Relevance gating
 
-Retrieval always returns *something*: ask about a topic your notes don't cover and you still get the ten least-bad chunks. Fed to an LLM, those read as authoritative context and quietly corrupt the answer. Relevance gating adds a check between retrieval and use — a statistical score floor, then optionally an LLM judge — that drops chunks which don't actually match the task, and can return nothing at all rather than something wrong.
+Retrieval always returns *something*: ask about a topic your notes don't cover and you still get the ten least-bad chunks. The retrieval-time similarity threshold doesn't save you — it defaults to the far end of the distance scale and rarely excludes anything (see [`retrieve_knowledge`](#tools)). Fed to an LLM, those chunks read as authoritative context and quietly corrupt the answer. Relevance gating adds a check between retrieval and use — a statistical score floor, then optionally an LLM judge — that drops chunks which don't actually match the task, and can return nothing at all rather than something wrong.
 
 That is a real tradeoff: the gate can also discard genuinely relevant chunks, lowering recall to raise precision. That's why it is off unless you opt in.
 
@@ -772,7 +792,12 @@ kb doctor                    # human-readable report
 kb doctor --format=json      # machine-readable, for agent shells
 ```
 
-The full report covers active-model resolution, FAISS index version and mtime, the latest in-process index-update summary, per-KB stale counts, embedding-backend reachability (Ollama / HuggingFace / OpenAI), ask and relevance-gate LLM endpoint readiness, LLM call counters (calls, errors, p95 latency, reported token totals, bounded provider and coarse-model attribution, attempts and retries, workflow cache outcomes, answer impact, answer-cache counters), the CLI version, and local git state.
+The full report covers four areas:
+
+- **Retrieval readiness** — active-model resolution, FAISS index version and mtime, the latest in-process index-update summary, and per-KB stale counts.
+- **Backend reachability** — the embedding provider (Ollama / HuggingFace / OpenAI), plus the `kb ask` and relevance-gate LLM endpoints.
+- **LLM usage counters**, broken down by operation — calls, errors, p95 latency, reported token totals, attempts and retries, cache hit outcomes, and how often an answer actually changed as a result. Provider and model attribution is *bounded*: only the few most-used values are tracked by name, so a long tail of models can't grow the counter set without limit.
+- **Local install state** — the CLI version and local git state, which is what catches a global `kb` bin pointing at a stale checkout.
 
 It **exits non-zero when a required retrieval check fails** — unresolved active model, missing index, unreachable backend. LLM endpoint failures are only WARN rows, because search can be perfectly healthy while `kb ask` or the optional gate is not ready.
 
