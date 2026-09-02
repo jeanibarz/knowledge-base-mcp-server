@@ -376,7 +376,7 @@ Use this path if you want to develop against the repo or pin an unreleased commi
         OPENAI_MODEL_NAME=text-embedding-3-small
         KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases
         ```
-    *   To target an OpenAI-compatible endpoint instead of the official API (self-hosted gateways, Azure OpenAI, Volcengine Ark, OpenRouter, …), set `OPENAI_BASE_URL` to the endpoint's base URL including the API version path, e.g. `OPENAI_BASE_URL=https://ark.cn-beijing.volces.com/api/v3`. Unset keeps the default `https://api.openai.com/v1`.
+    *   To target an OpenAI-compatible endpoint instead of the official API (self-hosted gateways, Volcengine Ark, OpenRouter, …), set `OPENAI_BASE_URL` to the endpoint's base URL including the API version path, e.g. `OPENAI_BASE_URL=https://ark.cn-beijing.volces.com/api/v3`. Unset keeps the default `https://api.openai.com/v1`. Azure OpenAI is reachable only through its `/openai/v1/` API-compatibility surface (`OPENAI_BASE_URL=https://<resource>.openai.azure.com/openai/v1`); classic Azure deployments need `api-key` auth, an `api-version` query parameter, and per-deployment paths, so a plain base URL cannot target them.
     *   As of this release, the OpenAI default is `text-embedding-3-small` (up from `text-embedding-ada-002`). Both produce 1536-dim vectors, but the model name change will trigger a one-time FAISS index rebuild on the next query. Override with `OPENAI_MODEL_NAME=...` if you prefer the old default.
 
     ### Option 3: HuggingFace Configuration (Fallback)

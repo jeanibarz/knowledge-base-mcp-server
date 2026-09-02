@@ -281,7 +281,9 @@ export function embeddingProviderBreakerKey(
 ): string | null {
   if (provider === 'fake') return null;
   if (provider === 'ollama') return `embedding:ollama:${OLLAMA_BASE_URL}:${modelName}`;
-  if (provider === 'openai') return `embedding:openai:${OPENAI_BASE_URL}/embeddings:${modelName}`;
+  // Trailing slashes are trimmed so the same endpoint spelled with or without
+  // one shares one breaker instead of minting two.
+  if (provider === 'openai') return `embedding:openai:${OPENAI_BASE_URL.replace(/\/+$/, '')}/embeddings:${modelName}`;
   const endpointUrl = HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN
     ? HUGGINGFACE_ENDPOINT_URL
     : `https://router.huggingface.co/hf-inference/models/${modelName}/pipeline/feature-extraction`;

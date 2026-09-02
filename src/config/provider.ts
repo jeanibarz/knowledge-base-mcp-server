@@ -150,10 +150,15 @@ export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'dengcao/Qwen3-Embedding
 export const DEFAULT_OPENAI_MODEL_NAME = 'text-embedding-3-small';
 export const OPENAI_MODEL_NAME = process.env.OPENAI_MODEL_NAME || DEFAULT_OPENAI_MODEL_NAME;
 
-// OpenAI-compatible endpoints (self-hosted gateways, Azure OpenAI,
-// Volcengine Ark, OpenRouter, …). Overrides the base URL used by the OpenAI
-// embedding provider; unset keeps the official api.openai.com default. The
-// value must include the API version path (e.g. /v1).
+// OpenAI-compatible endpoints (self-hosted gateways, Volcengine Ark,
+// OpenRouter, …; Azure only via its /openai/v1/ compatibility surface).
+// Overrides the base URL used by the OpenAI embedding provider; unset keeps
+// the official api.openai.com default. The value must include the API
+// version path (e.g. /v1).
+export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const OPENAI_BASE_URL_OVERRIDE = process.env.OPENAI_BASE_URL?.trim();
-export const OPENAI_BASE_URL_OVERRIDDEN = Boolean(OPENAI_BASE_URL_OVERRIDE);
-export const OPENAI_BASE_URL = OPENAI_BASE_URL_OVERRIDE || 'https://api.openai.com/v1';
+// Compares against the default rather than mere presence so a value equal to
+// the official endpoint (e.g. copied from .env.example) reports as unchanged.
+export const OPENAI_BASE_URL_OVERRIDDEN = Boolean(OPENAI_BASE_URL_OVERRIDE)
+  && OPENAI_BASE_URL_OVERRIDE !== DEFAULT_OPENAI_BASE_URL;
+export const OPENAI_BASE_URL = OPENAI_BASE_URL_OVERRIDE || DEFAULT_OPENAI_BASE_URL;

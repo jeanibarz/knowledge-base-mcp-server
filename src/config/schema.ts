@@ -22,6 +22,7 @@ import {
 } from './indexing.js';
 import {
   DEFAULT_HUGGINGFACE_MODEL_NAME,
+  DEFAULT_OPENAI_BASE_URL,
   DEFAULT_OPENAI_MODEL_NAME,
   KNOWN_EMBEDDING_PROVIDERS,
 } from './provider.js';
@@ -174,7 +175,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'OLLAMA_MODEL', kind: 'string', default: 'dengcao/Qwen3-Embedding-0.6B:Q8_0', emptyUsesDefault: true },
   { name: 'OPENAI_API_KEY', kind: 'secret', secret: true },
   { name: 'OPENAI_MODEL_NAME', kind: 'string', default: DEFAULT_OPENAI_MODEL_NAME, emptyUsesDefault: true },
-  { name: 'OPENAI_BASE_URL', kind: 'url', default: 'https://api.openai.com/v1', protocols: ['http:', 'https:'], description: 'Base URL for OpenAI-compatible embedding endpoints; must include the API version path (e.g. /v1).' },
+  { name: 'OPENAI_BASE_URL', kind: 'url', docDefault: 'https://api.openai.com/v1', defaultValue: () => DEFAULT_OPENAI_BASE_URL, protocols: ['http:', 'https:'], description: 'Base URL for OpenAI-compatible embedding endpoints; must include the API version path (e.g. /v1).' },
   { name: 'KB_EMBEDDING_TASK_PREFIXES', kind: 'boolean', default: 'on', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables role-specific embedding task prefixes for model families that require separate document/query prefixes.' },
   { name: 'KB_PROVIDER_BREAKER', kind: 'boolean', default: 'on', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables the process-shared open/half-open circuit breaker for embedding and LLM provider calls.' },
   { name: 'KB_PROVIDER_BREAKER_FAILURE_THRESHOLD', kind: 'integer', default: '3', min: 1, max: 100, integerSyntax: 'digits', description: 'Consecutive provider failures before the circuit opens.' },

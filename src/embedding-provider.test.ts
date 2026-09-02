@@ -350,6 +350,14 @@ describe('OpenAI arm — OPENAI_BASE_URL for OpenAI-compatible endpoints', () =>
       .toBe('embedding:openai:https://ark.cn-beijing.volces.com/api/v3/embeddings:text-embedding-3-small');
   });
 
+  it('folds a trailing slash in OPENAI_BASE_URL into the same breaker key', async () => {
+    const trailingSlash = await loadFresh({
+      OPENAI_BASE_URL: 'https://ark.cn-beijing.volces.com/api/v3/',
+    });
+    expect(trailingSlash.embeddingProviderBreakerKey('openai', 'text-embedding-3-small'))
+      .toBe('embedding:openai:https://ark.cn-beijing.volces.com/api/v3/embeddings:text-embedding-3-small');
+  });
+
   it('passes a custom OPENAI_BASE_URL through to the OpenAI client configuration', async () => {
     const { createEmbeddingsClient } = await loadFresh({
       OPENAI_API_KEY: 'test-openai-key',
@@ -387,6 +395,34 @@ describe('OpenAI arm — OPENAI_BASE_URL for OpenAI-compatible endpoints', () =>
     });
     expect(unwrapToOpenAIEmbeddings(client).clientConfig.baseURL)
       .toBe('https://api.openai.com/v1');
+  });
+});
+
+describe('OPENAI_BASE_URL_OVERRIDDEN — custom-endpoint detection', () => {
+  async function loadProviderConfig(env: Record<string, string | undefined>) {
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    jest.resetModules();
+    return import('./config/provider.js');
+  }
+
+  it('treats a value equal to the official default as not overridden', async () => {
+    const cfg = await loadProviderConfig({ OPENAI_BASE_URL: 'https://api.openai.com/v1' });
+    expect(cfg.OPENAI_BASE_URL_OVERRIDDEN).toBe(false);
+    expect(cfg.OPENAI_BASE_URL).toBe('https://api.openai.com/v1');
+  });
+
+  it('reports a genuinely custom endpoint as overridden', async () => {
+    const cfg = await loadProviderConfig({ OPENAI_BASE_URL: 'https://ark.cn-beijing.volces.com/api/v3' });
+    expect(cfg.OPENAI_BASE_URL_OVERRIDDEN).toBe(true);
+  });
+
+  it('treats a blank OPENAI_BASE_URL as not overridden', async () => {
+    const cfg = await loadProviderConfig({ OPENAI_BASE_URL: '   ' });
+    expect(cfg.OPENAI_BASE_URL_OVERRIDDEN).toBe(false);
+    expect(cfg.OPENAI_BASE_URL).toBe('https://api.openai.com/v1');
   });
 });
 
