@@ -9,6 +9,35 @@
 
 ## Security
 
+### NFR-SEC-907: Injection-guard wrapper delimiter integrity
+**Status:** Implemented
+**Priority:** High
+
+**Requirement:** The system shall neutralize configured injection-guard wrapper delimiters inside untrusted chunk content while preserving the outer wrapper and losslessly restoring content only while it is outside the wrapper trust boundary.
+**Rationale:** An embedded closing delimiter can terminate the untrusted-content envelope early and present the remaining document text as trusted instructions.
+
+**Acceptance Criteria:**
+- [x] Given content containing the default opening or closing wrapper delimiter, when wrap mode renders the content, then only the trusted outer envelope contains either delimiter verbatim.
+- [x] Given custom wrapper delimiters, when wrap mode renders content containing those delimiters, then the embedded occurrences are neutralized without changing the configured outer envelope.
+- [x] Given overlapping or single-codepoint custom delimiters, when wrap mode renders content containing those delimiters, then no embedded occurrence remains verbatim and restoration returns the original content.
+- [x] Given source metadata or chunk content containing a rendered opening or closing delimiter, when wrap mode renders the chunk, then only the trusted outer envelope contains those rendered tokens verbatim.
+- [x] Given neutralized wrapped content, when ask-context truncation splits and rebuilds the wrapper, then the inner content is restored for processing and neutralized again before returning to the trust boundary.
+- [x] Given a custom delimiter that occurs in the truncation marker, when ask-context truncation rebuilds the wrapper, then the marker is neutralized with the body and cannot terminate the envelope.
+- [x] Given delimiter-heavy wrapped content, when ask-context truncation rebuilds the wrapper, then it budgets the encoded payload and retains a safe truncated chunk that fits.
+- [x] Given an opening template with multiple `{source}` placeholders, or without static delimiter text on both sides of the placeholder, when wrap mode renders or ask-context truncation parses a chunk, then it rejects the structurally ambiguous template.
+- [x] Given task context that mentions a wrapper delimiter, when the guard is not in a wrapping mode, then the wrapper-delimiter signal does not fire and the context is not refused.
+- [x] Given source metadata containing a `$$`, `$&`, `` $` `` or `$'` substitution pattern, when wrap mode interpolates it into the opening template, then the metadata renders verbatim and no template fragment is re-injected after escaping.
+- [x] Given untrusted content or source metadata containing an opening delimiter rendered for a *different* source, when wrap mode renders the chunk, then that forged opening delimiter is neutralized.
+- [x] Given `tag` or `off` mode, when ask-context truncation processes chunk content shaped like an envelope, then the content is not parsed as a wrapper and its body is not rewritten.
+- [x] Given a knowledge base named in `KB_INJECTION_GUARD_BYPASS_KBS`, when ask-context truncation processes its envelope-shaped content in a wrapping mode, then the content is not parsed as a wrapper and its body is not rewritten.
+- [x] Given wrapped content that is saturated with delimiter tokens, when ask-context truncation rebuilds the envelope, then it backs off proportionally and still returns a truncated chunk within budget instead of dropping it.
+- [x] Given empty, Unicode-multiline, whitespace-padded, or mutually contained outer delimiters, when wrap mode renders a chunk, then it rejects the structurally ambiguous envelope.
+- [x] Given source metadata containing Unicode line separators, when wrap mode renders the source attribute, then it emits numeric entities rather than raw wrapper line breaks.
+- [x] Given content containing the configured closing delimiter, when injection signals are detected, then a wrapper-delimiter signal identifies the exact token.
+
+**Linked Tests:** TS-SEC-907 (`src/injection-guard.test.ts`, `src/cli-ask.test.ts`, `src/task-context-guard.test.ts`)
+**Dependencies:** ADR0010
+
 ### NFR-POLICY-854: Per-KB mutation policy enforcement
 **Status:** Implemented
 **Priority:** High
