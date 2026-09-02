@@ -181,6 +181,7 @@ but the model never sees the original character.
 | Ollama embedding model | `OLLAMA_MODEL` | `dengcao/Qwen3-Embedding-0.6B:Q8_0` | Ollama embedding provider | Implemented | active model selection through `kb models` | `EMBEDDING_PROVIDER=ollama kb models list` |
 | OpenAI embedding model | `OPENAI_MODEL_NAME` | `text-embedding-3-small` | OpenAI embedding provider | Implemented | active model selection through `kb models` | `EMBEDDING_PROVIDER=openai kb doctor` |
 | OpenAI API key | `OPENAI_API_KEY` | required for OpenAI | OpenAI embedding provider | Implemented | none | `EMBEDDING_PROVIDER=openai kb doctor` |
+| OpenAI base URL | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI embedding provider against OpenAI-compatible endpoints | Implemented | none | `OPENAI_BASE_URL=https://ark.cn-beijing.volces.com/api/v3 EMBEDDING_PROVIDER=openai kb doctor` |
 | HuggingFace embedding model | `HUGGINGFACE_MODEL_NAME` | `BAAI/bge-small-en-v1.5` | HuggingFace embedding provider | Implemented | active model selection through `kb models` | `EMBEDDING_PROVIDER=huggingface kb doctor` |
 | HuggingFace router provider | `HUGGINGFACE_PROVIDER` | `hf-inference` | HuggingFace embedding provider | Implemented | none | `EMBEDDING_PROVIDER=huggingface kb doctor` |
 | HuggingFace endpoint URL | `HUGGINGFACE_ENDPOINT_URL` | router URL for the selected model | HuggingFace embedding provider | Implemented | none | `HUGGINGFACE_ENDPOINT_URL=<url> kb doctor` |

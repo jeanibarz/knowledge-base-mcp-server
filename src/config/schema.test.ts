@@ -90,7 +90,6 @@ describe('config schema validation (FR-OBS-470)', () => {
 
   it.each([
     'KB_CACHE_SIZE',
-    'OPENAI_BASE_URL',
     'HUGGINGFACE_TIMEOUT',
     'MCP_HOST',
     'KB_DAEMON_POST',
