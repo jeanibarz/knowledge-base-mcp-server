@@ -1,6 +1,6 @@
 # Authoring notes that retrieve well
 
-This is a short, opinionated guide for **KB authors** — the humans (and agents) who write the markdown the server retrieves. It is **not** a contributor guide for the repo (see [`CONTRIBUTING.md`](../CONTRIBUTING.md)) and **not** an agent runbook (see [`CLAUDE.md`](../CLAUDE.md)). Seven sections, one page; cap maintained on purpose.
+This is a short, opinionated guide for **KB authors** — the humans (and agents) who write the markdown the server retrieves. It is **not** a contributor guide for the repo (see [`CONTRIBUTING.md`](../CONTRIBUTING.md)) and **not** an agent runbook (see [`CLAUDE.md`](../CLAUDE.md)). It is deliberately kept to one page across seven short sections — if something isn't here, it is probably outside what an authoring guide should decide for you.
 
 The server pipeline is short:
 
@@ -62,6 +62,15 @@ kb_policy:
   sensitivity: internal
 ---
 ```
+
+Those keys fall into four groups, and only the last group changes what retrieval does:
+
+| Group | Keys | Who writes them, and what reads them |
+| --- | --- | --- |
+| **Provenance** | `arxiv_id`, `title`, `authors`, `published`, `ingested_at` | Written by ingest pipelines (or by you). Carried on every chunk so a calling agent can cite a result without re-parsing the note, but not filterable on their own. |
+| **Evaluation** | `judge_method`, `metrics_used`, `bias_handling`, `relevance_score` | Written by the LLM-as-judge pipeline that generated the note ([RFC 011 §5.4](rfcs/011-arxiv-backend.md)). Lifted generically, so they show up on any note that sets them. If you're writing notes by hand, ignore these. |
+| **Lifecycle** | `status`, `review_status`, `tier`, `confidence`, `last_verified_at`, `manual_edits`, `contradicted_by`, `promote_model` | The trust and staleness record for a note. `kb promote` writes `tier` (`working` \| `validated` \| `wisdom`), `review_status` (`approved` \| `needs-review`), `confidence`, and `last_verified_at`; `kb superseded` reads `status`, `review_status`, `contradicted_by`, `last_verified_at`, and `confidence` to decide whether a note has gone stale. See [§6](#6-curate-notes-through-their-lifecycle). `promote_model` and `manual_edits` are lifted for external workflows; no command in this repo currently reads them. |
+| **Retrieval behaviour** | `tags`, `kb_policy` | The only two that change what the server returns — see below. |
 
 Why it matters:
 
