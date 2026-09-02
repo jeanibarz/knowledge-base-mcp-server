@@ -64,7 +64,7 @@ export async function resolveSearchPager(
   if (argv.length === 0) return null;
   const [command, ...args] = argv;
   if (isCatPager(command)) return null;
-  if (!(await commandExists(command, env))) return null;
+  if (!(await commandExists(command, env)) && !canUseInProcessPager(command)) return null;
   return { command, args };
 }
 
@@ -79,6 +79,12 @@ async function writeToPager(
   pager: PagerResolution,
   options: SearchPagerOptions,
 ): Promise<boolean> {
+  if (canUseInProcessPager(pager.command) && !options.capturePagerStdout) {
+    const { default: less } = await import('less-pager-mini');
+    await less(output, pager.args);
+    return true;
+  }
+
   const stderr = options.stderr ?? process.stderr;
   const stdout: Writable = options.stdout ?? process.stdout;
   const child = spawn(pager.command, pager.args, {
@@ -124,6 +130,14 @@ function isPagerDisabledValue(value: string): boolean {
 
 function isCatPager(command: string): boolean {
   return path.basename(command).toLowerCase() === 'cat';
+}
+
+function isLessPager(command: string): boolean {
+  return path.basename(command).toLowerCase() === 'less';
+}
+
+function canUseInProcessPager(command: string): boolean {
+  return process.platform === 'win32' && isLessPager(command);
 }
 
 function splitPagerCommand(commandLine: string): string[] {
