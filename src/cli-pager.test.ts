@@ -87,6 +87,65 @@ describe('search pager resolution (#471)', () => {
   });
 });
 
+describe('windows pager fallback (#934)', () => {
+  /** Runs fn with process.platform stubbed; canUseInProcessPager reads it live. */
+  async function withPlatform(value: string, fn: () => Promise<void>): Promise<void> {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value });
+    try {
+      await fn();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original });
+    }
+  }
+
+  const MISSING_PATH = '/definitely/not/a/real/bin';
+
+  it('resolves a pager on Windows when less is not on PATH', async () => {
+    await withPlatform('win32', async () => {
+      await expect(resolveSearchPager({
+        flag: true,
+        format: 'md',
+        env: { PATH: MISSING_PATH, PAGER: 'less -R' },
+        stdoutIsTTY: true,
+      })).resolves.toEqual({ command: 'less', args: ['-R'] });
+    });
+  });
+
+  it('keeps direct output on POSIX when less is not on PATH', async () => {
+    await withPlatform('linux', async () => {
+      await expect(resolveSearchPager({
+        flag: true,
+        format: 'md',
+        env: { PATH: MISSING_PATH, PAGER: 'less -R' },
+        stdoutIsTTY: true,
+      })).resolves.toBeNull();
+    });
+  });
+
+  it('does not stand in for a non-less pager on Windows', async () => {
+    await withPlatform('win32', async () => {
+      await expect(resolveSearchPager({
+        flag: true,
+        format: 'md',
+        env: { PATH: MISSING_PATH, PAGER: 'bat' },
+        stdoutIsTTY: true,
+      })).resolves.toBeNull();
+    });
+  });
+
+  it('still honours --no-pager on Windows', async () => {
+    await withPlatform('win32', async () => {
+      await expect(resolveSearchPager({
+        flag: false,
+        format: 'md',
+        env: { PATH: MISSING_PATH, PAGER: 'less -R' },
+        stdoutIsTTY: true,
+      })).resolves.toBeNull();
+    });
+  });
+});
+
 describe('writeMaybePagedOutput (#471)', () => {
   it('pipes output through the configured pager when enabled on a TTY', async () => {
     const stdout = new CaptureStream();
