@@ -8,6 +8,7 @@ const originalEnv = {
   KB_PROVIDER_BREAKER: process.env.KB_PROVIDER_BREAKER,
   HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
 };
 
 afterEach(() => {
@@ -325,6 +326,103 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
       state: 'closed',
       consecutive_failures: 0,
     })]);
+  });
+});
+
+describe('OpenAI arm — OPENAI_BASE_URL for OpenAI-compatible endpoints', () => {
+  // OpenAIEmbeddings sits two wrappers down (breaker → timeout → provider).
+  function unwrapToOpenAIEmbeddings(
+    client: unknown,
+  ): { clientConfig: { baseURL?: string } } {
+    const timeout = (client as { inner: unknown }).inner;
+    return (timeout as { inner: { clientConfig: { baseURL?: string } } }).inner;
+  }
+
+  it('derives the breaker key from OPENAI_BASE_URL so the key matches the endpoint actually called', async () => {
+    const { embeddingProviderBreakerKey } = await loadFresh({ OPENAI_BASE_URL: undefined });
+    expect(embeddingProviderBreakerKey('openai', 'text-embedding-3-small'))
+      .toBe('embedding:openai:https://api.openai.com/v1/embeddings:text-embedding-3-small');
+
+    const overridden = await loadFresh({
+      OPENAI_BASE_URL: 'https://ark.cn-beijing.volces.com/api/v3',
+    });
+    expect(overridden.embeddingProviderBreakerKey('openai', 'text-embedding-3-small'))
+      .toBe('embedding:openai:https://ark.cn-beijing.volces.com/api/v3/embeddings:text-embedding-3-small');
+  });
+
+  it('folds a trailing slash in OPENAI_BASE_URL into the same breaker key', async () => {
+    const trailingSlash = await loadFresh({
+      OPENAI_BASE_URL: 'https://ark.cn-beijing.volces.com/api/v3/',
+    });
+    expect(trailingSlash.embeddingProviderBreakerKey('openai', 'text-embedding-3-small'))
+      .toBe('embedding:openai:https://ark.cn-beijing.volces.com/api/v3/embeddings:text-embedding-3-small');
+  });
+
+  it('passes a custom OPENAI_BASE_URL through to the OpenAI client configuration', async () => {
+    const { createEmbeddingsClient } = await loadFresh({
+      OPENAI_API_KEY: 'test-openai-key',
+      OPENAI_BASE_URL: 'https://ark.cn-beijing.volces.com/api/v3',
+    });
+    const client = await createEmbeddingsClient({
+      provider: 'openai',
+      modelName: 'text-embedding-3-small',
+    });
+    expect(unwrapToOpenAIEmbeddings(client).clientConfig.baseURL)
+      .toBe('https://ark.cn-beijing.volces.com/api/v3');
+  });
+
+  it('keeps the official api.openai.com base URL when OPENAI_BASE_URL is unset', async () => {
+    const { createEmbeddingsClient } = await loadFresh({
+      OPENAI_API_KEY: 'test-openai-key',
+      OPENAI_BASE_URL: undefined,
+    });
+    const client = await createEmbeddingsClient({
+      provider: 'openai',
+      modelName: 'text-embedding-3-small',
+    });
+    expect(unwrapToOpenAIEmbeddings(client).clientConfig.baseURL)
+      .toBe('https://api.openai.com/v1');
+  });
+
+  it('treats a blank OPENAI_BASE_URL as unset', async () => {
+    const { createEmbeddingsClient } = await loadFresh({
+      OPENAI_API_KEY: 'test-openai-key',
+      OPENAI_BASE_URL: '   ',
+    });
+    const client = await createEmbeddingsClient({
+      provider: 'openai',
+      modelName: 'text-embedding-3-small',
+    });
+    expect(unwrapToOpenAIEmbeddings(client).clientConfig.baseURL)
+      .toBe('https://api.openai.com/v1');
+  });
+});
+
+describe('OPENAI_BASE_URL_OVERRIDDEN — custom-endpoint detection', () => {
+  async function loadProviderConfig(env: Record<string, string | undefined>) {
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    jest.resetModules();
+    return import('./config/provider.js');
+  }
+
+  it('treats a value equal to the official default as not overridden', async () => {
+    const cfg = await loadProviderConfig({ OPENAI_BASE_URL: 'https://api.openai.com/v1' });
+    expect(cfg.OPENAI_BASE_URL_OVERRIDDEN).toBe(false);
+    expect(cfg.OPENAI_BASE_URL).toBe('https://api.openai.com/v1');
+  });
+
+  it('reports a genuinely custom endpoint as overridden', async () => {
+    const cfg = await loadProviderConfig({ OPENAI_BASE_URL: 'https://ark.cn-beijing.volces.com/api/v3' });
+    expect(cfg.OPENAI_BASE_URL_OVERRIDDEN).toBe(true);
+  });
+
+  it('treats a blank OPENAI_BASE_URL as not overridden', async () => {
+    const cfg = await loadProviderConfig({ OPENAI_BASE_URL: '   ' });
+    expect(cfg.OPENAI_BASE_URL_OVERRIDDEN).toBe(false);
+    expect(cfg.OPENAI_BASE_URL).toBe('https://api.openai.com/v1');
   });
 });
 
