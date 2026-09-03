@@ -302,6 +302,19 @@ export class FaissStoreAdapter implements SearchIndexAdapter {
   }
 
   /**
+   * Issue #882 — iterate the docstore Map's values and return on the first
+   * match. Unlike `docstoreDocuments().some(...)`, this never allocates the
+   * intermediate `Document[]`, so a "does any view document exist?" probe on a
+   * warm daemon is allocation-free and short-circuits.
+   */
+  anyDocument(predicate: (doc: Document) => boolean): boolean {
+    for (const doc of getDocstoreMap(this.store).values()) {
+      if (predicate(doc)) return true;
+    }
+    return false;
+  }
+
+  /**
    * Issue #283 — emit `[docstoreId, Document]` pairs in insertion order so
    * the metadata sidecar can persist a stable id keyed by exactly what the
    * langchain docstore uses internally.

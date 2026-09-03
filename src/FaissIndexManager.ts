@@ -593,6 +593,17 @@ export class FaissIndexManager {
   private metadataSidecarCache: { sidecar: MetadataSidecar; loadedAt: number } | null = null;
   private metadataSidecarMissingLogged = false;
   private metadataSidecarAllowedForLoadedStore = true;
+  // Issue #882 — cache "does the loaded store contain any retrieval-view
+  // document?" so a dense/hybrid query does not copy and scan the entire
+  // docstore per call. The value is derived purely from per-document
+  // `retrieval_view` metadata baked at ingest, so it changes only when the
+  // docstore mutates. Keying on the adapter identity plus `totalVectors()`
+  // makes the cache self-invalidating: every content change either swaps in a
+  // new adapter (load/reload/version-load) or grows `ntotal` via
+  // `addEmbeddedDocuments` (the docstore is append-only — never mutated in
+  // place). `KB_RETRIEVAL_VIEWS` does not affect this predicate, so a config
+  // change cannot flip the value.
+  private hasViewDocumentsCache: { adapter: SearchIndexAdapter; ntotal: number; value: boolean } | null = null;
 
   /**
    * RFC 013 §4.9 file table — preferred form: `new FaissIndexManager({provider, modelName})`
@@ -2716,7 +2727,7 @@ export class FaissIndexManager {
       });
     };
     const ntotal = this.faissIndex.totalVectors();
-    const hasViewDocuments = this.getDocstoreDocuments().some(isRetrievalViewDocument);
+    const hasViewDocuments = this.hasRetrievalViewDocuments();
     const viewFetchMultiplier = opts.retrievalViews !== undefined && opts.retrievalViews.length > 0
       ? Math.max(4, opts.retrievalViews.length + 1)
       : (hasViewDocuments ? 4 : 1);
@@ -2971,6 +2982,30 @@ export class FaissIndexManager {
 
   private getDocstoreDocuments(): Document[] {
     return this.faissIndex?.docstoreDocuments() ?? [];
+  }
+
+  /**
+   * Issue #882 — "does the loaded store contain any retrieval-view document?"
+   * Retrieval views are opt-in and default off, so the honest answer is almost
+   * always `false`, yet the value is consulted on every dense/hybrid query to
+   * size the view-overfetch multiplier. Compute it via a non-allocating,
+   * short-circuiting docstore scan (`anyDocument`) and cache the boolean keyed
+   * on the adapter identity + `totalVectors()`; the append-only docstore means
+   * any change to the answer is captured by one of those two keys. This
+   * replaces the previous `getDocstoreDocuments().some(...)`, which copied and
+   * scanned the whole corpus per query.
+   */
+  private hasRetrievalViewDocuments(): boolean {
+    const adapter = this.faissIndex;
+    if (!adapter) return false;
+    const ntotal = adapter.totalVectors();
+    const cached = this.hasViewDocumentsCache;
+    if (cached !== null && cached.adapter === adapter && cached.ntotal === ntotal) {
+      return cached.value;
+    }
+    const value = adapter.anyDocument(isRetrievalViewDocument);
+    this.hasViewDocumentsCache = { adapter, ntotal, value };
+    return value;
   }
 
   /**

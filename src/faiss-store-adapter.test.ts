@@ -49,6 +49,38 @@ describe('FaissStoreAdapter', () => {
     });
   });
 
+  // Copy-avoidance on the query hot path is asserted at the manager level
+  // (FaissIndexManager.test.ts — `docstoreDocuments` is never called); here we
+  // only pin `anyDocument`'s short-circuit-on-first-match contract.
+  it('short-circuits anyDocument on the first match (#882)', () => {
+    const docs = new Map([
+      ['a', { pageContent: 'a', metadata: { flag: false } }],
+      ['b', { pageContent: 'b', metadata: { flag: true } }],
+      ['c', { pageContent: 'c', metadata: { flag: true } }],
+    ]);
+    const adapter = adapterFor({ docstore: { _docs: docs } });
+
+    const seen: string[] = [];
+    const found = adapter.anyDocument((doc) => {
+      seen.push(doc.pageContent);
+      return doc.metadata?.flag === true;
+    });
+
+    expect(found).toBe(true);
+    // Insertion order 'a','b' — stops at the first match, never visiting 'c'.
+    expect(seen).toEqual(['a', 'b']);
+  });
+
+  it('returns false from anyDocument when no document matches (#882)', () => {
+    const docs = new Map([
+      ['a', { pageContent: 'a', metadata: {} }],
+      ['b', { pageContent: 'b', metadata: {} }],
+    ]);
+    const adapter = adapterFor({ docstore: { _docs: docs } });
+
+    expect(adapter.anyDocument((doc) => doc.metadata?.flag === true)).toBe(false);
+  });
+
   // RFC 017 §3 — `addDocumentsWithEmbeddings` no longer routes through
   // `FaissStore.addDocuments`; instead it embeds via the passed-in
   // `embeddings` (the IndexingEmbeddingDeduper at the production call
