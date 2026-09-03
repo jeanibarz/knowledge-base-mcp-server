@@ -6,12 +6,15 @@ import * as path from 'node:path';
 import {
   appendDaemonAdmissionMetrics,
   createDaemonCommandHandlers,
+  createWarmCorpusStatsHandler,
+  type DaemonCommandHandlers,
   formatStatsRunResultAsOpenMetrics,
   gracefulDrain,
   parseServeArgs,
   runServeStatus,
   startDaemonServer,
 } from './cli-serve.js';
+import type { RunStatsDeps } from './cli-stats.js';
 import {
   DaemonAdmissionGate,
   resolveDaemonAdmissionConfig,
@@ -21,7 +24,7 @@ import {
   DEFAULT_DAEMON_DRAIN_TIMEOUT_MS,
 } from './daemon-admission.js';
 import { fetchDaemonHealth, runDaemonCommand, type DaemonRunResult } from './daemon-client.js';
-import type { KbStatsPayload } from './kb-stats.js';
+import { CorpusSizeCache, type KbStatsPayload } from './kb-stats.js';
 import type { RunSearchDeps } from './cli-search.js';
 import type { LexicalIndex } from './lexical-index.js';
 import { searchLatencyMetrics } from './metrics.js';
@@ -221,6 +224,102 @@ describe('kb serve daemon', () => {
     await expect(handlers.search(['query'])).resolves.toMatchObject({ exitCode: 0 });
     expect(loadManagerForModel).toHaveBeenCalledTimes(1);
     expect(loadWithJsonRetry).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses the warm resident store across consecutive daemon stats scrapes (#878)', async () => {
+    const manager = { marker: 'manager', modelId: 'ollama__nomic' };
+    let denseMtimeMs = 1;
+    const denseIndexMetadataReader = jest.fn(async () => ({
+      path: '/faiss/index',
+      mtimeMs: denseMtimeMs,
+      size: 10,
+    }));
+    const resolveActiveModelImpl = jest.fn(async () => 'ollama__nomic');
+    // These are the *base* loaders the daemon wraps in its warm cache. A spy on
+    // them stands in for FaissStore.load — it must fire at most once across
+    // repeated scrapes with an unchanged index.
+    const loadManagerForModel = jest.fn(async () => manager as never);
+    const loadWithJsonRetry = jest.fn(async () => undefined);
+    const runStatsImpl = jest.fn(async (_args: string[], deps: RunStatsDeps = {} as RunStatsDeps) => {
+      const modelId = await deps.resolveActiveModel();
+      const loaded = await deps.loadManagerForModel(modelId);
+      await deps.loadWithJsonRetry(loaded);
+      return 0;
+    });
+    const handlers = createDaemonCommandHandlers({
+      denseIndexMetadataReader,
+      resolveActiveModelImpl,
+      loadManagerForModel,
+      loadWithJsonRetry,
+      runStatsImpl,
+    });
+
+    await expect(handlers.stats(['--format=json'])).resolves.toMatchObject({ exitCode: 0 });
+    await expect(handlers.stats(['--format=json'])).resolves.toMatchObject({ exitCode: 0 });
+
+    // AC1: two consecutive scrapes load the FAISS store at most once.
+    expect(loadManagerForModel).toHaveBeenCalledTimes(1);
+    expect(loadWithJsonRetry).toHaveBeenCalledTimes(1);
+    expect(runStatsImpl).toHaveBeenCalledTimes(2);
+    // The daemon threads its warm manager loaders + cached corpus enumeration
+    // into the stats deps (not the raw base spies, which it wraps).
+    expect(runStatsImpl).toHaveBeenCalledWith(
+      ['--format=json'],
+      expect.objectContaining({
+        loadManagerForModel: expect.any(Function),
+        loadWithJsonRetry: expect.any(Function),
+        computeKbStats: expect.any(Function),
+      }),
+      { preferDaemon: false },
+    );
+
+    // A reindex (dense-index mtime bumps) forces exactly one reload.
+    denseMtimeMs = 2;
+    await expect(handlers.stats(['--format=json'])).resolves.toMatchObject({ exitCode: 0 });
+    expect(loadManagerForModel).toHaveBeenCalledTimes(1);
+    expect(loadWithJsonRetry).toHaveBeenCalledTimes(2);
+  });
+
+  it('recomputes the corpus size only when the dense-index signature changes (#878)', async () => {
+    let denseMtimeMs = 1;
+    const readDenseIndexMetadata = jest.fn(async (_modelId: string) => ({
+      path: '/faiss/index',
+      mtimeMs: denseMtimeMs,
+      size: 10,
+    }));
+    // The seam the daemon injects to walk + stat the corpus. AC2 says two
+    // scrapes with an unchanged index must hit it at most once.
+    const corpusSizeLoader = jest.fn(async () => ({
+      sizes: { alpha: { file_count: 1, total_bytes_indexed: 11 } },
+      enumerationFailures: { failure_count: 0, failures: [] },
+    }));
+    const cache = new CorpusSizeCache();
+    // Stand in for the heavy computeKbStats body: invoke the injected corpus
+    // loader exactly as the real computeKbStats does, so the
+    // signature-to-recompute wiring is genuinely exercised end to end.
+    const computeKbStatsImpl: typeof import('./kb-stats.js').computeKbStats = async (_manager, opts) => {
+      await opts.computeCorpusSizes?.(['alpha']);
+      return {} as KbStatsPayload;
+    };
+    const handler = createWarmCorpusStatsHandler({
+      readDenseIndexMetadata,
+      cache,
+      corpusSizeLoader,
+      computeKbStatsImpl,
+    });
+    const manager = { modelId: 'ollama__nomic' } as never;
+    const opts = { serverVersion: 'x', startedAt: 0 };
+
+    await handler(manager, opts);
+    await handler(manager, opts);
+    // AC2: unchanged dense index → corpus walked once across two scrapes.
+    expect(corpusSizeLoader).toHaveBeenCalledTimes(1);
+    expect(corpusSizeLoader).toHaveBeenCalledWith(['alpha']);
+
+    denseMtimeMs = 2; // a reindex rewrites the index file
+    await handler(manager, opts);
+    // AC2: the changed dense-index signature forces exactly one recompute.
+    expect(corpusSizeLoader).toHaveBeenCalledTimes(2);
   });
 
   it('records successful daemon-served search timings through the search deps hook', async () => {
@@ -790,92 +889,96 @@ describe('appendDaemonAdmissionMetrics', () => {
   });
 });
 
+function sampleKbStatsPayload(): KbStatsPayload {
+  return {
+    knowledge_bases: {
+      alpha: {
+        file_count: 1,
+        chunk_count: 2,
+        total_bytes_indexed: 3,
+        last_updated_at: null,
+      },
+    },
+    quarantined: {},
+    filesystem: {
+      enumeration_failures: { failure_count: 0, failures: [] },
+    },
+    embedding: {
+      provider: 'huggingface',
+      model: 'BAAI/bge-small-en-v1.5',
+      dim: 384,
+    },
+    index_path: '/tmp/faiss',
+    last_index_update: {
+      status: 'never_run',
+      scope: null,
+      model_id: 'huggingface__BAAI-bge-small-en-v1.5',
+      started_at: null,
+      finished_at: null,
+      duration_ms: null,
+      files_scanned: 0,
+      files_changed: 0,
+      files_unchanged: 0,
+      files_skipped: 0,
+      chunks_attempted: 0,
+      chunks_added: 0,
+      index_mutated: false,
+      saved: false,
+      sidecars_written: false,
+      warning_count: 0,
+      warnings: [],
+      failure_count: 0,
+      failures: [],
+    },
+    server: {
+      version: '0.0.0-test',
+      uptime_ms: 1,
+    },
+    provider_calls: {},
+    search_latency: {
+      requests: {},
+      stages: {},
+      degraded: {},
+    },
+    query_cache: {
+      hits: 0,
+      misses: 0,
+      hit_ratio: 0,
+      l1_hits: 0,
+      disk_hits: 0,
+      bypasses: 0,
+      writes: 0,
+      corruptions: 0,
+      l1_size: 0,
+      disk_size_bytes: 0,
+    },
+    relevance_gate: {
+      gated_queries: 0,
+      verdict_injected: 0,
+      verdict_no_relevant_context: 0,
+      verdict_empty_index: 0,
+      low_confidence_rate: 0,
+      drop_rate_A1: 0,
+      drop_rate_A2: 0,
+      drop_rate_B: 0,
+      judge_degrade_rate: 0,
+      judge_window: {
+        size: 0,
+        degraded: 0,
+        rate: 0,
+        warn_threshold: 0.1,
+      },
+    },
+    write_locks: {
+      wait: {},
+      hold: {},
+    },
+  };
+}
+
 describe('kb serve metrics formatting', () => {
   it('formats the default kb stats daemon result as OpenMetrics text', () => {
-    const payload: KbStatsPayload = {
-      knowledge_bases: {
-        alpha: {
-          file_count: 1,
-          chunk_count: 2,
-          total_bytes_indexed: 3,
-          last_updated_at: null,
-        },
-      },
-      quarantined: {},
-      filesystem: {
-        enumeration_failures: { failure_count: 0, failures: [] },
-      },
-      embedding: {
-        provider: 'huggingface',
-        model: 'BAAI/bge-small-en-v1.5',
-        dim: 384,
-      },
-      index_path: '/tmp/faiss',
-      last_index_update: {
-        status: 'never_run',
-        scope: null,
-        model_id: 'huggingface__BAAI-bge-small-en-v1.5',
-        started_at: null,
-        finished_at: null,
-        duration_ms: null,
-        files_scanned: 0,
-        files_changed: 0,
-        files_unchanged: 0,
-        files_skipped: 0,
-        chunks_attempted: 0,
-        chunks_added: 0,
-        index_mutated: false,
-        saved: false,
-        sidecars_written: false,
-        warning_count: 0,
-        warnings: [],
-        failure_count: 0,
-        failures: [],
-      },
-      server: {
-        version: '0.0.0-test',
-        uptime_ms: 1,
-      },
-      provider_calls: {},
-      search_latency: {
-        requests: {},
-        stages: {},
-        degraded: {},
-      },
-      query_cache: {
-        hits: 0,
-        misses: 0,
-        hit_ratio: 0,
-        l1_hits: 0,
-        disk_hits: 0,
-        bypasses: 0,
-        writes: 0,
-        corruptions: 0,
-        l1_size: 0,
-        disk_size_bytes: 0,
-      },
-      relevance_gate: {
-        gated_queries: 0,
-        verdict_injected: 0,
-        verdict_no_relevant_context: 0,
-        verdict_empty_index: 0,
-        low_confidence_rate: 0,
-        drop_rate_A1: 0,
-        drop_rate_A2: 0,
-        drop_rate_B: 0,
-        judge_degrade_rate: 0,
-        judge_window: {
-          size: 0,
-          degraded: 0,
-          rate: 0,
-          warn_threshold: 0.1,
-        },
-      },
-      write_locks: {
-        wait: {},
-        hold: {},
-      },
-    };
+    const payload = sampleKbStatsPayload();
 
     const text = formatStatsRunResultAsOpenMetrics({
       exitCode: 0,
@@ -895,6 +998,41 @@ describe('kb serve metrics formatting', () => {
       stdout: '',
       stderr: 'stats unavailable\n',
     })).toThrow('stats unavailable');
+  });
+
+  it('serves /metrics from the warm daemon command handlers, not a throwaway store (#878)', async () => {
+    // Before #878, the default /metrics handler built a fresh
+    // createDaemonCommandHandlers() per scrape (reloading FAISS + re-walking the
+    // corpus each time). It must now reuse the daemon's warm `handlers`, so the
+    // injected stats spy is what answers each scrape.
+    const stats = jest.fn(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify(sampleKbStatsPayload()),
+      stderr: '',
+    }));
+    const handlers: DaemonCommandHandlers = {
+      search: jest.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
+      list: jest.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
+      stats,
+    };
+    const previousMetricsExport = process.env.KB_METRICS_EXPORT;
+    process.env.KB_METRICS_EXPORT = 'on';
+    const daemon = await startDaemonServer({ port: 0, idleTimeoutMs: 0, warm: false, handlers });
+    try {
+      const first = await request(daemon.url, { path: '/metrics' });
+      const second = await request(daemon.url, { path: '/metrics' });
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+      expect(first.body).toContain('kb_knowledge_base_chunks{kb="alpha"} 2');
+      // The live admission gauges are still spliced in per scrape.
+      expect(first.body).toContain('kb_daemon_inflight');
+      expect(stats).toHaveBeenCalledTimes(2);
+      expect(stats).toHaveBeenNthCalledWith(1, ['--format=json']);
+    } finally {
+      await daemon.stop();
+      if (previousMetricsExport === undefined) delete process.env.KB_METRICS_EXPORT;
+      else process.env.KB_METRICS_EXPORT = previousMetricsExport;
+    }
   });
 });
 

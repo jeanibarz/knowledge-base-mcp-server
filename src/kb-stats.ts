@@ -229,6 +229,107 @@ export interface ComputeKbStatsOptions {
   writeLockMetrics?: WriteLockMetrics;
   /** Process-local HTTP/SSE counters, supplied by KnowledgeBaseServer when active. */
   remoteTransportStats?: TransportRuntimeStatsSnapshot;
+  /**
+   * Issue #878 — seam for the corpus-size enumeration (per-KB file counts +
+   * `total_bytes_indexed`). Walking every ingestable file and `fs.stat`-ing it
+   * dominates the cost of a stats call, so `kb serve` injects a cached loader
+   * (see `CorpusSizeCache`) to avoid ~10k stat syscalls per `/metrics` scrape.
+   * Left undefined, the uncached {@link computeCorpusSizes} runs per call.
+   */
+  computeCorpusSizes?: ComputeCorpusSizes;
+}
+
+/** Per-KB corpus-size counts derived purely from the on-disk source tree. */
+export interface CorpusSizeRow {
+  file_count: number;
+  total_bytes_indexed: number;
+}
+
+/**
+ * Result of the corpus-size enumeration: per-KB file/byte counts plus the
+ * walk's enumeration diagnostics. Everything here depends only on the KB
+ * source files (not the loaded index), so it is safe to cache behind an
+ * index-mutation signature.
+ */
+export interface CorpusEnumerationResult {
+  sizes: Record<string, CorpusSizeRow>;
+  enumerationFailures: KbFilesystemEnumerationDiagnostics;
+}
+
+export type ComputeCorpusSizes = (
+  kbNames: readonly string[],
+) => Promise<CorpusEnumerationResult>;
+
+/**
+ * Issue #878 — walk each KB's ingestable files and sum their byte sizes.
+ * Applies the SAME ingest filter the indexer uses so `file_count` and
+ * `total_bytes_indexed` reflect what would actually be embedded — not the raw
+ * file walk (which still includes excluded extensions and excluded subtrees).
+ *
+ * This is the expensive part of `computeKbStats` (a full recursive walk plus
+ * one `fs.stat` per file). It reads only the source tree, so callers that scrape
+ * repeatedly (e.g. `kb serve` `/metrics`) can cache the result.
+ */
+export async function computeCorpusSizes(
+  kbNames: readonly string[],
+): Promise<CorpusEnumerationResult> {
+  const enumerations = await enumerateIngestableKbFiles(
+    KNOWLEDGE_BASES_ROOT_DIR,
+    kbNames,
+    {
+      extraExtensions: INGEST_EXTRA_EXTENSIONS,
+      excludePaths: INGEST_EXCLUDE_PATHS,
+    },
+  );
+  const enumerationFailures = aggregateEnumerationDiagnostics(enumerations);
+  const fsConcurrency = resolveFsConcurrency();
+  const sizes: Record<string, CorpusSizeRow> = {};
+  for (const { kbName, filePaths } of enumerations) {
+    const byteCounts = await mapBounded(filePaths, fsConcurrency, async (filePath) => {
+      try {
+        const st = await fsp.stat(filePath);
+        return st.size;
+      } catch (err) {
+        // Best-effort: a TOCTOU between the walker and stat (e.g. concurrent
+        // edit) shouldn't fail the whole stats call.
+        logger.debug(`kb_stats: could not stat ${filePath}: ${(err as Error).message}`);
+        return 0;
+      }
+    });
+    sizes[kbName] = {
+      file_count: filePaths.length,
+      total_bytes_indexed: byteCounts.reduce((sum, value) => sum + value, 0),
+    };
+  }
+  return { sizes, enumerationFailures };
+}
+
+/**
+ * Issue #878 — memoizes {@link computeCorpusSizes} behind a caller-supplied
+ * signature so a warm `kb serve` daemon does not re-walk + re-`stat` the whole
+ * corpus on every `/metrics` scrape. The signature is the daemon's dense-index
+ * metadata (path/mtime/size): a reindex changes the index file, which changes
+ * the signature and forces a recompute, satisfying "refresh on reindex". A
+ * stale byte total between reindexes is acceptable. The KB set is folded into
+ * the key so a `--kb`-scoped call never returns another scope's counts.
+ */
+export class CorpusSizeCache {
+  private entry: { key: string; result: CorpusEnumerationResult } | null = null;
+
+  async load(
+    kbNames: readonly string[],
+    signature: string,
+    compute: ComputeCorpusSizes = computeCorpusSizes,
+  ): Promise<CorpusEnumerationResult> {
+    // JSON encodes the array boundaries unambiguously, so a KB named
+    // "a b" can never collide with the set ["a", "b"].
+    const key = JSON.stringify([signature, [...kbNames]]);
+    const cached = this.entry;
+    if (cached !== null && cached.key === key) return cached.result;
+    const result = await compute(kbNames);
+    this.entry = { key, result };
+    return result;
+  }
 }
 
 /**
@@ -263,43 +364,26 @@ export async function computeKbStats(
 
   const indexStats = manager.getStats();
 
-  // Apply the SAME ingest filter the indexer uses, so file_count and
-  // total_bytes_indexed reflect what would actually be embedded — not the
-  // raw file walk (which still includes excluded extensions and excluded
-  // subtrees).
-  const enumerations = await enumerateIngestableKbFiles(
-    KNOWLEDGE_BASES_ROOT_DIR,
-    kbsToReport,
-    {
-      extraExtensions: INGEST_EXTRA_EXTENSIONS,
-      excludePaths: INGEST_EXCLUDE_PATHS,
-    },
-  );
+  // Corpus-size enumeration (per-KB file_count + total_bytes_indexed) — the
+  // expensive full walk + per-file stat. Injectable so `kb serve` can serve it
+  // from a cache (issue #878); left undefined it runs uncached per call.
+  const computeCorpusSizesImpl = options.computeCorpusSizes ?? computeCorpusSizes;
+  const { sizes: corpusSizes, enumerationFailures } = await computeCorpusSizesImpl(kbsToReport);
 
   const knowledge_bases: Record<string, KbStatsRow> = {};
   const quarantined: Record<string, number> = {};
-  const enumerationFailures = aggregateEnumerationDiagnostics(enumerations);
-  const fsConcurrency = resolveFsConcurrency();
-  for (const { kbName, kbPath, filePaths } of enumerations) {
-    const byteCounts = await mapBounded(filePaths, fsConcurrency, async (filePath) => {
-      try {
-        const st = await fsp.stat(filePath);
-        return st.size;
-      } catch (err) {
-        // Best-effort: a TOCTOU between the walker and stat (e.g. concurrent
-        // edit) shouldn't fail the whole stats call.
-        logger.debug(`kb_stats: could not stat ${filePath}: ${(err as Error).message}`);
-        return 0;
-      }
-    });
-    const totalBytes = byteCounts.reduce((sum, value) => sum + value, 0);
+  for (const kbName of kbsToReport) {
+    const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
+    const size = corpusSizes[kbName] ?? { file_count: 0, total_bytes_indexed: 0 };
+    // last_updated_at, chunk_count, and quarantine reflect live index/disk
+    // state, so they stay uncached even when corpus sizes are served warm.
     const lastUpdatedAt = await maxMtimeIso(path.join(kbPath, '.index'));
     const chunkCount = indexStats.chunkCountsByKb[kbName] ?? 0;
     const contextualPreface = await computeContextualPrefaceBlock(kbName, chunkCount);
     knowledge_bases[kbName] = {
-      file_count: filePaths.length,
+      file_count: size.file_count,
       chunk_count: chunkCount,
-      total_bytes_indexed: totalBytes,
+      total_bytes_indexed: size.total_bytes_indexed,
       last_updated_at: lastUpdatedAt,
       contextual_preface: contextualPreface,
     };

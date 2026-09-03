@@ -806,3 +806,118 @@ describe('enumerateIngestableKbFiles', () => {
     }
   });
 });
+
+// Issue #878 — the corpus-size enumeration (file counts + total_bytes_indexed)
+// is the expensive part of a stats call. `kb serve` serves it from a cache so
+// repeated /metrics scrapes do not re-walk + re-stat the whole corpus.
+describe('CorpusSizeCache (#878)', () => {
+  const emptyFailures = { failure_count: 0, failures: [] };
+  const result = (fileCount: number) => ({
+    sizes: { alpha: { file_count: fileCount, total_bytes_indexed: fileCount * 10 } },
+    enumerationFailures: emptyFailures,
+  });
+
+  it('computes once and reuses for the same signature and KB set', async () => {
+    const { CorpusSizeCache } = await import('./kb-stats.js');
+    const cache = new CorpusSizeCache();
+    const compute = jest.fn(async () => result(3));
+
+    const first = await cache.load(['alpha'], 'sig-1', compute);
+    const second = await cache.load(['alpha'], 'sig-1', compute);
+
+    expect(first).toBe(second);
+    expect(first.sizes.alpha.total_bytes_indexed).toBe(30);
+    expect(compute).toHaveBeenCalledTimes(1);
+    expect(compute).toHaveBeenCalledWith(['alpha']);
+  });
+
+  it('recomputes when the index signature changes (reindex)', async () => {
+    const { CorpusSizeCache } = await import('./kb-stats.js');
+    const cache = new CorpusSizeCache();
+    let count = 3;
+    const compute = jest.fn(async () => result(count));
+
+    await cache.load(['alpha'], 'sig-1', compute);
+    count = 7;
+    const after = await cache.load(['alpha'], 'sig-2', compute);
+
+    expect(after.sizes.alpha.file_count).toBe(7);
+    expect(compute).toHaveBeenCalledTimes(2);
+  });
+
+  it('recomputes when the requested KB set changes', async () => {
+    const { CorpusSizeCache } = await import('./kb-stats.js');
+    const cache = new CorpusSizeCache();
+    const compute = jest.fn(async () => result(3));
+
+    await cache.load(['alpha'], 'sig-1', compute);
+    await cache.load(['alpha', 'beta'], 'sig-1', compute);
+
+    expect(compute).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not confuse a KB named with a space for a two-KB set', async () => {
+    const { CorpusSizeCache } = await import('./kb-stats.js');
+    const cache = new CorpusSizeCache();
+    const compute = jest.fn(async () => result(3));
+
+    // The JSON key encodes array boundaries, so `["a b"]` and `["a","b"]`
+    // are distinct even though a naive space-joined key would collide.
+    await cache.load(['a b'], 'sig-1', compute);
+    await cache.load(['a', 'b'], 'sig-1', compute);
+
+    expect(compute).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('computeKbStats corpus-size seam (#878)', () => {
+  const originalRoot = process.env.KNOWLEDGE_BASES_ROOT_DIR;
+  const originalFaiss = process.env.FAISS_INDEX_PATH;
+
+  afterEach(() => {
+    if (originalRoot === undefined) delete process.env.KNOWLEDGE_BASES_ROOT_DIR;
+    else process.env.KNOWLEDGE_BASES_ROOT_DIR = originalRoot;
+    if (originalFaiss === undefined) delete process.env.FAISS_INDEX_PATH;
+    else process.env.FAISS_INDEX_PATH = originalFaiss;
+  });
+
+  it('serves file_count/total_bytes from the injected loader while keeping chunk_count live', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-stats-corpus-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    // Real on-disk bytes differ from the injected loader's numbers, so a match
+    // proves the seam is used instead of the uncached walk.
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'one.md'), 'hello world');
+
+    const { computeKbStats } = await freshKbStats({
+      KNOWLEDGE_BASES_ROOT_DIR: tempDir,
+      FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
+    });
+
+    const computeCorpusSizes = jest.fn(async () => ({
+      sizes: { alpha: { file_count: 42, total_bytes_indexed: 4242 } },
+      enumerationFailures: {
+        failure_count: 1,
+        failures: [{ kbName: 'alpha', path: '/x', code: 'EACCES', message: 'denied' }],
+      },
+    }));
+
+    const manager = makeManager({ chunkCountsByKb: { alpha: 9 } });
+    const payload = await computeKbStats(manager as any, {
+      serverVersion: '9.9.9',
+      startedAt: Date.now(),
+      computeCorpusSizes,
+    });
+
+    expect(computeCorpusSizes).toHaveBeenCalledTimes(1);
+    expect(computeCorpusSizes).toHaveBeenCalledWith(['alpha']);
+    expect(payload.knowledge_bases.alpha).toMatchObject({
+      file_count: 42,
+      total_bytes_indexed: 4242,
+      chunk_count: 9, // live from the manager, never cached
+    });
+    // enumeration diagnostics also flow from the injected loader's result.
+    expect(payload.filesystem.enumeration_failures.failure_count).toBe(1);
+
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+});

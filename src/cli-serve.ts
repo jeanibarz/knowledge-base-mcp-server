@@ -7,7 +7,7 @@ import { runList } from './cli-list.js';
 import { createRunSearchDeps, runSearch, type RunSearchDeps } from './cli-search.js';
 import { captureProcessOutput, extractVerbosity, type Verbosity } from './cli-shared.js';
 import { EXIT } from './cli-exit-codes.js';
-import { runStats } from './cli-stats.js';
+import { createRunStatsDeps, runStats, type RunStatsDeps } from './cli-stats.js';
 import {
   isMetricsExportEnabled,
   OPENMETRICS_CONTENT_TYPE,
@@ -36,7 +36,12 @@ import {
 } from './prometheus-export.js';
 import { searchLatencyMetrics, type SearchLatencyMode } from './metrics.js';
 import { searchStageDurationsFromTiming } from './timing-core.js';
-import type { KbStatsPayload } from './kb-stats.js';
+import {
+  computeKbStats,
+  CorpusSizeCache,
+  type ComputeCorpusSizes,
+  type KbStatsPayload,
+} from './kb-stats.js';
 import { LexicalIndexCache } from './lexical-index-cache.js';
 import type { LexicalIndex } from './lexical-index.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
@@ -143,6 +148,12 @@ export interface DaemonCommandHandlerOptions {
   runSearchImpl?: typeof runSearch;
   runListImpl?: typeof runList;
   runStatsImpl?: typeof runStats;
+  /**
+   * Issue #878 — underlying corpus-size enumeration wrapped by the daemon's
+   * `CorpusSizeCache`. Tests inject a spy to assert consecutive scrapes walk
+   * the corpus at most once. Defaults to the real `computeCorpusSizes`.
+   */
+  corpusSizeLoader?: ComputeCorpusSizes;
 }
 
 interface DenseIndexMetadata {
@@ -390,7 +401,7 @@ export async function startDaemonServer(
   if (parsed.warm) {
     prewarmHealth = await runDaemonPrewarm(handlers);
   }
-  const baseMetricsHandler = options.metricsHandler ?? defaultMetricsHandler;
+  const baseMetricsHandler = options.metricsHandler ?? (() => defaultMetricsHandler(handlers));
   const admission = new DaemonAdmissionGate(
     options.admission ?? resolveDaemonAdmissionConfig(),
   );
@@ -659,6 +670,24 @@ export function createDaemonCommandHandlers(options: DaemonCommandHandlerOptions
   const runSearchImpl = options.runSearchImpl ?? runSearch;
   const runListImpl = options.runListImpl ?? runList;
   const runStatsImpl = options.runStatsImpl ?? runStats;
+  // Issue #878 — reuse the daemon's warm resident store for `stats`/`/metrics`
+  // instead of rebuilding a fresh FaissStore per scrape, and serve the
+  // corpus-size enumeration (file counts + total_bytes_indexed) from a cache
+  // keyed on the dense-index signature so a reindex refreshes it but repeated
+  // scrapes do not re-walk + re-stat ~10k files. Live runtime counters
+  // (search latency, admission gauges) are read fresh on every call.
+  const statsDeps = createRunStatsDeps({
+    resolveActiveModel: resolveActiveModelImpl,
+    loadManagerForModel,
+    loadWithJsonRetry,
+    computeKbStats: createWarmCorpusStatsHandler({
+      readDenseIndexMetadata,
+      cache: new CorpusSizeCache(),
+      // Undefined lets CorpusSizeCache.load fall back to the real
+      // computeCorpusSizes; tests inject a spy via options.corpusSizeLoader.
+      corpusSizeLoader: options.corpusSizeLoader,
+    }),
+  });
   return {
     search: async (args) => {
       const startedAt = Date.now();
@@ -673,7 +702,7 @@ export function createDaemonCommandHandlers(options: DaemonCommandHandlerOptions
       return result;
     },
     list: async (args) => captureProcessOutput(() => runListImpl(args)),
-    stats: async (args) => captureProcessOutput(() => runStatsImpl(args, undefined, { preferDaemon: false })),
+    stats: async (args) => captureProcessOutput(() => runStatsImpl(args, statsDeps, { preferDaemon: false })),
     prewarm: async () => {
       const activeModelId = await resolveActiveModelImpl();
       const manager = await loadManagerForModel(activeModelId);
@@ -948,8 +977,42 @@ export function appendDaemonAdmissionMetrics(
   return `${body}${lines.join('\n')}\n`;
 }
 
-async function defaultMetricsHandler(): Promise<string> {
-  const result = await createDaemonCommandHandlers().stats(['--format=json']);
+/**
+ * Issue #878 — wrap `computeKbStats` so the corpus-size enumeration (file
+ * counts + `total_bytes_indexed`) is served from `cache`, keyed on the
+ * manager's dense-index signature (index path + mtime + size). A reindex
+ * rewrites the index file, changing the signature and forcing a recompute;
+ * repeated scrapes between reindexes reuse the cached counts. Exported so the
+ * signature-to-recompute wiring is directly testable; the daemon binds it in
+ * `createDaemonCommandHandlers`.
+ */
+export function createWarmCorpusStatsHandler(deps: {
+  readDenseIndexMetadata: (modelId: string) => Promise<DenseIndexMetadata>;
+  cache: CorpusSizeCache;
+  corpusSizeLoader?: ComputeCorpusSizes;
+  computeKbStatsImpl?: typeof computeKbStats;
+}): RunStatsDeps['computeKbStats'] {
+  const computeKbStatsImpl = deps.computeKbStatsImpl ?? computeKbStats;
+  return async (manager, statsOptions) => {
+    const meta = await deps.readDenseIndexMetadata(manager.modelId);
+    const signature = JSON.stringify([meta.path, meta.mtimeMs, meta.size]);
+    return computeKbStatsImpl(manager, {
+      ...statsOptions,
+      computeCorpusSizes: (kbNames) =>
+        deps.cache.load(kbNames, signature, deps.corpusSizeLoader),
+    });
+  };
+}
+
+/**
+ * Issue #878 — build the default `/metrics` body from the daemon's *warm*
+ * command handlers so each scrape reuses the resident FaissStore and the
+ * corpus-size cache. Previously this spun up a throwaway
+ * `createDaemonCommandHandlers()` per request, forcing a full ~160 MB index
+ * reload + ~10k stat syscalls on every Prometheus scrape.
+ */
+async function defaultMetricsHandler(handlers: DaemonCommandHandlers): Promise<string> {
+  const result = await handlers.stats(['--format=json']);
   return formatStatsRunResultAsOpenMetrics(result);
 }
 
