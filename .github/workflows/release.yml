@@ -12,6 +12,10 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # The e2e-inclusive test step spawns binary child processes; cap the job so
+    # a leaked child / open handle can't stall a tagged release toward the
+    # default 6h ceiling.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,7 +25,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm test
+      # Issue #883 — gate releases on the full suite INCLUDING the `src/e2e/`
+      # npm-pack tarball smoke and stdio-handshake tests. `KB_RUN_E2E=1` drops
+      # the `src/e2e/` exclusion so a broken `bin`, a file missing from the
+      # packed tarball, or a stdio-handshake break fails the release before
+      # `npm publish`.
+      - run: KB_RUN_E2E=1 npm test
       - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

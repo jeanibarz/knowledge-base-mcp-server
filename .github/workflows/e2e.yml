@@ -1,0 +1,43 @@
+name: E2E
+
+# Issue #883 — the spawn-the-binary suite under `src/e2e/` (MCP stdio client,
+# npm-pack tarball smoke, HTTP/SSE transport) is gated behind `KB_RUN_E2E=1` and
+# ran in zero pipelines. A broken `bin`, a file missing from the packed tarball
+# (the regression class of #82), a stdio-handshake break, or an HTTP/SSE
+# transport regression therefore shipped uncaught. This job runs the suite on
+# every PR and push so those regressions fail the build.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # The npm-pack smoke test borrows the checkout's installed node_modules
+    # (native faiss-node included), and each test spawns the built binary as a
+    # child process — allow generous wall-time versus the fast inner-loop suite.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      # Match `test.yml`'s matrix: the tarball/handshake regressions this suite
+      # guards (native faiss-node ABI, ESM loader, undici/SSE fetch) are
+      # Node-version-sensitive, and the package ships `engines >=20`, so the
+      # min-supported runtime must be exercised, not just the newest.
+      matrix:
+        node: [20, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      # The e2e suite spawns `build/index.js` / `build/cli.js` and `npm pack`s
+      # the `build/` tree; `test:serial` does not build, so build explicitly.
+      - run: npm run build
+      # `KB_RUN_E2E=1` drops the `src/e2e/` exclusion in `jest.config.js` and
+      # flips the `describe.skip` gate on, so the suite actually executes. It
+      # runs in the serial project (`--runInBand`) to avoid worker contention
+      # between binary-spawning tests.
+      - run: KB_RUN_E2E=1 npm run test:serial
