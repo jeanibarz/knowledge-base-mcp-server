@@ -15,6 +15,7 @@ const originalEnv = {
   KB_CHUNK_SIZE: process.env.KB_CHUNK_SIZE,
   KB_CHUNK_OVERLAP: process.env.KB_CHUNK_OVERLAP,
   KB_INDEX_VERSION_RETENTION: process.env.KB_INDEX_VERSION_RETENTION,
+  KB_MIN_FREE_DISK_BYTES: process.env.KB_MIN_FREE_DISK_BYTES,
   KB_FLAT_SEARCH_P95_ADVISORY_MS: process.env.KB_FLAT_SEARCH_P95_ADVISORY_MS,
   KB_AGE_BUDGET_HOURS: process.env.KB_AGE_BUDGET_HOURS,
   KB_AGE_BUDGET_HOURS_ALPHA: process.env.KB_AGE_BUDGET_HOURS_ALPHA,
@@ -3251,6 +3252,213 @@ describe('kb doctor', () => {
       } finally {
         await fsp.rm(tempDir, { recursive: true, force: true });
       }
+    });
+  });
+
+  // Issue #886 — `kb doctor` disk_space check reuses the reindex disk-space
+  // estimator so it can never disagree with `kb reindex` about whether a
+  // rebuild is possible on the current volume.
+  describe('disk_space check', () => {
+    // Deterministic margin so the estimate arithmetic is easy to reason
+    // about in-test: estimate = ceil(currentBytes × 1.5), required =
+    // estimate + margin.
+    const MARGIN = 500;
+    const CURRENT = 1000; // → estimate 1500 → required 2000
+    const REQUIRED = 2000;
+
+    function statfsReturning(bytes: number) {
+      return async () => ({ bavail: bytes, bsize: 1 });
+    }
+
+    async function reportWithDiskSpace(
+      env: Record<string, string>,
+      opts: { availableBytes?: number; currentBytes?: number; statfs?: () => Promise<{ bavail: number; bsize: number }> },
+    ): Promise<import('./cli-doctor.js').DoctorReport> {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-disk-'));
+      const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+      const { buildDoctorReport } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'fake',
+        KB_MIN_FREE_DISK_BYTES: String(MARGIN),
+        ...env,
+      });
+      try {
+        return await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          embeddingCanaryCheck: async () => ({
+            status: 'skipped',
+            canary_id: null,
+            recorded_at: null,
+            dimensions: null,
+            similarity: null,
+            threshold: 0,
+            detail: 'skipped for test',
+            next_action: null,
+          }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+          diskSpaceCurrentBytes: opts.currentBytes ?? CURRENT,
+          diskSpaceStatfs:
+            opts.statfs ?? statfsReturning(opts.availableBytes ?? 0),
+        });
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    }
+
+    it('FAILs when free space is below the reindex estimate + margin', async () => {
+      const report = await reportWithDiskSpace({}, { availableBytes: REQUIRED - 1 });
+      const check = report.checks.find((c) => c.name === 'disk_space');
+      expect(check?.status).toBe('error');
+      expect(check?.detail).toMatch(/insufficient free space/i);
+      expect(report.disk_space.sufficient).toBe(false);
+      expect(report.disk_space.required_bytes).toBe(REQUIRED);
+      expect(report.disk_space.next_action).toMatch(/KB_MIN_FREE_DISK_BYTES/);
+      expect(report.status).toBe('error');
+    });
+
+    it('reports OK with comfortable headroom above the estimate', async () => {
+      // headroom factor is 2×; required 2000 → OK needs ≥ 4000 free.
+      const report = await reportWithDiskSpace({}, { availableBytes: 10_000 });
+      const check = report.checks.find((c) => c.name === 'disk_space');
+      expect(check?.status).toBe('ok');
+      expect(report.disk_space.sufficient).toBe(true);
+      expect(report.disk_space.next_action).toBeNull();
+    });
+
+    it('WARNs when free space clears the estimate but is within the headroom band', async () => {
+      // required 2000 ≤ available < 4000 (2× headroom) → WARN.
+      const report = await reportWithDiskSpace({}, { availableBytes: 3000 });
+      const check = report.checks.find((c) => c.name === 'disk_space');
+      expect(check?.status).toBe('warn');
+      expect(check?.detail).toMatch(/tight/i);
+      expect(report.disk_space.sufficient).toBe(true);
+      expect(report.status).toBe('warn');
+    });
+
+    it('degrades to OK (not FAIL) when statfs is unavailable, mirroring the guard', async () => {
+      const report = await reportWithDiskSpace(
+        {},
+        { statfs: async () => { throw new Error('statfs not supported'); } },
+      );
+      const check = report.checks.find((c) => c.name === 'disk_space');
+      expect(check?.status).toBe('ok');
+      expect(report.disk_space.statfs_checked).toBe(false);
+      expect(check?.detail).toMatch(/skipped/i);
+      // available_bytes must be an honest `null` (unknown), not a sentinel
+      // that survives JSON as a misleading number/`null` — a monitor that
+      // reads the JSON must not mistake "statfs unavailable" for "disk full".
+      expect(report.disk_space.available_bytes).toBeNull();
+      const roundTripped = JSON.parse(JSON.stringify(report.disk_space));
+      expect(roundTripped.available_bytes).toBeNull();
+      expect(roundTripped.statfs_checked).toBe(false);
+    });
+
+    it('walks the real FAISS_INDEX_PATH for current_bytes when no override is given', async () => {
+      // Production wiring: buildDoctorReport is called without the
+      // diskSpaceCurrentBytes seam, so the check must point directorySizeBytes
+      // at $FAISS_INDEX_PATH and get a sane on-disk size back. A regression
+      // that walked the wrong directory would be invisible to the stubbed
+      // tests above.
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-disk-walk-'));
+      try {
+        const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+        const payload = 'x'.repeat(4096);
+        await fsp.writeFile(path.join(faissDir, 'blob.bin'), payload);
+        const { buildDoctorReport } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'fake',
+          KB_MIN_FREE_DISK_BYTES: String(MARGIN),
+        });
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          embeddingCanaryCheck: async () => ({
+            status: 'skipped',
+            canary_id: null,
+            recorded_at: null,
+            dimensions: null,
+            similarity: null,
+            threshold: 0,
+            detail: 'skipped for test',
+            next_action: null,
+          }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: healthyLlmProbe,
+          // No diskSpaceCurrentBytes override — exercise the real walk.
+          diskSpaceStatfs: statfsReturning(10 ** 12),
+        });
+        // The seeded index tree plus the 4096-byte blob must be reflected;
+        // proves the walk targeted faissDir, not some empty/other directory.
+        expect(report.disk_space.current_bytes).toBeGreaterThanOrEqual(4096);
+        expect(report.disk_space.estimated_bytes).toBe(
+          Math.ceil(report.disk_space.current_bytes * report.disk_space.estimate_factor),
+        );
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('estimates 0 for a first-ever reindex (empty index), gated only by the margin', async () => {
+      // disk-preflight documents this: an empty index estimates 0 bytes, so
+      // only the margin gates the run. A fresh install runs `kb doctor`
+      // before any index exists.
+      const belowMargin = await reportWithDiskSpace({}, { currentBytes: 0, availableBytes: MARGIN - 1 });
+      expect(belowMargin.disk_space.estimated_bytes).toBe(0);
+      expect(belowMargin.disk_space.required_bytes).toBe(MARGIN);
+      expect(belowMargin.disk_space.status).toBe('error');
+
+      const aboveMargin = await reportWithDiskSpace({}, { currentBytes: 0, availableBytes: MARGIN * 10 });
+      expect(aboveMargin.disk_space.estimated_bytes).toBe(0);
+      expect(aboveMargin.disk_space.status).toBe('ok');
+    });
+
+    it('agrees with assertSufficientDiskSpace at the sufficiency boundary and on statfs failure', async () => {
+      // The acceptance criterion: any state that makes the reindex guard
+      // throw makes the doctor check FAIL, and vice-versa. Sweep the free
+      // bytes across the boundary AND include the statfs-failure branch, so
+      // the shared arithmetic and the shared graceful-degradation both stay
+      // in lockstep.
+      const { assertSufficientDiskSpace } = await import('./disk-preflight.js');
+      const throwingStatfs = async (): Promise<{ bavail: number; bsize: number }> => {
+        throw new Error('statfs not supported');
+      };
+      const cases: Array<{ statfs: () => Promise<{ bavail: number; bsize: number }> }> = [
+        { statfs: statfsReturning(REQUIRED - 1) },
+        { statfs: statfsReturning(REQUIRED) },
+        { statfs: statfsReturning(REQUIRED + 1) },
+        { statfs: throwingStatfs },
+      ];
+      for (const { statfs } of cases) {
+        const report = await reportWithDiskSpace({}, { statfs });
+        const doctorFails = report.disk_space.status === 'error';
+
+        let guardThrew = false;
+        try {
+          await assertSufficientDiskSpace('/unused', {
+            currentBytes: CURRENT,
+            minFreeBytes: MARGIN,
+            statfs,
+          });
+        } catch {
+          guardThrew = true;
+        }
+
+        expect(doctorFails).toBe(guardThrew);
+      }
+    });
+
+    it('renders the disk_space section in the markdown report', async () => {
+      const { formatDoctorMarkdown } = await import('./cli-doctor.js');
+      const report = await reportWithDiskSpace({}, { availableBytes: REQUIRED - 1 });
+      const md = formatDoctorMarkdown(report);
+      expect(md).toMatch(/Disk space \(reindex preflight\):/);
+      expect(md).toMatch(/ERROR\s+disk_space:/);
     });
   });
 });

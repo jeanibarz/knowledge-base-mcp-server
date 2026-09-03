@@ -144,6 +144,15 @@ import {
 } from './faiss-store-layout.js';
 import { createDoctorBugReportBundle } from './cli-bug-report.js';
 import {
+  DEFAULT_REINDEX_ESTIMATE_FACTOR,
+  availableDiskBytes,
+  directorySizeBytes,
+  evaluateDiskSpace,
+  formatBytes as formatDiskBytes,
+  resolveMinFreeDiskBytes,
+  type StatfsFn,
+} from './disk-preflight.js';
+import {
   WRITE_LOCK_OWNER_SCHEMA_VERSION,
   WRITE_LOCK_STALE_MS,
   writeLockOwnerPathFor,
@@ -158,6 +167,15 @@ import {
  * trip an operator's alarm.
  */
 export const PROVIDER_CALL_ERROR_RATE_WARN_THRESHOLD = 0.05;
+/**
+ * Issue #886 — disk-space check headroom. The check FAILs when free space
+ * is below the reindex estimate + margin (the exact condition the guard
+ * refuses on) and WARNs when free space clears that requirement but by less
+ * than this multiplier — i.e. the next corpus growth is likely to push it
+ * under. 2× the required space is a conservative "one more rebuild's worth
+ * of slack" band; tune here if operators find it too eager.
+ */
+export const DOCTOR_DISK_SPACE_WARN_HEADROOM_FACTOR = 2;
 const DEFAULT_LLM_ENDPOINT = 'http://127.0.0.1:8080/v1/chat/completions';
 const DOCTOR_LLM_HEALTH_TIMEOUT_MS = 1_000;
 const DOCTOR_LLM_CHAT_TIMEOUT_MS = 3_000;
@@ -414,6 +432,39 @@ export interface DoctorReport {
     healthy: boolean;
     detail: string;
   };
+  /**
+   * Issue #886 — disk-space preflight for `kb reindex`, computed from the
+   * SAME estimator the reindex guard (`assertSufficientDiskSpace`) uses so
+   * the two can never disagree about whether a rebuild is possible. FAIL
+   * (error) means a reindex against `$FAISS_INDEX_PATH` would be refused up
+   * front; WARN means free space clears the estimate but by less than the
+   * headroom factor, so the next corpus growth is likely to break it. When
+   * `statfs` is unavailable (older runtimes / exotic filesystems) the check
+   * degrades to OK exactly as the guard degrades to permissive, and
+   * `statfs_checked` is false.
+   */
+  disk_space: {
+    status: HealthStatus;
+    path: string;
+    current_bytes: number;
+    estimate_factor: number;
+    estimated_bytes: number;
+    /**
+     * Free bytes on the target filesystem, or `null` when `statfs` could not
+     * be read (`statfs_checked: false`). Deliberately not a sentinel number:
+     * `Infinity` would serialize to `null` under `JSON.stringify` anyway, and
+     * `0` would read as "disk full" to a numeric consumer — the opposite of
+     * the permissive degrade this represents.
+     */
+    available_bytes: number | null;
+    margin_bytes: number;
+    required_bytes: number;
+    sufficient: boolean;
+    warn_headroom_factor: number;
+    statfs_checked: boolean;
+    detail: string;
+    next_action: string | null;
+  };
   llm_endpoint: {
     status: HealthStatus;
     endpoint: string | null;
@@ -543,6 +594,18 @@ export interface BuildDoctorReportOptions {
   llmEndpointProbe?: LlmEndpointProbe;
   /** Run the slow `kb verify --integrity` audit and fold it into status. */
   integrity?: boolean;
+  /**
+   * Issue #886 — test seam for the disk-space preflight statfs probe.
+   * Production callers leave this undefined so the doctor reads the real
+   * filesystem via `fs.promises.statfs`, matching the reindex guard.
+   */
+  diskSpaceStatfs?: StatfsFn;
+  /**
+   * Issue #886 — test seam: precomputed FAISS index footprint in bytes.
+   * When set, skips walking `$FAISS_INDEX_PATH`; production callers leave it
+   * undefined so the check walks the index tree exactly as the guard does.
+   */
+  diskSpaceCurrentBytes?: number;
   /** Test seam for the embedding canary drift check. */
   embeddingCanaryCheck?: (
     modelId: string | null,
@@ -1628,6 +1691,22 @@ export async function buildDoctorReport(
       : `${staleIncompleteModels.length} stale incomplete model director${staleIncompleteModels.length === 1 ? 'y' : 'ies'} detected`,
   });
 
+  // Issue #886 — surface the disk-space condition the reindex guard
+  // (`assertSufficientDiskSpace`, #645) enforces, so `kb doctor` is loud
+  // about a machine where a nightly reindex is guaranteed to be refused
+  // instead of reporting OK and leaving the operator to discover it only
+  // after the burned run. The estimate reuses the SAME estimator, margin,
+  // and factor as the guard; it must never disagree with `kb reindex`.
+  const diskSpace = await readDiskSpaceHealth({
+    statfs: options.diskSpaceStatfs,
+    currentBytes: options.diskSpaceCurrentBytes,
+  });
+  checks.push({
+    name: 'disk_space',
+    status: diskSpace.status,
+    detail: diskSpace.detail,
+  });
+
   const backend = await readBackendHealth(
     activeProvider,
     activeModelName,
@@ -1803,6 +1882,7 @@ export async function buildDoctorReport(
     age_budgets: ageBudgetResult.byKb,
     age_budget_config_errors: ageBudgetResult.configErrors,
     incomplete_models: incompleteModels,
+    disk_space: diskSpace,
     backend,
     llm_endpoint: llmEndpoint,
     gate_llm_endpoint: gateLlmEndpoint,
@@ -2183,6 +2263,137 @@ function formatExtractionCacheCheckDetail(
     : `; ${report.error_count} inventory error(s)`;
   return `${presence}; ${report.entry_count} cache entr${report.entry_count === 1 ? 'y' : 'ies'}, ` +
     `${formatBytes(report.total_bytes)}${ignored}${errors}`;
+}
+
+/**
+ * Issue #886 — disk-space preflight for `kb doctor`.
+ *
+ * Mirrors {@link assertSufficientDiskSpace} (the reindex guard, #645) exactly:
+ * it walks `$FAISS_INDEX_PATH` for the current footprint, multiplies by the
+ * shared {@link DEFAULT_REINDEX_ESTIMATE_FACTOR}, compares against the free
+ * bytes reported by `statfs`, and requires the same
+ * `KB_MIN_FREE_DISK_BYTES` margin. Because it consumes the same
+ * {@link evaluateDiskSpace} arithmetic on the same inputs, any state that
+ * makes the guard throw makes this check FAIL and vice-versa — the two can
+ * never drift apart about whether a rebuild is possible.
+ *
+ * Non-throwing: a `statfs` failure degrades to OK (the guard degrades to
+ * permissive there too), so `doctor` never FAILs where `reindex` would
+ * actually proceed.
+ */
+async function readDiskSpaceHealth(
+  opts: { statfs?: StatfsFn; currentBytes?: number } = {},
+): Promise<DoctorReport['disk_space']> {
+  const marginBytes = resolveMinFreeDiskBytes();
+  const factor = DEFAULT_REINDEX_ESTIMATE_FACTOR;
+  const currentBytes = opts.currentBytes ?? (await directorySizeBytes(FAISS_INDEX_PATH));
+  const estimatedBytes = Math.ceil(currentBytes * factor);
+
+  let availableBytes: number;
+  try {
+    availableBytes = await availableDiskBytes(FAISS_INDEX_PATH, opts.statfs);
+  } catch (err) {
+    // Mirror the guard's graceful degradation: a missing/unsupported
+    // `statfs` must not turn into a FAIL, because the reindex guard would
+    // let the run proceed. Report OK but say the check could not run.
+    const requiredBytes = estimatedBytes + marginBytes;
+    return {
+      status: 'ok',
+      path: FAISS_INDEX_PATH,
+      current_bytes: currentBytes,
+      estimate_factor: factor,
+      estimated_bytes: estimatedBytes,
+      // `null`, not Infinity: free space is genuinely unknown here, and a
+      // numeric sentinel would either serialize to null anyway (Infinity) or
+      // read as "disk full" (0) to a JSON consumer.
+      available_bytes: null,
+      margin_bytes: marginBytes,
+      required_bytes: requiredBytes,
+      sufficient: true,
+      warn_headroom_factor: DOCTOR_DISK_SPACE_WARN_HEADROOM_FACTOR,
+      statfs_checked: false,
+      detail:
+        `disk-space check skipped — statfs("${FAISS_INDEX_PATH}") failed: ` +
+        `${(err as Error).message}. A reindex would not be blocked on free space.`,
+      next_action: null,
+    };
+  }
+
+  const estimate = evaluateDiskSpace({ estimatedBytes, availableBytes, marginBytes });
+  const warnCeiling = estimate.required_bytes * DOCTOR_DISK_SPACE_WARN_HEADROOM_FACTOR;
+
+  if (!estimate.sufficient) {
+    // Same "need ~X, have Y" shape and same tunable name as the reindex
+    // refusal (`assertSufficientDiskSpace`), so an operator sees the same
+    // numbers here that would block the run.
+    return {
+      status: 'error',
+      path: FAISS_INDEX_PATH,
+      current_bytes: currentBytes,
+      estimate_factor: factor,
+      estimated_bytes: estimate.estimated_bytes,
+      available_bytes: estimate.available_bytes,
+      margin_bytes: estimate.margin_bytes,
+      required_bytes: estimate.required_bytes,
+      sufficient: false,
+      warn_headroom_factor: DOCTOR_DISK_SPACE_WARN_HEADROOM_FACTOR,
+      statfs_checked: true,
+      detail:
+        `insufficient free space for a reindex at "${FAISS_INDEX_PATH}": ` +
+        `need ~${formatDiskBytes(estimate.required_bytes)} ` +
+        `(estimate ${formatDiskBytes(estimate.estimated_bytes)} + ` +
+        `${formatDiskBytes(estimate.margin_bytes)} margin), ` +
+        `have ${formatDiskBytes(estimate.available_bytes)} free`,
+      next_action:
+        `Free up space or lower KB_MIN_FREE_DISK_BYTES ` +
+        `(current margin ${estimate.margin_bytes} bytes).`,
+    };
+  }
+
+  if (estimate.available_bytes < warnCeiling) {
+    return {
+      status: 'warn',
+      path: FAISS_INDEX_PATH,
+      current_bytes: currentBytes,
+      estimate_factor: factor,
+      estimated_bytes: estimate.estimated_bytes,
+      available_bytes: estimate.available_bytes,
+      margin_bytes: estimate.margin_bytes,
+      required_bytes: estimate.required_bytes,
+      sufficient: true,
+      warn_headroom_factor: DOCTOR_DISK_SPACE_WARN_HEADROOM_FACTOR,
+      statfs_checked: true,
+      detail:
+        `free space is tight for a reindex at "${FAISS_INDEX_PATH}": ` +
+        `have ${formatDiskBytes(estimate.available_bytes)} free, ` +
+        `need ~${formatDiskBytes(estimate.required_bytes)} now ` +
+        `(< ${DOCTOR_DISK_SPACE_WARN_HEADROOM_FACTOR}× headroom); ` +
+        `the next corpus growth is likely to block the reindex`,
+      next_action:
+        `Free up space before the corpus grows, or lower KB_MIN_FREE_DISK_BYTES ` +
+        `(current margin ${estimate.margin_bytes} bytes).`,
+    };
+  }
+
+  return {
+    status: 'ok',
+    path: FAISS_INDEX_PATH,
+    current_bytes: currentBytes,
+    estimate_factor: factor,
+    estimated_bytes: estimate.estimated_bytes,
+    available_bytes: estimate.available_bytes,
+    margin_bytes: estimate.margin_bytes,
+    required_bytes: estimate.required_bytes,
+    sufficient: true,
+    warn_headroom_factor: DOCTOR_DISK_SPACE_WARN_HEADROOM_FACTOR,
+    statfs_checked: true,
+    detail:
+      `${formatDiskBytes(estimate.available_bytes)} free, ` +
+      `~${formatDiskBytes(estimate.required_bytes)} needed for a reindex ` +
+      `(estimate ${formatDiskBytes(estimate.estimated_bytes)} + ` +
+      `${formatDiskBytes(estimate.margin_bytes)} margin)`,
+    next_action: null,
+  };
 }
 
 async function statIndexSecurityEntry(
@@ -2847,6 +3058,23 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
     }
   }
   lines.push(`  note: ${report.reindex_trigger.limitation}`);
+  lines.push('Disk space (reindex preflight):');
+  lines.push(`  status: ${report.disk_space.status}`);
+  lines.push(`  path: ${report.disk_space.path}`);
+  const diskAvailable = report.disk_space.statfs_checked
+    ? formatBytes(report.disk_space.available_bytes)
+    : 'n/a (statfs unavailable)';
+  lines.push(
+    `  free: ${diskAvailable}, ` +
+    `required: ${formatBytes(report.disk_space.required_bytes)} ` +
+    `(estimate ${formatBytes(report.disk_space.estimated_bytes)} × ` +
+    `factor ${report.disk_space.estimate_factor} + ` +
+    `${formatBytes(report.disk_space.margin_bytes)} margin)`,
+  );
+  lines.push(`  detail: ${report.disk_space.detail}`);
+  if (report.disk_space.next_action !== null) {
+    lines.push(`  next_action: ${report.disk_space.next_action}`);
+  }
   lines.push(`Backend: ${report.backend.healthy ? 'ok' : 'error'} — ${report.backend.detail}`);
   lines.push('LLM endpoint:');
   lines.push(`  status: ${report.llm_endpoint.status}`);
