@@ -73,6 +73,27 @@ describe('HnswIndexAdapter', () => {
     expect(afterLoad[0][0].pageContent).toBe('beta');
   });
 
+  it('short-circuits anyDocument on the first match (#882)', async () => {
+    const adapter = await HnswIndexAdapter.fromEmbeddedDocuments({
+      documents: docs(),
+      vectors: [
+        [0, 0],
+        [10, 0],
+        [0, 10],
+      ],
+    }, config);
+
+    const seen: string[] = [];
+    const found = adapter.anyDocument((doc) => {
+      seen.push(doc.pageContent);
+      return doc.metadata?.knowledgeBase === 'kb-a';
+    });
+
+    expect(found).toBe(true);
+    expect(seen).toEqual(['alpha']);
+    expect(adapter.anyDocument((doc) => doc.metadata?.knowledgeBase === 'kb-missing')).toBe(false);
+  });
+
   it('rejects dimension mismatches before mutating the index', async () => {
     const adapter = await HnswIndexAdapter.fromEmbeddedDocuments({
       documents: [docs()[0]],

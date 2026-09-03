@@ -213,6 +213,15 @@ export class HnswIndexAdapter implements SearchIndexAdapter {
     return [...this.documents];
   }
 
+  /**
+   * Issue #882 — scan the backing documents array and return on the first
+   * match, so a "does any view document exist?" probe short-circuits without
+   * copying the array via `docstoreDocuments()`.
+   */
+  anyDocument(predicate: (doc: Document) => boolean): boolean {
+    return this.documents.some(predicate);
+  }
+
   docstoreEntries(): Array<[string, Document]> {
     return this.documents.map((document, index) => [`doc-${index}`, document]);
   }

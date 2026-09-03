@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 import { createMockEmbeddings } from './test-support/embeddings.js';
+import type { SearchIndexAdapter } from './search-index-adapter.js';
 
 // RFC 013 M1+M2: per-model layout. Default test config (huggingface +
 // BAAI/bge-small-en-v1.5) maps to this model_id slug.
@@ -3395,6 +3396,156 @@ describe('FaissIndexManager similaritySearch threshold filter', () => {
     const results = await manager.similaritySearch('query', 10, 10);
 
     expect(results.map((r) => r.score)).toEqual([0.1, 0.5]);
+  });
+});
+
+describe('FaissIndexManager #882 — hasViewDocuments probe caching', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+  };
+
+  beforeEach(() => {
+    similaritySearchMock.mockReset();
+    similaritySearchMock.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    const keys = Object.keys(originalEnv) as Array<keyof typeof originalEnv>;
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    jest.restoreAllMocks();
+  });
+
+  // A metadata blob that satisfies `isRetrievalViewDocument` (RFC retrieval
+  // views bake this in at ingest; it is independent of `KB_RETRIEVAL_VIEWS`).
+  const viewMetadata = (): Record<string, unknown> => ({
+    retrieval_view: {
+      schema_version: 'kb.retrieval-view.v1',
+      kind: 'summary',
+      view_id: 'v1',
+      canonical_id: 'c1',
+      canonical_source: 's1',
+      canonical_chunk_index: 0,
+      text_hash: 'h1',
+    },
+  });
+
+  type RawDoc = { pageContent: string; metadata: Record<string, unknown> };
+
+  // Minimal object matching the FaissStore shape FaissStoreAdapter reads for
+  // search: a docstore `_docs` Map and an `index` with `ntotal`/`getDimension`.
+  function makeRawStore(docs: RawDoc[]): Record<string, unknown> {
+    const map = new Map<string, RawDoc>();
+    docs.forEach((doc, index) => map.set(`doc-${index}`, doc));
+    return {
+      embeddings: mockEmbeddings,
+      docstore: { _docs: map },
+      index: { ntotal: () => map.size, getDimension: () => 2 },
+      similaritySearchWithScore: (...args: unknown[]) => similaritySearchMock(...args),
+    };
+  }
+
+  async function makeManagerWithStore(store: Record<string, unknown>) {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-hasview-'));
+    const kbDir = path.join(tempDir, 'kb');
+    await fsp.mkdir(kbDir, { recursive: true });
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await setLoadedFaissStore(manager, store);
+    return manager;
+  }
+
+  function loadedAdapter(manager: unknown): SearchIndexAdapter {
+    return (manager as { faissIndex: SearchIndexAdapter }).faissIndex;
+  }
+
+  it('computes the view-document probe without copying the docstore and caches it across dense queries', async () => {
+    const manager = await makeManagerWithStore(makeRawStore([{ pageContent: 'plain', metadata: {} }]));
+    const adapter = loadedAdapter(manager);
+    const docstoreSpy = jest.spyOn(adapter, 'docstoreDocuments');
+    const anySpy = jest.spyOn(adapter, 'anyDocument');
+
+    await manager.similaritySearch('q', 5);
+    await manager.similaritySearch('q', 5);
+
+    // Acceptance #882: no full-array docstore copy to compute hasViewDocuments.
+    expect(docstoreSpy).not.toHaveBeenCalled();
+    // The lazy probe runs exactly once, then the cache serves every later query.
+    expect(anySpy).toHaveBeenCalledTimes(1);
+    expect(anySpy.mock.results[0]?.value).toBe(false);
+  });
+
+  it('serves the cached probe regardless of per-query opts.retrievalViews (same adapter/ntotal)', async () => {
+    const manager = await makeManagerWithStore(makeRawStore([{ pageContent: 'plain', metadata: {} }]));
+    const anySpy = jest.spyOn(loadedAdapter(manager), 'anyDocument');
+
+    // The probe derives only from baked per-document metadata; the query-time
+    // view selection must not participate in the cache key. Varying it across
+    // calls on the same adapter/ntotal must NOT trigger a recompute — this
+    // guards against a future regression that keys the cache on opts.
+    await manager.similaritySearch('q', 5);
+    await manager.similaritySearch('q', 5, undefined, undefined, undefined, undefined, {
+      retrievalViews: ['summary'],
+    });
+
+    expect(anySpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('recomputes the probe after the docstore grows and reflects a non-empty view set', async () => {
+    const store = makeRawStore([{ pageContent: 'plain', metadata: {} }]);
+    const manager = await makeManagerWithStore(store);
+    const adapter = loadedAdapter(manager);
+    const anySpy = jest.spyOn(adapter, 'anyDocument');
+
+    await manager.similaritySearch('q', 5);
+    expect(anySpy).toHaveBeenCalledTimes(1);
+    expect(anySpy.mock.results[0]?.value).toBe(false);
+
+    // Append-only mutation (the only in-place docstore change): ntotal grows,
+    // so the cache key changes and the probe re-runs.
+    (store.docstore as { _docs: Map<string, RawDoc> })._docs.set('doc-1', {
+      pageContent: 'view',
+      metadata: viewMetadata(),
+    });
+
+    await manager.similaritySearch('q', 5);
+    expect(anySpy).toHaveBeenCalledTimes(2);
+    expect(anySpy.mock.results[1]?.value).toBe(true);
+  });
+
+  it('recomputes the probe when the loaded index is replaced with equal ntotal but different content', async () => {
+    const manager = await makeManagerWithStore(makeRawStore([{ pageContent: 'plain', metadata: {} }]));
+    const firstSpy = jest.spyOn(loadedAdapter(manager), 'anyDocument');
+
+    await manager.similaritySearch('q', 5);
+    expect(firstSpy).toHaveBeenCalledTimes(1);
+    expect(firstSpy.mock.results[0]?.value).toBe(false);
+
+    // Simulate a reload/version-load swapping in a new adapter (same ntotal,
+    // now containing a view document). Adapter identity keys the cache, so the
+    // probe must re-run even though the vector count is unchanged.
+    await setLoadedFaissStore(manager, makeRawStore([{ pageContent: 'view', metadata: viewMetadata() }]));
+    const secondSpy = jest.spyOn(loadedAdapter(manager), 'anyDocument');
+
+    await manager.similaritySearch('q', 5);
+    expect(secondSpy).toHaveBeenCalledTimes(1);
+    expect(secondSpy.mock.results[0]?.value).toBe(true);
   });
 });
 
