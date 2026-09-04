@@ -97,6 +97,16 @@ const DEFAULT_DEPS: RunStatsDeps = {
   stderr: (text) => process.stderr.write(text),
 };
 
+/**
+ * Issue #878 — build `RunStatsDeps` from the defaults with selective overrides,
+ * mirroring `createRunSearchDeps`. `kb serve` overrides the manager loaders and
+ * `computeKbStats` so scrapes reuse its warm resident store and corpus-size
+ * cache instead of reconstructing a fresh `FaissStore` per request.
+ */
+export function createRunStatsDeps(overrides: Partial<RunStatsDeps> = {}): RunStatsDeps {
+  return { ...DEFAULT_DEPS, ...overrides };
+}
+
 export async function runStats(
   rest: string[],
   deps: RunStatsDeps = DEFAULT_DEPS,
