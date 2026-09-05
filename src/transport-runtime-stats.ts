@@ -1,3 +1,5 @@
+import type { LatencyHistogramSnapshot } from './metrics.js';
+
 export type RemoteTransportKind = 'http' | 'sse';
 
 export type ResponseStatusBucket = '1xx' | '2xx' | '3xx' | '4xx' | '5xx';
@@ -19,6 +21,12 @@ export interface TransportRuntimeStatsSnapshot {
   origin_denials: number;
   host_denials: number;
   last_error: TransportRuntimeErrorSnapshot | null;
+  /**
+   * Issue #892 — per-request latency histograms keyed by response status
+   * class. Absent for hand-built fixtures and older snapshots; a serving
+   * `BaseHttpHost` always populates it (empty until the first request).
+   */
+  request_duration_ms?: Partial<Record<ResponseStatusBucket, LatencyHistogramSnapshot>>;
 }
 
 export function emptyResponseStatusBuckets(): Record<ResponseStatusBucket, number> {

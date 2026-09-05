@@ -10,6 +10,7 @@
 
 import type { SearchLatencyStage } from './timing-core.js';
 import type { DenseDegradationReason } from './search-core.js';
+import type { ResponseStatusBucket } from './transport-runtime-stats.js';
 
 /**
  * Fixed log-spaced latency bucket upper bounds, in milliseconds. 10 bucket
@@ -229,6 +230,19 @@ export interface RerankMetricsSnapshot {
 export interface WriteLockMetricsSnapshot {
   wait: Partial<Record<WriteLockResourceKind, LatencyHistogramSnapshot>>;
   hold: Partial<Record<WriteLockResourceKind, LatencyHistogramSnapshot>>;
+}
+
+/**
+ * Issue #892 — per-request latency histogram for the remote HTTP/SSE
+ * transport, keyed only by the bounded response status class (`1xx`..`5xx`).
+ * The status-class label mirrors the existing
+ * `kb_remote_transport_responses_${bucket}_total` counters, so the histogram
+ * adds at most five time series and never carries request path, method,
+ * origin, or session id — keeping cardinality bounded exactly like the other
+ * transport telemetry.
+ */
+export interface RemoteTransportLatencyMetricsSnapshot {
+  request_duration_ms: Partial<Record<ResponseStatusBucket, LatencyHistogramSnapshot>>;
 }
 
 function emptyState(now: number): MetricsState {
@@ -793,6 +807,45 @@ export class WriteLockMetrics {
       out[resourceKind] = snapshotHistogram(state);
     }
     return out;
+  }
+}
+
+/**
+ * Instance-lifetime latency histogram for the remote HTTP/SSE transport
+ * (issue #892). One instance is owned by each `BaseHttpHost`, so recording
+ * happens on the transport hot path and the snapshot rides the existing
+ * `remote_transport` stats surface. Buckets are the shared
+ * `LATENCY_BUCKET_BOUNDS_MS`; the only label is the bounded response status
+ * class, so a serving process can expose p50/p95/p99 request latency without
+ * any unbounded per-request label.
+ */
+export class RemoteTransportLatencyMetrics {
+  private readonly states = new Map<ResponseStatusBucket, HistogramState>();
+  private readonly now: () => number;
+
+  constructor(options: { now?: () => number } = {}) {
+    this.now = options.now ?? Date.now;
+  }
+
+  record(statusBucket: ResponseStatusBucket, durationMs: number): void {
+    let state = this.states.get(statusBucket);
+    if (state === undefined) {
+      state = emptyHistogramState(this.now());
+      this.states.set(statusBucket, state);
+    }
+    recordHistogramSample(state, durationMs);
+  }
+
+  snapshot(): RemoteTransportLatencyMetricsSnapshot {
+    const request_duration_ms: RemoteTransportLatencyMetricsSnapshot['request_duration_ms'] = {};
+    for (const [statusBucket, state] of this.states.entries()) {
+      request_duration_ms[statusBucket] = snapshotHistogram(state);
+    }
+    return { request_duration_ms };
+  }
+
+  reset(): void {
+    this.states.clear();
   }
 }
 

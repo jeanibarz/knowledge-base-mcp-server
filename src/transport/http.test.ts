@@ -367,6 +367,29 @@ describe('StreamableHttpHost — endpoints', () => {
     expect(stats.origin_denials).toBe(1);
     expect(stats.host_denials).toBe(0);
     expect(stats.last_error?.message).toEqual(expect.any(String));
+
+    // #892 — the per-status latency histogram is fed from the same request
+    // finalize() path, so each status class' histogram count mirrors its
+    // response-bucket counter and the totals reconcile with requests_total.
+    const durations = stats.request_duration_ms ?? {};
+    let histogramTotal = 0;
+    for (const bucket of ['1xx', '2xx', '3xx', '4xx', '5xx'] as const) {
+      const row = durations[bucket];
+      const observed = row?.count ?? 0;
+      expect(observed).toBe(stats.response_status_buckets[bucket]);
+      histogramTotal += observed;
+      if (row !== undefined) {
+        // Every recorded request lands in exactly one bucket, so the bucket
+        // counts sum back to `count`, and the (real, non-negative) durations
+        // accumulate into a finite `sum_ms` — a broken finalize() plumbing
+        // (dropped/NaN duration) would violate one of these invariants.
+        expect(row.buckets.reduce((a, b) => a + b, 0)).toBe(row.count);
+        expect(Number.isFinite(row.sum_ms)).toBe(true);
+        expect(row.sum_ms).toBeGreaterThanOrEqual(0);
+      }
+    }
+    expect(histogramTotal).toBe(stats.requests_total);
+    expect(durations['2xx']?.count).toBeGreaterThanOrEqual(2);
   });
 
   it('preflight OPTIONS from listed origin gets streamable HTTP CORS headers', async () => {
