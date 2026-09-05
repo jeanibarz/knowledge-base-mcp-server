@@ -57,7 +57,11 @@ export function redactSecrets(input: string): { text: string; summary: Redaction
   );
   apply(
     'key_value_secret',
-    /\b([A-Za-z_][A-Za-z0-9_]*(?:(?:api|access|refresh|auth|session)[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|secret|cookie)[A-Za-z0-9_]*\s*[:=]\s*)(['"]?)(?!\[REDACTED\])([^\s'",}]+)(\2)/gi,
+    // The identifier prefix before the keyword is optional so that bare fields
+    // (`password=…`, `secret: …`, `token=…`), not just prefixed ones
+    // (`db_password=…`), are scrubbed — matching the shapes the ingest scanner
+    // flags. The leading `\b` still anchors the match to a word boundary.
+    /\b([A-Za-z0-9_]*(?:(?:api|access|refresh|auth|session)[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|secret|cookie)[A-Za-z0-9_]*\s*[:=]\s*)(['"]?)(?!\[REDACTED\])([^\s'",}]+)(\2)/gi,
     (_match, prefix, quote, _value, suffix) => `${prefix}${quote}${REDACTION_PLACEHOLDER}${suffix}`,
   );
   apply(
@@ -65,9 +69,39 @@ export function redactSecrets(input: string): { text: string; summary: Redaction
     /\b(Bearer\s+)([A-Za-z0-9._~+/-]{12,})\b/g,
     (_match, prefix) => `${prefix}${REDACTION_PLACEHOLDER}`,
   );
+  // Multi-line private-key blocks (PEM / OpenSSH / PKCS#8). Redact the whole
+  // block rather than just the header line the ingest scanner keys on, so no key
+  // material survives. The algorithm-name prefix (`RSA `, `EC `, `OPENSSH `,
+  // `ENCRYPTED `, …) is optional, so bare PKCS#8 headers with no algorithm name
+  // are covered too. When the trailing `END` footer line is missing (a
+  // truncated key in a log or support bundle), fall back to redacting the header
+  // plus its trailing base64 body lines instead of letting them egress.
+  apply(
+    'ssh_private_key',
+    /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|(?:\r?\n[A-Za-z0-9+/=]{16,})+)/g,
+    () => REDACTION_PLACEHOLDER,
+  );
+  // JSON Web Tokens: match the full three-segment header.payload.signature shape
+  // (not just the `eyJ` header) to avoid over-redacting arbitrary base64 text.
+  apply(
+    'jwt',
+    /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
+    () => REDACTION_PLACEHOLDER,
+  );
+  // Azure Storage connection-string secret. Keep the `AccountKey=` label and
+  // scrub only the base64 key value, mirroring the field-preserving style of the
+  // other secret-field patterns above.
+  apply(
+    'azure_storage_key',
+    /\b(AccountKey=)([A-Za-z0-9+/=]{40,})/gi,
+    (_match, prefix) => `${prefix}${REDACTION_PLACEHOLDER}`,
+  );
+  // Provider API tokens and cloud access-key IDs. The AWS branch mirrors the
+  // ingest scanner's full prefix set (including the ASIA/AGPA/AIDA/AROA session
+  // and role prefixes) and the GCP branch covers `AIza…` API keys.
   apply(
     'provider_token',
-    /\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[abprs]-[A-Za-z0-9-]{10,})\b/g,
+    /\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:A3T[A-Z0-9]|AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA)[A-Z0-9]{16}|AIza[0-9A-Za-z_-]{35}|xox[abprs]-[A-Za-z0-9-]{10,})\b/g,
     () => REDACTION_PLACEHOLDER,
   );
 
