@@ -1,6 +1,14 @@
 import { describe, expect, it } from '@jest/globals';
 
 import { CONFIG_SCHEMA, isRegisteredConfigName, parseDotEnvText, showConfigEnv, validateConfigEnv } from './schema.js';
+import {
+  DAEMON_MAX_CONCURRENCY_ENV,
+  DAEMON_QUEUE_MAX_ENV,
+  DEFAULT_DAEMON_MAX_CONCURRENCY,
+  DEFAULT_DAEMON_QUEUE_MAX,
+  MAX_DAEMON_CONCURRENCY,
+  MAX_DAEMON_QUEUE_MAX,
+} from '../daemon-admission.js';
 
 describe('config schema validation (FR-OBS-470)', () => {
   it('emits ok findings and counts for valid known environment variables', () => {
@@ -446,5 +454,73 @@ describe('CONFIG_SCHEMA registrations for env-usage guard baseline (#776)', () =
     const names = report.entries.map((entry) => entry.name);
 
     expect(names).toEqual(expect.arrayContaining([...baselinedNames]));
+  });
+});
+
+describe('daemon concurrency knobs (#881)', () => {
+  it('accepts KB_DAEMON_MAX_CONCURRENCY / KB_DAEMON_QUEUE_MAX without a spelling warning', () => {
+    const report = validateConfigEnv({
+      [DAEMON_MAX_CONCURRENCY_ENV]: '4',
+      [DAEMON_QUEUE_MAX_ENV]: '0',
+    });
+
+    expect(report.status).toBe('ok');
+    expect(report.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: DAEMON_MAX_CONCURRENCY_ENV, status: 'ok', value: '4' }),
+      expect.objectContaining({ name: DAEMON_QUEUE_MAX_ENV, status: 'ok', value: '0' }),
+    ]));
+    // Regression: the knobs must not surface as unknown "check spelling" warnings.
+    expect(report.findings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: DAEMON_MAX_CONCURRENCY_ENV, kind: 'unknown' }),
+      expect.objectContaining({ name: DAEMON_QUEUE_MAX_ENV, kind: 'unknown' }),
+    ]));
+  });
+
+  it('rejects out-of-range and malformed daemon concurrency values', () => {
+    const report = validateConfigEnv({
+      [DAEMON_MAX_CONCURRENCY_ENV]: '0',
+      [DAEMON_QUEUE_MAX_ENV]: String(MAX_DAEMON_QUEUE_MAX + 1),
+    });
+
+    expect(report.status).toBe('error');
+    expect(report.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: DAEMON_MAX_CONCURRENCY_ENV, status: 'error', message: expect.stringContaining('>= 1') }),
+      expect.objectContaining({ name: DAEMON_QUEUE_MAX_ENV, status: 'error', message: expect.stringContaining(`<= ${MAX_DAEMON_QUEUE_MAX}`) }),
+    ]));
+
+    const malformed = validateConfigEnv({ [DAEMON_MAX_CONCURRENCY_ENV]: 'lots' });
+    expect(malformed.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: DAEMON_MAX_CONCURRENCY_ENV, status: 'error', message: expect.stringContaining('integer') }),
+    ]));
+  });
+
+  it('keeps schema defaults and bounds in sync with the daemon-admission constants', () => {
+    const maxSpec = CONFIG_SCHEMA.find((spec) => spec.name === DAEMON_MAX_CONCURRENCY_ENV);
+    const queueSpec = CONFIG_SCHEMA.find((spec) => spec.name === DAEMON_QUEUE_MAX_ENV);
+
+    expect(maxSpec).toEqual(expect.objectContaining({
+      default: String(DEFAULT_DAEMON_MAX_CONCURRENCY),
+      min: 1,
+      max: MAX_DAEMON_CONCURRENCY,
+    }));
+    expect(queueSpec).toEqual(expect.objectContaining({
+      default: String(DEFAULT_DAEMON_QUEUE_MAX),
+      min: 0,
+      max: MAX_DAEMON_QUEUE_MAX,
+    }));
+  });
+
+  it('surfaces the daemon concurrency knobs in config show output', () => {
+    const report = showConfigEnv({});
+    const byName = new Map(report.entries.map((entry) => [entry.name, entry]));
+
+    expect(byName.get(DAEMON_MAX_CONCURRENCY_ENV)).toEqual(expect.objectContaining({
+      value: String(DEFAULT_DAEMON_MAX_CONCURRENCY),
+      source: 'default',
+    }));
+    expect(byName.get(DAEMON_QUEUE_MAX_ENV)).toEqual(expect.objectContaining({
+      value: String(DEFAULT_DAEMON_QUEUE_MAX),
+      source: 'default',
+    }));
   });
 });

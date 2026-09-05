@@ -22,6 +22,8 @@ import {
   DEFAULT_DAEMON_MAX_CONCURRENCY,
   DEFAULT_DAEMON_QUEUE_MAX,
   DEFAULT_DAEMON_DRAIN_TIMEOUT_MS,
+  MAX_DAEMON_CONCURRENCY,
+  MAX_DAEMON_QUEUE_MAX,
 } from './daemon-admission.js';
 import { fetchDaemonHealth, runDaemonCommand, type DaemonRunResult } from './daemon-client.js';
 import { CorpusSizeCache, type KbStatsPayload } from './kb-stats.js';
@@ -546,6 +548,27 @@ describe('daemon admission gate', () => {
     ).toEqual({
       maxConcurrency: DEFAULT_DAEMON_MAX_CONCURRENCY,
       queueMax: DEFAULT_DAEMON_QUEUE_MAX,
+    });
+    // Out-of-range (above the schema max) also falls back, so the daemon and
+    // `kb config validate` agree that these values are not honored (#881).
+    expect(
+      resolveDaemonAdmissionConfig({
+        KB_DAEMON_MAX_CONCURRENCY: String(MAX_DAEMON_CONCURRENCY + 1),
+        KB_DAEMON_QUEUE_MAX: String(MAX_DAEMON_QUEUE_MAX + 1),
+      }),
+    ).toEqual({
+      maxConcurrency: DEFAULT_DAEMON_MAX_CONCURRENCY,
+      queueMax: DEFAULT_DAEMON_QUEUE_MAX,
+    });
+    // The upper bounds themselves are accepted verbatim.
+    expect(
+      resolveDaemonAdmissionConfig({
+        KB_DAEMON_MAX_CONCURRENCY: String(MAX_DAEMON_CONCURRENCY),
+        KB_DAEMON_QUEUE_MAX: String(MAX_DAEMON_QUEUE_MAX),
+      }),
+    ).toEqual({
+      maxConcurrency: MAX_DAEMON_CONCURRENCY,
+      queueMax: MAX_DAEMON_QUEUE_MAX,
     });
   });
 
