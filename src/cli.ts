@@ -27,6 +27,7 @@ import { EVAL_GATE_HELP, runEvalGate } from './cli-eval-gate.js';
 import { EXPLAIN_HELP, runExplain } from './cli-explain.js';
 import { FEEDBACK_HELP, runFeedback } from './cli-feedback.js';
 import { IMPORT_URL_HELP, runImportUrl } from './cli-import-url.js';
+import { INIT_HELP, runInit } from './cli-init.js';
 import { INSPECT_HELP, runInspect } from './cli-inspect.js';
 import { LIST_HELP, runList } from './cli-list.js';
 import { LS_HELP, runLs } from './cli-ls.js';
@@ -104,6 +105,7 @@ const NON_OPTION_HELP_SECTIONS = new Set([
 ]);
 
 const SUBCOMMANDS: readonly Subcommand[] = [
+  { name: 'init',         summary: 'Create a new, empty knowledge base.',                                     help: INIT_HELP,         handler: runInit },
   { name: 'list',         summary: 'List available knowledge bases.',                                         help: LIST_HELP,         handler: runList },
   { name: 'ls',           summary: 'List ingestable documents in one or all knowledge bases.',                help: LS_HELP,           handler: runLs },
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },

@@ -9,7 +9,7 @@ surface. Run `npm run build && node scripts/gen-cli-reference.mjs` after
 changing a command or its help text, and commit the result. The
 `docs:check-cli` gate (part of `npm run check`) fails if this file drifts.
 
-The `kb` CLI exposes 39 commands.
+The `kb` CLI exposes 40 commands.
 
 ## Commands
 
@@ -31,6 +31,7 @@ The `kb` CLI exposes 39 commands.
 | [`kb explain`](#kb-explain) | Verbose single-query retrieval trace for debugging and bug reports. |
 | [`kb feedback`](#kb-feedback) | Record relevance judgments and promote them into eval fixtures. |
 | [`kb import-url`](#kb-import-url) | Snapshot a web page or PDF into a KB note with provenance frontmatter. |
+| [`kb init`](#kb-init) | Create a new, empty knowledge base. |
 | [`kb inspect`](#kb-inspect) | Show file-side ingest chunking diagnostics for one file. |
 | [`kb list`](#kb-list) | List available knowledge bases. |
 | [`kb llm`](#kb-llm) | Configure local LLM endpoints and managed warm model services. |
@@ -758,6 +759,46 @@ Examples:
   kb import-url --kb=research https://example.com/article
   kb import-url --kb=research https://example.com/paper.pdf --note=papers/x.md
   kb import-url --kb=work http://localhost:8080/doc --allow-local-network
+```
+
+## `kb init`
+
+Create a new, empty knowledge base.
+
+```text
+kb init — create a new, empty knowledge base
+
+Usage:
+  kb init <name> [--format=md|json]
+
+Creates a new knowledge-base directory named <name> under
+`KNOWLEDGE_BASES_ROOT_DIR` so that `kb remember`, `kb capture`, and the MCP
+`add_document` tool can immediately write into it. Until now the only way to
+start a fresh shelf was a manual `mkdir`; every write path throws
+`KB_NOT_FOUND` for a directory that does not exist yet.
+
+The shelf is left empty — no index is built and no files are added — so the
+first write behaves exactly as it would for any existing KB (least surprise).
+
+The name is validated with the same rules the read and write surfaces use to
+address a KB: it must not be empty, start with ".", contain a path separator
+(`/` or `\`), or be an absolute path. Re-running with a name that already
+exists errors instead of clobbering the existing shelf.
+
+Options:
+  --format=md|json      Output format (default: md). `md` prints the created
+                        directory path; `json` prints an object with
+                        `knowledge_base_name`, `path`, and `created`.
+  --help, -h            Show this help.
+
+Exit codes:
+  0   the knowledge base was created
+  1   a knowledge base with that name already exists (or another runtime error)
+  2   missing / extra arguments, or an unsafe name
+
+Examples:
+  kb init new-topic
+  kb init research --format=json
 ```
 
 ## `kb inspect`

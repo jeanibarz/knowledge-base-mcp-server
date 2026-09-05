@@ -557,6 +557,87 @@ export async function resolveKnowledgeBaseDir(
   return kbDir;
 }
 
+/**
+ * Thrown by `createKnowledgeBase` when a shelf with the requested name already
+ * exists. A dedicated type (rather than a `KBError` variant) lets the `kb init`
+ * CLI distinguish "the name is taken" (a state conflict) from "the name is
+ * unsafe" (an argument error) without string-matching on messages.
+ */
+export class KnowledgeBaseExistsError extends Error {
+  constructor(
+    readonly knowledgeBaseName: string,
+    readonly rootDir: string,
+  ) {
+    super(`Knowledge base "${knowledgeBaseName}" already exists under ${rootDir}.`);
+    this.name = 'KnowledgeBaseExistsError';
+  }
+}
+
+/**
+ * Create a new, empty knowledge-base directory under `rootDir` and return its
+ * absolute path. Companion to `resolveKnowledgeBaseDir`: it applies the same
+ * addressability guards (empty / dot-prefixed / null-byte / absolute /
+ * path-separator names are rejected) so a shelf created here is one the ingest
+ * and read surfaces can immediately address.
+ *
+ * The KB root is created if it does not exist yet, so bootstrapping the very
+ * first shelf on a fresh install works without a manual `mkdir`. The KB
+ * directory itself is created non-recursively so an existing name is reported
+ * as a `KnowledgeBaseExistsError` conflict instead of silently reusing whatever
+ * is already there. The new directory is left empty — no index, no README — for
+ * least surprise (the first write behaves exactly as it would for any KB).
+ */
+export async function createKnowledgeBase(
+  rootDir: string,
+  knowledgeBaseName: string,
+): Promise<string> {
+  if (
+    knowledgeBaseName.length === 0 ||
+    knowledgeBaseName.startsWith('.') ||
+    knowledgeBaseName.includes('\0') ||
+    path.isAbsolute(knowledgeBaseName) ||
+    hasPathSeparator(knowledgeBaseName)
+  ) {
+    throw new KBError(
+      'VALIDATION',
+      `Invalid knowledge base name ${JSON.stringify(knowledgeBaseName)}: names must not be empty, ` +
+        'start with ".", contain a path separator, or be an absolute path.',
+    );
+  }
+
+  // Create the root on demand so the first-ever shelf works without a manual
+  // mkdir; `{ recursive: true }` is a no-op when the root already exists.
+  await fsp.mkdir(rootDir, { recursive: true });
+
+  const kbDir = path.join(rootDir, knowledgeBaseName);
+  try {
+    // Non-recursive so an already-present name (directory OR file) surfaces as
+    // EEXIST rather than silently succeeding — never clobber an existing shelf.
+    await fsp.mkdir(kbDir);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === 'EEXIST') {
+      throw new KnowledgeBaseExistsError(knowledgeBaseName, rootDir);
+    }
+    throw error;
+  }
+
+  // Defence in depth: confirm the freshly created directory resolves inside the
+  // KB root (mirrors resolveKnowledgeBaseDir's realpath guard).
+  const rootReal = await fsp.realpath(rootDir);
+  const kbReal = await fsp.realpath(kbDir);
+  if (!isInsideOrEqual(rootReal, kbReal)) {
+    // Only reachable via a post-mkdir TOCTOU symlink swap (the lexical guard
+    // above makes a safe name a direct child otherwise). Remove the directory
+    // we just created so a rejected init leaves nothing behind.
+    await fsp.rmdir(kbDir).catch(() => {});
+    throw new KBError(
+      'VALIDATION',
+      `Knowledge base "${knowledgeBaseName}" resolves outside ${rootDir}.`,
+    );
+  }
+  return kbDir;
+}
+
 async function knowledgeBaseNotFound(rootDir: string, knowledgeBaseName: string): Promise<KBError> {
   let available: string[] = [];
   try {

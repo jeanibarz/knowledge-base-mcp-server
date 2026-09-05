@@ -219,6 +219,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ]));
     const names = manifest.commands.map((command) => command.name);
     expect(names).toEqual([
+      'init',
       'list',
       'ls',
       'search',
