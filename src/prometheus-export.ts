@@ -503,6 +503,13 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     emittedWhen: 'Emitted after write-lock hold telemetry is observed.',
   },
   {
+    name: 'kb_remote_transport_request_duration_ms',
+    type: 'histogram',
+    help: 'Remote HTTP/SSE transport request latency in milliseconds, split by bounded response status class.',
+    labels: ['le', 'status'],
+    emittedWhen: 'Emitted after HTTP or SSE transport requests are observed.',
+  },
+  {
     name: 'kb_daemon_inflight',
     type: 'gauge',
     help: 'Admitted-but-incomplete kb serve daemon requests (running + queued).',
@@ -645,6 +652,7 @@ export function formatKbStatsOpenMetrics(
   lines.push(...llmCallLatencyHistogramLines(payload.llm_calls));
   lines.push(...rerankLatencyHistogramLines(payload.rerank));
   lines.push(...writeLockHistogramLines(payload.write_locks));
+  lines.push(...remoteTransportHistogramLines(payload.remote_transport));
   lines.push('# EOF');
   return `${lines.join('\n')}\n`;
 }
@@ -1070,6 +1078,22 @@ function writeLockHistogramRows(
     rows.push({ labels: { resource_kind: resourceKind }, histogram });
   }
   return rows;
+}
+
+function remoteTransportHistogramLines(
+  stats: KbStatsPayload['remote_transport'],
+): string[] {
+  const durations = stats?.request_duration_ms;
+  if (durations === undefined) return [];
+  const rows: HistogramRow[] = [];
+  for (const [status, histogram] of Object.entries(durations)) {
+    if (histogram === undefined) continue;
+    rows.push({ labels: { status }, histogram });
+  }
+  return renderHistogramFamily({
+    name: 'kb_remote_transport_request_duration_ms',
+    rows,
+  });
 }
 
 function requestHistogramRows(snapshot: SearchLatencyMetricsSnapshot): HistogramRow[] {

@@ -65,7 +65,55 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('kb_remote_transport_requests_total 9');
     expect(text).toContain('# TYPE kb_remote_transport_responses_4xx counter');
     expect(text).toContain('kb_remote_transport_responses_4xx_total 2');
+    expect(text).toContain('# TYPE kb_remote_transport_request_duration_ms histogram');
+    expect(text).toContain('kb_remote_transport_request_duration_ms_bucket{le="100",status="2xx"} 1');
+    expect(text).toContain('kb_remote_transport_request_duration_ms_bucket{le="+Inf",status="2xx"} 1');
+    expect(text).toContain('kb_remote_transport_request_duration_ms_sum{status="2xx"} 80');
+    expect(text).toContain('kb_remote_transport_request_duration_ms_count{status="2xx"} 1');
+    expect(text).toContain('kb_remote_transport_request_duration_ms_bucket{le="30",status="4xx"} 1');
+    expect(text).toContain('kb_remote_transport_request_duration_ms_count{status="4xx"} 1');
     expect(text.endsWith('# EOF\n')).toBe(true);
+  });
+
+  it('renders the remote transport request-duration histogram with cumulative buckets (issue #892)', () => {
+    const payload = samplePayload();
+    payload.remote_transport = {
+      ...payload.remote_transport!,
+      request_duration_ms: {
+        '2xx': histogramSnapshot(80),
+      },
+    };
+    const text = formatKbStatsOpenMetrics(payload);
+
+    expect(text).toContain('# TYPE kb_remote_transport_request_duration_ms histogram');
+    // 80ms lands in the le="100" bucket; everything below it stays zero and
+    // every bucket at or above it is 1 (cumulative), matching the count.
+    for (const le of [1, 3, 10, 30]) {
+      expect(text).toContain(`kb_remote_transport_request_duration_ms_bucket{le="${le}",status="2xx"} 0`);
+    }
+    for (const le of [100, 300, 1000, 3000, 10000, 30000]) {
+      expect(text).toContain(`kb_remote_transport_request_duration_ms_bucket{le="${le}",status="2xx"} 1`);
+    }
+    expect(text).toContain('kb_remote_transport_request_duration_ms_bucket{le="+Inf",status="2xx"} 1');
+    expect(text).toContain('kb_remote_transport_request_duration_ms_sum{status="2xx"} 80');
+    expect(text).toContain('kb_remote_transport_request_duration_ms_count{status="2xx"} 1');
+  });
+
+  it('omits the remote transport request-duration histogram when the transport is inactive (issue #892)', () => {
+    const payload = samplePayload();
+    delete payload.remote_transport;
+    const text = formatKbStatsOpenMetrics(payload);
+    expect(text).not.toContain('kb_remote_transport_request_duration_ms');
+  });
+
+  it('omits the remote transport request-duration histogram before any request is observed (issue #892)', () => {
+    const payload = samplePayload();
+    payload.remote_transport = {
+      ...payload.remote_transport!,
+      request_duration_ms: {},
+    };
+    const text = formatKbStatsOpenMetrics(payload);
+    expect(text).not.toContain('kb_remote_transport_request_duration_ms');
   });
 
   it('renders bounded LLM operation counters, token counters, and latency histogram', () => {
@@ -423,6 +471,10 @@ function samplePayload(): KbStatsPayload {
       origin_denials: 1,
       host_denials: 0,
       last_error: null,
+      request_duration_ms: {
+        '2xx': histogramSnapshot(80),
+        '4xx': histogramSnapshot(12),
+      },
     },
   };
 }

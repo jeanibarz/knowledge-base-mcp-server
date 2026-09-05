@@ -37,6 +37,7 @@ import {
   type TransportConfig,
 } from '../transport-config.js';
 import { logger } from '../logger.js';
+import { RemoteTransportLatencyMetrics } from '../metrics.js';
 import {
   emptyResponseStatusBuckets,
   responseStatusBucket,
@@ -120,6 +121,10 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
   private requestsTotal = 0;
   private readonly responseStatusBuckets: Record<ResponseStatusBucket, number> =
     emptyResponseStatusBuckets();
+  // #892 — per-request latency histogram keyed by response status class. Fed
+  // from the same `duration_ms` the access log already reports, so /metrics
+  // can surface transport p50/p95/p99 without grepping access-log lines.
+  private readonly requestDurationMetrics = new RemoteTransportLatencyMetrics();
   private authFailures = 0;
   private originDenials = 0;
   private hostDenials = 0;
@@ -220,6 +225,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       origin_denials: this.originDenials,
       host_denials: this.hostDenials,
       last_error: this.lastError === null ? null : { ...this.lastError },
+      request_duration_ms: this.requestDurationMetrics.snapshot().request_duration_ms,
     };
   }
 
@@ -389,14 +395,20 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     const clientAddress = this.clientAddress(req);
 
     const finalize = (status: number) => {
+      const durationMs = Date.now() - startedAt;
+      const bucket = responseStatusBucket(status);
       this.requestsTotal += 1;
-      this.responseStatusBuckets[responseStatusBucket(status)] += 1;
+      this.responseStatusBuckets[bucket] += 1;
+      // #892 — record the already-computed request duration into the latency
+      // histogram before it is handed to the access log, so no access-log
+      // behaviour changes.
+      this.requestDurationMetrics.record(bucket, durationMs);
       this.writeAccessLog({
         ts: new Date(startedAt).toISOString(),
         method,
         path,
         status,
-        duration_ms: Date.now() - startedAt,
+        duration_ms: durationMs,
         origin: originHeader,
         auth_present: authPresent,
       });

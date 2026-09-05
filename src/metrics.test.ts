@@ -9,6 +9,7 @@ import {
   normalizeLlmProvider,
   ProviderCallMetrics,
   quantileFromBuckets,
+  RemoteTransportLatencyMetrics,
   RerankMetrics,
   SearchLatencyMetrics,
   WriteLockMetrics,
@@ -370,6 +371,48 @@ describe('WriteLockMetrics', () => {
     metrics.reset();
 
     expect(metrics.snapshot()).toEqual({ wait: {}, hold: {} });
+  });
+});
+
+describe('RemoteTransportLatencyMetrics (issue #892)', () => {
+  it('accumulates count and sum per status class and keeps buckets independent', () => {
+    const metrics = new RemoteTransportLatencyMetrics({ now: () => 1_700_000_000_000 });
+
+    metrics.record('2xx', 10);
+    metrics.record('2xx', 20);
+    metrics.record('4xx', 5);
+
+    const snap = metrics.snapshot();
+    // Two 2xx samples accumulate into one row: count 2, sum 30.
+    expect(snap.request_duration_ms['2xx']).toMatchObject({
+      count: 2,
+      sum_ms: 30,
+      since_started_at: '2023-11-14T22:13:20.000Z',
+    });
+    // 10ms lands in the le=10 bucket, 20ms in le=30 — no cross-bucket leak.
+    expect(snap.request_duration_ms['2xx']?.buckets[bucketIndexForLatency(10)]).toBe(1);
+    expect(snap.request_duration_ms['2xx']?.buckets[bucketIndexForLatency(20)]).toBe(1);
+    // The 4xx class is tracked independently and never sees the 2xx samples.
+    expect(snap.request_duration_ms['4xx']).toMatchObject({ count: 1, sum_ms: 5 });
+    expect(snap.request_duration_ms['5xx']).toBeUndefined();
+  });
+
+  it('coerces a negative (clock-skew) duration to zero without dropping the sample', () => {
+    const metrics = new RemoteTransportLatencyMetrics();
+    metrics.record('5xx', -1);
+
+    const row = metrics.snapshot().request_duration_ms['5xx'];
+    expect(row).toMatchObject({ count: 1, sum_ms: 0 });
+    expect(row?.buckets[0]).toBe(1);
+  });
+
+  it('reset() clears remote transport latency telemetry', () => {
+    const metrics = new RemoteTransportLatencyMetrics();
+    metrics.record('2xx', 5);
+
+    metrics.reset();
+
+    expect(metrics.snapshot()).toEqual({ request_duration_ms: {} });
   });
 });
 
