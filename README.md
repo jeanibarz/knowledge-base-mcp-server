@@ -442,6 +442,25 @@ kb ask "why does src/cli.ts throw?" --mode=hybrid --rerank
 kb ask "what changed in the daemonization notes?" --timing
 ```
 
+**Iterating in a REPL.** `--interactive` (`-i`) starts a multi-turn session instead of a one-shot answer: the first question retrieves evidence, and follow-ups reuse that same evidence — no re-retrieval — until you ask for a fresh scan. This is the ergonomic path for drilling into a topic, since each follow-up skips the retrieval round-trip. In-session commands:
+
+- `/sources` — show the citations behind the last answer.
+- `/kb <name>` — scope retrieval to a KB and re-retrieve; `/kb` with no argument shows the current scope.
+- `/refresh` — drop the cached evidence so the next question re-scans and re-retrieves.
+- `/save [title]` — persist the last exchange as a transcript note (needs a KB scoped via `--kb` or `/kb`).
+- `/reset` — clear cached evidence and conversation history.
+- `/help`, `/exit` (alias `/quit`).
+
+Interactive mode needs a TTY; when stdin is piped or redirected it falls back to a single one-shot answer (with a notice on stderr).
+
+```bash
+kb ask -i --kb=operating-environment
+# > Which notes discuss reboot recovery?         # first question retrieves evidence
+# > What do they say about the watchdog timer?   # follow-up reuses the same evidence
+# > /refresh                                      # drop cached evidence; next question re-retrieves
+# > /exit
+```
+
 **Saving an answer as a note.** `--save-transcript --kb=<name> --yes` writes the answer into that KB as a new markdown note recording the question, answer, citations, source chunk ids, LLM endpoint/profile/model, retrieval model, and — with `--timing` — timing metadata. `--title=<title>` sets the note title and slug. Existing transcript notes are never overwritten.
 
 ```bash
