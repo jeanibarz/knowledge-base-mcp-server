@@ -42,11 +42,30 @@ export const DEFAULT_DAEMON_DRAIN_TIMEOUT_MS = 5000;
 export const DEFAULT_DAEMON_MAX_CONCURRENCY = 8;
 
 /**
+ * Upper bound accepted for KB_DAEMON_MAX_CONCURRENCY. A value beyond this is
+ * a configuration mistake rather than a tuning choice. Both the runtime
+ * (`resolveDaemonAdmissionConfig`) and the config schema (`CONFIG_SCHEMA`)
+ * share this constant so they agree: `kb config validate` reports an
+ * out-of-range value as an error, and the daemon falls back to the default
+ * rather than honoring it.
+ */
+export const MAX_DAEMON_CONCURRENCY = 1024;
+
+/**
  * Default bounded backlog beyond the concurrency cap. Generous enough to
  * absorb an agent firing a parallel batch of `kb search` calls while still
  * shedding load once the daemon is genuinely saturated.
  */
 export const DEFAULT_DAEMON_QUEUE_MAX = 128;
+
+/**
+ * Upper bound accepted for KB_DAEMON_QUEUE_MAX. A backlog beyond this would
+ * trade memory for latency without shedding load, so treat it as a mistake.
+ * Shared by `resolveDaemonAdmissionConfig` and `CONFIG_SCHEMA` so validation
+ * and admission agree: validate errors on an out-of-range value and the
+ * daemon falls back to the default.
+ */
+export const MAX_DAEMON_QUEUE_MAX = 65536;
 
 /** Advisory `Retry-After` (seconds) returned with a rejection. */
 export const DAEMON_RETRY_AFTER_SECONDS = 1;
@@ -60,12 +79,18 @@ function parseBoundedInt(
   raw: string | undefined,
   fallback: number,
   min: number,
+  max?: number,
 ): number {
   if (raw === undefined || raw.trim() === '') {
     return fallback;
   }
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < min) {
+  if (
+    !Number.isFinite(parsed) ||
+    !Number.isInteger(parsed) ||
+    parsed < min ||
+    (max !== undefined && parsed > max)
+  ) {
     return fallback;
   }
   return parsed;
@@ -79,6 +104,7 @@ export function resolveDaemonAdmissionConfig(
       env[DAEMON_MAX_CONCURRENCY_ENV],
       DEFAULT_DAEMON_MAX_CONCURRENCY,
       1,
+      MAX_DAEMON_CONCURRENCY,
     ),
     // queueMax of 0 is valid — it makes the daemon reject immediately once
     // the concurrency slots are full (immediate-429 mode).
@@ -86,6 +112,7 @@ export function resolveDaemonAdmissionConfig(
       env[DAEMON_QUEUE_MAX_ENV],
       DEFAULT_DAEMON_QUEUE_MAX,
       0,
+      MAX_DAEMON_QUEUE_MAX,
     ),
   };
 }

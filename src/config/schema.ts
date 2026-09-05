@@ -38,6 +38,14 @@ import {
   DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
   MAX_DAEMON_CLIENT_TIMEOUT_MS,
 } from '../daemon-client.js';
+import {
+  DAEMON_MAX_CONCURRENCY_ENV,
+  DAEMON_QUEUE_MAX_ENV,
+  DEFAULT_DAEMON_MAX_CONCURRENCY,
+  DEFAULT_DAEMON_QUEUE_MAX,
+  MAX_DAEMON_CONCURRENCY,
+  MAX_DAEMON_QUEUE_MAX,
+} from '../daemon-admission.js';
 import { closestSuggestion, levenshteinDistance } from '../suggestion-core.js';
 
 export type ConfigFindingStatus = 'ok' | 'warn' | 'error';
@@ -274,6 +282,8 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_DAEMON_CLIENT_TIMEOUT_MS', kind: 'duration', default: String(DEFAULT_DAEMON_CLIENT_TIMEOUT_MS), min: 1, max: MAX_DAEMON_CLIENT_TIMEOUT_MS, integerSyntax: 'digits', description: 'Timeout in milliseconds for daemon command requests.' },
   { name: 'KB_DAEMON_HEALTH_TIMEOUT_MS', kind: 'duration', default: String(DEFAULT_DAEMON_HEALTH_TIMEOUT_MS), min: 1, max: MAX_DAEMON_CLIENT_TIMEOUT_MS, integerSyntax: 'digits', description: 'Timeout in milliseconds for daemon health requests, capped by any outer autostart deadline.' },
   { name: 'KB_DAEMON_DRAIN_TIMEOUT_MS', kind: 'duration', default: '5000', min: 0, description: 'Bounded wait (ms) for in-flight kb serve requests to finish on SIGINT/SIGTERM before the daemon force-exits. 0 stops immediately.' },
+  { name: DAEMON_MAX_CONCURRENCY_ENV, kind: 'integer', default: String(DEFAULT_DAEMON_MAX_CONCURRENCY), min: 1, max: MAX_DAEMON_CONCURRENCY, integerSyntax: 'digits', description: 'Maximum concurrent kb serve daemon requests admitted at once; excess requests queue (up to KB_DAEMON_QUEUE_MAX) then get 429. Tune down on smaller boxes.' },
+  { name: DAEMON_QUEUE_MAX_ENV, kind: 'integer', default: String(DEFAULT_DAEMON_QUEUE_MAX), min: 0, max: MAX_DAEMON_QUEUE_MAX, integerSyntax: 'digits', description: 'Bounded backlog of kb serve daemon requests queued beyond the KB_DAEMON_MAX_CONCURRENCY cap; further requests get 429 + Retry-After. 0 rejects immediately once the concurrency slots are full.' },
   { name: 'KB_DAEMON_AUTOSTART', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'KB_DAEMON_PREWARM', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES },
   { name: 'MCP_TRANSPORT', kind: 'enum', values: ['stdio', 'sse', 'http'], default: 'stdio', description: 'MCP server transport.' },
