@@ -275,6 +275,202 @@ describe('RecursiveKbWatcher (RFC 007 §6.6 / issue #212)', () => {
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith(KB);
   });
+
+  describe('per-directory discovery of subdirs created after start (issue #893)', () => {
+    it('indexes a file already present when a new subdirectory is first observed', async () => {
+      // mkdir-then-immediate-write: the file exists before the new
+      // watcher is attached, so listing at discovery time is what
+      // surfaces it. The test hook drives discovery without waiting
+      // on inotify.
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange, debounceMs: 25 });
+      await watcher.start();
+      const watchedAtStart = watcher.watchedDirectoryCount(KB);
+
+      const topic = path.join(tempDir, KB, 'topic');
+      await fsp.mkdir(topic);
+      await fsp.writeFile(path.join(topic, 'note.md'), 'hello');
+      await watcher.handlePossibleNewDirectory(KB, 'topic');
+
+      expect(watcher.watchedDirectoryCount(KB)).toBe(watchedAtStart + 1);
+      await drain(80);
+      await watcher.stop();
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith(KB);
+    });
+
+    it('indexes a file already present in a nested subdirectory of a newly observed dir', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange, debounceMs: 25 });
+      await watcher.start();
+      const watchedAtStart = watcher.watchedDirectoryCount(KB);
+
+      await fsp.mkdir(path.join(tempDir, KB, 'topic/nested'), { recursive: true });
+      await fsp.writeFile(path.join(tempDir, KB, 'topic/nested/note.md'), 'hello');
+      await watcher.handlePossibleNewDirectory(KB, 'topic');
+
+      expect(watcher.watchedDirectoryCount(KB)).toBe(watchedAtStart + 2);
+      await drain(80);
+      await watcher.stop();
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith(KB);
+    });
+
+    it('does not attach a second watcher to a directory that already has one', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange, debounceMs: 25 });
+      await watcher.start();
+      const watchedAtStart = watcher.watchedDirectoryCount(KB);
+
+      await fsp.mkdir(path.join(tempDir, KB, 'topic'));
+      await Promise.all([
+        watcher.handlePossibleNewDirectory(KB, 'topic'),
+        watcher.handlePossibleNewDirectory(KB, 'topic'),
+      ]);
+
+      expect(watcher.watchedDirectoryCount(KB)).toBe(watchedAtStart + 1);
+      await drain(80);
+      await watcher.stop();
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('does not follow a symlink to a directory outside the KB', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange, debounceMs: 25 });
+      await watcher.start();
+      const watchedAtStart = watcher.watchedDirectoryCount(KB);
+
+      const outside = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-fs-watch-outside-'));
+      try {
+        await fsp.writeFile(path.join(outside, 'secret.md'), 'nope');
+        await fsp.symlink(outside, path.join(tempDir, KB, 'alias'));
+        await watcher.handlePossibleNewDirectory(KB, 'alias');
+        expect(watcher.watchedDirectoryCount(KB)).toBe(watchedAtStart);
+        await drain(80);
+        await watcher.stop();
+        expect(onChange).not.toHaveBeenCalled();
+      } finally {
+        await fsp.rm(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('re-attaches after a watched subdirectory is removed and created again', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange, debounceMs: 25 });
+      await watcher.start();
+      const watchedAtStart = watcher.watchedDirectoryCount(KB);
+      const topic = path.join(tempDir, KB, 'topic');
+
+      await fsp.mkdir(topic);
+      await watcher.handlePossibleNewDirectory(KB, 'topic');
+      expect(watcher.watchedDirectoryCount(KB)).toBe(watchedAtStart + 1);
+
+      await fsp.rm(topic, { recursive: true, force: true });
+      await watcher.handlePossibleNewDirectory(KB, 'topic');
+      expect(watcher.watchedDirectoryCount(KB)).toBe(watchedAtStart);
+
+      await fsp.mkdir(topic);
+      await fsp.writeFile(path.join(topic, 'note.md'), 'hello');
+      await watcher.handlePossibleNewDirectory(KB, 'topic');
+      expect(watcher.watchedDirectoryCount(KB)).toBe(watchedAtStart + 1);
+      await drain(80);
+      await watcher.stop();
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith(KB);
+    });
+
+    it('does not attach a watcher to a dot-prefixed directory', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange, debounceMs: 25 });
+      await watcher.start();
+      const watchedAtStart = watcher.watchedDirectoryCount(KB);
+
+      await fsp.mkdir(path.join(tempDir, KB, '.index'));
+      await fsp.writeFile(path.join(tempDir, KB, '.index', 'sidecar.md'), 'nope');
+      await watcher.handlePossibleNewDirectory(KB, '.index');
+
+      expect(watcher.watchedDirectoryCount(KB)).toBe(watchedAtStart);
+      await drain(80);
+      await watcher.stop();
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('indexes a file written after a newly observed subdirectory is already being watched', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange, debounceMs: 50 });
+      await watcher.start();
+      const watchedAtStart = watcher.watchedDirectoryCount(KB);
+
+      const topic = path.join(tempDir, KB, 'topic');
+      await fsp.mkdir(topic);
+      await watcher.handlePossibleNewDirectory(KB, 'topic');
+      expect(watcher.watchedDirectoryCount(KB)).toBe(watchedAtStart + 1);
+      await drain(40);
+      expect(onChange).not.toHaveBeenCalled();
+
+      await fsp.writeFile(path.join(topic, 'note.md'), 'hello');
+      await drain(250);
+      await watcher.stop();
+
+      if (onChange.mock.calls.length === 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          'recursive-fs-watch later-write new-subdir test: fs.watch backend delivered no events; ' +
+            'skipping count assertion (this can happen on NFS/FUSE filesystems).',
+        );
+        return;
+      }
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith(KB);
+    });
+
+    it('does not fire onChange for a non-ingestable file in a newly observed directory', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange, debounceMs: 25 });
+      await watcher.start();
+
+      const topic = path.join(tempDir, KB, 'topic');
+      await fsp.mkdir(topic);
+      await fsp.writeFile(path.join(topic, 'shot.png'), 'nope');
+      await watcher.handlePossibleNewDirectory(KB, 'topic');
+      await drain(80);
+      await watcher.stop();
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('end-to-end: mkdir then write into the new subdir is indexed without a restart', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange, debounceMs: 50 });
+      await watcher.start();
+      const watchedAtStart = watcher.watchedDirectoryCount(KB);
+
+      // Control write in an already-watched directory. If this does
+      // not fire, the backend is not delivering events (NFS/FUSE) and
+      // the subdir case cannot be judged. If it does fire, a missing
+      // new-subdir discovery is a real failure — not a skip.
+      await fsp.writeFile(path.join(tempDir, KB, 'probe.md'), 'probe');
+      await drain(250);
+      if (onChange.mock.calls.length === 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          'recursive-fs-watch e2e new-subdir test: fs.watch backend delivered no events; ' +
+            'skipping count assertion (this can happen on NFS/FUSE filesystems).',
+        );
+        await watcher.stop();
+        return;
+      }
+      onChange.mockClear();
+
+      const topic = path.join(tempDir, KB, 'topic');
+      await fsp.mkdir(topic);
+      await fsp.writeFile(path.join(topic, 'note.md'), 'hello');
+      await drain(300);
+      expect(watcher.watchedDirectoryCount(KB)).toBe(watchedAtStart + 1);
+      await watcher.stop();
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith(KB);
+    });
+  });
 });
 
 describe('enumerateDirectories', () => {
