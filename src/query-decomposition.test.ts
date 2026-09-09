@@ -9,6 +9,10 @@ import {
   queryDecompositionTraceToJson,
   runQueryDecomposition,
 } from './query-decomposition.js';
+import {
+  defaultDecompositionCache,
+  DiskTieredDecompositionCache,
+} from './decomposition-cache.js';
 import type { DecompositionCache } from './decomposition-cache.js';
 import type { HybridChunk } from './hybrid-retrieval.js';
 
@@ -62,6 +66,65 @@ describe('LLM query decomposition cache (#736)', () => {
     expect(get).toHaveBeenNthCalledWith(1, 'model-a', 'Multi   hop query');
     expect(set).toHaveBeenCalledWith('model-a', 'Multi   hop query', ['hop one', 'hop two']);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares the process-global cache across default decomposers (#894)', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '{"subqueries":["cached hop"]}' } }],
+      model: 'model-a',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const get = jest.spyOn(defaultDecompositionCache, 'get')
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(['cached hop']);
+    const set = jest.spyOn(defaultDecompositionCache, 'set').mockImplementation(() => undefined);
+
+    const first = createLocalLlmQueryDecomposer(undefined, {
+      endpoint: 'http://llm.test',
+      model: 'model-a',
+    });
+    const second = createLocalLlmQueryDecomposer(undefined, {
+      endpoint: 'http://llm.test',
+      model: 'model-a',
+    });
+
+    await expect(first.decompose('shared query')).resolves.toEqual(['cached hop']);
+    await expect(second.decompose('shared query')).resolves.toEqual(['cached hop']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(get.mock.instances[0]).toBe(defaultDecompositionCache);
+    expect(get.mock.instances[1]).toBe(defaultDecompositionCache);
+  });
+
+  it('records L1 hits across decomposers that share one cache (#894)', async () => {
+    const indexPath = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-decomposition-shared-l1-'));
+    try {
+      const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        choices: [{ message: { content: '{"subqueries":["hop one","hop two"]}' } }],
+        model: 'model-a',
+      }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      const cache = new DiskTieredDecompositionCache({
+        indexPath,
+        enabled: true,
+      });
+      const first = createLocalLlmQueryDecomposer(undefined, {
+        endpoint: 'http://llm.test',
+        model: 'model-a',
+        cache,
+      });
+      const second = createLocalLlmQueryDecomposer(undefined, {
+        endpoint: 'http://llm.test',
+        model: 'model-a',
+        cache,
+      });
+
+      await expect(first.decompose('Multi hop query')).resolves.toEqual(['hop one', 'hop two']);
+      await expect(second.decompose('multi hop query')).resolves.toEqual(['hop one', 'hop two']);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(cache.stats()).toMatchObject({ writes: 1, l1_hits: 1, disk_hits: 0, misses: 1 });
+    } finally {
+      await fsp.rm(indexPath, { recursive: true, force: true });
+    }
   });
 
   it('never caches provider failures, invalid responses, or offline fallback results', async () => {

@@ -186,6 +186,12 @@ export class DiskTieredDecompositionCache implements DecompositionCache {
       this.recordCorrupt(file);
       return null;
     }
+    // Best-effort LRU: touch mtime so the disk cap evicts least-recently-used.
+    try {
+      fs.utimesSync(file, new Date(), new Date());
+    } catch {
+      // a missing/locked file is fine to ignore
+    }
     return record.subqueries.slice();
   }
 
@@ -228,6 +234,11 @@ export class DiskTieredDecompositionCache implements DecompositionCache {
     }
   }
 }
+
+// Process-wide default so long-lived daemons (`kb serve`) share one warm L1
+// across searches instead of building a cold cache per query. One-shot `kb
+// search` processes still start and exit with a single cache instance.
+export const defaultDecompositionCache = new DiskTieredDecompositionCache();
 
 function isValidIdentity(modelId: string, query: string): boolean {
   return modelId.trim() !== '' && normalizeDecompositionQuery(query) !== '';

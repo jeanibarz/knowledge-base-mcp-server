@@ -6,6 +6,7 @@ import * as path from 'path';
 import {
   DECOMPOSITION_CACHE_SCHEMA_VERSION,
   DiskTieredDecompositionCache,
+  defaultDecompositionCache,
   decompositionCacheKey,
   decompositionCacheRoot,
   isDecompositionCacheEnabled,
@@ -88,6 +89,45 @@ describe('DiskTieredDecompositionCache (#736)', () => {
     } finally {
       await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
     }
+  });
+
+  it('evicts the least-recently-read disk entry, not the oldest write (#894)', async () => {
+    const indexPath = await tempIndexPath('kb-decomposition-cache-true-lru-');
+    try {
+      const probe = new DiskTieredDecompositionCache({ indexPath, enabled: true });
+      probe.set('model', 'probe', ['probe result']);
+      const entryBytes = probe.diskSizeBytes();
+      await fsp.rm(decompositionCacheRoot(indexPath), { recursive: true, force: true });
+
+      const cache = new DiskTieredDecompositionCache({
+        indexPath,
+        enabled: true,
+        lruMax: 0,
+        diskMaxBytes: Math.floor(entryBytes * 2.5),
+      });
+      cache.set('model', 'q1', ['one']);
+      const q1Key = decompositionCacheKey('model', 'q1');
+      const q1File = path.join(decompositionCacheRoot(indexPath), q1Key.slice(0, 2), `${q1Key}.json`);
+      fs.utimesSync(q1File, new Date(1_000), new Date(1_000));
+      cache.set('model', 'q2', ['two']);
+      const q2Key = decompositionCacheKey('model', 'q2');
+      const q2File = path.join(decompositionCacheRoot(indexPath), q2Key.slice(0, 2), `${q2Key}.json`);
+      fs.utimesSync(q2File, new Date(2_000), new Date(2_000));
+
+      expect(cache.get('model', 'q1')).toEqual(['one']);
+      cache.set('model', 'q3', ['three']);
+
+      expect(cache.diskSizeBytes()).toBeLessThanOrEqual(Math.floor(entryBytes * 2.5));
+      expect(cache.get('model', 'q2')).toBeNull();
+      expect(cache.get('model', 'q1')).toEqual(['one']);
+      expect(cache.get('model', 'q3')).toEqual(['three']);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('exports a process-global default cache instance (#894)', () => {
+    expect(defaultDecompositionCache).toBeInstanceOf(DiskTieredDecompositionCache);
   });
 
   it('rejects invalid or tampered records and removes them', async () => {
