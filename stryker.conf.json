@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
-  "_comment": "Issue #651 — mutation testing scoped to a curated set of pure, high-value core modules that have focused unit tests. Run via `npm run test:mutation`; nightly/manual in CI only (mutation runs are slow). Issue #751 added the security-critical injection-guard detector to the scope, ratcheting `break` 45 -> 50 as the intent invites. Baseline re-measured 2026-07-03 (~3m33s, concurrency 2): combined 54.68% — chunk-id 54.94%, hybrid-retrieval 82.80%, lexical-bm25 48.78%, redaction 20.37%, injection-guard 67.70%. Only `injection-guard.test.ts` (the deterministic, example/corpus-based unit test) is in the Stryker `testMatch` (jest.stryker.config.cjs); the fast-check property suite is deliberately excluded so the gate stays deterministic — its random seeds would jitter the mutant verdicts. `thresholds.break` sits a few points under the combined baseline so the gate catches regressions without flaking on run-to-run jitter; ratchet it upward as the suite improves.",
+  "_comment": "Issue #651 — mutation testing scoped to a curated set of pure, high-value core modules that have focused unit tests. Run via `npm run test:mutation`; nightly/manual in CI only (mutation runs are slow). Issue #751 added the security-critical injection-guard detector to the scope, ratcheting `break` 45 -> 50. Issue #896 added secret-scanner and strengthened redaction tests, ratcheting `break` 50 -> 64. Baseline re-measured 2026-09-10 (~41m, concurrency 2): combined 68.97% — chunk-id 54.94%, hybrid-retrieval 93.15%, lexical-bm25 50.00%, redaction 69.95%, secret-scanner 80.84%, injection-guard 69.72%. Only the deterministic unit tests are in the Stryker `testMatch` (jest.stryker.config.cjs); the fast-check property suites are deliberately excluded so the gate stays deterministic — their random seeds would jitter the mutant verdicts. `thresholds.break` sits a few points under the combined baseline so the gate catches regressions without flaking on run-to-run jitter; ratchet it upward as the suite improves.",
   "packageManager": "npm",
   "testRunner": "jest",
   "jest": {
@@ -12,6 +12,7 @@
   "mutate": [
     "src/chunk-id.ts",
     "src/redaction.ts",
+    "src/secret-scanner.ts",
     "src/lexical-bm25.ts",
     "src/hybrid-retrieval.ts",
     "src/injection-guard.ts"
@@ -25,6 +26,6 @@
   "thresholds": {
     "high": 80,
     "low": 50,
-    "break": 50
+    "break": 64
   }
 }

@@ -27,6 +27,7 @@ module.exports = {
   testMatch: [
     '**/src/chunk-id.test.ts',
     '**/src/redaction.test.ts',
+    '**/src/secret-scanner.test.ts',
     '**/src/lexical-bm25.test.ts',
     '**/src/hybrid-retrieval.test.ts',
     '**/src/injection-guard.test.ts',
