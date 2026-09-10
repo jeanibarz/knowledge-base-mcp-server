@@ -34,6 +34,7 @@ export interface GuardedChunk {
 
 const DEFAULT_WRAP_OPEN = '<untrusted-doc src="{source}">';
 const DEFAULT_WRAP_CLOSE = '</untrusted-doc>';
+// Stryker disable next-line Regex: `\v` → `\V` mutants are a syntax error under `/u` and abort the dry run.
 const WRAPPER_LINE_BREAK = /[\r\n\v\f\u0085\u2028\u2029]/u;
 const WRAPPER_CODEC_CANDIDATES = [
   0x2060, // word joiner
