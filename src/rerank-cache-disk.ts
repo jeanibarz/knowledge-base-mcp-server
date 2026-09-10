@@ -210,6 +210,12 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
       this.recordCorrupt(file);
       return null;
     }
+    // Best-effort LRU: touch mtime so the disk cap evicts least-recently-used.
+    try {
+      fs.utimesSync(file, new Date(), new Date());
+    } catch {
+      // a missing/locked file is fine to ignore
+    }
     return record.score;
   }
 

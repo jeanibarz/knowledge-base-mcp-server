@@ -1,7 +1,7 @@
 import { callChatCompletion } from './llm-client.js';
 import type { HybridChunk } from './hybrid-retrieval.js';
 import { chunkIdFromMetadata } from './rrf.js';
-import { DiskTieredDecompositionCache } from './decomposition-cache.js';
+import { defaultDecompositionCache } from './decomposition-cache.js';
 import type { DecompositionCache } from './decomposition-cache.js';
 import { resolveLlmProvider } from './config/llm-provider.js';
 import { readLlmContextPolicy } from './sensitivity-policy.js';
@@ -178,7 +178,7 @@ export function createLocalLlmQueryDecomposer(
   fallback: QueryDecompositionProvider = createRuleBasedQueryDecomposer(),
   options: LocalLlmQueryDecomposerOptions = {},
 ): QueryDecompositionProvider {
-  const cache = options.cache ?? new DiskTieredDecompositionCache();
+  const cache = options.cache ?? defaultDecompositionCache;
   return {
     name: 'local-llm',
     async decompose(query) {

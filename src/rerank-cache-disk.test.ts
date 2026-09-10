@@ -167,6 +167,43 @@ describe('DiskTieredRerankScoreCache (#646)', () => {
     }
   });
 
+  it('evicts the least-recently-read disk entry, not the oldest write (#894)', async () => {
+    const indexPath = await tempIndexPath('kb-rerank-cache-true-lru-');
+    try {
+      const probe = new DiskTieredRerankScoreCache({ indexPath, enabled: true });
+      probe.set(MODEL, 'probe', 'probe-body', 0.1);
+      const entryBytes = probe.diskSizeBytes();
+      await fsp.rm(rerankScoreCacheRoot(indexPath), { recursive: true, force: true });
+
+      const cache = new DiskTieredRerankScoreCache({
+        indexPath,
+        enabled: true,
+        l1Max: 0,
+        diskMaxBytes: Math.floor(entryBytes * 2.5),
+      });
+
+      cache.set(MODEL, 'q1', 'first', 0.11);
+      const q1Key = rerankScoreCacheKey(MODEL, 'q1', 'first');
+      const q1File = path.join(rerankScoreCacheRoot(indexPath), q1Key.slice(0, 2), `${q1Key}.json`);
+      fs.utimesSync(q1File, new Date(1_000), new Date(1_000));
+      cache.set(MODEL, 'q2', 'second', 0.22);
+      const q2Key = rerankScoreCacheKey(MODEL, 'q2', 'second');
+      const q2File = path.join(rerankScoreCacheRoot(indexPath), q2Key.slice(0, 2), `${q2Key}.json`);
+      fs.utimesSync(q2File, new Date(2_000), new Date(2_000));
+
+      // A hit must bump q1 ahead of q2 so the next overflow evicts q2.
+      expect(cache.get(MODEL, 'q1', 'first')).toBe(0.11);
+      cache.set(MODEL, 'q3', 'third', 0.33);
+
+      expect(cache.diskSizeBytes()).toBeLessThanOrEqual(Math.floor(entryBytes * 2.5));
+      expect(cache.get(MODEL, 'q2', 'second')).toBeNull();
+      expect(cache.get(MODEL, 'q1', 'first')).toBe(0.11);
+      expect(cache.get(MODEL, 'q3', 'third')).toBe(0.33);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
   it('treats a corrupt disk entry as a miss and removes it', async () => {
     const indexPath = await tempIndexPath('kb-rerank-cache-corrupt-');
     try {
