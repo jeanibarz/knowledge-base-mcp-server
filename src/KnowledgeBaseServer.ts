@@ -121,6 +121,7 @@ import {
   classifyCanonicalError,
   canonicalGateStageRecord,
   canonicalRerankStageRecord,
+  createCanonicalRequestId,
   degradationSummaryFields,
   emitCanonicalLog,
   type CanonicalDegradedStage,
@@ -937,13 +938,19 @@ export class KnowledgeBaseServer {
     const gateOverride: RelevanceGateOverride = args.gate;
     const rerankOverride: RerankOverride = args.rerank;
     const neighborContext = resolveNeighborContextOptions(args);
+    // Mint before the span so the trace and the canonical log share one id
+    // (issue #900). withCanonicalTool would otherwise mint later, after the
+    // span is already open, leaving two unlinkable identifiers.
+    const requestId = createCanonicalRequestId();
 
     return withSpan('kb.retrieve_knowledge', {
       'kb.scope': knowledgeBaseName ?? null,
       'kb.search_mode': searchMode,
       'kb.k': 10,
+      'kb.request_id': requestId,
     }, () => this.withCanonicalTool({
       tool: 'retrieve_knowledge',
+      request_id: requestId,
       query,
       kb_scope: knowledgeBaseName ?? null,
       k: 10,
@@ -1231,8 +1238,12 @@ export class KnowledgeBaseServer {
     timing?: boolean;
   }, extra?: ToolExtra): Promise<CallToolResult> {
     const report = this.progressReporter(extra);
+    // Same mint-early pattern as retrieve_knowledge (issue #900): the kb.ask
+    // span opens inside executeAsk, so the id has to travel in as request_id.
+    const requestId = createCanonicalRequestId();
     return this.withCanonicalTool({
       tool: 'ask_knowledge',
+      request_id: requestId,
       query: args.query,
       kb_scope: args.knowledge_base_name ?? null,
       k: args.k ?? 8,
@@ -1250,6 +1261,7 @@ export class KnowledgeBaseServer {
           search_mode: args.search_mode,
           rerank: args.rerank,
           timing: args.timing ?? true,
+          request_id: requestId,
         }, {
           bootstrapLayout: FaissIndexManager.bootstrapLayout.bind(FaissIndexManager),
           resolveActiveModel,

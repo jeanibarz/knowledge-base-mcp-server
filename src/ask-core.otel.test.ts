@@ -149,6 +149,24 @@ describe('executeAsk OpenTelemetry spans (#647)', () => {
     expect(spans.every((s) => s.ended)).toBe(true);
   });
 
+  it('copies a provided request id onto the root kb.ask span as kb.request_id (#900)', async () => {
+    const { tracer, spans } = makeFakeTracer();
+    setOtelTracerForTesting(tracer);
+
+    const requestId = 'req-otel-900-ask';
+    const cache = new AnswerCache({ enabled: false, indexPath: dir });
+    const call = jest.fn(async () => ({ content: 'an answer', model: 'qwen3', raw: {} }));
+    await executeAsk(
+      { ...askArgs('How did the deploy change?'), requestId },
+      makeDeps(cache, makeManager('The deploy switched models.'), call),
+      Date.now(),
+    );
+
+    const root = spans.find((s) => s.name === 'kb.ask');
+    expect(root?.attributes['kb.request_id']).toBe(requestId);
+    expect(spans.filter((s) => s.name !== 'kb.ask').every((s) => s.attributes['kb.request_id'] === undefined)).toBe(true);
+  });
+
   it('never puts the query text or chunk content in any span attribute', async () => {
     const { tracer, spans } = makeFakeTracer();
     setOtelTracerForTesting(tracer);

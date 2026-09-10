@@ -116,6 +116,11 @@ export interface AskExecutionArgs {
   /** Per-call cross-encoder reranker override (hybrid only). Off by default. */
   rerank?: RerankOverride;
   onAnswerToken?: (token: string) => void | Promise<void>;
+  /**
+   * Canonical-log request id (#900). Copied onto the root `kb.ask` span as
+   * `kb.request_id` so a slow log line and its OTLP trace share one id.
+   */
+  requestId?: string;
 }
 
 export interface AskKnowledgeInput {
@@ -134,6 +139,8 @@ export interface AskKnowledgeInput {
   search_mode?: SearchMode;
   /** Per-call cross-encoder reranker override (hybrid only). Off by default. */
   rerank?: RerankOverride;
+  /** Internal: canonical request id for the root `kb.ask` span (#900). */
+  request_id?: string;
 }
 
 export interface AskCitation {
@@ -292,6 +299,7 @@ export async function askKnowledge(
     gate: input.gate,
     searchMode: input.search_mode,
     rerank: input.rerank,
+    ...(input.request_id !== undefined ? { requestId: input.request_id } : {}),
   }, deps, nowMs(), onProgress);
 }
 
@@ -757,6 +765,7 @@ export async function executeAsk(
   return withSpan('kb.ask', {
     'kb.scope': args.kb ?? null,
     'kb.k': args.k,
+    'kb.request_id': args.requestId,
   }, async () => {
     // Issue #795 — two coarse stage boundaries flank the two expensive halves
     // (retrieval, then LLM synthesis) so an MCP client sees progress on a call

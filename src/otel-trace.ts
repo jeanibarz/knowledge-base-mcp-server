@@ -11,9 +11,11 @@
 // are honoured by the OTLP exporter / resource respectively.
 //
 // Redaction discipline (mirrors the canonical log, ADR 0007): span attributes
-// carry only the low-cardinality, non-sensitive facts already present in the
-// canonical log line (mode, kb scope, k, counts). Query text and chunk content
-// MUST NEVER be attached to a span.
+// carry only non-sensitive facts already present in the canonical log line
+// (mode, kb scope, k, counts, and the per-call join-key request_id). Query
+// text and chunk content MUST NEVER be attached to a span. `kb.request_id` on
+// the root retrieve/ask span is the join key with the canonical line
+// (issue #900) — unique per call, not a low-cardinality dimension.
 import { logger } from './logger.js';
 
 /** Env flag that opts the process into OTLP trace export. */
@@ -263,8 +265,9 @@ function spanHandle(span: MinimalSpan): SpanHandle {
  * Zero-cost when tracing is disabled: `fn` is invoked directly with a no-op
  * {@link SpanHandle} and no span machinery runs.
  *
- * Attribute discipline: pass only non-sensitive, low-cardinality values
- * (mode, kb, k, counts) — never query text or chunk content.
+ * Attribute discipline: pass only non-sensitive values already on the
+ * canonical log (mode, kb, k, counts, request_id) — never query text or
+ * chunk content. `request_id` is a per-call join key, not a metric dimension.
  */
 export async function withSpan<T>(
   name: string,
