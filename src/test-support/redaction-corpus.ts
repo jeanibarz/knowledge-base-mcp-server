@@ -79,60 +79,60 @@ export const REDACTION_POSITIVE_CORPUS: readonly RedactionPositiveEntry[] = [
   },
   {
     name: 'openai-sk',
-    payload: 'sk-abcdefghijklmnopqrstuvwxyz',
+    payload: 'sk-abcdefghijklmnopqrstuvwxyz', // pragma: allowlist secret
     expectedType: 'provider_token',
-    secretNeedle: 'sk-abcdefghijklmnopqrstuvwxyz',
+    secretNeedle: 'sk-abcdefghijklmnopqrstuvwxyz', // pragma: allowlist secret
     expectedSnippet: '[REDACTED]',
   },
   {
     name: 'github-pat',
-    payload: 'github_pat_abcdefghijklmnopqrstuvwxyz',
+    payload: 'github_pat_abcdefghijklmnopqrstuvwxyz', // pragma: allowlist secret
     expectedType: 'provider_token',
-    secretNeedle: 'github_pat_abcdefghijklmnopqrstuvwxyz',
+    secretNeedle: 'github_pat_abcdefghijklmnopqrstuvwxyz', // pragma: allowlist secret
     expectedSnippet: '[REDACTED]',
   },
   {
     name: 'aws-akia',
-    payload: 'AKIAIOSFODNN7EXAMPLE',
+    payload: 'AKIAIOSFODNN7EXAMPLE', // pragma: allowlist secret
     expectedType: 'provider_token',
-    secretNeedle: 'AKIAIOSFODNN7EXAMPLE',
+    secretNeedle: 'AKIAIOSFODNN7EXAMPLE', // pragma: allowlist secret
     expectedSnippet: '[REDACTED]',
   },
   {
     name: 'slack-xoxb',
-    payload: 'xoxb-1234567890-token',
+    payload: 'xoxb-1234567890-token', // pragma: allowlist secret
     expectedType: 'provider_token',
-    secretNeedle: 'xoxb-1234567890-token',
+    secretNeedle: 'xoxb-1234567890-token', // pragma: allowlist secret
     expectedSnippet: '[REDACTED]',
   },
   {
     name: 'jwt',
     payload:
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ', // pragma: allowlist secret
     expectedType: 'jwt',
     secretNeedle:
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ', // pragma: allowlist secret
     expectedSnippet: '[REDACTED]',
   },
   {
     name: 'ssh-private-key',
-    payload: '-----BEGIN OPENSSH PRIVATE KEY-----\nabcdefghijklmnopqrstuvwxyzABCDEF\n-----END OPENSSH PRIVATE KEY-----',
+    payload: '-----BEGIN OPENSSH PRIVATE KEY-----\nabcdefghijklmnopqrstuvwxyzABCDEF\n-----END OPENSSH PRIVATE KEY-----', // pragma: allowlist secret
     expectedType: 'ssh_private_key',
     secretNeedle: 'abcdefghijklmnopqrstuvwxyzABCDEF',
     expectedSnippet: '[REDACTED]',
   },
   {
     name: 'azure-account-key',
-    payload: 'AccountKey=abcDEF1234567890abcDEF1234567890abcDEF1234567890==',
+    payload: 'AccountKey=abcDEF1234567890abcDEF1234567890abcDEF1234567890==', // pragma: allowlist secret
     expectedType: 'azure_storage_key',
     secretNeedle: 'abcDEF1234567890abcDEF1234567890abcDEF1234567890==',
-    expectedSnippet: 'AccountKey=[REDACTED]',
+    expectedSnippet: 'AccountKey=[REDACTED]', // pragma: allowlist secret
   },
   {
     name: 'gcp-api-key',
-    payload: 'AIzaSyD-1234567890abcdefghijklmnopqrstu',
+    payload: 'AIzaSyD-1234567890abcdefghijklmnopqrstu', // pragma: allowlist secret
     expectedType: 'provider_token',
-    secretNeedle: 'AIzaSyD-1234567890abcdefghijklmnopqrstu',
+    secretNeedle: 'AIzaSyD-1234567890abcdefghijklmnopqrstu', // pragma: allowlist secret
     expectedSnippet: '[REDACTED]',
   },
 ];
@@ -142,7 +142,7 @@ export const REDACTION_NEGATIVE_CORPUS: readonly RedactionNegativeEntry[] = [
   { name: 'https-url', payload: 'see https://example.com/abcdefghijklmnopqrstuvwxyz0123456789' },
   { name: 'ordinary-prose', payload: 'Deployment notes: restart the worker after migration.' },
   { name: 'short-bearer', payload: 'use Bearer 12345678901 here' },
-  { name: 'short-sk', payload: 'sk-shorttokenvalue' },
+  { name: 'short-sk', payload: 'sk-shorttokenvalue' }, // pragma: allowlist secret
   { name: 'json-username', payload: '{"username":"alice","count":3}' },
   { name: 'plain-assignment', payload: 'FOO=bar' },
   { name: 'password-in-prose', payload: 'the password is documented in the runbook' },
@@ -150,7 +150,7 @@ export const REDACTION_NEGATIVE_CORPUS: readonly RedactionNegativeEntry[] = [
   // Generic high-entropy blob: redaction matches shaped secrets only, not entropy.
   { name: 'high-entropy-blob', payload: 'Aa0.Bb1.Cc2.Dd3.Ee4.Ff5.Gg6.Hh7.Ii8.Jj9k' },
   // Lone `eyJ` header without payload.signature is not a JWT.
-  { name: 'bare-eyj-header', payload: 'value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9' },
-  { name: 'short-gcp-key', payload: `AIzaSy${'B'.repeat(32)}` },
-  { name: 'short-azure-key', payload: 'AccountKey=abcdefghijklmnopqrstuvwxyz012345' },
+  { name: 'bare-eyj-header', payload: 'value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9' }, // pragma: allowlist secret
+  { name: 'short-gcp-key', payload: `AIzaSy${'B'.repeat(32)}` }, // pragma: allowlist secret
+  { name: 'short-azure-key', payload: 'AccountKey=abcdefghijklmnopqrstuvwxyz012345' }, // pragma: allowlist secret
 ];

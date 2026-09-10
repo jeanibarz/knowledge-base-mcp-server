@@ -15,9 +15,9 @@ import {
 describe('redactSecrets', () => {
   it('redacts common support-bundle secret shapes', () => {
     const input = [
-      'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz',
+      'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz', // pragma: allowlist secret
       'Authorization: Bearer abcdefghijklmnop',
-      '{"github_token":"ghp_abcdefghijklmnopqrstuvwxyz"}',
+      '{"github_token":"ghp_abcdefghijklmnopqrstuvwxyz"}', // pragma: allowlist secret
       'https://user:password@example.com/path',
     ].join('\n');
 
@@ -141,52 +141,52 @@ describe('redactSecrets', () => {
   });
 
   it('enforces provider-token length floors and each alternative', () => {
-    expect(redactSecrets('sk-abcdefghijklmnopqrst').text).toBe('[REDACTED]');
-    expect(redactSecrets('sk-abcdefghijklmnopqrs').text).toBe('sk-abcdefghijklmnopqrs');
-    expect(redactSecrets('sk-proj-abcdefghijklmnopqrst').text).toBe('[REDACTED]');
-    expect(redactSecrets('gho_abcdefghijklmnopqrst').text).toBe('[REDACTED]');
-    expect(redactSecrets('ghu_abcdefghijklmnopqrst').text).toBe('[REDACTED]');
-    expect(redactSecrets('ghs_abcdefghijklmnopqrst').text).toBe('[REDACTED]');
-    expect(redactSecrets('ghr_abcdefghijklmnopqrst').text).toBe('[REDACTED]');
-    expect(redactSecrets('AKIA0123456789ABCDEF').text).toBe('[REDACTED]');
-    expect(redactSecrets('AKIA0123456789ABCDE').text).toBe('AKIA0123456789ABCDE');
-    expect(redactSecrets('xoxa-1234567890').text).toBe('[REDACTED]');
-    expect(redactSecrets('xoxp-1234567890').text).toBe('[REDACTED]');
-    expect(redactSecrets('xoxr-1234567890').text).toBe('[REDACTED]');
-    expect(redactSecrets('xoxs-1234567890').text).toBe('[REDACTED]');
-    expect(redactSecrets('ASIAIOSFODNN7EXAMPLE').text).toBe('[REDACTED]');
-    expect(redactSecrets('AGPAIOSFODNN7EXAMPLE').text).toBe('[REDACTED]');
-    expect(redactSecrets('AIDA' + 'IOSFODNN7EXAMPLE').text).toBe('[REDACTED]');
-    expect(redactSecrets('AROA' + 'IOSFODNN7EXAMPLE').text).toBe('[REDACTED]');
-    expect(redactSecrets('AIPA' + 'IOSFODNN7EXAMPLE').text).toBe('[REDACTED]');
-    expect(redactSecrets('ANPA' + 'IOSFODNN7EXAMPLE').text).toBe('[REDACTED]');
-    expect(redactSecrets('A3TA' + 'IOSFODNN7EXAMPLE').text).toBe('[REDACTED]');
-    expect(redactSecrets('AIzaSyD-1234567890abcdefghijklmnopqrstu').text).toBe('[REDACTED]');
-    expect(redactSecrets(`AIzaSy${'B'.repeat(32)}`).text).toContain(`AIzaSy${'B'.repeat(32)}`);
-    expect(redactSecrets('AccountKey=abcdefghijklmnopqrstuvwxyz012345').text).toContain(
+    expect(redactSecrets('sk-abcdefghijklmnopqrst').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('sk-abcdefghijklmnopqrs').text).toBe('sk-abcdefghijklmnopqrs'); // pragma: allowlist secret
+    expect(redactSecrets('sk-proj-abcdefghijklmnopqrst').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('gho_abcdefghijklmnopqrst').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('ghu_abcdefghijklmnopqrst').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('ghs_abcdefghijklmnopqrst').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('ghr_abcdefghijklmnopqrst').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('AKIA0123456789ABCDEF').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('AKIA0123456789ABCDE').text).toBe('AKIA0123456789ABCDE'); // pragma: allowlist secret
+    expect(redactSecrets('xoxa-1234567890').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('xoxp-1234567890').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('xoxr-1234567890').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('xoxs-1234567890').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('ASIAIOSFODNN7EXAMPLE').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('AGPAIOSFODNN7EXAMPLE').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('AIDA' + 'IOSFODNN7EXAMPLE').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('AROA' + 'IOSFODNN7EXAMPLE').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('AIPA' + 'IOSFODNN7EXAMPLE').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('ANPA' + 'IOSFODNN7EXAMPLE').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('A3TA' + 'IOSFODNN7EXAMPLE').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets('AIzaSyD-1234567890abcdefghijklmnopqrstu').text).toBe('[REDACTED]'); // pragma: allowlist secret
+    expect(redactSecrets(`AIzaSy${'B'.repeat(32)}`).text).toContain(`AIzaSy${'B'.repeat(32)}`); // pragma: allowlist secret
+    expect(redactSecrets('AccountKey=abcdefghijklmnopqrstuvwxyz012345').text).toContain( // pragma: allowlist secret
       'abcdefghijklmnopqrstuvwxyz012345',
     );
   });
 
   it('redacts JWT triples, Azure account keys, and PEM private-key blocks', () => {
     const jwt =
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ';
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ'; // pragma: allowlist secret
     expect(redactSecrets(`token ${jwt}`).text).toBe('token [REDACTED]');
-    expect(redactSecrets('AccountKey=abcDEF1234567890abcDEF1234567890abcDEF1234567890==').text).toBe(
-      'AccountKey=[REDACTED]',
+    expect(redactSecrets('AccountKey=abcDEF1234567890abcDEF1234567890abcDEF1234567890==').text).toBe( // pragma: allowlist secret
+      'AccountKey=[REDACTED]', // pragma: allowlist secret
     );
     const pem = [
-      '-----BEGIN RSA PRIVATE KEY-----',
+      '-----BEGIN RSA PRIVATE KEY-----', // pragma: allowlist secret
       'abcdefghijklmnopqrstuvwxyzABCDEF',
       '-----END RSA PRIVATE KEY-----',
     ].join('\n');
     expect(redactSecrets(pem).text).toBe('[REDACTED]');
-    const truncated = '-----BEGIN PRIVATE KEY-----\nabcdefghijklmnopqrstuvwxyzABCDEF';
+    const truncated = '-----BEGIN PRIVATE KEY-----\nabcdefghijklmnopqrstuvwxyzABCDEF'; // pragma: allowlist secret
     expect(redactSecrets(truncated).text).toBe('[REDACTED]');
   });
 
   it('replaces every match when a pattern is global', () => {
-    const result = redactSecrets('sk-abcdefghijklmnopqrst sk-abcdefghijklmnopqrst');
+    const result = redactSecrets('sk-abcdefghijklmnopqrst sk-abcdefghijklmnopqrst'); // pragma: allowlist secret
     expect(result.text).toBe('[REDACTED] [REDACTED]');
     expect(result.summary.by_type).toEqual({ provider_token: 2 });
     expect(result.summary.total).toBe(2);
@@ -250,17 +250,17 @@ describe('combineRedactionSummaries', () => {
 
 describe('redactSecrets — #952 egress categories retained', () => {
   it('scrubs GCP, JWT, PEM, Azure, and AWS-session secrets', () => {
-    const gcpKey = `AIzaSy${'B'.repeat(33)}`;
+    const gcpKey = `AIzaSy${'B'.repeat(33)}`; // pragma: allowlist secret
     const jwt =
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'; // pragma: allowlist secret
     const pemKey = [
-      '-----BEGIN OPENSSH PRIVATE KEY-----',
+      '-----BEGIN OPENSSH PRIVATE KEY-----', // pragma: allowlist secret
       'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz',
       'c2gtZWQyNTUxOQAAACD7uJ0j9mFq3Lr8sVtWuZ1aBcDeFgHiJkLmNoPqRsTuA==',
       '-----END OPENSSH PRIVATE KEY-----',
     ].join('\n');
-    const azureKey = 'AccountKey=Xj7Kq2Wm9Rt4Yv6Bn1Zc3Pl5Sd8Fg0Hk2Lw4Qa6Ne8Ui0Op2==';
-    const awsSessionKey = 'ASIAIOSFODNN7EXAMPLE';
+    const azureKey = 'AccountKey=Xj7Kq2Wm9Rt4Yv6Bn1Zc3Pl5Sd8Fg0Hk2Lw4Qa6Ne8Ui0Op2=='; // pragma: allowlist secret
+    const awsSessionKey = 'ASIAIOSFODNN7EXAMPLE'; // pragma: allowlist secret
 
     const result = redactSecrets(
       [`key: ${gcpKey}`, `token: ${jwt}`, pemKey, `conn: ${azureKey}`, `aws: ${awsSessionKey}`].join('\n'),
@@ -271,7 +271,7 @@ describe('redactSecrets — #952 egress categories retained', () => {
     expect(result.text).not.toContain('c2gtZWQyNTUxOQ');
     expect(result.text).not.toContain('Xj7Kq2Wm9Rt4Yv6Bn1Zc3Pl5Sd8Fg0Hk2Lw4Qa6Ne8Ui0Op2');
     expect(result.text).not.toContain(awsSessionKey);
-    expect(result.text).toContain(`AccountKey=${REDACTION_PLACEHOLDER}`);
+    expect(result.text).toContain(`AccountKey=${REDACTION_PLACEHOLDER}`); // pragma: allowlist secret
     expect(result.summary.total).toBeGreaterThanOrEqual(5);
   });
 
@@ -280,17 +280,17 @@ describe('redactSecrets — #952 egress categories retained', () => {
     const encryptedBody = 'MIIFDjBABgkqhkiG9w0BBQ0wMzAbBgkqhkiG9w0BBQwwDgQItruncatedAESkey00';
     const truncatedBody = 'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQMoreKeyBodyBytes123456';
 
-    expect(redactSecrets(`-----BEGIN PRIVATE KEY-----\n${pkcs8Body}\n-----END PRIVATE KEY-----`).text)
+    expect(redactSecrets(`-----BEGIN PRIVATE KEY-----\n${pkcs8Body}\n-----END PRIVATE KEY-----`).text) // pragma: allowlist secret
       .not.toContain(pkcs8Body);
     expect(redactSecrets(
-      `-----BEGIN ENCRYPTED PRIVATE KEY-----\n${encryptedBody}\n-----END ENCRYPTED PRIVATE KEY-----`,
+      `-----BEGIN ENCRYPTED PRIVATE KEY-----\n${encryptedBody}\n-----END ENCRYPTED PRIVATE KEY-----`, // pragma: allowlist secret
     ).text).not.toContain(encryptedBody);
-    expect(redactSecrets(`-----BEGIN OPENSSH PRIVATE KEY-----\n${truncatedBody}`).text)
+    expect(redactSecrets(`-----BEGIN OPENSSH PRIVATE KEY-----\n${truncatedBody}`).text) // pragma: allowlist secret
       .not.toContain(truncatedBody);
   });
 
   it('keeps a lone eyJ header (not a three-segment JWT)', () => {
-    const notAJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9';
+    const notAJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'; // pragma: allowlist secret
     expect(redactSecrets(`value: ${notAJwt}`).text).toContain(notAJwt);
   });
 
@@ -314,30 +314,30 @@ type ParityCase =
 const CATEGORY_PARITY: Record<SecretFindingCategory, ParityCase> = {
   aws_access_key: {
     mirrored: true,
-    sample: 'ASIAIOSFODNN7EXAMPLE',
-    secret: 'ASIAIOSFODNN7EXAMPLE',
+    sample: 'ASIAIOSFODNN7EXAMPLE', // pragma: allowlist secret
+    secret: 'ASIAIOSFODNN7EXAMPLE', // pragma: allowlist secret
   },
   gcp_api_key: {
     mirrored: true,
-    sample: `AIzaSy${'B'.repeat(33)}`,
-    secret: `AIzaSy${'B'.repeat(33)}`,
+    sample: `AIzaSy${'B'.repeat(33)}`, // pragma: allowlist secret
+    secret: `AIzaSy${'B'.repeat(33)}`, // pragma: allowlist secret
   },
   github_token: {
     mirrored: true,
-    sample: `ghp_${'a'.repeat(36)}`,
-    secret: `ghp_${'a'.repeat(36)}`,
+    sample: `ghp_${'a'.repeat(36)}`, // pragma: allowlist secret
+    secret: `ghp_${'a'.repeat(36)}`, // pragma: allowlist secret
   },
   jwt: {
     mirrored: true,
     sample:
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U', // pragma: allowlist secret
     secret:
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U', // pragma: allowlist secret
   },
   ssh_private_key: {
     mirrored: true,
     sample: [
-      '-----BEGIN RSA PRIVATE KEY-----',
+      '-----BEGIN RSA PRIVATE KEY-----', // pragma: allowlist secret
       'MIIEpAIBAAKCAQEA7uJ0j9mFq3Lr8sVtWuZ1aBcDeFgHiJkLmNoPqRsTuVwXyZ012',
       '-----END RSA PRIVATE KEY-----',
     ].join('\n'),
@@ -350,7 +350,7 @@ const CATEGORY_PARITY: Record<SecretFindingCategory, ParityCase> = {
   },
   azure_storage_key: {
     mirrored: true,
-    sample: 'AccountKey=Xj7Kq2Wm9Rt4Yv6Bn1Zc3Pl5Sd8Fg0Hk2Lw4Qa6Ne8Ui0Op2==',
+    sample: 'AccountKey=Xj7Kq2Wm9Rt4Yv6Bn1Zc3Pl5Sd8Fg0Hk2Lw4Qa6Ne8Ui0Op2==', // pragma: allowlist secret
     secret: 'Xj7Kq2Wm9Rt4Yv6Bn1Zc3Pl5Sd8Fg0Hk2Lw4Qa6Ne8Ui0Op2',
   },
   key_value_secret: {

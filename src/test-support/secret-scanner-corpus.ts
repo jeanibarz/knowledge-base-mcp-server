@@ -36,28 +36,28 @@ export const MID_ENTROPY_KEY_VALUE = 'Abcdefghijk1';
 export const SECRET_SCANNER_POSITIVE_CORPUS: readonly SecretScannerPositiveEntry[] = [
   {
     name: 'aws-access-key',
-    payload: 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
+    payload: 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE', // pragma: allowlist secret
     expectedCategory: 'aws_access_key',
   },
   {
     name: 'gcp-api-key',
-    payload: 'AIzaSyD-1234567890abcdefghijklmnopqrstu',
+    payload: 'AIzaSyD-1234567890abcdefghijklmnopqrstu', // pragma: allowlist secret
     expectedCategory: 'gcp_api_key',
   },
   {
     name: 'github-token',
-    payload: 'ghp_1234567890abcdefghijklmnopqrstuvwxyzABCD',
+    payload: 'ghp_1234567890abcdefghijklmnopqrstuvwxyzABCD', // pragma: allowlist secret
     expectedCategory: 'github_token',
   },
   {
     name: 'jwt',
     payload:
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ',
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ', // pragma: allowlist secret
     expectedCategory: 'jwt',
   },
   {
     name: 'ssh-private-key',
-    payload: '-----BEGIN OPENSSH PRIVATE KEY-----',
+    payload: '-----BEGIN OPENSSH PRIVATE KEY-----', // pragma: allowlist secret
     expectedCategory: 'ssh_private_key',
   },
   {
@@ -67,7 +67,7 @@ export const SECRET_SCANNER_POSITIVE_CORPUS: readonly SecretScannerPositiveEntry
   },
   {
     name: 'azure-storage-key',
-    payload: 'AccountKey=abcDEF1234567890abcDEF1234567890abcDEF1234567890==',
+    payload: 'AccountKey=abcDEF1234567890abcDEF1234567890abcDEF1234567890==', // pragma: allowlist secret
     expectedCategory: 'azure_storage_key',
   },
   {

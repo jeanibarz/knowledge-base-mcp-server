@@ -14,16 +14,16 @@ import {
 describe('ingest secret scanner', () => {
   it('detects curated credential shapes without returning matched payloads', () => {
     const cases = [
-      ['aws_access_key', 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE'],
-      ['gcp_api_key', 'AIzaSyD-1234567890abcdefghijklmnopqrstu'],
-      ['github_token', 'ghp_1234567890abcdefghijklmnopqrstuvwxyzABCD'],
+      ['aws_access_key', 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE'], // pragma: allowlist secret
+      ['gcp_api_key', 'AIzaSyD-1234567890abcdefghijklmnopqrstu'], // pragma: allowlist secret
+      ['github_token', 'ghp_1234567890abcdefghijklmnopqrstuvwxyzABCD'], // pragma: allowlist secret
       [
         'jwt',
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ',
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ', // pragma: allowlist secret
       ],
-      ['ssh_private_key', '-----BEGIN OPENSSH PRIVATE KEY-----'],
+      ['ssh_private_key', '-----BEGIN OPENSSH PRIVATE KEY-----'], // pragma: allowlist secret
       ['bearer_token', 'Authorization: Bearer abcDEF1234567890abcDEF1234567890'],
-      ['azure_storage_key', 'AccountKey=abcDEF1234567890abcDEF1234567890abcDEF1234567890=='],
+      ['azure_storage_key', 'AccountKey=abcDEF1234567890abcDEF1234567890abcDEF1234567890=='], // pragma: allowlist secret
       ['key_value_secret', 'password=abcDEF1234567890!'],
     ] as const;
 
@@ -80,7 +80,7 @@ describe('ingest secret scanner', () => {
   it('can report frontmatter findings without inventing chunk indexes', () => {
     try {
       assertNoIngestSecrets(
-        [{ content: '{"api_key":"AKIA1234567890ABCDEF"}', location: 'frontmatter' }],
+        [{ content: '{"api_key":"AKIA1234567890ABCDEF"}', location: 'frontmatter' }], // pragma: allowlist secret
         {
           relativePath: 'alpha/secret.md',
           knowledgeBaseName: 'alpha',
@@ -114,13 +114,13 @@ describe('ingest secret scanner', () => {
   );
 
   it('detects every AWS access-key prefix and rejects a 15-character remainder', () => {
-    const prefixes = ['A3TA', 'AKIA', 'ASIA', 'AGPA', 'AIDA', 'AROA', 'AIPA', 'ANPA'] as const;
+    const prefixes = ['A3TA', 'AKIA', 'ASIA', 'AGPA', 'AIDA', 'AROA', 'AIPA', 'ANPA'] as const; // pragma: allowlist secret
     for (const prefix of prefixes) {
       expect(detectSecretsInText(`${prefix}IOSFODNN7EXAMPLE`)).toEqual(expect.arrayContaining([
         expect.objectContaining({ category: 'aws_access_key' }),
       ]));
     }
-    expect(detectSecretsInText('AKIAIOSFODNN7EXAMPL')).toEqual([]);
+    expect(detectSecretsInText('AKIAIOSFODNN7EXAMPL')).toEqual([]); // pragma: allowlist secret
   });
 
   it('detects every SSH private-key BEGIN variant', () => {
@@ -128,21 +128,21 @@ describe('ingest secret scanner', () => {
       // The ingest regex is `(?:OPENSSH|RSA|DSA|EC|PRIVATE) PRIVATE KEY`, so the
       // `PRIVATE` alternative is `BEGIN PRIVATE PRIVATE KEY`, not PKCS#8
       // `BEGIN PRIVATE KEY`. Egress redaction covers the latter separately.
-      expect(detectSecretsInText(`-----BEGIN ${kind} PRIVATE KEY-----`)).toEqual(
+      expect(detectSecretsInText(`-----BEGIN ${kind} PRIVATE KEY-----`)).toEqual( // pragma: allowlist secret
         expect.arrayContaining([expect.objectContaining({ category: 'ssh_private_key' })]),
       );
     }
-    expect(detectSecretsInText('-----BEGIN PRIVATE KEY-----')).toEqual([]);
+    expect(detectSecretsInText('-----BEGIN PRIVATE KEY-----')).toEqual([]); // pragma: allowlist secret
   });
 
-  it('detects gh[opsu]_ tokens of 36+ and ignores a ghr_ token as github_token', () => {
+  it('detects gh[opsu]_ tokens of 36+ and ignores a ghr_ token as github_token', () => { // pragma: allowlist secret
     const body = '1234567890abcdefghijklmnopqrstuvwxyzABCD';
-    for (const prefix of ['ghp_', 'gho_', 'ghu_', 'ghs_'] as const) {
+    for (const prefix of ['ghp_', 'gho_', 'ghu_', 'ghs_'] as const) { // pragma: allowlist secret
       expect(detectSecretsInText(`${prefix}${body}`)).toEqual(expect.arrayContaining([
         expect.objectContaining({ category: 'github_token' }),
       ]));
     }
-    const ghrFindings = detectSecretsInText(`ghr_${body}`);
+    const ghrFindings = detectSecretsInText(`ghr_${body}`); // pragma: allowlist secret
     expect(ghrFindings.some((finding) => finding.category === 'github_token')).toBe(false);
   });
 
@@ -170,7 +170,7 @@ describe('ingest secret scanner', () => {
   });
 
   it('resets global regex lastIndex so a second scan of the same text still matches', () => {
-    const text = 'AKIAIOSFODNN7EXAMPLE';
+    const text = 'AKIAIOSFODNN7EXAMPLE'; // pragma: allowlist secret
     expect(detectSecretsInText(text)).toEqual(expect.arrayContaining([
       expect.objectContaining({ category: 'aws_access_key' }),
     ]));
