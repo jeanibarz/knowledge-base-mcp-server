@@ -195,6 +195,40 @@ describe('KnowledgeBaseServer handlers', () => {
       .map((line) => JSON.parse(line));
   }
 
+  function makeFakeOtelTracer(): {
+    tracer: {
+      startActiveSpan<T>(name: string, fn: (span: {
+        setAttribute(key: string, value: unknown): unknown;
+        setStatus(): unknown;
+        recordException(): unknown;
+        end(): unknown;
+      }) => T): T;
+    };
+    spans: Array<{ name: string; attributes: Record<string, unknown> }>;
+  } {
+    const spans: Array<{ name: string; attributes: Record<string, unknown> }> = [];
+    const tracer = {
+      startActiveSpan<T>(name: string, fn: (span: {
+        setAttribute(key: string, value: unknown): unknown;
+        setStatus(): unknown;
+        recordException(): unknown;
+        end(): unknown;
+      }) => T): T {
+        const recorded = { name, attributes: {} as Record<string, unknown> };
+        spans.push(recorded);
+        return fn({
+          setAttribute(key, value) {
+            recorded.attributes[key] = value;
+          },
+          setStatus() { /* unused */ },
+          recordException() { /* unused */ },
+          end() { /* unused */ },
+        });
+      },
+    };
+    return { tracer, spans };
+  }
+
   // --- handleListKnowledgeBases ---------------------------------------------
 
   it('handleListKnowledgeBases returns filtered (dot-free) entries', async () => {
@@ -2170,6 +2204,38 @@ describe('KnowledgeBaseServer handlers', () => {
     }));
   });
 
+  it('handleRetrieveKnowledge sets kb.request_id on the root span equal to the canonical line (#900)', async () => {
+    const tempDir = await setRetrieveEnv();
+    const logFile = path.join(tempDir, 'canonical-otel-retrieve.log');
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'canonical';
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'Alpha content', metadata: { source: '/kb/a.md' }, score: 0.12 },
+    ]);
+
+    const server = await freshServer();
+    const otel = await import('./otel-trace.js');
+    const { tracer, spans } = makeFakeOtelTracer();
+    otel.setOtelTracerForTesting(tracer);
+    try {
+      const result = await server['handleRetrieveKnowledge']({
+        query: 'what is alpha',
+        knowledge_base_name: 'alpha',
+      });
+      expect(result.isError).toBeUndefined();
+
+      const events = await readCanonicalEvents(logFile);
+      const retrieveEvent = events.find((event) => event.tool === 'retrieve_knowledge');
+      const root = spans.find((span) => span.name === 'kb.retrieve_knowledge');
+      expect(typeof retrieveEvent?.request_id).toBe('string');
+      expect(retrieveEvent?.request_id).not.toBe('');
+      expect(root?.attributes['kb.request_id']).toBe(retrieveEvent?.request_id);
+    } finally {
+      otel.resetOtelForTesting();
+    }
+  });
+
   it('handleRetrieveKnowledge returns "_No similar results found._" when similaritySearch returns []', async () => {
     await setRetrieveEnv();
     updateIndexMock.mockResolvedValue(undefined);
@@ -2251,6 +2317,48 @@ describe('KnowledgeBaseServer handlers', () => {
       context_excluded_chunks: 0,
     });
     expect((result as any).structuredContent).toEqual(payload);
+  });
+
+  it('handleAskKnowledge sets kb.request_id on the root span equal to the canonical line (#900)', async () => {
+    const tempDir = await setRetrieveEnv();
+    const logFile = path.join(tempDir, 'canonical-otel-ask.log');
+    process.env.LOG_FILE = logFile;
+    process.env.KB_LOG_FORMAT = 'canonical';
+    process.env.KB_LLM_FAKE = 'on';
+    delete process.env.KB_LLM_ENDPOINT;
+    similaritySearchMock.mockResolvedValue([
+      {
+        pageContent: 'Rollback approval requires the release lead.',
+        metadata: {
+          knowledgeBase: 'ops',
+          relativePath: 'runbooks/rollback.md',
+          source: path.join(process.cwd(), 'package.json'),
+          loc: { lines: { from: 4, to: 8 } },
+        },
+        score: 0.1,
+      },
+    ]);
+
+    const server = await freshServer();
+    const otel = await import('./otel-trace.js');
+    const { tracer, spans } = makeFakeOtelTracer();
+    otel.setOtelTracerForTesting(tracer);
+    try {
+      const result = await server['handleAskKnowledge']({
+        query: 'Who approves rollback?',
+        knowledge_base_name: 'ops',
+      });
+      expect(result.isError).toBeUndefined();
+
+      const events = await readCanonicalEvents(logFile);
+      const askEvent = events.find((event) => event.tool === 'ask_knowledge');
+      const root = spans.find((span) => span.name === 'kb.ask');
+      expect(typeof askEvent?.request_id).toBe('string');
+      expect(askEvent?.request_id).not.toBe('');
+      expect(root?.attributes['kb.request_id']).toBe(askEvent?.request_id);
+    } finally {
+      otel.resetOtelForTesting();
+    }
   });
 
   it('handleRetrieveKnowledge forwards knowledge_base_name to updateIndex; passes undefined otherwise', async () => {
