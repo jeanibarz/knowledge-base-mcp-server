@@ -38,6 +38,8 @@ async function startHost(opts: {
   allowedOrigins?: string[];
   allowedHosts?: string[];
   authBackoff?: AuthBackoffConfig;
+  maxSessions?: number;
+  createMcpServer?: () => McpServer;
   metricsExporter?: () => Promise<string>;
   readinessProbe?: () => Promise<ReadinessPayload>;
 }): Promise<{ host: SseHost; port: number; stop: () => Promise<void> }> {
@@ -50,8 +52,9 @@ async function startHost(opts: {
       allowedOrigins: opts.allowedOrigins ?? [],
       allowedHosts: opts.allowedHosts,
       authBackoff: opts.authBackoff,
+      maxSessions: opts.maxSessions,
     },
-    createMcpServer: freshFactory(),
+    createMcpServer: opts.createMcpServer ?? freshFactory(),
     metricsExporter: opts.metricsExporter,
     readinessProbe: opts.readinessProbe,
   });
@@ -1008,5 +1011,62 @@ describe('SseHost — endpoints', () => {
     expect(sad.server.sendResourceListChanged).toHaveBeenCalledTimes(1);
 
     sessions.clear();
+  });
+});
+
+
+describe('SseHost — session capacity', () => {
+  let stop: (() => Promise<void>) | undefined;
+  const streams: Awaited<ReturnType<typeof openSseStream>>[] = [];
+  const headers = { Authorization: `Bearer ${VALID_TOKEN}` };
+  afterEach(async () => {
+    streams.splice(0).forEach((stream) => stream.close());
+    await stop?.();
+  });
+
+  it('caps concurrent streams without creating excess servers and admits a replacement after close', async () => {
+    const factory = jest.fn(freshFactory());
+    const started = await startHost({ maxSessions: 2, createMcpServer: factory });
+    stop = started.stop;
+    streams.push(...await Promise.all(Array.from({ length: 3 }, () => openSseStream(started.port, headers))));
+    expect(streams.map((s) => s.statusCode).sort()).toEqual([200, 200, 503]);
+    expect(streams.find((s) => s.statusCode === 503)?.resHeaders['retry-after']).toBe('1');
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(started.host.getRuntimeStats().current_sessions).toBe(2);
+    streams.find((s) => s.statusCode === 200)!.close();
+    await waitFor(() => started.host.sessionCount === 1);
+    const replacement = await openSseStream(started.port, headers);
+    streams.push(replacement);
+    expect(replacement.statusCode).toBe(200);
+    expect(started.host.sessionCount).toBe(2);
+  });
+
+  it.each(['factory', 'connect'] as const)('releases capacity after %s fails', async (failure) => {
+    const firstServer = freshFactory()();
+    const close = jest.spyOn(firstServer, 'close');
+    if (failure === 'connect') jest.spyOn(firstServer, 'connect').mockRejectedValueOnce(new Error('connect failed'));
+    const factory = jest.fn(freshFactory()).mockImplementationOnce(() => {
+      if (failure === 'factory') throw new Error('factory failed');
+      return firstServer;
+    });
+    const started = await startHost({ maxSessions: 1, createMcpServer: factory });
+    stop = started.stop;
+    const failed = await openSseStream(started.port, headers);
+    streams.push(failed);
+    expect(failed.statusCode).toBe(500);
+    expect(started.host.sessionCount).toBe(0);
+    if (failure === 'connect') expect(close).toHaveBeenCalled();
+    const replacement = await openSseStream(started.port, headers);
+    streams.push(replacement);
+    expect(replacement.statusCode).toBe(200);
+    expect(started.host.sessionCount).toBe(1);
+  });
+
+  it.each([undefined, 0])('leaves streams unbounded with maxSessions=%s', async (maxSessions) => {
+    const started = await startHost({ maxSessions });
+    stop = started.stop;
+    streams.push(...await Promise.all(Array.from({ length: 3 }, () => openSseStream(started.port, headers))));
+    expect(streams.map((s) => s.statusCode)).toEqual([200, 200, 200]);
+    expect(started.host.getRuntimeStats().current_sessions).toBe(3);
   });
 });
