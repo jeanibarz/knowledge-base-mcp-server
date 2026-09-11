@@ -776,7 +776,7 @@ describe('StreamableHttpHost — session capacity', () => {
       await pending;
       await connect(transport);
     });
-    const factory = jest.fn(() => server);
+    const factory = jest.fn(freshFactory()).mockImplementationOnce(() => server);
     const started = await startHost({ maxSessions: 1, createMcpServer: factory });
     stop = started.stop;
     const first = initialize(started.port);
