@@ -87,7 +87,7 @@ describe('scanForInjectionSignals — Unicode obfuscation', () => {
   it('leaves neighboring code points and lone surrogates unflagged', () => {
     const text = String.fromCodePoint(
       0x200A, 0x200E, 0xFEFE, 0xFF00, 0x2029, 0x202F, 0x2065, 0x206A,
-      0xE001F, 0xE0080, 0xD800, 0xDFFF,
+      0xE001F, 0xE0080, 0xD800, 0x61, 0xDFFF,
     );
     expect(scanForInjectionSignals(text)).toEqual([]);
   });
