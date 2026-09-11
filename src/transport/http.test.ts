@@ -36,6 +36,8 @@ async function startHost(opts: {
   allowedOrigins?: string[];
   allowedHosts?: string[];
   authBackoff?: AuthBackoffConfig;
+  maxSessions?: number;
+  createMcpServer?: () => McpServer;
   metricsExporter?: () => Promise<string>;
   readinessProbe?: () => Promise<ReadinessPayload>;
 }): Promise<{ host: StreamableHttpHost; port: number; stop: () => Promise<void> }> {
@@ -48,8 +50,9 @@ async function startHost(opts: {
       allowedOrigins: opts.allowedOrigins ?? [],
       allowedHosts: opts.allowedHosts,
       authBackoff: opts.authBackoff,
+      maxSessions: opts.maxSessions,
     },
-    createMcpServer: freshFactory(),
+    createMcpServer: opts.createMcpServer ?? freshFactory(),
     metricsExporter: opts.metricsExporter,
     readinessProbe: opts.readinessProbe,
   });
@@ -718,3 +721,101 @@ describe('StreamableHttpHost — endpoints', () => {
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+
+describe('StreamableHttpHost — session capacity', () => {
+  let stop: (() => Promise<void>) | undefined;
+  afterEach(async () => { await stop?.(); });
+
+  const initialize = (port: number, headers: Record<string, string> = {}) => request(port, {
+    method: 'POST', path: '/mcp',
+    headers: {
+      Authorization: `Bearer ${VALID_TOKEN}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      ...headers,
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'cap-test', version: '1' } },
+    }),
+  });
+
+  it('refuses excess sessions, keeps existing sessions usable, and frees capacity on DELETE', async () => {
+    const factory = jest.fn(freshFactory());
+    const started = await startHost({ maxSessions: 1, createMcpServer: factory });
+    stop = started.stop;
+    const { client, transport } = await connectClient(started.port);
+    try {
+      const refused = await initialize(started.port);
+      expect(refused.statusCode).toBe(503);
+      expect(refused.headers['retry-after']).toBe('1');
+      expect(JSON.parse(refused.body).error.message).toContain('capacity');
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(started.host.getRuntimeStats().current_sessions).toBe(1);
+      expect(await client.callTool({ name: 'echo', arguments: { text: 'still usable' } }))
+        .toMatchObject({ content: [{ type: 'text', text: 'still usable' }] });
+      await transport.terminateSession();
+      await waitFor(() => started.host.sessionCount === 0);
+      expect((await initialize(started.port)).statusCode).toBe(200);
+      expect(started.host.sessionCount).toBe(1);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('reserves a slot while asynchronous initialization is still pending', async () => {
+    let resume!: () => void;
+    const pending = new Promise<void>((resolve) => { resume = resolve; });
+    let entered!: () => void;
+    const connecting = new Promise<void>((resolve) => { entered = resolve; });
+    const server = freshFactory()();
+    const connect = server.connect.bind(server);
+    jest.spyOn(server, 'connect').mockImplementation(async (transport) => {
+      entered();
+      await pending;
+      await connect(transport);
+    });
+    const factory = jest.fn(freshFactory()).mockImplementationOnce(() => server);
+    const started = await startHost({ maxSessions: 1, createMcpServer: factory });
+    stop = started.stop;
+    const first = initialize(started.port);
+    try {
+      await connecting;
+      expect(started.host.sessionCount).toBe(0);
+      const results = await Promise.all(Array.from({ length: 3 }, () => initialize(started.port)));
+      expect(results.map((r) => r.statusCode)).toEqual([503, 503, 503]);
+      expect(factory).toHaveBeenCalledTimes(1);
+    } finally {
+      resume();
+      expect((await first).statusCode).toBe(200);
+    }
+    expect(started.host.getRuntimeStats().current_sessions).toBe(1);
+  });
+
+  it.each(['factory', 'connect', 'request'] as const)('releases failed %s initialization capacity', async (failure) => {
+    const firstServer = freshFactory()();
+    const close = jest.spyOn(firstServer, 'close');
+    if (failure === 'connect') jest.spyOn(firstServer, 'connect').mockRejectedValueOnce(new Error('connect failed'));
+    const factory = jest.fn(freshFactory()).mockImplementationOnce(() => {
+      if (failure === 'factory') throw new Error('factory failed');
+      return firstServer;
+    });
+    const started = await startHost({ maxSessions: 1, createMcpServer: factory });
+    stop = started.stop;
+    const failed = await initialize(started.port, failure === 'request' ? { Accept: 'application/json' } : {});
+    expect(failed.statusCode).toBe(failure === 'request' ? 406 : 500);
+    expect(started.host.sessionCount).toBe(0);
+    if (failure !== 'factory') expect(close).toHaveBeenCalled();
+    expect((await initialize(started.port)).statusCode).toBe(200);
+    expect(started.host.sessionCount).toBe(1);
+  });
+
+  it.each([undefined, 0])('leaves sessions unbounded with maxSessions=%s', async (maxSessions) => {
+    const started = await startHost({ maxSessions });
+    stop = started.stop;
+    const responses = await Promise.all(Array.from({ length: 3 }, () => initialize(started.port)));
+    expect(responses.map((r) => r.statusCode)).toEqual([200, 200, 200]);
+    expect(started.host.getRuntimeStats().current_sessions).toBe(3);
+  });
+});

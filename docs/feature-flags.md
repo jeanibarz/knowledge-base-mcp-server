@@ -213,6 +213,7 @@ but the model never sees the original character.
 | Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
 |---|---|---:|---|---|---|---|
 | MCP transport | `MCP_TRANSPORT` | stdio | MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> node build/index.js` |
+| Concurrent session cap | `MCP_MAX_SESSIONS` | `0` (unbounded) | HTTP/SSE MCP server | Implemented, opt-in | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_MAX_SESSIONS=2 node build/index.js`; a third concurrent session receives HTTP 503 with `Retry-After: 1` |
 | HTTP/SSE auth token | `MCP_AUTH_TOKEN` | required for non-stdio transports unless `MCP_AUTH_TOKEN_FILE` is set | MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> node build/index.js` |
 | HTTP/SSE auth token file | `MCP_AUTH_TOKEN_FILE` | unset | MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN_FILE=/run/secrets/kb-mcp-token node build/index.js` |
 | Allowed browser origins | `MCP_ALLOWED_ORIGINS` | deny browser origins | HTTP/SSE MCP server | Implemented | none | `MCP_TRANSPORT=http MCP_AUTH_TOKEN=<32+ chars> MCP_ALLOWED_ORIGINS=http://localhost:5173 node build/index.js` |

@@ -118,6 +118,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
   private readonly authFailureStates = new Map<string, AuthFailureState>();
   private sessionsOpened = 0;
   private sessionsClosed = 0;
+  private initializingSessions = 0;
   private requestsTotal = 0;
   private readonly responseStatusBuckets: Record<ResponseStatusBucket, number> =
     emptyResponseStatusBuckets();
@@ -798,6 +799,22 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       this.sessionsOpened += 1;
     }
     this.sessions.set(sessionId, entry);
+  }
+
+  /** Reserve before any asynchronous initialization so concurrent opens cannot oversubscribe. */
+  protected reserveSessionSlot(): (() => void) | null {
+    const maxSessions = this.options.config.maxSessions ?? 0;
+    if (maxSessions > 0 && this.sessions.size + this.initializingSessions >= maxSessions) {
+      return null;
+    }
+    this.initializingSessions += 1;
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        this.initializingSessions -= 1;
+      }
+    };
   }
 
   protected unregisterSession(sessionId: string): BaseSessionEntry<TTransport> | undefined {

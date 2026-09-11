@@ -289,6 +289,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'MCP_TRANSPORT', kind: 'enum', values: ['stdio', 'sse', 'http'], default: 'stdio', description: 'MCP server transport.' },
   { name: 'MCP_PORT', kind: 'integer', default: '8765', min: 1, max: 65535 },
   { name: 'MCP_BIND_ADDR', kind: 'string', default: '127.0.0.1' },
+  { name: 'MCP_MAX_SESSIONS', kind: 'integer', default: '0', min: 0, description: 'Maximum concurrent HTTP/SSE sessions, including initialization. Zero or unset is unbounded. New sessions at capacity receive HTTP 503 with Retry-After: 1; existing sessions remain usable.' },
   { name: 'MCP_AUTH_TOKEN', kind: 'secret', secret: true, description: 'Bearer token required for HTTP/SSE transports.' },
   { name: 'MCP_AUTH_TOKEN_FILE', kind: 'path', description: 'Path to a file containing the bearer token for HTTP/SSE transports; takes precedence over MCP_AUTH_TOKEN.' },
   { name: 'MCP_ALLOWED_ORIGINS', kind: 'csv' },
