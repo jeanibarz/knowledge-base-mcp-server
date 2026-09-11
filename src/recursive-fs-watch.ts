@@ -87,8 +87,8 @@ interface PerKbState {
   kbName: string;
   kbPath: string;
   watchers: fs.FSWatcher[];
-  /** Absolute paths that already have a per-directory watcher. */
-  watchedDirs: Set<string>;
+  /** Directory identity prevents a replacement path retaining an old inode's watch. */
+  directoryWatches: Map<string, { watcher: fs.FSWatcher; dev: number; ino: number }>;
   debounceTimers: Map<string, NodeJS.Timeout>;
   inFlight: Promise<void> | null;
   pending: boolean;
@@ -130,7 +130,7 @@ export class RecursiveKbWatcher {
         kbName: target.kbName,
         kbPath: target.kbPath,
         watchers: [],
-        watchedDirs: new Set(),
+        directoryWatches: new Map(),
         debounceTimers: new Map(),
         inFlight: null,
         pending: false,
@@ -181,7 +181,7 @@ export class RecursiveKbWatcher {
         }
       }
       state.watchers = [];
-      state.watchedDirs.clear();
+      state.directoryWatches.clear();
     }
     const drains = Array.from(this.states.values())
       .map((state) => state.inFlight)
@@ -226,7 +226,7 @@ export class RecursiveKbWatcher {
   watchedDirectoryCount(kbName: string): number {
     const state = this.states.get(kbName);
     if (state === undefined) return 0;
-    return state.watchedDirs.size;
+    return state.directoryWatches.size;
   }
 
   private useRecursive(): boolean {
@@ -256,22 +256,21 @@ export class RecursiveKbWatcher {
   }
 
   private async attachPerDirectory(state: PerKbState): Promise<void> {
-    const dirs = await enumerateDirectories(state.kbPath);
-    for (const dir of dirs) {
-      this.watchDirectory(state, dir);
-    }
+    await this.discoverNewDirectory(state, state.kbPath, false);
   }
 
   /**
    * Attach one non-recursive `fs.watch` to `dir` if this KB does not
-   * already have one. Claim the path before `fs.watch` so a re-entrant
-   * discovery (parent event + nested walk) cannot open a second handle.
+   * already have one for the same inode. There is no await between checking
+   * the identity and registering the handle, so concurrent discovery cannot
+   * attach a duplicate. Returns whether a new watch needs its contents scanned.
    */
-  private watchDirectory(state: PerKbState, dir: string): void {
-    if (this.stopped) return;
+  private watchDirectory(state: PerKbState, dir: string, st: fs.Stats): boolean {
+    if (this.stopped) return false;
     const absDir = path.resolve(dir);
-    if (state.watchedDirs.has(absDir)) return;
-    state.watchedDirs.add(absDir);
+    const existing = state.directoryWatches.get(absDir);
+    if (existing?.dev === st.dev && existing.ino === st.ino) return false;
+    this.closeDirectoryTree(state, absDir);
     try {
       const watcher = fs.watch(dir, (_event, filename) => {
         void this.onPerDirectoryFsEvent(state, dir, filename);
@@ -279,20 +278,41 @@ export class RecursiveKbWatcher {
       watcher.on('error', (err) => {
         // Deleted-dir / dead-inode errors leave a stale claim that
         // would block re-attach if the same path is created again.
-        state.watchedDirs.delete(absDir);
+        // A late error from a replaced handle must not drop the new watch.
+        if (state.directoryWatches.get(absDir)?.watcher === watcher) {
+          this.closeDirectoryWatch(state, absDir);
+        }
         logger.warn(
           `RecursiveKbWatcher: error on ${dir} (${state.kbName}): ${err.message}`,
         );
       });
       state.watchers.push(watcher);
+      state.directoryWatches.set(absDir, { watcher, dev: st.dev, ino: st.ino });
+      return true;
     } catch (err) {
       // A subdir that disappeared between enumerate and attach, or an
       // inotify slot exhaustion on this one dir, is not a hard error —
       // drop the claim so a later event can retry.
-      state.watchedDirs.delete(absDir);
       logger.debug(
         `RecursiveKbWatcher: skip ${dir} (${state.kbName}): ${(err as Error).message}`,
       );
+      return false;
+    }
+  }
+
+  private closeDirectoryWatch(state: PerKbState, absDir: string): void {
+    const existing = state.directoryWatches.get(absDir);
+    if (!existing) return;
+    state.directoryWatches.delete(absDir);
+    state.watchers = state.watchers.filter((watcher) => watcher !== existing.watcher);
+    existing.watcher.close();
+  }
+
+  private closeDirectoryTree(state: PerKbState, absDir: string): void {
+    for (const dir of state.directoryWatches.keys()) {
+      if (dir === absDir || dir.startsWith(absDir + path.sep)) {
+        this.closeDirectoryWatch(state, dir);
+      }
     }
   }
 
@@ -326,11 +346,15 @@ export class RecursiveKbWatcher {
    * what closes the mkdir-then-immediate-write race: a file written
    * before the new watcher is attached never generates its own event.
    */
-  private async discoverNewDirectory(state: PerKbState, absPath: string): Promise<void> {
+  private async discoverNewDirectory(
+    state: PerKbState,
+    absPath: string,
+    emitExisting = true,
+  ): Promise<void> {
     if (this.stopped || this.useRecursive()) return;
 
     const relFromKb = path.relative(state.kbPath, absPath);
-    if (relFromKb === '' || relFromKb.startsWith('..')) return;
+    if (relFromKb.startsWith('..')) return;
     // Same skip as `enumerateDirectories`: `.index/` and `.git/` are
     // indexer / vcs sidecars, never corpus.
     if (relFromKb.split(path.sep).some((segment) => segment.startsWith('.'))) return;
@@ -342,29 +366,25 @@ export class RecursiveKbWatcher {
       // not pull us into the target tree. Startup enumeration uses
       // dirent.isDirectory(), which likewise does not follow links.
       st = await fsp.lstat(absPath);
-    } catch {
+    } catch (err) {
       // Path vanished (typical: rmdir of a previously watched dir).
-      // Drop the claim so a later mkdir of the same name can attach.
-      state.watchedDirs.delete(resolved);
+      // Close the handle too; otherwise repeated replacements leak watches.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.closeDirectoryTree(state, resolved);
+      }
       return;
     }
-    if (!st.isDirectory()) return;
-    if (state.watchedDirs.has(resolved)) return;
-
-    const dirs = await enumerateDirectories(absPath);
-    if (this.stopped) return;
-
-    for (const dir of dirs) {
-      const wasNew = !state.watchedDirs.has(path.resolve(dir));
-      this.watchDirectory(state, dir);
-      if (wasNew) {
-        await this.emitExistingFiles(state, dir);
-        if (this.stopped) return;
-      }
+    if (!st.isDirectory()) {
+      this.closeDirectoryTree(state, resolved);
+      return;
     }
+    if (!this.watchDirectory(state, absPath, st)) return;
+    // Subscribe before listing. Children created before subscription are in
+    // the listing; children created afterward also produce a parent event.
+    await this.scanDirectory(state, absPath, emitExisting);
   }
 
-  private async emitExistingFiles(state: PerKbState, dir: string): Promise<void> {
+  private async scanDirectory(state: PerKbState, dir: string, emitExisting: boolean): Promise<void> {
     if (this.stopped) return;
     let entries: fs.Dirent[];
     try {
@@ -378,8 +398,12 @@ export class RecursiveKbWatcher {
     for (const entry of entries) {
       if (this.stopped) return;
       if (entry.name.startsWith('.')) continue;
-      if (entry.isDirectory()) continue;
       const absPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await this.discoverNewDirectory(state, absPath, emitExisting);
+        continue;
+      }
+      if (!emitExisting) continue;
       const relFromKb = path.relative(state.kbPath, absPath);
       if (relFromKb === '' || relFromKb.startsWith('..')) continue;
       this.onRawFsEvent(state, relFromKb);
