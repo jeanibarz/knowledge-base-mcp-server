@@ -362,10 +362,10 @@ export class RecursiveKbWatcher {
     const resolved = path.resolve(absPath);
     let st: fs.Stats;
     try {
-      // lstat, not stat: a symlink whose name sits inside the KB must
-      // not pull us into the target tree. Startup enumeration uses
-      // dirent.isDirectory(), which likewise does not follow links.
-      st = await fsp.lstat(absPath);
+      // Registered KB roots may themselves be symlinks, as supported by
+      // the indexer and original startup walk. Only discovered descendants
+      // use lstat, so links inside the corpus cannot pull us into other trees.
+      st = relFromKb === '' ? await fsp.stat(absPath) : await fsp.lstat(absPath);
     } catch (err) {
       // Path vanished (typical: rmdir of a previously watched dir).
       // Close the handle too; otherwise repeated replacements leak watches.

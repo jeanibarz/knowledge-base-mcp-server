@@ -416,6 +416,27 @@ describe('RecursiveKbWatcher (RFC 007 §6.6 / issue #212)', () => {
       }
     });
 
+    it('preserves watching when the registered KB root is a symlink', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange });
+      const root = path.join(tempDir, KB);
+      const actual = path.join(tempDir, 'actual-notes');
+      await fsp.rename(root, actual);
+      await fsp.symlink(actual, root, 'dir');
+      try {
+        await watcher.start();
+        expect(watcher.watchedDirectoryCount(KB)).toBe(1);
+        await fsp.mkdir(path.join(actual, 'topic'));
+        await fsp.writeFile(path.join(actual, 'topic', 'note.md'), 'hello');
+        await watcher.handlePossibleNewDirectory(KB, 'topic');
+        expect(watcher.watchedDirectoryCount(KB)).toBe(2);
+        await drain(80);
+        expect(onChange).toHaveBeenCalledWith(KB);
+      } finally {
+        await watcher.stop();
+      }
+    });
+
     it('re-attaches after a watched subdirectory is removed and created again', async () => {
       const onChange = jest.fn().mockResolvedValue(undefined);
       const watcher = makeWatcher({ onChange, debounceMs: 25 });
