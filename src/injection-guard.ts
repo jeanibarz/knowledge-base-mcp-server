@@ -470,15 +470,15 @@ function formatCodepoint(codepoint: number): string {
   return `U+${codepoint.toString(16).toUpperCase().padStart(4, '0')}`;
 }
 
-function isUnicodeBidiControl(codepoint: number): boolean {
+export function isUnicodeBidiControl(codepoint: number): boolean {
   return (codepoint >= 0x202A && codepoint <= 0x202E) ||
     (codepoint >= 0x2066 && codepoint <= 0x2069);
 }
 
-function isZeroWidthControl(codepoint: number): boolean {
+export function isZeroWidthControl(codepoint: number): boolean {
   return (codepoint >= 0x200B && codepoint <= 0x200D) || codepoint === 0xFEFF;
 }
 
-function isUnicodeTagControl(codepoint: number): boolean {
+export function isUnicodeTagControl(codepoint: number): boolean {
   return codepoint >= 0xE0020 && codepoint <= 0xE007F;
 }
