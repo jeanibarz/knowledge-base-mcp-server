@@ -1,3 +1,4 @@
+import fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -332,6 +333,67 @@ describe('RecursiveKbWatcher (RFC 007 §6.6 / issue #212)', () => {
       await drain(80);
       await watcher.stop();
       expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('discovers nested files created just before their parent watch attaches', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange });
+      const topic = path.join(tempDir, KB, 'topic');
+      const originalWatch = fs.watch;
+      const watchSpy = jest.spyOn(fs, 'watch').mockImplementation((dir) => {
+        if (dir === topic) {
+          fs.mkdirSync(path.join(topic, 'nested'));
+          fs.writeFileSync(path.join(topic, 'nested', 'note.md'), 'hello');
+        }
+        // Suppress kernel callbacks: only the discovery listing can find the
+        // nested directory created at the enumeration/subscription boundary.
+        return originalWatch(dir, () => undefined);
+      });
+      try {
+        await watcher.start();
+        await fsp.mkdir(topic);
+        await watcher.handlePossibleNewDirectory(KB, 'topic');
+        expect(watcher.watchedDirectoryCount(KB)).toBe(3);
+        await drain(80);
+        expect(onChange).toHaveBeenCalledWith(KB);
+      } finally {
+        await watcher.stop();
+        watchSpy.mockRestore();
+      }
+    });
+
+    it('replaces the old inode watch when a directory is recreated before discovery', async () => {
+      const onChange = jest.fn().mockResolvedValue(undefined);
+      const watcher = makeWatcher({ onChange });
+      const topic = path.join(tempDir, KB, 'topic');
+      const originalWatch = fs.watch;
+      const watchSpy = jest.spyOn(fs, 'watch').mockImplementation((dir) =>
+        originalWatch(dir, () => undefined),
+      );
+      try {
+        await watcher.start();
+        await fsp.mkdir(path.join(topic, 'nested'), { recursive: true });
+        await watcher.handlePossibleNewDirectory(KB, 'topic');
+        const originalHandle = watchSpy.mock.results[1].value as fs.FSWatcher;
+        const closeSpy = jest.spyOn(originalHandle, 'close');
+        const nestedHandle = watchSpy.mock.results[2].value as fs.FSWatcher;
+        const nestedCloseSpy = jest.spyOn(nestedHandle, 'close');
+        // Renaming retains the old inode, making replacement identity
+        // deterministic while no discovery observes an absent topic path.
+        await fsp.rename(topic, path.join(tempDir, KB, '.old-topic'));
+        await fsp.mkdir(topic);
+        await fsp.writeFile(path.join(topic, 'note.md'), 'replacement');
+        await watcher.handlePossibleNewDirectory(KB, 'topic');
+        expect(watchSpy).toHaveBeenCalledTimes(4);
+        expect(closeSpy).toHaveBeenCalledTimes(1);
+        expect(nestedCloseSpy).toHaveBeenCalledTimes(1);
+        expect(watcher.watchedDirectoryCount(KB)).toBe(2);
+        await drain(80);
+        expect(onChange).toHaveBeenCalledWith(KB);
+      } finally {
+        await watcher.stop();
+        watchSpy.mockRestore();
+      }
     });
 
     it('does not follow a symlink to a directory outside the KB', async () => {
