@@ -362,6 +362,13 @@ describe('config schema validation (FR-OBS-470)', () => {
       expect(spec.docDefault).not.toMatch(/[A-Za-z]:\\Users\\/);
     }
   });
+
+  it('documents every config variable with a non-empty description (#937)', () => {
+    const missing = CONFIG_SCHEMA.filter(
+      (spec) => spec.description === undefined || spec.description.trim() === '',
+    ).map((spec) => spec.name);
+    expect(missing).toEqual([]);
+  });
 });
 
 describe('CONFIG_SCHEMA registrations for env-usage guard baseline (#776)', () => {
