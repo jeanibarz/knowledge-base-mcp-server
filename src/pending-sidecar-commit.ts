@@ -1,6 +1,7 @@
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { writeFileAtomicDurable } from './file-utils.js';
 import {
   isChunkManifest,
   type ChunkManifest,
@@ -164,10 +165,6 @@ export async function writePendingSidecarCommitManifest(options: {
   } = options;
   await fsp.mkdir(modelDir, { recursive: true });
   const manifestPath = pendingSidecarCommitManifestPath(modelDir);
-  const tmpPath = path.join(
-    modelDir,
-    `.${PENDING_SIDECAR_COMMIT_FILENAME}.${process.pid}.${process.hrtime.bigint()}.tmp`,
-  );
   const payload: PendingSidecarCommitManifest = {
     schema_version: PENDING_SIDECAR_COMMIT_SCHEMA_VERSION,
     owner,
@@ -179,16 +176,15 @@ export async function writePendingSidecarCommitManifest(options: {
     })),
   };
 
-  try {
-    await fsp.writeFile(tmpPath, JSON.stringify(payload), {
-      encoding: 'utf-8',
-      mode: 0o600,
-    });
-    await fsp.rename(tmpPath, manifestPath);
-  } catch (error) {
-    await fsp.rm(tmpPath, { force: true }).catch(() => undefined);
-    throw error;
-  }
+  // Issue #902: the crash-recovery journal must itself survive a crash.
+  // `writeFileAtomicDurable` fsyncs the tmp file and parent dir before and
+  // after the atomic rename (a plain writeFile+rename could be dropped by a
+  // power loss), and its unique tmp name removes the fixed-`.tmp` collision
+  // risk if two writers ever race the same model dir.
+  await writeFileAtomicDurable(manifestPath, JSON.stringify(payload), {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
 }
 
 export async function clearPendingSidecarCommitManifest(modelDir: string): Promise<void> {
