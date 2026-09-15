@@ -14,7 +14,7 @@
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { afterAll, afterEach, describe, expect, it, jest } from '@jest/globals';
+import { afterAll, afterEach, beforeAll, describe, expect, it, jest } from '@jest/globals';
 
 // Issue #958 — `runLexicalLeg`'s refresh path acquires the real write lock at
 // `${FAISS_INDEX_PATH}/lexical/<kbName>/`. With the default FAISS_INDEX_PATH
@@ -24,6 +24,15 @@ import { afterAll, afterEach, describe, expect, it, jest } from '@jest/globals';
 // later runs with "Refresh lock is already held for this model". Redirect the
 // whole FAISS tree to a per-run temp dir by mocking the module-load-time const
 // so every derived lock/index path lands under `mkdtemp`, never the live index.
+//
+// This prefix is the sole authority for what the redirect guards trust as
+// "temp": the pre-run assertion (beforeAll) refuses to run any refresh test
+// unless FAISS_INDEX_PATH resolves under it, and the cleanup (afterAll) refuses
+// to delete anything that is not under it. So even if the mock ever failed to
+// apply, the suite fails loudly instead of locking — or deleting — the live
+// index. The literal is repeated inside the hoisted mock factory below because
+// a `jest.mock` factory may not close over module-scope bindings.
+const FAISS_TEMP_PREFIX = 'kb-hybrid-faiss-';
 jest.mock('./config/paths.js', () => {
   const actual = jest.requireActual<typeof import('./config/paths.js')>('./config/paths.js');
   const nodeOs = jest.requireActual<typeof import('os')>('os');
@@ -50,6 +59,14 @@ import type { LexicalIndex, LexicalQueryOptions, LexicalSearchResult } from './l
 import { kbSearchFailureMetrics } from './metrics.js';
 import { logger } from './logger.js';
 import { DEFAULT_C } from './rrf.js';
+
+/** True only for a path the config/paths mock created under `os.tmpdir()`. */
+function isRedirectedFaissTempDir(candidate: string): boolean {
+  return (
+    candidate.startsWith(os.tmpdir()) &&
+    path.basename(candidate).startsWith(FAISS_TEMP_PREFIX)
+  );
+}
 
 function chunk(source: string, chunkIndex: number, score: number, body = `c${chunkIndex}`): HybridChunk {
   return {
@@ -306,19 +323,37 @@ afterEach(async () => {
 });
 
 // Issue #958 — remove the redirected FAISS tree (write locks + any persisted
-// index) created under `os.tmpdir()` by the mocked config/paths module.
+// index) created under `os.tmpdir()` by the mocked config/paths module. The
+// guard is load-bearing: `recursive`/`force` rm of a mis-resolved path could
+// otherwise wipe the operator's live index, so refuse to delete anything that
+// is not a temp dir we minted.
 afterAll(async () => {
-  await fsp.rm(TEST_FAISS_INDEX_PATH, { recursive: true, force: true });
+  if (isRedirectedFaissTempDir(TEST_FAISS_INDEX_PATH)) {
+    await fsp.rm(TEST_FAISS_INDEX_PATH, { recursive: true, force: true });
+  }
 });
 
 describe('runLexicalLeg', () => {
+  // Issue #958 — refuse to run ANY refresh test unless FAISS_INDEX_PATH was
+  // redirected under a temp dir. If the config/paths mock ever failed to apply,
+  // this aborts the suite loudly instead of letting the refresh tests silently
+  // acquire the write lock on (and persist into) the operator's live index.
+  beforeAll(() => {
+    if (!isRedirectedFaissTempDir(TEST_FAISS_INDEX_PATH)) {
+      throw new Error(
+        `Issue #958: FAISS_INDEX_PATH was not redirected to a temp dir (got "${TEST_FAISS_INDEX_PATH}"); ` +
+          'refusing to run refresh tests against a real index path.',
+      );
+    }
+  });
+
   // Issue #958 — the refresh write lock must land under a temp FAISS tree, not
   // the operator's live `~/knowledge_bases/.faiss`. A unique KB name that could
   // never pre-exist proves this run created the lock dir under the temp root
   // and never touched the default (live) index path.
   it('issue #958: acquires the refresh write lock under a temp FAISS tree, not the live index', async () => {
     expect(TEST_FAISS_INDEX_PATH).not.toBe(DEFAULT_FAISS_INDEX_PATH);
-    expect(TEST_FAISS_INDEX_PATH.startsWith(os.tmpdir())).toBe(true);
+    expect(isRedirectedFaissTempDir(TEST_FAISS_INDEX_PATH)).toBe(true);
 
     const kbName = `kb-issue-958-${process.pid}`;
     const liveLockDir = path.dirname(path.join(DEFAULT_FAISS_INDEX_PATH, 'lexical', kbName, 'index.json'));
