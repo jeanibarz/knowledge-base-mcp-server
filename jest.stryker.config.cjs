@@ -31,6 +31,8 @@ module.exports = {
     '**/src/lexical-bm25.test.ts',
     '**/src/hybrid-retrieval.test.ts',
     '**/src/injection-guard.test.ts',
+    '**/src/sensitivity-policy.test.ts',
+    '**/src/kb-write-policy.test.ts',
   ],
   testTimeout: 30000,
 };

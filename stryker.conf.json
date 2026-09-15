@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
-  "_comment": "Issue #651 — mutation testing scoped to a curated set of pure, high-value core modules that have focused unit tests. Run via `npm run test:mutation`; nightly/manual in CI only (mutation runs are slow). Issue #751 added the security-critical injection-guard detector to the scope, ratcheting `break` 45 -> 50. Issue #896 added secret-scanner and strengthened redaction tests, ratcheting `break` 50 -> 64. Baseline re-measured 2026-09-10 (~41m, concurrency 2): combined 68.97% — chunk-id 54.94%, hybrid-retrieval 93.15%, lexical-bm25 50.00%, redaction 69.95%, secret-scanner 80.84%, injection-guard 69.72%. Only the deterministic unit tests are in the Stryker `testMatch` (jest.stryker.config.cjs); the fast-check property suites are deliberately excluded so the gate stays deterministic — their random seeds would jitter the mutant verdicts. `thresholds.break` sits a few points under the combined baseline so the gate catches regressions without flaking on run-to-run jitter; ratchet it upward as the suite improves.",
+  "_comment": "Issue #651 — mutation testing scoped to a curated set of pure, high-value core modules that have focused unit tests. Run via `npm run test:mutation`; nightly/manual in CI only (mutation runs are slow). Issue #751 added the security-critical injection-guard detector to the scope, ratcheting `break` 45 -> 50. Issue #896 added secret-scanner and strengthened redaction tests, ratcheting `break` 50 -> 64. Baseline re-measured 2026-09-10 (~41m, concurrency 2): combined 68.97% — chunk-id 54.94%, hybrid-retrieval 93.15%, lexical-bm25 50.00%, redaction 69.95%, secret-scanner 80.84%, injection-guard 69.72%. Issue #903 added the two fail-closed security-decision modules sensitivity-policy and kb-write-policy with focused invariant tests. Scoped mutation run of just those two files (2026-09-16, ~3m, concurrency 2) scored 93.77% combined — sensitivity-policy 95.26%, kb-write-policy 90.36% — with every fail-closed decision-value mutant killed (remaining survivors are equivalent mutants where the fail-closed fallback converges with the recognized-value branch, plus benign error-message string literals). Both files raise the combined score, so `break` stays at 64 (a safe non-flaky floor); the nightly full run supplies the authoritative combined for the next ratchet. Only the deterministic unit tests are in the Stryker `testMatch` (jest.stryker.config.cjs); the fast-check property suites are deliberately excluded so the gate stays deterministic — their random seeds would jitter the mutant verdicts. `thresholds.break` sits a few points under the combined baseline so the gate catches regressions without flaking on run-to-run jitter; ratchet it upward as the suite improves.",
   "packageManager": "npm",
   "testRunner": "jest",
   "jest": {
@@ -15,7 +15,9 @@
     "src/secret-scanner.ts",
     "src/lexical-bm25.ts",
     "src/hybrid-retrieval.ts",
-    "src/injection-guard.ts"
+    "src/injection-guard.ts",
+    "src/sensitivity-policy.ts",
+    "src/kb-write-policy.ts"
   ],
   "concurrency": 2,
   "timeoutMS": 60000,
