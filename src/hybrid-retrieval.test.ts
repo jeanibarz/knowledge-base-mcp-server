@@ -14,8 +14,27 @@
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import { afterAll, afterEach, describe, expect, it, jest } from '@jest/globals';
 
+// Issue #958 — `runLexicalLeg`'s refresh path acquires the real write lock at
+// `${FAISS_INDEX_PATH}/lexical/<kbName>/`. With the default FAISS_INDEX_PATH
+// (`~/knowledge_bases/.faiss`) and the shared test names ('kb-a', …), the
+// suite locked and littered the operator's LIVE lexical index; a timed-out
+// concurrent-refresh test could even leave a `.kb-write.lock` behind, breaking
+// later runs with "Refresh lock is already held for this model". Redirect the
+// whole FAISS tree to a per-run temp dir by mocking the module-load-time const
+// so every derived lock/index path lands under `mkdtemp`, never the live index.
+jest.mock('./config/paths.js', () => {
+  const actual = jest.requireActual<typeof import('./config/paths.js')>('./config/paths.js');
+  const nodeOs = jest.requireActual<typeof import('os')>('os');
+  const nodePath = jest.requireActual<typeof import('path')>('path');
+  const nodeFs = jest.requireActual<typeof import('fs')>('fs');
+  const faissRoot = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'kb-hybrid-faiss-'));
+  return { ...actual, FAISS_INDEX_PATH: faissRoot };
+});
+
+import { DEFAULT_FAISS_INDEX_PATH, FAISS_INDEX_PATH as TEST_FAISS_INDEX_PATH } from './config/paths.js';
+import { lexicalIndexFilePath } from './lexical-index.js';
 import {
   HYBRID_FETCH_CAP,
   HYBRID_FETCH_MULTIPLIER,
@@ -286,7 +305,43 @@ afterEach(async () => {
   filterTempDirs.length = 0;
 });
 
+// Issue #958 — remove the redirected FAISS tree (write locks + any persisted
+// index) created under `os.tmpdir()` by the mocked config/paths module.
+afterAll(async () => {
+  await fsp.rm(TEST_FAISS_INDEX_PATH, { recursive: true, force: true });
+});
+
 describe('runLexicalLeg', () => {
+  // Issue #958 — the refresh write lock must land under a temp FAISS tree, not
+  // the operator's live `~/knowledge_bases/.faiss`. A unique KB name that could
+  // never pre-exist proves this run created the lock dir under the temp root
+  // and never touched the default (live) index path.
+  it('issue #958: acquires the refresh write lock under a temp FAISS tree, not the live index', async () => {
+    expect(TEST_FAISS_INDEX_PATH).not.toBe(DEFAULT_FAISS_INDEX_PATH);
+    expect(TEST_FAISS_INDEX_PATH.startsWith(os.tmpdir())).toBe(true);
+
+    const kbName = `kb-issue-958-${process.pid}`;
+    const liveLockDir = path.dirname(path.join(DEFAULT_FAISS_INDEX_PATH, 'lexical', kbName, 'index.json'));
+    const tempLockDir = path.dirname(lexicalIndexFilePath(kbName));
+    expect(tempLockDir.startsWith(TEST_FAISS_INDEX_PATH)).toBe(true);
+
+    const empty = makeFakeIndex({ numFiles: 0, hits: [lexicalHit('a.md', 0.9)] });
+    const result = await runLexicalLeg({
+      kbs: [{ kbName, kbPath: `/tmp/fake/${kbName}` }],
+      query: 'q',
+      fetchK: 10,
+      refresh: 'when-empty',
+      loadIndex: async () => empty.idx,
+      loadFreshIndex: async () => empty.idx,
+    });
+
+    expect(result.refreshed).toBe(1);
+    // The write lock mkdir-p'd the resource dir under the temp tree...
+    await expect(fsp.stat(tempLockDir)).resolves.toBeDefined();
+    // ...and never created it under the live index path.
+    await expect(fsp.stat(liveLockDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('TS-SEARCH-853: applies metadata filters to lexical hits before fusion', async () => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-hybrid-filter-'));
     filterTempDirs.push(root);
