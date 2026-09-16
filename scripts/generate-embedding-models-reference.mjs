@@ -20,6 +20,29 @@ const MODEL_DOC_SOURCES = [
   '[BGE small model card](https://huggingface.co/BAAI/bge-small-en-v1.5)',
 ];
 
+// Explicit, stable map from a doc-row quality key to its committed benchmark
+// artifacts (issue #942). Only models listed here render a measured value; every
+// other row renders "Not measured" so a missing benchmark never reads as a zero
+// score. Keys are attached to rows below via `qualityKey`. The map is keyed by an
+// opaque key (not the model id) so the mapping stays explicit and does not
+// silently pick up an unrelated result file that happens to share a model name.
+const MEASURED_QUALITY_SOURCES = {
+  qwen3: {
+    mtebPath: 'benchmarks/results/mteb/qwen3.json',
+    beirMatrixPath: 'benchmarks/results/beir/matrix/qwen3/beir-matrix.json',
+    beirReportPath: 'benchmarks/results/beir/matrix/qwen3/beir-matrix.md',
+  },
+  nomic: {
+    mtebPath: 'benchmarks/results/mteb/nomic.json',
+    beirMatrixPath: 'benchmarks/results/beir/matrix/nomic/beir-matrix.json',
+    beirReportPath: 'benchmarks/results/beir/matrix/nomic/beir-matrix.md',
+  },
+};
+
+// Relative prefix from the generated doc (docs/reference/embedding-models.md) to
+// the repo root, so artifact links resolve from the rendered page.
+const DOC_TO_ROOT = '../../';
+
 export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROOT } = {}) {
   const sources = await readSources(root);
   const providerConfig = sources.providerConfig;
@@ -41,6 +64,7 @@ export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROO
   };
   const costLastVerified = matchString(costEstimates, /export const LAST_VERIFIED = '([^']+)'/, 'cost LAST_VERIFIED');
   const deriveModelId = await loadDeriveModelId(root);
+  const measuredQuality = await readMeasuredQuality(root);
 
   assertExactValues(
     knownProviders,
@@ -55,6 +79,7 @@ export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROO
       modelId: deriveModelId('ollama', defaults.ollama),
       dimensions: '1024',
       prefixes: 'No',
+      qualityKey: 'qwen3',
       status: 'Default local production model. Requires Ollama and the pulled model.',
       notes: 'Qwen3-Embedding-0.6B has a 32k context window and configurable output dimensions up to 1024; this server does not pass a custom dimension parameter.',
     },
@@ -64,6 +89,7 @@ export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROO
       modelId: `${deriveModelId('ollama', 'nomic-embed-text')} / ${deriveModelId('ollama', 'nomic-embed-text:latest')}`,
       dimensions: '768',
       prefixes: `Yes: \`${nomicPrefixes.document}\` for documents, \`${nomicPrefixes.query}\` for queries`,
+      qualityKey: 'nomic',
       status: 'Supported example model. Prefix behavior is covered by `src/embedding-provider.test.ts`.',
       notes: 'Pin the exact tag consistently. The model id is derived from the name as typed, so `nomic-embed-text` and `nomic-embed-text:latest` use different index directories.',
     },
@@ -137,20 +163,24 @@ export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROO
     '- Provider defaults and accepted providers: `src/config/provider.ts`.',
     '- Task-prefix behavior: `src/embedding-provider.ts`.',
     '- Paid-provider cost tiers: `src/cost-estimates.ts`.',
+    '- Measured retrieval quality: committed local benchmark artifacts under `benchmarks/results/mteb/` and `benchmarks/results/beir/matrix/`.',
     `- External dimension/context references: ${MODEL_DOC_SOURCES.join('; ')}.`,
     '',
     'Run `npm run docs:generate-embedding-models` after changing any of those source values. The `docs:check-embedding-models` gate fails if this file drifts.',
     '',
+    'The **Measured retrieval quality** column shows how well each model retrieves relevant documents on two standard retrieval benchmarks, run locally. MTEB (Massive Text Embedding Benchmark): we report the mean of its per-task primary metric across the tasks we ran. BEIR (a standard information-retrieval benchmark suite): we report the dense-mode nDCG@10 — a 0–1 ranking-quality score — where "dense" means embedding-only retrieval with no lexical/keyword matching or reranking, so the number reflects the embedding model alone. Each value links to the committed artifact it came from. These are local runs over a small subset of tasks/datasets, not official leaderboard submissions — use them to compare the listed models against each other, not as absolute scores. Models with no committed results show "Not measured", meaning untested, not a score of zero.',
+    '',
     '## Compatibility Matrix',
     '',
-    '| Provider | Model name | Model id | Vector dimensions | Task prefixes | Repo status | Switch-over notes |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| Provider | Model name | Model id | Vector dimensions | Task prefixes | Measured retrieval quality | Repo status | Switch-over notes |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
     ...rows.map((row) => [
       row.provider,
       code(row.model),
       code(row.modelId),
       row.dimensions,
       row.prefixes,
+      formatMeasuredQuality(measuredQuality[row.qualityKey]),
       row.status,
       row.notes,
     ].map(markdownTableCell).join(' | ')).map((line) => `| ${line} |`),
@@ -199,6 +229,59 @@ async function readSources(root) {
       ]),
     ),
   );
+}
+
+// Read the committed benchmark artifacts for every mapped model and reduce them
+// to the headline numbers the doc renders. A mapped file that is missing or
+// malformed is a hard error so the drift gate flags it instead of silently
+// dropping to "Not measured" (issue #942).
+async function readMeasuredQuality(root) {
+  const entries = await Promise.all(
+    Object.entries(MEASURED_QUALITY_SOURCES).map(async ([key, srcs]) => {
+      const mteb = await readJson(root, srcs.mtebPath);
+      const beir = await readJson(root, srcs.beirMatrixPath);
+      const mtebMean = requireNumber(mteb.mean_main_score, `mean_main_score in ${srcs.mtebPath}`);
+      const mtebTasks = Array.isArray(mteb.tasks) ? mteb.tasks.length : 0;
+      if (mtebTasks === 0) throw new Error(`No tasks recorded in ${srcs.mtebPath}`);
+      const dense = (Array.isArray(beir.perMode) ? beir.perMode : []).find((mode) => mode.mode === 'dense');
+      if (!dense) throw new Error(`No dense-mode row in ${srcs.beirMatrixPath}`);
+      const beirDense = requireNumber(dense.multiDomainMeanNdcgAt10, `dense multiDomainMeanNdcgAt10 in ${srcs.beirMatrixPath}`);
+      const beirDatasets = requireNumber(dense.datasetsEvaluated, `dense datasetsEvaluated in ${srcs.beirMatrixPath}`);
+      return [key, { mtebMean, mtebTasks, beirDense, beirDatasets, ...srcs }];
+    }),
+  );
+  return Object.fromEntries(entries);
+}
+
+async function readJson(root, relPath) {
+  const raw = await fs.readFile(path.join(root, relPath), 'utf8');
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Unable to parse ${relPath} as JSON: ${err.message}`);
+  }
+}
+
+function requireNumber(value, label) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`Expected a finite number for ${label}`);
+  }
+  return value;
+}
+
+function formatMeasuredQuality(quality) {
+  if (!quality) return 'Not measured';
+  const mtebLink = `[${formatScore(quality.mtebMean)}](${DOC_TO_ROOT}${quality.mtebPath})`;
+  const beirLink = `[${formatScore(quality.beirDense)}](${DOC_TO_ROOT}${quality.beirReportPath})`;
+  return (
+    `MTEB mean ${mtebLink} (${quality.mtebTasks} tasks); ` +
+    `BEIR dense nDCG@10 ${beirLink} (${quality.beirDatasets} datasets); ` +
+    'local run, not an official leaderboard submission'
+  );
+}
+
+function formatScore(value) {
+  return value.toFixed(3);
 }
 
 function parseKnownProviders(source) {

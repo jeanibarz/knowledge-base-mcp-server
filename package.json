@@ -53,7 +53,7 @@
     "docs:gen-error-codes": "npm run build && node scripts/gen-error-codes-doc.mjs",
     "docs:check-error-codes": "node scripts/gen-error-codes-doc.mjs --check",
     "docs:generate-embedding-models": "node scripts/generate-embedding-models-reference.mjs",
-    "docs:check-embedding-models": "node scripts/generate-embedding-models-reference.mjs --check",
+    "docs:check-embedding-models": "node --test scripts/generate-embedding-models-reference.test.mjs && node scripts/generate-embedding-models-reference.mjs --check",
     "docs:generate-metrics-reference": "npm run build && node scripts/generate-metrics-reference.mjs",
     "docs:check-metrics-reference": "node scripts/generate-metrics-reference.mjs --check",
     "test": "npm run typecheck:tests && npm run build && npm run test:parallel && npm run test:serial",
