@@ -1,4 +1,4 @@
-import * as fsp from 'fs/promises';
+import fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { jest } from '@jest/globals';
@@ -8,8 +8,29 @@ import {
   buildChunkManifest,
   countStableChunkPrefix,
   normalizeChunkTextForEmbedding,
+  writeChunkManifests,
+  writeSidecarHashes,
+  CHUNK_MANIFEST_SCHEMA_VERSION,
+  type ChunkManifest,
 } from './file-ingest.js';
 import { buildSidecarRowFromDocument } from './metadata-sidecar.js';
+
+// The durable-write tests below drive `writeSidecarHashes` / `writeChunkManifests`
+// directly. Their real `withSidecarLock` wrapper (a) does `fsp.mkdir` + a
+// proper-lockfile lock on the process-wide FAISS_INDEX_PATH, which is resolved
+// once at import time and would otherwise touch the operator's *real* KB
+// `.index/` dir, and (b) serializes concurrent callers, which would hide the
+// fixed-`${target}.tmp` collision race the fix closes. Replace it with a
+// passthrough so the two-writer test exercises a genuine, unserialized race to
+// the same target — exactly the sidecar-lock fail-open window issue #902
+// targets. Every other write-lock export stays real.
+jest.mock('./write-lock.js', () => {
+  const actual = jest.requireActual<typeof import('./write-lock.js')>('./write-lock.js');
+  return {
+    ...actual,
+    withSidecarLock: <T,>(action: () => Promise<T>): Promise<T> => action(),
+  };
+});
 
 describe('normalizeChunkTextForEmbedding', () => {
   it('collapses insignificant text differences before indexing dedupe', () => {
@@ -57,6 +78,102 @@ describe('buildChunkManifest', () => {
     expect(first.chunks[0].textHash).toBe(second.chunks[0].textHash);
     expect(first.chunks[0].metadataHash).toBe(second.chunks[0].metadataHash);
     expect(countStableChunkPrefix(first, second)).toBe(1);
+  });
+});
+
+describe('durable + collision-safe sidecar writes (#902)', () => {
+  // These helpers back the re-embed decision on the next reindex, so a torn
+  // or lost sidecar/manifest silently skips or re-embeds a source file.
+  // Issue #902 routed them through `writeFileAtomicDurable` (unique tmp name,
+  // fsync + parent-dir sync) to close both the durability gap and the
+  // fixed-`${target}.tmp` collision race. Lock those properties here.
+  // Deterministic, valid 64-char hex string seeded by `seed`.
+  const hex = (seed: string): string => {
+    let out = '';
+    for (let i = 0; out.length < 64; i += 1) {
+      out += (seed.charCodeAt(i % seed.length) & 0xf).toString(16);
+    }
+    return out.slice(0, 64);
+  };
+
+  const largeManifest = (source: string, chunkCount: number): ChunkManifest => ({
+    schema_version: CHUNK_MANIFEST_SCHEMA_VERSION,
+    source_sha256: hex(source),
+    chunks: Array.from({ length: chunkCount }, (_unused, i) => ({
+      chunkIndex: i,
+      textHash: hex(`${source}t${i}`),
+      metadataHash: hex(`${source}m${i}`),
+      vectorDocstoreId: hex(`${source}v${i}`),
+    })),
+  });
+
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-durable-sidecar-'));
+  });
+
+  afterEach(async () => {
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  it('writeSidecarHashes writes through a unique tmp and leaves no fixed .tmp behind', async () => {
+    const target = path.join(dir, 'doc.md.hash');
+    await writeSidecarHashes([{ path: target, hash: hex('a') }]);
+
+    await expect(fsp.readFile(target, 'utf-8')).resolves.toBe(hex('a'));
+    // No `${target}.tmp` and no `.kb-tmp.` leftover — the write is clean.
+    const leftovers = (await fsp.readdir(dir)).filter((name) => name !== 'doc.md.hash');
+    expect(leftovers).toEqual([]);
+  });
+
+  it('two interleaved chunk-manifest writers to the same target never tear the output', async () => {
+    // With `withSidecarLock` stubbed to a passthrough (see the mock at the top
+    // of this file), these two calls genuinely race. Distinct, sizeable
+    // payloads: a byte-interleave into one shared tmp (the old fixed-
+    // `${target}.tmp` bug) would yield invalid JSON or a hybrid of the two.
+    // With per-write unique tmp names the loser is fully overwritten by the
+    // winner and the survivor is always one intact value.
+    const target = path.join(dir, 'doc.md.chunks.json');
+    const first = largeManifest('1', 400);
+    const second = largeManifest('2', 400);
+
+    await Promise.all([
+      writeChunkManifests([{ path: target, manifest: first }]),
+      writeChunkManifests([{ path: target, manifest: second }]),
+    ]);
+
+    const raw = await fsp.readFile(target, 'utf-8');
+    const parsed = JSON.parse(raw) as ChunkManifest;
+    // Exactly one complete manifest survives — never a torn hybrid.
+    expect([JSON.stringify(first), JSON.stringify(second)]).toContain(raw);
+    expect(parsed.chunks).toHaveLength(400);
+    const leftovers = (await fsp.readdir(dir)).filter((name) => name !== 'doc.md.chunks.json');
+    expect(leftovers).toEqual([]);
+  });
+
+  it('writeSidecarHashes preserves the prior sidecar when a write crashes before the rename', async () => {
+    const target = path.join(dir, 'doc.md.hash');
+    await writeSidecarHashes([{ path: target, hash: hex('a') }]);
+
+    // Simulate a crash between the fsynced tmp write and the durability
+    // point (rename): the recovery contract is that the previously committed
+    // sidecar stays byte-intact so the next reindex still makes a correct
+    // re-embed decision, and no partial tmp is left behind.
+    const renameSpy = jest.spyOn(fsp, 'rename').mockRejectedValue(
+      Object.assign(new Error('simulated crash before rename'), { code: 'EIO' }),
+    );
+    try {
+      await expect(
+        writeSidecarHashes([{ path: target, hash: hex('b') }]),
+      ).rejects.toThrow('simulated crash before rename');
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    await expect(fsp.readFile(target, 'utf-8')).resolves.toBe(hex('a'));
+    const leftovers = (await fsp.readdir(dir)).filter((name) => name !== 'doc.md.hash');
+    expect(leftovers).toEqual([]);
   });
 });
 

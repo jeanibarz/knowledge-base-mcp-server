@@ -29,6 +29,7 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { isContextualRetrievalEnabled } from './config/contextual-preface.js';
 import { resolveContextualPrefaces, sha256 as contextualPrefaceSha256 } from './contextual-preface.js';
 import { handleFsOperationError } from './error-utils.js';
+import { writeFileAtomicDurable } from './file-utils.js';
 import { parseFrontmatter, parseFrontmatterStrict } from './frontmatter.js';
 import { detectSiblingPdfPath, liftFrontmatter } from './frontmatter-lift.js';
 import { applyExtractedTextLimit } from './loaders.js';
@@ -348,15 +349,29 @@ export async function buildChunkDocuments(
 }
 
 /**
- * Atomic sidecar-hash write batch. tmp+rename keeps each sidecar atomic;
- * if `mkdir` fails (a peer purged the parent) it's recreated before the
- * tmp write. The whole batch runs under `withSidecarLock` so a concurrent
- * `purgeStaleSidecars` cross-model can't rmrf `<kb>/.index/` between the
- * loop's pre-pass `mkdir` and our `rename`.
+ * Durable sidecar-hash write batch (issue #902). Each sidecar is written
+ * via `writeFileAtomicDurable`: a per-write unique tmp name, fsync of the
+ * tmp file, atomic rename, then a parent-dir sync. The unique tmp name
+ * closes the fixed-`${target}.tmp` collision race — two writers racing the
+ * same target in the sidecar lock's fail-open window (see `withSidecarLock`)
+ * no longer interleave bytes into one shared tmp path — and the fsync closes
+ * the durability gap so a crash cannot leave a torn or lost sidecar that
+ * would drive a wrong re-embed decision on the next reindex.
  *
- * Best-effort tmp cleanup on failure: the original FS error is the one
- * that propagates via `handleFsOperationError`, the leftover `.tmp` is
- * harmless (next pass overwrites it).
+ * If `mkdir` fails (a peer purged the parent) it's recreated first. The
+ * whole batch runs under `withSidecarLock` so a concurrent
+ * `purgeStaleSidecars` cross-model can't rmrf `<kb>/.index/` between the
+ * pre-write `mkdir` and the rename.
+ *
+ * On a *caught* error `writeFileAtomicDurable` unlinks its own unique tmp
+ * and the original FS error propagates via `handleFsOperationError`. A hard
+ * crash (SIGKILL / power loss) between the tmp open and the rename can still
+ * leave a uniquely-named `.kb-tmp.*` orphan in `<kb>/.index/` — but that same
+ * crash also leaves the pending-commit journal in `save-started`, and the
+ * next startup's `recoverPendingSidecarCommit` rmrf's the whole `.index/` via
+ * `purgeStaleSidecars`, reaping the orphan. The unique name (vs the old fixed
+ * `${target}.tmp`, which collided under concurrency) is the deliberate trade
+ * that makes the sidecar lock's fail-open window safe.
  */
 export async function writeSidecarHashes(
   pendingHashWrites: ReadonlyArray<PendingSidecarWrite>,
@@ -365,20 +380,13 @@ export async function writeSidecarHashes(
   await withSidecarLock(async () => {
     await Promise.all(
       pendingHashWrites.map(async ({ path: target, hash }) => {
-        const tmpPath = `${target}.tmp`;
         try {
           // Recreate the parent if a peer purged it between the
           // pre-loop mkdir and now. mkdir({ recursive: true }) is a
           // no-op when the dir already exists.
           await fsp.mkdir(path.dirname(target), { recursive: true });
-          await fsp.writeFile(tmpPath, hash, { encoding: 'utf-8' });
-          await fsp.rename(tmpPath, target);
+          await writeFileAtomicDurable(target, hash, { encoding: 'utf-8' });
         } catch (error) {
-          try {
-            await fsp.unlink(tmpPath);
-          } catch {
-            // best-effort cleanup; original error is what matters
-          }
           handleFsOperationError('write file hash metadata to', target, error);
         }
       }),
@@ -393,20 +401,16 @@ export async function writeChunkManifests(
   await withSidecarLock(async () => {
     await Promise.all(
       pendingManifestWrites.map(async ({ path: target, manifest }) => {
-        const tmpPath = `${target}.tmp`;
         try {
           await fsp.mkdir(path.dirname(target), { recursive: true });
-          await fsp.writeFile(tmpPath, JSON.stringify(manifest), {
+          // Durable + collision-safe (issue #902): unique tmp name, fsync,
+          // atomic rename, parent-dir sync — same rationale as
+          // `writeSidecarHashes`.
+          await writeFileAtomicDurable(target, JSON.stringify(manifest), {
             encoding: 'utf-8',
             mode: 0o600,
           });
-          await fsp.rename(tmpPath, target);
         } catch (error) {
-          try {
-            await fsp.unlink(tmpPath);
-          } catch {
-            // best-effort cleanup; original error is what matters
-          }
           handleFsOperationError('write chunk manifest to', target, error);
         }
       }),
