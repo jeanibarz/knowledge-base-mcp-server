@@ -17,7 +17,13 @@
 //     omit the wire field entirely when disabled so "signal field absent"
 //     and "signal field empty array" are distinguishable.
 
-export const KB_SHIELD_RULESET_VERSION = 'v1';
+import {
+  isUnicodeBidiControl,
+  isUnicodeTagControl,
+  isZeroWidthControl,
+} from './injection-guard.js';
+
+export const KB_SHIELD_RULESET_VERSION = 'v2';
 
 export interface InjectionSignal {
   rule: string;
@@ -30,7 +36,7 @@ interface RuleSpec {
   readonly pattern: RegExp;
 }
 
-// v1 ruleset. Each pattern carries the `g` flag so `matchAll` yields every
+// Frozen v1 ruleset. Each pattern carries the `g` flag so `matchAll` yields every
 // hit, and is created with explicit flags rather than inline `(?i)` syntax
 // because V8 does not support inline-flag groups.
 //
@@ -72,11 +78,20 @@ const RULES_V1: ReadonlyArray<RuleSpec> = [
   },
 ];
 
+const CONTROL_RULES_V2 = [
+  { id: 'Obfuscation.ZeroWidth', matches: isZeroWidthControl },
+  { id: 'Obfuscation.BidiControl', matches: isUnicodeBidiControl },
+  { id: 'Obfuscation.UnicodeTag', matches: isUnicodeTagControl },
+] as const;
+
 /**
  * Scans `content` for known prompt-injection signals and returns each hit as a
  * `{rule, span_start, span_end}` triple. Spans are half-open `[start, end)`
  * UTF-16 code-unit offsets into the input (the same units `String.length`
  * uses), so `content.slice(span_start, span_end)` recovers the matched text.
+ * Obfuscation rules flag each control character independently of surrounding
+ * text: evidence for review, not proof of malicious intent. Each such span
+ * covers one code point (one UTF-16 unit, or two for Unicode tags).
  *
  * The result is sorted deterministically by `(span_start, span_end, rule)` so
  * the output is stable across processes and node versions — useful for
@@ -96,6 +111,18 @@ export function scanForInjectionSignals(content: string): InjectionSignal[] {
       if (matched.length === 0) continue; // defensive: never emit empty spans
       signals.push({ rule: id, span_start: start, span_end: start + matched.length });
     }
+  }
+  let offset = 0;
+  for (const char of content) {
+    const codepoint = char.codePointAt(0);
+    if (codepoint !== undefined) {
+      for (const { id, matches } of CONTROL_RULES_V2) {
+        if (matches(codepoint)) {
+          signals.push({ rule: id, span_start: offset, span_end: offset + char.length });
+        }
+      }
+    }
+    offset += char.length;
   }
   signals.sort((a, b) => {
     if (a.span_start !== b.span_start) return a.span_start - b.span_start;
@@ -130,5 +157,5 @@ export function getInjectionSignals(content: string): InjectionSignal[] | undefi
  * wants to validate `injection_signals[].rule` against the known set.
  */
 export function listRuleIds(): string[] {
-  return RULES_V1.map((r) => r.id);
+  return [...RULES_V1, ...CONTROL_RULES_V2].map((r) => r.id);
 }
