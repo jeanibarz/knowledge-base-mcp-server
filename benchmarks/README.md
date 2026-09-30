@@ -219,6 +219,36 @@ npm run bench:bright -- --bright-dir=bright-data --tasks=biology,economics \
     --modes=dense,hybrid+rerank --provider=ollama --model=nomic-embed-text
 ```
 
+## One-command reproduction — `bench:reproduce` (issue #944)
+
+`bench:reproduce` composes the canonical small-model dense/nomic BEIR flow into a
+single command, so contributors and evaluators can run it and verify without
+reassembling the individual `bench:beir` invocations by hand. Both paths drive
+the same production retrieval seam (`runBeirBenchmark`) and print where artifacts
+landed.
+
+```bash
+# SMOKE (default) — offline, credential-free. --mode=dense against the committed
+# gate fixture with the deterministic --provider=fake, so CI stays green and no
+# real provider is implied. Fake-provider numbers are self-test smoke only.
+npm run bench:reproduce
+
+# FULL — the canonical config recorded by the committed matrix runs
+# (--mode=dense --provider=ollama --model=nomic-embed-text) over the exact
+# published dataset set (scifact, nfcorpus, fiqa, arguana, scidocs). Needs a
+# local Ollama daemon with `nomic-embed-text` pulled and dataset-download egress.
+npm run bench:reproduce -- --full
+```
+
+Both paths write to a temp dir by default (printed on completion) so a run never
+dirties the committed results tree. To regenerate the committed published dense
+artifacts in place, pass `--output-dir=benchmarks/results/beir/matrix/nomic` (this
+reproduces only the dense slice, not the other modes or the aggregate
+`beir-matrix.json`).
+
+Overrides: `--provider`, `--model`, `--datasets=a,b,c`, `--split`, `--output-dir`,
+`--cache-dir`, `--workspace-root`, `--max-queries`. See `--help` for the full list.
+
 ## Result file naming
 
 Reports are written to `benchmarks/results/` with this naming pattern:
