@@ -1146,6 +1146,237 @@ describe('kb doctor', () => {
     }
   });
 
+  describe('LLM chat probe is opt-in (issue #966)', () => {
+    async function seedLlmGateDoctor(tempDir: string) {
+      const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+      return freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+        KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
+        KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+        KB_LLM_ENDPOINT: 'http://127.0.0.1:8080',
+        KB_LLM_PROVIDER: 'local',
+        KB_LLM_FAKE: 'off',
+        KB_RELEVANCE_GATE: 'on',
+        KB_GATE_LLM_ENDPOINT: 'http://127.0.0.1:9090',
+        KB_GATE_LLM_MODEL: 'gate-model',
+        KB_GATE_LLM_TIMEOUT_MS: '100',
+      });
+    }
+
+    it('skips the chat probe by default so a liveness probe cannot load a chat model', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-skip-'));
+      try {
+        const { buildDoctorReport, formatDoctorMarkdown } = await seedLlmGateDoctor(tempDir);
+        const probe = jest.fn(healthyLlmProbe);
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          probeLlmChat: false,
+          llmEndpointProbe: probe,
+        });
+
+        // The core guarantee: no chat completion was issued, so nothing loads
+        // (and, under OLLAMA_KEEP_ALIVE, pins) a chat model on the GPU.
+        expect(probe).not.toHaveBeenCalled();
+
+        expect(report.llm_endpoint).toMatchObject({
+          status: 'skipped',
+          endpoint: 'http://127.0.0.1:8080/v1/chat/completions',
+          endpoint_source: 'env',
+          health_ok: false,
+          chat_ok: false,
+        });
+        expect(report.llm_endpoint.detail).toContain('OLLAMA_KEEP_ALIVE');
+        expect(report.llm_endpoint.next_action).toContain('kb doctor --llm');
+
+        // The relevance-gate chat probe is skipped the same way.
+        expect(report.gate_llm_endpoint).toMatchObject({
+          name: 'gate_llm_endpoint',
+          status: 'skipped',
+          configured: true,
+          target: 'http://127.0.0.1:9090/v1/chat/completions',
+        });
+
+        // A skipped probe is non-failing, and the untouched embedding backend
+        // check still runs (embedding smoke still works).
+        expect(report.checks).toContainEqual(
+          expect.objectContaining({ name: 'llm_endpoint', status: 'ok' }),
+        );
+        expect(report.checks).toContainEqual(
+          expect.objectContaining({ name: 'gate_llm_endpoint', status: 'ok' }),
+        );
+        expect(report.checks).toContainEqual(
+          expect.objectContaining({ name: 'backend', status: 'ok' }),
+        );
+
+        // Status-neutral: skipping the probe yields the SAME aggregate status a
+        // healthy chat probe would, so a skip never masks nor invents a failure
+        // (and can never degrade the report on its own).
+        const healthyReport = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          probeLlmChat: true,
+          llmEndpointProbe: jest.fn(healthyLlmProbe),
+        });
+        expect(report.status).toBe(healthyReport.status);
+        expect(report.status).not.toBe('error');
+
+        expect(formatDoctorMarkdown(report)).toContain('status: skipped');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('runs both chat probes when opted in (probeLlmChat=true)', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-optin-'));
+      try {
+        const { buildDoctorReport } = await seedLlmGateDoctor(tempDir);
+        const probed: string[] = [];
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          probeLlmChat: true,
+          llmEndpointProbe: async (endpoint) => {
+            probed.push(endpoint);
+            return healthyLlmProbe(endpoint);
+          },
+        });
+
+        expect(probed).toEqual([
+          'http://127.0.0.1:8080/v1/chat/completions',
+          'http://127.0.0.1:9090/v1/chat/completions',
+        ]);
+        expect(report.llm_endpoint.status).toBe('ok');
+        expect(report.gate_llm_endpoint.status).toBe('ok');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('defaults to probing when probeLlmChat is omitted (library default preserved)', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-default-'));
+      try {
+        const { buildDoctorReport } = await seedLlmGateDoctor(tempDir);
+        const probe = jest.fn(healthyLlmProbe);
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          llmEndpointProbe: probe,
+        });
+        expect(probe).toHaveBeenCalled();
+        expect(report.llm_endpoint.status).toBe('ok');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('routes the default `kb doctor --format=json` liveness probe past the chat model', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-cli-'));
+      try {
+        const { runDoctor } = await seedLlmGateDoctor(tempDir);
+        // No LLM server is listening; a skipped probe returns without any
+        // network call, so this stays fast and deterministic.
+        const routed = await captureStdout(() => runDoctor(['--format=json']));
+        const report = JSON.parse(routed.stdout) as {
+          llm_endpoint: { status: string };
+          gate_llm_endpoint: { status: string };
+        };
+        expect(report.llm_endpoint.status).toBe('skipped');
+        expect(report.gate_llm_endpoint.status).toBe('skipped');
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('runs the chat probe through runDoctor when --llm is passed', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-cli-optin-'));
+      const realFetch = global.fetch;
+      try {
+        const { runDoctor } = await seedLlmGateDoctor(tempDir);
+        // runDoctor has no probe seam, so mock the global fetch the default
+        // probe uses. Every request rejects → the chat probe runs but reports
+        // an unhealthy endpoint (not 'skipped'), proving --llm is wired.
+        const fetchMock = jest.fn(async () => {
+          throw new Error('connection refused (test)');
+        });
+        global.fetch = fetchMock as unknown as typeof fetch;
+
+        const routed = await captureStdout(() => runDoctor(['--llm', '--format=json']));
+        const report = JSON.parse(routed.stdout) as {
+          llm_endpoint: { status: string; chat_ok: boolean };
+          gate_llm_endpoint: { status: string };
+        };
+        expect(fetchMock).toHaveBeenCalled();
+        expect(report.llm_endpoint.status).not.toBe('skipped');
+        expect(report.llm_endpoint.status).toBe('warn');
+        expect(report.llm_endpoint.chat_ok).toBe(false);
+        expect(report.gate_llm_endpoint.status).not.toBe('skipped');
+      } finally {
+        global.fetch = realFetch;
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps the gate "not configured" detail on the default skip path when the gate is off', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-gate-off-'));
+      try {
+        const { rootDir, faissDir } = await seedDoctorBase(tempDir);
+        const { buildDoctorReport } = await freshDoctor({
+          KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+          FAISS_INDEX_PATH: faissDir,
+          EMBEDDING_PROVIDER: 'huggingface',
+          HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+          HUGGINGFACE_API_KEY: 'test-key',
+          KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
+          KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
+          KB_LLM_ENDPOINT: 'http://127.0.0.1:8080',
+          KB_RELEVANCE_GATE: 'off',
+          KB_GATE_LLM_ENDPOINT: '',
+        });
+        const probe = jest.fn(healthyLlmProbe);
+        const report = await buildDoctorReport({
+          backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+          packageRoot: tempDir,
+          invokedPath: null,
+          packageVersion: '9.9.9',
+          probeLlmChat: false,
+          llmEndpointProbe: probe,
+        });
+
+        expect(probe).not.toHaveBeenCalled();
+        // The gate skip branch is guarded on gate-enabled; with the gate off it
+        // falls through to the existing "not enabled" reason, not the new text.
+        expect(report.gate_llm_endpoint).toMatchObject({
+          status: 'skipped',
+          configured: false,
+          detail: 'KB_RELEVANCE_GATE is not enabled',
+        });
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('documents which checks touch the GPU and the keep-alive they inherit', async () => {
+      const { DOCTOR_HELP } = await freshDoctor({});
+      expect(DOCTOR_HELP).toContain('--llm');
+      expect(DOCTOR_HELP).toContain('OLLAMA_KEEP_ALIVE');
+      expect(DOCTOR_HELP).toMatch(/GPU/);
+      expect(DOCTOR_HELP).toContain('smoke embedding');
+    });
+  });
+
   it('warns on an unhealthy managed LLM endpoint without starting the service', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-llm-managed-'));
     try {
@@ -2307,6 +2538,7 @@ describe('kb doctor', () => {
       endpoints: false,
       locks: false,
       kbSymlinks: false,
+      llm: false,
       integrity: false,
       bugReport: null,
     });
@@ -2316,6 +2548,7 @@ describe('kb doctor', () => {
       endpoints: false,
       locks: false,
       kbSymlinks: false,
+      llm: false,
       integrity: false,
       bugReport: null,
     });
@@ -2325,6 +2558,7 @@ describe('kb doctor', () => {
       endpoints: true,
       locks: false,
       kbSymlinks: false,
+      llm: false,
       integrity: false,
       bugReport: null,
     });
@@ -2334,6 +2568,7 @@ describe('kb doctor', () => {
       endpoints: false,
       locks: true,
       kbSymlinks: false,
+      llm: false,
       integrity: false,
       bugReport: null,
     });
@@ -2343,6 +2578,17 @@ describe('kb doctor', () => {
       endpoints: false,
       locks: false,
       kbSymlinks: true,
+      llm: false,
+      integrity: false,
+      bugReport: null,
+    });
+    expect(parseDoctorArgs(['--llm', '--format=json'])).toEqual({
+      format: 'json',
+      reindexTrigger: false,
+      endpoints: false,
+      locks: false,
+      kbSymlinks: false,
+      llm: true,
       integrity: false,
       bugReport: null,
     });
@@ -2352,6 +2598,7 @@ describe('kb doctor', () => {
       endpoints: false,
       locks: false,
       kbSymlinks: false,
+      llm: false,
       integrity: false,
       bugReport: null,
     });
@@ -2361,6 +2608,7 @@ describe('kb doctor', () => {
       endpoints: false,
       locks: false,
       kbSymlinks: false,
+      llm: false,
       integrity: false,
       bugReport: null,
     });
@@ -2370,6 +2618,7 @@ describe('kb doctor', () => {
       endpoints: false,
       locks: false,
       kbSymlinks: false,
+      llm: false,
       integrity: false,
       bugReport: {
         outputParentDir: '/tmp/out',
@@ -2390,6 +2639,7 @@ describe('kb doctor', () => {
       endpoints: false,
       locks: false,
       kbSymlinks: false,
+      llm: false,
       integrity: false,
       bugReport: {
         outputParentDir: undefined,
