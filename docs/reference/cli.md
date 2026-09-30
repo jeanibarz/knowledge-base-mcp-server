@@ -447,15 +447,24 @@ Aggregate model / index / backend health report.
 kb doctor — aggregate model / index / backend health report
 
 Usage:
-  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints] [--locks] [--kb-symlinks] [--integrity|--slow]
+  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints] [--locks] [--kb-symlinks] [--llm] [--integrity|--slow]
   kb doctor --bug-report[=<dir>] [--include-command -- <cmd> [args...]]
 
 Composes existing read-only checks (env vars, registered models, active
-model, FAISS index presence + mtime, knowledge-base count, embedding
-backend readiness, and local LLM endpoint readiness for kb ask) into
-a single status report. Does NOT load the FAISS store, embed KB documents,
-or start managed LLM services; backend checks may perform a tiny
-model-specific smoke embedding.
+model, FAISS index presence + mtime, knowledge-base count, and embedding
+backend readiness) into a single status report. Does NOT load the FAISS
+store, embed KB documents, or start managed LLM services.
+
+GPU / keep-alive: the embedding backend check may perform a tiny
+model-specific smoke embedding (e.g. nomic-embed-text, ~323 MiB) that
+briefly touches the GPU but unloads on its own keep-alive. The local LLM
+chat-completion readiness probe for `kb ask` is NOT run by default: it
+issues a chat completion that loads a full chat model onto the GPU and, on
+Ollama, inherits OLLAMA_KEEP_ALIVE so the model can stay resident for the
+keep-alive window (Ollama's OpenAI `/v1/chat/completions` endpoint ignores
+per-request keep_alive/num_ctx, so there is no cheap in-probe unload).
+Skipping it by default keeps a periodic `kb doctor --format=json` liveness
+probe from pinning a chat model; pass --llm (or use --endpoints) to run it.
 
 Report status is one of `ok`, `warn`, or `error`. The exit code is non-zero
 when any required check fails, so `kb doctor && kb search ...` is a safe
@@ -469,7 +478,14 @@ Options:
   --endpoints           Check only configured local bind/connect endpoint
                         readiness (MCP bind target, KB_DAEMON_URL,
                         Ollama embedding endpoint, KB_LLM_ENDPOINT/profile, and
-                        the enabled relevance-gate KB_GATE_LLM_ENDPOINT).
+                        the enabled relevance-gate KB_GATE_LLM_ENDPOINT). The
+                        LLM endpoint checks issue a chat completion and load a
+                        chat model on the GPU (subject to OLLAMA_KEEP_ALIVE).
+  --llm                 Also run the local LLM chat-completion readiness probe
+                        (kb ask endpoint) in the aggregate report. Off by
+                        default because it loads a chat model on the GPU and,
+                        on Ollama, inherits OLLAMA_KEEP_ALIVE, so a periodic
+                        liveness probe would keep the model resident.
   --locks               Check only FAISS/model write-lock paths, including
                         owner metadata when available and stale-lock guidance.
   --kb-symlinks         Inventory symlinks under KB roots without following

@@ -185,15 +185,24 @@ const execFileAsync = promisify(execFile);
 export const DOCTOR_HELP = `kb doctor — aggregate model / index / backend health report
 
 Usage:
-  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints] [--locks] [--kb-symlinks] [--integrity|--slow]
+  kb doctor [--format=md|json] [--reindex-trigger] [--endpoints] [--locks] [--kb-symlinks] [--llm] [--integrity|--slow]
   kb doctor --bug-report[=<dir>] [--include-command -- <cmd> [args...]]
 
 Composes existing read-only checks (env vars, registered models, active
-model, FAISS index presence + mtime, knowledge-base count, embedding
-backend readiness, and local LLM endpoint readiness for kb ask) into
-a single status report. Does NOT load the FAISS store, embed KB documents,
-or start managed LLM services; backend checks may perform a tiny
-model-specific smoke embedding.
+model, FAISS index presence + mtime, knowledge-base count, and embedding
+backend readiness) into a single status report. Does NOT load the FAISS
+store, embed KB documents, or start managed LLM services.
+
+GPU / keep-alive: the embedding backend check may perform a tiny
+model-specific smoke embedding (e.g. nomic-embed-text, ~323 MiB) that
+briefly touches the GPU but unloads on its own keep-alive. The local LLM
+chat-completion readiness probe for \`kb ask\` is NOT run by default: it
+issues a chat completion that loads a full chat model onto the GPU and, on
+Ollama, inherits OLLAMA_KEEP_ALIVE so the model can stay resident for the
+keep-alive window (Ollama's OpenAI \`/v1/chat/completions\` endpoint ignores
+per-request keep_alive/num_ctx, so there is no cheap in-probe unload).
+Skipping it by default keeps a periodic \`kb doctor --format=json\` liveness
+probe from pinning a chat model; pass --llm (or use --endpoints) to run it.
 
 Report status is one of \`ok\`, \`warn\`, or \`error\`. The exit code is non-zero
 when any required check fails, so \`kb doctor && kb search ...\` is a safe
@@ -207,7 +216,14 @@ Options:
   --endpoints           Check only configured local bind/connect endpoint
                         readiness (MCP bind target, KB_DAEMON_URL,
                         Ollama embedding endpoint, KB_LLM_ENDPOINT/profile, and
-                        the enabled relevance-gate KB_GATE_LLM_ENDPOINT).
+                        the enabled relevance-gate KB_GATE_LLM_ENDPOINT). The
+                        LLM endpoint checks issue a chat completion and load a
+                        chat model on the GPU (subject to OLLAMA_KEEP_ALIVE).
+  --llm                 Also run the local LLM chat-completion readiness probe
+                        (kb ask endpoint) in the aggregate report. Off by
+                        default because it loads a chat model on the GPU and,
+                        on Ollama, inherits OLLAMA_KEEP_ALIVE, so a periodic
+                        liveness probe would keep the model resident.
   --locks               Check only FAISS/model write-lock paths, including
                         owner metadata when available and stale-lock guidance.
   --kb-symlinks         Inventory symlinks under KB roots without following
@@ -237,6 +253,12 @@ export interface DoctorArgs {
   endpoints: boolean;
   locks: boolean;
   kbSymlinks: boolean;
+  /**
+   * Issue #966 — opt in to the local LLM chat-completion readiness probe in
+   * the aggregate report. Off by default so a periodic `kb doctor` liveness
+   * probe never loads (and, under OLLAMA_KEEP_ALIVE, pins) a chat model.
+   */
+  llm: boolean;
   integrity: boolean;
   bugReport: {
     outputParentDir?: string;
@@ -466,7 +488,12 @@ export interface DoctorReport {
     next_action: string | null;
   };
   llm_endpoint: {
-    status: HealthStatus;
+    /**
+     * Issue #966 — `'skipped'` when the aggregate report ran without the
+     * opt-in chat probe (the default), so a liveness probe never loads a
+     * chat model on the GPU.
+     */
+    status: HealthStatus | 'skipped';
     endpoint: string | null;
     health_url: string | null;
     endpoint_source: 'env' | 'profile' | 'default' | 'unresolved';
@@ -592,6 +619,16 @@ export interface BuildDoctorReportOptions {
    * short, read-only probe without starting any services.
    */
   llmEndpointProbe?: LlmEndpointProbe;
+  /**
+   * Issue #966 — run the local LLM chat-completion readiness probe (both the
+   * `kb ask` endpoint and the relevance-gate endpoint). Defaults to `true`
+   * for library/test callers; the `kb doctor` CLI passes `false` unless
+   * `--llm` is given, so a periodic liveness probe never loads (and, under
+   * OLLAMA_KEEP_ALIVE, pins) a chat model on the GPU. When `false` the
+   * report resolves the configured endpoints for display but issues no chat
+   * completion, and the check status is `'skipped'` (non-failing).
+   */
+  probeLlmChat?: boolean;
   /** Run the slow `kb verify --integrity` audit and fold it into status. */
   integrity?: boolean;
   /**
@@ -672,7 +709,8 @@ export async function runDoctor(rest: string[]): Promise<number> {
     const result = await createDoctorBugReportBundle({
       outputParentDir: parsed.bugReport.outputParentDir,
       command: parsed.bugReport.command,
-      buildDoctorReport: () => buildDoctorReport({ integrity: parsed.integrity }),
+      buildDoctorReport: () =>
+        buildDoctorReport({ integrity: parsed.integrity, probeLlmChat: parsed.llm }),
     });
     if (parsed.format === 'json') {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -682,7 +720,10 @@ export async function runDoctor(rest: string[]): Promise<number> {
     return 0;
   }
 
-  const report = await buildDoctorReport({ integrity: parsed.integrity });
+  const report = await buildDoctorReport({
+    integrity: parsed.integrity,
+    probeLlmChat: parsed.llm,
+  });
   if (parsed.format === 'json') {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
@@ -698,6 +739,7 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
     endpoints: false,
     locks: false,
     kbSymlinks: false,
+    llm: false,
     integrity: false,
     bugReport: null,
   };
@@ -735,6 +777,10 @@ export function parseDoctorArgs(rest: string[]): DoctorArgs {
     }
     if (raw === '--kb-symlinks') {
       out.kbSymlinks = true;
+      continue;
+    }
+    if (raw === '--llm') {
+      out.llm = true;
       continue;
     }
     if (raw === '--bug-report' || raw.startsWith('--bug-report=')) {
@@ -1054,6 +1100,7 @@ async function readConfiguredLlmEndpointHealth(
 
 async function readConfiguredGateLlmEndpointHealth(
   check: LlmEndpointProbe,
+  probeChat = true,
 ): Promise<EndpointReadinessEntry> {
   const gateConfig = resolveRelevanceGateConfig();
   const gateEnabled = gateConfig.enabled;
@@ -1087,6 +1134,25 @@ async function readConfiguredGateLlmEndpointHealth(
       target: endpoint,
       source: 'invalid',
       detail: `KB_GATE_LLM_ENDPOINT configuration is invalid: ${(err as Error).message}`,
+    };
+  }
+
+  // Issue #966 — the gate probe also issues a chat completion; skip it on the
+  // default liveness path so no chat model is loaded onto the GPU. This runs
+  // AFTER config validation above so a malformed gate endpoint is still
+  // surfaced (mirroring the main llm_endpoint path), not masked as skipped.
+  if (!probeChat) {
+    return {
+      name: 'gate_llm_endpoint',
+      kind: 'http',
+      status: 'skipped',
+      configured: true,
+      target: profile.endpoint,
+      source: 'env',
+      detail:
+        'gate LLM chat readiness probe skipped by default (it loads a chat '
+        + 'model on the GPU and, on Ollama, inherits OLLAMA_KEEP_ALIVE). '
+        + 'Run `kb doctor --llm` or `kb doctor --endpoints` to probe it.',
     };
   }
 
@@ -1723,16 +1789,25 @@ export async function buildDoctorReport(
     detail: backend.detail,
   });
 
+  // Issue #966 — the LLM chat-completion readiness probe loads a chat model
+  // on the GPU (and, on Ollama, pins it for OLLAMA_KEEP_ALIVE). Skip it unless
+  // explicitly opted in so a periodic `kb doctor` liveness probe cannot pin a
+  // chat model. When skipped the endpoints are still resolved for display.
+  const probeLlmChat = options.probeLlmChat ?? true;
   const llmEndpoint = await readLlmEndpointHealth(
     options.llmEndpointProbe ?? defaultLlmEndpointProbe,
+    probeLlmChat,
   );
   checks.push({
     name: 'llm_endpoint',
-    status: llmEndpoint.status,
+    // A skipped probe is not a failure; keep the aggregate exit code clean so
+    // `kb doctor && kb search` still gates on real health.
+    status: llmEndpoint.status === 'skipped' ? 'ok' : llmEndpoint.status,
     detail: llmEndpoint.detail,
   });
   const gateLlmEndpoint = await readConfiguredGateLlmEndpointHealth(
     options.llmEndpointProbe ?? defaultLlmEndpointProbe,
+    probeLlmChat,
   );
   checks.push({
     name: 'gate_llm_endpoint',
@@ -2653,11 +2728,14 @@ async function readBackendHealth(
 
 async function readLlmEndpointHealth(
   check: LlmEndpointProbe,
+  probeChat = true,
 ): Promise<DoctorReport['llm_endpoint']> {
   let target: { profile: LlmProfile; source: DoctorReport['llm_endpoint']['endpoint_source'] };
   try {
     target = await resolveDoctorLlmTarget();
   } catch (err) {
+    // Issue #966 — even a skipped probe surfaces a resolution failure so a
+    // broken profile is not hidden; resolution itself makes no network call.
     return {
       status: 'warn',
       endpoint: null,
@@ -2675,6 +2753,30 @@ async function readLlmEndpointHealth(
   }
 
   const { profile, source } = target;
+
+  // Issue #966 — default liveness path: resolve the endpoint for display but
+  // issue no chat completion, so no chat model is loaded onto the GPU.
+  if (!probeChat) {
+    return {
+      status: 'skipped',
+      endpoint: profile.endpoint,
+      health_url: safeDeriveHealthUrl(profile.endpoint),
+      endpoint_source: source,
+      profile_name: profile.name,
+      profile_mode: profile.mode,
+      managed_by: profile.mode === 'external' ? profile.managed_by ?? null : null,
+      unit_name: profile.mode === 'managed' ? profile.unit_name : null,
+      health_ok: false,
+      chat_ok: false,
+      detail:
+        'LLM chat readiness probe skipped by default (it loads a chat model on '
+        + 'the GPU and, on Ollama, inherits OLLAMA_KEEP_ALIVE). '
+        + `profile=${profile.name}; source=${source}; endpoint=${profile.endpoint}. `
+        + 'Run `kb doctor --llm` or `kb doctor --endpoints` to probe chat readiness.',
+      next_action: `Run kb doctor --llm or kb llm probe --endpoint=${profile.endpoint} to check chat readiness.`,
+    };
+  }
+
   try {
     const probe = await check(profile.endpoint);
     const status: HealthStatus = probe.health_ok && probe.chat_ok ? 'ok' : 'warn';

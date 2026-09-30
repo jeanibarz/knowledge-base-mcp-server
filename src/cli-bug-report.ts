@@ -149,7 +149,10 @@ function isPosixPermissionsSupported(): boolean {
 
 async function defaultBuildDoctorReport(): Promise<DoctorReport> {
   const { buildDoctorReport } = await import('./cli-doctor.js');
-  return buildDoctorReport();
+  // Issue #966 — the fallback builder used when no builder is injected must
+  // not load a chat model on the GPU (the CLI injects `probeLlmChat: --llm`;
+  // this keeps any future caller safe-by-default too).
+  return buildDoctorReport({ probeLlmChat: false });
 }
 
 function redactJsonValue(value: unknown): { value: unknown; redaction: RedactionSummary } {

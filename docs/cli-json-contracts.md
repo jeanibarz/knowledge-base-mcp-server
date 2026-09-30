@@ -1190,19 +1190,26 @@ Stable fields:
 - `reranker`: RFC 019 reranker readiness. Stable fields are `enabled`,
   `model`, `top_n`, `status`, `cache_path`, and `detail`; `cache_path` is
   `null` when no local Transformers.js cache candidate is known.
-- `llm_endpoint`: local LLM readiness for `kb ask`. `status` is `ok` or
-  `warn`; failed LLM readiness is a warning because search health can still be
-  usable. `endpoint_source` is `env`, `profile`, `default`, or `unresolved`.
-  `profile_name`, `profile_mode`, `managed_by`, and `unit_name` describe the
-  resolved profile/ownership when known. `health_ok` checks the derived
-  `/health` URL and `chat_ok` checks an OpenAI-compatible chat completion.
+- `llm_endpoint`: local LLM readiness for `kb ask`. `status` is `ok`, `warn`,
+  or `skipped`; failed LLM readiness is a warning because search health can
+  still be usable. The chat-completion probe loads a chat model on the GPU
+  (and, on Ollama, inherits `OLLAMA_KEEP_ALIVE`), so the aggregate `kb doctor`
+  does **not** run it by default: the status is `skipped` and no chat
+  completion is issued, so a periodic `kb doctor --format=json` liveness probe
+  cannot pin a chat model (issue #966). Pass `--llm` (or use `--endpoints`) to
+  run the probe. `endpoint_source` is `env`, `profile`, `default`, or
+  `unresolved`. `profile_name`, `profile_mode`, `managed_by`, and `unit_name`
+  describe the resolved profile/ownership when known (still populated when
+  skipped). `health_ok` checks the derived `/health` URL and `chat_ok` checks
+  an OpenAI-compatible chat completion (both `false` when skipped).
   `next_action` is `null` when ready, otherwise a human-readable repair hint.
 - `gate_llm_endpoint`: explicitly configured relevance-gate judge readiness.
   `status` is `ok`, `error`, or `skipped`; the row is skipped when the gate is
-  disabled, the explicit endpoint is unset, or the fake judge is active. A
-  configured but unhealthy gate is surfaced as a `warn` entry in `checks[]`
-  because retrieval remains fail-soft while the top-level row retains its
-  `error` status.
+  disabled, the explicit endpoint is unset, the fake judge is active, or the
+  chat probe is off by default (see `llm_endpoint` above — opt in with
+  `--llm`/`--endpoints`). A configured but unhealthy gate is surfaced as a
+  `warn` entry in `checks[]` because retrieval remains fail-soft while the
+  top-level row retains its `error` status.
 - `llm_calls`: object keyed by the bounded `ask`, `gate`, or `preface`
   operation. Each entry contains calls, errors, reported prompt/completion
   token totals, and a process-lifetime latency histogram.
