@@ -3,7 +3,13 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
-import { executeAsk, type AskExecutionArgs, type RunAskCoreDeps } from './ask-core.js';
+import {
+  executeAsk,
+  resolveAskLlmTimeoutMs,
+  DEFAULT_ASK_LLM_TIMEOUT_MS,
+  type AskExecutionArgs,
+  type RunAskCoreDeps,
+} from './ask-core.js';
 import { AnswerCache } from './ask-answer-cache.js';
 import { LlmCallMetrics } from './metrics.js';
 
@@ -175,5 +181,98 @@ describe('executeAsk answer cache read-through (#656)', () => {
     });
     const callArgs = call.mock.calls as unknown as Array<[unknown]>;
     expect(JSON.stringify(callArgs[0][0])).not.toContain('Unverified private context');
+  });
+
+  it('passes the resolved KB_ASK_LLM_TIMEOUT_MS on the ask-generation call (#889)', async () => {
+    const prev = process.env.KB_ASK_LLM_TIMEOUT_MS;
+    process.env.KB_ASK_LLM_TIMEOUT_MS = '4500';
+    try {
+      const cache = new AnswerCache({ enabled: false, indexPath: dir });
+      const call = jest.fn(async () => ({ content: 'answer', model: 'qwen3', raw: {} }));
+      const source = path.join(dir, 'deploys.md');
+
+      await executeAsk(
+        askArgs('What changed?'),
+        makeDeps(cache, makeManager('The deploy switched models.', source), call),
+        Date.now(),
+      );
+
+      expect(call).toHaveBeenCalledTimes(1);
+      const callArgs = call.mock.calls as unknown as Array<[{ timeoutMs?: number }]>;
+      expect(callArgs[0][0].timeoutMs).toBe(4500);
+    } finally {
+      if (prev === undefined) delete process.env.KB_ASK_LLM_TIMEOUT_MS;
+      else process.env.KB_ASK_LLM_TIMEOUT_MS = prev;
+    }
+  });
+
+  it('passes the default timeout on the ask-generation call when unset (#889)', async () => {
+    const prev = process.env.KB_ASK_LLM_TIMEOUT_MS;
+    delete process.env.KB_ASK_LLM_TIMEOUT_MS;
+    try {
+      const cache = new AnswerCache({ enabled: false, indexPath: dir });
+      const call = jest.fn(async () => ({ content: 'answer', model: 'qwen3', raw: {} }));
+      const source = path.join(dir, 'deploys.md');
+
+      await executeAsk(
+        askArgs('What changed?'),
+        makeDeps(cache, makeManager('The deploy switched models.', source), call),
+        Date.now(),
+      );
+
+      const callArgs = call.mock.calls as unknown as Array<[{ timeoutMs?: number }]>;
+      // Pin both the constant and its literal value so a wrong default is caught here.
+      expect(callArgs[0][0].timeoutMs).toBe(DEFAULT_ASK_LLM_TIMEOUT_MS);
+      expect(callArgs[0][0].timeoutMs).toBe(120_000);
+    } finally {
+      if (prev === undefined) delete process.env.KB_ASK_LLM_TIMEOUT_MS;
+      else process.env.KB_ASK_LLM_TIMEOUT_MS = prev;
+    }
+  });
+
+  it('still passes the timeout on the streaming ask-generation call (#889)', async () => {
+    const prev = process.env.KB_ASK_LLM_TIMEOUT_MS;
+    process.env.KB_ASK_LLM_TIMEOUT_MS = '7000';
+    try {
+      const cache = new AnswerCache({ enabled: false, indexPath: dir });
+      const call = jest.fn(async () => ({ content: 'answer', model: 'qwen3', raw: {} }));
+      const source = path.join(dir, 'deploys.md');
+
+      await executeAsk(
+        { ...askArgs('What changed?'), onAnswerToken: () => {} },
+        makeDeps(cache, makeManager('The deploy switched models.', source), call),
+        Date.now(),
+      );
+
+      const callArgs = call.mock.calls as unknown as Array<[{ timeoutMs?: number; stream?: unknown }]>;
+      // The deadline must accompany the streaming path too — llm-client re-arms it
+      // per token (idle-reset), so its presence is what keeps that behavior bounded.
+      expect(callArgs[0][0].timeoutMs).toBe(7000);
+      expect(callArgs[0][0].stream).toBeDefined();
+    } finally {
+      if (prev === undefined) delete process.env.KB_ASK_LLM_TIMEOUT_MS;
+      else process.env.KB_ASK_LLM_TIMEOUT_MS = prev;
+    }
+  });
+});
+
+describe('resolveAskLlmTimeoutMs (#889)', () => {
+  it('defaults to 120000ms when unset or empty', () => {
+    expect(DEFAULT_ASK_LLM_TIMEOUT_MS).toBe(120_000);
+    expect(resolveAskLlmTimeoutMs({})).toBe(120_000);
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '' })).toBe(120_000);
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '   ' })).toBe(120_000);
+  });
+
+  it('honors a positive integer override', () => {
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '5000' })).toBe(5000);
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '1' })).toBe(1);
+  });
+
+  it('falls back to the default for non-positive, non-integer, or non-numeric values', () => {
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '0' })).toBe(120_000);
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '-500' })).toBe(120_000);
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '1.5' })).toBe(120_000);
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: 'abc' })).toBe(120_000);
   });
 });
