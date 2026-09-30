@@ -540,6 +540,8 @@ describe('KB_ASK_LLM_TIMEOUT_MS ask-generation timeout knob (#889)', () => {
       kind: 'duration',
       default: '120000',
       min: 1,
+      // Above Node's 32-bit setTimeout ceiling the delay overflows to 1ms (#889).
+      max: 2_147_483_647,
     }));
   });
 
@@ -566,6 +568,13 @@ describe('KB_ASK_LLM_TIMEOUT_MS ask-generation timeout knob (#889)', () => {
     const malformed = validateConfigEnv({ KB_ASK_LLM_TIMEOUT_MS: 'soon' });
     expect(malformed.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'KB_ASK_LLM_TIMEOUT_MS', status: 'error', message: expect.stringContaining('integer') }),
+    ]));
+
+    // Above the 32-bit setTimeout ceiling must be rejected, not silently accepted (#889).
+    const overflow = validateConfigEnv({ KB_ASK_LLM_TIMEOUT_MS: '2147483648' });
+    expect(overflow.status).toBe('error');
+    expect(overflow.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'KB_ASK_LLM_TIMEOUT_MS', status: 'error', message: expect.stringContaining('<= 2147483647') }),
     ]));
   });
 });

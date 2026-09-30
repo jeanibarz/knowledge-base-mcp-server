@@ -7,6 +7,7 @@ import {
   executeAsk,
   resolveAskLlmTimeoutMs,
   DEFAULT_ASK_LLM_TIMEOUT_MS,
+  MAX_ASK_LLM_TIMEOUT_MS,
   type AskExecutionArgs,
   type RunAskCoreDeps,
 } from './ask-core.js';
@@ -274,5 +275,14 @@ describe('resolveAskLlmTimeoutMs (#889)', () => {
     expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '-500' })).toBe(120_000);
     expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '1.5' })).toBe(120_000);
     expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: 'abc' })).toBe(120_000);
+  });
+
+  it('clamps a value above the Node 32-bit timer ceiling instead of overflowing to 1ms', () => {
+    // 2^31 overflows Node's setTimeout and would silently become a 1ms abort.
+    expect(MAX_ASK_LLM_TIMEOUT_MS).toBe(2_147_483_647);
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '2147483648' })).toBe(MAX_ASK_LLM_TIMEOUT_MS);
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: '999999999999' })).toBe(MAX_ASK_LLM_TIMEOUT_MS);
+    // At-or-below the ceiling passes through unchanged.
+    expect(resolveAskLlmTimeoutMs({ KB_ASK_LLM_TIMEOUT_MS: String(MAX_ASK_LLM_TIMEOUT_MS) })).toBe(MAX_ASK_LLM_TIMEOUT_MS);
   });
 });
