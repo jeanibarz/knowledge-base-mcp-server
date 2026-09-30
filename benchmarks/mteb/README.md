@@ -72,7 +72,11 @@ comparison with older records.
 How to extend coverage: pass more tasks to the runner's `--tasks` flag on
 `benchmarks/mteb_submit.py` (comma separated, e.g. illustratively
 `--tasks=SciFact,NFCorpus,FiQA2018,ArguAna`; see the **Running** section above
-for the full invocation) and re-record. The recorder folds every task the run
-returns into the record's `tasks` array and recomputes `mean_main_score` over
-all of them, so the committed record's scope always matches whatever `--tasks`
-was run. If task coverage grows, update this note to match.
+for the full invocation) and re-record. The recorder folds **every** per-task
+result JSON it finds under `--results-dir` into the record's `tasks` array and
+recomputes `mean_main_score` over all of them — it does not filter by the
+`--tasks` you just requested. So run against a clean/isolated `--results-dir`:
+stale results left in that directory from an earlier run are folded in too and
+would silently widen the record's scope beyond the current `--tasks`. After
+re-recording, confirm the record's `tasks` array is exactly the set you
+intended, and if task coverage grows, update this note to match.
