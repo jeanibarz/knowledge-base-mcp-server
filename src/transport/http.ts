@@ -180,12 +180,32 @@ export class StreamableHttpHost extends BaseHttpHost<StreamableHTTPServerTranspo
     res: http.ServerResponse,
     parsedBody: unknown,
   ): Promise<void> {
+    const releaseSlot = this.reserveSessionSlot();
+    if (releaseSlot === null) {
+      res.setHeader('Retry-After', '1');
+      respondJsonRpcError(res, 503, -32000, 'Session capacity reached; retry later');
+      return;
+    }
+    try {
+      await this.initializeSession(req, res, parsedBody, releaseSlot);
+    } finally {
+      releaseSlot();
+    }
+  }
+
+  private async initializeSession(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    parsedBody: unknown,
+    releaseSlot: () => void,
+  ): Promise<void> {
     let transport!: StreamableHTTPServerTransport;
     const mcp = this.options.createMcpServer();
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId) => {
         this.registerSession(sessionId, { transport, mcp });
+        releaseSlot();
       },
     });
     transport.onclose = () => {
@@ -200,6 +220,12 @@ export class StreamableHttpHost extends BaseHttpHost<StreamableHTTPServerTranspo
     try {
       await mcp.connect(transport);
       await transport.handleRequest(req, res, parsedBody);
+      // The SDK rejects invalid initialize requests with an HTTP error instead
+      // of throwing. Close those unregistered instances as well.
+      if (!transport.sessionId) {
+        await transport.close();
+        await mcp.close();
+      }
     } catch (err) {
       if (transport.sessionId) {
         this.unregisterSession(transport.sessionId);

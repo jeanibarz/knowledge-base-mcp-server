@@ -10,6 +10,20 @@ import {
   parseAllowedHosts,
 } from './transport-config.js';
 
+describe('loadTransportConfig — maxSessions', () => {
+  it.each([undefined, '', '0'])('keeps %s unbounded', (raw) => {
+    expect(loadTransportConfig({ MCP_MAX_SESSIONS: raw }).maxSessions).toBe(0);
+  });
+
+  it('loads a positive session cap', () => {
+    expect(loadTransportConfig({ MCP_MAX_SESSIONS: '2' }).maxSessions).toBe(2);
+  });
+
+  it.each(['-1', '1.5', 'NaN', 'Infinity', 'many'])('rejects invalid cap %s', (raw) => {
+    expect(() => loadTransportConfig({ MCP_MAX_SESSIONS: raw })).toThrow('MCP_MAX_SESSIONS');
+  });
+});
+
 describe('defaultAllowedHosts', () => {
   it('includes host:port and bare host plus loopback aliases for a loopback bind', () => {
     const hosts = defaultAllowedHosts('127.0.0.1', 8765);
