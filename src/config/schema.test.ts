@@ -531,3 +531,50 @@ describe('daemon concurrency knobs (#881)', () => {
     }));
   });
 });
+
+describe('KB_ASK_LLM_TIMEOUT_MS ask-generation timeout knob (#889)', () => {
+  it('is registered as a bounded duration with a 120000ms default', () => {
+    expect(isRegisteredConfigName('KB_ASK_LLM_TIMEOUT_MS')).toBe(true);
+    const spec = CONFIG_SCHEMA.find((entry) => entry.name === 'KB_ASK_LLM_TIMEOUT_MS');
+    expect(spec).toEqual(expect.objectContaining({
+      kind: 'duration',
+      default: '120000',
+      min: 1,
+      // Above Node's 32-bit setTimeout ceiling the delay overflows to 1ms (#889).
+      max: 2_147_483_647,
+    }));
+  });
+
+  it('accepts a positive override and defaults in config show output', () => {
+    const report = validateConfigEnv({ KB_ASK_LLM_TIMEOUT_MS: '4500' });
+    expect(report.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'KB_ASK_LLM_TIMEOUT_MS', status: 'ok', value: '4500' }),
+    ]));
+
+    const shown = new Map(showConfigEnv({}).entries.map((entry) => [entry.name, entry]));
+    expect(shown.get('KB_ASK_LLM_TIMEOUT_MS')).toEqual(expect.objectContaining({
+      value: '120000',
+      source: 'default',
+    }));
+  });
+
+  it('rejects out-of-range and malformed values', () => {
+    const outOfRange = validateConfigEnv({ KB_ASK_LLM_TIMEOUT_MS: '0' });
+    expect(outOfRange.status).toBe('error');
+    expect(outOfRange.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'KB_ASK_LLM_TIMEOUT_MS', status: 'error', message: expect.stringContaining('>= 1') }),
+    ]));
+
+    const malformed = validateConfigEnv({ KB_ASK_LLM_TIMEOUT_MS: 'soon' });
+    expect(malformed.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'KB_ASK_LLM_TIMEOUT_MS', status: 'error', message: expect.stringContaining('integer') }),
+    ]));
+
+    // Above the 32-bit setTimeout ceiling must be rejected, not silently accepted (#889).
+    const overflow = validateConfigEnv({ KB_ASK_LLM_TIMEOUT_MS: '2147483648' });
+    expect(overflow.status).toBe('error');
+    expect(overflow.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'KB_ASK_LLM_TIMEOUT_MS', status: 'error', message: expect.stringContaining('<= 2147483647') }),
+    ]));
+  });
+});
