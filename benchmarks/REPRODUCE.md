@@ -39,9 +39,10 @@ The committed artifacts these numbers come from:
 - MTEB — [results/mteb/nomic.json](results/mteb/nomic.json)
 - BRIGHT — [results/bright/nomic/bright-report.md](results/bright/nomic/bright-report.md)
 
-Every committed result JSON records the exact `command`, git SHA, dataset
-checksum, and runtime versions that produced it. The commands below match those
-recorded `command` fields.
+The BEIR per-cell result JSONs record the exact `command`, git SHA, dataset
+checksum, and runtime versions that produced them; the MTEB and BRIGHT artifacts
+record their model, tool version, and per-task scores (BRIGHT also records its git
+SHA). The commands below match those recorded `command` fields where present.
 
 ---
 
@@ -267,7 +268,7 @@ committed [results/bright/nomic/bright-report.md](results/bright/nomic/bright-re
 ### Expected numbers (reference)
 
 From [results/bright/nomic/bright-report.md](results/bright/nomic/bright-report.md)
-(git `e4eea16`), nDCG@10 by task and mode:
+(git `abe8012`), nDCG@10 by task and mode:
 
 | task | dense | hybrid+rerank |
 | --- | ---: | ---: |
@@ -292,9 +293,10 @@ the official BRIGHT harness. See [bright/README.md](bright/README.md).
   compares fresh nDCG@10 against committed baselines with a tolerance band and a
   significance test (lexical always; dense via the deterministic `fake`
   provider). See [benchmarks/README.md](README.md) → "CI quality gate".
-- **Every run is self-describing.** The result JSON records git SHA, dataset
-  checksum, command, runtime versions, and chunking config, so any number can be
-  traced back to the exact configuration that produced it.
+- **The artifacts are self-describing.** The BEIR per-cell result JSONs record git
+  SHA, dataset checksum, command, runtime versions, and chunking config; the MTEB
+  and BRIGHT artifacts record model and tool version. Any number can be traced back
+  to the artifact that produced it.
 - **Nothing here is an official submission.** All numbers are local reproductions
   until the runner is validated against the official BEIR/MTEB/BRIGHT tooling and
   submission workflows.
