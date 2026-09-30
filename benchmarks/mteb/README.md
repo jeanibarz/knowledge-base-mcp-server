@@ -42,3 +42,37 @@ loader instead.
 No score is fabricated. With no `mteb` package or no served model, the recorder
 produces a *pending* record that says so. A real result needs the `mteb` package
 and the active embedding model served (Ollama).
+
+## Scope of the committed records
+
+The committed records under `benchmarks/results/mteb/` (`nomic.json`,
+`qwen3.json`) cover a **two-task subset of MTEB — `SciFact` and `NFCorpus`
+only** — not the full MTEB benchmark. Their `tasks` arrays list exactly those
+two entries, and `mean_main_score` is the mean over just those two tasks. **They
+are not a full-MTEB result and must not be read as an MTEB leaderboard rank.**
+
+Why these two tasks: both are small BEIR retrieval datasets, so a run is quick
+against a served model. `SciFact` (scientific claim verification) is also the
+dataset the pipeline baseline uses (see
+`benchmarks/results/beir/baseline/README.md`, where it is described as a
+BM25-friendly domain), which keeps the embedding-model number anchored to a
+domain the pipeline already reports. `NFCorpus` (medical information retrieval)
+adds a second, distinct domain that the pipeline baseline does not cover.
+Together they are a quick sanity signal on the served model, **not** a coverage
+claim.
+
+How to interpret: `mean_main_score` is the mean of MTEB's `main_score` (nDCG@10
+for these two retrieval tasks) over `SciFact` and `NFCorpus`. Use it to compare
+embedding models on these same two tasks — **not** as a position in the
+published MTEB ranking, which aggregates dozens of tasks across several task
+types. Only compare records that share the same `tasks` list: because the mean
+mixes every task in the record, adding a task changes the mean and breaks
+comparison with older records.
+
+How to extend coverage: pass more tasks to the runner's `--tasks` flag on
+`benchmarks/mteb_submit.py` (comma separated, e.g. illustratively
+`--tasks=SciFact,NFCorpus,FiQA2018,ArguAna`; see the **Running** section above
+for the full invocation) and re-record. The recorder folds every task the run
+returns into the record's `tasks` array and recomputes `mean_main_score` over
+all of them, so the committed record's scope always matches whatever `--tasks`
+was run. If task coverage grows, update this note to match.
