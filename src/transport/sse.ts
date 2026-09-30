@@ -65,11 +65,11 @@ export class SseHost extends BaseHttpHost<SSEServerTransport> {
 
     if (method === 'GET' && path === SSE_ENDPOINT) {
       // SSE GET is long-lived; we do NOT increment inFlight (would block
-      // drain). Status logged immediately as 200; the SDK has already
-      // written headers by the time start() resolves.
+      // drain). Successful opens are logged after the SDK writes headers;
+      // capacity refusals retain their 503 status in the access log.
       try {
         await this.handleSseOpen(req, res);
-        return 200;
+        return res.statusCode;
       } catch (err) {
         logger.error(`[sse] error opening stream: ${(err as Error).message}`);
         if (!res.headersSent) {
@@ -102,6 +102,20 @@ export class SseHost extends BaseHttpHost<SSEServerTransport> {
     _req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
+    const releaseSlot = this.reserveSessionSlot();
+    if (releaseSlot === null) {
+      res.setHeader('Retry-After', '1');
+      respond(res, 503, 'Session capacity reached; retry later');
+      return;
+    }
+    try {
+      await this.connectSse(res, releaseSlot);
+    } finally {
+      releaseSlot();
+    }
+  }
+
+  private async connectSse(res: http.ServerResponse, releaseSlot: () => void): Promise<void> {
     const transport = new SSEServerTransport(MESSAGES_ENDPOINT, res);
     const mcp = this.options.createMcpServer();
     const sessionId = transport.sessionId;
@@ -115,10 +129,11 @@ export class SseHost extends BaseHttpHost<SSEServerTransport> {
       this.unregisterSession(sessionId);
     };
     this.registerSession(sessionId, { transport, mcp });
+    releaseSlot();
     try {
       await mcp.connect(transport);
     } catch (err) {
-      this.unregisterSession(sessionId);
+      await this.closeEntry(sessionId, { transport, mcp });
       throw err;
     }
   }

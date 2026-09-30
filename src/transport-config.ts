@@ -39,6 +39,8 @@ export interface TransportConfig {
    */
   allowedHosts?: string[];
   authBackoff?: AuthBackoffConfig;
+  /** Maximum live or initializing remote sessions; zero/unset is unbounded. */
+  maxSessions?: number;
 }
 
 export class TransportConfigError extends Error {
@@ -252,6 +254,7 @@ export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): Trans
   const authToken = resolveAuthToken(env);
   const allowedOrigins = parseAllowedOrigins(env.MCP_ALLOWED_ORIGINS);
   const allowedHosts = parseAllowedHosts(env.MCP_ALLOWED_HOSTS, bindAddr, port);
+  const maxSessions = parseNonNegativeInteger('MCP_MAX_SESSIONS', env.MCP_MAX_SESSIONS, 0);
   const authBackoff = {
     failureThreshold: parseNonNegativeInteger(
       'MCP_AUTH_BACKOFF_THRESHOLD',
@@ -286,5 +289,5 @@ export function loadTransportConfig(env: NodeJS.ProcessEnv = process.env): Trans
     }
   }
 
-  return { transport, port, bindAddr, authToken, allowedOrigins, allowedHosts, authBackoff };
+  return { transport, port, bindAddr, authToken, allowedOrigins, allowedHosts, authBackoff, maxSessions };
 }
