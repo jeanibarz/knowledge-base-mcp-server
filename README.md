@@ -778,6 +778,8 @@ npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --lexical-un
 
 The runner builds a temporary KB root and emits metrics JSON plus a TREC run file, along with reproduction metadata: git SHA, command, dataset checksum, runtime versions, chunking config, and latency percentiles. **These are local artifacts, not official BEIR leaderboard submissions** — the lexical source path is scored at document level, matching `kb search --mode=lexical --lexical-unit=source`. See [benchmarks/README.md](benchmarks/README.md#beirscifact-local-retrieval-benchmark) for smoke-test commands and caveats, and [benchmarks/results/README.md](benchmarks/results/README.md) for the archived SciFact run.
 
+To reproduce the committed **dense / small-model** numbers (BEIR, MTEB, and BRIGHT with `nomic-embed-text` on Ollama) end to end, follow the step-by-step runbook in [benchmarks/REPRODUCE.md](benchmarks/REPRODUCE.md).
+
 Optuna tuning is optional and runs only when you invoke it. This sweeps lexical chunking parameters and writes a replayable best-config file:
 
 ```bash
