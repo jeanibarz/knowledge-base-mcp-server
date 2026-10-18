@@ -1,0 +1,43 @@
+name: Sonar
+
+# Pushes analysis to the SonarQube project bound in sonar-project.properties —
+# enforces the quality gate (duplication, maintainability, coverage, security
+# hotspots) repo-wide instead of leaving findings to SonarLint in the IDE.
+#
+# Required secret: SONAR_TOKEN (from the SonarQube/SonarCloud account).
+# If the project lives on a self-hosted SonarQube Server, also create a
+# SONAR_HOST_URL secret and drop `sonar.organization` from
+# sonar-project.properties.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sonar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so Sonar gets blame/new-code attribution.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 24
+      - run: npm ci
+      # Produces coverage/lcov.info, consumed via sonar-project.properties.
+      - run: npm run test:coverage
+      - name: SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          # Fail the job when the project quality gate is red.
+          args: >
+            -Dsonar.qualitygate.wait=true

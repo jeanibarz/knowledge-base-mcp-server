@@ -1,0 +1,6 @@
+{
+    "sonarlint.connectedMode.project": {
+        "connectionId": "gundestrup",
+        "projectKey": "gundestrup_knowledge-base-mcp-server"
+    }
+}
