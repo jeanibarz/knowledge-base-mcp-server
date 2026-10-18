@@ -17,6 +17,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { KBError } from '../errors.js';
 import { assertNoTraversal, resolveKbPath } from '../kb-fs.js';
+import { makeTempDir } from '../test-support/tempdir.js';
 
 const NUM_RUNS = process.env.KB_PROPERTY_DEEP === '1' ? 1000 : 50;
 
@@ -81,7 +82,7 @@ describe('resolveKbPath — property tests (issue #219)', () => {
   let kbDir: string;
 
   beforeAll(async () => {
-    rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-prop-resolve-'));
+    rootDir = await makeTempDir('kb-prop-resolve-');
     kbDir = path.join(rootDir, kbName);
     await fsp.mkdir(kbDir, { recursive: true });
     // Create a couple of real files so mustExist-true probes can hit one.

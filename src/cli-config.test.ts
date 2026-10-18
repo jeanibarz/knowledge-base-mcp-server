@@ -11,6 +11,7 @@ import {
   runConfig,
 } from './cli-config.js';
 import { resetProjectConfigForTests } from './config/project-config.js';
+import { makeTempDir } from './test-support/tempdir.js';
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_CWD = process.cwd();
@@ -29,7 +30,7 @@ beforeEach(async () => {
   resetProjectConfigForTests();
   stdout = '';
   stderr = '';
-  tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-config-validate-'));
+  tempDir = await makeTempDir('kb-config-validate-');
   jest.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
     stdout += chunk.toString();
     return true;

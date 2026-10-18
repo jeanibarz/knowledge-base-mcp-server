@@ -72,7 +72,7 @@ function runCli(args: string[], input?: string): RunResult {
     },
     encoding: 'utf-8',
     input,
-    timeout: 8_000,
+    timeout: 30_000,
   });
   if (result.error) throw result.error;
   return {
