@@ -13,6 +13,7 @@
 // don't replay every HEAD request.
 
 import * as fsp from 'fs/promises';
+import type { Dirent } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
@@ -291,7 +292,7 @@ async function selectKbs(rootDir: string, kbFilter: string | undefined): Promise
 async function listMarkdownFiles(kbDir: string): Promise<string[]> {
   const out: string[] = [];
   async function walk(dir: string): Promise<void> {
-    let entries: Awaited<ReturnType<typeof fsp.readdir>> = [];
+    let entries: Dirent[] = [];
     try {
       entries = await fsp.readdir(dir, { withFileTypes: true });
     } catch {

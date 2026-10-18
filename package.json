@@ -108,7 +108,7 @@
     "zod": "^3.23.8"
   },
   "optionalDependencies": {
-    "@opentelemetry/exporter-trace-otlp-http": "^0.200.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
     "@opentelemetry/resources": "^2.0.0",
     "@opentelemetry/sdk-trace-node": "^2.0.0",
     "@opentelemetry/semantic-conventions": "^1.30.0"
@@ -137,5 +137,14 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "faiss-node@0.5.1": true,
+    "fsevents@2.3.3": true,
+    "hnswlib-node@3.0.0": true,
+    "onnxruntime-node@1.21.0": true,
+    "protobufjs@7.6.6": true,
+    "sharp@0.34.5": true
   }
 }
