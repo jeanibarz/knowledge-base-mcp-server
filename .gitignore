@@ -31,3 +31,6 @@ STOP
 
 # Ad-hoc logging-throughput probe output (synthetic payloads, ~7MB/run)
 probe-concurrent-*.jsonl
+
+# IDE-local settings (SonarLint binding, etc.)
+.vscode/
