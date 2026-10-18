@@ -56,6 +56,9 @@ const baseConfig = {
   extensionsToTreatAsEsm: ['.ts'],
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
+    // uuid@14 (nested under @langchain/community 1.x) is ESM-only; jest's CJS
+    // runtime can't parse it. Map to the CJS shim — see test-support/uuid-shim.ts.
+    '^uuid$': '<rootDir>/src/test-support/uuid-shim.ts',
   },
   transform: {
     '^.+\\.ts$': [

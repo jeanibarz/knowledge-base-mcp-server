@@ -23,7 +23,7 @@ import * as fsp from 'fs/promises';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { Document } from '@langchain/core/documents';
-import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
+import { MarkdownTextSplitter, RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { resolveChunkSize } from './config/indexing.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { isContextualRetrievalEnabled } from './config/contextual-preface.js';
