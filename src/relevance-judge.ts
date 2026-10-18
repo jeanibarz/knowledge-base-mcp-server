@@ -283,7 +283,7 @@ function parseJudgeJson(content: string): RawJudgeResponse {
 }
 
 function stripMarkdownJsonFence(content: string): string {
-  const match = content.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const match = content.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);  // NOSONAR typescript:S8786 — fence-bounded lazy match on LLM reply
   return match ? match[1].trim() : content;
 }
 

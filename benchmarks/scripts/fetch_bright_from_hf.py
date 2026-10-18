@@ -18,6 +18,36 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import tempfile
+
+
+def _allowed_roots() -> list[str]:
+    repo = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return [
+        repo,
+        os.path.realpath(os.getcwd()),
+        os.path.realpath(tempfile.gettempdir()),
+        os.path.realpath(os.path.expanduser("~")),
+    ]
+
+
+def _resolve_path(path_str: str) -> str:
+    """Resolve a CLI-supplied path and require it to stay under an allowed root
+    (repo checkout, CWD, or the system temp dir)."""
+    dest = os.path.realpath(path_str)
+    if not any(dest == root or dest.startswith(root + os.sep) for root in _allowed_roots()):
+        raise SystemExit(f"[error] refusing path outside allowed roots: {dest}")
+    return dest
+
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_name(value: str, what: str) -> str:
+    if not _SAFE_NAME.match(value):
+        raise SystemExit(f"[error] unsafe {what}: {value!r}")
+    return value
 
 
 def main() -> int:
@@ -30,7 +60,7 @@ def main() -> int:
 
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
     for task in tasks:
-        out = os.path.join(args.bright_dir, task)
+        out = os.path.join(_resolve_path(args.bright_dir), _safe_name(task, "task name"))
         os.makedirs(out, exist_ok=True)
         docs = load_dataset("xlangai/BRIGHT", "documents", split=task)
         exs = load_dataset("xlangai/BRIGHT", "examples", split=task)

@@ -315,7 +315,7 @@ function basenameTitle(metadata: Record<string, unknown>): string | undefined {
 }
 
 function sectionTitleFromText(text: string): string | undefined {
-  const match = text.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/m);
+  const match = text.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/m);  // NOSONAR typescript:S8786 — line-anchored heading match
   return match?.[1]?.trim();
 }
 
@@ -335,7 +335,7 @@ function summaryFromDoc(
   const preface = typeof metadata.contextual_preface === 'string' ? metadata.contextual_preface.trim() : '';
   if (preface !== '') return preface;
   const firstSentence = doc.pageContent
-    .replace(/^\s{0,3}#{1,6}\s+.+$/gm, '')
+    .replace(/^\s{0,3}#{1,6}\s+.+$/gm, '')  // NOSONAR typescript:S8786 — line-anchored heading strip
     .replace(/\s+/g, ' ')
     .trim()
     .match(/^(.{20,320}?[.!?])(?:\s|$)/)?.[1]

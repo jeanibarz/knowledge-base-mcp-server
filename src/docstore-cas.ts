@@ -21,7 +21,7 @@
 // The reader path (`FaissStore.load`) is unchanged — `fs.readFile` follows
 // hardlinks transparently.
 
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
@@ -422,9 +422,7 @@ export async function withCasLock<T>(
 }
 
 async function atomicWriteBytes(targetPath: string, data: Buffer): Promise<void> {
-  const tmpPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}.${Math.random()
-    .toString(16)
-    .slice(2)}`;
+  const tmpPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}.${randomBytes(8).toString('hex')}`;
   const handle = await fsp.open(tmpPath, 'w');
   try {
     await handle.writeFile(data);

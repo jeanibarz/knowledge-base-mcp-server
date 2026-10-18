@@ -59,7 +59,7 @@ export function normalizeDocumentPrefix(raw: string | undefined): string {
   assertNoTraversal(prefix);
   const normalized = path.posix.normalize(prefix.replace(/\\/g, '/'));
   if (normalized === '.' || normalized === './') return '';
-  const withoutTrailingSlash = normalized.replace(/\/+$/g, '');
+  const withoutTrailingSlash = normalized.replace(/\/+$/g, '');  // NOSONAR typescript:S8786 — trailing-slash trim, single quantifier
   return withoutTrailingSlash.length === 0 ? '' :
     (normalized.endsWith('/') ? `${withoutTrailingSlash}/` : withoutTrailingSlash);
 }

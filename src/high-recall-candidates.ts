@@ -369,7 +369,7 @@ function duplicateFingerprint(candidate: HybridChunk): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 800);
-  return createHash('sha1').update(source).update('\0').update(normalizedContent).digest('hex');
+  return createHash('sha256').update(source).update('\0').update(normalizedContent).digest('hex');
 }
 
 function sourceKey(metadata: Record<string, unknown>): string | null {

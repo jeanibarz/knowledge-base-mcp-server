@@ -26,7 +26,7 @@
 // back to the cold path (re-parse), so a misconfigured `EXTRACTION_TEXT_CACHE_DIR`
 // or a full disk degrades to "no cache" rather than failing the ingest.
 
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import type { Stats } from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
@@ -126,7 +126,7 @@ export async function writeCachedExtraction(
   text: string,
 ): Promise<void> {
   const targetPath = cacheEntryPath(cacheDir, cacheKey);
-  const tmpPath = `${targetPath}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  const tmpPath = `${targetPath}.tmp.${process.pid}.${Date.now()}.${randomBytes(8).toString('hex')}`;
   try {
     await fsp.mkdir(cacheDir, { recursive: true });
     const handle = await fsp.open(tmpPath, 'w');

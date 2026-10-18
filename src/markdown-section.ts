@@ -34,7 +34,7 @@ export interface SpliceResult {
  * level prefix so `## Foo` cannot accidentally match `### Foo`.
  */
 export function parseHeadingSpec(spec: string): HeadingSpec {
-  const match = spec.match(/^(#{1,6})\s+(\S.*?)\s*$/);
+  const match = spec.match(/^(#{1,6})\s+(\S.*?)\s*$/);  // NOSONAR typescript:S8786 — bounded anchor spec, single lazy quantifier
   if (!match) {
     throw new Error(
       `--append-section must be of the form "<#..######> <heading text>" (e.g. "## OSS gate"); got ${JSON.stringify(spec)}`,

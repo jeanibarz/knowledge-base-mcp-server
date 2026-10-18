@@ -72,7 +72,7 @@ export async function writeFileAtomicDurable(
   data: string | Uint8Array,
   options: WriteFileAtomicDurableOptions = {},
 ): Promise<void> {
-  const tmpPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  const tmpPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}.${crypto.randomBytes(8).toString('hex')}`;
   const permissions = options.mode === undefined ? undefined : options.mode & 0o7777;
   let handle: fsp.FileHandle | null = await fsp.open(tmpPath, 'w', permissions);
   try {

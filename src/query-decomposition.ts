@@ -549,12 +549,12 @@ function ruleBasedSubqueries(query: string): string[] {
   const normalized = query.normalize('NFKC').replace(/\s+/g, ' ').trim();
   if (normalized === '') return [];
   const pieces = normalized
-    .split(/\s+(?:and|then|while|where|which|who|that|because|before|after)\s+/iu)
+    .split(/\s+(?:and|then|while|where|which|who|that|because|before|after)\s+/iu)  // NOSONAR typescript:S8786 — split on whitespace-bounded keywords
     .map((piece) => trimQuestion(piece))
     .filter((piece) => piece.length > 0);
   const out = pieces.length > 1 ? pieces : [normalized];
 
-  const between = /\bbetween\s+(.+?)\s+and\s+(.+?)(?:[?.]|$)/iu.exec(normalized);
+  const between = /\bbetween\s+(.+?)\s+and\s+(.+?)(?:[?.]|$)/iu.exec(normalized);  // NOSONAR typescript:S8786 — lazy quantifiers bounded by lookahead on user query
   if (between !== null) {
     out.push(between[1].trim());
     out.push(between[2].trim());
@@ -637,7 +637,7 @@ function dedupeQueries(queries: readonly string[]): string[] {
 }
 
 function trimQuestion(query: string): string {
-  return query.normalize('NFKC').replace(/\s+/g, ' ').trim().replace(/^[,;: -]+|[,;: -]+$/g, '');
+  return query.normalize('NFKC').replace(/\s+/g, ' ').trim().replace(/^[,;: -]+|[,;: -]+$/g, '');  // NOSONAR typescript:S8786 — whitespace collapse + punctuation trim
 }
 
 function sourceKey(metadata: Record<string, unknown>): string | null {

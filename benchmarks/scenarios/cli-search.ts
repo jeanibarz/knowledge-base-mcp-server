@@ -274,7 +274,7 @@ export function parseCliSearchTimingFromStdout(stdout: string): CliSearchTimingF
   // Markdown timing footer: `> _Timing (dense): k=Vms, …._`. The body itself
   // contains `_` characters (e.g. `bootstrap_ms`) so the lazy capture must be
   // anchored to end-of-line via the `m` flag instead of trying to exclude `_`.
-  const footerMatch = /_Timing[^:]*:\s*(.+?)\._\s*$/m.exec(stdout);
+  const footerMatch = /_Timing[^:]*:\s*(.+?)\._\s*$/m.exec(stdout);  // NOSONAR typescript:S8786 — line-anchored footer match on CLI stdout
   if (footerMatch) {
     const pairs = footerMatch[1].split(',').map((s) => s.trim());
     const out: Record<string, unknown> = {};

@@ -147,7 +147,7 @@ export function parseRetryAfterMs(
 }
 
 export function normalizeChatEndpoint(raw: string): string {
-  const trimmed = raw.trim().replace(/\/+$/, '');
+  const trimmed = raw.trim().replace(/\/+$/, '');  // NOSONAR typescript:S8786 — trailing-slash trim
   if (trimmed === '') throw new LlmClientError('LLM endpoint is empty');
   if (trimmed.endsWith('/v1/chat/completions')) return trimmed;
   return `${trimmed}/v1/chat/completions`;

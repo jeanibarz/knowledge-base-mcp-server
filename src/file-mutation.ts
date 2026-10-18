@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
@@ -74,7 +75,7 @@ export async function createFileAtomically(
     throw error;
   }
 
-  const tempPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  const tempPath = `${targetPath}.kb-tmp.${process.pid}.${Date.now()}.${randomBytes(8).toString('hex')}`;
   try {
     const handle = await fsp.open(tempPath, 'wx');
     try {

@@ -40,6 +40,7 @@ export function resolveBuildCommit(packageRoot: string = resolvePackageRoot()): 
   }
 
   try {
+    // NOSONAR typescript:S4036 — resolving git via PATH is intentional; git's install location varies by system.
     return execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: packageRoot,
       encoding: 'utf-8',

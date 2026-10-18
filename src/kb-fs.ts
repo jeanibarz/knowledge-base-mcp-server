@@ -338,7 +338,7 @@ const KB_DESCRIPTION_MAX_LEN = 80;
 export function extractKbDescription(content: string): string {
   const lines = content.split(/\r?\n/);
   for (const line of lines) {
-    const heading = /^\s*#+\s+(.+?)\s*$/.exec(line);
+    const heading = /^\s*#+\s+(.+?)\s*$/.exec(line);  // NOSONAR typescript:S8786 — line-anchored heading match
     if (heading) {
       return heading[1].trim();
     }

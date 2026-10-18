@@ -151,7 +151,7 @@ function timestampRunId(now: Date): string {
 }
 
 function safeFileSegment(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'arm';
+  return value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'arm';  // NOSONAR typescript:S8786 — slug sanitizer on bounded id
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

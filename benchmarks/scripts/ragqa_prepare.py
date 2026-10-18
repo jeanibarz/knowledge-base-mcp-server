@@ -35,6 +35,34 @@ def safe_id(raw: str) -> str:
     return f"{keep or 'p'}-{suffix}"
 
 
+def _allowed_roots() -> list[str]:
+    repo = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return [
+        repo,
+        os.path.realpath(os.getcwd()),
+        os.path.realpath(tempfile.gettempdir()),
+        os.path.realpath(os.path.expanduser("~")),
+    ]
+
+
+def _resolve_path(path_str: str) -> str:
+    """Resolve a CLI-supplied path and require it to stay under an allowed root
+    (repo checkout, CWD, or the system temp dir)."""
+    dest = os.path.realpath(path_str)
+    if not any(dest == root or dest.startswith(root + os.sep) for root in _allowed_roots()):
+        raise SystemExit(f"[error] refusing path outside allowed roots: {dest}")
+    return dest
+
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_name(value: str, what: str) -> str:
+    if not _SAFE_NAME.match(value):
+        raise SystemExit(f"[error] unsafe {what}: {value!r}")
+    return value
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=150)
@@ -45,12 +73,14 @@ def main() -> int:
 
     from datasets import load_dataset
 
-    os.makedirs(args.data_dir, exist_ok=True)
-    os.makedirs(args.docs_dir, exist_ok=True)
+    data_dir = _resolve_path(args.data_dir)
+    docs_dir = _resolve_path(args.docs_dir)
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(docs_dir, exist_ok=True)
 
-    ds = load_dataset("hotpotqa/hotpot_qa", "distractor", split=args.split, streaming=True)
+    ds = load_dataset("hotpotqa/hotpot_qa", "distractor", split=_safe_name(args.split, "split"), streaming=True)
 
-    gold_path = os.path.join(args.data_dir, "hotpotqa.jsonl")
+    gold_path = os.path.join(data_dir, "hotpotqa.jsonl")
     paramap: dict[str, str] = {}
     n_written = 0
 
@@ -86,7 +116,7 @@ def main() -> int:
                 pid = safe_id(f"{qid}::{t}")
                 if pid not in paramap:
                     paramap[pid] = para
-                    doc_path = os.path.join(args.docs_dir, f"{pid}.md")
+                    doc_path = os.path.join(docs_dir, f"{pid}.md")
                     with open(doc_path, "w", encoding="utf-8") as df:
                         df.write(f"# {t}\n\n{para}\n")
 
@@ -98,11 +128,11 @@ def main() -> int:
             }, ensure_ascii=False) + "\n")
             n_written += 1
 
-    with open(os.path.join(args.data_dir, "hotpotqa_paramap.json"), "w", encoding="utf-8") as pf:
+    with open(os.path.join(data_dir, "hotpotqa_paramap.json"), "w", encoding="utf-8") as pf:
         json.dump(paramap, pf, ensure_ascii=False)
 
     print(f"[done] hotpotqa: items={n_written} paragraphs={len(paramap)} "
-          f"-> gold={gold_path}, docs={args.docs_dir}")
+          f"-> gold={gold_path}, docs={docs_dir}")
     return 0
 
 

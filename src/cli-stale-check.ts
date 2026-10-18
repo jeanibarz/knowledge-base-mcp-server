@@ -317,9 +317,9 @@ async function listMarkdownFiles(kbDir: string): Promise<string[]> {
 
 const URL_RE = /https?:\/\/[^\s)\]<>"'`]+/g;
 const TILDE_RE = /~\/[A-Za-z0-9_./~@:+\-]+/g;
-const MD_LINK_RE = /\[[^\]\n]*\]\(([^)\s]+)\)/g;
+const MD_LINK_RE = /\[[^\]\n]*\]\(([^)\s]+)\)/g;  // NOSONAR typescript:S8786 — negated classes only, linear
 // Trailing punctuation often glued to extracted refs; trim it before checking.
-const TRAILING_PUNCT_RE = /[.,;:!?)\]]+$/;
+const TRAILING_PUNCT_RE = /[.,;:!?)\]]+$/;  // NOSONAR typescript:S8786 — trailing punctuation trim
 
 export function extractReferences(content: string): Reference[] {
   const refs: Reference[] = [];

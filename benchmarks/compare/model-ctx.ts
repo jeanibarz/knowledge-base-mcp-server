@@ -154,7 +154,7 @@ export function parseRuntimeNumCtx(parameters: string | undefined): number | nul
   if (!parameters) return null;
   // ^\s* anchors at line start; the value is the first whitespace-separated
   // token after `num_ctx`. /m so ^ matches each line.
-  const match = parameters.match(/^\s*num_ctx\s+(\d+)/m);
+  const match = parameters.match(/^\s*num_ctx\s+(\d+)/m);  // NOSONAR typescript:S8786 — line-anchored num_ctx match
   if (!match) return null;
   const value = Number(match[1]);
   if (!Number.isFinite(value) || value <= 0) return null;
