@@ -18,6 +18,9 @@ env:
   KOOKR_ENGINE_REF: dbedfc798b6b619a3c80bd6bc3f9d8b91fdc890d
   TSX_VERSION: 4.22.4
 
+permissions:
+  contents: read
+
 jobs:
   checklist:
     name: Anti-drift checklist

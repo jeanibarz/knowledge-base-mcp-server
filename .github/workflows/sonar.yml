@@ -21,19 +21,22 @@ jobs:
   sonar:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history so Sonar gets blame/new-code attribution.
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           cache: npm
           node-version: 24
+      # allowScripts in package.json gates lifecycle scripts to the pinned
+      # native-build allowlist; --ignore-scripts would break faiss-node/hnswlib-node.
       - run: npm ci
       # Produces coverage/lcov.info, consumed via sonar-project.properties.
       - run: npm run test:coverage
       - name: SonarQube scan
-        uses: SonarSource/sonarqube-scan-action@v5
+        # v8+ — v5 is vulnerable to CVE-2025-59844 (argument injection).
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}

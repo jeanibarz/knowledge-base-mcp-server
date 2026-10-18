@@ -5,6 +5,9 @@ on:
     - cron: '0 4 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   chaos:
     runs-on: ubuntu-latest
