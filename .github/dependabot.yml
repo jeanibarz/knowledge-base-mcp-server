@@ -42,6 +42,12 @@ updates:
       types:
         patterns:
           - "@types/*"
+    # @types/node must track the minimum supported runtime (engines: >=20,
+    # CI matrix 20/24) — a major jump would declare APIs absent on Node 20.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
   - package-ecosystem: github-actions
     directory: /
     schedule:
