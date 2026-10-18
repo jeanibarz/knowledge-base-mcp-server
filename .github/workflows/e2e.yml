@@ -25,10 +25,10 @@ jobs:
       fail-fast: false
       # Match `test.yml`'s matrix: the tarball/handshake regressions this suite
       # guards (native faiss-node ABI, ESM loader, undici/SSE fetch) are
-      # Node-version-sensitive, and the package ships `engines >=20`, so the
+      # Node-version-sensitive, and the package ships `engines >=22`, so the
       # min-supported runtime must be exercised, not just the newest.
       matrix:
-        node: [20, 24]
+        node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

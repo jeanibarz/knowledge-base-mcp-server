@@ -122,7 +122,7 @@
     "@types/html-to-text": "^9.0.4",
     "@types/jest": "^30.0.0",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^20.11.5",
+    "@types/node": "^22.15.0",
     "@types/pdf-parse": "^1.1.5",
     "@types/pdfkit": "^0.17.6",
     "@types/proper-lockfile": "^4.1.4",
@@ -137,7 +137,7 @@
     "typescript-eslint": "^8.61.1"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "overrides": {
     "@langchain/community": {
