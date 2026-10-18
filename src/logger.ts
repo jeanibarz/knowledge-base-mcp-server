@@ -171,6 +171,24 @@ function writeCanonical(jsonLine: string): void {
   }
 }
 
+/**
+ * Ends the LOG_FILE stream and resolves once buffered text writes have
+ * flushed. Call before process.exit() — the `'exit'` handler above cannot
+ * await, so without this hook the last log lines are dropped on fast exits
+ * (issue #979). Canonical lines are already synchronous (appendFileSync).
+ */
+export function closeLogFile(): Promise<void> {
+  return new Promise((resolve) => {
+    const stream = fileStream;
+    if (!stream) {
+      resolve();
+      return;
+    }
+    fileStream = undefined;
+    stream.end(() => resolve());
+  });
+}
+
 export const logger = {
   debug: (...args: unknown[]) => write('debug', args),
   info: (...args: unknown[]) => write('info', args),

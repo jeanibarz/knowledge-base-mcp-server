@@ -102,7 +102,7 @@ import {
   type DeleteDocumentArgs,
 } from './mcp-document-mutations.js';
 import { withWriteLock } from './write-lock.js';
-import { logger } from './logger.js';
+import { logger, closeLogFile } from './logger.js';
 import { toError } from './error-utils.js';
 import * as path from 'path';
 import { StreamableHttpHost } from './transport/http.js';
@@ -1988,6 +1988,13 @@ export class KnowledgeBaseServer {
       await shutdownOtel();
     } catch (err) {
       logger.warn(`Error during OpenTelemetry shutdown: ${(err as Error).message}`);
+    }
+    // Drain the LOG_FILE stream last — everything above may still log (issue
+    // #979). Best effort: callers exit immediately after.
+    try {
+      await closeLogFile();
+    } catch {
+      // logging teardown is best-effort; never block shutdown on it
     }
   }
 }

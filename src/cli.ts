@@ -57,6 +57,7 @@ import { buildDaemonSearchArgs, resolveSearchPager } from './cli-pager.js';
 import { exitCodeDocs, formatExitCodesHelp } from './cli-exit-codes.js';
 import { closestSuggestion } from './cli-shared.js';
 import { shutdownOtel } from './otel-trace.js';
+import { closeLogFile } from './logger.js';
 
 // ----- Subcommand registry --------------------------------------------------
 
@@ -675,8 +676,18 @@ function isMainModule(): boolean {
 if (isMainModule()) {
   // Flush OTEL spans before exit so one-shot CLI commands (kb ask, etc.)
   // actually export — BatchSpanProcessor otherwise drops them (issue #879).
+  // Pending stream writes must also drain first: process.exit() truncates
+  // buffered pipe output (observed with `kb help --format=json` under
+  // spawnSync — stdout cut at the 64KB pipe boundary or dropped entirely).
+  const flushStreams = () =>
+    Promise.all([
+      new Promise<void>((resolve) => process.stdout.write('', () => resolve())),
+      new Promise<void>((resolve) => process.stderr.write('', () => resolve())),
+    ]);
   void main(process.argv).then(async (code) => {
     await shutdownOtel();
+    await closeLogFile();
+    await flushStreams();
     process.exit(code);
   }).catch(async (err) => {
     // Catastrophic top-level (transitive import failure, etc.). Emit a
@@ -691,6 +702,8 @@ if (isMainModule()) {
       process.stderr.write(`kb: fatal: ${msg}\n`);
     }
     await shutdownOtel();
+    await closeLogFile();
+    await flushStreams();
     process.exit(1);
   });
 }
