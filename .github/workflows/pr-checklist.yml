@@ -24,6 +24,9 @@ permissions:
 jobs:
   checklist:
     name: Anti-drift checklist
+    # Dependabot PR bodies are machine-generated and can't carry the template
+    # checklist — the gate is unpassable for them, so skip rather than fail red.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
