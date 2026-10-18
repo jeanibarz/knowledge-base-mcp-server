@@ -31,17 +31,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout (full history for merge-base diff)
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
 
       - name: Fetch Kookr PR-checklist engine (pinned)
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kookr-ai/kookr
           ref: ${{ env.KOOKR_ENGINE_REF }}
