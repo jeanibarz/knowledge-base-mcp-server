@@ -820,7 +820,7 @@ describe('CorpusSizeCache (#878)', () => {
   it('computes once and reuses for the same signature and KB set', async () => {
     const { CorpusSizeCache } = await import('./kb-stats.js');
     const cache = new CorpusSizeCache();
-    const compute = jest.fn(async () => result(3));
+    const compute = jest.fn(async (_kbs?: readonly string[]) => result(3));
 
     const first = await cache.load(['alpha'], 'sig-1', compute);
     const second = await cache.load(['alpha'], 'sig-1', compute);
@@ -835,7 +835,7 @@ describe('CorpusSizeCache (#878)', () => {
     const { CorpusSizeCache } = await import('./kb-stats.js');
     const cache = new CorpusSizeCache();
     let count = 3;
-    const compute = jest.fn(async () => result(count));
+    const compute = jest.fn(async (_kbs?: readonly string[]) => result(count));
 
     await cache.load(['alpha'], 'sig-1', compute);
     count = 7;
@@ -848,7 +848,7 @@ describe('CorpusSizeCache (#878)', () => {
   it('recomputes when the requested KB set changes', async () => {
     const { CorpusSizeCache } = await import('./kb-stats.js');
     const cache = new CorpusSizeCache();
-    const compute = jest.fn(async () => result(3));
+    const compute = jest.fn(async (_kbs?: readonly string[]) => result(3));
 
     await cache.load(['alpha'], 'sig-1', compute);
     await cache.load(['alpha', 'beta'], 'sig-1', compute);
@@ -859,7 +859,7 @@ describe('CorpusSizeCache (#878)', () => {
   it('does not confuse a KB named with a space for a two-KB set', async () => {
     const { CorpusSizeCache } = await import('./kb-stats.js');
     const cache = new CorpusSizeCache();
-    const compute = jest.fn(async () => result(3));
+    const compute = jest.fn(async (_kbs?: readonly string[]) => result(3));
 
     // The JSON key encodes array boundaries, so `["a b"]` and `["a","b"]`
     // are distinct even though a naive space-joined key would collide.
@@ -893,7 +893,7 @@ describe('computeKbStats corpus-size seam (#878)', () => {
       FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
     });
 
-    const computeCorpusSizes = jest.fn(async () => ({
+    const computeCorpusSizes = jest.fn(async (_kbs?: readonly string[]) => ({
       sizes: { alpha: { file_count: 42, total_bytes_indexed: 4242 } },
       enumerationFailures: {
         failure_count: 1,

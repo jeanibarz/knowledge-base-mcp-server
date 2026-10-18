@@ -148,8 +148,8 @@ describe('kb serve daemon', () => {
 
   it('injects a cached lexical loader into daemon-served search', async () => {
     const lexicalIndex = { numFiles: () => 1 } as unknown as LexicalIndex;
-    const lexicalIndexLoader = jest.fn(async () => lexicalIndex);
-    const lexicalIndexFreshLoader = jest.fn(async () => lexicalIndex);
+    const lexicalIndexLoader = jest.fn(async (..._args: any[]) => lexicalIndex);
+    const lexicalIndexFreshLoader = jest.fn(async (..._args: any[]) => lexicalIndex);
     const lexicalIndexInvalidator = jest.fn((_kbName: string, _kbPath: string): void => {});
     const runSearchImpl = jest.fn(async (_args: string[], deps: RunSearchDeps = {} as RunSearchDeps) => {
       await expect(deps.loadLexicalIndex?.('alpha', '/kb/alpha')).resolves.toBe(lexicalIndex);
@@ -181,15 +181,15 @@ describe('kb serve daemon', () => {
     const lexicalIndex = { numFiles: () => 1 } as unknown as LexicalIndex;
     const manager = { marker: 'manager', modelId: 'ollama__nomic' };
     let denseMtimeMs = 1;
-    const lexicalIndexLoader = jest.fn(async () => lexicalIndex);
+    const lexicalIndexLoader = jest.fn(async (..._args: any[]) => lexicalIndex);
     const denseIndexMetadataReader = jest.fn(async () => ({
       path: '/faiss/index',
       mtimeMs: denseMtimeMs,
       size: 10,
     }));
     const resolveActiveModelImpl = jest.fn(async () => 'ollama__nomic');
-    const loadManagerForModel = jest.fn(async () => manager as never);
-    const loadWithJsonRetry = jest.fn(async () => undefined);
+    const loadManagerForModel = jest.fn(async (..._args: any[]) => manager as never);
+    const loadWithJsonRetry = jest.fn(async (..._args: any[]) => undefined);
     const listKnowledgeBasesImpl = jest.fn(async () => ['alpha', 'beta']);
     const runSearchImpl = jest.fn(async (_args: string[], deps: RunSearchDeps = {} as RunSearchDeps) => {
       const loaded = await deps.loadManagerForModel('ollama__nomic');
@@ -240,9 +240,9 @@ describe('kb serve daemon', () => {
     // These are the *base* loaders the daemon wraps in its warm cache. A spy on
     // them stands in for FaissStore.load — it must fire at most once across
     // repeated scrapes with an unchanged index.
-    const loadManagerForModel = jest.fn(async () => manager as never);
-    const loadWithJsonRetry = jest.fn(async () => undefined);
-    const runStatsImpl = jest.fn(async (_args: string[], deps: RunStatsDeps = {} as RunStatsDeps) => {
+    const loadManagerForModel = jest.fn(async (..._args: any[]) => manager as never);
+    const loadWithJsonRetry = jest.fn(async (..._args: any[]) => undefined);
+    const runStatsImpl = jest.fn(async (_args: string[], deps: RunStatsDeps = {} as RunStatsDeps, _opts?: { preferDaemon?: boolean }) => {
       const modelId = await deps.resolveActiveModel();
       const loaded = await deps.loadManagerForModel(modelId);
       await deps.loadWithJsonRetry(loaded);
@@ -291,7 +291,7 @@ describe('kb serve daemon', () => {
     }));
     // The seam the daemon injects to walk + stat the corpus. AC2 says two
     // scrapes with an unchanged index must hit it at most once.
-    const corpusSizeLoader = jest.fn(async () => ({
+    const corpusSizeLoader = jest.fn(async (_kbs?: readonly string[]) => ({
       sizes: { alpha: { file_count: 1, total_bytes_indexed: 11 } },
       enumerationFailures: { failure_count: 0, failures: [] },
     }));
@@ -479,15 +479,15 @@ describe('kb serve daemon', () => {
   it('surfaces successful startup prewarm in daemon health', async () => {
     const lexicalIndex = { numFiles: () => 1 } as unknown as LexicalIndex;
     const manager = { marker: 'manager', modelId: 'ollama__nomic' };
-    const lexicalIndexLoader = jest.fn(async () => lexicalIndex);
+    const lexicalIndexLoader = jest.fn(async (..._args: any[]) => lexicalIndex);
     const denseIndexMetadataReader = jest.fn(async () => ({
       path: '/faiss/index',
       mtimeMs: 1,
       size: 10,
     }));
     const resolveActiveModelImpl = jest.fn(async () => 'ollama__nomic');
-    const loadManagerForModel = jest.fn(async () => manager as never);
-    const loadWithJsonRetry = jest.fn(async () => undefined);
+    const loadManagerForModel = jest.fn(async (..._args: any[]) => manager as never);
+    const loadWithJsonRetry = jest.fn(async (..._args: any[]) => undefined);
     const listKnowledgeBasesImpl = jest.fn(async () => ['alpha', 'beta']);
     const handlers = createDaemonCommandHandlers({
       lexicalIndexLoader,
@@ -1028,7 +1028,7 @@ describe('kb serve metrics formatting', () => {
     // createDaemonCommandHandlers() per scrape (reloading FAISS + re-walking the
     // corpus each time). It must now reuse the daemon's warm `handlers`, so the
     // injected stats spy is what answers each scrape.
-    const stats = jest.fn(async () => ({
+    const stats = jest.fn(async (..._args: any[]) => ({
       exitCode: 0,
       stdout: JSON.stringify(sampleKbStatsPayload()),
       stderr: '',

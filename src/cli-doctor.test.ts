@@ -1525,7 +1525,7 @@ describe('kb doctor', () => {
       const modelDir = await seedRegisteredModel(faissDir);
       await seedVersionedIndex(modelDir);
 
-      const fetchMock = jest.fn(async (input: string | URL | Request) => {
+      const fetchMock = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
         if (url.endsWith('/health')) {
           return new Response('{"status":"ok"}', { status: 200 });
@@ -1881,7 +1881,7 @@ describe('kb doctor', () => {
         KB_LLM_CONFIG_DIR: path.join(tempDir, 'llm-config'),
         KB_LLM_STATE_DIR: path.join(tempDir, 'llm-state'),
       });
-      const fetchMock = jest.fn(async (input: string | URL | Request) => {
+      const fetchMock = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
         if (url === 'http://127.0.0.1:17799/health') {
           return new Response('{"status":"ok"}', {

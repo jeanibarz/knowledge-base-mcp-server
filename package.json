@@ -128,7 +128,7 @@
     "@types/proper-lockfile": "^4.1.4",
     "eslint": "^10.5.0",
     "fast-check": "^4.7.0",
-    "jest": "^29.7.0",
+    "jest": "^30.5.2",
     "nodemon": "^3.0.3",
     "pdfkit": "^0.20.2",
     "ts-jest": "^29.4.1",

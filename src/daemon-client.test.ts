@@ -297,7 +297,7 @@ describe('daemon client', () => {
 
   it('autostarts a detached daemon and reruns the command after health is ready', async () => {
     let call = 0;
-    const child = { once: jest.fn(() => child), unref: jest.fn() };
+    const child = { once: jest.fn((_ev: string, _cb: unknown) => child), unref: jest.fn() };
     const spawnImpl = jest.fn<SpawnDaemon>(() => child);
     const fetchImpl = jest.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
       call += 1;
@@ -393,7 +393,7 @@ describe('daemon client', () => {
   });
 
   it('falls back cold with a notice when autostart readiness times out', async () => {
-    const child = { once: jest.fn(() => child), unref: jest.fn() };
+    const child = { once: jest.fn((_ev: string, _cb: unknown) => child), unref: jest.fn() };
     const fetchImpl = jest.fn(async () => {
       throw new DaemonUnavailableError('kb daemon is not reachable', { cause: { code: 'ECONNREFUSED' } });
     });
@@ -420,7 +420,7 @@ describe('daemon client', () => {
   it('caps autostart preflight health by the outer readiness deadline', async () => {
     jest.useFakeTimers();
     try {
-      const child = { once: jest.fn(() => child), unref: jest.fn() };
+      const child = { once: jest.fn((_ev: string, _cb: unknown) => child), unref: jest.fn() };
       const spawnImpl = jest.fn<SpawnDaemon>(() => child);
       const healthSignals: AbortSignal[] = [];
       const fetchImpl = jest.fn((url: URL | RequestInfo, init?: RequestInit): Promise<Response> => {

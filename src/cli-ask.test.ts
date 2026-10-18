@@ -540,7 +540,7 @@ describe('ask transcript records', () => {
         modelDir: path.join(root, '.faiss', 'models', 'ollama__nomic'),
         initialize: jest.fn(async () => {}),
         updateIndex: jest.fn(async () => {}),
-        similaritySearch: jest.fn(async () => [
+        similaritySearch: jest.fn(async (..._args: any[]) => [
           {
             pageContent: 'The deployment switched embedding models.',
             metadata: {
@@ -708,7 +708,7 @@ describe('ask transcript records', () => {
         modelDir: '/tmp/kb-ask-model',
         initialize: jest.fn(async () => {}),
         updateIndex: jest.fn(async () => {}),
-        similaritySearch: jest.fn(async () => [
+        similaritySearch: jest.fn(async (..._args: any[]) => [
           {
             pageContent: 'Rollback approval requires the release lead.',
             metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md', source: ELIGIBLE_SOURCE },
@@ -771,7 +771,7 @@ describe('ask transcript records', () => {
         modelDir: '/tmp/kb-ask-model',
         initialize: jest.fn(async () => {}),
         updateIndex: jest.fn(async () => {}),
-        similaritySearch: jest.fn(async () => [
+        similaritySearch: jest.fn(async (..._args: any[]) => [
           {
             pageContent: 'Rollback approval requires the release lead.',
             metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md', source: ELIGIBLE_SOURCE },
@@ -843,7 +843,7 @@ describe('ask transcript records', () => {
         modelDir: '/tmp/kb-ask-model',
         initialize: jest.fn(async () => {}),
         updateIndex: jest.fn(async () => {}),
-        similaritySearch: jest.fn(async () => [
+        similaritySearch: jest.fn(async (..._args: any[]) => [
           {
             pageContent: `${'Useful first sentence. '.repeat(20)}${'tail '.repeat(160)}`,
             metadata: { knowledgeBase: 'ops', relativePath: 'long.md', source: ELIGIBLE_SOURCE },
@@ -940,7 +940,7 @@ describe('ask transcript records', () => {
         modelDir: '/tmp/kb-ask-model',
         initialize: jest.fn(async () => {}),
         updateIndex: jest.fn(async () => {}),
-        similaritySearch: jest.fn(async () => [
+        similaritySearch: jest.fn(async (..._args: any[]) => [
           {
             pageContent: 'Rollback approval requires the release lead.',
             metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md', source: ELIGIBLE_SOURCE },
@@ -1004,7 +1004,7 @@ describe('ask transcript records', () => {
         modelDir: '/tmp/kb-ask-model',
         initialize: jest.fn(async () => {}),
         updateIndex: jest.fn(async () => {}),
-        similaritySearch: jest.fn(async () => [
+        similaritySearch: jest.fn(async (..._args: any[]) => [
           {
             pageContent: `${'Useful first sentence. '.repeat(20)}${'tail '.repeat(160)}`,
             metadata: { knowledgeBase: 'ops', relativePath: 'long.md', source: ELIGIBLE_SOURCE },
@@ -1078,7 +1078,7 @@ describe('ask transcript records', () => {
         modelDir: '/tmp/kb-ask-model',
         initialize: jest.fn(async () => {}),
         updateIndex: jest.fn(async () => {}),
-        similaritySearch: jest.fn(async () => [
+        similaritySearch: jest.fn(async (..._args: any[]) => [
           {
             pageContent: 'Rollback approval requires the release lead.',
             metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md', source: ELIGIBLE_SOURCE },
@@ -1149,7 +1149,7 @@ describe('ask transcript records', () => {
         modelDir: '/tmp/kb-ask-model',
         initialize: jest.fn(async () => {}),
         updateIndex: jest.fn(async () => {}),
-        similaritySearch: jest.fn(async () => [
+        similaritySearch: jest.fn(async (..._args: any[]) => [
           {
             pageContent: 'Rollback approval requires the release lead.',
             metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/rollback.md', source: ELIGIBLE_SOURCE },
@@ -1505,7 +1505,7 @@ describe('kb ask grounding fixtures', () => {
 
       const manager = {
         modelDir: path.join(root, '.faiss', 'models', 'ollama__nomic'),
-        similaritySearch: jest.fn(async () => [
+        similaritySearch: jest.fn(async (..._args: any[]) => [
           {
             pageContent: 'Rollback approval requires the release lead.',
           metadata: { knowledgeBase: 'ops', relativePath: 'runbooks/public.md', source: ELIGIBLE_SOURCE },
@@ -1684,7 +1684,7 @@ describe('kb ask --interactive routing', () => {
       modelDir: '/tmp/kb-ask-repl-route',
       initialize: jest.fn(async () => {}),
       updateIndex: jest.fn(async () => {}),
-      similaritySearch: jest.fn(async () => [
+      similaritySearch: jest.fn(async (..._args: any[]) => [
         {
           pageContent: 'Rollback needs the release lead.',
           metadata: { knowledgeBase: 'ops', relativePath: 'rollback.md', source: ELIGIBLE_SOURCE },
@@ -1760,7 +1760,7 @@ describe('kb ask global verbosity (#739)', () => {
         modelDir: '/tmp/kb-ask-verbosity',
         initialize: jest.fn(async () => {}),
         updateIndex: jest.fn(async () => {}),
-        similaritySearch: jest.fn(async () => [
+        similaritySearch: jest.fn(async (..._args: any[]) => [
           {
             pageContent: 'Rollback is approved by the on-call lead.',
             metadata: {

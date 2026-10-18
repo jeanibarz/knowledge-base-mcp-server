@@ -110,8 +110,8 @@ describe('ask retrieval modes (#732)', () => {
 
   it('mode=hybrid reaches the hybrid retrieval leg (dense over-fetch + lexical fusion)', async () => {
     const manager = makeManager([denseDoc('runbooks/a.md', 'Dense hit about rollback.', 0.1)]);
-    const listLexicalKbs = jest.fn(async () => [{ kbName: 'ops', kbPath: '/tmp/ops' }]);
-    const runLexicalLeg = jest.fn(async () => ({
+    const listLexicalKbs = jest.fn(async (..._args: any[]) => [{ kbName: 'ops', kbPath: '/tmp/ops' }]);
+    const runLexicalLeg = jest.fn(async (..._args: any[]) => ({
       hits: [denseDoc('runbooks/b.md', 'Lexical hit about rollback.', 3.2)],
       refreshed: 0,
       failed: 0,
@@ -139,7 +139,7 @@ describe('ask retrieval modes (#732)', () => {
 
   it('mode=lexical runs the BM25 leg only (no dense FAISS search)', async () => {
     const manager = makeManager([]);
-    const runLexicalLeg = jest.fn(async () => ({
+    const runLexicalLeg = jest.fn(async (..._args: any[]) => ({
       hits: [denseDoc('runbooks/only.md', 'Lexical-only hit.', 4.0)],
       refreshed: 0,
       failed: 0,
@@ -177,7 +177,7 @@ describe('ask retrieval modes (#732)', () => {
     const loadLexicalIndex = jest.fn<NonNullable<RunAskCoreDeps['loadLexicalIndex']>>();
     const loadFreshLexicalIndex = jest.fn<NonNullable<RunAskCoreDeps['loadFreshLexicalIndex']>>();
     const invalidateLexicalIndex = jest.fn<NonNullable<RunAskCoreDeps['invalidateLexicalIndex']>>();
-    const runLexicalLeg = jest.fn(async () => ({
+    const runLexicalLeg = jest.fn(async (..._args: any[]) => ({
       hits: [denseDoc('runbooks/only.md', 'Lexical-only hit.', 4.0)],
       refreshed: 0,
       failed: 0,
@@ -201,8 +201,8 @@ describe('ask retrieval modes (#732)', () => {
 
   it('default mode stays dense for a prose query (backward compatible)', async () => {
     const manager = makeManager([denseDoc('runbooks/a.md', 'Dense answer.', 0.1)]);
-    const listLexicalKbs = jest.fn(async () => [{ kbName: 'ops', kbPath: '/tmp/ops' }]);
-    const runLexicalLeg = jest.fn(async () => ({ hits: [], refreshed: 0, failed: 0 }));
+    const listLexicalKbs = jest.fn(async (..._args: any[]) => [{ kbName: 'ops', kbPath: '/tmp/ops' }]);
+    const runLexicalLeg = jest.fn(async (..._args: any[]) => ({ hits: [], refreshed: 0, failed: 0 }));
     const deps = makeDeps({ manager, listLexicalKbs, runLexicalLeg });
 
     const result = await executeAsk(askArgs('What changed during the deploy?'), deps, Date.now());

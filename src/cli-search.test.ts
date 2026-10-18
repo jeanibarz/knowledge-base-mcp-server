@@ -608,7 +608,7 @@ describe('runSearch timing guard (#331)', () => {
 
   it('routes dense markdown output through the pager writer at the runSearch boundary', async () => {
     const { deps, manager } = makeDeps();
-    const writeOutput = jest.fn(async () => {});
+    const writeOutput = jest.fn(async (..._args: any[]) => {});
     deps.writeOutput = writeOutput;
     manager.similaritySearch.mockResolvedValueOnce([
       {
