@@ -115,8 +115,8 @@
     "@opentelemetry/semantic-conventions": "^1.30.0"
   },
   "devDependencies": {
-    "@commitlint/cli": "^20.5.3",
-    "@commitlint/config-conventional": "^20.5.3",
+    "@commitlint/cli": "^21.2.3",
+    "@commitlint/config-conventional": "^21.2.3",
     "@stryker-mutator/core": "^10.0.0",
     "@stryker-mutator/jest-runner": "^10.0.0",
     "@types/html-to-text": "^9.0.4",
