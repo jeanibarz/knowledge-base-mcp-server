@@ -15,7 +15,7 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import {
   ActiveModelResolutionError,
   resolveActiveModel,

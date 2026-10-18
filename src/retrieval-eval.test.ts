@@ -1,7 +1,7 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { parseEvalArgs, toJsonReport } from './cli-eval.js';
 import type { ScoredDocument } from './formatter.js';
 import type { Staleness } from './search-core.js';

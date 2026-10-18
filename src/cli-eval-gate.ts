@@ -21,7 +21,7 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { callChatCompletion, probeLlmEndpoint, type LlmChatMessage } from './llm-client.js';
 import {
   GATE_VARIANTS,

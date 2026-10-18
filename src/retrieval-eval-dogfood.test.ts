@@ -2,7 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import { createHash } from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { normalizeRetrievalEvalFixture } from './retrieval-eval.js';
 
 const FIXTURE_DIR = path.join(process.cwd(), 'docs/testing/fixtures');

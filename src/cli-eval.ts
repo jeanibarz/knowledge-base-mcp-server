@@ -1,5 +1,5 @@
 import * as fsp from 'fs/promises';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,

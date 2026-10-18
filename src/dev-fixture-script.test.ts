@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 const SCRIPT_PATH = path.join(process.cwd(), 'scripts', 'dev-fixture.mjs');
 
