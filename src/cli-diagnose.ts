@@ -520,7 +520,7 @@ async function assertDiagnoseDirectoryHasOnlyBundleFiles(bundleDir: string): Pro
       return !DIAGNOSE_BUNDLE_FILENAMES.has(entry.name) || !entry.isFile();
     })
     .map((entry) => entry.name)
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
   if (unsafeEntries.length > 0) {
     throw new Error(
       `${bundleDir} contains non-bundle file(s): ${unsafeEntries.join(', ')}; ` +

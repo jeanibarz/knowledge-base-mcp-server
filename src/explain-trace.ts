@@ -364,7 +364,7 @@ function formatList(items: readonly string[]): string {
 }
 
 function escapeTableCell(s: string): string {
-  return s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  return s.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ');
 }
 
 function stringField(md: Record<string, unknown>, key: string): string | null {

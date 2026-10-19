@@ -608,7 +608,7 @@ async function assertBundleDirectoryHasOnlyBundleFiles(bundlePath: string): Prom
   const unsafeEntries = entries
     .filter((entry) => !REPRO_BUNDLE_FILENAMES.has(entry.name) || !entry.isFile())
     .map((entry) => entry.name)
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
   if (unsafeEntries.length > 0) {
     throw new Error(
       `${bundlePath} contains non-bundle file(s): ${unsafeEntries.join(', ')}; ` +
