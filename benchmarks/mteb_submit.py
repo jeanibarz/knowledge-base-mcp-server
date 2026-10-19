@@ -70,7 +70,7 @@ _SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _safe_name(value: str, what: str) -> str:
-    if not _SAFE_NAME.match(value):
+    if not _SAFE_NAME.match(value) or value in (".", ".."):
         raise SystemExit(f"[error] unsafe {what}: {value!r}")
     return value
 
