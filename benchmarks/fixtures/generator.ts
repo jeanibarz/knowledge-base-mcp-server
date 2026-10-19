@@ -1,6 +1,6 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { MarkdownTextSplitter } from 'langchain/text_splitter';
+import { MarkdownTextSplitter } from '@langchain/textsplitters';
 import { getDefaultLargeCorpusSpec, materializeLargeCorpusFixture } from './large-corpus.js';
 
 interface KnowledgeBaseFixtureOptions {

@@ -1,6 +1,6 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { MarkdownTextSplitter } from 'langchain/text_splitter';
+import { MarkdownTextSplitter } from '@langchain/textsplitters';
 import type { ColdStartScenarioResult, FixtureOverrides, ScenarioContext } from '../types.js';
 import { generateKnowledgeBaseFixture } from '../fixtures/generator.js';
 import { durationMs, resetDirectory } from '../utils.js';
