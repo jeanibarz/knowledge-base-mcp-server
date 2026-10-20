@@ -20,6 +20,7 @@
 // fails loudly otherwise.
 
 import { spawnSync } from 'child_process';
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 import {
   startMcpBinaryHarness,
@@ -227,6 +228,45 @@ function runKbCliSearch(
     expect(result.isError).toBeFalsy();
     const payload = parseToolJsonText(result as Parameters<typeof parseToolJsonText>[0]);
     expect(payload).toEqual([]);
+  });
+
+  it('indexes and retrieves real PDF text over stdio when PDF ingest is enabled', async () => {
+    harness = await startMcpBinaryHarness({
+      activeModel: {
+        modelId: FAKE_PARITY_MODEL_ID,
+        modelName: FAKE_PARITY_MODEL_NAME,
+      },
+      extraEnv: {
+        EMBEDDING_PROVIDER: 'fake',
+        KB_FAKE_DIM: '32',
+        KB_INGEST_ENABLED: 'true',
+        INGEST_EXTRA_EXTENSIONS: '.pdf',
+      },
+      knowledgeBases: { pdf: { files: {} } },
+    });
+    await fsp.copyFile(
+      path.join(REPO_ROOT, 'src', '__fixtures__', 'sample.pdf'),
+      path.join(harness.knowledgeBasesRootDir, 'pdf', 'sample.pdf'),
+    );
+
+    const reindex = await harness.client.callTool({
+      name: 'reindex_knowledge_base',
+      arguments: { knowledge_base_name: 'pdf' },
+    });
+    expect(reindex.isError).toBeFalsy();
+
+    const result = await harness.client.callTool({
+      name: 'retrieve_knowledge',
+      arguments: {
+        query: 'Hello loader test from issue 46',
+        knowledge_base_name: 'pdf',
+        gate: 'off',
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const markdown = extractMcpMarkdownText(result);
+    expect(markdown).toContain('Hello loader test from issue 46');
+    expect(markdown).toContain('sample.pdf');
   });
 
   it('keeps binary CLI search and MCP retrieve_knowledge dense results aligned on stable chunk identities', async () => {
