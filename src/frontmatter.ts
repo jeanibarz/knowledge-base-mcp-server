@@ -61,12 +61,14 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
   const yamlRaw = searchSlice.slice(0, yamlEnd);
   const body = normalizedContent.slice(openEnd + fenceEnd);
 
+  const hasYamlContent = yamlRaw.split('\n').some((line) => {
+    const trimmed = line.trim();
+    return trimmed !== '' && !trimmed.startsWith('#');
+  });
   let parsed: unknown;
-  if (yamlRaw.trim() === '') {
-    // js-yaml 5 throws on an empty document ("expected a document, but the
-    // input is empty") where js-yaml 4 returned undefined. An empty
-    // frontmatter block (`---\n---\n`) is valid and must strip to an empty
-    // mapping, not degrade to the raw-content body of a parse failure.
+  if (!hasYamlContent) {
+    // js-yaml 5 rejects empty/comment-only documents. Lenient ingestion must
+    // still strip their fences; strict mutation parsing keeps its own policy.
     parsed = undefined;
   } else {
     try {
