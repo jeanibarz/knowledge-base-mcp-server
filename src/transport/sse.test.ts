@@ -560,6 +560,24 @@ describe('SseHost — endpoints', () => {
     expect(res.statusCode).toBe(401);
   });
 
+  it('(c) same-length wrong bearer token gets 401 (reaches the constant-time compare)', async () => {
+    const started = await startHost({});
+    stop = started.stop;
+    // Same length as VALID_TOKEN but one byte different. Every other wrong-token
+    // case differs in LENGTH and is rejected by verifyBearer's fast
+    // `provided.length !== authTokenBuf.length` guard — so none of them ever
+    // reach `timingSafeEqual`. Without this case a regression that accepts any
+    // equal-length token (e.g. dropping the comparison) would stay green.
+    const sameLengthWrong = `${VALID_TOKEN.slice(0, -1)}X`;
+    expect(sameLengthWrong.length).toBe(VALID_TOKEN.length);
+    expect(sameLengthWrong).not.toBe(VALID_TOKEN);
+    const res = await request(started.port, {
+      path: '/sse',
+      headers: { Authorization: `Bearer ${sameLengthWrong}` },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
   it('backs off repeated bearer failures by remote address with Retry-After', async () => {
     const started = await startHost({
       authBackoff: {

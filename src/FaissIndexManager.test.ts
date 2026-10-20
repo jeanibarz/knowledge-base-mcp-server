@@ -4678,6 +4678,10 @@ describe('FaissIndexManager integration — frontmatter + pdf_path (RFC 011 M2)'
     await manager.updateIndex();
 
     const { metadatas } = collectChunks();
+    // Without this guard the loop below is vacuous: if ingest produced no
+    // chunks the assertions never run and the test passes for the wrong
+    // reason. The sibling pdf_path tests assert the same precondition.
+    expect(metadatas.length).toBeGreaterThan(0);
     for (const md of metadatas) {
       expect(md.pdf_path).toBeUndefined();
       expect(md.frontmatter).toEqual({ arxiv_id: '2604.99' });
@@ -5259,7 +5263,7 @@ describe('FaissIndexManager progressive overfetch (#229)', () => {
     expect(results.map((r) => r.pageContent)).toEqual(['needle']);
   });
 
-  it('scoped search uses progressive overfetch even without metadata filters', async () => {
+  it('scoped search drops out-of-scope results and still uses progressive overfetch', async () => {
     const manager = await setupManagerWithNtotal(1000);
     const inScope: Array<[unknown, number]> = Array.from({ length: 4 }, (_, i) => [
       {
@@ -5271,15 +5275,33 @@ describe('FaissIndexManager progressive overfetch (#229)', () => {
       },
       0.1 + i * 0.01,
     ]);
-    similaritySearchMock.mockResolvedValueOnce(inScope);
+    // A hit in a DIFFERENT knowledge base, given the strongest (lowest) score
+    // so only the KB-scope post-filter — not the distance threshold — can
+    // exclude it. Previously every candidate was already under `/scoped/`, so
+    // the post-filter had nothing to drop and the test passed whether scoping
+    // worked or was a no-op.
+    const outOfScope: [unknown, number] = [
+      {
+        pageContent: 'other-kb',
+        metadata: {
+          source: `${process.env.KNOWLEDGE_BASES_ROOT_DIR}/other/leak.md`,
+          extension: '.md',
+        },
+      },
+      0.05,
+    ];
+    similaritySearchMock.mockResolvedValueOnce([outOfScope, ...inScope]);
 
     const results = await manager.similaritySearch('q', 10, undefined, 'scoped');
 
-    // First rung is 20. Result count is 4 → less than k=10, but raw.length=4
-    // < fetchK=20 means FAISS is exhausted, so we stop after one call.
+    // First rung is 20. raw.length=5 < fetchK=20 means FAISS is exhausted, so
+    // we stop after one call.
     expect(similaritySearchMock).toHaveBeenCalledTimes(1);
     expect(similaritySearchMock).toHaveBeenCalledWith('q', 20);
+    // The out-of-scope document is dropped by the KB-scope post-filter; only
+    // the four in-scope documents survive, in order.
     expect(results.map((r) => r.pageContent)).toEqual(['s0', 's1', 's2', 's3']);
+    expect(results.map((r) => r.pageContent)).not.toContain('other-kb');
   });
 });
 
@@ -5509,8 +5531,11 @@ describe('FaissIndexManager predicate-pushdown sidecar (#283)', () => {
         frontmatter: row.frontmatter,
       })),
     });
-    (manager as { __resetMetadataSidecarCacheForTests?: () => void })
-      .__resetMetadataSidecarCacheForTests?.();
+    // Non-optional on purpose: if this test-only seam is ever renamed, the
+    // call must throw loudly rather than silently no-op (`?.()`) and let the
+    // test read a stale sidecar cache and pass for the wrong reason.
+    (manager as { __resetMetadataSidecarCacheForTests: () => void })
+      .__resetMetadataSidecarCacheForTests();
     return { manager, tempDir, sidecarPath };
   }
 
@@ -5804,8 +5829,11 @@ describe('FaissIndexManager predicate-pushdown sidecar (#283)', () => {
       })),
     });
     await fsp.writeFile(sidecarPath, '{not-valid-jsonl', 'utf-8');
-    (manager as { __resetMetadataSidecarCacheForTests?: () => void })
-      .__resetMetadataSidecarCacheForTests?.();
+    // Non-optional on purpose: if this test-only seam is ever renamed, the
+    // call must throw loudly rather than silently no-op (`?.()`) and let the
+    // test read a stale sidecar cache and pass for the wrong reason.
+    (manager as { __resetMetadataSidecarCacheForTests: () => void })
+      .__resetMetadataSidecarCacheForTests();
 
     const items: Array<[unknown, number]> = Array.from({ length: 20 }, (_, i) => [
       { pageContent: `m${i}`, metadata: { extension: '.md', relativePath: `docs/m${i}.md` } },

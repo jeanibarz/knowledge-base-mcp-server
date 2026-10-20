@@ -561,16 +561,22 @@ describe('llm-client', () => {
       { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '7' } },
     ));
 
-    await expect(callChatCompletion({
+    const error = await callChatCompletion({
       endpoint: 'http://127.0.0.1:8080',
       messages: [{ role: 'user', content: 'q' }],
       retry: false,
-    }, fetchMock as unknown as typeof fetch)).rejects.toMatchObject({
-      name: 'LlmClientError',
-      status: 429,
-      retryAfterMs: 7000,
-    });
-    expect(LlmClientError).toBeDefined();
+    }, fetchMock as unknown as typeof fetch).then(
+      () => {
+        throw new Error('expected callChatCompletion to reject on a 429');
+      },
+      (e: unknown) => e,
+    );
+    // `toBeInstanceOf` verifies the real error class. The previous
+    // `expect(LlmClientError).toBeDefined()` was a dead assertion — an imported
+    // class is always defined — and asserting `name: 'LlmClientError'` only
+    // checks a string field any plain object could carry.
+    expect(error).toBeInstanceOf(LlmClientError);
+    expect(error).toMatchObject({ status: 429, retryAfterMs: 7000 });
   });
 
   it('probes health and chat completion with an explicit model', async () => {

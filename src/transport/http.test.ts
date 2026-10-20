@@ -214,6 +214,27 @@ describe('StreamableHttpHost — endpoints', () => {
     expect(wrong.statusCode).toBe(401);
   });
 
+  it('rejects a same-length wrong bearer token on GET /ready (reaches the constant-time compare)', async () => {
+    const started = await startHost({
+      readinessProbe: async () => readyPayload('ok'),
+    });
+    stop = started.stop;
+
+    // Equal length to VALID_TOKEN but one byte different, so it passes the fast
+    // `provided.length !== authTokenBuf.length` guard in verifyBearer and
+    // reaches `timingSafeEqual`. The other wrong-token cases differ in length
+    // and never exercise the constant-time comparison, so a regression that
+    // accepted any equal-length token would otherwise go undetected.
+    const sameLengthWrong = `${VALID_TOKEN.slice(0, -1)}X`;
+    expect(sameLengthWrong.length).toBe(VALID_TOKEN.length);
+    expect(sameLengthWrong).not.toBe(VALID_TOKEN);
+    const res = await request(started.port, {
+      path: '/ready',
+      headers: { Authorization: `Bearer ${sameLengthWrong}` },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
   it('serves authenticated readiness JSON when model, index, and backend are ready', async () => {
     const started = await startHost({
       readinessProbe: async () => readyPayload('ok'),
