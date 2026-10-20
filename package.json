@@ -106,7 +106,7 @@
     "pdf-parse": "^2.4.5",
     "pickleparser": "^0.2.1",
     "proper-lockfile": "^4.1.2",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "optionalDependencies": {
     "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
