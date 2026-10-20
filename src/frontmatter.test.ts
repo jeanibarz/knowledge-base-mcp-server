@@ -47,6 +47,14 @@ describe('parseFrontmatter empty documents (issue #982)', () => {
     });
   });
 
+  it('still parses metadata after a comment terminated by a bare CR', () => {
+    const content = `---\n# comment\rtitle: preserved\n---\n${body}`;
+    const result = parseFrontmatter(content);
+
+    expect(result.frontmatter).toEqual({ title: 'preserved' });
+    expect(result.body).toBe(body);
+  });
+
   it('preserves comment-looking lines inside a YAML block scalar', () => {
     const content = `---\nsummary: |\n  # scalar content\n---\n${body}`;
     const result = parseFrontmatter(content);

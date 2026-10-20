@@ -61,7 +61,7 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
   const yamlRaw = searchSlice.slice(0, yamlEnd);
   const body = normalizedContent.slice(openEnd + fenceEnd);
 
-  const hasYamlContent = yamlRaw.split('\n').some((line) => {
+  const hasYamlContent = yamlRaw.split(/\r\n?|\n/).some((line) => {
     const trimmed = line.trim();
     return trimmed !== '' && !trimmed.startsWith('#');
   });
