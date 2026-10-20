@@ -3850,15 +3850,19 @@ describe('FaissIndexManager ingest filter (RFC 011 M1)', () => {
 
 describe('FaissIndexManager ingest — PDF + HTML loaders (issue #46)', () => {
   // pdf-parse drives pdfjs-dist which would attempt to set up a fake worker
-  // and read a bundled fixture under jest's loader. Mocking the direct lib
-  // path lets us assert that .pdf files are routed through the PDF loader,
-  // that the extracted text reaches the splitter, and that PDF chunks land
-  // with the right metadata — without booting pdfjs.
-  jest.mock('pdf-parse/lib/pdf-parse.js', () => ({
+  // and read a bundled fixture under jest's loader. Mocking the pdf-parse@2
+  // `PDFParse` class lets us assert that .pdf files are routed through the PDF
+  // loader, that the extracted text reaches the splitter, and that PDF chunks
+  // land with the right metadata — without booting pdfjs.
+  jest.mock('pdf-parse', () => ({
     __esModule: true,
-    default: async (_buf: Buffer) => ({
-      text: 'Mock PDF body extracted by pdf-parse stub.',
-    }),
+    PDFParse: class {
+      constructor(_opts: { data: Buffer; verbosity?: number }) {}
+      async getText(): Promise<{ text: string }> {
+        return { text: 'Mock PDF body extracted by pdf-parse stub.' };
+      }
+      async destroy(): Promise<void> {}
+    },
   }));
 
   const originalEnv = {
