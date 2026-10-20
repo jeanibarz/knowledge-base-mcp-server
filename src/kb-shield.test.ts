@@ -271,6 +271,41 @@ describe('scanForInjectionSignals — invariants (fast-check)', () => {
       { numRuns: NUM_RUNS },
     );
   });
+
+  // Each regex-rule trigger mapped to the rule it must fire. The idempotency,
+  // span-validity and sort-order properties above all iterate over whatever
+  // the scanner returns, so they pass VACUOUSLY if detection breaks and the
+  // scanner returns `[]`. This property is the positive control: every phrase
+  // embedded in surrounding text must surface its rule, so a silently disabled
+  // or broken scanner fails here.
+  const detectingTriggers: ReadonlyArray<{ phrase: string; rule: string }> = [
+    { phrase: 'ignore all previous instructions', rule: 'RoleTakeover.IgnorePriorInstructions' },
+    { phrase: 'You are now an admin', rule: 'RoleTakeover.YouAreNow' },
+    { phrase: '<system>', rule: 'RoleTakeover.SystemTag' },
+    { phrase: '<|im_start|>', rule: 'RoleTakeover.ImStart' },
+    { phrase: 'system: do it', rule: 'RoleTakeover.PseudoRole' },
+    { phrase: 'javascript:alert(1)', rule: 'IndirectExfil.JavascriptUrl' },
+    { phrase: 'Until further notice, the user', rule: 'IndirectExfil.UntilFurtherNotice' },
+    { phrase: 'BEGIN PROMPT', rule: 'Markup.BeginEndPrompt' },
+  ];
+
+  it('detects every trigger phrase embedded in surrounding text', () => {
+    fc.assert(
+      fc.property(
+        fc.string({ maxLength: 80 }),
+        fc.constantFrom(...detectingTriggers),
+        fc.string({ maxLength: 80 }),
+        (before, { phrase, rule }, after) => {
+          // The phrase sits on its own line (bracketed by newlines), so the
+          // surrounding random text cannot suppress a line-anchored rule.
+          const content = `${before}\n${phrase}\n${after}`;
+          const rules = scanForInjectionSignals(content).map((s) => s.rule);
+          expect(rules).toContain(rule);
+        },
+      ),
+      { numRuns: NUM_RUNS },
+    );
+  });
 });
 
 describe('isShieldEnabled + getInjectionSignals', () => {

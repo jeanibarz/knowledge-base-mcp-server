@@ -28,6 +28,14 @@ describe('canonical log line schema (#216)', () => {
     });
 
     expect(event.schema_version).toBe(CANONICAL_SCHEMA_VERSION);
+    // `query_sha256` is the first 16 hex chars of sha256 over the *normalized*
+    // query (trimmed, inner whitespace collapsed). Pin the literal so a
+    // regression in the digest algorithm or the 16-char slice fails here
+    // instead of silently tracking the implementation (both sides would change
+    // together if we only compared against hashQuery(...)).
+    expect(event.query_sha256).toBe('9b74198c555ecc87');
+    // The raw padded/duplicate-space query must still hash to the normalized
+    // form — this second assertion guards the normalization step specifically.
     expect(event.query_sha256).toBe(hashQuery('rollback procedure'));
     expect(event.query_len_chars).toBe(query.length);
     expect(JSON.stringify(event)).not.toContain('rollback');

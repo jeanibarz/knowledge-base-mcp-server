@@ -3312,9 +3312,23 @@ describe('--explain-empty output integration (#328)', () => {
     expect(output).toContain('_No similar results found._');
     expect(output).toContain('### Diagnostics');
     expect(output).toContain('Per-filter drops: kb_scope=1, threshold=2');
-    // Per-filter drops + post-filter count sum to pre-filter total (regression on
-    // the diagnostic invariant the issue asks for).
-    expect(1 + 2 + 0).toBe(3);
+    // Diagnostic invariant: the per-filter drops plus the kept count must
+    // reconcile with the inspected total. The previous `expect(1 + 2 + 0)
+    // .toBe(3)` was a pure literal tautology — no implementation change could
+    // ever make it fail. Assert the real rendered counts instead, and tie them
+    // back to the fixture so a formatter regression (or an inconsistent
+    // fixture) surfaces here.
+    expect(output).toContain(
+      `Candidates inspected: ${diagnostics.candidatesPreFilter}`,
+    );
+    expect(output).toContain(
+      `Candidates kept after filters: ${diagnostics.candidatesPostFilter}`,
+    );
+    expect(
+      diagnostics.filterDrops.kbScope +
+        diagnostics.filterDrops.threshold +
+        diagnostics.candidatesPostFilter,
+    ).toBe(diagnostics.candidatesPreFilter);
   });
 
   it('omits the Diagnostics block in markdown when results are non-empty', () => {

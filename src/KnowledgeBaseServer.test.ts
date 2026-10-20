@@ -96,6 +96,10 @@ describe('KnowledgeBaseServer handlers', () => {
     KB_DENSE_DEGRADE_ON_PROVIDER_ERROR: process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
     KB_HYBRID_DENSE_WEIGHT: process.env.KB_HYBRID_DENSE_WEIGHT,
     KB_HYBRID_LEXICAL_WEIGHT: process.env.KB_HYBRID_LEXICAL_WEIGHT,
+    // Captured so afterEach restores it: the FRONTMATTER_EXTRAS_WIRE_VISIBLE
+    // test sets this to 'true', and without it here that value leaked into
+    // every later test in the file (order-dependent flakiness).
+    FRONTMATTER_EXTRAS_WIRE_VISIBLE: process.env.FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   };
 
   beforeEach(() => {
