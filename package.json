@@ -126,6 +126,7 @@
     "@types/pdf-parse": "^1.1.5",
     "@types/pdfkit": "^0.17.6",
     "@types/proper-lockfile": "^4.1.4",
+    "babel-plugin-dynamic-import-node": "^2.3.3",
     "eslint": "^10.5.0",
     "fast-check": "^4.7.0",
     "jest": "^30.5.2",

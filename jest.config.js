@@ -61,6 +61,14 @@ const baseConfig = {
     '^uuid$': '<rootDir>/src/test-support/uuid-shim.ts',
   },
   transform: {
+    // @langchain/community's dist .cjs keeps lazy `await import('faiss-node')`
+    // calls; jest's CJS runtime cannot service real dynamic imports without
+    // --experimental-vm-modules. Transform just this package so import()
+    // becomes require().
+    'node_modules/@langchain/community/.+\\.[cm]?js$': [
+      'babel-jest',
+      { plugins: ['babel-plugin-dynamic-import-node'] },
+    ],
     '^.+\\.ts$': [
       'ts-jest',
       {
@@ -68,6 +76,7 @@ const baseConfig = {
       },
     ],
   },
+  transformIgnorePatterns: ['/node_modules/(?!@langchain/community/)'],
 };
 
 // Issue #661 — coverage is opt-in via `--coverage` (wired into
