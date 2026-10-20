@@ -54,9 +54,22 @@ const SAMPLE_PDF_FIXTURE = path.join(
 // the only logic in `loadPdf` worth unit-testing in isolation.
 const pdfParseFnMock = jest.fn();
 
-jest.mock('pdf-parse/lib/pdf-parse.js', () => ({
+// pdf-parse@2 is driven through its `PDFParse` class: `new PDFParse({ data })`
+// then `getText()` → `{ text }`. The mock routes `getText()` through
+// `pdfParseFnMock(data)` so existing assertions (called once, with the file
+// bytes, returning the extracted text) keep working against the v2 shape.
+jest.mock('pdf-parse', () => ({
   __esModule: true,
-  default: (buf: Buffer) => pdfParseFnMock(buf),
+  PDFParse: class {
+    private readonly data: Buffer;
+    constructor(opts: { data: Buffer; verbosity?: number }) {
+      this.data = opts.data;
+    }
+    getText(): unknown {
+      return pdfParseFnMock(this.data);
+    }
+    async destroy(): Promise<void> {}
+  },
 }));
 
 describe('LOADERS registry', () => {
@@ -256,15 +269,16 @@ describe('PDF loader (pdf-parse) — routing + dispatch (pdf-parse is mocked)', 
 });
 
 describe('PDF loader — pdfjs-dist stdout noise suppression', () => {
-  // Regression for the hybrid-search complaint: pdf-parse@1.1.1 bundles
-  // pdfjs-dist v1.10.100, whose worker emits TrueType-sanitizer chatter
-  // ("Warning: TT: undefined function: 32",
+  // Regression for the hybrid-search complaint: pdfjs-dist can emit
+  // TrueType-sanitizer chatter ("Warning: TT: undefined function: 32",
   // "Warning: FormatError: Required 'loca' table is not found",
   // "Warning: Empty 'FlateDecode' stream.") via console.log when it
   // re-indexes a PDF whose fonts use glyph hints the sanitizer doesn't
   // understand. Those lines used to land on stdout and pollute the
-  // retrieval markdown / JSON output. We filter them at the loader's
-  // boundary; this suite locks the filter in place.
+  // retrieval markdown / JSON output. Under pdf-parse@1 they could not be
+  // silenced via verbosity (fake-worker path); pdf-parse@2 is constructed
+  // with verbosity:0 so the source is quiet, and `silencePdfjsConsole`
+  // remains as a stdout backstop. This suite locks that backstop in place.
   let tempDir = '';
   let originalConsoleLog: typeof console.log;
   let stdoutSpy: jest.Mock;

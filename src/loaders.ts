@@ -8,12 +8,10 @@
 // existing splitter + embedder pipeline.
 //
 // Library choices:
-//   - `pdf-parse@^1.1.1` for `.pdf`. Pure-JS, no native bindings, exposes a
-//     `pdfParse(buffer): Promise<{text, numpages, ...}>` API. Pinned to v1
-//     because `@langchain/community@^0.3.59` declares
-//     `peerOptional pdf-parse@1.1.1`; v2 satisfies our usage but trips
-//     `npm ci` (CI uses strict peer resolution, which legacy-peer-deps
-//     can't bypass without a project-wide `.npmrc` flag).
+//   - `pdf-parse@^2.4.5` for `.pdf`. Pure-JS, no native bindings, exposes a
+//     typed `PDFParse` class whose `getText()` returns `{text, pages, ...}`.
+//     (`@langchain/community@^1.1.29` declares `peerOptional
+//     pdf-parse@^1.0.0 || ^2.0.0`, so v2 resolves cleanly under `npm ci`.)
 //   - `html-to-text` for `.html` / `.htm`. Pure-JS, no DOM emulation, focuses
 //     on producing readable plain text (preserves paragraph/list breaks,
 //     skips `<script>` / `<style>`). Lighter than cheerio + manual extraction.
@@ -44,7 +42,10 @@ export type Loader = (filePath: string, options?: LoadFileOptions) => Promise<st
 // transparently invalidates every cached entry produced by the previous
 // behavior; operators do not need to manually purge `extracted-text/`.
 const PDF_LOADER_NAME = 'pdf-parse';
-const PDF_LOADER_VERSION = 1;
+// v2 — bumped from 1 for the pdf-parse@1 → @2 upgrade. v2 drives a newer
+// pdfjs-dist whose text extraction can differ in whitespace/line flow, so the
+// bump invalidates every entry cached by the v1 loader (see Issue #279 note).
+const PDF_LOADER_VERSION = 2;
 const HTML_LOADER_NAME = 'html-to-text';
 const HTML_LOADER_VERSION = 1;
 const DELIMITED_TABLE_LOADER_NAME = 'delimited-table';
@@ -470,26 +471,30 @@ let pdfjsSilenceDepth = 0;
 let pdfjsOriginalConsoleLog: typeof console.log | null = null;
 
 /**
- * Filter `console.log` for the duration of `fn` so the pdfjs-dist v1.10.100
- * bundle inside `pdf-parse@1.1.1` does not pollute stdout with TrueType
- * sanitizer chatter.
+ * Filter `console.log` for the duration of `fn` so a pdfjs-dist bundle inside
+ * pdf-parse does not pollute stdout with TrueType sanitizer chatter.
  *
- * Why the noise exists. pdf-parse bundles pdfjs-dist v1.10.100. Inside that
- * bundle, `warn(msg)` resolves to `console.log('Warning: ' + msg)` and is
- * called by the TrueType-program sanitizer for every glyph hint it doesn't
- * understand ("TT: undefined function: 32") and by the font loader on
- * malformed font tables ("FormatError: Required 'loca' table is not found").
- * Text extraction succeeds anyway — these are advisory, not failures.
+ * Primary suppression now lives at the source: `loadPdf` constructs `PDFParse`
+ * with `verbosity: 0` (VerbosityLevel.ERRORS), and pdf-parse@2's modern pdfjs
+ * honors it. This wrapper is kept as a defense-in-depth stdout backstop — it
+ * costs nothing on the happy path and still catches any advisory line a future
+ * pdfjs build might route through `console.log` before we can quiet it.
  *
- * Why we cannot just lower verbosity. The bundled pdfjs has two copies of
- * the verbosity flag: one in `pdf.js` (reachable via `PDFJS.verbosity`) and
- * one in `pdf.worker.js` (module-private, only exposed to outside callers
- * through `WorkerMessageHandler`). pdf.js synchronizes the two by sending a
- * `configure` message — but ONLY on the real-Worker path. In Node we always
- * take the fake-worker `LoopbackPort` path, where no `configure` message is
- * sent and the worker keeps `verbosity = warnings` regardless of what we set
- * on the main module. Setting `PDFJS.verbosity = 0` therefore has no effect
- * on the warnings emitted from inside the worker bundle.
+ * Why the noise exists. Historically pdf-parse@1 bundled pdfjs-dist v1.10.100,
+ * whose `warn(msg)` resolved to `console.log('Warning: ' + msg)` and fired from
+ * the TrueType-program sanitizer for every glyph hint it didn't understand
+ * ("TT: undefined function: 32") and from the font loader on malformed font
+ * tables ("FormatError: Required 'loca' table is not found"). Text extraction
+ * succeeds anyway — these are advisory, not failures.
+ *
+ * Why v1 couldn't just lower verbosity. That bundle had two copies of the
+ * verbosity flag: one in `pdf.js` (reachable via `PDFJS.verbosity`) and one in
+ * `pdf.worker.js` (module-private). pdf.js synchronized them with a `configure`
+ * message sent ONLY on the real-Worker path; in Node we always took the
+ * fake-worker `LoopbackPort` path, where no `configure` message was sent and
+ * the worker kept `verbosity = warnings` regardless. Setting `PDFJS.verbosity`
+ * therefore had no effect — hence this console-level filter. v2's pdfjs no
+ * longer has that gap, so `verbosity: 0` is the real fix and this is a backstop.
  *
  * Filtering the single Node process's `console.log` is the smallest fix that
  * actually silences the noise. We match the three prefixes pdfjs uses
@@ -530,15 +535,15 @@ async function loadPdf(filePath: string, options: LoadFileOptions = {}): Promise
   const limits = resolveLargeFileLimits();
   const size = await statSize(filePath);
   enforceFileSizeLimit(filePath, size, limits);
-  // pdf-parse@1 ships its main as a CJS function with `module.exports = PDF`
-  // and a `parent`-less debug branch that fires on import (it tries to read
-  // a bundled test fixture from `./test/data/...`). Importing under that
-  // condition crashes with ENOENT before we ever feed it our buffer. Both
-  // `require('pdf-parse/lib/pdf-parse.js')` and `await import(...)` of the
-  // direct lib file dodge the debug branch by setting `module.parent` to a
-  // truthy value at load time. The `@ts-expect-error` is for the
-  // un-typed subpath; pdf-parse/lib/pdf-parse.js is the same function as
-  // the package main, just without the debug branch wrapper.
+  // pdf-parse@2 exposes a typed `PDFParse` class (package root export, no more
+  // `module.parent` debug-branch landmine from v1). We construct it with the
+  // file bytes as `data` (Buffer is converted to Uint8Array internally), pull
+  // the concatenated document text via `getText()`, and always `destroy()` the
+  // parser to release the underlying pdfjs document/worker. `verbosity: 0`
+  // (VerbosityLevel.ERRORS) silences pdfjs's TrueType-sanitizer / font chatter
+  // at the source — v2's modern pdfjs honors it, unlike the v1.10.100 bundle.
+  // `silencePdfjsConsole` stays as a stdout backstop for any line that still
+  // slips through (see its doc comment).
   //
   // Issue #279 — gate the heavy parse behind the content-addressed extraction
   // cache. On a cache hit we never touch pdfjs-dist at all; on a miss we run
@@ -548,13 +553,14 @@ async function loadPdf(filePath: string, options: LoadFileOptions = {}): Promise
     loaderName: PDF_LOADER_NAME,
     loaderVersion: PDF_LOADER_VERSION,
     parse: async (buffer) => {
-      // @ts-expect-error: subpath import resolved at runtime, not by tsc
-      const mod = await import('pdf-parse/lib/pdf-parse.js');
-      const pdfParse = (mod.default ?? mod) as (
-        buf: Buffer,
-      ) => Promise<{ text: string }>;
-      const result = await silencePdfjsConsole(() => pdfParse(buffer));
-      return result.text;
+      const { PDFParse } = await import('pdf-parse');
+      const parser = new PDFParse({ data: buffer, verbosity: 0 });
+      try {
+        const result = await silencePdfjsConsole(() => parser.getText());
+        return result.text;
+      } finally {
+        await parser.destroy();
+      }
     },
     writeOnMiss: options.writeExtractionCacheOnMiss,
   });
