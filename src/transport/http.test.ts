@@ -19,14 +19,15 @@ const VALID_TOKEN = 'a-very-secret-token-for-test-use-only';
 function freshFactory(): () => McpServer {
   return () => {
     const server = new McpServer({ name: 'kb-http-test', version: '0.0.0-test' });
-    server.tool(
-      'echo',
-      'Echoes the supplied text',
-      { text: z.string() },
-      async ({ text }) => ({
-        content: [{ type: 'text', text }],
-      }),
-    );
+    const registerTool = server.tool.bind(server) as unknown as (
+      name: string,
+      description: string,
+      shape: Record<string, z.ZodTypeAny>,
+      cb: (args: { text: string }) => Promise<{ content: { type: 'text'; text: string }[] }>,
+    ) => void;
+    registerTool('echo', 'Echoes the supplied text', { text: z.string() }, async ({ text }) => ({
+      content: [{ type: 'text', text }],
+    }));
     return server;
   };
 }

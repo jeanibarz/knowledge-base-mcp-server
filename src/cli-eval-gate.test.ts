@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@jest/globals';
 import * as fs from 'fs';
 import * as path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { parseEvalGateArgs, runSimulatedGateEval } from './cli-eval-gate.js';
 import { aggregateGateEval, normalizeGateEvalFixture } from './relevance-gate-eval.js';
 

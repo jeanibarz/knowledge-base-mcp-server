@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { MarkdownTextSplitter } from 'langchain/text_splitter';
+import { MarkdownTextSplitter } from '@langchain/textsplitters';
 import type { GoldenLabel, GoldenLabels } from '../compare/golden.js';
 
 export type LargeCorpusQueryKind =

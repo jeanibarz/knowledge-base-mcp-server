@@ -3021,7 +3021,10 @@ function detectSymlinkedCheckoutPath(packageRoot: string, invokedPath: string | 
   try {
     const invokedLexical = path.resolve(invokedPath);
     const invokedReal = realpathSync(invokedPath);
-    const cliReal = path.join(packageRoot, 'build', 'cli.js');
+    // packageRoot may itself sit under a symlinked dir (macOS /var -> /private/
+    // var, npm -g into a symlinked prefix); compare canonical to canonical or
+    // the detection silently misses.
+    const cliReal = realpathSync(path.join(packageRoot, 'build', 'cli.js'));
     if (invokedLexical !== invokedReal && invokedReal === cliReal) return packageRoot;
   } catch {
     return null;

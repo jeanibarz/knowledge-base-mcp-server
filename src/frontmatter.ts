@@ -1,4 +1,4 @@
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 const FRONTMATTER_MAX_BYTES = 8192;
 
@@ -62,10 +62,18 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
   const body = normalizedContent.slice(openEnd + fenceEnd);
 
   let parsed: unknown;
-  try {
-    parsed = yaml.load(yamlRaw, { schema: yaml.FAILSAFE_SCHEMA });
-  } catch {
-    return { tags: [], body: content, frontmatter: {} };
+  if (yamlRaw.trim() === '') {
+    // js-yaml 5 throws on an empty document ("expected a document, but the
+    // input is empty") where js-yaml 4 returned undefined. An empty
+    // frontmatter block (`---\n---\n`) is valid and must strip to an empty
+    // mapping, not degrade to the raw-content body of a parse failure.
+    parsed = undefined;
+  } else {
+    try {
+      parsed = yaml.load(yamlRaw, { schema: yaml.FAILSAFE_SCHEMA });
+    } catch {
+      return { tags: [], body: content, frontmatter: {} };
+    }
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -132,10 +140,17 @@ export function parseFrontmatterStrict(content: string): StrictParsedFrontmatter
   const fenceEnd = closeMatch.index + closeMatch[0].length;
   const yamlRaw = searchSlice.slice(0, yamlEnd);
   let parsed: unknown;
-  try {
-    parsed = yaml.load(yamlRaw, { schema: yaml.FAILSAFE_SCHEMA });
-  } catch (error) {
-    throw new Error(`malformed frontmatter: ${(error as Error).message}`);
+  if (yamlRaw.trim() === '') {
+    // js-yaml 5 throws on an empty document where js-yaml 4 returned
+    // undefined; an empty frontmatter block is a valid empty mapping, not
+    // malformed. Normalize to undefined so the guard below coerces it to {}.
+    parsed = undefined;
+  } else {
+    try {
+      parsed = yaml.load(yamlRaw, { schema: yaml.FAILSAFE_SCHEMA });
+    } catch (error) {
+      throw new Error(`malformed frontmatter: ${(error as Error).message}`);
+    }
   }
 
   if (parsed === undefined) parsed = {};

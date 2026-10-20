@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 import { createMockEmbeddings } from './test-support/embeddings.js';
+import { makeTempDir } from './test-support/tempdir.js';
 import type { SearchIndexAdapter } from './search-index-adapter.js';
 
 // RFC 013 M1+M2: per-model layout. Default test config (huggingface +
@@ -782,7 +783,7 @@ describe('FaissIndexManager permission handling', () => {
   });
 
   it('recovers a save-complete pending manifest by finishing hash and chunk sidecars', async () => {
-    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pending-complete-'));
+    const tempDir = await makeTempDir('kb-faiss-pending-complete-');
     const kbDir = path.join(tempDir, 'kb');
     const defaultKb = path.join(kbDir, 'default');
     await fsp.mkdir(defaultKb, { recursive: true });
@@ -962,7 +963,7 @@ describe('FaissIndexManager permission handling', () => {
   });
 
   it('leaves a save-started manifest intact while its same-host owner is alive', async () => {
-    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-pending-live-owner-'));
+    const tempDir = await makeTempDir('kb-faiss-pending-live-owner-');
     const kbDir = path.join(tempDir, 'kb');
     const defaultKb = path.join(kbDir, 'default');
     await fsp.mkdir(path.join(defaultKb, '.index'), { recursive: true });

@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { atomicWriteFile } from './file-mutation.js';
 import { normalizeRetrievalEvalFixture } from './retrieval-eval.js';
 

@@ -46,7 +46,7 @@ function runOpen(args: string[], extraEnv: Record<string, string> = {}): RunResu
       ...extraEnv,
     },
     encoding: 'utf-8',
-    timeout: 8_000,
+    timeout: 30_000,
   });
   if (result.error) throw result.error;
   return {

@@ -2,6 +2,25 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
+// Poll until the lazily-opened log stream creates/flushes the file. A single
+// setImmediate is not a reliable barrier: createWriteStream opens the fd
+// asynchronously, so buffered writes may not have landed yet on slower or
+// contended filesystems.
+async function waitForFile(file: string, predicate: (contents: string) => boolean, timeoutMs = 5000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let contents = '';
+  while (Date.now() <= deadline) {
+    try {
+      contents = await fsp.readFile(file, 'utf-8');
+      if (predicate(contents)) return contents;
+    } catch {
+      // File not yet created by the stream's async open.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return contents;
+}
+
 describe('logger', () => {
   const originalEnv = {
     LOG_FILE: process.env.LOG_FILE,
@@ -45,11 +64,10 @@ describe('logger', () => {
       const { logger } = await import('./logger.js');
       logger.info('File target message');
       logger.debug('debug content');
-      await new Promise((resolve) => setImmediate(resolve));
     });
 
     expect((await fsp.stat(path.dirname(logFile))).isDirectory()).toBe(true);
-    const fileContents = await fsp.readFile(logFile, 'utf-8');
+    const fileContents = await waitForFile(logFile, (s) => s.includes('debug content'));
     expect(fileContents).toContain('File target message');
     expect(fileContents).toContain('[DEBUG] debug content');
   });
@@ -105,10 +123,9 @@ describe('logger', () => {
       const { logger } = await import('./logger.js');
       logger.info('text remains');
       logger.canonical('{"schema_version":"kb-canonical.v1"}');
-      await new Promise((resolve) => setImmediate(resolve));
     });
 
-    const fileContents = await fsp.readFile(logFile, 'utf-8');
+    const fileContents = await waitForFile(logFile, (s) => s.includes('text remains'));
     expect(fileContents).toContain('text remains');
     expect(fileContents).not.toContain('kb-canonical.v1');
   });
@@ -189,11 +206,13 @@ describe('logger', () => {
 
     await jest.isolateModulesAsync(async () => {
       await import('./logger.js');
-      await new Promise((resolve) => setImmediate(resolve));
     });
 
     const rolled = await fsp.readFile(`${logFile}.1`, 'utf-8');
     expect(rolled.length).toBeGreaterThanOrEqual(500);
+    // The rolled file is renamed synchronously at module load, but the fresh
+    // app.log is only created by the stream's async open — wait for it.
+    await waitForFile(logFile, () => true);
     const current = await fsp.readFile(logFile, 'utf-8');
     expect(current.length).toBeLessThan(100);
   });

@@ -62,7 +62,7 @@ flowchart LR
 
 | Container | Tech | Lifecycle | Persistence |
 | --- | --- | --- | --- |
-| MCP server | Node.js >=20, TypeScript output | Launched by an MCP client over stdio, or by an operator/supervisor for HTTP/SSE mode. | In-memory managers only; durable state is in the stores below. |
+| MCP server | Node.js >=22, TypeScript output | Launched by an MCP client over stdio, or by an operator/supervisor for HTTP/SSE mode. | In-memory managers only; durable state is in the stores below. |
 | `kb` CLI | Node.js command binary | Fresh process per command, except when a command opts into `kb serve` for warm reads. | Writes only through explicit write commands or refresh/reindex flows. |
 | `kb serve` daemon | Loopback HTTP helper | Foreground process or user service; optional. | Keeps warm in-memory state; durable state remains in the stores. |
 | Knowledge-base source tree | Plain files | User-owned, long-lived content. | Source files plus `.index/` sidecars. |

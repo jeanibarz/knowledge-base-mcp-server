@@ -3,7 +3,7 @@
 [![Tests](https://github.com/jeanibarz/knowledge-base-mcp-server/actions/workflows/test.yml/badge.svg)](https://github.com/jeanibarz/knowledge-base-mcp-server/actions/workflows/test.yml)
 [![npm](https://img.shields.io/npm/v/@jeanibarz/knowledge-base-mcp-server.svg)](https://www.npmjs.com/package/@jeanibarz/knowledge-base-mcp-server)
 [![License](https://img.shields.io/github/license/jeanibarz/knowledge-base-mcp-server)](./UNLICENSE)
-[![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](./package.json)
+[![Node.js >= 22](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](./package.json)
 
 Point this server at a folder of markdown notes and it becomes searchable by meaning, not just by keyword — from your AI client, or from your shell.
 
@@ -43,7 +43,7 @@ Real output, no mock data: the capture drives the `kb` CLI against a small knowl
 
 ## Install
 
-All install paths need [Node.js](https://nodejs.org/) 20 or newer and npm.
+All install paths need [Node.js](https://nodejs.org/) 22 or newer and npm.
 
 ### As an MCP server (one command)
 

@@ -1,0 +1,60 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Wait a week before proposing any release — brand-new versions are the
+    # window where yanked/compromised publishes get caught (supply-chain).
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    # `increase` keeps existing caret ranges and only widens when a new major
+    # lands outside them — matches how deps are declared today.
+    versioning-strategy: increase
+    commit-message:
+      prefix: chore
+      include: scope
+    # Group tightly-coupled ecosystems so related majors land in one PR
+    # (tracked in #980) instead of a cascade of mutually-conflicting ones.
+    groups:
+      langchain:
+        patterns:
+          - "langchain"
+          - "@langchain/*"
+      opentelemetry:
+        patterns:
+          - "@opentelemetry/*"
+      jest:
+        patterns:
+          - "jest"
+          - "@jest/*"
+          - "ts-jest"
+          - "babel-jest"
+          - "@types/jest"
+      commitlint:
+        patterns:
+          - "@commitlint/*"
+      stryker:
+        patterns:
+          - "@stryker-mutator/*"
+      types:
+        patterns:
+          - "@types/*"
+    # @types/node must track the minimum supported runtime (engines: >=20,
+    # CI matrix 20/24) — a major jump would declare APIs absent on Node 20.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+      include: scope

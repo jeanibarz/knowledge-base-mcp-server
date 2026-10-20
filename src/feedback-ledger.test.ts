@@ -2,7 +2,7 @@ import { describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import {
   appendFeedbackEntry,
   appendPromotedCaseToFixtureFile,

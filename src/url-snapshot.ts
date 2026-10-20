@@ -14,7 +14,7 @@ import * as net from 'node:net';
 import type { LookupAddress, LookupOptions } from 'node:dns';
 import type { AgentOptions as HttpAgentOptions } from 'node:http';
 import type { AgentOptions as HttpsAgentOptions } from 'node:https';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 /** Raised for any URL-snapshot failure the operator should see verbatim. */
 export class UrlSnapshotError extends Error {

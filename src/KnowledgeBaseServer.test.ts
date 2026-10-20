@@ -1705,9 +1705,9 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(first.isError).toBeUndefined();
     expect(second.isError).toBeUndefined();
     expect(ask.isError).toBeUndefined();
-    expect(first.content[0].text).toContain('LEXICAL_CACHE_TOKEN');
-    expect(second.content[0].text).toContain('LEXICAL_CACHE_TOKEN');
-    expect(JSON.parse(ask.content[0].text as string).answer).toContain('LEXICAL_CACHE_TOKEN');
+    expect((first.content[0] as { text: string }).text).toContain('LEXICAL_CACHE_TOKEN');
+    expect((second.content[0] as { text: string }).text).toContain('LEXICAL_CACHE_TOKEN');
+    expect(JSON.parse((ask.content[0] as { text: string }).text).answer).toContain('LEXICAL_CACHE_TOKEN');
     expect(loadSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -1924,7 +1924,7 @@ describe('KnowledgeBaseServer handlers', () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content[0].text as string).error.code).toBe('PROVIDER_UNAVAILABLE');
+    expect(JSON.parse((result.content[0] as { text: string }).text).error.code).toBe('PROVIDER_UNAVAILABLE');
     expect((result as any).structuredContent?.degraded).toBeUndefined();
   });
 

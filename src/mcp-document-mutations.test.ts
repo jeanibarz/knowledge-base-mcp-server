@@ -84,7 +84,8 @@ describe('mcp-document-mutations', () => {
   function parseTextPayload(result: CallToolResult): any {
     const content = result.content[0];
     expect(content.type).toBe('text');
-    return JSON.parse(String(content.text));
+    if (content.type !== 'text') throw new Error('expected text content');
+    return JSON.parse(content.text);
   }
 
   it('handleAddDocument writes the document and refreshes the active index', async () => {

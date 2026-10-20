@@ -28,7 +28,9 @@ jest.mock('fs/promises', () => ({
 }));
 
 describe('getFilesRecursively', () => {
-  const mockReaddir = fsp.readdir as jest.MockedFunction<typeof fsp.readdir>;
+  const mockReaddir = fsp.readdir as unknown as jest.MockedFunction<
+    (dirPath: fs.PathLike, options?: any) => Promise<fs.Dirent[]>
+  >;
 
   beforeEach(() => {
     jest.clearAllMocks();

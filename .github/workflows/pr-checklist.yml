@@ -18,24 +18,30 @@ env:
   KOOKR_ENGINE_REF: dbedfc798b6b619a3c80bd6bc3f9d8b91fdc890d
   TSX_VERSION: 4.22.4
 
+permissions:
+  contents: read
+
 jobs:
   checklist:
     name: Anti-drift checklist
+    # Dependabot PR bodies are machine-generated and can't carry the template
+    # checklist — the gate is unpassable for them, so skip rather than fail red.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout (full history for merge-base diff)
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
 
       - name: Fetch Kookr PR-checklist engine (pinned)
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kookr-ai/kookr
           ref: ${{ env.KOOKR_ENGINE_REF }}

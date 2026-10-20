@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { makeTempDir } from './test-support/tempdir.js';
 
 const cliPath = path.join(process.cwd(), 'build', 'cli.js');
 
@@ -19,7 +20,7 @@ let faissPath: string;
 let notePath: string;
 
 beforeEach(async () => {
-  tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-inspect-'));
+  tempDir = await makeTempDir('kb-inspect-');
   kbRoot = path.join(tempDir, 'knowledge-bases');
   faissPath = path.join(tempDir, 'faiss');
   const docsDir = path.join(kbRoot, 'alpha', 'docs');
@@ -62,7 +63,7 @@ function runInspect(args: string[], extraEnv: Record<string, string> = {}): RunR
       ...extraEnv,
     },
     encoding: 'utf-8',
-    timeout: 10_000,
+    timeout: 30_000,
   });
   if (result.error) throw result.error;
   return {

@@ -15,8 +15,8 @@ function doc(content: string, metadata: Record<string, unknown>, score?: number)
 }
 
 function depsFor(manager: {
-  findChunkByReference: jest.Mock;
-  similaritySearch: jest.Mock;
+  findChunkByReference: jest.Mock<(...args: any[]) => any>;
+  similaritySearch: jest.Mock<(...args: any[]) => any>;
 }): RunRelatedDeps {
   return {
     bootstrapLayout: jest.fn(async () => undefined),
@@ -73,8 +73,8 @@ describe('runRelated', () => {
       chunkIndex: 0,
     }, 0.42);
     const manager = {
-      findChunkByReference: jest.fn(() => seed),
-      similaritySearch: jest.fn(async () => [{ ...seed, score: 0.01 }, related]),
+      findChunkByReference: jest.fn((..._args: any[]) => seed),
+      similaritySearch: jest.fn(async (..._args: any[]) => [{ ...seed, score: 0.01 }, related]),
     };
     const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -124,8 +124,8 @@ describe('runRelated', () => {
 
   it('reports a missing indexed seed as a runtime error', async () => {
     const manager = {
-      findChunkByReference: jest.fn(() => null),
-      similaritySearch: jest.fn(),
+      findChunkByReference: jest.fn((..._args: any[]) => null),
+      similaritySearch: jest.fn((..._args: any[]) => undefined),
     };
     const stdoutSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);

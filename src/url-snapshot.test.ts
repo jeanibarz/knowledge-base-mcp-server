@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import {
   assertHostAllowed,
   assertHttpUrl,
