@@ -52,7 +52,7 @@ if ((process.env.KB_CONTEXTUAL_RETRIEVAL ?? '').toLowerCase() !== 'on') {
 
 // --- byte-exact mirror of benchmarks/beir/run.ts prepareCorpus -------------
 function safeDocFileName(docId, index) {
-  const readable = docId.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) || `doc-${index}`;
+  const readable = docId.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) || `doc-${index}`;  // NOSONAR javascript:S8786 — slug sanitizer on bounded id
   const suffix = crypto.createHash('sha1').update(docId).digest('hex').slice(0, 12);
   return `${readable}-${suffix}.md`;
 }

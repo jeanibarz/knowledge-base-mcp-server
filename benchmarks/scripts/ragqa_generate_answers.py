@@ -31,12 +31,50 @@ import json
 import os
 import subprocess
 import sys
+import re
+import tempfile
+
+
+def _allowed_roots() -> list[str]:
+    repo = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return [
+        repo,
+        os.path.realpath(os.getcwd()),
+        os.path.realpath(tempfile.gettempdir()),
+        os.path.realpath(os.path.expanduser("~")),
+    ]
+
+
+def _resolve_path(path_str: str) -> str:
+    """Resolve a CLI-supplied path and require it to stay under an allowed root
+    (repo checkout, CWD, system temp dir, or the user's home)."""
+    dest = os.path.realpath(path_str)
+    if not any(dest == root or dest.startswith(root + os.sep) for root in _allowed_roots()):
+        raise SystemExit(f"[error] refusing path outside allowed roots: {dest}")
+    return dest
+
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_name(value: str, what: str) -> str:
+    if not _SAFE_NAME.match(value) or value in (".", ".."):
+        raise SystemExit(f"[error] unsafe {what}: {value!r}")
+    return value
+
+
+def _safe_value(value: str, what: str) -> str:
+    """Reject a CLI value that would be re-interpreted as a flag by a subprocess."""
+    if value.startswith("-"):
+        raise SystemExit(f"[error] {what} must not start with '-': {value!r}")
+    return value
 
 
 def run_ask(cli: str, question: str, kb: str, endpoint: str, model: str, env: dict,
             refresh: bool, k: int) -> dict:
-    cmd = ["node", cli, "ask", question, f"--kb={kb}", "--format=json",
-           f"--endpoint={endpoint}", f"--k={k}"]
+    cmd = ["node", _resolve_path(cli), "ask", _safe_value(question, "question"),
+           f"--kb={_safe_name(kb, 'kb name')}", "--format=json",
+           f"--endpoint={_safe_value(endpoint, 'endpoint')}", f"--k={k}"]
     if refresh:
         cmd.append("--refresh")
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
@@ -70,11 +108,11 @@ def main() -> int:
     ap.add_argument("--k", type=int, default=8)
     args = ap.parse_args()
 
-    with open(args.paramap, encoding="utf-8") as f:
+    with open(_resolve_path(args.paramap), encoding="utf-8") as f:
         paramap = json.load(f)
 
     items = []
-    with open(args.gold, encoding="utf-8") as f:
+    with open(_resolve_path(args.gold), encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -83,17 +121,18 @@ def main() -> int:
         items = items[: args.n]
 
     env = dict(os.environ)
-    env["KNOWLEDGE_BASES_ROOT_DIR"] = os.path.abspath(args.kb_root)
-    env["FAISS_INDEX_PATH"] = os.path.abspath(args.faiss_index)
+    env["KNOWLEDGE_BASES_ROOT_DIR"] = _resolve_path(args.kb_root)
+    env["FAISS_INDEX_PATH"] = _resolve_path(args.faiss_index)
     env.setdefault("EMBEDDING_PROVIDER", "ollama")
     env["KB_LLM_PROVIDER"] = env.get("KB_LLM_PROVIDER", "openrouter")
     env["KB_LLM_MODEL"] = args.answerer_model
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    out_path = _resolve_path(args.out)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     written = 0
     errors = 0
-    with open(args.out, "w", encoding="utf-8") as outf:
+    with open(out_path, "w", encoding="utf-8") as outf:
         for idx, item in enumerate(items):
             qid = str(item["id"])
             question = item["question"]

@@ -250,7 +250,7 @@ function ruleDecisionForCandidate(rule: FakeJudgeRule | undefined, contentLower:
 
 function parseJudgeCandidates(user: string): ParsedCandidate[] {
   const rows: ParsedCandidate[] = [];
-  const regex = /id:\s*([^\n]+)\nsource:\s*[^\n]*\ncontent:\n([\s\S]*?)(?=\n\n---\n\nCandidate \d+|\n\nJSON shape:|$)/g;
+  const regex = /id:\s*([^\n]+)\nsource:\s*[^\n]*\ncontent:\n([\s\S]*?)(?=\n\n---\n\nCandidate \d+|\n\nJSON shape:|$)/g;  // NOSONAR typescript:S8786 — test stub on own generated fixture
   let match: RegExpExecArray | null;
   while ((match = regex.exec(user)) !== null) {
     rows.push({
@@ -290,7 +290,7 @@ function buildAskResponse(user: string, rules: FakeLlmRules): string {
 }
 
 function parseFirstAskSnippet(user: string): { path: string | null; content: string } | null {
-  const match = user.match(/Snippet 1\nScore:[^\n]*\nMetadata:\s*([^\n]+)\nContent:\n([\s\S]*?)(?=\n\n---\n\nSnippet \d+|$)/);
+  const match = user.match(/Snippet 1\nScore:[^\n]*\nMetadata:\s*([^\n]+)\nContent:\n([\s\S]*?)(?=\n\n---\n\nSnippet \d+|$)/);  // NOSONAR typescript:S8786 — test stub on own generated fixture
   if (match === null) return null;
   let pathValue: string | null = null;
   try {
@@ -312,8 +312,8 @@ function parseFirstAskSnippet(user: string): { path: string | null; content: str
 function nearestHeading(documentBody: string, chunk: string): string {
   const index = chunk.trim() === '' ? -1 : documentBody.indexOf(chunk);
   const prefix = index >= 0 ? documentBody.slice(0, index) : documentBody;
-  const headings = [...prefix.matchAll(/^#{1,6}\s+(.+)$/gm)].map((match) => match[1].trim());
-  const heading = headings.at(-1) ?? [...documentBody.matchAll(/^#{1,6}\s+(.+)$/gm)].at(0)?.[1]?.trim();
+  const headings = [...prefix.matchAll(/^#{1,6}\s+(.+)$/gm)].map((match) => match[1].trim());  // NOSONAR typescript:S8786 — line-anchored heading match
+  const heading = headings.at(-1) ?? [...documentBody.matchAll(/^#{1,6}\s+(.+)$/gm)].at(0)?.[1]?.trim();  // NOSONAR typescript:S8786 — line-anchored heading match
   return heading ? `section "${heading}"` : 'the source document';
 }
 
@@ -403,7 +403,7 @@ function includesFolded(haystack: string, needle: string): boolean {
 
 function importantTerms(input: string): string[] {
   return input
-    .replace(/<[^>]+>/g, ' ')
+    .replace(/<[^>]+>/g, ' ')  // NOSONAR typescript:S8786 — negated class, linear
     .toLowerCase()
     .match(/[a-z0-9_/-]{3,}/g)
     ?.filter((term) => !STOP_WORDS.has(term)) ?? [];
@@ -415,7 +415,7 @@ function firstContentTerm(input: string): string | null {
 
 function firstSentence(input: string): string | null {
   const cleaned = input
-    .replace(/<[^>]+>/g, ' ')
+    .replace(/<[^>]+>/g, ' ')  // NOSONAR typescript:S8786 — negated class, linear
     .replace(/\s+/g, ' ')
     .trim();
   if (cleaned === '') return null;

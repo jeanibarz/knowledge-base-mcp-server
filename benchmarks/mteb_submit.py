@@ -33,6 +33,8 @@ import argparse
 import json
 import os
 import sys
+import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +45,41 @@ KB_PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
     "huggingface": {"kb_model": "BAAI/bge-small-en-v1.5", "mteb_model_id": "BAAI/bge-small-en-v1.5"},
     "openai": {"kb_model": "text-embedding-3-small", "mteb_model_id": "text-embedding-3-small"},
 }
+
+
+def _allowed_roots() -> list[str]:
+    repo = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return [
+        repo,
+        os.path.realpath(os.getcwd()),
+        os.path.realpath(tempfile.gettempdir()),
+        os.path.realpath(os.path.expanduser("~")),
+    ]
+
+
+def _resolve_path(path_str: str) -> str:
+    """Resolve a CLI-supplied path and require it to stay under an allowed root
+    (repo checkout, CWD, system temp dir, or the user's home)."""
+    dest = os.path.realpath(path_str)
+    if not any(dest == root or dest.startswith(root + os.sep) for root in _allowed_roots()):
+        raise SystemExit(f"[error] refusing path outside allowed roots: {dest}")
+    return dest
+
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_name(value: str, what: str) -> str:
+    if not _SAFE_NAME.match(value) or value in (".", ".."):
+        raise SystemExit(f"[error] unsafe {what}: {value!r}")
+    return value
+
+
+def _safe_value(value: str, what: str) -> str:
+    """Reject a CLI value that would be re-interpreted as a flag by a subprocess."""
+    if value.startswith("-"):
+        raise SystemExit(f"[error] {what} must not start with '-': {value!r}")
+    return value
 
 
 def main() -> int:
@@ -93,14 +130,14 @@ def main() -> int:
         print(f"mteb_submit: could not load embedding model: {err}", file=sys.stderr)
         return 2
 
-    output_dir = Path(args.results_dir)
+    output_dir = Path(_resolve_path(args.results_dir))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     benchmark = mteb.MTEB(tasks=mteb.get_tasks(tasks=tasks))
     benchmark.run(model, output_folder=str(output_dir), verbosity=1)
 
     record = build_record(output_dir, mteb_model_id, kb_model, mteb_version=getattr(mteb, "__version__", None))
-    out_path = Path(args.output)
+    out_path = Path(_resolve_path(args.output))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"JSON: {out_path}")

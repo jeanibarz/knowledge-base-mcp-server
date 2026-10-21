@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,7 @@ def main() -> int:
     args = parse_args()
 
     if args.replay_config is not None:
-        return run_replay_config(Path(args.replay_config)).returncode
+        return run_replay_config(Path(_resolve_path(args.replay_config))).returncode
 
     try:
         import optuna  # type: ignore
@@ -143,8 +144,27 @@ def build_replay_config(study: Any, args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _allowed_roots() -> list[str]:
+    repo = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+    return [
+        repo,
+        os.path.realpath(os.getcwd()),
+        os.path.realpath(tempfile.gettempdir()),
+        os.path.realpath(os.path.expanduser("~")),
+    ]
+
+
+def _resolve_path(path_str: str) -> str:
+    """Resolve a CLI-supplied path and require it to stay under an allowed root
+    (repo checkout, CWD, system temp dir, or the user's home)."""
+    dest = os.path.realpath(path_str)
+    if not any(dest == root or dest.startswith(root + os.sep) for root in _allowed_roots()):
+        raise SystemExit(f"[error] refusing path outside allowed roots: {dest}")
+    return dest
+
+
 def write_replay_config(study: Any, args: argparse.Namespace) -> Path:
-    output_path = Path(args.best_config_out) if args.best_config_out else default_best_config_path(args.study_name)
+    output_path = Path(_resolve_path(args.best_config_out)) if args.best_config_out else default_best_config_path(args.study_name)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(build_replay_config(study, args), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return output_path

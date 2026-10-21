@@ -130,7 +130,7 @@ export async function checkCliReference({ root = REPO_ROOT } = {}) {
 function normalizeBody(body) {
   // Drop trailing whitespace (the closing fence re-adds a newline) so the output
   // is stable regardless of how a `*_HELP` string terminates.
-  return body.replace(/\s+$/u, '');
+  return body.replace(/\s+$/u, '');  // NOSONAR javascript:S8786 — trailing whitespace trim
 }
 
 function fenceTicks(bodies) {

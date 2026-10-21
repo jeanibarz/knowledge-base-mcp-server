@@ -21,6 +21,8 @@ import io
 import json
 import os
 import sys
+import re
+import tempfile
 import urllib.request
 
 import pandas as pd
@@ -30,6 +32,33 @@ HF_BASE = "https://huggingface.co"
 # Most BeIR datasets live at BeIR/<name> with a sibling BeIR/<name>-qrels repo.
 # A few use a different corpus/qrels repo name on the hub; record those here.
 QRELS_REPO_OVERRIDE: dict[str, str] = {}
+def _allowed_roots() -> list[str]:
+    repo = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    return [
+        repo,
+        os.path.realpath(os.getcwd()),
+        os.path.realpath(tempfile.gettempdir()),
+        os.path.realpath(os.path.expanduser("~")),
+    ]
+
+
+def _resolve_path(path_str: str) -> str:
+    """Resolve a CLI-supplied path and require it to stay under an allowed root
+    (repo checkout, CWD, or the system temp dir)."""
+    dest = os.path.realpath(path_str)
+    if not any(dest == root or dest.startswith(root + os.sep) for root in _allowed_roots()):
+        raise SystemExit(f"[error] refusing path outside allowed roots: {dest}")
+    return dest
+
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_name(value: str, what: str) -> str:
+    if not _SAFE_NAME.match(value) or value in (".", ".."):
+        raise SystemExit(f"[error] unsafe {what}: {value!r}")
+    return value
+
 
 
 def _hf_api(path: str) -> dict:
@@ -92,7 +121,7 @@ def main() -> int:
     ds = args.dataset
     corpus_repo = args.corpus_repo or f"BeIR/{ds}"
     qrels_repo = args.qrels_repo or QRELS_REPO_OVERRIDE.get(ds, f"BeIR/{ds}-qrels")
-    out_dir = os.path.join(args.cache_dir, ds)
+    out_dir = os.path.join(_resolve_path(args.cache_dir), _safe_name(ds, "dataset name"))
     corpus_path = os.path.join(out_dir, "corpus.jsonl")
     queries_path = os.path.join(out_dir, "queries.jsonl")
     qrels_path = os.path.join(out_dir, "qrels", f"{args.split}.tsv")
@@ -128,7 +157,7 @@ def main() -> int:
 
     # qrels: a flat <split>.tsv in the qrels repo.
     qsib = _siblings(qrels_repo)
-    tsv_name = f"{args.split}.tsv"
+    tsv_name = f"{_safe_name(args.split, 'split')}.tsv"
     if tsv_name not in qsib:
         print(f"[error] {ds}: {tsv_name} not in {qrels_repo}; siblings={qsib}", file=sys.stderr)
         return 3

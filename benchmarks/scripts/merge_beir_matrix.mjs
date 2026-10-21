@@ -133,6 +133,7 @@ const generalization = computeGeneralizationReport(
   modes,
 );
 
+// NOSONAR javascript:S4036 — resolving git via PATH is intentional.
 const gitSha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repoRoot, encoding: 'utf-8' }).trim();
 
 const report = {

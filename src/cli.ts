@@ -452,14 +452,28 @@ function parseOptionLine(line: string): HelpManifestOption | null {
   if (!line.startsWith('  ')) return null;
   const trimmed = line.trimStart();
   if (!trimmed.startsWith('-')) return null;
-  const match = /^(\S+(?:,\s+\S+)*)\s{2,}(.*)$/.exec(trimmed);
-  const flagSpec = match?.[1] ?? trimmed;
+  const gap = trimmed.search(/\s{2,}/);
+  let flagSpec = trimmed;
+  let description = '';
+  if (gap >= 0) {
+    const left = trimmed.slice(0, gap);
+    const isFlagSpec = left
+      .split(',')
+      .every((part) => {
+        const token = part.trim();
+        return token.length > 0 && !/\s/.test(token);
+      });
+    if (isFlagSpec) {
+      flagSpec = left;
+      description = trimmed.slice(gap).trim();
+    }
+  }
   const parsedFlags = parseFlagSpec(flagSpec);
   if (parsedFlags.flags.length === 0) return null;
   return {
     flags: parsedFlags.flags,
     value: parsedFlags.value,
-    description: match?.[2]?.trim() ?? '',
+    description,
   };
 }
 
@@ -530,9 +544,10 @@ function extractDefinitionList(help: string, heading: string): HelpManifestDefin
       }
       continue;
     }
-    const match = /^ {2}(.+?)\s{2,}(.*)$/.exec(line);
-    if (match) {
-      current = pushDefinitions(definitions, match[1], match[2].trim());
+    const rest = line.slice(2);
+    const gap = rest.search(/\s{2,}/);
+    if (gap > 0) {
+      current = pushDefinitions(definitions, rest.slice(0, gap), rest.slice(gap).trim());
       continue;
     }
     current = pushDefinitions(definitions, line.trim(), '');

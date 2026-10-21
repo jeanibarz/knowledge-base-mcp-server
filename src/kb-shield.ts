@@ -54,7 +54,7 @@ const RULES_V1: ReadonlyArray<RuleSpec> = [
   },
   {
     id: 'RoleTakeover.SystemTag',
-    pattern: /<\s*\/?\s*system\s*>/gi,
+    pattern: /<\s*\/?\s*system\s*>/gi,  // NOSONAR typescript:S8786 — bounded tag literals, disjoint classes
   },
   {
     id: 'RoleTakeover.ImStart',

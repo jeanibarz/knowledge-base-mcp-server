@@ -814,7 +814,7 @@ async function handleRequest(
   buildHealth: () => DaemonHealth,
   admission: DaemonAdmissionGate,
 ): Promise<void> {
-  const url = new URL(req.url ?? '/', 'http://placeholder');
+  const url = new URL(req.url ?? '/', 'http://placeholder'); // NOSONAR typescript:S5332 — parse-only base, never fetched
   if (req.method === 'GET' && url.pathname === '/health') {
     writeJson(res, 200, buildHealth());
     return;

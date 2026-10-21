@@ -927,7 +927,7 @@ function compactJson(value: unknown): string {
 
 function code(value: string | undefined): string {
   if (value === undefined || value === '') return '';
-  return `\`${value.replace(/`/g, '\\`')}\``;
+  return `\`${value.replace(/\\/g, '\\\\').replace(/`/g, '\\`')}\``;
 }
 
 function escapeTableCell(value: string | number): string {

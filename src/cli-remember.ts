@@ -407,7 +407,7 @@ interface LessonValidation {
 function normalizeHeadingText(text: string): string {
   return text
     .trim()
-    .replace(/[\s:.?!,;]+$/u, '')
+    .replace(/[\s:.?!,;]+$/u, '')  // NOSONAR typescript:S8786 — trailing punctuation trim
     .toLowerCase();
 }
 

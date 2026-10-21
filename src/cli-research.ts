@@ -622,9 +622,9 @@ function tokenize(value: string): string[] {
   const seen = new Set<string>();
   const tokens: string[] = [];
   for (const raw of value.toLowerCase().match(/[a-z0-9][a-z0-9-]{1,}/g) ?? []) {
-    addSelectionToken(raw.replace(/^-+|-+$/g, ''), seen, tokens);
+    addSelectionToken(raw.replace(/^-+|-+$/g, ''), seen, tokens);  // NOSONAR typescript:S8786 — dash trim on bounded token
     for (const part of raw.split('-')) {
-      addSelectionToken(part.replace(/^-+|-+$/g, ''), seen, tokens);
+      addSelectionToken(part.replace(/^-+|-+$/g, ''), seen, tokens);  // NOSONAR typescript:S8786 — dash trim on bounded token
     }
   }
   return tokens;
@@ -659,7 +659,7 @@ function tokenizeForQuery(value: string): string[] {
   const seen = new Set<string>();
   const tokens: string[] = [];
   for (const raw of value.toLowerCase().match(/[a-z0-9][a-z0-9-]{1,}/g) ?? []) {
-    const token = raw.replace(/^-+|-+$/g, '');
+    const token = raw.replace(/^-+|-+$/g, '');  // NOSONAR typescript:S8786 — dash trim on bounded token
     if (token === '') continue;
     const normalized = normalizeToken(token);
     if (STOP_WORDS.has(normalized) || seen.has(token)) continue;

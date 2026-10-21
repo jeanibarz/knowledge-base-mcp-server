@@ -1791,7 +1791,7 @@ export class KnowledgeBaseServer {
 
   private async readResourceListFingerprint(): Promise<string> {
     const result = await listResources();
-    return result.resources.map((resource) => resource.uri).sort().join('\0');
+    return result.resources.map((resource) => resource.uri).sort((a, b) => a.localeCompare(b)).join('\0');
   }
 
   private async refreshResourceListFingerprint(): Promise<void> {

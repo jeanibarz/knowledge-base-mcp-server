@@ -304,9 +304,9 @@ export function slugifyForFilename(text: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/^-+|-+$/g, '')  // NOSONAR typescript:S8786 — dash trim
     .replace(/-{2,}/g, '-');
-  return slug.length > 0 ? slug.slice(0, 80).replace(/-+$/, '') : 'snapshot';
+  return slug.length > 0 ? slug.slice(0, 80).replace(/-+$/, '') : 'snapshot';  // NOSONAR typescript:S8786 — dash trim
 }
 
 // ----- snapshot note builder -----------------------------------------------

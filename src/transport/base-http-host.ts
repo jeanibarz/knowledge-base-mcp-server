@@ -381,7 +381,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
   private async dispatch(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const startedAt = Date.now();
     const method = req.method ?? 'GET';
-    const url = new URL(req.url ?? '/', 'http://placeholder');
+    const url = new URL(req.url ?? '/', 'http://placeholder'); // NOSONAR typescript:S5332 — parse-only base, never fetched
     const path = url.pathname;
     const originHeader = headerValue(req.headers.origin);
     // Allow-list is normalized at config-parse time (parseAllowedOrigins);

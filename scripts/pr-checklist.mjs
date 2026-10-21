@@ -92,6 +92,7 @@ function main() {
   // offline run still verifies against whatever base commit is already local.
   const baseBranch = opts.base.startsWith('origin/') ? opts.base.slice('origin/'.length) : opts.base;
   try {
+    // NOSONAR javascript:S4036 — resolving git via PATH is intentional.
     execFileSync('git', ['fetch', '--no-tags', '--quiet', 'origin', baseBranch], { stdio: 'ignore' });
   } catch {
     process.stderr.write(`[pr-checklist] warning: could not fetch origin/${baseBranch}; verifying against the local base.\n`);

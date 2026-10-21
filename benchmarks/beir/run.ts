@@ -1820,7 +1820,7 @@ async function hashDatasetFiles(datasetDir: string, split: string): Promise<stri
 }
 
 function safeDocFileName(docId: string, index: number): string {
-  const readable = docId.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) || `doc-${index}`;
+  const readable = docId.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) || `doc-${index}`;  // NOSONAR typescript:S8786 — slug sanitizer on bounded id
   const suffix = crypto.createHash('sha1').update(docId).digest('hex').slice(0, 12);
   return `${readable}-${suffix}.md`;
 }

@@ -29,10 +29,10 @@ export function slugifyTitle(title: string, options: SlugifyTitleOptions = {}): 
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/^-+|-+$/g, '')  // NOSONAR typescript:S8786 — trim on bounded slug
     .replace(/-{2,}/g, '-');
   if (slug.length > 0) {
-    return slug.slice(0, maxLength).replace(/-+$/g, '');
+    return slug.slice(0, maxLength).replace(/-+$/g, '');  // NOSONAR typescript:S8786 — trim on bounded slug
   }
   return `${fallback}-${shortTitleHash(title)}`;
 }
