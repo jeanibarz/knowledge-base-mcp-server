@@ -50,12 +50,14 @@ jobs:
           node-version: 24
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci --ignore-scripts
+          npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
 
       - name: Build
         run: |
           npm run build
-          npx tsc -p tsconfig.bench.json
+          ./node_modules/.bin/tsc -p tsconfig.bench.json
 
       # The hermetic gate: lexical BM25 + dense via the deterministic `fake`
       # provider over the vendored fixture corpus. No network, no credentials —

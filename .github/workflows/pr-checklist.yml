@@ -26,7 +26,10 @@ jobs:
     name: Anti-drift checklist
     # Dependabot PR bodies are machine-generated and can't carry the template
     # checklist — the gate is unpassable for them, so skip rather than fail red.
-    if: github.actor != 'dependabot[bot]'
+    # Key on the PR *author* (pull_request.user), not github.actor: a human
+    # push to a dependabot branch (synchronize event) re-triggers the gate and
+    # would otherwise flip the actor to the pusher.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

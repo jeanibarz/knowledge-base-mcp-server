@@ -4,7 +4,7 @@ FROM node:lts-alpine AS builder
 WORKDIR /app
 # Install dependencies
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts && npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
 # Copy source and build
 COPY . .
 RUN npm run build
@@ -14,9 +14,12 @@ FROM node:lts-alpine
 WORKDIR /app
 # Install production dependencies
 COPY package.json package-lock.json ./
-RUN npm ci --only=production
+RUN npm ci --only=production --ignore-scripts && npm rebuild faiss-node hnswlib-node onnxruntime-node sharp
 # Copy built files and dependencies
-COPY --from=builder /app/build ./build
+COPY --from=builder --chown=node:node /app/build ./build
+
+# Run as the non-root node user
+USER node
 
 # Default command
 CMD ["node", "build/index.js"]
