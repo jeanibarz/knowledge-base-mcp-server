@@ -251,6 +251,13 @@ describe('ingest chaos suite', () => {
   it('trips the contextual-preface circuit breaker after consecutive LLM timeouts', async () => {
     process.env.KB_CONTEXTUAL_RETRIEVAL = 'on';
     process.env.KB_LLM_ENDPOINT = 'http://127.0.0.1:0/v1/chat/completions';
+    // Serialized resolution keeps the breaker math deterministic: 5 consecutive
+    // chunk timeouts x 3 attempts = 15 calls before chunks 6-8 short-circuit.
+    process.env.KB_CONTEXTUAL_CONCURRENCY = '1';
+    // The provider-level breaker (threshold 3) trips before the per-file
+    // breaker (limit 5) under test; disable it so the file breaker is what
+    // engages.
+    process.env.KB_PROVIDER_BREAKER = 'off';
     const fetchMock = jest.fn(async () => {
       throw Object.assign(new Error('timeout'), { name: 'AbortError' });
     });
@@ -258,8 +265,10 @@ describe('ingest chaos suite', () => {
 
     const { resolveContextualPrefaces, sidecarPathFor } =
       await import('../../../src/contextual-preface.js');
-    const source = path.join(workspace.kbPath, 'long.md');
     const chunks = Array.from({ length: 8 }, (_, i) => `chunk ${i}`);
+    // The LLM-policy gate reads the real source file (readLlmContextPolicy);
+    // without it on disk resolution never reaches the endpoint.
+    const source = await writeFixtureNote(workspace, 'long.md', chunks.join('\n\n'));
 
     const resolved = await resolveContextualPrefaces({
       source,
