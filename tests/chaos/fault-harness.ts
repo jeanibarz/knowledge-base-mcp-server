@@ -22,7 +22,9 @@ const ENV_KEYS = [
   'KB_FAISS_INDEX_TYPE',
   'KB_INDEX_VERSION_RETENTION',
   'KB_CONTEXTUAL_RETRIEVAL',
+  'KB_CONTEXTUAL_CONCURRENCY',
   'KB_LLM_ENDPOINT',
+  'KB_PROVIDER_BREAKER',
 ] as const;
 
 export type SavedEnv = Record<typeof ENV_KEYS[number], string | undefined>;
