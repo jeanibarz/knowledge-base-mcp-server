@@ -17,7 +17,7 @@ jobs:
         with:
           cache: npm
           node-version: 24
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Lint PR title
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}

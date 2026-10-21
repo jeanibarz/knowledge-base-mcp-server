@@ -23,7 +23,9 @@ jobs:
         with:
           cache: npm
           node-version: 24
-      - run: npm ci
+      - run: |
+          npm ci --ignore-scripts
+          npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
       - run: npm run test:mutation
       - name: Upload mutation report
         if: always()

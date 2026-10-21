@@ -23,7 +23,9 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
-      - run: npm ci
+      - run: |
+          npm ci --ignore-scripts
+          npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
       - run: npm run build
       # Issue #883 — gate releases on the full suite INCLUDING the `src/e2e/`
       # npm-pack tarball smoke and stdio-handshake tests. `KB_RUN_E2E=1` drops

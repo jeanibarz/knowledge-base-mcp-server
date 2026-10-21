@@ -36,7 +36,8 @@ EOF
 fi
 
 echo "==> Installing npm dependencies"
-npm install
+npm install --ignore-scripts
+npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
 
 echo "==> Building"
 npm run build

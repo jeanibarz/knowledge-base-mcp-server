@@ -35,7 +35,9 @@ jobs:
         with:
           cache: npm
           node-version: ${{ matrix.node }}
-      - run: npm ci
+      - run: |
+          npm ci --ignore-scripts
+          npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
       # The e2e suite spawns `build/index.js` / `build/cli.js` and `npm pack`s
       # the `build/` tree; `test:serial` does not build, so build explicitly.
       - run: npm run build

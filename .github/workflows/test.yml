@@ -19,6 +19,8 @@ jobs:
         with:
           cache: npm
           node-version: ${{ matrix.node }}
-      - run: npm ci
+      - run: |
+          npm ci --ignore-scripts
+          npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
       - run: npm run lint
       - run: npm run check
