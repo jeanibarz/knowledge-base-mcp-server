@@ -320,7 +320,9 @@ describe('metadata-sidecar', () => {
     it('deleteMetadataSidecar succeeds when the file is absent', async () => {
       const dir = await makeTempDir();
       try {
-        await deleteMetadataSidecar(path.join(dir, 'never-existed.jsonl'));
+        await expect(
+          deleteMetadataSidecar(path.join(dir, 'never-existed.jsonl')),
+        ).resolves.toBeUndefined();
       } finally {
         await fsp.rm(dir, { recursive: true, force: true });
       }

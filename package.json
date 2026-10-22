@@ -115,6 +115,9 @@
     "@opentelemetry/semantic-conventions": "^1.30.0"
   },
   "devDependencies": {
+    "@babel/core": "^8.0.0",
+    "@babel/plugin-transform-dynamic-import": "^8.0.1",
+    "@babel/plugin-transform-modules-commonjs": "^8.0.1",
     "@commitlint/cli": "^21.2.3",
     "@commitlint/config-conventional": "^21.2.3",
     "@stryker-mutator/core": "^10.0.0",
@@ -125,7 +128,6 @@
     "@types/node": "^22.15.0",
     "@types/pdfkit": "^0.17.6",
     "@types/proper-lockfile": "^4.1.4",
-    "babel-plugin-dynamic-import-node": "^2.3.3",
     "eslint": "^10.5.0",
     "fast-check": "^4.7.0",
     "jest": "^30.5.2",
@@ -143,6 +145,9 @@
     "@langchain/community": {
       "@huggingface/transformers": "^4.3.1",
       "html-to-text": "^10.0.1"
+    },
+    "typed-rest-client": {
+      "qs": "6.15.2"
     }
   },
   "allowScripts": {

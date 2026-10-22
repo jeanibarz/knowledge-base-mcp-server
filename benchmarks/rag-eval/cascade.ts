@@ -318,7 +318,7 @@ function assembleOutcome(
 // stable sequence regardless of completion order. ---
 function readPanelConcurrency(): number {
   const raw = process.env.KB_RAGEVAL_PANEL_CONCURRENCY;
-  const parsed = raw === undefined ? NaN : Number(raw);
+  const parsed = raw === undefined ? Number.NaN : Number(raw);
   if (!Number.isFinite(parsed) || parsed < 1) return 4;
   return Math.min(Math.floor(parsed), 16);
 }

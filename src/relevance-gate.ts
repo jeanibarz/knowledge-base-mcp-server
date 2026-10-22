@@ -114,7 +114,7 @@ export const DEFAULT_GATE_VERDICT_CACHE_MAX = 256;
 export function resolveGateVerdictCacheMax(
   raw: string | undefined = process.env.KB_GATE_VERDICT_CACHE_MAX,
 ): number {
-  const parsed = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_GATE_VERDICT_CACHE_MAX;
   return Math.floor(parsed);
 }
@@ -833,7 +833,7 @@ function buildCacheKey<T extends RelevanceGateCandidate>(
     model: config.judgeModel ?? '',
     empty: config.emptyVerdictEnabled,
   }));
-  for (const lexicalId of Array.from(lexicalHitIds).sort()) {
+  for (const lexicalId of Array.from(lexicalHitIds).sort((a, b) => a.localeCompare(b))) {
     hash.update('\0lexical:');
     hash.update(lexicalId);
   }

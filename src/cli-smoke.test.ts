@@ -392,6 +392,7 @@ describe('kb CLI smoke matrix without an embedding backend', () => {
 
   describe.each(outputCases)('$name', ({ args, setup, assert }) => {
     it('exercises the representative output path', async () => {
+      expect.hasAssertions();
       await setup?.();
       await assert(runCli(args));
     });

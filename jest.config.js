@@ -67,7 +67,12 @@ const baseConfig = {
     // becomes require().
     'node_modules/@langchain/community/.+\\.[cm]?js$': [
       'babel-jest',
-      { plugins: ['babel-plugin-dynamic-import-node'] },
+      {
+        plugins: [
+          '@babel/plugin-transform-dynamic-import',
+          '@babel/plugin-transform-modules-commonjs',
+        ],
+      },
     ],
     '^.+\\.ts$': [
       'ts-jest',

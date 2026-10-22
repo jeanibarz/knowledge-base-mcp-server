@@ -98,7 +98,7 @@ function normalizeJsonValue(value: unknown): unknown {
   }
   if (isJsonObject(value)) {
     const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
+    for (const key of Object.keys(value).sort((a, b) => a.localeCompare(b))) {
       sorted[key] = normalizeJsonValue(value[key]);
     }
     return sorted;

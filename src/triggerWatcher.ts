@@ -421,7 +421,7 @@ export class ReindexTriggerWatcher {
         return false;
       }
       const parsed = JSON.parse(raw) as { pid?: unknown };
-      const pid = typeof parsed.pid === 'number' ? parsed.pid : NaN;
+      const pid = typeof parsed.pid === 'number' ? parsed.pid : Number.NaN;
       return Number.isFinite(pid) && helpers.isPidAlive(pid);
     } catch (err) {
       // The file exists but is unreadable / corrupt. Don't block the

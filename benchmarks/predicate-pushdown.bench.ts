@@ -377,13 +377,13 @@ function formatMetrics(metrics: ReturnType<typeof timePath>): string {
 
 function parsePositiveInt(raw: string | undefined): number | null {
   if (!raw) return null;
-  const parsed = parseInt(raw, 10);
+  const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function parsePositiveFloat(raw: string | undefined): number | null {
   if (!raw) return null;
-  const parsed = parseFloat(raw);
+  const parsed = Number.parseFloat(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 

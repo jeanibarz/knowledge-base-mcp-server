@@ -83,7 +83,7 @@ export interface IndexVersionPruneResult {
 export function parseIndexVersionDirName(name: string): number | null {
   const match = name.match(VERSION_DIR_PATTERN);
   if (!match) return null;
-  const n = parseInt(match[1], 10);
+  const n = Number.parseInt(match[1], 10);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -195,7 +195,7 @@ export async function pruneInactiveIndexVersions(
         `kept active ${active} plus ${Math.max(0, kept.size - 1)} inactive version(s)`,
     );
   }
-  return { active, retention, kept: [...kept].sort(), removed, skipped: null };
+  return { active, retention, kept: [...kept].sort((a, b) => a.localeCompare(b)), removed, skipped: null };
 }
 
 type FsOperationErrorHandler = (action: string, targetPath: string, error: unknown) => never;

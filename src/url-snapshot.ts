@@ -53,7 +53,7 @@ function firstHextet(addr: string): number | null {
   const idx = addr.indexOf(':');
   const head = idx === -1 ? addr : addr.slice(0, idx);
   if (!/^[0-9a-f]{1,4}$/.test(head)) return null;
-  return parseInt(head, 16);
+  return Number.parseInt(head, 16);
 }
 
 function isBlockedIPv6(raw: string): boolean {

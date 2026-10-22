@@ -197,6 +197,23 @@ describe('logger', () => {
     await expect(fsp.stat(`${logFile}.3`)).rejects.toThrow();
   });
 
+  it('closeLogFile flushes buffered writes and resolves when no stream exists', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-logger-close-'));
+    const logFile = path.join(tempDir, 'app.log');
+    process.env.LOG_FILE = logFile;
+
+    await jest.isolateModulesAsync(async () => {
+      const { logger, closeLogFile } = await import('./logger.js');
+      logger.info('final message before close');
+      await closeLogFile();
+      // Second call must resolve immediately (stream cleared).
+      await expect(closeLogFile()).resolves.toBeUndefined();
+    });
+
+    const contents = await fsp.readFile(logFile, 'utf-8');
+    expect(contents).toContain('final message before close');
+  });
+
   it('rolls an oversized pre-existing log on startup', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-logger-startup-'));
     const logFile = path.join(tempDir, 'app.log');

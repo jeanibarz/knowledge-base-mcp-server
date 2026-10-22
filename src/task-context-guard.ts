@@ -83,7 +83,7 @@ export function resolveTaskContextArgvMax(
 
 /** Distinct injection-signal kinds, sorted, for stable messages. */
 function describeSignalKinds(signals: InjectionSignal[]): string {
-  return Array.from(new Set(signals.map((signal) => signal.kind))).sort().join(', ');
+  return Array.from(new Set(signals.map((signal) => signal.kind))).sort((a, b) => a.localeCompare(b)).join(', ');
 }
 
 // The wrapper-delimiter rule only means something when a wrapping mode is

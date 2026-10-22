@@ -1983,7 +1983,7 @@ Usage:
   npm run bench:beir -- --dataset=scifact --split=test --mode=lexical --lexical-unit=source --output-dir=/tmp/kb-beir-scifact
 
 Options:
-  --dataset=<name>       BEIR dataset name. Built-ins: ${Object.keys(DATASET_URLS).sort().join(', ')}.
+  --dataset=<name>       BEIR dataset name. Built-ins: ${Object.keys(DATASET_URLS).sort((a, b) => a.localeCompare(b)).join(', ')}.
   --config=<path>        JSON config with env overrides and BEIR runner args.
   --split=<name>         Qrels split under qrels/<split>.tsv. Default: test.
   --mode=<mode>          Retrieval mode: ${BEIR_MODES.join(', ')}. Default: lexical.

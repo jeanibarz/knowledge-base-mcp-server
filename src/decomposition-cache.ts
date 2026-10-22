@@ -52,7 +52,7 @@ export function isDecompositionCacheEnabled(
 export function resolveDecompositionCacheLruMax(
   raw: string | undefined = readEnvironment('KB_DECOMPOSE_CACHE_LRU_MAX'),
 ): number {
-  const parsed = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_DECOMPOSITION_CACHE_LRU_MAX;
   return Math.floor(parsed);
 }
@@ -60,7 +60,7 @@ export function resolveDecompositionCacheLruMax(
 export function resolveDecompositionCacheDiskMaxBytes(
   raw: string | undefined = readEnvironment('KB_DECOMPOSE_CACHE_DISK_MAX_BYTES'),
 ): number {
-  const parsed = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_DECOMPOSITION_CACHE_DISK_MAX_BYTES;
   return Math.floor(parsed);
 }

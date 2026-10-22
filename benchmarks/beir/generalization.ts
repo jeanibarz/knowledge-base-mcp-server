@@ -105,7 +105,7 @@ export function computeDomainBreakdown(
   for (const [domain, domainCells] of byDomain) {
     rows.push({
       domain,
-      datasets: domainCells.map((c) => c.dataset).sort(),
+      datasets: domainCells.map((c) => c.dataset).sort((a, b) => a.localeCompare(b)),
       meanNdcgAt10: mean(domainCells.map((c) => c.ndcgAt10)) ?? 0,
       meanPrecisionAt10: mean(domainCells.map((c) => c.precisionAt10)) ?? 0,
       queriesEvaluated: domainCells.reduce((acc, c) => acc + c.queriesEvaluated, 0),
@@ -124,13 +124,11 @@ export function computeDomainBreakdown(
 export function computeDeltaG(
   cells: readonly GeneralizationCell[],
   mode: string,
-  partition: { tuned: readonly string[]; unseen: readonly string[] } = {
-    tuned: tunedDatasets(),
-    unseen: unseenGeneralityDatasets(),
-  },
+  partition?: { tuned: readonly string[]; unseen: readonly string[] },
 ): DeltaGResult {
-  const tunedSet = new Set(partition.tuned);
-  const unseenSet = new Set(partition.unseen);
+  const resolvedPartition = partition ?? { tuned: tunedDatasets(), unseen: unseenGeneralityDatasets() };
+  const tunedSet = new Set(resolvedPartition.tuned);
+  const unseenSet = new Set(resolvedPartition.unseen);
   const seenCells = cells.filter((c) => c.mode === mode && tunedSet.has(c.dataset));
   const unseenCells = cells.filter((c) => c.mode === mode && unseenSet.has(c.dataset));
 
@@ -142,8 +140,8 @@ export function computeDeltaG(
 
   return {
     mode,
-    seenDatasets: seenCells.map((c) => c.dataset).sort(),
-    unseenDatasets: unseenCells.map((c) => c.dataset).sort(),
+    seenDatasets: seenCells.map((c) => c.dataset).sort((a, b) => a.localeCompare(b)),
+    unseenDatasets: unseenCells.map((c) => c.dataset).sort((a, b) => a.localeCompare(b)),
     seenMeanNdcgAt10: seenMean,
     unseenMeanNdcgAt10: unseenMean,
     deltaG,
@@ -153,19 +151,17 @@ export function computeDeltaG(
 export function computeGeneralizationReport(
   cells: readonly GeneralizationCell[],
   modes: readonly string[],
-  partition: { tuned: readonly string[]; unseen: readonly string[] } = {
-    tuned: tunedDatasets(),
-    unseen: unseenGeneralityDatasets(),
-  },
+  partition?: { tuned: readonly string[]; unseen: readonly string[] },
 ): GeneralizationReport {
+  const resolvedPartition = partition ?? { tuned: tunedDatasets(), unseen: unseenGeneralityDatasets() };
   return {
     modes: modes.map((mode) => ({
       mode,
       domains: computeDomainBreakdown(cells, mode),
-      deltaG: computeDeltaG(cells, mode, partition),
+      deltaG: computeDeltaG(cells, mode, resolvedPartition),
     })),
-    tunedDatasets: [...partition.tuned],
-    unseenGeneralityDatasets: [...partition.unseen],
+    tunedDatasets: [...resolvedPartition.tuned],
+    unseenGeneralityDatasets: [...resolvedPartition.unseen],
   };
 }
 

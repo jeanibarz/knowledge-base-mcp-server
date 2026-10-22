@@ -41,14 +41,14 @@
 
 <h2>Headline — multi-domain mean nDCG@10 by run × mode</h2>
 <p class="note">Each cell is the per-mode mean nDCG@10 across the datasets that run evaluated (the headline metric, RFC 020 §2). Best per mode is highlighted.</p>
-<table>
+<table> <!-- NOSONAR Web:S5256 — <th> headers are generated into {{HEADLINE_HEAD}} -->
 <thead>{{HEADLINE_HEAD}}</thead>
 <tbody>{{HEADLINE_ROWS}}</tbody>
 </table>
 
 <h2>Generalization gap — Δ_g by run × mode</h2>
 <p class="note">Δ_g = (seen − unseen) / seen (RFC 020 §6). Higher = worse on held-out domains (overfitting direction); the lowest Δ_g per mode is highlighted.</p>
-<table>
+<table> <!-- NOSONAR Web:S5256 — <th> headers are generated into {{DELTAG_HEAD}} -->
 <thead>{{DELTAG_HEAD}}</thead>
 <tbody>{{DELTAG_ROWS}}</tbody>
 </table>

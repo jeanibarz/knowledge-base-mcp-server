@@ -3,15 +3,14 @@
 // loader tests (issue #46). Run on demand after upgrading pdfkit; the
 // committed fixture should normally not change.
 //
-// Note: pdf-parse v1's bundled pdfjs (v1.10.100) sometimes rejects newly
-// generated pdfkit output with "bad XRef entry" because pdfkit's PDF
-// document IDs are random per-run and certain seeds produce xref tables
-// the older pdfjs build doesn't accept. The runtime impact is nil (we
-// mock pdf-parse in jest, and real-world PDFs from common producers parse
-// fine), but the verification step here may need a few retries.
+// Note: pdfkit's PDF document IDs are random per-run and certain seeds have
+// historically produced xref tables that pdfjs rejects ("bad XRef entry").
+// The runtime impact is nil (we mock pdf-parse in jest, and real-world PDFs
+// from common producers parse fine), but the verification step here may need
+// a few retries.
 
 const PDFDocument = require('pdfkit');
-const pdfParse = require('pdf-parse');
+const { PDFParse } = require('pdf-parse');
 const fs = require('fs');
 const path = require('path');
 
@@ -35,12 +34,15 @@ async function generateOnce() {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const buf = await generateOnce();
     let result;
+    const parser = new PDFParse({ data: buf });
     try {
-      result = await pdfParse(buf);
+      result = await parser.getText();
     } catch (err) {
-      // pdf-parse v1 + pdfjs v1.10.100 occasionally chokes on pdfkit
-      // output; retry with a fresh document ID.
+      // pdfjs occasionally chokes on pdfkit output; retry with a fresh
+      // document ID.
       continue;
+    } finally {
+      await parser.destroy();
     }
     fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true });
     fs.writeFileSync(OUT_PATH, buf);
@@ -54,4 +56,7 @@ async function generateOnce() {
     `failed: pdf-parse rejected ${MAX_ATTEMPTS} pdfkit-generated PDFs in a row`,
   );
   process.exit(1);
-})();
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

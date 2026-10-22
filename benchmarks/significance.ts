@@ -308,7 +308,7 @@ export function pairedBootstrap(
   for (let b = 0; b < resamples; b += 1) {
     let sum = 0;
     for (let i = 0; i < n; i += 1) {
-      sum += deltas[(random() * n) | 0];
+      sum += deltas[Math.trunc(random() * n)];
     }
     const resampleMean = sum / n;
     means[b] = resampleMean;
@@ -536,8 +536,8 @@ function clamp01(value: number): number {
 export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
+    a |= 0; // NOSONAR typescript:S7767 — deliberate int32 coercion for mulberry32
+    a = (a + 0x6d2b79f5) | 0; // NOSONAR typescript:S7767 — int32 wrap required
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;

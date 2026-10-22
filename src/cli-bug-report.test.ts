@@ -197,10 +197,10 @@ describe('doctor bug-report bundle', () => {
 
       expect(path.basename(result.bundle_dir)).toBe('kb-bug-report-20260522T010203Z');
       expect(result.files).toEqual([
-        'README.md',
         'doctor.json',
         'logs-recent.json',
         'manifest.json',
+        'README.md',
         'runtime.json',
         'stats.json',
       ]);

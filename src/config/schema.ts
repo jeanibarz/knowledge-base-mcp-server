@@ -634,7 +634,7 @@ function validateUnknownControlledVars(
   source: string,
 ): ConfigFinding[] {
   const findings: ConfigFinding[] = [];
-  for (const name of Object.keys(env).sort()) {
+  for (const name of Object.keys(env).sort((a, b) => a.localeCompare(b))) {
     if (SCHEMA_BY_NAME.has(name)) continue;
     if (dynamicSpecForName(name) !== null) continue;
     if (!isControlledEnvName(name)) continue;

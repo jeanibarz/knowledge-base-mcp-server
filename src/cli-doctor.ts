@@ -1621,7 +1621,7 @@ export async function buildDoctorReport(
     activeModelName = model?.model_name ?? parsed.slugBody;
     checks.push({ name: 'active_model', status: 'ok', detail: activeModelId });
   } catch (err) {
-    const status = err instanceof ActiveModelResolutionError ? 'error' : 'error';
+    const status = 'error';
     checks.push({ name: 'active_model', status, detail: (err as Error).message });
   }
 
@@ -3231,7 +3231,7 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   }
   lines.push('');
   lines.push('Stale counts by KB:');
-  const names = Object.keys(report.stale_counts_by_kb).sort();
+  const names = Object.keys(report.stale_counts_by_kb).sort((a, b) => a.localeCompare(b));
   if (names.length === 0) {
     lines.push('  (no knowledge bases found)');
   } else {
@@ -3254,7 +3254,7 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   }
   lines.push('');
   lines.push('Ingest quarantine by KB:');
-  const quarantineNames = Object.keys(report.quarantine_counts_by_kb).sort();
+  const quarantineNames = Object.keys(report.quarantine_counts_by_kb).sort((a, b) => a.localeCompare(b));
   if (quarantineNames.length === 0) {
     lines.push('  (no knowledge bases found)');
   } else {
@@ -3264,7 +3264,7 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   }
   lines.push('');
   lines.push('Age budgets:');
-  const budgetNames = Object.keys(report.age_budgets).sort();
+  const budgetNames = Object.keys(report.age_budgets).sort((a, b) => a.localeCompare(b));
   if (budgetNames.length === 0 && report.age_budget_config_errors.length === 0) {
     lines.push('  (no budgets configured)');
   } else {
@@ -3292,7 +3292,7 @@ export function formatDoctorMarkdown(report: DoctorReport): string {
   }
   lines.push('');
   lines.push('Provider calls:');
-  const providerModelIds = Object.keys(report.provider_calls).sort();
+  const providerModelIds = Object.keys(report.provider_calls).sort((a, b) => a.localeCompare(b));
   if (providerModelIds.length === 0) {
     lines.push('  (no provider calls observed)');
   } else {

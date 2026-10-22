@@ -332,7 +332,7 @@ async function inspectTarget(target: ResolvedInspectTarget): Promise<InspectPayl
     },
     frontmatter: {
       tags: parsedFrontmatter.tags,
-      lifted_keys: liftedFrontmatter === undefined ? [] : Object.keys(liftedFrontmatter).sort(),
+      lifted_keys: liftedFrontmatter === undefined ? [] : Object.keys(liftedFrontmatter).sort((a, b) => a.localeCompare(b)),
     },
     secret_scan: secretScan,
     quarantine,

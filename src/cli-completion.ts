@@ -75,7 +75,7 @@ export function generateCompletionScript(shell: CompletionShell, commands: Compl
 }
 
 function generateBashCompletion(commands: CompletionCommand[]): string {
-  const commandWords = ['help', ...commands.map((command) => command.name)].sort().join(' ');
+  const commandWords = ['help', ...commands.map((command) => command.name)].sort((a, b) => a.localeCompare(b)).join(' ');
   const dynamicCases = bashDynamicCases(commands);
   const commandCases = commands.map((command) => (
     `    ${command.name})\n` +
@@ -316,7 +316,7 @@ function completionWordsForCommand(command: CompletionCommand): string[] {
       }
     }
   }
-  return [...words].sort();
+  return [...words].sort((a, b) => a.localeCompare(b));
 }
 
 function enumOptionValues(option: CompletionOption): string[] {
@@ -339,7 +339,7 @@ function actionWordsForCommand(command: CompletionCommand): string[] {
       if (isLiteralActionWord(part)) actions.add(part);
     }
   }
-  return [...actions].sort();
+  return [...actions].sort((a, b) => a.localeCompare(b));
 }
 
 function isLiteralActionWord(value: string): boolean {

@@ -202,7 +202,7 @@ export async function computeReindexProgress(
   if (filter) for (const name of filter) names.add(name);
 
   const kbs: ReindexProgressKb[] = [];
-  for (const name of [...names].sort()) {
+  for (const name of [...names].sort((a, b) => a.localeCompare(b))) {
     if (filter && !filter.has(name)) continue;
     const eligibleStatuses: ContextualSidecarStatus[] = [];
     for (const status of byKb.get(name) ?? []) {

@@ -390,7 +390,7 @@ export async function planExtractionCachePrune(
     } else {
       prunableEntries.push({
         ...entry,
-        reasons: [...reasons].sort(),
+        reasons: [...reasons].sort((a, b) => a.localeCompare(b)),
       });
     }
   }

@@ -137,7 +137,7 @@ async function collectJsonFiles(dir: string): Promise<string[]> {
     if (entry.isDirectory()) out.push(...(await collectJsonFiles(full)));
     else if (entry.isFile() && entry.name.endsWith('.json')) out.push(full);
   }
-  return out.sort();
+  return out.sort((a, b) => a.localeCompare(b));
 }
 
 export function parseMtebRunArgs(argv: string[]): MtebRunOptions {

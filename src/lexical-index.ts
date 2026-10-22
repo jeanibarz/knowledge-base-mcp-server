@@ -346,7 +346,7 @@ export class LexicalIndex {
     const tmpPath = `${filePath}.tmp`;
 
     const files: Record<string, FileEntry> = {};
-    const sortedKeys = [...this.entries.keys()].sort();
+    const sortedKeys = [...this.entries.keys()].sort((a, b) => a.localeCompare(b));
     for (const key of sortedKeys) {
       files[key] = this.entries.get(key) as FileEntry;
     }

@@ -437,6 +437,6 @@ function parseIndexVersionDirName(name: unknown): number | null {
   if (typeof name !== 'string') return null;
   const match = /^index\.v(\d+)$/.exec(name);
   if (!match) return null;
-  const n = parseInt(match[1], 10);
+  const n = Number.parseInt(match[1], 10);
   return Number.isFinite(n) ? n : null;
 }

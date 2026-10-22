@@ -51,7 +51,7 @@ export function isRerankCacheEnabled(raw: string | undefined = process.env.KB_RE
 export function resolveRerankCacheDiskMaxBytes(
   raw: string | undefined = process.env.KB_RERANK_CACHE_DISK_MAX_BYTES,
 ): number {
-  const parsed = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_RERANK_CACHE_DISK_MAX_BYTES;
   return Math.floor(parsed);
 }

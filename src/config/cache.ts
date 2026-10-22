@@ -12,7 +12,7 @@ export function isQueryCacheEnabled(raw: string | undefined = process.env.KB_QUE
 }
 
 export function resolveQueryCacheLruMax(raw: string | undefined = process.env.KB_QUERY_CACHE_LRU_MAX): number {
-  const parsed = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) return 256;
   return Math.floor(parsed);
 }
@@ -20,7 +20,7 @@ export function resolveQueryCacheLruMax(raw: string | undefined = process.env.KB
 export function resolveQueryCacheDiskMaxBytes(
   raw: string | undefined = process.env.KB_QUERY_CACHE_DISK_MAX_MB,
 ): number {
-  const parsed = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return 64 * 1024 * 1024;
   return Math.floor(parsed * 1024 * 1024);
 }
@@ -42,7 +42,7 @@ export function isAskCacheEnabled(raw: string | undefined = process.env.KB_ASK_C
 export function resolveAskCacheDiskMaxBytes(
   raw: string | undefined = process.env.KB_ASK_CACHE_DISK_MAX_MB,
 ): number {
-  const parsed = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return 64 * 1024 * 1024;
   return Math.floor(parsed * 1024 * 1024);
 }

@@ -121,7 +121,7 @@ export async function createDoctorBugReportBundle(
     redaction_summary: manifestRedaction,
   };
   await writeText('README.md', buildReadme(createdAt, options.command !== undefined));
-  manifest.files = [...written.map((file) => file.name), 'manifest.json'].sort();
+  manifest.files = [...written.map((file) => file.name), 'manifest.json'].sort((a, b) => a.localeCompare(b));
   await writePrivateUtf8File(
     bundleDir,
     'manifest.json',
@@ -262,7 +262,7 @@ function summarizeEnv(env: NodeJS.ProcessEnv): Array<{ name: string; value: stri
   ];
   return Object.keys(env)
     .filter((name) => prefixes.some((prefix) => name.startsWith(prefix)))
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .map((name) => ({
       name,
       value: redactEnvValue(name, env[name] ?? ''),

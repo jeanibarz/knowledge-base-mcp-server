@@ -21,6 +21,10 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: |
           npm ci --ignore-scripts
-          npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
+          npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs || {
+            echo "native rebuild failed — retrying after 10s"
+            sleep 10
+            npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
+          }
       - run: npm run lint
       - run: npm run check
