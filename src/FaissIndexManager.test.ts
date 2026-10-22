@@ -5359,7 +5359,10 @@ describe('FaissIndexManager neighbor context expansion', () => {
       ['2', { pageContent: 'after', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } }],
       ['other', { pageContent: 'wrong source', metadata: { knowledgeBase: 'kb', source: '/kb/other.md', chunkIndex: 0 } }],
     ]);
-    await setLoadedFaissStore(manager, { docstore: { _docs: docs } });
+    await setLoadedFaissStore(manager, {
+      docstore: { _docs: docs },
+      index: { ntotal: () => docs.size, getDimension: () => 2 },
+    });
 
     const expanded = manager.expandWithNeighborContext([
       {
@@ -5400,7 +5403,10 @@ describe('FaissIndexManager neighbor context expansion', () => {
       ['2', { pageContent: 'two', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } }],
       ['3', { pageContent: 'three', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 3 } }],
     ]);
-    await setLoadedFaissStore(manager, { docstore: { _docs: docs } });
+    await setLoadedFaissStore(manager, {
+      docstore: { _docs: docs },
+      index: { ntotal: () => docs.size, getDimension: () => 2 },
+    });
 
     const expanded = manager.expandWithNeighborContext([
       {
@@ -5432,7 +5438,10 @@ describe('FaissIndexManager neighbor context expansion', () => {
       ['1', { pageContent: 'one', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 } }],
       ['2', { pageContent: 'two', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } }],
     ]);
-    await setLoadedFaissStore(manager, { docstore: { _docs: docs } });
+    await setLoadedFaissStore(manager, {
+      docstore: { _docs: docs },
+      index: { ntotal: () => docs.size, getDimension: () => 2 },
+    });
 
     const expanded = manager.expandWithNeighborContext([
       {
@@ -5444,6 +5453,99 @@ describe('FaissIndexManager neighbor context expansion', () => {
 
     expect(expanded[0].contextChunks?.map((chunk) => chunk.pageContent)).toEqual(['zero']);
     expect(expanded[0].contextTruncated).toBe(true);
+  });
+});
+
+describe('FaissIndexManager #994 — neighbor identity cache', () => {
+  function loadedAdapter(manager: unknown): SearchIndexAdapter {
+    return (manager as { faissIndex: SearchIndexAdapter }).faissIndex;
+  }
+
+  async function makeManagerWithDocs(docs: Map<string, { pageContent: string; metadata: Record<string, unknown> }>) {
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager({
+      provider: 'huggingface',
+      modelName: 'BAAI/bge-small-en-v1.5',
+    });
+    await setLoadedFaissStore(manager, {
+      docstore: { _docs: docs },
+      index: { ntotal: () => docs.size, getDimension: () => 2 },
+    });
+    return manager;
+  }
+
+  const semanticResult = (chunkIndex: number, pageContent: string) => ({
+    pageContent,
+    metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex },
+    score: 0.1,
+  });
+
+  it('builds the identity map once across two neighbor-context calls on the same store', async () => {
+    const docs = new Map([
+      ['0', { pageContent: 'before', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 0 } }],
+      ['1', { pageContent: 'match', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 } }],
+      ['2', { pageContent: 'after', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } }],
+    ]);
+    const manager = await makeManagerWithDocs(docs);
+    const adapter = loadedAdapter(manager);
+    const docstoreSpy = jest.spyOn(adapter, 'docstoreDocuments');
+
+    manager.expandWithNeighborContext([semanticResult(1, 'match')], { before: 1, after: 1 });
+    manager.expandWithNeighborContext([semanticResult(1, 'match')], { before: 1, after: 1 });
+
+    // Acceptance #994: the identity map is rebuilt only on the first call;
+    // the second call is served entirely from the cache.
+    expect(docstoreSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds the identity map after the docstore grows (append-only mutation)', async () => {
+    const docs = new Map([
+      ['0', { pageContent: 'before', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 0 } }],
+      ['1', { pageContent: 'match', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 } }],
+    ]);
+    const manager = await makeManagerWithDocs(docs);
+    const adapter = loadedAdapter(manager);
+    const docstoreSpy = jest.spyOn(adapter, 'docstoreDocuments');
+
+    manager.expandWithNeighborContext([semanticResult(1, 'match')], { before: 1, after: 1 });
+    expect(docstoreSpy).toHaveBeenCalledTimes(1);
+
+    // Append-only growth: ntotal changes, so the cache key changes and the
+    // map is rebuilt, picking up the newly added neighbor.
+    docs.set('2', { pageContent: 'after', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 2 } });
+
+    const expanded = manager.expandWithNeighborContext([semanticResult(1, 'match')], { before: 1, after: 1 });
+    expect(docstoreSpy).toHaveBeenCalledTimes(2);
+    expect(expanded[0].contextChunks?.map((chunk) => chunk.pageContent)).toEqual(['before', 'after']);
+  });
+
+  it('rebuilds the identity map when the loaded store is reloaded with a new adapter', async () => {
+    const docs = new Map([
+      ['0', { pageContent: 'before', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 0 } }],
+      ['1', { pageContent: 'match', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 } }],
+    ]);
+    const manager = await makeManagerWithDocs(docs);
+    const firstSpy = jest.spyOn(loadedAdapter(manager), 'docstoreDocuments');
+
+    manager.expandWithNeighborContext([semanticResult(1, 'match')], { before: 1, after: 1 });
+    expect(firstSpy).toHaveBeenCalledTimes(1);
+
+    // Reload with a different adapter instance, same doc count: adapter
+    // identity keys the cache, so the map must still be rebuilt.
+    const reloadedDocs = new Map([
+      ['0', { pageContent: 'new-before', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 0 } }],
+      ['1', { pageContent: 'match', metadata: { knowledgeBase: 'kb', source: '/kb/doc.md', chunkIndex: 1 } }],
+    ]);
+    await setLoadedFaissStore(manager, {
+      docstore: { _docs: reloadedDocs },
+      index: { ntotal: () => reloadedDocs.size, getDimension: () => 2 },
+    });
+    const secondSpy = jest.spyOn(loadedAdapter(manager), 'docstoreDocuments');
+
+    const expanded = manager.expandWithNeighborContext([semanticResult(1, 'match')], { before: 1, after: 1 });
+    expect(secondSpy).toHaveBeenCalledTimes(1);
+    expect(expanded[0].contextChunks?.map((chunk) => chunk.pageContent)).toEqual(['new-before']);
   });
 });
 

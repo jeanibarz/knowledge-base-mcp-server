@@ -604,6 +604,15 @@ export class FaissIndexManager {
   // place). `KB_RETRIEVAL_VIEWS` does not affect this predicate, so a config
   // change cannot flip the value.
   private hasViewDocumentsCache: { adapter: SearchIndexAdapter; ntotal: number; value: boolean } | null = null;
+  // Issue #994 — cache the chunk-identity map (`chunkKey` -> Document) used by
+  // `expandWithNeighborContext` to look up a result's before/after neighbors,
+  // so a neighbor-context query does not rebuild it over the whole docstore
+  // per call. Keyed on the adapter identity plus `totalVectors()`, same as
+  // `hasViewDocumentsCache` above: the docstore is append-only, so every
+  // content change either swaps in a new adapter (load/reload/version-load)
+  // or grows `ntotal` (addEmbeddedDocuments), and either one invalidates it.
+  private neighborIdentityCache: { adapter: SearchIndexAdapter; ntotal: number; byKey: Map<string, Document> } | null =
+    null;
 
   /**
    * RFC 013 §4.9 file table — preferred form: `new FaissIndexManager({provider, modelName})`
@@ -2874,17 +2883,12 @@ export class FaissIndexManager {
     if (!this.faissIndex || results.length === 0) {
       return results.map(markSemanticResult);
     }
-
-    const docs = this.getDocstoreDocuments();
-    if (docs.length === 0) {
+    const adapter = this.faissIndex;
+    if (adapter.totalVectors() === 0) {
       return results.map(markSemanticResult);
     }
 
-    const byKey = new Map<string, Document>();
-    for (const doc of docs) {
-      const identity = chunkIdentity(doc);
-      if (identity) byKey.set(identity.key, doc);
-    }
+    const byKey = this.getNeighborIdentityMap(adapter);
 
     const semanticKeys = new Set<string>();
     for (const result of results) {
@@ -2982,6 +2986,27 @@ export class FaissIndexManager {
 
   private getDocstoreDocuments(): Document[] {
     return this.faissIndex?.docstoreDocuments() ?? [];
+  }
+
+  /**
+   * Issue #994 — cached `chunkKey` -> Document identity map for
+   * `expandWithNeighborContext`'s neighbor lookups. On a cache hit this
+   * never touches the docstore at all; only a cache miss fetches
+   * `getDocstoreDocuments()` and rebuilds the map.
+   */
+  private getNeighborIdentityMap(adapter: SearchIndexAdapter): Map<string, Document> {
+    const ntotal = adapter.totalVectors();
+    const cached = this.neighborIdentityCache;
+    if (cached !== null && cached.adapter === adapter && cached.ntotal === ntotal) {
+      return cached.byKey;
+    }
+    const byKey = new Map<string, Document>();
+    for (const doc of this.getDocstoreDocuments()) {
+      const identity = chunkIdentity(doc);
+      if (identity) byKey.set(identity.key, doc);
+    }
+    this.neighborIdentityCache = { adapter, ntotal, byKey };
+    return byKey;
   }
 
   /**
