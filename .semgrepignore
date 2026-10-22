@@ -1,0 +1,29 @@
+# Scope for `semgrep ci` / `semgrep scan`. Anchored paths are repo-root
+# relative (gitignore syntax) — keep the leading `/` so they cannot match
+# a same-named directory deeper in the tree.
+#
+# Rationale: the untrusted boundary (MCP tool args, CLI input) is guarded by
+# resolveKbPath/resolveKnowledgeBaseDir/assertNoTraversal in src/kb-fs.ts,
+# so audit rules firing on path.join/path.resolve elsewhere are noise. The
+# real attack surface left scanned: src/, .github/, package-lock.json.
+
+# Dev-only benchmark tooling (python/ts corpus runners, mlflow, adjudication):
+# child_process, weak-hash, and non-literal-regexp findings here are all in
+# operator-driven scripts that never see untrusted input.
+/benchmarks/
+
+# Repo-local generator/dev scripts (.mjs) — same operator-only trust level.
+/scripts/
+
+# Test harnesses and scenarios — spawn/eval in test scaffolding is expected.
+/tests/
+
+# Deliberately planted fixture secrets (JWT/AWS/GitHub tokens) used by the
+# redaction + secret-scanner test corpus — always false positives.
+/src/test-support/
+
+# Unit/integration/e2e test files at any depth — intentional secrets,
+# spawnShell calls, and path fixtures live here by design.
+*.test.ts
+*.test.js
+*.test.mjs
