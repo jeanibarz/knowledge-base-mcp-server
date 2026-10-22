@@ -100,7 +100,7 @@ export function scanConfigEnvUsage(roots = [SRC_DIR]) {
   for (const [name, files] of usedControlled) {
     if (isRegisteredConfigName(name)) continue;
     if (ALLOWLIST.has(name)) continue;
-    drift.push({ name, files: [...files].sort() });
+    drift.push({ name, files: [...files].sort((a, b) => a.localeCompare(b)) });
   }
   drift.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -108,7 +108,7 @@ export function scanConfigEnvUsage(roots = [SRC_DIR]) {
   // redundant and should be removed so the allowlist keeps shrinking.
   const redundantAllowlist = [...ALLOWLIST.keys()]
     .filter((name) => isRegisteredConfigName(name))
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
 
   return { drift, redundantAllowlist };
 }

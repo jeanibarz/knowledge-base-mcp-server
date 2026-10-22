@@ -275,6 +275,6 @@ async function calculateSHA256(filePath: string): Promise<string> {
 function parseIndexVersionDirName(name: string): number | null {
   const match = /^index\.v(\d+)$/.exec(name);
   if (!match) return null;
-  const n = parseInt(match[1], 10);
+  const n = Number.parseInt(match[1], 10);
   return Number.isFinite(n) ? n : null;
 }

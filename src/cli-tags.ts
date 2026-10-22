@@ -255,7 +255,7 @@ async function selectKbs(rootDir: string, kbFilter: string | undefined): Promise
     return [kbFilter];
   }
   const all = await listKnowledgeBases(rootDir);
-  return all.sort();
+  return all.sort((a, b) => a.localeCompare(b));
 }
 
 async function listMarkdownFiles(kbDir: string): Promise<string[]> {
@@ -279,7 +279,7 @@ async function listMarkdownFiles(kbDir: string): Promise<string[]> {
     }
   }
   await walk(kbDir);
-  return out.sort();
+  return out.sort((a, b) => a.localeCompare(b));
 }
 
 function compareStrings(a: string, b: string): number {

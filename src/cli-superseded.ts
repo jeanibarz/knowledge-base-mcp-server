@@ -219,7 +219,7 @@ export async function supersededCheck(opts: SupersededCheckOptions): Promise<Sup
   const kbDir = await resolveKnowledgeBaseDir(opts.rootDir, opts.kb);
   const markdownFiles = (await getFilesRecursively(kbDir))
     .filter((filePath) => MARKDOWN_EXTS.has(path.extname(filePath).toLowerCase()))
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
 
   const candidates: SupersededCandidate[] = [];
   let clean = 0;

@@ -81,7 +81,7 @@ export function resolveIndexingConcurrency(
   }
 
   const ollamaParallelRaw = env.OLLAMA_NUM_PARALLEL;
-  const ollamaParallel = ollamaParallelRaw === undefined ? NaN : Number(ollamaParallelRaw);
+  const ollamaParallel = ollamaParallelRaw === undefined ? Number.NaN : Number(ollamaParallelRaw);
   if (!Number.isFinite(ollamaParallel) || ollamaParallel <= 1) {
     return DEFAULT_INDEXING_CONCURRENCY;
   }
@@ -206,11 +206,11 @@ const DEFAULT_CHUNK_OVERLAP = 200;
 export function resolveChunkSize(): { chunkSize: number; chunkOverlap: number } {
   const sizeRaw = process.env.KB_CHUNK_SIZE;
   const overlapRaw = process.env.KB_CHUNK_OVERLAP;
-  const sizeParsed = sizeRaw ? Number(sizeRaw) : NaN;
+  const sizeParsed = sizeRaw ? Number(sizeRaw) : Number.NaN;
   const chunkSize = Number.isFinite(sizeParsed) && sizeParsed > 0
     ? Math.floor(sizeParsed)
     : DEFAULT_CHUNK_SIZE;
-  const overlapParsed = overlapRaw ? Number(overlapRaw) : NaN;
+  const overlapParsed = overlapRaw ? Number(overlapRaw) : Number.NaN;
   const chunkOverlap = Number.isFinite(overlapParsed) && overlapParsed >= 0
     ? Math.floor(overlapParsed)
     : (chunkSize === DEFAULT_CHUNK_SIZE ? DEFAULT_CHUNK_OVERLAP : Math.floor(chunkSize / 5));

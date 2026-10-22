@@ -456,7 +456,7 @@ export class ProviderCallMetrics {
    * which model_ids have been observed without taking a full snapshot.
    */
   knownModelIds(): string[] {
-    return Array.from(this.states.keys()).sort();
+    return Array.from(this.states.keys()).sort((a, b) => a.localeCompare(b));
   }
 }
 

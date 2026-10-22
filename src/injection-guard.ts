@@ -85,8 +85,9 @@ export function resolveInjectionGuardOptions(
 
 export function detectInjectionSignals(
   content: string,
-  options: Pick<InjectionGuardOptions, 'wrapClose'> = { wrapClose: DEFAULT_WRAP_CLOSE },
+  options?: Pick<InjectionGuardOptions, 'wrapClose'>,
 ): InjectionSignal[] {
+  const wrapClose = options?.wrapClose ?? DEFAULT_WRAP_CLOSE;
   const signals: InjectionSignal[] = [];
   const seen = new Set<string>();
 
@@ -100,8 +101,8 @@ export function detectInjectionSignals(
     if (match !== undefined) addSignal(signals, seen, { kind: 'instruction_override', match });
   }
 
-  if (options.wrapClose !== '' && content.includes(options.wrapClose)) {
-    addSignal(signals, seen, { kind: 'wrapper_delimiter', match: options.wrapClose });
+  if (wrapClose !== '' && content.includes(wrapClose)) {
+    addSignal(signals, seen, { kind: 'wrapper_delimiter', match: wrapClose });
   }
 
   for (const char of content) {
@@ -123,25 +124,23 @@ export function detectInjectionSignals(
 export function wrapUntrustedContent(
   content: string,
   metadata: Record<string, unknown> = {},
-  options: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'> = {
-    wrapOpen: DEFAULT_WRAP_OPEN,
-    wrapClose: DEFAULT_WRAP_CLOSE,
-  },
+  options?: Pick<InjectionGuardOptions, 'wrapOpen' | 'wrapClose'>,
 ): string {
-  assertValidWrapperTemplate(options);
+  const resolvedOptions = { wrapOpen: DEFAULT_WRAP_OPEN, wrapClose: DEFAULT_WRAP_CLOSE, ...options };
+  assertValidWrapperTemplate(resolvedOptions);
   const escapedSource = escapeAttributeValue(getChunkSource(metadata));
-  const source = neutralizeWrapperDelimiters(escapedSource, options);
+  const source = neutralizeWrapperDelimiters(escapedSource, resolvedOptions);
   // The replacer must stay a function: a string replacement would expand `$$`,
   // `$&`, `` $` `` and `$'` substitution patterns, letting attacker-controlled
   // source metadata re-inject raw fragments of the template *after* escaping and
   // neutralization — a breakout through the opening delimiter (NFR-SEC-907).
-  const open = options.wrapOpen.replaceAll('{source}', () => source);
-  assertValidWrapperEnvelope(options, open);
+  const open = resolvedOptions.wrapOpen.replaceAll('{source}', () => source);
+  assertValidWrapperEnvelope(resolvedOptions, open);
   const neutralizedContent = neutralizeWrapperDelimiters(content, {
-    ...options,
+    ...resolvedOptions,
     renderedWrapOpen: open,
   });
-  return `${open}\n${neutralizedContent}\n${options.wrapClose}`;
+  return `${open}\n${neutralizedContent}\n${resolvedOptions.wrapClose}`;
 }
 
 export function isValidInjectionGuardWrapperEnvelope(

@@ -246,7 +246,7 @@ export async function runDiagnose(
       explainBundleDir: explainBundleRel,
       inferredArgs,
       explainStderrFile,
-      files: [...files, 'README.md', 'manifest.json'].sort(),
+      files: [...files, 'README.md', 'manifest.json'].sort((a, b) => a.localeCompare(b)),
       redactionSummary: combineRedactionSummaries(true, ...redactions),
       now: deps.now(),
     });

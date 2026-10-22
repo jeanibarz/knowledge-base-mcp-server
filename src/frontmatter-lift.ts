@@ -88,7 +88,7 @@ export function liftFrontmatter(
         logger.debug(`Dropping non-string frontmatter key "${key}" from ${filePath}`);
         continue;
       }
-      const parsed = parseInt(value, 10);
+      const parsed = Number.parseInt(value, 10);
       if (Number.isFinite(parsed)) {
         lifted.relevance_score = parsed;
         hasAny = true;

@@ -9,7 +9,7 @@ HEARTBEAT="$REPO/.chain-heartbeat"
 
 MAX_ITER=0
 SLEEP_S=1
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     --max-iter) MAX_ITER="$2"; shift 2 ;;
     --sleep) SLEEP_S="$2"; shift 2 ;;
@@ -24,18 +24,18 @@ trap on_signal INT TERM
 cleanup() { rm -f "$HEARTBEAT"; }
 trap cleanup EXIT
 
-[ -f "$STOP_FLAG" ] && { echo "[chain] STOP flag present at $STOP_FLAG; remove it to run."; exit 0; }
+[[ -f "$STOP_FLAG" ]] && { echo "[chain] STOP flag present at $STOP_FLAG; remove it to run."; exit 0; }
 echo "pid=$$ started=$(date -u +%FT%TZ)" > "$HEARTBEAT"
-echo "[chain] starting (pid $$). sleep=${SLEEP_S}s max_iter=$([ "$MAX_ITER" -eq 0 ] && echo "unlimited" || echo "$MAX_ITER")."
+echo "[chain] starting (pid $$). sleep=${SLEEP_S}s max_iter=$([[ "$MAX_ITER" -eq 0 ]] && echo "unlimited" || echo "$MAX_ITER")."
 echo "[chain] stop with: Ctrl-C | touch $STOP_FLAG | kill $$"
 
 count=0
 while :; do
-  [ "$stopping" -eq 1 ] && { echo "[chain] stopped after $count iteration(s)."; break; }
-  if [ -f "$STOP_FLAG" ]; then
+  [[ "$stopping" -eq 1 ]] && { echo "[chain] stopped after $count iteration(s)."; break; }
+  if [[ -f "$STOP_FLAG" ]]; then
     echo "[chain] STOP flag detected; stopping after $count iteration(s)."; break
   fi
-  if [ "$MAX_ITER" -ne 0 ] && [ "$count" -ge "$MAX_ITER" ]; then
+  if [[ "$MAX_ITER" -ne 0 ]] && [[ "$count" -ge "$MAX_ITER" ]]; then
     echo "[chain] reached --max-iter $MAX_ITER; stopping."; break
   fi
 

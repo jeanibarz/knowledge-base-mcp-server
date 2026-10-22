@@ -172,7 +172,7 @@ function addFinding(
 }
 
 function uniqueSorted(values: readonly SecretFindingCategory[]): SecretFindingCategory[] {
-  return Array.from(new Set(values)).sort();
+  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
 }
 
 function uniqueSortedNumbers(values: readonly number[]): number[] {
@@ -180,5 +180,5 @@ function uniqueSortedNumbers(values: readonly number[]): number[] {
 }
 
 function uniqueSortedStrings(values: readonly string[]): string[] {
-  return Array.from(new Set(values)).sort();
+  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
 }

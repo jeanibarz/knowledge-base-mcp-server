@@ -687,7 +687,7 @@ const INDEX_UPDATE_STATUSES = Object.keys(INDEX_UPDATE_STATUS_VALUES) as Array<
 function indexUpdateMetrics(
   summary: KbStatsPayload['last_index_update'],
 ): MetricDefinition[] {
-  const finishedAtMs = summary.finished_at === null ? NaN : Date.parse(summary.finished_at);
+  const finishedAtMs = summary.finished_at === null ? Number.NaN : Date.parse(summary.finished_at);
   const timestampSeconds = Number.isFinite(finishedAtMs)
     ? Math.max(0, finishedAtMs / 1000)
     : 0;

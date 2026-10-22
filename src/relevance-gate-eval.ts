@@ -566,7 +566,7 @@ export function aggregateGateEval(
   const caseCount = caseResults.length;
   return {
     caseCount,
-    kbNames: [...new Set(caseResults.map((r) => r.kb))].sort(),
+    kbNames: [...new Set(caseResults.map((r) => r.kb))].sort((a, b) => a.localeCompare(b)),
     hasAnswerCount: buckets.hasAnswer.count,
     noGoodAnswerCount: buckets.noGoodAnswer.count,
     noGoodAnswerRatio: caseCount === 0 ? 0 : buckets.noGoodAnswer.count / caseCount,

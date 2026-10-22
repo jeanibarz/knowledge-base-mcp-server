@@ -673,7 +673,7 @@ export async function classifyContextualSidecarChunks(
     // by the resolver without an LLM call; an elapsed or absent one is cold.
     const retryAtMs = entry.next_retry_after !== undefined
       ? Date.parse(entry.next_retry_after)
-      : NaN;
+      : Number.NaN;
     if (!Number.isNaN(retryAtMs) && retryAtMs > nowMs) {
       retrySkips += 1;
     } else {
@@ -830,7 +830,7 @@ function summarizeSidecar(sidecar: SidecarFile): ContextualSidecarStatus {
     chunksTotal: sidecar.chunks.length,
     chunksResolved: resolved,
     chunksFailed: failed,
-    errorCodes: [...errorCodes].sort(),
+    errorCodes: [...errorCodes].sort((a, b) => a.localeCompare(b)),
   };
 }
 

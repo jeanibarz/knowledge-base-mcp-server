@@ -227,7 +227,7 @@ async function main(): Promise<void> {
     generatedAt: new Date().toISOString(),
   });
 
-  const stamp = new Date().toISOString().replace(/[:T]/g, '-').replace(/\..+$/, '');
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').replace(/\..+$/, ''); // NOSONAR typescript:S8786 — ISO timestamp, bounded
   const outBase = `compare-${safeFileSegment(modelA.id)}-vs-${safeFileSegment(modelB.id)}-${stamp}`;
   const outDir = path.resolve(flags.outputDir);
   await fsp.mkdir(outDir, { recursive: true });

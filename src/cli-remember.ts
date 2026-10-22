@@ -897,8 +897,8 @@ function sameCacheKeys(
   before: Record<string, SuggestHeadingCacheEntry>,
   after: Record<string, SuggestHeadingCacheEntry>,
 ): boolean {
-  const beforeKeys = Object.keys(before).sort();
-  const afterKeys = Object.keys(after).sort();
+  const beforeKeys = Object.keys(before).sort((a, b) => a.localeCompare(b));
+  const afterKeys = Object.keys(after).sort((a, b) => a.localeCompare(b));
   if (beforeKeys.length !== afterKeys.length) return false;
   return beforeKeys.every((key, index) => key === afterKeys[index]);
 }

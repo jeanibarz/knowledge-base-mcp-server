@@ -30,14 +30,14 @@
 set -euo pipefail
 
 KB_BIN="${KB_BIN:-$(command -v kb || true)}"
-if [ -z "${KB_BIN}" ] || [ ! -x "${KB_BIN}" ]; then
+if [[ -z "${KB_BIN}" ]] || [[ ! -x "${KB_BIN}" ]]; then
   # Fall back to the local build inside this checkout.
   here_build="$(cd "$(dirname "$0")/.." && pwd)/build/cli.js"
-  if [ -x "$here_build" ] || [ -f "$here_build" ]; then
+  if [[ -x "$here_build" ]] || [[ -f "$here_build" ]]; then
     KB_BIN="$here_build"
   fi
 fi
-if [ -z "${KB_BIN}" ] || [ ! -e "${KB_BIN}" ]; then
+if [[ -z "${KB_BIN}" ]] || [[ ! -e "${KB_BIN}" ]]; then
   echo "dogfood-hybrid: cannot find kb. Set KB_BIN or install/build first." >&2
   exit 2
 fi
@@ -69,8 +69,8 @@ llm-reasoning|paraphrase|chain of thought versus tree search for reasoning|
 EOF
 )"
 
-if [ -n "$QUERIES_FILE" ]; then
-  if [ ! -r "$QUERIES_FILE" ]; then
+if [[ -n "$QUERIES_FILE" ]]; then
+  if [[ ! -r "$QUERIES_FILE" ]]; then
     echo "dogfood-hybrid: QUERIES_FILE not readable: $QUERIES_FILE" >&2
     exit 2
   fi
@@ -91,10 +91,10 @@ run_mode() {
 # absent; "-" if no expected was supplied.
 find_rank() {
   local expected=$1 sources=$2
-  [ -z "$expected" ] && { echo "-"; return; }
+  [[ -z "$expected" ]] && { echo "-"; return; }
   local rank=1
   while IFS= read -r line; do
-    [ -z "$line" ] && continue
+    [[ -z "$line" ]] && continue
     if [[ "$line" == *"$expected"* ]]; then
       echo "$rank"
       return
@@ -118,31 +118,31 @@ neither=0
 gated=0
 
 while IFS='|' read -r kb kind query expected; do
-  [ -z "$kb" ] && continue
+  [[ -z "$kb" ]] && continue
   dense_top=$(run_mode "$kb" "$query" dense)
   hybrid_top=$(run_mode "$kb" "$query" hybrid)
   dense_rank=$(find_rank "$expected" "$dense_top")
   hybrid_rank=$(find_rank "$expected" "$hybrid_top")
 
-  if [ -n "$expected" ]; then
+  if [[ -n "$expected" ]]; then
     gated=$((gated + 1))
-    [ "$dense_rank" != "0" ] && dense_finds=$((dense_finds + 1))
-    [ "$hybrid_rank" != "0" ] && hybrid_finds=$((hybrid_finds + 1))
-    if [ "$dense_rank" = "0" ] && [ "$hybrid_rank" != "0" ]; then
+    [[ "$dense_rank" != "0" ]] && dense_finds=$((dense_finds + 1))
+    [[ "$hybrid_rank" != "0" ]] && hybrid_finds=$((hybrid_finds + 1))
+    if [[ "$dense_rank" = "0" ]] && [[ "$hybrid_rank" != "0" ]]; then
       hybrid_lifts=$((hybrid_lifts + 1))
-    elif [ "$dense_rank" != "0" ] && [ "$hybrid_rank" = "0" ]; then
+    elif [[ "$dense_rank" != "0" ]] && [[ "$hybrid_rank" = "0" ]]; then
       hybrid_regress=$((hybrid_regress + 1))
-    elif [ "$dense_rank" = "0" ] && [ "$hybrid_rank" = "0" ]; then
+    elif [[ "$dense_rank" = "0" ]] && [[ "$hybrid_rank" = "0" ]]; then
       neither=$((neither + 1))
-    elif [ "$dense_rank" = "$hybrid_rank" ]; then
+    elif [[ "$dense_rank" = "$hybrid_rank" ]]; then
       ties=$((ties + 1))
-    elif [ "$hybrid_rank" -lt "$dense_rank" ] 2>/dev/null; then
+    elif [[ "$hybrid_rank" -lt "$dense_rank" ]] 2>/dev/null; then
       hybrid_better=$((hybrid_better + 1))
     else
       dense_better=$((dense_better + 1))
     fi
-    dense_label=$([ "$dense_rank" = "0" ] && echo "miss" || echo "@$dense_rank")
-    hybrid_label=$([ "$hybrid_rank" = "0" ] && echo "miss" || echo "@$hybrid_rank")
+    dense_label=$([[ "$dense_rank" = "0" ]] && echo "miss" || echo "@$dense_rank")
+    hybrid_label=$([[ "$hybrid_rank" = "0" ]] && echo "miss" || echo "@$hybrid_rank")
   else
     dense_label="—"
     hybrid_label="—"
@@ -165,7 +165,7 @@ echo "  dense recall:    $dense_finds / $gated expected"
 echo "  hybrid recall:   $hybrid_finds / $gated expected"
 
 # Exit non-zero only on a regression — recall ties are fine; lifts are bonus.
-if [ "$hybrid_regress" -gt 0 ] || [ "$dense_better" -gt 0 ]; then
+if [[ "$hybrid_regress" -gt 0 ]] || [[ "$dense_better" -gt 0 ]]; then
   echo ""
   echo "FAIL: hybrid retrieval shows ${hybrid_regress} regression(s) and ${dense_better} cases where dense ranked the expected source higher." >&2
   exit 1

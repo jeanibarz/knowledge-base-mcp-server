@@ -159,7 +159,7 @@ async function collectDocFiles(root, docRoots) {
       files.push(full);
     }
   }
-  return files.sort();
+  return files.sort((a, b) => a.localeCompare(b));
 }
 
 async function walkMarkdown(dir, out) {
@@ -428,7 +428,7 @@ async function runSelfTest() {
     const report = await checkDocAnchors({ root: tmp });
     assert.equal(report.totals.anchorsChecked, 5);
     assert.equal(report.totals.failures, 2);
-    assert.deepEqual(report.failures.map((failure) => failure.status).sort(), ['MISSING_SYMBOL', 'RANGE_EXCEEDS_FILE']);
+    assert.deepEqual(report.failures.map((failure) => failure.status).sort((a, b) => a.localeCompare(b)), ['MISSING_SYMBOL', 'RANGE_EXCEEDS_FILE']);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
