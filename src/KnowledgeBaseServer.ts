@@ -143,7 +143,9 @@ import {
 } from './diff-index-core.js';
 import {
   classifyDenseDegradationReason,
+  resolveAutoSearchMode,
   type DenseDegradationReason,
+  type EffectiveSearchMode,
 } from './search-core.js';
 import { parseRecencyFilterRange } from './search-filters.js';
 import { shutdownOtel, withSpan } from './otel-trace.js';
@@ -911,7 +913,8 @@ export class KnowledgeBaseServer {
     context_before?: number;
     context_after?: number;
     context_window?: number;
-    search_mode?: 'dense' | 'hybrid';
+    k?: number;
+    search_mode?: 'dense' | 'hybrid' | 'lexical' | 'auto';
     task_context?: string;
     gate?: 'on' | 'off';
     rerank?: 'on' | 'off';
@@ -935,7 +938,15 @@ export class KnowledgeBaseServer {
       until: args.until,
     };
     const filters = hasRetrievalFilters(candidateFilters) ? candidateFilters : undefined;
-    const searchMode: 'dense' | 'hybrid' = args.search_mode ?? 'dense';
+    // Issue #973 — effectiveK replaces the hardcoded top-K of 10; omitting
+    // `k` preserves the previous behavior exactly. `auto` (same heuristic as
+    // ask_knowledge, #732) resolves to dense or hybrid before any retrieval
+    // work starts; omitting `search_mode` still defaults to 'dense'.
+    const effectiveK = args.k ?? 10;
+    const requestedSearchMode: 'dense' | 'hybrid' | 'lexical' | 'auto' = args.search_mode ?? 'dense';
+    const searchMode: EffectiveSearchMode = requestedSearchMode === 'auto'
+      ? resolveAutoSearchMode(query).mode
+      : requestedSearchMode;
     const taskContext = args.task_context;
     const gateOverride: RelevanceGateOverride = args.gate;
     const rerankOverride: RerankOverride = args.rerank;
@@ -948,14 +959,14 @@ export class KnowledgeBaseServer {
     return withSpan('kb.retrieve_knowledge', {
       'kb.scope': knowledgeBaseName ?? null,
       'kb.search_mode': searchMode,
-      'kb.k': 10,
+      'kb.k': effectiveK,
       'kb.request_id': requestId,
     }, () => this.withCanonicalTool({
       tool: 'retrieve_knowledge',
       request_id: requestId,
       query,
       kb_scope: knowledgeBaseName ?? null,
-      k: 10,
+      k: effectiveK,
       threshold: threshold ?? 2,
       search_mode: searchMode,
     }, async () => {
@@ -980,10 +991,10 @@ export class KnowledgeBaseServer {
           isError: true,
         };
       }
-      if (searchMode === 'hybrid') {
+      if (searchMode === 'hybrid' || searchMode === 'lexical') {
         if (hasNeighborContext(neighborContext)) {
           searchLatencyMetrics.record({
-            mode: 'hybrid',
+            mode: searchMode,
             status: 'error',
             totalMs: Date.now() - requestStartedAt,
           });
@@ -1000,6 +1011,18 @@ export class KnowledgeBaseServer {
             isError: true,
           };
         }
+        if (searchMode === 'lexical') {
+          return this.handleRetrieveKnowledgeLexical({
+            query,
+            knowledgeBaseName,
+            filters,
+            canonical,
+            taskContext,
+            gateOverride,
+            k: effectiveK,
+            requestStartedAt,
+          });
+        }
         return this.handleRetrieveKnowledgeHybrid({
           query,
           knowledgeBaseName,
@@ -1009,6 +1032,7 @@ export class KnowledgeBaseServer {
           taskContext,
           gateOverride,
           rerankOverride,
+          k: effectiveK,
         });
       }
 
@@ -1056,11 +1080,11 @@ export class KnowledgeBaseServer {
       try {
         // `kb.retrieve.dense` covers query embedding + FAISS search.
         similaritySearchResults = await withSpan('kb.retrieve.dense', {
-          'kb.k': 10,
+          'kb.k': effectiveK,
           'kb.scope': knowledgeBaseName ?? null,
         }, () => manager.similaritySearch(
           query,
-          10,
+          effectiveK,
           threshold,
           knowledgeBaseName,
           filters,
@@ -1079,7 +1103,7 @@ export class KnowledgeBaseServer {
         const degraded = await this.runDegradedLexicalOnly({
           query,
           knowledgeBaseName,
-          fetchK: 10,
+          fetchK: effectiveK,
         });
         if (degraded === null) throw error;
         degradedReason = reason;
@@ -1328,9 +1352,11 @@ export class KnowledgeBaseServer {
     taskContext?: string;
     gateOverride?: RelevanceGateOverride;
     rerankOverride?: RerankOverride;
+    /** Issue #973 — retrieval top-K before fusion/rerank. Default 10. */
+    k?: number;
   }): Promise<CallToolResult> {
     const { query, knowledgeBaseName, modelNameOverride, filters, canonical, taskContext, gateOverride, rerankOverride } = input;
-    const HYBRID_TOP_K = 10;
+    const HYBRID_TOP_K = input.k ?? 10;
     const fetchK = hybridFetchK(HYBRID_TOP_K);
     const requestStartedAt = Date.now();
 
@@ -1563,6 +1589,139 @@ export class KnowledgeBaseServer {
         totalMs: Date.now() - requestStartedAt,
       });
       logger.error('Error retrieving knowledge (hybrid):', err);
+      if (err.stack) logger.error(err.stack);
+      return { content: [mcpErrorContent(err)], isError: true };
+    }
+  }
+
+  /**
+   * Issue #973 — BM25-only retrieval path for `retrieve_knowledge`, mirroring
+   * `ask_knowledge`'s lexical leg (ask-core.ts `retrieveHybridOrLexical`).
+   * Runs only the per-KB lexical leg (no FAISS leg, no fusion, no reranker —
+   * the reranker is opt-in for hybrid only), applies the same relevance gate
+   * as the dense/hybrid paths, and returns the same wire envelope.
+   */
+  private async handleRetrieveKnowledgeLexical(input: {
+    query: string;
+    knowledgeBaseName?: string;
+    filters?: { extensions?: string[]; pathGlob?: string; tags?: string[]; since?: string; until?: string };
+    canonical?: Partial<CanonicalLogInput>;
+    taskContext?: string;
+    gateOverride?: RelevanceGateOverride;
+    /** Retrieval top-K. Default 10. */
+    k?: number;
+    requestStartedAt: number;
+  }): Promise<CallToolResult> {
+    const { query, knowledgeBaseName, filters, canonical, taskContext, gateOverride, requestStartedAt } = input;
+    const topK = input.k ?? 10;
+    const fetchK = hybridFetchK(topK);
+
+    try {
+      const allKbNames = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+      const kbNames = knowledgeBaseName
+        ? allKbNames.filter((name) => name === knowledgeBaseName)
+        : allKbNames;
+      const kbs = kbNames.map((kbName) => ({ kbName, kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName) }));
+
+      let lexicalSearchMs = 0;
+      const lexicalStartedAt = Date.now();
+      const lexicalLegResult = await withSpan('kb.retrieve.lexical', {
+        'kb.k': fetchK,
+        'kb.kb_count': kbs.length,
+      }, () => runLexicalLeg({
+        kbs,
+        query,
+        fetchK,
+        refresh: 'when-empty',
+        filters,
+        loadIndex: this.loadLexicalIndex,
+        loadFreshIndex: this.loadFreshLexicalIndex,
+        invalidateIndex: this.invalidateLexicalIndex,
+        onError: (kbName, err) => {
+          logger.warn(`retrieve_knowledge lexical: lexical leg failed for KB "${kbName}": ${err.message}`);
+        },
+      }));
+      lexicalSearchMs = Date.now() - lexicalStartedAt;
+      let ranked = lexicalLegResult.hits.slice(0, topK);
+      const lexicalHitIds = new Set(ranked.map((r) => chunkIdFromMetadata(r.metadata)));
+
+      const gateStartedAt = Date.now();
+      const gate = await withSpan('kb.retrieve.gate', {
+        'kb.candidates_in': ranked.length,
+      }, async (gateSpan) => {
+        const decision = await applyRelevanceGate({
+          query,
+          taskContext,
+          candidates: ranked,
+          denseDistanceById: new Map<string, number>(),
+          lexicalHitIds,
+          gateOverride,
+          process: 'mcp',
+        });
+        gateSpan.setAttribute('kb.gate_state', decision.verdict.state);
+        gateSpan.setAttribute('kb.candidates_out', decision.results.length);
+        return decision;
+      });
+      const gateMs = Date.now() - gateStartedAt;
+      ranked = gate.results;
+      emitRelevanceGateDecision({
+        process: 'mcp',
+        query,
+        kbScope: knowledgeBaseName ?? null,
+        searchMode: 'lexical',
+        verdict: gate.verdict,
+        taskContext,
+        observability: gate.observability,
+      });
+      if (canonical) {
+        canonical.gate = canonicalGateStageRecord(gate.verdict);
+      }
+
+      const formatStartedAt = Date.now();
+      let responseText = await withSpan('kb.retrieve.format', {
+        'kb.result_count': ranked.length,
+      }, async () => formatRetrievalAsMarkdown(ranked as never, FRONTMATTER_EXTRAS_WIRE_VISIBLE));
+      if (gate.verdict.state !== 'bypassed') {
+        responseText = `${responseText}\n\n${formatGateVerdictFooter(gate.verdict)}`;
+      }
+      const formatMs = Date.now() - formatStartedAt;
+      if (canonical) {
+        canonical.result_count = ranked.length;
+        canonical.top_score = ranked[0]?.score;
+        canonical.top_sources = topSourcesForCanonicalLog(ranked);
+        canonical.format_ms = formatMs;
+      }
+      searchLatencyMetrics.record({
+        mode: 'lexical',
+        status: 'success',
+        totalMs: Date.now() - requestStartedAt,
+        stageDurationsMs: searchStageDurationsFromTiming({
+          lexical_search_ms: lexicalSearchMs,
+          gate_ms: gateMs,
+          format_ms: formatMs,
+        }),
+      });
+      const header = `> _Mode: lexical (BM25); fetched ${lexicalLegResult.hits.length} (#973)._`;
+      responseText = `${header}\n\n${responseText}`;
+      const degradation = degradationSummaryFields({
+        gate: canonical?.gate,
+      });
+      const degradedFooter = formatDegradedStagesFooter(degradation.degraded_stages);
+      if (degradedFooter !== '') {
+        responseText = `${responseText}\n\n${degradedFooter}`;
+      }
+
+      const content: TextContent = { type: 'text', text: responseText };
+      const response = withGateVerdict({ content: [content] }, gate.verdict);
+      return withDegradationSummary(response, degradation.degraded_stages);
+    } catch (error: unknown) {
+      const err = toError(error);
+      searchLatencyMetrics.record({
+        mode: 'lexical',
+        status: 'error',
+        totalMs: Date.now() - requestStartedAt,
+      });
+      logger.error('Error retrieving knowledge (lexical):', err);
       if (err.stack) logger.error(err.stack);
       return { content: [mcpErrorContent(err)], isError: true };
     }
