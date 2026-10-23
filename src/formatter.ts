@@ -100,6 +100,27 @@ export interface RetrievalSnippetOptions {
 // so all ANSI output shares one source and one color-control decision (#659).
 
 /**
+ * Issue #976 — OSC-8 terminal hyperlink escape sequence
+ * (`\x1b]8;;<URI>\x1b\\<TEXT>\x1b]8;;\x1b\\`). Wraps the displayed source path
+ * in a clickable link for terminals that support it; terminals that don't
+ * simply render the raw text, so this is safe to emit unconditionally once
+ * the caller has already decided (via the shared `resolveColorEnabled` gate)
+ * that escape sequences are appropriate for this stream.
+ */
+function wrapOsc8Link(text: string, uri: string): string {
+  return `\x1b]8;;${uri}\x1b\\${text}\x1b]8;;\x1b\\`;
+}
+
+/**
+ * Chooses the OSC-8 target for a citation: an editor URI (if `KB_EDITOR_URI`
+ * is configured) opens the file directly, otherwise the `kb://` resource URI
+ * is the next best "something useful happens when clicked" target.
+ */
+function osc8CitationTarget(citation: ChunkCitation): string {
+  return citation.editor_uri ?? citation.resource_uri;
+}
+
+/**
  * Strips `frontmatter.extras` from a chunk's metadata before wire
  * serialization unless the operator has opted back in via
  * `FRONTMATTER_EXTRAS_WIRE_VISIBLE=true`. RFC 011 §7.1 R1 — extras are a
@@ -157,6 +178,7 @@ export function formatRetrievalAsMarkdown(
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
   highlight?: RetrievalHighlightOptions,
   snippet?: RetrievalSnippetOptions,
+  hyperlink?: boolean,
 ): string {
   if (!results || results.length === 0) {
     return formatRetrievalEmptyAsMarkdown();
@@ -182,8 +204,8 @@ export function formatRetrievalAsMarkdown(
       const scoreText = formatMarkdownRelevance(doc);
       const signals = getShieldSignals(doc.pageContent, sanitizedMetadata, guardOptions);
       const shieldFooter = formatInjectionMarkdown(signals);
-      const contextText = formatContextChunksAsMarkdown(doc, extrasVisible, editorUriMode, highlight);
-      return `${resultHeader}\n\n${scoreText}${content}\n\n${shieldFooter}${formatSourceBlock(metadata, citation)}${contextText}`;
+      const contextText = formatContextChunksAsMarkdown(doc, extrasVisible, editorUriMode, highlight, hyperlink);
+      return `${resultHeader}\n\n${scoreText}${content}\n\n${shieldFooter}${formatSourceBlock(metadata, citation, hyperlink)}${contextText}`;
     })
     .join('\n\n---\n\n');
   return `${SEMANTIC_SEARCH_HEADER}\n\n${formattedResults}${SEMANTIC_SEARCH_DISCLAIMER}`;
@@ -195,6 +217,7 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
   highlight?: RetrievalHighlightOptions,
   snippet?: RetrievalSnippetOptions,
+  hyperlink?: boolean,
 ): string {
   const grouped = groupRetrievalBySource(results, extrasVisible, editorUriMode, snippet);
   if (grouped.length === 0) {
@@ -206,7 +229,9 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
         .map((chunk, chunkIdx) => {
           const scoreText = formatScore(chunk.score);
           const locationText = formatLocation(chunk.location);
-          const openText = chunk.editor_uri ? `\n   **Open:** ${chunk.editor_uri}` : '';
+          const openUri = chunk.editor_uri;
+          const openDisplay = openUri && hyperlink ? wrapOsc8Link(openUri, openUri) : openUri;
+          const openText = openDisplay ? `\n   **Open:** ${openDisplay}` : '';
           const shieldText = formatInjectionGrouped(chunk.injection_signals);
           const typeText = chunk.match_type ? `\n   **Type:** ${chunk.match_type}` : '';
           const content = applyRetrievalHighlight((chunk.snippet ?? chunk.content).trim(), highlight);
@@ -738,6 +763,7 @@ function formatContextChunksAsMarkdown(
   extrasVisible: boolean,
   editorUriMode: KBEditorUriMode,
   highlight: RetrievalHighlightOptions | undefined,
+  hyperlink?: boolean,
 ): string {
   if (!doc.contextChunks || doc.contextChunks.length === 0) {
     return doc.contextTruncated ? '\n\n**Context chunks:** truncated by response cap.' : '';
@@ -753,7 +779,10 @@ function formatContextChunksAsMarkdown(
       const citation = buildChunkCitation(guarded.metadata, editorUriMode);
       const signals = getShieldSignals(chunk.pageContent, metadata, guardOptions);
       const openText = citation?.editor_uri ? `\n   **Open:** ${citation.editor_uri}` : '';
-      const sourceText = citation ? `\n   **Source:** ${citation.chunk_id}` : '';
+      const sourceChunkId = citation && hyperlink
+        ? wrapOsc8Link(citation.chunk_id, osc8CitationTarget(citation))
+        : citation?.chunk_id;
+      const sourceText = citation ? `\n   **Source:** ${sourceChunkId}` : '';
       const shieldText = formatInjectionContext(signals);
       const content = applyRetrievalHighlight(guarded.content.trim(), highlight);
       return (
@@ -816,10 +845,11 @@ function indentListContent(content: string): string {
   return content.replace(/\n/g, '\n  ');
 }
 
-function formatSourceBlock(metadata: string, citation: ChunkCitation | null): string {
+function formatSourceBlock(metadata: string, citation: ChunkCitation | null, hyperlink?: boolean): string {
   if (citation === null) {
     return `**Source:**\n\`\`\`json\n${metadata}\n\`\`\``;
   }
   const openLine = citation.editor_uri ? `\n**Open:** ${citation.editor_uri}` : '';
-  return `**Source:** [${citation.chunk_id}](${citation.resource_uri})${openLine}\n\n\`\`\`json\n${metadata}\n\`\`\``;
+  const chunkIdText = hyperlink ? wrapOsc8Link(citation.chunk_id, osc8CitationTarget(citation)) : citation.chunk_id;
+  return `**Source:** [${chunkIdText}](${citation.resource_uri})${openLine}\n\n\`\`\`json\n${metadata}\n\`\`\``;
 }

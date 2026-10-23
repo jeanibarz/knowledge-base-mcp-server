@@ -6,7 +6,7 @@ import {
   readKbColorMode,
   resolveColorEnabled,
 } from './color.js';
-import { shouldHighlightSearchOutput } from './cli-search.js';
+import { shouldHighlightSearchOutput, shouldHyperlinkSearchOutput } from './cli-search.js';
 
 describe('parseColorMode', () => {
   it('accepts the three modes', () => {
@@ -137,5 +137,43 @@ describe('shouldHighlightSearchOutput routes through the unified color control',
     expect(
       shouldHighlightSearchOutput({ format: 'md', highlight: 'always' }, {}, false),
     ).toBe(true);
+  });
+});
+
+// Issue #976 — OSC-8 hyperlinks reuse the same unified color control as
+// highlighting/color, but (unlike highlighting) have no `--highlight`-style
+// back-compat override: only `--color`/NO_COLOR/KB_COLOR/TTY decide.
+describe('shouldHyperlinkSearchOutput routes through the unified color control', () => {
+  it('only emits OSC-8 for markdown output', () => {
+    expect(shouldHyperlinkSearchOutput({ format: 'json' }, {}, true)).toBe(false);
+    expect(shouldHyperlinkSearchOutput({ format: 'vimgrep' }, {}, true)).toBe(false);
+    expect(shouldHyperlinkSearchOutput({ format: 'compact' }, {}, true)).toBe(false);
+    expect(shouldHyperlinkSearchOutput({ format: 'md' }, {}, true)).toBe(true);
+  });
+
+  it('has no OSC-8 bytes for piped (non-TTY) output', () => {
+    expect(shouldHyperlinkSearchOutput({ format: 'md' }, {}, false)).toBe(false);
+  });
+
+  it('suppresses on NO_COLOR by default and lets --color=always override it', () => {
+    expect(shouldHyperlinkSearchOutput({ format: 'md' }, { NO_COLOR: '1' }, true)).toBe(false);
+    expect(
+      shouldHyperlinkSearchOutput(
+        { format: 'md', color: 'always', colorExplicit: true },
+        { NO_COLOR: '1' },
+        false,
+      ),
+    ).toBe(true);
+  });
+
+  it('honors --color=never on a TTY', () => {
+    expect(
+      shouldHyperlinkSearchOutput({ format: 'md', color: 'never', colorExplicit: true }, {}, true),
+    ).toBe(false);
+  });
+
+  it('honors KB_COLOR when --color is not explicit', () => {
+    expect(shouldHyperlinkSearchOutput({ format: 'md' }, { KB_COLOR: 'always' }, false)).toBe(true);
+    expect(shouldHyperlinkSearchOutput({ format: 'md' }, { KB_COLOR: 'never' }, true)).toBe(false);
   });
 });
