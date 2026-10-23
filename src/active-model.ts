@@ -24,6 +24,7 @@ import {
 import { pathExists, writeFileAtomicDurable } from './file-utils.js';
 import { deriveModelId, EmbeddingProvider, isValidModelId, parseModelId } from './model-id.js';
 import { logger } from './logger.js';
+import { ActiveModelResolutionError } from './errors.js';
 import {
   parseIndexVersionDirName,
   resolveIndexVersionRetention,
@@ -573,12 +574,10 @@ async function readActiveRaw(): Promise<ActiveReadResult> {
 // Active-model resolution.
 // ---------------------------------------------------------------------------
 
-export class ActiveModelResolutionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ActiveModelResolutionError';
-  }
-}
+// Moved to errors.ts (issue #1006) so logging primitives don't need to import
+// this domain module just for the error class; re-exported here for
+// backward compatibility with existing consumers of active-model.js.
+export { ActiveModelResolutionError } from './errors.js';
 
 export interface ResolveOptions {
   /** Explicit per-call override: CLI `--model=<id>` or MCP `args.model_name`. */

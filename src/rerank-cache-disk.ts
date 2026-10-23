@@ -7,7 +7,7 @@ import {
   KB_RERANK_CACHE_ENABLED,
 } from './config/reranker.js';
 import { logger } from './logger.js';
-import type { RerankScoreCache } from './reranker.js';
+import type { RerankScoreCache } from './rerank-types.js';
 
 // Disk-tiered persistent rerank-score cache (#646). Mirrors the two-tier
 // query embedding cache (src/query-cache.ts, ADR 0009): an in-memory LRU L1

@@ -13,7 +13,7 @@ import {
   redactSecrets,
   type RedactionSummary,
 } from './redaction.js';
-import type { DoctorReport } from './cli-doctor.js';
+import type { DoctorReport } from './cli-doctor-types.js';
 
 const BUG_REPORT_SCHEMA_VERSION = 'kb.doctor.bug_report.v1';
 const DEFAULT_LOG_LIMIT = 50;

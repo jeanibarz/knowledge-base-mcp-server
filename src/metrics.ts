@@ -9,8 +9,11 @@
 // runtime histograms live on the existing `kb_stats` MCP tool surface.
 
 import type { SearchLatencyStage } from './timing-core.js';
-import type { DenseDegradationReason } from './search-core.js';
+import type { DenseDegradationReason } from './search-types.js';
 import type { ResponseStatusBucket } from './transport-runtime-stats.js';
+import type { WriteLockResourceKind } from './metrics-types.js';
+
+export type { WriteLockResourceKind } from './metrics-types.js';
 
 /**
  * Fixed log-spaced latency bucket upper bounds, in milliseconds. 10 bucket
@@ -218,7 +221,6 @@ export interface SearchLatencyMetricsSnapshot {
 
 export type RerankSkipReason = 'disabled' | 'skip_domain' | 'no_candidates';
 export type RerankCandidateSource = 'cache_hit' | 'model_scored';
-export type WriteLockResourceKind = 'active_index' | 'model_index' | 'other';
 
 export interface RerankMetricsSnapshot {
   invocations: number;
