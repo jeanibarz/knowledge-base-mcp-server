@@ -12,7 +12,7 @@ sequenceDiagram
   autonumber
   participant Client as MCP client
   participant Server as KnowledgeBaseServer
-  participant Active as active-model.ts
+  participant Active as model-resolution.ts
   participant Lock as withWriteLock(modelDir)
   participant FIM as FaissIndexManager
   participant FS as KB source tree

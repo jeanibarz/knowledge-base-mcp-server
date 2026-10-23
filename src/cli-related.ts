@@ -4,7 +4,7 @@ import {
   type SearchResultDocument,
   type SimilaritySearchTiming,
 } from './FaissIndexManager.js';
-import { resolveActiveModel } from './active-model.js';
+import { resolveActiveModel } from './model-resolution.js';
 import { buildChunkId, parseChunkReference } from './chunk-id.js';
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,

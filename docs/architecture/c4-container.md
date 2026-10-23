@@ -85,7 +85,7 @@ flowchart LR
 
 | Link | Direction | Source of truth |
 | --- | --- | --- |
-| Active model selection | CLI/MCP read `active.txt`; model commands write it. | `src/active-model.ts` |
+| Active model selection | CLI/MCP read `active.txt`; model commands write it. | `src/model-resolution.ts`, `src/model-storage-layout.ts` |
 | Per-model FAISS persistence | Managers load/save versioned `models/<id>/index.vN/` directories. | `src/faiss-store-layout.ts`, `src/FaissIndexManager.ts` |
 | Source freshness | Refresh compares source hashes with `<kb>/.index/` sidecars and chunk manifests. | `src/file-ingest.ts`, `src/FaissIndexManager.ts` |
 | Query cache | Retrieval can reuse query embeddings from memory or `$FAISS_INDEX_PATH/cache/queries/`. | `src/query-cache.ts` |

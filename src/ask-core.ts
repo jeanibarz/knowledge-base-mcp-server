@@ -1,6 +1,6 @@
 import type { FaissIndexManager, SimilaritySearchTiming } from './FaissIndexManager.js';
 import type { SearchResultDocument } from './FaissIndexManager.js';
-import type { resolveActiveModel } from './active-model.js';
+import type { resolveActiveModel } from './model-resolution.js';
 import { resolveLlmProvider } from './config/llm-provider.js';
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,

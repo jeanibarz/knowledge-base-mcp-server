@@ -78,7 +78,7 @@ export const KB_FAKE_DIM: number = parseKbFakeDim(process.env.KB_FAKE_DIM);
 // precedence over `${FAISS_INDEX_PATH}/active.txt` for the lifetime of this
 // process. Empty/unset = fall through to active.txt then to legacy env-var
 // derivation. Slug validation (^[a-z]+__[A-Za-z0-9._-]+$) is enforced by
-// active-model.ts before any path-join.
+// model-storage-layout.ts before any path-join.
 export const KB_ACTIVE_MODEL = process.env.KB_ACTIVE_MODEL || '';
 
 // HuggingFace configuration

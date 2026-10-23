@@ -37,7 +37,7 @@ flowchart TB
   end
 
   subgraph storage["Storage and indexing"]
-    Active["active-model.ts<br/>model registry and active model"]
+    Active["model-resolution.ts / model-storage-layout.ts<br/>model registry and active model"]
     Layout["faiss-store-layout.ts<br/>versioned index load/save"]
     FaissAdapter["faiss-store-adapter.ts<br/>FAISS backend adapter"]
     HnswAdapter["hnsw-index-adapter.ts<br/>HNSW backend adapter"]
@@ -126,7 +126,7 @@ flowchart TB
 | Search backends | `src/faiss-store-adapter.ts`, `src/hnsw-index-adapter.ts`, `src/search-index-adapter.ts` | Present FAISS and HNSW stores behind a shared search-index adapter surface. | Loaded/saved by `faiss-store-layout.ts`, queried by `FaissIndexManager`. |
 | Versioned store layout | `src/faiss-store-layout.ts` | Owns `index -> index.vN` load/save, backend/integrity manifests, legacy fallback, symlink swaps, retention pruning, and HNSW/FAISS backend dispatch. | Used by `FaissIndexManager` and diff/verify flows. |
 | Docstore CAS | `src/docstore-cas.ts` | Canonicalizes FAISS `docstore.json` payloads and hardlinks identical docstores through `$FAISS_INDEX_PATH/.docstore-cas/`. | Called during FAISS atomic saves. |
-| Active model store | `src/active-model.ts` | Single owner of `models/<id>/` paths, registered-model discovery, `model_name.txt`, `index-type.txt`, incomplete-add state, and `active.txt` resolution/writes. | Used by CLI, MCP server, manager registry, and FAISS manager. |
+| Active model store | `src/model-resolution.ts`, `src/model-storage-layout.ts` | `model-storage-layout.ts` owns `models/<id>/` paths, `model_name.txt`, `index-type.txt`, and incomplete-add sentinel state; `model-resolution.ts` owns `resolveActiveModel`/`active.txt` resolution and registered-model discovery, importing from `model-storage-layout.ts` (never the reverse). | Used by CLI, MCP server, manager registry, and FAISS manager. |
 | Ingest and loaders | `src/file-ingest.ts`, `src/loaders.ts`, `src/ingest-quarantine.ts`, `src/secret-scanner.ts` | Build chunks/manifests, route extension-specific extraction, quarantine failed/secret-bearing files, and write sidecars. | Used by `FaissIndexManager` and inspect/doctor surfaces. |
 | Retrieval composition | `src/search-core.ts`, `src/hybrid-retrieval.ts`, `src/lexical-index.ts`, `src/rrf.ts`, `src/retrieval-views.ts`, `src/query-decomposition.ts`, `src/decomposition-cache.ts` | Implement dense, lexical, hybrid RRF, optional bounded query decomposition, retrieval views, scoring/diagnostics, fallback behavior, and the opt-in two-tier decomposition cache. | Used by CLI search, MCP retrieval, eval, and research flows. |
 | Answering and relevance | `src/ask-core.ts`, `src/llm-client.ts`, `src/relevance-gate.ts`, `src/reranker.ts` | Pack retrieval context, call local/OpenAI-compatible LLMs, optionally gate/rerank candidates, and report timing/provenance. | Used by CLI `ask`, MCP `ask_knowledge`, MCP/CLI retrieval, eval-gate. |
@@ -149,7 +149,7 @@ flowchart TB
 
 ### Model Layout Path
 
-`active-model.ts` owns the filesystem schema and active resolution rules: model directory derivation, registration checks, `model_name.txt`, `index-type.txt`, `.adding`, and `active.txt`. New model-loading code should read model metadata there instead of reconstructing paths or assuming the process-level `KB_INDEX_TYPE`.
+`model-storage-layout.ts` owns the filesystem schema: model directory derivation, registration checks, `model_name.txt`, `index-type.txt`, and `.adding`. `model-resolution.ts` owns active resolution rules (`active.txt`, `KB_ACTIVE_MODEL`, legacy env fallback) and imports from `model-storage-layout.ts`. New model-loading code should read model metadata through these modules instead of reconstructing paths or assuming the process-level `KB_INDEX_TYPE`.
 
 ### Index Persistence Path
 
@@ -165,7 +165,7 @@ flowchart TB
 - **Runtime orchestration points outward.** `KnowledgeBaseServer` and `cli.ts` may depend on indexing/model/filesystem helpers; those helpers should not import either orchestration surface.
 - **Non-CLI modules never import `cli-*` adapters.** Only `cli.ts` and `cli-*.ts` command modules may import a `cli-*` adapter. Shared, server, and transport modules import command-independent `*-core` modules (`search-core.ts`, `search-errors-core.ts`, `timing-core.ts`) instead. `src/non-cli-import-boundary.test.ts` scans production modules for regressions.
 - **`logger` remains a leaf.** It has no source imports and must continue writing logs away from stdout.
-- **`active-model.ts` is the model layout authority.** New code should not reconstruct `models/<id>/` paths, `model_name.txt`, or `index-type.txt` independently.
+- **`model-storage-layout.ts` is the model layout authority.** New code should not reconstruct `models/<id>/` paths, `model_name.txt`, or `index-type.txt` independently. `model-resolution.ts` may import from it; the dependency never runs the other way.
 - **Versioned store layout is not embedded in the manager.** Backend-specific load/save behavior belongs in `faiss-store-layout.ts`; `FaissIndexManager` remains the ingest/search orchestrator.
 - **Shared helpers are domain-scoped.** Prefer existing domain helpers over broad utility barrels.
 - **Config is read at module load except transport validation.** `loadTransportConfig()` in `src/transport-config.ts` is the explicit startup validation boundary for MCP transport settings.

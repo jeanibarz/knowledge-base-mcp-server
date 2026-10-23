@@ -124,7 +124,8 @@ export function parseBackupArgs(rest: readonly string[]): BackupArgs {
 
 export async function createBackup(args: BackupArgs): Promise<BackupResult> {
   const { FAISS_INDEX_PATH } = await import('./config/paths.js');
-  const { modelDir, resolveActiveModel } = await import('./active-model.js');
+  const { modelDir } = await import('./model-storage-layout.js');
+  const { resolveActiveModel } = await import('./model-resolution.js');
   const { withWriteLock } = await import('./write-lock.js');
   const outputDir = path.resolve(args.outputDir);
   await assertSafeNewOutputDir(outputDir, FAISS_INDEX_PATH);
@@ -273,7 +274,7 @@ async function estimateBackupSourceBytes(modelDirPath: string, versionDir: strin
 }
 
 async function assertNoIncompleteModelState(modelId: string): Promise<void> {
-  const { addingSentinelPath, modelDir } = await import('./active-model.js');
+  const { addingSentinelPath, modelDir } = await import('./model-storage-layout.js');
   if (await pathExists(addingSentinelPath(modelId))) {
     throw new Error(`model ${modelId} is incomplete (.adding sentinel exists); refusing to snapshot it`);
   }
@@ -283,7 +284,7 @@ async function assertNoIncompleteModelState(modelId: string): Promise<void> {
 }
 
 async function assertRequiredModelFiles(modelId: string): Promise<void> {
-  const { modelDir } = await import('./active-model.js');
+  const { modelDir } = await import('./model-storage-layout.js');
   const filePath = path.join(modelDir(modelId), 'model_name.txt');
   try {
     const st = await fsp.stat(filePath);

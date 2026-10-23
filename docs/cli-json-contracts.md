@@ -2253,7 +2253,7 @@ Stdout/stderr and exit codes:
   and `2` for argv/configuration errors.
 
 Source and test anchors: `src/cli-models.ts:20-64`,
-`src/cli-models.ts:88-177`, `src/active-model.ts:463-499`,
+`src/cli-models.ts:88-177`, `src/model-resolution.ts:37-75`,
 `src/cli-json-contracts.test.ts`.
 
 ## `kb models gc --dry-run --format=json`

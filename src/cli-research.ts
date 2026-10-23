@@ -1,7 +1,7 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { readFileSync, realpathSync } from 'fs';
-import { resolveActiveModel } from './active-model.js';
+import { resolveActiveModel } from './model-resolution.js';
 import { captureProcessOutput, loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 import { runSearch } from './cli-search.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config.js';

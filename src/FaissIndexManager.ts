@@ -38,13 +38,13 @@ import {
   type SearchIndexType,
 } from './config/indexing.js';
 import { casRootForIndexPath } from './docstore-cas.js';
+import { computeLegacyEnvModelSpec } from './model-resolution.js';
 import {
   activeFileExists,
-  computeLegacyEnvModelSpec,
   modelDir,
   modelNameFilePath,
   writeIndexTypeAtomic,
-} from './active-model.js';
+} from './model-storage-layout.js';
 import { deriveModelId, EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
 import { KBError } from './errors.js';
@@ -1167,7 +1167,7 @@ export class FaissIndexManager {
    * Side effect: emits a one-time `logger.warn` when both versioned and
    * legacy layouts coexist (the downgrade hazard). The hazard signal is
    * derived directly from on-disk state by `kb models list` and
-   * `list_models` (active-model.ts:detectDowngradeHazard), so no marker
+   * `list_models` (model-resolution.ts:detectDowngradeHazard), so no marker
    * file is required — the filesystem is the single source of truth.
    */
   private async loadAtomic(opts: { repairCorrupt?: boolean } = {}): Promise<SearchIndexAdapter | null> {

@@ -1,24 +1,25 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { FaissIndexManager } from './FaissIndexManager.js';
+import { isValidModelId, parseModelId } from './model-id.js';
 import {
   ActiveModelResolutionError,
+  computeLegacyEnvDerivedId,
+  isRegisteredModel,
+  listRegisteredModels,
+  resolveActiveModel,
+} from './model-resolution.js';
+import {
   activeModelFilePath,
   addingSentinelPath,
   buildAddingSentinelMetadata,
   classifyIncompleteModelState,
-  computeLegacyEnvDerivedId,
-  isRegisteredModel,
-  isValidModelId,
-  listRegisteredModels,
   modelDir,
   modelsRoot,
-  parseModelId,
   readStoredModelName,
-  resolveActiveModel,
   writeAddingSentinel,
   writeActiveModelAtomic,
-} from './active-model.js';
+} from './model-storage-layout.js';
 import { resolveIndexType, type SearchIndexType } from './config/indexing.js';
 import { KB_ACTIVE_MODEL } from './config/provider.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';

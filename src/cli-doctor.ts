@@ -9,17 +9,19 @@ import * as net from 'net';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { parseModelId } from './model-id.js';
 import {
   ActiveModelResolutionError,
-  listIncompleteModelStates,
   listRegisteredModels,
+  resolveActiveModel,
+} from './model-resolution.js';
+import {
+  listIncompleteModelStates,
+  modelDir,
   modelsRoot,
-  parseModelId,
   readModelIndexStorage,
   readStoredIndexType,
-  resolveActiveModel,
-  modelDir,
-} from './active-model.js';
+} from './model-storage-layout.js';
 import {
   FAISS_INDEX_PATH,
   KNOWLEDGE_BASES_ROOT_DIR,

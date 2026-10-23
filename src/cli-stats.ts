@@ -1,4 +1,4 @@
-import { resolveActiveModel } from './active-model.js';
+import { resolveActiveModel } from './model-resolution.js';
 import { tryRunDaemonCommand } from './daemon-client.js';
 import {
   classifyKbSearchError,

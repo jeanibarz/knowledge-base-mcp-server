@@ -88,9 +88,9 @@ Normal completion removes the manifest after all sidecars are durable. On startu
 
 ### Model registry
 
-`$FAISS_INDEX_PATH/active.txt` records the active `model_id`; callers can override it with `KB_ACTIVE_MODEL` (`src/active-model.ts:5`, `:26`). Each registered model lives at `$FAISS_INDEX_PATH/models/<model_id>/`, where `<model_id>` is derived from provider and model name (`README.md:102`, `src/active-model.ts:37-43`).
+`$FAISS_INDEX_PATH/active.txt` records the active `model_id`; callers can override it with `KB_ACTIVE_MODEL` (`src/model-resolution.ts:3`, `:141-142`). Each registered model lives at `$FAISS_INDEX_PATH/models/<model_id>/`, where `<model_id>` is derived from provider and model name (`README.md:102`, `src/model-storage-layout.ts:34-40`).
 
-A model is registered only when its directory exists, `model_name.txt` exists, and `.adding` does not exist (`src/active-model.ts:107-127`). `model_name.txt` is written per model during `FaissIndexManager.initialize()` (`src/FaissIndexManager.ts:327-334`) and stores the configured embedding model name, not the derived model id.
+A model is registered only when its directory exists, `model_name.txt` exists, and `.adding` does not exist (`src/model-storage-layout.ts:440-459`). `model_name.txt` is written per model during `FaissIndexManager.initialize()` (`src/FaissIndexManager.ts:327-334`) and stores the configured embedding model name, not the derived model id.
 
 ### Versioned search-index store
 
@@ -131,7 +131,7 @@ per-model `docstore.json` files without changing retrieval behavior.
 
 ### Legacy FAISS store
 
-The pre-RFC-014 layout is `models/<model_id>/faiss.index/{faiss.index,docstore.json}`. The loader still falls back to it when the `index` symlink is absent (`src/faiss-store-layout.ts:122-142`). The first successful save under the new layout writes `index.vN/` and leaves the legacy directory untouched as downgrade/rollback slack (`src/FaissIndexManager.ts:765-770`). When both layouts are present, `kb models list` can surface a downgrade hazard derived directly from filesystem state (`src/active-model.ts:129-185`).
+The pre-RFC-014 layout is `models/<model_id>/faiss.index/{faiss.index,docstore.json}`. The loader still falls back to it when the `index` symlink is absent (`src/faiss-store-layout.ts:122-142`). The first successful save under the new layout writes `index.vN/` and leaves the legacy directory untouched as downgrade/rollback slack (`src/FaissIndexManager.ts:765-770`). When both layouts are present, `kb models list` can surface a downgrade hazard derived directly from filesystem state (`src/model-resolution.ts:83-93`).
 
 ### Query embedding cache
 
@@ -247,7 +247,7 @@ This page is verified against the following source files. If one of these files 
 - HNSW backend files and JSON docstore: `src/hnsw-index-adapter.ts`, `src/faiss-store-layout.ts`.
 - Docstore CAS hardlink dedup: `src/docstore-cas.ts`, `src/faiss-store-layout.ts`.
 - Query embedding cache: `src/query-cache.ts`.
-- Model registry, model sidecars, incomplete-add sentinel: `src/active-model.ts`.
+- Model registry, model sidecars, incomplete-add sentinel: `src/model-resolution.ts`, `src/model-storage-layout.ts`.
 - Sidecar write path: `src/file-ingest.ts:118-144`, `src/FaissIndexManager.ts:782-793`.
-- Active-model resolution: `src/active-model.ts:5-26`, `:259-330`.
-- Per-model directory and `model_name.txt`: `src/active-model.ts:107-127`, `src/FaissIndexManager.ts:327-334`.
+- Active-model resolution: `src/model-resolution.ts:1-13`, `:121-191`.
+- Per-model directory and `model_name.txt`: `src/model-storage-layout.ts:440-459`, `src/FaissIndexManager.ts:327-334`.

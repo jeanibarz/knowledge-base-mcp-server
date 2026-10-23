@@ -12,7 +12,7 @@ jest.mock('./FaissIndexManager.js', () => ({
   },
 }));
 
-jest.mock('./active-model.js', () => ({
+jest.mock('./model-resolution.js', () => ({
   ActiveModelResolutionError: class ActiveModelResolutionError extends Error {},
   resolveActiveModel: jest.fn(async () => 'fake__model'),
 }));
