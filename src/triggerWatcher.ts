@@ -373,8 +373,8 @@ export class ReindexTriggerWatcher {
     // RFC 017 M0b — defer if a `kb reindex --with-context` is in flight.
     // Cheap synchronous probe (`fs.existsSync`) for the common case (no
     // reindex running): zero overhead in the happy path. Only when the
-    // run-state file is present do we run the PID-liveness check via
-    // `process.kill(pid, 0)` — also synchronous.
+    // run-state file is present do we run the #992 age/host/PID-liveness
+    // check (`isRunStateActiveSync`) — also synchronous.
     if (this.shouldDeferToReindex()) {
       logger.debug(
         'ReindexTriggerWatcher: deferring updateIndex — peer reindex is in flight',
@@ -407,10 +407,16 @@ export class ReindexTriggerWatcher {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const helpers = require('./reindex-runner.js') as {
         runStateFilePath(): string;
-        isPidAlive(pid: number): boolean;
+        isRunStateActiveSync(
+          state: { pid: number; started_at: string; hostname?: string },
+          now: Date,
+          localHost: string,
+        ): boolean;
       };
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const fs = require('fs') as typeof import('fs');
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const os = require('os') as typeof import('os');
       const target = helpers.runStateFilePath();
       let raw: string;
       try {
@@ -420,9 +426,16 @@ export class ReindexTriggerWatcher {
         if (code === 'ENOENT' || code === 'ENOTDIR') return false;
         return false;
       }
-      const parsed = JSON.parse(raw) as { pid?: unknown };
+      const parsed = JSON.parse(raw) as { pid?: unknown; started_at?: unknown; hostname?: unknown };
       const pid = typeof parsed.pid === 'number' ? parsed.pid : Number.NaN;
-      return Number.isFinite(pid) && helpers.isPidAlive(pid);
+      const startedAt = typeof parsed.started_at === 'string' ? parsed.started_at : '';
+      const hostname = typeof parsed.hostname === 'string' ? parsed.hostname : undefined;
+      if (!Number.isFinite(pid)) return false;
+      return helpers.isRunStateActiveSync(
+        { pid, started_at: startedAt, hostname },
+        new Date(),
+        os.hostname(),
+      );
     } catch (err) {
       // The file exists but is unreadable / corrupt. Don't block the
       // watcher — proceed normally; the next poll will re-check, and the

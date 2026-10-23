@@ -679,6 +679,64 @@ describe('.reindex.run.json + PID liveness', () => {
     });
     expect(capturedHostname).toBe(os.hostname());
   });
+
+  // --- Issue #992: isRunStateActiveSync pure-function parity with #906 ---
+
+  describe('isRunStateActiveSync', () => {
+    const localHost = os.hostname();
+
+    function makeState(fields: {
+      pid: number;
+      started_at: string;
+      hostname?: string;
+    }): { schema_version: typeof import('./reindex-runner.js')['REINDEX_RUN_SCHEMA_VERSION']; pid: number; started_at: string; kbs_in_scope: string[]; hostname?: string } {
+      return {
+        schema_version: runner.REINDEX_RUN_SCHEMA_VERSION,
+        pid: fields.pid,
+        started_at: fields.started_at,
+        kbs_in_scope: ['alpha'],
+        ...(fields.hostname === undefined ? {} : { hostname: fields.hostname }),
+      };
+    }
+
+    it('returns false for an aged-out run-state even with a live same-host PID', () => {
+      const now = new Date();
+      const agedOut = new Date(now.getTime() - runner.REINDEX_RUN_STALE_MS - 60_000).toISOString();
+      const state = makeState({ pid: process.pid, started_at: agedOut, hostname: localHost });
+      expect(runner.isRunStateActiveSync(state, now, localHost)).toBe(false);
+    });
+
+    it('returns false for a foreign-host run-state even with a live, recent PID', () => {
+      const now = new Date();
+      const state = makeState({
+        pid: process.pid,
+        started_at: now.toISOString(),
+        hostname: `${localHost}-some-other-host`,
+      });
+      expect(runner.isRunStateActiveSync(state, now, localHost)).toBe(false);
+    });
+
+    it('returns false just over the REINDEX_RUN_STALE_MS boundary', () => {
+      const now = new Date();
+      const justOver = new Date(now.getTime() - runner.REINDEX_RUN_STALE_MS - 1_000).toISOString();
+      const state = makeState({ pid: process.pid, started_at: justOver, hostname: localHost });
+      expect(runner.isRunStateActiveSync(state, now, localHost)).toBe(false);
+    });
+
+    it('returns true for a recent, same-host, live-PID run-state', () => {
+      const now = new Date();
+      const recent = new Date(now.getTime() - 5_000).toISOString();
+      const state = makeState({ pid: process.pid, started_at: recent, hostname: localHost });
+      expect(runner.isRunStateActiveSync(state, now, localHost)).toBe(true);
+    });
+
+    it('returns true for a legacy no-hostname run-state that is recent and live', () => {
+      const now = new Date();
+      const recent = new Date(now.getTime() - 5_000).toISOString();
+      const state = makeState({ pid: process.pid, started_at: recent });
+      expect(runner.isRunStateActiveSync(state, now, localHost)).toBe(true);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -491,4 +491,61 @@ describe('ReindexTriggerWatcher RFC 017 M0b cooperative deferral', () => {
     await new Promise((r) => setImmediate(r));
     expect(onTrigger).toHaveBeenCalledTimes(1);
   });
+
+  it('issue #992: does not defer when the run-state is older than REINDEX_RUN_STALE_MS', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const runner = require('./reindex-runner.js') as { REINDEX_RUN_STALE_MS: number };
+    const agedOut = new Date(Date.now() - runner.REINDEX_RUN_STALE_MS - 60_000).toISOString();
+    // Live PID (this process) + same host, but aged out — must not defer.
+    await fsp.writeFile(
+      runStatePath,
+      JSON.stringify({
+        schema_version: 'reindex-run.v1',
+        pid: process.pid,
+        started_at: agedOut,
+        kbs_in_scope: ['alpha'],
+        hostname: os.hostname(),
+      }),
+    );
+
+    await fsp.writeFile(triggerPath, 'first');
+    const onTrigger = jest.fn().mockResolvedValue(undefined);
+    const watcher = new ReindexTriggerWatcher(triggerPath, onTrigger, 60_000);
+
+    await watcher.poll(); // baseline seed
+    const stat = await fsp.stat(triggerPath);
+    const newSec = stat.mtimeMs / 1000 + 5;
+    await fsp.utimes(triggerPath, newSec, newSec);
+    await watcher.poll();
+    await new Promise((r) => setImmediate(r));
+
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it('issue #992: does not defer when the run-state names a foreign hostname', async () => {
+    // Live PID (this process) + recent, but a different host — must not defer.
+    await fsp.writeFile(
+      runStatePath,
+      JSON.stringify({
+        schema_version: 'reindex-run.v1',
+        pid: process.pid,
+        started_at: new Date().toISOString(),
+        kbs_in_scope: ['alpha'],
+        hostname: `${os.hostname()}-some-other-host`,
+      }),
+    );
+
+    await fsp.writeFile(triggerPath, 'first');
+    const onTrigger = jest.fn().mockResolvedValue(undefined);
+    const watcher = new ReindexTriggerWatcher(triggerPath, onTrigger, 60_000);
+
+    await watcher.poll(); // baseline seed
+    const stat = await fsp.stat(triggerPath);
+    const newSec = stat.mtimeMs / 1000 + 5;
+    await fsp.utimes(triggerPath, newSec, newSec);
+    await watcher.poll();
+    await new Promise((r) => setImmediate(r));
+
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+  });
 });
