@@ -4,7 +4,7 @@ import * as yaml from 'js-yaml';
 import {
   ActiveModelResolutionError,
   resolveActiveModel,
-} from './active-model.js';
+} from './model-resolution.js';
 import {
   type DelimitedOutputFormat,
   loadManagerForModel,

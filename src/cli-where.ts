@@ -22,7 +22,7 @@ import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,
   resolveActiveModel,
-} from './active-model.js';
+} from './model-resolution.js';
 import { loadManagerForModel, loadWithJsonRetry as loadManagerWithJsonRetry } from './cli-shared.js';
 import type { ScoredDocument } from './formatter.js';
 

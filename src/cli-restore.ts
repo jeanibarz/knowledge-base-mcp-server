@@ -99,7 +99,7 @@ export function parseRestoreArgs(rest: readonly string[]): RestoreArgs {
 
 export async function restoreBackup(args: RestoreArgs): Promise<RestoreResult> {
   const { FAISS_INDEX_PATH } = await import('./config/paths.js');
-  const { modelDir } = await import('./active-model.js');
+  const { modelDir } = await import('./model-storage-layout.js');
   const { withWriteLock } = await import('./write-lock.js');
   const fromDir = path.resolve(args.fromDir);
   assertSafeRestoreSource(fromDir, FAISS_INDEX_PATH);
@@ -172,7 +172,7 @@ function assertSafeRestoreSource(fromDir: string, faissIndexPath: string): void 
 }
 
 async function assertSafeLiveDestination(modelId: string): Promise<void> {
-  const { addingSentinelPath, modelDir } = await import('./active-model.js');
+  const { addingSentinelPath, modelDir } = await import('./model-storage-layout.js');
   if (await pathExists(addingSentinelPath(modelId))) {
     throw new Error(`unsafe restore destination: model ${modelId} has an .adding sentinel`);
   }

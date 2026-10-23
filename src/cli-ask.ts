@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { FaissIndexManager } from './FaissIndexManager.js';
-import { resolveActiveModel } from './active-model.js';
+import { resolveActiveModel } from './model-resolution.js';
 import { createFileAtomically } from './file-mutation.js';
 import {
   auditEnabled,

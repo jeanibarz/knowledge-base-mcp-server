@@ -495,7 +495,7 @@ describe('RFC 014 atomic save — downgrade-hazard surfacing (filesystem-derived
     process.env.HUGGINGFACE_MODEL_NAME = 'BAAI/bge-small-en-v1.5';
     process.env.HUGGINGFACE_API_KEY = 'test-stub';
     jest.resetModules();
-    const { listRegisteredModels } = await import('./active-model.js');
+    const { listRegisteredModels } = await import('./model-resolution.js');
 
     // 1. Versioned-only — no hazard.
     const v0 = path.join(modelDir, 'index.v0');
@@ -543,7 +543,7 @@ describe('RFC 014 atomic save — downgrade-hazard surfacing (filesystem-derived
     process.env.HUGGINGFACE_MODEL_NAME = 'BAAI/bge-small-en-v1.5';
     process.env.HUGGINGFACE_API_KEY = 'test-stub';
     jest.resetModules();
-    const { listRegisteredModels } = await import('./active-model.js');
+    const { listRegisteredModels } = await import('./model-resolution.js');
 
     const models = await listRegisteredModels();
     expect(models).toHaveLength(1);

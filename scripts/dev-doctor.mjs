@@ -299,7 +299,8 @@ async function denseStep(env, mode) {
 }
 
 async function resolveDenseModelSpec() {
-  const { computeLegacyEnvModelSpec, deriveModelId } = await import('../src/active-model.ts');
+  const { computeLegacyEnvModelSpec } = await import('../src/model-resolution.ts');
+  const { deriveModelId } = await import('../src/model-id.ts');
   const spec = computeLegacyEnvModelSpec();
   return {
     modelId: deriveModelId(spec.provider, spec.modelName),

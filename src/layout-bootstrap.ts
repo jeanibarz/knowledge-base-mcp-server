@@ -2,7 +2,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as properLockfile from 'proper-lockfile';
 import { FAISS_INDEX_PATH } from './config/paths.js';
-import { writeActiveModelAtomic } from './active-model.js';
+import { writeActiveModelAtomic } from './model-storage-layout.js';
 import { pathExists } from './file-utils.js';
 import { logger } from './logger.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';

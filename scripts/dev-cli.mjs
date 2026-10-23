@@ -13,10 +13,10 @@ const {
 } = await import('../src/config.ts');
 const {
   computeLegacyEnvModelSpec,
-  parseModelId,
-  readStoredModelName,
   resolveActiveModel,
-} = await import('../src/active-model.ts');
+} = await import('../src/model-resolution.ts');
+const { readStoredModelName } = await import('../src/model-storage-layout.ts');
+const { parseModelId } = await import('../src/model-id.ts');
 const { main } = await import('../src/cli.ts');
 
 process.argv = [process.execPath, cliSourcePath, ...passthroughArgs];

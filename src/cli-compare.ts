@@ -2,7 +2,7 @@ import { FaissIndexManager } from './FaissIndexManager.js';
 import {
   ActiveModelResolutionError,
   resolveActiveModel,
-} from './active-model.js';
+} from './model-resolution.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
 
 export const COMPARE_SCHEMA_VERSION = 'kb.compare.v1' as const;

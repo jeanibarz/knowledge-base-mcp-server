@@ -1,7 +1,7 @@
 import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { ActiveModelResolutionError } from './active-model.js';
+import { ActiveModelResolutionError } from './model-resolution.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import type { FaissIndexManager } from './FaissIndexManager.js';
 import { auditEnabled, recordMutation, sha256OfFileOrNull } from './audit-log.js';

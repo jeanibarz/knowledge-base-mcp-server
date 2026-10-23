@@ -12,7 +12,7 @@ sequenceDiagram
   autonumber
   participant Op as Operator
   participant Cli as kb models
-  participant Active as active-model.ts
+  participant Active as model-resolution.ts / model-storage-layout.ts
   participant FIM as FaissIndexManager
   participant Lock as withWriteLock(modelDir)
   participant Store as $FAISS_INDEX_PATH/models/<id>
@@ -41,7 +41,7 @@ sequenceDiagram
   autonumber
   participant Op as Operator
   participant Cli as kb models set-active
-  participant Active as active-model.ts
+  participant Active as model-resolution.ts / model-storage-layout.ts
   participant Store as $FAISS_INDEX_PATH
 
   Op->>Cli: kb models set-active <model_id>
@@ -65,7 +65,7 @@ caller supplied a KB name. FAISS deletion is not supported in this server, so a
 sequenceDiagram
   autonumber
   participant Caller as CLI or MCP caller
-  participant Active as active-model.ts
+  participant Active as model-resolution.ts / model-storage-layout.ts
   participant Lock as withWriteLock(modelDir)
   participant FIM as FaissIndexManager
   participant Store as models/<active_id>
