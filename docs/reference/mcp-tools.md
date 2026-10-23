@@ -51,7 +51,8 @@ Retrieves similar chunks from the knowledge base based on a query. Optionally, i
 | `context_before` | integer | no | min 0; max 5 | Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense semantic match. Defaults to 0. |
 | `context_after` | integer | no | min 0; max 5 | Opt-in neighbor context: include up to this many following chunks from the same source around each dense semantic match. Defaults to 0. |
 | `context_window` | integer | no | min 0; max 5 | Shorthand for setting context_before and context_after to the same value. Defaults to 0. |
-| `search_mode` | enum | no | one of: `dense`, `hybrid` | Retrieval mode. "dense" (default) uses FAISS only. "hybrid" fuses FAISS top-N with per-KB BM25 top-N via Reciprocal Rank Fusion. See #206. |
+| `k` | integer | no | min 1; max 50 | Retrieval top-K. Default 10. |
+| `search_mode` | enum | no | one of: `dense`, `hybrid`, `lexical`, `auto` | Retrieval mode. "dense" (default) uses FAISS only. "hybrid" fuses FAISS top-N with per-KB BM25 top-N via Reciprocal Rank Fusion. "lexical" is BM25-only. "auto" keeps dense for prose and upgrades code/error-token queries to hybrid. See #206 + #973. |
 | `task_context` | string | no | — | Optional task context used by the relevance gate judge. Truncated to 2000 characters. |
 | `gate` | enum | no | one of: `on`, `off` | Per-call relevance gate override. Omit to use KB_RELEVANCE_GATE. |
 | `rerank` | enum | no | one of: `on`, `off` | Per-call RFC 019 reranker override for hybrid retrieval. Omit to use KB_RERANK. |

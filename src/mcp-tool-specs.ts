@@ -83,12 +83,18 @@ export const RETRIEVE_KNOWLEDGE_INPUT = {
   context_before: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense semantic match. Defaults to 0.'),
   context_after: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each dense semantic match. Defaults to 0.'),
   context_window: z.number().int().min(0).max(5).optional().describe('Shorthand for setting context_before and context_after to the same value. Defaults to 0.'),
+  // Issue #973 — bring ask_knowledge's configurable top-K to retrieve_knowledge.
+  // Default 10 preserves the previously hardcoded value for 0.x clients.
+  k: z.number().int().min(1).max(50).optional().describe('Retrieval top-K. Default 10.'),
   // #206 stage 2 — sparse+dense hybrid retrieval. Default 'dense' is
   // wire-compatible with 0.x clients: when the field is absent the
   // server runs the unmodified dense path. 'hybrid' fuses dense FAISS
   // top-N with per-KB BM25 top-N via Reciprocal Rank Fusion (c=60,
-  // Cormack 2009); see RFC 006 §4 + #206 + ADR 0006.
-  search_mode: z.enum(['dense', 'hybrid']).optional().describe('Retrieval mode. "dense" (default) uses FAISS only. "hybrid" fuses FAISS top-N with per-KB BM25 top-N via Reciprocal Rank Fusion. See #206.'),
+  // Cormack 2009); see RFC 006 §4 + #206 + ADR 0006. Issue #973 adds
+  // 'lexical' (BM25-only) and 'auto' (prose stays dense, code/error-token
+  // queries upgrade to hybrid) to match ask_knowledge; omitting the field
+  // still defaults to 'dense' so existing clients see no behavior change.
+  search_mode: z.enum(['dense', 'hybrid', 'lexical', 'auto']).optional().describe('Retrieval mode. "dense" (default) uses FAISS only. "hybrid" fuses FAISS top-N with per-KB BM25 top-N via Reciprocal Rank Fusion. "lexical" is BM25-only. "auto" keeps dense for prose and upgrades code/error-token queries to hybrid. See #206 + #973.'),
   task_context: z.string().optional().describe('Optional task context used by the relevance gate judge. Truncated to 2000 characters.'),
   gate: z.enum(['on', 'off']).optional().describe('Per-call relevance gate override. Omit to use KB_RELEVANCE_GATE.'),
   rerank: z.enum(['on', 'off']).optional().describe('Per-call RFC 019 reranker override for hybrid retrieval. Omit to use KB_RERANK.'),
