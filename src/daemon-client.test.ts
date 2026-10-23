@@ -245,6 +245,45 @@ describe('daemon client', () => {
     });
   });
 
+  it('round-trips the admission block from GET /health', async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'ok',
+        admission: {
+          in_flight: 2,
+          rejected_total: 7,
+          max_concurrency: 8,
+          queue_max: 128,
+          closed: false,
+        },
+      }));
+    }, async (url) => {
+      await expect(fetchDaemonHealth({ env: { KB_DAEMON_URL: url.href } })).resolves.toEqual({
+        status: 'ok',
+        admission: {
+          in_flight: 2,
+          rejected_total: 7,
+          max_concurrency: 8,
+          queue_max: 128,
+          closed: false,
+        },
+      });
+    });
+  });
+
+  it('tolerates an older daemon that omits the admission block', async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', pid: 4242 }));
+    }, async (url) => {
+      await expect(fetchDaemonHealth({ env: { KB_DAEMON_URL: url.href } })).resolves.toEqual({
+        status: 'ok',
+        pid: 4242,
+      });
+    });
+  });
+
   it('uses the configured health timeout independently of the request timeout', async () => {
     jest.useFakeTimers();
     try {
@@ -292,6 +331,22 @@ describe('daemon client', () => {
     }, async (url) => {
       await expect(fetchDaemonHealth({ env: { KB_DAEMON_URL: url.href } }))
         .rejects.toBeInstanceOf(DaemonProtocolError);
+    });
+  });
+
+  it('degrades a malformed admission block to absent without breaking the rest of /health', async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'ok',
+        pid: 4242,
+        admission: { in_flight: 'not-a-number' },
+      }));
+    }, async (url) => {
+      await expect(fetchDaemonHealth({ env: { KB_DAEMON_URL: url.href } })).resolves.toEqual({
+        status: 'ok',
+        pid: 4242,
+      });
     });
   });
 

@@ -1110,8 +1110,30 @@ describe('kb serve status', () => {
     }
   });
 
+  it('reports admission load on the status line', async () => {
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      admission: { maxConcurrency: 8, queueMax: 128 },
+    });
+    process.env.KB_DAEMON_URL = daemon.url.href;
+    try {
+      const result = await captureStatus([]);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain(
+        '  load:         0 in-flight, 0 rejected (cap 8, queue 128)',
+      );
+    } finally {
+      await daemon.stop();
+    }
+  });
+
   it('emits a machine-readable envelope with --json', async () => {
-    const daemon = await startDaemonServer({ port: 0, idleTimeoutMs: 0 });
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      admission: { maxConcurrency: 8, queueMax: 128 },
+    });
     process.env.KB_DAEMON_URL = daemon.url.href;
     try {
       const result = await captureStatus(['--json']);
@@ -1120,7 +1142,17 @@ describe('kb serve status', () => {
       expect(payload).toMatchObject({
         reachable: true,
         url: daemon.url.href,
-        daemon: { status: 'ok', commands: ['search', 'list', 'stats'] },
+        daemon: {
+          status: 'ok',
+          commands: ['search', 'list', 'stats'],
+          admission: {
+            in_flight: 0,
+            rejected_total: 0,
+            max_concurrency: 8,
+            queue_max: 128,
+            closed: false,
+          },
+        },
       });
     } finally {
       await daemon.stop();
