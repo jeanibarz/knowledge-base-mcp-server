@@ -178,6 +178,70 @@ describe('formatRetrievalAsMarkdown', () => {
     expect(out).not.toContain('**Open:**');
   });
 
+  it('emits no OSC-8 bytes when hyperlink is omitted or false (issue #976)', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'sample content',
+      metadata: {
+        source: '/tmp/kbs/alpha/docs/deploy.md',
+        knowledgeBase: 'alpha',
+        relativePath: 'alpha/docs/deploy.md',
+        loc: { lines: { from: 42, to: 58 } },
+        chunkIndex: 0,
+      },
+      score: 0.42,
+    } as unknown as ScoredDocument;
+
+    const withoutArg = formatRetrievalAsMarkdown([doc], false, 'vscode');
+    const withFalse = formatRetrievalAsMarkdown([doc], false, 'vscode', undefined, undefined, false);
+
+    expect(withoutArg).not.toContain('\x1b]8;;');
+    expect(withFalse).not.toContain('\x1b]8;;');
+  });
+
+  it('wraps the source path in an OSC-8 hyperlink when hyperlink is true (issue #976)', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'sample content',
+      metadata: {
+        source: '/tmp/kbs/alpha/docs/deploy.md',
+        knowledgeBase: 'alpha',
+        relativePath: 'alpha/docs/deploy.md',
+        loc: { lines: { from: 42, to: 58 } },
+        chunkIndex: 0,
+      },
+      score: 0.42,
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsMarkdown([doc], false, 'vscode', undefined, undefined, true);
+
+    const editorUri = 'vscode://file/tmp/kbs/alpha/docs/deploy.md:42:0';
+    const chunkId = 'alpha/docs/deploy.md#L42-L58';
+    expect(out).toContain(
+      `**Source:** [\x1b]8;;${editorUri}\x1b\\${chunkId}\x1b]8;;\x1b\\](kb://alpha/docs/deploy.md#L42-L58)`,
+    );
+    // The existing **Open:** line and kb:// markdown link are untouched (additive, not a replacement).
+    expect(out).toContain(`**Open:** ${editorUri}`);
+    expect(out).toContain('(kb://alpha/docs/deploy.md#L42-L58)');
+  });
+
+  it('falls back to the kb:// resource URI as the OSC-8 target when no editor URI is configured (issue #976)', () => {
+    const doc: ScoredDocument = {
+      pageContent: 'sample content',
+      metadata: {
+        source: '/tmp/kbs/alpha/docs/deploy.md',
+        knowledgeBase: 'alpha',
+        relativePath: 'alpha/docs/deploy.md',
+        loc: { lines: { from: 42, to: 58 } },
+        chunkIndex: 0,
+      },
+      score: 0.42,
+    } as unknown as ScoredDocument;
+
+    const out = formatRetrievalAsMarkdown([doc], false, 'none', undefined, undefined, true);
+
+    expect(out).toContain('\x1b]8;;kb://alpha/docs/deploy.md#L42-L58\x1b\\');
+    expect(out).not.toContain('**Open:**');
+  });
+
   it('adds an editor URI only when opted in', () => {
     const doc: ScoredDocument = {
       pageContent: 'sample content',

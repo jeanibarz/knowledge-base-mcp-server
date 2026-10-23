@@ -887,6 +887,7 @@ export async function runSearch(
       advancedRetrieval,
       highlight: buildSearchHighlightOptions(parsed, query),
       snippet: buildSearchSnippetOptions(parsed, query),
+      hyperlink: buildSearchHyperlinkFlag(parsed),
     }));
   }
 
@@ -1355,6 +1356,26 @@ function buildSearchHighlightOptions(
   return terms.length === 0 ? undefined : { terms };
 }
 
+/**
+ * Issue #976 — OSC-8 hyperlinks reuse the same `--color`/`NO_COLOR`/TTY gate
+ * as ANSI color, with no separate flag. Unlike highlighting, `--highlight`
+ * never forces this on/off: a non-default `--highlight` is a back-compat
+ * color override for query-term bolding only, not for hyperlink escapes.
+ */
+export function shouldHyperlinkSearchOutput(
+  parsed: { format: SearchFormat; color?: ColorMode; colorExplicit?: boolean },
+  env: NodeJS.ProcessEnv = process.env,
+  stdoutIsTTY: boolean = process.stdout.isTTY === true,
+): boolean {
+  if (parsed.format !== 'md') return false;
+  const flag: ColorMode | undefined = parsed.colorExplicit ? parsed.color ?? 'auto' : undefined;
+  return resolveColorEnabled({ flag, env, isTTY: stdoutIsTTY });
+}
+
+function buildSearchHyperlinkFlag(parsed: SearchArgs): boolean {
+  return shouldHyperlinkSearchOutput(parsed, process.env, process.stdout.isTTY === true);
+}
+
 function buildSearchSnippetOptions(
   parsed: Pick<SearchArgs, 'snippetLines'>,
   query: string,
@@ -1818,6 +1839,8 @@ export interface DenseSearchMarkdownOutputInput {
   advancedRetrieval?: AdvancedRetrievalMetadata | null;
   highlight?: RetrievalHighlightOptions;
   snippet?: RetrievalSnippetOptions;
+  /** Issue #976 — OSC-8 hyperlinks around markdown source paths; TTY/NO_COLOR-gated. */
+  hyperlink?: boolean;
 }
 
 export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutputInput): string {
@@ -1846,6 +1869,7 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
       KB_EDITOR_URI,
       input.highlight,
       input.snippet,
+      input.hyperlink,
     );
   } else {
     md = formatRetrievalAsMarkdown(
@@ -1854,6 +1878,7 @@ export function formatDenseSearchMarkdownOutput(input: DenseSearchMarkdownOutput
       KB_EDITOR_URI,
       input.highlight,
       input.snippet,
+      input.hyperlink,
     );
   }
   output += `${md}\n\n`;
@@ -2820,6 +2845,7 @@ async function runLexicalSearch(
         KB_EDITOR_URI,
         buildSearchHighlightOptions(parsed, query),
         buildSearchSnippetOptions(parsed, query),
+        buildSearchHyperlinkFlag(parsed),
       )}\n\n`;
     }
     const summaryLines = perKb.map((r) => {
@@ -3263,6 +3289,7 @@ async function runHybridSearch(
         KB_EDITOR_URI,
         buildSearchHighlightOptions(parsed, query),
         buildSearchSnippetOptions(parsed, query),
+        buildSearchHyperlinkFlag(parsed),
       )}\n\n`;
     }
     output += `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} with unit=${parsed.lexicalUnit} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`;
