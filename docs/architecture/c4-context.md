@@ -65,7 +65,7 @@ flowchart TB
 | Embedding provider | Converts source chunks and queries into vectors. | `src/embedding-provider.ts`. |
 | Optional LLM endpoint | Answers `kb ask`, relevance-gate judge calls, and contextual ingest prefaces when enabled. | `src/llm-client.ts`, `src/ask-core.ts`, `src/contextual-preface.ts`. |
 | `$KNOWLEDGE_BASES_ROOT_DIR` | User-owned source tree plus per-KB `.index/` sidecars. | `src/config/paths.ts`, `src/kb-fs.ts`, `src/file-ingest.ts`. |
-| `$FAISS_INDEX_PATH` | Server-owned model registry, versioned FAISS stores, cache, and index metadata. | `src/active-model.ts`, `src/faiss-store-layout.ts`, `src/query-cache.ts`. |
+| `$FAISS_INDEX_PATH` | Server-owned model registry, versioned FAISS stores, cache, and index metadata. | `src/model-resolution.ts`, `src/model-storage-layout.ts`, `src/faiss-store-layout.ts`, `src/query-cache.ts`. |
 
 ## Trust Boundaries
 

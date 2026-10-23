@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { logger } from './logger.js';
 import { KBError, type KBErrorCode } from './errors.js';
-import { ActiveModelResolutionError } from './active-model.js';
+import { ActiveModelResolutionError } from './model-resolution.js';
 import type { QueryCacheOutcome, QueryCacheTelemetry } from './query-cache.js';
 import { readKBSlowQueryMs } from './config/logging.js';
 import type { DenseDegradationReason } from './search-core.js';

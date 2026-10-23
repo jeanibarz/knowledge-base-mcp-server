@@ -22,16 +22,18 @@ import type {
   SearchResultDocument,
   SimilaritySearchTiming,
 } from './FaissIndexManager.js';
+import { parseModelId } from './model-id.js';
 import {
   ActiveModelResolutionError,
   listRegisteredModels,
+  resolveActiveModel,
+} from './model-resolution.js';
+import {
   modelDir,
-  parseModelId,
   readStoredIndexType,
   readStoredModelName,
-  resolveActiveModel,
   resolveFaissIndexBinaryPath,
-} from './active-model.js';
+} from './model-storage-layout.js';
 import { ManagerRegistry } from './manager-registry.js';
 import {
   ADD_DOCUMENT_DESCRIPTION,

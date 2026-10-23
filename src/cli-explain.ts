@@ -13,10 +13,8 @@ import { readFileSync, realpathSync } from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { FaissIndexManager, type SimilaritySearchTiming } from './FaissIndexManager.js';
-import {
-  resolveActiveModel,
-  resolveFaissIndexBinaryPath,
-} from './active-model.js';
+import { resolveActiveModel } from './model-resolution.js';
+import { resolveFaissIndexBinaryPath } from './model-storage-layout.js';
 import {
   classifyKbSearchError,
   exitCodeForFailure,

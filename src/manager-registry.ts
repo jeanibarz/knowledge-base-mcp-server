@@ -11,7 +11,8 @@
 // resolved cache so a hard failure on first init doesn't poison
 // subsequent retries (the entry is removed in the `finally`).
 
-import { parseModelId, readStoredIndexType, readStoredModelName } from './active-model.js';
+import { parseModelId } from './model-id.js';
+import { readStoredIndexType, readStoredModelName } from './model-storage-layout.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import type { EmbeddingProvider } from './model-id.js';
 

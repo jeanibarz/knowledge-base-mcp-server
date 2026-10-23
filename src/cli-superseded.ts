@@ -3,7 +3,8 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { resolveActiveModel, resolveFaissIndexBinaryPath } from './active-model.js';
+import { resolveActiveModel } from './model-resolution.js';
+import { resolveFaissIndexBinaryPath } from './model-storage-layout.js';
 import { loadManagerForModel } from './cli-shared.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { getFilesRecursively } from './file-utils.js';
