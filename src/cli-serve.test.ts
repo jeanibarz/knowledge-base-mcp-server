@@ -29,7 +29,7 @@ import { fetchDaemonHealth, runDaemonCommand, type DaemonRunResult } from './dae
 import { CorpusSizeCache, type KbStatsPayload } from './kb-stats.js';
 import type { RunSearchDeps } from './cli-search.js';
 import type { LexicalIndex } from './lexical-index.js';
-import { searchLatencyMetrics } from './metrics.js';
+import { searchLatencyMetrics } from './search-latency-metrics.js';
 
 interface RawResponse {
   statusCode: number;

@@ -10,7 +10,7 @@ import {
   type Reranker,
   type RerankableDocument,
 } from './reranker.js';
-import { rerankMetrics } from './metrics.js';
+import { rerankMetrics } from './metrics-recording.js';
 
 function doc(source: string, score: number, body = source): RerankableDocument {
   return {

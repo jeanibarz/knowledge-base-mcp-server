@@ -5,7 +5,7 @@ import { ActiveModelResolutionError } from './active-model.js';
 import type { QueryCacheOutcome, QueryCacheTelemetry } from './query-cache.js';
 import { readKBSlowQueryMs } from './config/logging.js';
 import type { DenseDegradationReason } from './search-core.js';
-import type { WriteLockResourceKind } from './metrics.js';
+import type { WriteLockResourceKind } from './metrics-recording.js';
 
 export const CANONICAL_SCHEMA_VERSION = 'kb-canonical.v1';
 
