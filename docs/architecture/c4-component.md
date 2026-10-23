@@ -161,7 +161,7 @@ flowchart TB
 
 ## Dependency Rules In Force
 
-- **No source import cycles.** Production modules should remain acyclic; keep orchestration modules at the edge.
+- **No runtime import cycles.** Type-only (`import type`) cycles are tolerated since they are erased at compile time; keep orchestration modules at the edge. Shared leaf types that both sides of a would-be cycle need live in a `*-types.ts` module (e.g. `search-types.ts`, `metrics-types.ts`, `rerank-types.ts`, `cli-doctor-types.ts`). `src/no-runtime-import-cycles.test.ts` scans production modules for regressions.
 - **Runtime orchestration points outward.** `KnowledgeBaseServer` and `cli.ts` may depend on indexing/model/filesystem helpers; those helpers should not import either orchestration surface.
 - **Non-CLI modules never import `cli-*` adapters.** Only `cli.ts` and `cli-*.ts` command modules may import a `cli-*` adapter. Shared, server, and transport modules import command-independent `*-core` modules (`search-core.ts`, `search-errors-core.ts`, `timing-core.ts`) instead. `src/non-cli-import-boundary.test.ts` scans production modules for regressions.
 - **`logger` remains a leaf.** It has no source imports and must continue writing logs away from stdout.

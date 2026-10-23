@@ -13,6 +13,7 @@ import { resolveFaissIndexBinaryPath } from './active-model.js';
 import { mapBounded, resolveFsConcurrency } from './bounded-concurrency.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import type { SearchResultDocument } from './FaissIndexManager.js';
+import type { DenseDegradationReason } from './search-types.js';
 import type {
   FreshnessScanScope,
   FreshnessScanSource,
@@ -61,7 +62,7 @@ export function formatAutoModeHeader(decision: AutoSearchModeDecision): string {
 
 // -- Dense-provider degradation ---------------------------------------------
 
-export type DenseDegradationReason = 'provider_unavailable' | 'provider_timeout';
+export type { DenseDegradationReason } from './search-types.js';
 
 export function classifyDenseDegradationReason(error: unknown): DenseDegradationReason | null {
   if (!(error instanceof KBError)) return null;

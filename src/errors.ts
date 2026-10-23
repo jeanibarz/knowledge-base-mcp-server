@@ -46,3 +46,14 @@ export class KBError extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
+
+// Issue #1006 — moved from active-model.ts so logging primitives (e.g.
+// canonical-log.ts) can depend on this leaf module instead of reaching
+// upward into the active-model domain layer. Re-exported from
+// active-model.ts for existing consumers.
+export class ActiveModelResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ActiveModelResolutionError';
+  }
+}

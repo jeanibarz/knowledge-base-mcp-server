@@ -19,6 +19,8 @@
 // from `search-core.ts`) lives in `search-latency-metrics.ts` instead — see
 // that file's header.
 
+import type { DenseDegradationReason } from './search-types.js';
+import type { WriteLockResourceKind } from './metrics-types.js';
 import {
   isLlmAnswerImpact,
   isLlmCacheOutcome,
@@ -31,6 +33,8 @@ import {
   type LlmModel,
   type LlmProvider,
 } from './llm-taxonomy.js';
+
+export type { WriteLockResourceKind } from './metrics-types.js';
 
 /**
  * Fixed log-spaced latency bucket upper bounds, in milliseconds. 10 bucket
@@ -130,7 +134,6 @@ export interface LatencyHistogramSnapshot {
 
 export type RerankSkipReason = 'disabled' | 'skip_domain' | 'no_candidates';
 export type RerankCandidateSource = 'cache_hit' | 'model_scored';
-export type WriteLockResourceKind = 'active_index' | 'model_index' | 'other';
 
 export interface RerankMetricsSnapshot {
   invocations: number;

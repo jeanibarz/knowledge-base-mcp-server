@@ -1,11 +1,10 @@
 import { createHash, randomBytes } from 'crypto';
 import { logger } from './logger.js';
-import { KBError, type KBErrorCode } from './errors.js';
-import { ActiveModelResolutionError } from './active-model.js';
+import { KBError, ActiveModelResolutionError, type KBErrorCode } from './errors.js';
 import type { QueryCacheOutcome, QueryCacheTelemetry } from './query-cache.js';
 import { readKBSlowQueryMs } from './config/logging.js';
-import type { DenseDegradationReason } from './search-core.js';
-import type { WriteLockResourceKind } from './metrics-recording.js';
+import type { DenseDegradationReason } from './search-types.js';
+import type { WriteLockResourceKind } from './metrics-types.js';
 
 export const CANONICAL_SCHEMA_VERSION = 'kb-canonical.v1';
 

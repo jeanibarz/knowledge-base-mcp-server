@@ -21,6 +21,7 @@ import {
 import { DiskTieredRerankScoreCache } from './rerank-cache-disk.js';
 import { logger } from './logger.js';
 import { rerankMetrics } from './metrics-recording.js';
+import type { RerankScoreCache } from './rerank-types.js';
 
 export {
   DEFAULT_RERANK_BATCH_SIZE,
@@ -49,10 +50,7 @@ export interface RerankableDocument extends Document {
   rerankScore?: number;
 }
 
-export interface RerankScoreCache {
-  get(modelId: string, query: string, candidateText: string): number | null;
-  set(modelId: string, query: string, candidateText: string, score: number): void;
-}
+export type { RerankScoreCache } from './rerank-types.js';
 
 export interface RerankFusedResultsInput<T extends RerankableDocument> {
   query: string;
