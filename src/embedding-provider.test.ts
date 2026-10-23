@@ -251,7 +251,7 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
     const { CircuitBrokenEmbeddings, createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
       KB_EMBEDDING_TASK_PREFIXES: undefined,
     });
-    const { ProviderCallMetrics } = await import('./metrics.js');
+    const { ProviderCallMetrics } = await import('./metrics-recording.js');
     const metrics = new ProviderCallMetrics({ now: () => 0 });
     const client = await createEmbeddingsClient({
       provider: 'ollama',
@@ -505,7 +505,7 @@ describe('TimeoutEmbeddings (issue #793 — per-call embedding deadline)', () =>
 describe('createEmbeddingsClient — provider call telemetry (issue #210)', () => {
   it('does not record telemetry when modelId is omitted', async () => {
     const { createEmbeddingsClient } = await loadFresh({ KB_FAKE_DIM: '32' });
-    const { ProviderCallMetrics } = await import('./metrics.js');
+    const { ProviderCallMetrics } = await import('./metrics-recording.js');
     const metrics = new ProviderCallMetrics({ now: () => 0 });
     const client = await createEmbeddingsClient({
       provider: 'fake',
@@ -518,7 +518,7 @@ describe('createEmbeddingsClient — provider call telemetry (issue #210)', () =
 
   it('records every embedQuery and embedDocuments call under the supplied modelId', async () => {
     const { createEmbeddingsClient } = await loadFresh({ KB_FAKE_DIM: '16' });
-    const { ProviderCallMetrics } = await import('./metrics.js');
+    const { ProviderCallMetrics } = await import('./metrics-recording.js');
     const metrics = new ProviderCallMetrics({ now: () => 0 });
     const client = await createEmbeddingsClient({
       provider: 'fake',

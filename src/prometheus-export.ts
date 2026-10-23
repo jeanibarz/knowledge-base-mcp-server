@@ -6,22 +6,22 @@ import {
 } from './provider-breaker.js';
 import {
   LATENCY_BUCKET_BOUNDS_MS,
-  LLM_MODELS,
-  LLM_PROVIDERS,
-  isLlmAnswerImpact,
-  isLlmCacheOutcome,
-  isLlmCallOperation,
   kbSearchFailureMetrics,
   type KbSearchFailureSnapshot,
   type LatencyHistogramSnapshot,
   type LlmCallAttributionSnapshot,
   type LlmCallMetricsSnapshot,
   type RerankMetricsSnapshot,
-  type SearchLatencyMetricsSnapshot,
-  type SearchLatencyMode,
-  type SearchLatencyStatus,
   type WriteLockMetricsSnapshot,
-} from './metrics.js';
+} from './metrics-recording.js';
+import {
+  LLM_MODELS,
+  LLM_PROVIDERS,
+  isLlmAnswerImpact,
+  isLlmCacheOutcome,
+  isLlmCallOperation,
+} from './llm-taxonomy.js';
+import type { SearchLatencyMetricsSnapshot, SearchLatencyMode, SearchLatencyStatus } from './search-latency-metrics.js';
 
 interface MetricSample {
   name: string;

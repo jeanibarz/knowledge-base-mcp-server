@@ -12,7 +12,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { CONTEXTUAL_DOCUMENT_TRUNCATION_CHARS } from './config/contextual-preface.js';
-import { LlmCallMetrics } from './metrics.js';
+import { LlmCallMetrics } from './metrics-recording.js';
 
 const FETCH_MOCK = jest.fn();
 

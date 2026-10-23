@@ -15,7 +15,7 @@ import {
   type RelevanceGateVerdict,
 } from './relevance-gate-schema.js';
 import { relevanceGateMetrics } from './relevance-gate-metrics.js';
-import { llmCallMetrics, type LlmCallMetrics } from './metrics.js';
+import { llmCallMetrics, type LlmCallMetrics } from './metrics-recording.js';
 import {
   excludesLlmContext,
   normalizeKbSensitivityPolicy,

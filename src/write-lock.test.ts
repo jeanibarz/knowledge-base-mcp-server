@@ -28,7 +28,7 @@ describe('withWriteLock', () => {
 
   it('acquires the lock, runs fn, releases', async () => {
     jest.resetModules();
-    const { writeLockMetrics } = await import('./metrics.js');
+    const { writeLockMetrics } = await import('./metrics-recording.js');
     const { withWriteLock, writeLockOwnerPathFor } = await import('./write-lock.js');
 
     let observed: { lockedDuringFn: boolean; ownerPid: number | null } = {

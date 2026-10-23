@@ -21,7 +21,7 @@ import {
 } from './config/provider.js';
 import { KBError } from './errors.js';
 import { logger } from './logger.js';
-import { instrumentEmbeddingsClient, type ProviderCallMetrics } from './metrics.js';
+import { instrumentEmbeddingsClient, type ProviderCallMetrics } from './metrics-recording.js';
 import type { EmbeddingProvider } from './model-id.js';
 import { makeOllamaOnFailedAttempt } from './ollama-error.js';
 import { providerBreakerRegistry, type ProviderBreakerRegistry } from './provider-breaker.js';
