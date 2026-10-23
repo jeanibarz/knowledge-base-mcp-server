@@ -313,11 +313,14 @@ export async function checkReindexRunState(): Promise<{
   const state = await readRunState();
   if (state === null) return { alive: false, state: null };
 
+  const now = new Date();
+  const localHost = os.hostname();
+
   // 1. Age bound. Catches the recycled-PID false-alive case: an unclean kill
   //    leaves the file behind and the OS later reuses the PID, so liveness
   //    lies — but no genuine reindex runs past this bound.
   const startedMs = Date.parse(state.started_at);
-  const ageMs = Number.isFinite(startedMs) ? Date.now() - startedMs : Number.POSITIVE_INFINITY;
+  const ageMs = Number.isFinite(startedMs) ? now.getTime() - startedMs : Number.POSITIVE_INFINITY;
   if (ageMs > REINDEX_RUN_STALE_MS) {
     logger.warn(
       `Issue #906: reclaiming stale reindex run-state (age ${Math.round(ageMs / 1_000)}s ` +
@@ -330,7 +333,6 @@ export async function checkReindexRunState(): Promise<{
 
   // 2. Cross-host. A PID recorded by another host is meaningless on this one;
   //    we cannot probe it, so treat the state as reclaimable and log loudly.
-  const localHost = os.hostname();
   if (state.hostname !== undefined && state.hostname !== localHost) {
     logger.warn(
       `Issue #906: reclaiming reindex run-state from a different host ` +
@@ -342,10 +344,31 @@ export async function checkReindexRunState(): Promise<{
   }
 
   // 3. Same host (or legacy no-host): fall back to PID liveness.
-  if (isPidAlive(state.pid)) return { alive: true, state };
+  if (isRunStateActiveSync(state, now, localHost)) return { alive: true, state };
 
   await reclaimRunState(state, 'dead-pid');
   return { alive: false, state: null };
+}
+
+/**
+ * Issue #992 — pure, synchronous, side-effect-free liveness check sharing the
+ * three-step logic (age bound, cross-host, PID liveness) `checkReindexRunState`
+ * applies, so callers that cannot do async file I/O or reclaim side effects
+ * (the trigger watcher's synchronous poll path) still get the full #906
+ * hardening instead of a bare `isPidAlive` check. Does not read or delete
+ * the run-state file, and does not log; callers own both the read and any
+ * reclaim-on-false behavior.
+ */
+export function isRunStateActiveSync(
+  state: RunStateFile,
+  now: Date,
+  localHost: string,
+): boolean {
+  const startedMs = Date.parse(state.started_at);
+  const ageMs = Number.isFinite(startedMs) ? now.getTime() - startedMs : Number.POSITIVE_INFINITY;
+  if (ageMs > REINDEX_RUN_STALE_MS) return false;
+  if (state.hostname !== undefined && state.hostname !== localHost) return false;
+  return isPidAlive(state.pid);
 }
 
 /**
