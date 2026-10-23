@@ -34,7 +34,7 @@ import {
   openMetricsFamilyName,
   openMetricsReference,
 } from './prometheus-export.js';
-import { searchLatencyMetrics, type SearchLatencyMode } from './metrics.js';
+import { searchLatencyMetrics, type SearchLatencyMode } from './search-latency-metrics.js';
 import { searchStageDurationsFromTiming } from './timing-core.js';
 import {
   computeKbStats,

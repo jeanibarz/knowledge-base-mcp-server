@@ -40,7 +40,6 @@ import {
   providerCallMetrics,
   quantileFromBuckets,
   rerankMetrics,
-  searchLatencyMetrics,
   writeLockMetrics,
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
@@ -48,11 +47,14 @@ import {
   type LlmCallMetricsSnapshot,
   type RerankMetrics,
   type RerankMetricsSnapshot,
-  type SearchLatencyMetrics,
-  type SearchLatencyMetricsSnapshot,
   type WriteLockMetrics,
   type WriteLockMetricsSnapshot,
-} from './metrics.js';
+} from './metrics-recording.js';
+import {
+  searchLatencyMetrics,
+  type SearchLatencyMetrics,
+  type SearchLatencyMetricsSnapshot,
+} from './search-latency-metrics.js';
 import { countIngestQuarantine } from './ingest-quarantine.js';
 import {
   providerBreakerRegistry,

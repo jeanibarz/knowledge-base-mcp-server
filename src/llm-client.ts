@@ -1,10 +1,7 @@
 import { callFakeChatCompletion, isFakeLlmEnabled } from './llm-fake-stub.js';
 import { resolveLlmProvider, type LlmProviderKind } from './config/llm-provider.js';
-import {
-  llmCallMetrics,
-  normalizeLlmProvider,
-  type LlmCallOperation,
-} from './metrics.js';
+import { llmCallMetrics } from './metrics-recording.js';
+import { normalizeLlmProvider, type LlmCallOperation } from './llm-taxonomy.js';
 import { providerBreakerRegistry } from './provider-breaker.js';
 
 export interface LlmChatMessage {

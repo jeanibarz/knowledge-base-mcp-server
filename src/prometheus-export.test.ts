@@ -3,7 +3,7 @@ import type { KbStatsPayload } from './kb-stats.js';
 import {
   bucketIndexForLatency,
   LATENCY_BUCKET_BOUNDS_MS,
-} from './metrics.js';
+} from './metrics-recording.js';
 import {
   formatKbStatsOpenMetrics,
   OPEN_METRICS_REFERENCE,

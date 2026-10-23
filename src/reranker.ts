@@ -20,7 +20,7 @@ import {
 } from './config/reranker.js';
 import { DiskTieredRerankScoreCache } from './rerank-cache-disk.js';
 import { logger } from './logger.js';
-import { rerankMetrics } from './metrics.js';
+import { rerankMetrics } from './metrics-recording.js';
 
 export {
   DEFAULT_RERANK_BATCH_SIZE,
