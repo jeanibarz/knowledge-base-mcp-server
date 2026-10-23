@@ -19,6 +19,14 @@ export interface DaemonPrewarmHealth {
   updated_at?: string;
 }
 
+export interface DaemonAdmissionHealth {
+  in_flight: number;
+  rejected_total: number;
+  max_concurrency: number;
+  queue_max: number;
+  closed: boolean;
+}
+
 /**
  * Lifecycle snapshot returned by the daemon's `GET /health` endpoint and
  * surfaced verbatim by `kb serve status --json`. Every field beyond `status`
@@ -34,6 +42,7 @@ export interface DaemonHealth {
   commands?: string[];
   uptime_ms?: number;
   prewarm?: DaemonPrewarmHealth;
+  admission?: DaemonAdmissionHealth;
 }
 
 export interface DaemonEndpoint {
@@ -352,6 +361,8 @@ function parseDaemonHealth(payload: unknown): DaemonHealth {
   if (typeof obj.uptime_ms === 'number') health.uptime_ms = obj.uptime_ms;
   const prewarm = parseDaemonPrewarmHealth(obj.prewarm);
   if (prewarm !== null) health.prewarm = prewarm;
+  const admission = parseDaemonAdmissionHealth(obj.admission);
+  if (admission !== null) health.admission = admission;
   return health;
 }
 
@@ -375,6 +386,23 @@ function parseDaemonPrewarmHealth(payload: unknown): DaemonPrewarmHealth | null 
   if (typeof obj.error === 'string') out.error = obj.error;
   if (typeof obj.updated_at === 'string') out.updated_at = obj.updated_at;
   return out;
+}
+
+function parseDaemonAdmissionHealth(payload: unknown): DaemonAdmissionHealth | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const obj = payload as Record<string, unknown>;
+  if (typeof obj.in_flight !== 'number') return null;
+  if (typeof obj.rejected_total !== 'number') return null;
+  if (typeof obj.max_concurrency !== 'number') return null;
+  if (typeof obj.queue_max !== 'number') return null;
+  if (typeof obj.closed !== 'boolean') return null;
+  return {
+    in_flight: obj.in_flight,
+    rejected_total: obj.rejected_total,
+    max_concurrency: obj.max_concurrency,
+    queue_max: obj.queue_max,
+    closed: obj.closed,
+  };
 }
 
 async function runDaemonCommandAfterAutostart(

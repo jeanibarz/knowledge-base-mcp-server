@@ -16,6 +16,7 @@ import {
   daemonUrlFromEnv,
   assertDaemonSocketPath,
   tryFetchDaemonHealth,
+  type DaemonAdmissionHealth,
   type DaemonCommand,
   type DaemonHealth,
   type DaemonOwnership,
@@ -359,7 +360,15 @@ function formatServeStatus(health: DaemonHealth, queriedUrl: URL): string {
   if (health.prewarm !== undefined) {
     lines.push(`  prewarm:      ${formatPrewarmStatus(health.prewarm)}`);
   }
+  if (health.admission !== undefined) {
+    lines.push(`  load:         ${formatAdmissionLoad(health.admission)}`);
+  }
   return `${lines.join('\n')}\n`;
+}
+
+function formatAdmissionLoad(admission: DaemonAdmissionHealth): string {
+  const base = `${admission.in_flight} in-flight, ${admission.rejected_total} rejected (cap ${admission.max_concurrency}, queue ${admission.queue_max})`;
+  return admission.closed ? `${base} (closed)` : base;
 }
 
 function formatPrewarmStatus(prewarm: DaemonPrewarmHealth): string {
@@ -402,9 +411,8 @@ export async function startDaemonServer(
     prewarmHealth = await runDaemonPrewarm(handlers);
   }
   const baseMetricsHandler = options.metricsHandler ?? (() => defaultMetricsHandler(handlers));
-  const admission = new DaemonAdmissionGate(
-    options.admission ?? resolveDaemonAdmissionConfig(),
-  );
+  const admissionConfig = options.admission ?? resolveDaemonAdmissionConfig();
+  const admission = new DaemonAdmissionGate(admissionConfig);
   // Always surface the daemon's admission gauge/counter on /metrics, even
   // when a custom metrics body is supplied, by splicing the lines in ahead
   // of the OpenMetrics `# EOF` terminator.
@@ -428,6 +436,13 @@ export async function startDaemonServer(
     commands: [...DAEMON_COMMANDS],
     uptime_ms: Date.now() - startedAt,
     prewarm: prewarmHealth,
+    admission: {
+      in_flight: admission.inFlight,
+      rejected_total: admission.rejectedTotal,
+      max_concurrency: admissionConfig.maxConcurrency,
+      queue_max: admissionConfig.queueMax,
+      closed: admission.isClosed,
+    },
   });
 
   const server = http.createServer((req, res) => {
