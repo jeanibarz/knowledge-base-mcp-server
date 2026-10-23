@@ -14,7 +14,7 @@ import type { RelevanceGateConfig } from './config/relevance-gate.js';
 import { chunkIdFromMetadata } from './rrf.js';
 import { RelevanceGateMetrics, relevanceGateMetrics } from './relevance-gate-metrics.js';
 import type { RelevanceGateVerdict } from './relevance-gate-schema.js';
-import { LlmCallMetrics } from './metrics.js';
+import { LlmCallMetrics } from './metrics-recording.js';
 
 jest.mock('fs/promises', () => {
   const actual = jest.requireActual<typeof import('fs/promises')>('fs/promises');

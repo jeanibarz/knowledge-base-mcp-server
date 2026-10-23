@@ -8,7 +8,7 @@ import {
   parseRetryAfterMs,
   probeLlmEndpoint,
 } from './llm-client.js';
-import { llmCallMetrics } from './metrics.js';
+import { llmCallMetrics } from './metrics-recording.js';
 import { providerBreakerRegistry } from './provider-breaker.js';
 
 describe('llm-client', () => {

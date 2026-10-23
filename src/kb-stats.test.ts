@@ -420,7 +420,7 @@ describe('computeKbStats', () => {
         KNOWLEDGE_BASES_ROOT_DIR: tempDir,
         FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
       });
-      const { ProviderCallMetrics } = await import('./metrics.js');
+      const { ProviderCallMetrics } = await import('./metrics-recording.js');
       const metrics = new ProviderCallMetrics({ now: () => 1_700_000_000_000 });
 
       const empty = await computeKbStats(makeManager({}) as any, {
@@ -460,7 +460,7 @@ describe('computeKbStats', () => {
         KNOWLEDGE_BASES_ROOT_DIR: tempDir,
         FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
       });
-      const { LlmCallMetrics } = await import('./metrics.js');
+      const { LlmCallMetrics } = await import('./metrics-recording.js');
       const llmMetrics = new LlmCallMetrics({ now: () => 1_700_000_000_000 });
 
       const empty = await computeKbStats(makeManager({}) as any, {
@@ -506,7 +506,7 @@ describe('computeKbStats', () => {
         KNOWLEDGE_BASES_ROOT_DIR: tempDir,
         FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
       });
-      const { WriteLockMetrics } = await import('./metrics.js');
+      const { WriteLockMetrics } = await import('./metrics-recording.js');
       const writeLockMetrics = new WriteLockMetrics({ now: () => 1_700_000_000_000 });
 
       const empty = await computeKbStats(makeManager({}) as any, {
@@ -548,7 +548,7 @@ describe('computeKbStats', () => {
         FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
         KB_FLAT_SEARCH_P95_ADVISORY_MS: '50',
       });
-      const { SearchLatencyMetrics } = await import('./metrics.js');
+      const { SearchLatencyMetrics } = await import('./search-latency-metrics.js');
       const searchMetrics = new SearchLatencyMetrics({ now: () => 1_700_000_000_000 });
       searchMetrics.record({
         mode: 'dense',
@@ -609,7 +609,7 @@ describe('computeKbStats', () => {
         FAISS_INDEX_PATH: path.join(tempDir, '.faiss'),
         KB_FLAT_SEARCH_P95_ADVISORY_MS: '50',
       });
-      const { SearchLatencyMetrics } = await import('./metrics.js');
+      const { SearchLatencyMetrics } = await import('./search-latency-metrics.js');
       const emptyMetrics = new SearchLatencyMetrics({ now: () => 1 });
 
       const missing = await computeKbStats(makeManager({}) as any, {

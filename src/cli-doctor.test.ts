@@ -2835,7 +2835,7 @@ describe('kb doctor', () => {
           HUGGINGFACE_MODEL_NAME: MODEL_NAME,
           HUGGINGFACE_API_KEY: 'test-key',
         });
-        const { ProviderCallMetrics } = await import('./metrics.js');
+        const { ProviderCallMetrics } = await import('./metrics-recording.js');
         const report = await buildDoctorReport({
           backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
           packageRoot: tempDir,
@@ -2868,7 +2868,7 @@ describe('kb doctor', () => {
           HUGGINGFACE_MODEL_NAME: MODEL_NAME,
           HUGGINGFACE_API_KEY: 'test-key',
         });
-        const { ProviderCallMetrics } = await import('./metrics.js');
+        const { ProviderCallMetrics } = await import('./metrics-recording.js');
         const metrics = new ProviderCallMetrics({ now: () => 1_700_000_000_000 });
         for (let index = 0; index < 100; index += 1) {
           metrics.record('huggingface__bge', { latencyMs: index, ok: true });
@@ -2908,7 +2908,7 @@ describe('kb doctor', () => {
           HUGGINGFACE_MODEL_NAME: MODEL_NAME,
           HUGGINGFACE_API_KEY: 'test-key',
         });
-        const { ProviderCallMetrics } = await import('./metrics.js');
+        const { ProviderCallMetrics } = await import('./metrics-recording.js');
         const metrics = new ProviderCallMetrics({ now: () => 1_700_000_000_000 });
         // 8 errors / 10 calls — well above the 5% threshold.
         for (let index = 0; index < 2; index += 1) {
@@ -2952,7 +2952,7 @@ describe('kb doctor', () => {
           HUGGINGFACE_MODEL_NAME: MODEL_NAME,
           HUGGINGFACE_API_KEY: 'test-key',
         });
-        const { LlmCallMetrics } = await import('./metrics.js');
+        const { LlmCallMetrics } = await import('./metrics-recording.js');
         const llmMetrics = new LlmCallMetrics({ now: () => 1_700_000_000_000 });
         llmMetrics.record('ask', {
           latencyMs: 12,
@@ -3094,7 +3094,7 @@ describe('kb doctor', () => {
           HUGGINGFACE_API_KEY: 'test-key',
           KB_FLAT_SEARCH_P95_ADVISORY_MS: '50',
         });
-        const { SearchLatencyMetrics } = await import('./metrics.js');
+        const { SearchLatencyMetrics } = await import('./search-latency-metrics.js');
         const searchMetrics = new SearchLatencyMetrics({ now: () => 1_700_000_000_000 });
         searchMetrics.record({
           mode: 'dense',
@@ -3212,7 +3212,7 @@ describe('kb doctor', () => {
           HUGGINGFACE_MODEL_NAME: MODEL_NAME,
           HUGGINGFACE_API_KEY: 'test-key',
         });
-        const { SearchLatencyMetrics } = await import('./metrics.js');
+        const { SearchLatencyMetrics } = await import('./search-latency-metrics.js');
 
         const report = await buildDoctorReport({
           backendHealthCheck: async () => ({ healthy: true, detail: 'ok' }),
@@ -3245,7 +3245,7 @@ describe('kb doctor', () => {
           HUGGINGFACE_API_KEY: 'test-key',
           KB_FLAT_SEARCH_P95_ADVISORY_MS: '50',
         });
-        const { SearchLatencyMetrics } = await import('./metrics.js');
+        const { SearchLatencyMetrics } = await import('./search-latency-metrics.js');
         const searchMetrics = new SearchLatencyMetrics({ now: () => 1_700_000_000_000 });
         searchMetrics.record({
           mode: 'dense',

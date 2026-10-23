@@ -1961,7 +1961,7 @@ describe('KnowledgeBaseServer handlers', () => {
     updateIndexMock.mockResolvedValue(undefined);
 
     const server = await freshServer();
-    const { searchLatencyMetrics } = await import('./metrics.js');
+    const { searchLatencyMetrics } = await import('./search-latency-metrics.js');
     searchLatencyMetrics.reset();
     const { KBError } = await import('./errors.js');
     similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_TIMEOUT', 'embedding provider timed out'));
@@ -1990,7 +1990,7 @@ describe('KnowledgeBaseServer handlers', () => {
     updateIndexMock.mockResolvedValue(undefined);
 
     const server = await freshServer();
-    const { searchLatencyMetrics } = await import('./metrics.js');
+    const { searchLatencyMetrics } = await import('./search-latency-metrics.js');
     searchLatencyMetrics.reset();
     const { KBError } = await import('./errors.js');
     similaritySearchMock.mockRejectedValue(new KBError('PROVIDER_UNAVAILABLE', 'embedding provider unavailable'));

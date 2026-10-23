@@ -128,7 +128,7 @@ import {
   type CanonicalLogInput,
 } from './canonical-log.js';
 import { formatKbStatsOpenMetrics } from './prometheus-export.js';
-import { searchLatencyMetrics } from './metrics.js';
+import { searchLatencyMetrics } from './search-latency-metrics.js';
 import {
   searchStageDurationsFromTiming,
   type TimingPayload,

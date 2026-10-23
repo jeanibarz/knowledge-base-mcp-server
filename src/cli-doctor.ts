@@ -74,13 +74,12 @@ import {
   llmCallMetrics,
   providerCallMetrics,
   quantileFromBuckets,
-  searchLatencyMetrics,
   type LlmCallMetrics,
   type LlmCallMetricsSnapshot,
   type ProviderCallMetrics,
   type ProviderCallSnapshot,
-  type SearchLatencyMetrics,
-} from './metrics.js';
+} from './metrics-recording.js';
+import { searchLatencyMetrics, type SearchLatencyMetrics } from './search-latency-metrics.js';
 import {
   parseProviderCircuitKey,
   providerBreakerRegistry,

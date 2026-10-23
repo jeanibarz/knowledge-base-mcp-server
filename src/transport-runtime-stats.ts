@@ -1,8 +1,12 @@
-import type { LatencyHistogramSnapshot } from './metrics.js';
+import type { LatencyHistogramSnapshot, ResponseStatusBucket } from './metrics-recording.js';
+
+// Re-exported for backward compatibility: callers (e.g. `base-http-host.ts`)
+// import `ResponseStatusBucket` from this module. Issue #1007 moved the
+// type's definition into `metrics-recording.ts` to break a two-way
+// type-only import cycle between this file and the old `metrics.ts`.
+export type { ResponseStatusBucket };
 
 export type RemoteTransportKind = 'http' | 'sse';
-
-export type ResponseStatusBucket = '1xx' | '2xx' | '3xx' | '4xx' | '5xx';
 
 export interface TransportRuntimeErrorSnapshot {
   at: string;
