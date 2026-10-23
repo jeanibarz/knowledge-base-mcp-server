@@ -50,7 +50,7 @@ import { resolveLlmProvider } from './config/llm-provider.js';
 import { KBError } from './errors.js';
 import { callChatCompletion, LlmClientError } from './llm-client.js';
 import { logger } from './logger.js';
-import { llmCallMetrics, type LlmCallMetrics } from './metrics.js';
+import { llmCallMetrics, type LlmCallMetrics } from './metrics-recording.js';
 import { retrievalViewText } from './retrieval-views.js';
 import { excludesLlmContext, readLlmContextPolicy } from './sensitivity-policy.js';
 import { withSidecarLock } from './write-lock.js';

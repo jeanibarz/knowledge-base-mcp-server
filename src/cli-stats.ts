@@ -19,7 +19,7 @@ import {
   type KbStatsContextualPrefaceBlock,
   type KbStatsPayload,
 } from './kb-stats.js';
-import { quantileFromBuckets } from './metrics.js';
+import { quantileFromBuckets } from './metrics-recording.js';
 import { formatKbStatsOpenMetrics } from './prometheus-export.js';
 import { readBuildInfo, type BuildInfo } from './build-info.js';
 

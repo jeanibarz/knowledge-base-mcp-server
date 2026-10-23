@@ -1,5 +1,5 @@
-// metrics.ts — issue #210, runtime provider-call telemetry surfaced in
-// `kb_stats` and `kb doctor`.
+// metrics-recording.ts — issue #210/#1007, runtime provider-call telemetry
+// surfaced in `kb_stats` and `kb doctor`.
 //
 // Process-lifetime, in-memory only. No on-disk state, no network export.
 // One record per `model_id` (the active model id from `model-id.ts`); the
@@ -7,11 +7,32 @@
 // record one bucket update per `embedQuery`/`embedDocuments` call, never
 // per-query labels. RFC 008 §6.8 capped `/health` at `{status:"ok"}`, so
 // runtime histograms live on the existing `kb_stats` MCP tool surface.
+//
+// Issue #1007 split metrics.ts by subsystem. This module holds the
+// recording primitives (histogram math, the metric classes, their
+// process-wide singletons, and the embeddings instrumentation helper) that
+// do NOT depend on `search-core.ts`. That independence is load-bearing: it
+// is what lets `canonical-log.ts` import `WriteLockResourceKind` from here
+// without recreating the `metrics.ts > search-core.ts > active-model.ts >
+// ... > canonical-log.ts > metrics.ts` cycle that existed before the split.
+// Search-latency recording (which genuinely needs `DenseDegradationReason`
+// from `search-core.ts`) lives in `search-latency-metrics.ts` instead — see
+// that file's header.
 
-import type { SearchLatencyStage } from './timing-core.js';
 import type { DenseDegradationReason } from './search-types.js';
-import type { ResponseStatusBucket } from './transport-runtime-stats.js';
 import type { WriteLockResourceKind } from './metrics-types.js';
+import {
+  isLlmAnswerImpact,
+  isLlmCacheOutcome,
+  isLlmCallOperation,
+  normalizeLlmModel,
+  normalizeLlmProvider,
+  type LlmAnswerImpact,
+  type LlmCacheOutcome,
+  type LlmCallOperation,
+  type LlmModel,
+  type LlmProvider,
+} from './llm-taxonomy.js';
 
 export type { WriteLockResourceKind } from './metrics-types.js';
 
@@ -41,101 +62,6 @@ export interface ProviderCallSnapshot {
   tokens_in: number | null;
   latency_ms: { p50: number; p95: number; p99: number };
   since_started_at: string;
-}
-
-/**
- * Fixed operation labels for chat-completion telemetry. Keep this enum small:
- * prompt text, KB names, model strings, and request ids must never become
- * metric labels.
- */
-export type LlmCallOperation = 'ask' | 'gate' | 'preface';
-
-export const LLM_CALL_OPERATIONS: readonly LlmCallOperation[] = ['ask', 'gate', 'preface'];
-
-export function isLlmCallOperation(value: string): value is LlmCallOperation {
-  return (LLM_CALL_OPERATIONS as readonly string[]).includes(value);
-}
-
-/**
- * Bounded provider labels for chat-completion telemetry. Unknown providers are
- * deliberately collapsed so a future configuration value cannot create an
- * unbounded metric label set.
- */
-export type LlmProvider = 'local' | 'openrouter' | 'fake' | 'unknown';
-
-export const LLM_PROVIDERS: readonly LlmProvider[] = ['local', 'openrouter', 'fake', 'unknown'];
-
-/** Coarse model families used for telemetry; raw model strings never escape this boundary. */
-export type LlmModel =
-  | 'local'
-  | 'fake'
-  | 'deepseek'
-  | 'qwen'
-  | 'llama'
-  | 'gpt'
-  | 'claude'
-  | 'gemini'
-  | 'mistral'
-  | 'other'
-  | 'unknown';
-
-export const LLM_MODELS: readonly LlmModel[] = [
-  'local',
-  'fake',
-  'deepseek',
-  'qwen',
-  'llama',
-  'gpt',
-  'claude',
-  'gemini',
-  'mistral',
-  'other',
-  'unknown',
-];
-
-export type LlmCacheOutcome = 'hit' | 'miss' | 'not_applicable';
-export type LlmAnswerImpact = 'used' | 'not_used' | 'unknown';
-
-export const LLM_CACHE_OUTCOMES: readonly LlmCacheOutcome[] = ['hit', 'miss', 'not_applicable'];
-export const LLM_ANSWER_IMPACTS: readonly LlmAnswerImpact[] = ['used', 'not_used', 'unknown'];
-
-export function isLlmCacheOutcome(value: string): value is LlmCacheOutcome {
-  return (LLM_CACHE_OUTCOMES as readonly string[]).includes(value);
-}
-
-export function isLlmAnswerImpact(value: string): value is LlmAnswerImpact {
-  return (LLM_ANSWER_IMPACTS as readonly string[]).includes(value);
-}
-
-export function normalizeLlmProvider(value: string | null | undefined): LlmProvider {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === 'local') return 'local';
-  if (normalized === 'openrouter') return 'openrouter';
-  if (normalized === 'fake') return 'fake';
-  return 'unknown';
-}
-
-/**
- * Map a configured or provider-returned model string to a finite family. The
- * original string is intentionally not retained in telemetry.
- */
-export function normalizeLlmModel(
-  value: string | null | undefined,
-  provider?: LlmProvider | string | null,
-): LlmModel {
-  const normalizedProvider = normalizeLlmProvider(provider);
-  if (normalizedProvider === 'fake') return 'fake';
-  const model = value?.trim().toLowerCase() ?? '';
-  if (model === '') return normalizedProvider === 'local' ? 'local' : 'unknown';
-  if (model.includes('deepseek')) return 'deepseek';
-  if (model.includes('qwen')) return 'qwen';
-  if (model.includes('llama')) return 'llama';
-  if (/\b(?:gpt|o[1-4](?:-mini|-preview)?)\b/.test(model)) return 'gpt';
-  if (model.includes('claude') || model.includes('anthropic')) return 'claude';
-  if (model.includes('gemini') || model.includes('google')) return 'gemini';
-  if (model.includes('mistral') || model.includes('mixtral')) return 'mistral';
-  if (model === 'local' || model === 'local-model' || model.startsWith('local-')) return 'local';
-  return 'other';
 }
 
 export interface LlmCallAttributionSnapshot {
@@ -186,7 +112,13 @@ interface MetricsState {
   startedAtMs: number;
 }
 
-interface HistogramState {
+/**
+ * Shared histogram accumulator. Exported so `search-latency-metrics.ts`
+ * (the one subsystem that still has to depend on `search-core.ts`, and
+ * therefore cannot live in this module) can reuse the same bucket math
+ * instead of duplicating it.
+ */
+export interface HistogramState {
   buckets: number[];
   count: number;
   sumMs: number;
@@ -198,25 +130,6 @@ export interface LatencyHistogramSnapshot {
   count: number;
   sum_ms: number;
   since_started_at: string;
-}
-
-export type SearchLatencyMode = 'dense' | 'lexical' | 'hybrid' | 'auto' | 'unknown';
-export type SearchLatencyStatus = 'success' | 'error';
-
-export interface SearchLatencyRecord {
-  mode: SearchLatencyMode;
-  status: SearchLatencyStatus;
-  totalMs: number;
-  stageDurationsMs?: Partial<Record<SearchLatencyStage, number>>;
-}
-
-export interface SearchLatencyMetricsSnapshot {
-  requests: Partial<Record<SearchLatencyMode, Partial<Record<SearchLatencyStatus, LatencyHistogramSnapshot>>>>;
-  stages: Partial<Record<
-    SearchLatencyMode,
-    Partial<Record<SearchLatencyStage, Partial<Record<SearchLatencyStatus, LatencyHistogramSnapshot>>>>
-  >>;
-  degraded: Partial<Record<SearchLatencyMode, Partial<Record<DenseDegradationReason, number>>>>;
 }
 
 export type RerankSkipReason = 'disabled' | 'skip_domain' | 'no_candidates';
@@ -233,6 +146,15 @@ export interface WriteLockMetricsSnapshot {
   wait: Partial<Record<WriteLockResourceKind, LatencyHistogramSnapshot>>;
   hold: Partial<Record<WriteLockResourceKind, LatencyHistogramSnapshot>>;
 }
+
+/**
+ * Bounded response-status-class label shared with `transport-runtime-stats.ts`
+ * (which re-exports this type for backward compatibility — see that file).
+ * Defined here rather than there so this module never has to import from
+ * `transport-runtime-stats.ts`: that former two-way type-only import was
+ * itself a circular dependency (issue #1007 point 4).
+ */
+export type ResponseStatusBucket = '1xx' | '2xx' | '3xx' | '4xx' | '5xx';
 
 /**
  * Issue #892 — per-request latency histogram for the remote HTTP/SSE
@@ -258,7 +180,7 @@ function emptyState(now: number): MetricsState {
   };
 }
 
-function emptyHistogramState(now: number): HistogramState {
+export function emptyHistogramState(now: number): HistogramState {
   return {
     buckets: new Array<number>(LATENCY_BUCKET_BOUNDS_MS.length + 1).fill(0),
     count: 0,
@@ -267,14 +189,14 @@ function emptyHistogramState(now: number): HistogramState {
   };
 }
 
-function recordHistogramSample(state: HistogramState, latencyMs: number): void {
+export function recordHistogramSample(state: HistogramState, latencyMs: number): void {
   const safe = !Number.isFinite(latencyMs) || latencyMs < 0 ? 0 : latencyMs;
   state.count += 1;
   state.sumMs += safe;
   state.buckets[bucketIndexForLatency(safe)] += 1;
 }
 
-function snapshotHistogram(state: HistogramState): LatencyHistogramSnapshot {
+export function snapshotHistogram(state: HistogramState): LatencyHistogramSnapshot {
   return {
     buckets: [...state.buckets],
     count: state.count,
@@ -610,94 +532,6 @@ export class LlmCallMetrics {
 }
 
 /**
- * Process-lifetime search request latency registry for daemon-scrapeable
- * search paths. Labels are intentionally bounded to mode/status/stage:
- * no query text, KB name, path, request id, or error message is recorded.
- */
-export class SearchLatencyMetrics {
-  private readonly requestStates = new Map<string, HistogramState>();
-  private readonly stageStates = new Map<string, HistogramState>();
-  private readonly degradedCounts = new Map<string, number>();
-  private readonly now: () => number;
-
-  constructor(options: { now?: () => number } = {}) {
-    this.now = options.now ?? Date.now;
-  }
-
-  record(sample: SearchLatencyRecord): void {
-    const requestState = this.getRequestState(sample.mode, sample.status);
-    recordHistogramSample(requestState, sample.totalMs);
-
-    for (const [stage, value] of Object.entries(sample.stageDurationsMs ?? {}) as Array<[SearchLatencyStage, number]>) {
-      if (typeof value !== 'number') continue;
-      const stageState = this.getStageState(sample.mode, stage, sample.status);
-      recordHistogramSample(stageState, value);
-    }
-  }
-
-  recordDegraded(mode: SearchLatencyMode, reason: DenseDegradationReason): void {
-    const key = `${mode}|${reason}`;
-    this.degradedCounts.set(key, (this.degradedCounts.get(key) ?? 0) + 1);
-  }
-
-  snapshot(): SearchLatencyMetricsSnapshot {
-    const requests: SearchLatencyMetricsSnapshot['requests'] = {};
-    for (const [key, state] of this.requestStates.entries()) {
-      const [mode, status] = key.split('|') as [SearchLatencyMode, SearchLatencyStatus];
-      requests[mode] ??= {};
-      requests[mode]![status] = snapshotHistogram(state);
-    }
-
-    const stages: SearchLatencyMetricsSnapshot['stages'] = {};
-    for (const [key, state] of this.stageStates.entries()) {
-      const [mode, stage, status] = key.split('|') as [SearchLatencyMode, SearchLatencyStage, SearchLatencyStatus];
-      stages[mode] ??= {};
-      stages[mode]![stage] ??= {};
-      stages[mode]![stage]![status] = snapshotHistogram(state);
-    }
-
-    const degraded: SearchLatencyMetricsSnapshot['degraded'] = {};
-    for (const [key, count] of this.degradedCounts.entries()) {
-      const [mode, reason] = key.split('|') as [SearchLatencyMode, DenseDegradationReason];
-      degraded[mode] ??= {};
-      degraded[mode]![reason] = count;
-    }
-
-    return { requests, stages, degraded };
-  }
-
-  reset(): void {
-    this.requestStates.clear();
-    this.stageStates.clear();
-    this.degradedCounts.clear();
-  }
-
-  private getRequestState(mode: SearchLatencyMode, status: SearchLatencyStatus): HistogramState {
-    const key = `${mode}|${status}`;
-    let state = this.requestStates.get(key);
-    if (state === undefined) {
-      state = emptyHistogramState(this.now());
-      this.requestStates.set(key, state);
-    }
-    return state;
-  }
-
-  private getStageState(
-    mode: SearchLatencyMode,
-    stage: SearchLatencyStage,
-    status: SearchLatencyStatus,
-  ): HistogramState {
-    const key = `${mode}|${stage}|${status}`;
-    let state = this.stageStates.get(key);
-    if (state === undefined) {
-      state = emptyHistogramState(this.now());
-      this.stageStates.set(key, state);
-    }
-    return state;
-  }
-}
-
-/**
  * Process-lifetime reranker-stage telemetry. Labels are intentionally bounded:
  * skip reason and candidate/latency source are fixed enums, never query text,
  * KB name, path, model id, or error message.
@@ -922,7 +756,7 @@ function mapCounts<T extends string>(counts: Map<T, number>): Partial<Record<T, 
  * floating-point precision overstates accuracy; one decimal in
  * milliseconds is plenty for an operator-facing p95.
  */
-function roundLatency(latencyMs: number): number {
+export function roundLatency(latencyMs: number): number {
   return Math.round(latencyMs * 10) / 10;
 }
 
@@ -933,8 +767,6 @@ function roundLatency(latencyMs: number): number {
 export const providerCallMetrics = new ProviderCallMetrics();
 
 export const llmCallMetrics = new LlmCallMetrics();
-
-export const searchLatencyMetrics = new SearchLatencyMetrics();
 
 export const rerankMetrics = new RerankMetrics();
 

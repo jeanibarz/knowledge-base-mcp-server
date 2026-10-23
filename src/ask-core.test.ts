@@ -12,7 +12,7 @@ import {
   type RunAskCoreDeps,
 } from './ask-core.js';
 import { AnswerCache } from './ask-answer-cache.js';
-import { LlmCallMetrics } from './metrics.js';
+import { LlmCallMetrics } from './metrics-recording.js';
 
 interface ManagerResult {
   pageContent: string;

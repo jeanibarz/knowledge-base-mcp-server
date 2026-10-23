@@ -56,7 +56,7 @@ import {
   type LexicalKb,
 } from './hybrid-retrieval.js';
 import type { LexicalIndex, LexicalQueryOptions, LexicalSearchResult } from './lexical-index.js';
-import { kbSearchFailureMetrics } from './metrics.js';
+import { kbSearchFailureMetrics } from './metrics-recording.js';
 import { logger } from './logger.js';
 import { DEFAULT_C } from './rrf.js';
 

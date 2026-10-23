@@ -71,7 +71,7 @@ import {
   nowMs,
   type TimingPayload,
 } from './timing-core.js';
-import { llmCallMetrics, type LlmCallMetrics } from './metrics.js';
+import { llmCallMetrics, type LlmCallMetrics } from './metrics-recording.js';
 import {
   excludesLlmContext,
   normalizeKbSensitivityPolicy,

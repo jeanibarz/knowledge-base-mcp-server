@@ -10,7 +10,7 @@ Local-first knowledge-base MCP server and `kb` CLI backed by embedded FAISS inde
 npm install
 npm run build          # tsc → build/index.js (chmod +x, stdio-executable)
 npm test               # build + test:parallel (--maxWorkers=4) + test:serial (--runInBand) — must stay green
-npm run dev            # nodemon src/index.ts for iteration
+npm run dev            # node --watch --import tsx src/index.ts for iteration
 node build/index.js    # runs the server over stdio (clients launch it this way)
 ```
 

@@ -68,7 +68,7 @@ import {
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
-import { kbSearchFailureMetrics } from './metrics.js';
+import { kbSearchFailureMetrics } from './metrics-recording.js';
 import { chunkIdFromMetadata, reciprocalRankFusion, type RankedList } from './rrf.js';
 import type { RetrievalViewKind } from './retrieval-views.js';
 import { withWriteLock } from './write-lock.js';

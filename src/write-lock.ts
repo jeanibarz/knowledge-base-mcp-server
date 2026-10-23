@@ -19,7 +19,7 @@ import * as properLockfile from 'proper-lockfile';
 import { classifyCanonicalError, emitCanonicalLog, type CanonicalError } from './canonical-log.js';
 import { FAISS_INDEX_PATH } from './config/paths.js';
 import { logger } from './logger.js';
-import { writeLockMetrics, type WriteLockResourceKind } from './metrics.js';
+import { writeLockMetrics, type WriteLockResourceKind } from './metrics-recording.js';
 
 export const WRITE_LOCK_STALE_MS = 10_000;
 

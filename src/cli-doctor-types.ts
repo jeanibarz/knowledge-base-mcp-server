@@ -11,7 +11,7 @@ import type { KbFilesystemEnumerationDiagnostics } from './kb-fs.js';
 import type { IndexUpdateSummary } from './FaissIndexManager.js';
 import type { KbStatsDenseSearchLatencySummary } from './kb-stats.js';
 import type { AnswerCacheStats } from './ask-answer-cache.js';
-import type { LlmCallMetricsSnapshot, ProviderCallSnapshot } from './metrics.js';
+import type { LlmCallMetricsSnapshot, ProviderCallSnapshot } from './metrics-recording.js';
 import type { ProviderCircuitSnapshot } from './provider-breaker.js';
 import type { SearchIndexType } from './config/indexing.js';
 import type { IntegrityReport } from './cli-verify.js';

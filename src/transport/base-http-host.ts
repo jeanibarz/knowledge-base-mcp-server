@@ -37,7 +37,7 @@ import {
   type TransportConfig,
 } from '../transport-config.js';
 import { logger } from '../logger.js';
-import { RemoteTransportLatencyMetrics } from '../metrics.js';
+import { RemoteTransportLatencyMetrics } from '../metrics-recording.js';
 import {
   emptyResponseStatusBuckets,
   responseStatusBucket,
