@@ -9,6 +9,10 @@
 // This test pairs the real `@langchain/community/vectorstores/faiss` with
 // the repo's `FakeEmbeddings` provider (issue #204) and drives the same
 // `saveFaissStoreAtomic` codepath the production manager uses.
+//
+// Issue #984 — this real-FaissStore suite is the one that failed under jest
+// before the scoped babel-jest transform in jest.config.js (see the comment
+// above the @langchain/community transform entry there).
 
 import { Document } from '@langchain/core/documents';
 import { FaissStore } from '@langchain/community/vectorstores/faiss';
