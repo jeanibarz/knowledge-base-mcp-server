@@ -2499,6 +2499,87 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, 0.25, 'alpha', undefined, expect.any(Object));
   });
 
+  // --- handleRetrieveKnowledge k / search_mode (#973) -----------------------
+
+  it('handleRetrieveKnowledge honors a custom k, capping the dense FAISS fetch (#973)', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([]);
+
+    const server = await freshServer();
+
+    await server['handleRetrieveKnowledge']({ query: 'q', k: 3 });
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 3, undefined, undefined, undefined, expect.any(Object));
+  });
+
+  it('handleRetrieveKnowledge rejects an out-of-range k at the tool schema boundary (#973)', async () => {
+    await setRetrieveEnv();
+    const server = await freshServer();
+    const schema = toolInputSchema(server, 'retrieve_knowledge');
+    expect(() => schema.parse({ query: 'q', k: 0 })).toThrow();
+    expect(() => schema.parse({ query: 'q', k: 51 })).toThrow();
+    expect(schema.parse({ query: 'q', k: 3 }).k).toBe(3);
+  });
+
+  it('handleRetrieveKnowledge runs a BM25-only lexical search_mode and formats results like dense (#973)', async () => {
+    const tempDir = await setRetrieveEnv();
+    const alphaDir = path.join(tempDir, 'alpha');
+    await fsp.mkdir(alphaDir, { recursive: true });
+    await fsp.writeFile(path.join(alphaDir, 'doc.md'), 'LEXICAL_MODE_QUERY matches this document.\n');
+    updateIndexMock.mockResolvedValue(undefined);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'LEXICAL_MODE_QUERY',
+      knowledge_base_name: 'alpha',
+      search_mode: 'lexical',
+    });
+
+    expect(result.isError).toBeUndefined();
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain('Mode: lexical');
+    expect(text).toContain('LEXICAL_MODE_QUERY');
+    // Dense FAISS is never consulted for a pure lexical request.
+    expect(similaritySearchMock).not.toHaveBeenCalled();
+  });
+
+  it('handleRetrieveKnowledge resolves search_mode "auto" to hybrid for a code-token query (#973)', async () => {
+    const tempDir = await setRetrieveEnv();
+    const alphaDir = path.join(tempDir, 'alpha');
+    await fsp.mkdir(alphaDir, { recursive: true });
+    await fsp.writeFile(path.join(alphaDir, 'doc.md'), 'AUTO_MODE_TOKEN appears in this error-code-like query.\n');
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'AUTO_MODE_TOKEN', // matches the "constant or error-code token" auto heuristic -> hybrid
+      knowledge_base_name: 'alpha',
+      search_mode: 'auto',
+    });
+
+    expect(result.isError).toBeUndefined();
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain('Mode: hybrid');
+  });
+
+  it('handleRetrieveKnowledge omitting k/search_mode keeps 10 dense hits unchanged (#973 no-regression)', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'Alpha content', metadata: { source: '/kb/a.md' }, score: 0.1 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({ query: 'q', knowledge_base_name: 'alpha' });
+
+    expect(result.isError).toBeUndefined();
+    expect(similaritySearchMock).toHaveBeenLastCalledWith('q', 10, undefined, 'alpha', undefined, expect.any(Object));
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).not.toContain('Mode:');
+    expect(text).toContain('Alpha content');
+  });
+
   it('handleRetrieveKnowledge forwards extensions / path_glob / tags filters (#53)', async () => {
     await setRetrieveEnv();
     updateIndexMock.mockResolvedValue(undefined);
