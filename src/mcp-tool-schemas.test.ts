@@ -3,7 +3,9 @@ import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 import { KnowledgeBaseServer } from './KnowledgeBaseServer.js';
+import { ASK_KNOWLEDGE_INPUT, RETRIEVE_KNOWLEDGE_INPUT } from './mcp-tool-specs.js';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -19,6 +21,16 @@ function withoutDescriptions(value: JsonValue): JsonValue {
 }
 
 describe('MCP tool JSON Schema contract', () => {
+  it('still strips unknown fields from search and ask inputs at runtime', () => {
+    for (const input of [RETRIEVE_KNOWLEDGE_INPUT, ASK_KNOWLEDGE_INPUT]) {
+      const schema = z.object(input);
+
+      expect(schema.parse({ query: 'test query', unexpected: true })).toEqual({
+        query: 'test query',
+      });
+    }
+  });
+
   it('pins structurally meaningful schemas emitted by a real listTools round trip', async () => {
     const fixturePath = resolve('src/__fixtures__/mcp-tool-schemas.json');
     const server = new KnowledgeBaseServer();

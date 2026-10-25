@@ -5,7 +5,7 @@
 // CLI/--check entry point) so the rendering can be unit-tested directly against
 // MCP_TOOL_SPECS without a build or a child process.
 
-import type { ZodTypeAny, ZodRawShape } from 'zod';
+import type { ZodRawShape } from 'zod';
 
 import type { McpToolSpec } from './mcp-tool-specs.js';
 
@@ -19,44 +19,55 @@ interface FieldDoc {
   description: string;
 }
 
-// zod stores its runtime metadata on `_def`; the public types don't expose the
-// version-specific check shapes, so introspection works through a narrow local
-// view rather than `any`.
-interface ZodDefView {
-  typeName?: string;
-  description?: string;
-  innerType?: ZodTypeAny;
-  schema?: ZodTypeAny;
-  type?: ZodTypeAny;
-  checks?: Array<{ kind: string; value?: unknown }>;
-  values?: unknown[];
-  minLength?: { value: number } | null;
-  maxLength?: { value: number } | null;
+// zod 4 keeps runtime metadata on `_def` — lowercase `type` tag, `innerType` /
+// `element` / `entries` payload, and `checks[]` carrying `{ check, ... }` defs —
+// while `.describe()` lives on the schema's `description` getter (backed by the
+// global registry). The public types don't expose those internals, so
+// introspection works through a narrow structural view rather than `any`.
+interface ZodCheckDef {
+  check?: string;
+  value?: number;
+  maximum?: number;
+  minimum?: number;
+  format?: string;
 }
 
-function defOf(type: ZodTypeAny): ZodDefView {
-  return (type as unknown as { _def?: ZodDefView })._def ?? {};
+interface ZodDefView {
+  type?: string;
+  format?: string;
+  innerType?: unknown;
+  element?: unknown;
+  entries?: Record<string, unknown>;
+  checks?: Array<{ _zod?: { def?: ZodCheckDef } }>;
+}
+
+interface ZodLike {
+  _def?: ZodDefView;
+  description?: string;
+}
+
+function defOf(node: unknown): ZodDefView {
+  return (node as ZodLike)?._def ?? {};
+}
+
+function checkDefs(def: ZodDefView): ZodCheckDef[] {
+  return (def.checks ?? []).map((check) => check._zod?.def ?? {});
 }
 
 // Walk past wrappers that do not change the documented base type. Optional and
-// default both make a field non-required; effects (refine/transform) wrap a base
-// schema we still want to describe.
-function unwrap(type: ZodTypeAny): { node: ZodTypeAny; required: boolean } {
+// default both make a field non-required.
+function unwrap(type: unknown): { node: unknown; required: boolean } {
   let node = type;
   let required = true;
   for (;;) {
     const def = defOf(node);
-    if (def.typeName === 'ZodOptional' || def.typeName === 'ZodDefault') {
+    if (def.type === 'optional' || def.type === 'default' || def.type === 'prefault') {
       required = false;
-      node = def.innerType as ZodTypeAny;
+      node = def.innerType;
       continue;
     }
-    if (def.typeName === 'ZodNullable') {
-      node = def.innerType as ZodTypeAny;
-      continue;
-    }
-    if (def.typeName === 'ZodEffects') {
-      node = def.schema as ZodTypeAny;
+    if (def.type === 'nullable' || def.type === 'nonoptional') {
+      node = def.innerType;
       continue;
     }
     break;
@@ -64,58 +75,60 @@ function unwrap(type: ZodTypeAny): { node: ZodTypeAny; required: boolean } {
   return { node, required };
 }
 
-function baseTypeLabel(type: ZodTypeAny): string {
+function baseTypeLabel(type: unknown): string {
   return typeInfo(unwrap(type).node).type;
 }
 
-function typeInfo(node: ZodTypeAny): { type: string; constraints: string[] } {
+function typeInfo(node: unknown): { type: string; constraints: string[] } {
   const def = defOf(node);
-  switch (def.typeName) {
-    case 'ZodString': {
+  switch (def.type) {
+    case 'string': {
       const constraints: string[] = [];
-      for (const check of def.checks ?? []) {
-        if (check.kind === 'max') constraints.push(`max ${String(check.value)} chars`);
-        else if (check.kind === 'min') constraints.push(`min ${String(check.value)} chars`);
+      for (const check of checkDefs(def)) {
+        if (check.check === 'max_length') constraints.push(`max ${String(check.maximum)} chars`);
+        else if (check.check === 'min_length') constraints.push(`min ${String(check.minimum)} chars`);
       }
       return { type: 'string', constraints };
     }
-    case 'ZodNumber': {
-      let isInt = false;
+    case 'number': {
+      // z.int() bakes the format onto the def; `.int()` appends a check.
+      let isInt = def.format === 'safeint' || def.format === 'int32' || def.format === 'uint32';
       const constraints: string[] = [];
-      for (const check of def.checks ?? []) {
-        if (check.kind === 'int') isInt = true;
-        else if (check.kind === 'min') constraints.push(`min ${String(check.value)}`);
-        else if (check.kind === 'max') constraints.push(`max ${String(check.value)}`);
+      for (const check of checkDefs(def)) {
+        if (check.check === 'number_format' && check.format === 'safeint') isInt = true;
+        else if (check.check === 'greater_than') constraints.push(`min ${String(check.value)}`);
+        else if (check.check === 'less_than') constraints.push(`max ${String(check.value)}`);
       }
       return { type: isInt ? 'integer' : 'number', constraints };
     }
-    case 'ZodBoolean':
+    case 'boolean':
       return { type: 'boolean', constraints: [] };
-    case 'ZodEnum':
+    case 'enum':
       return {
         type: 'enum',
-        constraints: [`one of: ${(def.values ?? []).map((value) => `\`${String(value)}\``).join(', ')}`],
+        constraints: [`one of: ${Object.values(def.entries ?? {}).map((value) => `\`${String(value)}\``).join(', ')}`],
       };
-    case 'ZodArray': {
-      const element = baseTypeLabel(def.type as ZodTypeAny);
+    case 'array': {
+      const element = baseTypeLabel(def.element);
       const constraints: string[] = [];
-      if (def.maxLength) constraints.push(`max ${def.maxLength.value} items`);
-      if (def.minLength) constraints.push(`min ${def.minLength.value} items`);
+      for (const check of checkDefs(def)) {
+        if (check.check === 'max_length') constraints.push(`max ${check.maximum} items`);
+        else if (check.check === 'min_length') constraints.push(`min ${check.minimum} items`);
+      }
       return { type: `array of ${element}`, constraints };
     }
     default: {
-      const name = (def.typeName ?? 'unknown').replace(/^Zod/, '').toLowerCase();
-      return { type: name, constraints: [] };
+      return { type: def.type ?? 'unknown', constraints: [] };
     }
   }
 }
 
-function describeField(name: string, type: ZodTypeAny): FieldDoc {
+function describeField(name: string, type: unknown): FieldDoc {
   const { node, required } = unwrap(type);
   const { type: typeLabel, constraints } = typeInfo(node);
   // `.describe()` is always the outermost call, so the description lives on the
   // top-level type; fall back to the unwrapped node just in case.
-  const description = defOf(type).description ?? defOf(node).description ?? '';
+  const description = (type as ZodLike).description ?? (node as ZodLike).description ?? '';
   return { name, type: typeLabel, required, constraints, description };
 }
 

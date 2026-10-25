@@ -96,7 +96,7 @@ Compares retrieval-result churn across two persisted FAISS index versions for a 
 | --- | --- | --- | --- | --- |
 | `before` | string | yes | — | BEFORE index version number, relative directory, or absolute version directory. |
 | `after` | string | yes | — | AFTER index version number, relative directory, or absolute version directory. |
-| `queries` | array of string | yes | max 64 items; min 1 items | Plaintext queries to run against both index versions. |
+| `queries` | array of string | yes | min 1 items; max 64 items | Plaintext queries to run against both index versions. |
 | `model_name` | string | no | — | Optional registered embedding model id. If omitted, the active model is used. |
 | `knowledge_base_name` | string | no | — | Optional KB scope applied to every query. |
 | `top_k` | integer | no | min 1; max 100 | Top-K results per query. Default 10. |
