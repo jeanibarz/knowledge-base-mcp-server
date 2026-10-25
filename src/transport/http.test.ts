@@ -22,7 +22,7 @@ function freshFactory(): () => McpServer {
     const registerTool = server.tool.bind(server) as unknown as (
       name: string,
       description: string,
-      shape: Record<string, z.ZodTypeAny>,
+      shape: z.ZodRawShape,
       cb: (args: { text: string }) => Promise<{ content: { type: 'text'; text: string }[] }>,
     ) => void;
     registerTool('echo', 'Echoes the supplied text', { text: z.string() }, async ({ text }) => ({

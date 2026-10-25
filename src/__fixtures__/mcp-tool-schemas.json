@@ -17,7 +17,6 @@
       "path",
       "content"
     ],
-    "additionalProperties": false,
     "$schema": "http://json-schema.org/draft-07/schema#"
   },
   "ask_knowledge": {
@@ -43,7 +42,8 @@
       },
       "context_budget_tokens": {
         "type": "integer",
-        "minimum": 64
+        "minimum": 64,
+        "maximum": 9007199254740991
       },
       "search_mode": {
         "type": "string",
@@ -78,7 +78,6 @@
     "required": [
       "query"
     ],
-    "additionalProperties": false,
     "$schema": "http://json-schema.org/draft-07/schema#"
   },
   "delete_document": {
@@ -95,7 +94,6 @@
       "knowledge_base_name",
       "path"
     ],
-    "additionalProperties": false,
     "$schema": "http://json-schema.org/draft-07/schema#"
   },
   "diff_index": {
@@ -108,13 +106,13 @@
         "type": "string"
       },
       "queries": {
+        "minItems": 1,
+        "maxItems": 64,
         "type": "array",
         "items": {
           "type": "string",
           "maxLength": 8192
-        },
-        "minItems": 1,
-        "maxItems": 64
+        }
       },
       "model_name": {
         "type": "string"
@@ -143,7 +141,6 @@
       "after",
       "queries"
     ],
-    "additionalProperties": false,
     "$schema": "http://json-schema.org/draft-07/schema#"
   },
   "kb_stats": {
@@ -153,7 +150,6 @@
         "type": "string"
       }
     },
-    "additionalProperties": false,
     "$schema": "http://json-schema.org/draft-07/schema#"
   },
   "list_knowledge_bases": {
@@ -171,7 +167,6 @@
         "type": "string"
       }
     },
-    "additionalProperties": false,
     "$schema": "http://json-schema.org/draft-07/schema#"
   },
   "retrieve_knowledge": {
@@ -191,22 +186,22 @@
         "type": "string"
       },
       "extensions": {
+        "maxItems": 64,
         "type": "array",
         "items": {
           "type": "string"
-        },
-        "maxItems": 64
+        }
       },
       "path_glob": {
         "type": "string",
         "maxLength": 1024
       },
       "tags": {
+        "maxItems": 64,
         "type": "array",
         "items": {
           "type": "string"
-        },
-        "maxItems": 64
+        }
       },
       "since": {
         "type": "string"
@@ -257,7 +252,6 @@
     "required": [
       "query"
     ],
-    "additionalProperties": false,
     "$schema": "http://json-schema.org/draft-07/schema#"
   }
 }

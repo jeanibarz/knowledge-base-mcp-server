@@ -106,7 +106,7 @@
     "pdf-parse": "^2.4.5",
     "pickleparser": "^0.2.1",
     "proper-lockfile": "^4.1.2",
-    "zod": "^3.23.8"
+    "zod": "^4.6.6"
   },
   "optionalDependencies": {
     "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
@@ -144,6 +144,12 @@
     "@langchain/community": {
       "@huggingface/transformers": "^4.3.1",
       "html-to-text": "^10.0.1"
+    },
+    "@browserbasehq/stagehand": {
+      "zod": "^4"
+    },
+    "openai": {
+      "zod": "^4"
     },
     "typed-rest-client": {
       "qs": "6.15.2"

@@ -6,8 +6,8 @@ export const relevanceGateVerdictSchema = z.object({
   schema_version: z.literal(RELEVANCE_GATE_SCHEMA_VERSION),
   state: z.enum(['bypassed', 'empty-index', 'injected', 'no-relevant-context']),
   low_confidence: z.boolean(),
-  input_count: z.number().int().nonnegative(),
-  output_count: z.number().int().nonnegative(),
+  input_count: z.int().nonnegative(),
+  output_count: z.int().nonnegative(),
   dropped: z.array(z.object({
     id: z.string(),
     stage: z.string(),

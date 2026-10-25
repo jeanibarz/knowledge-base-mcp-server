@@ -39,7 +39,7 @@ describe('docs/reference/mcp-tools.md drift gate', () => {
             ...spec,
             inputShape: {
               ...askSpec!.inputShape,
-              k: z.number().int().min(1).max(10).optional(),
+              k: z.int().min(1).max(10).optional(),
             },
           }
         : spec,

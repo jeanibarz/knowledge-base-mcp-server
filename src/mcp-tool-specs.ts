@@ -80,9 +80,9 @@ export const RETRIEVE_KNOWLEDGE_INPUT = {
   tags: boundedFilterArray().optional().describe('Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter. In hybrid mode, applied to lexical candidates before fusion.'),
   since: z.string().optional().describe('Limit results to chunks whose current source-file mtime is at or after this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. In hybrid mode, applied to lexical candidates before fusion.'),
   until: z.string().optional().describe('Limit results to chunks whose current source-file mtime is at or before this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. In hybrid mode, applied to lexical candidates before fusion.'),
-  context_before: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense semantic match. Defaults to 0.'),
-  context_after: z.number().int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each dense semantic match. Defaults to 0.'),
-  context_window: z.number().int().min(0).max(5).optional().describe('Shorthand for setting context_before and context_after to the same value. Defaults to 0.'),
+  context_before: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense semantic match. Defaults to 0.'),
+  context_after: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each dense semantic match. Defaults to 0.'),
+  context_window: z.int().min(0).max(5).optional().describe('Shorthand for setting context_before and context_after to the same value. Defaults to 0.'),
   // #206 stage 2 — sparse+dense hybrid retrieval. Default 'dense' is
   // wire-compatible with 0.x clients: when the field is absent the
   // server runs the unmodified dense path. 'hybrid' fuses dense FAISS
@@ -99,8 +99,8 @@ export const ASK_KNOWLEDGE_INPUT = {
   knowledge_base_name: z.string().optional().describe('Name of a single knowledge base to search. If omitted, all available knowledge bases are considered.'),
   model_name: z.string().optional().describe('Registered embedding model_id to use for retrieval. If omitted, the active model is used.'),
   llm_profile: z.string().optional().describe('Saved kb llm profile name to use for answer generation.'),
-  k: z.number().int().min(1).max(50).optional().describe('Retrieval top-K before context packing. Default 8.'),
-  context_budget_tokens: z.number().int().min(64).optional().describe('Approximate token budget for snippets sent to the LLM. Default 6000.'),
+  k: z.int().min(1).max(50).optional().describe('Retrieval top-K before context packing. Default 8.'),
+  context_budget_tokens: z.int().min(64).optional().describe('Approximate token budget for snippets sent to the LLM. Default 6000.'),
   // #732 — bring the search-mode + opt-in rerank surface of retrieve_knowledge
   // to the ask path. Defaults to 'auto' (prose stays dense, code/error-token
   // queries upgrade to hybrid); reranking stays opt-in.
@@ -124,7 +124,7 @@ export const DIFF_INDEX_INPUT = {
   queries: z.array(boundedQueryString()).min(1).max(KB_MAX_FILTER_ITEMS).describe('Plaintext queries to run against both index versions.'),
   model_name: z.string().optional().describe('Optional registered embedding model id. If omitted, the active model is used.'),
   knowledge_base_name: z.string().optional().describe('Optional KB scope applied to every query.'),
-  top_k: z.number().int().min(1).max(100).optional().describe('Top-K results per query. Default 10.'),
+  top_k: z.int().min(1).max(100).optional().describe('Top-K results per query. Default 10.'),
   threshold: z.number().optional().describe('Dense similarity threshold. Default 2.'),
   format: z.enum(['json', 'markdown']).optional().describe('Response format. Default markdown.'),
 };
