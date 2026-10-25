@@ -61,9 +61,10 @@ const baseConfig = {
     '^uuid$': '<rootDir>/src/test-support/uuid-shim.ts',
   },
   transform: {
-    // @langchain/community's dist .cjs keeps lazy `await import('faiss-node')`
-    // calls; jest's CJS runtime cannot service real dynamic imports without
-    // --experimental-vm-modules. Transform just this package so import()
+    // Issue #984 — @langchain/community's dist .cjs keeps lazy
+    // `await import('faiss-node')` calls; jest's CJS runtime cannot service
+    // real dynamic imports without --experimental-vm-modules (which breaks
+    // 153 other tests process-wide). Transform just this package so import()
     // becomes require().
     'node_modules/@langchain/community/.+\\.[cm]?js$': [
       'babel-jest',
