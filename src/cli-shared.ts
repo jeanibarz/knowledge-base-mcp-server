@@ -1,5 +1,6 @@
 import { FaissIndexManager } from './FaissIndexManager.js';
-import { parseModelId, readStoredIndexType, readStoredModelName } from './active-model.js';
+import { parseModelId } from './model-id.js';
+import { readStoredIndexType, readStoredModelName } from './model-storage-layout.js';
 import type { EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
 

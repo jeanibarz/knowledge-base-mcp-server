@@ -2,12 +2,12 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { resolveActiveModel } from './model-resolution.js';
 import {
   modelDir,
   modelsRoot,
   readModelIndexStorage,
-  resolveActiveModel,
-} from './active-model.js';
+} from './model-storage-layout.js';
 import {
   FAISS_INDEX_PATH,
   KNOWLEDGE_BASES_ROOT_DIR,

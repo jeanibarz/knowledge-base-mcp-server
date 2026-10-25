@@ -1,6 +1,6 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { ActiveModelResolutionError, resolveActiveModel } from './active-model.js';
+import { ActiveModelResolutionError, resolveActiveModel } from './model-resolution.js';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { getFilesRecursively } from './file-utils.js';

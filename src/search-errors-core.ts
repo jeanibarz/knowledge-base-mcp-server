@@ -13,7 +13,7 @@
 // classifier. CLI adapters should import from here, not from a sibling
 // CLI command module (issue #341 boundary fix).
 
-import { ActiveModelResolutionError } from './active-model.js';
+import { ActiveModelResolutionError } from './model-resolution.js';
 import { KBError, type KBErrorCode } from './errors.js';
 import { LlmClientError } from './llm-client.js';
 import { RerankerConfigError } from './config/reranker.js';

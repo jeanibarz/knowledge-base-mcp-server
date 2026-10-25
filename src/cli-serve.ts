@@ -46,7 +46,8 @@ import {
 import { LexicalIndexCache } from './lexical-index-cache.js';
 import type { LexicalIndex } from './lexical-index.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
-import { modelDir, resolveActiveModel, resolveFaissIndexBinaryPath } from './active-model.js';
+import { resolveActiveModel } from './model-resolution.js';
+import { modelDir, resolveFaissIndexBinaryPath } from './model-storage-layout.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
 

@@ -11,7 +11,7 @@ import {
   type CompleteResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { listRegisteredModels } from './active-model.js';
+import { listRegisteredModels } from './model-resolution.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { KB_PROMPT_TEMPLATES } from './config/mcp-descriptions.js';
 import { listKnowledgeBases } from './kb-fs.js';

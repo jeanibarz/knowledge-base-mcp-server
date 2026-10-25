@@ -4,13 +4,13 @@ import {
   isKnownEmbeddingProvider,
   type KnownEmbeddingProvider,
 } from './config/provider.js';
+import { parseModelId } from './model-id.js';
+import { resolveActiveModel } from './model-resolution.js';
 import {
   modelDir,
-  parseModelId,
   readStoredIndexType,
   readStoredModelName,
-  resolveActiveModel,
-} from './active-model.js';
+} from './model-storage-layout.js';
 import { backendForIndexType } from './config/indexing.js';
 import { createEmbeddingsClient } from './embedding-provider.js';
 import { resolveActiveIndexFilePath } from './faiss-store-layout.js';

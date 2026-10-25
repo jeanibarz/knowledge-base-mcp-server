@@ -5,7 +5,7 @@ import {
   formatKbSearchFailureJson,
   formatKbSearchFailureStderr,
 } from './search-errors-core.js';
-import { ActiveModelResolutionError } from './active-model.js';
+import { ActiveModelResolutionError } from './model-resolution.js';
 import { KBError } from './errors.js';
 import { WriteLockContentionError } from './write-lock.js';
 

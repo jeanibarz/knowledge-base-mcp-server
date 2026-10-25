@@ -8,10 +8,8 @@ import {
   type SearchResultDocument,
   type SimilaritySearchTiming,
 } from './FaissIndexManager.js';
-import {
-  resolveActiveModel,
-  resolveFaissIndexBinaryPath,
-} from './active-model.js';
+import { resolveActiveModel } from './model-resolution.js';
+import { resolveFaissIndexBinaryPath } from './model-storage-layout.js';
 import {
   classifyKbSearchError,
   exitCodeForFailure,
