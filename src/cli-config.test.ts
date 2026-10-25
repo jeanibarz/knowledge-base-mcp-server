@@ -367,9 +367,11 @@ describe('kb config show (#545)', () => {
   });
 
   it('filters JSON output to env-sourced values with --non-default-only', async () => {
+    process.chdir(tempDir);
     process.env = {
       PATH: ORIGINAL_ENV.PATH ?? '',
       KB_RELEVANCE_GATE: 'on',
+      XDG_CONFIG_HOME: tempDir,
     };
 
     await expect(runConfig(['show', '--format=json', '--non-default-only'])).resolves.toBe(0);
