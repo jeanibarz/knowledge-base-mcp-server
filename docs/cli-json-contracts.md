@@ -593,6 +593,82 @@ Source and test anchors: `src/cli-search.ts:262-320`,
 `src/formatter.ts:136-213`, `src/cli-search-errors.ts:181-215`,
 `src/formatter.test.ts:161-213`, `src/cli-search-errors.test.ts:121-159`.
 
+## `kb search --batch-jsonl`
+
+Invocation:
+
+```bash
+printf '%s\n' '{"query":"rollback","kb":"ops"}' | kb search --batch-jsonl
+kb search --batch-jsonl [--model=<id>] [--timing] < rows.jsonl
+```
+
+Reads one JSON object per stdin line and writes one compact JSON row per input
+line to stdout. Blank lines are skipped. Fields a row does not set inherit the
+command-line defaults, so for example a CLI `--mode=hybrid` flag applies to
+every row. `--timing` is a CLI flag, not a row field; it adds millisecond
+counters inside each row's `result`.
+
+Input record fields (18 accepted keys):
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `query` | string | yes | Retrieval query; must be non-empty. |
+| `kb` | string | no | Restrict the row to one knowledge base. |
+| `model` | string | no | Registered model id; default resolves the active model (resolved once per distinct value, then cached). |
+| `k` | integer | no | Positive top-K for the row. |
+| `mode` | string | no | `dense` (default), `lexical`, `hybrid`, or `auto`. Rows whose *effective* mode is not `dense` fail per row; `auto` is resolved per row from the query text. |
+| `threshold` | number \| `"auto"` | no | Dense score threshold for the row. |
+| `no_cache` | boolean | no | Bypass the query cache for the row. |
+| `refresh` | boolean | no | Refresh the row's index scope before searching. |
+| `freshness` | boolean | no | Compute staleness for the row (mirrors `--freshness`/`--no-freshness`). |
+| `since` | string | no | Recency lower bound; duration (`30d`, `24h`) or ISO date/timestamp. |
+| `until` | string | no | Recency upper bound, same syntax. |
+| `group_by_source` | boolean | no | Group the row's results by source file. |
+| `explain_empty` | boolean | no | Emit empty-result diagnostics for the row. |
+| `task_context` | string | no | Task context for the relevance gate; subject to the task-context policy. |
+| `gate` | boolean | no | `true` enables the per-row relevance gate, `false` disables it. |
+| `context_window` | integer | no | Neighbor context on both sides (0-5). |
+| `context_before` | integer | no | Preceding neighbor chunks (0-5). |
+| `context_after` | integer | no | Following neighbor chunks (0-5). |
+
+The fields `rerank`, `diverse`, `anti_query`, `plus`, and `minus` are explicitly
+rejected per row (`BATCH_ROW_INVALID`). Keys not listed above are ignored.
+
+Success row envelope (`schema_version` is `kb.search.batch-jsonl.v1`):
+
+```json
+{"schema_version":"kb.search.batch-jsonl.v1","line":1,"ok":true,"query":"rollback procedure","kb":"ops","model":"ollama__nomic-embed-text-latest","mode":"dense","result":{"results":[],"stale":false}}
+```
+
+Stable fields: `schema_version`, `line` (1-based stdin line number), `ok`,
+`query`, `kb` (`null` when the row is unscoped), `model` (resolved model id),
+`mode` (effective mode), and `result` — the same dense success envelope
+documented under `kb search` above, including `stale`, `query_cache`, and
+`timing` payloads where applicable.
+
+Failure row envelope:
+
+```json
+{"schema_version":"kb.search.batch-jsonl.v1","line":3,"ok":false,"query":"...","kb":"ops","error":{"code":"BATCH_ROW_INVALID","category":"input","message":"line 3: k must be a positive integer","next_action":"Fix the JSONL row and retry."}}
+```
+
+`error.code` is either the batch-local `BATCH_ROW_INVALID` (`category: "input"`,
+emitted when the row is rejected before any search runs) or a classified
+failure code such as `KB_NOT_FOUND` when the row ran and the search itself
+failed. See `docs/reference/error-codes.md`.
+
+Stdout/stderr and exit codes: every row — success or failure — is a stdout JSON
+line; per-row task-context warnings go to stderr. The process does not stop at
+the first bad row: a rejected or input/configuration failure contributes `2`,
+other classified failures contribute `1`, and the process exits with the
+maximum contribution observed across all rows (`0` when all rows succeed).
+
+Source anchors: `src/cli-search.ts:2090` (schema version),
+`src/cli-search.ts:2115-2322` (row loop, dense-only rejection, envelopes),
+`src/cli-search.ts:2423-2530` (input record parser),
+`src/cli-search.ts:2547-2570` (failure envelope writer),
+`src/cli-search.ts:2631-2637` (neighbor-context bounds).
+
 ## `kb ask`
 
 Invocation:

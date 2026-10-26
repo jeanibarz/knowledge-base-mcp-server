@@ -8,6 +8,7 @@ import {
   ERROR_CODES_REFERENCE_PATH,
   KB_ERROR_CODE_DOCS,
   renderErrorCodesMarkdown,
+  SEARCH_BATCH_CLI_ERROR_CODES,
 } from './error-codes-doc.js';
 
 // The rendering is pure (it reads the in-source registries and does no I/O or
@@ -61,6 +62,13 @@ describe('docs/reference/error-codes.md drift gate', () => {
   it('renders the ask-local CLI codes table', () => {
     const markdown = renderErrorCodesMarkdown();
     for (const entry of ASK_CLI_ERROR_CODES) {
+      expect(markdown).toContain(`<code>${entry.code}</code>`);
+    }
+  });
+
+  it('renders the batch-jsonl CLI codes table', () => {
+    const markdown = renderErrorCodesMarkdown();
+    for (const entry of SEARCH_BATCH_CLI_ERROR_CODES) {
       expect(markdown).toContain(`<code>${entry.code}</code>`);
     }
   });
