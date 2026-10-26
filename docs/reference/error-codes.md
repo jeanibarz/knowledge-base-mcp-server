@@ -75,3 +75,17 @@ and transcript paths.
 | <code>ASK_TRANSCRIPT_EXISTS</code> | `input` | `--save-transcript` would overwrite an existing note. | Choose a different `--title` or remove the existing transcript note. | No |
 | <code>ASK_TRANSCRIPT_PERMISSION_DENIED</code> | `permissions` | Transcript write failed with a filesystem permission/read-only error. | Grant write access to the target KB directory, then retry. | No |
 | <code>ASK_TRANSCRIPT_WRITE_FAILED</code> | `unknown` | Transcript write failed without a more specific errno classification. | Check the target KB path and disk state, then retry. | Unknown |
+
+## `kb search --batch-jsonl` CLI Codes
+
+`kb search --batch-jsonl` reads one JSON object per stdin line and emits one
+versioned JSON row per line on stdout (`schema_version:
+"kb.search.batch-jsonl.v1"`). A failed row carries
+`error.code`/`error.category`/`error.message`/`error.next_action`; the code
+is either a shared `KBErrorCode` from the first table (e.g. `KB_NOT_FOUND`)
+or the batch-local code below. See `docs/cli-json-contracts.md` for the
+input record schema and envelope.
+
+| Code | Category | Meaning | Operator Remedy | Transient? |
+| --- | --- | --- | --- | --- |
+| <code>BATCH_ROW_INVALID</code> | `input` | A `--batch-jsonl` input row failed validation: malformed JSON, a non-object row, a missing or empty `query`, an invalid field type or value, a field rejected for batch rows, or a row that resolved to a non-dense mode. | Fix the row identified by the envelope `line` field and `error.message`; unaffected rows still ran and exit code reflects the worst failure. | No |

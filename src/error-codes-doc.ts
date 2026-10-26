@@ -141,7 +141,7 @@ export const KB_ERROR_CODE_DOCS: Record<KBErrorCode, KBErrorCodeDoc> = {
   },
 };
 
-export interface AskCliErrorCodeDoc {
+export interface CliErrorCodeDoc {
   code: string;
   category: string;
   meaning: string;
@@ -155,7 +155,7 @@ export interface AskCliErrorCodeDoc {
 // single exported registry the way KBErrorCode is); keep in sync with that file
 // when adding an ask-local code. Tracked as a follow-up to wire these to their
 // source. Rendered as a second table below the shared taxonomy.
-export const ASK_CLI_ERROR_CODES: AskCliErrorCodeDoc[] = [
+export const ASK_CLI_ERROR_CODES: CliErrorCodeDoc[] = [
   {
     code: 'ASK_ARGUMENT_INVALID',
     category: 'input',
@@ -235,6 +235,24 @@ export const ASK_CLI_ERROR_CODES: AskCliErrorCodeDoc[] = [
   },
 ];
 
+// Command-local classified codes emitted per row by `kb search --batch-jsonl`
+// inside the versioned `kb.search.batch-jsonl.v1` envelope (src/cli-search.ts).
+// Like the ask-local codes above these are not `KBErrorCode` values — a row
+// failure is delivered inside the JSONL envelope, never thrown as a `KBError`.
+// Keep in sync with the batch row parser (`parseBatchJsonlRow`) and the
+// `batchInputError` writer. Rendered as a third table.
+export const SEARCH_BATCH_CLI_ERROR_CODES: CliErrorCodeDoc[] = [
+  {
+    code: 'BATCH_ROW_INVALID',
+    category: 'input',
+    meaning:
+      'A `--batch-jsonl` input row failed validation: malformed JSON, a non-object row, a missing or empty `query`, an invalid field type or value, a field rejected for batch rows, or a row that resolved to a non-dense mode.',
+    remedy:
+      'Fix the row identified by the envelope `line` field and `error.message`; unaffected rows still ran and exit code reflects the worst failure.',
+    transient: 'No',
+  },
+];
+
 // Markdown table cells cannot contain a raw `|`; escape it. Newlines are folded
 // so a multi-line source string still renders as one row.
 function tableCell(value: string): string {
@@ -243,7 +261,8 @@ function tableCell(value: string): string {
 
 export function renderErrorCodesMarkdown(
   codeDocs: Record<string, KBErrorCodeDoc> = KB_ERROR_CODE_DOCS,
-  askCodes: AskCliErrorCodeDoc[] = ASK_CLI_ERROR_CODES,
+  askCodes: CliErrorCodeDoc[] = ASK_CLI_ERROR_CODES,
+  batchCodes: CliErrorCodeDoc[] = SEARCH_BATCH_CLI_ERROR_CODES,
 ): string {
   const lines: string[] = [
     '# KB Error Codes',
@@ -303,6 +322,23 @@ export function renderErrorCodesMarkdown(
     '| Code | Category | Meaning | Operator Remedy | Transient? |',
     '| --- | --- | --- | --- | --- |',
     ...askCodes.map(
+      (entry) =>
+        `| <code>${entry.code}</code> | \`${entry.category}\` | ${tableCell(entry.meaning)} | ${tableCell(entry.remedy)} | ${entry.transient} |`,
+    ),
+    '',
+    '## `kb search --batch-jsonl` CLI Codes',
+    '',
+    '`kb search --batch-jsonl` reads one JSON object per stdin line and emits one',
+    'versioned JSON row per line on stdout (`schema_version:',
+    '"kb.search.batch-jsonl.v1"`). A failed row carries',
+    '`error.code`/`error.category`/`error.message`/`error.next_action`; the code',
+    'is either a shared `KBErrorCode` from the first table (e.g. `KB_NOT_FOUND`)',
+    'or the batch-local code below. See `docs/cli-json-contracts.md` for the',
+    'input record schema and envelope.',
+    '',
+    '| Code | Category | Meaning | Operator Remedy | Transient? |',
+    '| --- | --- | --- | --- | --- |',
+    ...batchCodes.map(
       (entry) =>
         `| <code>${entry.code}</code> | \`${entry.category}\` | ${tableCell(entry.meaning)} | ${tableCell(entry.remedy)} | ${entry.transient} |`,
     ),
