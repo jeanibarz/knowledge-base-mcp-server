@@ -134,7 +134,7 @@
     "pdfkit": "^0.20.2",
     "ts-jest": "^29.4.1",
     "tsx": "^4.21.0",
-    "typescript": "^5.3.3",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1"
   },
   "engines": {
