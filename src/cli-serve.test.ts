@@ -525,6 +525,24 @@ describe('kb serve daemon', () => {
       await daemon.stop();
     }
   });
+
+  it('surfaces the running build version and commit in daemon health (#1020)', async () => {
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      buildInfo: { version: '9.9.9', commit: 'deadbeefcafe1234' },
+    });
+    try {
+      const health = await request(daemon.url, { path: '/health' });
+      expect(health.statusCode).toBe(200);
+      expect(JSON.parse(health.body)).toMatchObject({
+        status: 'ok',
+        build: { version: '9.9.9', commit: 'deadbeefcafe1234' },
+      });
+    } finally {
+      await daemon.stop();
+    }
+  });
 });
 
 describe('daemon admission gate', () => {
@@ -1128,11 +1146,45 @@ describe('kb serve status', () => {
     }
   });
 
+  it('prints the running build version and short commit on the status line (#1020)', async () => {
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      buildInfo: { version: '2.5.0', commit: 'abcdef0123456789abcdef' },
+    });
+    process.env.KB_DAEMON_URL = daemon.url.href;
+    try {
+      const result = await captureStatus([]);
+      expect(result.code).toBe(0);
+      // Commit is abbreviated to 12 chars for display; the full SHA stays in --json.
+      expect(result.stdout).toContain('  build:        2.5.0 (abcdef012345)');
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('renders a non-hex commit sentinel verbatim on the status line (#1020)', async () => {
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      buildInfo: { version: 'unknown', commit: 'unknown' },
+    });
+    process.env.KB_DAEMON_URL = daemon.url.href;
+    try {
+      const result = await captureStatus([]);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('  build:        unknown (unknown)');
+    } finally {
+      await daemon.stop();
+    }
+  });
+
   it('emits a machine-readable envelope with --json', async () => {
     const daemon = await startDaemonServer({
       port: 0,
       idleTimeoutMs: 0,
       admission: { maxConcurrency: 8, queueMax: 128 },
+      buildInfo: { version: '2.5.0', commit: 'abcdef0123456789abcdef' },
     });
     process.env.KB_DAEMON_URL = daemon.url.href;
     try {
@@ -1152,6 +1204,8 @@ describe('kb serve status', () => {
             queue_max: 128,
             closed: false,
           },
+          // Full, unabbreviated commit is preserved in the machine-readable form.
+          build: { version: '2.5.0', commit: 'abcdef0123456789abcdef' },
         },
       });
     } finally {

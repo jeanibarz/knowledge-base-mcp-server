@@ -1713,9 +1713,10 @@ The daemon accepts read-only search/list/stats requests and exits after the
 idle timeout.
 
 `kb serve status` reports whether a daemon is reachable at the configured
-URL along with its PID, idle timeout, supported commands, and uptime. It
-never starts or stops a daemon. When `kb search --daemon` cannot reach a
-daemon it prints a one-line notice to stderr and runs the search directly.
+URL along with its PID, idle timeout, supported commands, uptime, and the
+build (version + commit) it is serving. It never starts or stops a daemon.
+When `kb search --daemon` cannot reach a daemon it prints a one-line notice
+to stderr and runs the search directly.
 
 Options:
   --host=<host>             Loopback host to bind (default: 127.0.0.1).
