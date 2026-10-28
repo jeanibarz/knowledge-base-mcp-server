@@ -183,6 +183,39 @@ describe('applyRerankerIfEnabled — per-domain skip-rerank fallback (RFC 020 §
     }
   });
 
+  it('increments the degraded counter when the cross-encoder throws and falls back to fused order (#1019)', async () => {
+    const reranker: Reranker = {
+      id: 'throwing',
+      rerank: jest.fn(async () => {
+        throw new Error('model unavailable');
+      }),
+    };
+    const restore = setRerankerFactoryForTests(async () => reranker);
+    try {
+      setEnv({ KB_RERANK: 'on' });
+      const fused = [doc('a.md', 0.030), doc('b.md', 0.020)];
+
+      const out = await applyRerankerIfEnabled({
+        query: 'q',
+        results: fused,
+        k: 2,
+        kbScope: 'prose',
+      });
+
+      // Cross-encoder threw: we fall back to the fused order and the degrade
+      // is now counted on /metrics, not just warnOnce'd.
+      expect(reranker.rerank).toHaveBeenCalledTimes(1);
+      expect(out.degraded).toBe(true);
+      expect(out.results.map((r) => r.metadata.source)).toEqual(['a.md', 'b.md']);
+      expect(rerankMetrics.snapshot().degraded).toBe(1);
+      // Invocations still counted; the degrade is not a skip.
+      expect(rerankMetrics.snapshot().invocations).toBe(1);
+      expect(rerankMetrics.snapshot().skipped).toEqual({});
+    } finally {
+      restore();
+    }
+  });
+
   it('records a no-candidates skip without invoking the cross-encoder', async () => {
     const reranker = stubReranker([]);
     const restore = setRerankerFactoryForTests(async () => reranker);

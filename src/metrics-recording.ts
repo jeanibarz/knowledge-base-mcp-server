@@ -137,6 +137,13 @@ export type RerankCandidateSource = 'cache_hit' | 'model_scored';
 
 export interface RerankMetricsSnapshot {
   invocations: number;
+  /**
+   * Issue #1019 — count of invocations where the cross-encoder reranker threw
+   * at runtime and the stage fell back to the fused order. Lets operators
+   * alert on a silent search-quality regression that otherwise only
+   * `warnOnce`'d on first occurrence.
+   */
+  degraded: number;
   skipped: Partial<Record<RerankSkipReason, number>>;
   candidates: Partial<Record<RerankCandidateSource, number>>;
   latency: Partial<Record<RerankCandidateSource, LatencyHistogramSnapshot>>;
@@ -538,6 +545,7 @@ export class LlmCallMetrics {
  */
 export class RerankMetrics {
   private invocations = 0;
+  private degraded = 0;
   private readonly skippedCounts = new Map<RerankSkipReason, number>();
   private readonly candidateCounts = new Map<RerankCandidateSource, number>();
   private readonly latencyStates = new Map<RerankCandidateSource, HistogramState>();
@@ -549,6 +557,16 @@ export class RerankMetrics {
 
   recordSkipped(reason: RerankSkipReason): void {
     this.skippedCounts.set(reason, (this.skippedCounts.get(reason) ?? 0) + 1);
+  }
+
+  /**
+   * Issue #1019 — record that a reranker invocation degraded to the fused
+   * order because the cross-encoder threw at runtime. Called from the
+   * reranker's catch/fallback path so the degradation is visible on `/metrics`
+   * rather than only in a one-shot warning.
+   */
+  recordDegraded(): void {
+    this.degraded += 1;
   }
 
   recordInvocation(sample: { latencyMs: number; candidatesIn: number; cacheHits: number }): void {
@@ -582,11 +600,12 @@ export class RerankMetrics {
     const latency: RerankMetricsSnapshot['latency'] = {};
     for (const [source, state] of this.latencyStates.entries()) latency[source] = snapshotHistogram(state);
 
-    return { invocations: this.invocations, skipped, candidates, latency };
+    return { invocations: this.invocations, degraded: this.degraded, skipped, candidates, latency };
   }
 
   reset(): void {
     this.invocations = 0;
+    this.degraded = 0;
     this.skippedCounts.clear();
     this.candidateCounts.clear();
     this.latencyStates.clear();

@@ -307,6 +307,13 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     emittedWhen: 'Emitted when reranker telemetry is available and candidate sources have been observed.',
   },
   {
+    name: 'kb_rerank_degraded_total',
+    type: 'counter',
+    help: 'Reranker-stage degradations where the cross-encoder threw at runtime and the stage fell back to the fused order.',
+    labels: [],
+    emittedWhen: 'Emitted when reranker telemetry is available.',
+  },
+  {
     name: 'kb_query_cache_hits_total',
     type: 'counter',
     help: 'Query embedding cache hits.',
@@ -1025,6 +1032,7 @@ function rerankCounterMetrics(snapshot: RerankMetricsSnapshot | undefined): Metr
 
   return [
     defineMetric('kb_rerank_invocations_total', [{ name: 'kb_rerank_invocations_total', value: snapshot.invocations }]),
+    defineMetric('kb_rerank_degraded_total', [{ name: 'kb_rerank_degraded_total', value: snapshot.degraded }]),
     defineMetric('kb_rerank_skipped_total', skippedSamples),
     defineMetric('kb_rerank_candidates_total', candidateSamples),
   ];
