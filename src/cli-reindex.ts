@@ -14,6 +14,7 @@ import {
   writeReindexProgress,
   type ReindexProgress,
 } from './reindex-progress.js';
+import { ActiveModelResolutionError } from './model-resolution.js';
 import { isContextualRetrievalEnabled } from './config/contextual-preface.js';
 import { FAISS_INDEX_PATH } from './config/paths.js';
 import { assertSufficientDiskSpace } from './disk-preflight.js';
@@ -25,7 +26,7 @@ import { extractVerbosity } from './cli-shared.js';
 export const REINDEX_HELP = `kb reindex — rebuild FAISS indexes (RFC 017)
 
 Usage:
-  kb reindex --with-context [--kb=<name>...] [--force]
+  kb reindex --with-context [--kb=<name>...] [--model=<id>] [--force]
   kb reindex status [--kb=<name>...] [--format=md|json]
 
 The \`--with-context\` flag is REQUIRED in this milestone (M0b). It runs
@@ -92,6 +93,15 @@ Options:
                         (unknown name -> exit 2). Repeat for multiple KBs.
                         Default: every registered KB. Status: limit the
                         report to this KB.
+  --model=<id>          Reindex this registered model_id instead of the
+                        active one. Default: the active model resolved from
+                        \`$FAISS_INDEX_PATH/active.txt\` (same precedence as
+                        \`kb search\`) — NOT the EMBEDDING_PROVIDER/OLLAMA_MODEL
+                        env vars. This makes a stale \`OLLAMA_MODEL\` export
+                        inert: it can no longer silently create an empty
+                        parallel FAISS store or purge the shared \`.index\`
+                        content-hash caches (issue #1043). An unregistered or
+                        malformed id exits 2.
   --force               Bypass the LRA cron window guard AND the
                         self-runtime-budget guard. Required to start
                         a reindex inside 06:00-10:30 UTC or when the
@@ -105,7 +115,8 @@ Options:
 Exit codes:
   0   success — index swapped / status reported
   1   updateIndex reported partial or failed status
-  2   argv / env error (e.g. --kb=<missing>, missing --with-context)
+  2   argv / env error (e.g. --kb=<missing>, --model=<unregistered>,
+      unresolvable active model, missing --with-context)
   3   guard blocked the run (inside or crossing the LRA window)
   4   another reindex is already running on the same model
   5   disk-space preflight failed (estimated write exceeds free space
@@ -116,6 +127,8 @@ interface ReindexArgs {
   withContext: boolean;
   knowledgeBases: string[];
   force: boolean;
+  /** Issue #1043 — explicit model override; undefined ⇒ active model. */
+  model?: string;
 }
 
 function parseReindexArgs(rest: string[]): ReindexArgs {
@@ -139,6 +152,14 @@ function parseReindexArgs(rest: string[]): ReindexArgs {
         throw new Error(`empty --kb=<name> value`);
       }
       out.knowledgeBases.push(value);
+      continue;
+    }
+    if (arg.startsWith('--model=')) {
+      const value = arg.slice('--model='.length);
+      if (value.length === 0) {
+        throw new Error(`empty --model=<id> value`);
+      }
+      out.model = value;
       continue;
     }
     throw new Error(`unknown option '${arg}'`);
@@ -207,12 +228,20 @@ export async function runReindexCli(rest: string[]): Promise<number> {
     result = await runReindex({
       knowledgeBases: parsed.knowledgeBases,
       force: parsed.force,
+      model: parsed.model,
     });
   } catch (err) {
     progress.stop();
     const message = (err as Error).message;
     const code = (err as { code?: unknown }).code;
     if (code === 'KB_NOT_FOUND') {
+      process.stderr.write(`kb reindex: ${message}\n`);
+      return 2;
+    }
+    // Issue #1043 — an unresolvable/invalid/unregistered model (bad --model=,
+    // malformed active.txt, no registered model) is an argv/env error, not a
+    // rebuild failure: map it to exit 2 like --kb=<missing>.
+    if (err instanceof ActiveModelResolutionError) {
       process.stderr.write(`kb reindex: ${message}\n`);
       return 2;
     }

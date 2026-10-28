@@ -43,12 +43,34 @@ function makeNeverRunSummary(): import('./FaissIndexManager.js').IndexUpdateSumm
   } as unknown as import('./FaissIndexManager.js').IndexUpdateSummary;
 }
 
+/**
+ * Issue #1043 — register a model under the temp FAISS dir so
+ * `resolveActiveModel` treats it as registered (dir + model_name.txt, no
+ * `.adding` sentinel). Does NOT touch active.txt.
+ */
+async function registerModel(modelId: string, modelName: string): Promise<void> {
+  const dir = path.join(tempDir, 'faiss', 'models', modelId);
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(path.join(dir, 'model_name.txt'), modelName);
+}
+
+/** Register a model AND point active.txt at it. */
+async function registerActiveModel(modelId: string, modelName: string): Promise<void> {
+  await registerModel(modelId, modelName);
+  await fsp.writeFile(path.join(tempDir, 'faiss', 'active.txt'), modelId);
+}
+
 beforeEach(async () => {
   tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-reindex-runner-'));
   savedEnv = {
     FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
     KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
     KB_CONTEXTUAL_RETRIEVAL: process.env.KB_CONTEXTUAL_RETRIEVAL,
+    // Issue #1043 — tests below set these to simulate the playbook env typo,
+    // so capture and restore them.
+    EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER,
+    OLLAMA_MODEL: process.env.OLLAMA_MODEL,
+    KB_ACTIVE_MODEL: process.env.KB_ACTIVE_MODEL,
   };
   setEnv('FAISS_INDEX_PATH', path.join(tempDir, 'faiss'));
   setEnv('KNOWLEDGE_BASES_ROOT_DIR', path.join(tempDir, 'kbs'));
@@ -437,6 +459,11 @@ describe('.reindex.run.json + PID liveness', () => {
   });
 
   it('initializes the default manager under the model write lock', async () => {
+    // Issue #1043 — the default (non-injected) path resolves the ACTIVE model
+    // from active.txt, so register one in the temp FAISS dir. The manager the
+    // runner builds for `ollama__nomic-embed-text` then has its prototype
+    // initialize/updateIndex spied below.
+    await registerActiveModel('ollama__nomic-embed-text', 'nomic-embed-text');
     const { FaissIndexManager } = await import('./FaissIndexManager.js');
     let lockedDuringInitialize = false;
     const initialize = jest.spyOn(FaissIndexManager.prototype, 'initialize')
@@ -466,6 +493,96 @@ describe('.reindex.run.json + PID liveness', () => {
       updateIndex.mockRestore();
       getLastIndexUpdateSummary.mockRestore();
     }
+  });
+
+  // Issue #1043 — the default (non-injected) path must bind the ACTIVE model
+  // from active.txt, with `--model` the sole explicit override, so a stale
+  // OLLAMA_MODEL/EMBEDDING_PROVIDER env can no longer create an empty parallel
+  // store (and trigger the Issue #90 shared-cache purge). These tests capture
+  // the model_id the runner actually bound via a prototype updateIndex spy.
+  describe('active-model resolution (issue #1043)', () => {
+    async function runAndCaptureBoundModel(opts: {
+      model?: string;
+    }): Promise<{ outcome: string; boundModelId: string | undefined }> {
+      const { FaissIndexManager } = await import('./FaissIndexManager.js');
+      let boundModelId: string | undefined;
+      const updateIndex = jest
+        .spyOn(FaissIndexManager.prototype, 'updateIndex')
+        .mockImplementation(async function (this: { modelId: string }) {
+          boundModelId = this.modelId;
+        });
+      const initialize = jest
+        .spyOn(FaissIndexManager.prototype, 'initialize')
+        .mockImplementation(async () => undefined);
+      const getLast = jest
+        .spyOn(FaissIndexManager.prototype, 'getLastIndexUpdateSummary')
+        .mockReturnValue(makeNeverRunSummary());
+      try {
+        const result = await runner.runReindex({
+          knowledgeBases: [],
+          force: true,
+          resolveKbs: async () => ['alpha'],
+          model: opts.model,
+        });
+        return { outcome: result.outcome, boundModelId };
+      } finally {
+        updateIndex.mockRestore();
+        initialize.mockRestore();
+        getLast.mockRestore();
+      }
+    }
+
+    it('binds the active.txt model, ignoring a mismatched OLLAMA_MODEL env typo', async () => {
+      // The playbook bug: EMBEDDING_PROVIDER/OLLAMA_MODEL env derive a DIFFERENT
+      // id (`ollama__nomic-embed-text-latest`, an empty parallel store) than the
+      // live active model named in active.txt (`ollama__nomic-embed-text`).
+      setEnv('EMBEDDING_PROVIDER', 'ollama');
+      setEnv('OLLAMA_MODEL', 'nomic-embed-text:latest');
+      setEnv('KB_ACTIVE_MODEL', undefined);
+      jest.resetModules();
+      runner = (await import('./reindex-runner.js')) as RunnerModule;
+
+      await registerActiveModel('ollama__nomic-embed-text', 'nomic-embed-text');
+      // The parallel :latest store also exists but must NOT be chosen.
+      await registerModel('ollama__nomic-embed-text-latest', 'nomic-embed-text:latest');
+
+      const { outcome, boundModelId } = await runAndCaptureBoundModel({});
+      expect(outcome).toBe('completed');
+      expect(boundModelId).toBe('ollama__nomic-embed-text');
+    });
+
+    it('honors an explicit --model override, binding that registered model', async () => {
+      setEnv('KB_ACTIVE_MODEL', undefined);
+      jest.resetModules();
+      runner = (await import('./reindex-runner.js')) as RunnerModule;
+
+      await registerActiveModel('ollama__nomic-embed-text', 'nomic-embed-text');
+      await registerModel('ollama__other-embed', 'other-embed');
+
+      const { outcome, boundModelId } = await runAndCaptureBoundModel({
+        model: 'ollama__other-embed',
+      });
+      expect(outcome).toBe('completed');
+      expect(boundModelId).toBe('ollama__other-embed');
+    });
+
+    it('rejects an unregistered --model and writes no run-state file', async () => {
+      setEnv('KB_ACTIVE_MODEL', undefined);
+      jest.resetModules();
+      runner = (await import('./reindex-runner.js')) as RunnerModule;
+      await registerActiveModel('ollama__nomic-embed-text', 'nomic-embed-text');
+
+      await expect(
+        runner.runReindex({
+          knowledgeBases: [],
+          force: true,
+          resolveKbs: async () => ['alpha'],
+          model: 'ollama__not-registered',
+        }),
+      ).rejects.toMatchObject({ name: 'ActiveModelResolutionError' });
+      // The resolution happens before any run-state is written, so none leaks.
+      await expect(fsp.access(runner.runStateFilePath())).rejects.toThrow();
+    });
   });
 
   it('reports model lock contention as lock_held', async () => {
