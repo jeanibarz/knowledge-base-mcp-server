@@ -258,9 +258,12 @@ describe('RerankMetrics', () => {
     metrics.recordSkipped('skip_domain');
     metrics.recordInvocation({ latencyMs: 12, candidatesIn: 3, cacheHits: 1 });
     metrics.recordInvocation({ latencyMs: 2, candidatesIn: 2, cacheHits: 2 });
+    metrics.recordDegraded();
+    metrics.recordDegraded();
 
     const snap = metrics.snapshot();
     expect(snap.invocations).toBe(2);
+    expect(snap.degraded).toBe(2);
     expect(snap.skipped).toEqual({ disabled: 1, skip_domain: 2 });
     expect(snap.candidates).toEqual({ cache_hit: 3, model_scored: 2 });
     expect(snap.latency.model_scored).toMatchObject({
@@ -275,11 +278,13 @@ describe('RerankMetrics', () => {
     const metrics = new RerankMetrics();
     metrics.recordSkipped('no_candidates');
     metrics.recordInvocation({ latencyMs: 1, candidatesIn: 1, cacheHits: 0 });
+    metrics.recordDegraded();
 
     metrics.reset();
 
     expect(metrics.snapshot()).toEqual({
       invocations: 0,
+      degraded: 0,
       skipped: {},
       candidates: {},
       latency: {},

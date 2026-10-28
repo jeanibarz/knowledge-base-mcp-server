@@ -193,7 +193,13 @@ export async function applyRerankerIfEnabled<T extends RerankableDocument>(
     };
   }
 
-  if (out.degraded && out.degradeReason !== null) warnOnce(out.degradeReason, out.model);
+  if (out.degraded) {
+    // Issue #1019 — the cross-encoder threw and we fell back to the fused
+    // order. Count every such degradation on `/metrics` (warnOnce only logs
+    // the first occurrence of each unique reason).
+    rerankMetrics.recordDegraded();
+    if (out.degradeReason !== null) warnOnce(out.degradeReason, out.model);
+  }
   rerankMetrics.recordInvocation({
     latencyMs: out.tookMs,
     candidatesIn: out.candidatesIn,

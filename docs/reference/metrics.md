@@ -49,6 +49,7 @@ Histogram rows list the base family name; scrapes emit `_bucket`, `_sum`, and `_
 | <code>kb_rerank_invocations_total</code> | <code>counter</code> | _none_ | Reranker-stage invocations. | Emitted when reranker telemetry is available. |
 | <code>kb_rerank_skipped_total</code> | <code>counter</code> | <code>reason</code> | Reranker-stage skips by bounded reason. | Emitted when reranker telemetry is available and skip reasons have been observed. |
 | <code>kb_rerank_candidates_total</code> | <code>counter</code> | <code>source</code> | Reranker-stage candidates by scoring source. | Emitted when reranker telemetry is available and candidate sources have been observed. |
+| <code>kb_rerank_degraded_total</code> | <code>counter</code> | _none_ | Reranker-stage degradations where the cross-encoder threw at runtime and the stage fell back to the fused order. | Emitted when reranker telemetry is available. |
 | <code>kb_query_cache_hits_total</code> | <code>counter</code> | _none_ | Query embedding cache hits. | Always emitted. |
 | <code>kb_query_cache_misses_total</code> | <code>counter</code> | _none_ | Query embedding cache misses. | Always emitted. |
 | <code>kb_query_cache_bypasses_total</code> | <code>counter</code> | _none_ | Query embedding cache bypasses. | Always emitted. |
