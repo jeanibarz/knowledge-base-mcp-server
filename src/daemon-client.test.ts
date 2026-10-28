@@ -272,6 +272,49 @@ describe('daemon client', () => {
     });
   });
 
+  it('round-trips the build block from GET /health', async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'ok',
+        build: { version: '1.2.3', commit: 'abcdef1234567890' },
+      }));
+    }, async (url) => {
+      await expect(fetchDaemonHealth({ env: { KB_DAEMON_URL: url.href } })).resolves.toEqual({
+        status: 'ok',
+        build: { version: '1.2.3', commit: 'abcdef1234567890' },
+      });
+    });
+  });
+
+  it('tolerates an older daemon that omits the build block', async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', pid: 4242 }));
+    }, async (url) => {
+      await expect(fetchDaemonHealth({ env: { KB_DAEMON_URL: url.href } })).resolves.toEqual({
+        status: 'ok',
+        pid: 4242,
+      });
+    });
+  });
+
+  it('degrades a malformed build block to absent without breaking the rest of /health', async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'ok',
+        pid: 4242,
+        build: { version: 7, commit: 'abcdef1' },
+      }));
+    }, async (url) => {
+      await expect(fetchDaemonHealth({ env: { KB_DAEMON_URL: url.href } })).resolves.toEqual({
+        status: 'ok',
+        pid: 4242,
+      });
+    });
+  });
+
   it('tolerates an older daemon that omits the admission block', async () => {
     await withServer((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });

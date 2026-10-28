@@ -17,12 +17,14 @@ import {
   assertDaemonSocketPath,
   tryFetchDaemonHealth,
   type DaemonAdmissionHealth,
+  type DaemonBuildHealth,
   type DaemonCommand,
   type DaemonHealth,
   type DaemonOwnership,
   type DaemonPrewarmHealth,
   type DaemonRunResult,
 } from './daemon-client.js';
+import { readBuildInfo, type BuildInfo } from './build-info.js';
 import {
   DaemonAdmissionGate,
   DAEMON_RETRY_AFTER_SECONDS,
@@ -62,9 +64,10 @@ The daemon accepts read-only search/list/stats requests and exits after the
 idle timeout.
 
 \`kb serve status\` reports whether a daemon is reachable at the configured
-URL along with its PID, idle timeout, supported commands, and uptime. It
-never starts or stops a daemon. When \`kb search --daemon\` cannot reach a
-daemon it prints a one-line notice to stderr and runs the search directly.
+URL along with its PID, idle timeout, supported commands, uptime, and the
+build (version + commit) it is serving. It never starts or stops a daemon.
+When \`kb search --daemon\` cannot reach a daemon it prints a one-line notice
+to stderr and runs the search directly.
 
 Options:
   --host=<host>             Loopback host to bind (default: 127.0.0.1).
@@ -135,6 +138,12 @@ export interface StartDaemonServerOptions extends Partial<ServeArgs> {
    * explicit config so the cap/queue/429 behaviour is deterministic.
    */
   admission?: DaemonAdmissionConfig;
+  /**
+   * Build provenance surfaced on `/health` (issue #1020). Defaults to
+   * `readBuildInfo()` resolved once at startup; tests inject a fixed value so
+   * the health snapshot is deterministic.
+   */
+  buildInfo?: BuildInfo;
 }
 
 export interface DaemonCommandHandlerOptions {
@@ -364,7 +373,21 @@ function formatServeStatus(health: DaemonHealth, queriedUrl: URL): string {
   if (health.admission !== undefined) {
     lines.push(`  load:         ${formatAdmissionLoad(health.admission)}`);
   }
+  if (health.build !== undefined) {
+    lines.push(`  build:        ${formatBuildInfo(health.build)}`);
+  }
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Render the running build as `<version> (<short-commit>)`, matching the issue
+ * #1020 goal of letting an operator confirm which build a resident daemon
+ * serves. The commit is abbreviated to 12 chars (as elsewhere in the CLI)
+ * unless it is the `unknown` sentinel from `build-info.ts`.
+ */
+function formatBuildInfo(build: DaemonBuildHealth): string {
+  const commit = /^[0-9a-f]{7,40}$/i.test(build.commit) ? build.commit.slice(0, 12) : build.commit;
+  return `${build.version} (${commit})`;
 }
 
 function formatAdmissionLoad(admission: DaemonAdmissionHealth): string {
@@ -421,6 +444,9 @@ export async function startDaemonServer(
     appendDaemonAdmissionMetrics(await baseMetricsHandler(), admission);
   let idleTimer: NodeJS.Timeout | undefined;
   const startedAt = Date.now();
+  // Issue #1020 — resolve build provenance once at startup (readBuildInfo may
+  // shell out to git) and serve it from the cached value on every /health hit.
+  const buildInfo = options.buildInfo ?? readBuildInfo();
   let boundUrl = '';
 
   let resolveClosed!: () => void;
@@ -444,6 +470,7 @@ export async function startDaemonServer(
       queue_max: admissionConfig.queueMax,
       closed: admission.isClosed,
     },
+    build: { version: buildInfo.version, commit: buildInfo.commit },
   });
 
   const server = http.createServer((req, res) => {

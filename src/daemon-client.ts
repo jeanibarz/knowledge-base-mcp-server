@@ -28,6 +28,19 @@ export interface DaemonAdmissionHealth {
 }
 
 /**
+ * Build provenance of the running daemon, mirrored from `build-info.ts`
+ * (issue #1020). Lets an operator confirm a resident daemon picked up a new
+ * build after an upgrade without killing and inspecting the process. This is
+ * the loopback-only `kb serve` daemon health — NOT the unauthenticated remote
+ * MCP transport /health, which deliberately omits version for fingerprint
+ * safety.
+ */
+export interface DaemonBuildHealth {
+  version: string;
+  commit: string;
+}
+
+/**
  * Lifecycle snapshot returned by the daemon's `GET /health` endpoint and
  * surfaced verbatim by `kb serve status --json`. Every field beyond `status`
  * is optional so a newer client stays compatible with an older daemon that
@@ -43,6 +56,7 @@ export interface DaemonHealth {
   uptime_ms?: number;
   prewarm?: DaemonPrewarmHealth;
   admission?: DaemonAdmissionHealth;
+  build?: DaemonBuildHealth;
 }
 
 export interface DaemonEndpoint {
@@ -363,7 +377,16 @@ function parseDaemonHealth(payload: unknown): DaemonHealth {
   if (prewarm !== null) health.prewarm = prewarm;
   const admission = parseDaemonAdmissionHealth(obj.admission);
   if (admission !== null) health.admission = admission;
+  const build = parseDaemonBuildHealth(obj.build);
+  if (build !== null) health.build = build;
   return health;
+}
+
+function parseDaemonBuildHealth(payload: unknown): DaemonBuildHealth | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const obj = payload as Record<string, unknown>;
+  if (typeof obj.version !== 'string' || typeof obj.commit !== 'string') return null;
+  return { version: obj.version, commit: obj.commit };
 }
 
 function parseDaemonPrewarmHealth(payload: unknown): DaemonPrewarmHealth | null {
