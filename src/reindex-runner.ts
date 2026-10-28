@@ -47,6 +47,9 @@ import {
 } from './contextual-preface.js';
 import { KBError } from './errors.js';
 import { FaissIndexManager, type IndexUpdateSummary } from './FaissIndexManager.js';
+import { parseModelId, type EmbeddingProvider } from './model-id.js';
+import { ActiveModelResolutionError, resolveActiveModel } from './model-resolution.js';
+import { readStoredIndexType, readStoredModelName } from './model-storage-layout.js';
 import { writeFileAtomicDurable } from './file-utils.js';
 import { listKnowledgeBases } from './kb-fs.js';
 import { logger } from './logger.js';
@@ -117,9 +120,18 @@ export interface ReindexOptions {
    */
   force: boolean;
   /**
+   * Issue #1043 — explicit `--model=<id>` override. When set, it is passed to
+   * `resolveActiveModel` as the per-call override (validated + must be a
+   * registered model). When omitted, the reindex targets the ACTIVE model from
+   * `active.txt` (the same precedence `kb search` uses), NOT whatever
+   * `OLLAMA_MODEL`/`EMBEDDING_PROVIDER` env happens to be set — see the manager
+   * resolution in `runReindex`.
+   */
+  model?: string;
+  /**
    * Test seam: the manager whose model directory and embeddings will be
-   * the target. Production callers omit this and the orchestrator
-   * constructs a default manager from env vars.
+   * the target. Production callers omit this and the orchestrator resolves
+   * the active model (`active.txt` / `--model`) and constructs the manager.
    */
   manager?: FaissIndexManager;
   /**
@@ -574,6 +586,40 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
   //    at the observed embedding rebuild rate because an incremental update
   //    can escalate to a whole-index FAISS rebuild.
   const kbs = await resolveKbsInScope(options);
+
+  // Issue #1043 — resolve the embedding target to the ACTIVE model up front,
+  // before any run-state is written, so a resolution error fails cleanly
+  // (and leaves no orphaned `.reindex.run.json`). Previously the manager was
+  // constructed via `new FaissIndexManager()`, which derives its model_id from
+  // `EMBEDDING_PROVIDER`/`OLLAMA_MODEL` env — so a playbook env typo (e.g.
+  // `OLLAMA_MODEL=nomic-embed-text:latest`) bound a *different*, empty
+  // `ollama__nomic-embed-text-latest` store instead of the live
+  // `ollama__nomic-embed-text` named in `active.txt`. That empty parallel store
+  // then triggered the Issue #90 empty-index cleanup, which deletes the shared,
+  // cross-model per-KB `.index` content-hash caches the active model still
+  // needs. Resolving from `active.txt` (with `--model` as the sole explicit
+  // override) matches `kb search`/MCP/`kb ask` and makes an env typo inert.
+  // Test seams (`manager` / `runUpdateIndex`) bypass this entirely.
+  let resolvedManager: FaissIndexManager | undefined = options.manager;
+  let managerNeedsInit = false;
+  if (options.manager === undefined && options.runUpdateIndex === undefined) {
+    const modelId = await resolveActiveModel({ explicitOverride: options.model });
+    const { provider } = parseModelId(modelId);
+    const modelName = await readStoredModelName(modelId);
+    if (modelName === null) {
+      throw new ActiveModelResolutionError(
+        `model_name.txt missing for registered model "${modelId}"; the model directory ` +
+          `is half-built. Run \`kb models list\` and re-add it if needed.`,
+      );
+    }
+    resolvedManager = new FaissIndexManager({
+      provider: provider as EmbeddingProvider,
+      modelName,
+      indexType: await readStoredIndexType(modelId),
+    });
+    managerNeedsInit = true;
+  }
+
   const estimate = await estimateContextualReindexWork(kbs, now);
   const totalChunks = estimate.total_chunks;
   const estimatedSeconds = Math.ceil(
@@ -672,12 +718,16 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
       // configured (e.g. in CI) even when `updateIndex` is mocked here.
       summary = await options.runUpdateIndex({ force: shouldForceRebuild });
     } else {
-      const manager = options.manager ?? new FaissIndexManager();
+      // `resolvedManager` is always set on this branch: it is either the
+      // injected test manager or the active-model manager built above.
+      const manager = resolvedManager!;
       summary = await withWriteLock(manager.modelDir, async () => {
         // Initialization can recover a pending sidecar commit and repair the
         // persisted index, so keep it under the same lock as updateIndex.
-        // The lock primitive is re-entrant for this async flow.
-        if (options.manager === undefined) await manager.initialize();
+        // The lock primitive is re-entrant for this async flow. Only the
+        // manager we constructed needs initialize(); an injected one is
+        // assumed ready (preserves the pre-#1043 `options.manager` contract).
+        if (managerNeedsInit) await manager.initialize();
         return runManagerUpdateIndex(manager, { force: shouldForceRebuild });
       });
     }

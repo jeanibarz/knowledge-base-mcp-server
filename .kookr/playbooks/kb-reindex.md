@@ -58,13 +58,27 @@ Export the path/index vars explicitly:
 ```bash
 export KNOWLEDGE_BASES_ROOT_DIR="$HOME/knowledge_bases"
 export FAISS_INDEX_PATH="$HOME/knowledge_bases/.faiss"
-export OLLAMA_MODEL=nomic-embed-text:latest
+export OLLAMA_MODEL=nomic-embed-text
 export EMBEDDING_PROVIDER=ollama
 export OLLAMA_BASE_URL=http://localhost:11434
 export LOG_FILE="$HOME/knowledge_bases/.kb-canonical.jsonl"
 export KB_LOG_FORMAT=both
 export PATH="$HOME/.nvm/versions/node/v24.11.1/bin:$PATH"
 ```
+
+> **`OLLAMA_MODEL=nomic-embed-text` — NO `:latest` tag.** The on-disk FAISS
+> store id is derived from the tag *as typed*: untagged `nomic-embed-text` is
+> `ollama__nomic-embed-text` (the active store named in
+> `$FAISS_INDEX_PATH/active.txt`), while `nomic-embed-text:latest` derives a
+> *different* id, `ollama__nomic-embed-text-latest`. Exporting the tagged form
+> does not refresh the index `kb search` uses — it opens an empty parallel
+> store, and because that store has no FAISS files yet, startup runs the Issue
+> #90 empty-index cleanup, which deletes the **shared, cross-model** per-KB
+> `.index` content-hash caches the active model still needs. `kb reindex` now
+> resolves the active model from `active.txt` (same precedence as `kb search`),
+> so a stale `OLLAMA_MODEL` here can no longer silently target a parallel store
+> — but keep this export correct anyway, and pass `kb reindex --model=<id>`
+> only when you deliberately want a non-active store.
 
 ## Steps
 
