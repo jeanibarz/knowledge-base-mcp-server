@@ -1,6 +1,6 @@
 import * as path from 'path';
 import type { ColdIndexScenarioResult, FixtureOverrides, ScenarioContext } from '../types.js';
-import { prepareCorpus } from './external-corpus.js';
+import { prepareCorpus, readIndexedCounts } from './external-corpus.js';
 import { durationMs } from '../utils.js';
 
 interface ManagerLike {
@@ -28,10 +28,25 @@ export async function runColdIndexScenario(
   const end = process.hrtime.bigint();
   const counters = context.stubController?.getCounters();
 
+  // For an external corpus, report the counts the production FaissIndexManager
+  // actually recorded in last-index-update.json rather than prepareCorpus's
+  // pre-index estimate from countCorpusChunks (issue #1067) — the estimate uses
+  // a naive MarkdownTextSplitter that does not match the real ingest chunker.
+  // Synthetic fixtures keep the generator's exact counts. Fall back to the
+  // estimate when the manifest is absent or reports zero (indexing wrote no
+  // summary), so this never regresses to worse data.
+  let chunks = fixture.chunkCount;
+  let files = fixture.files;
+  if (prepared.external) {
+    const indexed = await readIndexedCounts(context.faissIndexPath);
+    if (indexed.files > 0) files = indexed.files;
+    if (indexed.chunks > 0) chunks = indexed.chunks;
+  }
+
   return {
     add_documents_calls: counters?.addDocumentsCalls,
-    chunks: fixture.chunkCount,
-    files: fixture.files,
+    chunks,
+    files,
     from_texts_calls: counters?.fromTextsCalls,
     ms: Number(durationMs(start, end).toFixed(3)),
     save_calls: counters?.saveCalls,
