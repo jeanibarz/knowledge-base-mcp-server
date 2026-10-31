@@ -1,7 +1,6 @@
 import * as path from 'path';
 import type { FixtureOverrides, MemoryScenarioResult, ScenarioContext } from '../types.js';
-import { generateKnowledgeBaseFixture } from '../fixtures/generator.js';
-import { resetDirectory } from '../utils.js';
+import { prepareCorpus } from './external-corpus.js';
 
 interface ManagerLike {
   initialize(): Promise<void>;
@@ -12,18 +11,8 @@ export async function runMemoryScenario(
   context: ScenarioContext,
   fixtureOverrides: FixtureOverrides = {},
 ): Promise<MemoryScenarioResult> {
-  await resetDirectory(context.knowledgeBasesRootDir);
-  await resetDirectory(context.faissIndexPath);
-  context.stubController?.resetCounters();
-
-  const fixture = await generateKnowledgeBaseFixture({
-    files: fixtureOverrides.files ?? 100,
-    knowledgeBaseName: context.knowledgeBaseName,
-    rootDir: context.knowledgeBasesRootDir,
-    seed: context.fixtureSeed + 4,
-    targetChunksPerFile: fixtureOverrides.targetChunksPerFile ?? 5,
-    chunkSize: fixtureOverrides.chunkSize,
-  });
+  const prepared = await prepareCorpus(context, fixtureOverrides, { seedOffset: 4 });
+  const fixture = prepared.fixture;
 
   const { FaissIndexManager } = await import(
     new URL(`file://${path.join(context.buildRoot, 'FaissIndexManager.js')}?scenario=memory-${Date.now()}`).href,
@@ -33,7 +22,7 @@ export async function runMemoryScenario(
 
   const manager = new FaissIndexManager();
   await manager.initialize();
-  await manager.updateIndex(context.knowledgeBaseName);
+  await manager.updateIndex(prepared.knowledgeBaseName);
 
   const usage = process.memoryUsage();
 

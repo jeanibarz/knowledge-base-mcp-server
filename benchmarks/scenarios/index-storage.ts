@@ -1,8 +1,7 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import type { IndexStorageScenarioResult, ScenarioContext } from '../types.js';
-import { generateKnowledgeBaseFixture } from '../fixtures/generator.js';
-import { resetDirectory } from '../utils.js';
+import { prepareCorpus } from './external-corpus.js';
 
 interface IndexStorageScenarioOptions {
   files?: number;
@@ -28,18 +27,12 @@ export async function runIndexStorageScenario(
   const files = options.files ?? 100;
   const targetChunksPerFile = options.targetChunksPerFile ?? 5;
 
-  await resetDirectory(context.knowledgeBasesRootDir);
-  await resetDirectory(context.faissIndexPath);
-  context.stubController?.resetCounters();
-
-  const fixture = await generateKnowledgeBaseFixture({
-    files,
-    knowledgeBaseName: context.knowledgeBaseName,
-    rootDir: context.knowledgeBasesRootDir,
-    seed: context.fixtureSeed + 6,
-    targetChunksPerFile,
-    chunkSize: options.chunkSize,
-  });
+  const prepared = await prepareCorpus(
+    context,
+    { files, targetChunksPerFile, chunkSize: options.chunkSize },
+    { files, seedOffset: 6, targetChunksPerFile },
+  );
+  const fixture = prepared.fixture;
 
   const { FaissIndexManager } = await import(
     new URL(`file://${path.join(context.buildRoot, 'FaissIndexManager.js')}?scenario=index-storage-${Date.now()}`).href,
@@ -49,7 +42,7 @@ export async function runIndexStorageScenario(
 
   const manager = new FaissIndexManager();
   await manager.initialize();
-  await manager.updateIndex(context.knowledgeBaseName);
+  await manager.updateIndex(prepared.knowledgeBaseName);
 
   const indexDir = path.join(manager.modelDir, 'faiss.index');
   const vectorBytes = await safeStatSize(path.join(indexDir, 'faiss.index'));

@@ -1,7 +1,7 @@
 import * as path from 'path';
 import type { FixtureOverrides, ScenarioContext, WarmQueryScenarioResult } from '../types.js';
-import { generateKnowledgeBaseFixture } from '../fixtures/generator.js';
-import { durationMs, percentile, resetDirectory } from '../utils.js';
+import { prepareCorpus } from './external-corpus.js';
+import { durationMs, percentile } from '../utils.js';
 
 interface SearchResult {
   metadata: Record<string, unknown>;
@@ -19,18 +19,8 @@ export async function runWarmQueryScenario(
   context: ScenarioContext,
   fixtureOverrides: FixtureOverrides = {},
 ): Promise<WarmQueryScenarioResult> {
-  await resetDirectory(context.knowledgeBasesRootDir);
-  await resetDirectory(context.faissIndexPath);
-  context.stubController?.resetCounters();
-
-  const fixture = await generateKnowledgeBaseFixture({
-    files: fixtureOverrides.files ?? 100,
-    knowledgeBaseName: context.knowledgeBaseName,
-    rootDir: context.knowledgeBasesRootDir,
-    seed: context.fixtureSeed + 3,
-    targetChunksPerFile: fixtureOverrides.targetChunksPerFile ?? 5,
-    chunkSize: fixtureOverrides.chunkSize,
-  });
+  const prepared = await prepareCorpus(context, fixtureOverrides, { seedOffset: 3 });
+  const fixture = prepared.fixture;
 
   const { FaissIndexManager } = await import(
     new URL(`file://${path.join(context.buildRoot, 'FaissIndexManager.js')}?scenario=warm-query-${Date.now()}`).href,
@@ -40,12 +30,12 @@ export async function runWarmQueryScenario(
 
   const manager = new FaissIndexManager();
   await manager.initialize();
-  await manager.updateIndex(context.knowledgeBaseName);
+  await manager.updateIndex(prepared.knowledgeBaseName);
 
   const measurements: number[] = [];
   for (let repetition = 0; repetition < 30; repetition += 1) {
     const start = process.hrtime.bigint();
-    await manager.updateIndex(context.knowledgeBaseName);
+    await manager.updateIndex(prepared.knowledgeBaseName);
     const results = await manager.similaritySearch(fixture.query, 10);
     const end = process.hrtime.bigint();
 
