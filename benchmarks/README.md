@@ -608,8 +608,8 @@ similar long-vs-short comparisons (`bge-small-en` 512, `mxbai-embed-large`
 out of the box. Pre-#107 the second leg crashed seven retries deep with
 `400 the input length exceeds the context length`.
 
-To override (e.g. for `--fixture=external` against your own KB whose chunks
-are already small enough):
+To override (`--fixture=external` keeps the real corpus's natural chunking,
+so the clamp only applies to generated fixtures):
 
 ```bash
 BENCH_FIXTURE_CHUNK_CHARS=1000 npm run bench:compare -- --models=…

@@ -4,8 +4,8 @@ import type {
   BatchQueryScenarioResult,
   ScenarioContext,
 } from '../types.js';
-import { generateKnowledgeBaseFixture } from '../fixtures/generator.js';
-import { durationMs, percentile, resetDirectory } from '../utils.js';
+import { prepareCorpus } from './external-corpus.js';
+import { durationMs, percentile } from '../utils.js';
 
 interface SearchResult {
   metadata: Record<string, unknown>;
@@ -45,18 +45,12 @@ export async function runBatchQueryScenario(
   const files = options.files ?? 100;
   const targetChunksPerFile = options.targetChunksPerFile ?? 5;
 
-  await resetDirectory(context.knowledgeBasesRootDir);
-  await resetDirectory(context.faissIndexPath);
-  context.stubController?.resetCounters();
-
-  const fixture = await generateKnowledgeBaseFixture({
-    files,
-    knowledgeBaseName: context.knowledgeBaseName,
-    rootDir: context.knowledgeBasesRootDir,
-    seed: context.fixtureSeed + 5,
-    targetChunksPerFile,
-    chunkSize: options.chunkSize,
-  });
+  const prepared = await prepareCorpus(
+    context,
+    { files, targetChunksPerFile, chunkSize: options.chunkSize },
+    { files, seedOffset: 5, targetChunksPerFile },
+  );
+  const fixture = prepared.fixture;
 
   const queries = options.queries && options.queries.length > 0
     ? options.queries
@@ -70,7 +64,7 @@ export async function runBatchQueryScenario(
 
   const manager = new FaissIndexManager();
   await manager.initialize();
-  await manager.updateIndex(context.knowledgeBaseName);
+  await manager.updateIndex(prepared.knowledgeBaseName);
 
   const runs: BatchQueryRunResult[] = [];
 

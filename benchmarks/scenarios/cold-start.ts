@@ -2,8 +2,8 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { MarkdownTextSplitter } from '@langchain/textsplitters';
 import type { ColdStartScenarioResult, FixtureOverrides, ScenarioContext } from '../types.js';
-import { generateKnowledgeBaseFixture } from '../fixtures/generator.js';
-import { durationMs, resetDirectory } from '../utils.js';
+import { listCorpusFiles, prepareCorpus, type PreparedCorpus } from './external-corpus.js';
+import { durationMs } from '../utils.js';
 
 interface EmbeddingsLike {
   embedDocuments(texts: string[]): Promise<number[][]>;
@@ -39,21 +39,12 @@ export async function runColdStartScenario(
   context: ScenarioContext,
   fixtureOverrides: FixtureOverrides = {},
 ): Promise<ColdStartScenarioResult> {
-  await resetDirectory(context.knowledgeBasesRootDir);
-  await resetDirectory(context.faissIndexPath);
+  // cold-start traditionally uses fewer files (20) than other scenarios (100).
+  // Honor BENCH_FIXTURE_FILES if explicitly set, else keep the smaller default.
+  const prepared = await prepareCorpus(context, fixtureOverrides, { files: 20, seedOffset: 1 });
+  const fixture = prepared.fixture;
 
-  const fixture = await generateKnowledgeBaseFixture({
-    // cold-start traditionally uses fewer files (20) than other scenarios (100).
-    // Honor BENCH_FIXTURE_FILES if explicitly set, else keep the smaller default.
-    files: fixtureOverrides.files ?? 20,
-    knowledgeBaseName: context.knowledgeBaseName,
-    rootDir: context.knowledgeBasesRootDir,
-    seed: context.fixtureSeed + 1,
-    targetChunksPerFile: fixtureOverrides.targetChunksPerFile ?? 5,
-    chunkSize: fixtureOverrides.chunkSize,
-  });
-
-  await createPersistedFixture(context, fixtureOverrides);
+  await createPersistedFixture(context, fixtureOverrides, prepared);
 
   const start = process.hrtime.bigint();
   const moduleUrl = new URL(`file://${path.join(context.buildRoot, 'FaissIndexManager.js')}?scenario=cold-start-${Date.now()}`);
@@ -72,6 +63,7 @@ export async function runColdStartScenario(
 async function createPersistedFixture(
   context: ScenarioContext,
   fixtureOverrides: FixtureOverrides,
+  prepared: PreparedCorpus,
 ): Promise<void> {
   // RFC 013 layout: persist into ${FAISS_INDEX_PATH}/models/<id>/{faiss.index/, model_name.txt}.
   // Probe a manager once to discover the env-derived modelDir/modelNameFile so the
@@ -82,8 +74,10 @@ async function createPersistedFixture(
   await fsp.mkdir(probe.modelDir, { recursive: true });
   const indexDir = path.join(probe.modelDir, 'faiss.index');
 
-  const kbPath = path.join(context.knowledgeBasesRootDir, context.knowledgeBaseName);
-  const filePaths = (await fsp.readdir(kbPath)).map((entry) => path.join(kbPath, entry));
+  const filePaths = prepared.external
+    ? await listCorpusFiles(context.knowledgeBasesRootDir)
+    : (await fsp.readdir(path.join(context.knowledgeBasesRootDir, context.knowledgeBaseName)))
+        .map((entry) => path.join(context.knowledgeBasesRootDir, context.knowledgeBaseName, entry));
   const chunkSize = fixtureOverrides.chunkSize && fixtureOverrides.chunkSize > 0 ? fixtureOverrides.chunkSize : 1000;
   const splitter = new MarkdownTextSplitter({
     chunkOverlap: Math.floor(chunkSize / 5),
@@ -118,7 +112,7 @@ async function createPersistedFixture(
     const realModule = await import(realUrl.href) as ManagerModule;
     const manager = new realModule.FaissIndexManager();
     await manager.initialize();
-    await manager.updateIndex(context.knowledgeBaseName);
+    await manager.updateIndex(prepared.knowledgeBaseName);
   }
 
   await fsp.writeFile(probe.modelNameFile, probe.modelName, 'utf-8');

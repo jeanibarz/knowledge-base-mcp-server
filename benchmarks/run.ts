@@ -11,6 +11,7 @@ import { runIndexStorageScenario } from './scenarios/index-storage.js';
 import { runMemoryScenario } from './scenarios/memory.js';
 import { runRetrievalQualityScenario } from './scenarios/retrieval-quality.js';
 import { runWarmQueryScenario } from './scenarios/warm-query.js';
+import { isExternalCorpus } from './scenarios/external-corpus.js';
 import { ensureDirectory, gitSha, resultFileName, writeJsonFile } from './utils.js';
 import { logBenchmarkToMlflow } from './observability/mlflow.js';
 
@@ -56,7 +57,9 @@ async function main(): Promise<void> {
   const includeIndexStorage = parseBoolEnv(process.env.BENCH_INCLUDE_INDEX_STORAGE, true);
   // Issue #284 — cli-search spawns the built `kb` binary per repetition; it is
   // structurally heavier than the in-process scenarios so it stays opt-in.
-  const includeCliSearch = parseBoolEnv(process.env.BENCH_INCLUDE_CLI_SEARCH, false);
+  // cli-search builds its own two-shelf synthetic fixture — it cannot reuse an
+  // external corpus and must never reset a real KB root (issue #1063).
+  const includeCliSearch = parseBoolEnv(process.env.BENCH_INCLUDE_CLI_SEARCH, false) && !isExternalCorpus();
   const cliSearchReps = parsePositiveIntEnv(process.env.BENCH_CLI_SEARCH_REPETITIONS);
 
   const concurrencies = parseConcurrencies(process.env.BENCH_BATCH_CONCURRENCIES);

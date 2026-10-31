@@ -139,7 +139,11 @@ async function main(): Promise<void> {
 
   // Single shared knowledge-bases dir so both models embed the SAME corpus.
   // Each model has its own faissIndexPath (per-model layout enforces this anyway).
-  const sharedKbRoot = path.join(orchestratorTmp, 'kb-corpus');
+  // For --fixture=external this IS the operator's real corpus (read-only —
+  // BENCH_EXTERNAL_CORPUS stops the scenarios from resetting it, issue #1063).
+  const sharedKbRoot = flags.fixture === 'external'
+    ? path.resolve(process.env.KNOWLEDGE_BASES_ROOT_DIR ?? path.join(os.homedir(), 'knowledge_bases'))
+    : path.join(orchestratorTmp, 'kb-corpus');
   await fsp.mkdir(sharedKbRoot, { recursive: true });
 
   process.stderr.write(`[bench:compare] orchestrator tmpdir: ${orchestratorTmp}\n`);
@@ -150,7 +154,11 @@ async function main(): Promise<void> {
   // Issue #107: probe each model's num_ctx and clamp the shared corpus's
   // chunk size to fit the smaller of the two. Operator override:
   // BENCH_FIXTURE_CHUNK_CHARS=N short-circuits the probe.
-  const fixtureChunkChars = await resolveFixtureChunkChars(modelA, modelB);
+  // External corpora keep their natural chunking — clamping KB_CHUNK_SIZE
+  // would make the bench measure a different split than production.
+  const fixtureChunkChars = flags.fixture === 'external'
+    ? undefined
+    : await resolveFixtureChunkChars(modelA, modelB);
 
   // Concurrency invariant (§4.13.9): back-to-back, never parallel.
   process.stderr.write(`[bench:compare] running model A bench…\n`);
@@ -563,7 +571,9 @@ function fixtureProfileEnv(
   largeCorpusCache?: LargeCorpusCache,
 ): NodeJS.ProcessEnv {
   if (flags.fixture === 'external') {
-    return {};
+    // Marks every scenario leg as read-only against the real corpus —
+    // prepareCorpus() skips resetDirectory + fixture generation (issue #1063).
+    return { BENCH_EXTERNAL_CORPUS: '1' };
   }
 
   const env: NodeJS.ProcessEnv = {
