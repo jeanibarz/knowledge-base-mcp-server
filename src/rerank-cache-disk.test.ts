@@ -204,6 +204,48 @@ describe('DiskTieredRerankScoreCache (#646)', () => {
     }
   });
 
+  it('bumps disk mtime at most once per touch window on read hits (#1026)', async () => {
+    const indexPath = await tempIndexPath('kb-rerank-cache-touch-window-');
+    const spy = jest.spyOn(fs, 'utimesSync');
+    try {
+      const cache = new DiskTieredRerankScoreCache({ indexPath, enabled: true, l1Max: 0 });
+      cache.set(MODEL, 'q1', 'first', 0.11);
+
+      // First read performs the LRU bump.
+      expect(cache.get(MODEL, 'q1', 'first')).toBe(0.11);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // Repeated hits inside the window reuse the previous bump — no syscall.
+      expect(cache.get(MODEL, 'q1', 'first')).toBe(0.11);
+      expect(cache.get(MODEL, 'q1', 'first')).toBe(0.11);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('touchWindowMs=0 restores a touch on every read hit', async () => {
+    const indexPath = await tempIndexPath('kb-rerank-cache-touch-zero-');
+    const spy = jest.spyOn(fs, 'utimesSync');
+    try {
+      const cache = new DiskTieredRerankScoreCache({
+        indexPath,
+        enabled: true,
+        l1Max: 0,
+        touchWindowMs: 0,
+      });
+      cache.set(MODEL, 'q1', 'first', 0.11);
+
+      expect(cache.get(MODEL, 'q1', 'first')).toBe(0.11);
+      expect(cache.get(MODEL, 'q1', 'first')).toBe(0.11);
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
   it('treats a corrupt disk entry as a miss and removes it', async () => {
     const indexPath = await tempIndexPath('kb-rerank-cache-corrupt-');
     try {
