@@ -20,6 +20,7 @@ import { installStubProvider } from '../stub.js';
 import { renderReport, type CrossModelAggregate, type CrossModelQueryResult, type SourceDiversityDiagnostics } from './render.js';
 import { resolveModelCtx, safeChunkChars } from './model-ctx.js';
 import { loadGoldenFile, scoreGoldenQuality } from './golden.js';
+import { crossLegEnv } from './cross-leg-env.js';
 import {
   ensureLargeCorpusCache,
   getDefaultLargeCorpusSpec,
@@ -207,6 +208,7 @@ async function main(): Promise<void> {
     modelB,
     buildRoot,
     queries,
+    repoRoot,
   });
   const goldenQuality = goldenLabels
     ? scoreGoldenQuality(goldenLabels, crossModel.per_query)
@@ -355,25 +357,38 @@ interface CrossModelArgs {
   modelB: ResolvedModel;
   buildRoot: string;
   queries: string[];
+  repoRoot: string;
 }
-
-interface ManagerLike {
-  initialize(): Promise<void>;
-  similaritySearch(query: string, k: number, threshold?: number): Promise<{ pageContent: string; metadata: Record<string, unknown>; score?: number }[]>;
-  updateIndex(knowledgeBaseName?: string): Promise<void>;
-}
-
-interface ManagerCtor { new (): ManagerLike }
 
 async function crossModelAgreement(args: CrossModelArgs): Promise<CrossModelAggregate> {
-  // Load A
-  const managerA = await loadManagerFor(args.workspaceA, args.kbRoot, args.modelA, args.buildRoot, 'A');
-  const topKsA = await runQueriesAgainstManager(managerA, args.queries);
+  // Issue #1065 — each leg's query pass runs in its own subprocess with a
+  // per-leg env (see crossLegEnv). The bench legs write the indexes; the
+  // child opens them read-only. In-process env mutation + a cache-busted
+  // top-module import leaked leg A's config into leg B's manager (identical
+  // scores for two different embedding models) — subprocess isolation is the
+  // fix, mirroring how runOnce isolates each leg.
+  const orchestratorTmp = path.dirname(args.workspaceA);
+  const queriesFile = path.join(orchestratorTmp, 'cross-queries.json');
+  await fsp.writeFile(queriesFile, JSON.stringify(args.queries), 'utf-8');
 
-  // Load B (separate process-env mutation for each — bench leg already wrote
-  // the indexes, we just open them read-only here).
-  const managerB = await loadManagerFor(args.workspaceB, args.kbRoot, args.modelB, args.buildRoot, 'B');
-  const topKsB = await runQueriesAgainstManager(managerB, args.queries);
+  const topKsA = await runCrossLegQueries({
+    workspace: args.workspaceA,
+    kbRoot: args.kbRoot,
+    model: args.modelA,
+    buildRoot: args.buildRoot,
+    queriesFile,
+    repoRoot: args.repoRoot,
+    label: 'A',
+  });
+  const topKsB = await runCrossLegQueries({
+    workspace: args.workspaceB,
+    kbRoot: args.kbRoot,
+    model: args.modelB,
+    buildRoot: args.buildRoot,
+    queriesFile,
+    repoRoot: args.repoRoot,
+    label: 'B',
+  });
 
   const perQuery: CrossModelQueryResult[] = args.queries.map((q, i) => {
     const a = topKsA[i] ?? [];
@@ -409,54 +424,39 @@ async function crossModelAgreement(args: CrossModelArgs): Promise<CrossModelAggr
   };
 }
 
-async function loadManagerFor(
-  workspace: string,
-  kbRoot: string,
-  model: ResolvedModel,
-  buildRoot: string,
-  label: string,
-): Promise<ManagerLike> {
-  // Mutate env so the manager picks up the right path + provider/model. For a
-  // stub-mode orchestrator run, treat `stub` as `huggingface` (the stub patches
-  // the HF embeddings module).
-  const provider = model.provider === ('stub' as EmbeddingProvider) ? 'huggingface' : model.provider;
-  process.env.FAISS_INDEX_PATH = path.join(workspace, '.faiss');
-  process.env.KNOWLEDGE_BASES_ROOT_DIR = kbRoot;
-  process.env.EMBEDDING_PROVIDER = provider;
-  if (provider === 'huggingface') {
-    process.env.HUGGINGFACE_MODEL_NAME = model.name;
-    process.env.HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY ?? 'bench-hf-key';
-  } else if (provider === 'ollama') {
-    process.env.OLLAMA_MODEL = model.name;
-  } else {
-    process.env.OPENAI_MODEL_NAME = model.name;
-  }
-
-  const url = new URL(`file://${path.join(buildRoot, 'FaissIndexManager.js')}?cross-${label}-${Date.now()}`);
-  const mod = await import(url.href) as { FaissIndexManager: ManagerCtor };
-  const manager = new mod.FaissIndexManager();
-  await manager.initialize();
-  return manager;
+interface CrossLegQueryArgs {
+  workspace: string;
+  kbRoot: string;
+  model: ResolvedModel;
+  buildRoot: string;
+  queriesFile: string;
+  repoRoot: string;
+  label: string;
 }
 
-async function runQueriesAgainstManager(
-  manager: ManagerLike,
-  queries: string[],
-): Promise<{ doc: string; score: number }[][]> {
-  const out: { doc: string; score: number }[][] = [];
-  for (const q of queries) {
-    try {
-      const results = await manager.similaritySearch(q, 20);
-      out.push(results.map((r) => ({
-        doc: String(r.metadata.relativePath ?? r.metadata.source ?? r.pageContent.slice(0, 40)),
-        score: r.score ?? 0,
-      })));
-    } catch {
-      out.push([]);
-    }
-  }
-  return out;
+async function runCrossLegQueries(args: CrossLegQueryArgs): Promise<{ doc: string; score: number }[][]> {
+  const outFile = path.join(args.workspace, `cross-out-${args.label}.json`);
+  const script = path.join(args.buildRoot, 'benchmarks', 'compare', 'cross-query.js');
+  await spawnNode(
+    script,
+    {
+      ...process.env,
+      ...crossLegEnv({
+        workspace: args.workspace,
+        kbRoot: args.kbRoot,
+        model: args.model,
+        queriesFile: args.queriesFile,
+        outFile,
+      }),
+    },
+    args.repoRoot,
+  );
+  const raw = await fsp.readFile(outFile, 'utf-8');
+  const parsed = JSON.parse(raw) as { topKs?: { doc: string; score: number }[][] };
+  return parsed.topKs ?? [];
 }
+
+
 
 function sourceDiversityAt10(docs: string[]): SourceDiversityDiagnostics {
   const topK = docs.slice(0, 10);
