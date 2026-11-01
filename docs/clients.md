@@ -297,6 +297,35 @@ Contributors who want to pin an unreleased commit can build locally and point a 
 
 Run `npm install && npm run build` in that checkout before launching the client.
 
+## Remote transport (HTTP/SSE)
+
+The server can also run as a remote MCP host instead of being spawned over stdio per client. Set `MCP_TRANSPORT=http` (or `sse`) plus `MCP_AUTH_TOKEN` on the server side; the transport binds loopback by default and serves MCP only at the `/mcp` endpoint:
+
+| Request | Purpose |
+| --- | --- |
+| `POST /mcp` | Initialize and per-session JSON-RPC calls |
+| `GET /mcp` | Per-session SSE stream |
+| `DELETE /mcp` | Terminate a session |
+
+Requests to `/mcp` and `/ready` must carry `Authorization: Bearer <MCP_AUTH_TOKEN>` (or the token stored in `MCP_AUTH_TOKEN_FILE`). `/health` is an unauthenticated liveness probe; all other paths return 404.
+
+Client-side, point the MCP client at the endpoint URL and provide the same token as a bearer header. Minimal example for clients that take a `url` + `headers` config:
+
+```json
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "url": "http://127.0.0.1:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+For `sse` transport use the SSE endpoint on the configured port instead. Never commit a real token — keep the placeholder in the config.
+
 ## Verifying the connection
 
 Once the client launches the server, run a quick smoke test from the client UI:
