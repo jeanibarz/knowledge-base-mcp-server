@@ -1603,6 +1603,84 @@ describe('FaissIndexManager permission handling', () => {
     });
   });
 
+  it('appends a brand-new file without a full rebuild when no chunk manifest exists yet', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-new-file-append-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'first.md'), 'alpha seed content for the initial index');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    fromTextsMock.mockClear();
+    addDocumentsMock.mockClear();
+    saveMock.mockClear();
+
+    // A brand-new file has no chunk manifest, but also no committed vectors —
+    // it must take the incremental append path, not trigger a full rebuild.
+    await fsp.writeFile(path.join(defaultKb, 'second.md'), 'beta new file content to append');
+    await manager.updateIndex('default');
+
+    expect(fromTextsMock).not.toHaveBeenCalled();
+    expect(addDocumentsMock).toHaveBeenCalled();
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      index_mutated: true,
+      saved: true,
+    });
+
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('still rebuilds when an indexed file loses its chunk manifest but keeps vectors', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-lost-manifest-rebuild-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'doc.md');
+    await fsp.writeFile(docPath, 'original content committed to the index');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+
+    fromTextsMock.mockClear();
+    addDocumentsMock.mockClear();
+    saveMock.mockClear();
+
+    // Wipe the per-KB .index state (hash sidecar + chunk manifest) while the
+    // committed index still holds vectors for the file. The next change must
+    // rebuild so those vectors cannot go stale.
+    await fsp.rm(path.join(defaultKb, '.index'), { recursive: true, force: true });
+    await fsp.writeFile(docPath, 'edited content after the manifest was lost');
+    await manager.updateIndex('default');
+
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      index_mutated: true,
+      saved: true,
+    });
+
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  });
+
   it('propagates an indexing error when the provider returns the wrong vector count', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-dedupe-vector-count-'));
     const kbDir = path.join(tempDir, 'kb');

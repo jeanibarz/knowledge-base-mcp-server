@@ -1810,6 +1810,7 @@ export class FaissIndexManager {
         indexFilePath: string;
         chunkManifestPath: string;
         fileHash: string;
+        storedHash: string | null;
         fileSize: number;
         mtimeMs: number;
       };
@@ -1985,6 +1986,7 @@ export class FaissIndexManager {
           indexFilePath: scan.indexFilePath,
           chunkManifestPath: scan.chunkManifestPath,
           fileHash: scan.fileHash,
+          storedHash: scan.storedHash,
           fileSize: scan.fileSize,
           mtimeMs: scan.mtimeMs,
         });
@@ -2042,6 +2044,39 @@ export class FaissIndexManager {
           }
         },
       );
+      // Files whose chunk manifest is missing are only rebuild-worthy when
+      // vectors for them may already be committed: a stored hash sidecar or a
+      // docstore entry proves prior indexing. A brand-new file has neither, so
+      // its chunks can append without invalidating anything. The docstore set
+      // is built lazily — manifest misses are rare and the scan is O(ntotal)
+      // on first use only.
+      let committedFileKeys: Set<string> | null = null;
+      const fileHasCommittedVectors = (scan: IndexableScan): boolean => {
+        if (!this.faissIndex) return true;
+        if (committedFileKeys === null) {
+          committedFileKeys = new Set<string>();
+          for (const [, document] of this.faissIndex.docstoreEntries()) {
+            const metadata = document.metadata as Record<string, unknown> | undefined;
+            const source = metadata?.source;
+            if (typeof source === 'string' && source.length > 0) {
+              committedFileKeys.add(source);
+            }
+            // relativePath is stored root-relative (kbName/relPath), so it can
+            // disambiguate files whose absolute source moved between runs.
+            const kb = metadata?.knowledgeBase;
+            const rel = metadata?.relativePath;
+            if (typeof kb === 'string' && typeof rel === 'string') {
+              committedFileKeys.add(`${kb}::${rel}`);
+            }
+          }
+        }
+        return (
+          committedFileKeys.has(scan.filePath) ||
+          committedFileKeys.has(
+            `${scan.knowledgeBaseName}::${scan.knowledgeBaseName}/${scan.relativePath}`,
+          )
+        );
+      };
       for (const result of extractionResults) {
         const { scan } = result;
         if (!result.success) {
@@ -2077,11 +2112,18 @@ export class FaissIndexManager {
           if (!rebuildFromEmptyIndex && !forceReindex) {
             const previousManifest = await readChunkManifest(scan.chunkManifestPath);
             if (previousManifest === null) {
-              requiresFullRebuild = true;
-              logger.info(
-                `Chunk manifest missing for changed file ${scan.filePath}; ` +
-                  `falling back to a full rebuild to avoid stale vectors.`,
-              );
+              if (scan.storedHash !== null || fileHasCommittedVectors(scan)) {
+                requiresFullRebuild = true;
+                logger.info(
+                  `Chunk manifest missing for changed file ${scan.filePath}; ` +
+                    `falling back to a full rebuild to avoid stale vectors.`,
+                );
+              } else {
+                logger.debug(
+                  `Chunk manifest absent for new file ${scan.filePath}; ` +
+                    `appending its chunks without a rebuild.`,
+                );
+              }
             } else {
               const stablePrefix = countStableChunkPrefix(previousManifest, nextManifest);
               if (
@@ -2126,7 +2168,11 @@ export class FaissIndexManager {
         } else {
           if (!rebuildFromEmptyIndex && !forceReindex) {
             const previousManifest = await readChunkManifest(scan.chunkManifestPath);
-            if (previousManifest !== null && previousManifest.chunks.length > 0) {
+            const hadCommittedVectors =
+              previousManifest !== null
+                ? previousManifest.chunks.length > 0
+                : scan.storedHash !== null || fileHasCommittedVectors(scan);
+            if (hadCommittedVectors) {
               requiresFullRebuild = true;
               logger.info(
                 `Changed file ${scan.filePath} now emits no chunks; ` +
