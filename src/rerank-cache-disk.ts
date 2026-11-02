@@ -25,12 +25,20 @@ export const RERANK_SCORE_CACHE_SCHEMA_VERSION = 'kb-rerank-score-cache.v1';
 export const DEFAULT_RERANK_CACHE_L1_MAX = 4096;
 
 const DISK_SIZE_RECONCILE_INTERVAL = 64;
+// Read-hit mtime touches are collapsed within this window so the disk LRU
+// bookkeeping does not issue a blocking utimes write on every cache hit.
+const RERANK_CACHE_TOUCH_WINDOW_MS = 10_000;
+const LRU_TOUCH_MAP_MAX = 4096;
 
 export interface DiskTieredRerankScoreCacheOptions {
   indexPath?: string;
   enabled?: boolean;
   l1Max?: number;
   diskMaxBytes?: number;
+  // Minimum ms between mtime bumps per disk entry on read hits. A larger
+  // window trades bounded LRU-ordering staleness for fewer write syscalls;
+  // 0 restores the pre-window behavior of touching on every read hit.
+  touchWindowMs?: number;
 }
 
 export interface RerankScoreCacheStats {
@@ -91,6 +99,8 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
   private readonly diskMaxBytes: number;
   private readonly l1Max: number;
   private readonly l1 = new Map<string, number>();
+  private readonly lruTouches = new Map<string, number>();
+  private readonly touchWindowMs: number;
   private diskBytes: number | undefined;
   private writesSinceReconcile = 0;
   private l1Hits = 0;
@@ -104,6 +114,7 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
     this.cacheRoot = rerankScoreCacheRoot(options.indexPath ?? FAISS_INDEX_PATH);
     this.diskMaxBytes = options.diskMaxBytes ?? KB_RERANK_CACHE_DISK_MAX_BYTES;
     this.l1Max = options.l1Max ?? DEFAULT_RERANK_CACHE_L1_MAX;
+    this.touchWindowMs = options.touchWindowMs ?? RERANK_CACHE_TOUCH_WINDOW_MS;
     this.diskBytes = this.reconcileDiskSize();
   }
 
@@ -211,10 +222,22 @@ export class DiskTieredRerankScoreCache implements RerankScoreCache {
       return null;
     }
     // Best-effort LRU: touch mtime so the disk cap evicts least-recently-used.
-    try {
-      fs.utimesSync(file, new Date(), new Date());
-    } catch {
-      // a missing/locked file is fine to ignore
+    // Collapsed per window so repeated hits on the same entry do not issue a
+    // blocking utimes write every time; ordering stays true between entries
+    // touched more than one window apart.
+    const now = Date.now();
+    if (now - (this.lruTouches.get(file) ?? 0) >= this.touchWindowMs) {
+      try {
+        fs.utimesSync(file, new Date(now), new Date(now));
+        this.lruTouches.delete(file);
+        this.lruTouches.set(file, now);
+        if (this.lruTouches.size > LRU_TOUCH_MAP_MAX) {
+          const oldest = this.lruTouches.keys().next().value;
+          if (oldest !== undefined) this.lruTouches.delete(oldest);
+        }
+      } catch {
+        // a missing/locked file is fine to ignore
+      }
     }
     return record.score;
   }
