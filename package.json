@@ -116,7 +116,7 @@
     "@opentelemetry/semantic-conventions": "^1.30.0"
   },
   "devDependencies": {
-    "@babel/core": "^8.0.0",
+    "@babel/core": "^8.0.9",
     "@babel/plugin-transform-dynamic-import": "^8.0.1",
     "@babel/plugin-transform-modules-commonjs": "^8.0.1",
     "@commitlint/cli": "^21.2.3",
