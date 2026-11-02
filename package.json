@@ -94,7 +94,7 @@
     "@langchain/openai": "^1.6.2",
     "@langchain/textsplitters": "^1.0.2",
     "@modelcontextprotocol/sdk": "^1.17.2",
-    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/api": "^1.10.0",
     "@opentelemetry/sdk-trace-base": "^2.0.0",
     "axios": "^1.6.7",
     "faiss-node": "0.5.1",
@@ -110,8 +110,8 @@
     "zod": "^4.6.6"
   },
   "optionalDependencies": {
-    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
-    "@opentelemetry/resources": "^2.0.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.300.0",
+    "@opentelemetry/resources": "^3.0.0",
     "@opentelemetry/sdk-trace-node": "^2.0.0",
     "@opentelemetry/semantic-conventions": "^1.30.0"
   },
