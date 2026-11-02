@@ -8,6 +8,12 @@
 // mirrors the ESM/ts-jest transform from `baseConfig` but flattens it to one
 // project, drops coverage gating, and scopes `testMatch` to the focused unit
 // tests that cover the curated `mutate` set in stryker.conf.json.
+//
+// Issue #1076 — the langchain-1.x accommodations from `jest.config.js` (uuid
+// ESM shim + @langchain/community CJS transform) must be mirrored here too:
+// the stryker-scope tests load langchain transitively, and without them the
+// dry run dies on `require('uuid')` before any mutant runs (nightly broken
+// since the #981 dep refresh).
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
@@ -15,8 +21,24 @@ module.exports = {
   extensionsToTreatAsEsm: ['.ts'],
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
+    // uuid@14 (nested under @langchain/community 1.x) is ESM-only; jest's CJS
+    // runtime can't parse it. Map to the CJS shim — see test-support/uuid-shim.ts.
+    '^uuid$': '<rootDir>/src/test-support/uuid-shim.ts',
   },
   transform: {
+    // Issue #984 — @langchain/community's dist .cjs keeps lazy
+    // `await import('faiss-node')` calls; jest's CJS runtime cannot service
+    // real dynamic imports without --experimental-vm-modules. Transform just
+    // this package so import() becomes require().
+    'node_modules/@langchain/community/.+\\.[cm]?js$': [
+      'babel-jest',
+      {
+        plugins: [
+          '@babel/plugin-transform-dynamic-import',
+          '@babel/plugin-transform-modules-commonjs',
+        ],
+      },
+    ],
     '^.+\\.ts$': [
       'ts-jest',
       {
@@ -24,6 +46,7 @@ module.exports = {
       },
     ],
   },
+  transformIgnorePatterns: ['/node_modules/(?!@langchain/community/)'],
   testMatch: [
     '**/src/chunk-id.test.ts',
     '**/src/redaction.test.ts',
