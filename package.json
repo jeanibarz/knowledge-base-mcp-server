@@ -66,6 +66,7 @@
     "test:coverage": "LOG_FILE= jest --coverage --runInBand",
     "test:watch": "LOG_FILE= jest --watch --maxWorkers=4",
     "test:file": "LOG_FILE= jest --runInBand --runTestsByPath",
+    "test:changed": "LOG_FILE= jest --onlyChanged --runInBand",
     "test:chaos": "LOG_FILE= jest --selectProjects serial --runInBand --testMatch '**/tests/chaos/scenarios/**/*.test.ts'",
     "test:mutation": "stryker run",
     "start": "node build/index.js",

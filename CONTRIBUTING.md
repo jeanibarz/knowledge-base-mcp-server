@@ -88,6 +88,7 @@ For focused local work:
 
 - `npm run test:file -- src/cli-search.test.ts` runs one or more explicit test files with Jest's `--runTestsByPath` filter.
 - `npm run test:watch -- src/cli-search.test.ts` starts Jest watch mode while accepting the same Jest path or name filters you would pass manually.
+- `npm run test:changed` runs only the tests affected by your working-tree diff (Jest `--onlyChanged`, one pass through the serial configuration) — a "test what I touched" sweep with no paths to name. It needs real git state: on a detached HEAD or a repository without commits Jest may fall back to running everything.
 
 Treat watch mode as local-only. It expects an interactive terminal and should not be used in automation.
 
