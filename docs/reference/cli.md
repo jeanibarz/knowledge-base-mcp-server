@@ -21,7 +21,7 @@ The `kb` CLI exposes 40 commands.
 | [`kb capture`](#kb-capture) | Run a command and append its stdout to a KB note as a fenced block. |
 | [`kb cite`](#kb-cite) | Export BibTeX or CSL-JSON from note frontmatter. |
 | [`kb compare`](#kb-compare) | Side-by-side rank/score table for two embedding models. |
-| [`kb completion`](#kb-completion) | Generate shell completions for bash, zsh, or fish. |
+| [`kb completion`](#kb-completion) | Generate shell completions for bash, zsh, fish, or powershell. |
 | [`kb config`](#kb-config) | Validate KB environment configuration. |
 | [`kb diagnose`](#kb-diagnose) | Package a canonical request log as a redacted repro bundle. |
 | [`kb diff-index`](#kb-diff-index) | Compare retrieval-result churn across two FAISS index versions. |
@@ -304,7 +304,7 @@ Examples:
 
 ## `kb completion`
 
-Generate shell completions for bash, zsh, or fish.
+Generate shell completions for bash, zsh, fish, or powershell.
 
 ```text
 kb completion — generate shell completion scripts
@@ -313,11 +313,13 @@ Usage:
   kb completion bash
   kb completion zsh
   kb completion fish
+  kb completion powershell
 
 Shells:
   bash                  Print a bash completion function for the `kb` command.
   zsh                   Print a zsh completion function for the `kb` command.
   fish                  Print fish completion commands for the `kb` command.
+  powershell            Print a PowerShell Register-ArgumentCompleter script for the `kb` command.
 
 Options:
   --help, -h            Show this help.
@@ -326,6 +328,7 @@ Examples:
   kb completion bash > ~/.local/share/bash-completion/completions/kb
   kb completion zsh > ~/.zfunc/_kb
   kb completion fish > ~/.config/fish/completions/kb.fish
+  kb completion powershell >> $PROFILE
 ```
 
 ## `kb config`

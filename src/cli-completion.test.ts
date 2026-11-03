@@ -6,6 +6,13 @@ import {
   generateCompletionScript,
 } from './cli-completion.js';
 
+// pwsh is not guaranteed on every CI runner; skip the live-execution test when
+// it is absent. The structural assertions always run.
+const hasPwsh = spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'], {
+  encoding: 'utf-8',
+}).status === 0;
+const maybePwshIt = hasPwsh ? it : it.skip;
+
 const fixtureCommands: CompletionCommand[] = [
   {
     name: 'alpha',
@@ -81,7 +88,7 @@ complete -c kb -n '__fish_use_subcommand' -a 'help' -d 'Show top-level or comman
 complete -c kb -n '__fish_use_subcommand' -a 'alpha' -d 'Alpha: run local KB tasks'
 complete -c kb -n '__fish_use_subcommand' -a 'completion' -d 'Generate shell completions'
 complete -c kb -n '__fish_seen_subcommand_from help' -a 'alpha completion' -d 'Command'
-complete -c kb -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish' -d 'Shell'
+complete -c kb -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish powershell' -d 'Shell'
 complete -c kb -n '__fish_seen_subcommand_from alpha' -a 'status sync' -d 'Action'
 complete -c kb -n '__fish_seen_subcommand_from alpha' -l 'format' -s 'f' -a 'md json' -d 'Writer'\\''s output format.'
 complete -c kb -n '__fish_seen_subcommand_from alpha' -l 'mode' -a 'quick full-scan' -d 'Controlled vocabulary: quick, full-scan'
@@ -89,6 +96,32 @@ complete -c kb -n '__fish_seen_subcommand_from alpha' -l 'path'
 complete -c kb -n '__fish_seen_subcommand_from completion' -l 'help' -s 'h' -d 'Show completion help.'
 `);
   });
+
+  it('generates the powershell Register-ArgumentCompleter script with static commands and options', () => {
+    const script = generateCompletionScript('powershell', fixtureCommands);
+
+    expect(script).toContain('Register-ArgumentCompleter -Native -CommandName kb -ScriptBlock {');
+    expect(script).toContain("$commands = @('alpha', 'completion', 'help')");
+    expect(script).toContain("'alpha' = @('--format', '--format=json', '--format=md', '--mode', '--mode=full-scan', '--mode=quick', '--path', '-f', 'status', 'sync')");
+    expect(script).toContain("'completion' = @('--help', '-h', 'bash', 'fish', 'zsh')");
+    // The synthetic `help` entry lists every command plus the two help formats.
+    expect(script).toContain("'help' = @('alpha', 'completion', 'help', '--format=md', '--format=json')");
+    expect(script).toContain('[System.Management.Automation.CompletionResult]::new($_, $_, \'ParameterValue\', $_)');
+  });
+
+  maybePwshIt('powershell completer suggests commands and per-command options when run in pwsh', () => {
+    const script = generateCompletionScript('powershell', fixtureCommands);
+
+    expect(runPwshCompletion(script, 'kb ')).toContain('alpha');
+    expect(runPwshCompletion(script, 'kb alph')).toEqual(['alpha']);
+    // Shared-prefix order is stable under any collation.
+    expect(runPwshCompletion(script, 'kb alpha --mo')).toEqual(['--mode', '--mode=full-scan', '--mode=quick']);
+    // Compare as sets: Sort-Object ordering of '-h' vs '--help' is locale/collation
+    // dependent, so normalise both sides rather than couple to one sort order.
+    expect([...runPwshCompletion(script, 'kb completion ')].sort()).toEqual(
+      ['--help', '-h', 'bash', 'fish', 'zsh'].sort(),
+    );
+  }, 30_000);
 
   it('keeps bash enum completions working after Bash splits --flag=value input', () => {
     const result = spawnSync('bash', ['-c', [
@@ -230,4 +263,29 @@ function runBashCompletion(commands: CompletionCommand[], compWordsAssignment: s
 
 function bashSingleQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+// Run the generated completer in pwsh via TabExpansion2 and return the ordered
+// completion texts for the given command line (cursor at end of input).
+function runPwshCompletion(script: string, line: string): string[] {
+  const program = [
+    '. ([ScriptBlock]::Create($env:KB_PS_COMPLETION_SCRIPT))',
+    `$result = TabExpansion2 ${pwshSingleQuote(line)} ${line.length}`,
+    '$result.CompletionMatches | ForEach-Object { $_.CompletionText }',
+  ].join('\n');
+  const result = spawnSync('pwsh', ['-NoProfile', '-Command', program], {
+    // Inherit the full environment (pwsh needs SYSTEMROOT/HOME etc. to start);
+    // only add the script payload.
+    env: { ...process.env, KB_PS_COMPLETION_SCRIPT: script },
+    encoding: 'utf-8',
+  });
+  if (result.error) throw result.error;
+  expect(result.status).toBe(0);
+  // pwsh may emit benign notices on stderr; only real parse/runtime errors matter.
+  expect(result.stderr).not.toMatch(/ParserError|Exception|Error:/);
+  return result.stdout.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+}
+
+function pwshSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
