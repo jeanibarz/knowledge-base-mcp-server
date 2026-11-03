@@ -54,9 +54,10 @@ jobs:
       - name: Verify checklist against diff
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch --no-tags origin "${{ github.base_ref }}"
+          git fetch --no-tags origin "$BASE_REF"
           printf '%s' "$PR_BODY" | npx --yes "tsx@${TSX_VERSION}" \
             .kookr-engine/bin/kookr.js pr-checklist verify \
-            --base "${{ github.base_ref }}" \
+            --base "$BASE_REF" \
             --pr-body -
