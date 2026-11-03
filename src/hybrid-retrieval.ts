@@ -218,9 +218,22 @@ export interface LexicalKb {
  * do their own existence check before calling. Concretely, `listLexicalKbs`
  * never throws for a missing scope: callers see `[]` and can decide.
  */
-export async function listLexicalKbs(scopedKb?: string): Promise<LexicalKb[]> {
+export async function listLexicalKbs(
+  scopedKb?: string | readonly string[],
+): Promise<LexicalKb[]> {
   const all = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
-  const filtered = scopedKb ? all.filter((name) => name === scopedKb) : all;
+  // Issue #975 — an array scopes to a named subset (order follows the on-disk
+  // KB list, unknown names simply yield no match); a string keeps the single-KB
+  // behaviour; undefined means all KBs.
+  let filtered: string[];
+  if (Array.isArray(scopedKb)) {
+    const want = new Set(scopedKb);
+    filtered = all.filter((name) => want.has(name));
+  } else if (typeof scopedKb === 'string') {
+    filtered = all.filter((name) => name === scopedKb);
+  } else {
+    filtered = all;
+  }
   return filtered.map((kbName) => ({
     kbName,
     kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName),

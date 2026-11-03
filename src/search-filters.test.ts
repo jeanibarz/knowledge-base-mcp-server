@@ -99,3 +99,66 @@ describe('createSimilaritySearchPostFilter recency filters (#609)', () => {
     expect(filter.apply([row(source, 0.2)])).toHaveLength(0);
   });
 });
+
+describe('createSimilaritySearchPostFilter KB-subset scope (#975)', () => {
+  const root = path.join(os.tmpdir(), 'kb-subset-scope-root');
+
+  function kbRow(kb: string, file = 'd.md', score = 0.1): ScoredDocument {
+    const source = path.join(root, kb, file);
+    return [
+      { pageContent: `${kb}/${file}`, metadata: { source, relativePath: `${kb}/${file}`, extension: '.md' } } as Document,
+      score,
+    ];
+  }
+
+  it('keeps only docs under any of the named KBs and over-fetches', () => {
+    const filter = createSimilaritySearchPostFilter({
+      threshold: 2,
+      knowledgeBasesRootDir: root,
+      knowledgeBaseNames: ['alpha', 'beta'],
+    });
+
+    expect(filter.requiresOverfetch).toBe(true);
+    expect(filter.apply([kbRow('alpha'), kbRow('beta'), kbRow('gamma')]).map(([doc]) => doc.pageContent))
+      .toEqual(['alpha/d.md', 'beta/d.md']);
+  });
+
+  it('is byte-identical to the single-name scope when the subset has one entry', () => {
+    const single = createSimilaritySearchPostFilter({
+      threshold: 2,
+      knowledgeBasesRootDir: root,
+      knowledgeBaseName: 'alpha',
+    });
+    const subsetOfOne = createSimilaritySearchPostFilter({
+      threshold: 2,
+      knowledgeBasesRootDir: root,
+      knowledgeBaseNames: ['alpha'],
+    });
+    const rows = [kbRow('alpha'), kbRow('beta')];
+    expect(subsetOfOne.apply(rows)).toEqual(single.apply(rows));
+    expect(subsetOfOne.requiresOverfetch).toBe(single.requiresOverfetch);
+  });
+
+  it('treats an empty subset array as "all KBs" (no scoping)', () => {
+    const filter = createSimilaritySearchPostFilter({
+      threshold: 2,
+      knowledgeBasesRootDir: root,
+      knowledgeBaseNames: [],
+    });
+    // No scope and no other filter ⇒ no over-fetch, nothing dropped on scope.
+    expect(filter.requiresOverfetch).toBe(false);
+    expect(filter.apply([kbRow('alpha'), kbRow('gamma')]).map(([doc]) => doc.pageContent))
+      .toEqual(['alpha/d.md', 'gamma/d.md']);
+  });
+
+  it('the scalar name wins when both scope inputs are passed', () => {
+    const filter = createSimilaritySearchPostFilter({
+      threshold: 2,
+      knowledgeBasesRootDir: root,
+      knowledgeBaseName: 'alpha',
+      knowledgeBaseNames: ['beta'],
+    });
+    expect(filter.apply([kbRow('alpha'), kbRow('beta')]).map(([doc]) => doc.pageContent))
+      .toEqual(['alpha/d.md']);
+  });
+});

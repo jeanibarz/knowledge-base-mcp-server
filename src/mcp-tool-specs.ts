@@ -66,6 +66,12 @@ const boundedGlobString = () =>
 export const RETRIEVE_KNOWLEDGE_INPUT = {
   query: boundedQueryString().describe('The search query to use for retrieving similar chunks from the knowledge base.'),
   knowledge_base_name: z.string().optional().describe('The name of the knowledge base to search. If omitted, all available knowledge bases are considered.'),
+  // Issue #975 — search a named subset of shelves, mirroring the research CLI's
+  // repeatable `--include-kb`. Mutually exclusive with knowledge_base_name:
+  // passing both is a VALIDATION error. Omitting it keeps the single-or-all
+  // scope of knowledge_base_name; an unknown name fails closed with
+  // KB_NOT_FOUND.
+  knowledge_base_names: boundedFilterArray().optional().describe('Search only this named subset of knowledge bases (e.g. ["runbooks", "adr"]). Mutually exclusive with knowledge_base_name — passing both is a VALIDATION error. Omit to keep the knowledge_base_name rule (one named base, or all). An unknown name fails with KB_NOT_FOUND.'),
   threshold: z.number().optional().describe('The maximum similarity score threshold for returned dense documents. Defaults to 2 if not specified; in hybrid mode, the threshold is not applied because both legs are over-fetched for fusion, while metadata filters apply to both legs before fusion.'),
   // RFC 013 M3 §4.5 — optional override of the active embedding model.
   // When omitted, the server uses the model recorded in active.txt.
@@ -103,6 +109,8 @@ export const RETRIEVE_KNOWLEDGE_INPUT = {
 export const ASK_KNOWLEDGE_INPUT = {
   query: boundedQueryString().describe('Question to answer from retrieved knowledge-base snippets.'),
   knowledge_base_name: z.string().optional().describe('Name of a single knowledge base to search. If omitted, all available knowledge bases are considered.'),
+  // Issue #975 — same named-subset scope as retrieve_knowledge.
+  knowledge_base_names: boundedFilterArray().optional().describe('Answer from only this named subset of knowledge bases (e.g. ["runbooks", "adr"]). Mutually exclusive with knowledge_base_name — passing both is a VALIDATION error. Omit to keep the knowledge_base_name rule (one named base, or all). An unknown name fails with KB_NOT_FOUND.'),
   model_name: z.string().optional().describe('Registered embedding model_id to use for retrieval. If omitted, the active model is used.'),
   llm_profile: z.string().optional().describe('Saved kb llm profile name to use for answer generation.'),
   k: z.int().min(1).max(50).optional().describe('Retrieval top-K before context packing. Default 8.'),

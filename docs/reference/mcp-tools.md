@@ -41,6 +41,7 @@ Retrieves similar chunks from the knowledge base based on a query. Optionally, i
 | --- | --- | --- | --- | --- |
 | `query` | string | yes | max 8192 chars | The search query to use for retrieving similar chunks from the knowledge base. |
 | `knowledge_base_name` | string | no | — | The name of the knowledge base to search. If omitted, all available knowledge bases are considered. |
+| `knowledge_base_names` | array of string | no | max 64 items | Search only this named subset of knowledge bases (e.g. ["runbooks", "adr"]). Mutually exclusive with knowledge_base_name — passing both is a VALIDATION error. Omit to keep the knowledge_base_name rule (one named base, or all). An unknown name fails with KB_NOT_FOUND. |
 | `threshold` | number | no | — | The maximum similarity score threshold for returned dense documents. Defaults to 2 if not specified; in hybrid mode, the threshold is not applied because both legs are over-fetched for fusion, while metadata filters apply to both legs before fusion. |
 | `model_name` | string | no | — | The model_id of an alternate embedding model to query (e.g. "openai__text-embedding-3-small"). If omitted, the active model is used. Run list_models for available ids. |
 | `extensions` | array of string | no | max 64 items | Limit results to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional. In hybrid mode, applied to lexical candidates before fusion. |
@@ -65,6 +66,7 @@ Answers a question from retrieved knowledge-base context using the configured lo
 | --- | --- | --- | --- | --- |
 | `query` | string | yes | max 8192 chars | Question to answer from retrieved knowledge-base snippets. |
 | `knowledge_base_name` | string | no | — | Name of a single knowledge base to search. If omitted, all available knowledge bases are considered. |
+| `knowledge_base_names` | array of string | no | max 64 items | Answer from only this named subset of knowledge bases (e.g. ["runbooks", "adr"]). Mutually exclusive with knowledge_base_name — passing both is a VALIDATION error. Omit to keep the knowledge_base_name rule (one named base, or all). An unknown name fails with KB_NOT_FOUND. |
 | `model_name` | string | no | — | Registered embedding model_id to use for retrieval. If omitted, the active model is used. |
 | `llm_profile` | string | no | — | Saved kb llm profile name to use for answer generation. |
 | `k` | integer | no | min 1; max 50 | Retrieval top-K before context packing. Default 8. |
