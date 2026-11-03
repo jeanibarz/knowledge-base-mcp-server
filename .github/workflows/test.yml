@@ -26,5 +26,7 @@ jobs:
             sleep 10
             npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
           }
-      - run: npm run lint
+      # `npm run check` already runs `lint` (build && lint && typecheck:tests &&
+      # test:coverage && docs checks), so a separate lint step just ran eslint
+      # twice. Dropped — check still fails on a lint error, early (right after build).
       - run: npm run check
