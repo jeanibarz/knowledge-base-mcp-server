@@ -7,12 +7,44 @@ on:
 permissions:
   contents: read
 
+# The old layout ran the entire `npm run check` (build + lint + typecheck +
+# coverage + 12 docs checks) once per Node in a [22, 24] matrix — so coverage
+# and every Node-independent check ran twice, and each leg took 30-44 min.
+# Split into parallel jobs that each do a slice once:
+#   - quality:  Node-independent gates (build, lint, typecheck, docs) — one Node.
+#   - test:     cross-version correctness on the *other* Node (22), no coverage.
+#               Node 24's test run is already covered by the coverage job below.
+#   - coverage: the enforced coverage-threshold run (all tests), one Node.
+# Wall-clock is now the slowest single job instead of a doubled full check, and
+# total CI minutes drop by roughly a full `check`.
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          cache: npm
+          node-version: 24
+      - run: |
+          npm ci --ignore-scripts
+          npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs || {
+            echo "native rebuild failed — retrying after 10s"
+            sleep 10
+            npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
+          }
+      # `check:fast` == `npm run check` minus the coverage run (build + lint +
+      # typecheck:tests + the docs/config consistency checks).
+      - run: npm run check:fast
+
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: [22, 24]
+        # Node 24's suite runs (with coverage) in the `coverage` job, so this
+        # matrix only needs the other supported version for cross-version
+        # compatibility. Add versions here to widen the compat matrix.
+        node: [22]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -26,7 +58,29 @@ jobs:
             sleep 10
             npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
           }
-      # `npm run check` already runs `lint` (build && lint && typecheck:tests &&
-      # test:coverage && docs checks), so a separate lint step just ran eslint
-      # twice. Dropped — check still fails on a lint error, early (right after build).
-      - run: npm run check
+      # Build first: src/cli.test.ts spawns build/cli.js. No coverage here —
+      # test:parallel uses a worker pool, test:serial runs the isolation-
+      # sensitive suites in-band.
+      - run: npm run build
+      - run: npm run test:parallel
+      - run: npm run test:serial
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          cache: npm
+          node-version: 24
+      - run: |
+          npm ci --ignore-scripts
+          npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs || {
+            echo "native rebuild failed — retrying after 10s"
+            sleep 10
+            npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
+          }
+      # Coverage numbers don't vary by Node version, so this enforced-threshold
+      # run (jest --coverage, all tests) happens once. build first for cli.test.ts.
+      - run: npm run build
+      - run: npm run test:coverage
