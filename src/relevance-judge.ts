@@ -152,7 +152,7 @@ async function assertCandidatesLlmContextAllowed(
   }));
 }
 
-function resolveJudgeRedactionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+export function resolveJudgeRedactionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env.KB_ASK_REDACT_OUTBOUND?.trim().toLowerCase();
   if (raw !== undefined && raw !== '') {
     if (REDACT_TRUTHY_VALUES.has(raw)) return true;
@@ -267,19 +267,28 @@ function buildJudgeMessages(
 
 function parseJudgeJson(content: string): RawJudgeResponse {
   const stripped = stripMarkdownJsonFence(content.trim());
+  let parsed: unknown;
   try {
-    return JSON.parse(stripped) as RawJudgeResponse;
+    parsed = JSON.parse(stripped);
   } catch {
     const repaired = extractFirstJsonObject(stripped);
     if (repaired === null) {
       throw new RelevanceJudgeError('judge response was not valid JSON');
     }
     try {
-      return JSON.parse(repaired) as RawJudgeResponse;
+      parsed = JSON.parse(repaired);
     } catch (err) {
       throw new RelevanceJudgeError('judge response repair failed', err);
     }
   }
+  // Well-formed JSON that is not an object (null, an array, a bare string or
+  // number) must surface as a RelevanceJudgeError too — otherwise the later
+  // `parsed.overall` access throws a raw TypeError that escapes the fail-safe's
+  // RelevanceJudgeError contract that callers catch on.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new RelevanceJudgeError('judge response was not a JSON object');
+  }
+  return parsed as RawJudgeResponse;
 }
 
 function stripMarkdownJsonFence(content: string): string {
