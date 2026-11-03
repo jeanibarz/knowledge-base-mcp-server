@@ -1,0 +1,54 @@
+name: Concurrency Stress Tests
+
+# Issue #1023 — the concurrency stress suite under `tests/stress/scenarios/`
+# (write-lock / search-during-refresh invariants) self-skips everywhere via
+# `KB_RUN_STRESS === '1' ? describe : describe.skip`, and no workflow set that
+# env, so the scenarios guarded no merge or nightly run. This job runs them
+# nightly (and on demand) with the gate flipped on, then asserts they actually
+# executed rather than skipped — a silent skip would otherwise pass green.
+on:
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    # The scenarios spawn concurrent refreshes/mutations through the real write
+    # lock; allow generous wall-time versus the fast inner-loop suite.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          cache: npm
+          node-version: 24
+      - run: |
+          npm ci --ignore-scripts
+          npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs || {
+            echo "native rebuild failed — retrying after 10s"
+            sleep 10
+            npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
+          }
+      - run: npm run build
+      # `test:stress` sets `KB_RUN_STRESS=1`, which flips the `describe.skip`
+      # gate on so the scenarios execute. The JSON report is consumed by the
+      # verification step below.
+      - run: npm run test:stress -- --json --outputFile=stress-results.json
+      # Guard against a silent skip: `jest` exits 0 even when every scenario is
+      # pending (skipped), so assert at least one test ran and none were
+      # skipped. This is the "observed to run, not skip" acceptance check.
+      - name: Assert stress scenarios ran, not skipped
+        run: |
+          total=$(jq '.numTotalTests' stress-results.json)
+          passed=$(jq '.numPassedTests' stress-results.json)
+          pending=$(jq '.numPendingTests' stress-results.json)
+          todo=$(jq '.numTodoTests' stress-results.json)
+          echo "stress scenarios: total=$total passed=$passed pending=$pending todo=$todo"
+          if [ "$total" -lt 1 ] || [ "$passed" -lt 1 ] || [ "$pending" -ne 0 ] || [ "$todo" -ne 0 ]; then
+            echo "::error::concurrency stress scenarios were skipped or did not run (expected KB_RUN_STRESS=1 to flip the describe.skip gate)"
+            exit 1
+          fi
