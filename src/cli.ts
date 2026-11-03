@@ -126,7 +126,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'models',       summary: 'Manage embedding models (list, add, set-active, remove).',               help: MODELS_HELP,       handler: runModels },
   { name: 'llm',          summary: 'Configure local LLM endpoints and managed warm model services.',          help: LLM_HELP,          handler: runLlm },
   { name: 'reindex',      summary: 'Rebuild FAISS indexes (RFC 017 — requires --with-context).',              help: REINDEX_HELP,      handler: runReindexCli },
-  { name: 'completion',   summary: 'Generate shell completions for bash, zsh, or fish.',                      help: COMPLETION_HELP,   handler: runCompletionWithCurrentManifest },
+  { name: 'completion',   summary: 'Generate shell completions for bash, zsh, fish, or powershell.',           help: COMPLETION_HELP,   handler: runCompletionWithCurrentManifest },
 ];
 
 // ----- Top-level help -------------------------------------------------------
@@ -142,7 +142,7 @@ Usage:
   kb <command> [options]
   kb help [<command>]
   kb <command> --help
-  kb completion bash|zsh|fish
+  kb completion bash|zsh|fish|powershell
   kb --version
 
 Available commands:

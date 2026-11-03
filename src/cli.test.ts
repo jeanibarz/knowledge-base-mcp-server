@@ -300,8 +300,8 @@ describe('kb CLI — argv parsing and dispatch', () => {
     ]));
     const completion = manifest.commands.find((command) => command.name === 'completion');
     expect(completion).toMatchObject({
-      summary: 'Generate shell completions for bash, zsh, or fish.',
-      usage: ['kb completion bash', 'kb completion zsh', 'kb completion fish'],
+      summary: 'Generate shell completions for bash, zsh, fish, or powershell.',
+      usage: ['kb completion bash', 'kb completion zsh', 'kb completion fish', 'kb completion powershell'],
     });
   });
 
@@ -353,7 +353,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(zsh.stderr).toBe('');
     expect(zsh.stdout).toContain('#compdef kb');
     expect(zsh.stdout).toContain('search:Semantic search across one or all knowledge bases.');
-    expect(zsh.stdout).toContain("_values 'shell' bash zsh fish");
+    expect(zsh.stdout).toContain("_values 'shell' bash zsh fish powershell");
     expect(zsh.stdout).toContain('recent');
     expect(zsh.stdout).toContain('--mode=hybrid');
     expect(zsh.stdout).toContain('--threshold=auto');
@@ -363,7 +363,7 @@ describe('kb CLI — argv parsing and dispatch', () => {
     expect(fish.stderr).toBe('');
     expect(fish.stdout).toContain('complete -c kb -f');
     expect(fish.stdout).toContain("-a 'search'");
-    expect(fish.stdout).toContain("__fish_seen_subcommand_from completion' -a 'bash zsh fish'");
+    expect(fish.stdout).toContain("__fish_seen_subcommand_from completion' -a 'bash zsh fish powershell'");
     expect(fish.stdout).toContain("__fish_seen_subcommand_from logs' -a 'recent show'");
     expect(fish.stdout).toContain("-l 'mode' -a 'dense lexical hybrid auto'");
     expect(fish.stdout).toContain("-l 'format' -a 'md json vimgrep compact'");
@@ -403,10 +403,19 @@ describe('kb CLI — argv parsing and dispatch', () => {
   });
 
   it('kb completion rejects unsupported shells without printing a script (#389)', () => {
-    const r = runCli(['completion', 'powershell']);
+    const r = runCli(['completion', 'tcsh']);
     expect(r.code).toBe(2);
     expect(r.stdout).toBe('');
-    expect(r.stderr).toContain("unsupported shell 'powershell'");
+    expect(r.stderr).toContain("unsupported shell 'tcsh'");
+  });
+
+  it('kb completion powershell emits a Register-ArgumentCompleter script (#1025)', () => {
+    const r = runCli(['completion', 'powershell']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe('');
+    expect(r.stdout).toContain('Register-ArgumentCompleter -Native -CommandName kb');
+    expect(r.stdout).toContain("'completion'");
+    expect(r.stdout).toContain('System.Management.Automation.CompletionResult');
   });
 
   it('kb help <command> mirrors `kb <command> --help`', () => {
