@@ -144,6 +144,38 @@ export function replColorEnabled(env: NodeJS.ProcessEnv): boolean {
   return true;
 }
 
+/** In-session slash-commands offered for TAB completion when stdin is a TTY. */
+export const REPL_COMMANDS: readonly string[] = [
+  '/sources',
+  '/kb',
+  '/save',
+  '/refresh',
+  '/reset',
+  '/help',
+  '/exit',
+  '/quit',
+];
+
+/**
+ * readline completer for the in-session /commands. Only slash-prefixed input is
+ * completed (questions are free text); an unmatched prefix yields no hits so
+ * readline leaves the line untouched instead of listing every command.
+ */
+export function replCompleter(line: string): [string[], string] {
+  if (!line.startsWith('/')) return [[], line];
+  const hits = REPL_COMMANDS.filter((cmd) => cmd.startsWith(line));
+  return [hits, line];
+}
+
+/**
+ * Terminal features (up-arrow history recall, left/right line editing, TAB
+ * completion) require a TTY stdin. Piped/redirected input is not a TTY, so the
+ * REPL falls back to plain line-at-a-time reading with no ANSI line editing.
+ */
+export function inputIsTty(input: NodeJS.ReadableStream): boolean {
+  return (input as NodeJS.ReadStream).isTTY === true;
+}
+
 /** Render the citations behind a result as a stderr-friendly block. */
 export function formatSourcesBlock(result: AskKnowledgeResult): string {
   if (result.citations.length === 0) {
@@ -208,7 +240,6 @@ export async function runAskRepl(opts: RunAskReplOptions): Promise<number> {
 
   const session = createReplSession(opts.baseArgs.kb);
   const promptText = color ? '\x1b[1mkb›\x1b[0m ' : 'kb> ';
-  const promptOut = (): void => { errOutput.write(promptText); };
 
   errOutput.write('Interactive ask — type a question, /help for commands, /exit to quit.\n');
   if (session.kb !== undefined) errOutput.write(`Knowledge base: ${session.kb}\n`);
@@ -343,7 +374,29 @@ export async function runAskRepl(opts: RunAskReplOptions): Promise<number> {
   };
 
   return new Promise<number>((resolve) => {
-    const rl = readline.createInterface({ input, terminal: false });
+    // With a TTY, enable terminal mode so readline provides up-arrow history
+    // recall, left/right line editing, and TAB completion of /commands (#1030).
+    // The prompt and the editable line render on errOutput (stderr), keeping the
+    // answer text on stdout pipe-clean. Non-TTY/piped input keeps the original
+    // plain, line-at-a-time behavior with no ANSI line editing.
+    const terminal = inputIsTty(input);
+    const rl = terminal
+      ? readline.createInterface({
+          input,
+          output: errOutput,
+          terminal: true,
+          prompt: promptText,
+          completer: replCompleter,
+        })
+      : readline.createInterface({ input, terminal: false });
+
+    // In terminal mode readline paints the prompt and the editable line itself
+    // (via rl.prompt()); off a TTY we write the plain prompt string as before.
+    const promptOut = (): void => {
+      if (terminal) rl.prompt();
+      else errOutput.write(promptText);
+    };
+
     let queue: Promise<void> = Promise.resolve();
     let closed = false;
 
