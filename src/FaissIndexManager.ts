@@ -380,6 +380,12 @@ export interface SearchResultDocument extends Document {
 export interface SimilaritySearchOptions {
   noCache?: boolean;
   retrievalViews?: RetrievalViewKind[];
+  /**
+   * Issue #975 — scope the search to a named subset of KBs. Mutually exclusive
+   * with the `knowledgeBaseName` positional arg (the tool boundary rejects
+   * passing both); a doc is kept when its source lives under any of these KBs.
+   */
+  knowledgeBaseNames?: readonly string[];
 }
 
 const MAX_INDEX_UPDATE_FAILURES = 10;
@@ -2746,10 +2752,16 @@ export class FaissIndexManager {
       throw new KBError('INDEX_NOT_INITIALIZED', 'FAISS index is not initialized');
     }
 
+    // Issue #975 — a non-empty subset scope drives a multi-KB prefix filter;
+    // the scalar name keeps the single-prefix path. Never both at once.
+    const knowledgeBaseNames = opts.knowledgeBaseNames !== undefined && opts.knowledgeBaseNames.length > 0
+      ? opts.knowledgeBaseNames
+      : undefined;
     const postFilter = createSimilaritySearchPostFilter({
       threshold,
       knowledgeBasesRootDir: KNOWLEDGE_BASES_ROOT_DIR,
       knowledgeBaseName,
+      knowledgeBaseNames,
       filters,
     });
 
@@ -2836,8 +2848,12 @@ export class FaissIndexManager {
     // The post-filter still runs on the FAISS results for correctness:
     // sidecar candidates only narrow how MANY vectors we ask FAISS for,
     // they do not bypass the post-filter.
+    // Issue #975 — the sidecar fast-path narrows candidates by a SINGLE KB. For
+    // a multi-KB subset we skip that narrowing (pass no KB name) and let the
+    // post-filter enforce the subset; metadata filters still narrow via the
+    // sidecar, and the progressive ladder + post-filter keep the result correct.
     const sidecarFilter = toSidecarFilter({
-      knowledgeBaseName,
+      knowledgeBaseName: knowledgeBaseNames !== undefined ? undefined : knowledgeBaseName,
       knowledgeBasesRootDir: KNOWLEDGE_BASES_ROOT_DIR,
       filters,
     });

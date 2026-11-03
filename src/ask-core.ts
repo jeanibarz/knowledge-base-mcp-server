@@ -115,6 +115,8 @@ export const ASK_SYSTEM_PROMPT =
 export interface AskExecutionArgs {
   question: string;
   kb?: string;
+  /** Issue #975 — named subset scope (mutually exclusive with `kb`). */
+  kbs?: readonly string[];
   model?: string;
   llmProfile?: string;
   endpoint?: string;
@@ -141,6 +143,8 @@ export interface AskExecutionArgs {
 export interface AskKnowledgeInput {
   query: string;
   knowledge_base_name?: string;
+  /** Issue #975 — named subset scope (mutually exclusive with knowledge_base_name). */
+  knowledge_base_names?: readonly string[];
   model_name?: string;
   llm_profile?: string;
   endpoint?: string;
@@ -287,6 +291,18 @@ export class AskExecutionError extends Error {
   }
 }
 
+/**
+ * Issue #975 — a single KB-scope label for spans, observability, and the
+ * retrieval payload: the scalar `kb`, else the comma-joined subset, else null
+ * (all KBs). With no subset requested this is identical to the pre-#975
+ * `args.kb ?? null`.
+ */
+function askScopeLabel(args: AskExecutionArgs): string | null {
+  if (args.kb !== undefined && args.kb.length > 0) return args.kb;
+  if (args.kbs !== undefined && args.kbs.length > 0) return args.kbs.join(',');
+  return null;
+}
+
 export async function askKnowledge(
   input: AskKnowledgeInput,
   deps: RunAskCoreDeps,
@@ -300,9 +316,13 @@ export async function askKnowledge(
   if (!Number.isInteger(contextBudgetTokens) || contextBudgetTokens < MIN_ASK_CONTEXT_BUDGET_TOKENS) {
     throw new Error(`ask_knowledge requires context_budget_tokens >= ${MIN_ASK_CONTEXT_BUDGET_TOKENS}`);
   }
+  const kbs = input.knowledge_base_names !== undefined && input.knowledge_base_names.length > 0
+    ? input.knowledge_base_names
+    : undefined;
   return executeAsk({
     question: query,
     kb: input.knowledge_base_name,
+    kbs,
     model: input.model_name,
     llmProfile: input.llm_profile,
     endpoint: input.endpoint,
@@ -356,7 +376,7 @@ export async function retrieveAskEvidence(
     ? resolveAutoSearchMode(args.question).mode
     : requestedMode;
   return withSpan('kb.ask.retrieve', {
-    'kb.scope': args.kb ?? null,
+    'kb.scope': askScopeLabel(args),
     'kb.k': args.k,
     'kb.search_mode': effectiveMode,
     'kb.refresh': args.refresh,
@@ -382,7 +402,14 @@ export async function retrieveAskEvidence(
       if (args.refresh) {
         await deps.withWriteLock(manager.modelDir, async () => {
           await manager.initialize();
-          await manager.updateIndex(args.kb);
+          // Issue #975 — a subset refreshes each named KB under the one lock.
+          if (args.kbs !== undefined && args.kbs.length > 0) {
+            for (const name of args.kbs) {
+              await manager.updateIndex(name);
+            }
+          } else {
+            await manager.updateIndex(args.kb);
+          }
         });
       } else {
         await deps.loadReadOnlyIndex(manager);
@@ -396,7 +423,7 @@ export async function retrieveAskEvidence(
         // nearest-neighbour search (both happen inside similaritySearch).
         results = await withSpan('kb.ask.dense', {
           'kb.k': args.k,
-          'kb.scope': args.kb ?? null,
+          'kb.scope': askScopeLabel(args),
         }, () => manager.similaritySearch(
           args.question,
           args.k,
@@ -404,6 +431,9 @@ export async function retrieveAskEvidence(
           args.kb,
           undefined,
           timing ? denseTiming : undefined,
+          // Pass opts only for a subset so the single/all path keeps its exact
+          // pre-#975 call shape.
+          ...(args.kbs && args.kbs.length > 0 ? [{ knowledgeBaseNames: args.kbs }] as const : [] as const),
         ));
         for (const result of results) {
           denseDistanceById.set(chunkIdFromMetadata(result.metadata as Record<string, unknown>), result.score);
@@ -457,7 +487,7 @@ export async function retrieveAskEvidence(
         emitRelevanceGateDecision({
           process: 'mcp',
           query: args.question,
-          kbScope: args.kb ?? null,
+          kbScope: askScopeLabel(args),
           searchMode: effectiveMode,
           verdict: gate.verdict,
           taskContext: args.taskContext,
@@ -498,7 +528,10 @@ async function retrieveHybridOrLexical(input: {
 }): Promise<HybridOrLexicalRetrieval> {
   const { manager, args, effectiveMode, deps, denseTiming, timing } = input;
   const fetchK = hybridFetchK(args.k);
-  const kbs = await (deps.listLexicalKbs ?? listLexicalKbs)(args.kb);
+  // Issue #975 — a named subset scopes the lexical legs; else the scalar name.
+  const kbs = await (deps.listLexicalKbs ?? listLexicalKbs)(
+    args.kbs !== undefined && args.kbs.length > 0 ? args.kbs : args.kb,
+  );
 
   const runLexical = () => withSpan('kb.ask.lexical', {
     'kb.k': fetchK,
@@ -526,7 +559,7 @@ async function retrieveHybridOrLexical(input: {
   // Hybrid: dense + lexical legs in parallel, then RRF + opt-in rerank.
   const densePromise = withSpan('kb.ask.dense', {
     'kb.k': fetchK,
-    'kb.scope': args.kb ?? null,
+    'kb.scope': askScopeLabel(args),
   }, () => manager.similaritySearch(
     args.question,
     fetchK,
@@ -534,6 +567,7 @@ async function retrieveHybridOrLexical(input: {
     args.kb,
     undefined,
     timing ? denseTiming : undefined,
+    ...(args.kbs && args.kbs.length > 0 ? [{ knowledgeBaseNames: args.kbs }] as const : [] as const),
   )).then((rs) => rs.map((r): HybridChunk => ({
     pageContent: r.pageContent,
     metadata: r.metadata,
@@ -542,7 +576,7 @@ async function retrieveHybridOrLexical(input: {
   const [denseResults, lexical] = await Promise.all([densePromise, runLexical()]);
   if (timing) mergeAskDenseTiming(timing, denseTiming);
 
-  const rerankConfig = resolveRerankerConfig(process.env, args.rerank, args.kb ?? null);
+  const rerankConfig = resolveRerankerConfig(process.env, args.rerank, askScopeLabel(args));
   const fusion = fuseHybridResultsWithDiagnostics({
     denseResults,
     lexicalResults: lexical.hits,
@@ -560,7 +594,7 @@ async function retrieveHybridOrLexical(input: {
     config: rerankConfig,
     process: 'mcp',
     searchMode: 'hybrid',
-    kbScope: args.kb ?? null,
+    kbScope: askScopeLabel(args),
   }));
   if (timing && rerankResult.candidatesIn > 0) {
     timing.rerank_ms = rerankResult.tookMs;
@@ -761,7 +795,7 @@ export async function answerWithEvidence(
       k: args.k,
       context_budget_tokens: args.contextBudgetTokens,
       refreshed: args.refresh,
-      knowledge_base: args.kb ?? null,
+      knowledge_base: askScopeLabel(args),
       search_mode: searchMode,
       ...(args.taskContext !== undefined ? { task_context_provided: args.taskContext.trim() !== '' } : {}),
       ...(args.gate !== undefined ? { gate: args.gate } : {}),
@@ -782,7 +816,7 @@ export async function executeAsk(
 ): Promise<AskKnowledgeResult> {
   const timing: TimingPayload | null = args.timing ? {} : null;
   return withSpan('kb.ask', {
-    'kb.scope': args.kb ?? null,
+    'kb.scope': askScopeLabel(args),
     'kb.k': args.k,
     'kb.request_id': args.requestId,
   }, async () => {

@@ -218,6 +218,27 @@ export {
   KB_MAX_GLOB_WILDCARDS,
 } from './mcp-tool-specs.js';
 
+/**
+ * Issue #975 — resolve the set of KB names a lexical/BM25 leg should query from
+ * the full on-disk list and the requested scope. A non-empty subset array wins
+ * (order follows the on-disk list; unknown names were already rejected upstream
+ * with KB_NOT_FOUND); else the scalar name scopes to one; else all KBs.
+ */
+function selectScopedKbNames(
+  allKbNames: readonly string[],
+  knowledgeBaseName: string | undefined,
+  knowledgeBaseNames: readonly string[] | undefined,
+): string[] {
+  if (knowledgeBaseNames !== undefined && knowledgeBaseNames.length > 0) {
+    const want = new Set(knowledgeBaseNames);
+    return allKbNames.filter((name) => want.has(name));
+  }
+  if (knowledgeBaseName) {
+    return allKbNames.filter((name) => name === knowledgeBaseName);
+  }
+  return [...allKbNames];
+}
+
 function mcpErrorContent(error: Error): TextContent {
   const code = error instanceof KBError
     ? error.code
@@ -900,9 +921,58 @@ export class KnowledgeBaseServer {
     });
   }
 
+  /**
+   * Issue #975 — validate and resolve the `knowledge_base_name` /
+   * `knowledge_base_names` scope pair shared by retrieve_knowledge and
+   * ask_knowledge. Returns either the validated subset (`names`, or `undefined`
+   * when no subset was requested) or an error `CallToolResult`:
+   *   - both the scalar name and a non-empty array set → VALIDATION
+   *   - any name in the array that is not a registered KB → KB_NOT_FOUND
+   * An empty/whitespace-only array is treated as "no subset" (same as omitting
+   * it), so omitting the argument preserves the exact single-or-all scope.
+   */
+  private async resolveKbSubsetScope(
+    knowledgeBaseName: string | undefined,
+    knowledgeBaseNames: readonly string[] | undefined,
+  ): Promise<{ names?: string[] } | { error: CallToolResult }> {
+    const requested = (knowledgeBaseNames ?? []).filter(
+      (name): name is string => typeof name === 'string' && name.length > 0,
+    );
+    if (requested.length === 0) return { names: undefined };
+    if (typeof knowledgeBaseName === 'string' && knowledgeBaseName.length > 0) {
+      return {
+        error: {
+          content: [mcpErrorContent(new KBError(
+            'VALIDATION',
+            'Pass either knowledge_base_name (one base) or knowledge_base_names (a subset), not both.',
+          ))],
+          isError: true,
+        },
+      };
+    }
+    const available = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+    const availableSet = new Set(available);
+    const deduped = [...new Set(requested)];
+    const unknown = deduped.filter((name) => !availableSet.has(name));
+    if (unknown.length > 0) {
+      const known = [...available].sort((a, b) => a.localeCompare(b)).join(', ') || '(none)';
+      return {
+        error: {
+          content: [mcpErrorContent(new KBError(
+            'KB_NOT_FOUND',
+            `Unknown knowledge base(s) in knowledge_base_names: ${unknown.join(', ')}. Known: ${known}.`,
+          ))],
+          isError: true,
+        },
+      };
+    }
+    return { names: deduped };
+  }
+
   private async handleRetrieveKnowledge(args: {
     query: string;
     knowledge_base_name?: string;
+    knowledge_base_names?: string[];
     threshold?: number;
     model_name?: string;
     extensions?: string[];
@@ -928,6 +998,18 @@ export class KnowledgeBaseServer {
     const requestStartedAt = Date.now();
     const query: string = args.query;
     const knowledgeBaseName: string | undefined = args.knowledge_base_name;
+    // Issue #975 — resolve the optional named-subset scope. Validation errors
+    // (both scope args set → VALIDATION; unknown name → KB_NOT_FOUND) short out
+    // before any retrieval work and before the canonical span opens.
+    const scope = await this.resolveKbSubsetScope(args.knowledge_base_name, args.knowledge_base_names);
+    if ('error' in scope) return scope.error;
+    const knowledgeBaseNames: string[] | undefined = scope.names;
+    // A single scope label for spans, canonical logs, and the relevance gate:
+    // the scalar name, else the comma-joined subset, else null (all KBs). When
+    // no subset is requested this is identical to the pre-#975 `name ?? null`.
+    const kbScope: string | null = knowledgeBaseName && knowledgeBaseName.length > 0
+      ? knowledgeBaseName
+      : (knowledgeBaseNames !== undefined ? knowledgeBaseNames.join(',') : null);
     const threshold: number | undefined = args.threshold;
     const modelNameOverride: string | undefined = args.model_name;
     const candidateFilters = {
@@ -957,7 +1039,7 @@ export class KnowledgeBaseServer {
     const requestId = createCanonicalRequestId();
 
     return withSpan('kb.retrieve_knowledge', {
-      'kb.scope': knowledgeBaseName ?? null,
+      'kb.scope': kbScope,
       'kb.search_mode': searchMode,
       'kb.k': effectiveK,
       'kb.request_id': requestId,
@@ -965,7 +1047,7 @@ export class KnowledgeBaseServer {
       tool: 'retrieve_knowledge',
       request_id: requestId,
       query,
-      kb_scope: knowledgeBaseName ?? null,
+      kb_scope: kbScope,
       k: effectiveK,
       threshold: threshold ?? 2,
       search_mode: searchMode,
@@ -1015,6 +1097,7 @@ export class KnowledgeBaseServer {
           return this.handleRetrieveKnowledgeLexical({
             query,
             knowledgeBaseName,
+            knowledgeBaseNames,
             filters,
             canonical,
             taskContext,
@@ -1026,6 +1109,7 @@ export class KnowledgeBaseServer {
         return this.handleRetrieveKnowledgeHybrid({
           query,
           knowledgeBaseName,
+          knowledgeBaseNames,
           modelNameOverride,
           filters,
           canonical,
@@ -1067,7 +1151,16 @@ export class KnowledgeBaseServer {
 
       // RFC 013 §4.6 — write lock is per-model (resource = `models/<id>/`).
       // A `kb models add B` against another model never blocks retrievals on A.
-      await withWriteLock(manager.modelDir, () => manager.updateIndex(knowledgeBaseName));
+      // Issue #975 — a subset refreshes each named KB under the one lock.
+      await withWriteLock(manager.modelDir, async () => {
+        if (knowledgeBaseNames !== undefined) {
+          for (const name of knowledgeBaseNames) {
+            await manager.updateIndex(name);
+          }
+        } else {
+          await manager.updateIndex(knowledgeBaseName);
+        }
+      });
       if (process.env.KB_LOG_VERBOSE === '1') {
         logger.debug(`[${Date.now()}] FAISS index update completed`);
       }
@@ -1081,7 +1174,7 @@ export class KnowledgeBaseServer {
         // `kb.retrieve.dense` covers query embedding + FAISS search.
         similaritySearchResults = await withSpan('kb.retrieve.dense', {
           'kb.k': effectiveK,
-          'kb.scope': knowledgeBaseName ?? null,
+          'kb.scope': kbScope,
         }, () => manager.similaritySearch(
           query,
           effectiveK,
@@ -1089,6 +1182,9 @@ export class KnowledgeBaseServer {
           knowledgeBaseName,
           filters,
           timing,
+          // Pass opts only for a subset so the single/all path keeps its exact
+          // pre-#975 call shape.
+          ...(knowledgeBaseNames ? [{ knowledgeBaseNames }] as const : [] as const),
         ));
       } catch (error: unknown) {
         const reason = classifyDenseDegradationReason(error);
@@ -1103,6 +1199,7 @@ export class KnowledgeBaseServer {
         const degraded = await this.runDegradedLexicalOnly({
           query,
           knowledgeBaseName,
+          knowledgeBaseNames,
           fetchK: effectiveK,
         });
         if (degraded === null) throw error;
@@ -1155,7 +1252,7 @@ export class KnowledgeBaseServer {
       emitRelevanceGateDecision({
         process: 'mcp',
         query,
-        kbScope: knowledgeBaseName ?? null,
+        kbScope,
         searchMode,
         verdict: gate.verdict,
         taskContext,
@@ -1253,6 +1350,7 @@ export class KnowledgeBaseServer {
   private async handleAskKnowledge(args: {
     query: string;
     knowledge_base_name?: string;
+    knowledge_base_names?: string[];
     model_name?: string;
     llm_profile?: string;
     k?: number;
@@ -1264,6 +1362,14 @@ export class KnowledgeBaseServer {
     timing?: boolean;
   }, extra?: ToolExtra): Promise<CallToolResult> {
     const report = this.progressReporter(extra);
+    // Issue #975 — resolve the optional named-subset scope (VALIDATION when both
+    // scope args are set; KB_NOT_FOUND for an unknown name) before the span.
+    const scope = await this.resolveKbSubsetScope(args.knowledge_base_name, args.knowledge_base_names);
+    if ('error' in scope) return scope.error;
+    const knowledgeBaseNames = scope.names;
+    const kbScope: string | null = args.knowledge_base_name && args.knowledge_base_name.length > 0
+      ? args.knowledge_base_name
+      : (knowledgeBaseNames !== undefined ? knowledgeBaseNames.join(',') : null);
     // Same mint-early pattern as retrieve_knowledge (issue #900): the kb.ask
     // span opens inside executeAsk, so the id has to travel in as request_id.
     const requestId = createCanonicalRequestId();
@@ -1271,13 +1377,14 @@ export class KnowledgeBaseServer {
       tool: 'ask_knowledge',
       request_id: requestId,
       query: args.query,
-      kb_scope: args.knowledge_base_name ?? null,
+      kb_scope: kbScope,
       k: args.k ?? 8,
     }, async () => {
       try {
         const payload = await askKnowledge({
           query: args.query,
           knowledge_base_name: args.knowledge_base_name,
+          knowledge_base_names: knowledgeBaseNames,
           model_name: args.model_name,
           llm_profile: args.llm_profile,
           k: args.k,
@@ -1346,6 +1453,8 @@ export class KnowledgeBaseServer {
   private async handleRetrieveKnowledgeHybrid(input: {
     query: string;
     knowledgeBaseName?: string;
+    /** Issue #975 — named subset scope (mutually exclusive with the scalar name). */
+    knowledgeBaseNames?: readonly string[];
     modelNameOverride?: string;
     filters?: { extensions?: string[]; pathGlob?: string; tags?: string[]; since?: string; until?: string };
     canonical?: Partial<CanonicalLogInput>;
@@ -1355,7 +1464,10 @@ export class KnowledgeBaseServer {
     /** Issue #973 — retrieval top-K before fusion/rerank. Default 10. */
     k?: number;
   }): Promise<CallToolResult> {
-    const { query, knowledgeBaseName, modelNameOverride, filters, canonical, taskContext, gateOverride, rerankOverride } = input;
+    const { query, knowledgeBaseName, knowledgeBaseNames, modelNameOverride, filters, canonical, taskContext, gateOverride, rerankOverride } = input;
+    const kbScope: string | null = knowledgeBaseName && knowledgeBaseName.length > 0
+      ? knowledgeBaseName
+      : (knowledgeBaseNames !== undefined && knowledgeBaseNames.length > 0 ? knowledgeBaseNames.join(',') : null);
     const HYBRID_TOP_K = input.k ?? 10;
     const fetchK = hybridFetchK(HYBRID_TOP_K);
     const requestStartedAt = Date.now();
@@ -1377,16 +1489,25 @@ export class KnowledgeBaseServer {
       }
       if (canonical) canonical.model_id = activeModelId;
       const manager = await this.managers.getOrCreate(activeModelId);
-      await withWriteLock(manager.modelDir, () => manager.updateIndex(knowledgeBaseName));
+      // Issue #975 — a subset refreshes each named KB under the one lock.
+      await withWriteLock(manager.modelDir, async () => {
+        if (knowledgeBaseNames !== undefined && knowledgeBaseNames.length > 0) {
+          for (const name of knowledgeBaseNames) {
+            await manager.updateIndex(name);
+          }
+        } else {
+          await manager.updateIndex(knowledgeBaseName);
+        }
+      });
 
       // Dense leg — over-fetch to give RRF room.
       const denseTiming: SimilaritySearchTiming = {};
       let denseError: unknown = null;
       const densePromise = withSpan('kb.retrieve.dense', {
         'kb.k': fetchK,
-        'kb.scope': knowledgeBaseName ?? null,
+        'kb.scope': kbScope,
       }, () => manager
-        .similaritySearch(query, fetchK, Number.POSITIVE_INFINITY, knowledgeBaseName, filters, denseTiming))
+        .similaritySearch(query, fetchK, Number.POSITIVE_INFINITY, knowledgeBaseName, filters, denseTiming, ...(knowledgeBaseNames && knowledgeBaseNames.length > 0 ? [{ knowledgeBaseNames }] as const : [] as const)))
         .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })))
         .catch((err) => {
           denseError = err;
@@ -1400,9 +1521,7 @@ export class KnowledgeBaseServer {
       // metadata is current. Explicit unfiltered refresh is the CLI's job
       // (`kb search --refresh`).
       const allKbNames = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
-      const kbNames = knowledgeBaseName
-        ? allKbNames.filter((name) => name === knowledgeBaseName)
-        : allKbNames;
+      const kbNames = selectScopedKbNames(allKbNames, knowledgeBaseName, knowledgeBaseNames);
       const kbs = kbNames.map((kbName) => ({ kbName, kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName) }));
       let lexicalSearchMs = 0;
       const lexicalStartedAt = Date.now();
@@ -1453,7 +1572,7 @@ export class KnowledgeBaseServer {
         logger.warn(`retrieve_knowledge hybrid degraded to lexical-only: ${reason}`);
       }
 
-      const rerankConfig = resolveRerankerConfig(process.env, rerankOverride, knowledgeBaseName ?? null);
+      const rerankConfig = resolveRerankerConfig(process.env, rerankOverride, kbScope);
       const fusionStartedAt = Date.now();
       const fusion = await withSpan('kb.retrieve.fusion', {
         'kb.dense_in': denseResults.length,
@@ -1484,7 +1603,7 @@ export class KnowledgeBaseServer {
         config: rerankConfig,
         process: 'mcp',
         searchMode: 'hybrid',
-        kbScope: knowledgeBaseName ?? null,
+        kbScope,
       }));
       const rerankMs = rerankResult.tookMs ?? Date.now() - rerankStartedAt;
       ranked = rerankResult.results;
@@ -1513,7 +1632,7 @@ export class KnowledgeBaseServer {
       emitRelevanceGateDecision({
         process: 'mcp',
         query,
-        kbScope: knowledgeBaseName ?? null,
+        kbScope,
         searchMode: 'hybrid',
         verdict: gate.verdict,
         taskContext,
@@ -1604,6 +1723,8 @@ export class KnowledgeBaseServer {
   private async handleRetrieveKnowledgeLexical(input: {
     query: string;
     knowledgeBaseName?: string;
+    /** Issue #975 — named subset scope (mutually exclusive with the scalar name). */
+    knowledgeBaseNames?: readonly string[];
     filters?: { extensions?: string[]; pathGlob?: string; tags?: string[]; since?: string; until?: string };
     canonical?: Partial<CanonicalLogInput>;
     taskContext?: string;
@@ -1612,15 +1733,16 @@ export class KnowledgeBaseServer {
     k?: number;
     requestStartedAt: number;
   }): Promise<CallToolResult> {
-    const { query, knowledgeBaseName, filters, canonical, taskContext, gateOverride, requestStartedAt } = input;
+    const { query, knowledgeBaseName, knowledgeBaseNames, filters, canonical, taskContext, gateOverride, requestStartedAt } = input;
+    const kbScope: string | null = knowledgeBaseName && knowledgeBaseName.length > 0
+      ? knowledgeBaseName
+      : (knowledgeBaseNames !== undefined && knowledgeBaseNames.length > 0 ? knowledgeBaseNames.join(',') : null);
     const topK = input.k ?? 10;
     const fetchK = hybridFetchK(topK);
 
     try {
       const allKbNames = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
-      const kbNames = knowledgeBaseName
-        ? allKbNames.filter((name) => name === knowledgeBaseName)
-        : allKbNames;
+      const kbNames = selectScopedKbNames(allKbNames, knowledgeBaseName, knowledgeBaseNames);
       const kbs = kbNames.map((kbName) => ({ kbName, kbPath: path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName) }));
 
       let lexicalSearchMs = 0;
@@ -1667,7 +1789,7 @@ export class KnowledgeBaseServer {
       emitRelevanceGateDecision({
         process: 'mcp',
         query,
-        kbScope: knowledgeBaseName ?? null,
+        kbScope,
         searchMode: 'lexical',
         verdict: gate.verdict,
         taskContext,
@@ -1730,12 +1852,12 @@ export class KnowledgeBaseServer {
   private async runDegradedLexicalOnly(input: {
     query: string;
     knowledgeBaseName?: string;
+    /** Issue #975 — named subset scope (mutually exclusive with the scalar name). */
+    knowledgeBaseNames?: readonly string[];
     fetchK: number;
   }): Promise<{ results: Array<{ pageContent: string; metadata: Record<string, unknown>; score: number }> } | null> {
     const allKbNames = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
-    const kbNames = input.knowledgeBaseName
-      ? allKbNames.filter((name) => name === input.knowledgeBaseName)
-      : allKbNames;
+    const kbNames = selectScopedKbNames(allKbNames, input.knowledgeBaseName, input.knowledgeBaseNames);
     if (kbNames.length === 0) return null;
     const kbs = kbNames.map((kbName) => ({
       kbName,

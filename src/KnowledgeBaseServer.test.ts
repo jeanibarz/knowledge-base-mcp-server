@@ -411,6 +411,105 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(result.content[0].text).not.toContain('Model:');
   });
 
+  // --- Issue #975: named subset of shelves (knowledge_base_names) ------------
+
+  async function seedKbs(tempDir: string, names: string[]): Promise<void> {
+    for (const name of names) {
+      await fsp.mkdir(path.join(tempDir, name), { recursive: true });
+      await fsp.writeFile(path.join(tempDir, name, 'd.md'), 'data');
+    }
+  }
+
+  it('handleRetrieveKnowledge with knowledge_base_names scopes the dense leg to the subset (#975)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await seedKbs(tempDir, ['alpha', 'beta', 'gamma']);
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'hit', metadata: { source: path.join(tempDir, 'alpha', 'd.md') }, score: 0.5 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'q',
+      knowledge_base_names: ['alpha', 'beta'],
+    });
+
+    expect(result.isError).toBeUndefined();
+    // The dense leg gets the subset via opts; the single-KB positional stays
+    // undefined so the two scope inputs never mix.
+    const call = similaritySearchMock.mock.calls[0];
+    expect(call[3]).toBeUndefined();
+    expect(call[6]?.knowledgeBaseNames).toEqual(['alpha', 'beta']);
+    // Only the named KBs are refreshed under the write lock — gamma is not.
+    expect(updateIndexMock.mock.calls.map((c: unknown[]) => c[0])).toEqual(['alpha', 'beta']);
+  });
+
+  it('handleRetrieveKnowledge without a subset keeps the all-KB default scope (#975)', async () => {
+    await setRetrieveEnv();
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'hello', metadata: { source: '/tmp/x.md' }, score: 0.5 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+
+    expect(result.isError).toBeUndefined();
+    const call = similaritySearchMock.mock.calls[0];
+    expect(call[3]).toBeUndefined();
+    expect(call[6]?.knowledgeBaseNames).toBeUndefined();
+    // The whole corpus is refreshed with a single undefined-scoped updateIndex.
+    expect(updateIndexMock.mock.calls).toEqual([[undefined]]);
+  });
+
+  it('handleRetrieveKnowledge rejects knowledge_base_name + knowledge_base_names with VALIDATION (#975)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await seedKbs(tempDir, ['alpha']);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'q',
+      knowledge_base_name: 'alpha',
+      knowledge_base_names: ['alpha'],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.code).toBe('VALIDATION');
+    expect(similaritySearchMock).not.toHaveBeenCalled();
+  });
+
+  it('handleRetrieveKnowledge fails closed with KB_NOT_FOUND for an unknown name in the subset (#975)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await seedKbs(tempDir, ['alpha']);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'q',
+      knowledge_base_names: ['alpha', 'doesnotexist'],
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error.code).toBe('KB_NOT_FOUND');
+    expect(payload.error.message).toContain('doesnotexist');
+    expect(similaritySearchMock).not.toHaveBeenCalled();
+  });
+
+  it('handleAskKnowledge rejects knowledge_base_name + knowledge_base_names with VALIDATION (#975)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await seedKbs(tempDir, ['alpha']);
+
+    const server = await freshServer();
+    const result = await server['handleAskKnowledge']({
+      query: 'q',
+      knowledge_base_name: 'alpha',
+      knowledge_base_names: ['alpha'],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error.code).toBe('VALIDATION');
+  });
+
   it('handleRetrieveKnowledge expands neighbor context only when requested', async () => {
     await setRetrieveEnv();
     updateIndexMock.mockResolvedValue(undefined);

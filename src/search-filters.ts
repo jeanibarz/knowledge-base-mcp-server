@@ -27,11 +27,32 @@ export function createSimilaritySearchPostFilter(options: {
   threshold: number;
   knowledgeBasesRootDir: string;
   knowledgeBaseName?: string;
+  /**
+   * Issue #975 — scope to a named subset of KBs. A doc is kept when its source
+   * lives under ANY of these KB directories. Ignored when `knowledgeBaseName`
+   * is set (the two are mutually exclusive at the tool boundary); the single
+   * name is the one-element form of the same prefix check.
+   */
+  knowledgeBaseNames?: readonly string[];
   filters?: SimilaritySearchFilters;
   recencyNowMs?: number;
 }): SimilaritySearchPostFilter {
   const { threshold, knowledgeBasesRootDir, knowledgeBaseName, filters } = options;
-  const scoped = typeof knowledgeBaseName === 'string' && knowledgeBaseName.length > 0;
+  // Resolve the KB scope into a non-empty list of names, or undefined for
+  // "all KBs". The scalar name wins; otherwise the subset array (empty entries
+  // dropped) applies. A one-name scope and a one-element subset collapse to the
+  // identical single-prefix check, so the scalar path stays byte-for-byte the
+  // same as before #975.
+  const scopeNames = ((): readonly string[] | undefined => {
+    if (typeof knowledgeBaseName === 'string' && knowledgeBaseName.length > 0) {
+      return [knowledgeBaseName];
+    }
+    const names = (options.knowledgeBaseNames ?? []).filter(
+      (name): name is string => typeof name === 'string' && name.length > 0,
+    );
+    return names.length > 0 ? names : undefined;
+  })();
+  const scoped = scopeNames !== undefined;
   const normalizedExtensions = normalizeExtensionFilter(filters?.extensions);
   const pathGlob = filters?.pathGlob && filters.pathGlob.length > 0 ? filters.pathGlob : undefined;
   const requiredTags = filters?.tags?.filter((t): t is string => typeof t === 'string' && t.length > 0) ?? [];
@@ -44,9 +65,9 @@ export function createSimilaritySearchPostFilter(options: {
     normalizedExtensions !== undefined || pathGlob !== undefined || requiredTags.length > 0;
   const hasRecencyFilter = recencyRange !== undefined;
   const sourceMtimeMemo = new Map<string, number | null>();
-  const kbPrefix = scoped
-    ? path.join(knowledgeBasesRootDir, knowledgeBaseName as string) + path.sep
-    : undefined;
+  const kbPrefixes = scopeNames?.map(
+    (name) => path.join(knowledgeBasesRootDir, name) + path.sep,
+  );
 
   return {
     requiresOverfetch: scoped || hasMetadataFilter || hasRecencyFilter,
@@ -56,9 +77,9 @@ export function createSimilaritySearchPostFilter(options: {
           return false;
         }
         const metadata = doc.metadata as Record<string, unknown> | undefined;
-        if (kbPrefix) {
+        if (kbPrefixes) {
           const source = metadata?.source;
-          if (typeof source !== 'string' || !source.startsWith(kbPrefix)) {
+          if (typeof source !== 'string' || !kbPrefixes.some((prefix) => source.startsWith(prefix))) {
             return false;
           }
         }
