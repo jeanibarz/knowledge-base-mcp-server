@@ -20,10 +20,12 @@ import {
   defaultExtractionCacheDir,
   EXTRACTION_CACHE_SCHEMA_VERSION,
   applyExtractionCachePrune,
+  enforceExtractionCacheDiskCap,
   inventoryExtractionCache,
   loadWithExtractionCache,
   planExtractionCachePrune,
   readCachedExtraction,
+  resetExtractionCacheSizeState,
   writeCachedExtraction,
 } from './extraction-cache.js';
 
@@ -507,5 +509,159 @@ describe('extracted-text cache inventory and pruning', () => {
     await expect(fsp.stat(path.join(cacheDir, oldName))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fsp.stat(path.join(cacheDir, freshName))).resolves.toBeDefined();
     await expect(fsp.stat(path.join(cacheDir, 'notes.txt'))).resolves.toBeDefined();
+  });
+});
+
+describe('extracted-text cache write-time disk byte cap (#1022)', () => {
+  let cacheDir = '';
+
+  beforeEach(async () => {
+    cacheDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-extract-cache-cap-'));
+    resetExtractionCacheSizeState();
+  });
+
+  afterEach(async () => {
+    resetExtractionCacheSizeState();
+    await fsp.rm(cacheDir, { recursive: true, force: true });
+  });
+
+  // Writes a cache-shaped entry (64-hex .txt) with a controlled mtime so
+  // oldest-first eviction is deterministic regardless of wall-clock timing.
+  async function writeEntry(hexChar: string, body: string, mtime: Date): Promise<string> {
+    const filename = `${hexChar.repeat(64).slice(0, 64)}.txt`;
+    const filePath = path.join(cacheDir, filename);
+    await fsp.writeFile(filePath, body);
+    await fsp.utimes(filePath, mtime, mtime);
+    return filename;
+  }
+
+  async function totalBytes(): Promise<number> {
+    return (await inventoryExtractionCache(cacheDir)).summary.total_bytes;
+  }
+
+  describe('enforceExtractionCacheDiskCap', () => {
+    it('evicts oldest entries until the total is back under the cap', async () => {
+      const oldest = await writeEntry('a', 'aaaa', new Date('2026-05-01T00:00:00.000Z'));
+      const middle = await writeEntry('b', 'bbbb', new Date('2026-05-02T00:00:00.000Z'));
+      const newest = await writeEntry('c', 'cccc', new Date('2026-05-03T00:00:00.000Z'));
+
+      // 12 bytes on disk, cap 8 → the single oldest entry (4 bytes) is evicted.
+      await enforceExtractionCacheDiskCap(cacheDir, 8, 0);
+
+      await expect(fsp.stat(path.join(cacheDir, oldest))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fsp.stat(path.join(cacheDir, middle))).resolves.toBeDefined();
+      await expect(fsp.stat(path.join(cacheDir, newest))).resolves.toBeDefined();
+      expect(await totalBytes()).toBe(8);
+    });
+
+    it('is a no-op when the cap is zero (enforcement disabled)', async () => {
+      await writeEntry('a', 'aaaa', new Date('2026-05-01T00:00:00.000Z'));
+      await writeEntry('b', 'bbbb', new Date('2026-05-02T00:00:00.000Z'));
+
+      await enforceExtractionCacheDiskCap(cacheDir, 0, 0);
+
+      expect(await totalBytes()).toBe(8);
+      expect(await fsp.readdir(cacheDir)).toHaveLength(2);
+    });
+
+    it('is a no-op when the cap is negative (treated as disabled)', async () => {
+      await writeEntry('a', 'aaaa', new Date('2026-05-01T00:00:00.000Z'));
+
+      await enforceExtractionCacheDiskCap(cacheDir, -1, 0);
+
+      expect(await totalBytes()).toBe(4);
+    });
+
+    it('does nothing when the total is already under the cap', async () => {
+      await writeEntry('a', 'aaaa', new Date('2026-05-01T00:00:00.000Z'));
+
+      await enforceExtractionCacheDiskCap(cacheDir, 1024, 0);
+
+      expect(await totalBytes()).toBe(4);
+    });
+
+    it('does not over-evict when several evictors race one directory (concurrency)', async () => {
+      // Ingest runs eviction at fs-concurrency (default 8), so evictors can
+      // interleave on the same snapshot. Five 100-byte entries (500 total) with
+      // a 250-byte cap must settle at exactly the two newest (200 bytes): a
+      // loser whose unlink loses the race (ENOENT) still decrements its running
+      // total, so it stops at the cap instead of walking further and gutting the
+      // cache below cap - entrySize.
+      const body = 'z'.repeat(100);
+      const names: string[] = [];
+      for (let i = 0; i < 5; i += 1) {
+        names.push(await writeEntry(
+          String.fromCharCode(97 + i), // a..e
+          body,
+          new Date(`2026-05-0${i + 1}T00:00:00.000Z`),
+        ));
+      }
+
+      await Promise.all([
+        enforceExtractionCacheDiskCap(cacheDir, 250, 0),
+        enforceExtractionCacheDiskCap(cacheDir, 250, 0),
+        enforceExtractionCacheDiskCap(cacheDir, 250, 0),
+      ]);
+
+      const inventory = await inventoryExtractionCache(cacheDir);
+      expect(inventory.summary.total_bytes).toBe(200);
+      // The two newest survive; the three oldest are evicted exactly once.
+      expect(inventory.entries.map((e) => e.filename)).toEqual(names.slice(3));
+    });
+
+    it('evicts everything when a single entry already exceeds the cap', async () => {
+      // A cap smaller than one entry is a misconfiguration; enforcement still
+      // terminates cleanly (it evicts the oversized entry too) rather than
+      // looping — the operator just gets no caching, matching the sibling caps.
+      await writeEntry('a', 'x'.repeat(100), new Date('2026-05-01T00:00:00.000Z'));
+
+      await enforceExtractionCacheDiskCap(cacheDir, 10, 0);
+
+      expect(await totalBytes()).toBe(0);
+    });
+  });
+
+  describe('loadWithExtractionCache disk-cap integration', () => {
+    // Each distinct file content hashes to a distinct cache key → one entry
+    // per write, so repeated writeOnMiss grows the directory until the cap.
+    async function cachePut(id: number, body: string, diskMaxBytes: number): Promise<void> {
+      const filePath = path.join(cacheDir, `src-${id}.pdf`);
+      await fsp.writeFile(filePath, Buffer.from(`bytes-${id}`));
+      await loadWithExtractionCache({
+        filePath,
+        loaderName: 'pdf-parse',
+        loaderVersion: 1,
+        parse: async () => body,
+        cacheDir: path.join(cacheDir, 'entries'),
+        diskMaxBytes,
+      });
+    }
+
+    it('keeps total cache bytes under the cap across repeated writeOnMiss', async () => {
+      const entriesDir = path.join(cacheDir, 'entries');
+      const body = 'x'.repeat(100); // 100 bytes per cache entry
+      const cap = 250; // room for at most 2 entries
+
+      for (let i = 0; i < 8; i += 1) {
+        await cachePut(i, `${body}-${i}`, cap);
+      }
+
+      const inventory = await inventoryExtractionCache(entriesDir);
+      expect(inventory.summary.total_bytes).toBeLessThanOrEqual(cap);
+      expect(inventory.summary.entry_count).toBeGreaterThan(0);
+      expect(inventory.summary.entry_count).toBeLessThan(8);
+    });
+
+    it('leaves the cache unbounded when diskMaxBytes is 0 (default behavior)', async () => {
+      const entriesDir = path.join(cacheDir, 'entries');
+      const body = 'y'.repeat(100);
+
+      for (let i = 0; i < 6; i += 1) {
+        await cachePut(i, `${body}-${i}`, 0);
+      }
+
+      const inventory = await inventoryExtractionCache(entriesDir);
+      expect(inventory.summary.entry_count).toBe(6);
+    });
   });
 });

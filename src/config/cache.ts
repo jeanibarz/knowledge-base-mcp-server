@@ -49,3 +49,28 @@ export function resolveAskCacheDiskMaxBytes(
 
 export const KB_ASK_CACHE_ENABLED = isAskCacheEnabled();
 export const KB_ASK_CACHE_DISK_MAX_BYTES = resolveAskCacheDiskMaxBytes();
+
+// ---------------------------------------------------------------------------
+// Extraction-text cache disk byte cap (#1022). The content-addressed
+// extracted-text cache ($FAISS_INDEX_PATH/extracted-text) historically grew
+// unbounded across reindexes and shrank only when an operator ran
+// `kb cache prune`. KB_EXTRACTION_CACHE_DISK_MAX_BYTES opts that cache into the
+// same write-time eviction the rerank/query/ask disk caches use: once the cap
+// is exceeded on a write, oldest entries are evicted until the total is back
+// under it.
+//
+// Default OFF (0): unlike the other disk caps, the extraction cache stays
+// unbounded unless an operator sets a positive cap, so this change preserves
+// the pre-#1022 behavior for every existing install. A blank, non-numeric, or
+// negative value also resolves to 0 (enforcement disabled).
+// ---------------------------------------------------------------------------
+
+export function resolveExtractionCacheDiskMaxBytes(
+  raw: string | undefined = process.env.KB_EXTRACTION_CACHE_DISK_MAX_BYTES,
+): number {
+  const parsed = raw === undefined || raw.trim() === '' ? Number.NaN : Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.floor(parsed);
+}
+
+export const KB_EXTRACTION_CACHE_DISK_MAX_BYTES = resolveExtractionCacheDiskMaxBytes();
