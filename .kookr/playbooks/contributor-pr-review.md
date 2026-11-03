@@ -53,6 +53,7 @@ checklist:
   - Each eligible PR reviewed for correctness, tests, and repo conventions
   - Findings classified into blockers vs. non-critical, and only blockers prevent merge
   - Mostly-ok PRs — contributor thanked, then merged only once CI is green and review is not CHANGES_REQUESTED
+  - Sweep is a bounded snapshot — never blocks waiting/polling for a pending CI check; a PR whose required checks are still running is deferred to the next 2-hourly sweep, not waited on
   - Non-critical findings turned into follow-up issues/PR suggestions, not merge blocks
   - Blocked PRs given one diplomatic, concise, constructive comment naming the blocker and the fix
   - Respond-once-per-revision gate honored — a PR is re-commented only after the contributor pushes new commits (its head SHA changed since this watchdog's last marked comment); an unchanged PR is skipped silently, never commented on twice
@@ -322,8 +323,26 @@ intended disposition prefixed `DRY-RUN:` instead):
 
 A PR is mergeable when it has **no blockers**, its required checks are green in
 `statusCheckRollup` (this repo's protected `main` requires the **"Anti-drift
-checklist"** check — do not merge until it has passed), `mergeStateStatus` is
-`CLEAN`, and `reviewDecision` is not `CHANGES_REQUESTED`.
+checklist"** check), `mergeStateStatus` is `CLEAN`, and `reviewDecision` is not
+`CHANGES_REQUESTED`.
+
+**A sweep is a bounded snapshot — never wait for CI.** Read `statusCheckRollup`
+once, as it is *right now*, and act on that state only:
+
+- **All required checks already green** → mergeable; thank + merge this sweep.
+- **A required check is still pending/running** → *not actionable this sweep.* Do
+  **not** wait or poll for it to finish. This repo's required `npm test` can take
+  tens of minutes; a 2-hourly watchdog that blocks on it burns its whole time
+  budget and gets killed by the task watchdog (repeated, that auto-pauses the
+  schedule). Record `checks pending — deferred` in the Phase 5 report, post **no**
+  comment (the marker is for feedback, not a pending-CI holding note), and move on
+  — a later sweep merges it once green. If auto-merge is enabled on this repo you
+  may instead enqueue it and return immediately:
+  `gh pr merge "$N" -R "$REPO" --squash --auto --delete-branch` — but still never
+  block the sweep waiting.
+- **A required check is red** → infra-red (the job never ran: CI quota/outage) is
+  *not* a real failure — treat it as still-pending and defer. A genuine
+  test/lint/type/build failure **is** a blocker → go to 4b.
 
 1. **Greet / thank the contributor first** (the user asked for this to happen
    before the merge). Keep it warm, brief, and specific to what they did. For an
@@ -340,16 +359,14 @@ checklist"** check — do not merge until it has passed), `mergeStateStatus` is
    *"Merging as-is; I've opened #NN to track a small follow-up — no action needed
    from you."*
 
-2. **Merge** once the thank-you is posted and the gates above hold:
+2. **Merge** once the thank-you is posted and the snapshot above says *all
+   required checks are already green* (never after waiting for a pending one):
 
    ```bash
    gh pr merge "$N" -R "$REPO" --squash --delete-branch
    ```
 
-   Classify a red check before treating it as a blocker: a check that failed only
-   because CI infrastructure/quota was unavailable (the job never ran) is infra-red,
-   not a real failure. A genuine test/lint/type/build failure **is** a blocker —
-   do not merge; go to 4b. Never bypass branch protection or a required check.
+   Never bypass branch protection or a required check.
 
 ### 4b. Blocked by a critical problem → diplomatic, concise feedback
 
@@ -396,8 +413,9 @@ merge.
 
 Write a per-PR disposition summary: PR number, author, security verdict, quality
 verdict, blockers (if any), action taken or planned (`merged` / `commented
-blocker` / `thanked + follow-up #NN` / `skipped: <reason>`), and any PRs skipped
-over the `{{maxPrs}}` cap.
+blocker` / `thanked + follow-up #NN` / `checks pending — deferred` /
+`awaiting contributor revision` / `skipped: <reason>`), and any PRs skipped over
+the `{{maxPrs}}` cap.
 
 Then emit the post-task lesson decision — either a `kb remember
 --kb=agent-task-lessons …` write capturing a reusable review/security lesson, or
@@ -428,6 +446,11 @@ flight this tick.
 - **Don't merge on an unmet required check** ("Anti-drift checklist"), a
   `CHANGES_REQUESTED` review, or a real test failure — even if the change looks
   fine. Branch protection is the floor, not a suggestion.
+- **Don't block the sweep waiting for CI to finish.** A sweep acts on the check
+  state as it is *right now*. If a required check is still running, defer the PR to
+  the next 2-hourly sweep — never sleep, poll, or "wait a few minutes and re-check".
+  Waiting on a long `npm test` blows the run's time budget and the task watchdog
+  kills it; three such kills in a row auto-pause the whole schedule.
 - **Don't comment twice on an unchanged PR.** If your own last marked comment's
   head SHA equals the PR's current `headRefOid`, the contributor hasn't pushed
   anything — stay silent until they do. Re-commenting every 2 hours on a PR nobody
