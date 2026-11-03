@@ -56,6 +56,7 @@ module.exports = {
     '**/src/injection-guard.test.ts',
     '**/src/sensitivity-policy.test.ts',
     '**/src/kb-write-policy.test.ts',
+    '**/src/relevance-judge.test.ts',
   ],
   testTimeout: 30000,
 };
