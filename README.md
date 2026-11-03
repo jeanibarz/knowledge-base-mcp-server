@@ -780,6 +780,56 @@ The runner builds a temporary KB root and emits metrics JSON plus a TREC run fil
 
 To reproduce the committed **dense / small-model** numbers (BEIR, MTEB, and BRIGHT with `nomic-embed-text` on Ollama) end to end, follow the step-by-step runbook in [benchmarks/REPRODUCE.md](benchmarks/REPRODUCE.md).
 
+### Committed small-model results
+
+The repo contains committed benchmark runs for two small embedding models on
+Ollama — `nomic-embed-text` and `dengcao/Qwen3-Embedding-0.6B:Q8_0`. These are
+**local reproducible runs, not official leaderboard submissions**; every number
+below is copied verbatim from its committed artifact, higher is better.
+
+Scores are **nDCG@10**: a 0–1 measure of how well the top 10 results are ranked
+(1 is perfect). Each mode is a retrieval strategy of `kb search` — *lexical*
+(keyword matching), *dense* (embedding similarity), *hybrid* (the two fused), and
+*+rerank* (a second-pass model reorders the top hits). Means taken over different
+numbers of datasets or tasks are not comparable to each other or to official
+leaderboards.
+
+**MTEB** — mean main score (nDCG@10 for these two retrieval tasks) over the committed tasks (SciFact, NFCorpus), `mteb` 1.19.10. A 2-task mean is not comparable to published MTEB averages over dozens of tasks:
+
+| Model | Mean (2 tasks) | SciFact | NFCorpus | Artifact |
+| --- | ---: | ---: | ---: | --- |
+| `nomic-embed-text` | 0.353055 | 0.52408 | 0.18203 | [mteb/nomic.json](benchmarks/results/mteb/nomic.json) |
+| `Qwen3-Embedding-0.6B:Q8_0` | 0.487265 | 0.67752 | 0.29701 | [mteb/qwen3.json](benchmarks/results/mteb/qwen3.json) |
+
+**BEIR matrix** — multi-domain mean nDCG@10 across 5 datasets (scifact, nfcorpus, arguana, scidocs, fiqa):
+
+| Model | lexical | dense | hybrid | hybrid+rerank | Artifact |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `nomic-embed-text` | 0.337237 | 0.254749 | 0.320355 | 0.376205 | [nomic/beir-matrix.json](benchmarks/results/beir/matrix/nomic/beir-matrix.json) (`04f3eb8`) |
+| `Qwen3-Embedding-0.6B:Q8_0` | 0.337237 | 0.373419 | 0.389288 | 0.386762 | [qwen3/beir-matrix.json](benchmarks/results/beir/matrix/qwen3/beir-matrix.json) (`869d527`) |
+
+Lexical mode is model-independent (it uses the shared lexical index, not the
+embedding model), so both rows report the same lexical score. The qwen3 artifact
+also records additional modes (late, hybrid+late, hybrid+rerank+contextual); two
+of them ran on only 2 or 3 of the 5 datasets, so their means are not comparable
+to the full-coverage rows — see the full matrix.
+
+**BRIGHT** — reasoning-intensive retrieval, mean nDCG@10 over 2 tasks (biology, economics):
+
+| Model | dense | hybrid+rerank | Artifact |
+| --- | ---: | ---: | --- |
+| `nomic-embed-text` | 0.1476 | 0.1293 | [bright/nomic/bright-report.md](benchmarks/results/bright/nomic/bright-report.md) (`abe8012`) |
+| `Qwen3-Embedding-0.6B:Q8_0` | 0.1586 | 0.1309 | [bright/qwen3/bright-report.md](benchmarks/results/bright/qwen3/bright-report.md) (`ee23284`) |
+
+BRIGHT queries need multi-step reasoning, so nDCG@10 is low across all systems.
+One caveat from the run report: BRIGHT lists documents to ignore per query, but
+this harness does not subtract them from the ranking, so scores may run slightly
+high versus the official harness.
+
+The git SHA after each artifact is the code revision recorded inside that run.
+Full per-dataset and per-mode breakdowns, plus latency and provenance, live in
+[benchmarks/results/README.md](benchmarks/results/README.md).
+
 Optuna tuning is optional and runs only when you invoke it. This sweeps lexical chunking parameters and writes a replayable best-config file:
 
 ```bash
