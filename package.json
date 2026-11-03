@@ -70,6 +70,7 @@
     "test:file": "LOG_FILE= jest --runInBand --runTestsByPath",
     "test:changed": "LOG_FILE= jest --onlyChanged --runInBand",
     "test:chaos": "LOG_FILE= jest --selectProjects serial --runInBand --testMatch '**/tests/chaos/scenarios/**/*.test.ts'",
+    "test:stress": "KB_RUN_STRESS=1 LOG_FILE= jest --selectProjects serial --runInBand --testMatch '**/tests/stress/scenarios/**/*.test.ts'",
     "test:mutation": "stryker run",
     "start": "node build/index.js",
     "dev": "node --watch --import tsx src/index.ts",
