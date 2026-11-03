@@ -7,7 +7,9 @@ import {
   buildHistoryContext,
   createReplSession,
   formatSourcesBlock,
+  inputIsTty,
   parseReplLine,
+  replCompleter,
   runAskRepl,
   type SaveTranscriptInput,
   type SaveTranscriptResult,
@@ -72,6 +74,21 @@ function baseArgs(kb?: string): AskExecutionArgs {
 
 function scripted(lines: string[]): Readable {
   return Readable.from(lines.map((line) => `${line}\n`));
+}
+
+/**
+ * A scripted stream that pretends to be a TTY so {@link runAskRepl} takes the
+ * terminal (readline line-editing) branch. `setRawMode` is a no-op because the
+ * mock stream has no real terminal to switch modes on.
+ */
+function scriptedTty(lines: string[]): Readable {
+  const stream = scripted(lines) as Readable & {
+    isTTY?: boolean;
+    setRawMode?: (mode: boolean) => void;
+  };
+  stream.isTTY = true;
+  stream.setRawMode = () => {};
+  return stream;
 }
 
 function sink(): { stream: Writable; text: () => string } {
@@ -171,9 +188,60 @@ describe('createReplSession', () => {
   });
 });
 
+describe('replCompleter', () => {
+  it('completes in-session /commands by prefix', () => {
+    expect(replCompleter('/s')).toEqual([['/sources', '/save'], '/s']);
+    expect(replCompleter('/ex')).toEqual([['/exit'], '/ex']);
+  });
+
+  it('offers no completion for free-text questions', () => {
+    expect(replCompleter('what changed')).toEqual([[], 'what changed']);
+  });
+
+  it('returns no hits for an unrecognized /command prefix', () => {
+    expect(replCompleter('/zzz')).toEqual([[], '/zzz']);
+  });
+});
+
+describe('inputIsTty', () => {
+  it('treats piped input as non-TTY and an isTTY stream as a TTY', () => {
+    expect(inputIsTty(scripted(['x']))).toBe(false);
+    expect(inputIsTty(scriptedTty(['x']))).toBe(true);
+  });
+});
+
 // --- loop behavior ----------------------------------------------------------
 
 describe('runAskRepl loop', () => {
+  it('enables terminal line editing when stdin is a TTY', async () => {
+    const out = sink();
+    const err = sink();
+    const manager = makeManager();
+    const code = await runAskRepl({
+      baseArgs: baseArgs('ops'),
+      coreDeps: makeCoreDeps(manager, staticAnswer()),
+      input: scriptedTty(['why did the deploy change?', '/exit']),
+      output: out.stream,
+      errOutput: err.stream,
+      env: { NO_COLOR: '1' },
+    });
+    expect(code).toBe(0);
+    // Terminal mode: readline echoes the edited line back to the chrome stream,
+    // which the plain (non-TTY) reader never does. This proves the TTY branch
+    // (history recall / left-right editing / TAB completion) is active.
+    expect(err.text()).toContain('why did the deploy change?');
+    expect(out.text()).toContain('A grounded answer.');
+  });
+
+  it('does not echo the typed line for non-TTY (piped) input', async () => {
+    const h = await runScript(['why did the deploy change?', '/exit'], { kb: 'ops' });
+    expect(h.code).toBe(0);
+    // Non-TTY: plain line-at-a-time reading, so readline echoes nothing — the
+    // pre-#1030 behavior, unchanged, for piped/redirected input.
+    expect(h.err.text()).not.toContain('why did the deploy change?');
+    expect(h.out.text()).toContain('A grounded answer.');
+  });
+
   it('retrieves once and reuses evidence for follow-up turns', async () => {
     const h = await runScript(['first question', 'a follow up', '/exit'], { kb: 'ops' });
     expect(h.code).toBe(0);
