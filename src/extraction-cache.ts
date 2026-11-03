@@ -30,6 +30,7 @@ import { createHash, randomBytes } from 'crypto';
 import type { Stats } from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { KB_EXTRACTION_CACHE_DISK_MAX_BYTES } from './config/cache.js';
 import { FAISS_INDEX_PATH } from './config/paths.js';
 import { logger } from './logger.js';
 
@@ -160,6 +161,12 @@ export interface CachedLoadOptions {
   cacheDir?: string;
   /** When false, return parsed text on a miss without populating the cache. */
   writeOnMiss?: boolean;
+  /**
+   * Disk byte cap enforced after a write-on-miss: once total cache bytes exceed
+   * it, oldest entries are evicted until back under the cap. `<= 0` disables
+   * enforcement (unbounded). Defaults to `KB_EXTRACTION_CACHE_DISK_MAX_BYTES`.
+   */
+  diskMaxBytes?: number;
 }
 
 export interface ExtractionCacheEntry {
@@ -281,8 +288,130 @@ export async function loadWithExtractionCache(opts: CachedLoadOptions): Promise<
   const text = await opts.parse(buffer);
   if (opts.writeOnMiss !== false) {
     await writeCachedExtraction(cacheDir, cacheKey, text);
+    // Reaching here means `readCachedExtraction` missed, so in the common case
+    // this write created a new entry (previous on-disk size 0) whose byte count
+    // is exactly the UTF-8 length just written — no extra stat needed to update
+    // the running total. The estimate can drift upward in rare cases (a
+    // swallowed write failure, a non-ENOENT read error that masked an existing
+    // entry, or two workers racing the same new key), but every drift source
+    // over-counts, so the cap is never silently overshot and the periodic
+    // reconcile resets the estimate to ground truth. Enforce the cap afterwards.
+    await enforceExtractionCacheDiskCap(
+      cacheDir,
+      opts.diskMaxBytes ?? KB_EXTRACTION_CACHE_DISK_MAX_BYTES,
+      Buffer.byteLength(text, 'utf-8'),
+    );
   }
   return text;
+}
+
+// ---------------------------------------------------------------------------
+// Write-time disk byte-cap enforcement (#1022).
+//
+// The extracted-text cache previously grew unbounded, shrinking only when an
+// operator ran `kb cache prune`. This mirrors the amortized size enforcement
+// the rerank / query-embedding disk caches use (#828): a running byte total is
+// kept per cache directory in memory and incremented by each write, so the
+// common path never re-scans the directory. A full scan happens only to
+// reconcile every `EXTRACTION_CACHE_RECONCILE_INTERVAL` writes, when the total
+// is unknown, or when the running estimate says the cap is exceeded — and that
+// same scan supplies the oldest-first entry list used to evict down to the cap.
+//
+// Eviction unlinks oldest entries by mtime. It never races a concurrent reader
+// into an error: `readCachedExtraction` already treats a vanished entry as a
+// miss (ENOENT -> null -> cold-path re-parse), and writes are atomic
+// (tmp + rename), so removing a file a reader is about to open only costs a
+// re-parse, never a crash.
+// ---------------------------------------------------------------------------
+
+const EXTRACTION_CACHE_RECONCILE_INTERVAL = 64;
+
+// Bound the per-directory accounting map so a long-lived process that rotates
+// through many distinct cache directories (realistically only tests) cannot
+// grow it without limit. Production uses a single cache directory.
+const EXTRACTION_CACHE_SIZE_STATE_MAX = 256;
+
+interface ExtractionCacheSizeState {
+  /** Running byte estimate, or undefined when a reconcile is required. */
+  diskBytes: number | undefined;
+  writesSinceReconcile: number;
+}
+
+const extractionCacheSizeState = new Map<string, ExtractionCacheSizeState>();
+
+function extractionCacheStateFor(cacheDir: string): ExtractionCacheSizeState {
+  let state = extractionCacheSizeState.get(cacheDir);
+  if (state === undefined) {
+    state = { diskBytes: undefined, writesSinceReconcile: 0 };
+    if (extractionCacheSizeState.size >= EXTRACTION_CACHE_SIZE_STATE_MAX) {
+      const oldest = extractionCacheSizeState.keys().next().value;
+      if (oldest !== undefined) extractionCacheSizeState.delete(oldest);
+    }
+    extractionCacheSizeState.set(cacheDir, state);
+  }
+  return state;
+}
+
+/** Reset the in-memory size accounting (test seam; also safe in production). */
+export function resetExtractionCacheSizeState(cacheDir?: string): void {
+  if (cacheDir === undefined) extractionCacheSizeState.clear();
+  else extractionCacheSizeState.delete(cacheDir);
+}
+
+/**
+ * Enforce the on-disk byte cap for `cacheDir` after a write that added
+ * `addedBytes`. A non-positive `maxBytes` disables enforcement entirely, so the
+ * default (0) preserves the historical unbounded behavior. Best-effort: any I/O
+ * failure degrades to "no eviction this round" rather than disrupting ingest.
+ */
+export async function enforceExtractionCacheDiskCap(
+  cacheDir: string,
+  maxBytes: number,
+  addedBytes: number,
+): Promise<void> {
+  if (!(maxBytes > 0)) return;
+  const state = extractionCacheStateFor(cacheDir);
+  if (state.diskBytes !== undefined) state.diskBytes += addedBytes;
+  state.writesSinceReconcile += 1;
+
+  const needScan =
+    state.diskBytes === undefined ||
+    state.writesSinceReconcile >= EXTRACTION_CACHE_RECONCILE_INTERVAL ||
+    state.diskBytes > maxBytes;
+  if (!needScan) return;
+
+  // One full scan serves both the reconcile and the oldest-first eviction list.
+  const inventory = await inventoryExtractionCache(cacheDir);
+  state.writesSinceReconcile = 0;
+  let total = inventory.summary.total_bytes;
+  if (total <= maxBytes) {
+    state.diskBytes = total;
+    return;
+  }
+
+  // `inventory.entries` is sorted oldest-first (mtime asc) — evict from the
+  // front until the running total is back under the cap.
+  //
+  // Concurrency note: ingest evicts at fs-concurrency (default 8), so several
+  // evictors can run this loop against one directory from the same snapshot. A
+  // loser's `unlink` throws ENOENT because a peer already removed that entry —
+  // but the entry's bytes are gone from disk either way, so we still decrement
+  // `total`. Skipping the decrement (counting a byte another evictor already
+  // reclaimed) is what would make the losers walk further down the list and
+  // gut the cache far below the cap. Any other error (locked / permission)
+  // leaves the file in place, so those bytes stay counted and the entry is
+  // skipped.
+  for (const entry of inventory.entries) {
+    if (total <= maxBytes) break;
+    try {
+      await fsp.unlink(entry.path);
+      total -= entry.size_bytes;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') total -= entry.size_bytes;
+      // else locked/permission: leave it counted and move on.
+    }
+  }
+  state.diskBytes = total;
 }
 
 export async function inventoryExtractionCache(
