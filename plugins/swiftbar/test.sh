@@ -101,6 +101,69 @@ echo "== update.sh sanity =="
 check "update.sh fetch failure exits nonzero" "! env HOME=\"$TMP/home\" KB_MENUBAR_ENV=\"$ENVF\" PATH=/usr/bin:/bin \"$HERE/update.sh\" bogus-tag 2>/dev/null"
 check "update.sh syntax valid" "bash -n \"$HERE/update.sh\""
 
+echo "== release-tag pinning (issue #1114) =="
+# Stub curl: GitHub tags API returns swiftbar/v2.0.0 (plus a decoy server-wide
+# v9.9.9 that must be ignored); a main VERSION fetch would serve the OLD 1.0.0.
+# The passive check must report 2.0.0 (from the tag), proving it pins to the
+# swiftbar/v* release and not to main.
+cat > "$TMP/bin/curl" <<STUB
+#!/bin/sh
+case " \$* " in
+  *api.github.com*tags*) printf '%s\n' '[{"name":"v9.9.9"},{"name":"swiftbar/v1.0.0"},{"name":"swiftbar/v2.0.0"}]' ;;
+  *main*VERSION*) printf '1.0.0\n' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$TMP/bin/curl"; rm -f "$TMP/home/.config/kb/.update-check"*
+out=$(env -i HOME="$TMP/home" PATH="$TMP/bin:/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
+# Banner shows 2.0.0 only if the tag (not main's 1.0.0) drove the check; a
+# failed tag resolution would fall back to main 1.0.0 == local -> no banner.
+check "passive check pins to latest swiftbar/v* tag" "echo \"\$out\" | grep -q 'Update available' && echo \"\$out\" | grep -q '2[.]0[.]0'"
+check "passive check ignores non-swiftbar server tags" "! echo \"\$out\" | grep -q '9[.]9[.]9'"
+
+# Stub curl: tags API -> swiftbar/v1.0.0; log every raw-content URL then fail so
+# update.sh aborts at the first fetch (before install). Proves the default (no
+# tag arg) pulls from the swiftbar/v1.0.0 ref, not from main.
+cat > "$TMP/bin/curl" <<STUB
+#!/bin/sh
+for a in "\$@"; do case "\$a" in https://raw.githubusercontent.com/*) echo "\$a" >> "$TMP/fetch.log" ;; esac; done
+case " \$* " in
+  *api.github.com*tags*) printf '%s\n' '[{"name":"swiftbar/v1.0.0"}]' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$TMP/bin/curl"; rm -f "$TMP/fetch.log"
+env HOME="$TMP/home" KB_MENUBAR_ENV="$ENVF" PATH="$TMP/bin:/usr/bin:/bin" "$HERE/update.sh" >/dev/null 2>&1 || true
+check "update.sh default pins to latest swiftbar/v* tag" "grep -q '/swiftbar/v1.0.0/plugins/swiftbar/' \"$TMP/fetch.log\""
+check "update.sh default does not pull from main" "! grep -q '/main/plugins/swiftbar/' \"$TMP/fetch.log\""
+
+# No swiftbar/* tags exist -> update.sh must fall back to main (bootstrap).
+cat > "$TMP/bin/curl" <<STUB
+#!/bin/sh
+for a in "\$@"; do case "\$a" in https://raw.githubusercontent.com/*) echo "\$a" >> "$TMP/fetch.log" ;; esac; done
+case " \$* " in
+  *api.github.com*tags*) printf '%s\n' '[{"name":"v9.9.9"}]' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$TMP/bin/curl"; rm -f "$TMP/fetch.log"
+env HOME="$TMP/home" KB_MENUBAR_ENV="$ENVF" PATH="$TMP/bin:/usr/bin:/bin" "$HERE/update.sh" >/dev/null 2>&1 || true
+check "update.sh falls back to main when no swiftbar/v* tag exists" "grep -q '/main/plugins/swiftbar/' \"$TMP/fetch.log\""
+
+# Explicit tag argument wins over tag-API resolution.
+cat > "$TMP/bin/curl" <<STUB
+#!/bin/sh
+for a in "\$@"; do case "\$a" in https://raw.githubusercontent.com/*) echo "\$a" >> "$TMP/fetch.log" ;; esac; done
+case " \$* " in
+  *api.github.com*tags*) printf '%s\n' '[{"name":"swiftbar/v9.9.9"}]' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$TMP/bin/curl"; rm -f "$TMP/fetch.log"
+env HOME="$TMP/home" KB_MENUBAR_ENV="$ENVF" PATH="$TMP/bin:/usr/bin:/bin" "$HERE/update.sh" v1.2.3 >/dev/null 2>&1 || true
+check "update.sh honors explicit tag argument over tag API" "grep -q '/v1.2.3/plugins/swiftbar/' \"$TMP/fetch.log\" && ! grep -q '/swiftbar/v9.9.9/' \"$TMP/fetch.log\""
+rm -f "$TMP/bin/curl"
+
 echo "== round-trip on live setup =="
 env KB_MENUBAR_ENV="$HOME/.config/kb/menubar.env.test" "$HERE/install.sh" >/dev/null 2>&1 \
   && check "real install works (test env file)" true || check "real install works (test env file)" false

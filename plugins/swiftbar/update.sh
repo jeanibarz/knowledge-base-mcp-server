@@ -1,10 +1,26 @@
 #!/usr/bin/env bash
 # Update the menubar plugin from the pinned GitHub fork release.
-# Usage: update.sh [tag]  — default tag: main
+# Usage: update.sh [tag]  — with no argument, pins to the highest vetted
+# swiftbar/v* release tag, falling back to main until the first tag is cut.
 set -euo pipefail
-REPO_RAW="https://raw.githubusercontent.com/jeanibarz/knowledge-base-mcp-server"
-TAG="${1:-main}"
+REPO_SLUG="jeanibarz/knowledge-base-mcp-server"
+REPO_RAW="https://raw.githubusercontent.com/${REPO_SLUG}"
+TAGS_API="https://api.github.com/repos/${REPO_SLUG}/tags?per_page=100"
 FILES="kb-mcp.10s.sh kb-mcp-rebuild.sh kb-mcp-uninstall.sh install.sh uninstall.sh update.sh VERSION"
+
+# Resolve the release tag to pull. An explicit argument wins; otherwise pick
+# the highest swiftbar/v<semver> tag from the GitHub tags API, and fall back to
+# main when none exists yet (bootstrap / offline). Server-wide vX.Y.Z tags are
+# ignored — only the swiftbar/ namespace counts as a plugin release.
+if [[ -n "${1:-}" ]]; then
+  TAG="$1"
+else
+  LATEST="$(curl -fsSL -m 10 "$TAGS_API" 2>/dev/null \
+    | grep -oE '"swiftbar/v[0-9]+\.[0-9]+\.[0-9]+"' \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+    | sort -V | tail -1 || true)"
+  if [[ -n "$LATEST" ]]; then TAG="swiftbar/v$LATEST"; else TAG="main"; fi
+fi
 
 ENV_FILE="${KB_MENUBAR_ENV:-$HOME/.config/kb/menubar.env}"
 # shellcheck source=/dev/null
