@@ -180,7 +180,10 @@ Not every durable artifact belongs under the two retrieval stores:
   `ledger.json`, `events.jsonl`, and `evidence_packet.md` to the operator-chosen
   run directory.
 - `KB_MUTATION_AUDIT_LOG=<path>` writes an append-only mutation audit JSONL file
-  outside the KB and FAISS roots when configured.
+  outside the KB and FAISS roots when configured. It appends forever by default;
+  setting `KB_MUTATION_AUDIT_LOG_MAX_BYTES` opts into size-based rotation
+  (`<path>.1`, `.2`, …) that retains at most `KB_MUTATION_AUDIT_LOG_MAX_FILES`
+  generations (default 5), bounding on-disk growth.
 - `kb llm` profile and managed-service state live under configurable user config,
   state, and systemd directories (`KB_LLM_CONFIG_DIR`, `KB_LLM_STATE_DIR`,
   `KB_LLM_SYSTEMD_USER_DIR`).

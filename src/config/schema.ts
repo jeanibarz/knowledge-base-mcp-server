@@ -274,6 +274,8 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_METRICS_EXPORT', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Exposes the OpenMetrics text endpoint on the loopback HTTP daemon.' },
   { name: 'KB_FLAT_SEARCH_P95_ADVISORY_MS', kind: 'duration', default: String(DEFAULT_FLAT_SEARCH_P95_ADVISORY_MS), min: 1, description: 'Advisory p95 latency bound for flat-index search; kb stats and kb doctor warn when it is exceeded.' },
   { name: 'KB_MUTATION_AUDIT_LOG', kind: 'path', description: 'Path to an append-only log where mutating operations record audit entries.' },
+  { name: 'KB_MUTATION_AUDIT_LOG_MAX_BYTES', kind: 'integer', min: 1, description: 'Enables size-based KB_MUTATION_AUDIT_LOG rotation when set to a positive byte cap; unset keeps the append-forever default.' },
+  { name: 'KB_MUTATION_AUDIT_LOG_MAX_FILES', kind: 'integer', default: '5', min: 1, description: 'Retained rotated KB_MUTATION_AUDIT_LOG generations when KB_MUTATION_AUDIT_LOG_MAX_BYTES enables rotation.' },
   { name: 'KB_AGE_BUDGET_HOURS', kind: 'integer', min: 1, description: 'Global maximum content-age budget (hours) for staleness checks; per-KB overrides use KB_AGE_BUDGET_HOURS_<KB>.' },
 
   { name: 'KB_DAEMON_URL', kind: 'url', protocols: ['http:', 'https:'], description: 'Explicit daemon HTTP URL for clients; takes precedence over host/port/socket resolution.' },
