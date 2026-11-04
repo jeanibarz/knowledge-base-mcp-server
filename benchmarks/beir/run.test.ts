@@ -121,7 +121,7 @@ describe('BEIR benchmark runner', () => {
       };
       dataset: { corpus_documents: number; queries_evaluated: number };
       command: string;
-      ranking: { unit: string; implementation: string; trec_run: string };
+      ranking: { unit: string; implementation: string; qrel_rollup: string; trec_run: string };
     };
     expect(json.git_sha).toBe('test-sha');
     expect(json.dataset).toMatchObject({ corpus_documents: 2, queries_evaluated: 1 });
@@ -130,6 +130,8 @@ describe('BEIR benchmark runner', () => {
     expect(json.ranking).toMatchObject({
       unit: 'source',
       implementation: 'LexicalIndex source BM25 over whole files, returning one representative chunk per source',
+      // issue #1053 — every result file states the chunk→document roll-up rule.
+      qrel_rollup: 'max-pool',
       trec_run: path.join(outputDir, 'kb-tiny-lexical-source-run.trec'),
     });
     expect(json.metrics).toMatchObject({
