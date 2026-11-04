@@ -27,6 +27,7 @@ Implementation anchors: `src/query-cache.ts::QueryEmbeddingCache`,
 | Disable for a process | `KB_QUERY_CACHE=off kb search "query"` | Use for provider debugging or one-shot correctness probes. |
 | Tune memory entries | `KB_QUERY_CACHE_LRU_MAX=512 ...` | Default is `256`; `0` disables the in-process L1. |
 | Tune disk budget | `KB_QUERY_CACHE_DISK_MAX_MB=128 ...` | Default is `64`; pruning runs after cache writes. |
+| Coalesce concurrent misses | `KB_QUERY_CACHE_SINGLE_FLIGHT=on ...` | Opt-in (default `off`); merges concurrent identical cache misses onto one in-flight embedding call. Useful on the daemon under a thundering herd of identical queries. |
 
 ## Interpret Status
 

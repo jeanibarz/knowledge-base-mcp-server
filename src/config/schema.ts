@@ -207,6 +207,7 @@ export const CONFIG_SCHEMA: readonly ConfigSpec[] = [
   { name: 'KB_QUERY_CACHE', kind: 'boolean', default: 'on', booleanValues: QUERY_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'yes', 'enabled'], description: 'Enables the query embedding cache.' },
   { name: 'KB_QUERY_CACHE_LRU_MAX', kind: 'integer', default: '256', min: 0, description: 'Maximum query-embedding entries retained in the process LRU; 0 disables the memory tier.' },
   { name: 'KB_QUERY_CACHE_DISK_MAX_MB', kind: 'number', default: '64', min: 0.000001, description: 'Disk-size cap (MiB) for the persistent query-embedding cache.' },
+  { name: 'KB_QUERY_CACHE_SINGLE_FLIGHT', kind: 'boolean', default: 'off', booleanValues: QUERY_CACHE_BOOL_VALUES, truthyValues: ['on', 'true', '1', 'yes', 'enabled'], description: 'Coalesces concurrent identical query-embedding cache misses onto a single in-flight embedding call (single-flight), preventing duplicate embeds under a thundering herd. Opt-in; default-off preserves independent per-miss embedding.' },
   { name: 'KB_EXTRACTION_CACHE_DISK_MAX_BYTES', kind: 'integer', default: '0', min: 0, description: 'Disk-size cap in bytes for the extracted-text cache under $FAISS_INDEX_PATH/extracted-text; on each write past the cap oldest entries are evicted. 0 (default) disables enforcement, leaving the cache unbounded.' },
 
   { name: 'KB_CONTEXTUAL_RETRIEVAL', kind: 'boolean', default: 'off', booleanValues: YES_NO_BOOL_VALUES, truthyValues: YES_NO_TRUTHY_VALUES, description: 'Enables LLM contextual prefaces during ingest.' },

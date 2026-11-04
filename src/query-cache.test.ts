@@ -1,4 +1,4 @@
-import { describe, expect, it, jest } from '@jest/globals';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import * as crypto from 'crypto';
 import fsp from 'fs/promises';
 import * as os from 'os';
@@ -9,7 +9,7 @@ import {
   queryCachePaths,
   queryCacheDiskSizeBytes,
 } from './query-cache.js';
-import { isQueryCacheEnabled } from './config/cache.js';
+import { isQueryCacheEnabled, isQueryCacheSingleFlightEnabled } from './config/cache.js';
 
 async function tempIndexPath(prefix: string): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -642,5 +642,110 @@ describe('query embedding cache (#214)', () => {
   it('normalizes queries with NFKC trim and whitespace collapse but preserves case', () => {
     expect(normalizeQueryForCache('  A\u00a0B\nC  ')).toBe('A B C');
     expect(normalizeQueryForCache('Case')).not.toBe(normalizeQueryForCache('case'));
+  });
+});
+
+describe('KB_QUERY_CACHE_SINGLE_FLIGHT config resolver (#1027)', () => {
+  it('defaults off when unset or empty', () => {
+    expect(isQueryCacheSingleFlightEnabled(undefined)).toBe(false);
+    expect(isQueryCacheSingleFlightEnabled('')).toBe(false);
+    expect(isQueryCacheSingleFlightEnabled('  ')).toBe(false);
+  });
+
+  it('stays off for falsy / unrecognized values', () => {
+    for (const raw of ['off', 'false', '0', 'no', 'disabled', 'nope']) {
+      expect(isQueryCacheSingleFlightEnabled(raw)).toBe(false);
+    }
+  });
+
+  it('enables for truthy values regardless of case or surrounding whitespace', () => {
+    for (const raw of ['on', 'true', '1', 'yes', 'enabled', ' ON ', 'True']) {
+      expect(isQueryCacheSingleFlightEnabled(raw)).toBe(true);
+    }
+  });
+});
+
+describe('global queryEmbeddingCache single-flight wiring (#1027)', () => {
+  const originalEnv = {
+    KNOWLEDGE_BASES_ROOT_DIR: process.env.KNOWLEDGE_BASES_ROOT_DIR,
+    FAISS_INDEX_PATH: process.env.FAISS_INDEX_PATH,
+    KB_QUERY_CACHE_SINGLE_FLIGHT: process.env.KB_QUERY_CACHE_SINGLE_FLIGHT,
+  };
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    jest.resetModules();
+  });
+
+  async function freshGlobalCache(
+    faissDir: string,
+    singleFlight: string | undefined,
+  ): Promise<typeof import('./query-cache.js')> {
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = path.join(path.dirname(faissDir), 'kbs');
+    process.env.FAISS_INDEX_PATH = faissDir;
+    if (singleFlight === undefined) delete process.env.KB_QUERY_CACHE_SINGLE_FLIGHT;
+    else process.env.KB_QUERY_CACHE_SINGLE_FLIGHT = singleFlight;
+    jest.resetModules();
+    return import('./query-cache.js');
+  }
+
+  it('coalesces concurrent identical misses on the process-global instance when KB_QUERY_CACHE_SINGLE_FLIGHT is on', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-global-single-flight-');
+    try {
+      const { queryEmbeddingCache } = await freshGlobalCache(indexPath, 'on');
+      let calls = 0;
+      let release!: (embedding: number[]) => void;
+      const pending = new Promise<number[]>((resolve) => {
+        release = resolve;
+      });
+      const embed = async (): Promise<number[]> => {
+        calls += 1;
+        return pending;
+      };
+
+      const first = queryEmbeddingCache.getOrCompute({ modelId: 'fake__one', query: 'herd query', embed });
+      const second = queryEmbeddingCache.getOrCompute({ modelId: 'fake__one', query: 'herd query', embed });
+      await new Promise((resolve) => setImmediate(resolve));
+      release([3.5, 4.5]);
+
+      const results = await Promise.all([first, second]);
+      expect(calls).toBe(1);
+      expect(results.map((result) => result.embedding)).toEqual([[3.5, 4.5], [3.5, 4.5]]);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('leaves the process-global instance independent per-miss when the knob is unset (default-off)', async () => {
+    const indexPath = await tempIndexPath('kb-query-cache-global-single-flight-off-');
+    try {
+      const { queryEmbeddingCache } = await freshGlobalCache(indexPath, undefined);
+      let calls = 0;
+      let release!: (embedding: number[]) => void;
+      let markBothStarted!: () => void;
+      const pending = new Promise<number[]>((resolve) => {
+        release = resolve;
+      });
+      const bothStarted = new Promise<void>((resolve) => {
+        markBothStarted = resolve;
+      });
+      const embed = async (): Promise<number[]> => {
+        calls += 1;
+        if (calls === 2) markBothStarted();
+        return pending;
+      };
+
+      const first = queryEmbeddingCache.getOrCompute({ modelId: 'fake__one', query: 'herd query', embed });
+      const second = queryEmbeddingCache.getOrCompute({ modelId: 'fake__one', query: 'herd query', embed });
+      await bothStarted;
+      release([1, 2]);
+      await Promise.all([first, second]);
+      expect(calls).toBe(2);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
   });
 });

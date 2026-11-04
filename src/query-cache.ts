@@ -9,6 +9,7 @@ import {
   KB_QUERY_CACHE_DISK_MAX_BYTES,
   KB_QUERY_CACHE_ENABLED,
   KB_QUERY_CACHE_LRU_MAX,
+  KB_QUERY_CACHE_SINGLE_FLIGHT,
 } from './config/cache.js';
 import { pathExists } from './file-utils.js';
 import { logger } from './logger.js';
@@ -473,7 +474,9 @@ export function __resetQueryEmbeddingCacheForTests(): void {
   queryEmbeddingCache.clearMemory();
 }
 
-export const queryEmbeddingCache = new QueryEmbeddingCache();
+export const queryEmbeddingCache = new QueryEmbeddingCache({
+  singleFlight: KB_QUERY_CACHE_SINGLE_FLIGHT,
+});
 
 function queryCacheRoot(indexPath: string): string {
   return path.join(indexPath, 'cache', 'queries');
