@@ -52,6 +52,45 @@
         "minimum": 64,
         "maximum": 9007199254740991
       },
+      "extensions": {
+        "maxItems": 64,
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "path_glob": {
+        "type": "string",
+        "maxLength": 1024
+      },
+      "tags": {
+        "maxItems": 64,
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "since": {
+        "type": "string"
+      },
+      "until": {
+        "type": "string"
+      },
+      "context_before": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5
+      },
+      "context_after": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5
+      },
+      "context_window": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5
+      },
       "search_mode": {
         "type": "string",
         "enum": [

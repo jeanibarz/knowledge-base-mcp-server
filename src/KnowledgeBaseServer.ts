@@ -1355,6 +1355,17 @@ export class KnowledgeBaseServer {
     llm_profile?: string;
     k?: number;
     context_budget_tokens?: number;
+    // Issue #974 — metadata POST-filters + neighbor windows, mirroring
+    // retrieve_knowledge. Threaded straight into askKnowledge (ask-core.ts),
+    // which builds/validates them and scopes retrieval before context packing.
+    extensions?: string[];
+    path_glob?: string;
+    tags?: string[];
+    since?: string;
+    until?: string;
+    context_before?: number;
+    context_after?: number;
+    context_window?: number;
     task_context?: string;
     gate?: 'on' | 'off';
     search_mode?: 'dense' | 'hybrid' | 'lexical' | 'auto';
@@ -1389,6 +1400,14 @@ export class KnowledgeBaseServer {
           llm_profile: args.llm_profile,
           k: args.k,
           context_budget_tokens: args.context_budget_tokens,
+          extensions: args.extensions,
+          path_glob: args.path_glob,
+          tags: args.tags,
+          since: args.since,
+          until: args.until,
+          context_before: args.context_before,
+          context_after: args.context_after,
+          context_window: args.context_window,
           task_context: args.task_context,
           gate: args.gate,
           search_mode: args.search_mode,
