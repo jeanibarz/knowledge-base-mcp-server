@@ -25,9 +25,21 @@ export function resolveQueryCacheDiskMaxBytes(
   return Math.floor(parsed * 1024 * 1024);
 }
 
+// Opt-in (default OFF): single-flight coalescing merges concurrent identical
+// cache misses onto one in-flight embedding call (#803/#794). Default-off keeps
+// the historical behavior where each concurrent miss embeds independently, so
+// enabling it is the operator's deliberate choice (#1027).
+export function isQueryCacheSingleFlightEnabled(
+  raw: string | undefined = process.env.KB_QUERY_CACHE_SINGLE_FLIGHT,
+): boolean {
+  const value = (raw ?? '').trim().toLowerCase();
+  return value === 'on' || value === 'true' || value === '1' || value === 'yes' || value === 'enabled';
+}
+
 export const KB_QUERY_CACHE_ENABLED = isQueryCacheEnabled();
 export const KB_QUERY_CACHE_LRU_MAX = resolveQueryCacheLruMax();
 export const KB_QUERY_CACHE_DISK_MAX_BYTES = resolveQueryCacheDiskMaxBytes();
+export const KB_QUERY_CACHE_SINGLE_FLIGHT = isQueryCacheSingleFlightEnabled();
 
 // ---------------------------------------------------------------------------
 // Answer cache configuration (#656). Opt-in (default OFF) — caching LLM answers
