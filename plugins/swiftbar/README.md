@@ -69,7 +69,7 @@ deleting just its own files if the checkout is gone).
 ## Testing
 
 ```bash
-plugins/swiftbar/test.sh    # 19 checks: reject paths, happy path, uninstall
+plugins/swiftbar/test.sh    # reject paths, happy path, uninstall, update + release-tag pinning
 ```
 
 Uses `KB_PLUGIN_DST`/`KB_MENUBAR_ENV`/`KB_SWIFTBAR_APP`/`KB_MCP_LABEL`/

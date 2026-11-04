@@ -28,15 +28,25 @@ HELPER="$REPO/plugins/swiftbar/kb-mcp-rebuild.sh"
 UNINSTALL="$REPO/plugins/swiftbar/kb-mcp-uninstall.sh"
 UPDATER="$REPO/plugins/swiftbar/update.sh"
 
-# Remote version check — throttled to once per 6h, silent on any failure.
-REMOTE_VER_URL="https://raw.githubusercontent.com/jeanibarz/knowledge-base-mcp-server/main/plugins/swiftbar/VERSION"
+# Remote version check — tracks the highest vetted swiftbar/v* release tag,
+# falling back to main's VERSION until the first tag is cut. Throttled to once
+# per 6h, silent on any failure.
+REPO_SLUG="jeanibarz/knowledge-base-mcp-server"
+TAGS_API="https://api.github.com/repos/${REPO_SLUG}/tags?per_page=100"
+REMOTE_VER_FALLBACK_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/plugins/swiftbar/VERSION"
 CACHE="$HOME/.config/kb/.update-check"
 LOCAL_VER="$(cat "$REPO/plugins/swiftbar/VERSION" 2>/dev/null || echo 0)"
 NOW=$(date +%s); LAST=0
 [[ -f $CACHE ]] && LAST=$(cat "$CACHE" 2>/dev/null || echo 0)
 REMOTE_VER=""
 if (( NOW - LAST > 21600 )); then
-  REMOTE_VER="$(curl -fsSL -m 3 "$REMOTE_VER_URL" 2>/dev/null || true)"
+  # Highest swiftbar/v<semver> release tag (server-wide vX.Y.Z tags ignored);
+  # fall back to main's VERSION until the first swiftbar/ tag is cut.
+  REMOTE_VER="$(curl -fsSL -m 3 "$TAGS_API" 2>/dev/null \
+    | grep -oE '"swiftbar/v[0-9]+\.[0-9]+\.[0-9]+"' \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+    | sort -V | tail -1 || true)"
+  [[ -z $REMOTE_VER ]] && REMOTE_VER="$(curl -fsSL -m 3 "$REMOTE_VER_FALLBACK_URL" 2>/dev/null || true)"
   mkdir -p "$(dirname "$CACHE")" 2>/dev/null || true
   echo "$NOW" > "$CACHE" 2>/dev/null || true
   [[ -n $REMOTE_VER ]] && echo "$REMOTE_VER" > "$CACHE.ver" 2>/dev/null || true
