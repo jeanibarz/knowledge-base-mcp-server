@@ -4,7 +4,11 @@ import * as path from 'path';
 import * as fsp from 'fs/promises';
 import {
   DEFAULT_GATE_THRESHOLDS,
+  DEFAULT_NANOBEIR_PROVIDER,
   evaluateGateComparison,
+  NANOBEIR_BASELINE_DIR,
+  NANOBEIR_FIXTURE_DIR,
+  NANOBEIR_GATE_DATASETS,
   parseQualityGateArgs,
   renderGateMarkdown,
   runQualityGate,
@@ -14,6 +18,7 @@ import {
   type QualityGateDependencies,
   type QualityGateThresholds,
 } from './quality-gate.js';
+import { baselineFileName } from './baseline.js';
 import type { BeirBenchmarkRunResult } from './run.js';
 
 // A fast, deterministic threshold set for the unit tests (fewer bootstrap
@@ -322,6 +327,127 @@ describe('committed gate fixture baselines', () => {
     const row = evaluateGateComparison(baseline, regressed, FAST);
     expect(row.status).toBe('fail');
     expect(row.significant).toBe(true);
+  });
+});
+
+describe('NanoBEIR real-geometry dense gate (issue #1051)', () => {
+  // The hermetic `fake` fixture has no semantic geometry, so it cannot catch a
+  // real dense regression. These committed baselines are recorded with a REAL
+  // embedding provider over the vendored, capped NanoBEIR fixtures — the semantic
+  // check the gate adds. Reading them here proves they parse as GateRunReports,
+  // carry real-geometry provenance, and wire through the real significance
+  // comparator (self-compare PASS; a regressed copy FAILS).
+  const baselineDir = path.join(process.cwd(), NANOBEIR_BASELINE_DIR);
+
+  it('exposes a non-empty dataset set and offline-vendored fixture layout', () => {
+    expect(NANOBEIR_GATE_DATASETS.length).toBeGreaterThan(0);
+    // The fixtures are vendored under benchmarks/beir/fixtures, the baselines
+    // beside the other BEIR results — so the gate needs no network for data.
+    expect(NANOBEIR_FIXTURE_DIR).toContain(path.join('fixtures', 'nanobeir'));
+    expect(NANOBEIR_BASELINE_DIR).toContain(path.join('results', 'beir'));
+    // The default gate provider is a REAL embedding provider, never the
+    // semantics-free `fake` provider (that is the separate plumbing fixture).
+    expect(DEFAULT_NANOBEIR_PROVIDER).not.toBe('fake');
+  });
+
+  it.each(NANOBEIR_GATE_DATASETS.map((dataset) => [dataset]))(
+    '%s has a committed dense baseline recorded with real geometry',
+    async (dataset) => {
+      const file = baselineFileName(dataset, 'dense');
+      const baseline = JSON.parse(
+        await fsp.readFile(path.join(baselineDir, file), 'utf-8'),
+      ) as GateRunReport;
+
+      expect(baseline.mode).toBe('dense');
+      // The baseline must actually be the one for THIS dataset — guards against a
+      // mislabeled or copy-pasted baseline file (e.g. scifact's numbers committed
+      // under the fiqa filename).
+      expect(baseline.dataset.name).toBe(dataset);
+      // Real geometry: a concrete embedding provider, NOT lexical (null) and NOT
+      // the semantics-free `fake` provider.
+      expect(baseline.embedding).not.toBeNull();
+      expect(baseline.embedding?.provider).not.toBe('fake');
+      expect(baseline.embedding?.provider.length).toBeGreaterThan(0);
+      // Enough per-query points for the paired significance machinery to be
+      // meaningful (NanoBEIR ships ~50 queries/dataset).
+      expect(baseline.per_query.length).toBeGreaterThanOrEqual(40);
+      // Internal consistency: the headline nDCG@10 is the mean of the per-query
+      // scores the gate pairs on. A file whose summary metric and per-query rows
+      // disagree is corrupt and must not be trusted as a baseline.
+      const perQueryMean =
+        baseline.per_query.reduce((sum, q) => sum + q.ndcgAt10, 0) / baseline.per_query.length;
+      expect(perQueryMean).toBeCloseTo(baseline.metrics.ndcgAt10, 4);
+      // A real retrieval score strictly inside (0, 1): neither a degenerate 0 nor
+      // a saturated 1 the capped distractors would make the gate insensitive to.
+      expect(baseline.metrics.ndcgAt10).toBeGreaterThan(0.05);
+      expect(baseline.metrics.ndcgAt10).toBeLessThan(1);
+    },
+  );
+
+  it.each(NANOBEIR_GATE_DATASETS.map((dataset) => [dataset]))(
+    '%s dense baseline self-compares to PASS',
+    async (dataset) => {
+      const baseline = JSON.parse(
+        await fsp.readFile(path.join(baselineDir, baselineFileName(dataset, 'dense')), 'utf-8'),
+      ) as GateRunReport;
+      const row = evaluateGateComparison(baseline, baseline, FAST);
+      expect(row.status).toBe('pass');
+      expect(row.delta).toBe(0);
+    },
+  );
+
+  it.each(NANOBEIR_GATE_DATASETS.map((dataset) => [dataset]))(
+    '%s dense gate FAILS a significant, tolerance-clearing regression',
+    async (dataset) => {
+      const baseline = JSON.parse(
+        await fsp.readFile(path.join(baselineDir, baselineFileName(dataset, 'dense')), 'utf-8'),
+      ) as GateRunReport;
+      // A consistent large per-query drop: below tolerance AND significant.
+      const regressed: GateRunReport = {
+        ...baseline,
+        metrics: { ndcgAt10: Number(Math.max(0, baseline.metrics.ndcgAt10 - 0.3).toFixed(6)) },
+        per_query: baseline.per_query.map((q) => ({
+          queryId: q.queryId,
+          ndcgAt10: Math.max(0, q.ndcgAt10 - 0.3),
+        })),
+      };
+      const row = evaluateGateComparison(baseline, regressed, FAST);
+      expect(row.status).toBe('fail');
+      expect(row.significant).toBe(true);
+      expect(row.verdict).toBe('regression');
+    },
+  );
+
+  it('SKIPS (never fails) a NanoBEIR dense cell when no real provider is reachable', async () => {
+    // On a runner without the embedding provider (e.g. hosted CI with no Ollama),
+    // the fresh dense run throws; the gate records SKIP, not a false failure.
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-gate-nano-'));
+    const dataset = NANOBEIR_GATE_DATASETS[0];
+    const baseline = JSON.parse(
+      await fsp.readFile(path.join(baselineDir, baselineFileName(dataset, 'dense')), 'utf-8'),
+    ) as GateRunReport;
+    await fsp.writeFile(path.join(tmp, baselineFileName(dataset, 'dense')), JSON.stringify(baseline), 'utf-8');
+    const deps: QualityGateDependencies = {
+      readBaseline: async (filePath) => JSON.parse(await fsp.readFile(filePath, 'utf-8')) as GateRunReport,
+      runBenchmark: async (): Promise<BeirBenchmarkRunResult> => {
+        throw new Error('embedding provider "ollama" unreachable (ECONNREFUSED)');
+      },
+    };
+    const result = await runQualityGate({
+      datasets: [dataset],
+      modes: ['dense'],
+      provider: DEFAULT_NANOBEIR_PROVIDER,
+      split: 'test',
+      baselineDir: tmp,
+      cacheDir: path.join(tmp, 'cache'),
+      workspaceRoot: path.join(tmp, 'ws'),
+      outputDir: path.join(tmp, 'out'),
+      thresholds: FAST,
+    }, deps);
+    expect(result.worstStatus).toBe('skip');
+    expect(result.rows[0].status).toBe('skip');
+    expect(result.rows[0].note).toContain('run failed');
+    await fsp.rm(tmp, { recursive: true, force: true });
   });
 });
 

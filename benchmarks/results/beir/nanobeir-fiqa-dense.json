@@ -1,0 +1,616 @@
+{
+  "schema_version": "kb.beir-benchmark.v8",
+  "generated_at": "2026-11-04T21:25:54.478Z",
+  "git_sha": "0f91e2c",
+  "command": "node build/benchmarks/beir/run.js --dataset=nanobeir-fiqa --split=test --mode=dense --provider=ollama --model=nomic-embed-text:latest --output-dir=/tmp/kb-beir-nanobeir-out --dataset-dir=benchmarks/beir/fixtures/nanobeir/nanobeir-fiqa",
+  "dataset": {
+    "name": "nanobeir-fiqa",
+    "split": "test",
+    "source_url": null,
+    "checksum_sha256": "cb98b257b18efde6c34cf53b4669abc0d66ad12266ed0fc94d7326061e5031a6",
+    "corpus_documents": 1000,
+    "queries_total": 50,
+    "qrels_queries": 50,
+    "queries_evaluated": 50
+  },
+  "mode": "dense",
+  "embedding": {
+    "provider": "ollama",
+    "model": "nomic-embed-text:latest"
+  },
+  "rerank": {
+    "enabled": false,
+    "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+    "topN": 40
+  },
+  "contextual": {
+    "enabled": false
+  },
+  "hybrid_rrf_weights": null,
+  "late_interaction": null,
+  "reranker_bakeoff": null,
+  "ranking": {
+    "unit": "chunk",
+    "implementation": "src/FaissIndexManager.similaritySearch (production dense path) via retrieval-eval.retrieveForRetrievalEvalCase",
+    "trec_run": "/tmp/kb-beir-nanobeir-out/kb-nanobeir-fiqa-dense-chunk-run.trec",
+    "k": 100,
+    "chunk_candidate_k": 1000
+  },
+  "chunking": {
+    "KB_CHUNK_SIZE": null,
+    "KB_CHUNK_OVERLAP": null
+  },
+  "runtime": {
+    "node_version": "v24.11.1",
+    "python_version": "Python 3.10.12",
+    "os": "linux",
+    "arch": "x64"
+  },
+  "indexing": {
+    "ms": 37433.583,
+    "files": 1000,
+    "chunks": 1851
+  },
+  "metrics": {
+    "judgedQueries": 50,
+    "ndcgAt10": 0.65025,
+    "mapAt100": 0.594175,
+    "precisionAt10": 0.156,
+    "recallAt10": 0.70304,
+    "recallAt100": 0.930611
+  },
+  "metrics_uncertainty": {
+    "schema_version": "kb.beir.metric-uncertainty.v1",
+    "observations": 50,
+    "alpha": 0.05,
+    "note": "SE/CI are estimated across per-query metric values; MDE is 2x bounded-metric SE for the evaluated query count.",
+    "metrics": {
+      "ndcgAt10": {
+        "standard_error": 0.051605,
+        "ci_low": 0.546547,
+        "ci_high": 0.753953,
+        "minimum_detectable_effect": 0.134885
+      },
+      "mapAt100": {
+        "standard_error": 0.052644,
+        "ci_low": 0.488383,
+        "ci_high": 0.699967,
+        "minimum_detectable_effect": 0.13889
+      },
+      "precisionAt10": {
+        "standard_error": 0.018987,
+        "ci_low": 0.117845,
+        "ci_high": 0.194155,
+        "minimum_detectable_effect": 0.102631
+      },
+      "recallAt10": {
+        "standard_error": 0.052992,
+        "ci_low": 0.596549,
+        "ci_high": 0.809531,
+        "minimum_detectable_effect": 0.129236
+      },
+      "recallAt100": {
+        "standard_error": 0.027168,
+        "ci_low": 0.876015,
+        "ci_high": 0.985207,
+        "minimum_detectable_effect": 0.071874
+      }
+    }
+  },
+  "latency": {
+    "queries": 50,
+    "p50Ms": 61.154291,
+    "p95Ms": 71.699727,
+    "p99Ms": 98.74326,
+    "meanMs": 62.077051
+  },
+  "per_query": [
+    {
+      "queryId": "10246",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.218407,
+      "mapAt100": 0.083333,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 0.5
+    },
+    {
+      "queryId": "10414",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.919721,
+      "mapAt100": 0.833333,
+      "precisionAt10": 0.2,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "10447",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0.296082,
+      "mapAt100": 0.205882,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.333333,
+      "recallAt100": 0.666667
+    },
+    {
+      "queryId": "106",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "11039",
+      "relevant": 8,
+      "retrieved": 100,
+      "ndcgAt10": 0.685577,
+      "mapAt100": 0.56997,
+      "precisionAt10": 0.5,
+      "recallAt10": 0.625,
+      "recallAt100": 0.875
+    },
+    {
+      "queryId": "1310",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "1736",
+      "relevant": 5,
+      "retrieved": 100,
+      "ndcgAt10": 0.360055,
+      "mapAt100": 0.294094,
+      "precisionAt10": 0.2,
+      "recallAt10": 0.4,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "1783",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0
+    },
+    {
+      "queryId": "1920",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.083333,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "1948",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "2296",
+      "relevant": 9,
+      "retrieved": 100,
+      "ndcgAt10": 0.383343,
+      "mapAt100": 0.362668,
+      "precisionAt10": 0.2,
+      "recallAt10": 0.222222,
+      "recallAt100": 0.888889
+    },
+    {
+      "queryId": "2348",
+      "relevant": 15,
+      "retrieved": 100,
+      "ndcgAt10": 0.648932,
+      "mapAt100": 0.443658,
+      "precisionAt10": 0.5,
+      "recallAt10": 0.333333,
+      "recallAt100": 0.6
+    },
+    {
+      "queryId": "2385",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.613147,
+      "mapAt100": 0.529412,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "2587",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "26",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.850345,
+      "mapAt100": 0.7,
+      "precisionAt10": 0.2,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "2676",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "2724",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.693426,
+      "mapAt100": 0.583333,
+      "precisionAt10": 0.2,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "2903",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0.5,
+      "mapAt100": 0.333333,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "3033",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.877215,
+      "mapAt100": 0.75,
+      "precisionAt10": 0.2,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "3039",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "3189",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.264068,
+      "mapAt100": 0.141949,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "3357",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "3453",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.919721,
+      "mapAt100": 0.833333,
+      "precisionAt10": 0.2,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "3682",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.81753,
+      "mapAt100": 0.642857,
+      "precisionAt10": 0.2,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "4233",
+      "relevant": 5,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.5,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "4286",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.613147,
+      "mapAt100": 0.518519,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "4312",
+      "relevant": 7,
+      "retrieved": 100,
+      "ndcgAt10": 0.704125,
+      "mapAt100": 0.645693,
+      "precisionAt10": 0.4,
+      "recallAt10": 0.571429,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "4600",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "4785",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "5064",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.2,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "5083",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.613147,
+      "mapAt100": 0.51,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "5331",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "5402",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.613147,
+      "mapAt100": 0.545455,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "5981",
+      "relevant": 5,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.5,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "604",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0.871079,
+      "mapAt100": 0.722222,
+      "precisionAt10": 0.3,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "6199",
+      "relevant": 4,
+      "retrieved": 100,
+      "ndcgAt10": 0.943866,
+      "mapAt100": 0.854167,
+      "precisionAt10": 0.4,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "6410",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.015873,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "6787",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.021277,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "6896",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.016667,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "7071",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.204382,
+      "mapAt100": 0.113095,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "7377",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "7431",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.05,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "8034",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "8351",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0.264068,
+      "mapAt100": 0.125,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
+      "recallAt100": 0.5
+    },
+    {
+      "queryId": "8378",
+      "relevant": 3,
+      "retrieved": 100,
+      "ndcgAt10": 0.650821,
+      "mapAt100": 0.484211,
+      "precisionAt10": 0.2,
+      "recallAt10": 0.666667,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "8779",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.2,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "9385",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "94",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "9548",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0.356207,
+      "mapAt100": 0.166667,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "988",
+      "relevant": 2,
+      "retrieved": 100,
+      "ndcgAt10": 0,
+      "mapAt100": 0.029412,
+      "precisionAt10": 0,
+      "recallAt10": 0,
+      "recallAt100": 0.5
+    }
+  ],
+  "caveats": [
+    "This is a local BEIR benchmark, not an official leaderboard submission.",
+    "Scores are document-level for BEIR qrels.",
+    "MLflow logging is not required for JSON/TREC artifacts; optional logging is expected to come from the bench observability hook.",
+    "Dense/hybrid retrieval is driven by the production src/ paths (FaissIndexManager.similaritySearch + src/hybrid-retrieval RRF), not a benchmark-only reimplementation.",
+    "Dense/hybrid require a real embedding provider; the fake provider is deterministic but has no semantic geometry, so fake-provider numbers are self-test smoke only — never a quality baseline."
+  ]
+}
