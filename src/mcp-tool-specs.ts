@@ -115,6 +115,23 @@ export const ASK_KNOWLEDGE_INPUT = {
   llm_profile: z.string().optional().describe('Saved kb llm profile name to use for answer generation.'),
   k: z.int().min(1).max(50).optional().describe('Retrieval top-K before context packing. Default 8.'),
   context_budget_tokens: z.int().min(64).optional().describe('Approximate token budget for snippets sent to the LLM. Default 6000.'),
+  // Issue #974 — mirror retrieve_knowledge's metadata POST-filters on the ask
+  // path so an agent can scope the evidence an answer is drawn from without
+  // leaving the tool. ANDed with each other and with the KB scope; in hybrid
+  // mode they apply to lexical candidates before fusion. Omitting them keeps the
+  // unfiltered whole-base search (same hit count and formatting as before).
+  extensions: boundedFilterArray().optional().describe('Limit answer evidence to chunks whose source file has one of these extensions (e.g. [".md", ".pdf"]). Case-insensitive; leading dot optional. In hybrid mode, applied to lexical candidates before fusion.'),
+  path_glob: boundedGlobString().optional().describe('Limit answer evidence to chunks whose KB-internal relative path matches this glob (e.g. "runbooks/**"). The KB-name segment is stripped before matching. In hybrid mode, applied to lexical candidates before fusion.'),
+  tags: boundedFilterArray().optional().describe('Limit answer evidence to chunks whose source file has ALL of these tags in its YAML frontmatter. In hybrid mode, applied to lexical candidates before fusion.'),
+  since: z.string().optional().describe('Limit answer evidence to chunks whose current source-file mtime is at or after this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. In hybrid mode, applied to lexical candidates before fusion.'),
+  until: z.string().optional().describe('Limit answer evidence to chunks whose current source-file mtime is at or before this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. In hybrid mode, applied to lexical candidates before fusion.'),
+  // Issue #974 — opt-in neighbor windows, mirroring retrieve_knowledge. As on
+  // retrieve, expansion is only supported with dense retrieval (hybrid/lexical
+  // fusion has no stable neighbor ordering), so a window with a non-dense
+  // effective mode is a VALIDATION error. Defaults stay 0 (no expansion).
+  context_before: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each match before packing. Only supported with dense retrieval (search_mode="dense"); the default "auto" stays dense for prose. Defaults to 0.'),
+  context_after: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each match before packing. Only supported with dense retrieval (search_mode="dense"); the default "auto" stays dense for prose. Defaults to 0.'),
+  context_window: z.int().min(0).max(5).optional().describe('Shorthand for setting context_before and context_after to the same value. Only supported with dense retrieval (search_mode="dense"). Defaults to 0.'),
   // #732 — bring the search-mode + opt-in rerank surface of retrieve_knowledge
   // to the ask path. Defaults to 'auto' (prose stays dense, code/error-token
   // queries upgrade to hybrid); reranking stays opt-in.
