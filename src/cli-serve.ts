@@ -144,6 +144,13 @@ export interface StartDaemonServerOptions extends Partial<ServeArgs> {
    * the health snapshot is deterministic.
    */
   buildInfo?: BuildInfo;
+  /**
+   * Socket-hardening bounds for the daemon's HTTP server (issue #1029). Unset
+   * fields fall back to the `DEFAULT_DAEMON_*` constants via
+   * `resolveDaemonHttpLimits`; tests pass explicit values to assert they are
+   * applied to the listening server.
+   */
+  httpLimits?: Partial<DaemonHttpLimits>;
 }
 
 export interface DaemonCommandHandlerOptions {
@@ -193,6 +200,49 @@ const DEFAULT_SERVE_ARGS: ServeArgs = {
   ownership: 'manual',
   warm: false,
 };
+
+/**
+ * Socket-hardening bounds for the resident daemon's HTTP server (issue #1029).
+ * Like the remote HTTP/SSE host, the daemon was created with no explicit
+ * requestTimeout / headersTimeout / keepAliveTimeout / maxConnections, so a
+ * slow/abusive client could hold a connection — and an admission slot — open
+ * indefinitely. These are applied explicitly in `startDaemonServer`.
+ *
+ * Timeout defaults mirror Node's own current defaults (defence-in-depth, not a
+ * behaviour change). The daemon is a loopback read cache fronted by the
+ * admission gate (default concurrency 8 / queue 128), so a connection cap of
+ * 256 leaves generous headroom while bounding raw socket count. A timeout of
+ * `0` disables that timeout; a `maxConnections` of `0` leaves the count
+ * unbounded because the cap assignment is skipped (Node itself treats a literal
+ * `maxConnections = 0` as refuse-all, so it must not be assigned).
+ */
+export const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 300_000;
+export const DEFAULT_DAEMON_HEADERS_TIMEOUT_MS = 60_000;
+export const DEFAULT_DAEMON_KEEP_ALIVE_TIMEOUT_MS = 5_000;
+export const DEFAULT_DAEMON_MAX_CONNECTIONS = 256;
+
+export interface DaemonHttpLimits {
+  requestTimeoutMs: number;
+  headersTimeoutMs: number;
+  keepAliveTimeoutMs: number;
+  maxConnections: number;
+}
+
+/**
+ * Resolve the effective daemon socket-hardening bounds, filling any unset
+ * field with its `DEFAULT_DAEMON_*` constant. Exposed so tests and callers can
+ * assert/override the applied values deterministically.
+ */
+export function resolveDaemonHttpLimits(
+  overrides?: Partial<DaemonHttpLimits>,
+): DaemonHttpLimits {
+  return {
+    requestTimeoutMs: overrides?.requestTimeoutMs ?? DEFAULT_DAEMON_REQUEST_TIMEOUT_MS,
+    headersTimeoutMs: overrides?.headersTimeoutMs ?? DEFAULT_DAEMON_HEADERS_TIMEOUT_MS,
+    keepAliveTimeoutMs: overrides?.keepAliveTimeoutMs ?? DEFAULT_DAEMON_KEEP_ALIVE_TIMEOUT_MS,
+    maxConnections: overrides?.maxConnections ?? DEFAULT_DAEMON_MAX_CONNECTIONS,
+  };
+}
 
 export async function runServe(rest: string[]): Promise<number> {
   // Issue #739 — resolve the shared --quiet/--verbose flags before dispatching.
@@ -477,6 +527,17 @@ export async function startDaemonServer(
     resetIdleTimer();
     void handleRequest(req, res, handlers, metricsHandler, buildHealth, admission);
   });
+
+  // Issue #1029 — bound slow/abusive clients at the socket layer before the
+  // server starts listening, so a stuck connection can no longer hold an
+  // admission slot open indefinitely.
+  const httpLimits = resolveDaemonHttpLimits(options.httpLimits);
+  server.requestTimeout = httpLimits.requestTimeoutMs;
+  server.headersTimeout = httpLimits.headersTimeoutMs;
+  server.keepAliveTimeout = httpLimits.keepAliveTimeoutMs;
+  if (httpLimits.maxConnections > 0) {
+    server.maxConnections = httpLimits.maxConnections;
+  }
 
   server.on('close', () => {
     if (idleTimer) clearTimeout(idleTimer);

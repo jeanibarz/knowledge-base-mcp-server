@@ -8,9 +8,14 @@ import {
   createDaemonCommandHandlers,
   createWarmCorpusStatsHandler,
   type DaemonCommandHandlers,
+  DEFAULT_DAEMON_HEADERS_TIMEOUT_MS,
+  DEFAULT_DAEMON_KEEP_ALIVE_TIMEOUT_MS,
+  DEFAULT_DAEMON_MAX_CONNECTIONS,
+  DEFAULT_DAEMON_REQUEST_TIMEOUT_MS,
   formatStatsRunResultAsOpenMetrics,
   gracefulDrain,
   parseServeArgs,
+  resolveDaemonHttpLimits,
   runServeStatus,
   startDaemonServer,
 } from './cli-serve.js';
@@ -1257,5 +1262,71 @@ describe('kb serve status', () => {
     expect(code).toBe(3);
     expect(stdout).toContain(`no daemon reachable at ${url}`);
     expect(stdout).not.toContain('start one with');
+  });
+});
+
+describe('kb serve daemon socket hardening (issue #1029)', () => {
+  it('resolveDaemonHttpLimits fills unset fields with safe defaults', () => {
+    expect(resolveDaemonHttpLimits()).toEqual({
+      requestTimeoutMs: DEFAULT_DAEMON_REQUEST_TIMEOUT_MS,
+      headersTimeoutMs: DEFAULT_DAEMON_HEADERS_TIMEOUT_MS,
+      keepAliveTimeoutMs: DEFAULT_DAEMON_KEEP_ALIVE_TIMEOUT_MS,
+      maxConnections: DEFAULT_DAEMON_MAX_CONNECTIONS,
+    });
+  });
+
+  it('resolveDaemonHttpLimits honours per-field overrides', () => {
+    expect(resolveDaemonHttpLimits({ requestTimeoutMs: 11, maxConnections: 3 })).toEqual({
+      requestTimeoutMs: 11,
+      headersTimeoutMs: DEFAULT_DAEMON_HEADERS_TIMEOUT_MS,
+      keepAliveTimeoutMs: DEFAULT_DAEMON_KEEP_ALIVE_TIMEOUT_MS,
+      maxConnections: 3,
+    });
+  });
+
+  it('applies the safe defaults to the listening daemon server', async () => {
+    const daemon = await startDaemonServer({ port: 0, idleTimeoutMs: 0 });
+    try {
+      expect(daemon.server.requestTimeout).toBe(DEFAULT_DAEMON_REQUEST_TIMEOUT_MS);
+      expect(daemon.server.headersTimeout).toBe(DEFAULT_DAEMON_HEADERS_TIMEOUT_MS);
+      expect(daemon.server.keepAliveTimeout).toBe(DEFAULT_DAEMON_KEEP_ALIVE_TIMEOUT_MS);
+      expect(daemon.server.maxConnections).toBe(DEFAULT_DAEMON_MAX_CONNECTIONS);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('reflects explicit httpLimits on the listening daemon server', async () => {
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      httpLimits: {
+        requestTimeoutMs: 33_333,
+        headersTimeoutMs: 4_444,
+        keepAliveTimeoutMs: 1_234,
+        maxConnections: 5,
+      },
+    });
+    try {
+      expect(daemon.server.requestTimeout).toBe(33_333);
+      expect(daemon.server.headersTimeout).toBe(4_444);
+      expect(daemon.server.keepAliveTimeout).toBe(1_234);
+      expect(daemon.server.maxConnections).toBe(5);
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('leaves the daemon connection count uncapped when maxConnections is 0', async () => {
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      httpLimits: { maxConnections: 0 },
+    });
+    try {
+      expect(daemon.server.maxConnections).not.toBe(0);
+    } finally {
+      await daemon.stop();
+    }
   });
 });

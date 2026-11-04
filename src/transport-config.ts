@@ -19,6 +19,33 @@ export const DEFAULT_MCP_AUTH_BACKOFF_THRESHOLD = 5;
 export const DEFAULT_MCP_AUTH_BACKOFF_MS = 30_000;
 export const DEFAULT_MCP_AUTH_BACKOFF_MAX_ENTRIES = 1024;
 
+// Socket-hardening defaults for the remote HTTP/SSE server (issue #1029).
+// Both node:http servers previously relied entirely on Node's implicit
+// defaults, leaving a slow-loris-style client free to hold a connection — and
+// a session budget — open indefinitely. These bounds are applied explicitly in
+// `BaseHttpHost.start()`.
+//
+// The timeout values mirror Node's own current defaults so the explicit
+// assignment is defence-in-depth rather than a behaviour change; `maxConnections`
+// has no Node default, so a cap is introduced.
+//
+// SSE safety: `requestTimeout` bounds only how long the server waits to RECEIVE
+// a complete request (its timer clears once `req.complete` is set), and
+// `keepAliveTimeout` applies only AFTER a response has been fully written — an
+// SSE response is never "fully written", so its idle timer never arms. Neither
+// bounds an in-progress long-lived SSE response, so these defaults never
+// truncate a legitimate stream. This holds while the request body is fully
+// consumed before/while the response streams (true for MCP's POST-streamed and
+// bodyless-GET SSE); a future handler that streams a response without draining
+// its request body would leave `req.complete` false and let `requestTimeout`
+// fire mid-stream. The one knob that WOULD sever an active socket regardless of
+// response state — `server.timeout` (socket inactivity) — is deliberately left
+// at Node's disabled default (0) and never set here.
+export const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 300_000;
+export const DEFAULT_MCP_HEADERS_TIMEOUT_MS = 60_000;
+export const DEFAULT_MCP_KEEP_ALIVE_TIMEOUT_MS = 5_000;
+export const DEFAULT_MCP_MAX_CONNECTIONS = 1024;
+
 export interface AuthBackoffConfig {
   failureThreshold: number;
   backoffMs: number;
@@ -41,6 +68,16 @@ export interface TransportConfig {
   authBackoff?: AuthBackoffConfig;
   /** Maximum live or initializing remote sessions; zero/unset is unbounded. */
   maxSessions?: number;
+  /**
+   * Socket-hardening bounds for the listening HTTP server (issue #1029).
+   * Unset falls back to the `DEFAULT_MCP_*` constants in `BaseHttpHost.start()`.
+   * A timeout of `0` disables that timeout (Node semantics); `maxConnections`
+   * of `0` leaves the raw connection count unbounded.
+   */
+  requestTimeoutMs?: number;
+  headersTimeoutMs?: number;
+  keepAliveTimeoutMs?: number;
+  maxConnections?: number;
 }
 
 export class TransportConfigError extends Error {
