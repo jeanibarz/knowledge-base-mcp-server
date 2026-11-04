@@ -371,11 +371,20 @@ kb diagnose — package a canonical request log as a repro bundle
 
 Usage:
   kb diagnose --request-id=<id> --repro-bundle=<dir> [--file=<path>] [--query=<text>|--query-file=<path>|--stdin] [--include-content] [--force] [--format=md|json]
+  kb diagnose --to-fixture=<bundle-dir> --out=<fixture-dir> [--include-sources] [--force] [--format=md|json]
 
 Reads canonical logs for one request id and writes a private diagnostic bundle
 with redacted log context. When the raw query is supplied, it also replays
 `kb explain --repro-bundle` using model, KB scope, k, and threshold hints from
 the selected canonical event when available.
+
+`--to-fixture` turns an existing diagnose bundle into a runnable local
+retrieval fixture (issue #977). It reads the bundle's replayed query and hits
+and writes a `kb eval` fixture plus a redacted mini-corpus that `kb eval` can
+run offline with fake (deterministic, no-network) embeddings — no real
+embedding provider is ever called. The mini-corpus is a redacted stand-in built
+from the bundle; original note bodies are NOT rehydrated from disk unless you
+pass `--include-sources`. The generated `README.md` lists the exact commands.
 
 Options:
   --request-id=<id>       Canonical request id to package.
@@ -388,13 +397,22 @@ Options:
   --stdin                 Read the raw query from stdin.
   --include-content       Forward to kb explain; includes candidate chunk text.
                           Requires a raw query.
-  --force                 Chmod unsafe existing bundle directories to 0700.
+  --to-fixture=<dir>      Read an existing diagnose bundle at <dir> and scaffold
+                          a runnable retrieval-eval fixture from it. Requires
+                          --out=<fixture-dir>.
+  --out=<dir>             Output directory for the scaffolded fixture. Only
+                          valid with --to-fixture.
+  --include-sources       Only with --to-fixture: rehydrate note bodies from the
+                          live knowledge base on disk (redacted) instead of the
+                          redacted stand-in corpus. Default is off.
+  --force                 Chmod unsafe existing output directories to 0700.
   --format=md|json        Output format (default: md).
   --help, -h              Show this help.
 
 Examples:
   kb diagnose --request-id=maw6d3qfabcd1234 --repro-bundle=/tmp/kb-diag
   kb diagnose --request-id=maw6d3qfabcd1234 --query-file=query.txt --repro-bundle=/tmp/kb-diag
+  kb diagnose --to-fixture=/tmp/kb-diag --out=/tmp/kb-fixture
 ```
 
 ## `kb diff-index`
