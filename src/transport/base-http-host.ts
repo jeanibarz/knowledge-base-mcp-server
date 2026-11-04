@@ -32,6 +32,10 @@ import {
   DEFAULT_MCP_AUTH_BACKOFF_MAX_ENTRIES,
   DEFAULT_MCP_AUTH_BACKOFF_MS,
   DEFAULT_MCP_AUTH_BACKOFF_THRESHOLD,
+  DEFAULT_MCP_HEADERS_TIMEOUT_MS,
+  DEFAULT_MCP_KEEP_ALIVE_TIMEOUT_MS,
+  DEFAULT_MCP_MAX_CONNECTIONS,
+  DEFAULT_MCP_REQUEST_TIMEOUT_MS,
   normalizeOrigin,
   type AuthBackoffConfig,
   type TransportConfig,
@@ -292,6 +296,27 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     );
   }
 
+  /**
+   * Issue #1029 — bound slow/abusive clients at the socket layer. Without
+   * these the server relies entirely on Node's implicit defaults, so a
+   * slow-loris-style client can hold a connection (and a session-budget slot)
+   * open indefinitely. Applied before `listen()` so the values are in force
+   * for the very first accepted connection.
+   *
+   * A timeout of `0` disables that timeout (Node semantics); a `maxConnections`
+   * of `0` leaves the connection count unbounded (no cap assigned).
+   */
+  private applyServerHardening(server: http.Server): void {
+    const cfg = this.options.config;
+    server.requestTimeout = cfg.requestTimeoutMs ?? DEFAULT_MCP_REQUEST_TIMEOUT_MS;
+    server.headersTimeout = cfg.headersTimeoutMs ?? DEFAULT_MCP_HEADERS_TIMEOUT_MS;
+    server.keepAliveTimeout = cfg.keepAliveTimeoutMs ?? DEFAULT_MCP_KEEP_ALIVE_TIMEOUT_MS;
+    const maxConnections = cfg.maxConnections ?? DEFAULT_MCP_MAX_CONNECTIONS;
+    if (maxConnections > 0) {
+      server.maxConnections = maxConnections;
+    }
+  }
+
   async start(): Promise<http.Server> {
     if (this.server) {
       throw new Error(`${this.constructor.name} already started`);
@@ -299,6 +324,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
     const server = http.createServer((req, res) => {
       void this.dispatch(req, res);
     });
+    this.applyServerHardening(server);
     server.on('clientError', (err, socket) => {
       try {
         socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');

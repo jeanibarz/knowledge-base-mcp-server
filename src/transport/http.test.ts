@@ -10,7 +10,13 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
-import type { AuthBackoffConfig } from '../transport-config.js';
+import {
+  DEFAULT_MCP_HEADERS_TIMEOUT_MS,
+  DEFAULT_MCP_KEEP_ALIVE_TIMEOUT_MS,
+  DEFAULT_MCP_MAX_CONNECTIONS,
+  DEFAULT_MCP_REQUEST_TIMEOUT_MS,
+  type AuthBackoffConfig,
+} from '../transport-config.js';
 import type { ReadinessPayload } from '../transport-readiness.js';
 import { StreamableHttpHost } from './http.js';
 
@@ -839,5 +845,75 @@ describe('StreamableHttpHost — session capacity', () => {
     const responses = await Promise.all(Array.from({ length: 3 }, () => initialize(started.port)));
     expect(responses.map((r) => r.statusCode)).toEqual([200, 200, 200]);
     expect(started.host.getRuntimeStats().current_sessions).toBe(3);
+  });
+});
+
+// Issue #1029 — slow/abusive-client socket hardening. The bounds live in the
+// shared BaseHttpHost.start(); exercised here via StreamableHttpHost and in
+// sse.test.ts via SseHost so both subclasses are covered.
+describe('socket hardening (issue #1029)', () => {
+  let stopHost: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (stopHost) await stopHost();
+    stopHost = undefined;
+  });
+
+  async function startWith(
+    extra: Partial<{
+      requestTimeoutMs: number;
+      headersTimeoutMs: number;
+      keepAliveTimeoutMs: number;
+      maxConnections: number;
+    }>,
+  ): Promise<http.Server> {
+    const host = new StreamableHttpHost({
+      config: {
+        transport: 'http',
+        port: 0,
+        bindAddr: '127.0.0.1',
+        authToken: VALID_TOKEN,
+        allowedOrigins: [],
+        ...extra,
+      },
+      createMcpServer: freshFactory(),
+    });
+    const server = await host.start();
+    stopHost = () => host.stop();
+    return server;
+  }
+
+  it('applies the safe defaults to the listening server when config is unset', async () => {
+    const server = await startWith({});
+    expect(server.requestTimeout).toBe(DEFAULT_MCP_REQUEST_TIMEOUT_MS);
+    expect(server.headersTimeout).toBe(DEFAULT_MCP_HEADERS_TIMEOUT_MS);
+    expect(server.keepAliveTimeout).toBe(DEFAULT_MCP_KEEP_ALIVE_TIMEOUT_MS);
+    expect(server.maxConnections).toBe(DEFAULT_MCP_MAX_CONNECTIONS);
+  });
+
+  it('reflects explicit config values after start()', async () => {
+    const server = await startWith({
+      requestTimeoutMs: 12_345,
+      headersTimeoutMs: 6_789,
+      keepAliveTimeoutMs: 2_222,
+      maxConnections: 7,
+    });
+    expect(server.requestTimeout).toBe(12_345);
+    expect(server.headersTimeout).toBe(6_789);
+    expect(server.keepAliveTimeout).toBe(2_222);
+    expect(server.maxConnections).toBe(7);
+  });
+
+  it('honours a timeout of 0 as "disabled" (Node semantics)', async () => {
+    const server = await startWith({ requestTimeoutMs: 0, headersTimeoutMs: 0 });
+    expect(server.requestTimeout).toBe(0);
+    expect(server.headersTimeout).toBe(0);
+  });
+
+  it('leaves the connection count uncapped when maxConnections is 0', async () => {
+    const server = await startWith({ maxConnections: 0 });
+    // A cap of 0 would refuse every connection; the hardening must skip the
+    // assignment and leave Node's unbounded default in place.
+    expect(server.maxConnections).not.toBe(0);
   });
 });

@@ -21,6 +21,10 @@ import {
   loadTransportConfig,
   TransportConfigError,
   DEFAULT_MCP_PORT,
+  DEFAULT_MCP_HEADERS_TIMEOUT_MS,
+  DEFAULT_MCP_KEEP_ALIVE_TIMEOUT_MS,
+  DEFAULT_MCP_MAX_CONNECTIONS,
+  DEFAULT_MCP_REQUEST_TIMEOUT_MS,
   type AuthBackoffConfig,
 } from '../transport-config.js';
 import type { ReadinessPayload } from '../transport-readiness.js';
@@ -1086,5 +1090,95 @@ describe('SseHost — session capacity', () => {
     streams.push(...await Promise.all(Array.from({ length: 3 }, () => openSseStream(started.port, headers))));
     expect(streams.map((s) => s.statusCode)).toEqual([200, 200, 200]);
     expect(started.host.getRuntimeStats().current_sessions).toBe(3);
+  });
+});
+
+// Issue #1029 — confirm the shared BaseHttpHost socket hardening also reaches
+// the SSE subclass (the HTTP subclass is covered in http.test.ts). SSE streams
+// are long-lived, so this also guards that the chosen defaults are applied to
+// the very transport whose streams must not be truncated.
+describe('socket hardening (issue #1029)', () => {
+  it('applies the safe defaults to the SSE listening server', async () => {
+    const host = new SseHost({
+      config: {
+        transport: 'sse',
+        port: 0,
+        bindAddr: '127.0.0.1',
+        authToken: VALID_TOKEN,
+        allowedOrigins: [],
+      },
+      createMcpServer: freshFactory(),
+    });
+    const server = await host.start();
+    try {
+      expect(server.requestTimeout).toBe(DEFAULT_MCP_REQUEST_TIMEOUT_MS);
+      expect(server.headersTimeout).toBe(DEFAULT_MCP_HEADERS_TIMEOUT_MS);
+      expect(server.keepAliveTimeout).toBe(DEFAULT_MCP_KEEP_ALIVE_TIMEOUT_MS);
+      expect(server.maxConnections).toBe(DEFAULT_MCP_MAX_CONNECTIONS);
+    } finally {
+      await host.stop();
+    }
+  });
+
+  it('reflects explicit config values on the SSE server after start()', async () => {
+    const host = new SseHost({
+      config: {
+        transport: 'sse',
+        port: 0,
+        bindAddr: '127.0.0.1',
+        authToken: VALID_TOKEN,
+        allowedOrigins: [],
+        requestTimeoutMs: 44_444,
+        headersTimeoutMs: 5_555,
+        keepAliveTimeoutMs: 1_111,
+        maxConnections: 9,
+      },
+      createMcpServer: freshFactory(),
+    });
+    const server = await host.start();
+    try {
+      expect(server.requestTimeout).toBe(44_444);
+      expect(server.headersTimeout).toBe(5_555);
+      expect(server.keepAliveTimeout).toBe(1_111);
+      expect(server.maxConnections).toBe(9);
+    } finally {
+      await host.stop();
+    }
+  });
+
+  // End-to-end proof of the central risk-note claim: a long-lived SSE stream
+  // must not be severed once keepAliveTimeout/headersTimeout elapse. Both are
+  // set far below the time we hold the stream open; if either (wrongly) applied
+  // to the in-progress response, the SDK's transport onclose would fire and
+  // drop the session. sessionCount staying at 1 proves the stream survived.
+  it('does not sever an active SSE stream after keepAliveTimeout/headersTimeout elapse', async () => {
+    const host = new SseHost({
+      config: {
+        transport: 'sse',
+        port: 0,
+        bindAddr: '127.0.0.1',
+        authToken: VALID_TOKEN,
+        allowedOrigins: [],
+        keepAliveTimeoutMs: 40,
+        headersTimeoutMs: 60,
+      },
+      createMcpServer: freshFactory(),
+    });
+    const server = await host.start();
+    const addr = server.address() as AddressInfo;
+    const stream = await openSseStream(addr.port, {
+      Authorization: `Bearer ${VALID_TOKEN}`,
+    });
+    try {
+      expect(stream.statusCode).toBe(200);
+      expect(stream.sessionId).toBeTruthy();
+      await waitFor(() => host.sessionCount === 1);
+      // Hold the stream open for many multiples of both small timeouts.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(host.sessionCount).toBe(1);
+    } finally {
+      stream.close();
+      await host.stop();
+    }
   });
 });
