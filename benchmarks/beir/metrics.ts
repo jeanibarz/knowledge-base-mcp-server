@@ -7,6 +7,118 @@ export interface RankedDocument {
   score: number;
 }
 
+/**
+ * Name of the chunk→document relevance roll-up rule reported in every result
+ * file (issue #1053). See {@link rollUpChunksToDocuments} for the rule itself.
+ */
+export type QrelRollupRule = 'max-pool';
+
+/**
+ * The single chunk→document relevance roll-up rule used for BEIR-style scoring,
+ * applied UNIFORMLY to the dense, lexical, and hybrid retrieval legs.
+ *
+ * Why this constant exists (issue #1053): BEIR qrels are judged at the
+ * **document** level, but chunk-level retrieval (dense, hybrid, and chunk-unit
+ * lexical) returns many chunks per document. Comparing a whole-document lexical
+ * baseline (`--lexical-unit=source`) against a chunk-level hybrid run without a
+ * declared, uniform roll-up is a confound: the two legs are rolled up to the
+ * qrel unit differently (or not at all), so the comparison is not
+ * apples-to-apples. We fix the rule once, here, and stamp its name into results.
+ *
+ * Rule chosen: **max-pool** (see {@link rollUpChunksToDocuments}).
+ *
+ * Alternative considered — **parent-label inheritance** (each retrieved chunk
+ * inherits its parent document's qrel, then metrics are computed over the
+ * chunk-level ranking). It is a valid rule but carries a *known mild optimistic
+ * bias at large chunk sizes*: a bigger chunk covers more of a document, so it is
+ * more likely to be judged relevant by inheritance even when the matched span is
+ * off-topic, nudging nDCG/MAP up. Max-pool avoids that span-size sensitivity by
+ * collapsing to one row per document before scoring, which is why it is the
+ * reported rule. This bias note is surfaced in result caveats so every run
+ * states the rule it used and the tradeoff of the road not taken.
+ */
+export const QREL_ROLLUP_RULE: QrelRollupRule = 'max-pool';
+
+/** A retrieved chunk tagged with the parent BEIR document it belongs to. */
+export interface RollupChunk {
+  /** Parent document id — the unit BEIR qrels are judged at. */
+  docId: string;
+  /** Leg-native score for this chunk (e.g. BM25, dense distance, RRF). */
+  score: number;
+}
+
+export interface RollupOptions {
+  /**
+   * How the pooled documents are ORDERED and SCORED in the returned ranking.
+   * Both modes apply the SAME max-pool relevance roll-up (one row per parent
+   * document, represented by its single best chunk — this is what the metrics
+   * see). They differ only in the score the returned ranking carries, because
+   * raw chunk scores are not comparable across legs:
+   *
+   *  - `'score'` — re-sort the pooled documents by their max chunk score
+   *    (higher = better), ties broken by ascending docId. Use for legs whose
+   *    chunk list is itself a higher-is-better ranking (BM25, late-interaction
+   *    MaxSim).
+   *
+   *  - `'retrieval-order'` — keep each document's first (best) appearance in the
+   *    already-ranked chunk list and emit a strictly decreasing rank score. Use
+   *    for legs whose raw scores are not higher-is-better (dense distances,
+   *    hybrid RRF), where re-sorting by raw score would invert the ranking.
+   *
+   * The pooled document SET and its RANK ORDER — the only things the metrics in
+   * this module consume — are identical across both modes when the input chunk
+   * list is already sorted best-first; the mode only changes the cosmetic score
+   * written to the TREC run so external `trec_eval` reproduces the same order.
+   */
+  order: 'score' | 'retrieval-order';
+}
+
+/**
+ * Roll chunk-level retrieval results up to one row per parent document using the
+ * {@link QREL_ROLLUP_RULE} max-pool rule: a document is represented by its
+ * single best-matching chunk, and its document-level qrel is applied once to
+ * that row. Returns the top-`k` documents.
+ *
+ * This is the single source of truth for the roll-up: the dense, lexical, and
+ * hybrid legs all collapse through this function (differing only by
+ * {@link RollupOptions.order}, which is a score-cosmetics choice, not a
+ * different relevance rule). See {@link QREL_ROLLUP_RULE} for the rationale and
+ * the parent-label-inheritance bias note.
+ */
+export function rollUpChunksToDocuments(
+  chunks: readonly RollupChunk[],
+  k: number,
+  options: RollupOptions,
+): RankedDocument[] {
+  if (k <= 0) return [];
+  if (options.order === 'retrieval-order') {
+    // Max-pool by retrieval position: a document's best chunk is its first
+    // appearance in the already best-first list. Emit a strictly decreasing
+    // rank score so the order survives external trec_eval unchanged.
+    const seen = new Set<string>();
+    const docIds: string[] = [];
+    for (const chunk of chunks) {
+      if (seen.has(chunk.docId)) continue;
+      seen.add(chunk.docId);
+      docIds.push(chunk.docId);
+      if (docIds.length >= k) break;
+    }
+    return docIds.map((docId, index) => ({ docId, score: docIds.length - index }));
+  }
+  // Max-pool by score: each document keeps its highest chunk score.
+  const best = new Map<string, number>();
+  for (const chunk of chunks) {
+    const previous = best.get(chunk.docId);
+    if (previous === undefined || chunk.score > previous) {
+      best.set(chunk.docId, chunk.score);
+    }
+  }
+  return [...best.entries()]
+    .map(([docId, score]) => ({ docId, score }))
+    .sort((left, right) => right.score - left.score || left.docId.localeCompare(right.docId))
+    .slice(0, k);
+}
+
 export interface QueryMetric {
   queryId: string;
   relevant: number;

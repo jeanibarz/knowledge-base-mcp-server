@@ -10,10 +10,13 @@ import {
   aggregateQueryMetrics,
   formatTrecRun,
   parseQrelsTsv,
+  rollUpChunksToDocuments,
   scoreQuery,
   summarizeLatencies,
+  QREL_ROLLUP_RULE,
   type AggregateMetrics,
   type Qrels,
+  type QrelRollupRule,
   type RankedDocument,
   type QueryMetric,
 } from './metrics.js';
@@ -348,6 +351,11 @@ interface BeirBenchmarkReport {
   ranking: {
     unit: LexicalUnit;
     implementation: string;
+    // Chunk→document relevance roll-up rule applied before scoring against the
+    // document-level BEIR qrels (issue #1053). Reported so every result file
+    // states the rule used and the lexical(source) vs chunk+rollup vs hybrid
+    // comparison is apples-to-apples.
+    qrel_rollup: QrelRollupRule;
     trec_run: string;
     k: number;
     chunk_candidate_k: number;
@@ -547,6 +555,7 @@ export async function runBeirBenchmark(
     ranking: {
       unit: rankingMeta.unit,
       implementation: rankingMeta.implementation,
+      qrel_rollup: QREL_ROLLUP_RULE,
       trec_run: portablePath(trecPath),
       k: args.k,
       chunk_candidate_k: args.chunkK,
@@ -1177,37 +1186,42 @@ function defaultModelForProvider(provider: string): string {
 }
 
 /**
- * Collapse ranked chunks to BEIR documents while PRESERVING retrieval order.
+ * Collapse ranked chunks to BEIR documents under the single QREL_ROLLUP_RULE
+ * (max-pool), PRESERVING retrieval order.
  *
- * Unlike the lexical `collapseChunksToDocuments` (which maxes a BM25 score per
- * document), this keeps each document's first (best) appearance in the
- * already-ranked chunk list and assigns a strictly decreasing rank score. This
- * is mode-agnostic on purpose: dense scores are distances (lower = better)
- * while hybrid RRF scores are higher = better, so re-sorting by the raw score
- * would invert dense rankings. The decreasing rank score keeps external
- * `trec_eval` reproducing the same order the production path returned.
+ * Delegates to `rollUpChunksToDocuments` with `order: 'retrieval-order'`: it
+ * keeps each document's first (best) appearance in the already-ranked chunk list
+ * and assigns a strictly decreasing rank score. This mode exists because dense
+ * scores are distances (lower = better) while hybrid RRF scores are higher =
+ * better, so re-sorting by the raw score would invert dense rankings. The
+ * decreasing rank score keeps external `trec_eval` reproducing the same order
+ * the production path returned. The lexical/late legs use the same rule in
+ * `order: 'score'` mode via `collapseChunksToDocuments`.
  */
 function collapseRankedChunksToDocuments(
   chunks: ReadonlyArray<BeirRankedChunk>,
   docIdByRelativePath: Map<string, string>,
   k: number,
 ): RankedDocument[] {
-  const seen = new Set<string>();
-  const docIds: string[] = [];
+  // Resolve each chunk to its parent BEIR document, then apply the single
+  // QREL_ROLLUP_RULE max-pool roll-up in `retrieval-order` mode (dense/hybrid
+  // raw scores are not higher-is-better, so the already-ranked order is kept).
+  const resolved: Array<{ docId: string; score: number }> = [];
   for (const chunk of chunks) {
     const docId = docIdFromMetadata(chunk.metadata, docIdByRelativePath);
-    if (docId === null || seen.has(docId)) continue;
-    seen.add(docId);
-    docIds.push(docId);
-    if (docIds.length >= k) break;
+    if (docId === null) continue;
+    resolved.push({ docId, score: chunk.score });
   }
-  return docIds.map((docId, index) => ({ docId, score: docIds.length - index }));
+  return rollUpChunksToDocuments(resolved, k, { order: 'retrieval-order' });
 }
 
 function buildCaveats(args: Args): string[] {
   const caveats = [
     'This is a local BEIR benchmark, not an official leaderboard submission.',
     'Scores are document-level for BEIR qrels.',
+    `Chunk→document roll-up rule: ${QREL_ROLLUP_RULE} (a document is represented by its single best chunk, ` +
+      'scored once against the document-level qrel), applied uniformly to the dense, lexical, and hybrid legs. ' +
+      'The alternative (parent-label inheritance) has a known mild optimistic bias at large chunk sizes, so max-pool is used.',
     'MLflow logging is not required for JSON/TREC artifacts; optional logging is expected to come from the bench observability hook.',
   ];
   if (args.mode === 'lexical') {
@@ -1671,19 +1685,16 @@ function collapseChunksToDocuments(
   docIdByRelativePath: Map<string, string>,
   k: number,
 ): RankedDocument[] {
-  const best = new Map<string, number>();
+  // Resolve each chunk to its parent BEIR document, then apply the single
+  // QREL_ROLLUP_RULE max-pool roll-up in `score` mode (BM25 / late-interaction
+  // chunk scores are higher-is-better, so documents re-sort by max chunk score).
+  const resolved: Array<{ docId: string; score: number }> = [];
   for (const chunk of chunks) {
     const docId = docIdFromMetadata(chunk.metadata, docIdByRelativePath);
     if (docId === null) continue;
-    const previous = best.get(docId);
-    if (previous === undefined || chunk.score > previous) {
-      best.set(docId, chunk.score);
-    }
+    resolved.push({ docId, score: chunk.score });
   }
-  return [...best.entries()]
-    .map(([docId, score]) => ({ docId, score }))
-    .sort((left, right) => right.score - left.score || left.docId.localeCompare(right.docId))
-    .slice(0, k);
+  return rollUpChunksToDocuments(resolved, k, { order: 'score' });
 }
 
 function docIdFromMetadata(metadata: Record<string, unknown>, docIdByRelativePath: Map<string, string>): string | null {
