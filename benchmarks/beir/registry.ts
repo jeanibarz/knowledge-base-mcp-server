@@ -340,3 +340,69 @@ export function assertRegistryInvariants(registry: readonly BeirDatasetRegistryE
     throw new Error(`registry: tuned/unseen Δ_g groups overlap on ${overlap.join(', ')} — they must be disjoint`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// NanoBEIR real-geometry dense gate registry (issue #1051)
+// ---------------------------------------------------------------------------
+//
+// NanoBEIR (the official downsized BEIR — ~50 queries/dataset,
+// https://huggingface.co/zeta-alpha-ai) powers the real-geometry dense CI gate.
+// It is deliberately a SEPARATE registry from BEIR_REGISTRY: these vendored,
+// further-capped fixtures are a fast per-PR dense-regression signal, NOT part of
+// the headline multi-domain BEIR mean or the Δ_g generalization partition, so
+// they must never leak into fullMatrixDatasets()/the matrix runner. Unlike the
+// hermetic `fake`-provider fixture (which "has no semantic geometry" — baseline
+// README), the NanoBEIR gate runs a REAL embedding model over real text, so it
+// catches the dense regressions the fake fixture structurally cannot. The capped
+// corpora are vendored under benchmarks/beir/fixtures/nanobeir/<name> (see that
+// directory's build script for exact provenance and the downsizing rule).
+
+export interface NanoBeirGateEntry {
+  /** Gate dataset key — matches the vendored fixture dir and baseline file stem. */
+  name: string;
+  /** Upstream NanoBEIR Hugging Face dataset the vendored fixture is derived from. */
+  source: string;
+  /** Human-facing label for reports. */
+  title: string;
+  /** Coarse domain bucket. */
+  domain: string;
+  /** Qrels split the runner reads (NanoBEIR ships a single eval split). */
+  split: string;
+  contamination: BeirContaminationNote;
+}
+
+export const NANOBEIR_REGISTRY: readonly NanoBeirGateEntry[] = [
+  {
+    name: 'nanobeir-scifact',
+    source: 'zeta-alpha-ai/NanoSciFact',
+    title: 'NanoSciFact',
+    domain: 'scientific fact-checking',
+    split: 'test',
+    contamination: {
+      knownInPretraining: false,
+      qrels: 'expert',
+      note: 'Downsized SciFact: expert claim↔evidence annotations (binary qrels in NanoBEIR); low pretraining-leakage. Capped fixture — a real-geometry regression signal, not a leaderboard number.',
+    },
+  },
+  {
+    name: 'nanobeir-fiqa',
+    source: 'zeta-alpha-ai/NanoFiQA2018',
+    title: 'NanoFiQA-2018',
+    domain: 'finance',
+    split: 'test',
+    contamination: {
+      knownInPretraining: false,
+      qrels: 'crowdsourced',
+      note: 'Downsized FiQA-2018: financial-opinion QA over forum text, crowdsourced binary qrels. Capped fixture — a real-geometry regression signal, not a leaderboard number.',
+    },
+  },
+];
+
+/** NanoBEIR dense-gate dataset keys, in report order. */
+export function nanoBeirGateDatasets(): string[] {
+  return NANOBEIR_REGISTRY.map((entry) => entry.name);
+}
+
+export function getNanoBeirEntry(name: string): NanoBeirGateEntry | undefined {
+  return NANOBEIR_REGISTRY.find((entry) => entry.name === name);
+}

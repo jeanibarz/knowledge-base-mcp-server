@@ -24,6 +24,7 @@ on:
       - 'benchmarks/beir/**'
       - 'benchmarks/significance.ts'
       - 'benchmarks/results/beir/baseline/**'
+      - 'benchmarks/results/beir/nanobeir-*.json'
       - '.github/workflows/retrieval-quality-gate.yml'
   workflow_dispatch:
     inputs:
@@ -94,4 +95,34 @@ jobs:
             --provider=fake \
             --workspace-root="${RUNNER_TEMP}/kb-beir-gate-ci-ws" \
             --output-dir="${RUNNER_TEMP}/kb-beir-gate-ci-out" \
+            --fail-on-regression
+
+      # The NanoBEIR real-geometry dense gate (issue #1051). The hermetic `fake`
+      # dense cells above have NO semantic geometry (baseline README), so they
+      # cannot catch a real dense regression — the blind spot this step closes.
+      # It runs the production dense path with a REAL embedding provider over the
+      # vendored, capped NanoBEIR fixtures and gates nDCG@10 with the same
+      # significance machinery, against the committed real baselines
+      # (benchmarks/results/beir/nanobeir-*.json). Those baselines are recorded
+      # with a real provider and the gate compares like-for-like, so a runner
+      # WITHOUT the provider reachable records SKIP (never a false failure),
+      # while a runner/host WITH it reachable (a self-hosted runner, or the
+      # operator's local merge gate — this repo's CI policy makes local
+      # verification the real gate) ENFORCES the regression. The always-offline
+      # `fake` fixture above stays as the hermetic plumbing check.
+      - name: Quality gate — NanoBEIR dense (real geometry; enforced where a provider is reachable)
+        env:
+          BENCH_QUALITY_GATE_FAIL: ${{ (github.event_name == 'workflow_dispatch' && inputs.enforce == false) && '0' || '1' }}
+          EMBEDDING_PROVIDER: ${{ vars.EMBEDDING_PROVIDER || 'ollama' }}
+          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'nomic-embed-text' }}
+          OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL || 'http://localhost:11434' }}
+        run: |
+          node build/benchmarks/beir/quality-gate.js \
+            --datasets=nanobeir-scifact,nanobeir-fiqa \
+            --modes=dense \
+            --provider="${EMBEDDING_PROVIDER}" \
+            --dataset-dir=benchmarks/beir/fixtures/nanobeir \
+            --baseline-dir=benchmarks/results/beir \
+            --workspace-root="${RUNNER_TEMP}/kb-beir-nano-ws" \
+            --output-dir="${RUNNER_TEMP}/kb-beir-nano-out" \
             --fail-on-regression

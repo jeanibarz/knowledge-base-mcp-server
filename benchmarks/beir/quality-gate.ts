@@ -45,8 +45,34 @@ import {
   type BeirMode,
 } from './run.js';
 import { baselineFileName, CI_SUBSET } from './baseline.js';
+import { nanoBeirGateDatasets } from './registry.js';
 
 export type QualityGateStatus = 'pass' | 'inconclusive-below-noise-floor' | 'fail' | 'skip';
+
+// ---------------------------------------------------------------------------
+// NanoBEIR real-geometry dense gate (issue #1051)
+// ---------------------------------------------------------------------------
+//
+// The hermetic `fake`-provider dense cells are plumbing only — the fake provider
+// "has no semantic geometry" (baseline README), so they cannot catch a real
+// dense regression. The NanoBEIR gate closes that blind spot: it runs the
+// production dense path with a REAL embedding provider over the vendored, capped
+// NanoBEIR fixtures and gates nDCG@10 with the exact same significance machinery.
+//
+// Its committed baselines sit beside the other BEIR results
+// (benchmarks/results/beir/nanobeir-<dataset>-dense.json) and are recorded with a
+// real provider. The gate compares like-for-like (see evaluateGateComparison),
+// so on a runner WITHOUT that provider the fresh dense run fails and the cell is
+// SKIPPED — never a false failure — while a runner/host WITH the provider
+// reachable enforces the regression. The always-offline `fake` fixture stays as
+// the hermetic plumbing check; NanoBEIR is the semantic check.
+export const NANOBEIR_GATE_DATASETS: readonly string[] = nanoBeirGateDatasets();
+/** Parent dir of the vendored per-dataset NanoBEIR fixture folders (for --dataset-dir). */
+export const NANOBEIR_FIXTURE_DIR = path.join('benchmarks', 'beir', 'fixtures', 'nanobeir');
+/** Committed-baseline dir for the NanoBEIR dense cells (for --baseline-dir). */
+export const NANOBEIR_BASELINE_DIR = path.join('benchmarks', 'results', 'beir');
+/** Default real embedding provider for the NanoBEIR gate (overridable via EMBEDDING_PROVIDER). */
+export const DEFAULT_NANOBEIR_PROVIDER = 'ollama';
 
 // Default tolerance: a relative fraction of the baseline nDCG@10, with an
 // absolute floor so a tiny baseline cannot make the band collapse to ~0 (RFC §4,

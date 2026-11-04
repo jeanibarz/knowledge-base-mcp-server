@@ -1,11 +1,14 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   BEIR_REGISTRY,
+  NANOBEIR_REGISTRY,
   assertRegistryInvariants,
   ciSubsetDatasets,
   downloadableDatasets,
   fullMatrixDatasets,
+  getNanoBeirEntry,
   getRegistryEntry,
+  nanoBeirGateDatasets,
   tunedDatasets,
   unseenGeneralityDatasets,
   domainOf,
@@ -71,5 +74,40 @@ describe('BEIR dataset registry', () => {
       { ...BEIR_REGISTRY[3], name: 'overlap', generalityRole: 'tuned' },
       { ...BEIR_REGISTRY[3], name: 'overlap', generalityRole: 'unseen-generality' },
     ])).toThrow(/duplicate|overlap/);
+  });
+});
+
+describe('NanoBEIR gate registry (issue #1051)', () => {
+  it('is a separate registry that never leaks into the headline BEIR matrix', () => {
+    // NanoBEIR gate datasets are a per-PR dense-regression signal, NOT part of
+    // the RFC §2 full public BEIR set — they must stay out of fullMatrixDatasets()
+    // (and therefore the matrix runner / Δ_g partition).
+    const gateNames = nanoBeirGateDatasets();
+    // Guard against a vacuous pass: both sides must be non-empty for the
+    // disjointness assertion below to mean anything.
+    expect(gateNames.length).toBeGreaterThan(0);
+    expect(gateNames).toEqual(NANOBEIR_REGISTRY.map((e) => e.name));
+    const matrix = fullMatrixDatasets();
+    expect(matrix.length).toBeGreaterThan(0);
+    const matrixSet = new Set(matrix);
+    for (const name of gateNames) {
+      expect(matrixSet.has(name)).toBe(false);
+    }
+  });
+
+  it('carries NanoBEIR provenance and a contamination note for every gate dataset', () => {
+    for (const entry of NANOBEIR_REGISTRY) {
+      expect(entry.name.startsWith('nanobeir-')).toBe(true);
+      expect(entry.source).toMatch(/Nano/);
+      expect(entry.split.length).toBeGreaterThan(0);
+      expect(entry.contamination.note.length).toBeGreaterThan(0);
+      expect(['expert', 'crowdsourced', 'automatic', 'mixed']).toContain(entry.contamination.qrels);
+    }
+  });
+
+  it('resolves gate entries by name', () => {
+    const first = nanoBeirGateDatasets()[0];
+    expect(getNanoBeirEntry(first)?.name).toBe(first);
+    expect(getNanoBeirEntry('not-a-nanobeir-dataset')).toBeUndefined();
   });
 });
