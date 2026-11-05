@@ -15,7 +15,7 @@ import { KBError } from './errors.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { resolveKbPath } from './kb-fs.js';
 
-export type CiteFormat = 'bibtex' | 'csl-json' | 'text';
+export type CiteFormat = 'bibtex' | 'csl-json' | 'text' | 'ris';
 
 export interface CitationEntry {
   key: string;
@@ -136,6 +136,7 @@ export function citationEntryFromFrontmatter(
 export function formatCitation(entry: CitationEntry, format: CiteFormat): string {
   if (format === 'bibtex') return formatBibTeX(entry);
   if (format === 'csl-json') return JSON.stringify([toCslJson(entry)], null, 2);
+  if (format === 'ris') return formatRis(entry);
   return formatTextCitation(entry);
 }
 
@@ -158,7 +159,7 @@ export function normalizeAuthors(value: unknown): string[] {
 }
 
 export function isCiteFormat(value: string): value is CiteFormat {
-  return value === 'bibtex' || value === 'csl-json' || value === 'text';
+  return value === 'bibtex' || value === 'csl-json' || value === 'text' || value === 'ris';
 }
 
 function formatBibTeX(entry: CitationEntry): string {
@@ -198,6 +199,47 @@ function toCslJson(entry: CitationEntry): Record<string, unknown> {
     out.archive_location = entry.arxivId;
   }
   return out;
+}
+
+// RIS — the tagged interchange format EndNote, Zotero, Mendeley, and RefWorks
+// import (#1157). Each line is `XX  - value` (two-letter tag, two spaces, hyphen,
+// space); the record opens with `TY  - ` and closes with the `ER  - `
+// terminator. Values are single-line, so every field is whitespace-collapsed to
+// keep a multi-line title or note from breaking the tag grammar, and a field
+// that collapses to empty is skipped so the record never carries a valueless tag
+// (importers reject those). The reference type mirrors the BibTeX article/misc
+// split: a note with a usable DOI maps to `JOUR` (journal article); with no DOI
+// the tag defaults to `GEN` (generic), the safe fallback every RIS reader
+// accepts. RIS has no dedicated arXiv field, so an arXiv id rides in an `N1`
+// note (its abstract URL is already carried by `UR`).
+function formatRis(entry: CitationEntry): string {
+  const doi = nonEmptyCollapsed(entry.doi);
+  const lines: string[] = [`TY  - ${doi === undefined ? 'GEN' : 'JOUR'}`];
+  const title = nonEmptyCollapsed(entry.title);
+  if (title !== undefined) lines.push(`TI  - ${title}`);
+  for (const author of entry.authors) {
+    const name = nonEmptyCollapsed(author);
+    if (name !== undefined) lines.push(`AU  - ${name}`);
+  }
+  const year = nonEmptyCollapsed(entry.year);
+  if (year !== undefined) lines.push(`PY  - ${year}`);
+  if (doi !== undefined) lines.push(`DO  - ${doi}`);
+  const url = nonEmptyCollapsed(entry.url);
+  if (url !== undefined) lines.push(`UR  - ${url}`);
+  lines.push(`N1  - KB note: ${collapseWhitespace(entry.notePath)}`);
+  const arxivId = nonEmptyCollapsed(entry.arxivId);
+  if (arxivId !== undefined) lines.push(`N1  - arXiv: ${arxivId}`);
+  lines.push('ER  - ');
+  return lines.join('\n');
+}
+
+// Collapse whitespace and treat an empty result as absent, so RIS never emits a
+// tag with no value (e.g. a malformed `doi: "doi:"` that normalizeDoi reduces to
+// "" must not surface as a bare `DO  - ` line or promote the type to JOUR).
+function nonEmptyCollapsed(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const collapsed = collapseWhitespace(value);
+  return collapsed.length === 0 ? undefined : collapsed;
 }
 
 function formatTextCitation(entry: CitationEntry): string {

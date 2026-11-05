@@ -36,7 +36,7 @@ export {
 export const CITE_HELP = `kb cite — export a bibliography entry from note frontmatter
 
 Usage:
-  kb cite <chunk-id|kb://uri|kb-relative-path> [--format=bibtex|csl-json|text]
+  kb cite <chunk-id|kb://uri|kb-relative-path> [--format=bibtex|csl-json|text|ris]
 
 Reads one markdown note, extracts citation-oriented frontmatter fields, and
 prints a ready-to-paste bibliography entry. Accepted selector forms match
@@ -56,8 +56,9 @@ Recognized frontmatter fields:
   arxiv_id              arXiv identifier, emitted as eprint/archive metadata.
 
 Options:
-  --format=bibtex|csl-json|text
-                        Output format (default: bibtex).
+  --format=bibtex|csl-json|text|ris
+                        Output format (default: bibtex). "ris" emits a RIS
+                        record for EndNote/Zotero/Mendeley/RefWorks import.
   --help, -h            Show this help.
 
 Environment:

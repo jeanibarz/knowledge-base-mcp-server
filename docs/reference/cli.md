@@ -19,7 +19,7 @@ The `kb` CLI exposes 40 commands.
 | [`kb backup`](#kb-backup) | Create a checksum-validated active index snapshot. |
 | [`kb cache`](#kb-cache) | Inspect and prune local cache surfaces. |
 | [`kb capture`](#kb-capture) | Run a command and append its stdout to a KB note as a fenced block. |
-| [`kb cite`](#kb-cite) | Export BibTeX or CSL-JSON from note frontmatter. |
+| [`kb cite`](#kb-cite) | Export a bibliography entry (BibTeX, CSL-JSON, text, or RIS) from note frontmatter. |
 | [`kb compare`](#kb-compare) | Side-by-side rank/score table for two embedding models. |
 | [`kb completion`](#kb-completion) | Generate shell completions for bash, zsh, fish, or powershell. |
 | [`kb config`](#kb-config) | Validate KB environment configuration. |
@@ -221,13 +221,13 @@ Examples:
 
 ## `kb cite`
 
-Export BibTeX or CSL-JSON from note frontmatter.
+Export a bibliography entry (BibTeX, CSL-JSON, text, or RIS) from note frontmatter.
 
 ```text
 kb cite — export a bibliography entry from note frontmatter
 
 Usage:
-  kb cite <chunk-id|kb://uri|kb-relative-path> [--format=bibtex|csl-json|text]
+  kb cite <chunk-id|kb://uri|kb-relative-path> [--format=bibtex|csl-json|text|ris]
 
 Reads one markdown note, extracts citation-oriented frontmatter fields, and
 prints a ready-to-paste bibliography entry. Accepted selector forms match
@@ -247,8 +247,9 @@ Recognized frontmatter fields:
   arxiv_id              arXiv identifier, emitted as eprint/archive metadata.
 
 Options:
-  --format=bibtex|csl-json|text
-                        Output format (default: bibtex).
+  --format=bibtex|csl-json|text|ris
+                        Output format (default: bibtex). "ris" emits a RIS
+                        record for EndNote/Zotero/Mendeley/RefWorks import.
   --help, -h            Show this help.
 
 Environment:

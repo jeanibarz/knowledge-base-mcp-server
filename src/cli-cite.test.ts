@@ -18,8 +18,52 @@ describe('kb cite', () => {
       target: 'research/paper.md',
       format: 'csl-json',
     });
+    expect(parseCiteArgs(['research/paper.md', '--format=ris'])).toEqual({
+      target: 'research/paper.md',
+      format: 'ris',
+    });
     expect(() => parseCiteArgs([])).toThrow('missing <chunk-id|kb://uri|kb-relative-path>');
     expect(() => parseCiteArgs(['research/paper.md', '--format=json'])).toThrow('invalid --format');
+  });
+
+  it('writes a valid RIS record for --format=ris', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cite-ris-'));
+    await fsp.mkdir(path.join(tempDir, 'research', 'papers'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'research', 'papers', 'paper.md'), [
+      '---',
+      'title: Example Paper',
+      'authors:',
+      '  - Ada Lovelace',
+      'published: 1843-01-01',
+      'doi: doi:10.1000/example',
+      '---',
+      '',
+      '# Example Paper',
+      '',
+    ].join('\n'));
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const deps: RunCiteDeps = {
+      rootDir: tempDir,
+      readFile: (filePath) => fsp.readFile(filePath, 'utf-8'),
+      stdout: (text) => { stdout.push(text); },
+      stderr: (text) => { stderr.push(text); },
+    };
+
+    await expect(runCite(['research/papers/paper.md', '--format=ris'], deps)).resolves.toBe(0);
+    expect(stderr.join('')).toBe('');
+    expect(stdout.join('')).toBe(
+      [
+        'TY  - JOUR',
+        'TI  - Example Paper',
+        'AU  - Ada Lovelace',
+        'PY  - 1843',
+        'DO  - 10.1000/example',
+        'N1  - KB note: research/papers/paper.md',
+        'ER  - ',
+      ].join('\n') + '\n',
+    );
   });
 
   it('resolves a note path, reads frontmatter, and writes the requested format', async () => {
