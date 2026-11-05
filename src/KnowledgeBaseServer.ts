@@ -42,6 +42,7 @@ import {
   DIFF_INDEX_DESCRIPTION,
   FIND_RELATED_DESCRIPTION,
   KB_STATS_DESCRIPTION,
+  LIST_FACETS_DESCRIPTION,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   LIST_MODELS_DESCRIPTION,
   REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
@@ -53,6 +54,7 @@ import {
   DELETE_DOCUMENT_INPUT,
   DIFF_INDEX_INPUT,
   FIND_RELATED_INPUT,
+  LIST_FACETS_INPUT,
   KB_STATS_INPUT,
   REINDEX_KNOWLEDGE_BASE_INPUT,
   RETRIEVE_KNOWLEDGE_INPUT,
@@ -93,6 +95,11 @@ import {
   resolveKnowledgeBaseDir,
 } from './kb-fs.js';
 import { computeKbStats } from './kb-stats.js';
+import {
+  buildFacetsJsonPayload,
+  collectTagsReport,
+  DEFAULT_FACETS,
+} from './facets-core.js';
 import {
   buildRelatedJsonPayload,
   findRelatedCore,
@@ -584,6 +591,17 @@ export class KnowledgeBaseServer {
       this.handleFindRelated.bind(this)
     );
 
+    // Issue #1151 — list_facets: read-only frontmatter-facet enumeration
+    // mirroring `kb tags`. Always registered (not ingest-gated).
+    this.registerShapedTool(
+      mcp,
+      'list_facets',
+      LIST_FACETS_DESCRIPTION,
+      LIST_FACETS_INPUT,
+      toolAnnotations('list_facets'),
+      this.handleListFacets.bind(this)
+    );
+
     if (KB_INGEST_ENABLED) {
       this.registerShapedTool(
         mcp,
@@ -942,6 +960,62 @@ export class KnowledgeBaseServer {
       } catch (error: unknown) {
         const err = toError(error);
         logger.error('Error finding related chunks:', err);
+        if (err.stack) {
+          logger.error(err.stack);
+        }
+        return { content: [mcpErrorContent(err)], isError: true };
+      }
+    });
+  }
+
+  /**
+   * Issue #1151 — list_facets MCP handler. The read-only MCP equivalent of
+   * `kb tags`: enumerate the frontmatter facet values that actually exist so a
+   * client can discover the valid tags/status/type filter vocabulary accepted
+   * by retrieve_knowledge / ask_knowledge. A thin transport wrapper — it
+   * normalizes the optional scope/facet inputs and delegates the scan to the
+   * shared `collectTagsReport` (the same core `kb tags` uses), returning the
+   * byte-identical `kb.tags.v1` JSON payload. Does NOT touch the index: it
+   * reads notes straight off disk under KNOWLEDGE_BASES_ROOT_DIR.
+   */
+  private async handleListFacets(args: {
+    knowledge_base_name?: string;
+    facet?: string;
+  }): Promise<CallToolResult> {
+    // Normalize empty/whitespace-only inputs to "unset" so they fall back to
+    // the documented defaults (all KBs / tags-status-type) rather than scoping
+    // to a literal empty KB or facet name — the Zod fields are unbounded
+    // optional strings, so a client could send "". The CLI rejects an empty
+    // --kb / --facet outright; here we treat them as unset instead of erroring.
+    const knowledgeBaseName = args.knowledge_base_name !== undefined && args.knowledge_base_name.trim().length > 0
+      ? args.knowledge_base_name
+      : undefined;
+    const facet = args.facet !== undefined && args.facet.trim().length > 0
+      ? args.facet
+      : undefined;
+    const facets = facet !== undefined ? [facet] : [...DEFAULT_FACETS];
+
+    return this.withCanonicalTool({
+      tool: 'list_facets',
+      kb_scope: knowledgeBaseName ?? null,
+    }, async () => {
+      try {
+        // collectTagsReport resolves an unknown knowledge_base_name through
+        // resolveKnowledgeBaseDir, which throws KBError('KB_NOT_FOUND', …) —
+        // the same fail-closed contract the other tools use. mcpErrorContent
+        // preserves that code on the wire.
+        const report = await collectTagsReport({
+          rootDir: KNOWLEDGE_BASES_ROOT_DIR,
+          kbFilter: knowledgeBaseName,
+          facets,
+        });
+        const payload = buildFacetsJsonPayload(report);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        };
+      } catch (error: unknown) {
+        const err = toError(error);
+        logger.error('Error listing facets:', err);
         if (err.stack) {
           logger.error(err.stack);
         }

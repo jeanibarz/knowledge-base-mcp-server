@@ -1872,6 +1872,143 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(payload.scoped_kb).toBe('alpha');
   });
 
+  // --- handleListFacets (#1151) ---------------------------------------------
+
+  // Write a KB tree of markdown notes with YAML frontmatter under a fresh root
+  // so list_facets has real files to scan (it reads disk, not the index).
+  async function setFacetsEnv(
+    kbs: Record<string, Record<string, string>>,
+  ): Promise<string> {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-facets-'));
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    for (const [kb, notes] of Object.entries(kbs)) {
+      for (const [rel, body] of Object.entries(notes)) {
+        const full = path.join(tempDir, kb, rel);
+        await fsp.mkdir(path.dirname(full), { recursive: true });
+        await fsp.writeFile(full, body, 'utf-8');
+      }
+    }
+    return tempDir;
+  }
+
+  const note = (frontmatter: string, body = 'content\n'): string =>
+    `---\n${frontmatter}\n---\n${body}`;
+
+  it('handleListFacets returns a kb.tags.v1 payload with distinct values and per-note counts', async () => {
+    await setFacetsEnv({
+      alpha: {
+        'a.md': note('tags: [deploy, ops]\nstatus: draft\ntype: guide'),
+        'b.md': note('tags: [deploy]\nstatus: published'),
+      },
+    });
+
+    const server = await freshServer();
+    const result = await server['handleListFacets']({});
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text) as {
+      schemaVersion: string;
+      knowledgeBases: string[];
+      notesScanned: number;
+      facets: Record<string, Array<{ value: string; count: number }>>;
+    };
+    expect(payload.schemaVersion).toBe('kb.tags.v1');
+    expect(payload.knowledgeBases).toEqual(['alpha']);
+    expect(payload.notesScanned).toBe(2);
+    // tags: deploy twice (count 2), ops once — sorted by count desc then value.
+    expect(payload.facets.tags).toEqual([
+      { value: 'deploy', count: 2 },
+      { value: 'ops', count: 1 },
+    ]);
+    // status: one draft, one published (count ties → value asc).
+    expect(payload.facets.status).toEqual([
+      { value: 'draft', count: 1 },
+      { value: 'published', count: 1 },
+    ]);
+    expect(payload.facets.type).toEqual([{ value: 'guide', count: 1 }]);
+  });
+
+  it('handleListFacets scopes to a single knowledge_base_name', async () => {
+    await setFacetsEnv({
+      alpha: { 'a.md': note('tags: [alpha-only]') },
+      beta: { 'b.md': note('tags: [beta-only]') },
+    });
+
+    const server = await freshServer();
+    const result = await server['handleListFacets']({ knowledge_base_name: 'beta' });
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text) as {
+      knowledgeBases: string[];
+      facets: Record<string, Array<{ value: string; count: number }>>;
+    };
+    expect(payload.knowledgeBases).toEqual(['beta']);
+    expect(payload.facets.tags).toEqual([{ value: 'beta-only', count: 1 }]);
+  });
+
+  it('handleListFacets reports a single arbitrary facet when facet is given', async () => {
+    await setFacetsEnv({
+      alpha: {
+        'a.md': note('priority: high'),
+        'b.md': note('priority: high\ntags: [ignored]'),
+      },
+    });
+
+    const server = await freshServer();
+    const result = await server['handleListFacets']({ facet: 'priority' });
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text) as {
+      facets: Record<string, Array<{ value: string; count: number }>>;
+    };
+    expect(Object.keys(payload.facets)).toEqual(['priority']);
+    expect(payload.facets.priority).toEqual([{ value: 'high', count: 2 }]);
+  });
+
+  it('handleListFacets fails closed with KB_NOT_FOUND for an unknown knowledge_base_name', async () => {
+    await setFacetsEnv({ alpha: { 'a.md': note('tags: [x]') } });
+
+    const server = await freshServer();
+    const result = await server['handleListFacets']({ knowledge_base_name: 'does-not-exist' });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text) as { error: { code: string } };
+    expect(payload.error.code).toBe('KB_NOT_FOUND');
+  });
+
+  it('handleListFacets normalizes empty/whitespace scope + facet to the all-KBs / default-facet set', async () => {
+    await setFacetsEnv({
+      alpha: { 'a.md': note('tags: [t1]\nstatus: draft') },
+      beta: { 'b.md': note('tags: [t2]') },
+    });
+
+    const server = await freshServer();
+
+    type FacetsPayload = {
+      knowledgeBases: string[];
+      facets: Record<string, Array<{ value: string; count: number }>>;
+    };
+    const parse = (r: { content: Array<{ text: string }> }): FacetsPayload =>
+      JSON.parse(r.content[0].text) as FacetsPayload;
+
+    // Each blank form — whitespace and bare empty string — must behave as "unset":
+    // scope → every KB (alpha + beta, sorted), facet → tags/status/type, with the
+    // real aggregated values (not merely the right keys).
+    for (const blank of ['   ', '']) {
+      const result = await server['handleListFacets']({ knowledge_base_name: blank, facet: blank });
+      expect(result.isError).toBeUndefined();
+      const payload = parse(result);
+      expect(payload.knowledgeBases).toEqual(['alpha', 'beta']);
+      expect(Object.keys(payload.facets)).toEqual(['tags', 'status', 'type']);
+      expect(payload.facets.tags).toEqual([
+        { value: 't1', count: 1 },
+        { value: 't2', count: 1 },
+      ]);
+      expect(payload.facets.status).toEqual([{ value: 'draft', count: 1 }]);
+      expect(payload.facets.type).toEqual([]);
+    }
+  });
+
   // --- handleRetrieveKnowledge ----------------------------------------------
 
   it('handleRetrieveKnowledge formats multi-result responses with Result N, score, and source blocks', async () => {
@@ -3239,15 +3376,15 @@ describe('KnowledgeBaseServer handlers', () => {
   }
 
   // Issue #798 — every tool must advertise its advisory ToolAnnotations so MCP
-  // clients can gate auto-approval and confirm destructive writes. The seven
+  // clients can gate auto-approval and confirm destructive writes. The eight
   // readers are read-only; the three ingest-gated writes carry hand-reviewed
   // destructive/idempotent hints (delete is the only destructive one).
-  it('registers each of the 10 tools with the expected ToolAnnotations hints', async () => {
+  it('registers each of the 11 tools with the expected ToolAnnotations hints', async () => {
     await setRetrieveEnv();
     process.env.KB_INGEST_ENABLED = 'true';
     const server = await freshServer();
 
-    // All 10 tools present so we can assert the writes too.
+    // All 11 tools present so we can assert the writes too.
     expect(registeredToolNames(server)).toEqual(
       expect.arrayContaining([
         'list_knowledge_bases',
@@ -3257,6 +3394,7 @@ describe('KnowledgeBaseServer handlers', () => {
         'kb_stats',
         'diff_index',
         'find_related',
+        'list_facets',
         'add_document',
         'delete_document',
         'reindex_knowledge_base',
@@ -3271,6 +3409,7 @@ describe('KnowledgeBaseServer handlers', () => {
       'kb_stats',
       'diff_index',
       'find_related',
+      'list_facets',
     ]) {
       expect(annotationsOf(server, readOnlyTool)).toMatchObject({ readOnlyHint: true });
     }
@@ -3322,6 +3461,7 @@ describe('KnowledgeBaseServer handlers', () => {
       'list_models',
       'kb_stats',
       'diff_index',
+      'list_facets',
     ]));
     expect(tools).not.toContain('add_document');
     expect(tools).not.toContain('delete_document');

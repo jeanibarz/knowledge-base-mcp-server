@@ -172,6 +172,7 @@ function runKbCliSearch(
       'diff_index',
       'find_related',
       'kb_stats',
+      'list_facets',
       'list_knowledge_bases',
       'list_models',
       'reindex_knowledge_base',
