@@ -14,6 +14,7 @@ import {
   type ChunkManifest,
 } from './file-ingest.js';
 import { buildSidecarRowFromDocument } from './metadata-sidecar.js';
+import { IngestSecretDetectedError, detectSecretsInText } from './secret-scanner.js';
 
 // The durable-write tests below drive `writeSidecarHashes` / `writeChunkManifests`
 // directly. Their real `withSidecarLock` wrapper (a) does `fsp.mkdir` + a
@@ -455,5 +456,118 @@ describe('buildChunkDocuments → metadata-sidecar contract (#283)', () => {
       knowledgeBase: kbName,
       extension: '.md',
     }));
+  });
+});
+
+describe('buildChunkDocuments → boundary-split secret quarantine (#1125)', () => {
+  // Issue #1125: the ingest secret scan used to run only on post-split
+  // chunks. A single secret long enough to be divided across a chunk
+  // boundary is present whole in no chunk, so it evaded every pattern and
+  // was embedded in cleartext. buildChunkDocuments now also scans the whole
+  // pre-split body under location:'file'. Drive a small chunk size so the
+  // secret is deterministically torn, then prove (a) no individual chunk
+  // still matches the secret and (b) the file is quarantined anyway.
+  let kbRoot: string | undefined;
+  let workspaceUnderRoot: string | undefined;
+  const envBackup: Record<string, string | undefined> = {};
+
+  beforeAll(async () => {
+    const { KNOWLEDGE_BASES_ROOT_DIR } = await import('./config.js');
+    kbRoot = KNOWLEDGE_BASES_ROOT_DIR;
+    workspaceUnderRoot = await fsp.mkdtemp(path.join(kbRoot, 'kb-ingest-secret-'));
+    for (const key of ['KB_CHUNK_SIZE', 'KB_CHUNK_OVERLAP', 'KB_INGEST_SECRET_SCAN']) {
+      envBackup[key] = process.env[key];
+    }
+    // The ingest secret scan is gated off by default (#472); enable it so the
+    // quarantine path actually runs.
+    process.env.KB_INGEST_SECRET_SCAN = 'on';
+    // chunkSize 50 / overlap 0: the JWT below (header=36, payload=27,
+    // signature=38, 103 chars, no separators) cannot fit its three
+    // dot-delimited segments inside any single 50-char slice, so the jwt
+    // pattern can only ever match the whole body.
+    process.env.KB_CHUNK_SIZE = '50';
+    process.env.KB_CHUNK_OVERLAP = '0';
+  });
+
+  afterAll(async () => {
+    for (const [key, value] of Object.entries(envBackup)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    if (workspaceUnderRoot !== undefined) {
+      await fsp.rm(workspaceUnderRoot, { recursive: true, force: true });
+    }
+  });
+
+  // A real-shaped JWT with no surrounding whitespace so the recursive
+  // splitter tears it at a character boundary. pragma: allowlist secret
+  const JWT =
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ'; // pragma: allowlist secret gitleaks:allow
+
+  it('quarantines a JWT torn across a chunk boundary that no single chunk still matches', async () => {
+    const kbName = 'docs';
+    const kbDir = path.join(workspaceUnderRoot as string, kbName);
+    await fsp.mkdir(kbDir, { recursive: true });
+    const filePath = path.join(kbDir, 'boundary-jwt.md');
+    const content = JWT;
+    await fsp.writeFile(filePath, content, 'utf-8');
+
+    // Produce the chunks without enforcing the scan, to inspect the split.
+    const documents = await buildChunkDocuments(filePath, content, kbName, {
+      enforceSecretScan: false,
+      generateContextualPrefaces: false,
+    });
+    expect(documents.length).toBeGreaterThan(1);
+    // The torn secret survives in no single chunk: the per-chunk scan is
+    // blind to it. This is the exact gap the whole-body pass closes.
+    for (const document of documents) {
+      expect(
+        detectSecretsInText(document.pageContent).some((finding) => finding.category === 'jwt'),
+      ).toBe(false);
+    }
+
+    // With enforcement on (the default), the whole-body pass catches it.
+    let caught: unknown;
+    try {
+      await buildChunkDocuments(filePath, content, kbName, {
+        generateContextualPrefaces: false,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(IngestSecretDetectedError);
+    const secretError = caught as IngestSecretDetectedError;
+    expect(secretError.categories).toContain('jwt');
+    // The jwt finding could only have come from the whole-body 'file' pass.
+    expect(secretError.locations).toContain('file');
+  });
+
+  it('does not quarantine a clean file whose chunks and body carry no secret (#1125)', async () => {
+    const kbName = 'docs';
+    const kbDir = path.join(workspaceUnderRoot as string, kbName);
+    await fsp.mkdir(kbDir, { recursive: true });
+    const filePath = path.join(kbDir, 'clean.md');
+    // Long, prose-like body with separators — torn across many chunks. It
+    // includes two deliberate near-misses that the whole-body pass must NOT
+    // flag: a sub-threshold `password=` (low-entropy, below the 3.5 floor)
+    // and a truncated `eyJ`-prefixed token with only one segment (not a
+    // JWT). If the added whole-body pass over-fired, this file would be
+    // wrongly quarantined.
+    const content = [
+      ...Array.from({ length: 40 }, (_, i) =>
+        `Paragraph ${i}: restart the queue worker when lag exceeds five minutes.`,
+      ),
+      'config note: password=aaaaaaaaaaaa is a placeholder, not a real secret.',
+      'token fragment eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 appears alone here.',
+    ].join('\n\n');
+    await fsp.writeFile(filePath, content, 'utf-8');
+
+    // Must resolve (not throw IngestSecretDetectedError) with the scan on.
+    const documents = await buildChunkDocuments(filePath, content, kbName, {
+      generateContextualPrefaces: false,
+    });
+    expect(documents.length).toBeGreaterThan(1);
+    // And the whole-body pass itself is silent on this content.
+    expect(detectSecretsInText(content)).toEqual([]);
   });
 });

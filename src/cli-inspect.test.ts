@@ -141,9 +141,37 @@ describe('kb inspect', () => {
       enabled: true,
       verdict: 'secret_detected',
       error_code: 'KB_INGEST_SECRET_DETECTED',
-      locations: ['chunk'],
+      // #1125: inspect mirrors ingest's whole-body pass, so a secret that
+      // fits in one chunk is now reported at both 'chunk' and 'file'.
+      locations: ['chunk', 'file'],
     });
     expect(body.secret_scan.categories).toContain('key_value_secret');
+  });
+
+  it('reports a secret torn across a chunk boundary via the whole-body pass (#1125)', async () => {
+    // A 103-char JWT with no separators; at chunk size 50 the splitter tears
+    // it so no single chunk matches the jwt pattern. Only the whole-body
+    // 'file' pass can flag it — if cli-inspect dropped that pass this would
+    // report "clean", diverging from what ingest actually quarantines.
+    const jwt =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.vJ8eQhVZl2w5uXqO78Fpm_4ZcYc8-Ma5zJ5PpQ'; // pragma: allowlist secret gitleaks:allow
+    await fsp.writeFile(notePath, jwt, 'utf-8');
+
+    const result = runInspect(['alpha/docs/note.md', '--json'], {
+      KB_INGEST_SECRET_SCAN: 'on',
+      KB_CHUNK_SIZE: '50',
+      KB_CHUNK_OVERLAP: '0',
+    });
+
+    expect(result.code).toBe(0);
+    const body = JSON.parse(result.stdout) as Record<string, any>;
+    expect(body.secret_scan).toMatchObject({
+      enabled: true,
+      verdict: 'secret_detected',
+      error_code: 'KB_INGEST_SECRET_DETECTED',
+    });
+    expect(body.secret_scan.categories).toContain('jwt');
+    expect(body.secret_scan.locations).toContain('file');
   });
 
   it('reads quarantine state without mutating it', async () => {

@@ -97,6 +97,26 @@ describe('ingest secret scanner', () => {
     }
   });
 
+  it('reports a whole-body file finding without inventing a chunk index (#1125)', () => {
+    try {
+      assertNoIngestSecrets(
+        [{ content: 'AKIAIOSFODNN7EXAMPLE', location: 'file' }], // pragma: allowlist secret
+        {
+          relativePath: 'alpha/secret.md',
+          knowledgeBaseName: 'alpha',
+          scanOptions: { enabled: true, bypassKnowledgeBases: [] },
+        },
+      );
+      throw new Error('expected scanner to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(IngestSecretDetectedError);
+      const secretError = error as IngestSecretDetectedError;
+      expect(secretError.categories).toEqual(['aws_access_key']);
+      expect(secretError.chunkIndexes).toEqual([]);
+      expect(secretError.locations).toEqual(['file']);
+    }
+  });
+
   it.each(SECRET_SCANNER_POSITIVE_CORPUS.map((entry) => [entry.name, entry] as const))(
     'flags positive corpus entry: %s',
     (_name, entry) => {
