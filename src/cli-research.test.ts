@@ -109,6 +109,7 @@ function statsPayload(overrides: Partial<KbStatsPayload> = {}): KbStatsPayload {
       drop_rate_A2: 0,
       drop_rate_B: 0,
       judge_degrade_rate: 0,
+      judge_degraded_total: 0,
       judge_window: {
         size: 0,
         degraded: 0,

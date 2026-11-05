@@ -11,6 +11,7 @@ export interface RelevanceGateMetricsSnapshot {
   drop_rate_A2: number;
   drop_rate_B: number;
   judge_degrade_rate: number;
+  judge_degraded_total: number;
   judge_window: {
     size: number;
     degraded: number;
@@ -75,6 +76,7 @@ export class RelevanceGateMetrics {
       drop_rate_A2: rate(this.stageDrops.A2, this.inputCandidates),
       drop_rate_B: rate(this.stageDrops.B, this.inputCandidates),
       judge_degrade_rate: rate(this.judgeDegrades, this.judgeRuns),
+      judge_degraded_total: this.judgeDegrades,
       judge_window: {
         size: this.judgeWindow.length,
         degraded: windowDegraded,

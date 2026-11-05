@@ -405,6 +405,13 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     emittedWhen: 'Always emitted.',
   },
   {
+    name: 'kb_relevance_gate_judge_degraded_total',
+    type: 'counter',
+    help: 'Relevance-gate LLM judge degradations where the judge failed and the gate fell back to the statistical path.',
+    labels: [],
+    emittedWhen: 'Always emitted.',
+  },
+  {
     name: 'kb_remote_transport_requests_total',
     type: 'counter',
     help: 'Remote HTTP/SSE transport requests.',
@@ -640,6 +647,10 @@ export function formatKbStatsOpenMetrics(
     defineMetric('kb_relevance_gate_verdict_empty_index_total', [{
         name: 'kb_relevance_gate_verdict_empty_index_total',
         value: payload.relevance_gate.verdict_empty_index,
+      }]),
+    defineMetric('kb_relevance_gate_judge_degraded_total', [{
+        name: 'kb_relevance_gate_judge_degraded_total',
+        value: payload.relevance_gate.judge_degraded_total,
       }]),
     ...providerCircuitMetrics(payload.provider_circuits),
     ...remoteTransportMetrics(payload),

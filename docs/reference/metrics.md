@@ -63,6 +63,7 @@ Histogram rows list the base family name; scrapes emit `_bucket`, `_sum`, and `_
 | <code>kb_relevance_gate_verdict_injected_total</code> | <code>counter</code> | _none_ | Relevance gate injected-context verdict count. | Always emitted. |
 | <code>kb_relevance_gate_verdict_no_relevant_context_total</code> | <code>counter</code> | _none_ | Relevance gate no-relevant-context verdict count. | Always emitted. |
 | <code>kb_relevance_gate_verdict_empty_index_total</code> | <code>counter</code> | _none_ | Relevance gate empty-index verdict count. | Always emitted. |
+| <code>kb_relevance_gate_judge_degraded_total</code> | <code>counter</code> | _none_ | Relevance-gate LLM judge degradations where the judge failed and the gate fell back to the statistical path. | Always emitted. |
 | <code>kb_remote_transport_requests_total</code> | <code>counter</code> | _none_ | Remote HTTP/SSE transport requests. | Emitted when HTTP or SSE transport stats are available. |
 | <code>kb_remote_transport_sessions_opened_total</code> | <code>counter</code> | _none_ | Remote HTTP/SSE transport sessions opened. | Emitted when HTTP or SSE transport stats are available. |
 | <code>kb_remote_transport_sessions_closed_total</code> | <code>counter</code> | _none_ | Remote HTTP/SSE transport sessions closed. | Emitted when HTTP or SSE transport stats are available. |

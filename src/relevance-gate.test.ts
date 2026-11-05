@@ -1176,6 +1176,38 @@ describe('relevance gate', () => {
     }
   });
 
+  it('exposes a cumulative judge_degraded_total that increments only on judge degradation', () => {
+    const metrics = new RelevanceGateMetrics();
+    expect(metrics.snapshot().judge_degraded_total).toBe(0);
+
+    // Non-degrading judge outcomes must never move the counter.
+    metrics.record(metricVerdict({ judge: { status: 'succeeded' } }));
+    metrics.record(metricVerdict({ judge: { status: 'skipped' } }));
+    metrics.record(metricVerdict({ judge: { status: 'not-run' } }));
+    expect(metrics.snapshot().judge_degraded_total).toBe(0);
+
+    metrics.record(metricVerdict({ judge: { status: 'failed', reason: 'judge unavailable' } }));
+    metrics.record(metricVerdict({ judge: { status: 'failed', reason: 'judge unavailable' } }));
+    expect(metrics.snapshot().judge_degraded_total).toBe(2);
+  });
+
+  it('judge_degraded_total is cumulative, not a rolling-window count', () => {
+    const metrics = new RelevanceGateMetrics();
+    const degradations = 130; // well past the internal 50-entry judge window
+    for (let i = 0; i < degradations; i += 1) {
+      metrics.record(metricVerdict({ judge: { status: 'failed', reason: 'judge unavailable' } }));
+    }
+
+    const snapshot = metrics.snapshot();
+    // The rolling window saturates at its bounded size, but the cumulative
+    // counter must keep growing — that is what operators alert on.
+    expect(snapshot.judge_window.size).toBeLessThan(degradations);
+    expect(snapshot.judge_degraded_total).toBe(degradations);
+
+    metrics.reset();
+    expect(metrics.snapshot().judge_degraded_total).toBe(0);
+  });
+
   it('emits reproduction fields in the canonical decision event', async () => {
     const rows = [candidate('/kb/a.md', 0, 0.2, 'deployment rollback')];
     const gate = await applyRelevanceGate({
