@@ -1743,6 +1743,7 @@ kb serve — resident local daemon for warm CLI reads
 Usage:
   kb serve [--host=127.0.0.1] [--port=17799] [--socket=/path/to/kb.sock] [--idle-timeout-ms=300000] [--warm]
   kb serve status [--json]
+  kb serve stop [--json]
 
 Starts a local JSON HTTP daemon used by `kb search --daemon`.
 The daemon accepts read-only search/list/stats requests and exits after the
@@ -1750,9 +1751,17 @@ idle timeout.
 
 `kb serve status` reports whether a daemon is reachable at the configured
 URL along with its PID, idle timeout, supported commands, uptime, and the
-build (version + commit) it is serving. It never starts or stops a daemon.
-When `kb search --daemon` cannot reach a daemon it prints a one-line notice
-to stderr and runs the search directly.
+build (version + commit) it is serving. `kb serve status` itself never starts
+or stops a daemon; use `kb serve stop` to stop one. When `kb search --daemon`
+cannot reach a daemon it prints a one-line notice to stderr and runs the search
+directly.
+
+`kb serve stop` gracefully stops the daemon reachable at the configured URL:
+it reads the PID from `GET /health`, sends SIGTERM (triggering the daemon's
+graceful drain), and polls `/health` until the daemon stops answering. It
+signals only a daemon reachable over loopback or a Unix-domain socket, and only
+when the reported PID is a live local process; a non-loopback URL is refused
+(exit 2). If no daemon is running it reports that and exits 3.
 
 Options:
   --host=<host>             Loopback host to bind (default: 127.0.0.1).
@@ -1761,7 +1770,8 @@ Options:
   --idle-timeout-ms=<ms>    Stop after this much idle time (default: 300000).
   --warm                    Pre-warm the active model, FAISS index, and
                             lexical indexes before the daemon reports ready.
-  --json                    `kb serve status`: emit the daemon health JSON.
+  --json                    `kb serve status`: emit the daemon health JSON;
+                            `kb serve stop`: emit the stop-result JSON.
   --quiet, -q               Suppress the "listening on" line (and the `status`
                             "start one with" hint), leaving only errors.
   --verbose, -v             Reserved for extra diagnostics.
@@ -1784,10 +1794,14 @@ Environment:
                             as `kb serve --warm`.
 
 Exit codes:
-  0   daemon started, or `kb serve status` found a reachable daemon
-  1   runtime error
-  2   invalid arguments or environment
-  3   `kb serve status`: no daemon reachable at the configured URL
+  0   daemon started, `kb serve status` found a reachable daemon, or
+      `kb serve stop` stopped the running daemon
+  1   runtime error (includes `kb serve stop` failing to signal or confirm
+      shutdown of the daemon)
+  2   invalid arguments or environment (includes `kb serve stop` refusing a
+      non-local daemon URL)
+  3   `kb serve status`/`kb serve stop`: no daemon reachable at the
+      configured URL (for `stop`, nothing to stop)
 ```
 
 ## `kb stale-check`
