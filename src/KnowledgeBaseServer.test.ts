@@ -2169,6 +2169,30 @@ describe('KnowledgeBaseServer handlers', () => {
     ]);
   });
 
+  it('handleExportCitations emits a RIS record when format=ris (#1157)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await writeCiteNote(tempDir);
+    const server = await freshServer();
+
+    const result = await server['handleExportCitations']({
+      selector: 'research/papers/paper.md',
+      format: 'ris',
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toBe(
+      [
+        'TY  - JOUR',
+        'TI  - Example Paper',
+        'AU  - Ada Lovelace',
+        'PY  - 1843',
+        'DO  - 10.1000/example',
+        'N1  - KB note: research/papers/paper.md',
+        'ER  - ',
+      ].join('\n'),
+    );
+  });
+
   it('handleExportCitations returns a path-keyed citation when frontmatter is missing (not an error)', async () => {
     const tempDir = await setRetrieveEnv();
     await fsp.mkdir(path.join(tempDir, 'notes'), { recursive: true });

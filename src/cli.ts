@@ -92,7 +92,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'ls',           summary: 'List ingestable documents in one or all knowledge bases.',                help: LS_HELP,           handler: runLs },
   { name: 'search',       summary: 'Semantic search across one or all knowledge bases.',                     help: SEARCH_HELP,       handler: runSearch },
   { name: 'open',         summary: 'Resolve a chunk id / kb:// URI / result path to its source file.',        help: OPEN_HELP,         handler: runOpen },
-  { name: 'cite',         summary: 'Export BibTeX or CSL-JSON from note frontmatter.',                       help: CITE_HELP,         handler: runCite },
+  { name: 'cite',         summary: 'Export a bibliography entry (BibTeX, CSL-JSON, text, or RIS) from note frontmatter.', help: CITE_HELP,         handler: runCite },
   { name: 'related',      summary: 'Find chunks related to an existing chunk id or kb:// URI.',               help: RELATED_HELP,      handler: runRelated },
   { name: 'backup',       summary: 'Create a checksum-validated active index snapshot.',                      help: BACKUP_HELP,       handler: runBackup },
   { name: 'restore',      summary: 'Validate and restore an index snapshot with an atomic swap.',             help: RESTORE_HELP,      handler: runRestore },

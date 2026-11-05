@@ -201,7 +201,8 @@
         "enum": [
           "bibtex",
           "csl-json",
-          "text"
+          "text",
+          "ris"
         ]
       }
     },

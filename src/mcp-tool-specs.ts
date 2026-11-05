@@ -241,9 +241,9 @@ export const EXPORT_CITATIONS_INPUT = {
     .min(1, 'selector must not be empty')
     .describe('The note to cite: a chunk id (e.g. "alpha/papers/x.md#L42-L78") or kb:// URI from a prior retrieve_knowledge/find_related result, or a KB-relative path such as "research/papers/example.md". A line/chunk fragment is accepted but only identifies the containing note.'),
   format: z
-    .enum(['bibtex', 'csl-json', 'text'])
+    .enum(['bibtex', 'csl-json', 'text', 'ris'])
     .optional()
-    .describe('Output format for the citation. "bibtex" (default) emits a BibTeX entry, "csl-json" a CSL-JSON array, "text" a one-line plain-text reference.'),
+    .describe('Output format for the citation. "bibtex" (default) emits a BibTeX entry, "csl-json" a CSL-JSON array, "text" a one-line plain-text reference, "ris" a RIS record for EndNote/Zotero/Mendeley/RefWorks import.'),
 };
 
 export const ADD_DOCUMENT_INPUT = {

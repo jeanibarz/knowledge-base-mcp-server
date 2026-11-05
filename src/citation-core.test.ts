@@ -73,6 +73,79 @@ describe('citation-core formatting', () => {
     ]);
   });
 
+  it('emits a RIS record with JOUR type for a typical scholarly note', () => {
+    const entry = citationEntryFromFrontmatter({
+      authors: ['Ada Lovelace', 'Grace Hopper'],
+      published: '1843-09',
+      title: 'Notes on Analytical Engines',
+      doi: 'https://doi.org/10.1000/example',
+      url: 'https://example.test/notes',
+    }, 'history/notes/analytical-engine.md');
+
+    const ris = formatCitation(entry, 'ris');
+    expect(ris).toBe(
+      [
+        'TY  - JOUR',
+        'TI  - Notes on Analytical Engines',
+        'AU  - Ada Lovelace',
+        'AU  - Grace Hopper',
+        'PY  - 1843',
+        'DO  - 10.1000/example',
+        'UR  - https://example.test/notes',
+        'N1  - KB note: history/notes/analytical-engine.md',
+        'ER  - ',
+      ].join('\n'),
+    );
+    // Acceptance criteria: a valid RIS record begins `TY  - ` and ends `ER  - `.
+    expect(ris.startsWith('TY  - ')).toBe(true);
+    expect(ris.endsWith('ER  - ')).toBe(true);
+  });
+
+  it('falls back to TY=GEN for a note without a DOI-derived type', () => {
+    const entry = citationEntryFromFrontmatter({}, 'notes/plain-note.md');
+
+    expect(formatCitation(entry, 'ris')).toBe(
+      ['TY  - GEN', 'N1  - KB note: notes/plain-note.md', 'ER  - '].join('\n'),
+    );
+  });
+
+  it('collapses multi-line/multi-space RIS values and emits arXiv id + derived URL', () => {
+    const entry = citationEntryFromFrontmatter({
+      arxiv_id: '2604.21215',
+      authors: ['Ada   Lovelace', 'Grace\tHopper'],
+      published: '2026-04-23',
+      title: 'The  Recurrent\nTransformer',
+    }, 'arxiv-llm-inference/papers/recurrent-transformer.md');
+
+    // No DOI → TY=GEN; whitespace in title/authors is collapsed so a multi-line
+    // value cannot break the one-line tag grammar; the arXiv id rides in an N1
+    // note while its abstract URL (derived upstream) is the UR line.
+    expect(formatCitation(entry, 'ris')).toBe(
+      [
+        'TY  - GEN',
+        'TI  - The Recurrent Transformer',
+        'AU  - Ada Lovelace',
+        'AU  - Grace Hopper',
+        'PY  - 2026',
+        'UR  - https://arxiv.org/abs/2604.21215',
+        'N1  - KB note: arxiv-llm-inference/papers/recurrent-transformer.md',
+        'N1  - arXiv: 2604.21215',
+        'ER  - ',
+      ].join('\n'),
+    );
+  });
+
+  it('treats a malformed empty DOI as absent in RIS (no bare DO tag, TY=GEN)', () => {
+    // normalizeDoi reduces "doi:" to "", which must not surface as a valueless
+    // `DO  - ` line nor promote the reference type to JOUR.
+    const entry = citationEntryFromFrontmatter({ doi: 'doi:' }, 'notes/plain-note.md');
+
+    expect(entry.doi).toBe('');
+    expect(formatCitation(entry, 'ris')).toBe(
+      ['TY  - GEN', 'N1  - KB note: notes/plain-note.md', 'ER  - '].join('\n'),
+    );
+  });
+
   it('degrades gracefully when citation frontmatter is missing', () => {
     const entry = citationEntryFromFrontmatter({}, 'notes/plain-note.md');
 
