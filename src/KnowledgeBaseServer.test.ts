@@ -2009,6 +2009,98 @@ describe('KnowledgeBaseServer handlers', () => {
     }
   });
 
+  // --- handleRecommendKnowledgeBase (#1152) ---------------------------------
+
+  it('handleRecommendKnowledgeBase routes a topic to the best KB + file and returns a kb.recommend.v1 payload', async () => {
+    await setRetrieveEnv();
+    // Cross-KB hits: beta has the single closest chunk, so it is the
+    // recommended shelf and its lowest-score file is the existing target.
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'a', metadata: { knowledgeBase: 'alpha', relativePath: 'alpha/notes/x.md' }, score: 0.85 },
+      { pageContent: 'b', metadata: { knowledgeBase: 'beta', relativePath: 'beta/notes/y.md' }, score: 0.40 },
+      { pageContent: 'c', metadata: { knowledgeBase: 'beta', relativePath: 'beta/notes/z.md' }, score: 0.55 },
+    ]);
+
+    const server = await freshServer();
+    const result = await server['handleRecommendKnowledgeBase']({ topic: 'quarterly retro template', k: 5 });
+
+    expect(result.isError).toBeUndefined();
+    // The cross-KB search runs on the topic text with no KB filter and the
+    // search-level threshold is infinite (the confidence cutoff is applied
+    // afterwards by decideWhere) — identical to `kb where`.
+    expect(similaritySearchMock).toHaveBeenCalledWith(
+      'quarterly retro template',
+      5,
+      Number.POSITIVE_INFINITY,
+    );
+    const payload = JSON.parse(result.content[0].text) as {
+      schema_version: string;
+      recommended_kb: string | null;
+      existing_target: string | null;
+      confidence: number | null;
+      confident: boolean;
+    };
+    expect(payload).toEqual({
+      schema_version: 'kb.recommend.v1',
+      recommended_kb: 'beta',
+      existing_target: 'beta/notes/y.md',
+      confidence: 0.4,
+      confident: true,
+    });
+    // The CLI-only copy-paste is never on the MCP wire.
+    expect(result.content[0].text).not.toContain('suggested_invocation');
+    expect(result.content[0].text).not.toContain('kb remember');
+  });
+
+  it('handleRecommendKnowledgeBase withholds the existing_target (confident=false) when the closest file is above the threshold', async () => {
+    await setRetrieveEnv();
+    similaritySearchMock.mockResolvedValue([
+      { pageContent: 'a', metadata: { knowledgeBase: 'alpha', relativePath: 'alpha/notes/loose.md' }, score: 1.4 },
+    ]);
+
+    const server = await freshServer();
+    // threshold 1.0 (the default): 1.4 is above it → no high-confidence file.
+    const result = await server['handleRecommendKnowledgeBase']({ topic: 'something unrelated', threshold: 1.0 });
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text) as {
+      recommended_kb: string | null;
+      existing_target: string | null;
+      confident: boolean;
+    };
+    expect(payload.recommended_kb).toBe('alpha');
+    expect(payload.existing_target).toBeNull();
+    expect(payload.confident).toBe(false);
+  });
+
+  it('handleRecommendKnowledgeBase returns an all-null recommendation when nothing is similar', async () => {
+    await setRetrieveEnv();
+    similaritySearchMock.mockResolvedValue([]);
+
+    const server = await freshServer();
+    const result = await server['handleRecommendKnowledgeBase']({ topic: 'empty corpus' });
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    expect(payload).toEqual({
+      schema_version: 'kb.recommend.v1',
+      recommended_kb: null,
+      existing_target: null,
+      confidence: null,
+      confident: false,
+    });
+  });
+
+  it('handleRecommendKnowledgeBase with model_name=<unregistered> returns isError: true with a resolution hint', async () => {
+    await setRetrieveEnv();
+    const server = await freshServer();
+    const result = await server['handleRecommendKnowledgeBase']({ topic: 't', model_name: 'ollama__not-here' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not registered');
+    // The bad model short-circuits before any search runs.
+    expect(similaritySearchMock).not.toHaveBeenCalled();
+  });
+
   // --- handleRetrieveKnowledge ----------------------------------------------
 
   it('handleRetrieveKnowledge formats multi-result responses with Result N, score, and source blocks', async () => {

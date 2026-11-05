@@ -248,6 +248,31 @@
     "type": "object",
     "properties": {}
   },
+  "recommend_knowledge_base": {
+    "type": "object",
+    "properties": {
+      "topic": {
+        "type": "string",
+        "minLength": 1
+      },
+      "k": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      },
+      "threshold": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "model_name": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "topic"
+    ],
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
   "reindex_knowledge_base": {
     "type": "object",
     "properties": {

@@ -25,6 +25,27 @@ import {
 } from './model-resolution.js';
 import { loadManagerForModel, loadWithJsonRetry as loadManagerWithJsonRetry } from './cli-shared.js';
 import type { ScoredDocument } from './formatter.js';
+// The command-independent decision + JSON-serialization core lives in
+// `recommend-kb-core.ts` so the read-only `recommend_knowledge_base` MCP tool
+// (#1152) can reuse it without importing this `cli-*` adapter (the non-CLI
+// import boundary, #405). This module keeps only the argv/stdout/exit-code
+// concerns; the core symbols are re-exported below so existing importers keep
+// working.
+import {
+  DEFAULT_CONFIDENCE_THRESHOLD,
+  DEFAULT_K,
+  decideWhere,
+  toWhereJsonShape,
+  type WhereDecision,
+} from './recommend-kb-core.js';
+
+export {
+  DEFAULT_CONFIDENCE_THRESHOLD,
+  DEFAULT_K,
+  decideWhere,
+  toWhereJsonShape,
+} from './recommend-kb-core.js';
+export type { WhereDecision } from './recommend-kb-core.js';
 
 export const WHERE_HELP = `kb where — recommend the best KB and file for a topic (read-only)
 
@@ -65,13 +86,6 @@ export interface WhereArgs {
   format: 'md' | 'json';
 }
 
-export interface WhereDecision {
-  recommendedKb: string;
-  existingTarget: string | null;
-  confidence: number;
-  suggestedInvocation: string;
-}
-
 type WhereSearchManager = Pick<FaissIndexManager, 'similaritySearch'>;
 
 export interface RunWhereDeps {
@@ -91,9 +105,6 @@ const DEFAULT_WHERE_DEPS: RunWhereDeps = {
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
 };
-
-const DEFAULT_CONFIDENCE_THRESHOLD = 1.0;
-const DEFAULT_K = 20;
 
 export async function runWhere(rest: string[], deps: RunWhereDeps = DEFAULT_WHERE_DEPS): Promise<number> {
   let parsed: WhereArgs;
@@ -219,82 +230,6 @@ export function parseWhereArgs(rest: string[]): WhereArgs {
   return out;
 }
 
-/**
- * Reduces a flat list of cross-KB search results to a single recommendation.
- *
- * Returns `null` when `results` is empty or no result has a usable
- * `metadata.knowledgeBase` field (defensive — should not happen in practice
- * since FaissIndexManager always stamps it).
- *
- * Lower score = closer match (FAISS L2 distance). The "best" hit is the one
- * with the lowest score; the "best file" within that KB is the lowest-scoring
- * result whose `relativePath` is set.
- */
-export function decideWhere(
-  results: readonly ScoredDocument[],
-  confidenceThreshold: number = DEFAULT_CONFIDENCE_THRESHOLD,
-): WhereDecision | null {
-  if (results.length === 0) return null;
-
-  let bestKb: string | null = null;
-  let bestKbScore = Number.POSITIVE_INFINITY;
-  for (const r of results) {
-    const kb = readKb(r);
-    if (kb === null) continue;
-    const score = r.score ?? Number.POSITIVE_INFINITY;
-    if (score < bestKbScore) {
-      bestKbScore = score;
-      bestKb = kb;
-    }
-  }
-  if (bestKb === null) return null;
-
-  let bestFile: string | null = null;
-  let bestFileScore = Number.POSITIVE_INFINITY;
-  for (const r of results) {
-    if (readKb(r) !== bestKb) continue;
-    const rel = readRelativePath(r);
-    if (rel === null) continue;
-    const score = r.score ?? Number.POSITIVE_INFINITY;
-    if (score < bestFileScore) {
-      bestFileScore = score;
-      bestFile = rel;
-    }
-  }
-
-  const confident = bestFile !== null && bestFileScore < confidenceThreshold;
-  return {
-    recommendedKb: bestKb,
-    existingTarget: confident ? bestFile : null,
-    confidence: confident ? bestFileScore : bestKbScore,
-    suggestedInvocation: confident
-      ? buildAppendInvocation(bestKb, bestFile as string)
-      : buildCreateInvocation(bestKb),
-  };
-}
-
-function readKb(r: ScoredDocument): string | null {
-  const v = (r.metadata as Record<string, unknown> | undefined)?.knowledgeBase;
-  return typeof v === 'string' && v.length > 0 ? v : null;
-}
-
-function readRelativePath(r: ScoredDocument): string | null {
-  const v = (r.metadata as Record<string, unknown> | undefined)?.relativePath;
-  return typeof v === 'string' && v.length > 0 ? v : null;
-}
-
-function buildAppendInvocation(kb: string, relPath: string): string {
-  return (
-    `kb remember --kb=${kb} \\\n` +
-    `             --append=${relPath} \\\n` +
-    `             --stdin --yes`
-  );
-}
-
-function buildCreateInvocation(kb: string): string {
-  return `kb remember --kb=${kb} --title=<title> --stdin --yes`;
-}
-
 export function formatWhereMarkdown(d: WhereDecision): string {
   const target = d.existingTarget ?? '_(none — suggest creating a new note)_';
   const conf = d.confidence.toFixed(2);
@@ -305,13 +240,4 @@ export function formatWhereMarkdown(d: WhereDecision): string {
     `Confidence:            ${conf} (${confLabel}; lower distance = closer match)\n` +
     `Suggested invocation:  ${d.suggestedInvocation}`
   );
-}
-
-export function toWhereJsonShape(d: WhereDecision): Record<string, unknown> {
-  return {
-    recommended_kb: d.recommendedKb,
-    existing_target: d.existingTarget,
-    confidence: d.confidence,
-    suggested_invocation: d.suggestedInvocation,
-  };
 }

@@ -260,6 +260,7 @@ Your client sees these tools (registered in `src/KnowledgeBaseServer.ts`):
 | `diff_index` | Compare retrieval results across two persisted index versions, to see what a rebuild actually changed. |
 | `find_related` | Read-only "more-like-this" expansion — given a chunk id or `kb://` URI from an earlier result, return the chunks most similar to that one, without re-running a text query. The MCP equivalent of the `kb related` CLI command. |
 | `list_facets` | Read-only frontmatter-facet enumeration — list the distinct `tags`/`status`/`type` values (with per-note counts) that actually exist, so a client can discover the valid vocabulary for the `tags` filter instead of guessing. The MCP equivalent of the `kb tags` CLI command. |
+| `recommend_knowledge_base` | Read-only shelf routing — given a topic, recommend which knowledge base (and which existing file inside it) best fits, so an agent can scope a search or pick an `add_document` destination instead of guessing a shelf or scanning them all. Returns the recommended KB, best file, match distance, and a confidence flag. The MCP equivalent of the `kb where` CLI command. |
 | `add_document` | Write a text document into a KB through the guarded mutation path. |
 | `delete_document` | Delete a KB-relative document through the guarded mutation path. |
 | `reindex_knowledge_base` | Force a global rebuild, optionally validating a named KB first. |
