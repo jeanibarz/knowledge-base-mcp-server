@@ -40,7 +40,7 @@ import {
   type RetrievalSnippetOptions,
   type ScoredDocument,
 } from './formatter.js';
-import { runPicker } from './cli-search-picker.js';
+import { helpBodyLines, runPicker } from './cli-search-picker.js';
 import { parseColorMode, resolveColorEnabled, type ColorMode } from './color.js';
 import { listKnowledgeBases, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { withWriteLock } from './write-lock.js';
@@ -167,6 +167,12 @@ import {
   parseRecencyFilterRange,
   type SimilaritySearchFilters,
 } from './search-filters.js';
+
+// Keep the interactive-picker key list in the help text — and therefore in the
+// generated CLI reference (docs/reference/cli.md) — sourced from the picker's
+// own helpBodyLines() so the two can never drift. helpBodyLines()[0] is the
+// 'Keys:' label, which the help section heading below replaces.
+const SEARCH_PICKER_KEYS_HELP = helpBodyLines().slice(1).join('\n');
 
 export const SEARCH_HELP = `kb search — semantic search across knowledge bases
 
@@ -335,8 +341,12 @@ Verbosity:
 Input:
   --stdin               Read query from stdin (multi-line safe).
   -i, --interactive     Open an interactive results picker (TTY only; ignored
-                        when a structured or compact format is set).
+                        when a structured or compact format is set). See the
+                        key list below; press ? inside the picker for the same.
   --help, -h            Show this help.
+
+Interactive picker keys (-i, markdown output on a TTY):
+${SEARCH_PICKER_KEYS_HELP}
 
 Examples:
   kb search "rollback procedure"

@@ -433,7 +433,7 @@ function renderFooterHint(state: PickerState, _opts: PickerRenderOptions): strin
   return '[j/k] move  [PgUp/PgDn] page  [/] filter  [Space] mark  [Enter] print  [Tab] toggle view  [?] help  [q] quit';
 }
 
-function helpBodyLines(): string[] {
+export function helpBodyLines(): string[] {
   return [
     'Keys:',
     '  j / Down     next result',

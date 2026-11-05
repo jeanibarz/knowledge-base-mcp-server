@@ -434,6 +434,30 @@ kb related alpha/docs/deploy.md#L42-L78  # find dense neighbors of an existing r
 
 `kb open` validates the path against the KB root and prints it; add `--json` for the cited line range and an `editorUri`. `kb related` fetches the indexed seed chunk behind the handle, searches with its text, and excludes the seed itself unless you pass `--include-self`.
 
+**Browsing results interactively.** `--interactive` (`-i`) opens a full-screen results picker instead of printing the hits. It works only with markdown output on a terminal: `-i` is silently ignored when `--format` is `json`, `vimgrep`, or `compact`, and with markdown output stdout must be a TTY — redirecting or piping fails with `kb search: --interactive requires a TTY`. It also can't be combined with `--batch-jsonl` or the advanced operators (`--diverse`, `--anti-query`, `--plus`, `--minus`).
+
+Inside the picker you scroll the hits, filter within them, and toggle between a flat list of chunks (each chunk is one indexed passage of a file) and a view that groups those chunks under their source file. In the flat view, `Space` marks chunks; `Enter` then prints the marked chunks — or, if none are marked, the focused chunk (flat view) or whole source (grouped view) — to the terminal and exits. These are the keys, the same list the picker shows when you press `?`:
+
+```
+Keys:
+  j / Down     next result
+  k / Up       previous result
+  PgDn / PgUp  page down / up
+  Ctrl-D/Ctrl-U  half page down / up
+  g            jump to top
+  G            jump to bottom
+  /            filter results (type to narrow, Esc clears, Enter selects)
+  Space        mark / unmark focused chunk in flat view
+  Tab          toggle flat / grouped-by-source view
+  Enter        print marked chunks, or focused row/source if none are marked
+  ?            toggle this help
+  q / Esc      quit (no output)
+```
+
+```bash
+kb search "rollback procedure" -i        # browse hits, then Enter to print a selection
+```
+
 ### Ask: answers from a local LLM
 
 `kb ask` keeps retrieval deterministic and adds a chat step on top: retrieve, then have an OpenAI-compatible LLM write an answer with citations. It accepts the same `--mode` values as `kb search`, plus `--rerank`.

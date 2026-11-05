@@ -1699,8 +1699,23 @@ Verbosity:
 Input:
   --stdin               Read query from stdin (multi-line safe).
   -i, --interactive     Open an interactive results picker (TTY only; ignored
-                        when a structured or compact format is set).
+                        when a structured or compact format is set). See the
+                        key list below; press ? inside the picker for the same.
   --help, -h            Show this help.
+
+Interactive picker keys (-i, markdown output on a TTY):
+  j / Down     next result
+  k / Up       previous result
+  PgDn / PgUp  page down / up
+  Ctrl-D/Ctrl-U  half page down / up
+  g            jump to top
+  G            jump to bottom
+  /            filter results (type to narrow, Esc clears, Enter selects)
+  Space        mark / unmark focused chunk in flat view
+  Tab          toggle flat / grouped-by-source view
+  Enter        print marked chunks, or focused row/source if none are marked
+  ?            toggle this help
+  q / Esc      quit (no output)
 
 Examples:
   kb search "rollback procedure"
