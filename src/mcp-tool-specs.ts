@@ -19,6 +19,7 @@ import {
   ASK_KNOWLEDGE_DESCRIPTION,
   DELETE_DOCUMENT_DESCRIPTION,
   DIFF_INDEX_DESCRIPTION,
+  FIND_RELATED_DESCRIPTION,
   KB_STATS_DESCRIPTION,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   LIST_MODELS_DESCRIPTION,
@@ -160,6 +161,36 @@ export const DIFF_INDEX_INPUT = {
   format: z.enum(['json', 'markdown']).optional().describe('Response format. Default markdown.'),
 };
 
+// Issue #1133 — find_related mirrors the read-only `kb related` CLI: seed-chunk
+// "more-like-this" expansion from an existing result's id/URI. The seed is a
+// chunk id or kb:// URI (not a text query); k/threshold/knowledge_base_name
+// mirror retrieve_knowledge's bounds. all_kbs broadens past the seed KB and is
+// mutually exclusive with knowledge_base_name (VALIDATION); include_self keeps
+// the seed in the results.
+export const FIND_RELATED_INPUT = {
+  chunk_id: z
+    .string()
+    .min(1, 'chunk_id must not be empty')
+    .describe('The seed chunk to expand from: a public chunk id (e.g. "alpha/docs/deploy.md#L42-L78") or a kb:// resource URI from a prior retrieve_knowledge result. A bare <kb>/<path> location is rejected because it cannot name a single chunk.'),
+  knowledge_base_name: z
+    .string()
+    .optional()
+    .describe('Scope the related search to this knowledge base. Defaults to the seed chunk\'s own knowledge base. Mutually exclusive with all_kbs — passing both is a VALIDATION error.'),
+  all_kbs: z
+    .boolean()
+    .optional()
+    .describe('Search across all knowledge bases instead of the default seed-KB scope. Mutually exclusive with knowledge_base_name.'),
+  k: z.int().min(1).max(50).optional().describe('Related results to return. Default 10.'),
+  threshold: z
+    .number()
+    .optional()
+    .describe('Maximum dense similarity score; lower = closer match. Default 2.'),
+  include_self: z
+    .boolean()
+    .optional()
+    .describe('Keep the seed chunk in the result set. Omitted/false excludes it (the default).'),
+};
+
 export const ADD_DOCUMENT_INPUT = {
   knowledge_base_name: z.string().describe('The name of the knowledge base to write into.'),
   path: z.string().describe('KB-relative document path to create or overwrite. Parent directories are created as needed.'),
@@ -214,6 +245,8 @@ export const MCP_TOOL_SPECS: McpToolSpec[] = [
   { name: 'list_models', description: LIST_MODELS_DESCRIPTION, annotations: READ_ONLY_ANNOTATIONS },
   { name: 'kb_stats', description: KB_STATS_DESCRIPTION, inputShape: KB_STATS_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   { name: 'diff_index', description: DIFF_INDEX_DESCRIPTION, inputShape: DIFF_INDEX_INPUT, annotations: READ_ONLY_ANNOTATIONS },
+  // Issue #1133 — read-only seed-chunk "more-like-this" expansion mirroring `kb related`.
+  { name: 'find_related', description: FIND_RELATED_DESCRIPTION, inputShape: FIND_RELATED_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   // add_document writes a document: not read-only, and additive rather than
   // destructive (it creates/overwrites a single path). Re-writing the same
   // path+content leaves the KB in the same state, so it is idempotent.

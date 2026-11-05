@@ -4,6 +4,13 @@ import {
   runRelated,
   type RunRelatedDeps,
 } from './cli-related.js';
+import {
+  buildRelatedJsonPayload,
+  findRelatedCore,
+  parseRelatedTarget,
+  type RelatedCoreManager,
+} from './related-core.js';
+import { parseChunkReference } from './chunk-id.js';
 import type { SearchResultDocument } from './FaissIndexManager.js';
 
 function doc(content: string, metadata: Record<string, unknown>, score?: number): SearchResultDocument {
@@ -51,6 +58,159 @@ describe('parseRelatedArgs', () => {
     expect(() => parseRelatedArgs([])).toThrow(/missing <chunk-id/);
     expect(() => parseRelatedArgs(['alpha/docs/a.md#L1-L2', '--all-kbs', '--kb=alpha']))
       .toThrow(/--all-kbs cannot be combined/);
+  });
+});
+
+describe('parseRelatedTarget', () => {
+  it('accepts a chunk id and a kb:// URI, rejects a bare <kb>/<path> location', () => {
+    expect(parseRelatedTarget('alpha/docs/deploy.md#L1-L4')).toMatchObject({
+      value: { kind: 'chunk-id', knowledgeBase: 'alpha', kbRelativePath: 'docs/deploy.md' },
+    });
+    expect(parseRelatedTarget('kb://alpha/docs/deploy.md')).toMatchObject({
+      value: { kind: 'kb-uri', knowledgeBase: 'alpha' },
+    });
+    expect(parseRelatedTarget('alpha/docs/deploy.md')).toEqual({
+      error: 'expected a chunk id or kb:// URI, got a KB-relative path',
+    });
+  });
+});
+
+describe('findRelatedCore', () => {
+  const seed = doc('seed body', {
+    knowledgeBase: 'alpha',
+    relativePath: 'alpha/docs/deploy.md',
+    loc: { lines: { from: 1, to: 4 } },
+    chunkIndex: 0,
+  });
+  const related = doc('adjacent note', {
+    knowledgeBase: 'alpha',
+    relativePath: 'alpha/docs/other.md',
+    loc: { lines: { from: 9, to: 12 } },
+    chunkIndex: 0,
+  }, 0.42);
+  const reference = parseChunkReference('alpha/docs/deploy.md#L1-L4');
+
+  it('over-fetches k+1, scopes to the seed KB, and drops the seed by default', async () => {
+    const manager: RelatedCoreManager = {
+      findChunkByReference: jest.fn(() => seed),
+      similaritySearch: jest.fn(async () => [{ ...seed, score: 0.01 }, related]) as never,
+    };
+
+    const outcome = await findRelatedCore(manager, reference, {
+      k: 1,
+      threshold: 2,
+      includeSelf: false,
+      noCache: false,
+      allKbs: false,
+    });
+
+    expect(manager.similaritySearch).toHaveBeenCalledWith(
+      'seed body', 2, 2, 'alpha', undefined, expect.any(Object), { noCache: false },
+    );
+    expect('seedNotFound' in outcome).toBe(false);
+    if ('seedNotFound' in outcome) throw new Error('unreachable');
+    expect(outcome.scopedKb).toBe('alpha');
+    expect(outcome.results).toEqual([related]);
+  });
+
+  it('keeps the seed and searches all KBs when includeSelf + allKbs are set', async () => {
+    const manager: RelatedCoreManager = {
+      findChunkByReference: jest.fn(() => seed),
+      similaritySearch: jest.fn(async () => [{ ...seed, score: 0.0 }]) as never,
+    };
+
+    const outcome = await findRelatedCore(manager, reference, {
+      k: 5,
+      threshold: 2,
+      includeSelf: true,
+      noCache: false,
+      allKbs: true,
+    });
+
+    // includeSelf → fetchK equals k (no +1); allKbs → undefined scope.
+    expect(manager.similaritySearch).toHaveBeenCalledWith(
+      'seed body', 5, 2, undefined, undefined, expect.any(Object), { noCache: false },
+    );
+    if ('seedNotFound' in outcome) throw new Error('unreachable');
+    expect(outcome.scopedKb).toBeUndefined();
+    expect(outcome.results).toHaveLength(1);
+  });
+
+  it('reports seedNotFound without searching when the reference resolves to no chunk', async () => {
+    const similaritySearch = jest.fn();
+    const manager: RelatedCoreManager = {
+      findChunkByReference: jest.fn(() => null),
+      similaritySearch: similaritySearch as never,
+    };
+
+    const outcome = await findRelatedCore(manager, reference, {
+      k: 10,
+      threshold: 2,
+      includeSelf: false,
+      noCache: false,
+      allKbs: false,
+    });
+
+    expect(outcome).toEqual({ seedNotFound: true });
+    expect(similaritySearch).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildRelatedJsonPayload', () => {
+  it('builds a kb.related.v1 payload with the seed (score stripped) and formatted results', () => {
+    const seed = doc('seed body', {
+      knowledgeBase: 'alpha',
+      relativePath: 'alpha/docs/deploy.md',
+      loc: { lines: { from: 1, to: 4 } },
+      chunkIndex: 0,
+      frontmatter: { status: 'active', extras: { private_note: 'do not emit' } },
+    });
+    const related = doc('adjacent note', {
+      knowledgeBase: 'alpha',
+      relativePath: 'alpha/docs/other.md',
+      loc: { lines: { from: 9, to: 12 } },
+      chunkIndex: 0,
+    }, 0.42);
+
+    const payload = buildRelatedJsonPayload({
+      target: 'alpha/docs/deploy.md#L1-L4',
+      seed,
+      scopedKb: 'alpha',
+      includeSelf: false,
+      results: [related],
+    });
+
+    expect(payload.schema_version).toBe('kb.related.v1');
+    expect(payload.seed).toMatchObject({
+      target: 'alpha/docs/deploy.md#L1-L4',
+      chunk_id: 'alpha/docs/deploy.md#L1-L4',
+    });
+    // The seed is emitted without a score field, and frontmatter extras stay hidden.
+    expect(payload.seed).not.toHaveProperty('score');
+    expect((payload.seed.metadata as { frontmatter?: unknown }).frontmatter).toEqual({ status: 'active' });
+    expect(payload.scoped_kb).toBe('alpha');
+    expect(payload.include_self).toBe(false);
+    expect(payload.results).toEqual([
+      expect.objectContaining({ chunk_id: 'alpha/docs/other.md#L9-L12', content: 'adjacent note' }),
+    ]);
+  });
+
+  it('reports scoped_kb as null when the related search spanned all KBs', () => {
+    const seed = doc('seed body', {
+      knowledgeBase: 'alpha',
+      relativePath: 'alpha/docs/deploy.md',
+      loc: { lines: { from: 1, to: 4 } },
+      chunkIndex: 0,
+    });
+    const payload = buildRelatedJsonPayload({
+      target: 'alpha/docs/deploy.md#L1-L4',
+      seed,
+      scopedKb: undefined,
+      includeSelf: false,
+      results: [],
+    });
+    expect(payload.scoped_kb).toBeNull();
+    expect(payload.results).toEqual([]);
   });
 });
 

@@ -60,6 +60,12 @@ export const REINDEX_KNOWLEDGE_BASE_DESCRIPTION =
 export const DIFF_INDEX_DESCRIPTION =
   'Compares retrieval-result churn across two persisted FAISS index versions for a list of plaintext queries. Returns rank deltas, top-K membership changes, and stability/churn scores; useful before promoting a new index version.';
 
+// Issue #1133 — find_related: the MCP equivalent of `kb related`. Seed-chunk
+// "more-like-this" expansion from an existing result's id/URI (no text query).
+// Like diff_index, this reader carries no env-override knob.
+export const FIND_RELATED_DESCRIPTION =
+  'Finds chunks semantically similar to an existing result ("more-like-this"), seeded by a chunk id or kb:// URI from a prior retrieve_knowledge hit rather than a text query. Resolves the seed chunk from the active index and runs dense similarity search on its text, excluding the seed itself by default. Read-only. Returns a kb.related.v1 JSON payload (seed, scoped_kb, related results). Defaults: k=10, threshold=2, scoped to the seed chunk\'s knowledge base; pass all_kbs=true to search every KB or include_self=true to keep the seed in the results.';
+
 // ---------------------------------------------------------------------------
 // MCP prompts surface (#642).
 // The server's third MCP primitive (alongside tools + resources): a small,

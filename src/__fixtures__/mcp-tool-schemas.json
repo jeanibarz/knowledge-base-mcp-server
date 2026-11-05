@@ -189,6 +189,36 @@
     ],
     "$schema": "http://json-schema.org/draft-07/schema#"
   },
+  "find_related": {
+    "type": "object",
+    "properties": {
+      "chunk_id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "knowledge_base_name": {
+        "type": "string"
+      },
+      "all_kbs": {
+        "type": "boolean"
+      },
+      "k": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      },
+      "threshold": {
+        "type": "number"
+      },
+      "include_self": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "chunk_id"
+    ],
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
   "kb_stats": {
     "type": "object",
     "properties": {
