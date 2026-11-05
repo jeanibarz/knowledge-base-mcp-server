@@ -274,6 +274,90 @@ Add to the `mcpServers` object. Three provider variants are shown — use only o
 }
 ```
 
+## VS Code
+
+VS Code ships native MCP support that GitHub Copilot's agent mode uses. Prefer the **project-scoped** file so the config travels with the repository:
+
+- Project scope — `.vscode/mcp.json` at the workspace root (shown below).
+- User scope — your user `settings.json`, where the same server object nests under a top-level `"mcp"` key: `{ "mcp": { "servers": { … } } }`.
+
+VS Code's top-level key is `servers` (not `mcpServers`), and each stdio entry needs an explicit `"type": "stdio"` (Ollama provider shown):
+
+```jsonc
+// .vscode/mcp.json  (project-scope)
+{
+  "servers": {
+    "knowledge-base": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+      "env": {
+        "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
+        "EMBEDDING_PROVIDER": "ollama",
+        "OLLAMA_BASE_URL": "http://localhost:11434",
+        "OLLAMA_MODEL": "dengcao/Qwen3-Embedding-0.6B:Q8_0"
+      }
+    }
+  }
+}
+```
+
+Open the file in VS Code and click **Start** (shown above the server entry, or run **MCP: List Servers**), then confirm the tools as described under [Verifying the connection](#verifying-the-connection).
+
+Keep secrets out of a committed `.vscode/mcp.json`: the Ollama snippet above has no key, but if you switch to the OpenAI or HuggingFace provider, put the config in user-scope `settings.json` instead, or use a VS Code input variable (`"<OPENAI_API_KEY>"` → `"${input:openai-api-key}"`) so the token is prompted for rather than checked in.
+
+## Windsurf
+
+Config file (global — Windsurf has no project-level MCP config):
+
+- macOS / Linux — `~/.codeium/windsurf/mcp_config.json`
+- Windows — `%USERPROFILE%\.codeium\windsurf\mcp_config.json`
+
+Windsurf uses the same top-level `mcpServers` shape as Claude Desktop (OpenAI provider shown):
+
+```json
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "command": "npx",
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+      "env": {
+        "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
+        "EMBEDDING_PROVIDER": "openai",
+        "OPENAI_API_KEY": "<OPENAI_API_KEY>",
+        "OPENAI_MODEL_NAME": "text-embedding-ada-002"
+      }
+    }
+  }
+}
+```
+
+Make sure the JSON is valid, then open Windsurf's MCP settings (in the Cascade panel) and refresh the server list, or restart Windsurf. Then confirm the tools as described under [Verifying the connection](#verifying-the-connection).
+
+## JetBrains
+
+JetBrains IDEs (IntelliJ IDEA, PyCharm, WebStorm, …) expose MCP through AI Assistant. Open **Settings → Tools → AI Assistant → Model Context Protocol (MCP)**, click **+** to add a server, and choose **As JSON** to paste the block below. JetBrains uses the top-level `mcpServers` shape (HuggingFace provider shown):
+
+```json
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "command": "npx",
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+      "env": {
+        "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
+        "EMBEDDING_PROVIDER": "huggingface",
+        "HUGGINGFACE_API_KEY": "<HF_API_KEY>",
+        "HUGGINGFACE_MODEL_NAME": "sentence-transformers/all-MiniLM-L6-v2",
+        "HUGGINGFACE_PROVIDER": "hf-inference"
+      }
+    }
+  }
+}
+```
+
+Apply the settings, then confirm the tools as described under [Verifying the connection](#verifying-the-connection). (The **Import from Claude** button in the same dialog can pull in an existing Claude Desktop entry if you already have one.)
+
 ## Install from source
 
 Contributors who want to pin an unreleased commit can build locally and point a client at `build/index.js` instead of using the published package.
