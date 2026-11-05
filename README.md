@@ -268,6 +268,10 @@ Exact input schemas, types, and bounds are generated from the shipped tool regis
 
 Clients that want to enumerate and read source documents directly, rather than searching them, can use MCP resources. `resources/list` returns `kb://<knowledge-base>/<encoded-relative-path>` URIs for every ingestable, non-quarantined file under `KNOWLEDGE_BASES_ROOT_DIR`; `resources/read` returns the raw document as text, or as a base64 PDF blob when `.pdf` has been opted into ingest. See [`docs/mcp-resources.md`](docs/mcp-resources.md) for URI, MIME type, and percent-encoding details.
 
+### Prompts
+
+The server can also expose reusable MCP **prompt templates** — `summarize_kb`, `cite_sources`, `compare_notes`, and `research_brief` — that clients (such as Claude Desktop) surface as slash-commands in their "/" menu. Each template pre-wires a grounded, citation-disciplined `retrieve_knowledge` workflow so users get a well-formed prompt with one click. This surface is **opt-in** (`KB_MCP_PROMPTS=on`) and **read-only**: serving a prompt only substitutes your arguments into instruction text and returns it — the server runs no retrieval and calls no LLM while doing so. See [`docs/mcp-prompts.md`](docs/mcp-prompts.md) for the template registry, arguments, and examples.
+
 ### Logging
 
 The server advertises the standard MCP `logging` capability. HTTP and SSE clients can call `logging/setLevel` to pick a minimum notification level for their session; stdio accepts the request as a no-op. This is independent of `KB_LOG_FORMAT` and `LOG_FILE`. See [`docs/mcp-logging.md`](docs/mcp-logging.md).
