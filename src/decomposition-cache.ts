@@ -11,6 +11,13 @@ export const DEFAULT_DECOMPOSITION_CACHE_DISK_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_CACHED_SUBQUERIES = 64;
 const MAX_CACHED_SUBQUERY_LENGTH = 16_384;
 
+// How many writes may land between full-directory reconciliation scans. The
+// running `diskBytes` total is updated incrementally per write (bounded drift)
+// and corrected by a full rescan at most once per interval — the same
+// discipline the sibling query/rerank disk caches use (see src/query-cache.ts,
+// src/rerank-cache-disk.ts). Kept identical so drift stays bounded the same way.
+const DISK_SIZE_RECONCILE_INTERVAL = 64;
+
 export interface DecompositionCache {
   get(modelId: string, query: string): string[] | null;
   set(modelId: string, query: string, subqueries: readonly string[]): void;
@@ -40,6 +47,11 @@ interface DecompositionCacheRecord {
   normalized_query: string;
   subqueries: string[];
   subqueries_sha256: string;
+}
+
+interface DiskWriteResult {
+  previousSize: number;
+  size: number;
 }
 
 export function isDecompositionCacheEnabled(
@@ -94,6 +106,12 @@ export class DiskTieredDecompositionCache implements DecompositionCache {
   private misses = 0;
   private writes = 0;
   private corruptions = 0;
+  // Running on-disk byte total, incrementally maintained to avoid a full-tree
+  // scan on every write. `undefined` means "unknown" (not yet computed, or a
+  // write/corruption invalidated it) and forces a reconcile before the total is
+  // trusted again. Lazily initialized so a disabled cache never scans.
+  private diskBytes: number | undefined;
+  private writesSinceReconcile = 0;
 
   constructor(options: DiskTieredDecompositionCacheOptions = {}) {
     this.enabled = options.enabled ?? isDecompositionCacheEnabled();
@@ -128,10 +146,13 @@ export class DiskTieredDecompositionCache implements DecompositionCache {
     const key = decompositionCacheKey(modelId, query);
     this.l1Set(key, stable);
     try {
-      this.writeDisk(key, modelId, normalizeDecompositionQuery(query), stable);
+      const write = this.writeDisk(key, modelId, normalizeDecompositionQuery(query), stable);
       this.writes += 1;
+      this.applyDiskWrite(write);
       this.enforceDiskLimit();
     } catch (err) {
+      // The incremental total may no longer reflect disk — force a reconcile.
+      this.diskBytes = undefined;
       logger.warn(`query decomposition cache write skipped: ${(err as Error).message}`);
     }
   }
@@ -154,7 +175,8 @@ export class DiskTieredDecompositionCache implements DecompositionCache {
   }
 
   diskSizeBytes(): number {
-    return listEntryFiles(this.cacheRoot).reduce((sum, file) => sum + file.size, 0);
+    if (this.diskBytes === undefined) this.diskBytes = this.reconcileDiskSize();
+    return this.diskBytes ?? 0;
   }
 
   private l1Set(key: string, subqueries: readonly string[]): void {
@@ -195,8 +217,9 @@ export class DiskTieredDecompositionCache implements DecompositionCache {
     return record.subqueries.slice();
   }
 
-  private writeDisk(key: string, modelId: string, normalizedQuery: string, subqueries: string[]): void {
+  private writeDisk(key: string, modelId: string, normalizedQuery: string, subqueries: string[]): DiskWriteResult {
     const file = this.entryPath(key);
+    const previousSize = fileSizeIfPresent(file);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const record: DecompositionCacheRecord = {
       schema_version: DECOMPOSITION_CACHE_SCHEMA_VERSION,
@@ -205,25 +228,46 @@ export class DiskTieredDecompositionCache implements DecompositionCache {
       subqueries,
       subqueries_sha256: subqueriesChecksum(subqueries),
     };
+    const serialized = `${JSON.stringify(record)}\n`;
     const tmp = `${file}.${process.pid}.tmp`;
     try {
-      fs.writeFileSync(tmp, `${JSON.stringify(record)}\n`, 'utf-8');
+      fs.writeFileSync(tmp, serialized, 'utf-8');
       fs.renameSync(tmp, file);
     } catch (err) {
       try { fs.unlinkSync(tmp); } catch { /* best-effort temp cleanup */ }
       throw err;
     }
+    return { previousSize, size: Buffer.byteLength(serialized, 'utf-8') };
   }
 
   private recordCorrupt(file: string): void {
     this.corruptions += 1;
+    // The removed entry's bytes are no longer accounted for — force a reconcile
+    // before the running total is trusted again.
+    this.diskBytes = undefined;
     try { fs.unlinkSync(file); } catch { /* best-effort corrupt entry cleanup */ }
   }
 
+  private applyDiskWrite(write: DiskWriteResult): void {
+    if (this.diskBytes !== undefined) {
+      this.diskBytes += write.size - write.previousSize;
+    }
+    this.writesSinceReconcile += 1;
+  }
+
   private enforceDiskLimit(): void {
+    // A non-positive cap disables the disk tier (parity with the sibling
+    // query/rerank/answer caches); never scan or evict in that case.
+    if (this.diskMaxBytes <= 0) return;
+    // Only pay for a full-tree scan when the running total is unknown or the
+    // reconcile interval has elapsed; otherwise trust the incremental total.
+    if (this.diskBytes === undefined || this.writesSinceReconcile >= DISK_SIZE_RECONCILE_INTERVAL) {
+      this.diskBytes = this.reconcileDiskSize();
+    }
+    if (this.diskBytes === undefined || this.diskBytes <= this.diskMaxBytes) return;
+
     const files = listEntryFiles(this.cacheRoot);
     let total = files.reduce((sum, file) => sum + file.size, 0);
-    if (total <= this.diskMaxBytes) return;
     files.sort((left, right) => left.mtimeMs - right.mtimeMs);
     for (const file of files) {
       if (total <= this.diskMaxBytes) break;
@@ -231,6 +275,19 @@ export class DiskTieredDecompositionCache implements DecompositionCache {
         fs.unlinkSync(file.path);
         total -= file.size;
       } catch { /* another process may already have removed it */ }
+    }
+    this.diskBytes = total;
+    this.writesSinceReconcile = 0;
+  }
+
+  private reconcileDiskSize(): number | undefined {
+    try {
+      const total = listEntryFiles(this.cacheRoot).reduce((sum, file) => sum + file.size, 0);
+      this.writesSinceReconcile = 0;
+      return total;
+    } catch (err) {
+      logger.warn(`query decomposition cache size reconciliation skipped: ${(err as Error).message}`);
+      return undefined;
     }
   }
 }
@@ -274,6 +331,15 @@ function subqueriesChecksum(subqueries: readonly string[]): string {
 // scope. A follow-up can promote these knobs into the shared config schema.
 function readEnvironment(name: string): string | undefined {
   return process.env[name];
+}
+
+function fileSizeIfPresent(file: string): number {
+  try {
+    return fs.statSync(file).size;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw err;
+  }
 }
 
 function listEntryFiles(root: string): Array<{ path: string; size: number; mtimeMs: number }> {

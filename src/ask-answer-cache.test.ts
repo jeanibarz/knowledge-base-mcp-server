@@ -1,5 +1,5 @@
-import { describe, expect, it, beforeEach, afterEach } from '@jest/globals';
-import * as fsp from 'fs/promises';
+import { describe, expect, it, jest, beforeEach, afterEach } from '@jest/globals';
+import fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -14,6 +14,29 @@ import {
   sha256Hex,
   type AnswerCacheKeyInput,
 } from './ask-answer-cache.js';
+
+// Independent ground-truth walk of the answer-cache dir, reimplemented here so
+// accounting assertions cross-check the cache's running total against a
+// separate scan (never against the production size function it reconciles with).
+async function rescanAnswerDiskSizeBytes(indexPath: string): Promise<number> {
+  const dir = answerCacheDir(indexPath);
+  let names: string[];
+  try {
+    names = await fsp.readdir(dir);
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  for (const name of names) {
+    if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+    try {
+      total += (await fsp.stat(path.join(dir, name))).size;
+    } catch {
+      // raced with an eviction/removal — not counted
+    }
+  }
+  return total;
+}
 
 function baseKeyInput(): AnswerCacheKeyInput {
   return {
@@ -168,6 +191,74 @@ describe('AnswerCache storage (#656)', () => {
 
     expect(await cache.get(keyOld)).toBeNull();
     expect(await cache.get(keyNew)).toEqual({ answer: 'new answer', model: null });
+  });
+
+  it('amortizes the disk scan across writes instead of rescanning on every set (#1122)', async () => {
+    const cache = new AnswerCache({ enabled: true, indexPath: dir });
+    const cacheDir = answerCacheDir(dir);
+    const readdirSpy = jest.spyOn(fsp, 'readdir');
+    try {
+      for (let index = 0; index < 40; index += 1) {
+        await cache.set(
+          computeAnswerCacheKey({ ...baseKeyInput(), query: `q-${index}` }),
+          { answer: `answer-${index}`, model: null },
+        );
+      }
+      // The disk cap's size scan reads the cache directory. Under the old
+      // scan-on-every-write behavior this fired on all 40 writes; the amortized
+      // total reconciles at most once across a sub-interval run.
+      const scans = readdirSpy.mock.calls.filter((call) => call[0] === cacheDir).length;
+      expect(scans).toBeLessThanOrEqual(1);
+    } finally {
+      readdirSpy.mockRestore();
+    }
+  });
+
+  it('keeps incremental byte accounting aligned with a ground-truth rescan (#1122)', async () => {
+    const cache = new AnswerCache({ enabled: true, indexPath: dir });
+    const k1 = computeAnswerCacheKey({ ...baseKeyInput(), query: 'q1' });
+    const k2 = computeAnswerCacheKey({ ...baseKeyInput(), query: 'q2' });
+
+    await cache.set(k1, { answer: 'first', model: null });
+    expect((await cache.stats()).disk_size_bytes).toBe(await rescanAnswerDiskSizeBytes(dir));
+
+    // Overwriting the same key must apply a size delta, not double-count.
+    await cache.set(k1, { answer: 'first rewritten with a much longer answer body', model: 'm' });
+    expect((await cache.stats()).disk_size_bytes).toBe(await rescanAnswerDiskSizeBytes(dir));
+
+    await cache.set(k2, { answer: 'second', model: null });
+    expect((await cache.stats()).disk_size_bytes).toBe(await rescanAnswerDiskSizeBytes(dir));
+  });
+
+  it('reconciles out-of-band drift to ground truth within a bounded number of scans (#1122)', async () => {
+    // A large cap so the run stays about accounting/reconcile, not eviction.
+    const cache = new AnswerCache({ enabled: true, indexPath: dir, diskMaxBytes: 64 * 1024 * 1024 });
+    const cacheDir = answerCacheDir(dir);
+
+    const seedKey = computeAnswerCacheKey({ ...baseKeyInput(), query: 'seed' });
+    await cache.set(seedKey, { answer: 'seed answer', model: null });
+    // Remove the seed entry behind the cache's back: the running total now
+    // overcounts by the seed's bytes until a reconcile corrects it.
+    await fsp.rm(path.join(cacheDir, `${seedKey}.json`));
+
+    const readdirSpy = jest.spyOn(fsp, 'readdir');
+    // Drive well past the 64-write reconcile interval so the periodic rescan
+    // fires and corrects the stale total.
+    for (let index = 0; index < 80; index += 1) {
+      await cache.set(
+        computeAnswerCacheKey({ ...baseKeyInput(), query: `fill-${index}` }),
+        { answer: `fill answer ${index}`, model: null },
+      );
+    }
+    const scans = readdirSpy.mock.calls.filter((call) => call[0] === cacheDir).length;
+    readdirSpy.mockRestore();
+
+    // The periodic reconcile fired at least once across the interval yet stayed
+    // bounded (not once per write), and corrected the drifted total: without the
+    // reconcile the running total would still overcount the removed seed entry.
+    expect(scans).toBeGreaterThanOrEqual(1);
+    expect(scans).toBeLessThanOrEqual(3);
+    expect((await cache.stats()).disk_size_bytes).toBe(await rescanAnswerDiskSizeBytes(dir));
   });
 
   it('defaults to disabled (opt-in)', () => {
