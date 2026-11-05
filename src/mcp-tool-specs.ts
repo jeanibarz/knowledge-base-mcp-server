@@ -19,6 +19,7 @@ import {
   ASK_KNOWLEDGE_DESCRIPTION,
   DELETE_DOCUMENT_DESCRIPTION,
   DIFF_INDEX_DESCRIPTION,
+  EXPORT_CITATIONS_DESCRIPTION,
   FIND_RELATED_DESCRIPTION,
   KB_STATS_DESCRIPTION,
   LIST_FACETS_DESCRIPTION,
@@ -230,6 +231,21 @@ export const RECOMMEND_KNOWLEDGE_BASE_INPUT = {
     .describe('Override the active embedding model for this call (RFC 013). Defaults to the active model.'),
 };
 
+// Issue #1153 — export_citations mirrors the read-only `kb cite` CLI: turn one
+// retrieval selector into a bibliography entry from the note's frontmatter. The
+// selector matches `kb open` (chunk id / kb:// URI / KB-relative path); format
+// mirrors the CLI's --format. Index-independent — it only reads one note.
+export const EXPORT_CITATIONS_INPUT = {
+  selector: z
+    .string()
+    .min(1, 'selector must not be empty')
+    .describe('The note to cite: a chunk id (e.g. "alpha/papers/x.md#L42-L78") or kb:// URI from a prior retrieve_knowledge/find_related result, or a KB-relative path such as "research/papers/example.md". A line/chunk fragment is accepted but only identifies the containing note.'),
+  format: z
+    .enum(['bibtex', 'csl-json', 'text'])
+    .optional()
+    .describe('Output format for the citation. "bibtex" (default) emits a BibTeX entry, "csl-json" a CSL-JSON array, "text" a one-line plain-text reference.'),
+};
+
 export const ADD_DOCUMENT_INPUT = {
   knowledge_base_name: z.string().describe('The name of the knowledge base to write into.'),
   path: z.string().describe('KB-relative document path to create or overwrite. Parent directories are created as needed.'),
@@ -269,7 +285,7 @@ export interface McpToolSpec {
   annotations: ToolAnnotations;
 }
 
-// Shared annotation objects. The nine readers do not modify their environment;
+// Shared annotation objects. The ten readers do not modify their environment;
 // per the MCP spec `destructiveHint`/`idempotentHint` are meaningful only when
 // `readOnlyHint === false`, so a lone `readOnlyHint: true` is the complete hint
 // for a reader.
@@ -290,6 +306,8 @@ export const MCP_TOOL_SPECS: McpToolSpec[] = [
   { name: 'list_facets', description: LIST_FACETS_DESCRIPTION, inputShape: LIST_FACETS_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   // Issue #1152 — read-only topic→shelf routing mirroring `kb where`.
   { name: 'recommend_knowledge_base', description: RECOMMEND_KNOWLEDGE_BASE_DESCRIPTION, inputShape: RECOMMEND_KNOWLEDGE_BASE_INPUT, annotations: READ_ONLY_ANNOTATIONS },
+  // Issue #1153 — read-only, index-independent citation export mirroring `kb cite`.
+  { name: 'export_citations', description: EXPORT_CITATIONS_DESCRIPTION, inputShape: EXPORT_CITATIONS_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   // add_document writes a document: not read-only, and additive rather than
   // destructive (it creates/overwrites a single path). Re-writing the same
   // path+content leaves the KB in the same state, so it is idempotent.

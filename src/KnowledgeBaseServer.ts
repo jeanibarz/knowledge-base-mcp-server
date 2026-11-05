@@ -40,6 +40,7 @@ import {
   ASK_KNOWLEDGE_DESCRIPTION,
   DELETE_DOCUMENT_DESCRIPTION,
   DIFF_INDEX_DESCRIPTION,
+  EXPORT_CITATIONS_DESCRIPTION,
   FIND_RELATED_DESCRIPTION,
   KB_STATS_DESCRIPTION,
   LIST_FACETS_DESCRIPTION,
@@ -54,6 +55,7 @@ import {
   ASK_KNOWLEDGE_INPUT,
   DELETE_DOCUMENT_INPUT,
   DIFF_INDEX_INPUT,
+  EXPORT_CITATIONS_INPUT,
   FIND_RELATED_INPUT,
   LIST_FACETS_INPUT,
   KB_STATS_INPUT,
@@ -107,6 +109,11 @@ import {
   findRelatedCore,
   parseRelatedTarget,
 } from './related-core.js';
+import {
+  formatCitation,
+  resolveCitationEntry,
+  type CiteFormat,
+} from './citation-core.js';
 import {
   buildRecommendKbPayload,
   decideWhere,
@@ -621,6 +628,17 @@ export class KnowledgeBaseServer {
       this.handleRecommendKnowledgeBase.bind(this)
     );
 
+    // Issue #1153 — export_citations: read-only, index-independent citation
+    // export mirroring `kb cite`. Always registered (not ingest-gated).
+    this.registerShapedTool(
+      mcp,
+      'export_citations',
+      EXPORT_CITATIONS_DESCRIPTION,
+      EXPORT_CITATIONS_INPUT,
+      toolAnnotations('export_citations'),
+      this.handleExportCitations.bind(this)
+    );
+
     if (KB_INGEST_ENABLED) {
       this.registerShapedTool(
         mcp,
@@ -1101,6 +1119,45 @@ export class KnowledgeBaseServer {
       } catch (error: unknown) {
         const err = toError(error);
         logger.error('Error recommending a knowledge base:', err);
+        if (err.stack) {
+          logger.error(err.stack);
+        }
+        return { content: [mcpErrorContent(err)], isError: true };
+      }
+    });
+  }
+
+  /**
+   * Issue #1153 — export_citations MCP handler. The read-only MCP equivalent of
+   * `kb cite`: turn one retrieval selector (chunk id / kb:// URI / KB-relative
+   * path) into a bibliography entry from the note's YAML frontmatter. A thin
+   * transport wrapper — it delegates selector resolution, frontmatter parsing,
+   * and formatting to the SAME `resolveCitationEntry` / `formatCitation` the CLI
+   * uses, so the two surfaces produce byte-identical citations. Index- and
+   * service-independent: it reads exactly one note and never touches the index,
+   * the write lock, or an LLM. Errors mirror the shared resolution the CLI uses:
+   * a malformed selector surfaces as VALIDATION; an unknown knowledge base as
+   * KB_NOT_FOUND; a missing note at an otherwise valid path as a plain
+   * "path not found" error (stamped INTERNAL by mcpErrorContent, since
+   * resolveKbPath throws a non-KBError there). A note with missing/invalid
+   * frontmatter is NOT an error — it returns a citation keyed from the note
+   * path, exactly as `kb cite` does.
+   */
+  private async handleExportCitations(args: {
+    selector: string;
+    format?: CiteFormat;
+  }): Promise<CallToolResult> {
+    const format: CiteFormat = args.format ?? 'bibtex';
+
+    return this.withCanonicalTool({ tool: 'export_citations' }, async () => {
+      try {
+        const entry = await resolveCitationEntry(args.selector);
+        return {
+          content: [{ type: 'text', text: formatCitation(entry, format) }],
+        };
+      } catch (error: unknown) {
+        const err = toError(error);
+        logger.error('Error exporting citation:', err);
         if (err.stack) {
           logger.error(err.stack);
         }
