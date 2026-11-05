@@ -34,3 +34,7 @@ probe-concurrent-*.jsonl
 
 # IDE-local settings (SonarLint binding, etc.)
 .vscode/
+# ...but track the shared debugger launch configs (see CONTRIBUTING "Debugging").
+!.vscode/
+.vscode/*
+!.vscode/launch.json
