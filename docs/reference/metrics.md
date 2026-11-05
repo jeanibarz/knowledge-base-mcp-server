@@ -55,6 +55,7 @@ Histogram rows list the base family name; scrapes emit `_bucket`, `_sum`, and `_
 | <code>kb_query_cache_bypasses_total</code> | <code>counter</code> | _none_ | Query embedding cache bypasses. | Always emitted. |
 | <code>kb_query_cache_disk_size_bytes</code> | <code>gauge</code> | _none_ | Query embedding cache disk usage in bytes. | Always emitted. |
 | <code>kb_query_cache_outcomes_total</code> | <code>counter</code> | <code>outcome</code> | Coarse query embedding cache workflow outcomes. | Always emitted. |
+| <code>kb_query_cache_coalesced_total</code> | <code>counter</code> | _none_ | Query embedding cache single-flight coalesced hits: concurrent identical misses deduplicated onto one in-flight embed, each a saved provider embed call. | Always emitted (0 unless single-flight coalescing is enabled and a concurrent identical miss coalesced). |
 | <code>kb_answer_cache_hits_total</code> | <code>counter</code> | _none_ | Answer cache hits. | Emitted when answer-cache stats are available. |
 | <code>kb_answer_cache_misses_total</code> | <code>counter</code> | _none_ | Answer cache misses. | Emitted when answer-cache stats are available. |
 | <code>kb_answer_cache_outcomes_total</code> | <code>counter</code> | <code>outcome</code> | Coarse answer-cache workflow outcomes. | Emitted when answer-cache stats are available. |

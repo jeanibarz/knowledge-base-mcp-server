@@ -48,18 +48,25 @@ describe('query embedding cache (#214)', () => {
 
       const first = cache.getOrCompute({ modelId: 'fake__one', query: 'same query', embed });
       const second = cache.getOrCompute({ modelId: 'fake__one', query: 'same query', embed });
+      const third = cache.getOrCompute({ modelId: 'fake__one', query: 'same query', embed });
       await new Promise((resolve) => setImmediate(resolve));
       release([1.25, 2.5]);
 
-      const results = await Promise.all([first, second]);
+      const results = await Promise.all([first, second, third]);
       expect(calls).toBe(1);
-      expect(results.map((result) => result.embedding)).toEqual([[1.25, 2.5], [1.25, 2.5]]);
+      expect(results.map((result) => result.embedding)).toEqual([[1.25, 2.5], [1.25, 2.5], [1.25, 2.5]]);
+      // The two later concurrent misses each coalesced onto the first's in-flight
+      // embed: both non-owning callers are counted, the owner never is. Pinning
+      // the count at 2 (not 1) keeps the counter accumulating per coalesced call.
+      expect((await cache.stats()).coalesced).toBe(2);
 
       const paths = queryCachePaths({ indexPath, modelId: 'fake__one', query: 'same query' });
       cache.clearMemory();
       await Promise.all([fsp.unlink(paths.metaPath), fsp.unlink(paths.vectorPath)]);
       await cache.getOrCompute({ modelId: 'fake__one', query: 'same query', embed });
       expect(calls).toBe(2);
+      // The sequential retry owned its flight, so no further coalescing occurred.
+      expect((await cache.stats()).coalesced).toBe(2);
     } finally {
       await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
     }
@@ -90,6 +97,8 @@ describe('query embedding cache (#214)', () => {
       release([1, 2]);
       await Promise.all([first, second]);
       expect(calls).toBe(2);
+      // Single-flight off: each miss owns its own embed, so nothing coalesced.
+      expect((await cache.stats()).coalesced).toBe(0);
     } finally {
       await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
     }
