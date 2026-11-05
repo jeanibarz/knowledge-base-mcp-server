@@ -240,8 +240,12 @@ directly ...`) and runs the search in-process. If you expected the warm path,
 that notice and `kb serve status` together tell you whether to start a daemon.
 
 `KB_DAEMON_URL` (default `http://127.0.0.1:17799`) selects the daemon that
-both `kb serve status` and `kb search --daemon` talk to. A `/health` probe
-counts as activity, so polling `kb serve status` also defers the idle timeout.
+both `kb serve status` and `kb search --daemon` talk to. The unauthenticated
+`/health` and `/metrics` probes do **not** count as activity: polling
+`kb serve status` or scraping `/metrics` no longer defers the idle timeout, so
+a status cron, an autostart health loop, or a Prometheus scrape can run
+continuously without pinning the daemon in memory. Only a real search/list/stats
+command through `/v1/run` resets the idle timer.
 
 ## Command Choice
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as fsp from 'node:fs/promises';
 import * as http from 'node:http';
 import * as os from 'node:os';
@@ -44,7 +44,7 @@ interface RawResponse {
 
 function request(
   url: URL,
-  options: { method?: string; path: string; body?: unknown },
+  options: { method?: string; path: string; body?: unknown; headers?: http.OutgoingHttpHeaders },
 ): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -53,7 +53,10 @@ function request(
         port: url.port,
         method: options.method ?? 'GET',
         path: options.path,
-        headers: options.body === undefined ? undefined : { 'Content-Type': 'application/json' },
+        headers: {
+          ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          ...options.headers,
+        },
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -764,6 +767,162 @@ describe('kb serve daemon admission control', () => {
       expect(accepted.statusCode).toBe(200);
     } finally {
       release();
+      await daemon.stop();
+    }
+  });
+});
+
+describe('kb serve idle shutdown timer (issue #1124)', () => {
+  const itUnix = process.platform === 'win32' ? it.skip : it;
+  const originalMetricsExport = process.env.KB_METRICS_EXPORT;
+
+  // Health and metrics probes arrive through the same http.createServer handler
+  // as real commands. Fake timers let us assert whether a given request stream
+  // postpones the idle-shutdown deadline without waiting real wall-clock time.
+  // `setImmediate` is left real so the HTTP machinery keeps flowing while the
+  // idle `setTimeout` is under the fake clock's control.
+  const ok = (): DaemonRunResult => ({ exitCode: 0, stdout: 'ok\n', stderr: '' });
+  const idleHandlers = (): DaemonCommandHandlers => ({
+    search: async () => ok(),
+    list: async () => ok(),
+    stats: async () => ok(),
+  });
+
+  beforeEach(() => {
+    // Exercise the realistic Prometheus scrape path: /metrics answering 200.
+    process.env.KB_METRICS_EXPORT = 'on';
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    if (originalMetricsExport === undefined) delete process.env.KB_METRICS_EXPORT;
+    else process.env.KB_METRICS_EXPORT = originalMetricsExport;
+  });
+
+  itUnix('repeated /health and /metrics polls do not postpone idle shutdown', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const idleTimeoutMs = 10_000;
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs,
+      warm: false,
+      handlers: idleHandlers(),
+      metricsHandler: async () => '# EOF\n',
+    });
+    try {
+      // Advance halfway to the deadline, then hammer the unauthenticated probes
+      // the way a status cron / autostart health loop / Prometheus scrape would.
+      jest.advanceTimersByTime(idleTimeoutMs / 2);
+      for (let i = 0; i < 3; i += 1) {
+        const health = await request(daemon.url, {
+          path: '/health',
+          headers: { Connection: 'close' },
+        });
+        expect(health.statusCode).toBe(200);
+        const metrics = await request(daemon.url, {
+          path: '/metrics',
+          headers: { Connection: 'close' },
+        });
+        expect(metrics.statusCode).toBe(200);
+      }
+      // Still before the ORIGINAL deadline — the daemon is alive.
+      expect(daemon.server.listening).toBe(true);
+      // Cross the original deadline. Because the probes did NOT re-arm the idle
+      // timer, the daemon shuts down on the operator's configured schedule.
+      jest.advanceTimersByTime(idleTimeoutMs / 2);
+      expect(daemon.server.listening).toBe(false);
+    } finally {
+      jest.useRealTimers();
+      await daemon.stop();
+    }
+  });
+
+  itUnix('a real /v1/run command postpones idle shutdown', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const idleTimeoutMs = 10_000;
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs,
+      warm: false,
+      handlers: idleHandlers(),
+      metricsHandler: async () => '# EOF\n',
+    });
+    try {
+      // A real client command arrives at t=8s, before the t=10s deadline.
+      jest.advanceTimersByTime(8_000);
+      const run = await request(daemon.url, {
+        method: 'POST',
+        path: '/v1/run',
+        body: { command: 'search', args: ['q'] },
+        headers: { Connection: 'close' },
+      });
+      expect(run.statusCode).toBe(200);
+      // The command re-armed the timer to t=18s. Crossing the ORIGINAL t=10s
+      // deadline must NOT shut the daemon down.
+      jest.advanceTimersByTime(3_000); // t=11s
+      expect(daemon.server.listening).toBe(true);
+      // Cross the postponed deadline — now the daemon reclaims.
+      jest.advanceTimersByTime(idleTimeoutMs); // t=21s, past t=18s
+      expect(daemon.server.listening).toBe(false);
+    } finally {
+      jest.useRealTimers();
+      await daemon.stop();
+    }
+  });
+
+  itUnix('an untouched daemon reclaims after exactly one idle interval', async () => {
+    // Guards the default-behavior-unchanged criterion: with no traffic at all
+    // the daemon must still shut down after exactly one idle interval.
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const idleTimeoutMs = 10_000;
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs,
+      warm: false,
+      handlers: idleHandlers(),
+      metricsHandler: async () => '# EOF\n',
+    });
+    try {
+      expect(daemon.server.listening).toBe(true);
+      jest.advanceTimersByTime(idleTimeoutMs - 1);
+      expect(daemon.server.listening).toBe(true);
+      jest.advanceTimersByTime(1);
+      expect(daemon.server.listening).toBe(false);
+    } finally {
+      jest.useRealTimers();
+      await daemon.stop();
+    }
+  });
+
+  itUnix('a malformed /v1/run request does not postpone idle shutdown', async () => {
+    // The idle reset fires only for a VALIDATED, admissible command — not for
+    // every request that happens to hit /v1/run. A garbage POST (400) must not
+    // become a backdoor that keeps the daemon resident the way the probes did.
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    const idleTimeoutMs = 10_000;
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs,
+      warm: false,
+      handlers: idleHandlers(),
+      metricsHandler: async () => '# EOF\n',
+    });
+    try {
+      jest.advanceTimersByTime(idleTimeoutMs / 2);
+      const bad = await request(daemon.url, {
+        method: 'POST',
+        path: '/v1/run',
+        body: 'not json at all',
+        headers: { Connection: 'close' },
+      });
+      expect(bad.statusCode).toBe(400);
+      expect(daemon.server.listening).toBe(true);
+      // Crossing the ORIGINAL deadline still reclaims: the bad request did not
+      // re-arm the timer.
+      jest.advanceTimersByTime(idleTimeoutMs / 2);
+      expect(daemon.server.listening).toBe(false);
+    } finally {
+      jest.useRealTimers();
       await daemon.stop();
     }
   });

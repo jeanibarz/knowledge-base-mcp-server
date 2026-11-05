@@ -524,8 +524,12 @@ export async function startDaemonServer(
   });
 
   const server = http.createServer((req, res) => {
-    resetIdleTimer();
-    void handleRequest(req, res, handlers, metricsHandler, buildHealth, admission);
+    // Issue #1124 — the idle-shutdown timer is re-armed from inside
+    // `handleRequest`, and only for validated client work (`POST /v1/run`). The
+    // unauthenticated `/health` and `/metrics` probes that monitoring setups
+    // scrape continuously are deliberately NOT treated as activity, so they can
+    // no longer postpone the `--idle-timeout-ms` reclaim indefinitely.
+    void handleRequest(req, res, handlers, metricsHandler, buildHealth, admission, resetIdleTimer);
   });
 
   // Issue #1029 — bound slow/abusive clients at the socket layer before the
@@ -917,16 +921,21 @@ async function handleRequest(
   metricsHandler: () => Promise<string>,
   buildHealth: () => DaemonHealth,
   admission: DaemonAdmissionGate,
+  resetIdleTimer: () => void,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://placeholder'); // NOSONAR typescript:S5332 — parse-only base, never fetched
   if (req.method === 'GET' && url.pathname === '/health') {
+    // Issue #1124 — health probes are NOT client work: do not re-arm the idle
+    // timer, or a `kb serve status` cron / autostart health loop would keep the
+    // daemon resident forever and defeat `--idle-timeout-ms`.
     writeJson(res, 200, buildHealth());
     return;
   }
   if (url.pathname === '/metrics') {
     // /metrics stays outside admission control: scraping must keep working
     // under load, which is exactly when the daemon_inflight / rejected
-    // gauges matter most.
+    // gauges matter most. Issue #1124 — like /health, a Prometheus scrape of
+    // /metrics is not client work and must not postpone idle shutdown.
     await handleMetricsRequest(req, res, metricsHandler);
     return;
   }
@@ -960,6 +969,15 @@ async function handleRequest(
     rejectDraining(res);
     return;
   }
+
+  // Issue #1124 — a validated, admissible client command reached the daemon's
+  // work endpoint; THIS is the real activity the idle timeout tracks, so re-arm
+  // the timer here rather than for every inbound request. The unauthenticated
+  // /health and /metrics probes handled above never reach this point, so a
+  // status cron / autostart health loop / Prometheus scrape can no longer
+  // postpone the operator's --idle-timeout-ms reclaim. Malformed or draining
+  // requests (handled above with early returns) are likewise not counted.
+  resetIdleTimer();
 
   const accepted = admission.run(async () => {
     try {
