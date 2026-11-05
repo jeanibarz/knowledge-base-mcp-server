@@ -40,9 +40,11 @@ daemon still starts, reports `"prewarm": {"status": "failed", ...}` in
 `/health`, and falls back to lazy loading on the first real request.
 
 The process logs `kb serve: listening on http://127.0.0.1:17799/` to stdout
-and stays in the foreground. SIGINT / SIGTERM stops it cleanly. Run it under
-a terminal multiplexer, or wrap it in a systemd user unit for hands-off
-operation:
+and stays in the foreground. SIGINT / SIGTERM stops it cleanly, and
+[`kb serve stop`](#stop-the-daemon) sends that signal for you — the first-party
+way to stop a daemon you did not start in the foreground (for example one
+launched by `KB_DAEMON_AUTOSTART`). Run it under a terminal multiplexer, or wrap
+it in a systemd user unit for hands-off operation:
 
 ```ini
 # ~/.config/systemd/user/kb-serve.service
@@ -106,6 +108,55 @@ Exit codes are deliberately distinct:
 
 // Unreachable
 { "reachable": false, "url": "http://127.0.0.1:17799/" }
+```
+
+## Stop the daemon
+
+`kb serve stop` gracefully stops the daemon reachable at the configured URL. Use
+it to stop a daemon you did not start in the foreground — for example one
+launched by `KB_DAEMON_AUTOSTART` (detached, with its stdio discarded), which has
+no terminal to Ctrl-C. It replaces the manual "scrape the PID from
+`kb serve status --json`, then `kill` it" dance.
+
+```bash
+kb serve stop            # human-readable
+kb serve stop --json     # machine-readable
+```
+
+It reads the PID from `GET /health`, sends `SIGTERM` (triggering the same
+graceful drain as Ctrl-C — in-flight requests finish, new ones are refused), and
+polls `/health` until the daemon stops answering. The poll is bounded by the
+graceful-drain budget — `KB_DAEMON_DRAIN_TIMEOUT_MS` (default 5s), how long the
+daemon spends letting in-flight requests finish — plus a short grace margin.
+`kb serve stop` reads `KB_DAEMON_DRAIN_TIMEOUT_MS` from its own environment, so
+if you have tuned it for the daemon, export the same value where you run `stop`.
+
+**Safety.** `kb serve stop` only signals a daemon it can prove is local — a
+loopback `KB_DAEMON_URL` (`127.0.0.1`, `localhost`, `::1`) or a Unix-domain
+socket — and only after confirming the reported PID is a live local process. A
+non-loopback `KB_DAEMON_URL` is refused (exit `2`). Stop a remote daemon on its
+own host. One caveat: `/health` is unauthenticated and reports its own PID, so a
+loopback URL that actually reaches another machine — an `ssh -L` tunnel or port
+forward — can name a PID that locally belongs to an unrelated process. Do not
+point `KB_DAEMON_URL` at a forwarded port when stopping a daemon.
+
+Exit codes:
+
+| Exit | Meaning | Operator next step |
+| --- | --- | --- |
+| `0` | Daemon drained and stopped (or was already gone when signalled) | Done. |
+| `1` | Runtime error — the daemon reported no PID, the signal failed, or it was still reachable after the drain budget | Re-check with `kb serve status`; stop a wedged process manually. |
+| `2` | Invalid argument, or a refused non-local `KB_DAEMON_URL` | Fix the configuration, or stop the daemon on its own host. |
+| `3` | No daemon running at the configured URL — **nothing to stop** | None; this is not an error. |
+
+`--json` output:
+
+```jsonc
+// Stopped
+{ "stopped": true, "pid": 41234, "url": "http://127.0.0.1:17799/" }
+
+// Nothing to stop
+{ "stopped": false, "reachable": false, "url": "http://127.0.0.1:17799/" }
 ```
 
 ## Configure the daemon URL
