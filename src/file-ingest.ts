@@ -282,6 +282,14 @@ export async function buildChunkDocuments(
     chunkIndex,
     location: 'chunk',
   }));
+  // Issue #1125: the per-chunk scan above only ever sees one post-split
+  // chunk at a time, so a single secret long enough to be divided across a
+  // chunk boundary (a JWT, an Azure `AccountKey=` value, a long
+  // high-entropy token) is no longer present whole in any chunk and evades
+  // every pattern. Scan the whole, pre-split body once more under
+  // location:'file' to catch a boundary-torn secret. This adds exactly one
+  // extra scan pass per ingested file and carries no chunkIndex.
+  secretScanInputs.unshift({ content: body, location: 'file' });
   if (liftedFrontmatter !== undefined) {
     secretScanInputs.push({
       content: JSON.stringify(liftedFrontmatter),

@@ -11,7 +11,7 @@ export type SecretFindingCategory =
   | 'key_value_secret'
   | 'high_entropy';
 
-export type SecretScanLocation = 'chunk' | 'frontmatter';
+export type SecretScanLocation = 'chunk' | 'frontmatter' | 'file';
 
 export interface SecretScanInput {
   content: string;

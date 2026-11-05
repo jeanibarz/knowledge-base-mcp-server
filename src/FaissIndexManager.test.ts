@@ -2205,7 +2205,9 @@ describe('FaissIndexManager permission handling', () => {
       secret_scan: expect.objectContaining({
         categories: expect.arrayContaining(['key_value_secret']),
         chunk_indexes: [0],
-        locations: ['chunk'],
+        // #1125: the whole-body pass also flags this single-chunk secret, so
+        // it is now reported at both 'chunk' and 'file'.
+        locations: ['chunk', 'file'],
       }),
     }));
   });

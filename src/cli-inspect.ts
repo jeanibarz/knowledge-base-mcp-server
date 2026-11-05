@@ -305,7 +305,7 @@ async function inspectTarget(target: ResolvedInspectTarget): Promise<InspectPayl
   );
   const { chunkSize, chunkOverlap } = resolveChunkSize();
   const chunks = buildChunkBoundaries(parsedFrontmatter.body, documents.map((doc) => doc.pageContent));
-  const secretScan = inspectSecretScan(target, documents, liftedFrontmatter);
+  const secretScan = inspectSecretScan(target, documents, liftedFrontmatter, parsedFrontmatter.body);
   const quarantine = await inspectQuarantine(target, sourceBuffer);
   const contextual = await inspectContextualPreface(target, parsedFrontmatter.body, chunks.length);
 
@@ -370,6 +370,7 @@ function inspectSecretScan(
   target: ResolvedInspectTarget,
   documents: ReadonlyArray<{ pageContent: string }>,
   liftedFrontmatter: unknown,
+  body: string,
 ): SecretScanVerdict {
   const scanOptions = resolveIngestSecretScanOptions();
   if (!scanOptions.enabled) {
@@ -384,6 +385,10 @@ function inspectSecretScan(
     chunkIndex,
     location: 'chunk',
   }));
+  // Issue #1125: mirror the ingest path's whole-body pass so `inspect`
+  // never reports "clean" for a boundary-split secret that ingest would
+  // actually quarantine.
+  inputs.unshift({ content: body, location: 'file' });
   if (liftedFrontmatter !== undefined) {
     inputs.push({
       content: JSON.stringify(liftedFrontmatter),
