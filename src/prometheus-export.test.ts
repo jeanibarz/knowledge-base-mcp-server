@@ -55,6 +55,10 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('kb_rerank_degraded_total 2');
     expect(text).toContain('kb_rerank_skipped_total{reason="skip_domain"} 2');
     expect(text).toContain('kb_rerank_candidates_total{source="model_scored"} 4');
+    expect(text).toContain('kb_relevance_gate_queries_total 2');
+    expect(text).toContain('kb_relevance_gate_verdict_injected_total 1');
+    expect(text).toContain('# TYPE kb_relevance_gate_judge_degraded counter');
+    expect(text).toContain('kb_relevance_gate_judge_degraded_total 3');
     expect(text).toContain('# TYPE kb_rerank_latency_ms histogram');
     expect(text).toContain('kb_rerank_latency_ms_bucket{le="30",source="model_scored"} 1');
     expect(text).toContain('kb_rerank_latency_ms_sum{source="model_scored"} 12');
@@ -425,7 +429,8 @@ function samplePayload(): KbStatsPayload {
       drop_rate_A1: 0,
       drop_rate_A2: 0,
       drop_rate_B: 0,
-      judge_degrade_rate: 0,
+      judge_degrade_rate: 0.25,
+      judge_degraded_total: 3,
       judge_window: {
         size: 2,
         degraded: 0,
