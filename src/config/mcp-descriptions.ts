@@ -25,7 +25,7 @@ export const ASK_KNOWLEDGE_DESCRIPTION =
     : DEFAULT_ASK_KNOWLEDGE_DESCRIPTION;
 
 export const DEFAULT_LIST_KNOWLEDGE_BASES_DESCRIPTION =
-  'Lists the available knowledge bases.';
+  'Lists the available knowledge bases. Returns a JSON array of knowledge-base names by default. Pass include_counts: true to instead return one object per shelf, { name, document_count }, where document_count is the number of ingestable documents on that shelf (0 for an empty shelf).';
 export const LIST_KNOWLEDGE_BASES_DESCRIPTION =
   process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION && process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION.length > 0
     ? process.env.LIST_KNOWLEDGE_BASES_DESCRIPTION

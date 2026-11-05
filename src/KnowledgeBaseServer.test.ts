@@ -268,6 +268,62 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(parsed).not.toContain('.config');
   });
 
+  // Issue #1159 — include_counts: false / omitted preserves the bare-names array
+  // so 0.x clients are unaffected by the new opt-in argument.
+  it('handleListKnowledgeBases with include_counts=false returns the bare-names array', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-counts-off-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'one.md'), '# One\n');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const result = await server['handleListKnowledgeBases']({ include_counts: false });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text)).toEqual(['alpha']);
+  });
+
+  // Issue #1159 — include_counts: true returns one { name, document_count }
+  // object per shelf with a correct ingestable-document count; an empty shelf
+  // reports 0 and a nested document is counted by the recursive walk.
+  it('handleListKnowledgeBases with include_counts=true returns per-shelf document counts', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-server-counts-on-'));
+    await fsp.mkdir(path.join(tempDir, 'alpha'));
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'one.md'), '# One\n');
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'two.md'), '# Two\n');
+    await fsp.mkdir(path.join(tempDir, 'beta')); // empty shelf -> 0
+    await fsp.mkdir(path.join(tempDir, 'gamma'));
+    await fsp.mkdir(path.join(tempDir, 'gamma', 'docs'));
+    await fsp.writeFile(path.join(tempDir, 'gamma', 'docs', 'deep.md'), '# Deep\n');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    const server = await freshServer();
+    const result = await server['handleListKnowledgeBases']({ include_counts: true });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content[0].text) as Array<{ name: string; document_count: number }>;
+    const byName = new Map(parsed.map((entry) => [entry.name, entry.document_count]));
+    expect(byName).toEqual(
+      new Map([
+        ['alpha', 2],
+        ['beta', 0],
+        ['gamma', 1],
+      ]),
+    );
+    // The Map equality above already pins the full shape: a bare-string entry
+    // (the default output) would key the Map on undefined, and a stringified
+    // count would fail numeric deep-equality — so no separate typeof guard is
+    // needed to prove the { name, document_count } object shape.
+  });
+
   // --- handleListModels (RFC 013 M3 §4.5) ----------------------------------
 
   it('handleListModels returns registered models with active marker', async () => {
@@ -3729,7 +3785,7 @@ describe('KnowledgeBaseServer handlers', () => {
     const server = await freshServer();
 
     expect(describeOf(server, 'list_knowledge_bases')).toBe(
-      'Lists the available knowledge bases.'
+      'Lists the available knowledge bases. Returns a JSON array of knowledge-base names by default. Pass include_counts: true to instead return one object per shelf, { name, document_count }, where document_count is the number of ingestable documents on that shelf (0 for an empty shelf).'
     );
     expect(describeOf(server, 'retrieve_knowledge')).toBe(
       'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.'
@@ -3751,7 +3807,7 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(describeOf(server, 'retrieve_knowledge')).toBe('custom retrieve desc');
     // list_knowledge_bases must not be affected by the retrieve override.
     expect(describeOf(server, 'list_knowledge_bases')).toBe(
-      'Lists the available knowledge bases.'
+      'Lists the available knowledge bases. Returns a JSON array of knowledge-base names by default. Pass include_counts: true to instead return one object per shelf, { name, document_count }, where document_count is the number of ingestable documents on that shelf (0 for an empty shelf).'
     );
   });
 
@@ -3780,7 +3836,7 @@ describe('KnowledgeBaseServer handlers', () => {
       'Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion.'
     );
     expect(describeOf(server, 'list_knowledge_bases')).toBe(
-      'Lists the available knowledge bases.'
+      'Lists the available knowledge bases. Returns a JSON array of knowledge-base names by default. Pass include_counts: true to instead return one object per shelf, { name, document_count }, where document_count is the number of ingestable documents on that shelf (0 for an empty shelf).'
     );
   });
 

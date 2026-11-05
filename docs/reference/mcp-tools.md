@@ -17,7 +17,7 @@ The server exposes 13 tools, 3 of which are only registered when `KB_INGEST_ENAB
 
 | Tool | Gated | Description |
 | --- | --- | --- |
-| [`list_knowledge_bases`](#list_knowledge_bases) | — | Lists the available knowledge bases. |
+| [`list_knowledge_bases`](#list_knowledge_bases) | — | Lists the available knowledge bases. Returns a JSON array of knowledge-base names by default. Pass include_counts: true to instead return one object per shelf, { name, document_count }, where document_count is the number of ingestable documents on that shelf (0 for an empty shelf). |
 | [`retrieve_knowledge`](#retrieve_knowledge) | — | Retrieves similar chunks from the knowledge base based on a query. Optionally, if a knowledge base is specified, only that one is searched; otherwise, all available knowledge bases are considered. By default, at most 10 documents are returned. Dense retrieval limits results to a similarity score of 2 by default; a different threshold can optionally be provided. Hybrid retrieval does not apply this threshold because both legs are over-fetched for fusion. |
 | [`ask_knowledge`](#ask_knowledge) | — | Answers a question from retrieved knowledge-base context using the configured local OpenAI-compatible LLM endpoint. Returns a structured payload with answer, citations, context-packing diagnostics, abstention_reason, LLM provenance, retrieval model, and optional timing. Use retrieve_knowledge when you only need raw chunks. |
 | [`list_models`](#list_models) | — | Lists the embedding models registered for retrieval. Returns an array of {model_id, provider, model_name, active}. Use the model_id as the optional `model_name` argument to retrieve_knowledge to query a specific model instead of the active default. |
@@ -33,9 +33,11 @@ The server exposes 13 tools, 3 of which are only registered when `KB_INGEST_ENAB
 
 ## `list_knowledge_bases`
 
-Lists the available knowledge bases.
+Lists the available knowledge bases. Returns a JSON array of knowledge-base names by default. Pass include_counts: true to instead return one object per shelf, { name, document_count }, where document_count is the number of ingestable documents on that shelf (0 for an empty shelf).
 
-_No input parameters._
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `include_counts` | boolean | no | — | When true, return one object per knowledge base as { name, document_count } instead of a bare array of names. document_count is the number of ingestable documents on that shelf (0 for an empty shelf), computed by a filesystem walk. Omitted/false keeps the default array-of-names output. |
 
 ## `retrieve_knowledge`
 
