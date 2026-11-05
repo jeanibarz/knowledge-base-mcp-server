@@ -40,6 +40,7 @@ import {
   ASK_KNOWLEDGE_DESCRIPTION,
   DELETE_DOCUMENT_DESCRIPTION,
   DIFF_INDEX_DESCRIPTION,
+  FIND_RELATED_DESCRIPTION,
   KB_STATS_DESCRIPTION,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   LIST_MODELS_DESCRIPTION,
@@ -51,6 +52,7 @@ import {
   ASK_KNOWLEDGE_INPUT,
   DELETE_DOCUMENT_INPUT,
   DIFF_INDEX_INPUT,
+  FIND_RELATED_INPUT,
   KB_STATS_INPUT,
   REINDEX_KNOWLEDGE_BASE_INPUT,
   RETRIEVE_KNOWLEDGE_INPUT,
@@ -91,6 +93,11 @@ import {
   resolveKnowledgeBaseDir,
 } from './kb-fs.js';
 import { computeKbStats } from './kb-stats.js';
+import {
+  buildRelatedJsonPayload,
+  findRelatedCore,
+  parseRelatedTarget,
+} from './related-core.js';
 import {
   listResources,
   readResource,
@@ -566,6 +573,17 @@ export class KnowledgeBaseServer {
       this.handleDiffIndex.bind(this)
     );
 
+    // Issue #1133 — find_related: read-only seed-chunk "more-like-this"
+    // expansion mirroring `kb related`. Always registered (not ingest-gated).
+    this.registerShapedTool(
+      mcp,
+      'find_related',
+      FIND_RELATED_DESCRIPTION,
+      FIND_RELATED_INPUT,
+      toolAnnotations('find_related'),
+      this.handleFindRelated.bind(this)
+    );
+
     if (KB_INGEST_ENABLED) {
       this.registerShapedTool(
         mcp,
@@ -815,6 +833,115 @@ export class KnowledgeBaseServer {
       } catch (error: unknown) {
         const err = toError(error);
         logger.error('Error diffing index versions:', err);
+        if (err.stack) {
+          logger.error(err.stack);
+        }
+        return { content: [mcpErrorContent(err)], isError: true };
+      }
+    });
+  }
+
+  /**
+   * Issue #1133 — find_related MCP handler. The read-only MCP equivalent of
+   * `kb related`: seed-chunk "more-like-this" expansion from an existing
+   * result's chunk id / kb:// URI (no text query). A thin transport wrapper —
+   * it validates the seed reference, loads a read-only manager for the active
+   * model, and delegates the retrieval to the shared `findRelatedCore` (the
+   * same core `kb related` uses), returning the byte-identical `kb.related.v1`
+   * JSON payload. Does NOT acquire the write lock or trigger an index update.
+   */
+  private async handleFindRelated(args: {
+    chunk_id: string;
+    knowledge_base_name?: string;
+    all_kbs?: boolean;
+    k?: number;
+    threshold?: number;
+    include_self?: boolean;
+  }): Promise<CallToolResult> {
+    const allKbs = args.all_kbs ?? false;
+    const includeSelf = args.include_self ?? false;
+    const k = args.k ?? 10;
+    const threshold = args.threshold ?? 2;
+    // Normalize an empty/whitespace-only knowledge_base_name to "no scope" so
+    // it falls back to the seed chunk's own KB (the documented default). The
+    // Zod field is an unbounded optional string (matching retrieve/ask), so a
+    // client could send ""; without this, `kb: ''` would reach findRelatedCore,
+    // and since `options.kb ?? reference.knowledgeBase` only coalesces
+    // null/undefined, "" would be treated as a real KB name and silently scope
+    // the search to a nonexistent base (zero results). The CLI rejects an empty
+    // --kb outright; here we treat it as "unset" rather than erroring.
+    const knowledgeBaseName = args.knowledge_base_name !== undefined && args.knowledge_base_name.trim().length > 0
+      ? args.knowledge_base_name
+      : undefined;
+
+    return this.withCanonicalTool({
+      tool: 'find_related',
+      kb_scope: allKbs ? null : (knowledgeBaseName ?? null),
+      k,
+      threshold,
+    }, async () => {
+      // Mirror the CLI's `--all-kbs cannot be combined with --kb` guard.
+      if (allKbs && knowledgeBaseName !== undefined) {
+        return {
+          content: [mcpErrorContent(new KBError(
+            'VALIDATION',
+            'Pass either knowledge_base_name (one base) or all_kbs (every base), not both.',
+          ))],
+          isError: true,
+        };
+      }
+
+      const reference = parseRelatedTarget(args.chunk_id);
+      if ('error' in reference) {
+        return {
+          content: [mcpErrorContent(new KBError('VALIDATION', reference.error))],
+          isError: true,
+        };
+      }
+
+      try {
+        let activeModelId: string;
+        try {
+          activeModelId = await resolveActiveModel();
+        } catch (err) {
+          if (err instanceof ActiveModelResolutionError) {
+            return { content: [{ type: 'text', text: err.message }], isError: true };
+          }
+          throw err;
+        }
+
+        const manager = await this.createReadOnlyManagerForModel(activeModelId);
+        const outcome = await findRelatedCore(manager, reference.value, {
+          k,
+          threshold,
+          includeSelf,
+          noCache: false,
+          kb: knowledgeBaseName,
+          allKbs,
+        });
+        if ('seedNotFound' in outcome) {
+          return {
+            content: [mcpErrorContent(new KBError(
+              'KB_NOT_FOUND',
+              `no indexed chunk matched '${args.chunk_id}'`,
+            ))],
+            isError: true,
+          };
+        }
+
+        const payload = buildRelatedJsonPayload({
+          target: args.chunk_id,
+          seed: outcome.seed,
+          scopedKb: outcome.scopedKb,
+          includeSelf,
+          results: outcome.results,
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        };
+      } catch (error: unknown) {
+        const err = toError(error);
+        logger.error('Error finding related chunks:', err);
         if (err.stack) {
           logger.error(err.stack);
         }

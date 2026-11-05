@@ -170,6 +170,7 @@ function runKbCliSearch(
       'ask_knowledge',
       'delete_document',
       'diff_index',
+      'find_related',
       'kb_stats',
       'list_knowledge_bases',
       'list_models',

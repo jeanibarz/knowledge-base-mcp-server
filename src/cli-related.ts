@@ -1,22 +1,19 @@
-import type { Document } from '@langchain/core/documents';
 import {
   FaissIndexManager,
   type SearchResultDocument,
-  type SimilaritySearchTiming,
 } from './FaissIndexManager.js';
 import { resolveActiveModel } from './model-resolution.js';
-import { buildChunkId, parseChunkReference } from './chunk-id.js';
 import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KB_EDITOR_URI,
 } from './config/retrieval.js';
-import {
-  formatRetrievalAsJson,
-  formatRetrievalAsMarkdown,
-  type ScoredDocument,
-} from './formatter.js';
+import { formatRetrievalAsMarkdown } from './formatter.js';
 import { classifyKbSearchError, exitCodeForFailure, formatKbSearchFailureJson, formatKbSearchFailureStderr } from './search-errors-core.js';
 import { loadManagerForModel, loadWithJsonRetry } from './cli-shared.js';
+// Issue #1133 / #405 — the command-independent related core lives in
+// `related-core.ts` so the MCP `find_related` tool can reuse it without
+// importing this CLI adapter (see `non-cli-import-boundary.test.ts`).
+import { buildRelatedJsonPayload, findRelatedCore, parseRelatedTarget } from './related-core.js';
 
 export const RELATED_HELP = `kb related — find chunks related to an existing result
 
@@ -90,7 +87,7 @@ export async function runRelated(
     return 2;
   }
 
-  const reference = parseTarget(parsed.target);
+  const reference = parseRelatedTarget(parsed.target);
   if ('error' in reference) {
     process.stderr.write(`kb related: ${reference.error}\n`);
     return 2;
@@ -102,51 +99,22 @@ export async function runRelated(
     const manager = await deps.loadManagerForModel(activeModelId);
     await deps.loadWithJsonRetry(manager);
 
-    const seed = manager.findChunkByReference(reference.value);
-    if (seed === null) {
+    const outcome = await findRelatedCore(manager, reference.value, parsed);
+    if ('seedNotFound' in outcome) {
       process.stderr.write(`kb related: no indexed chunk matched '${parsed.target}'\n`);
       return 1;
     }
 
-    const seedMetadata = seed.metadata as Record<string, unknown>;
-    const scopedKb = parsed.allKbs ? undefined : (parsed.kb ?? reference.value.knowledgeBase);
-    const fetchK = parsed.includeSelf ? parsed.k : parsed.k + 1;
-    const timing: SimilaritySearchTiming = {};
-    const rawResults = await manager.similaritySearch(
-      seed.pageContent,
-      fetchK,
-      parsed.threshold,
-      scopedKb,
-      undefined,
-      timing,
-      { noCache: parsed.noCache },
-    );
-    const results = parsed.includeSelf
-      ? rawResults.slice(0, parsed.k)
-      : excludeSeed(rawResults, seed).slice(0, parsed.k);
+    const { seed, scopedKb, results } = outcome;
 
     if (parsed.format === 'json') {
-      const [formattedSeed] = formatRetrievalAsJson(
-        [seed as ScoredDocument],
-        FRONTMATTER_EXTRAS_WIRE_VISIBLE,
-        KB_EDITOR_URI,
-      );
-      const { score: _seedScore, ...seedPayload } = formattedSeed ?? {
-        content: seed.pageContent,
-        metadata: seedMetadata,
-        chunk_id: buildChunkId(seedMetadata) ?? undefined,
-      };
-      void _seedScore;
-      process.stdout.write(`${JSON.stringify({
-        schema_version: 'kb.related.v1',
-        seed: {
-          target: parsed.target,
-          ...seedPayload,
-        },
-        scoped_kb: scopedKb ?? null,
-        include_self: parsed.includeSelf,
-        results: formatRetrievalAsJson(results, FRONTMATTER_EXTRAS_WIRE_VISIBLE, KB_EDITOR_URI),
-      }, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(buildRelatedJsonPayload({
+        target: parsed.target,
+        seed,
+        scopedKb,
+        includeSelf: parsed.includeSelf,
+        results,
+      }), null, 2)}\n`);
       return 0;
     }
 
@@ -217,29 +185,6 @@ export function parseRelatedArgs(rest: string[]): RelatedArgs {
     throw new Error('--all-kbs cannot be combined with --kb');
   }
   return out as RelatedArgs;
-}
-
-function parseTarget(target: string): { value: ReturnType<typeof parseChunkReference> } | { error: string } {
-  try {
-    const reference = parseChunkReference(target);
-    if (reference.kind === 'path') {
-      return { error: 'expected a chunk id or kb:// URI, got a KB-relative path' };
-    }
-    return { value: reference };
-  } catch (err) {
-    return { error: (err as Error).message };
-  }
-}
-
-function excludeSeed(
-  results: SearchResultDocument[],
-  seed: Document,
-): SearchResultDocument[] {
-  const seedId = buildChunkId(seed.metadata as Record<string, unknown>);
-  if (seedId === null) return results;
-  return results.filter((result) => (
-    buildChunkId(result.metadata as Record<string, unknown>) !== seedId
-  ));
 }
 
 function formatRelatedMarkdown(input: {
