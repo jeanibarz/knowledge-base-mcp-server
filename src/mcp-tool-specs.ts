@@ -24,6 +24,7 @@ import {
   LIST_FACETS_DESCRIPTION,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   LIST_MODELS_DESCRIPTION,
+  RECOMMEND_KNOWLEDGE_BASE_DESCRIPTION,
   REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
   RETRIEVE_KNOWLEDGE_DESCRIPTION,
 } from './config/mcp-descriptions.js';
@@ -208,6 +209,27 @@ export const LIST_FACETS_INPUT = {
     .describe('Report a single frontmatter key (any key) instead of the default tags/status/type set.'),
 };
 
+// Issue #1152 — recommend_knowledge_base mirrors the read-only `kb where` CLI:
+// route a topic to the best KB + existing file. topic is the only required
+// input; k/threshold/model_name mirror the CLI's --k/--threshold/--model and
+// keep the same semantics (lower threshold distance = closer / stricter).
+export const RECOMMEND_KNOWLEDGE_BASE_INPUT = {
+  topic: z
+    .string()
+    .min(1, 'topic must not be empty')
+    .describe('The topic / one-line description to place. The server runs one cross-KB similarity search for this text and recommends the closest KB + file.'),
+  k: z.int().min(1).max(50).optional().describe('Top-K cross-KB hits to consider when grouping. Default 20.'),
+  threshold: z
+    .number()
+    .positive()
+    .optional()
+    .describe('Confidence cutoff (a distance; lower = closer). A best-file score BELOW this is a high-confidence existing target; above it, no existing_target is returned. Default 1.0.'),
+  model_name: z
+    .string()
+    .optional()
+    .describe('Override the active embedding model for this call (RFC 013). Defaults to the active model.'),
+};
+
 export const ADD_DOCUMENT_INPUT = {
   knowledge_base_name: z.string().describe('The name of the knowledge base to write into.'),
   path: z.string().describe('KB-relative document path to create or overwrite. Parent directories are created as needed.'),
@@ -247,7 +269,7 @@ export interface McpToolSpec {
   annotations: ToolAnnotations;
 }
 
-// Shared annotation objects. The eight readers do not modify their environment;
+// Shared annotation objects. The nine readers do not modify their environment;
 // per the MCP spec `destructiveHint`/`idempotentHint` are meaningful only when
 // `readOnlyHint === false`, so a lone `readOnlyHint: true` is the complete hint
 // for a reader.
@@ -266,6 +288,8 @@ export const MCP_TOOL_SPECS: McpToolSpec[] = [
   { name: 'find_related', description: FIND_RELATED_DESCRIPTION, inputShape: FIND_RELATED_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   // Issue #1151 — read-only frontmatter-facet enumeration mirroring `kb tags`.
   { name: 'list_facets', description: LIST_FACETS_DESCRIPTION, inputShape: LIST_FACETS_INPUT, annotations: READ_ONLY_ANNOTATIONS },
+  // Issue #1152 — read-only topic→shelf routing mirroring `kb where`.
+  { name: 'recommend_knowledge_base', description: RECOMMEND_KNOWLEDGE_BASE_DESCRIPTION, inputShape: RECOMMEND_KNOWLEDGE_BASE_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   // add_document writes a document: not read-only, and additive rather than
   // destructive (it creates/overwrites a single path). Re-writing the same
   // path+content leaves the KB in the same state, so it is idempotent.

@@ -43,7 +43,7 @@ describe('MCP tool JSON Schema contract', () => {
       await client.connect(clientTransport);
 
       const response = await client.listTools();
-      expect(response.tools).toHaveLength(11);
+      expect(response.tools).toHaveLength(12);
 
       const emitted = Object.fromEntries(
         response.tools

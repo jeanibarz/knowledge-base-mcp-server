@@ -45,6 +45,7 @@ import {
   LIST_FACETS_DESCRIPTION,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   LIST_MODELS_DESCRIPTION,
+  RECOMMEND_KNOWLEDGE_BASE_DESCRIPTION,
   REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
   RETRIEVE_KNOWLEDGE_DESCRIPTION,
 } from './config/mcp-descriptions.js';
@@ -56,6 +57,7 @@ import {
   FIND_RELATED_INPUT,
   LIST_FACETS_INPUT,
   KB_STATS_INPUT,
+  RECOMMEND_KNOWLEDGE_BASE_INPUT,
   REINDEX_KNOWLEDGE_BASE_INPUT,
   RETRIEVE_KNOWLEDGE_INPUT,
   toolAnnotations,
@@ -105,6 +107,12 @@ import {
   findRelatedCore,
   parseRelatedTarget,
 } from './related-core.js';
+import {
+  buildRecommendKbPayload,
+  decideWhere,
+  DEFAULT_CONFIDENCE_THRESHOLD as DEFAULT_RECOMMEND_CONFIDENCE_THRESHOLD,
+  DEFAULT_K as DEFAULT_RECOMMEND_K,
+} from './recommend-kb-core.js';
 import {
   listResources,
   readResource,
@@ -602,6 +610,17 @@ export class KnowledgeBaseServer {
       this.handleListFacets.bind(this)
     );
 
+    // Issue #1152 — recommend_knowledge_base: read-only topic→shelf routing
+    // mirroring `kb where`. Always registered (not ingest-gated).
+    this.registerShapedTool(
+      mcp,
+      'recommend_knowledge_base',
+      RECOMMEND_KNOWLEDGE_BASE_DESCRIPTION,
+      RECOMMEND_KNOWLEDGE_BASE_INPUT,
+      toolAnnotations('recommend_knowledge_base'),
+      this.handleRecommendKnowledgeBase.bind(this)
+    );
+
     if (KB_INGEST_ENABLED) {
       this.registerShapedTool(
         mcp,
@@ -1016,6 +1035,72 @@ export class KnowledgeBaseServer {
       } catch (error: unknown) {
         const err = toError(error);
         logger.error('Error listing facets:', err);
+        if (err.stack) {
+          logger.error(err.stack);
+        }
+        return { content: [mcpErrorContent(err)], isError: true };
+      }
+    });
+  }
+
+  /**
+   * Issue #1152 — recommend_knowledge_base MCP handler. The read-only MCP
+   * equivalent of `kb where`: route a topic to the best knowledge base and the
+   * best existing file inside it, so an MCP-only client can scope a search or
+   * pick an add_document destination without guessing a shelf. A thin transport
+   * wrapper — it loads a read-only manager for the active model, runs one
+   * cross-KB similarity search for the topic (no KB filter, like the CLI), and
+   * delegates the reduction + serialization to the shared `decideWhere` /
+   * `buildRecommendKbPayload` core so the score/threshold semantics are
+   * identical to `kb where --format=json`. The CLI-only `kb remember`
+   * copy-paste is omitted so the MCP tool stays a pure recommendation. Does NOT
+   * acquire the write lock or trigger an index update.
+   */
+  private async handleRecommendKnowledgeBase(args: {
+    topic: string;
+    k?: number;
+    threshold?: number;
+    model_name?: string;
+  }): Promise<CallToolResult> {
+    const k = args.k ?? DEFAULT_RECOMMEND_K;
+    // The `threshold` input is the CONFIDENCE cutoff applied by decideWhere, not
+    // a search-level distance cap: the cross-KB search always over-fetches with
+    // an infinite threshold and the confidence check is applied afterwards —
+    // exactly as `kb where` does.
+    const confidenceThreshold = args.threshold ?? DEFAULT_RECOMMEND_CONFIDENCE_THRESHOLD;
+
+    return this.withCanonicalTool({
+      tool: 'recommend_knowledge_base',
+      kb_scope: null,
+      k,
+      threshold: confidenceThreshold,
+    }, async () => {
+      try {
+        let activeModelId: string;
+        try {
+          activeModelId = await resolveActiveModel({ explicitOverride: args.model_name });
+        } catch (err) {
+          if (err instanceof ActiveModelResolutionError) {
+            return { content: [{ type: 'text', text: err.message }], isError: true };
+          }
+          throw err;
+        }
+
+        const manager = await this.createReadOnlyManagerForModel(activeModelId);
+        // No KB filter — we want the cross-KB ranking, like `kb where`.
+        const results = await manager.similaritySearch(
+          args.topic,
+          k,
+          Number.POSITIVE_INFINITY,
+        );
+        const decision = decideWhere(results, confidenceThreshold);
+        const payload = buildRecommendKbPayload(decision);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        };
+      } catch (error: unknown) {
+        const err = toError(error);
+        logger.error('Error recommending a knowledge base:', err);
         if (err.stack) {
           logger.error(err.stack);
         }

@@ -74,6 +74,14 @@ export const FIND_RELATED_DESCRIPTION =
 export const LIST_FACETS_DESCRIPTION =
   'Enumerates the frontmatter facet values that actually exist across a knowledge base, so a client can discover the valid vocabulary for the retrieve_knowledge / ask_knowledge `tags` filter instead of guessing. Walks every note, parses YAML frontmatter, and reports each facet\'s distinct values with per-note counts (a value is counted once per note; array facets count each element). Read-only. Returns a kb.tags.v1 JSON payload (schemaVersion, knowledgeBases, notesScanned, facets) identical to `kb tags --format=json`. Defaults to the tags/status/type facets across every KB; pass knowledge_base_name to scope to one KB or facet to report a single frontmatter key.';
 
+// Issue #1152 — recommend_knowledge_base: the MCP equivalent of `kb where`.
+// Read-only shelf routing so an MCP-only client can ask "which knowledge base
+// — and which file — best fits this topic?" before it searches or writes
+// (e.g. to pick an add_document destination). Like diff_index/find_related/
+// list_facets, this reader carries no env-override knob.
+export const RECOMMEND_KNOWLEDGE_BASE_DESCRIPTION =
+  'Recommends which knowledge base ("shelf") — and which existing file inside it — best fits a topic, so an MCP client can route a search or an add_document write instead of guessing a shelf or scanning them all. Runs one cross-KB similarity search for the topic, picks the KB with the closest hit, and names the single best existing file in it. Read-only. Returns a kb.recommend.v1 JSON payload: recommended_kb, existing_target (the best file, or null when no file is within the confidence threshold), confidence (the match distance; lower = closer), and a confident boolean (true when an existing_target was found). Score and threshold semantics are identical to `kb where --format=json`; the CLI-only `kb remember` copy-paste is omitted. Defaults: k=20, threshold=1.0, across every KB; pass model_name to override the active embedding model for this call.';
+
 // ---------------------------------------------------------------------------
 // MCP prompts surface (#642).
 // The server's third MCP primitive (alongside tools + resources): a small,

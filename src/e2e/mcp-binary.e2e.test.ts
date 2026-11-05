@@ -175,6 +175,7 @@ function runKbCliSearch(
       'list_facets',
       'list_knowledge_bases',
       'list_models',
+      'recommend_knowledge_base',
       'reindex_knowledge_base',
       'retrieve_knowledge',
     ]);

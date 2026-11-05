@@ -11,7 +11,7 @@ name, description, or input schema, and commit the result. The
 `docs:check-mcp-tools` gate (part of `npm run check`) fails if this file
 drifts.
 
-The server exposes 11 tools, 3 of which are only registered when `KB_INGEST_ENABLED` is set.
+The server exposes 12 tools, 3 of which are only registered when `KB_INGEST_ENABLED` is set.
 
 ## Tools
 
@@ -25,6 +25,7 @@ The server exposes 11 tools, 3 of which are only registered when `KB_INGEST_ENAB
 | [`diff_index`](#diff_index) | — | Compares retrieval-result churn across two persisted FAISS index versions for a list of plaintext queries. Returns rank deltas, top-K membership changes, and stability/churn scores; useful before promoting a new index version. |
 | [`find_related`](#find_related) | — | Finds chunks semantically similar to an existing result ("more-like-this"), seeded by a chunk id or kb:// URI from a prior retrieve_knowledge hit rather than a text query. Resolves the seed chunk from the active index and runs dense similarity search on its text, excluding the seed itself by default. Read-only. Returns a kb.related.v1 JSON payload (seed, scoped_kb, related results). Defaults: k=10, threshold=2, scoped to the seed chunk's knowledge base; pass all_kbs=true to search every KB or include_self=true to keep the seed in the results. |
 | [`list_facets`](#list_facets) | — | Enumerates the frontmatter facet values that actually exist across a knowledge base, so a client can discover the valid vocabulary for the retrieve_knowledge / ask_knowledge `tags` filter instead of guessing. Walks every note, parses YAML frontmatter, and reports each facet's distinct values with per-note counts (a value is counted once per note; array facets count each element). Read-only. Returns a kb.tags.v1 JSON payload (schemaVersion, knowledgeBases, notesScanned, facets) identical to `kb tags --format=json`. Defaults to the tags/status/type facets across every KB; pass knowledge_base_name to scope to one KB or facet to report a single frontmatter key. |
+| [`recommend_knowledge_base`](#recommend_knowledge_base) | — | Recommends which knowledge base ("shelf") — and which existing file inside it — best fits a topic, so an MCP client can route a search or an add_document write instead of guessing a shelf or scanning them all. Runs one cross-KB similarity search for the topic, picks the KB with the closest hit, and names the single best existing file in it. Read-only. Returns a kb.recommend.v1 JSON payload: recommended_kb, existing_target (the best file, or null when no file is within the confidence threshold), confidence (the match distance; lower = closer), and a confident boolean (true when an existing_target was found). Score and threshold semantics are identical to `kb where --format=json`; the CLI-only `kb remember` copy-paste is omitted. Defaults: k=20, threshold=1.0, across every KB; pass model_name to override the active embedding model for this call. |
 | [`add_document`](#add_document) | `KB_INGEST_ENABLED` | Adds or overwrites a UTF-8 document in a knowledge base, creating parent directories as needed, then updates the active model index so the new content is queryable immediately. |
 | [`delete_document`](#delete_document) | `KB_INGEST_ENABLED` | DESTRUCTIVE: Deletes a document from a knowledge base and removes its hash sidecar. FAISS does not support vector deletion in this server, so orphan vectors for the removed file persist until a full rebuild; run reindex_knowledge_base after deletes if vector hygiene matters. |
 | [`reindex_knowledge_base`](#reindex_knowledge_base) | `KB_INGEST_ENABLED` | Forces the active model to fully rebuild its FAISS index from on-disk files, replacing the in-memory store and clearing orphan vectors left behind by prior delete_document calls. The rebuild always covers every KB because FAISS lacks per-vector deletion; passing knowledge_base_name is accepted (and recorded in the response) but does not narrow the rebuild scope. |
@@ -137,6 +138,17 @@ Enumerates the frontmatter facet values that actually exist across a knowledge b
 | --- | --- | --- | --- | --- |
 | `knowledge_base_name` | string | no | — | Scope the facet scan to this knowledge base. Omit to aggregate across every KB (the default). |
 | `facet` | string | no | — | Report a single frontmatter key (any key) instead of the default tags/status/type set. |
+
+## `recommend_knowledge_base`
+
+Recommends which knowledge base ("shelf") — and which existing file inside it — best fits a topic, so an MCP client can route a search or an add_document write instead of guessing a shelf or scanning them all. Runs one cross-KB similarity search for the topic, picks the KB with the closest hit, and names the single best existing file in it. Read-only. Returns a kb.recommend.v1 JSON payload: recommended_kb, existing_target (the best file, or null when no file is within the confidence threshold), confidence (the match distance; lower = closer), and a confident boolean (true when an existing_target was found). Score and threshold semantics are identical to `kb where --format=json`; the CLI-only `kb remember` copy-paste is omitted. Defaults: k=20, threshold=1.0, across every KB; pass model_name to override the active embedding model for this call.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `topic` | string | yes | min 1 chars | The topic / one-line description to place. The server runs one cross-KB similarity search for this text and recommends the closest KB + file. |
+| `k` | integer | no | min 1; max 50 | Top-K cross-KB hits to consider when grouping. Default 20. |
+| `threshold` | number | no | min 0 | Confidence cutoff (a distance; lower = closer). A best-file score BELOW this is a high-confidence existing target; above it, no existing_target is returned. Default 1.0. |
+| `model_name` | string | no | — | Override the active embedding model for this call (RFC 013). Defaults to the active model. |
 
 ## `add_document`
 

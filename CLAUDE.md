@@ -17,7 +17,7 @@ node build/index.js    # runs the server over stdio (clients launch it this way)
 ### Key architecture
 
 - **Transport:** `src/KnowledgeBaseServer.ts` starts stdio by default and can opt into SSE or streamable HTTP via `MCP_TRANSPORT`. HTTP/SSE mode requires `MCP_AUTH_TOKEN` and defaults to loopback.
-- **MCP tool surface:** tools are registered in `KnowledgeBaseServer.registerTools()`. Current tools include `list_knowledge_bases`, `retrieve_knowledge`, `ask_knowledge`, `list_models`, `kb_stats`, `diff_index`, `find_related`, `list_facets`, `add_document`, `delete_document`, and `reindex_knowledge_base`.
+- **MCP tool surface:** tools are registered in `KnowledgeBaseServer.registerTools()`. Current tools include `list_knowledge_bases`, `retrieve_knowledge`, `ask_knowledge`, `list_models`, `kb_stats`, `diff_index`, `find_related`, `list_facets`, `recommend_knowledge_base`, `add_document`, `delete_document`, and `reindex_knowledge_base`.
 - **CLI surface:** `src/cli.ts` is the `kb` dispatcher. Command-specific behavior lives in `src/cli-*.ts`; shared command-independent logic belongs in `*-core.ts` helpers.
 - **Embeddings:** `FaissIndexManager` is constructed for a concrete `(provider, modelName)` pair. Provider defaults come from `EMBEDDING_PROVIDER` plus provider-specific model env vars.
 - **Index layout:** `$FAISS_INDEX_PATH/active.txt` selects a model id. Each model stores metadata and versioned FAISS data under `$FAISS_INDEX_PATH/models/<model_id>/`. See `model-storage-layout.ts` (paths, sentinel) and `model-resolution.ts` (active-model resolution) — they decide and enforce this layout, so read them before changing any index path.
