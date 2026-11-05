@@ -228,6 +228,18 @@
     },
     "$schema": "http://json-schema.org/draft-07/schema#"
   },
+  "list_facets": {
+    "type": "object",
+    "properties": {
+      "knowledge_base_name": {
+        "type": "string"
+      },
+      "facet": {
+        "type": "string"
+      }
+    },
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
   "list_knowledge_bases": {
     "type": "object",
     "properties": {}

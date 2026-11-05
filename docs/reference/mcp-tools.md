@@ -11,7 +11,7 @@ name, description, or input schema, and commit the result. The
 `docs:check-mcp-tools` gate (part of `npm run check`) fails if this file
 drifts.
 
-The server exposes 10 tools, 3 of which are only registered when `KB_INGEST_ENABLED` is set.
+The server exposes 11 tools, 3 of which are only registered when `KB_INGEST_ENABLED` is set.
 
 ## Tools
 
@@ -24,6 +24,7 @@ The server exposes 10 tools, 3 of which are only registered when `KB_INGEST_ENAB
 | [`kb_stats`](#kb_stats) | — | Reports observability stats for the knowledge base index: per-KB file_count, chunk_count, total_bytes_indexed and last_updated_at; the active embedding provider/model/dim; the on-disk index_path; server version/commit/uptime; process-lifetime chat-completion calls with bounded provider/model attribution, attempts/retries, cache outcomes, and answer impact; answer-cache counters; and HTTP/SSE transport counters when a remote transport is active. Pass `knowledge_base_name` to scope to a single KB; omit it to get an entry per registered KB. |
 | [`diff_index`](#diff_index) | — | Compares retrieval-result churn across two persisted FAISS index versions for a list of plaintext queries. Returns rank deltas, top-K membership changes, and stability/churn scores; useful before promoting a new index version. |
 | [`find_related`](#find_related) | — | Finds chunks semantically similar to an existing result ("more-like-this"), seeded by a chunk id or kb:// URI from a prior retrieve_knowledge hit rather than a text query. Resolves the seed chunk from the active index and runs dense similarity search on its text, excluding the seed itself by default. Read-only. Returns a kb.related.v1 JSON payload (seed, scoped_kb, related results). Defaults: k=10, threshold=2, scoped to the seed chunk's knowledge base; pass all_kbs=true to search every KB or include_self=true to keep the seed in the results. |
+| [`list_facets`](#list_facets) | — | Enumerates the frontmatter facet values that actually exist across a knowledge base, so a client can discover the valid vocabulary for the retrieve_knowledge / ask_knowledge `tags` filter instead of guessing. Walks every note, parses YAML frontmatter, and reports each facet's distinct values with per-note counts (a value is counted once per note; array facets count each element). Read-only. Returns a kb.tags.v1 JSON payload (schemaVersion, knowledgeBases, notesScanned, facets) identical to `kb tags --format=json`. Defaults to the tags/status/type facets across every KB; pass knowledge_base_name to scope to one KB or facet to report a single frontmatter key. |
 | [`add_document`](#add_document) | `KB_INGEST_ENABLED` | Adds or overwrites a UTF-8 document in a knowledge base, creating parent directories as needed, then updates the active model index so the new content is queryable immediately. |
 | [`delete_document`](#delete_document) | `KB_INGEST_ENABLED` | DESTRUCTIVE: Deletes a document from a knowledge base and removes its hash sidecar. FAISS does not support vector deletion in this server, so orphan vectors for the removed file persist until a full rebuild; run reindex_knowledge_base after deletes if vector hygiene matters. |
 | [`reindex_knowledge_base`](#reindex_knowledge_base) | `KB_INGEST_ENABLED` | Forces the active model to fully rebuild its FAISS index from on-disk files, replacing the in-memory store and clearing orphan vectors left behind by prior delete_document calls. The rebuild always covers every KB because FAISS lacks per-vector deletion; passing knowledge_base_name is accepted (and recorded in the response) but does not narrow the rebuild scope. |
@@ -127,6 +128,15 @@ Finds chunks semantically similar to an existing result ("more-like-this"), seed
 | `k` | integer | no | min 1; max 50 | Related results to return. Default 10. |
 | `threshold` | number | no | — | Maximum dense similarity score; lower = closer match. Default 2. |
 | `include_self` | boolean | no | — | Keep the seed chunk in the result set. Omitted/false excludes it (the default). |
+
+## `list_facets`
+
+Enumerates the frontmatter facet values that actually exist across a knowledge base, so a client can discover the valid vocabulary for the retrieve_knowledge / ask_knowledge `tags` filter instead of guessing. Walks every note, parses YAML frontmatter, and reports each facet's distinct values with per-note counts (a value is counted once per note; array facets count each element). Read-only. Returns a kb.tags.v1 JSON payload (schemaVersion, knowledgeBases, notesScanned, facets) identical to `kb tags --format=json`. Defaults to the tags/status/type facets across every KB; pass knowledge_base_name to scope to one KB or facet to report a single frontmatter key.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `knowledge_base_name` | string | no | — | Scope the facet scan to this knowledge base. Omit to aggregate across every KB (the default). |
+| `facet` | string | no | — | Report a single frontmatter key (any key) instead of the default tags/status/type set. |
 
 ## `add_document`
 

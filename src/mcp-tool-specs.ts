@@ -21,6 +21,7 @@ import {
   DIFF_INDEX_DESCRIPTION,
   FIND_RELATED_DESCRIPTION,
   KB_STATS_DESCRIPTION,
+  LIST_FACETS_DESCRIPTION,
   LIST_KNOWLEDGE_BASES_DESCRIPTION,
   LIST_MODELS_DESCRIPTION,
   REINDEX_KNOWLEDGE_BASE_DESCRIPTION,
@@ -191,6 +192,22 @@ export const FIND_RELATED_INPUT = {
     .describe('Keep the seed chunk in the result set. Omitted/false excludes it (the default).'),
 };
 
+// Issue #1151 — list_facets mirrors the read-only `kb tags` CLI: enumerate the
+// frontmatter facet values that exist so a client can learn the valid filter
+// vocabulary. Both inputs are optional, matching the CLI's all-KBs /
+// tags-status-type defaults. An empty/whitespace value is normalized to "unset"
+// by the handler rather than scoping to a literal empty KB / facet name.
+export const LIST_FACETS_INPUT = {
+  knowledge_base_name: z
+    .string()
+    .optional()
+    .describe('Scope the facet scan to this knowledge base. Omit to aggregate across every KB (the default).'),
+  facet: z
+    .string()
+    .optional()
+    .describe('Report a single frontmatter key (any key) instead of the default tags/status/type set.'),
+};
+
 export const ADD_DOCUMENT_INPUT = {
   knowledge_base_name: z.string().describe('The name of the knowledge base to write into.'),
   path: z.string().describe('KB-relative document path to create or overwrite. Parent directories are created as needed.'),
@@ -230,7 +247,7 @@ export interface McpToolSpec {
   annotations: ToolAnnotations;
 }
 
-// Shared annotation objects. The seven readers do not modify their environment;
+// Shared annotation objects. The eight readers do not modify their environment;
 // per the MCP spec `destructiveHint`/`idempotentHint` are meaningful only when
 // `readOnlyHint === false`, so a lone `readOnlyHint: true` is the complete hint
 // for a reader.
@@ -247,6 +264,8 @@ export const MCP_TOOL_SPECS: McpToolSpec[] = [
   { name: 'diff_index', description: DIFF_INDEX_DESCRIPTION, inputShape: DIFF_INDEX_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   // Issue #1133 — read-only seed-chunk "more-like-this" expansion mirroring `kb related`.
   { name: 'find_related', description: FIND_RELATED_DESCRIPTION, inputShape: FIND_RELATED_INPUT, annotations: READ_ONLY_ANNOTATIONS },
+  // Issue #1151 — read-only frontmatter-facet enumeration mirroring `kb tags`.
+  { name: 'list_facets', description: LIST_FACETS_DESCRIPTION, inputShape: LIST_FACETS_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   // add_document writes a document: not read-only, and additive rather than
   // destructive (it creates/overwrites a single path). Re-writing the same
   // path+content leaves the KB in the same state, so it is idempotent.

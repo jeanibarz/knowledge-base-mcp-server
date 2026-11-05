@@ -66,6 +66,14 @@ export const DIFF_INDEX_DESCRIPTION =
 export const FIND_RELATED_DESCRIPTION =
   'Finds chunks semantically similar to an existing result ("more-like-this"), seeded by a chunk id or kb:// URI from a prior retrieve_knowledge hit rather than a text query. Resolves the seed chunk from the active index and runs dense similarity search on its text, excluding the seed itself by default. Read-only. Returns a kb.related.v1 JSON payload (seed, scoped_kb, related results). Defaults: k=10, threshold=2, scoped to the seed chunk\'s knowledge base; pass all_kbs=true to search every KB or include_self=true to keep the seed in the results.';
 
+// Issue #1151 — list_facets: the MCP equivalent of `kb tags`. Read-only
+// frontmatter-facet enumeration so an MCP-only client can discover the valid
+// tags/status/type filter vocabulary accepted by retrieve_knowledge /
+// ask_knowledge instead of guessing. Like diff_index/find_related, this reader
+// carries no env-override knob.
+export const LIST_FACETS_DESCRIPTION =
+  'Enumerates the frontmatter facet values that actually exist across a knowledge base, so a client can discover the valid vocabulary for the retrieve_knowledge / ask_knowledge `tags` filter instead of guessing. Walks every note, parses YAML frontmatter, and reports each facet\'s distinct values with per-note counts (a value is counted once per note; array facets count each element). Read-only. Returns a kb.tags.v1 JSON payload (schemaVersion, knowledgeBases, notesScanned, facets) identical to `kb tags --format=json`. Defaults to the tags/status/type facets across every KB; pass knowledge_base_name to scope to one KB or facet to report a single frontmatter key.';
+
 // ---------------------------------------------------------------------------
 // MCP prompts surface (#642).
 // The server's third MCP primitive (alongside tools + resources): a small,
