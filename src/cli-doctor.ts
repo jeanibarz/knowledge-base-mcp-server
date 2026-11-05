@@ -6,6 +6,7 @@
 import * as fsp from 'fs/promises';
 import { realpathSync } from 'fs';
 import * as net from 'net';
+import * as os from 'os';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -1191,7 +1192,10 @@ async function readDoctorLockOwner(ownerPath: string): Promise<DoctorLockOwner> 
 
   return {
     pid: parsed.pid,
-    live: isPidLive(parsed.pid),
+    // A PID is only meaningful on the host that recorded it. On a shared/NFS
+    // FAISS_INDEX_PATH the same PID can name an unrelated process on another
+    // host, so a cross-host owner is unverifiable (live=null), not live.
+    live: parsed.hostname === os.hostname() ? isPidLive(parsed.pid) : null,
     command: parsed.command,
     cwd: parsed.cwd,
     hostname: parsed.hostname,
@@ -1250,10 +1254,21 @@ function formatDoctorLockNextAction(
     if (owner.pid !== null && owner.live === false) {
       return 'The recorded owner PID is no longer live; verify no writer is running before removing the lock path.';
     }
+    if (owner.pid !== null && owner.live === null) {
+      const ownerHost = owner.hostname || 'another host';
+      return 'The lock heartbeat is older than the stale threshold and the owner PID is '
+        + `unverifiable on this host (cross-host lock recorded on ${ownerHost}); `
+        + 'check the owning host for a live writer before removing the lock path.';
+    }
     return 'The lock heartbeat is older than the stale threshold; verify no writer is running before removing the lock path.';
   }
   if (owner.pid !== null && owner.live === true) {
     return 'A writer appears active; wait for it to finish or inspect the recorded command before restarting services.';
+  }
+  if (owner.pid !== null && owner.live === null) {
+    const ownerHost = owner.hostname || 'another host';
+    return `The owner PID is unverifiable on this host (cross-host lock recorded on ${ownerHost}); `
+      + 'check the owning host for a live writer before removing the lock path.';
   }
   if (heartbeatStale) {
     return 'The heartbeat is old but no owner is known; inspect running kb processes before removing the lock path.';
