@@ -230,7 +230,7 @@ export interface McpToolSpec {
   annotations: ToolAnnotations;
 }
 
-// Shared annotation objects. The six readers do not modify their environment;
+// Shared annotation objects. The seven readers do not modify their environment;
 // per the MCP spec `destructiveHint`/`idempotentHint` are meaningful only when
 // `readOnlyHint === false`, so a lone `readOnlyHint: true` is the complete hint
 // for a reader.
