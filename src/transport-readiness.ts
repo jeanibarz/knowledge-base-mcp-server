@@ -27,6 +27,11 @@ export interface ReadinessPayload {
   status: ReadinessStatus;
   checks: ReadinessCheck[];
   failing_checks: ReadinessCheckName[];
+  // Issue #1121 — optional human-readable explanation, populated when the
+  // transport bounds the probe with a deadline (KB_READY_TIMEOUT_MS) and the
+  // deadline fires before the probe resolves. Absent on normal ok/error
+  // results so existing consumers see an unchanged shape.
+  reason?: string;
 }
 
 interface ActiveModelProbe {
