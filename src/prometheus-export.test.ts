@@ -183,6 +183,22 @@ describe('formatKbStatsOpenMetrics', () => {
     expect(text).toContain('kb_llm_attributed_call_latency_ms_bucket{le="100",model="deepseek",operation="ask",provider="openrouter"} 1');
   });
 
+  it('emits the query-cache single-flight coalesced counter (issue #1126)', () => {
+    const text = formatKbStatsOpenMetrics(samplePayload());
+
+    expect(text).toContain('# TYPE kb_query_cache_coalesced counter');
+    expect(text).toContain('kb_query_cache_coalesced_total 2');
+  });
+
+  it('emits the query-cache coalesced counter as 0 when the field is absent', () => {
+    const payload = samplePayload();
+    delete payload.query_cache.coalesced;
+
+    const text = formatKbStatsOpenMetrics(payload);
+
+    expect(text).toContain('kb_query_cache_coalesced_total 0');
+  });
+
   it('emits provider token counters only when the provider reports token usage', () => {
     const payload = samplePayload();
     payload.provider_calls['ollama__nomic-embed-text-latest'].tokens_in = 42;
@@ -407,6 +423,7 @@ function samplePayload(): KbStatsPayload {
       l1_hits: 4,
       disk_hits: 1,
       bypasses: 0,
+      coalesced: 2,
       writes: 6,
       corruptions: 0,
       l1_size: 4,

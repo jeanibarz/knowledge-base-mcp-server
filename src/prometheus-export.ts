@@ -349,6 +349,13 @@ export const OPEN_METRICS_REFERENCE: readonly OpenMetricsMetricReference[] = [
     emittedWhen: 'Always emitted.',
   },
   {
+    name: 'kb_query_cache_coalesced_total',
+    type: 'counter',
+    help: 'Query embedding cache single-flight coalesced hits: concurrent identical misses deduplicated onto one in-flight embed, each a saved provider embed call.',
+    labels: [],
+    emittedWhen: 'Always emitted (0 unless single-flight coalescing is enabled and a concurrent identical miss coalesced).',
+  },
+  {
     name: 'kb_answer_cache_hits_total',
     type: 'counter',
     help: 'Answer cache hits.',
@@ -633,6 +640,7 @@ export function formatKbStatsOpenMetrics(
     defineMetric('kb_query_cache_misses_total', [{ name: 'kb_query_cache_misses_total', value: payload.query_cache.misses }]),
     defineMetric('kb_query_cache_bypasses_total', [{ name: 'kb_query_cache_bypasses_total', value: payload.query_cache.bypasses }]),
     defineMetric('kb_query_cache_outcomes_total', queryCacheOutcomeSamples(payload.query_cache)),
+    defineMetric('kb_query_cache_coalesced_total', [{ name: 'kb_query_cache_coalesced_total', value: payload.query_cache.coalesced ?? 0 }]),
     defineMetric('kb_query_cache_disk_size_bytes', [{ name: 'kb_query_cache_disk_size_bytes', value: payload.query_cache.disk_size_bytes }]),
     ...answerCacheMetrics(payload.answer_cache),
     defineMetric('kb_relevance_gate_queries_total', [{ name: 'kb_relevance_gate_queries_total', value: payload.relevance_gate.gated_queries }]),
