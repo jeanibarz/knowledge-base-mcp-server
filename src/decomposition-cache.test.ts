@@ -1,6 +1,6 @@
-import { describe, expect, it } from '@jest/globals';
-import * as fs from 'fs';
-import * as fsp from 'fs/promises';
+import { describe, expect, it, jest } from '@jest/globals';
+import fs from 'fs';
+import fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
@@ -18,6 +18,21 @@ import {
 async function tempIndexPath(prefix: string): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
   return path.join(dir, '.faiss');
+}
+
+function rescanDecompositionDiskSizeBytes(indexPath: string): number {
+  const root = decompositionCacheRoot(indexPath);
+  let total = 0;
+  const walk = (dir: string): void => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(child);
+      else if (entry.isFile() && entry.name.endsWith('.json')) total += fs.statSync(child).size;
+    }
+  };
+  walk(root);
+  return total;
 }
 
 describe('DiskTieredDecompositionCache (#736)', () => {
@@ -128,6 +143,75 @@ describe('DiskTieredDecompositionCache (#736)', () => {
 
   it('exports a process-global default cache instance (#894)', () => {
     expect(defaultDecompositionCache).toBeInstanceOf(DiskTieredDecompositionCache);
+  });
+
+  it('amortizes the disk walk across writes instead of rescanning on every set (#1122)', async () => {
+    const indexPath = await tempIndexPath('kb-decomposition-cache-amortized-');
+    const root = decompositionCacheRoot(indexPath);
+    const readdirSpy = jest.spyOn(fs, 'readdirSync');
+    try {
+      const cache = new DiskTieredDecompositionCache({ indexPath, enabled: true, lruMax: 0 });
+      for (let index = 0; index < 40; index += 1) {
+        cache.set('model', `query-${index}`, [`sub-${index}`]);
+      }
+      // A full-tree walk starts by reading the cache root. Under the old
+      // scan-on-every-write behavior this fired 40 times; the amortized total
+      // reconciles at most once across a sub-interval run of writes.
+      const rootWalks = readdirSpy.mock.calls.filter((call) => call[0] === root).length;
+      expect(rootWalks).toBeLessThanOrEqual(1);
+    } finally {
+      readdirSpy.mockRestore();
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('keeps incremental byte accounting aligned with a ground-truth rescan (#1122)', async () => {
+    const indexPath = await tempIndexPath('kb-decomposition-cache-accounting-');
+    try {
+      const cache = new DiskTieredDecompositionCache({ indexPath, enabled: true, lruMax: 0 });
+      cache.set('model', 'q1', ['one']);
+      expect(cache.diskSizeBytes()).toBe(rescanDecompositionDiskSizeBytes(indexPath));
+
+      // Overwriting the same key must apply a size delta, not double-count.
+      cache.set('model', 'q1', ['one-rewritten-and-longer']);
+      expect(cache.diskSizeBytes()).toBe(rescanDecompositionDiskSizeBytes(indexPath));
+
+      cache.set('model', 'q2', ['two']);
+      expect(cache.diskSizeBytes()).toBe(rescanDecompositionDiskSizeBytes(indexPath));
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles out-of-band drift to ground truth within a bounded number of walks (#1122)', async () => {
+    const indexPath = await tempIndexPath('kb-decomposition-cache-reconcile-');
+    const root = decompositionCacheRoot(indexPath);
+    try {
+      const cache = new DiskTieredDecompositionCache({ indexPath, enabled: true, lruMax: 0 });
+      cache.set('model', 'seed', ['seed value']);
+      // Remove the seed entry behind the cache's back: the running total now
+      // overcounts by the seed's bytes until a reconcile corrects it.
+      const seedKey = decompositionCacheKey('model', 'seed');
+      fs.rmSync(path.join(root, seedKey.slice(0, 2), `${seedKey}.json`));
+
+      const readdirSpy = jest.spyOn(fs, 'readdirSync');
+      // Drive well past the 64-write reconcile interval so the periodic rescan
+      // fires and corrects the stale total.
+      for (let index = 0; index < 80; index += 1) {
+        cache.set('model', `fill-${index}`, [`value-${index}`]);
+      }
+      const rootWalks = readdirSpy.mock.calls.filter((call) => call[0] === root).length;
+      readdirSpy.mockRestore();
+
+      // The periodic reconcile fired at least once across the interval yet
+      // stayed bounded (not once per write), and corrected the drifted total:
+      // without the reconcile the running total would still overcount the seed.
+      expect(rootWalks).toBeGreaterThanOrEqual(1);
+      expect(rootWalks).toBeLessThanOrEqual(3);
+      expect(cache.diskSizeBytes()).toBe(rescanDecompositionDiskSizeBytes(indexPath));
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
   });
 
   it('rejects invalid or tampered records and removes them', async () => {

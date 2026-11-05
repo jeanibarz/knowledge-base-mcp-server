@@ -27,6 +27,13 @@ import { logger } from './logger.js';
 
 export const ANSWER_CACHE_SCHEMA_VERSION = 'kb-answer-cache.v1';
 
+// How many writes may land between full-directory reconciliation scans. The
+// running `diskBytes` total is updated incrementally per write (bounded drift)
+// and corrected by a full rescan at most once per interval — the same
+// discipline the sibling query/rerank disk caches use (see src/query-cache.ts).
+// Kept identical so the incremental total's drift stays bounded the same way.
+const DISK_SIZE_RECONCILE_INTERVAL = 64;
+
 export type AnswerCacheStatus = 'hit' | 'miss' | 'disabled';
 export type AnswerCacheOutcome = 'hit' | 'miss' | 'not_applicable';
 
@@ -66,6 +73,11 @@ interface StoredAnswerRecord extends AnswerCacheRecord {
   schema_version: typeof ANSWER_CACHE_SCHEMA_VERSION;
   key: string;
   created_at: string;
+}
+
+interface DiskWriteResult {
+  previousSize: number;
+  size: number;
 }
 
 export interface AnswerCacheOptions {
@@ -139,6 +151,12 @@ export class AnswerCache {
   private misses = 0;
   private writes = 0;
   private corruptions = 0;
+  // Running on-disk byte total, incrementally maintained to avoid a full-dir
+  // scan on every write. `undefined` means "unknown" (not yet computed, or a
+  // write/corruption invalidated it) and forces a reconcile before the total is
+  // trusted again. Lazily initialized so a disabled cache never scans.
+  private diskBytes: number | undefined;
+  private writesSinceReconcile = 0;
   private readonly outcomeCounts: Record<AnswerCacheOutcome, number> = {
     hit: 0,
     miss: 0,
@@ -208,6 +226,9 @@ export class AnswerCache {
         stale: 30_000,
         retries: { retries: 5, factor: 1.5, minTimeout: 25, maxTimeout: 250 },
       });
+      // Size of any existing entry for this key (overwrite), captured under the
+      // lock so the incremental delta reflects what this write replaces.
+      const previousSize = await fileSizeIfPresent(file);
       const stored: StoredAnswerRecord = {
         schema_version: ANSWER_CACHE_SCHEMA_VERSION,
         key,
@@ -215,11 +236,15 @@ export class AnswerCache {
         model: record.model,
         created_at: new Date().toISOString(),
       };
-      await fsp.writeFile(tmp, `${JSON.stringify(stored, null, 2)}\n`, 'utf-8');
+      const serialized = `${JSON.stringify(stored, null, 2)}\n`;
+      await fsp.writeFile(tmp, serialized, 'utf-8');
       await fsp.rename(tmp, file);
       this.writes += 1;
+      this.applyDiskWrite({ previousSize, size: Buffer.byteLength(serialized, 'utf-8') });
       await this.enforceDiskLimit();
     } catch (err) {
+      // The incremental total may no longer reflect disk — force a reconcile.
+      this.diskBytes = undefined;
       logger.warn(`answer cache write skipped: ${(err as Error).message}`);
     } finally {
       await fsp.unlink(tmp).catch(() => undefined);
@@ -237,9 +262,14 @@ export class AnswerCache {
       misses: this.misses,
       writes: this.writes,
       corruptions: this.corruptions,
-      disk_size_bytes: await answerCacheDiskSizeBytes(this.indexPath),
+      disk_size_bytes: await this.diskSizeBytes(),
       outcomes: { ...this.outcomeCounts },
     };
+  }
+
+  private async diskSizeBytes(): Promise<number> {
+    if (this.diskBytes === undefined) await this.reconcileDiskSize();
+    return this.diskBytes ?? 0;
   }
 
   private cacheDir(): string {
@@ -252,19 +282,47 @@ export class AnswerCache {
 
   private async recordCorrupt(file: string): Promise<void> {
     this.corruptions += 1;
+    // The removed entry's bytes are no longer accounted for — force a reconcile
+    // before the running total is trusted again.
+    this.diskBytes = undefined;
     await fsp.unlink(file).catch(() => undefined);
+  }
+
+  private applyDiskWrite(write: DiskWriteResult): void {
+    if (this.diskBytes !== undefined) {
+      this.diskBytes += write.size - write.previousSize;
+    }
+    this.writesSinceReconcile += 1;
   }
 
   private async enforceDiskLimit(): Promise<void> {
     if (this.diskMaxBytes <= 0) return;
+    // Only pay for a full-dir scan when the running total is unknown or the
+    // reconcile interval has elapsed; otherwise trust the incremental total.
+    if (this.diskBytes === undefined || this.writesSinceReconcile >= DISK_SIZE_RECONCILE_INTERVAL) {
+      await this.reconcileDiskSize();
+    }
+    if (this.diskBytes === undefined || this.diskBytes <= this.diskMaxBytes) return;
+
     const files = await listAnswerCacheFiles(this.cacheDir());
     let total = files.reduce((sum, file) => sum + file.size, 0);
-    if (total <= this.diskMaxBytes) return;
     files.sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const file of files) {
       if (total <= this.diskMaxBytes) break;
       await fsp.unlink(file.path).catch(() => undefined);
       total -= file.size;
+    }
+    this.diskBytes = total;
+    this.writesSinceReconcile = 0;
+  }
+
+  private async reconcileDiskSize(): Promise<void> {
+    try {
+      this.diskBytes = await answerCacheDiskSizeBytes(this.indexPath);
+      this.writesSinceReconcile = 0;
+    } catch (err) {
+      this.diskBytes = undefined;
+      logger.warn(`answer cache size reconciliation skipped: ${(err as Error).message}`);
     }
   }
 }
@@ -279,6 +337,15 @@ export async function answerCacheDiskSizeBytes(indexPath: string = FAISS_INDEX_P
 }
 
 export const defaultAnswerCache = new AnswerCache();
+
+async function fileSizeIfPresent(file: string): Promise<number> {
+  try {
+    return (await fsp.stat(file)).size;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw err;
+  }
+}
 
 async function listAnswerCacheFiles(
   dir: string,
