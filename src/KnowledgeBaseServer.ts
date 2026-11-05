@@ -112,8 +112,8 @@ import {
   parseRelatedTarget,
 } from './related-core.js';
 import {
-  formatCitation,
-  resolveCitationEntry,
+  formatCitations,
+  resolveCitationEntries,
   type CiteFormat,
 } from './citation-core.js';
 import {
@@ -1179,16 +1179,21 @@ export class KnowledgeBaseServer {
    * path, exactly as `kb cite` does.
    */
   private async handleExportCitations(args: {
-    selector: string;
+    selector: string | string[];
     format?: CiteFormat;
   }): Promise<CallToolResult> {
     const format: CiteFormat = args.format ?? 'bibtex';
+    // #1158 — `selector` accepts a single string (byte-identical to #1153) or an
+    // array; both resolve to one merged bibliography. Resolution is all-or-
+    // nothing and in order, so a malformed/unreadable selector surfaces the same
+    // VALIDATION/KB_NOT_FOUND/path-not-found error the single-selector call did.
+    const selectors = Array.isArray(args.selector) ? args.selector : [args.selector];
 
     return this.withCanonicalTool({ tool: 'export_citations' }, async () => {
       try {
-        const entry = await resolveCitationEntry(args.selector);
+        const entries = await resolveCitationEntries(selectors);
         return {
-          content: [{ type: 'text', text: formatCitation(entry, format) }],
+          content: [{ type: 'text', text: formatCitations(entries, format) }],
         };
       } catch (error: unknown) {
         const err = toError(error);

@@ -224,16 +224,22 @@ Examples:
 Export a bibliography entry (BibTeX, CSL-JSON, text, or RIS) from note frontmatter.
 
 ```text
-kb cite — export a bibliography entry from note frontmatter
+kb cite — export a bibliography from note frontmatter
 
 Usage:
-  kb cite <chunk-id|kb://uri|kb-relative-path> [--format=bibtex|csl-json|text|ris]
+  kb cite <selector> [<selector> ...] [--format=bibtex|csl-json|text|ris]
 
-Reads one markdown note, extracts citation-oriented frontmatter fields, and
-prints a ready-to-paste bibliography entry. Accepted selector forms match
+Reads one or more markdown notes, extracts citation-oriented frontmatter
+fields, and prints a ready-to-paste bibliography. Accepted selector forms match
 `kb open`: a chunk id, a kb:// URI, or a KB-relative path such as
 `research/papers/example.md`. Line or chunk fragments are accepted but only
 identify the containing note; citation fields come from note frontmatter.
+
+Pass several selectors to emit ONE merged bibliography: BibTeX entries and RIS
+records are concatenated (deduped by cite key), CSL-JSON becomes a single
+combined array, and text prints one line per note. Selectors resolve in order
+and the command is all-or-nothing — the first selector that fails to resolve
+determines the exit code and no partial output is written.
 
 Recognized frontmatter fields:
   authors, author       String or string array. String values split on
@@ -264,6 +270,7 @@ Examples:
   kb cite arxiv-llm-inference/papers/recurrent-transformer.md
   kb cite kb://research/papers/example.md --format=csl-json
   kb cite research/papers/example.md#L12-L48 --format=text
+  kb cite research/papers/a.md research/papers/b.md --format=bibtex
 ```
 
 ## `kb compare`

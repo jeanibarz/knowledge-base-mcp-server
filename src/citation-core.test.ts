@@ -6,7 +6,9 @@ import {
   citationEntryFromFrontmatter,
   CitationReadError,
   formatCitation,
+  formatCitations,
   normalizeAuthors,
+  resolveCitationEntries,
   resolveCitationEntry,
   type CitationResolutionDeps,
 } from './citation-core.js';
@@ -159,6 +161,89 @@ describe('citation-core formatting', () => {
   });
 });
 
+// Merge of several resolved entries into one bibliography, shared by `kb cite`
+// and export_citations so both emit identical merged output (#1158).
+describe('formatCitations (merge)', () => {
+  const alpha = citationEntryFromFrontmatter(
+    { title: 'Alpha', authors: ['Ada Lovelace'], published: '1843' },
+    'kb/a.md',
+  );
+  const beta = citationEntryFromFrontmatter(
+    { title: 'Beta', authors: ['Grace Hopper'], published: '1952' },
+    'kb/b.md',
+  );
+
+  it('renders a single entry with no record separator and a one-element CSL array', () => {
+    // Literal expectations (not `formatCitation(...)`, which now delegates here —
+    // comparing the two would be a tautology). These pin that a single-selector
+    // call is unchanged from #1153: a bare record with no blank-line separator,
+    // a one-line text reference, and a one-element CSL-JSON array.
+    expect(formatCitations([alpha], 'bibtex')).toBe(
+      [
+        '@misc{lovelace-1843-alpha,',
+        '  author = {Ada Lovelace},',
+        '  title = {Alpha},',
+        '  year = {1843},',
+        '  note = {KB note: kb/a.md},',
+        '}',
+      ].join('\n'),
+    );
+    expect(formatCitations([alpha], 'text')).toBe(
+      '[lovelace-1843-alpha] Ada Lovelace. (1843). Alpha. KB note: kb/a.md',
+    );
+    const parsedCsl = JSON.parse(formatCitations([alpha], 'csl-json')) as unknown[];
+    expect(parsedCsl).toHaveLength(1);
+    // A single entry must never introduce the `\n\n` record separator.
+    expect(formatCitations([alpha], 'bibtex')).not.toContain('\n\n');
+    expect(formatCitations([alpha], 'ris')).not.toContain('\n\n');
+  });
+
+  it('dedupes DISTINCT notes that collide on cite key, keeping the first occurrence', () => {
+    // Two different files with identical author/title/year resolve to the same
+    // cite key — the real case dedup exists for. Pins dedup-by-KEY (not by
+    // notePath) and first-wins across every format, killing a dedup-by-path or
+    // keep-last mutant.
+    const first = citationEntryFromFrontmatter(
+      { title: 'Alpha', authors: ['Ada Lovelace'], published: '1843' },
+      'kb/first.md',
+    );
+    const second = citationEntryFromFrontmatter(
+      { title: 'Alpha', authors: ['Ada Lovelace'], published: '1843' },
+      'kb/second.md',
+    );
+    expect(first.key).toBe(second.key); // precondition: a genuine key collision
+    for (const format of ['bibtex', 'text', 'ris'] as const) {
+      const merged = formatCitations([first, second], format);
+      expect(merged).toContain('kb/first.md');
+      expect(merged).not.toContain('kb/second.md');
+    }
+    const csl = JSON.parse(formatCitations([first, second], 'csl-json')) as Array<{ note: string }>;
+    expect(csl).toHaveLength(1);
+    expect(csl[0].note).toContain('kb/first.md');
+  });
+
+  it('concatenates BibTeX entries with a blank line and dedupes by cite key', () => {
+    // alpha appears twice → one entry; order follows first occurrence.
+    expect(formatCitations([alpha, beta, alpha], 'bibtex')).toBe(
+      `${formatCitation(alpha, 'bibtex')}\n\n${formatCitation(beta, 'bibtex')}`,
+    );
+  });
+
+  it('merges CSL-JSON into one combined array (deduped), not N one-element arrays', () => {
+    const parsed = JSON.parse(formatCitations([alpha, beta, alpha], 'csl-json')) as Array<{ id: string }>;
+    expect(parsed.map((e) => e.id)).toEqual(['lovelace-1843-alpha', 'hopper-1952-beta']);
+  });
+
+  it('prints one text line per source and concatenates RIS records with a blank line', () => {
+    expect(formatCitations([alpha, beta], 'text')).toBe(
+      `${formatCitation(alpha, 'text')}\n${formatCitation(beta, 'text')}`,
+    );
+    expect(formatCitations([alpha, beta], 'ris')).toBe(
+      `${formatCitation(alpha, 'ris')}\n\n${formatCitation(beta, 'ris')}`,
+    );
+  });
+});
+
 // The selector→entry core shared verbatim with both `kb cite` (cli-cite.ts) and
 // the export_citations MCP tool (#1153), so both surfaces produce one citation.
 describe('resolveCitationEntry', () => {
@@ -217,5 +302,52 @@ describe('resolveCitationEntry', () => {
     expect(error).toBeInstanceOf(CitationReadError);
     expect((error as CitationReadError).displayPath).toBe('research/papers/paper.md');
     expect((error as CitationReadError).message).toContain('failed to read research/papers/paper.md');
+  });
+});
+
+// The multi-selector resolver behind `kb cite A B` and export_citations with an
+// array (#1158): resolve in order, fail fast on the first failing selector.
+describe('resolveCitationEntries', () => {
+  async function writeNotes(): Promise<CitationResolutionDeps> {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cite-core-multi-'));
+    await fsp.mkdir(path.join(tempDir, 'p'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'p', 'a.md'), ['---', 'title: Alpha', '---', ''].join('\n'));
+    await fsp.writeFile(path.join(tempDir, 'p', 'b.md'), ['---', 'title: Beta', '---', ''].join('\n'));
+    return { rootDir: tempDir, readFile: (filePath) => fsp.readFile(filePath, 'utf-8') };
+  }
+
+  it('resolves every selector preserving argument order', async () => {
+    const deps = await writeNotes();
+    const entries = await resolveCitationEntries(['p/b.md', 'p/a.md'], deps);
+    expect(entries.map((e) => e.notePath)).toEqual(['p/b.md', 'p/a.md']);
+  });
+
+  it('rejects with a missing note after an earlier selector resolves (path-not-found propagates)', async () => {
+    const deps = await writeNotes();
+    // Second selector is a valid KB but a missing note: resolveKbPath throws a
+    // plain "path not found" Error, and that exact error propagates.
+    await expect(resolveCitationEntries(['p/a.md', 'p/missing.md'], deps)).rejects.toThrow(
+      'path not found: "missing.md"',
+    );
+  });
+
+  it('promotes a malformed selector to VALIDATION even when earlier selectors resolve', async () => {
+    const deps = await writeNotes();
+    await expect(
+      resolveCitationEntries(['p/a.md', 'not-a-reference'], deps),
+    ).rejects.toMatchObject({ name: 'KBError', code: 'VALIDATION' });
+  });
+
+  it('throws the FIRST failing selector in argument order, not a race winner', async () => {
+    const deps = await writeNotes();
+    // Both selectors fail, but with DIFFERENT errors. Sequential in-order
+    // resolution means the first one decides, so the error class flips with the
+    // order — killing a Promise.all (race) or order-reversed mutant.
+    await expect(
+      resolveCitationEntries(['not-a-reference', 'p/missing.md'], deps),
+    ).rejects.toMatchObject({ name: 'KBError', code: 'VALIDATION' });
+    await expect(
+      resolveCitationEntries(['p/missing.md', 'not-a-reference'], deps),
+    ).rejects.toThrow('path not found: "missing.md"');
   });
 });

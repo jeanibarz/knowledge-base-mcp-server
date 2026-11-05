@@ -104,6 +104,27 @@ export async function resolveCitationEntry(
   return citationEntryFromFrontmatter(parsed.frontmatter, reference.displayPath);
 }
 
+/**
+ * Resolve several selectors to entries in argument order (issue #1158). Fails
+ * fast and all-or-nothing: the FIRST selector (in order) that fails throws, with
+ * the exact error {@link resolveCitationEntry} would throw for it, so the merged
+ * surfaces keep the single-selector validation/exit contract — a malformed
+ * selector still maps to exit 2 / VALIDATION, a read failure to exit 1 /
+ * {@link CitationReadError} — and nothing is emitted on any failure. Resolution
+ * is sequential (not `Promise.all`) so the thrown error is deterministically the
+ * first failure in argument order, never a race winner.
+ */
+export async function resolveCitationEntries(
+  targets: readonly string[],
+  deps: CitationResolutionDeps = defaultCitationResolutionDeps(),
+): Promise<CitationEntry[]> {
+  const entries: CitationEntry[] = [];
+  for (const target of targets) {
+    entries.push(await resolveCitationEntry(target, deps));
+  }
+  return entries;
+}
+
 export function citationEntryFromFrontmatter(
   frontmatter: Record<string, unknown>,
   notePath: string,
@@ -134,10 +155,51 @@ export function citationEntryFromFrontmatter(
 }
 
 export function formatCitation(entry: CitationEntry, format: CiteFormat): string {
-  if (format === 'bibtex') return formatBibTeX(entry);
-  if (format === 'csl-json') return JSON.stringify([toCslJson(entry)], null, 2);
-  if (format === 'ris') return formatRis(entry);
-  return formatTextCitation(entry);
+  return formatCitations([entry], format);
+}
+
+/**
+ * Merge several resolved entries into ONE bibliography for the given format
+ * (issue #1158). Entries are deduped by cite key with the first occurrence
+ * winning: a BibTeX bibliography cannot repeat a cite key and a CSL-JSON array
+ * should not repeat an `id`, so the dedup is applied uniformly BEFORE formatting
+ * so every format shares one coherent set rather than diverging per format. Per
+ * format:
+ *   - csl-json: one combined array of CSL objects, so N notes yield one
+ *     N-element array the caller pastes verbatim instead of N one-element arrays
+ *     to stitch by hand.
+ *   - bibtex / ris: one record per entry, separated by a blank line.
+ *   - text: one single-line reference per entry.
+ * A single-entry call is byte-identical to the former single-selector output:
+ * dedup is a no-op on one entry, the CSL array has one element, and the join has
+ * a single part.
+ */
+export function formatCitations(entries: readonly CitationEntry[], format: CiteFormat): string {
+  const deduped = dedupeEntriesByKey(entries);
+  if (format === 'csl-json') {
+    return JSON.stringify(deduped.map(toCslJson), null, 2);
+  }
+  const renderOne =
+    format === 'bibtex' ? formatBibTeX : format === 'ris' ? formatRis : formatTextCitation;
+  const separator = format === 'text' ? '\n' : '\n\n';
+  return deduped.map((entry) => renderOne(entry)).join(separator);
+}
+
+// Dedup resolved entries by cite key, first occurrence winning, preserving
+// input order. Shared by every format so a selector cited twice (or two
+// selectors that resolve to the same key) contributes exactly one entry to the
+// merged bibliography — mandatory for BibTeX (a repeated cite key is invalid)
+// and for CSL-JSON (a repeated `id` breaks downstream citeproc), and the same
+// rule keeps text/RIS output free of duplicate records.
+function dedupeEntriesByKey(entries: readonly CitationEntry[]): CitationEntry[] {
+  const seen = new Set<string>();
+  const out: CitationEntry[] = [];
+  for (const entry of entries) {
+    if (seen.has(entry.key)) continue;
+    seen.add(entry.key);
+    out.push(entry);
+  }
+  return out;
 }
 
 export function normalizeAuthors(value: unknown): string[] {
