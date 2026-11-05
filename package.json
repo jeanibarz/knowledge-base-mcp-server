@@ -74,6 +74,7 @@
     "test:mutation": "stryker run",
     "start": "node build/index.js",
     "dev": "node --watch --import tsx src/index.ts",
+    "dev:inspect": "node --inspect-brk --enable-source-maps --import tsx src/index.ts",
     "dev:cli": "node --enable-source-maps --import tsx scripts/dev-cli.mjs",
     "dev:doctor": "node --enable-source-maps --import tsx scripts/dev-doctor.mjs",
     "dev:fixture": "node --enable-source-maps --import tsx scripts/dev-fixture.mjs",

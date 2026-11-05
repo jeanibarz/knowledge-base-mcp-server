@@ -92,6 +92,58 @@ For focused local work:
 
 Treat watch mode as local-only. It expects an interactive terminal and should not be used in automation.
 
+## Debugging
+
+Every dev entry point runs through `tsx` with source maps, so you can attach a
+Node inspector and set breakpoints directly in the TypeScript sources.
+
+**Debug the MCP server.** Start it under the inspector, halted before the first
+line so you have time to attach:
+
+```sh
+npm run dev:inspect
+```
+
+This runs `node --inspect-brk --enable-source-maps --import tsx src/index.ts`. It
+binds the inspector on the default port (`127.0.0.1:9229`), prints `Debugger
+listening on ws://…`, and pauses — nothing runs until a debugger attaches. Attach
+any Node inspector client:
+
+- **VS Code** — with `npm run dev:inspect` already running in a terminal, open the
+  Run and Debug view, select **"Attach to dev:inspect (MCP server)"** (from
+  [`.vscode/launch.json`](./.vscode/launch.json)), and press <kbd>F5</kbd> or the
+  green play button. It attaches on port `9229`, maps paused frames back to
+  `src/`, and `continueOnAttach` lets the process run straight to your breakpoints.
+- **Chrome / Edge** — open `chrome://inspect` and click the remote target.
+- **CLI** — `node inspect 127.0.0.1:9229`.
+
+**Debug a `kb` CLI command.** The **"Debug kb CLI command"** launch config runs
+the `kb` CLI through the same `scripts/dev-cli.mjs` wrapper that `npm run dev:cli`
+uses, so the debugged command sees the same dev environment and resolved embedding
+model (the wrapper prints that environment when it starts). Edit its `args` array
+to the subcommand you want — it ships with `["--help"]` — then press
+<kbd>F5</kbd>:
+
+```jsonc
+// .vscode/launch.json → "Debug kb CLI command"
+"args": ["search", "my query"],
+```
+
+The config also loads `${workspaceFolder}/.env` if present (copy
+[`.env.example`](./.env.example) to `.env` as described under *Local Test
+Iteration* above), so the debugged command gets the same configuration your shell
+would provide.
+
+`.vscode/launch.json` is intentionally tracked (the rest of `.vscode/` stays
+git-ignored for personal settings). It is editor-agnostic — contributors who use
+another editor can attach to the `dev:inspect` port directly. You can debug any
+other entry point the same way; for example, to break into the remote-transport
+dev harness (`scripts/dev-remote.mjs`, the script behind `npm run dev:remote`):
+
+```sh
+node --inspect-brk --enable-source-maps --import tsx scripts/dev-remote.mjs
+```
+
 ## Incremental Builds
 
 `tsc` runs with `incremental: true`, persisting compile state to `build/.tsbuildinfo` (and `build/benchmarks/.tsbuildinfo` for the bench config). Unchanged files are skipped, so the second `npm run build` after a small edit is much faster than the cold build. The `.tsbuildinfo` files live under the git-ignored `build/` directory and are never committed; CI always runs from a clean checkout, so it gets a correct cold build.

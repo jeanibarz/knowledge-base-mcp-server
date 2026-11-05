@@ -1,0 +1,36 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach to dev:inspect (MCP server)",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "restart": true,
+      "continueOnAttach": true,
+      "skipFiles": ["<node_internals>/**"],
+      "sourceMaps": true,
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/src/**",
+        "!**/node_modules/**"
+      ]
+    },
+    {
+      "name": "Debug kb CLI command",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/dev-cli.mjs",
+      "runtimeArgs": ["--enable-source-maps", "--import", "tsx"],
+      "args": ["--help"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "sourceMaps": true,
+      "resolveSourceMapLocations": [
+        "${workspaceFolder}/src/**",
+        "!**/node_modules/**"
+      ]
+    }
+  ]
+}
