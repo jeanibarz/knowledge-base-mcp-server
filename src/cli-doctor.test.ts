@@ -949,7 +949,7 @@ describe('kb doctor', () => {
         pid: 999999999,
         command: 'kb search --refresh stale',
         cwd: tempDir,
-        hostname: 'test-host',
+        hostname: os.hostname(),
         started_at: '2026-05-22T00:00:00.000Z',
       }));
       const oldMs = Date.now() - 60_000;
@@ -995,6 +995,108 @@ describe('kb doctor', () => {
       expect(markdown).toContain('Status: WARN');
       expect(markdown).toContain('STALE huggingface__BAAI-bge-small-en-v1.5');
       expect(markdown).toContain('owner: pid=999999999, live=no');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a write lock owned by another host as unverifiable (live=null), not a live writer', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-locks-xhost-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      const lockPath = path.join(modelDir, '.kb-write.lock');
+      const ownerPath = path.join(modelDir, '.kb-write.lock.owner.json');
+      await fsp.mkdir(lockPath);
+      // PID that IS live on this host, but the lock is owned by another host:
+      // host-blind isPidLive() would false-positive this as a live writer.
+      await fsp.writeFile(ownerPath, JSON.stringify({
+        schema_version: 'kb.write-lock-owner.v1',
+        pid: process.pid,
+        command: 'kb search --refresh remote',
+        cwd: tempDir,
+        hostname: `${os.hostname()}-other`,
+        started_at: '2026-05-22T00:00:00.000Z',
+      }));
+      // Fresh heartbeat so staleness cannot be what flips the verdict.
+      const freshMs = Date.now();
+      await fsp.utimes(lockPath, freshMs / 1000, freshMs / 1000);
+
+      const { buildDoctorLocksReport, formatDoctorLocksMarkdown } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+      });
+
+      const report = await buildDoctorLocksReport();
+
+      expect(report.locks).toEqual([
+        expect.objectContaining({
+          model_id: MODEL_ID,
+          present: true,
+          lock_kind: 'directory',
+          stale_suspected: false,
+          owner: expect.objectContaining({
+            pid: process.pid,
+            live: null,
+            hostname: `${os.hostname()}-other`,
+            source: 'metadata',
+          }),
+          next_action: expect.stringContaining('cross-host lock'),
+        }),
+      ]);
+      // The operator must not be told a writer is active on this host.
+      expect(report.locks[0]?.next_action).not.toContain('A writer appears active');
+      expect(report.locks[0]?.next_action).toContain(`${os.hostname()}-other`);
+
+      const markdown = formatDoctorLocksMarkdown(report);
+      expect(markdown).toContain(`live=unknown`);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the cross-host hint in the next action when a foreign-host lock is also heartbeat-stale', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-locks-xhost-stale-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      const lockPath = path.join(modelDir, '.kb-write.lock');
+      const ownerPath = path.join(modelDir, '.kb-write.lock.owner.json');
+      await fsp.mkdir(lockPath);
+      await fsp.writeFile(ownerPath, JSON.stringify({
+        schema_version: 'kb.write-lock-owner.v1',
+        pid: process.pid,
+        command: 'kb search --refresh remote',
+        cwd: tempDir,
+        hostname: `${os.hostname()}-other`,
+        started_at: '2026-05-22T00:00:00.000Z',
+      }));
+      // Old heartbeat so the lock is also suspected stale, not just cross-host.
+      const oldMs = Date.now() - 60_000;
+      await fsp.utimes(lockPath, oldMs / 1000, oldMs / 1000);
+
+      const { buildDoctorLocksReport } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+      });
+
+      const report = await buildDoctorLocksReport();
+      const entry = report.locks[0];
+
+      expect(entry?.status).toBe('stale');
+      expect(entry?.owner.live).toBeNull();
+      // Stale AND cross-host: the next action must name both, not drop the host context.
+      expect(entry?.next_action).toContain('stale threshold');
+      expect(entry?.next_action).toContain('cross-host lock');
+      expect(entry?.next_action).toContain(`${os.hostname()}-other`);
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
