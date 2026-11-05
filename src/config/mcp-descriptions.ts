@@ -66,6 +66,13 @@ export const DIFF_INDEX_DESCRIPTION =
 export const FIND_RELATED_DESCRIPTION =
   'Finds chunks semantically similar to an existing result ("more-like-this"), seeded by a chunk id or kb:// URI from a prior retrieve_knowledge hit rather than a text query. Resolves the seed chunk from the active index and runs dense similarity search on its text, excluding the seed itself by default. Read-only. Returns a kb.related.v1 JSON payload (seed, scoped_kb, related results). Defaults: k=10, threshold=2, scoped to the seed chunk\'s knowledge base; pass all_kbs=true to search every KB or include_self=true to keep the seed in the results.';
 
+// Issue #1153 — export_citations: the MCP equivalent of `kb cite`. Turns a
+// retrieval selector (chunk id / kb:// URI / KB-relative path) into a ready
+// bibliography entry from the note's YAML frontmatter. Index-independent and
+// read-only; like diff_index / find_related it carries no env-override knob.
+export const EXPORT_CITATIONS_DESCRIPTION =
+  'Exports a bibliography entry (BibTeX, CSL-JSON, or plain text) for a single note, turning a retrieval result into a citation without a separate terminal step. The selector matches `kb open`: a chunk id or kb:// URI from a prior retrieve_knowledge/find_related hit, or a KB-relative path such as "research/papers/example.md" (any line/chunk fragment identifies only the containing note). Citation fields come from the note\'s YAML frontmatter (authors/author, title, published/date, doi, url, arxiv_id); a note with missing or invalid frontmatter still returns a citation keyed from its path. Read-only and index-independent — it never consults the index or live KB services. Returns the formatted entry as text. Default format: bibtex.';
+
 // Issue #1151 — list_facets: the MCP equivalent of `kb tags`. Read-only
 // frontmatter-facet enumeration so an MCP-only client can discover the valid
 // tags/status/type filter vocabulary accepted by retrieve_knowledge /

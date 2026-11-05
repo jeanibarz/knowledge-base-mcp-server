@@ -2101,6 +2101,126 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(similaritySearchMock).not.toHaveBeenCalled();
   });
 
+  // --- handleExportCitations (#1153) ----------------------------------------
+
+  async function writeCiteNote(rootDir: string): Promise<void> {
+    await fsp.mkdir(path.join(rootDir, 'research', 'papers'), { recursive: true });
+    await fsp.writeFile(
+      path.join(rootDir, 'research', 'papers', 'paper.md'),
+      [
+        '---',
+        'title: Example Paper',
+        'authors:',
+        '  - Ada Lovelace',
+        'published: 1843-01-01',
+        'doi: doi:10.1000/example',
+        '---',
+        '',
+        '# Example Paper',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  it('handleExportCitations resolves a KB-relative path and returns a BibTeX entry from frontmatter', async () => {
+    const tempDir = await setRetrieveEnv();
+    await writeCiteNote(tempDir);
+    const server = await freshServer();
+
+    const result = await server['handleExportCitations']({ selector: 'research/papers/paper.md' });
+
+    expect(result.isError).toBeFalsy();
+    const text = result.content[0].text as string;
+    // Default format is bibtex; a frontmatter DOI promotes @misc → @article.
+    expect(text).toBe(
+      [
+        '@article{lovelace-1843-example,',
+        '  author = {Ada Lovelace},',
+        '  title = {Example Paper},',
+        '  year = {1843},',
+        '  doi = {10.1000/example},',
+        '  note = {KB note: research/papers/paper.md},',
+        '}',
+      ].join('\n'),
+    );
+  });
+
+  it('handleExportCitations emits CSL-JSON when format=csl-json, resolving a kb:// URI selector', async () => {
+    const tempDir = await setRetrieveEnv();
+    await writeCiteNote(tempDir);
+    const server = await freshServer();
+
+    const result = await server['handleExportCitations']({
+      selector: 'kb://research/papers/paper.md',
+      format: 'csl-json',
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.content[0].text as string)).toEqual([
+      {
+        id: 'lovelace-1843-example',
+        type: 'article-journal',
+        note: 'KB note: research/papers/paper.md',
+        title: 'Example Paper',
+        author: [{ literal: 'Ada Lovelace' }],
+        issued: { 'date-parts': [[1843, 1, 1]] },
+        DOI: '10.1000/example',
+      },
+    ]);
+  });
+
+  it('handleExportCitations returns a path-keyed citation when frontmatter is missing (not an error)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'notes'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'notes', 'plain-note.md'), '# Plain note\n\nNo frontmatter here.\n');
+    const server = await freshServer();
+
+    const result = await server['handleExportCitations']({ selector: 'notes/plain-note.md', format: 'text' });
+
+    // Mirrors `kb cite` degrading gracefully: a note without citation
+    // frontmatter still yields a citation keyed from its path.
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toBe('[plainnote-nd-plainnote] KB note: notes/plain-note.md');
+  });
+
+  it('handleExportCitations surfaces a VALIDATION error for a malformed selector', async () => {
+    await setRetrieveEnv();
+    const server = await freshServer();
+
+    const result = await server['handleExportCitations']({ selector: 'not-a-reference' });
+
+    expect(result.isError).toBe(true);
+    const error = JSON.parse(result.content[0].text as string).error;
+    expect(error.code).toBe('VALIDATION');
+    expect(error.message).toContain("cannot parse reference 'not-a-reference'");
+  });
+
+  it('handleExportCitations returns a path-not-found (INTERNAL) error for a missing note at a valid KB path', async () => {
+    const tempDir = await setRetrieveEnv();
+    // The KB directory exists but the note does not: resolveKbPath throws a
+    // plain Error("path not found: …"), which mcpErrorContent stamps INTERNAL
+    // (not KB_NOT_FOUND — that is reserved for an unknown knowledge base).
+    await fsp.mkdir(path.join(tempDir, 'research'), { recursive: true });
+    const server = await freshServer();
+
+    const result = await server['handleExportCitations']({ selector: 'research/missing.md' });
+
+    expect(result.isError).toBe(true);
+    const error = JSON.parse(result.content[0].text as string).error;
+    expect(error.code).toBe('INTERNAL');
+    expect(error.message).toContain('path not found');
+  });
+
+  it('handleExportCitations surfaces KB_NOT_FOUND when the selector names an unknown knowledge base', async () => {
+    await setRetrieveEnv();
+    const server = await freshServer();
+
+    const result = await server['handleExportCitations']({ selector: 'no-such-kb/paper.md' });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text as string).error.code).toBe('KB_NOT_FOUND');
+  });
+
   // --- handleRetrieveKnowledge ----------------------------------------------
 
   it('handleRetrieveKnowledge formats multi-result responses with Result N, score, and source blocks', async () => {
@@ -3468,15 +3588,15 @@ describe('KnowledgeBaseServer handlers', () => {
   }
 
   // Issue #798 — every tool must advertise its advisory ToolAnnotations so MCP
-  // clients can gate auto-approval and confirm destructive writes. The eight
+  // clients can gate auto-approval and confirm destructive writes. The ten
   // readers are read-only; the three ingest-gated writes carry hand-reviewed
   // destructive/idempotent hints (delete is the only destructive one).
-  it('registers each of the 11 tools with the expected ToolAnnotations hints', async () => {
+  it('registers each of the 13 tools with the expected ToolAnnotations hints', async () => {
     await setRetrieveEnv();
     process.env.KB_INGEST_ENABLED = 'true';
     const server = await freshServer();
 
-    // All 11 tools present so we can assert the writes too.
+    // All 13 tools present so we can assert the writes too.
     expect(registeredToolNames(server)).toEqual(
       expect.arrayContaining([
         'list_knowledge_bases',
@@ -3487,6 +3607,8 @@ describe('KnowledgeBaseServer handlers', () => {
         'diff_index',
         'find_related',
         'list_facets',
+        'recommend_knowledge_base',
+        'export_citations',
         'add_document',
         'delete_document',
         'reindex_knowledge_base',
@@ -3502,6 +3624,8 @@ describe('KnowledgeBaseServer handlers', () => {
       'diff_index',
       'find_related',
       'list_facets',
+      'recommend_knowledge_base',
+      'export_citations',
     ]) {
       expect(annotationsOf(server, readOnlyTool)).toMatchObject({ readOnlyHint: true });
     }
