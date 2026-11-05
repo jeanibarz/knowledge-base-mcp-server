@@ -827,7 +827,7 @@ export async function runSearch(
   });
 
   if (shouldUsePicker(parsed)) {
-    return runPicker({ results: results as ScoredDocument[] });
+    return runPicker({ results: results as ScoredDocument[], color: shouldColorizePicker(parsed) });
   }
 
   const outputTiming = parsed.timing ? timing : null;
@@ -1372,6 +1372,24 @@ export function shouldHyperlinkSearchOutput(
 
 function buildSearchHyperlinkFlag(parsed: SearchArgs): boolean {
   return shouldHyperlinkSearchOutput(parsed, process.env, process.stdout.isTTY === true);
+}
+
+/**
+ * Issue #1130 — the interactive picker routes its focused-row highlight through
+ * the same unified color resolver (#659) as the rest of search, so the
+ * documented `--color` > `NO_COLOR` > `KB_COLOR` > TTY precedence applies to the
+ * picker frame too (previously it checked only `NO_COLOR`). Like the hyperlink
+ * gate and unlike query-term highlighting, `--highlight` is not a color override
+ * for the picker — only an explicit `--color` flag is. The picker draws its
+ * frames to stderr, so `auto` resolution keys off stderr's TTY.
+ */
+export function shouldColorizePicker(
+  parsed: { color?: ColorMode; colorExplicit?: boolean },
+  env: NodeJS.ProcessEnv = process.env,
+  stderrIsTTY: boolean = process.stderr.isTTY === true,
+): boolean {
+  const flag: ColorMode | undefined = parsed.colorExplicit ? parsed.color ?? 'auto' : undefined;
+  return resolveColorEnabled({ flag, env, isTTY: stderrIsTTY });
 }
 
 function buildSearchSnippetOptions(
@@ -2773,7 +2791,7 @@ async function runLexicalSearch(
   });
 
   if (shouldUsePicker(parsed)) {
-    return runPicker({ results: formatted as ScoredDocument[] });
+    return runPicker({ results: formatted as ScoredDocument[], color: shouldColorizePicker(parsed) });
   }
 
   if (parsed.format === 'json') {
@@ -3187,7 +3205,7 @@ async function runHybridSearch(
   }
 
   if (shouldUsePicker(parsed)) {
-    return runPicker({ results: ranked as ScoredDocument[] });
+    return runPicker({ results: ranked as ScoredDocument[], color: shouldColorizePicker(parsed) });
   }
 
   if (parsed.format === 'json') {

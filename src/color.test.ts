@@ -6,7 +6,11 @@ import {
   readKbColorMode,
   resolveColorEnabled,
 } from './color.js';
-import { shouldHighlightSearchOutput, shouldHyperlinkSearchOutput } from './cli-search.js';
+import {
+  shouldColorizePicker,
+  shouldHighlightSearchOutput,
+  shouldHyperlinkSearchOutput,
+} from './cli-search.js';
 
 describe('parseColorMode', () => {
   it('accepts the three modes', () => {
@@ -175,5 +179,45 @@ describe('shouldHyperlinkSearchOutput routes through the unified color control',
   it('honors KB_COLOR when --color is not explicit', () => {
     expect(shouldHyperlinkSearchOutput({ format: 'md' }, { KB_COLOR: 'always' }, false)).toBe(true);
     expect(shouldHyperlinkSearchOutput({ format: 'md' }, { KB_COLOR: 'never' }, true)).toBe(false);
+  });
+});
+
+// Issue #1130 — the interactive picker must honor the same --color/KB_COLOR
+// precedence as the rest of search, not only NO_COLOR.
+describe('shouldColorizePicker routes through the unified color control', () => {
+  it('colorizes on a TTY by default and not when piped (auto)', () => {
+    expect(shouldColorizePicker({}, {}, true)).toBe(true);
+    expect(shouldColorizePicker({}, {}, false)).toBe(false);
+  });
+
+  it('honors --color=never even on a TTY', () => {
+    expect(shouldColorizePicker({ color: 'never', colorExplicit: true }, {}, true)).toBe(false);
+  });
+
+  it('forces color with --color=always even on a non-TTY', () => {
+    expect(shouldColorizePicker({ color: 'always', colorExplicit: true }, {}, false)).toBe(true);
+  });
+
+  it('suppresses on NO_COLOR by default and lets --color=always override it', () => {
+    expect(shouldColorizePicker({}, { NO_COLOR: '1' }, true)).toBe(false);
+    expect(
+      shouldColorizePicker({ color: 'always', colorExplicit: true }, { NO_COLOR: '1' }, false),
+    ).toBe(true);
+  });
+
+  it('honors KB_COLOR when --color is not explicit', () => {
+    expect(shouldColorizePicker({}, { KB_COLOR: 'never' }, true)).toBe(false);
+    expect(shouldColorizePicker({}, { KB_COLOR: 'always' }, false)).toBe(true);
+  });
+
+  it('keeps NO_COLOR ahead of KB_COLOR (documented precedence)', () => {
+    expect(shouldColorizePicker({}, { NO_COLOR: '1', KB_COLOR: 'always' }, true)).toBe(false);
+  });
+
+  it('ignores parsed.color when the flag was not explicit (auto resolution)', () => {
+    // A non-explicit `color` must not act as a flag: resolution falls through to
+    // env/TTY, so `color: 'never'` with colorExplicit:false still colorizes on a TTY.
+    expect(shouldColorizePicker({ color: 'never', colorExplicit: false }, {}, true)).toBe(true);
+    expect(shouldColorizePicker({ color: 'always', colorExplicit: false }, {}, false)).toBe(false);
   });
 });

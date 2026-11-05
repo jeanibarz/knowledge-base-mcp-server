@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { describe, expect, it } from '@jest/globals';
 import {
   applyKey,
@@ -5,6 +6,7 @@ import {
   formatSelection,
   pickerItemCount,
   renderPickerFrame,
+  runPicker,
   type PickerKey,
   type PickerRenderOptions,
   type PickerState,
@@ -494,5 +496,77 @@ describe('Ctrl-C path', () => {
     const cKey: PickerKey = { name: 'c' };
     const r = applyKey(makeState(), cKey);
     expect(r.action).toEqual({ type: 'continue' });
+  });
+});
+
+// Issue #1130 — runPicker must honor the `color` decision threaded by the
+// caller (already resolved through the unified --color/KB_COLOR/NO_COLOR
+// resolver), not only the picker's internal NO_COLOR fallback.
+describe('runPicker color threading', () => {
+  // A minimal raw-mode stdin stub: an EventEmitter with the ReadStream methods
+  // runPicker calls. The frame renders synchronously before runPicker awaits, so
+  // the test emits an Escape keypress to exit and then inspects the stderr bytes.
+  function makeStdin(): NodeJS.ReadStream {
+    const emitter = new EventEmitter() as unknown as NodeJS.ReadStream & { isRaw: boolean };
+    emitter.isRaw = false;
+    emitter.setRawMode = ((mode: boolean) => {
+      (emitter as unknown as { isRaw: boolean }).isRaw = mode;
+      return emitter;
+    }) as NodeJS.ReadStream['setRawMode'];
+    emitter.resume = (() => emitter) as NodeJS.ReadStream['resume'];
+    emitter.pause = (() => emitter) as NodeJS.ReadStream['pause'];
+    return emitter;
+  }
+
+  function makeStderr(chunks: string[]): NodeJS.WriteStream {
+    return {
+      rows: 24,
+      columns: 80,
+      write: (chunk: string) => {
+        chunks.push(chunk);
+        return true;
+      },
+    } as unknown as NodeJS.WriteStream;
+  }
+
+  async function firstFrame(color: boolean | undefined, env: NodeJS.ProcessEnv): Promise<string> {
+    const stdin = makeStdin();
+    const chunks: string[] = [];
+    const stderr = makeStderr(chunks);
+    const stdout = makeStderr([]);
+    const done = runPicker({
+      results: makeState().results,
+      stdin,
+      stderr,
+      stdout,
+      env,
+      color,
+    });
+    // The initial frame is written and the keypress listener registered
+    // synchronously during the runPicker call; Escape exits the picker.
+    stdin.emit('keypress', undefined, { name: 'escape' });
+    await done;
+    return chunks.join('');
+  }
+
+  const ESC_REVERSE = '\x1b[7m';
+
+  it('emits no ANSI highlight when color is threaded false (--color=never / KB_COLOR=never)', async () => {
+    expect(await firstFrame(false, {})).not.toContain(ESC_REVERSE);
+  });
+
+  it('emits ANSI highlight when color is threaded true (--color=always)', async () => {
+    expect(await firstFrame(true, {})).toContain(ESC_REVERSE);
+  });
+
+  it('a threaded false decision wins even when NO_COLOR is unset in the picker env', async () => {
+    // Before #1130 the picker looked only at NO_COLOR, so an unset NO_COLOR
+    // forced highlight on regardless of --color. The threaded decision now wins.
+    expect(await firstFrame(false, { NO_COLOR: '' })).not.toContain(ESC_REVERSE);
+  });
+
+  it('falls back to the NO_COLOR-only check when no decision is threaded', async () => {
+    expect(await firstFrame(undefined, {})).toContain(ESC_REVERSE);
+    expect(await firstFrame(undefined, { NO_COLOR: '1' })).not.toContain(ESC_REVERSE);
   });
 });
