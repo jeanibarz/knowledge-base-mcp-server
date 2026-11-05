@@ -5,6 +5,7 @@ import {
   hashQuery,
   normalizeCanonicalEvent,
   stableCanonicalJson,
+  type CanonicalLogEvent,
 } from './canonical-log.js';
 import { parseKBSlowQueryMs } from './config/logging.js';
 
@@ -243,5 +244,95 @@ describe('canonical log line schema (#216)', () => {
 
     expect(event.slow).toBeUndefined();
     expect(event.level).toBeUndefined();
+  });
+});
+
+// Issue #1127 — guard the hand-maintained CANONICAL_FIELD_ORDER array against
+// the CanonicalLogEvent interface. stableCanonicalJson() serializes *only* the
+// keys listed in CANONICAL_FIELD_ORDER, so a field added to the interface but
+// forgotten in the array is silently dropped from every emitted log line — the
+// compiler can't catch it, because `readonly (keyof CanonicalLogEvent)[]`
+// validates that entries are valid keys, not that all keys are present.
+//
+// Two layers guard the two directions:
+//   1. Compile-time (tsc -p tsconfig.tests.json, run by `npm test`): the
+//      `Required<CanonicalLogEvent>` annotation below fails to build if a new
+//      interface field is not added to this sample, forcing the sample current.
+//   2. Runtime (this test): once the sample has the new key, serializing it
+//      reveals whether CANONICAL_FIELD_ORDER carries that key — if not, the key
+//      is absent from the output and the parity assertion fails.
+// The reverse direction (a stale CANONICAL_FIELD_ORDER entry no longer on the
+// interface) is already a compile error from the array's own `keyof` typing.
+describe('CANONICAL_FIELD_ORDER / CanonicalLogEvent parity (#1127)', () => {
+  // A maximal event with *every* CanonicalLogEvent key populated. The
+  // `Required<CanonicalLogEvent>` annotation makes a newly added interface
+  // field a compile error here until it is added to this literal — the first
+  // half of the guard.
+  const fullyPopulatedEvent: Required<CanonicalLogEvent> = {
+    schema_version: CANONICAL_SCHEMA_VERSION,
+    ts: '2026-05-12T00:00:00.000Z',
+    request_id: 'req-parity',
+    process: 'mcp',
+    event: 'search',
+    level: 'warn',
+    slow: true,
+    tool: 'retrieve_knowledge',
+    cmd: 'search',
+    model_id: 'fake__model',
+    kb_scope: 'all',
+    query_sha256: 'deadbeefdeadbeef',
+    query_len_chars: 10,
+    k: 5,
+    threshold: 0.5,
+    search_mode: 'hybrid',
+    result_count: 3,
+    top_score: 0.9,
+    top_sources: ['a.md'],
+    kb_failures: 1,
+    failed_kbs: ['kb-broken'],
+    took_ms: 12,
+    lock_wait_ms: 1,
+    lock_hold_ms: 2,
+    lock_resource_kind: 'model_index',
+    embed_ms: 3,
+    faiss_ms: 4,
+    format_ms: 5,
+    cache: 'memory_hit',
+    query_cache: { enabled: true, outcome: 'memory_hit', model_id: 'fake__model', elapsed_ms: 1 },
+    error: { code: 'PROVIDER_TIMEOUT', category: 'provider' },
+    degraded: true,
+    degraded_stages: [{ stage: 'dense', reason: 'provider_timeout' }],
+    degrade_reason: 'provider_timeout',
+    recovery_hint: 'retry with a broader kb scope',
+    rerank: { degraded: false, degrade_reason: null },
+    gate: { state: 'passed', degraded: false },
+    secret_scan: { findings: 0 },
+    llm_provider: 'llama',
+  };
+
+  it('emits every CanonicalLogEvent field — none silently dropped by a stale CANONICAL_FIELD_ORDER', () => {
+    // Guard precondition: every sample value is defined, so the only reason a
+    // key could be absent from the output is CANONICAL_FIELD_ORDER not listing
+    // it (stableCanonicalJson skips undefined values).
+    const eventKeys = Object.keys(fullyPopulatedEvent);
+    expect(
+      eventKeys.every((key) => fullyPopulatedEvent[key as keyof CanonicalLogEvent] !== undefined),
+    ).toBe(true);
+
+    const emitted = JSON.parse(stableCanonicalJson(fullyPopulatedEvent)) as Record<string, unknown>;
+    const emittedKeys = Object.keys(emitted);
+
+    // Fully-populated event must emit every field in the output line. Any key
+    // listed here is present on the interface but missing from
+    // CANONICAL_FIELD_ORDER (or dropped from serialization for another reason).
+    const missingFromOutput = eventKeys.filter((key) => !emittedKeys.includes(key));
+    expect(missingFromOutput).toEqual([]);
+
+    // Symmetric check: the serializer must not invent keys beyond the schema.
+    const unexpectedInOutput = emittedKeys.filter((key) => !eventKeys.includes(key));
+    expect(unexpectedInOutput).toEqual([]);
+
+    // Belt-and-suspenders count: output key set equals the full event key set.
+    expect(emittedKeys.length).toBe(eventKeys.length);
   });
 });
