@@ -75,6 +75,7 @@ import {
 import {
   KNOWLEDGE_BASES_ROOT_DIR,
 } from './config/paths.js';
+import { KB_READY_TIMEOUT_MS } from './config/provider.js';
 import type { EmbeddingProvider } from './model-id.js';
 import {
   loadTransportConfig,
@@ -1964,6 +1965,7 @@ export class KnowledgeBaseServer {
       createMcpServer: () => this.buildMcpServer(),
       metricsExporter: () => this.handleMetricsExport(),
       readinessProbe: () => buildTransportReadinessPayload(),
+      readinessTimeoutMs: KB_READY_TIMEOUT_MS,
     });
     this.sseHost = host;
     this.installHttpShutdown();
@@ -1983,6 +1985,7 @@ export class KnowledgeBaseServer {
       createMcpServer: () => this.buildMcpServer(),
       metricsExporter: () => this.handleMetricsExport(),
       readinessProbe: () => buildTransportReadinessPayload(),
+      readinessTimeoutMs: KB_READY_TIMEOUT_MS,
     });
     this.httpHost = host;
     this.installHttpShutdown();

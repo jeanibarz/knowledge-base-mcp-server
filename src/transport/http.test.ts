@@ -47,6 +47,7 @@ async function startHost(opts: {
   createMcpServer?: () => McpServer;
   metricsExporter?: () => Promise<string>;
   readinessProbe?: () => Promise<ReadinessPayload>;
+  readinessTimeoutMs?: number;
 }): Promise<{ host: StreamableHttpHost; port: number; stop: () => Promise<void> }> {
   const host = new StreamableHttpHost({
     config: {
@@ -62,6 +63,7 @@ async function startHost(opts: {
     createMcpServer: opts.createMcpServer ?? freshFactory(),
     metricsExporter: opts.metricsExporter,
     readinessProbe: opts.readinessProbe,
+    readinessTimeoutMs: opts.readinessTimeoutMs,
   });
   const server = await host.start();
   const addr = server.address() as AddressInfo;
@@ -269,6 +271,54 @@ describe('StreamableHttpHost — endpoints', () => {
     });
     expect(res.statusCode).toBe(503);
     expect(JSON.parse(res.body)).toEqual(readyPayload('error', ['backend']));
+  });
+
+  it('#1121 — GET /ready fails fast with a bounded 503 when the probe exceeds the deadline', async () => {
+    // A readiness probe that never resolves (simulating a cold/hung embedding
+    // backend whose embedQuery is bounded only by the ~2min KB_EMBED_TIMEOUT_MS).
+    const started = await startHost({
+      readinessTimeoutMs: 80,
+      readinessProbe: () => new Promise<ReadinessPayload>(() => {}),
+    });
+    stop = started.stop;
+
+    const requestStart = Date.now();
+    const res = await request(started.port, {
+      path: '/ready',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` },
+    });
+    const elapsed = Date.now() - requestStart;
+
+    expect(res.statusCode).toBe(503);
+    // Well under KB_EMBED_TIMEOUT_MS; generous upper bound to avoid CI flakiness.
+    expect(elapsed).toBeLessThan(2_000);
+    const body = JSON.parse(res.body) as ReadinessPayload;
+    expect(body.status).toBe('error');
+    expect(body.failing_checks).toEqual(['active_model', 'index', 'backend']);
+    expect(body.reason).toMatch(/deadline/i);
+
+    // Acceptance: the inFlight slot is released once the deadline fires, so the
+    // stuck probe does not count against the graceful-shutdown drain.
+    expect(started.host.getRuntimeStats().in_flight_requests).toBe(0);
+  });
+
+  it('#1121 — a healthy probe under the deadline still returns ready', async () => {
+    const started = await startHost({
+      readinessTimeoutMs: 1_000,
+      readinessProbe: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return readyPayload('ok');
+      },
+    });
+    stop = started.stop;
+
+    const res = await request(started.port, {
+      path: '/ready',
+      headers: { Authorization: `Bearer ${VALID_TOKEN}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual(readyPayload('ok'));
+    expect(started.host.getRuntimeStats().in_flight_requests).toBe(0);
   });
 
   it('applies the same origin gate to /ready as MCP routes', async () => {

@@ -57,11 +57,23 @@ const READY_ENDPOINT = '/ready';
 const SHUTDOWN_DRAIN_DEADLINE_MS = 10_000;
 const SHUTDOWN_POLL_INTERVAL_MS = 50;
 
+// Issue #1121 — fallback deadline for the `GET /ready` readiness probe when a
+// caller does not supply `readinessTimeoutMs`. Mirrors the KB_READY_TIMEOUT_MS
+// config default (src/config/provider.ts) so the probe is always bounded even
+// if the host is constructed without an explicit timeout. Keeps the HTTP host
+// free of a direct dependency on the embedding-provider config module.
+const DEFAULT_READINESS_PROBE_TIMEOUT_MS = 5_000;
+
 export interface BaseHttpHostOptions {
   config: TransportConfig;
   createMcpServer: () => McpServer;
   metricsExporter?: () => Promise<string>;
   readinessProbe?: () => Promise<ReadinessPayload>;
+  // Issue #1121 — deadline (ms) bounding `readinessProbe`. On expiry GET /ready
+  // returns a bounded 503 instead of blocking on a cold/hung backend (whose
+  // embed call is bounded only by the far larger KB_EMBED_TIMEOUT_MS). Omitted
+  // or non-positive -> DEFAULT_READINESS_PROBE_TIMEOUT_MS.
+  readinessTimeoutMs?: number;
 }
 
 export interface BaseSessionEntry<TTransport> {
@@ -637,9 +649,37 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       return 405;
     }
 
+    // Issue #1121 — bound the probe with a fast deadline. The backend check
+    // performs a live embedQuery (bounded only by the ~2min KB_EMBED_TIMEOUT_MS),
+    // so against a cold/hung backend an unbounded await would hold this inFlight
+    // slot — timing out the poller and delaying graceful-shutdown drain. Racing
+    // against a timer makes /ready fail fast with a bounded 503, and the inFlight
+    // slot is released as soon as the race settles (the probe keeps running in
+    // the background, still bounded by KB_EMBED_TIMEOUT_MS).
+    const timeoutMs =
+      this.options.readinessTimeoutMs !== undefined && this.options.readinessTimeoutMs > 0
+        ? this.options.readinessTimeoutMs
+        : DEFAULT_READINESS_PROBE_TIMEOUT_MS;
+
     this.inFlight += 1;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const payload = await this.options.readinessProbe();
+      const probePromise = this.options.readinessProbe();
+      // If the deadline wins the race, the probe promise stays pending and may
+      // later settle; swallow a late rejection so it never surfaces as an
+      // unhandledRejection after we have already responded.
+      probePromise.catch(() => {});
+
+      const timeoutPromise = new Promise<ReadinessPayload>((resolve) => {
+        timer = setTimeout(() => resolve(readinessTimeoutPayload(timeoutMs)), timeoutMs);
+        // Never keep the event loop alive solely for this timer.
+        if (typeof timer.unref === 'function') timer.unref();
+      });
+
+      const payload = await Promise.race([probePromise, timeoutPromise]);
+      if (payload.reason !== undefined) {
+        logger.warn(`[${this.logPrefix}] readiness probe timed out: ${payload.reason}`);
+      }
       const status = payload.status === 'ok' ? 200 : 503;
       writeJson(res, status, payload, method);
       return status;
@@ -658,6 +698,7 @@ export abstract class BaseHttpHost<TTransport extends { close(): Promise<void> }
       writeJson(res, 503, payload, method);
       return 503;
     } finally {
+      if (timer !== undefined) clearTimeout(timer);
       this.inFlight -= 1;
     }
   }
@@ -880,6 +921,23 @@ export function respond(res: http.ServerResponse, status: number, message: strin
   }
   res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end(message);
+}
+
+// Issue #1121 — bounded-error payload returned when the readiness deadline
+// fires before the probe resolves. All checks report `error` because a timeout
+// yields no per-check result (identical to the probe-threw path); the `reason`
+// field distinguishes a deadline expiry from an underlying probe failure.
+function readinessTimeoutPayload(timeoutMs: number): ReadinessPayload {
+  return {
+    status: 'error',
+    checks: [
+      { name: 'active_model', status: 'error' },
+      { name: 'index', status: 'error' },
+      { name: 'backend', status: 'error' },
+    ],
+    failing_checks: ['active_model', 'index', 'backend'],
+    reason: `readiness probe exceeded ${timeoutMs}ms deadline`,
+  };
 }
 
 function writeJson(

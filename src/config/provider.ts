@@ -142,6 +142,32 @@ export function parseKbEmbedTimeoutMs(raw: string | undefined): number {
 
 export const KB_EMBED_TIMEOUT_MS: number = parseKbEmbedTimeoutMs(process.env.KB_EMBED_TIMEOUT_MS);
 
+// Issue #1121 — fast readiness deadline (ms) that bounds the remote transport
+// `GET /ready` probe end-to-end. The backend check in that probe performs a
+// live `embedQuery`, which is bounded only by KB_EMBED_TIMEOUT_MS (default
+// 120s). A monitoring/orchestrator readiness poll typically budgets 1-10s, so
+// against a cold/hung backend `/ready` would otherwise block for up to two
+// minutes — timing out the poller and holding an inFlight slot that delays
+// graceful-shutdown drain. This deadline makes the probe fail fast with a
+// bounded error payload well under KB_EMBED_TIMEOUT_MS. Default 5s: comfortably
+// above normal (warm) embed latency yet inside a typical readiness budget.
+// Invalid / non-positive values fall back to the default (the probe stays
+// bounded — there is no "disable" escape hatch by design).
+const DEFAULT_KB_READY_TIMEOUT_MS = 5_000;
+
+/**
+ * @internal exported only for config tests. Parses `KB_READY_TIMEOUT_MS`.
+ * Unset / blank / non-finite / `<= 0` -> default 5000; otherwise floored.
+ */
+export function parseKbReadyTimeoutMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_KB_READY_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_KB_READY_TIMEOUT_MS;
+  return Math.floor(parsed);
+}
+
+export const KB_READY_TIMEOUT_MS: number = parseKbReadyTimeoutMs(process.env.KB_READY_TIMEOUT_MS);
+
 // Ollama configuration
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'dengcao/Qwen3-Embedding-0.6B:Q8_0';
