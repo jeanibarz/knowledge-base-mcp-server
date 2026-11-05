@@ -51,7 +51,7 @@ All install paths need [Node.js](https://nodejs.org/) 22 or newer and npm.
 npx -y @jeanibarz/knowledge-base-mcp-server@latest
 ```
 
-`npx` fetches the package from npm and launches the stdio server. Point your MCP client at that same command and set the environment variables described under [Configure](#configure). [docs/clients.md](docs/clients.md) has copy-pasteable config snippets for Claude Desktop, Codex CLI, Cursor, Continue, and Cline.
+`npx` fetches the package from npm and launches the stdio server. Point your MCP client at that same command and set the environment variables described under [Configure](#configure). [docs/clients.md](docs/clients.md) has copy-pasteable config snippets for Claude Desktop, Claude Code, Codex CLI, Cursor, Continue, Cline, and the editors with native MCP support — VS Code, Windsurf, and JetBrains.
 
 > **Pin `@latest`, not the unversioned spec.** `npx -y @jeanibarz/knowledge-base-mcp-server` (no version) caches the resolved version in `~/.npm/_npx/` indefinitely — subsequent client launches reuse that cached version even after a new release ships. The `@latest` form hashes to a different cache key and re-resolves on every launch, so new fixes arrive on the next client restart instead of requiring a manual `~/.npm/_npx/` clear. See [RFC 012 §2.4](docs/rfcs/012-cli-distribution.md).
 
@@ -243,6 +243,8 @@ KB_STATS_DESCRIPTION="Report engineering KB index and transport health."
 ```
 
 ## Use the MCP server
+
+First wire your client to the server: [docs/clients.md](docs/clients.md) has paste-ready config for every supported client, including the editors with native MCP support — [VS Code](docs/clients.md#vs-code), [Windsurf](docs/clients.md#windsurf), and [JetBrains](docs/clients.md#jetbrains).
 
 ### Tools
 
