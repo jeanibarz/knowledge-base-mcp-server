@@ -247,6 +247,14 @@ export interface RunPickerOptions {
   stderr?: NodeJS.WriteStream;
   stdout?: NodeJS.WriteStream;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Whether to emit ANSI color in picker frames. When provided, this is the
+   * already-resolved decision from the unified color resolver (#659), so the
+   * picker honors `--color`/`KB_COLOR`/`NO_COLOR` precedence like the rest of
+   * search (#1130). When omitted, the picker falls back to its own NO_COLOR-only
+   * check for callers that do not thread a decision.
+   */
+  color?: boolean;
 }
 
 export async function runPicker(opts: RunPickerOptions): Promise<number> {
@@ -259,7 +267,7 @@ export async function runPicker(opts: RunPickerOptions): Promise<number> {
   const buildRenderOpts = (): PickerRenderOptions => ({
     rows: (stderr.rows && stderr.rows > 4) ? stderr.rows : 20,
     cols: stderr.columns ?? 80,
-    color: pickerColorEnabled(env),
+    color: opts.color ?? pickerColorEnabled(env),
   });
 
   const wasRaw = stdin.isRaw === true;
@@ -390,6 +398,8 @@ function computeViewport(state: PickerState, opts: PickerRenderOptions): number 
   return Math.max(3, opts.rows - reserved);
 }
 
+// NO_COLOR-only fallback, used when no resolved `color` is threaded into
+// RunPickerOptions (see that field's doc for the threaded path).
 function pickerColorEnabled(env: NodeJS.ProcessEnv): boolean {
   if (env.NO_COLOR !== undefined && env.NO_COLOR !== '') return false;
   return true;
