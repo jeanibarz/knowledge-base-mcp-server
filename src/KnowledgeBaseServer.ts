@@ -58,6 +58,7 @@ import {
   EXPORT_CITATIONS_INPUT,
   FIND_RELATED_INPUT,
   LIST_FACETS_INPUT,
+  LIST_KNOWLEDGE_BASES_INPUT,
   KB_STATS_INPUT,
   RECOMMEND_KNOWLEDGE_BASE_INPUT,
   REINDEX_KNOWLEDGE_BASE_INPUT,
@@ -99,6 +100,7 @@ import {
   resolveKnowledgeBaseDir,
 } from './kb-fs.js';
 import { computeKbStats } from './kb-stats.js';
+import { listKnowledgeBaseDocuments } from './kb-document-listing.js';
 import {
   buildFacetsJsonPayload,
   collectTagsReport,
@@ -541,11 +543,17 @@ export class KnowledgeBaseServer {
     // so MCP clients can gate auto-approval and confirm destructive writes. The
     // zero-arg readers use the SDK's (name, description, annotations, cb)
     // overload; shaped tools thread annotations through registerShapedTool.
-    mcp.tool(
+    // Issue #1159 — list_knowledge_bases now takes an optional include_counts
+    // flag, so it registers through registerShapedTool (which threads the input
+    // schema) rather than the zero-arg overload. The default call still sends no
+    // arguments and returns the historical bare-names array.
+    this.registerShapedTool(
+      mcp,
       'list_knowledge_bases',
       LIST_KNOWLEDGE_BASES_DESCRIPTION,
+      LIST_KNOWLEDGE_BASES_INPUT,
       toolAnnotations('list_knowledge_bases'),
-      async () => this.handleListKnowledgeBases()
+      this.handleListKnowledgeBases.bind(this)
     );
 
     this.registerShapedTool(
@@ -744,13 +752,40 @@ export class KnowledgeBaseServer {
     });
   }
 
-  private async handleListKnowledgeBases(): Promise<CallToolResult> {
+  private async handleListKnowledgeBases(
+    args: { include_counts?: boolean } = {},
+  ): Promise<CallToolResult> {
     return this.withCanonicalTool({ tool: 'list_knowledge_bases' }, async () => {
       try {
       const knowledgeBases = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+      if (args.include_counts !== true) {
+        const content: TextContent = {
+          type: 'text',
+          text: JSON.stringify(knowledgeBases, null, 2),
+        };
+        return { content: [content] };
+      }
+      // Issue #1159 — one filesystem walk across every shelf, then group the
+      // returned documents by KB so each name reports its ingestable-document
+      // count (an empty, or non-walkable, shelf defaults to 0). The name set is
+      // taken from listKnowledgeBases above so include_counts and the default
+      // output always agree on which shelves exist; listKnowledgeBaseDocuments
+      // only ever narrows that set (it drops symlinked/invalid dirs), so every
+      // name here is well-defined with a 0 fallback.
+      const { documents } = await listKnowledgeBaseDocuments({
+        rootDir: KNOWLEDGE_BASES_ROOT_DIR,
+      });
+      const counts = new Map<string, number>();
+      for (const document of documents) {
+        counts.set(document.kbName, (counts.get(document.kbName) ?? 0) + 1);
+      }
       const content: TextContent = {
         type: 'text',
-        text: JSON.stringify(knowledgeBases, null, 2),
+        text: JSON.stringify(
+          knowledgeBases.map((name) => ({ name, document_count: counts.get(name) ?? 0 })),
+          null,
+          2,
+        ),
       };
       return { content: [content] };
     } catch (error: unknown) {

@@ -264,7 +264,12 @@
   },
   "list_knowledge_bases": {
     "type": "object",
-    "properties": {}
+    "properties": {
+      "include_counts": {
+        "type": "boolean"
+      }
+    },
+    "$schema": "http://json-schema.org/draft-07/schema#"
   },
   "list_models": {
     "type": "object",

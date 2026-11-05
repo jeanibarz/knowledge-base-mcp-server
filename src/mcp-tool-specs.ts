@@ -246,6 +246,18 @@ export const EXPORT_CITATIONS_INPUT = {
     .describe('Output format for the citation. "bibtex" (default) emits a BibTeX entry, "csl-json" a CSL-JSON array, "text" a one-line plain-text reference, "ris" a RIS record for EndNote/Zotero/Mendeley/RefWorks import.'),
 };
 
+// Issue #1159 — opt-in per-shelf document counts for list_knowledge_bases. The
+// single field is optional and defaults to false, so the historical bare-names
+// array stays the default output (0.x clients unaffected). When true, the
+// handler switches to one { name, document_count } object per shelf, counting
+// ingestable documents via a filesystem walk (an empty shelf reports 0).
+export const LIST_KNOWLEDGE_BASES_INPUT = {
+  include_counts: z
+    .boolean()
+    .optional()
+    .describe('When true, return one object per knowledge base as { name, document_count } instead of a bare array of names. document_count is the number of ingestable documents on that shelf (0 for an empty shelf), computed by a filesystem walk. Omitted/false keeps the default array-of-names output.'),
+};
+
 export const ADD_DOCUMENT_INPUT = {
   knowledge_base_name: z.string().describe('The name of the knowledge base to write into.'),
   path: z.string().describe('KB-relative document path to create or overwrite. Parent directories are created as needed.'),
@@ -294,7 +306,7 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = { readOnlyHint: true };
 // Order mirrors registration in KnowledgeBaseServer.registerTools so the
 // generated doc reads top-to-bottom like the server surface.
 export const MCP_TOOL_SPECS: McpToolSpec[] = [
-  { name: 'list_knowledge_bases', description: LIST_KNOWLEDGE_BASES_DESCRIPTION, annotations: READ_ONLY_ANNOTATIONS },
+  { name: 'list_knowledge_bases', description: LIST_KNOWLEDGE_BASES_DESCRIPTION, inputShape: LIST_KNOWLEDGE_BASES_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   { name: 'retrieve_knowledge', description: RETRIEVE_KNOWLEDGE_DESCRIPTION, inputShape: RETRIEVE_KNOWLEDGE_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   { name: 'ask_knowledge', description: ASK_KNOWLEDGE_DESCRIPTION, inputShape: ASK_KNOWLEDGE_INPUT, annotations: READ_ONLY_ANNOTATIONS },
   { name: 'list_models', description: LIST_MODELS_DESCRIPTION, annotations: READ_ONLY_ANNOTATIONS },
