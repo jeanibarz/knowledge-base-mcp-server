@@ -231,19 +231,26 @@ export const RECOMMEND_KNOWLEDGE_BASE_INPUT = {
     .describe('Override the active embedding model for this call (RFC 013). Defaults to the active model.'),
 };
 
-// Issue #1153 — export_citations mirrors the read-only `kb cite` CLI: turn one
-// retrieval selector into a bibliography entry from the note's frontmatter. The
-// selector matches `kb open` (chunk id / kb:// URI / KB-relative path); format
-// mirrors the CLI's --format. Index-independent — it only reads one note.
+// Issue #1153 / #1158 — export_citations mirrors the read-only `kb cite` CLI:
+// turn one or more retrieval selectors into a bibliography from the notes'
+// frontmatter. Each selector matches `kb open` (chunk id / kb:// URI /
+// KB-relative path); format mirrors the CLI's --format. Index-independent — it
+// only reads the named notes. `selector` accepts either a single string (the
+// #1153 shape, byte-identical output) or an array of selectors (#1158) merged
+// into one bibliography.
 export const EXPORT_CITATIONS_INPUT = {
   selector: z
-    .string()
-    .min(1, 'selector must not be empty')
-    .describe('The note to cite: a chunk id (e.g. "alpha/papers/x.md#L42-L78") or kb:// URI from a prior retrieve_knowledge/find_related result, or a KB-relative path such as "research/papers/example.md". A line/chunk fragment is accepted but only identifies the containing note.'),
+    .union([
+      z.string().min(1, 'selector must not be empty'),
+      z
+        .array(z.string().min(1, 'each selector must not be empty'))
+        .min(1, 'selector must not be empty'),
+    ])
+    .describe('The note(s) to cite: a chunk id (e.g. "alpha/papers/x.md#L42-L78") or kb:// URI from a prior retrieve_knowledge/find_related result, or a KB-relative path such as "research/papers/example.md" (a line/chunk fragment is accepted but only identifies the containing note). Pass an array of such selectors to emit ONE merged bibliography — BibTeX/RIS records concatenated and deduped by cite key, a single combined CSL-JSON array, or one text line per note. Selectors resolve in order; if any fails to resolve the whole call errors (no partial output), mirroring `kb cite`.'),
   format: z
     .enum(['bibtex', 'csl-json', 'text', 'ris'])
     .optional()
-    .describe('Output format for the citation. "bibtex" (default) emits a BibTeX entry, "csl-json" a CSL-JSON array, "text" a one-line plain-text reference, "ris" a RIS record for EndNote/Zotero/Mendeley/RefWorks import.'),
+    .describe('Output format for the citation(s). "bibtex" (default) emits BibTeX entries, "csl-json" a CSL-JSON array, "text" a one-line plain-text reference per note, "ris" RIS records for EndNote/Zotero/Mendeley/RefWorks import.'),
 };
 
 // Issue #1159 — opt-in per-shelf document counts for list_knowledge_bases. The

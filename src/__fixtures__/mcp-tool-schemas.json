@@ -193,8 +193,20 @@
     "type": "object",
     "properties": {
       "selector": {
-        "type": "string",
-        "minLength": 1
+        "anyOf": [
+          {
+            "type": "string",
+            "minLength": 1
+          },
+          {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ]
       },
       "format": {
         "type": "string",

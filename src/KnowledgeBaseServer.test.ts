@@ -2301,6 +2301,76 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(JSON.parse(result.content[0].text as string).error.code).toBe('KB_NOT_FOUND');
   });
 
+  it('handleExportCitations merges an array of selectors into one BibTeX block, deduped by key (#1158)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'research', 'papers'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tempDir, 'research', 'papers', 'a.md'),
+      ['---', 'title: Alpha', 'authors:', '  - Ada Lovelace', 'published: 1843', '---', ''].join('\n'),
+    );
+    await fsp.writeFile(
+      path.join(tempDir, 'research', 'papers', 'b.md'),
+      ['---', 'title: Beta', 'authors:', '  - Grace Hopper', 'published: 1952', '---', ''].join('\n'),
+    );
+    const server = await freshServer();
+
+    // a.md is listed twice; the repeated cite key collapses to a single entry.
+    const result = await server['handleExportCitations']({
+      selector: ['research/papers/a.md', 'research/papers/b.md', 'research/papers/a.md'],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toBe(
+      [
+        '@misc{lovelace-1843-alpha,',
+        '  author = {Ada Lovelace},',
+        '  title = {Alpha},',
+        '  year = {1843},',
+        '  note = {KB note: research/papers/a.md},',
+        '}',
+        '',
+        '@misc{hopper-1952-beta,',
+        '  author = {Grace Hopper},',
+        '  title = {Beta},',
+        '  year = {1952},',
+        '  note = {KB note: research/papers/b.md},',
+        '}',
+      ].join('\n'),
+    );
+  });
+
+  it('handleExportCitations merges an array of selectors into one CSL-JSON array (#1158)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await writeCiteNote(tempDir);
+    await fsp.writeFile(
+      path.join(tempDir, 'research', 'papers', 'other.md'),
+      ['---', 'title: Other Paper', 'authors:', '  - Grace Hopper', 'published: 1952', '---', ''].join('\n'),
+    );
+    const server = await freshServer();
+
+    const result = await server['handleExportCitations']({
+      selector: ['research/papers/paper.md', 'research/papers/other.md'],
+      format: 'csl-json',
+    });
+
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(result.content[0].text as string) as Array<{ id: string }>;
+    expect(parsed.map((e) => e.id)).toEqual(['lovelace-1843-example', 'hopper-1952-otherpaper']);
+  });
+
+  it('handleExportCitations errors the whole array call when any selector fails (no partial output) (#1158)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await writeCiteNote(tempDir);
+    const server = await freshServer();
+
+    const result = await server['handleExportCitations']({
+      selector: ['research/papers/paper.md', 'not-a-reference'],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text as string).error.code).toBe('VALIDATION');
+  });
+
   // --- handleRetrieveKnowledge ----------------------------------------------
 
   it('handleRetrieveKnowledge formats multi-result responses with Result N, score, and source blocks', async () => {
