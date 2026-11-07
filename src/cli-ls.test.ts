@@ -168,14 +168,52 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
     ]);
   });
 
-  it('rejects knowledge-base roots that resolve outside the configured root', async () => {
+  it('rejects an explicitly requested KB root that resolves outside the configured root', async () => {
     const rootDir = await makeRoot();
     const outsideDir = path.join(tempDir!, 'outside');
     await fsp.mkdir(outsideDir, { recursive: true });
     await fsp.writeFile(path.join(outsideDir, 'leaked.md'), '# Outside\n', 'utf8');
     await fsp.symlink(outsideDir, path.join(rootDir, 'evil'), 'dir');
 
-    await expect(listKnowledgeBaseDocuments({ rootDir })).rejects.toThrow('resolves outside');
+    await expect(listKnowledgeBaseDocuments({ rootDir, kbName: 'evil' }))
+      .rejects.toThrow('resolves outside');
+  });
+
+  it('skips an escaping KB symlink instead of failing the whole listing (#1087)', async () => {
+    const rootDir = await makeRoot();
+    await writeFile(rootDir, 'good/note.md', '# Good\n');
+    const outsideDir = path.join(tempDir!, 'outside');
+    await fsp.mkdir(outsideDir, { recursive: true });
+    await fsp.writeFile(path.join(outsideDir, 'leaked.md'), '# Outside\n', 'utf8');
+    await fsp.symlink(outsideDir, path.join(rootDir, 'evil'), 'dir');
+
+    const listing = await listKnowledgeBaseDocuments({
+      rootDir,
+      skipMissingKb: true,
+      failOnEnumerationError: false,
+    });
+    expect(listing.knowledgeBases).toEqual(['good']);
+    expect(listing.documents.map((document) => `${document.kbName}/${document.relativePath}`))
+      .toEqual(['good/note.md']);
+    expect(JSON.stringify(listing)).not.toContain('leaked.md');
+    expect(JSON.stringify(listing)).not.toContain(outsideDir);
+
+    // The default (strict) options skip it too: the entry is not an
+    // addressable KB, so it is absent rather than an error.
+    const strict = await listKnowledgeBaseDocuments({ rootDir });
+    expect(strict.knowledgeBases).toEqual(['good']);
+  });
+
+  it('still propagates non-VALIDATION errors while enumerating KB directories', async () => {
+    const rootDir = await makeRoot();
+    await writeFile(rootDir, 'good/note.md', '# Good\n');
+    // A self-referential symlink makes stat() fail with ELOOP, which is
+    // neither a root-escape VALIDATION error nor a missing-entry error.
+    await fsp.symlink('loop', path.join(rootDir, 'loop'));
+
+    await expect(listKnowledgeBaseDocuments({ rootDir })).rejects.toMatchObject({
+      code: 'ELOOP',
+    });
   });
 
   it('does not treat an in-root KB symlink as a second inventory', async () => {
