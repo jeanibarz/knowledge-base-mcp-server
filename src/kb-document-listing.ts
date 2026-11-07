@@ -16,6 +16,7 @@ import {
   resolveKnowledgeBaseDir,
 } from './kb-fs.js';
 import { filterIngestablePaths } from './ingest-filter.js';
+import { KBError } from './errors.js';
 import { isValidKbName } from './kb-paths.js';
 import { listIngestQuarantine } from './ingest-quarantine.js';
 import { getFilesRecursivelyWithDiagnostics } from './file-utils.js';
@@ -253,10 +254,19 @@ async function listKnowledgeBaseDirectories(rootDir: string): Promise<string[]> 
     } catch (error: unknown) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
       if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+      // A symlink that escapes the root is not an addressable KB: omit it
+      // from the inventory instead of letting one bad entry fail the whole
+      // listing (#1087). Nothing is logged, so the escaping target path
+      // never reaches logs. Any other error still propagates.
+      if (isOutsideRootValidationError(error)) continue;
       throw error;
     }
   }
   return directories.sort(compareStrings);
+}
+
+function isOutsideRootValidationError(error: unknown): boolean {
+  return error instanceof KBError && error.code === 'VALIDATION';
 }
 
 function prefixSearchRelativeDir(

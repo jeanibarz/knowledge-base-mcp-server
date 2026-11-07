@@ -12,7 +12,7 @@ Use resources when a client already knows which document it needs, or when it wa
 
 ## Resource Listing
 
-`resources/list` walks every non-hidden knowledge base under `KNOWLEDGE_BASES_ROOT_DIR` and returns files that match the same ingest eligibility policy used by refresh/search indexing. Dot-prefixed files and directories are skipped, including `.index`, `.faiss`, and user-created draft folders. Built-in ingest exclusions, `INGEST_EXTRA_EXTENSIONS`, `INGEST_EXCLUDE_PATHS`, and per-KB ingest quarantine entries are also honored, so clients do not browse files the index would currently skip.
+`resources/list` walks every non-hidden knowledge base under `KNOWLEDGE_BASES_ROOT_DIR` and returns files that match the same ingest eligibility policy used by refresh/search indexing. Dot-prefixed files and directories are skipped, including `.index`, `.faiss`, and user-created draft folders. Built-in ingest exclusions, `INGEST_EXTRA_EXTENSIONS`, `INGEST_EXCLUDE_PATHS`, and per-KB ingest quarantine entries are also honored, so clients do not browse files the index would currently skip. A top-level entry that is a symlink resolving outside `KNOWLEDGE_BASES_ROOT_DIR` is not an addressable knowledge base: it is left out of the listing (it never fails the whole `resources/list` call), and `kb doctor --kb-symlinks` reports it.
 
 The no-parameter request remains backward-compatible: it returns the full concrete resource list and no cursor. Clients browsing large roots can pass these optional params:
 
