@@ -8,3 +8,20 @@
 // `testTimeout` config key is silently ignored. Fast, uninstrumented
 // `npm test` runs are unaffected — they still finish well under the cap.
 jest.setTimeout(30000);
+
+// Issue #1092 — keep the suite hermetic against a developer's user-level
+// `$XDG_CONFIG_HOME/kb/kb.config.yaml`. `findProjectConfig()` falls back to
+// that file and `initializeProjectConfig()` copies its keys into
+// `process.env` at module import time, so a local config could silently
+// change test outcomes (CI runners have none, hiding the leak). Point
+// XDG_CONFIG_HOME at a per-process directory that is never created; the
+// lookup then finds nothing. Tests that need a config dir still set
+// XDG_CONFIG_HOME themselves, and spawned children inherit this value.
+{
+  const nodeOs = require('node:os');
+  const nodePath = require('node:path');
+  process.env.XDG_CONFIG_HOME = nodePath.join(
+    nodeOs.tmpdir(),
+    `kb-jest-no-user-config-${process.pid}`,
+  );
+}
