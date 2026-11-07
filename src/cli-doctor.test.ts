@@ -52,15 +52,27 @@ const OLLAMA_MODEL_ID = 'ollama__nomic-embed-text-latest';
 const OLLAMA_MODEL_NAME = 'nomic-embed-text:latest';
 const RERANK_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
 
-afterEach(() => {
+afterEach(async () => {
+  // freshDoctor() re-imports the module graph, and importing it runs
+  // initializeProjectConfig(), which copies config-file values into
+  // process.env. Undo that injection before restoring the original env so
+  // one test's config defaults cannot leak into the next (#1092).
+  const { resetProjectConfigForTests } = await import('./config/project-config.js');
+  resetProjectConfigForTests();
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
 });
 
+// A trigger path whose parent (the OS temp dir) always exists, so the
+// reindex_trigger check grades 'warn' (file absent) rather than 'error'
+// (missing parent) no matter what a developer's config file sets (#1092).
+const DEFAULT_TEST_REINDEX_TRIGGER_PATH = path.join(os.tmpdir(), '.kb-doctor-test-trigger');
+
 async function freshDoctor(env: Record<string, string>): Promise<typeof import('./cli-doctor.js')> {
-  for (const [key, value] of Object.entries(env)) process.env[key] = value;
+  const merged = { REINDEX_TRIGGER_PATH: DEFAULT_TEST_REINDEX_TRIGGER_PATH, ...env };
+  for (const [key, value] of Object.entries(merged)) process.env[key] = value;
   jest.resetModules();
   return import('./cli-doctor.js');
 }
