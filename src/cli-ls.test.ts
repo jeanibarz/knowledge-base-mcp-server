@@ -204,6 +204,37 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
     expect(strict.knowledgeBases).toEqual(['good']);
   });
 
+  it('skips top-level symlinks that do not resolve to a directory (#1165)', async () => {
+    const rootDir = await makeRoot();
+    await writeFile(rootDir, 'good/note.md', '# Good\n');
+    const outsideDir = path.join(tempDir!, 'outside');
+    await fsp.mkdir(outsideDir, { recursive: true });
+    const outsideFile = path.join(outsideDir, 'leaked.md');
+    await fsp.writeFile(outsideFile, '# Outside\n', 'utf8');
+
+    // 1. a dangling symlink;
+    await fsp.symlink(path.join(tempDir!, 'missing-target'), path.join(rootDir, 'dangling'));
+    // 2. a symlink to a file outside the root;
+    await fsp.symlink(outsideFile, path.join(rootDir, 'file-outside'));
+    // 3. a symlink to a file inside the root (the accidental README case).
+    await fsp.symlink(path.join(rootDir, 'good', 'note.md'), path.join(rootDir, 'readme.md'));
+
+    const listing = await listKnowledgeBaseDocuments({ rootDir });
+    expect(listing.knowledgeBases).toEqual(['good']);
+    expect(listing.documents.map((document) => `${document.kbName}/${document.relativePath}`))
+      .toEqual(['good/note.md']);
+    // The escaping-file target must not leak into the listing payload.
+    expect(JSON.stringify(listing)).not.toContain('leaked.md');
+    expect(JSON.stringify(listing)).not.toContain(outsideDir);
+
+    // Asking for any of them by name still fails with the specific error;
+    // only the unscoped inventory skips them.
+    for (const kbName of ['dangling', 'file-outside', 'readme.md']) {
+      await expect(listKnowledgeBaseDocuments({ rootDir, kbName }))
+        .rejects.toMatchObject({ code: 'KB_NOT_FOUND' });
+    }
+  });
+
   it('still propagates non-VALIDATION errors while enumerating KB directories', async () => {
     const rootDir = await makeRoot();
     await writeFile(rootDir, 'good/note.md', '# Good\n');

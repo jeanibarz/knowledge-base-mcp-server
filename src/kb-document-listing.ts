@@ -254,19 +254,26 @@ async function listKnowledgeBaseDirectories(rootDir: string): Promise<string[]> 
     } catch (error: unknown) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
       if (code === 'ENOENT' || code === 'ENOTDIR') continue;
-      // A symlink that escapes the root is not an addressable KB: omit it
-      // from the inventory instead of letting one bad entry fail the whole
-      // listing (#1087). Nothing is logged, so the escaping target path
-      // never reaches logs. Any other error still propagates.
-      if (isOutsideRootValidationError(error)) continue;
+      // A symlinked candidate that resolveKnowledgeBaseDir rejects is not an
+      // addressable KB: omit it from the inventory instead of letting one bad
+      // entry fail the whole listing (#1087, #1165). It rejects a top-level
+      // symlink that escapes the root (VALIDATION) or that does not resolve to
+      // a directory — dangling, or pointing at a file inside or outside the
+      // root (KB_NOT_FOUND). Both can only originate from the symlink branch
+      // above, so skipping them here never masks a non-symlink failure.
+      // Nothing is logged, so the symlink target never reaches logs. Any other
+      // error (for example ELOOP on a self-referential symlink) still
+      // propagates.
+      if (isUnaddressableSymlinkError(error)) continue;
       throw error;
     }
   }
   return directories.sort(compareStrings);
 }
 
-function isOutsideRootValidationError(error: unknown): boolean {
-  return error instanceof KBError && error.code === 'VALIDATION';
+function isUnaddressableSymlinkError(error: unknown): boolean {
+  return error instanceof KBError
+    && (error.code === 'VALIDATION' || error.code === 'KB_NOT_FOUND');
 }
 
 function prefixSearchRelativeDir(
