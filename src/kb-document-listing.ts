@@ -16,7 +16,7 @@ import {
   resolveKnowledgeBaseDir,
 } from './kb-fs.js';
 import { filterIngestablePaths } from './ingest-filter.js';
-import { KBError } from './errors.js';
+import { isUnaddressableKbError } from './errors.js';
 import { isValidKbName } from './kb-paths.js';
 import { listIngestQuarantine } from './ingest-quarantine.js';
 import { getFilesRecursivelyWithDiagnostics } from './file-utils.js';
@@ -264,16 +264,11 @@ async function listKnowledgeBaseDirectories(rootDir: string): Promise<string[]> 
       // Nothing is logged, so the symlink target never reaches logs. Any other
       // error (for example ELOOP on a self-referential symlink) still
       // propagates.
-      if (isUnaddressableSymlinkError(error)) continue;
+      if (isUnaddressableKbError(error)) continue;
       throw error;
     }
   }
   return directories.sort(compareStrings);
-}
-
-function isUnaddressableSymlinkError(error: unknown): boolean {
-  return error instanceof KBError
-    && (error.code === 'VALIDATION' || error.code === 'KB_NOT_FOUND');
 }
 
 function prefixSearchRelativeDir(

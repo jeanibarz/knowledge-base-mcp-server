@@ -17,7 +17,7 @@ import type { Dirent } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
-import { listKnowledgeBases, resolveKnowledgeBaseDir } from './kb-fs.js';
+import { listResolvableKnowledgeBases, resolveKnowledgeBaseDir } from './kb-fs.js';
 import { extractVerbosity } from './cli-shared.js';
 
 export const STALE_CHECK_SCHEMA_VERSION = 'kb.stale-check.v1' as const;
@@ -285,7 +285,11 @@ async function selectKbs(rootDir: string, kbFilter: string | undefined): Promise
     await resolveKnowledgeBaseDir(rootDir, kbFilter);
     return [kbFilter];
   }
-  const all = await listKnowledgeBases(rootDir);
+  // Unscoped: skip top-level entries that are not addressable KB directories
+  // (plain files, dangling/escaping/file symlinks) instead of letting one of
+  // them abort the whole check (#1167). A named `kbFilter` above still fails
+  // closed on a bad name.
+  const all = await listResolvableKnowledgeBases(rootDir);
   return all.sort((a, b) => a.localeCompare(b));
 }
 

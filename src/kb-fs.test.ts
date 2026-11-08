@@ -7,6 +7,7 @@ import {
   describeKnowledgeBase,
   extractKbDescription,
   listKnowledgeBases,
+  listResolvableKnowledgeBases,
   resolveKnowledgeBaseDir,
 } from './kb-fs.js';
 
@@ -147,6 +148,50 @@ describe('describeKnowledgeBase', () => {
       expect(await describeKnowledgeBase(tempDir, '.faiss')).toBe('');
       expect(await describeKnowledgeBase(tempDir, '../escape')).toBe('');
       expect(await describeKnowledgeBase(tempDir, '')).toBe('');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('listResolvableKnowledgeBases (#1167)', () => {
+  it('keeps addressable KB directories and skips non-addressable top-level entries', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-fs-resolvable-'));
+    const rootDir = path.join(tempDir, 'kbs');
+    try {
+      await fsp.mkdir(path.join(rootDir, 'good'), { recursive: true });
+      await fsp.mkdir(path.join(rootDir, 'also'), { recursive: true });
+      await fsp.writeFile(path.join(rootDir, 'good', 'note.md'), '# Note\n', 'utf8');
+      // Kept: an in-root directory symlink alias still resolves, so it matches
+      // resolveKnowledgeBaseDir's acceptance (unlike the stricter
+      // resources/list inventory, which drops aliases).
+      await fsp.symlink(path.join(rootDir, 'good'), path.join(rootDir, 'alias'), 'dir');
+      // Skipped (KB_NOT_FOUND): a plain file, a dangling symlink, a symlink to a file.
+      await fsp.writeFile(path.join(rootDir, 'not-a-kb'), 'x', 'utf8');
+      await fsp.symlink(path.join(rootDir, 'missing'), path.join(rootDir, 'dangling'));
+      await fsp.symlink(path.join(rootDir, 'good', 'note.md'), path.join(rootDir, 'readme.md'));
+      // Skipped (VALIDATION): a directory symlink that escapes the root.
+      const outsideDir = path.join(tempDir, 'outside');
+      await fsp.mkdir(outsideDir, { recursive: true });
+      await fsp.symlink(outsideDir, path.join(rootDir, 'evil'), 'dir');
+
+      const out = (await listResolvableKnowledgeBases(rootDir)).sort();
+      expect(out).toEqual(['alias', 'also', 'good']);
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('propagates non-addressable errors that are not KB_NOT_FOUND/VALIDATION (ELOOP)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-fs-resolvable-loop-'));
+    const rootDir = path.join(tempDir, 'kbs');
+    try {
+      await fsp.mkdir(path.join(rootDir, 'good'), { recursive: true });
+      // A self-referential symlink makes stat() fail with ELOOP — a real error
+      // that must abort rather than be silently dropped.
+      await fsp.symlink('loop', path.join(rootDir, 'loop'));
+
+      await expect(listResolvableKnowledgeBases(rootDir)).rejects.toMatchObject({ code: 'ELOOP' });
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
