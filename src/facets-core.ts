@@ -17,7 +17,7 @@ import * as fsp from 'fs/promises';
 import type { Dirent } from 'fs';
 import * as path from 'path';
 import { parseFrontmatter } from './frontmatter.js';
-import { listKnowledgeBases, resolveKnowledgeBaseDir } from './kb-fs.js';
+import { listResolvableKnowledgeBases, resolveKnowledgeBaseDir } from './kb-fs.js';
 
 /** Stable wire-contract version for the JSON facet report (`kb tags --format=json`). */
 export const TAGS_SCHEMA_VERSION = 'kb.tags.v1';
@@ -179,7 +179,11 @@ async function selectKbs(rootDir: string, kbFilter: string | undefined): Promise
     await resolveKnowledgeBaseDir(rootDir, kbFilter);
     return [kbFilter];
   }
-  const all = await listKnowledgeBases(rootDir);
+  // Unscoped: skip top-level entries that are not addressable KB directories
+  // (plain files, dangling/escaping/file symlinks) instead of letting one of
+  // them abort the whole report (#1167). A named `kbFilter` above still fails
+  // closed on a bad name.
+  const all = await listResolvableKnowledgeBases(rootDir);
   return all.sort((a, b) => a.localeCompare(b));
 }
 

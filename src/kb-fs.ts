@@ -6,7 +6,7 @@
 
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { KBError } from './errors.js';
+import { KBError, isUnaddressableKbError } from './errors.js';
 import {
   DEFAULT_ENUMERATION_FAILURE_SAMPLE_LIMIT,
   getFilesRecursivelyWithDiagnostics,
@@ -555,6 +555,36 @@ export async function resolveKnowledgeBaseDir(
     );
   }
   return kbDir;
+}
+
+/**
+ * Enumerate the top-level knowledge bases under `rootDir` that actually resolve
+ * to an addressable KB directory, for UNSCOPED operations that walk every
+ * shelf (`kb tags`, `kb stale-check`, ...). `listKnowledgeBases` is a bare
+ * readdir minus dotfiles, so it also returns plain files, dangling or escaping
+ * symlinks, and symlinks to files. Resolving each name through
+ * `resolveKnowledgeBaseDir` and skipping the ones it rejects as not addressable
+ * (`KB_NOT_FOUND` / `VALIDATION`) keeps one stray top-level entry from aborting
+ * the whole operation, while any other error (`ELOOP`, `EACCES`, ...) still
+ * propagates. Input order is preserved; callers sort if they need to.
+ *
+ * Callers that address a single KB by name must keep calling
+ * `resolveKnowledgeBaseDir` directly so an explicitly requested bad name still
+ * fails with its specific error — only the unscoped inventory is lenient.
+ */
+export async function listResolvableKnowledgeBases(rootDir: string): Promise<string[]> {
+  const names = await listKnowledgeBases(rootDir);
+  const resolvable: string[] = [];
+  for (const name of names) {
+    try {
+      await resolveKnowledgeBaseDir(rootDir, name);
+      resolvable.push(name);
+    } catch (error: unknown) {
+      if (isUnaddressableKbError(error)) continue;
+      throw error;
+    }
+  }
+  return resolvable;
 }
 
 /**

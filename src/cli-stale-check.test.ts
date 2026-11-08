@@ -128,6 +128,31 @@ describe('staleCheck (filesystem + injected url checker)', () => {
     }
   });
 
+  it('skips non-addressable top-level entries in the unscoped check (#1167)', async () => {
+    const { rootDir, cleanup } = await makeKb('kb-stale-1167-');
+    try {
+      const goodDir = path.join(rootDir, 'good');
+      await fsp.mkdir(goodDir, { recursive: true });
+      await fsp.writeFile(path.join(goodDir, 'note.md'), 'See https://example.com/ok\n', 'utf-8');
+      // Stray top-level entries that must not abort the whole check: a plain
+      // file, a dangling symlink, a symlink to a file.
+      await fsp.writeFile(path.join(rootDir, 'not-a-kb'), 'ignore me\n', 'utf-8');
+      await fsp.symlink(path.join(rootDir, 'missing'), path.join(rootDir, 'dangling'));
+      await fsp.symlink(path.join(goodDir, 'note.md'), path.join(rootDir, 'readme.md'));
+
+      const checker: UrlChecker = async () => ({ status: 'OK' });
+      const report = await staleCheck({ rootDir, cachePath: null, urlChecker: checker });
+      expect(report.totals.filesScanned).toBe(1);
+
+      // Asking for one of the skipped names by --kb still fails closed.
+      await expect(
+        staleCheck({ rootDir, cachePath: null, kbFilter: 'dangling', urlChecker: checker }),
+      ).rejects.toMatchObject({ code: 'KB_NOT_FOUND' });
+    } finally {
+      await cleanup();
+    }
+  });
+
   it('reports HTTP errors from the url checker', async () => {
     const { rootDir, cleanup } = await makeKb('kb-stale-http-');
     try {

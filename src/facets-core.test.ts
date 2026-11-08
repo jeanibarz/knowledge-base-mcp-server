@@ -169,4 +169,24 @@ describe('collectTagsReport', () => {
       collectTagsReport({ rootDir: root, kbFilter: 'missing', facets: ['tags'] }),
     ).rejects.toBeInstanceOf(KBError);
   });
+
+  it('skips non-addressable top-level entries in the unscoped scan (#1167)', async () => {
+    const root = await makeRoot({ good: { 'a.md': note('tags: [x]') } });
+    // Stray top-level entries that resources/list already tolerates must not
+    // abort the whole report: a plain file, a dangling symlink, a symlink to a
+    // file.
+    await fsp.writeFile(path.join(root, 'not-a-kb'), 'ignore me\n', 'utf-8');
+    await fsp.symlink(path.join(root, 'missing'), path.join(root, 'dangling'));
+    await fsp.symlink(path.join(root, 'good', 'a.md'), path.join(root, 'readme.md'));
+
+    const report = await collectTagsReport({ rootDir: root, facets: ['tags'] });
+    expect(report.kbs).toEqual(['good']);
+    expect(report.notesScanned).toBe(1);
+    expect(report.facets[0].values).toEqual([{ value: 'x', count: 1 }]);
+
+    // Asking for one of the skipped names by --kb still fails closed.
+    await expect(
+      collectTagsReport({ rootDir: root, kbFilter: 'dangling', facets: ['tags'] }),
+    ).rejects.toMatchObject({ code: 'KB_NOT_FOUND' });
+  });
 });

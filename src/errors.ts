@@ -47,6 +47,20 @@ export class KBError extends Error {
   }
 }
 
+/**
+ * True when a `KBError` means a candidate is not an addressable knowledge base
+ * and an UNSCOPED enumeration should skip it rather than abort: `KB_NOT_FOUND`
+ * (missing, dangling symlink, or a symlink/path that does not resolve to a
+ * directory) and `VALIDATION` (a symlink that resolves outside the root). Every
+ * other error — a non-KBError such as `ELOOP`/`EACCES`, or any other KBError
+ * code — is a real failure and must still propagate. Callers addressing a
+ * single KB by name must NOT swallow these: an explicit bad name still fails.
+ */
+export function isUnaddressableKbError(error: unknown): boolean {
+  return error instanceof KBError
+    && (error.code === 'KB_NOT_FOUND' || error.code === 'VALIDATION');
+}
+
 // Issue #1006 — moved from active-model.ts so logging primitives (e.g.
 // canonical-log.ts) can depend on this leaf module instead of reaching
 // upward into the active-model domain layer. Re-exported from
