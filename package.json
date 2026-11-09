@@ -133,7 +133,7 @@
     "@types/node": "^22.15.0",
     "@types/pdfkit": "^0.17.7",
     "@types/proper-lockfile": "^4.1.4",
-    "eslint": "^10.5.0",
+    "eslint": "^10.14.0",
     "fast-check": "^4.7.0",
     "jest": "^30.5.2",
     "pdfkit": "^0.20.2",
