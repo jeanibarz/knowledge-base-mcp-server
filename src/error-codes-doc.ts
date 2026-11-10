@@ -139,6 +139,24 @@ export const KB_ERROR_CODE_DOCS: Record<KBErrorCode, KBErrorCodeDoc> = {
       'Free disk space on the target volume (prune old index versions, clear caches, choose a roomier `--output`) or lower `KB_MIN_FREE_DISK_BYTES`, then retry.',
     transient: false,
   },
+  INDEX_CONFIG_MISMATCH: {
+    meaning:
+      'The persisted index version was built with a different backend, `KB_INDEX_TYPE`, or HNSW tuning than this process is configured for.',
+    cause:
+      'Two processes use different environments against the same model directory, or the configuration changed after the index was built. Rebuilding silently would overwrite the other configuration.',
+    remedy:
+      'Restore the original `KB_INDEX_TYPE`/HNSW settings, or run `kb reindex` to rebuild the index with the current settings.',
+    transient: false,
+  },
+  INDEX_POINTER_MISSING: {
+    meaning:
+      'Versioned `index.vN/` directories exist under the model directory but the `index` pointer to the active one is missing.',
+    cause:
+      'The pointer was removed (for example by a pre-#1179 loader) while the index versions stayed on disk. Treating this as "not built" would re-embed the whole corpus.',
+    remedy:
+      'Run `kb verify --integrity --repair` to re-point `index` at the newest version whose `integrity.json` verifies, or `kb reindex` to rebuild.',
+    transient: false,
+  },
 };
 
 export interface CliErrorCodeDoc {

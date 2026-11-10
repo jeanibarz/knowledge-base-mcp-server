@@ -172,23 +172,164 @@ export async function resolveNextIndexVersion(
   return `index.v${next}`;
 }
 
+export interface IndexVersionEntry {
+  name: string;
+  n: number;
+  /** Epoch ms of integrity.json `written_at`, falling back to the directory mtime. */
+  createdMs: number;
+  /** True when the directory holds an integrity.json (i.e. a completed save). */
+  hasManifest: boolean;
+}
+
+/**
+ * Issue #1181 — every `index.vN/` directory under a model dir, newest first.
+ *
+ * Ordered by creation time (the later of integrity manifest `written_at` and
+ * directory mtime) and only then by version number. A directory whose numbering
+ * restarted before #1179 holds `index.v8` newer than `index.v38`; ordering by
+ * N alone would call the stale one "newest".
+ */
+export async function listIndexVersionsNewestFirst(modelDir: string): Promise<IndexVersionEntry[]> {
+  let entries: string[];
+  try {
+    entries = await fsp.readdir(modelDir);
+  } catch {
+    return [];
+  }
+  const out: IndexVersionEntry[] = [];
+  for (const name of entries) {
+    const n = parseIndexVersionDirName(name);
+    if (n === null) continue;
+    const dir = path.join(modelDir, name);
+    let createdMs = 0;
+    let hasManifest = false;
+    try {
+      const manifest = await readIndexIntegrityManifest(dir);
+      if (manifest) {
+        hasManifest = true;
+        const written = Date.parse(manifest.written_at);
+        if (Number.isFinite(written)) createdMs = written;
+      }
+    } catch {
+      // unreadable manifest: fall through to mtime
+    }
+    // `kb restore` copies integrity.json verbatim, so written_at can predate
+    // the restore; the directory mtime reflects when it was created here.
+    try {
+      createdMs = Math.max(createdMs, (await fsp.stat(dir)).mtimeMs);
+    } catch {
+      // keep what we have
+    }
+    out.push({ name, n, createdMs, hasManifest });
+  }
+  return out.sort((a, b) => b.createdMs - a.createdMs || b.n - a.n);
+}
+
+/**
+ * Issue #1181 — true when `index.vN/` holds an `integrity.json` whose every
+ * listed file exists and matches its recorded sha256.
+ */
+export async function verifyIndexVersionIntegrity(versionDir: string): Promise<boolean> {
+  let manifest: IndexIntegrityManifest | null;
+  try {
+    manifest = await readIndexIntegrityManifest(versionDir);
+  } catch {
+    return false;
+  }
+  if (manifest === null || manifest.files === undefined) return false;
+  const names = Object.keys(manifest.files);
+  if (names.length === 0) return false;
+  for (const file of names) {
+    // Manifest file names are bare (faiss.index, docstore.json, ...).
+    if (file !== path.basename(file)) return false;
+    try {
+      const actual = await calculateSHA256(path.join(versionDir, file));
+      if (actual !== manifest.files[file]?.sha256) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+export interface RepairIndexPointerResult {
+  status: 'repaired' | 'pointer_present' | 'no_versions' | 'no_verified_version';
+  target: string | null;
+  candidates: string[];
+}
+
+/**
+ * Issue #1181 — re-point a missing `index` symlink at the newest version
+ * whose integrity manifest verifies. Never touches an existing pointer or any
+ * version directory. Callers must hold the model's write lock.
+ */
+export async function repairIndexPointer(modelDir: string): Promise<RepairIndexPointerResult> {
+  const symlinkPath = path.join(modelDir, SYMLINK_NAME);
+  const existing = await fsp.lstat(symlinkPath).catch((err) => {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  });
+  const versions = await listIndexVersionsNewestFirst(modelDir);
+  const candidates = versions.map((v) => v.name);
+  if (existing !== null) return { status: 'pointer_present', target: null, candidates };
+  if (versions.length === 0) return { status: 'no_versions', target: null, candidates };
+  for (const v of versions) {
+    if (!(await verifyIndexVersionIntegrity(path.join(modelDir, v.name)))) continue;
+    const tmp = path.join(modelDir, `.${SYMLINK_NAME}.repair-${process.pid}`);
+    await fsp.rm(tmp, { force: true });
+    await fsp.symlink(v.name, tmp);
+    await fsp.rename(tmp, symlinkPath);
+    logger.warn(`Re-pointed missing ${SYMLINK_NAME} at ${v.name} in ${modelDir}`);
+    return { status: 'repaired', target: v.name, candidates };
+  }
+  return { status: 'no_verified_version', target: null, candidates };
+}
+
+/**
+ * Issue #1181 — the `index` pointer is gone while versioned directories
+ * remain: a built index that would otherwise read as "not built".
+ */
+export async function assertPointerNotMissing(modelDir: string): Promise<void> {
+  const existing = await fsp.lstat(path.join(modelDir, SYMLINK_NAME)).catch(() => null);
+  if (existing !== null) return;
+  // Only completed saves count: a crashed first save leaves a manifest-less
+  // index.v0/ with nothing worth protecting, and a rebuild is the right answer.
+  const versions = (await listIndexVersionsNewestFirst(modelDir)).filter((v) => v.hasManifest);
+  if (versions.length === 0) return;
+  throw new KBError(
+    'INDEX_POINTER_MISSING',
+    `The ${SYMLINK_NAME} pointer is missing in ${modelDir} but ${versions.length} index version(s) ` +
+      `exist on disk (newest: ${versions[0].name}). Run \`kb verify --integrity --repair\` to re-point it ` +
+      `(manual: \`ln -sfn ${versions[0].name} ${path.join(modelDir, SYMLINK_NAME)}\`), or \`kb reindex\` to rebuild.`,
+  );
+}
+
+function configMismatch(message: string, allowRebuild: boolean): null {
+  if (!allowRebuild) {
+    throw new KBError(
+      'INDEX_CONFIG_MISMATCH',
+      `${message}; refusing to rebuild over it. Restore the original configuration or run \`kb reindex\` to rebuild with the current one.`,
+    );
+  }
+  logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
+  return null;
+}
+
 export async function pruneInactiveIndexVersions(
   modelDirPath: string,
   opts: { retention?: number } = {},
 ): Promise<IndexVersionPruneResult> {
   const rawRetention = opts.retention ?? resolveIndexVersionRetention();
   const retention = Number.isSafeInteger(rawRetention) && rawRetention > 0 ? rawRetention : 0;
-  let entries: string[];
   try {
-    entries = await fsp.readdir(modelDirPath);
+    await fsp.readdir(modelDirPath);
   } catch {
     return { active: null, retention, kept: [], removed: [], skipped: 'model directory unreadable' };
   }
 
-  const versions = entries
-    .map((e) => ({ name: e, n: parseIndexVersionDirName(e) }))
-    .filter((v): v is { name: string; n: number } => v.n !== null)
-    .sort((a, b) => b.n - a.n);
+  // Issue #1181: newest by creation time, not version number — a directory
+  // whose numbering restarted holds a newer index.v8 than its stale index.v38.
+  const versions = await listIndexVersionsNewestFirst(modelDirPath);
   const active = await readSymlinkOrNull(path.join(modelDirPath, SYMLINK_NAME));
   if (active === null) {
     return {
@@ -291,6 +432,13 @@ export async function loadFaissStoreAtomic(options: {
   handleFsOperationError: FsOperationErrorHandler;
   expectedIndexType?: FaissIndexType;
   repairCorrupt?: boolean;
+  /**
+   * Issue #1181 — a writer may rebuild over a version it cannot use only when
+   * explicitly allowed (`kb reindex`). Otherwise a configuration mismatch
+   * throws INDEX_CONFIG_MISMATCH and an unreadable version throws
+   * CORRUPT_INDEX, so the caller never silently re-embeds the corpus.
+   */
+  allowRebuild?: boolean;
 }): Promise<FaissStore | null> {
   const {
     modelDir,
@@ -299,6 +447,7 @@ export async function loadFaissStoreAtomic(options: {
     handleFsOperationError,
     expectedIndexType = resolveFaissIndexType(),
     repairCorrupt = true,
+    allowRebuild = false,
   } = options;
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
   const legacyPath = path.join(modelDir, LEGACY_INDEX_NAME);
@@ -327,11 +476,7 @@ export async function loadFaissStoreAtomic(options: {
     const actualBackend = manifestBackend(manifest);
     if (actualBackend !== 'faiss') {
       const message = mismatchMessage(resolved, 'faiss', actualBackend);
-      if (!repairCorrupt) {
-        throw new Error(`${message}; read-only load will not rebuild it.`);
-      }
-      logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
-      return null;
+      return configMismatch(message, allowRebuild);
     }
     if (
       manifest !== null &&
@@ -340,11 +485,7 @@ export async function loadFaissStoreAtomic(options: {
     ) {
       const message = `Versioned FAISS index ${resolved} was written as ` +
         `${manifest.index_type}, but the current configuration expects ${expectedIndexType}`;
-      if (!repairCorrupt) {
-        throw new Error(`${message}; read-only load will not rebuild it.`);
-      }
-      logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
-      return null;
+      return configMismatch(message, allowRebuild);
     }
 
     let store: FaissStore;
@@ -359,6 +500,15 @@ export async function loadFaissStoreAtomic(options: {
           'CORRUPT_INDEX',
           `Versioned FAISS index ${resolved} is corrupt or unreadable; ` +
             `read-only load will not repair it. Underlying error: ${(err as Error).message}`,
+          err,
+        );
+      }
+      if (!allowRebuild) {
+        throw new KBError(
+          'CORRUPT_INDEX',
+          `Versioned FAISS index ${resolved} is corrupt or unreadable; refusing to ` +
+            `rebuild over it (the pointer and hash sidecars are left intact). Run ` +
+            `\`kb verify --integrity --repair\` or \`kb reindex\`. Underlying error: ${(err as Error).message}`,
           err,
         );
       }
@@ -382,6 +532,8 @@ export async function loadFaissStoreAtomic(options: {
 
     return store;
   }
+
+  if (repairCorrupt && !allowRebuild) await assertPointerNotMissing(modelDir);
 
   if (await pathExists(legacyPath)) {
     if (backendForIndexType(expectedIndexType) !== 'faiss') {
@@ -438,12 +590,15 @@ export async function loadHnswIndexAtomic(options: {
   config: HnswIndexConfig;
   handleFsOperationError: FsOperationErrorHandler;
   repairCorrupt?: boolean;
+  /** See `loadFaissStoreAtomic`. */
+  allowRebuild?: boolean;
 }): Promise<HnswIndexAdapter | null> {
   const {
     modelDir,
     modelId,
     config,
     repairCorrupt = true,
+    allowRebuild = false,
   } = options;
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
   const legacyPath = path.join(modelDir, LEGACY_INDEX_NAME);
@@ -472,19 +627,11 @@ export async function loadHnswIndexAtomic(options: {
     const actualBackend = manifestBackend(manifest);
     if (actualBackend !== 'hnsw') {
       const message = mismatchMessage(resolved, 'hnsw', actualBackend);
-      if (!repairCorrupt) {
-        throw new Error(`${message}; read-only load will not rebuild it.`);
-      }
-      logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
-      return null;
+      return configMismatch(message, allowRebuild);
     }
     if (manifest?.index_type !== 'hnsw' || manifest.hnsw === undefined) {
       const message = `Versioned HNSW index ${resolved} is missing HNSW manifest metadata`;
-      if (!repairCorrupt) {
-        throw new Error(`${message}; read-only load will not rebuild it.`);
-      }
-      logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
-      return null;
+      return configMismatch(message, allowRebuild);
     }
     if (
       manifest.hnsw.m !== config.m ||
@@ -498,11 +645,7 @@ export async function loadHnswIndexAtomic(options: {
         `current configuration expects m=${config.m}, ` +
         `efConstruction=${config.efConstruction}, metric=${config.metric}, ` +
         `randomSeed=${config.randomSeed}`;
-      if (!repairCorrupt) {
-        throw new Error(`${message}; read-only load will not rebuild it.`);
-      }
-      logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
-      return null;
+      return configMismatch(message, allowRebuild);
     }
 
     try {
@@ -520,6 +663,15 @@ export async function loadHnswIndexAtomic(options: {
           err,
         );
       }
+      if (!allowRebuild) {
+        throw new KBError(
+          'CORRUPT_INDEX',
+          `Versioned HNSW index ${resolved} is corrupt or unreadable; refusing to ` +
+            `rebuild over it (the pointer and hash sidecars are left intact). Run ` +
+            `\`kb verify --integrity --repair\` or \`kb reindex\`. Underlying error: ${(err as Error).message}`,
+          err,
+        );
+      }
       logger.warn(
         `Versioned HNSW index ${resolved} is corrupt or unreadable - ` +
           `${POINTER_KEPT_NOTE} Error:`,
@@ -528,6 +680,8 @@ export async function loadHnswIndexAtomic(options: {
       return null;
     }
   }
+
+  if (repairCorrupt && !allowRebuild) await assertPointerNotMissing(modelDir);
 
   if (await pathExists(legacyPath)) {
     if (!repairCorrupt) {

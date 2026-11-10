@@ -130,8 +130,10 @@ describe('kb verify --integrity', () => {
         integrity: true,
         format: 'json',
         allVersions: true,
+        repair: false,
         modelId: MODEL_ID,
       });
+    expect(verify.parseVerifyArgs(['--integrity', '--repair']).repair).toBe(true);
 
     const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
@@ -164,6 +166,34 @@ describe('kb verify --integrity', () => {
       expect(parsed.schema_version).toBe('kb.verify.integrity.v1');
       expect(parsed.status).toBe('clean');
       expect(parsed.checked_versions).toHaveLength(1);
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--repair re-points a missing index pointer at the newest verified version before auditing (#1181)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-verify-repair-'));
+    const stdout = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const fixture = await seedCleanFixture(tempDir);
+      const { verify, layout } = await freshModules({
+        KNOWLEDGE_BASES_ROOT_DIR: fixture.rootDir,
+        FAISS_INDEX_PATH: fixture.faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+      await layout.writeIndexIntegrityManifest(fixture.versionDir, MODEL_ID);
+      const pointer = path.join(path.dirname(fixture.versionDir), 'index');
+      await fsp.rm(pointer);
+
+      await expect(verify.runVerify(['--integrity', '--format=json', '--repair'])).resolves.toBe(0);
+
+      expect(await fsp.readlink(pointer)).toBe(path.basename(fixture.versionDir));
+      expect(stderr.mock.calls.flat().join('')).toContain('re-pointed');
     } finally {
       stdout.mockRestore();
       stderr.mockRestore();

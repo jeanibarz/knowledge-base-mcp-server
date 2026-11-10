@@ -21,6 +21,7 @@ import {
   INDEX_INTEGRITY_MANIFEST_FILENAME,
   INDEX_INTEGRITY_MANIFEST_SCHEMA_VERSION,
   parseIndexVersionDirName,
+  repairIndexPointer,
   resolveIndexVersionRetention,
   type IndexIntegrityManifest,
 } from './faiss-store-layout.js';
@@ -28,6 +29,7 @@ import { readChunkManifest } from './file-ingest.js';
 import { INGEST_QUARANTINE_FILENAME } from './ingest-quarantine.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { REINDEX_RUN_FILENAME } from './reindex-runner.js';
+import { withWriteLock } from './write-lock.js';
 
 const STALE_SENTINEL_MS = 60 * 60 * 1000;
 const KNOWN_INDEX_LEDGER_FILES = new Set([
@@ -38,7 +40,7 @@ const KNOWN_INDEX_LEDGER_FILES = new Set([
 export const VERIFY_HELP = `kb verify — deep consistency checks for persisted KB indexes
 
 Usage:
-  kb verify --integrity [--format=md|json] [--all-versions] [--model=<model_id>]
+  kb verify --integrity [--format=md|json] [--all-versions] [--model=<model_id>] [--repair]
 
 Runs a slow, read-only integrity audit over FAISS version directories,
 integrity manifests, docstore JSON, lexical chunk counts, per-file hash
@@ -51,6 +53,10 @@ Options:
                        instead of only the active version.
   --model=<model_id>   Verify a specific registered model. Defaults to the
                        active model resolution path.
+  --repair             Before auditing, re-point a missing \`index\` symlink at the
+                       newest index.vN whose integrity.json verifies. Holds the
+                       model's write lock; never touches an existing pointer or
+                       any version directory.
   --help, -h           Show this help.
 
 Exit codes:
@@ -63,6 +69,7 @@ export interface VerifyArgs {
   integrity: boolean;
   format: 'md' | 'json';
   allVersions: boolean;
+  repair: boolean;
   modelId: string | null;
 }
 
@@ -121,6 +128,30 @@ export async function runVerify(rest: string[]): Promise<number> {
     return 2;
   }
 
+  if (args.repair) {
+    try {
+      const repairModelId = args.modelId ?? await resolveActiveModel();
+      const modelPath = modelDir(repairModelId);
+      const result = await withWriteLock(modelPath, () => repairIndexPointer(modelPath));
+      if (result.status === 'repaired') {
+        process.stderr.write(`kb verify: re-pointed ${modelPath}/index at ${result.target}\n`);
+      } else if (result.status === 'no_verified_version') {
+        process.stderr.write(
+          `kb verify: --repair found no index version with a verifying integrity.json ` +
+            `(${result.candidates.join(', ')}); run \`kb reindex\` to rebuild\n`,
+        );
+        return 2;
+      } else if (result.status === 'no_versions') {
+        process.stderr.write('kb verify: --repair found no index.vN directories; nothing to repair\n');
+      } else {
+        process.stderr.write('kb verify: index pointer present; nothing to repair\n');
+      }
+    } catch (err) {
+      process.stderr.write(`kb verify: repair failed: ${(err as Error).message}\n`);
+      return 2;
+    }
+  }
+
   let report: IntegrityReport;
   try {
     report = await verifyIntegrity({
@@ -144,11 +175,16 @@ export function parseVerifyArgs(rest: readonly string[]): VerifyArgs {
     integrity: false,
     format: 'md',
     allVersions: false,
+    repair: false,
     modelId: null,
   };
   for (const raw of rest) {
     if (raw === '--integrity') {
       out.integrity = true;
+      continue;
+    }
+    if (raw === '--repair') {
+      out.repair = true;
       continue;
     }
     if (raw === '--all-versions') {

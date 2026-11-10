@@ -141,6 +141,7 @@ import {
   EMBEDDING_CANARY_ID,
   createEmbeddingCanaryFingerprint,
   cosineSimilarity,
+  listIndexVersionsNewestFirst,
   readIndexIntegrityManifest,
   resolveActiveIndexFilePath,
 } from './faiss-store-layout.js';
@@ -1401,11 +1402,14 @@ export async function buildDoctorReport(
   }
 
   const index = await readIndexHealth(activeModelId);
+  const missingPointerDetail = index.binary_path === null && activeModelId !== null
+    ? await describeMissingIndexPointer(activeModelId)
+    : null;
   checks.push({
     name: 'index',
     status: index.binary_path === null ? 'error' : 'ok',
     detail: index.binary_path === null
-      ? 'active model index is not built'
+      ? (missingPointerDetail ?? 'active model index is not built')
       : `${index.version ?? 'unknown'} at ${index.mtime ?? 'unknown mtime'}`,
   });
   const indexSecurity = await readIndexSecurity(activeModelId, index.binary_path);
@@ -1851,6 +1855,20 @@ function formatProviderCircuitDetail(circuit: ProviderCircuitSnapshot): string {
     : '';
   return `${kind}/${provider} ${circuit.state} (opened ${openedAt}, ` +
     `opens=${circuit.opened_total}${cooldown})`;
+}
+
+/**
+ * Issue #1181 — when the `index` pointer is gone but `index.vN/` directories
+ * remain, say so (and name the newest) instead of "not built".
+ */
+async function describeMissingIndexPointer(activeModelId: string): Promise<string | null> {
+  const dir = modelDir(activeModelId);
+  const pointer = await fsp.lstat(path.join(dir, 'index')).catch(() => null);
+  if (pointer !== null) return null;
+  const versions = (await listIndexVersionsNewestFirst(dir)).filter((v) => v.hasManifest);
+  if (versions.length === 0) return null;
+  return `active model index pointer is missing; ${versions.length} index version(s) on disk ` +
+    `(newest: ${versions[0].name}). Run \`kb verify --integrity --repair\` to re-point it.`;
 }
 
 async function readIndexHealth(activeModelId: string | null): Promise<DoctorReport['index']> {

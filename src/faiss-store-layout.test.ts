@@ -4,8 +4,11 @@ import {
   cosineSimilarity,
   createEmbeddingCanaryFingerprint,
   loadFaissStoreAtomic,
+  listIndexVersionsNewestFirst,
   loadHnswIndexAtomic,
+  pruneInactiveIndexVersions,
   readIndexIntegrityManifest,
+  repairIndexPointer,
   saveFaissStoreAtomic,
   saveHnswIndexAtomic,
 } from './faiss-store-layout.js';
@@ -140,6 +143,7 @@ describe('HNSW versioned layout', () => {
     const loaded = await loadFaissStoreAtomic({
       modelDir,
       modelId: 'model',
+      allowRebuild: true,
       embeddings: { embedDocuments: async () => [], embedQuery: async () => [] },
       handleFsOperationError: ((action: string, targetPath: string, error: unknown) => {
         throw new Error(`${action} ${targetPath}: ${(error as Error).message}`);
@@ -188,8 +192,14 @@ describe('loaders keep the active index pointer (#1179)', () => {
     return modelDir;
   }
 
-  function loadFaiss(modelDir: string, expectedIndexType: 'flat' | 'sq8', repairCorrupt = true) {
+  function loadFaiss(
+    modelDir: string,
+    expectedIndexType: 'flat' | 'sq8',
+    repairCorrupt = true,
+    allowRebuild = repairCorrupt,
+  ) {
     return loadFaissStoreAtomic({
+      allowRebuild,
       modelDir,
       modelId: 'model',
       embeddings,
@@ -199,8 +209,9 @@ describe('loaders keep the active index pointer (#1179)', () => {
     });
   }
 
-  function loadHnsw(modelDir: string, config: HnswIndexConfig = hnswConfig) {
+  function loadHnsw(modelDir: string, config: HnswIndexConfig = hnswConfig, allowRebuild = true) {
     return loadHnswIndexAtomic({
+      allowRebuild,
       modelDir,
       modelId: 'model',
       config,
@@ -274,6 +285,113 @@ describe('loaders keep the active index pointer (#1179)', () => {
     await expect(loadHnsw(modelDir)).resolves.toBeNull();
 
     expect(await pointer(modelDir)).toBe('index.v0');
+  });
+
+  it('a writer without allowRebuild gets a typed INDEX_CONFIG_MISMATCH and the pointer is kept (#1181)', async () => {
+    const faissDir = await makeFaissModelDir();
+    await expect(loadFaiss(faissDir, 'sq8', true, false)).rejects.toMatchObject({ code: 'INDEX_CONFIG_MISMATCH' });
+    // A read-only load throws the same typed error.
+    await expect(loadFaiss(faissDir, 'sq8', false)).rejects.toMatchObject({ code: 'INDEX_CONFIG_MISMATCH' });
+    expect(await pointer(faissDir)).toBe('index.v0');
+
+    const hnswDir = await makeHnswModelDir();
+    await expect(loadHnsw(hnswDir, { ...hnswConfig, m: 16 }, false))
+      .rejects.toMatchObject({ code: 'INDEX_CONFIG_MISMATCH' });
+    await expect(loadHnsw(faissDir, hnswConfig, false))
+      .rejects.toMatchObject({ code: 'INDEX_CONFIG_MISMATCH' });
+    expect(await pointer(hnswDir)).toBe('index.v0');
+  });
+
+  it('a writer without allowRebuild gets CORRUPT_INDEX instead of rebuilding over an unreadable version (#1181)', async () => {
+    const faissDir = await makeFaissModelDir();
+    await fsp.writeFile(path.join(faissDir, 'index.v0', 'faiss.index'), 'corrupt-bytes');
+    await expect(loadFaiss(faissDir, 'flat', true, false)).rejects.toMatchObject({ code: 'CORRUPT_INDEX' });
+
+    const hnswDir = await makeHnswModelDir();
+    await fsp.writeFile(path.join(hnswDir, 'index.v0', 'hnsw.index'), 'corrupt-bytes');
+    await expect(loadHnsw(hnswDir, hnswConfig, false)).rejects.toMatchObject({ code: 'CORRUPT_INDEX' });
+    expect(await pointer(hnswDir)).toBe('index.v0');
+  });
+
+  it('a writer sees INDEX_POINTER_MISSING when versions exist but the pointer is gone; readers and allowRebuild get null (#1181)', async () => {
+    const modelDir = await makeFaissModelDir();
+    await fsp.rm(path.join(modelDir, 'index'));
+
+    await expect(loadFaiss(modelDir, 'flat', true, false)).rejects.toMatchObject({ code: 'INDEX_POINTER_MISSING' });
+    await expect(loadHnsw(modelDir, hnswConfig, false)).rejects.toMatchObject({ code: 'INDEX_POINTER_MISSING' });
+    await expect(loadFaiss(modelDir, 'flat', false)).resolves.toBeNull();
+    await expect(loadFaiss(modelDir, 'flat', true, true)).resolves.toBeNull();
+  });
+
+  it('a manifest-less orphan index.v0 from a crashed first save is not a built index (#1181)', async () => {
+    const modelDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-1181-orphan-'));
+    await fsp.mkdir(path.join(modelDir, 'index.v0'));
+    await fsp.writeFile(path.join(modelDir, 'index.v0', 'faiss.index'), 'partial');
+
+    await expect(loadFaiss(modelDir, 'flat', true, false)).resolves.toBeNull();
+    await expect(loadHnsw(modelDir, hnswConfig, false)).resolves.toBeNull();
+  });
+
+  it('a restored version with an old written_at still ranks newest by directory mtime (#1181)', async () => {
+    const modelDir = await makeFaissModelDir();
+    const store = await FaissStore.fromTexts(['gamma'], [{}], embeddings);
+    await saveFaissStoreAtomic({ store, modelDir, modelId: 'model', swapCounter: 2, indexType: 'flat' });
+    const manifestPath = path.join(modelDir, 'index.v1', 'integrity.json');
+    const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf-8')) as { written_at: string };
+    manifest.written_at = '2020-01-01T00:00:00.000Z';
+    await fsp.writeFile(manifestPath, JSON.stringify(manifest));
+    const old = new Date('2021-01-01T00:00:00Z');
+    const v0Manifest = path.join(modelDir, 'index.v0', 'integrity.json');
+    const m0 = JSON.parse(await fsp.readFile(v0Manifest, 'utf-8')) as { written_at: string };
+    m0.written_at = old.toISOString();
+    await fsp.writeFile(v0Manifest, JSON.stringify(m0));
+    await fsp.utimes(path.join(modelDir, 'index.v0'), old, old);
+    const now = new Date();
+    await fsp.utimes(path.join(modelDir, 'index.v1'), now, now);
+
+    const versions = await listIndexVersionsNewestFirst(modelDir);
+    expect(versions[0].name).toBe('index.v1');
+  });
+
+  it('repairIndexPointer re-points at the newest verifying version and skips a tampered one (#1181)', async () => {
+    const modelDir = await makeFaissModelDir();
+    const store = await FaissStore.fromTexts(['gamma'], [{}], embeddings);
+    await saveFaissStoreAtomic({ store, modelDir, modelId: 'model', swapCounter: 2, indexType: 'flat' });
+    expect(await pointer(modelDir)).toBe('index.v1');
+    await fsp.rm(path.join(modelDir, 'index'));
+
+    // Newest version is tampered -> fall back to v0.
+    await fsp.writeFile(path.join(modelDir, 'index.v1', 'docstore.json'), '{}');
+    await expect(repairIndexPointer(modelDir)).resolves.toMatchObject({ status: 'repaired', target: 'index.v0' });
+    expect(await pointer(modelDir)).toBe('index.v0');
+    // Idempotent: an existing pointer is never touched.
+    await expect(repairIndexPointer(modelDir)).resolves.toMatchObject({ status: 'pointer_present' });
+
+    await fsp.rm(path.join(modelDir, 'index'));
+    await fsp.writeFile(path.join(modelDir, 'index.v0', 'docstore.json'), '{}');
+    await expect(repairIndexPointer(modelDir)).resolves.toMatchObject({ status: 'no_verified_version' });
+    await expect(fsp.lstat(path.join(modelDir, 'index'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('pruning keeps the newest version by creation time, not by version number (#1181)', async () => {
+    const modelDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-1181-prune-'));
+    const mk = async (name: string, ageMin: number) => {
+      const dir = path.join(modelDir, name);
+      await fsp.mkdir(dir);
+      const t = new Date(Date.now() - ageMin * 60_000);
+      await fsp.utimes(dir, t, t);
+    };
+    // Scrambled directory: numbering restarted, so v8 is newer than v38/v39.
+    await mk('index.v38', 300);
+    await mk('index.v39', 200);
+    await mk('index.v8', 10);
+    await mk('index.v40', 0);
+    await fsp.symlink('index.v40', path.join(modelDir, 'index'));
+
+    const result = await pruneInactiveIndexVersions(modelDir, { retention: 1 });
+
+    expect(result.removed.sort()).toEqual(['index.v38', 'index.v39']);
+    expect(result.kept.sort()).toEqual(['index.v40', 'index.v8']);
   });
 
   it('a save with no pointer numbers past existing versions instead of overwriting index.v0', async () => {

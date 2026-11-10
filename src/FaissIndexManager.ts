@@ -285,6 +285,12 @@ export interface UpdateIndexOptions {
 export interface InitializeOptions {
   readOnly?: boolean;
   strictReadOnly?: boolean;
+  /**
+   * Issue #1181 — permit a writer to rebuild over a persisted version it
+   * cannot use (configuration mismatch, unreadable). Only `kb reindex` sets
+   * this; every other writer gets a typed error instead of a silent rebuild.
+   */
+  allowRebuild?: boolean;
 }
 
 export type IndexUpdateSummaryStatus = 'success' | 'partial' | 'failed' | 'never_run';
@@ -796,6 +802,7 @@ export class FaissIndexManager {
       // corrupt legacy faiss.index/ — only a writer about to rebuild may.
       this.faissIndex = await this.loadAtomic({
         repairCorrupt: !readOnly,
+        allowRebuild: opts.allowRebuild === true,
       });
       this.metadataSidecarAllowedForLoadedStore = true;
       this.metadataSidecarCache = null;
@@ -1180,7 +1187,9 @@ export class FaissIndexManager {
    * `list_models` (model-resolution.ts:detectDowngradeHazard), so no marker
    * file is required — the filesystem is the single source of truth.
    */
-  private async loadAtomic(opts: { repairCorrupt?: boolean } = {}): Promise<SearchIndexAdapter | null> {
+  private async loadAtomic(
+    opts: { repairCorrupt?: boolean; allowRebuild?: boolean } = {},
+  ): Promise<SearchIndexAdapter | null> {
     if (this.indexBackend === 'hnsw') {
       if (this.hnswConfig === null) {
         throw new Error('HNSW index configuration was not initialized');
@@ -1191,6 +1200,7 @@ export class FaissIndexManager {
         config: this.hnswConfig,
         handleFsOperationError,
         repairCorrupt: opts.repairCorrupt,
+        allowRebuild: opts.allowRebuild,
       });
     }
     const store = await loadFaissStoreAtomic({
@@ -1200,6 +1210,7 @@ export class FaissIndexManager {
       handleFsOperationError,
       expectedIndexType: this.indexType === 'sq8' ? 'sq8' : 'flat',
       repairCorrupt: opts.repairCorrupt,
+      allowRebuild: opts.allowRebuild,
     });
     return store === null ? null : FaissStoreAdapter.fromStore(store);
   }
@@ -1210,7 +1221,8 @@ export class FaissIndexManager {
    * with a write mutation should already hold this manager's write lock.
    */
   async reloadPersistedIndex(): Promise<void> {
-    this.faissIndex = await this.loadAtomic();
+    // allowRebuild: this process already loaded (or is rebuilding) this store.
+    this.faissIndex = await this.loadAtomic({ allowRebuild: true });
     this.metadataSidecarAllowedForLoadedStore = true;
     this.metadataSidecarCache = null;
     this.metadataSidecarMissingLogged = false;

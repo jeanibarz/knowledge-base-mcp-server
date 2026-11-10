@@ -727,7 +727,7 @@ export async function runReindex(options: ReindexOptions): Promise<ReindexResult
         // The lock primitive is re-entrant for this async flow. Only the
         // manager we constructed needs initialize(); an injected one is
         // assumed ready (preserves the pre-#1043 `options.manager` contract).
-        if (managerNeedsInit) await manager.initialize();
+        if (managerNeedsInit) await manager.initialize({ allowRebuild: true });
         return runManagerUpdateIndex(manager, { force: shouldForceRebuild });
       });
     }

@@ -339,6 +339,8 @@ function categoryForKBError(code: KBErrorCode): CanonicalErrorCategory {
   switch (code) {
     case 'INDEX_NOT_INITIALIZED':
     case 'CORRUPT_INDEX':
+    case 'INDEX_CONFIG_MISMATCH':
+    case 'INDEX_POINTER_MISSING':
       return 'indexing';
     case 'PROVIDER_AUTH':
       return 'configuration';
@@ -386,6 +388,8 @@ function isKBErrorCode(code: string): code is KBErrorCode {
     'REINDEX_LOCK_HELD',
     'REINDEX_BUDGET_EXCEEDED',
     'INSUFFICIENT_DISK_SPACE',
+    'INDEX_CONFIG_MISMATCH',
+    'INDEX_POINTER_MISSING',
   ].includes(code);
 }
 

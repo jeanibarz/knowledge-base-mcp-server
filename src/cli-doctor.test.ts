@@ -508,6 +508,49 @@ describe('kb doctor', () => {
     }
   });
 
+  it('names a missing index pointer and the newest version instead of "not built" (#1181)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-pointer-'));
+    try {
+      const rootDir = path.join(tempDir, 'kbs');
+      const faissDir = path.join(tempDir, '.faiss');
+      await fsp.mkdir(rootDir, { recursive: true });
+      const modelDir = await seedRegisteredModel(faissDir);
+      for (const [name, ageSec] of [['index.v8', 10], ['index.v38', 500]] as const) {
+        const dir = path.join(modelDir, name);
+        await fsp.mkdir(dir, { recursive: true });
+        await fsp.writeFile(path.join(dir, 'integrity.json'), JSON.stringify({
+          schema_version: 'kb.index-integrity.v1',
+          written_at: new Date(Date.now() - ageSec * 1000).toISOString(),
+          model_id: MODEL_ID,
+          index_type: 'flat',
+          files: {},
+        }));
+        const t = Date.now() / 1000 - ageSec;
+        await fsp.utimes(dir, t, t);
+      }
+
+      const { buildDoctorReport } = await freshDoctor({
+        KNOWLEDGE_BASES_ROOT_DIR: rootDir,
+        FAISS_INDEX_PATH: faissDir,
+        EMBEDDING_PROVIDER: 'huggingface',
+        HUGGINGFACE_MODEL_NAME: MODEL_NAME,
+        HUGGINGFACE_API_KEY: 'test-key',
+      });
+      const report = await buildDoctorReport({
+        backendHealthCheck: async () => ({ healthy: true, detail: 'backend ok' }),
+        llmEndpointProbe: healthyLlmProbe,
+      });
+
+      const check = report.checks.find((c: { name: string }) => c.name === 'index');
+      expect(check?.status).toBe('error');
+      expect(check?.detail).toContain('pointer is missing');
+      expect(check?.detail).toContain('newest: index.v8');
+      expect(check?.detail).toContain('kb verify --integrity --repair');
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('reports legacy indexes without an embedding canary as not recorded', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-doctor-canary-missing-'));
     try {

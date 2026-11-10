@@ -264,6 +264,23 @@ function classifyKBError(err: KBError): SearchFailure {
         next_action:
           'Free disk space under `$FAISS_INDEX_PATH` (or lower `KB_MIN_FREE_DISK_BYTES`) and retry; the reindex/ingest refused before writing.',
       };
+    // Issue #1181 — persisted index exists but cannot be used as configured.
+    case 'INDEX_CONFIG_MISMATCH':
+      return {
+        code,
+        category: 'indexing',
+        message: err.message,
+        next_action:
+          'Restore the `KB_INDEX_TYPE`/HNSW settings the index was built with, or run `kb reindex` to rebuild it with the current settings.',
+      };
+    case 'INDEX_POINTER_MISSING':
+      return {
+        code,
+        category: 'indexing',
+        message: err.message,
+        next_action:
+          'Run `kb verify --integrity --repair` to re-point the `index` symlink at the newest verified version.',
+      };
     default: {
       // Exhaustiveness — if a new KBErrorCode is added, the switch above must
       // be updated. The fallthrough here keeps the runtime behaviour safe.
