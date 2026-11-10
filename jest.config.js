@@ -141,6 +141,12 @@ export default {
   // so it lives here. This only lifts the cap — fast, uninstrumented
   // `npm test` runs are unaffected since they still finish well under it.
   testTimeout: 30000,
+  // Issue #1180 — sandbox HOME, the knowledge-base root, the index directory
+  // and kb configuration env for the whole run (see jest.global-setup.cjs).
+  // Global-only: it must run in the parent process so workers and the child
+  // processes tests spawn inherit the sandboxed environment.
+  globalSetup: '<rootDir>/jest.global-setup.cjs',
+  globalTeardown: '<rootDir>/jest.global-teardown.cjs',
   projects: [
     {
       ...baseConfig,

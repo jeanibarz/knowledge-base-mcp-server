@@ -18,6 +18,9 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   setupFilesAfterEnv: ['<rootDir>/jest.setup.cjs'],
+  // Issue #1180 — hermetic HOME / knowledge-base root / index dir / kb env.
+  globalSetup: '<rootDir>/jest.global-setup.cjs',
+  globalTeardown: '<rootDir>/jest.global-teardown.cjs',
   extensionsToTreatAsEsm: ['.ts'],
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
