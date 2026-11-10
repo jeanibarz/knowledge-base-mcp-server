@@ -24,6 +24,7 @@ import {
   HNSW_INDEX_FILENAME,
   HnswIndexAdapter,
 } from './hnsw-index-adapter.js';
+import { KBError } from './errors.js';
 import { logger } from './logger.js';
 
 export const INDEX_VERSION_RETENTION_ENV = 'KB_INDEX_VERSION_RETENTION';
@@ -122,12 +123,53 @@ async function readSymlinkOrNull(p: string): Promise<string | null> {
   }
 }
 
+/**
+ * Issue #1179 — appended to every "this version cannot be loaded here" log.
+ *
+ * The loaders used to delete the `index` symlink in these cases so the next
+ * update would rebuild. The symlink is shared by every process using the
+ * model directory, so one process with a different index type, HNSW tuning,
+ * or a transient load failure made a valid index look "not built" to all
+ * of them. Loaders now leave the pointer alone: a writer that rebuilds
+ * writes a new `index.vN+1/` and swaps the pointer atomically, which keeps
+ * the old version as a rollback.
+ */
+const POINTER_KEPT_NOTE =
+  'leaving the active index pointer in place; a rebuild by this process saves a new version.';
+
 /** Pure: derive the next versioned directory name from the current target. */
 export function nextVersionAfter(currentTarget: string | null): string {
   if (!currentTarget) return 'index.v0';
   const n = parseIndexVersionDirName(currentTarget);
   if (n === null) throw new Error(`atomicSave: unrecognized symlink target "${currentTarget}"`);
   return `index.v${n + 1}`;
+}
+
+/**
+ * Issue #1179 — name of the next version directory to stage a save into.
+ *
+ * One higher than both the current pointer target and every `index.vN/`
+ * already on disk. Deriving it from the pointer alone restarted at
+ * `index.v0` whenever the pointer was missing, and the save then deleted
+ * that existing, valid version as an "orphan staging dir".
+ */
+export async function resolveNextIndexVersion(
+  modelDir: string,
+  currentTarget: string | null,
+): Promise<string> {
+  const fromPointer = parseIndexVersionDirName(nextVersionAfter(currentTarget)) ?? 0;
+  let entries: string[] = [];
+  try {
+    entries = await fsp.readdir(modelDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  let next = fromPointer;
+  for (const entry of entries) {
+    const n = parseIndexVersionDirName(entry);
+    if (n !== null && n + 1 > next) next = n + 1;
+  }
+  return `index.v${next}`;
 }
 
 export async function pruneInactiveIndexVersions(
@@ -288,12 +330,7 @@ export async function loadFaissStoreAtomic(options: {
       if (!repairCorrupt) {
         throw new Error(`${message}; read-only load will not rebuild it.`);
       }
-      logger.warn(`${message}; removing active symlink so the next update rebuilds.`);
-      try {
-        await fsp.rm(symlinkPath, { force: true });
-      } catch (unlinkErr) {
-        handleFsOperationError('delete mismatched index symlink', symlinkPath, unlinkErr);
-      }
+      logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
       return null;
     }
     if (
@@ -306,12 +343,7 @@ export async function loadFaissStoreAtomic(options: {
       if (!repairCorrupt) {
         throw new Error(`${message}; read-only load will not rebuild it.`);
       }
-      logger.warn(`${message}; removing active symlink so the next update rebuilds.`);
-      try {
-        await fsp.rm(symlinkPath, { force: true });
-      } catch (unlinkErr) {
-        handleFsOperationError('delete mismatched index symlink', symlinkPath, unlinkErr);
-      }
+      logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
       return null;
     }
 
@@ -323,22 +355,18 @@ export async function loadFaissStoreAtomic(options: {
       store = await FaissStore.load(resolved, embeddings);
     } catch (err) {
       if (!repairCorrupt) {
-        throw new Error(
+        throw new KBError(
+          'CORRUPT_INDEX',
           `Versioned FAISS index ${resolved} is corrupt or unreadable; ` +
             `read-only load will not repair it. Underlying error: ${(err as Error).message}`,
+          err,
         );
       }
       logger.warn(
         `Versioned FAISS index ${resolved} is corrupt or unreadable - ` +
-          `removing symlink and falling back to rebuild. Legacy faiss.index/ ` +
-          `(if present) is preserved. Error:`,
+          `${POINTER_KEPT_NOTE} Error:`,
         err,
       );
-      try {
-        await fsp.rm(symlinkPath, { force: true });
-      } catch (unlinkErr) {
-        handleFsOperationError('delete corrupt index symlink', symlinkPath, unlinkErr);
-      }
       return null;
     }
 
@@ -377,9 +405,11 @@ export async function loadFaissStoreAtomic(options: {
       return await FaissStore.load(legacyPath, embeddings);
     } catch (err) {
       if (!repairCorrupt) {
-        throw new Error(
+        throw new KBError(
+          'CORRUPT_INDEX',
           `Legacy FAISS index at ${legacyPath} is corrupt or unreadable; ` +
             `read-only load will not repair it. Underlying error: ${(err as Error).message}`,
+          err,
         );
       }
       logger.warn(
@@ -413,7 +443,6 @@ export async function loadHnswIndexAtomic(options: {
     modelDir,
     modelId,
     config,
-    handleFsOperationError,
     repairCorrupt = true,
   } = options;
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
@@ -446,12 +475,7 @@ export async function loadHnswIndexAtomic(options: {
       if (!repairCorrupt) {
         throw new Error(`${message}; read-only load will not rebuild it.`);
       }
-      logger.warn(`${message}; removing active symlink so the next update rebuilds.`);
-      try {
-        await fsp.rm(symlinkPath, { force: true });
-      } catch (unlinkErr) {
-        handleFsOperationError('delete mismatched index symlink', symlinkPath, unlinkErr);
-      }
+      logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
       return null;
     }
     if (manifest?.index_type !== 'hnsw' || manifest.hnsw === undefined) {
@@ -459,12 +483,7 @@ export async function loadHnswIndexAtomic(options: {
       if (!repairCorrupt) {
         throw new Error(`${message}; read-only load will not rebuild it.`);
       }
-      logger.warn(`${message}; removing active symlink so the next update rebuilds.`);
-      try {
-        await fsp.rm(symlinkPath, { force: true });
-      } catch (unlinkErr) {
-        handleFsOperationError('delete incomplete HNSW index symlink', symlinkPath, unlinkErr);
-      }
+      logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
       return null;
     }
     if (
@@ -482,12 +501,7 @@ export async function loadHnswIndexAtomic(options: {
       if (!repairCorrupt) {
         throw new Error(`${message}; read-only load will not rebuild it.`);
       }
-      logger.warn(`${message}; removing active symlink so the next update rebuilds.`);
-      try {
-        await fsp.rm(symlinkPath, { force: true });
-      } catch (unlinkErr) {
-        handleFsOperationError('delete retuned HNSW index symlink', symlinkPath, unlinkErr);
-      }
+      logger.warn(`${message}; ${POINTER_KEPT_NOTE}`);
       return null;
     }
 
@@ -499,21 +513,18 @@ export async function loadHnswIndexAtomic(options: {
       return await HnswIndexAdapter.load(resolved, config, manifest.hnsw.dimensions);
     } catch (err) {
       if (!repairCorrupt) {
-        throw new Error(
+        throw new KBError(
+          'CORRUPT_INDEX',
           `Versioned HNSW index ${resolved} is corrupt or unreadable; ` +
             `read-only load will not repair it. Underlying error: ${(err as Error).message}`,
+          err,
         );
       }
       logger.warn(
         `Versioned HNSW index ${resolved} is corrupt or unreadable - ` +
-          `removing symlink and falling back to rebuild. Error:`,
+          `${POINTER_KEPT_NOTE} Error:`,
         err,
       );
-      try {
-        await fsp.rm(symlinkPath, { force: true });
-      } catch (unlinkErr) {
-        handleFsOperationError('delete corrupt HNSW index symlink', symlinkPath, unlinkErr);
-      }
       return null;
     }
   }
@@ -571,7 +582,7 @@ export async function saveFaissStoreAtomic(options: {
   } = options;
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
   const currentTarget = await readSymlinkOrNull(symlinkPath);
-  const nextVersion = nextVersionAfter(currentTarget);
+  const nextVersion = await resolveNextIndexVersion(modelDir, currentTarget);
   const stagingDir = path.join(modelDir, nextVersion);
 
   if (await pathExists(stagingDir)) {
@@ -643,7 +654,7 @@ export async function saveHnswIndexAtomic(options: {
   } = options;
   const symlinkPath = path.join(modelDir, SYMLINK_NAME);
   const currentTarget = await readSymlinkOrNull(symlinkPath);
-  const nextVersion = nextVersionAfter(currentTarget);
+  const nextVersion = await resolveNextIndexVersion(modelDir, currentTarget);
   const stagingDir = path.join(modelDir, nextVersion);
 
   if (await pathExists(stagingDir)) {

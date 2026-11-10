@@ -4,10 +4,13 @@ import {
   createVerbosityPrinter,
   extractVerbosity,
   formatKnowledgeBaseSuggestions,
+  loadWithJsonRetry,
   rankSuggestions,
   renderRecords,
 } from './cli-shared.js';
 import { levenshteinDistance as coreLevenshteinDistance } from './suggestion-core.js';
+import { KBError } from './errors.js';
+import type { FaissIndexManager } from './FaissIndexManager.js';
 
 describe('renderRecords', () => {
   it('quotes CSV fields using RFC-4180 escaping', () => {
@@ -122,5 +125,35 @@ describe('createVerbosityPrinter (issue #739)', () => {
     printer.diag('d\n');
     expect(lines).toEqual(['i\n', 'd\n']);
     expect(printer.isVerbose).toBe(true);
+  });
+});
+
+describe('loadWithJsonRetry (issue #1179)', () => {
+  function managerThatThrows(make: () => Error): { manager: FaissIndexManager; calls: () => number } {
+    let calls = 0;
+    const manager = {
+      initialize: async () => {
+        calls += 1;
+        throw make();
+      },
+    } as unknown as FaissIndexManager;
+    return { manager, calls: () => calls };
+  }
+
+  it('keeps the CORRUPT_INDEX code when the corrupt-index message mentions a JSON parse error', async () => {
+    const { manager, calls } = managerThatThrows(() => new KBError(
+      'CORRUPT_INDEX',
+      'Versioned FAISS index /x/index.v0 is corrupt or unreadable; read-only load will not repair it. ' +
+        'Underlying error: Unexpected token g in JSON at position 0',
+    ));
+
+    await expect(loadWithJsonRetry(manager)).rejects.toMatchObject({ code: 'CORRUPT_INDEX' });
+    expect(calls()).toBe(2);
+  });
+
+  it('still reports an unclassified repeated JSON parse failure as a concurrent write', async () => {
+    const { manager } = managerThatThrows(() => new SyntaxError('Unexpected end of JSON input'));
+
+    await expect(loadWithJsonRetry(manager)).rejects.toThrow(/mid-write/);
   });
 });

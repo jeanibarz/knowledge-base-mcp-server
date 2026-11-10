@@ -2,6 +2,7 @@ import { FaissIndexManager } from './FaissIndexManager.js';
 import { parseModelId } from './model-id.js';
 import { readStoredIndexType, readStoredModelName } from './model-storage-layout.js';
 import type { EmbeddingProvider } from './model-id.js';
+import { KBError } from './errors.js';
 import { logger } from './logger.js';
 
 export {
@@ -53,7 +54,10 @@ export async function loadWithJsonRetry(manager: FaissIndexManager): Promise<voi
   try {
     await manager.initialize({ readOnly: true });
   } catch (err) {
-    if (isJsonParseError(err)) {
+    // Issue #1179 — a classified error (e.g. CORRUPT_INDEX, whose message
+    // embeds the parser's "Unexpected token" text) keeps its code; only an
+    // unclassified parse failure is reported as a concurrent write.
+    if (isJsonParseError(err) && !(err instanceof KBError)) {
       throw new Error(
         `Index appears to be mid-write (concurrent writer is updating it). ` +
         `Please retry in a moment. Underlying error: ${(err as Error).message}`,
