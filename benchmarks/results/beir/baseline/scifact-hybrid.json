@@ -1,13 +1,13 @@
 {
-  "schema_version": "kb.beir-benchmark.v2",
-  "generated_at": "2026-06-07T23:56:09.636Z",
-  "git_sha": "86a4caf",
-  "command": "node build/benchmarks/beir/run.js --dataset=scifact --split=test --mode=hybrid --provider=ollama --model=nomic-embed-text --output-dir=/tmp/beir-real-out --dataset-dir=/tmp/beir-hf/scifact",
+  "schema_version": "kb.beir-benchmark.v8",
+  "generated_at": "2026-11-10T20:01:27.634Z",
+  "git_sha": "461fe4b",
+  "command": "node build/benchmarks/beir/run.js --dataset=scifact --split=test --mode=hybrid --provider=ollama --model=nomic-embed-text --output-dir=benchmarks/results/beir/baseline",
   "dataset": {
     "name": "scifact",
     "split": "test",
-    "source_url": null,
-    "checksum_sha256": "24d7f696f849d4fd251c8dd7f20294eb971ba244d65739a433b616e6d4591e11",
+    "source_url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip",
+    "checksum_sha256": "8ad9035811f5acb750278959afe0cdf8919a8ee34403ce74a164fa0e7a572622",
     "corpus_documents": 5183,
     "queries_total": 1109,
     "qrels_queries": 300,
@@ -18,10 +18,25 @@
     "provider": "ollama",
     "model": "nomic-embed-text"
   },
+  "rerank": {
+    "enabled": false,
+    "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+    "topN": 40
+  },
+  "contextual": {
+    "enabled": false
+  },
+  "hybrid_rrf_weights": {
+    "dense": "1",
+    "lexical": "1"
+  },
+  "late_interaction": null,
+  "reranker_bakeoff": null,
   "ranking": {
     "unit": "chunk",
     "implementation": "src/hybrid-retrieval RRF fusion (production hybrid path) via retrieval-eval.retrieveForRetrievalEvalCase",
-    "trec_run": "/tmp/beir-real-out/kb-scifact-hybrid-chunk-run.trec",
+    "qrel_rollup": "max-pool",
+    "trec_run": "benchmarks/results/beir/baseline/kb-scifact-hybrid-chunk-run.trec",
     "k": 100,
     "chunk_candidate_k": 1000
   },
@@ -36,24 +51,62 @@
     "arch": "x64"
   },
   "indexing": {
-    "ms": 284335.16,
+    "ms": 238565.395,
     "files": 5183,
     "chunks": 14954
   },
   "metrics": {
     "judgedQueries": 300,
-    "ndcgAt10": 0.610915,
-    "mapAt100": 0.566212,
-    "precisionAt10": 0.085,
-    "recallAt10": 0.762944,
-    "recallAt100": 0.921333
+    "ndcgAt10": 0.707281,
+    "mapAt100": 0.664535,
+    "precisionAt10": 0.094333,
+    "recallAt10": 0.847056,
+    "recallAt100": 0.965333
+  },
+  "metrics_uncertainty": {
+    "schema_version": "kb.beir.metric-uncertainty.v1",
+    "observations": 300,
+    "alpha": 0.05,
+    "note": "SE/CI are estimated across per-query metric values; MDE is 2x bounded-metric SE for the evaluated query count.",
+    "metrics": {
+      "ndcgAt10": {
+        "standard_error": 0.02154,
+        "ci_low": 0.664893,
+        "ci_high": 0.749669,
+        "minimum_detectable_effect": 0.05254
+      },
+      "mapAt100": {
+        "standard_error": 0.023103,
+        "ci_low": 0.619071,
+        "ci_high": 0.709999,
+        "minimum_detectable_effect": 0.05452
+      },
+      "precisionAt10": {
+        "standard_error": 0.003061,
+        "ci_low": 0.08831,
+        "ci_high": 0.100356,
+        "minimum_detectable_effect": 0.033751
+      },
+      "recallAt10": {
+        "standard_error": 0.020118,
+        "ci_low": 0.807464,
+        "ci_high": 0.886648,
+        "minimum_detectable_effect": 0.041562
+      },
+      "recallAt100": {
+        "standard_error": 0.010409,
+        "ci_low": 0.944848,
+        "ci_high": 0.985818,
+        "minimum_detectable_effect": 0.021124
+      }
+    }
   },
   "latency": {
     "queries": 300,
-    "p50Ms": 910.035854,
-    "p95Ms": 1043.893485,
-    "p99Ms": 1167.885525,
-    "meanMs": 937.331597
+    "p50Ms": 1137.944618,
+    "p95Ms": 1617.500405,
+    "p99Ms": 2243.729178,
+    "meanMs": 1183.297745
   },
   "per_query": [
     {
@@ -80,8 +133,8 @@
       "queryId": "5",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -91,7 +144,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.025,
+      "mapAt100": 0.035714,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -100,8 +153,8 @@
       "queryId": "36",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0.237198,
-      "mapAt100": 0.127027,
+      "ndcgAt10": 0.218407,
+      "mapAt100": 0.115591,
       "precisionAt10": 0.1,
       "recallAt10": 0.5,
       "recallAt100": 1
@@ -120,8 +173,8 @@
       "queryId": "48",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -130,8 +183,8 @@
       "queryId": "49",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.386853,
-      "mapAt100": 0.2,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -170,8 +223,8 @@
       "queryId": "54",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.333333,
-      "mapAt100": 0.142857,
+      "ndcgAt10": 0.430677,
+      "mapAt100": 0.25,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -200,20 +253,20 @@
       "queryId": "70",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.04793,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.2,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "72",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.043478,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -230,8 +283,8 @@
       "queryId": "94",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -240,8 +293,8 @@
       "queryId": "99",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.430677,
-      "mapAt100": 0.25,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -300,20 +353,20 @@
       "queryId": "127",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.090909,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "128",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.076923,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -341,17 +394,17 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.021277,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "133",
       "relevant": 5,
       "retrieved": 100,
-      "ndcgAt10": 0.791345,
-      "mapAt100": 0.62,
+      "ndcgAt10": 0.805163,
+      "mapAt100": 0.653333,
       "precisionAt10": 0.4,
       "recallAt10": 0.8,
       "recallAt100": 0.8
@@ -370,8 +423,8 @@
       "queryId": "141",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 1,
-      "mapAt100": 1,
+      "ndcgAt10": 0.919721,
+      "mapAt100": 0.833333,
       "precisionAt10": 0.2,
       "recallAt10": 1,
       "recallAt100": 1
@@ -440,8 +493,8 @@
       "queryId": "179",
       "relevant": 4,
       "retrieved": 100,
-      "ndcgAt10": 0.363318,
-      "mapAt100": 0.303788,
+      "ndcgAt10": 0.636682,
+      "mapAt100": 0.612395,
       "precisionAt10": 0.2,
       "recallAt10": 0.5,
       "recallAt100": 1
@@ -460,8 +513,8 @@
       "queryId": "183",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.289065,
-      "mapAt100": 0.1,
+      "ndcgAt10": 0.356207,
+      "mapAt100": 0.166667,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -470,8 +523,8 @@
       "queryId": "185",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.356207,
-      "mapAt100": 0.166667,
+      "ndcgAt10": 0.5,
+      "mapAt100": 0.333333,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -481,7 +534,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.019231,
+      "mapAt100": 0.0625,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -490,8 +543,8 @@
       "queryId": "208",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -510,18 +563,18 @@
       "queryId": "213",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.066667,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "216",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.315465,
-      "mapAt100": 0.125,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -530,8 +583,8 @@
       "queryId": "217",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -600,8 +653,8 @@
       "queryId": "237",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 1,
-      "mapAt100": 1,
+      "ndcgAt10": 0.5,
+      "mapAt100": 0.333333,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -610,10 +663,10 @@
       "queryId": "238",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.356207,
-      "mapAt100": 0.166667,
-      "precisionAt10": 0.1,
-      "recallAt10": 1,
+      "ndcgAt10": 0,
+      "mapAt100": 0.047619,
+      "precisionAt10": 0,
+      "recallAt10": 0,
       "recallAt100": 1
     },
     {
@@ -621,7 +674,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.045455,
+      "mapAt100": 0.027027,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -651,7 +704,7 @@
       "relevant": 2,
       "retrieved": 100,
       "ndcgAt10": 0.264068,
-      "mapAt100": 0.183824,
+      "mapAt100": 0.172619,
       "precisionAt10": 0.1,
       "recallAt10": 0.5,
       "recallAt100": 1
@@ -660,8 +713,8 @@
       "queryId": "268",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.289065,
-      "mapAt100": 0.1,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -670,8 +723,8 @@
       "queryId": "269",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.30103,
-      "mapAt100": 0.111111,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -690,8 +743,8 @@
       "queryId": "275",
       "relevant": 3,
       "retrieved": 100,
-      "ndcgAt10": 0.4018,
-      "mapAt100": 0.257937,
+      "ndcgAt10": 0.610546,
+      "mapAt100": 0.435979,
       "precisionAt10": 0.2,
       "recallAt10": 0.666667,
       "recallAt100": 1
@@ -710,8 +763,8 @@
       "queryId": "294",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.30103,
-      "mapAt100": 0.111111,
+      "ndcgAt10": 0.333333,
+      "mapAt100": 0.142857,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -730,8 +783,8 @@
       "queryId": "298",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -740,8 +793,8 @@
       "queryId": "300",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.430677,
-      "mapAt100": 0.25,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -750,10 +803,10 @@
       "queryId": "303",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.090909,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.315465,
+      "mapAt100": 0.125,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -761,7 +814,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.047619,
+      "mapAt100": 0.076923,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -770,8 +823,8 @@
       "queryId": "314",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.356207,
-      "mapAt100": 0.166667,
+      "ndcgAt10": 0.5,
+      "mapAt100": 0.333333,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -780,10 +833,10 @@
       "queryId": "324",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.055556,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -800,8 +853,8 @@
       "queryId": "338",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -810,8 +863,8 @@
       "queryId": "343",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.291667,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.2,
       "recallAt10": 1,
       "recallAt100": 1
@@ -860,8 +913,8 @@
       "queryId": "384",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.386853,
-      "mapAt100": 0.2,
+      "ndcgAt10": 0.315465,
+      "mapAt100": 0.125,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -870,8 +923,8 @@
       "queryId": "385",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0.919721,
-      "mapAt100": 0.833333,
+      "ndcgAt10": 0.693426,
+      "mapAt100": 0.583333,
       "precisionAt10": 0.2,
       "recallAt10": 1,
       "recallAt100": 1
@@ -890,10 +943,10 @@
       "queryId": "388",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.037037,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -910,8 +963,8 @@
       "queryId": "410",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -930,8 +983,8 @@
       "queryId": "415",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -941,17 +994,17 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.043478,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "431",
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.010638,
+      "mapAt100": 0.029412,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -1010,8 +1063,8 @@
       "queryId": "452",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0.193426,
-      "mapAt100": 0.1125,
+      "ndcgAt10": 0.264068,
+      "mapAt100": 0.196429,
       "precisionAt10": 0.1,
       "recallAt10": 0.5,
       "recallAt100": 1
@@ -1020,20 +1073,20 @@
       "queryId": "475",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.035714,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.356207,
+      "mapAt100": 0.166667,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "478",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.037037,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -1050,8 +1103,8 @@
       "queryId": "501",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1061,7 +1114,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.03125,
+      "mapAt100": 0.01087,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -1070,8 +1123,8 @@
       "queryId": "507",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 1,
-      "mapAt100": 1,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1080,18 +1133,18 @@
       "queryId": "508",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0,
-      "precisionAt10": 0,
-      "recallAt10": 0,
-      "recallAt100": 0
+      "ndcgAt10": 0.30103,
+      "mapAt100": 0.111111,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
     },
     {
       "queryId": "513",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1121,7 +1174,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.02381,
+      "mapAt100": 0.019608,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -1150,8 +1203,8 @@
       "queryId": "527",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.430677,
-      "mapAt100": 0.25,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1191,10 +1244,10 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.055556,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "536",
@@ -1221,7 +1274,7 @@
       "relevant": 2,
       "retrieved": 100,
       "ndcgAt10": 0.386853,
-      "mapAt100": 0.265385,
+      "mapAt100": 0.295455,
       "precisionAt10": 0.1,
       "recallAt10": 0.5,
       "recallAt100": 1
@@ -1230,10 +1283,10 @@
       "queryId": "544",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.021277,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.289065,
+      "mapAt100": 0.1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -1250,8 +1303,8 @@
       "queryId": "551",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 0.356207,
+      "mapAt100": 0.166667,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1270,10 +1323,10 @@
       "queryId": "554",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.076923,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.430677,
+      "mapAt100": 0.25,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -1300,8 +1353,8 @@
       "queryId": "575",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1311,7 +1364,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.052632,
+      "mapAt100": 0.05,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -1330,8 +1383,8 @@
       "queryId": "587",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.333333,
-      "mapAt100": 0.142857,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1360,8 +1413,8 @@
       "queryId": "597",
       "relevant": 3,
       "retrieved": 100,
-      "ndcgAt10": 0.967468,
-      "mapAt100": 0.916667,
+      "ndcgAt10": 0.88546,
+      "mapAt100": 0.755556,
       "precisionAt10": 0.3,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1370,8 +1423,8 @@
       "queryId": "598",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.356207,
-      "mapAt100": 0.166667,
+      "ndcgAt10": 0.30103,
+      "mapAt100": 0.111111,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1390,34 +1443,24 @@
       "queryId": "619",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0.218407,
-      "mapAt100": 0.135965,
-      "precisionAt10": 0.1,
-      "recallAt10": 0.5,
+      "ndcgAt10": 0,
+      "mapAt100": 0.066017,
+      "precisionAt10": 0,
+      "recallAt10": 0,
       "recallAt100": 1
     },
     {
       "queryId": "623",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.356207,
-      "mapAt100": 0.166667,
+      "ndcgAt10": 0.289065,
+      "mapAt100": 0.1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "628",
-      "relevant": 1,
-      "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
-      "precisionAt10": 0.1,
-      "recallAt10": 1,
-      "recallAt100": 1
-    },
-    {
-      "queryId": "636",
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 1,
@@ -1427,7 +1470,7 @@
       "recallAt100": 1
     },
     {
-      "queryId": "637",
+      "queryId": "636",
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0.63093,
@@ -1437,13 +1480,23 @@
       "recallAt100": 1
     },
     {
+      "queryId": "637",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
       "queryId": "641",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0.613147,
-      "mapAt100": 0.519231,
-      "precisionAt10": 0.1,
-      "recallAt10": 0.5,
+      "ndcgAt10": 0.806574,
+      "mapAt100": 0.625,
+      "precisionAt10": 0.2,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -1460,8 +1513,8 @@
       "queryId": "649",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1470,8 +1523,8 @@
       "queryId": "659",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1481,7 +1534,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.033333,
+      "mapAt100": 0.058824,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -1500,8 +1553,8 @@
       "queryId": "684",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 1,
-      "mapAt100": 1,
+      "ndcgAt10": 0.5,
+      "mapAt100": 0.333333,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1530,8 +1583,8 @@
       "queryId": "692",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.430677,
-      "mapAt100": 0.25,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1540,8 +1593,8 @@
       "queryId": "693",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1550,8 +1603,8 @@
       "queryId": "700",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.30103,
-      "mapAt100": 0.111111,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1560,8 +1613,8 @@
       "queryId": "702",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.289065,
-      "mapAt100": 0.1,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1570,10 +1623,10 @@
       "queryId": "715",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.033333,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.315465,
+      "mapAt100": 0.125,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -1581,10 +1634,10 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.014286,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "718",
@@ -1620,8 +1673,8 @@
       "queryId": "727",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.333333,
-      "mapAt100": 0.142857,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1630,8 +1683,8 @@
       "queryId": "728",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0.806574,
-      "mapAt100": 0.625,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.2,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1680,8 +1733,8 @@
       "queryId": "756",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.430677,
-      "mapAt100": 0.25,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1721,7 +1774,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.037037,
+      "mapAt100": 0.047619,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -1741,7 +1794,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.076923,
+      "mapAt100": 0.083333,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -1750,8 +1803,8 @@
       "queryId": "784",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1760,8 +1813,8 @@
       "queryId": "785",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1770,8 +1823,8 @@
       "queryId": "793",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.356207,
-      "mapAt100": 0.166667,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1781,7 +1834,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.047619,
+      "mapAt100": 0.0625,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -1800,8 +1853,8 @@
       "queryId": "808",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1830,20 +1883,20 @@
       "queryId": "820",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.027027,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.315465,
+      "mapAt100": 0.125,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "821",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.03125,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.289065,
+      "mapAt100": 0.1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -1860,28 +1913,28 @@
       "queryId": "830",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.066667,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "831",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.023256,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.315465,
+      "mapAt100": 0.125,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "832",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1891,10 +1944,10 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.011905,
+      "mapAt100": 0,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 1
+      "recallAt100": 0
     },
     {
       "queryId": "837",
@@ -1910,8 +1963,8 @@
       "queryId": "839",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 1,
-      "mapAt100": 1,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1920,8 +1973,8 @@
       "queryId": "845",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.315465,
-      "mapAt100": 0.125,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1950,8 +2003,8 @@
       "queryId": "859",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -1961,27 +2014,27 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.010101,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "873",
       "relevant": 5,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.029461,
-      "precisionAt10": 0,
-      "recallAt10": 0,
-      "recallAt100": 0.6
+      "ndcgAt10": 0.238198,
+      "mapAt100": 0.175315,
+      "precisionAt10": 0.2,
+      "recallAt10": 0.4,
+      "recallAt100": 0.8
     },
     {
       "queryId": "879",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2011,10 +2064,10 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.023256,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "903",
@@ -2061,20 +2114,20 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.055556,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "914",
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.055556,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "921",
@@ -2110,8 +2163,8 @@
       "queryId": "956",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 1,
-      "mapAt100": 1,
+      "ndcgAt10": 0.430677,
+      "mapAt100": 0.25,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2120,10 +2173,10 @@
       "queryId": "957",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.090909,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -2140,8 +2193,8 @@
       "queryId": "967",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0.877215,
-      "mapAt100": 0.75,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.2,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2150,8 +2203,8 @@
       "queryId": "971",
       "relevant": 4,
       "retrieved": 100,
-      "ndcgAt10": 0.926758,
-      "mapAt100": 0.816667,
+      "ndcgAt10": 0.848583,
+      "mapAt100": 0.691667,
       "precisionAt10": 0.4,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2220,8 +2273,8 @@
       "queryId": "1019",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2250,8 +2303,8 @@
       "queryId": "1024",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.333333,
-      "mapAt100": 0.142857,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2260,31 +2313,31 @@
       "queryId": "1029",
       "relevant": 3,
       "retrieved": 100,
-      "ndcgAt10": 0.765361,
-      "mapAt100": 0.75,
-      "precisionAt10": 0.2,
-      "recallAt10": 0.666667,
+      "ndcgAt10": 0.946902,
+      "mapAt100": 0.866667,
+      "precisionAt10": 0.3,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "1041",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0.491149,
-      "mapAt100": 0.277778,
-      "precisionAt10": 0.2,
-      "recallAt10": 1,
+      "ndcgAt10": 0.204382,
+      "mapAt100": 0.162338,
+      "precisionAt10": 0.1,
+      "recallAt10": 0.5,
       "recallAt100": 1
     },
     {
       "queryId": "1049",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0,
-      "precisionAt10": 0,
-      "recallAt10": 0,
-      "recallAt100": 0
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
     },
     {
       "queryId": "1062",
@@ -2310,10 +2363,10 @@
       "queryId": "1088",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.012195,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.430677,
+      "mapAt100": 0.25,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -2330,8 +2383,8 @@
       "queryId": "1099",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 1,
-      "mapAt100": 1,
+      "ndcgAt10": 0.5,
+      "mapAt100": 0.333333,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2340,8 +2393,8 @@
       "queryId": "1100",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 0.5,
+      "mapAt100": 0.333333,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2360,8 +2413,8 @@
       "queryId": "1107",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2371,17 +2424,17 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.029412,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "1121",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2400,8 +2453,8 @@
       "queryId": "1132",
       "relevant": 2,
       "retrieved": 100,
-      "ndcgAt10": 0.193426,
-      "mapAt100": 0.115132,
+      "ndcgAt10": 0.218407,
+      "mapAt100": 0.166667,
       "precisionAt10": 0.1,
       "recallAt10": 0.5,
       "recallAt100": 1
@@ -2410,8 +2463,8 @@
       "queryId": "1137",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.430677,
-      "mapAt100": 0.25,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2420,8 +2473,8 @@
       "queryId": "1140",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2450,8 +2503,8 @@
       "queryId": "1150",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2481,17 +2534,17 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.038462,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "1180",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 1,
-      "mapAt100": 1,
+      "ndcgAt10": 0.5,
+      "mapAt100": 0.333333,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2510,8 +2563,8 @@
       "queryId": "1187",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.315465,
-      "mapAt100": 0.125,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2540,20 +2593,20 @@
       "queryId": "1196",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.090909,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "1197",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.083333,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -2570,10 +2623,10 @@
       "queryId": "1200",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.083333,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
@@ -2630,10 +2683,10 @@
       "queryId": "1221",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.289065,
-      "mapAt100": 0.1,
-      "precisionAt10": 0.1,
-      "recallAt10": 1,
+      "ndcgAt10": 0,
+      "mapAt100": 0.090909,
+      "precisionAt10": 0,
+      "recallAt10": 0,
       "recallAt100": 1
     },
     {
@@ -2651,10 +2704,10 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.043478,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "1232",
@@ -2671,7 +2724,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.043478,
+      "mapAt100": 0.052632,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -2680,8 +2733,8 @@
       "queryId": "1245",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 0.430677,
+      "mapAt100": 0.25,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2740,8 +2793,8 @@
       "queryId": "1272",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 0.315465,
+      "mapAt100": 0.125,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2760,8 +2813,8 @@
       "queryId": "1274",
       "relevant": 3,
       "retrieved": 100,
-      "ndcgAt10": 0.906025,
-      "mapAt100": 0.805556,
+      "ndcgAt10": 0.871079,
+      "mapAt100": 0.722222,
       "precisionAt10": 0.3,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2771,7 +2824,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.066667,
+      "mapAt100": 0.045455,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -2781,7 +2834,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.0625,
+      "mapAt100": 0.041667,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -2790,8 +2843,8 @@
       "queryId": "1280",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.30103,
-      "mapAt100": 0.111111,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2801,10 +2854,10 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0,
+      "mapAt100": 0.041667,
       "precisionAt10": 0,
       "recallAt10": 0,
-      "recallAt100": 0
+      "recallAt100": 1
     },
     {
       "queryId": "1282",
@@ -2830,8 +2883,8 @@
       "queryId": "1292",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.63093,
-      "mapAt100": 0.5,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2861,7 +2914,7 @@
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0,
-      "mapAt100": 0.020833,
+      "mapAt100": 0.066667,
       "precisionAt10": 0,
       "recallAt10": 0,
       "recallAt100": 1
@@ -2900,8 +2953,8 @@
       "queryId": "1335",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 1,
-      "mapAt100": 1,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2910,8 +2963,8 @@
       "queryId": "1336",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 1,
-      "mapAt100": 1,
+      "ndcgAt10": 0.63093,
+      "mapAt100": 0.5,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2920,8 +2973,8 @@
       "queryId": "1337",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.333333,
-      "mapAt100": 0.142857,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -2970,54 +3023,14 @@
       "queryId": "1362",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.090909,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     },
     {
       "queryId": "1363",
-      "relevant": 1,
-      "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.090909,
-      "precisionAt10": 0,
-      "recallAt10": 0,
-      "recallAt100": 1
-    },
-    {
-      "queryId": "1368",
-      "relevant": 1,
-      "retrieved": 100,
-      "ndcgAt10": 0.430677,
-      "mapAt100": 0.25,
-      "precisionAt10": 0.1,
-      "recallAt10": 1,
-      "recallAt100": 1
-    },
-    {
-      "queryId": "1370",
-      "relevant": 1,
-      "retrieved": 100,
-      "ndcgAt10": 0.430677,
-      "mapAt100": 0.25,
-      "precisionAt10": 0.1,
-      "recallAt10": 1,
-      "recallAt100": 1
-    },
-    {
-      "queryId": "1379",
-      "relevant": 4,
-      "retrieved": 100,
-      "ndcgAt10": 0.766809,
-      "mapAt100": 0.698052,
-      "precisionAt10": 0.3,
-      "recallAt10": 0.75,
-      "recallAt100": 1
-    },
-    {
-      "queryId": "1382",
       "relevant": 1,
       "retrieved": 100,
       "ndcgAt10": 0.356207,
@@ -3027,11 +3040,51 @@
       "recallAt100": 1
     },
     {
+      "queryId": "1368",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0.289065,
+      "mapAt100": 0.1,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "1370",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0.315465,
+      "mapAt100": 0.125,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "1379",
+      "relevant": 4,
+      "retrieved": 100,
+      "ndcgAt10": 0.654245,
+      "mapAt100": 0.515909,
+      "precisionAt10": 0.3,
+      "recallAt10": 0.75,
+      "recallAt100": 1
+    },
+    {
+      "queryId": "1382",
+      "relevant": 1,
+      "retrieved": 100,
+      "ndcgAt10": 0.430677,
+      "mapAt100": 0.25,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
+      "recallAt100": 1
+    },
+    {
       "queryId": "1385",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0.5,
-      "mapAt100": 0.333333,
+      "ndcgAt10": 1,
+      "mapAt100": 1,
       "precisionAt10": 0.1,
       "recallAt10": 1,
       "recallAt100": 1
@@ -3050,16 +3103,17 @@
       "queryId": "1395",
       "relevant": 1,
       "retrieved": 100,
-      "ndcgAt10": 0,
-      "mapAt100": 0.034483,
-      "precisionAt10": 0,
-      "recallAt10": 0,
+      "ndcgAt10": 0.386853,
+      "mapAt100": 0.2,
+      "precisionAt10": 0.1,
+      "recallAt10": 1,
       "recallAt100": 1
     }
   ],
   "caveats": [
     "This is a local BEIR benchmark, not an official leaderboard submission.",
     "Scores are document-level for BEIR qrels.",
+    "Chunk→document roll-up rule: max-pool (a document is represented by its single best chunk, scored once against the document-level qrel), applied uniformly to the dense, lexical, and hybrid legs. The alternative (parent-label inheritance) has a known mild optimistic bias at large chunk sizes, so max-pool is used.",
     "MLflow logging is not required for JSON/TREC artifacts; optional logging is expected to come from the bench observability hook.",
     "Dense/hybrid retrieval is driven by the production src/ paths (FaissIndexManager.similaritySearch + src/hybrid-retrieval RRF), not a benchmark-only reimplementation.",
     "Dense/hybrid require a real embedding provider; the fake provider is deterministic but has no semantic geometry, so fake-provider numbers are self-test smoke only — never a quality baseline."
