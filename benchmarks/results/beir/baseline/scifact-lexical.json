@@ -1,13 +1,13 @@
 {
-  "schema_version": "kb.beir-benchmark.v2",
-  "generated_at": "2026-06-07T23:46:27.022Z",
-  "git_sha": "86a4caf",
-  "command": "node build/benchmarks/beir/run.js --dataset=scifact --split=test --mode=lexical --lexical-unit=source --output-dir=/tmp/beir-real-out --dataset-dir=/tmp/beir-hf/scifact",
+  "schema_version": "kb.beir-benchmark.v8",
+  "generated_at": "2026-11-10T19:46:29.797Z",
+  "git_sha": "461fe4b",
+  "command": "node build/benchmarks/beir/run.js --dataset=scifact --split=test --mode=lexical --lexical-unit=source --output-dir=benchmarks/results/beir/baseline",
   "dataset": {
     "name": "scifact",
     "split": "test",
-    "source_url": null,
-    "checksum_sha256": "24d7f696f849d4fd251c8dd7f20294eb971ba244d65739a433b616e6d4591e11",
+    "source_url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip",
+    "checksum_sha256": "8ad9035811f5acb750278959afe0cdf8919a8ee34403ce74a164fa0e7a572622",
     "corpus_documents": 5183,
     "queries_total": 1109,
     "qrels_queries": 300,
@@ -15,10 +15,16 @@
   },
   "mode": "lexical",
   "embedding": null,
+  "rerank": null,
+  "contextual": null,
+  "hybrid_rrf_weights": null,
+  "late_interaction": null,
+  "reranker_bakeoff": null,
   "ranking": {
     "unit": "source",
     "implementation": "LexicalIndex source BM25 over whole files, returning one representative chunk per source",
-    "trec_run": "/tmp/beir-real-out/kb-scifact-lexical-source-run.trec",
+    "qrel_rollup": "max-pool",
+    "trec_run": "benchmarks/results/beir/baseline/kb-scifact-lexical-source-run.trec",
     "k": 100,
     "chunk_candidate_k": 1000
   },
@@ -33,7 +39,7 @@
     "arch": "x64"
   },
   "indexing": {
-    "ms": 6422.75,
+    "ms": 7023.002,
     "refresh": {
       "added": 5183,
       "updated": 0,
@@ -53,12 +59,50 @@
     "recallAt10": 0.792333,
     "recallAt100": 0.895889
   },
+  "metrics_uncertainty": {
+    "schema_version": "kb.beir.metric-uncertainty.v1",
+    "observations": 300,
+    "alpha": 0.05,
+    "note": "SE/CI are estimated across per-query metric values; MDE is 2x bounded-metric SE for the evaluated query count.",
+    "metrics": {
+      "ndcgAt10": {
+        "standard_error": 0.023101,
+        "ci_low": 0.62352,
+        "ci_high": 0.714442,
+        "minimum_detectable_effect": 0.054338
+      },
+      "mapAt100": {
+        "standard_error": 0.024355,
+        "ci_low": 0.582344,
+        "ci_high": 0.678204,
+        "minimum_detectable_effect": 0.055741
+      },
+      "precisionAt10": {
+        "standard_error": 0.002948,
+        "ci_low": 0.081199,
+        "ci_high": 0.092801,
+        "minimum_detectable_effect": 0.032544
+      },
+      "recallAt10": {
+        "standard_error": 0.02277,
+        "ci_low": 0.747523,
+        "ci_high": 0.837143,
+        "minimum_detectable_effect": 0.046839
+      },
+      "recallAt100": {
+        "standard_error": 0.017249,
+        "ci_low": 0.861943,
+        "ci_high": 0.929835,
+        "minimum_detectable_effect": 0.035265
+      }
+    }
+  },
   "latency": {
     "queries": 300,
-    "p50Ms": 24.967232,
-    "p95Ms": 44.327187,
-    "p99Ms": 56.46742,
-    "meanMs": 30.239493
+    "p50Ms": 24.117209,
+    "p95Ms": 42.295446,
+    "p99Ms": 50.959089,
+    "meanMs": 30.604542
   },
   "per_query": [
     {
@@ -3065,6 +3109,7 @@
   "caveats": [
     "This is a local BEIR benchmark, not an official leaderboard submission.",
     "Scores are document-level for BEIR qrels.",
+    "Chunk→document roll-up rule: max-pool (a document is represented by its single best chunk, scored once against the document-level qrel), applied uniformly to the dense, lexical, and hybrid legs. The alternative (parent-label inheritance) has a known mild optimistic bias at large chunk sizes, so max-pool is used.",
     "MLflow logging is not required for JSON/TREC artifacts; optional logging is expected to come from the bench observability hook.",
     "Lexical mode requires no provider credentials.",
     "Source ranking is the same public lexical unit exposed by kb search --lexical-unit=source."

@@ -42,54 +42,38 @@ that genuinely fails the build if a retrieval change makes the fixture nDCG@10
 regress significantly. These are plumbing baselines, not quality baselines (the
 `fake` provider has no semantic geometry).
 
-## Recorded SciFact baselines (test split, 300 judged queries)
+## Recorded SciFact baselines (test split, 300 judged queries) — re-measured 2026-11-10 (#1046)
 
 Embedding: **`ollama / nomic-embed-text`** (the project's shipped local model),
-default chunking 1000/200, no cross-encoder rerank (rerank is M1).
+default chunking 1000/200, task prefixes **on** (`search_query:` /
+`search_document:`, fixed in #587, now the default). `hybrid+rerank` uses
+`Xenova/ms-marco-MiniLM-L-6-v2`, topN=40 (#561).
 
 | mode (file) | nDCG@10 | precision@10 | Recall@10 | Recall@100 |
 |---|---|---|---|---|
 | `lexical` source BM25 (`scifact-lexical.json`) | **0.6690** | 0.0870 | 0.7923 | 0.8959 |
-| `dense` (`scifact-dense.json`) | 0.4914 | 0.0693 | 0.6107 | 0.8083 |
-| `hybrid` RRF (`scifact-hybrid.json`) | 0.6109 | 0.0850 | 0.7629 | 0.9213 |
+| `dense` (`scifact-dense.json`) | 0.6989 | 0.0927 | 0.8182 | 0.9450 |
+| `hybrid` RRF (`scifact-hybrid.json`) | 0.7073 | 0.0943 | 0.8471 | 0.9653 |
+| `hybrid+rerank` (`scifact-hybrid+rerank.json`) | 0.7079 | 0.0940 | 0.8374 | 0.9653 |
 
-(The lexical 0.6690 reproduces the prior pure-BM25 record in
-`../scifact-lexical-source-2026-05-28/` to 4 dp, validating the harness +
-dataset conversion.)
+Δ vs the stale pre-prefix / pre-rerank record (0.4914 dense, 0.6109 hybrid):
+dense **+0.2075**, hybrid **+0.0964**. Rerank adds only +0.0007 over hybrid
+(well inside the nDCG@10 SE of ~0.021, i.e. not significant here).
 
-## Acceptance metric (M0): NOT cleared by the as-shipped model ⚠️
+## Acceptance metric (M0): cleared on nDCG@10, but not by a significant margin
 
 > SciFact `hybrid` nDCG@10 recorded and **> lexical 0.669** by a significant
 > margin.
 
-**Measured result: hybrid = 0.611, which is _below_ lexical 0.669.** This is a
-real, honest finding — and precisely what the harness exists to surface (RFC 020:
-"make retrieval quality a first-class, honestly-measured quantity; measure before
-build"). The RFC's hypothesised 0.74–0.77 band was an explicit *training-knowledge
-hypothesis for Qwen3-Embedding-0.6B, pending verification* (RFC §Evidence base).
-The harness verified it against the model the product actually ships and the
-hypothesis does **not** hold here.
-
-Diagnosed contributors (each a follow-up, not M0 scope):
-
-1. **Model.** `nomic-embed-text` (137M) is much weaker than the RFC's assumed
-   Qwen3-Embedding-0.6B, and SciFact (scientific claim verification) is a
-   BM25-friendly domain.
-2. **Missing task prefixes (bug).** `nomic-embed-text` requires
-   `search_query:` / `search_document:` prefixes for retrieval; the embedding
-   path does not add them, depressing dense quality. Tracked as a follow-up
-   issue.
-3. **No reranker.** The RFC's gain assumes dense + RRF **+ cross-encoder**;
-   rerank lands in M1 (#561).
-4. **Chunk vs. source BM25.** The lexical baseline scores whole-document
-   (`--lexical-unit=source`) BM25, while hybrid fuses *chunk*-level BM25 with
-   dense; at document-level scoring the chunk split dilutes the strong
-   whole-doc BM25 signal — exactly the chunk-boundary effect precision@10 is
-   here to expose.
-
-The dense/hybrid harness is landed, tested, and now produces real, committed,
-reproducible numbers. Clearing 0.669 is an M1+ question (rerank, nomic prefixes,
-or a stronger embedding model), to be re-measured through this same harness.
+hybrid 0.7073 vs lexical 0.6690 is +0.038: above lexical, but smaller than the
+~0.053 MDE at this query count (SE ≈ 0.022 per mode), so the "significant
+margin" wording is not demonstrated by this run alone. The earlier "hybrid
+below lexical" finding was an artifact of the missing task prefixes (#587):
+enabling them lifts dense from 0.491 to 0.699, which alone clears lexical. The
+cross-encoder rerank gives no measurable SciFact gain on top of hybrid (and
+costs p50 ≈ 3.4 s/query on this machine). Single run, single machine; the
+chunk-level hybrid still scores differently from whole-document BM25, so the
+comparison is not perfectly like-for-like.
 
 ## Reproduce / extend
 
@@ -108,5 +92,5 @@ node build/benchmarks/beir/run.js --dataset=scifact --dataset-dir=<dir> \
 
 # Or, when the dataset host is reachable, the built-in fetch + CI subset:
 npm run bench:beir:baseline -- --provider=ollama --model=nomic-embed-text \
-  --modes=lexical,dense,hybrid
+  --modes=lexical,dense,hybrid,hybrid+rerank
 ```
