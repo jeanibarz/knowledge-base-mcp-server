@@ -1221,7 +1221,8 @@ export class FaissIndexManager {
    * with a write mutation should already hold this manager's write lock.
    */
   async reloadPersistedIndex(): Promise<void> {
-    this.faissIndex = await this.loadAtomic();
+    // allowRebuild: this process already loaded (or is rebuilding) this store.
+    this.faissIndex = await this.loadAtomic({ allowRebuild: true });
     this.metadataSidecarAllowedForLoadedStore = true;
     this.metadataSidecarCache = null;
     this.metadataSidecarMissingLogged = false;

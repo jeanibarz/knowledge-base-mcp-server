@@ -518,6 +518,13 @@ describe('kb doctor', () => {
       for (const [name, ageSec] of [['index.v8', 10], ['index.v38', 500]] as const) {
         const dir = path.join(modelDir, name);
         await fsp.mkdir(dir, { recursive: true });
+        await fsp.writeFile(path.join(dir, 'integrity.json'), JSON.stringify({
+          schema_version: 'kb.index-integrity.v1',
+          written_at: new Date(Date.now() - ageSec * 1000).toISOString(),
+          model_id: MODEL_ID,
+          index_type: 'flat',
+          files: {},
+        }));
         const t = Date.now() / 1000 - ageSec;
         await fsp.utimes(dir, t, t);
       }

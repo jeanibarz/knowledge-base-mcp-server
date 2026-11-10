@@ -4,6 +4,7 @@ import {
   cosineSimilarity,
   createEmbeddingCanaryFingerprint,
   loadFaissStoreAtomic,
+  listIndexVersionsNewestFirst,
   loadHnswIndexAtomic,
   pruneInactiveIndexVersions,
   readIndexIntegrityManifest,
@@ -320,6 +321,36 @@ describe('loaders keep the active index pointer (#1179)', () => {
     await expect(loadHnsw(modelDir, hnswConfig, false)).rejects.toMatchObject({ code: 'INDEX_POINTER_MISSING' });
     await expect(loadFaiss(modelDir, 'flat', false)).resolves.toBeNull();
     await expect(loadFaiss(modelDir, 'flat', true, true)).resolves.toBeNull();
+  });
+
+  it('a manifest-less orphan index.v0 from a crashed first save is not a built index (#1181)', async () => {
+    const modelDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-1181-orphan-'));
+    await fsp.mkdir(path.join(modelDir, 'index.v0'));
+    await fsp.writeFile(path.join(modelDir, 'index.v0', 'faiss.index'), 'partial');
+
+    await expect(loadFaiss(modelDir, 'flat', true, false)).resolves.toBeNull();
+    await expect(loadHnsw(modelDir, hnswConfig, false)).resolves.toBeNull();
+  });
+
+  it('a restored version with an old written_at still ranks newest by directory mtime (#1181)', async () => {
+    const modelDir = await makeFaissModelDir();
+    const store = await FaissStore.fromTexts(['gamma'], [{}], embeddings);
+    await saveFaissStoreAtomic({ store, modelDir, modelId: 'model', swapCounter: 2, indexType: 'flat' });
+    const manifestPath = path.join(modelDir, 'index.v1', 'integrity.json');
+    const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf-8')) as { written_at: string };
+    manifest.written_at = '2020-01-01T00:00:00.000Z';
+    await fsp.writeFile(manifestPath, JSON.stringify(manifest));
+    const old = new Date('2021-01-01T00:00:00Z');
+    const v0Manifest = path.join(modelDir, 'index.v0', 'integrity.json');
+    const m0 = JSON.parse(await fsp.readFile(v0Manifest, 'utf-8')) as { written_at: string };
+    m0.written_at = old.toISOString();
+    await fsp.writeFile(v0Manifest, JSON.stringify(m0));
+    await fsp.utimes(path.join(modelDir, 'index.v0'), old, old);
+    const now = new Date();
+    await fsp.utimes(path.join(modelDir, 'index.v1'), now, now);
+
+    const versions = await listIndexVersionsNewestFirst(modelDir);
+    expect(versions[0].name).toBe('index.v1');
   });
 
   it('repairIndexPointer re-points at the newest verifying version and skips a tampered one (#1181)', async () => {

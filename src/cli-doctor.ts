@@ -1865,7 +1865,7 @@ async function describeMissingIndexPointer(activeModelId: string): Promise<strin
   const dir = modelDir(activeModelId);
   const pointer = await fsp.lstat(path.join(dir, 'index')).catch(() => null);
   if (pointer !== null) return null;
-  const versions = await listIndexVersionsNewestFirst(dir);
+  const versions = (await listIndexVersionsNewestFirst(dir)).filter((v) => v.hasManifest);
   if (versions.length === 0) return null;
   return `active model index pointer is missing; ${versions.length} index version(s) on disk ` +
     `(newest: ${versions[0].name}). Run \`kb verify --integrity --repair\` to re-point it.`;

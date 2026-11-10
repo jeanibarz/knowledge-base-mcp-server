@@ -177,13 +177,15 @@ export interface IndexVersionEntry {
   n: number;
   /** Epoch ms of integrity.json `written_at`, falling back to the directory mtime. */
   createdMs: number;
+  /** True when the directory holds an integrity.json (i.e. a completed save). */
+  hasManifest: boolean;
 }
 
 /**
  * Issue #1181 — every `index.vN/` directory under a model dir, newest first.
  *
- * Ordered by creation time (integrity manifest `written_at`, else directory
- * mtime) and only then by version number. A directory whose numbering
+ * Ordered by creation time (the later of integrity manifest `written_at` and
+ * directory mtime) and only then by version number. A directory whose numbering
  * restarted before #1179 holds `index.v8` newer than `index.v38`; ordering by
  * N alone would call the stale one "newest".
  */
@@ -199,21 +201,26 @@ export async function listIndexVersionsNewestFirst(modelDir: string): Promise<In
     const n = parseIndexVersionDirName(name);
     if (n === null) continue;
     const dir = path.join(modelDir, name);
-    let createdMs = Number.NaN;
+    let createdMs = 0;
+    let hasManifest = false;
     try {
       const manifest = await readIndexIntegrityManifest(dir);
-      if (manifest) createdMs = Date.parse(manifest.written_at);
-    } catch {
-      // fall through to mtime
-    }
-    if (!Number.isFinite(createdMs)) {
-      try {
-        createdMs = (await fsp.stat(dir)).mtimeMs;
-      } catch {
-        createdMs = 0;
+      if (manifest) {
+        hasManifest = true;
+        const written = Date.parse(manifest.written_at);
+        if (Number.isFinite(written)) createdMs = written;
       }
+    } catch {
+      // unreadable manifest: fall through to mtime
     }
-    out.push({ name, n, createdMs });
+    // `kb restore` copies integrity.json verbatim, so written_at can predate
+    // the restore; the directory mtime reflects when it was created here.
+    try {
+      createdMs = Math.max(createdMs, (await fsp.stat(dir)).mtimeMs);
+    } catch {
+      // keep what we have
+    }
+    out.push({ name, n, createdMs, hasManifest });
   }
   return out.sort((a, b) => b.createdMs - a.createdMs || b.n - a.n);
 }
@@ -285,7 +292,9 @@ export async function repairIndexPointer(modelDir: string): Promise<RepairIndexP
 export async function assertPointerNotMissing(modelDir: string): Promise<void> {
   const existing = await fsp.lstat(path.join(modelDir, SYMLINK_NAME)).catch(() => null);
   if (existing !== null) return;
-  const versions = await listIndexVersionsNewestFirst(modelDir);
+  // Only completed saves count: a crashed first save leaves a manifest-less
+  // index.v0/ with nothing worth protecting, and a rebuild is the right answer.
+  const versions = (await listIndexVersionsNewestFirst(modelDir)).filter((v) => v.hasManifest);
   if (versions.length === 0) return;
   throw new KBError(
     'INDEX_POINTER_MISSING',
