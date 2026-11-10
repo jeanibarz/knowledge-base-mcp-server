@@ -2376,7 +2376,7 @@ async function resolveBatchActiveModel(
   const cached = cache.get(cacheKey);
   if (cached !== undefined) return cached;
   const startedAt = nowMs();
-  const activeModelId = await deps.resolveActiveModel({ explicitOverride: row.model });
+  const activeModelId = await deps.resolveActiveModel({ explicitOverride: row.model, registerFirstModel: row.refresh });
   cache.set(cacheKey, activeModelId);
   if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
   return activeModelId;

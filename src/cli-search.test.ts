@@ -539,6 +539,46 @@ describe('runSearch timing guard (#331)', () => {
     };
   }
 
+  // Issue #1178 — only refresh-capable (writer) searches opt in to first-run
+  // model registration; the resolver rejects so the test needs no manager mocks.
+  describe('first-run model registration opt-in (issue #1178)', () => {
+    async function resolveOptions(args: string[], stdin?: string): Promise<unknown[]> {
+      const resolveActiveModel = jest.fn(async () => {
+        throw new Error('stop after resolve');
+      });
+      const deps = {
+        bootstrapLayout: jest.fn(async () => {}),
+        resolveActiveModel,
+        loadManagerForModel: jest.fn(),
+        loadWithJsonRetry: jest.fn(),
+      } as unknown as RunSearchDeps;
+      await captureSearchOutput(args, deps, stdin);
+      return resolveActiveModel.mock.calls.map((c) => (c as unknown[])[0]);
+    }
+
+    it.each([
+      [['q', '--refresh', '--mode=dense']],
+      [['q', '--refresh', '--mode=hybrid']],
+    ])('passes registerFirstModel=true for %j', async (args) => {
+      expect(await resolveOptions(args)).toEqual([expect.objectContaining({ registerFirstModel: true })]);
+    });
+
+    it.each([
+      [['q', '--mode=dense']],
+      [['q', '--mode=hybrid']],
+    ])('keeps read-only search from registering for %j', async (args) => {
+      expect(await resolveOptions(args)).toEqual([expect.objectContaining({ registerFirstModel: false })]);
+    });
+
+    it('passes registerFirstModel=true for a batch row with refresh', async () => {
+      const calls = await resolveOptions(
+        ['--batch-jsonl'],
+        JSON.stringify({ query: 'q', refresh: true }) + '\n',
+      );
+      expect(calls[0]).toEqual(expect.objectContaining({ registerFirstModel: true }));
+    });
+  });
+
   async function captureSearchOutput(
     args: string[],
     deps: RunSearchDeps,
