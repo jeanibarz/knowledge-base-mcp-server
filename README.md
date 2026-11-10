@@ -135,6 +135,8 @@ KNOWLEDGE_BASES_ROOT_DIR=$HOME/knowledge_bases   # one subdirectory per knowledg
 EMBEDDING_PROVIDER=ollama                        # ollama | openai | huggingface
 ```
 
+**First run needs no extra step.** On a fresh index directory the MCP server registers the model your environment names (for example `ollama__nomic-embed-text`) as the active model when it starts, then embeds your notes. `kb search --refresh` does the same. After that, `kb models add` is only for *additional* models (see [Compare embedding models](#compare-embedding-models)); it is never required to get started, so `npx`-only and Smithery installs work without the `kb` command.
+
 Set these in your shell profile (`.bashrc`, `.zshrc`) or directly in your MCP client's config. Every recognised variable, with its default, accepted values, and validation constraints, is listed in [`docs/reference/configuration.md`](docs/reference/configuration.md); the operator-facing view of retrieval flags and rollout status is in [docs/feature-flags.md](docs/feature-flags.md). Copy [`.env.example`](./.env.example) to `.env` for local development.
 
 Run `kb config validate` to check your configuration before startup. It catches cross-variable mistakes as well as bad individual values — for example, `KB_CHUNK_OVERLAP` must be strictly less than `KB_CHUNK_SIZE`. `kb doctor` reports the same finding and exits non-zero when the pair is invalid.

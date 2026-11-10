@@ -23,6 +23,7 @@ import {
 } from './config/provider.js';
 import { pathExists } from './file-utils.js';
 import { ActiveModelResolutionError } from './errors.js';
+import { logger } from './logger.js';
 import { deriveModelId, EmbeddingProvider, isValidModelId, parseModelId } from './model-id.js';
 import {
   classifyIncompleteModelState,
@@ -31,6 +32,7 @@ import {
   modelsRoot,
   readActiveRaw,
   readStoredModelName,
+  registerFirstModelIfPristine,
 } from './model-storage-layout.js';
 
 export { isRegisteredModel };
@@ -106,6 +108,14 @@ export { ActiveModelResolutionError } from './errors.js';
 export interface ResolveOptions {
   /** Explicit per-call override: CLI `--model=<id>` or MCP `args.model_name`. */
   explicitOverride?: string;
+  /**
+   * Issue #1178 — set by callers that are allowed to write (MCP server,
+   * `kb search --refresh`). When the install is pristine (nothing registered,
+   * no active.txt, no KB_ACTIVE_MODEL, no explicit override), the env-derived
+   * model is registered and pinned active instead of failing with
+   * "No model registered". Read-only callers leave this unset.
+   */
+  registerFirstModel?: boolean;
 }
 
 /**
@@ -119,6 +129,16 @@ export interface ResolveOptions {
  * on any failure path. Callers convert to exit-2 (CLI) or `isError: true` (MCP).
  */
 export async function resolveActiveModel(opts: ResolveOptions = {}): Promise<string> {
+  if (
+    opts.registerFirstModel === true &&
+    (opts.explicitOverride === undefined || opts.explicitOverride === '') &&
+    !KB_ACTIVE_MODEL
+  ) {
+    const spec = computeLegacyEnvModelSpec();
+    if (await registerFirstModelIfPristine(spec.modelId, spec.modelName)) {
+      logger.info(`First run: registered env-derived model ${spec.modelId} as active`);
+    }
+  }
   // Step 1: explicit per-call override.
   if (opts.explicitOverride !== undefined && opts.explicitOverride !== '') {
     const id = opts.explicitOverride;
@@ -183,7 +203,8 @@ export async function resolveActiveModel(opts: ResolveOptions = {}): Promise<str
   if (!(await isRegisteredModel(envId))) {
     const available = (await listRegisteredModels()).map((m) => m.model_id).join(', ') || '<none>';
     throw new ActiveModelResolutionError(
-      `No model registered. Run \`kb models add <provider> <model>\` first. ` +
+      `No model registered. Run \`kb models add <provider> <model>\` first ` +
+      `(the MCP server and \`kb search --refresh\` register the env-derived model automatically on first run). ` +
       `Env-derived candidate: "${envId}". Registered: ${available}.`,
     );
   }

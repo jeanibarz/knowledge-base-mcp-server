@@ -34,6 +34,10 @@ the request as a no-op. See [MCP logging capability](./mcp-logging.md).
 
 The server can also expose reusable MCP prompt templates (`summarize_kb`, `cite_sources`, `compare_notes`, `research_brief`) that clients surface as slash-commands. This surface is opt-in (`KB_MCP_PROMPTS=on`) and read-only. See [MCP prompts and reusable KB templates](./mcp-prompts.md) for the template registry, arguments, and client support.
 
+## First run
+
+No `kb models add` step is needed to get started. When `FAISS_INDEX_PATH` has no registered model yet, the MCP server registers the one your env vars describe (`EMBEDDING_PROVIDER` + its model variable) as the active model on startup and indexes your notes; the first `retrieve_knowledge` then works. This is what makes `npx`-only and Smithery installs usable without a `kb` command. It only happens for the very first model: if any model (or an interrupted `kb models add`) already exists, or `active.txt` is present, nothing is registered automatically.
+
 ## Multi-model setups (RFC 013, 0.3.0+)
 
 The default config in the snippets below resolves to a single embedding model via the legacy env vars (`EMBEDDING_PROVIDER` + `OLLAMA_MODEL`/`OPENAI_MODEL_NAME`/`HUGGINGFACE_MODEL_NAME`). On 0.3.0+, you can keep multiple models registered side-by-side and have the MCP server use any of them per-call.

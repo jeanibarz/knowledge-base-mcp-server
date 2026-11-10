@@ -264,3 +264,66 @@ describe('model-resolution: isRegisteredModel / listRegisteredModels', () => {
     expect(models.map((m) => m.model_id)).toEqual([REGISTERED_ID]);
   });
 });
+
+describe('model-resolution: first-run registration (issue #1178)', () => {
+  let faissDir: string;
+  beforeEach(async () => {
+    faissDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-firstrun-'));
+    process.env.FAISS_INDEX_PATH = faissDir;
+    process.env.EMBEDDING_PROVIDER = 'ollama';
+    process.env.OLLAMA_MODEL = 'nomic-embed-text';
+    delete process.env.KB_ACTIVE_MODEL;
+  });
+
+  it('still fails without the opt-in flag and writes nothing', async () => {
+    jest.resetModules();
+    const { resolveActiveModel } = await import('./model-resolution.js');
+    await expect(resolveActiveModel()).rejects.toThrow(/No model registered/);
+    await expect(fsp.readdir(path.join(faissDir, 'models'))).rejects.toThrow();
+  });
+
+  it('registers and pins the env-derived model on a pristine install', async () => {
+    jest.resetModules();
+    const { resolveActiveModel, listRegisteredModels } = await import('./model-resolution.js');
+    expect(await resolveActiveModel({ registerFirstModel: true })).toBe('ollama__nomic-embed-text');
+    expect((await listRegisteredModels()).map((m) => m.model_id)).toEqual(['ollama__nomic-embed-text']);
+    expect((await fsp.readFile(path.join(faissDir, 'active.txt'), 'utf-8')).trim()).toBe('ollama__nomic-embed-text');
+    // idempotent, and plain resolution now succeeds
+    expect(await resolveActiveModel({ registerFirstModel: true })).toBe('ollama__nomic-embed-text');
+    expect(await resolveActiveModel()).toBe('ollama__nomic-embed-text');
+  });
+
+  it('does not register a second model when another is already registered', async () => {
+    jest.resetModules();
+    const { resolveActiveModel, listRegisteredModels } = await import('./model-resolution.js');
+    await seedRegistered(faissDir);
+    await expect(resolveActiveModel({ registerFirstModel: true })).rejects.toThrow(/No model registered/);
+    expect((await listRegisteredModels()).map((m) => m.model_id)).toEqual([REGISTERED_ID]);
+  });
+
+  it('does not adopt the env model when another model is mid-add (.adding)', async () => {
+    jest.resetModules();
+    const { resolveActiveModel } = await import('./model-resolution.js');
+    const dir = path.join(faissDir, 'models', REGISTERED_ID);
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(path.join(dir, '.adding'), '{}');
+    await expect(resolveActiveModel({ registerFirstModel: true })).rejects.toThrow(/No model registered/);
+  });
+
+  it('leaves an existing active.txt untouched', async () => {
+    jest.resetModules();
+    const { resolveActiveModel } = await import('./model-resolution.js');
+    await fsp.writeFile(path.join(faissDir, 'active.txt'), REGISTERED_ID);
+    await expect(resolveActiveModel({ registerFirstModel: true })).rejects.toThrow(/not registered/);
+    await expect(fsp.stat(path.join(faissDir, 'models'))).rejects.toThrow();
+  });
+
+  it('does not register when an explicit override is given', async () => {
+    jest.resetModules();
+    const { resolveActiveModel } = await import('./model-resolution.js');
+    await expect(
+      resolveActiveModel({ explicitOverride: REGISTERED_ID, registerFirstModel: true }),
+    ).rejects.toThrow(/not registered/);
+    await expect(fsp.stat(path.join(faissDir, 'models'))).rejects.toThrow();
+  });
+});

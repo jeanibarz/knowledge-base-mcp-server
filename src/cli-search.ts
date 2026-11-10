@@ -670,7 +670,10 @@ export async function runSearch(
   let activeModelId: string;
   try {
     const startedAt = nowMs();
-    activeModelId = await deps.resolveActiveModel({ explicitOverride: parsed.model });
+    activeModelId = await deps.resolveActiveModel({
+      explicitOverride: parsed.model,
+      registerFirstModel: parsed.refresh,
+    });
     if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);
@@ -2373,7 +2376,7 @@ async function resolveBatchActiveModel(
   const cached = cache.get(cacheKey);
   if (cached !== undefined) return cached;
   const startedAt = nowMs();
-  const activeModelId = await deps.resolveActiveModel({ explicitOverride: row.model });
+  const activeModelId = await deps.resolveActiveModel({ explicitOverride: row.model, registerFirstModel: row.refresh });
   cache.set(cacheKey, activeModelId);
   if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
   return activeModelId;
@@ -2923,7 +2926,7 @@ async function runHybridSearch(
     await deps.bootstrapLayout();
     if (timing) timing.bootstrap_ms = elapsedMs(startedAt);
     startedAt = nowMs();
-    activeModelId = await deps.resolveActiveModel({ explicitOverride: parsed.model });
+    activeModelId = await deps.resolveActiveModel({ explicitOverride: parsed.model, registerFirstModel: parsed.refresh });
     if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);

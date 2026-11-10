@@ -1515,7 +1515,7 @@ export class KnowledgeBaseServer {
       // hard-fails with a registered-list hint if not on disk).
       let activeModelId: string;
       try {
-        activeModelId = await resolveActiveModel({ explicitOverride: modelNameOverride });
+        activeModelId = await resolveActiveModel({ explicitOverride: modelNameOverride, registerFirstModel: true });
       } catch (err) {
         if (err instanceof ActiveModelResolutionError) {
           searchLatencyMetrics.record({
@@ -1878,7 +1878,7 @@ export class KnowledgeBaseServer {
     try {
       let activeModelId: string;
       try {
-        activeModelId = await resolveActiveModel({ explicitOverride: modelNameOverride });
+        activeModelId = await resolveActiveModel({ explicitOverride: modelNameOverride, registerFirstModel: true });
       } catch (err) {
         if (err instanceof ActiveModelResolutionError) {
           searchLatencyMetrics.record({
@@ -2411,7 +2411,7 @@ export class KnowledgeBaseServer {
 
   private async warmActiveManager(): Promise<void> {
     try {
-      const activeId = await resolveActiveModel();
+      const activeId = await resolveActiveModel({ registerFirstModel: true });
       const manager = await this.managers.getOrCreate(activeId);
       if (manager.hasLoadedIndex) {
         logger.info(`Active FAISS index ${activeId} loaded; startup rebuild not needed`);
