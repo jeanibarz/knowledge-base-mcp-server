@@ -4,9 +4,12 @@ import {
   cosineSimilarity,
   createEmbeddingCanaryFingerprint,
   loadFaissStoreAtomic,
+  loadHnswIndexAtomic,
   readIndexIntegrityManifest,
+  saveFaissStoreAtomic,
   saveHnswIndexAtomic,
 } from './faiss-store-layout.js';
+import { FaissStore } from '@langchain/community/vectorstores/faiss';
 import { HnswIndexAdapter } from './hnsw-index-adapter.js';
 import type { HnswIndexConfig } from './config/indexing.js';
 import * as fsp from 'fs/promises';
@@ -144,6 +147,147 @@ describe('HNSW versioned layout', () => {
     });
 
     expect(loaded).toBeNull();
-    await expect(fsp.lstat(path.join(modelDir, 'index'))).rejects.toMatchObject({ code: 'ENOENT' });
+    // Issue #1179 — refusing the version must not delete the shared pointer.
+    expect(await fsp.readlink(path.join(modelDir, 'index'))).toBe('index.v0');
+  });
+});
+
+// Issue #1179 — a version a process cannot use must keep its `index`
+// pointer, so processes configured to match it still load it.
+describe('loaders keep the active index pointer (#1179)', () => {
+  const hnswConfig: HnswIndexConfig = {
+    m: 8,
+    efConstruction: 40,
+    efSearch: 20,
+    metric: 'l2',
+    capacityPolicy: 'resize_to_fit',
+    randomSeed: 100,
+  };
+  const embeddings = {
+    embedDocuments: async (texts: string[]) => texts.map((_, i) => [i, 1]),
+    embedQuery: async () => [0, 1],
+  };
+  const failOnFsError = ((action: string, targetPath: string, error: unknown) => {
+    throw new Error(`${action} ${targetPath}: ${(error as Error).message}`);
+  });
+
+  async function makeFaissModelDir(): Promise<string> {
+    const modelDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-1179-faiss-'));
+    const store = await FaissStore.fromTexts(['alpha', 'beta'], [{}, {}], embeddings);
+    await saveFaissStoreAtomic({ store, modelDir, modelId: 'model', swapCounter: 1, indexType: 'flat' });
+    return modelDir;
+  }
+
+  async function makeHnswModelDir(): Promise<string> {
+    const modelDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-1179-hnsw-'));
+    const adapter = await HnswIndexAdapter.fromEmbeddedDocuments({
+      documents: [{ pageContent: 'alpha', metadata: {} } as never],
+      vectors: [[0, 1]],
+    }, hnswConfig);
+    await saveHnswIndexAtomic({ adapter, modelDir, modelId: 'model', swapCounter: 1, config: hnswConfig });
+    return modelDir;
+  }
+
+  function loadFaiss(modelDir: string, expectedIndexType: 'flat' | 'sq8', repairCorrupt = true) {
+    return loadFaissStoreAtomic({
+      modelDir,
+      modelId: 'model',
+      embeddings,
+      handleFsOperationError: failOnFsError,
+      expectedIndexType,
+      repairCorrupt,
+    });
+  }
+
+  function loadHnsw(modelDir: string, config: HnswIndexConfig = hnswConfig) {
+    return loadHnswIndexAtomic({
+      modelDir,
+      modelId: 'model',
+      config,
+      handleFsOperationError: failOnFsError,
+    });
+  }
+
+  async function pointer(modelDir: string): Promise<string> {
+    return fsp.readlink(path.join(modelDir, 'index'));
+  }
+
+  it('FAISS index-type mismatch returns null, keeps the pointer, and a matching load still works', async () => {
+    const modelDir = await makeFaissModelDir();
+
+    await expect(loadFaiss(modelDir, 'sq8')).resolves.toBeNull();
+
+    expect(await pointer(modelDir)).toBe('index.v0');
+    await expect(loadFaiss(modelDir, 'flat')).resolves.not.toBeNull();
+  });
+
+  it('FAISS index-type mismatch on a read-only load throws and keeps the pointer', async () => {
+    const modelDir = await makeFaissModelDir();
+
+    await expect(loadFaiss(modelDir, 'sq8', false)).rejects.toThrow(/written as flat.*expects sq8/);
+
+    expect(await pointer(modelDir)).toBe('index.v0');
+  });
+
+  it('FAISS load failure returns null and keeps the pointer', async () => {
+    const modelDir = await makeFaissModelDir();
+    await fsp.writeFile(path.join(modelDir, 'index.v0', 'faiss.index'), 'corrupt-bytes');
+
+    await expect(loadFaiss(modelDir, 'flat')).resolves.toBeNull();
+
+    expect(await pointer(modelDir)).toBe('index.v0');
+  });
+
+  it('HNSW loader keeps the pointer on a backend mismatch', async () => {
+    const modelDir = await makeFaissModelDir();
+
+    await expect(loadHnsw(modelDir)).resolves.toBeNull();
+
+    expect(await pointer(modelDir)).toBe('index.v0');
+  });
+
+  it('HNSW loader keeps the pointer when the manifest lacks HNSW metadata', async () => {
+    const modelDir = await makeHnswModelDir();
+    const manifestPath = path.join(modelDir, 'index.v0', 'integrity.json');
+    const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf-8')) as Record<string, unknown>;
+    delete manifest.hnsw;
+    await fsp.writeFile(manifestPath, JSON.stringify(manifest));
+
+    await expect(loadHnsw(modelDir)).resolves.toBeNull();
+
+    expect(await pointer(modelDir)).toBe('index.v0');
+  });
+
+  it('HNSW loader keeps the pointer when tuning differs, and the original tuning still loads', async () => {
+    const modelDir = await makeHnswModelDir();
+
+    await expect(loadHnsw(modelDir, { ...hnswConfig, m: 16 })).resolves.toBeNull();
+
+    expect(await pointer(modelDir)).toBe('index.v0');
+    await expect(loadHnsw(modelDir)).resolves.not.toBeNull();
+  });
+
+  it('HNSW load failure returns null and keeps the pointer', async () => {
+    const modelDir = await makeHnswModelDir();
+    await fsp.writeFile(path.join(modelDir, 'index.v0', 'hnsw.index'), 'corrupt-bytes');
+
+    await expect(loadHnsw(modelDir)).resolves.toBeNull();
+
+    expect(await pointer(modelDir)).toBe('index.v0');
+  });
+
+  it('a save with no pointer numbers past existing versions instead of overwriting index.v0', async () => {
+    const modelDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-1179-renumber-'));
+    await fsp.mkdir(path.join(modelDir, 'index.v0'));
+    await fsp.writeFile(path.join(modelDir, 'index.v0', 'marker'), 'v0');
+    await fsp.mkdir(path.join(modelDir, 'index.v5'));
+    await fsp.writeFile(path.join(modelDir, 'index.v5', 'marker'), 'v5');
+    const store = await FaissStore.fromTexts(['alpha'], [{}], embeddings);
+
+    await saveFaissStoreAtomic({ store, modelDir, modelId: 'model', swapCounter: 1, indexType: 'flat' });
+
+    expect(await pointer(modelDir)).toBe('index.v6');
+    expect(await fsp.readFile(path.join(modelDir, 'index.v0', 'marker'), 'utf-8')).toBe('v0');
+    expect(await fsp.readFile(path.join(modelDir, 'index.v5', 'marker'), 'utf-8')).toBe('v5');
   });
 });

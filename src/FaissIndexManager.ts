@@ -786,12 +786,16 @@ export class FaissIndexManager {
       // RFC 013: no model-switch wipe at initialize time. Each model has its
       // own dir; a different provider+model goes to a different `models/<id>/`.
       // RFC 014: load via the new versioned layout if present, fall back to
-      // the legacy faiss.index/ directory otherwise. loadAtomic handles its
-      // own corruption recovery — only the FAILED layout is removed, never
-      // the other one (preserves legacy as rollback safety even when the
-      // versioned layout is corrupt, and vice versa).
+      // the legacy faiss.index/ directory otherwise.
+      //
+      // Issue #1179: a versioned index this process cannot use (other
+      // backend or index type, other HNSW tuning, load failure) never loses
+      // its `index` pointer. A writer gets null and rebuilds into a new
+      // version; a read-only load throws the reason instead of reporting a
+      // built index as "not built". Read-only loads also never remove a
+      // corrupt legacy faiss.index/ — only a writer about to rebuild may.
       this.faissIndex = await this.loadAtomic({
-        repairCorrupt: opts.strictReadOnly !== true,
+        repairCorrupt: !readOnly,
       });
       this.metadataSidecarAllowedForLoadedStore = true;
       this.metadataSidecarCache = null;

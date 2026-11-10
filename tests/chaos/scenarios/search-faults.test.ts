@@ -192,10 +192,13 @@ describe('search chaos suite', () => {
     expect(output.stderr).not.toContain('UnhandledPromiseRejection');
     expect(JSON.parse(output.stdout)).toMatchObject({
       error: {
-        code: 'INDEX_NOT_INITIALIZED',
+        // Issue #1179 — a present-but-unreadable index is reported as
+        // corrupt, not as "not built", and its pointer is left in place.
+        code: 'CORRUPT_INDEX',
         category: 'indexing',
       },
     });
+    expect(await fsp.realpath(activeIndexSymlink(workspace))).toBe(activeVersion);
   });
 
   it('surfaces torn lexical JSON as a classified per-KB partial failure', async () => {
