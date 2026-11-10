@@ -28,6 +28,7 @@ node build/index.js    # runs the server over stdio (clients launch it this way)
 
 - **TypeScript strict** (`tsconfig.json`). No `any` without justification.
 - **Conventional commits** — `feat:`, `fix(scope):`, `docs:`, `chore:` (see `git log` for prior style).
+- **PR body = the template.** Build every PR body from `.github/PULL_REQUEST_TEMPLATE.md` with the `kookr:check:*` marker rows kept verbatim and on one line; check a row only if you did it (do not tick `npm test` if you ran a narrower scope — say so and strike the row with a reason), otherwise strike it with a one-line reason. Pass it via `gh pr create --body-file <file>` (file inside the worktree) or a quoted heredoc, never inline `--body`, and preflight with `npm run pr-checklist -- <file>` (see `CONTRIBUTING.md`).
 - **RFCs** under `docs/rfcs/NNN-slug.md` for non-trivial design. Drafts are first-class; merging an RFC does not imply implementation — each implementation PR references the RFC it realises.
 
 ### Verification beyond `npm test`
