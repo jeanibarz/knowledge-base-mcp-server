@@ -1878,7 +1878,7 @@ export class KnowledgeBaseServer {
     try {
       let activeModelId: string;
       try {
-        activeModelId = await resolveActiveModel({ explicitOverride: modelNameOverride });
+        activeModelId = await resolveActiveModel({ explicitOverride: modelNameOverride, registerFirstModel: true });
       } catch (err) {
         if (err instanceof ActiveModelResolutionError) {
           searchLatencyMetrics.record({

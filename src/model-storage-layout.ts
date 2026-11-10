@@ -457,11 +457,12 @@ export async function isRegisteredModel(modelId: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 /**
- * Atomic write of active.txt via tmp+rename. THREE permitted callers, asserted
+ * Atomic write of active.txt via tmp+rename. FOUR permitted callers, asserted
  * by a grep-based Jest test:
  *   1. `FaissIndexManager.bootstrapLayout` — when migrating 0.2.x layout.
  *   2. `cli-models.ts:setActive` — explicit operator command.
  *   3. `cli-models.ts:add` — only when active.txt is absent (fresh-install).
+ *   4. `registerFirstModelIfPristine` — first-run registration (issue #1178).
  *
  * `updateIndex`, the trigger watcher, and `kb models remove` MUST NOT call.
  */
