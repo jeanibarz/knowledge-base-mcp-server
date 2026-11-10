@@ -670,7 +670,10 @@ export async function runSearch(
   let activeModelId: string;
   try {
     const startedAt = nowMs();
-    activeModelId = await deps.resolveActiveModel({ explicitOverride: parsed.model });
+    activeModelId = await deps.resolveActiveModel({
+      explicitOverride: parsed.model,
+      registerFirstModel: parsed.refresh,
+    });
     if (timing) timing.model_resolution_ms = elapsedMs(startedAt);
   } catch (err) {
     return reportFailure(classifyKbSearchError(err), parsed.format);

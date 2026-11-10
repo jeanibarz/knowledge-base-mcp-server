@@ -4,7 +4,7 @@
 //
 //   - Path computation (modelDir, faissIndexBinaryPath, modelNameFile).
 //   - `.adding` sentinel read/write + incomplete-model classification.
-//   - Single-writer atomic writer for active.txt (only callers: bootstrapLayout, cli-models.setActive, cli-models.add (when absent)).
+//   - Single-writer atomic writer for active.txt (only callers: bootstrapLayout, cli-models.setActive, cli-models.add (when absent), registerFirstModelIfPristine).
 //
 // Kept free of imports from search-core/metrics/canonical-log to avoid
 // worsening the existing module cycle. Resolution logic (which model is
@@ -471,6 +471,34 @@ export async function writeActiveModelAtomic(modelId: string): Promise<void> {
   }
   await fsp.mkdir(FAISS_INDEX_PATH, { recursive: true });
   await writeFileAtomicDurable(ACTIVE_FILE, modelId);
+}
+
+/**
+ * Issue #1178 — first-run registration. Registers `modelId` (writes
+ * `model_name.txt`) and pins it in `active.txt`, but ONLY when the install is
+ * pristine: no `active.txt` content, no registered model, and no incomplete
+ * (`.adding`) model directory. Returns true when it registered the model.
+ * Never touches an existing model, so paid re-embedding stays an explicit act
+ * (`kb models add`) for every model after the first.
+ */
+export async function registerFirstModelIfPristine(modelId: string, modelName: string): Promise<boolean> {
+  if (!isValidModelId(modelId) || modelName.trim() === '') return false;
+  if ((await readActiveRaw()).kind !== 'absent') return false;
+  let entries: string[] = [];
+  try {
+    entries = await fsp.readdir(MODELS_DIR);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  // Any existing model directory (registered or mid-add) means this is not a
+  // first run; leave it to the explicit commands.
+  if (entries.some((e) => isValidModelId(e) && e !== modelId)) return false;
+  if (await isRegisteredModel(modelId)) return false;
+  if (await pathExists(addingSentinelPath(modelId))) return false;
+  await fsp.mkdir(modelDir(modelId), { recursive: true });
+  await writeFileAtomicDurable(modelNameFilePath(modelId), modelName);
+  await writeActiveModelAtomic(modelId);
+  return true;
 }
 
 export async function activeFileExists(): Promise<boolean> {
