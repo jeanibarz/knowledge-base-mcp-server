@@ -79,6 +79,8 @@ The flat config lives in [`eslint.config.js`](./eslint.config.js). It seeds type
 
 Use `npm test` for the local CI-parity test gate. It builds the TypeScript output first, then runs the Jest `parallel` project with four workers followed by the Jest `serial` project in-band. The scripts clear `LOG_FILE` so ambient local logging does not redirect canonical stderr assertions into a personal log file.
 
+Every Jest run, including a direct `npx jest`, is sandboxed by [`jest.global-setup.cjs`](./jest.global-setup.cjs). Before any test starts, it points `HOME`, `KNOWLEDGE_BASES_ROOT_DIR`, `FAISS_INDEX_PATH`, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` at a throwaway directory under the OS temp directory. It also removes every inherited kb configuration variable (`EMBEDDING_PROVIDER`, `OLLAMA_*`, `LOG_FILE`, `KB_DAEMON_URL`, ...). The `KB_RUN_*` variables that opt into extra suites are kept. As a result, tests never write into your real knowledge bases or index, and a local run sees the same configuration as CI. A test that needs a configuration value sets it itself. `src/test-hermeticity.test.ts` fails if this isolation stops working, including for child processes that tests spawn.
+
 Use the project scripts when you need a narrower runner check:
 
 - `npm run test:parallel` runs the parallel-safe Jest project with `--maxWorkers=4`.

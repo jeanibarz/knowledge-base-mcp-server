@@ -188,7 +188,8 @@ describe('buildChunkDocuments → metadata-sidecar contract (#283)', () => {
   // KNOWLEDGE_BASES_ROOT_DIR is read by `config.ts` at module load, so
   // tests build their fixture under a directory that is itself under the
   // active KB root and assert the relativePath is the path RELATIVE to
-  // that root (rather than guessing it).
+  // that root (rather than guessing it). Under Jest that root is the per-run
+  // sandbox from jest.global-setup.cjs, never the developer's real one (#1180).
   let kbRoot: string | undefined;
   let workspaceUnderRoot: string | undefined;
 
