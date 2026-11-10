@@ -26,10 +26,14 @@ describe('test-suite hermeticity (#1180)', () => {
   it('resolves the knowledge-base root and index directory inside the OS temp dir', async () => {
     const { KNOWLEDGE_BASES_ROOT_DIR, FAISS_INDEX_PATH } = await import('./config.js');
 
+    expect(os.homedir()).not.toBe(realHome);
+    // A developer may keep TMPDIR under their home; only then is the sandbox
+    // legitimately inside it, so the "outside the real home" check is skipped.
+    const tmpUnderRealHome = isInside(tmpRoot, realHome);
     for (const resolved of [KNOWLEDGE_BASES_ROOT_DIR, FAISS_INDEX_PATH, os.homedir()]) {
       expect(fs.existsSync(resolved)).toBe(true);
       expect(isInside(resolved, tmpRoot)).toBe(true);
-      expect(isInside(resolved, realHome)).toBe(false);
+      if (!tmpUnderRealHome) expect(isInside(resolved, realHome)).toBe(false);
     }
   });
 
