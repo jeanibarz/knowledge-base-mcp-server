@@ -30,6 +30,13 @@ export const KB_ERROR_CODES = [
   // so the run fails fast with an actionable "need ~X, have Y" message
   // instead of an ENOSPC partway through.
   'INSUFFICIENT_DISK_SPACE',
+  // Issue #1181 — a persisted index version exists but this process must not
+  // silently rebuild over it. INDEX_CONFIG_MISMATCH: the stored version was
+  // written for another backend/index type/HNSW tuning than the current
+  // environment. INDEX_POINTER_MISSING: index.vN/ directories exist but the
+  // `index` pointer is gone (repairable with `kb verify --integrity --repair`).
+  'INDEX_CONFIG_MISMATCH',
+  'INDEX_POINTER_MISSING',
 ] as const;
 
 export type KBErrorCode = (typeof KB_ERROR_CODES)[number];

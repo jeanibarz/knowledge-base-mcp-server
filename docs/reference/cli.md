@@ -2037,7 +2037,7 @@ Run slow integrity checks for persisted indexes and sidecars.
 kb verify — deep consistency checks for persisted KB indexes
 
 Usage:
-  kb verify --integrity [--format=md|json] [--all-versions] [--model=<model_id>]
+  kb verify --integrity [--format=md|json] [--all-versions] [--model=<model_id>] [--repair]
 
 Runs a slow, read-only integrity audit over FAISS version directories,
 integrity manifests, docstore JSON, lexical chunk counts, per-file hash
@@ -2050,6 +2050,10 @@ Options:
                        instead of only the active version.
   --model=<model_id>   Verify a specific registered model. Defaults to the
                        active model resolution path.
+  --repair             Before auditing, re-point a missing `index` symlink at the
+                       newest index.vN whose integrity.json verifies. Holds the
+                       model's write lock; never touches an existing pointer or
+                       any version directory.
   --help, -h           Show this help.
 
 Exit codes:
