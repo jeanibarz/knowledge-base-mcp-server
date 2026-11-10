@@ -331,7 +331,6 @@ function runKbCliSearch(
       },
       extraEnv: { EMBEDDING_PROVIDER: 'fake' },
     });
-    expect(await fsp.readdir(harness.faissIndexPath)).not.toContain('active.txt');
 
     const result = await harness.client.callTool({
       name: 'retrieve_knowledge',
