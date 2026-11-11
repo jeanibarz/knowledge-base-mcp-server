@@ -203,8 +203,8 @@ import { readBuildInfo } from './build-info.js';
 import { LexicalIndexCache } from './lexical-index-cache.js';
 
 const SERVER_NAME = 'knowledge-base-server';
-const SERVER_VERSION = '0.1.0';
 const SERVER_BUILD_INFO = readBuildInfo();
+const SERVER_VERSION = SERVER_BUILD_INFO.version;
 
 // Issue #795 — the SDK hands every tool callback a per-request `extra`
 // (RequestHandlerExtra) as its second argument. We thread it through the tool
@@ -829,6 +829,7 @@ export class KnowledgeBaseServer {
       const payload = await computeKbStats(manager, {
         knowledgeBaseName: args.knowledge_base_name,
         serverVersion: SERVER_VERSION,
+        serverCommit: SERVER_BUILD_INFO.commit,
         startedAt: this.startedAt,
         remoteTransportStats: this.getRemoteTransportStats(),
       });
