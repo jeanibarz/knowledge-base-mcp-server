@@ -52,7 +52,7 @@ import { TAGS_HELP, runTags } from './cli-tags.js';
 import { VERIFY_HELP, runVerify } from './cli-verify.js';
 import { WHERE_HELP, runWhere } from './cli-where.js';
 import { daemonUrlFromEnv, tryRunDaemonCommand } from './daemon-client.js';
-import { emitCanonicalLog } from './canonical-log.js';
+import { beginCliRequestId, emitCanonicalLog, endCliRequestId } from './canonical-log.js';
 import { buildDaemonSearchArgs, resolveSearchPager } from './cli-pager.js';
 import { exitCodeDocs, formatExitCodesHelp } from './cli-exit-codes.js';
 import { closestSuggestion } from './cli-shared.js';
@@ -378,6 +378,7 @@ async function runSubcommandWithCanonicalLog(
   operation: () => Promise<number>,
 ): Promise<number> {
   const startedAt = Date.now();
+  const requestId = beginCliRequestId();
   try {
     const code = await operation();
     const searchExtra = target.name === 'search'
@@ -385,6 +386,7 @@ async function runSubcommandWithCanonicalLog(
       : {};
     emitCanonicalLog({
       process: 'cli',
+      request_id: requestId,
       cmd: `kb ${target.name}`,
       ...searchExtra,
       took_ms: Date.now() - startedAt,
@@ -397,6 +399,7 @@ async function runSubcommandWithCanonicalLog(
   } catch (error: unknown) {
     emitCanonicalLog({
       process: 'cli',
+      request_id: requestId,
       cmd: `kb ${target.name}`,
       took_ms: Date.now() - startedAt,
       error: {
@@ -405,6 +408,8 @@ async function runSubcommandWithCanonicalLog(
       },
     });
     throw error;
+  } finally {
+    endCliRequestId();
   }
 }
 

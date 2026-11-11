@@ -96,6 +96,15 @@ Stable fields:
 - `stability`: currently `stable`; consumers should feature-detect fields and
   check `schema_version` before assuming compatibility.
 
+`request_id` (additive, optional): the `request_id` of the canonical log line
+that this `kb search` invocation writes, so `kb logs show --request-id <id>` and
+`kb diagnose --request-id <id>` can be pointed at it. It appears as a top-level
+field in the failure envelope above and in the success payload when `--timing`
+is set, and `kb search` prints `  request_id: <id>` as the last stderr line of a
+human-mode failure. It is omitted when canonical logging is disabled
+(`KB_LOG_FORMAT=text`) and for searches served by the daemon (`--daemon`), where
+the id is not carried over the daemon request.
+
 Stdout/stderr and exit codes:
 
 - Success JSON is stdout with exit `0`.

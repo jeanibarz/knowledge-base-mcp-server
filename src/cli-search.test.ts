@@ -1,3 +1,4 @@
+import { beginCliRequestId, endCliRequestId } from './canonical-log.js';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { describe, expect, it, jest } from '@jest/globals';
@@ -1902,6 +1903,33 @@ describe('runSearch timing guard (#331)', () => {
     expect(out.code).toBe(2);
     expect(out.stderr).toContain(message);
     expect(manager.similaritySearch).not.toHaveBeenCalled();
+  });
+
+  it('omits request_id when runSearch runs outside the CLI wrapper, e.g. in the daemon (#1197)', async () => {
+    const { deps } = makeDeps();
+    deps.resolveKnowledgeBaseDir = jest.fn(async () => {
+      throw new KBError('KB_NOT_FOUND', 'unknown KB');
+    });
+
+    const out = await captureSearchOutput(['query', '--kb=alpah', '--format=json'], deps);
+
+    expect(out.code).toBe(2);
+    expect(JSON.parse(out.stdout).error.code).toBe('KB_NOT_FOUND');
+    expect(JSON.parse(out.stdout)).not.toHaveProperty('request_id');
+  });
+
+  it('includes request_id in the JSON failure envelope when the CLI wrapper minted one (#1197)', async () => {
+    const { deps } = makeDeps();
+    deps.resolveKnowledgeBaseDir = jest.fn(async () => {
+      throw new KBError('KB_NOT_FOUND', 'unknown KB');
+    });
+    const requestId = beginCliRequestId();
+    try {
+      const out = await captureSearchOutput(['query', '--kb=alpah', '--format=json'], deps);
+      expect(JSON.parse(out.stdout).request_id).toBe(requestId);
+    } finally {
+      endCliRequestId();
+    }
   });
 
   it('rejects an unknown KB in a batch JSONL row before retrieval', async () => {

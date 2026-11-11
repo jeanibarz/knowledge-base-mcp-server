@@ -297,13 +297,14 @@ function classifyKBError(err: KBError): SearchFailure {
 }
 
 /** Stderr (markdown / human-mode) renderer. Always ends with a trailing newline. */
-export function formatKbSearchFailureStderr(failure: SearchFailure): string {
-  return formatClassifiedFailureStderr('kb search', failure);
+export function formatKbSearchFailureStderr(failure: SearchFailure, requestId?: string): string {
+  const base = formatClassifiedFailureStderr('kb search', failure);
+  return requestId === undefined ? base : `${base}  request_id: ${requestId}\n`;
 }
 
 /** JSON renderer for `--format=json` so agents can branch on `error.category`/`error.code`. */
-export function formatKbSearchFailureJson(failure: SearchFailure): string {
-  return formatClassifiedFailureJson(failure);
+export function formatKbSearchFailureJson(failure: SearchFailure, requestId?: string): string {
+  return formatClassifiedFailureJson(failure, requestId === undefined ? {} : { requestId });
 }
 
 /** Stderr renderer for `kb ask` classified failures. Always ends with a trailing newline. */
@@ -337,7 +338,7 @@ function formatClassifiedFailureStderr(command: string, failure: SearchFailure):
 
 function formatClassifiedFailureJson(
   failure: SearchFailure,
-  options: { legacyErrorText?: string } = {},
+  options: { legacyErrorText?: string; requestId?: string } = {},
 ): string {
   const error: Record<string, unknown> = {
     code: failure.code,
@@ -361,6 +362,7 @@ function formatClassifiedFailureJson(
   return `${JSON.stringify({
     error,
     ...(options.legacyErrorText !== undefined ? { error_text: options.legacyErrorText } : {}),
+    ...(options.requestId !== undefined ? { request_id: options.requestId } : {}),
   }, null, 2)}\n`;
 }
 
