@@ -152,11 +152,19 @@ kb cache — inspect and prune local cache surfaces
 Usage:
   kb cache extracted-text [--max-age-days=<n>] [--max-size-mb=<n>] [--dry-run|--yes] [--format=md|json]
   kb cache extracted-text [--cache-dir=<path>] [--max-age-days=<n>] [--max-size-mb=<n>] [--dry-run|--yes]
+  kb cache contextual-prefaces [--dry-run|--yes] [--format=md|json]
 
 The extracted-text cache stores parsed PDF/HTML text under
 `${FAISS_INDEX_PATH}/extracted-text` (or `EXTRACTION_TEXT_CACHE_DIR`).
 By default this command is a read-only dry-run. Passing `--yes` applies the
 planned deletion, and deletion is limited to expected 64-hex `.txt` cache files.
+
+The contextual-prefaces surface prunes orphaned contextual-retrieval sidecars
+under `${FAISS_INDEX_PATH}/.contextual-prefaces`: those whose recorded source
+file no longer exists. It is a dry-run unless `--yes` is passed; `--yes` deletes
+exactly the listed sidecars under the sidecar lock. Sidecars that record no
+source, and sidecars of a KB whose directory is missing (possibly unmounted),
+are never deleted. The extracted-text limits do not apply to this surface.
 
 Options:
   --max-age-days=<n>    Mark entries whose mtime is at least this many days old.
@@ -172,6 +180,8 @@ Examples:
   kb cache extracted-text --max-age-days=30
   kb cache extracted-text --max-size-mb=512 --format=json
   kb cache extracted-text --max-age-days=30 --max-size-mb=512 --yes
+  kb cache contextual-prefaces --dry-run
+  kb cache contextual-prefaces --yes
 ```
 
 ## `kb capture`
