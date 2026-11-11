@@ -2,6 +2,7 @@ import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { CompleteRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { readBuildInfo } from './build-info.js';
 import type { SimilaritySearchTiming } from './FaissIndexManager.js';
 
 const initializeMock = jest.fn();
@@ -675,8 +676,10 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(payload.index_path).toBe(process.env.FAISS_INDEX_PATH);
     expect(payload.last_index_update.status).toBe('never_run');
     expect(payload.last_index_update.model_id).toBe('huggingface__BAAI-bge-small-en-v1.5');
-    expect(typeof payload.server.version).toBe('string');
-    expect(payload.server.version.length).toBeGreaterThan(0);
+    // Issue #1193 — must match the real build info, not a hardcoded literal.
+    const buildInfo = readBuildInfo();
+    expect(payload.server.version).toBe(buildInfo.version);
+    expect(payload.server.commit).toBe(buildInfo.commit);
     expect(typeof payload.server.uptime_ms).toBe('number');
     expect(payload.server.uptime_ms).toBeGreaterThanOrEqual(0);
   });
