@@ -26,16 +26,12 @@ import {
   type IndexIntegrityManifest,
 } from './faiss-store-layout.js';
 import { readChunkManifest } from './file-ingest.js';
-import { INGEST_QUARANTINE_FILENAME } from './ingest-quarantine.js';
+import { KNOWN_INDEX_LEDGER_FILES } from './index-ledger-files.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { REINDEX_RUN_FILENAME } from './reindex-runner.js';
 import { withWriteLock } from './write-lock.js';
 
 const STALE_SENTINEL_MS = 60 * 60 * 1000;
-const KNOWN_INDEX_LEDGER_FILES = new Set([
-  INGEST_QUARANTINE_FILENAME,
-  'relevance-feedback.jsonl',
-]);
 
 export const VERIFY_HELP = `kb verify — deep consistency checks for persisted KB indexes
 
