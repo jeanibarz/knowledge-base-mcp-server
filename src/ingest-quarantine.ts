@@ -55,6 +55,46 @@ export interface ListIngestQuarantineOptions {
   useLock?: boolean;
 }
 
+/**
+ * Per-refresh, in-memory view of each KB's quarantine manifest. An index
+ * refresh asks "may this file be retried?" and "clear any record" for every
+ * file; answering each from the on-disk manifest costs one cross-process lock
+ * plus a read per file. The snapshot loads each KB's manifest once (lazily) and
+ * answers those per-file questions from memory. The refresh keeps it current by
+ * calling `set` / `delete` when it writes failures or clears records itself, so
+ * a failure recorded earlier in the same run is still honoured later in it. A
+ * change made by another process mid-run (`kb quarantine retry|ack`) is seen on
+ * the next refresh.
+ */
+export class IngestQuarantineSnapshot {
+  private readonly byKb = new Map<string, Promise<Map<string, IngestQuarantineRecord>>>();
+
+  private load(kbPath: string): Promise<Map<string, IngestQuarantineRecord>> {
+    let loaded = this.byKb.get(kbPath);
+    if (loaded === undefined) {
+      loaded = readManifest(kbPath).then(
+        (records) => new Map(records.map((record) => [record.relative_path, record])),
+      );
+      // Do not cache a failed read: let the next caller retry it.
+      loaded.catch(() => this.byKb.delete(kbPath));
+      this.byKb.set(kbPath, loaded);
+    }
+    return loaded;
+  }
+
+  async get(kbPath: string, relativePath: string): Promise<IngestQuarantineRecord | null> {
+    return (await this.load(kbPath)).get(normalizeRelativePath(relativePath)) ?? null;
+  }
+
+  async set(kbPath: string, record: IngestQuarantineRecord): Promise<void> {
+    (await this.load(kbPath)).set(record.relative_path, record);
+  }
+
+  async delete(kbPath: string, relativePath: string): Promise<void> {
+    (await this.load(kbPath)).delete(normalizeRelativePath(relativePath));
+  }
+}
+
 export function quarantineManifestPath(kbPath: string): string {
   return path.join(kbPath, '.index', INGEST_QUARANTINE_FILENAME);
 }
@@ -118,8 +158,17 @@ export async function recordIngestFailure(options: RecordIngestFailureOptions): 
   });
 }
 
-export async function recordIngestSuccess(kbPath: string, relativePath: string): Promise<boolean> {
-  return removeIngestQuarantineEntry(kbPath, relativePath);
+export async function recordIngestSuccess(
+  kbPath: string,
+  relativePath: string,
+  options: { snapshot?: IngestQuarantineSnapshot } = {},
+): Promise<boolean> {
+  const { snapshot } = options;
+  // With a snapshot, a path that has no record needs no lock and no I/O.
+  if (snapshot !== undefined && (await snapshot.get(kbPath, relativePath)) === null) return false;
+  const removed = await removeIngestQuarantineEntry(kbPath, relativePath);
+  await snapshot?.delete(kbPath, relativePath);
+  return removed;
 }
 
 export async function removeIngestQuarantineEntry(kbPath: string, relativePath: string): Promise<boolean> {
@@ -172,10 +221,18 @@ export async function ackIngestQuarantineEntry(
 export async function shouldRetryIngest(
   kbPath: string,
   relativePath: string,
-  options: { sourceHash?: string | null; now?: Date; maxRetries?: number } = {},
+  options: {
+    sourceHash?: string | null;
+    now?: Date;
+    maxRetries?: number;
+    /** Answer from a per-refresh manifest snapshot instead of locking and re-reading per call. */
+    snapshot?: IngestQuarantineSnapshot;
+  } = {},
 ): Promise<IngestRetryDecision> {
   const normalized = normalizeRelativePath(relativePath);
-  const record = await findRecord(kbPath, normalized);
+  const record = options.snapshot
+    ? await options.snapshot.get(kbPath, normalized)
+    : await findRecord(kbPath, normalized);
   if (record === null) {
     return { retry: true, reason: 'no_record', record: null };
   }
@@ -185,6 +242,7 @@ export async function shouldRetryIngest(
     record.source_sha256 !== options.sourceHash
   ) {
     await removeIngestQuarantineEntry(kbPath, normalized);
+    await options.snapshot?.delete(kbPath, normalized);
     return { retry: true, reason: 'content_changed', record };
   }
   if (record.ack) {
@@ -272,8 +330,11 @@ async function mutateManifest<T>(
 ): Promise<T> {
   return withSidecarLock(async () => {
     const records = await readManifestUnlocked(kbPath);
+    const before = serializeRecords(records);
     const result = mutate(records);
-    await writeManifestUnlocked(kbPath, records);
+    // A mutation that changed nothing (clearing a path with no record, an
+    // empty-manifest delete) must not rewrite or delete the manifest file.
+    if (serializeRecords(records) !== before) await writeManifestUnlocked(kbPath, records);
     return result;
   });
 }
@@ -310,6 +371,10 @@ async function readManifestUnlocked(kbPath: string): Promise<IngestQuarantineRec
   }
   records.sort((a, b) => a.relative_path.localeCompare(b.relative_path));
   return records;
+}
+
+function serializeRecords(records: IngestQuarantineRecord[]): string {
+  return records.map((record) => JSON.stringify(record)).join('\n');
 }
 
 async function writeManifestUnlocked(kbPath: string, records: IngestQuarantineRecord[]): Promise<void> {
