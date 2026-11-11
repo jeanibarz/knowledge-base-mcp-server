@@ -365,6 +365,22 @@ export interface FetchUrlOptions {
   allowLocalNetwork: boolean;
 }
 
+/**
+ * Resolves a hostname to every address it maps to (the shape of
+ * `dns.promises.lookup(host, { all: true })`).
+ */
+export type DnsLookupAll = (hostname: string) => Promise<LookupAddress[]>;
+
+/** Optional collaborators for {@link fetchUrlSnapshot}; production passes none. */
+export interface FetchUrlDeps {
+  /**
+   * DNS seam used by both the pre-flight host check and the connection-time
+   * agent `lookup`. Tests inject it to simulate DNS rebinding (a different
+   * answer per call); it defaults to the system resolver.
+   */
+  lookup?: DnsLookupAll;
+}
+
 /** Pluggable fetcher seam — the CLI injects a fake in tests. */
 export type UrlFetcher = (startUrl: string, opts: FetchUrlOptions) => Promise<UrlSnapshot>;
 
@@ -395,15 +411,59 @@ function lowercaseHeaders(headers: unknown): Record<string, string | undefined> 
 export async function fetchUrlSnapshot(
   startUrl: string,
   opts: FetchUrlOptions,
+  deps: FetchUrlDeps = {},
 ): Promise<UrlSnapshot> {
   const { default: axios } = await import('axios');
   const http = await import('node:http');
   const https = await import('node:https');
   const dns = await import('node:dns');
 
+  const lookupAll: DnsLookupAll =
+    deps.lookup ?? ((hostname) => dns.promises.lookup(hostname, { all: true, verbatim: true }));
+
   const resolver: AddressResolver = async (hostname) => {
-    const addresses = await dns.promises.lookup(hostname, { all: true, verbatim: true });
+    const addresses = await lookupAll(hostname);
     return addresses.map((a) => a.address);
+  };
+
+  type LookupCallback = (
+    err: Error | null,
+    address: string | LookupAddress[],
+    family?: number,
+  ) => void;
+
+  // Re-applies the address guard to a resolved answer and hands the
+  // validated address(es) back in the shape `net.connect` asked for.
+  const guardAndPick = (
+    hostname: string,
+    options: LookupOptions,
+    addresses: LookupAddress[],
+    callback: LookupCallback,
+  ): void => {
+    if (!opts.allowLocalNetwork) {
+      for (const entry of addresses) {
+        if (isBlockedAddress(entry.address)) {
+          callback(
+            new UrlSnapshotError(
+              `host ${hostname} resolves to a private/loopback address: ${entry.address}`,
+            ),
+            '',
+            0,
+          );
+          return;
+        }
+      }
+    }
+    if (options.all === true) {
+      callback(null, addresses);
+      return;
+    }
+    const wantFamily = options.family;
+    const picked =
+      wantFamily === 4 || wantFamily === 6
+        ? addresses.find((a) => a.family === wantFamily) ?? addresses[0]
+        : addresses[0];
+    callback(null, picked.address, picked.family);
   };
 
   // Connection-time guard: every socket — including ones opened for a
@@ -413,38 +473,12 @@ export async function fetchUrlSnapshot(
   const guardedLookup = (
     hostname: string,
     options: LookupOptions,
-    callback: (err: Error | null, address: string | LookupAddress[], family?: number) => void,
+    callback: LookupCallback,
   ): void => {
-    dns.lookup(hostname, { all: true, verbatim: true }, (err, addresses) => {
-      if (err !== null) {
-        callback(err, '', 0);
-        return;
-      }
-      if (!opts.allowLocalNetwork) {
-        for (const entry of addresses) {
-          if (isBlockedAddress(entry.address)) {
-            callback(
-              new UrlSnapshotError(
-                `host ${hostname} resolves to a private/loopback address: ${entry.address}`,
-              ),
-              '',
-              0,
-            );
-            return;
-          }
-        }
-      }
-      if (options.all === true) {
-        callback(null, addresses);
-        return;
-      }
-      const wantFamily = options.family;
-      const picked =
-        wantFamily === 4 || wantFamily === 6
-          ? addresses.find((a) => a.family === wantFamily) ?? addresses[0]
-          : addresses[0];
-      callback(null, picked.address, picked.family);
-    });
+    lookupAll(hostname).then(
+      (addresses) => guardAndPick(hostname, options, addresses, callback),
+      (err: unknown) => callback(err instanceof Error ? err : new Error(String(err)), '', 0),
+    );
   };
 
   // `lookup` is honored by `net.createConnection` but is not declared on
