@@ -47,26 +47,64 @@ function isBlockedIPv4(octets: [number, number, number, number]): boolean {
   return false;
 }
 
-/** First 16-bit group of an IPv6 address, or null when unparseable. */
-function firstHextet(addr: string): number | null {
-  if (addr.startsWith('::')) return 0;
-  const idx = addr.indexOf(':');
-  const head = idx === -1 ? addr : addr.slice(0, idx);
-  if (!/^[0-9a-f]{1,4}$/.test(head)) return null;
-  return Number.parseInt(head, 16);
+/**
+ * Expands an IPv6 literal (any spelling `net.isIPv6` accepts, including a
+ * dotted IPv4 tail and a `%zone` suffix) into its 16 bytes, or null when it
+ * cannot be parsed.
+ */
+function parseIPv6Bytes(raw: string): number[] | null {
+  let addr = raw.toLowerCase();
+  const zone = addr.indexOf('%');
+  if (zone !== -1) addr = addr.slice(0, zone);
+  // Rewrite a dotted IPv4 tail into two hex groups.
+  const tail = /(?:^|:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(addr);
+  if (tail !== null) {
+    const v4 = parseIPv4(tail[1]);
+    if (v4 === null) return null;
+    const hi = ((v4[0] << 8) | v4[1]).toString(16);
+    const lo = ((v4[2] << 8) | v4[3]).toString(16);
+    addr = addr.slice(0, addr.length - tail[1].length) + `${hi}:${lo}`;
+  }
+  const halves = addr.split('::');
+  if (halves.length > 2) return null;
+  const toGroups = (part: string): string[] => (part === '' ? [] : part.split(':'));
+  const head = toGroups(halves[0]);
+  const rest = halves.length === 2 ? toGroups(halves[1]) : [];
+  let groups: string[];
+  if (halves.length === 2) {
+    const fill = 8 - head.length - rest.length;
+    if (fill < 1) return null;
+    groups = [...head, ...Array<string>(fill).fill('0'), ...rest];
+  } else {
+    groups = head;
+  }
+  if (groups.length !== 8) return null;
+  const bytes: number[] = [];
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    const n = Number.parseInt(g, 16);
+    bytes.push(n >> 8, n & 0xff);
+  }
+  return bytes;
 }
 
 function isBlockedIPv6(raw: string): boolean {
-  const addr = raw.toLowerCase();
-  if (addr === '::1' || addr === '::') return true; // loopback / unspecified
-  // IPv4-mapped (::ffff:a.b.c.d) — classify the embedded IPv4.
-  const mappedV4 = /(?:^|:)((?:\d{1,3}\.){3}\d{1,3})$/.exec(addr);
-  if (addr.startsWith('::ffff:') && mappedV4 !== null) {
-    const v4 = parseIPv4(mappedV4[1]);
-    return v4 === null ? true : isBlockedIPv4(v4);
+  const b = parseIPv6Bytes(raw);
+  if (b === null) return true; // unparseable → block conservatively
+  const zeros = (from: number, to: number): boolean => b.slice(from, to).every((x) => x === 0);
+  const v4At = (i: number): [number, number, number, number] => [b[i], b[i + 1], b[i + 2], b[i + 3]];
+  if (zeros(0, 15) && (b[15] === 0 || b[15] === 1)) return true; // :: and ::1
+  // Forms that embed an IPv4 address: classify the embedded address.
+  if (zeros(0, 10) && b[10] === 0xff && b[11] === 0xff) return isBlockedIPv4(v4At(12)); // ::ffff:0:0/96 mapped
+  if (zeros(0, 12)) return isBlockedIPv4(v4At(12)); // ::/96 IPv4-compatible
+  if (zeros(0, 8) && b[8] === 0xff && b[9] === 0xff && b[10] === 0 && b[11] === 0) {
+    return isBlockedIPv4(v4At(12)); // ::ffff:0:a.b.c.d/96 IPv4-translated (SIIT)
   }
-  const head = firstHextet(addr);
-  if (head === null) return true; // unparseable → block conservatively
+  if (b[0] === 0x00 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && zeros(4, 12)) {
+    return isBlockedIPv4(v4At(12)); // 64:ff9b::/96 NAT64
+  }
+  if (b[0] === 0x20 && b[1] === 0x02) return isBlockedIPv4(v4At(2)); // 2002::/16 6to4
+  const head = (b[0] << 8) | b[1];
   if (head >= 0xfe80 && head <= 0xfebf) return true; // fe80::/10 — link-local
   if (head >= 0xfc00 && head <= 0xfdff) return true; // fc00::/7 — unique-local
   if (head >= 0xff00) return true; // ff00::/8 — multicast
