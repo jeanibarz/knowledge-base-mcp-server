@@ -11,11 +11,11 @@ startCommand:
         description: Hugging Face API key for inference
       knowledgeBasesRootDir:
         type: string
-        default: /root/knowledge_bases
+        default: /home/node/knowledge_bases
         description: Root directory for knowledge bases
       faissIndexPath:
         type: string
-        default: /root/knowledge_bases/.faiss
+        default: /home/node/knowledge_bases/.faiss
         description: Path to FAISS index file
       huggingfaceModelName:
         type: string
@@ -24,7 +24,7 @@ startCommand:
       huggingfaceProvider:
         type: string
         default: hf-inference
-        description: Hugging Face Inference Provider to use when routing through the HF router (examples: hf-inference, together, replicate, fireworks-ai, sambanova)
+        description: "Hugging Face Inference Provider to use when routing through the HF router (examples: hf-inference, together, replicate, fireworks-ai, sambanova)"
       embeddingProvider:
         type: string
         enum: ["huggingface", "ollama", "openai"]
@@ -47,25 +47,25 @@ startCommand:
         description: OpenAI model to use for embeddings
       mcpTransport:
         type: string
-        enum: ["stdio", "sse"]
+        enum: ["stdio", "sse", "http"]
         default: stdio
-        description: MCP transport — "stdio" (default) or "sse" (RFC 008 stage 1, opt-in HTTP/SSE endpoint).
+        description: MCP transport — "stdio" (default), "sse" (legacy HTTP/SSE endpoint), or "http" (streamable HTTP endpoint). Smithery launches the server over stdio; the network transports are opt-in (RFC 008).
       mcpPort:
         type: integer
         minimum: 1
         maximum: 65535
         default: 8765
-        description: TCP port for the SSE listener. Ignored when mcpTransport=stdio.
+        description: TCP port for the SSE/HTTP listener. Ignored when mcpTransport=stdio.
       mcpBindAddr:
         type: string
         default: 127.0.0.1
-        description: Bind address for the SSE listener. Defaults to loopback. Ignored when mcpTransport=stdio.
+        description: Bind address for the SSE/HTTP listener. Defaults to loopback. Ignored when mcpTransport=stdio.
       mcpAuthToken:
         type: string
-        description: Bearer token required by the SSE transport. REQUIRED when mcpTransport=sse. Ignored when mcpTransport=stdio. Generate with "openssl rand -base64 32".
+        description: Bearer token required by the SSE and HTTP transports. REQUIRED when mcpTransport=sse or mcpTransport=http. Ignored when mcpTransport=stdio. Generate with "openssl rand -base64 32".
       mcpAllowedOrigins:
         type: string
-        description: Comma-separated list of allowed CORS origins for the SSE transport. Default empty = no browser origins allowed. Wildcard "*" is rejected.
+        description: Comma-separated list of allowed CORS origins for the SSE and HTTP transports. Default empty = no browser origins allowed. Wildcard "*" is rejected.
     required:
       - knowledgeBasesRootDir
       - faissIndexPath
