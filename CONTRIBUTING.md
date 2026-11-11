@@ -62,6 +62,8 @@ Use `npm run check` before opening a PR; it runs the TypeScript build, ESLint, t
 
 For local configuration, copy [`.env.example`](./.env.example) to `.env`. The template is generated from `CONFIG_SCHEMA`; after changing the schema, run `npm run docs:generate-env-example` and commit the result.
 
+When `check:fast` reports reference-doc drift (configuration, `.env.example`, CLI, MCP tools, loaders, error codes, embedding models, metrics, or benchmark results), run `npm run docs:generate` — it builds once, rewrites every generated reference doc, and leaves nothing to regenerate by hand — then commit the result.
+
 ## Local Git Hooks
 
 `npm run dev:setup` points git at the tracked [`.githooks/`](./.githooks/) directory (`git config core.hooksPath .githooks`). Two lifecycle hooks then run automatically:

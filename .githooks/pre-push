@@ -39,14 +39,9 @@ cat >&2 <<'EOF'
 
 [pre-push] BLOCKED: fast CI-parity checks failed (lint or doc-drift).
 
-Regenerate the drifted reference docs, then re-check:
+Regenerate every drift-gated reference doc in one step, then re-check:
+  - Generated docs:  npm run docs:generate
   - Lint:            npm run lint:fix
-  - Config docs:     npm run docs:generate-config-reference
-  - CLI docs:        node scripts/gen-cli-reference.mjs
-  - MCP-tool docs:   npm run docs:gen-mcp-tools
-  - Error-code docs: npm run docs:gen-error-codes
-  - Metrics docs:    npm run docs:generate-metrics-reference
-  - Embedding docs:  npm run docs:generate-embedding-models
 
 Re-run locally with:  npm run check:fast
 Bypass (emergencies): git push --no-verify
