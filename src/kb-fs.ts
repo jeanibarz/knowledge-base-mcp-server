@@ -486,6 +486,26 @@ export async function resolveKbPath(
     throw new Error(`path not found: ${JSON.stringify(relativePath)}`);
   }
 
+  // realpath returned null: either the leaf does not exist, or it is a
+  // symlink whose target does not exist (a dangling link). Writing through a
+  // dangling link would create the link's target wherever it points — even
+  // outside the KB — so refuse any symlink leaf here, whatever it points at.
+  let leafStat: Awaited<ReturnType<typeof fsp.lstat>> | null = null;
+  try {
+    leafStat = await fsp.lstat(lexicalCandidate);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      throw err;
+    }
+  }
+  if (leafStat?.isSymbolicLink()) {
+    throw new KBError(
+      'VALIDATION',
+      `path escapes KB root: ${JSON.stringify(relativePath)} (dangling symlink; refusing to write through it)`,
+    );
+  }
+
   // mustExist === false: walk up to the nearest existing ancestor and
   // confirm it resolves inside the KB. This is what lets add_document
   // create new files at not-yet-existing paths while still rejecting
