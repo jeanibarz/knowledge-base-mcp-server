@@ -15,8 +15,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x build/index.js build/cli.js",
     "build:clean": "rm -rf build",
-    "check": "npm run build && npm run lint && npm run typecheck:tests && npm run test:coverage && npm run docs:check-anchors && npm run docs:check-config-reference && npm run docs:check-env-example && npm run config:check-env-usage && npm run docs:check-cli && npm run docs:check-mcp-tools && npm run docs:check-embedding-models && npm run docs:check-metrics-reference && npm run docs:check-error-codes && npm run docs:check-loaders && npm run docs:check-benchmark-results",
-    "check:fast": "npm run build && npm run lint && npm run typecheck:tests && npm run docs:check-anchors && npm run docs:check-config-reference && npm run docs:check-env-example && npm run config:check-env-usage && npm run docs:check-cli && npm run docs:check-mcp-tools && npm run docs:check-embedding-models && npm run docs:check-metrics-reference && npm run docs:check-error-codes && npm run docs:check-loaders && npm run docs:check-benchmark-results",
+    "check": "npm run build && npm run lint && npm run typecheck:tests && npm run test:coverage && npm run docs:check-anchors && npm run docs:check-config-reference && npm run docs:check-env-example && npm run config:check-env-usage && npm run docs:check-cli && npm run docs:check-readme-cli && npm run docs:check-mcp-tools && npm run docs:check-embedding-models && npm run docs:check-metrics-reference && npm run docs:check-error-codes && npm run docs:check-loaders && npm run docs:check-benchmark-results",
+    "check:fast": "npm run build && npm run lint && npm run typecheck:tests && npm run docs:check-anchors && npm run docs:check-config-reference && npm run docs:check-env-example && npm run config:check-env-usage && npm run docs:check-cli && npm run docs:check-readme-cli && npm run docs:check-mcp-tools && npm run docs:check-embedding-models && npm run docs:check-metrics-reference && npm run docs:check-error-codes && npm run docs:check-loaders && npm run docs:check-benchmark-results",
     "lint": "eslint src",
     "lint:commit-message": "commitlint",
     "pr-checklist": "node scripts/pr-checklist.mjs",
@@ -47,6 +47,7 @@
     "docs:check-env-example": "node --test scripts/generate-env-example.test.mjs && node scripts/generate-env-example.mjs --check",
     "config:check-env-usage": "npm run build && node scripts/check-config-env-usage.mjs",
     "docs:check-cli": "node scripts/gen-cli-reference.mjs --check",
+    "docs:check-readme-cli": "node --test scripts/check-readme-cli-commands.test.mjs && node scripts/check-readme-cli-commands.mjs",
     "docs:gen-mcp-tools": "npm run build && node scripts/gen-mcp-tools-doc.mjs",
     "docs:check-mcp-tools": "node scripts/gen-mcp-tools-doc.mjs --check",
     "docs:gen-loaders": "npm run build && node scripts/gen-loaders-reference.mjs",
