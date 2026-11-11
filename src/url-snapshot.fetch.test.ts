@@ -58,8 +58,12 @@ function handler(req: http.IncomingMessage, res: http.ServerResponse): void {
     // end this request before the (long) timeout does.
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     const chunk = Buffer.alloc(1024, 'a');
+    let closed = false;
+    res.on('close', () => {
+      closed = true;
+    });
     const pump = (): void => {
-      if (res.destroyed) return;
+      if (closed || res.destroyed) return;
       res.write(chunk, () => setImmediate(pump));
     };
     pump();
@@ -136,6 +140,15 @@ describe('fetchUrlSnapshot against a local HTTP server', () => {
     expect(snapshot.httpStatus).toBe(200);
     expect(snapshot.finalUrl).toBe(`http://127.0.0.1:${port}/doc`);
     expect(seen.map((r) => r.url)).toEqual(['/start', '/doc']);
+  });
+
+  it('resolves a named host through the default system resolver', async () => {
+    // No `deps`: exercises the production DNS path feeding both the
+    // pre-flight check and the agent lookup.
+    const snapshot = await fetchUrlSnapshot(`http://localhost:${port}/doc`, options());
+
+    expect(snapshot.httpStatus).toBe(200);
+    expect(seen).toEqual([{ url: '/doc', host: `localhost:${port}` }]);
   });
 
   it('connects through the agent lookup, pinning a named host to the address it returns', async () => {
