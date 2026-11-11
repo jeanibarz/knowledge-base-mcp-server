@@ -1,20 +1,35 @@
+import * as path from 'path';
 import {
   applyExtractionCachePrune,
   planExtractionCachePrune,
   type ExtractionCachePruneApplyResult,
   type ExtractionCachePrunePlan,
 } from './extraction-cache.js';
+import {
+  applyPrefaceGc,
+  planPrefaceGc,
+  type PrefaceGcApplyResult,
+  type PrefaceGcPlan,
+} from './contextual-preface-gc.js';
 
 export const CACHE_HELP = `kb cache — inspect and prune local cache surfaces
 
 Usage:
   kb cache extracted-text [--max-age-days=<n>] [--max-size-mb=<n>] [--dry-run|--yes] [--format=md|json]
   kb cache extracted-text [--cache-dir=<path>] [--max-age-days=<n>] [--max-size-mb=<n>] [--dry-run|--yes]
+  kb cache contextual-prefaces [--dry-run|--yes] [--format=md|json]
 
 The extracted-text cache stores parsed PDF/HTML text under
 \`${'${FAISS_INDEX_PATH}'}/extracted-text\` (or \`EXTRACTION_TEXT_CACHE_DIR\`).
 By default this command is a read-only dry-run. Passing \`--yes\` applies the
 planned deletion, and deletion is limited to expected 64-hex \`.txt\` cache files.
+
+The contextual-prefaces surface prunes orphaned contextual-retrieval sidecars
+under \`${'${FAISS_INDEX_PATH}'}/.contextual-prefaces\`: those whose recorded source
+file no longer exists. It is a dry-run unless \`--yes\` is passed; \`--yes\` deletes
+exactly the listed sidecars under the sidecar lock. Sidecars that record no
+source, and sidecars of a KB whose directory is missing (possibly unmounted),
+are never deleted. The extracted-text limits do not apply to this surface.
 
 Options:
   --max-age-days=<n>    Mark entries whose mtime is at least this many days old.
@@ -30,10 +45,12 @@ Examples:
   kb cache extracted-text --max-age-days=30
   kb cache extracted-text --max-size-mb=512 --format=json
   kb cache extracted-text --max-age-days=30 --max-size-mb=512 --yes
+  kb cache contextual-prefaces --dry-run
+  kb cache contextual-prefaces --yes
 `;
 
 interface CacheArgs {
-  surface: 'extracted-text';
+  surface: 'extracted-text' | 'contextual-prefaces';
   cacheDir?: string;
   maxAgeDays?: number;
   maxSizeBytes?: number;
@@ -45,6 +62,8 @@ interface CacheArgs {
 export interface RunCacheDeps {
   planExtractionCachePrune: typeof planExtractionCachePrune;
   applyExtractionCachePrune: typeof applyExtractionCachePrune;
+  planPrefaceGc?: typeof planPrefaceGc;
+  applyPrefaceGc?: typeof applyPrefaceGc;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -52,6 +71,8 @@ export interface RunCacheDeps {
 const DEFAULT_DEPS: RunCacheDeps = {
   planExtractionCachePrune,
   applyExtractionCachePrune,
+  planPrefaceGc,
+  applyPrefaceGc,
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
 };
@@ -66,6 +87,22 @@ export async function runCache(
   } catch (err) {
     deps.stderr(`kb cache: ${(err as Error).message}\n`);
     return 2;
+  }
+
+  if (parsed.surface === 'contextual-prefaces') {
+    try {
+      const plan = await (deps.planPrefaceGc ?? planPrefaceGc)();
+      if (parsed.dryRun) {
+        writePrefaceResult(plan, parsed.format, deps);
+        return 0;
+      }
+      const result = await (deps.applyPrefaceGc ?? applyPrefaceGc)(plan);
+      writePrefaceResult(result, parsed.format, deps);
+      return result.applied_summary.failed_count > 0 ? 1 : 0;
+    } catch (err) {
+      deps.stderr(`kb cache: ${(err as Error).message}\n`);
+      return 1;
+    }
   }
 
   try {
@@ -90,8 +127,8 @@ export async function runCache(
 
 export function parseCacheArgs(rest: string[]): CacheArgs {
   const [surface, ...args] = rest;
-  if (surface === undefined) throw new Error('missing surface: extracted-text');
-  if (surface !== 'extracted-text') throw new Error(`unknown surface: ${surface}`);
+  if (surface === undefined) throw new Error('missing surface: extracted-text|contextual-prefaces');
+  if (surface !== 'extracted-text' && surface !== 'contextual-prefaces') throw new Error(`unknown surface: ${surface}`);
 
   const out: CacheArgs = {
     surface,
@@ -136,6 +173,12 @@ export function parseCacheArgs(rest: string[]): CacheArgs {
     throw new Error(`unexpected argument: ${JSON.stringify(raw)}`);
   }
   if (sawDryRun && sawYes) throw new Error('--dry-run and --yes cannot be combined');
+  if (surface === 'contextual-prefaces') {
+    if (out.maxAgeDays !== undefined || out.maxSizeBytes !== undefined || out.cacheDir !== undefined) {
+      throw new Error('contextual-prefaces does not accept --max-age-days, --max-size-mb or --cache-dir');
+    }
+    return out;
+  }
   if (!out.dryRun && out.maxAgeDays === undefined && out.maxSizeBytes === undefined) {
     throw new Error('--yes requires --max-age-days or --max-size-mb');
   }
@@ -166,6 +209,54 @@ function writeCacheResult(
       ? formatExtractionCachePlanMarkdown(result)
       : formatExtractionCacheApplyMarkdown(result),
   );
+}
+
+function writePrefaceResult(
+  result: PrefaceGcPlan | PrefaceGcApplyResult,
+  format: 'md' | 'json',
+  deps: Pick<RunCacheDeps, 'stdout'>,
+): void {
+  deps.stdout(format === 'json' ? `${JSON.stringify(result, null, 2)}\n` : formatPrefaceGcMarkdown(result));
+}
+
+export function formatPrefaceGcMarkdown(result: PrefaceGcPlan | PrefaceGcApplyResult): string {
+  const lines = [
+    '# Contextual Preface Sidecars',
+    '',
+    `Mode: ${result.dry_run ? 'dry-run' : 'applied'}`,
+    `Sidecar root: \`${result.sidecar_root}\``,
+    `Inventory: ${result.inventory.sidecar_count} sidecar${result.inventory.sidecar_count === 1 ? '' : 's'}, ` +
+      `${formatBytes(result.inventory.total_bytes)} total`,
+    `Orphaned (source file gone): ${result.summary.orphan_count}, ${formatBytes(result.summary.orphan_bytes)}`,
+  ];
+  if (result.inventory.kept_unknown_count > 0) {
+    lines.push(`Kept (no recorded source or source not checkable): ${result.inventory.kept_unknown_count}`);
+  }
+  for (const kb of result.skipped_kbs) {
+    lines.push(
+      `Notice: skipped KB \`${kb.kb}\` (${kb.sidecar_count} sidecar${kb.sidecar_count === 1 ? '' : 's'}): ` +
+      `directory \`${kb.kb_dir}\` is missing`,
+    );
+  }
+  if (!result.dry_run) {
+    lines.push(
+      `Deleted: ${result.applied_summary.deleted_count}, ${formatBytes(result.applied_summary.deleted_bytes)}`,
+      `Failed: ${result.applied_summary.failed_count}`,
+    );
+    for (const f of result.failed) lines.push(`- ${escapeCell(f.path)}: ${escapeCell(f.message)}`);
+  } else if (result.orphans.length > 0) {
+    lines.push('', '| Sidecar | Source | Size |', '| --- | --- | ---: |');
+    for (const o of result.orphans.slice(0, 20)) {
+      lines.push(`| ${escapeCell(path.basename(o.path))} | ${escapeCell(o.source)} | ${formatBytes(o.size_bytes)} |`);
+    }
+    if (result.orphans.length > 20) lines.push(`| ... | ... | ${result.orphans.length - 20} more |`);
+  }
+  if (result.dry_run) {
+    lines.push('', result.summary.orphan_count === 0
+      ? 'No sidecars would be deleted.'
+      : 'Pass `--yes` to delete these sidecars.');
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 export function formatExtractionCachePlanMarkdown(plan: ExtractionCachePrunePlan): string {
