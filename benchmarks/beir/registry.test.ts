@@ -1,11 +1,15 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   BEIR_REGISTRY,
+  COIR_REGISTRY,
   NANOBEIR_REGISTRY,
   assertRegistryInvariants,
   ciSubsetDatasets,
+  coirDatasets,
+  coirDatasetsByFamily,
   downloadableDatasets,
   fullMatrixDatasets,
+  getCoirEntry,
   getNanoBeirEntry,
   getRegistryEntry,
   nanoBeirGateDatasets,
@@ -109,5 +113,42 @@ describe('NanoBEIR gate registry (issue #1051)', () => {
     const first = nanoBeirGateDatasets()[0];
     expect(getNanoBeirEntry(first)?.name).toBe(first);
     expect(getNanoBeirEntry('not-a-nanobeir-dataset')).toBeUndefined();
+  });
+});
+
+describe('CoIR code-retrieval registry (#1052)', () => {
+  it('stays out of the BEIR headline matrix and the Δ_g partition', () => {
+    const names = coirDatasets();
+    expect(names.length).toBeGreaterThan(0);
+    expect(names).toEqual(COIR_REGISTRY.map((e) => e.name));
+    const matrix = new Set(fullMatrixDatasets());
+    for (const name of names) expect(matrix.has(name)).toBe(false);
+    for (const name of [...tunedDatasets(), ...unseenGeneralityDatasets()]) {
+      expect(names).not.toContain(name);
+    }
+  });
+
+  it('has unique names and covers at least three task families', () => {
+    const names = coirDatasets();
+    expect(new Set(names).size).toBe(names.length);
+    const families = new Set(COIR_REGISTRY.map((e) => e.family));
+    expect(families.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it('carries a contamination note and a pair shape for every dataset', () => {
+    for (const entry of COIR_REGISTRY) {
+      expect(entry.split.length).toBeGreaterThan(0);
+      expect(entry.shape.length).toBeGreaterThan(0);
+      expect(entry.contamination.note.length).toBeGreaterThan(0);
+      expect(['expert', 'crowdsourced', 'automatic', 'mixed']).toContain(entry.contamination.qrels);
+    }
+  });
+
+  it('groups datasets by family and resolves entries by name', () => {
+    expect(coirDatasetsByFamily('text-to-code')).toEqual(['cosqa']);
+    expect(coirDatasetsByFamily('code-to-code')).toEqual(['codetrans-dl', 'codetrans-contest']);
+    expect(coirDatasetsByFamily('hybrid')).toEqual(['stackoverflow-qa']);
+    expect(getCoirEntry('cosqa')?.family).toBe('text-to-code');
+    expect(getCoirEntry('scifact')).toBeUndefined();
   });
 });
