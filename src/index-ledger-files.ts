@@ -26,6 +26,13 @@ export const KNOWN_INDEX_LEDGER_FILES: ReadonlySet<string> = new Set([
  * The directory itself is removed only when nothing is left.
  */
 export async function purgeIndexDirPreservingLedgers(indexDir: string): Promise<void> {
+  // A symlinked (or non-directory) `.index` is removed as a single entry, as the
+  // old whole-directory purge did, never traversed into its target.
+  const stat = await fsp.lstat(indexDir);
+  if (!stat.isDirectory()) {
+    await fsp.rm(indexDir, { force: true });
+    return;
+  }
   const entries = await fsp.readdir(indexDir);
   for (const entry of entries) {
     if (KNOWN_INDEX_LEDGER_FILES.has(entry)) continue;

@@ -53,4 +53,22 @@ describe('index-ledger-files (#1190)', () => {
       await fsp.rm(root, { recursive: true, force: true });
     }
   });
+
+  it('purge unlinks a symlinked .index without touching its target', async () => {
+    const root = await makeTempDir('kb-ledger-purge-');
+    try {
+      const target = path.join(root, 'elsewhere');
+      await fsp.mkdir(target);
+      await fsp.writeFile(path.join(target, 'keep.md'), 'precious');
+      const indexDir = path.join(root, '.index');
+      await fsp.symlink(target, indexDir);
+
+      await purgeIndexDirPreservingLedgers(indexDir);
+
+      await expect(fsp.lstat(indexDir)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await fsp.readFile(path.join(target, 'keep.md'), 'utf-8')).toBe('precious');
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
 });
