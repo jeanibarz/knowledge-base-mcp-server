@@ -258,4 +258,120 @@ describe('ingest quarantine manifest', () => {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
   });
+  describe('per-refresh snapshot and no-op writes', () => {
+    async function withQuarantine(
+      run: (ctx: {
+        q: typeof import('./ingest-quarantine.js');
+        kbPath: string;
+        lockCalls: () => number;
+      }) => Promise<void>,
+    ): Promise<void> {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-quarantine-snap-'));
+      try {
+        const kbPath = path.join(tempDir, 'kb');
+        await fsp.mkdir(kbPath, { recursive: true });
+        process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+        jest.resetModules();
+        let calls = 0;
+        jest.doMock('./write-lock.js', () => {
+          const actual = jest.requireActual('./write-lock.js') as typeof import('./write-lock.js');
+          return {
+            ...actual,
+            withSidecarLock: <T>(action: () => Promise<T>) => {
+              calls += 1;
+              return actual.withSidecarLock(action);
+            },
+          };
+        });
+        const q = await import('./ingest-quarantine.js');
+        await run({ q, kbPath, lockCalls: () => calls });
+      } finally {
+        jest.dontMock('./write-lock.js');
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    }
+
+    it('takes O(1) locks and never touches the manifest for 100 unchanged files with no quarantine', async () => {
+      await withQuarantine(async ({ q, kbPath, lockCalls }) => {
+        const snapshot = new q.IngestQuarantineSnapshot();
+        for (let i = 0; i < 100; i += 1) {
+          await expect(
+            q.shouldRetryIngest(kbPath, `f${i}.md`, { sourceHash: `h${i}`, snapshot }),
+          ).resolves.toMatchObject({ retry: true, reason: 'no_record' });
+          await expect(q.recordIngestSuccess(kbPath, `f${i}.md`, { snapshot })).resolves.toBe(false);
+        }
+        expect(lockCalls()).toBe(1);
+        await expect(fsp.stat(q.quarantineManifestPath(kbPath))).rejects.toMatchObject({ code: 'ENOENT' });
+      });
+    });
+
+    it('does not rewrite the manifest for files without a record, and still honours the one that has one', async () => {
+      await withQuarantine(async ({ q, kbPath, lockCalls }) => {
+        const now = new Date('2026-05-12T10:00:00.000Z');
+        await q.recordIngestFailure({
+          kbPath,
+          relativePath: 'bad.md',
+          sourceHash: 'bad-hash',
+          error: Object.assign(new Error('boom'), { code: 'EINVAL' }),
+          now,
+        });
+        const manifest = q.quarantineManifestPath(kbPath);
+        const before = await fsp.stat(manifest);
+        const locksBefore = lockCalls();
+        const snapshot = new q.IngestQuarantineSnapshot();
+
+        await expect(
+          q.shouldRetryIngest(kbPath, 'bad.md', { sourceHash: 'bad-hash', snapshot, now: new Date(now.getTime() + 1000) }),
+        ).resolves.toMatchObject({ retry: false, reason: 'backoff_active' });
+        for (let i = 0; i < 99; i += 1) {
+          await q.recordIngestSuccess(kbPath, `ok${i}.md`, { snapshot });
+        }
+
+        expect(lockCalls() - locksBefore).toBe(1);
+        const after = await fsp.stat(manifest);
+        expect(after.ino).toBe(before.ino);
+        expect(after.mtimeMs).toBe(before.mtimeMs);
+
+        // A successful retry still clears the record, on disk and in the snapshot.
+        await expect(q.recordIngestSuccess(kbPath, 'bad.md', { snapshot })).resolves.toBe(true);
+        await expect(q.listIngestQuarantine(kbPath)).resolves.toEqual([]);
+        await expect(snapshot.get(kbPath, 'bad.md')).resolves.toBeNull();
+      });
+    });
+
+    it('resets a record on content change and sees failures recorded later in the same run', async () => {
+      await withQuarantine(async ({ q, kbPath }) => {
+        const now = new Date('2026-05-12T10:00:00.000Z');
+        await q.recordIngestFailure({
+          kbPath, relativePath: 'bad.md', sourceHash: 'old', error: new Error('boom'), now,
+        });
+        const snapshot = new q.IngestQuarantineSnapshot();
+        await expect(
+          q.shouldRetryIngest(kbPath, 'bad.md', { sourceHash: 'new', snapshot, now }),
+        ).resolves.toMatchObject({ retry: true, reason: 'content_changed' });
+        await expect(q.listIngestQuarantine(kbPath)).resolves.toEqual([]);
+
+        const record = await q.recordIngestFailure({
+          kbPath, relativePath: 'later.md', sourceHash: 'h', error: new Error('boom'), now,
+        });
+        await snapshot.set(kbPath, record);
+        await expect(
+          q.shouldRetryIngest(kbPath, 'later.md', { sourceHash: 'h', snapshot, now: new Date(now.getTime() + 1000) }),
+        ).resolves.toMatchObject({ retry: false, reason: 'backoff_active' });
+      });
+    });
+
+    it('mutateManifest-backed operations leave the file alone when nothing changes', async () => {
+      await withQuarantine(async ({ q, kbPath }) => {
+        await q.recordIngestFailure({ kbPath, relativePath: 'bad.md', error: new Error('boom') });
+        const manifest = q.quarantineManifestPath(kbPath);
+        const before = await fsp.stat(manifest);
+        await expect(q.removeIngestQuarantineEntry(kbPath, 'absent.md')).resolves.toBe(false);
+        await expect(q.ackIngestQuarantineEntry(kbPath, 'absent.md')).resolves.toBeNull();
+        const after = await fsp.stat(manifest);
+        expect(after.ino).toBe(before.ino);
+        expect(after.mtimeMs).toBe(before.mtimeMs);
+      });
+    });
+  });
 });

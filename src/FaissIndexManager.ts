@@ -104,6 +104,7 @@ import { FaissStoreAdapter, type EmbeddedDocumentsBatch } from './faiss-store-ad
 import { HnswIndexAdapter } from './hnsw-index-adapter.js';
 import type { SearchIndexAdapter } from './search-index-adapter.js';
 import {
+  IngestQuarantineSnapshot,
   recordIngestFailure,
   recordIngestSuccess,
   shouldRetryIngest,
@@ -1514,6 +1515,8 @@ export class FaissIndexManager {
         runSummary.warnings.push(warning);
       }
     };
+    // One manifest read per KB per refresh instead of a lock + read per file.
+    const quarantineSnapshot = new IngestQuarantineSnapshot();
     const recordQuarantineFailure = async (
       kbPath: string,
       relativePath: string,
@@ -1537,12 +1540,13 @@ export class FaissIndexManager {
         });
       }
       try {
-        await recordIngestFailure({
+        const record = await recordIngestFailure({
           kbPath,
           relativePath,
           sourceHash,
           error,
         });
+        await quarantineSnapshot.set(kbPath, record);
       } catch (quarantineError: unknown) {
         logger.warn(
           `Could not update ingest quarantine for ${path.join(kbPath, relativePath)}: ` +
@@ -1555,7 +1559,7 @@ export class FaissIndexManager {
       relativePath: string,
     ): Promise<void> => {
       try {
-        await recordIngestSuccess(kbPath, relativePath);
+        await recordIngestSuccess(kbPath, relativePath, { snapshot: quarantineSnapshot });
       } catch (quarantineError: unknown) {
         logger.warn(
           `Could not clear ingest quarantine for ${path.join(kbPath, relativePath)}: ` +
@@ -1989,7 +1993,7 @@ export class FaissIndexManager {
         const retryDecision = await shouldRetryIngest(
           scan.knowledgeBasePath,
           scan.relativePath,
-          { sourceHash: scan.fileHash },
+          { sourceHash: scan.fileHash, snapshot: quarantineSnapshot },
         );
         if (!retryDecision.retry) {
           runSummary.files_skipped += 1;
@@ -2403,7 +2407,7 @@ export class FaissIndexManager {
             const retryDecision = await shouldRetryIngest(
               knowledgeBasePath,
               relativePath,
-              { sourceHash: fileHash },
+              { sourceHash: fileHash, snapshot: quarantineSnapshot },
             );
             if (!retryDecision.retry) {
               continue;
