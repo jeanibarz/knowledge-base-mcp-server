@@ -113,6 +113,38 @@ describe('mcp-document-mutations', () => {
     });
   });
 
+  const itSymlink = process.platform === 'win32' ? it.skip : it;
+
+  itSymlink('handleAddDocument refuses a dangling in-KB symlink and creates nothing outside the KB (#1191)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-mcp-mutations-dangling-'));
+    const outside = path.join(tempDir, 'outside');
+    await fsp.mkdir(path.join(tempDir, 'kbs', 'alpha'), { recursive: true });
+    await fsp.mkdir(outside);
+    const target = path.join(outside, 'pwned.md');
+    await fsp.symlink(target, path.join(tempDir, 'kbs', 'alpha', 'link.md'));
+    // Dangling intermediate directory link: must also create nothing.
+    await fsp.symlink(path.join(outside, 'newdir'), path.join(tempDir, 'kbs', 'alpha', 'dirlink'), 'dir');
+    const { manager, updateIndex } = createManager(tempDir);
+    const { context } = createContext(path.join(tempDir, 'kbs'), manager);
+
+    const leaf = await handleAddDocument(
+      { knowledge_base_name: 'alpha', path: 'link.md', content: 'x' },
+      context,
+    );
+    expect(leaf.isError).toBe(true);
+    expect(JSON.stringify(leaf)).toContain('VALIDATION');
+    expect(await exists(target)).toBe(false);
+
+    const mid = await handleAddDocument(
+      { knowledge_base_name: 'alpha', path: 'dirlink/new.md', content: 'x' },
+      context,
+    );
+    expect(mid.isError).toBe(true);
+    expect(await exists(path.join(outside, 'newdir'))).toBe(false);
+    expect(await fsp.readdir(outside)).toEqual([]);
+    expect(updateIndex).not.toHaveBeenCalled();
+  });
+
   it('handleAddDocument returns a structured policy denial without writing or indexing', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-mcp-mutations-policy-add-'));
     await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
