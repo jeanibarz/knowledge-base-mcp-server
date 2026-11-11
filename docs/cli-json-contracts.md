@@ -599,8 +599,8 @@ Stdout/stderr and exit codes:
 
 Source and test anchors: `src/cli-search.ts:262-320`,
 `src/cli-search.ts:762-785`, `src/cli-search.ts:985-999`,
-`src/formatter.ts:136-213`, `src/cli-search-errors.ts:181-215`,
-`src/formatter.test.ts:161-213`, `src/cli-search-errors.test.ts:121-159`.
+`src/formatter.ts:136-213`, `src/search-errors-core.ts::formatKbSearchFailureJson`,
+`src/formatter.test.ts:161-213`, `src/search-errors-core.test.ts:12-60`.
 
 ## `kb search --batch-jsonl`
 
@@ -1145,7 +1145,7 @@ Stdout/stderr and exit codes:
   errors exit `1`.
 
 Source and test anchors: `src/cli-where.ts:139-157`,
-`src/cli-where.ts:290-297`, `src/cli-where.test.ts:16-57`,
+`src/cli-where.ts::runWhere`, `src/cli-where.test.ts:16-57`,
 `src/cli-where.test.ts:60-127`.
 
 ## `kb doctor`
@@ -2161,7 +2161,7 @@ Stdout/stderr and exit codes:
 - Exit `1` for runtime/index errors or a well-formed handle that does not
   match any indexed chunk.
 
-Source and test anchors: `src/cli-related.ts`, `src/FaissIndexManager.ts::findChunkByReference`,
+Source and test anchors: `src/cli-related.ts`, `src/FaissIndexManager.ts:3029`,
 `src/cli-related.test.ts`, `src/FaissIndexManager.test.ts`.
 
 ## `kb stats`

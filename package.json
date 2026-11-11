@@ -40,7 +40,7 @@
     "bench:evol": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/evolution/run.js",
     "bench:evol:iteration": "npm run build && tsc -p tsconfig.bench.json && node build/benchmarks/evolution/iteration.js",
     "bench:tune": "python3 benchmarks/optuna_tune.py",
-    "docs:check-anchors": "node scripts/check-doc-anchors.mjs",
+    "docs:check-anchors": "node scripts/check-doc-anchors.mjs --strict",
     "docs:generate": "npm run build && node scripts/generate-config-reference.mjs && node scripts/generate-env-example.mjs && node scripts/gen-cli-reference.mjs && node scripts/gen-mcp-tools-doc.mjs && node scripts/gen-loaders-reference.mjs && node scripts/gen-error-codes-doc.mjs && node scripts/generate-embedding-models-reference.mjs && node scripts/generate-metrics-reference.mjs && node scripts/generate-benchmark-results-reference.mjs",
     "docs:generate-config-reference": "npm run build && node scripts/generate-config-reference.mjs",
     "docs:check-config-reference": "node scripts/check-config-reference.mjs",
