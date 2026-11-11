@@ -5,12 +5,11 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DEFAULT_DOC_ROOTS = [
-  'docs/architecture',
-  'docs/operations',
-  'docs/rfcs',
+  'docs',
   'README.md',
   'CONTRIBUTING.md',
   'CLAUDE.md',
@@ -28,10 +27,14 @@ function usage() {
   return [
     'usage: node scripts/check-doc-anchors.mjs [--root <repo>] [--strict] [--verbose] [--json] [--self-test]',
     '',
-    'Scans docs/architecture/**/*.md, docs/operations/**/*.md,',
-    'docs/rfcs/**/*.md, README.md, CONTRIBUTING.md, and CLAUDE.md',
+    'Scans docs/**/*.md, README.md, CONTRIBUTING.md, and CLAUDE.md',
     'for anchors like src/file.ts:12-20',
     'and src/file.ts::SymbolName.',
+    '',
+    'Warns only by default; with --strict (used by `npm run docs:check-anchors`)',
+    'exits 1 when any anchor is stale.',
+    'Opt a whole doc out with `anchor-check: off`, a single line with',
+    '`anchor-check: ignore`.',
   ].join('\n');
 }
 
@@ -400,6 +403,8 @@ async function runSelfTest() {
   try {
     await fs.mkdir(path.join(tmp, 'src'), { recursive: true });
     await fs.mkdir(path.join(tmp, 'docs', 'architecture'), { recursive: true });
+    await fs.writeFile(path.join(tmp, 'docs', 'top.md'), 'Stale top-level: `src/sample.ts:99`.\n');
+    await fs.writeFile(path.join(tmp, 'docs', 'optout.md'), '<!-- anchor-check: off -->\nStale: `src/sample.ts:99`.\n');
     await fs.writeFile(
       path.join(tmp, 'src', 'sample.ts'),
       [
@@ -426,9 +431,14 @@ async function runSelfTest() {
     );
 
     const report = await checkDocAnchors({ root: tmp });
-    assert.equal(report.totals.anchorsChecked, 5);
-    assert.equal(report.totals.failures, 2);
-    assert.deepEqual(report.failures.map((failure) => failure.status).sort((a, b) => a.localeCompare(b)), ['MISSING_SYMBOL', 'RANGE_EXCEEDS_FILE']);
+    assert.equal(report.totals.anchorsChecked, 6);
+    assert.equal(report.totals.failures, 3);
+    assert.deepEqual(report.failures.map((failure) => failure.status).sort((a, b) => a.localeCompare(b)), ['MISSING_SYMBOL', 'RANGE_EXCEEDS_FILE', 'RANGE_EXCEEDS_FILE']);
+    assert.ok(report.failures.some((failure) => failure.docRelPath === 'docs/top.md'));
+
+    const cli = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--root', tmp, '--strict'], { encoding: 'utf8' });
+    assert.equal(cli.status, 1);
+    assert.match(cli.stdout, /src\/sample\.ts:99/);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

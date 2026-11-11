@@ -36,7 +36,7 @@ If you've never seen this repo before, read top-to-bottom:
 - **Every diagram is mermaid.** No PNGs, no ASCII art except in code blocks that explain a mermaid snippet.
 - **Each doc stays under 250 lines** (ADRs under 100). Tight text + one diagram + one table > walls of prose.
 - **Drift is a bug.** A PR that changes code under `src/` and leaves an anchor stale here should be reviewed the same way as a failing test.
-- **Check anchors locally.** Run `npm run docs:check-anchors` before review to report stale file-line and symbol anchors. It is warning-only while historical drift remains; use `npm run docs:check-anchors -- --strict` when you want stale anchors to fail the command.
+- **Check anchors locally.** Run `npm run docs:check-anchors` before review to report stale file-line and symbol anchors. It scans `docs/**`, `README.md`, `CONTRIBUTING.md`, and `CLAUDE.md`, runs in `--strict` mode, and exits non-zero (naming each stale anchor) when one is stale. Opt a historical doc out with an `anchor-check: off` marker.
 
 ## What this folder does NOT contain
 
