@@ -72,7 +72,10 @@ interface PackedPackage {
   mcpBin: string;
   /** Seeded read-only knowledge-base root used by `list` / `search` / MCP tests. */
   kbRoot: string;
-  /** Throwaway FAISS index path — none of the smoke paths build an index. */
+  /**
+   * Throwaway FAISS index path for the no-backend paths, which never build an
+   * index. First-search tests use their own fresh dirs instead.
+   */
   faissRoot: string;
   /** Sterile temp HOME so the bins never read the developer's machine profile. */
   homeDir: string;
@@ -285,6 +288,68 @@ function runKb(args: string[], extraEnv: Record<string, string> = {}): RunResult
       code: 'ACTIVE_MODEL_UNRESOLVED',
       category: 'configuration',
     });
+  });
+
+  // Issue #1177 (proposal 5) — the release gate must prove a FRESH install can
+  // search, not just that it fails cleanly. #1178 shipped a release candidate
+  // whose first search failed with "No model registered" until the user ran
+  // `kb models add`; only the read-only error path above was covered. Each
+  // first-search test gets its own never-touched FAISS dir (no active.txt, no
+  // models/) so it sees exactly what a new user sees. The fake provider stands
+  // in for a real embedder so the gate stays offline.
+  it('kb search --refresh succeeds as the first search on a pristine index', async () => {
+    const faissRoot = await fsp.mkdtemp(path.join(pkg.workDir, 'faiss-first-cli-'));
+
+    const result = runKb(['search', 'stable smoke-test note', '--refresh', '--format=json'], {
+      KNOWLEDGE_BASES_ROOT_DIR: pkg.kbRoot,
+      FAISS_INDEX_PATH: faissRoot,
+      EMBEDDING_PROVIDER: 'fake',
+    });
+
+    expect(result.code).toBe(0);
+    const body = JSON.parse(result.stdout) as {
+      results?: Array<{ metadata?: { relativePath?: string } }>;
+      query_cache?: { model_id?: string };
+    };
+    expect(body.results?.map((hit) => hit.metadata?.relativePath)).toEqual(['alpha/note.md']);
+    // The first search registered and pinned the env-derived model itself.
+    const activeModel = (await fsp.readFile(path.join(faissRoot, 'active.txt'), 'utf-8')).trim();
+    expect(activeModel).toMatch(/^fake__/);
+    expect(body.query_cache?.model_id).toBe(activeModel);
+  });
+
+  it('MCP retrieve_knowledge succeeds as the first search on a pristine index', async () => {
+    const faissRoot = await fsp.mkdtemp(path.join(pkg.workDir, 'faiss-first-mcp-'));
+    const transport = new StdioClientTransport({
+      command: pkg.mcpBin,
+      args: [],
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: pkg.homeDir,
+        KNOWLEDGE_BASES_ROOT_DIR: pkg.kbRoot,
+        FAISS_INDEX_PATH: faissRoot,
+        EMBEDDING_PROVIDER: 'fake',
+        REINDEX_TRIGGER_POLL_MS: '0',
+      },
+      stderr: 'inherit',
+    });
+    const client = new Client({ name: 'kb-npm-pack-first-search', version: '0.0.0-test' });
+
+    try {
+      await client.connect(transport);
+      const result = await client.callTool({
+        name: 'retrieve_knowledge',
+        arguments: { query: 'stable smoke-test note', knowledge_base_name: 'alpha', gate: 'off' },
+      });
+      expect(result.isError).toBeFalsy();
+      const text = (result.content as Array<{ type: string; text?: string }>)
+        .map((part) => part.text ?? '')
+        .join('\n');
+      expect(text).toContain('A stable smoke-test note');
+      expect(text).toContain('note.md');
+    } finally {
+      await client.close();
+    }
   });
 
   it('knowledge-base-mcp-server boots over stdio and serves a no-backend tool call', async () => {
