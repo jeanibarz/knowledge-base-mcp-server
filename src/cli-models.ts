@@ -36,7 +36,7 @@ Usage:
   kb models list [--format=md|json|csv|tsv|ndjson]
   kb models add <provider> <model> [--index-type=flat|sq8|hnsw] [--yes] [--dry-run] [--recover]
   kb models set-active <id>
-  kb models remove <id>
+  kb models remove <id> [--yes] [--force-incomplete]
   kb models gc --dry-run [--format=json]
 
 Each model gets its own per-model FAISS index under
@@ -75,6 +75,11 @@ Options for \`add\`:
   --index-type=flat|sq8|hnsw
                         Select the search index type for this model. Default is
                         KB_INDEX_TYPE when set, otherwise flat.
+
+Options for \`remove\`:
+  --yes                 Skip the confirmation prompt (required without a TTY).
+  --force-incomplete    Allow removing a model directory left by an interrupted
+                        add (one with a \`.adding\` sentinel).
 
 Options for \`gc\`:
   --dry-run             Required. Print the cleanup plan; never delete.

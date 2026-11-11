@@ -26,13 +26,17 @@ Usage:
   kb llm status [--profile=<name>] [--format=md|json]
   kb llm probe [--endpoint=<url>] [--expect-provider=<provider>] [--expect-model=<model>]
   kb llm use-endpoint <url> [--profile=<name>]
-  kb llm install --profile=<name> --runner=llama-server --bin=<path> --model=<gguf-path> [--port=8091] [--ctx=32768] [--ngl=99] [--runner-arg=<arg>] [--start]
+  kb llm install --profile=<name> --runner=llama-server --bin=<path> --model=<gguf-path> [--port=8091] [--ctx=32768] [--ngl=99] [--keepalive=lease|always] [--runner-arg=<arg>] [--start]
   kb llm start [--profile=<name>]
   kb llm stop [--profile=<name>]
   kb llm restart [--profile=<name>]
   kb llm set-model --profile=<name> --model=<gguf-path> [--start]
   kb llm uninstall [--profile=<name>|--all]
   kb llm reap
+
+Options for \`install\`:
+  --keepalive=lease|always
+                        Lifetime policy for the managed runner (default: lease).
 
 External profiles are reuse-only. Stop, restart, uninstall, and reap never
 touch external services such as local-research-agent's llama-server.

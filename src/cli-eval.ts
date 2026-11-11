@@ -90,6 +90,8 @@ Arguments:
   scaffold <query>      Emit a starter retrieval-eval fixture for query.
 
 Options:
+  --fixture=<path>      Fixture path as a flag, equivalent to the positional
+                        <fixture.yml|json>. Not supported for scaffold.
   --model=<id>          Override the active model for the run (RFC 013).
   --k=<int>             Top-K results per case (default: ${DEFAULT_K}).
   --threshold=<float>   Max similarity score; lower = closer (default: ${DEFAULT_THRESHOLD}).

@@ -37,6 +37,7 @@ Options:
   --summary             Aggregate the whole log into a diagnostics report.
   --request-id=<id>     Show canonical events for one request id.
   --query-sha=<hash>    Show canonical events for one query_sha256 value.
+  --query-sha256=<hash> Alias for --query-sha (matches the log field name).
   --help, -h            Show this help.
 
 Examples:

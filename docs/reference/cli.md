@@ -571,6 +571,8 @@ Arguments:
   scaffold <query>      Emit a starter retrieval-eval fixture for query.
 
 Options:
+  --fixture=<path>      Fixture path as a flag, equivalent to the positional
+                        <fixture.yml|json>. Not supported for scaffold.
   --model=<id>          Override the active model for the run (RFC 013).
   --k=<int>             Top-K results per case (default: 10).
   --threshold=<float>   Max similarity score; lower = closer (default: 2).
@@ -917,13 +919,17 @@ Usage:
   kb llm status [--profile=<name>] [--format=md|json]
   kb llm probe [--endpoint=<url>] [--expect-provider=<provider>] [--expect-model=<model>]
   kb llm use-endpoint <url> [--profile=<name>]
-  kb llm install --profile=<name> --runner=llama-server --bin=<path> --model=<gguf-path> [--port=8091] [--ctx=32768] [--ngl=99] [--runner-arg=<arg>] [--start]
+  kb llm install --profile=<name> --runner=llama-server --bin=<path> --model=<gguf-path> [--port=8091] [--ctx=32768] [--ngl=99] [--keepalive=lease|always] [--runner-arg=<arg>] [--start]
   kb llm start [--profile=<name>]
   kb llm stop [--profile=<name>]
   kb llm restart [--profile=<name>]
   kb llm set-model --profile=<name> --model=<gguf-path> [--start]
   kb llm uninstall [--profile=<name>|--all]
   kb llm reap
+
+Options for `install`:
+  --keepalive=lease|always
+                        Lifetime policy for the managed runner (default: lease).
 
 External profiles are reuse-only. Stop, restart, uninstall, and reap never
 touch external services such as local-research-agent's llama-server.
@@ -972,6 +978,7 @@ Options:
   --summary             Aggregate the whole log into a diagnostics report.
   --request-id=<id>     Show canonical events for one request id.
   --query-sha=<hash>    Show canonical events for one query_sha256 value.
+  --query-sha256=<hash> Alias for --query-sha (matches the log field name).
   --help, -h            Show this help.
 
 Examples:
@@ -1035,7 +1042,7 @@ Usage:
   kb models list [--format=md|json|csv|tsv|ndjson]
   kb models add <provider> <model> [--index-type=flat|sq8|hnsw] [--yes] [--dry-run] [--recover]
   kb models set-active <id>
-  kb models remove <id>
+  kb models remove <id> [--yes] [--force-incomplete]
   kb models gc --dry-run [--format=json]
 
 Each model gets its own per-model FAISS index under
@@ -1074,6 +1081,11 @@ Options for `add`:
   --index-type=flat|sq8|hnsw
                         Select the search index type for this model. Default is
                         KB_INDEX_TYPE when set, otherwise flat.
+
+Options for `remove`:
+  --yes                 Skip the confirmation prompt (required without a TTY).
+  --force-incomplete    Allow removing a model directory left by an interrupted
+                        add (one with a `.adding` sentinel).
 
 Options for `gc`:
   --dry-run             Required. Print the cleanup plan; never delete.
