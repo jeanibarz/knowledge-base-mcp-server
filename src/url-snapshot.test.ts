@@ -39,6 +39,17 @@ describe('isBlockedAddress', () => {
     ['::ffff:127.0.0.1', 'IPv4-mapped loopback'],
     ['::ffff:10.0.0.1', 'IPv4-mapped private'],
     ['not-an-ip', 'unparseable input fails closed'],
+    ['::ffff:7f00:1', 'hex IPv4-mapped loopback (URL-normalised form)'],
+    ['0:0:0:0:0:ffff:7f00:1', 'expanded IPv4-mapped loopback'],
+    ['::7f00:1', 'IPv4-compatible loopback'],
+    ['::ffff:a9fe:a9fe', 'hex IPv4-mapped cloud metadata'],
+    ['::ffff:a00:1', 'hex IPv4-mapped 10/8'],
+    ['::ffff:0:7f00:1', 'IPv4-translated loopback'],
+    ['64:ff9b::7f00:1', 'NAT64 loopback'],
+    ['64:ff9b::169.254.169.254', 'NAT64 metadata, dotted tail'],
+    ['2002:7f00:1::', '6to4 loopback'],
+    ['2002:a9fe:a9fe::1', '6to4 cloud metadata'],
+    ['fe80::1%eth0', 'link-local with zone id'],
   ])('blocks %s (%s)', (ip) => {
     expect(isBlockedAddress(ip)).toBe(true);
   });
@@ -53,8 +64,38 @@ describe('isBlockedAddress', () => {
     ['100.63.0.1', 'just outside CGNAT'],
     ['2606:4700:4700::1111', 'public IPv6'],
     ['::ffff:8.8.8.8', 'IPv4-mapped public'],
+    ['::ffff:808:808', 'hex IPv4-mapped public'],
+    ['64:ff9b::808:808', 'NAT64 public'],
+    ['2002:808:808::1', '6to4 public'],
   ])('allows %s (%s)', (ip) => {
     expect(isBlockedAddress(ip)).toBe(false);
+  });
+});
+
+describe('isBlockedAddress — every blocked IPv4 stays blocked in each IPv6 encoding', () => {
+  const hex = (v4: string): string => {
+    const [a, b, c, d] = v4.split('.').map(Number);
+    return `${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  };
+  const sixToFour = (v4: string): string => {
+    const [h1, h2] = hex(v4).split(':');
+    return `2002:${h1}:${h2}::1`;
+  };
+  const samples = [
+    ['0.0.0.1', true], ['10.1.2.3', true], ['127.0.0.1', true], ['169.254.169.254', true],
+    ['172.16.5.5', true], ['192.168.0.1', true], ['100.64.0.1', true], ['224.0.0.1', true],
+    ['8.8.8.8', false], ['93.184.216.34', false], ['172.15.0.1', false],
+  ] as const;
+  it.each(samples)('%s (blocked=%s)', (v4, blocked) => {
+    for (const form of [
+      `::ffff:${hex(v4)}`,
+      `::ffff:${v4}`,
+      `::${hex(v4)}`,
+      `64:ff9b::${hex(v4)}`,
+      sixToFour(v4),
+    ]) {
+      expect({ form, blocked: isBlockedAddress(form) }).toEqual({ form, blocked });
+    }
   });
 });
 
@@ -103,6 +144,21 @@ describe('assertHostAllowed', () => {
   it('strips IPv6 brackets before classifying', async () => {
     await expect(assertHostAllowed('[::1]', neverCalled, false)).rejects.toThrow(UrlSnapshotError);
   });
+
+  it('rejects the URL-normalised hostname of a dotted IPv4-mapped literal', async () => {
+    const host = new URL('http://[::ffff:127.0.0.1]/').hostname;
+    expect(host).toBe('[::ffff:7f00:1]');
+    await expect(assertHostAllowed(host, neverCalled, false)).rejects.toThrow(/private\/loopback/);
+    await expect(assertHostAllowed(host, neverCalled, true)).resolves.toBeUndefined();
+  });
+
+  it.each(['[64:ff9b::7f00:1]', '[2002:7f00:1::]', '[::7f00:1]'])(
+    'rejects embedded-IPv4 literal %s unless --allow-local-network',
+    async (host) => {
+      await expect(assertHostAllowed(host, neverCalled, false)).rejects.toThrow(UrlSnapshotError);
+      await expect(assertHostAllowed(host, neverCalled, true)).resolves.toBeUndefined();
+    },
+  );
 
   it('allows a named host that resolves only to public addresses', async () => {
     const resolve = async (): Promise<string[]> => ['93.184.216.34'];
@@ -193,6 +249,17 @@ describe('followRedirectChain', () => {
       res({ url, status: 404 });
     await expect(followRedirectChain('https://example.com/', fetchOnce, 5)).rejects.toThrow(
       /HTTP 404/,
+    );
+  });
+
+  it('refuses a redirect hop to a hex-form IPv4-mapped literal', async () => {
+    const neverResolves = async (): Promise<string[]> => [];
+    const fetchOnce = async (url: string): Promise<RawHttpResponse> => {
+      await assertHostAllowed(new URL(url).hostname, neverResolves, false);
+      return res({ url, status: 302, headers: { location: 'http://[::ffff:169.254.169.254]/latest' } });
+    };
+    await expect(followRedirectChain('https://8.8.8.8/', fetchOnce, 5)).rejects.toThrow(
+      /refusing to fetch a private\/loopback address/,
     );
   });
 
