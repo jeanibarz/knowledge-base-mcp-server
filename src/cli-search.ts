@@ -142,6 +142,7 @@ import {
 import {
   canonicalGateStageRecord,
   canonicalRerankStageRecord,
+  currentCliRequestIdForOutput,
   degradationSummaryFields,
   hashQuery,
   type CanonicalLogInput,
@@ -1774,6 +1775,8 @@ export function buildDenseSearchJsonPayload(input: DenseSearchJsonPayloadInput):
   if (retrievalViews !== null) payload.retrieval_views = retrievalViews;
   if (input.timing) {
     payload.timing = compactTimingPayload(input.timing);
+    const requestId = currentCliRequestIdForOutput();
+    if (requestId !== undefined) payload.request_id = requestId;
   }
   return payload;
 }
@@ -2069,6 +2072,12 @@ function createQueryDecompositionProvider(
   return fallback;
 }
 
+/** `{ request_id }` when this invocation has a canonical id to show, else `{}`. */
+function requestIdField(): { request_id?: string } {
+  const requestId = currentCliRequestIdForOutput();
+  return requestId === undefined ? {} : { request_id: requestId };
+}
+
 function defaultBypassedGateVerdict(count: number): RelevanceGateVerdict {
   return {
     schema_version: RELEVANCE_GATE_SCHEMA_VERSION,
@@ -2083,10 +2092,11 @@ function defaultBypassedGateVerdict(count: number): RelevanceGateVerdict {
 }
 
 function reportFailure(failure: SearchFailure, format: SearchFormat): number {
+  const requestId = currentCliRequestIdForOutput();
   if (format === 'json') {
-    process.stdout.write(formatKbSearchFailureJson(failure));
+    process.stdout.write(formatKbSearchFailureJson(failure, requestId));
   } else {
-    process.stderr.write(formatKbSearchFailureStderr(failure));
+    process.stderr.write(formatKbSearchFailureStderr(failure, requestId));
   }
   return exitCodeForFailure(failure);
 }
@@ -2838,6 +2848,7 @@ async function runLexicalSearch(
         ? { retrieval_views: retrievalViewsJson(parsed.retrievalViews) }
         : {}),
       ...(parsed.timing && timing ? { timing: compactTimingPayload(timing) } : {}),
+      ...(parsed.timing && timing ? requestIdField() : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
@@ -3263,6 +3274,7 @@ async function runHybridSearch(
       gate_verdict: gateVerdict,
       ...degradation,
       ...(parsed.timing && timing ? { timing: compactTimingPayload(timing) } : {}),
+      ...(parsed.timing && timing ? requestIdField() : {}),
     };
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (parsed.format === 'vimgrep') {
