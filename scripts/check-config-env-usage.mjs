@@ -9,9 +9,12 @@
 // reference. Wired into `npm run check`; fails when production code reads a
 // controlled env var that is neither registered nor explicitly allowlisted.
 //
-// Only *literal* env names are inspected (`process.env.NAME` and
-// `process.env['NAME']`). Dynamic `process.env[variable]` access is ignored,
-// so intentionally-dynamic reads never produce false positives.
+// Only *literal* env names are inspected. Besides `process.env.NAME` and
+// `process.env['NAME']`, indirect reads are resolved too: `env.NAME` /
+// `env['NAME']` on an env parameter, `envInteger('NAME')`-style helper calls,
+// and `const FOO_ENV = 'NAME'` constants (read later as `env[FOO_ENV]`).
+// Fully dynamic `env[variable]` access is ignored, so intentionally-dynamic
+// reads never produce false positives.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -32,8 +35,13 @@ const SRC_DIR = path.join(REPO_ROOT, 'src');
 export const ALLOWLIST = new Map([
 ]);
 
-const DOTTED_READ = /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g;
-const BRACKET_READ = /process\.env\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\]/g;
+// `\benv` also matches `process.env` and `env` parameters/destructured copies.
+const DOTTED_READ = /\benv\.([A-Za-z_][A-Za-z0-9_]*)/g;
+const BRACKET_READ = /\benv\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\]/g;
+// `envInteger('KB_X')`, `readEnv("KB_X")`: a helper whose name ends in Env*.
+const HELPER_READ = /\benv[A-Z][A-Za-z0-9_]*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/g;
+// `export const FS_CONCURRENCY_ENV = 'KB_FS_CONCURRENCY'`.
+const CONSTANT_READ = /\bconst\s+[A-Za-z0-9_]*_ENV(?:_NAME)?\s*(?::[^=]+)?=\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/g;
 
 // Directory / file names excluded from the production scan. Tests, fixtures,
 // and the opt-in e2e suite legitimately read env knobs that are not part of
@@ -69,7 +77,7 @@ export function collectSourceFiles(dir) {
 /** Extract literal controlled-prefix env names read in `content`. */
 function controlledReadsIn(content) {
   const names = new Set();
-  for (const re of [DOTTED_READ, BRACKET_READ]) {
+  for (const re of [DOTTED_READ, BRACKET_READ, HELPER_READ, CONSTANT_READ]) {
     for (const match of content.matchAll(re)) {
       const name = match[1];
       if (isControlledEnvName(name)) names.add(name);

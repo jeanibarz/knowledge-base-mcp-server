@@ -52,4 +52,21 @@ describe('config:check-env-usage guard', () => {
       fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ['an env parameter', 'export const a = (env: NodeJS.ProcessEnv) => env.KB_FAKE_INDIRECT_ONE;\n', 'KB_FAKE_INDIRECT_ONE'],
+    ['a bracket read on an env parameter', "export const a = (env: NodeJS.ProcessEnv) => env['KB_FAKE_INDIRECT_TWO'];\n", 'KB_FAKE_INDIRECT_TWO'],
+    ['an *_ENV name constant', "export const FAKE_ENV = 'KB_FAKE_INDIRECT_THREE';\n", 'KB_FAKE_INDIRECT_THREE'],
+    ['an env helper call', "export const a = envInteger('KB_FAKE_INDIRECT_FOUR');\n", 'KB_FAKE_INDIRECT_FOUR'],
+  ])('fails on an unregistered var read through %s', (_label, source, name) => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-env-usage-'));
+    try {
+      fs.writeFileSync(path.join(fixtureDir, 'indirect.ts'), source);
+      const { status, stderr } = runGuard([fixtureDir]);
+      expect(status).toBe(1);
+      expect(stderr).toContain(name);
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
 });
