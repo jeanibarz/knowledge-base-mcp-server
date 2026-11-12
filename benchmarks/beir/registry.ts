@@ -406,3 +406,101 @@ export function nanoBeirGateDatasets(): string[] {
 export function getNanoBeirEntry(name: string): NanoBeirGateEntry | undefined {
   return NANOBEIR_REGISTRY.find((entry) => entry.name === name);
 }
+
+// ---------------------------------------------------------------------------
+// CoIR code-retrieval registry (issue #1052)
+// ---------------------------------------------------------------------------
+//
+// CoIR (Code Information Retrieval, arXiv 2407.02883) is BEIR/MTEB-schema
+// compatible, so each dataset flows through the same runner once converted to
+// the BEIR directory layout (`benchmarks/scripts/fetch_coir_from_hf.py`). The
+// knowledge bases this tool serves are mostly code and technical prose, yet
+// BEIR has no code dataset — this registry is how retrieval quality gets
+// measured on the tool's real content type.
+//
+// Like NANOBEIR_REGISTRY it is a SEPARATE registry: CoIR is NOT part of the
+// headline multi-domain BEIR mean or the Δ_g partition, so it must never leak
+// into fullMatrixDatasets()/the matrix runner. Results are grouped by task
+// family so a per-family breakdown is a registry lookup, not a naming
+// convention.
+
+export type CoirTaskFamily = 'text-to-code' | 'code-to-code' | 'hybrid';
+
+export interface CoirDatasetRegistryEntry {
+  /** Registry key; also the `CoIR-Retrieval/<name>` HuggingFace repo name. */
+  name: string;
+  /** Human-facing label for reports. */
+  title: string;
+  /** CoIR task family: what the query is and what the corpus holds. */
+  family: CoirTaskFamily;
+  /** Qrels split the headline reports on. */
+  split: string;
+  /** One-line shape of a (query, relevant document) pair, for report readers. */
+  shape: string;
+  contamination: BeirContaminationNote;
+}
+
+export const COIR_REGISTRY: readonly CoirDatasetRegistryEntry[] = [
+  {
+    name: 'cosqa',
+    title: 'CoSQA',
+    family: 'text-to-code',
+    split: 'test',
+    shape: 'natural-language web search query → Python function',
+    contamination: {
+      knownInPretraining: true,
+      qrels: 'crowdsourced',
+      note: 'Bing queries paired with CodeSearchNet functions, human-annotated; CodeSearchNet is widely present in code-model pretraining corpora.',
+    },
+  },
+  {
+    name: 'codetrans-dl',
+    title: 'CodeTrans-DL',
+    family: 'code-to-code',
+    split: 'test',
+    shape: 'deep-learning snippet in one framework → equivalent snippet in another',
+    contamination: {
+      knownInPretraining: false,
+      qrels: 'automatic',
+      note: 'Framework-translation pairs (TensorFlow ↔ PaddlePaddle) mined from parallel tutorial code; small corpus (816 docs).',
+    },
+  },
+  {
+    name: 'codetrans-contest',
+    title: 'CodeTrans-Contest',
+    family: 'code-to-code',
+    split: 'test',
+    shape: 'competitive-programming solution in one language → same solution in another',
+    contamination: {
+      knownInPretraining: true,
+      qrels: 'automatic',
+      note: 'Cross-language contest solutions (Codeforces-style); contest code is widely scraped into pretraining data.',
+    },
+  },
+  {
+    name: 'stackoverflow-qa',
+    title: 'StackOverflow-QA',
+    family: 'hybrid',
+    split: 'test',
+    shape: 'StackOverflow question (text + code) → answer (text + code)',
+    contamination: {
+      knownInPretraining: true,
+      qrels: 'crowdsourced',
+      note: 'Accepted-answer pairs from StackOverflow; a staple of LLM pretraining corpora, so absolute scores flatter memorizing models.',
+    },
+  },
+];
+
+/** CoIR dataset keys, in report order. */
+export function coirDatasets(): string[] {
+  return COIR_REGISTRY.map((entry) => entry.name);
+}
+
+export function getCoirEntry(name: string): CoirDatasetRegistryEntry | undefined {
+  return COIR_REGISTRY.find((entry) => entry.name === name);
+}
+
+/** CoIR dataset keys belonging to one task family, in report order. */
+export function coirDatasetsByFamily(family: CoirTaskFamily): string[] {
+  return COIR_REGISTRY.filter((entry) => entry.family === family).map((entry) => entry.name);
+}
