@@ -403,7 +403,7 @@ Optional stable fields:
 
 - `scope`: present when `--kb=<name>` is used. Shape:
   `{"kb": string, "stale": boolean, "modified_files": number, "new_files": number}`.
-- `grouped_results`: present with `--group-by-source` in dense JSON mode. Each
+- `grouped_results`: present with `--group-by-source` in dense and hybrid JSON modes. Each
   source group has `source`, `chunk_count`, `best_score`, `locations`, and
   `chunks`. Each chunk follows the same hit contract as `results[]`, plus a
   stable `location` field.

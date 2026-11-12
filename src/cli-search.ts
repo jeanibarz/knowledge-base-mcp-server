@@ -292,8 +292,9 @@ Output:
                         group_by_source, task_context, gate, refresh, since,
                         until, and context_window.
   --group-by-source     Collapse repeated chunks from the same source file
-                        in markdown output. With \`--format=json\`, adds a
-                        \`grouped_results\` field alongside raw results.
+                        in markdown output (dense and hybrid modes). With
+                        \`--format=json\`, adds a \`grouped_results\`
+                        field alongside raw results.
   --timing              Include elapsed milliseconds for retrieval stages.
                         For non-empty filtered dense searches, also surfaces
                         aggregate filter selectivity counters.
@@ -2921,10 +2922,6 @@ async function runHybridSearch(
   if (parsed.thresholdAuto || parsed.threshold !== undefined) {
     process.stderr.write('kb search: --threshold/--threshold=auto are dense-only; ignored under --mode=hybrid\n');
   }
-  if (parsed.groupBySource) {
-    process.stderr.write('kb search: --group-by-source is dense-only in stage 2; ignored under --mode=hybrid\n');
-  }
-
   const query = parsed.query as string;
   const candidatePoolK = resolveCandidatePoolK(parsed.k, parsed.candidatePoolK);
   const highRecallEnabled = candidatePoolK !== null;
@@ -3248,6 +3245,16 @@ async function runHybridSearch(
         KB_EDITOR_URI,
         buildSearchSnippetOptions(parsed, query),
       ),
+      ...(parsed.groupBySource
+        ? {
+            grouped_results: groupRetrievalBySource(
+              ranked as never,
+              FRONTMATTER_EXTRAS_WIRE_VISIBLE,
+              KB_EDITOR_URI,
+              buildSearchSnippetOptions(parsed, query),
+            ),
+          }
+        : {}),
       retrievers: {
         dense: { fetched: denseResults.length, model: activeModelId },
         lexical: {
@@ -3328,7 +3335,7 @@ async function runHybridSearch(
     if (ranked.length === 0) {
       output += `_No matches._\n\n`;
     } else {
-      output += `${formatRetrievalAsMarkdown(
+      output += `${(parsed.groupBySource ? formatRetrievalGroupedBySourceAsMarkdown : formatRetrievalAsMarkdown)(
         ranked as never,
         FRONTMATTER_EXTRAS_WIRE_VISIBLE,
         KB_EDITOR_URI,
