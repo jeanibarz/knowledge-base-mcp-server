@@ -376,6 +376,41 @@ interface SequenceClassifierConfig {
   label2id?: Record<string, number>;
 }
 
+export const RERANK_ADDON_MISSING_MESSAGE =
+  'KB_RERANK=on needs the optional package @huggingface/transformers: ' +
+  'install it next to the server (global install: npm install -g @huggingface/transformers; ' +
+  'local install: npm install @huggingface/transformers; ' +
+  'npx: add -p @huggingface/transformers, e.g. npx -y -p @jeanibarz/knowledge-base-mcp-server@latest ' +
+  '-p @huggingface/transformers knowledge-base-mcp-server)';
+
+// Matches only when the *missing specifier itself* is the add-on. Node's message for a
+// nested miss ("Cannot find package 'onnxruntime-node' imported from
+// .../@huggingface/transformers/...") must not match.
+const MISSING_TRANSFORMERS_RE = /Cannot find (?:package|module) '@huggingface\/transformers'/;
+
+/**
+ * @huggingface/transformers is an optional peer dependency (#1176), so a
+ * default install does not ship it. Turn the bare module-resolution error into
+ * an actionable one; any other import failure is rethrown untouched.
+ */
+export async function loadTransformers(
+  importer: () => Promise<unknown> = () => import('@huggingface/transformers'),
+): Promise<TransformersModule> {
+  try {
+    return (await importer()) as TransformersModule;
+  } catch (err) {
+    const code = (err as { code?: string } | null)?.code;
+    const message = err instanceof Error ? err.message : String(err);
+    if (
+      (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') &&
+      MISSING_TRANSFORMERS_RE.test(message)
+    ) {
+      throw new Error(RERANK_ADDON_MISSING_MESSAGE, { cause: err });
+    }
+    throw err;
+  }
+}
+
 class TransformersJsReranker implements Reranker {
   private constructor(
     readonly id: string,
@@ -386,7 +421,7 @@ class TransformersJsReranker implements Reranker {
   ) {}
 
   static async create(model: string): Promise<TransformersJsReranker> {
-    const mod = await import('@huggingface/transformers') as unknown as TransformersModule;
+    const mod = await loadTransformers();
     // Opt-in GPU execution (RTX 3090): set KB_RERANK_DEVICE=cuda KB_RERANK_DTYPE=fp32
     // with onnxruntime's CUDA EP + cuDNN on LD_LIBRARY_PATH. ~60x faster than the
     // default CPU quantized path on long-document cross-encoding. Defaults to the

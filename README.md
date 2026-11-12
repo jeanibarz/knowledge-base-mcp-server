@@ -715,6 +715,25 @@ Dense retrieval scores your query and each chunk *separately*, then compares the
 
 Enable it with `KB_RERANK=on`, or per call with `kb search --rerank` / `kb ask --rerank`. You pay a small amount of latency per query.
 
+Reranking needs one extra install step, because the cross-encoder runtime (`@huggingface/transformers`, which pulls in ONNX runtimes) is an optional peer dependency and is not installed with the server by default:
+
+How you add it depends on how you run the server (the package must sit next to the server, because Node does not look in the global root from another install):
+
+```bash
+# global install: install both globally
+npm install -g @jeanibarz/knowledge-base-mcp-server @huggingface/transformers
+
+# local install or clone
+npm install @huggingface/transformers
+
+# npx: request both packages in the same npx environment
+npx -y -p @jeanibarz/knowledge-base-mcp-server@latest -p @huggingface/transformers knowledge-base-mcp-server
+```
+
+For an MCP client config, use `npx` with args `["-y", "-p", "@jeanibarz/knowledge-base-mcp-server@latest", "-p", "@huggingface/transformers", "knowledge-base-mcp-server"]`.
+
+Without it, `KB_RERANK=on` logs a one-time warning with this hint and returns the un-reranked order; `kb doctor` flags it too.
+
 | Env var | Description | Default |
 | --- | --- | --- |
 | `KB_RERANK` | Enable the cross-encoder reranking stage. | `off` |

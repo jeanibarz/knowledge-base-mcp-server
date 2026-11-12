@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import {
   applyRerankerIfEnabled,
   InMemoryRerankScoreCache,
+  loadTransformers,
+  RERANK_ADDON_MISSING_MESSAGE,
   rerankFusedResults,
   scoreInSubBatches,
   scoresFromSequenceClassifierOutput,
@@ -334,5 +336,43 @@ describe('scoresFromSequenceClassifierOutput', () => {
 
     expect(scores[0]).toBeCloseTo(0.8808, 4);
     expect(scores[1]).toBeCloseTo(0.0474, 4);
+  });
+});
+
+describe('loadTransformers (#1176 optional peer)', () => {
+  it('rewrites a missing-module error into an actionable install message', async () => {
+    const cause = Object.assign(
+      new Error("Cannot find package '@huggingface/transformers' imported from reranker.js"),
+      { code: 'ERR_MODULE_NOT_FOUND' },
+    );
+    let err: Error = new Error('loadTransformers did not throw');
+    try {
+      await loadTransformers(async () => { throw cause; });
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err.message).toBe(RERANK_ADDON_MISSING_MESSAGE);
+    expect(err.message).toContain('npm install -g @huggingface/transformers');
+    expect(err.cause).toBe(cause);
+  });
+
+  it('rethrows unrelated import failures untouched', async () => {
+    const other = Object.assign(new Error("Cannot find package 'onnxruntime-node'"), { code: 'ERR_MODULE_NOT_FOUND' });
+    await expect(loadTransformers(async () => { throw other; })).rejects.toBe(other);
+  });
+
+  it('does not misclassify a nested missing dependency of transformers', async () => {
+    const nested = Object.assign(
+      new Error(
+        "Cannot find package 'onnxruntime-node' imported from /x/node_modules/@huggingface/transformers/dist/transformers.node.mjs",
+      ),
+      { code: 'ERR_MODULE_NOT_FOUND' },
+    );
+    await expect(loadTransformers(async () => { throw nested; })).rejects.toBe(nested);
+  });
+
+  it('returns the module when the import succeeds', async () => {
+    const mod = { AutoTokenizer: {} };
+    await expect(loadTransformers(async () => mod)).resolves.toBe(mod);
   });
 });
