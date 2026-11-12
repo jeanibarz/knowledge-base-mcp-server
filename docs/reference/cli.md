@@ -1493,8 +1493,8 @@ Plan and collect read-only KB evidence packets.
 kb research — read-only KB evidence planning and collection
 
 Usage:
-  kb research plan "<question>" [--format=md|json] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
-  kb research collect "<question>" --run-dir <path> [--format=md|json] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
+  kb research plan "<question>" [--format=md|json] [--kb=<name>] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
+  kb research collect "<question>" --run-dir <path> [--format=md|json] [--kb=<name>] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
 
 The workflow is deterministic: it reads KB descriptions and stats, selects
 likely shelves and queries, then collect uses existing hybrid search. It does
@@ -1515,8 +1515,9 @@ Options:
   --run-dir=<path>      Same as above.
   --format=md|json      Output format (default: md).
   --k=<int>             Results per query/shelf search during collect (default: 5).
-  --kb=<name>           Include a shelf explicitly (alias for --include-kb).
-  --include-kb=<name>   Include a shelf explicitly; repeatable.
+  --kb=<name>           Restrict the plan to this shelf only (like "kb search --kb");
+                        repeatable. Disables auto-selection; use --include-kb to add.
+  --include-kb=<name>   Add a shelf on top of auto-selected shelves; repeatable.
   --exclude-kb=<name>   Exclude a shelf; repeatable.
   --max-shelves=<int>   Maximum automatically selected shelves (default: 5).
   --help, -h            Show this help.

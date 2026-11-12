@@ -250,7 +250,8 @@ describe('kb research CLI', () => {
       '--exclude-kb=recipes',
       '--max-shelves=2',
     ])).toMatchObject({
-      includeShelves: ['llm-agents', 'llm-as-judge'],
+      onlyShelves: ['llm-agents'],
+      includeShelves: ['llm-as-judge'],
       excludeShelves: ['recipes'],
       maxShelves: 2,
     });
@@ -331,6 +332,24 @@ describe('kb research CLI', () => {
       maxShelves: 1,
     });
     expect(excluded.selected_shelves.map((shelf) => shelf.name)).toEqual(['llm-agents']);
+  });
+
+  it('scopes the plan to --kb shelves only, with no auto-selection (#1221)', async () => {
+    const { deps } = makeDeps();
+    const prompt = 'end-to-end approach for autonomous research agents and evals, including LLM-as-judge bias mitigation';
+
+    const only = await buildResearchPlan(prompt, 5, deps, { onlyShelves: ['agent-task-lessons'] });
+    expect(only.selected_shelves.map((shelf) => shelf.name)).toEqual(['agent-task-lessons']);
+
+    const withInclude = await buildResearchPlan(prompt, 5, deps, {
+      onlyShelves: ['agent-task-lessons'],
+      includeShelves: ['llm-as-judge'],
+    });
+    expect(withInclude.selected_shelves.map((shelf) => shelf.name).sort()).toEqual(['agent-task-lessons', 'llm-as-judge']);
+
+    await expect(buildResearchPlan(prompt, 5, deps, { onlyShelves: ['no-such-shelf'] })).rejects.toThrow(
+      'unknown shelf',
+    );
   });
 
   it('prints plan JSON shape without running search', async () => {
