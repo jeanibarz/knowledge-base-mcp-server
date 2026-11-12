@@ -1459,7 +1459,9 @@ export class KnowledgeBaseServer {
         };
       }
       if (searchMode === 'hybrid' || searchMode === 'lexical') {
-        if (hasNeighborContext(neighborContext)) {
+        // Neighbour expansion needs the dense FAISS docstore, so it works for
+        // dense and hybrid; BM25-only (lexical) has no docstore to widen from.
+        if (searchMode === 'lexical' && hasNeighborContext(neighborContext)) {
           searchLatencyMetrics.record({
             mode: searchMode,
             status: 'error',
@@ -1471,7 +1473,7 @@ export class KnowledgeBaseServer {
               text: JSON.stringify({
                 error: {
                   code: 'VALIDATION',
-                  message: 'neighbor context expansion is only supported with dense retrieve_knowledge',
+                  message: 'neighbor context expansion is only supported with dense or hybrid retrieve_knowledge',
                 },
               }),
             }],
@@ -1502,6 +1504,7 @@ export class KnowledgeBaseServer {
           gateOverride,
           rerankOverride,
           k: effectiveK,
+          ...(neighborContext !== undefined ? { neighborContext } : {}),
         });
       }
 
@@ -1867,6 +1870,8 @@ export class KnowledgeBaseServer {
     rerankOverride?: RerankOverride;
     /** Issue #973 — retrieval top-K before fusion/rerank. Default 10. */
     k?: number;
+    /** Opt-in neighbour windows, applied after fusion + rerank + gate. */
+    neighborContext?: NeighborContextOptions;
   }): Promise<CallToolResult> {
     const { query, knowledgeBaseName, knowledgeBaseNames, modelNameOverride, filters, canonical, taskContext, gateOverride, rerankOverride } = input;
     const kbScope: string | null = knowledgeBaseName && knowledgeBaseName.length > 0
@@ -2033,6 +2038,11 @@ export class KnowledgeBaseServer {
       });
       const gateMs = Date.now() - gateStartedAt;
       ranked = gate.results;
+      if (input.neighborContext && hasNeighborContext(input.neighborContext) && degradedReason === null) {
+        // Expand after fusion + rerank + gate so context chunks never affect
+        // ranking. Skipped when the dense leg degraded (no FAISS docstore).
+        ranked = manager.expandWithNeighborContext(ranked as never, input.neighborContext) as never;
+      }
       emitRelevanceGateDecision({
         process: 'mcp',
         query,
