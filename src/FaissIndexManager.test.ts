@@ -1595,11 +1595,57 @@ describe('FaissIndexManager permission handling', () => {
     expect(saveMock).toHaveBeenCalledTimes(1);
     expect(manager.getLastIndexUpdateSummary()).toMatchObject({
       status: 'success',
-      scope: 'default',
+      scope: 'global',
       files_changed: 1,
       index_mutated: true,
       saved: true,
       sidecars_written: true,
+    });
+  });
+
+  it('upgrades a scoped refresh that needs a full rebuild to a global one so other KBs keep their vectors (#1229)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-scoped-rebuild-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const alphaDir = path.join(kbDir, 'alpha');
+    const betaDir = path.join(kbDir, 'beta');
+    await fsp.mkdir(alphaDir, { recursive: true });
+    await fsp.mkdir(betaDir, { recursive: true });
+    const paragraph = (label: string) => `${label} ${'content words '.repeat(12)}`;
+    const alphaPath = path.join(alphaDir, 'a.txt');
+    await fsp.writeFile(
+      alphaPath,
+      [paragraph('alpha one'), paragraph('alpha obsolete'), paragraph('alpha three')].join('\n\n'),
+    );
+    await fsp.writeFile(path.join(betaDir, 'b.txt'), paragraph('beta only'));
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+    process.env.KB_CHUNK_SIZE = '80';
+    process.env.KB_CHUNK_OVERLAP = '0';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const manager = new FaissIndexManager();
+    await manager.initialize();
+    await manager.updateIndex();
+    fromTextsMock.mockClear();
+    addDocumentsMock.mockClear();
+
+    // Removing a chunk from alpha forces the full-rebuild fallback.
+    await fsp.writeFile(alphaPath, [paragraph('alpha one'), paragraph('alpha three')].join('\n\n'));
+    await manager.updateIndex('alpha');
+
+    expect(fromTextsMock).toHaveBeenCalledTimes(1);
+    const [rebuiltTexts] = fromTextsMock.mock.calls[0] as [string[]];
+    const all = rebuiltTexts.join('\n');
+    expect(all).toContain('beta only'); // other shelf preserved
+    expect(all).toContain('alpha one');
+    expect(all).not.toContain('alpha obsolete');
+    expect(manager.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      scope: 'global',
     });
   });
 
