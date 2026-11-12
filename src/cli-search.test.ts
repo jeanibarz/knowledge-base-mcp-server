@@ -2264,6 +2264,16 @@ describe('runSearch timing guard (#331)', () => {
     expect(payload.results).toHaveLength(3);
     expect(payload.grouped_results).toHaveLength(2);
     expect(payload.grouped_results.map((g: { chunk_count: number }) => g.chunk_count).sort()).toEqual([1, 2]);
+    // Hybrid scores are fused RRF (higher = better): best_score is the group's MAX.
+    const flat = payload.results as Array<{ score: number; metadata: { relativePath: string } }>;
+    for (const group of payload.grouped_results as Array<{ source: string; best_score: number; chunks: Array<{ score: number }> }>) {
+      const scores = group.chunks.map((c) => c.score);
+      expect(group.best_score).toBe(Math.max(...scores));
+    }
+    const aGroup = payload.grouped_results.find((g: { chunk_count: number }) => g.chunk_count === 2);
+    const aScores = flat.filter((r) => r.metadata.relativePath === 'alpha/a.md').map((r) => r.score);
+    expect(aGroup.best_score).toBe(Math.max(...aScores));
+    expect(aGroup.best_score).toBeGreaterThan(Math.min(...aScores));
 
     const md = await captureSearchOutput(
       ['query', '--mode=hybrid', '--group-by-source', '--k=5', '--no-freshness'],
@@ -2272,6 +2282,9 @@ describe('runSearch timing guard (#331)', () => {
     expect(md.code).toBe(0);
     expect(md.stderr).not.toContain('dense-only');
     expect(md.stdout).toContain('**Chunk count:** 2');
+    expect(md.stdout).toContain('**Best score (RRF, higher = better):**');
+    expect(md.stdout).toContain('**Score (RRF, higher = better):**');
+    expect(md.stdout).not.toContain('lower = better');
 
     const plain = await captureSearchOutput(
       ['query', '--mode=hybrid', '--format=json', '--k=5', '--no-freshness'],

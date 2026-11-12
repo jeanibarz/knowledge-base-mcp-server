@@ -3252,6 +3252,7 @@ async function runHybridSearch(
               FRONTMATTER_EXTRAS_WIRE_VISIBLE,
               KB_EDITOR_URI,
               buildSearchSnippetOptions(parsed, query),
+              'similarity',
             ),
           }
         : {}),
@@ -3335,14 +3336,16 @@ async function runHybridSearch(
     if (ranked.length === 0) {
       output += `_No matches._\n\n`;
     } else {
-      output += `${(parsed.groupBySource ? formatRetrievalGroupedBySourceAsMarkdown : formatRetrievalAsMarkdown)(
-        ranked as never,
+      const hybridMarkdownArgs = [
         FRONTMATTER_EXTRAS_WIRE_VISIBLE,
         KB_EDITOR_URI,
         buildSearchHighlightOptions(parsed, query),
         buildSearchSnippetOptions(parsed, query),
         buildSearchHyperlinkFlag(parsed),
-      )}\n\n`;
+      ] as const;
+      output += `${parsed.groupBySource
+        ? formatRetrievalGroupedBySourceAsMarkdown(ranked as never, ...hybridMarkdownArgs, 'similarity')
+        : formatRetrievalAsMarkdown(ranked as never, ...hybridMarkdownArgs)}\n\n`;
     }
     output += `> _Hybrid status: dense fetched ${denseResults.length}, lexical fetched ${lexicalResults.length} with unit=${parsed.lexicalUnit} (refreshed ${lexicalResultsRow.refreshed}, ${lexicalResultsRow.failed} failed); fused via RRF (c=${HYBRID_RRF_C}, fetch_k=${fetchK})._\n`;
     if (highRecallDiagnostics !== null) {

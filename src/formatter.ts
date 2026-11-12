@@ -73,6 +73,12 @@ export interface GroupedRetrievalChunk extends RetrievalJsonResult {
   location: unknown | null;
 }
 
+/**
+ * Direction of the per-hit `score`: `distance` (dense; lower is better) or
+ * `similarity` (hybrid RRF; higher is better). Defaults to `distance`.
+ */
+export type GroupedScoreOrder = 'distance' | 'similarity';
+
 export interface GroupedRetrievalSource {
   source: string;
   chunk_count: number;
@@ -218,8 +224,10 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
   highlight?: RetrievalHighlightOptions,
   snippet?: RetrievalSnippetOptions,
   hyperlink?: boolean,
+  scoreOrder: GroupedScoreOrder = 'distance',
 ): string {
-  const grouped = groupRetrievalBySource(results, extrasVisible, editorUriMode, snippet);
+  const grouped = groupRetrievalBySource(results, extrasVisible, editorUriMode, snippet, scoreOrder);
+  const similarity = scoreOrder === 'similarity';
   if (grouped.length === 0) {
     return formatRetrievalEmptyAsMarkdown();
   }
@@ -236,12 +244,20 @@ export function formatRetrievalGroupedBySourceAsMarkdown(
           const typeText = chunk.match_type ? `\n   **Type:** ${chunk.match_type}` : '';
           const content = applyRetrievalHighlight((chunk.snippet ?? chunk.content).trim(), highlight);
           const contextText = formatJsonContextChunksForGroupedMarkdown(chunk.context_chunks, highlight);
-          return `${chunkIdx + 1}. **Distance:** ${scoreText} (lower = better)${typeText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(content)}${shieldText}${contextText}`;
+          const scoreLine = similarity
+            ? `**Score (RRF, higher = better):** ${scoreText}` +
+              (chunk.rerank_score !== undefined
+                ? `\n   **Rerank score:** ${chunk.rerank_score.toFixed(2)} (higher = better)`
+                : '')
+            : `**Distance:** ${scoreText} (lower = better)`;
+          return `${chunkIdx + 1}. ${scoreLine}${typeText}\n   **Location:** ${locationText}${openText}\n\n   ${indentChunkContent(content)}${shieldText}${contextText}`;
         })
         .join('\n\n');
       return (
         `**Source ${idx + 1}:** \`${group.source}\`\n\n` +
-        `**Best distance:** ${formatScore(group.best_score)} (lower = better)\n\n` +
+        (similarity
+          ? `**Best score (RRF, higher = better):** ${formatScore(group.best_score)}\n\n`
+          : `**Best distance:** ${formatScore(group.best_score)} (lower = better)\n\n`) +
         `**Chunk count:** ${group.chunk_count}\n\n` +
         `**Matching chunks:**\n\n${chunks}`
       );
@@ -396,6 +412,7 @@ export function groupRetrievalBySource(
   extrasVisible: boolean,
   editorUriMode: KBEditorUriMode = KB_EDITOR_URI,
   snippet?: RetrievalSnippetOptions,
+  scoreOrder: GroupedScoreOrder = 'distance',
 ): GroupedRetrievalSource[] {
   if (!results || results.length === 0) return [];
 
@@ -422,10 +439,11 @@ export function groupRetrievalBySource(
     const citation = buildChunkCitation(guarded.metadata, editorUriMode);
     const signals = getShieldSignals(doc.pageContent, sanitizedMetadata, guardOptions);
     group.chunk_count += 1;
-    group.best_score = bestScore(group.best_score, score);
+    group.best_score = bestScore(group.best_score, score, scoreOrder);
     group.locations.push({ score, location });
     group.chunks.push({
       score,
+      ...(scoreOrder === 'similarity' && doc.rerankScore !== undefined ? { rerank_score: doc.rerankScore } : {}),
       content: guarded.content,
       ...(snippet ? { snippet: applyRetrievalSnippet(guarded.content, snippet) } : {}),
       metadata: guarded.metadata,
@@ -684,10 +702,14 @@ function getChunkLocation(metadata: Record<string, unknown>): unknown | null {
   return null;
 }
 
-function bestScore(current: number | null, candidate: number | null): number | null {
+function bestScore(
+  current: number | null,
+  candidate: number | null,
+  scoreOrder: GroupedScoreOrder,
+): number | null {
   if (candidate === null) return current;
   if (current === null) return candidate;
-  return Math.min(current, candidate);
+  return scoreOrder === 'similarity' ? Math.max(current, candidate) : Math.min(current, candidate);
 }
 
 function formatScore(score: number | null): string {
