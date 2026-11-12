@@ -15,6 +15,12 @@ const similaritySearchMock = jest.fn();
 const findChunkByReferenceMock = jest.fn((..._args: unknown[]) => null as unknown);
 const expandWithNeighborContextMock = jest.fn((results: unknown, _options?: unknown) => results);
 const hasLoadedIndexMock = jest.fn(() => true);
+// #1228 — read-only (committed snapshot) managers report this instead.
+const snapshotHasLoadedIndexMock = jest.fn(() => true);
+// Optional overrides used only by read-only (snapshot) manager instances, so
+// tests can tell which manager served a search.
+let snapshotSimilaritySearchImpl: ((...a: unknown[]) => unknown) | null = null;
+let snapshotExpandImpl: ((...a: unknown[]) => unknown) | null = null;
 // Issue #54 — kb_stats reads chunk_count + dim from the manager. Default to
 // an empty store so tests that don't care about stats still see a sane shape.
 const getStatsMock = jest.fn(() => ({
@@ -51,13 +57,19 @@ const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provid
   const modelId = `${provider}__${modelName.replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-')}`;
   const faissPath = process.env.FAISS_INDEX_PATH ?? '/tmp/kb-server-mock';
   const modelDir = path.join(faissPath, 'models', modelId);
+  let readOnly = false;
   return {
-    initialize: initializeMock,
+    initialize: (o?: { readOnly?: boolean }) => {
+      readOnly = o?.readOnly === true;
+      return initializeMock(o);
+    },
     updateIndex: updateIndexMock,
     reloadPersistedIndex: reloadPersistedIndexMock,
-    similaritySearch: similaritySearchMock,
+    similaritySearch: (...a: unknown[]) =>
+      (readOnly && snapshotSimilaritySearchImpl ? snapshotSimilaritySearchImpl(...a) : similaritySearchMock(...a)),
     findChunkByReference: findChunkByReferenceMock,
-    expandWithNeighborContext: expandWithNeighborContextMock,
+    expandWithNeighborContext: (...a: unknown[]) =>
+      (readOnly && snapshotExpandImpl ? snapshotExpandImpl(...a) : (expandWithNeighborContextMock as any)(...a)),
     getStats: getStatsMock,
     getLastIndexUpdateSummary: getLastIndexUpdateSummaryMock,
     modelDir,
@@ -65,7 +77,7 @@ const FaissIndexManagerMock: any = jest.fn().mockImplementation((opts?: { provid
     modelName,
     embeddingProvider: provider,
     get hasLoadedIndex() {
-      return hasLoadedIndexMock();
+      return readOnly ? snapshotHasLoadedIndexMock() : hasLoadedIndexMock();
     },
   };
 });
@@ -100,6 +112,7 @@ describe('KnowledgeBaseServer handlers', () => {
     INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
     INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
     KB_DENSE_DEGRADE_ON_PROVIDER_ERROR: process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
+    KB_RETRIEVE_REFRESH_MODE: process.env.KB_RETRIEVE_REFRESH_MODE,
     KB_HYBRID_DENSE_WEIGHT: process.env.KB_HYBRID_DENSE_WEIGHT,
     KB_HYBRID_LEXICAL_WEIGHT: process.env.KB_HYBRID_LEXICAL_WEIGHT,
     // Captured so afterEach restores it: the FRONTMATTER_EXTRAS_WIRE_VISIBLE
@@ -120,6 +133,10 @@ describe('KnowledgeBaseServer handlers', () => {
     expandWithNeighborContextMock.mockImplementation((results: unknown) => results);
     hasLoadedIndexMock.mockReset();
     hasLoadedIndexMock.mockReturnValue(true);
+    snapshotSimilaritySearchImpl = null;
+    snapshotExpandImpl = null;
+    snapshotHasLoadedIndexMock.mockReset();
+    snapshotHasLoadedIndexMock.mockReturnValue(true);
     getStatsMock.mockReset();
     getStatsMock.mockReturnValue({ totalChunks: 0, chunkCountsByKb: {}, dim: null });
     process.env.KB_LOG_FORMAT = 'text';
@@ -524,6 +541,252 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(call[6]?.knowledgeBaseNames).toBeUndefined();
     // The whole corpus is refreshed with a single undefined-scoped updateIndex.
     expect(updateIndexMock.mock.calls).toEqual([[undefined]]);
+  });
+
+  describe('KB_RETRIEVE_REFRESH_MODE (#1228)', () => {
+    const hit = [{ pageContent: 'hello', metadata: { source: '/tmp/x.md' }, score: 0.5 }];
+
+    async function waitFor(cond: () => boolean) {
+      for (let i = 0; i < 200 && !cond(); i += 1) await new Promise((r) => setTimeout(r, 10));
+    }
+
+    function deferred() {
+      let resolve!: () => void;
+      let reject!: (err: Error) => void;
+      const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    }
+
+    it('sync (default) awaits the refresh and adds no index_status', async () => {
+      await setRetrieveEnv();
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      let done = false;
+      const pending = server['handleRetrieveKnowledge']({ query: 'q' }).then((r: unknown) => { done = true; return r; });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(done).toBe(false);
+      expect(similaritySearchMock).not.toHaveBeenCalled();
+      gate.resolve();
+      const result = await pending;
+      expect(result.isError).toBeUndefined();
+      expect((result as any).structuredContent?.index_status).toBeUndefined();
+    });
+
+    async function commitIndexPointer(version = 'index.v1') {
+      const modelDir = path.join(process.env.FAISS_INDEX_PATH as string, 'models', 'huggingface__BAAI-bge-small-en-v1.5');
+      const pointer = path.join(modelDir, 'index');
+      await fsp.mkdir(path.join(modelDir, version), { recursive: true });
+      await fsp.rm(pointer, { force: true });
+      await fsp.symlink(version, pointer);
+    }
+
+    it('async does not block, joins the in-flight refresh without a rerun, and serves the committed snapshot', async () => {
+      await setRetrieveEnv();
+      await commitIndexPointer();
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      const first = await server['handleRetrieveKnowledge']({ query: 'q' });
+      const second = await server['handleRetrieveKnowledge']({ query: 'q2', knowledge_base_name: 'alpha' });
+      expect(first.isError).toBeUndefined();
+      expect(similaritySearchMock).toHaveBeenCalledTimes(2);
+      const expected = { refresh_mode: 'async', state: 'refreshing', served_from: 'committed_snapshot' };
+      expect((first as any).structuredContent.index_status).toEqual(expected);
+      expect((second as any).structuredContent.index_status).toEqual(expected);
+      await new Promise((r) => setTimeout(r, 30));
+      expect(updateIndexMock).toHaveBeenCalledTimes(1);
+      expect(updateIndexMock).toHaveBeenCalledWith(undefined);
+
+      gate.resolve();
+      await server['retrieveRefresh'].idle();
+      // No queued rerun: a call that arrived during the run only joined it.
+      expect(updateIndexMock).toHaveBeenCalledTimes(1);
+      // The next call after it finished starts a new run.
+      updateIndexMock.mockResolvedValue(undefined);
+      await server['handleRetrieveKnowledge']({ query: 'q3' });
+      await server['retrieveRefresh'].idle();
+      expect(updateIndexMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('async rebuild window: writer index is null, search runs on the cached read-only snapshot', async () => {
+      await setRetrieveEnv();
+      await commitIndexPointer('index.v1');
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue([{ pageContent: 'WRITER-PARTIAL', metadata: { source: '/tmp/w.md' }, score: 0.5 }]);
+      snapshotSimilaritySearchImpl = async () => [{ pageContent: 'SNAPSHOT-COMMITTED', metadata: { source: '/tmp/s.md' }, score: 0.5 }];
+      hasLoadedIndexMock.mockReturnValue(false); // writer mid-rebuild
+      const server = await freshServer();
+      // A refresh is already running (e.g. started by an earlier call).
+      server['retrieveRefresh'].trigger(
+        (await server['managers'].getOrCreate('huggingface__BAAI-bge-small-en-v1.5')).modelDir,
+        () => gate.promise,
+      );
+      updateIndexMock.mockClear();
+      initializeMock.mockClear();
+
+      const r1 = await server['handleRetrieveKnowledge']({ query: 'q' });
+      const r2 = await server['handleRetrieveKnowledge']({ query: 'q' });
+      expect(r1.isError).toBeUndefined();
+      expect((r1 as any).structuredContent.index_status).toEqual({
+        refresh_mode: 'async', state: 'refreshing', served_from: 'committed_snapshot',
+      });
+      expect(r1.content[0].text).toContain('SNAPSHOT-COMMITTED');
+      expect(r1.content[0].text).not.toContain('WRITER-PARTIAL');
+      expect(similaritySearchMock).not.toHaveBeenCalled(); // writer never searched
+      expect(updateIndexMock).not.toHaveBeenCalled();
+      // Snapshot manager loaded once and reused while the pointer is unchanged.
+      expect(initializeMock.mock.calls.filter((c: any[]) => c[0]?.readOnly === true)).toHaveLength(1);
+
+      // A new committed version invalidates the cached snapshot.
+      await commitIndexPointer('index.v2');
+      await server['handleRetrieveKnowledge']({ query: 'q' });
+      expect(initializeMock.mock.calls.filter((c: any[]) => c[0]?.readOnly === true)).toHaveLength(2);
+      expect((r2 as any).structuredContent.index_status.served_from).toBe('committed_snapshot');
+      gate.resolve();
+      await server['retrieveRefresh'].idle();
+    });
+
+    it('async with no committed version awaits the in-flight refresh instead of erroring', async () => {
+      await setRetrieveEnv(); // no `index` pointer on disk
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      let done = false;
+      const pending = server['handleRetrieveKnowledge']({ query: 'q' }).then((r: unknown) => { done = true; return r; });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(done).toBe(false);
+      expect(similaritySearchMock).not.toHaveBeenCalled();
+      gate.resolve();
+      const result = await pending;
+      expect(result.isError).toBeUndefined();
+      expect((result as any).structuredContent.index_status).toEqual({ refresh_mode: 'async', state: 'fresh' });
+    });
+
+    it('async with no committed version surfaces a failed refresh instead of serving a partial index as fresh', async () => {
+      await setRetrieveEnv(); // no `index` pointer on disk
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      updateIndexMock.mockRejectedValue(new Error('embed backend down'));
+      similaritySearchMock.mockResolvedValue(hit);
+      hasLoadedIndexMock.mockReturnValue(true); // writer holds a partial, unsaved index
+      const server = await freshServer();
+
+      const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('embed backend down');
+      expect(similaritySearchMock).not.toHaveBeenCalled();
+      expect((result as any).structuredContent?.index_status).toBeUndefined();
+    });
+
+    it('concurrent cache misses share one snapshot load', async () => {
+      await setRetrieveEnv();
+      await commitIndexPointer();
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+      initializeMock.mockClear();
+
+      await Promise.all([1, 2, 3].map((i) => server['handleRetrieveKnowledge']({ query: `q${i}` })));
+      expect(initializeMock.mock.calls.filter((c: any[]) => c[0]?.readOnly === true)).toHaveLength(1);
+      gate.resolve();
+      await server['retrieveRefresh'].idle();
+    });
+
+    it('snapshot serves neighbour expansion too', async () => {
+      await setRetrieveEnv();
+      await commitIndexPointer();
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const snapshotExpand = jest.fn((r: unknown) => r);
+      snapshotExpandImpl = snapshotExpand;
+      const server = await freshServer();
+
+      const result = await server['handleRetrieveKnowledge']({ query: 'q', context_window: 1 });
+      expect(result.isError).toBeUndefined();
+      expect(snapshotExpand).toHaveBeenCalled();
+      expect(expandWithNeighborContextMock).not.toHaveBeenCalled();
+      gate.resolve();
+      await server['retrieveRefresh'].idle();
+    });
+
+    it('async also applies to the hybrid path', async () => {
+      await setRetrieveEnv();
+      await commitIndexPointer();
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      const result = await server['handleRetrieveKnowledge']({ query: 'q', search_mode: 'hybrid' });
+      expect(result.isError).toBeUndefined();
+      expect((result as any).structuredContent.index_status).toEqual({
+        refresh_mode: 'async', state: 'refreshing', served_from: 'committed_snapshot',
+      });
+      gate.resolve();
+      await server['retrieveRefresh'].idle();
+    });
+
+    it('off never refreshes and reports stale_unchecked', async () => {
+      await setRetrieveEnv();
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'off';
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+      const hybrid = await server['handleRetrieveKnowledge']({ query: 'q', search_mode: 'hybrid' });
+      expect(updateIndexMock).not.toHaveBeenCalled();
+      expect((result as any).structuredContent.index_status).toEqual({ refresh_mode: 'off', state: 'stale_unchecked' });
+      expect((hybrid as any).structuredContent.index_status.state).toBe('stale_unchecked');
+    });
+
+    it.each(['async', 'off'])('%s falls back to a synchronous refresh on cold start', async (mode) => {
+      await setRetrieveEnv();
+      process.env.KB_RETRIEVE_REFRESH_MODE = mode;
+      hasLoadedIndexMock.mockReturnValue(false);
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      let done = false;
+      const pending = server['handleRetrieveKnowledge']({ query: 'q' }).then((r: unknown) => { done = true; return r; });
+      await waitFor(() => updateIndexMock.mock.calls.length > 0);
+      expect(done).toBe(false);
+      expect(updateIndexMock).toHaveBeenCalledTimes(1);
+      gate.resolve();
+      const result = await pending;
+      expect(result.isError).toBeUndefined();
+      expect((result as any).structuredContent.index_status).toEqual({ refresh_mode: mode, state: 'fresh' });
+    });
+
+    it('a failing background refresh does not fail the search or reject', async () => {
+      await setRetrieveEnv();
+      await commitIndexPointer();
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      updateIndexMock.mockRejectedValue(new Error('embed backend down'));
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+      expect(result.isError).toBeUndefined();
+      await expect(server['retrieveRefresh'].idle()).resolves.toBeUndefined();
+      expect(updateIndexMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('handleRetrieveKnowledge rejects knowledge_base_name + knowledge_base_names with VALIDATION (#975)', async () => {

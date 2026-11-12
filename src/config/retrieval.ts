@@ -72,3 +72,21 @@ export function parseDenseDegradeOnProviderError(raw: string | undefined): boole
  */
 export const KB_DENSE_DEGRADE_ON_PROVIDER_ERROR: boolean =
   parseDenseDegradeOnProviderError(process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR);
+
+// ---------------------------------------------------------------------------
+// Retrieve-path index refresh mode (#1228).
+// ---------------------------------------------------------------------------
+
+export type RetrieveRefreshMode = 'sync' | 'async' | 'off';
+
+/**
+ * Read per call (not at import) so a long-lived server and tests see the
+ * current env. Unknown values fall back to `sync` (today's behaviour);
+ * `kb config validate` reports the invalid value.
+ */
+export function resolveRetrieveRefreshMode(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): RetrieveRefreshMode {
+  const value = env.KB_RETRIEVE_REFRESH_MODE?.trim().toLowerCase();
+  return value === 'async' || value === 'off' ? value : 'sync';
+}

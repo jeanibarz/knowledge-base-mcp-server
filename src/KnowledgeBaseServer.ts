@@ -69,6 +69,7 @@ import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
   resolveHybridRrfWeights,
+  resolveRetrieveRefreshMode,
 } from './config/retrieval.js';
 import {
   INGEST_EXCLUDE_PATHS,
@@ -142,6 +143,7 @@ import * as path from 'path';
 import { StreamableHttpHost } from './transport/http.js';
 import { SseHost } from './transport/sse.js';
 import { ReindexTriggerWatcher } from './triggerWatcher.js';
+import { BackgroundRefreshCoordinator, type RetrieveIndexStatus } from './retrieve-refresh.js';
 import { RecursiveKbWatcher } from './recursive-fs-watch.js';
 import { KBError, type KBErrorCode } from './errors.js';
 import {
@@ -337,6 +339,20 @@ function withDegradationSummary<T extends CallToolResult>(
   } as T;
 }
 
+function withIndexStatus<T extends CallToolResult>(
+  result: T,
+  status: RetrieveIndexStatus | undefined,
+): T {
+  if (status === undefined) return result;
+  return {
+    ...result,
+    structuredContent: {
+      ...((result as { structuredContent?: Record<string, unknown> }).structuredContent ?? {}),
+      index_status: status,
+    },
+  } as T;
+}
+
 function resolveNeighborContextOptions(args: {
   context_before?: number;
   context_after?: number;
@@ -394,6 +410,8 @@ export class KnowledgeBaseServer {
   private sseHost?: SseHost;
   private transportMode: 'stdio' | 'sse' | 'http' | null = null;
   private triggerWatcher?: ReindexTriggerWatcher;
+  private readonly retrieveRefresh = new BackgroundRefreshCoordinator();
+  private readonly committedSnapshots = new Map<string, { token: string; load: Promise<FaissIndexManager | null> }>();
   // RFC 007 §6.6 / issue #212 — opt-in recursive `fs.watch` per KB.
   // Complements `triggerWatcher` (root-level dotfile poller); this one
   // observes per-file edits *inside* each KB tree.
@@ -1207,6 +1225,116 @@ export class KnowledgeBaseServer {
     });
   }
 
+  /**
+   * Issue #1228 — the dense/hybrid pre-search refresh, gated by
+   * `KB_RETRIEVE_REFRESH_MODE`. Returns the manager to search with plus the
+   * `index_status` to report.
+   *
+   * - `sync` (default): the historical inline refresh under the per-model
+   *   write lock; no status, so the response stays byte-identical.
+   * - `off`: no refresh, search the loaded index; `stale_unchecked`.
+   * - `async`: join or start the model's single background refresh. While it
+   *   is in flight the shared writer manager is being mutated (a rebuild sets
+   *   its index to null, then fills a partial new one), so the search is
+   *   served from a read-only manager of the last committed version
+   *   (`served_from: 'committed_snapshot'`). With no committed version it
+   *   awaits the in-flight refresh; if that refresh failed, its error is
+   *   thrown as `sync` would (never reported as `fresh`).
+   * - Cold start (`async`/`off`, no loaded index, no refresh in flight):
+   *   synchronous refresh so the first call still returns results.
+   *
+   * The background refresh covers all KBs of the model (like the trigger
+   * watcher), so one in-flight run serves every scope.
+   */
+  private async refreshForRetrieve(
+    manager: FaissIndexManager,
+    knowledgeBaseName: string | undefined,
+    knowledgeBaseNames: readonly string[] | undefined,
+  ): Promise<{ searchManager: FaissIndexManager; indexStatus: RetrieveIndexStatus | undefined }> {
+    const mode = resolveRetrieveRefreshMode();
+    const refreshSync = () => withWriteLock(manager.modelDir, async () => {
+      if (knowledgeBaseNames !== undefined) {
+        for (const name of knowledgeBaseNames) {
+          await manager.updateIndex(name);
+        }
+      } else {
+        await manager.updateIndex(knowledgeBaseName);
+      }
+    });
+    if (mode === 'sync') {
+      await refreshSync();
+      return { searchManager: manager, indexStatus: undefined };
+    }
+    const key = manager.modelDir;
+    if (mode === 'off') {
+      if (!manager.hasLoadedIndex) {
+        await refreshSync();
+        return { searchManager: manager, indexStatus: { refresh_mode: 'off', state: 'fresh' } };
+      }
+      return { searchManager: manager, indexStatus: { refresh_mode: 'off', state: 'stale_unchecked' } };
+    }
+    if (!manager.hasLoadedIndex && !this.retrieveRefresh.isRefreshing(key)) {
+      await refreshSync();
+      return { searchManager: manager, indexStatus: { refresh_mode: 'async', state: 'fresh' } };
+    }
+    this.retrieveRefresh.trigger(key, () =>
+      withWriteLock(manager.modelDir, () => manager.updateIndex(undefined)).then(() => undefined));
+    const snapshot = await this.getCommittedSnapshot(manager);
+    if (snapshot !== null) {
+      return {
+        searchManager: snapshot,
+        indexStatus: { refresh_mode: 'async', state: 'refreshing', served_from: 'committed_snapshot' },
+      };
+    }
+    // Nothing committed to fall back on: wait for the in-flight refresh.
+    // A failed run leaves the writer index partial and unsaved: surface the
+    // refresh error exactly as `sync` would, never label it `fresh`.
+    const outcome = await this.retrieveRefresh.settled(key);
+    if (!outcome.ok) throw outcome.error;
+    if (!manager.hasLoadedIndex) await refreshSync();
+    return { searchManager: manager, indexStatus: { refresh_mode: 'async', state: 'fresh' } };
+  }
+
+  /**
+   * Read-only manager of the last committed index version, cached per model
+   * and reused while the committed version is unchanged. The cache key is the
+   * `index` pointer target plus that directory's inode and mtime, because
+   * version numbers can restart and reuse a name. Concurrent callers share one
+   * load. Null when no version is committed or it cannot be loaded (a failed
+   * load is not cached, so the next call retries).
+   */
+  private async getCommittedSnapshot(manager: FaissIndexManager): Promise<FaissIndexManager | null> {
+    let token: string;
+    try {
+      const target = await fsp.readlink(path.join(manager.modelDir, 'index'));
+      const st = await fsp.stat(path.join(manager.modelDir, target));
+      token = `${target}:${st.ino}:${st.mtimeMs}`;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'EINVAL') return null;
+      throw err;
+    }
+    const cached = this.committedSnapshots.get(manager.modelId);
+    if (cached !== undefined && cached.token === token) return cached.load;
+    const load = (async (): Promise<FaissIndexManager | null> => {
+      try {
+        const snapshot = await this.createReadOnlyManagerForModel(manager.modelId);
+        return snapshot.hasLoadedIndex ? snapshot : null;
+      } catch (err) {
+        logger.warn(`Committed index snapshot unavailable for ${manager.modelId}: ${(err as Error).message}`);
+        return null;
+      }
+    })();
+    const entry = { token, load };
+    this.committedSnapshots.set(manager.modelId, entry);
+    void load.then((snapshot) => {
+      if (snapshot === null && this.committedSnapshots.get(manager.modelId) === entry) {
+        this.committedSnapshots.delete(manager.modelId);
+      }
+    });
+    return load;
+  }
+
   private async createReadOnlyManagerForModel(modelId: string): Promise<FaissIndexManager> {
     const { provider } = parseModelId(modelId);
     const modelName = await readStoredModelName(modelId);
@@ -1540,15 +1668,11 @@ export class KnowledgeBaseServer {
       // RFC 013 §4.6 — write lock is per-model (resource = `models/<id>/`).
       // A `kb models add B` against another model never blocks retrievals on A.
       // Issue #975 — a subset refreshes each named KB under the one lock.
-      await withWriteLock(manager.modelDir, async () => {
-        if (knowledgeBaseNames !== undefined) {
-          for (const name of knowledgeBaseNames) {
-            await manager.updateIndex(name);
-          }
-        } else {
-          await manager.updateIndex(knowledgeBaseName);
-        }
-      });
+      const { searchManager, indexStatus } = await this.refreshForRetrieve(
+        manager,
+        knowledgeBaseName,
+        knowledgeBaseNames,
+      );
       if (process.env.KB_LOG_VERBOSE === '1') {
         logger.debug(`[${Date.now()}] FAISS index update completed`);
       }
@@ -1563,7 +1687,7 @@ export class KnowledgeBaseServer {
         similaritySearchResults = await withSpan('kb.retrieve.dense', {
           'kb.k': effectiveK,
           'kb.scope': kbScope,
-        }, () => manager.similaritySearch(
+        }, () => searchManager.similaritySearch(
           query,
           effectiveK,
           threshold,
@@ -1601,7 +1725,7 @@ export class KnowledgeBaseServer {
         logger.warn(`retrieve_knowledge dense degraded to lexical-only: ${reason}`);
       }
       if (neighborContext && degradedReason === null) {
-        similaritySearchResults = manager.expandWithNeighborContext(
+        similaritySearchResults = searchManager.expandWithNeighborContext(
           similaritySearchResults,
           neighborContext,
         );
@@ -1716,9 +1840,9 @@ export class KnowledgeBaseServer {
       const content: TextContent = { type: 'text', text: responseText };
       const response = withGateVerdict({ content: [content] }, gate.verdict);
       const responseWithSummary = withDegradationSummary(response, degradation.degraded_stages);
-      return degradedReason === null
+      return withIndexStatus(degradedReason === null
         ? responseWithSummary
-        : withDegradationMetadata(responseWithSummary, degradedReason);
+        : withDegradationMetadata(responseWithSummary, degradedReason), indexStatus);
     } catch (error: unknown) {
       const err = toError(error);
       searchLatencyMetrics.record({
@@ -1899,15 +2023,11 @@ export class KnowledgeBaseServer {
       if (canonical) canonical.model_id = activeModelId;
       const manager = await this.managers.getOrCreate(activeModelId);
       // Issue #975 — a subset refreshes each named KB under the one lock.
-      await withWriteLock(manager.modelDir, async () => {
-        if (knowledgeBaseNames !== undefined && knowledgeBaseNames.length > 0) {
-          for (const name of knowledgeBaseNames) {
-            await manager.updateIndex(name);
-          }
-        } else {
-          await manager.updateIndex(knowledgeBaseName);
-        }
-      });
+      const { searchManager, indexStatus } = await this.refreshForRetrieve(
+        manager,
+        knowledgeBaseName,
+        knowledgeBaseNames !== undefined && knowledgeBaseNames.length > 0 ? knowledgeBaseNames : undefined,
+      );
 
       // Dense leg — over-fetch to give RRF room.
       const denseTiming: SimilaritySearchTiming = {};
@@ -1915,7 +2035,7 @@ export class KnowledgeBaseServer {
       const densePromise = withSpan('kb.retrieve.dense', {
         'kb.k': fetchK,
         'kb.scope': kbScope,
-      }, () => manager
+      }, () => searchManager
         .similaritySearch(query, fetchK, Number.POSITIVE_INFINITY, knowledgeBaseName, filters, denseTiming, ...(knowledgeBaseNames && knowledgeBaseNames.length > 0 ? [{ knowledgeBaseNames }] as const : [] as const)))
         .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })))
         .catch((err) => {
@@ -2041,7 +2161,7 @@ export class KnowledgeBaseServer {
       if (input.neighborContext && hasNeighborContext(input.neighborContext) && degradedReason === null) {
         // Expand after fusion + rerank + gate so context chunks never affect
         // ranking. Skipped when the dense leg degraded (no FAISS docstore).
-        ranked = manager.expandWithNeighborContext(ranked as never, input.neighborContext) as never;
+        ranked = searchManager.expandWithNeighborContext(ranked as never, input.neighborContext) as never;
       }
       emitRelevanceGateDecision({
         process: 'mcp',
@@ -2111,9 +2231,9 @@ export class KnowledgeBaseServer {
       const content: TextContent = { type: 'text', text: responseText };
       const response = withGateVerdict({ content: [content] }, gate.verdict);
       const responseWithSummary = withDegradationSummary(response, degradation.degraded_stages);
-      return degradedReason === null
+      return withIndexStatus(degradedReason === null
         ? responseWithSummary
-        : withDegradationMetadata(responseWithSummary, degradedReason);
+        : withDegradationMetadata(responseWithSummary, degradedReason), indexStatus);
     } catch (error: unknown) {
       const err = toError(error);
       searchLatencyMetrics.record({
@@ -2652,6 +2772,8 @@ export class KnowledgeBaseServer {
       }
       this.triggerWatcher = undefined;
     }
+    // Drain any background retrieve refresh like the trigger watcher's write.
+    await this.retrieveRefresh.idle();
     if (this.fsWatcher) {
       try {
         await this.fsWatcher.stop();
