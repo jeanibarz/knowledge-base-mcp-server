@@ -100,6 +100,7 @@ describe('KnowledgeBaseServer handlers', () => {
     INGEST_EXTRA_EXTENSIONS: process.env.INGEST_EXTRA_EXTENSIONS,
     INGEST_EXCLUDE_PATHS: process.env.INGEST_EXCLUDE_PATHS,
     KB_DENSE_DEGRADE_ON_PROVIDER_ERROR: process.env.KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
+    KB_RETRIEVE_REFRESH_MODE: process.env.KB_RETRIEVE_REFRESH_MODE,
     KB_HYBRID_DENSE_WEIGHT: process.env.KB_HYBRID_DENSE_WEIGHT,
     KB_HYBRID_LEXICAL_WEIGHT: process.env.KB_HYBRID_LEXICAL_WEIGHT,
     // Captured so afterEach restores it: the FRONTMATTER_EXTRAS_WIRE_VISIBLE
@@ -524,6 +525,121 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(call[6]?.knowledgeBaseNames).toBeUndefined();
     // The whole corpus is refreshed with a single undefined-scoped updateIndex.
     expect(updateIndexMock.mock.calls).toEqual([[undefined]]);
+  });
+
+  describe('KB_RETRIEVE_REFRESH_MODE (#1228)', () => {
+    const hit = [{ pageContent: 'hello', metadata: { source: '/tmp/x.md' }, score: 0.5 }];
+
+    function deferred() {
+      let resolve!: () => void;
+      let reject!: (err: Error) => void;
+      const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    }
+
+    it('sync (default) awaits the refresh and adds no index_status', async () => {
+      await setRetrieveEnv();
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      let done = false;
+      const pending = server['handleRetrieveKnowledge']({ query: 'q' }).then((r: unknown) => { done = true; return r; });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(done).toBe(false);
+      expect(similaritySearchMock).not.toHaveBeenCalled();
+      gate.resolve();
+      const result = await pending;
+      expect(result.isError).toBeUndefined();
+      expect((result as any).structuredContent?.index_status).toBeUndefined();
+    });
+
+    it('async does not block on the refresh, single-flights, and reports refreshing (dense)', async () => {
+      await setRetrieveEnv();
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      const first = await server['handleRetrieveKnowledge']({ query: 'q' });
+      const second = await server['handleRetrieveKnowledge']({ query: 'q2', knowledge_base_name: 'alpha' });
+      expect(first.isError).toBeUndefined();
+      expect(similaritySearchMock).toHaveBeenCalledTimes(2);
+      expect((first as any).structuredContent.index_status).toEqual({ refresh_mode: 'async', state: 'refreshing' });
+      expect((second as any).structuredContent.index_status.state).toBe('refreshing');
+      // One in-flight background run covering the whole model, not one per call.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(updateIndexMock).toHaveBeenCalledTimes(1);
+      expect(updateIndexMock).toHaveBeenCalledWith(undefined);
+
+      gate.resolve();
+      await server['retrieveRefresh'].idle();
+      // The second call coalesced into exactly one rerun.
+      expect(updateIndexMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('async also applies to the hybrid path', async () => {
+      await setRetrieveEnv();
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      const result = await server['handleRetrieveKnowledge']({ query: 'q', search_mode: 'hybrid' });
+      expect(result.isError).toBeUndefined();
+      expect((result as any).structuredContent.index_status).toEqual({ refresh_mode: 'async', state: 'refreshing' });
+      gate.resolve();
+      await server['retrieveRefresh'].idle();
+    });
+
+    it('off never refreshes and reports stale_unchecked', async () => {
+      await setRetrieveEnv();
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'off';
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+      const hybrid = await server['handleRetrieveKnowledge']({ query: 'q', search_mode: 'hybrid' });
+      expect(updateIndexMock).not.toHaveBeenCalled();
+      expect((result as any).structuredContent.index_status).toEqual({ refresh_mode: 'off', state: 'stale_unchecked' });
+      expect((hybrid as any).structuredContent.index_status.state).toBe('stale_unchecked');
+    });
+
+    it.each(['async', 'off'])('%s falls back to a synchronous refresh on cold start', async (mode) => {
+      await setRetrieveEnv();
+      process.env.KB_RETRIEVE_REFRESH_MODE = mode;
+      hasLoadedIndexMock.mockReturnValue(false);
+      const gate = deferred();
+      updateIndexMock.mockReturnValue(gate.promise);
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      let done = false;
+      const pending = server['handleRetrieveKnowledge']({ query: 'q' }).then((r: unknown) => { done = true; return r; });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(done).toBe(false);
+      expect(updateIndexMock).toHaveBeenCalledTimes(1);
+      gate.resolve();
+      const result = await pending;
+      expect(result.isError).toBeUndefined();
+      expect((result as any).structuredContent.index_status).toEqual({ refresh_mode: mode, state: 'fresh' });
+    });
+
+    it('a failing background refresh does not fail the search or reject', async () => {
+      await setRetrieveEnv();
+      process.env.KB_RETRIEVE_REFRESH_MODE = 'async';
+      updateIndexMock.mockRejectedValue(new Error('embed backend down'));
+      similaritySearchMock.mockResolvedValue(hit);
+      const server = await freshServer();
+
+      const result = await server['handleRetrieveKnowledge']({ query: 'q' });
+      expect(result.isError).toBeUndefined();
+      await expect(server['retrieveRefresh'].idle()).resolves.toBeUndefined();
+      expect(updateIndexMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('handleRetrieveKnowledge rejects knowledge_base_name + knowledge_base_names with VALIDATION (#975)', async () => {

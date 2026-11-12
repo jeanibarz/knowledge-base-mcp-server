@@ -69,6 +69,7 @@ import {
   FRONTMATTER_EXTRAS_WIRE_VISIBLE,
   KB_DENSE_DEGRADE_ON_PROVIDER_ERROR,
   resolveHybridRrfWeights,
+  resolveRetrieveRefreshMode,
 } from './config/retrieval.js';
 import {
   INGEST_EXCLUDE_PATHS,
@@ -142,6 +143,7 @@ import * as path from 'path';
 import { StreamableHttpHost } from './transport/http.js';
 import { SseHost } from './transport/sse.js';
 import { ReindexTriggerWatcher } from './triggerWatcher.js';
+import { BackgroundRefreshCoordinator, type RetrieveIndexStatus } from './retrieve-refresh.js';
 import { RecursiveKbWatcher } from './recursive-fs-watch.js';
 import { KBError, type KBErrorCode } from './errors.js';
 import {
@@ -337,6 +339,20 @@ function withDegradationSummary<T extends CallToolResult>(
   } as T;
 }
 
+function withIndexStatus<T extends CallToolResult>(
+  result: T,
+  status: RetrieveIndexStatus | undefined,
+): T {
+  if (status === undefined) return result;
+  return {
+    ...result,
+    structuredContent: {
+      ...((result as { structuredContent?: Record<string, unknown> }).structuredContent ?? {}),
+      index_status: status,
+    },
+  } as T;
+}
+
 function resolveNeighborContextOptions(args: {
   context_before?: number;
   context_after?: number;
@@ -394,6 +410,7 @@ export class KnowledgeBaseServer {
   private sseHost?: SseHost;
   private transportMode: 'stdio' | 'sse' | 'http' | null = null;
   private triggerWatcher?: ReindexTriggerWatcher;
+  private readonly retrieveRefresh = new BackgroundRefreshCoordinator();
   // RFC 007 §6.6 / issue #212 — opt-in recursive `fs.watch` per KB.
   // Complements `triggerWatcher` (root-level dotfile poller); this one
   // observes per-file edits *inside* each KB tree.
@@ -1207,6 +1224,47 @@ export class KnowledgeBaseServer {
     });
   }
 
+  /**
+   * Issue #1228 — the dense/hybrid pre-search refresh, gated by
+   * `KB_RETRIEVE_REFRESH_MODE`. `sync` (default) is the historical inline
+   * refresh under the per-model write lock and returns no status, keeping the
+   * response byte-identical. `async`/`off` skip the inline refresh and report
+   * `index_status`, except on cold start (no loaded index), where they fall
+   * back to the synchronous refresh so the first call still returns results.
+   * The async refresh covers all KBs of the model (like the trigger watcher),
+   * so one in-flight run serves every scope.
+   */
+  private async refreshForRetrieve(
+    manager: FaissIndexManager,
+    knowledgeBaseName: string | undefined,
+    knowledgeBaseNames: readonly string[] | undefined,
+  ): Promise<RetrieveIndexStatus | undefined> {
+    const mode = resolveRetrieveRefreshMode();
+    const refreshSync = () => withWriteLock(manager.modelDir, async () => {
+      if (knowledgeBaseNames !== undefined) {
+        for (const name of knowledgeBaseNames) {
+          await manager.updateIndex(name);
+        }
+      } else {
+        await manager.updateIndex(knowledgeBaseName);
+      }
+    });
+    if (mode === 'sync') {
+      await refreshSync();
+      return undefined;
+    }
+    if (!manager.hasLoadedIndex) {
+      await refreshSync();
+      return { refresh_mode: mode, state: 'fresh' };
+    }
+    if (mode === 'off') {
+      return { refresh_mode: 'off', state: 'stale_unchecked' };
+    }
+    this.retrieveRefresh.trigger(manager.modelDir, () =>
+      withWriteLock(manager.modelDir, () => manager.updateIndex(undefined)).then(() => undefined));
+    return { refresh_mode: 'async', state: 'refreshing' };
+  }
+
   private async createReadOnlyManagerForModel(modelId: string): Promise<FaissIndexManager> {
     const { provider } = parseModelId(modelId);
     const modelName = await readStoredModelName(modelId);
@@ -1540,15 +1598,11 @@ export class KnowledgeBaseServer {
       // RFC 013 §4.6 — write lock is per-model (resource = `models/<id>/`).
       // A `kb models add B` against another model never blocks retrievals on A.
       // Issue #975 — a subset refreshes each named KB under the one lock.
-      await withWriteLock(manager.modelDir, async () => {
-        if (knowledgeBaseNames !== undefined) {
-          for (const name of knowledgeBaseNames) {
-            await manager.updateIndex(name);
-          }
-        } else {
-          await manager.updateIndex(knowledgeBaseName);
-        }
-      });
+      const indexStatus = await this.refreshForRetrieve(
+        manager,
+        knowledgeBaseName,
+        knowledgeBaseNames,
+      );
       if (process.env.KB_LOG_VERBOSE === '1') {
         logger.debug(`[${Date.now()}] FAISS index update completed`);
       }
@@ -1716,9 +1770,9 @@ export class KnowledgeBaseServer {
       const content: TextContent = { type: 'text', text: responseText };
       const response = withGateVerdict({ content: [content] }, gate.verdict);
       const responseWithSummary = withDegradationSummary(response, degradation.degraded_stages);
-      return degradedReason === null
+      return withIndexStatus(degradedReason === null
         ? responseWithSummary
-        : withDegradationMetadata(responseWithSummary, degradedReason);
+        : withDegradationMetadata(responseWithSummary, degradedReason), indexStatus);
     } catch (error: unknown) {
       const err = toError(error);
       searchLatencyMetrics.record({
@@ -1899,15 +1953,11 @@ export class KnowledgeBaseServer {
       if (canonical) canonical.model_id = activeModelId;
       const manager = await this.managers.getOrCreate(activeModelId);
       // Issue #975 — a subset refreshes each named KB under the one lock.
-      await withWriteLock(manager.modelDir, async () => {
-        if (knowledgeBaseNames !== undefined && knowledgeBaseNames.length > 0) {
-          for (const name of knowledgeBaseNames) {
-            await manager.updateIndex(name);
-          }
-        } else {
-          await manager.updateIndex(knowledgeBaseName);
-        }
-      });
+      const indexStatus = await this.refreshForRetrieve(
+        manager,
+        knowledgeBaseName,
+        knowledgeBaseNames !== undefined && knowledgeBaseNames.length > 0 ? knowledgeBaseNames : undefined,
+      );
 
       // Dense leg — over-fetch to give RRF room.
       const denseTiming: SimilaritySearchTiming = {};
@@ -2111,9 +2161,9 @@ export class KnowledgeBaseServer {
       const content: TextContent = { type: 'text', text: responseText };
       const response = withGateVerdict({ content: [content] }, gate.verdict);
       const responseWithSummary = withDegradationSummary(response, degradation.degraded_stages);
-      return degradedReason === null
+      return withIndexStatus(degradedReason === null
         ? responseWithSummary
-        : withDegradationMetadata(responseWithSummary, degradedReason);
+        : withDegradationMetadata(responseWithSummary, degradedReason), indexStatus);
     } catch (error: unknown) {
       const err = toError(error);
       searchLatencyMetrics.record({

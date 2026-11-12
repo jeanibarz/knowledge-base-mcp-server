@@ -21,6 +21,7 @@ operator workflow matrix and avoids duplicating the generated schema table.
 | Query decomposition cache | `KB_DECOMPOSE_CACHE_ENABLED` | off | LLM query decomposition | Implemented, opt-in | `KB_DECOMPOSE_CACHE_LRU_MAX` (default `256`), `KB_DECOMPOSE_CACHE_DISK_MAX_BYTES` (default `67108864`) | repeat an LLM-decomposed query, then inspect `$FAISS_INDEX_PATH/cache/query-decompositions/` |
 | Refresh before search | `kb search --refresh` | off | CLI search | Implemented | `--refresh` | `kb search "query" --refresh --timing` |
 | Dense-provider lexical degradation | `KB_DENSE_DEGRADE_ON_PROVIDER_ERROR=on` | off | MCP `retrieve_knowledge` dense/hybrid retrieval | Implemented, opt-in | none | Stop the embedding provider, call MCP `retrieve_knowledge` with `search_mode: "hybrid"`, and confirm `structuredContent.degraded: true` plus `degrade_reason` |
+| Retrieve-path index refresh mode | `KB_RETRIEVE_REFRESH_MODE=sync\|async\|off` | `sync` | MCP `retrieve_knowledge` dense/hybrid retrieval | Implemented, opt-in | none | Set `async`, call MCP `retrieve_knowledge`, and confirm `structuredContent.index_status` is `{ refresh_mode: "async", state: "refreshing" }` |
 | Provider circuit breaker | `KB_PROVIDER_BREAKER`, `KB_PROVIDER_BREAKER_FAILURE_THRESHOLD`, `KB_PROVIDER_BREAKER_COOLDOWN_MS` | on, `3`, `30000` | Embedding and LLM provider calls | Implemented | none | Stop the provider, trigger repeated calls, then confirm later calls fail immediately until cooldown |
 | Active embedding model | `KB_ACTIVE_MODEL` | unset, then `${FAISS_INDEX_PATH}/active.txt`, then legacy provider env | CLI and MCP retrieval | Implemented | `--model=<id>` on CLI, `model_name` on MCP `retrieve_knowledge` | `kb models list` |
 | Query embedding cache | `KB_QUERY_CACHE` | on | CLI and MCP retrieval | Implemented | `kb search --no-cache` | `kb doctor --format=json` |
@@ -38,6 +39,26 @@ and in the MCP `retrieve_knowledge` / `ask_knowledge` tools. They expand the
 returned context after ranking and do not make neighboring chunks influence the score. See
 [Neighbor Context Search Windows](search-neighbor-context.md) for examples,
 markdown/JSON output shape, and when wider windows dilute results.
+
+`KB_RETRIEVE_REFRESH_MODE` controls whether MCP `retrieve_knowledge` (dense and
+hybrid) refreshes the index before searching. `sync` (default) refreshes inline
+under the per-model write lock, so results are fresh but a call can wait as long
+as a full re-embed (or fail with `REFRESH_LOCK_BUSY` while another writer holds
+the lock). `async` starts a single-flight background refresh per model (calls
+that arrive meanwhile coalesce into at most one rerun) and searches the index
+already in memory. `off` never refreshes on read. Both `async` and `off` can
+therefore serve stale results: the reindex trigger watcher, the mutation tools,
+and `kb reindex` remain the only index writers. When no index is loaded yet
+(cold start), `async` and `off` fall back to a synchronous refresh so the first
+call still returns results. In `async`/`off` the response carries
+`structuredContent.index_status = { refresh_mode, state }` where `state` is
+`refreshing` (a background refresh was started or is in flight),
+`stale_unchecked` (`off`; freshness was not checked), or `fresh` (cold-start
+fallback just refreshed). `sync` responses carry no `index_status`. Lexical
+`search_mode` and `ask_knowledge` are unchanged. `async` refreshes the whole
+model, not just the requested KB scope. A search that overlaps a refresh doing a
+full rebuild can briefly see no loaded index and fail with
+`INDEX_NOT_INITIALIZED`; retry.
 
 `KB_DENSE_DEGRADE_ON_PROVIDER_ERROR=on` is fail-open only for classified
 transient embedding-provider failures (`PROVIDER_UNAVAILABLE` and
