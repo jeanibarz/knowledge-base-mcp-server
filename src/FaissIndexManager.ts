@@ -1520,6 +1520,9 @@ export class FaissIndexManager {
     };
     // One manifest read per KB per refresh instead of a lock + read per file.
     const quarantineSnapshot = new IngestQuarantineSnapshot();
+    // Issue #1229 — set when a scoped refresh hands off to a global one, so
+    // the outer run does not overwrite the nested run's persisted summary.
+    let delegatedToGlobal = false;
     const recordQuarantineFailure = async (
       kbPath: string,
       relativePath: string,
@@ -2243,6 +2246,20 @@ export class FaissIndexManager {
             'the existing index remains active and a later refresh will retry.',
         );
       }
+      if (requiresFullRebuild && scopedKnowledgeBase !== undefined) {
+        // Issue #1229 — the index is one shared store across all KBs and
+        // FAISS cannot delete vectors, so a full rebuild must walk every KB.
+        // Rebuilding from this scoped scan alone would silently drop every
+        // other KB's vectors (while their sidecars still claim "indexed").
+        // Nothing has been mutated yet, so hand off to a global refresh.
+        logger.info(
+          `Scoped refresh of "${scopedKnowledgeBase}" needs a full rebuild; ` +
+            `upgrading to a global rebuild so other knowledge bases keep their vectors.`,
+        );
+        delegatedToGlobal = true;
+        await this.updateIndex(undefined, opts);
+        return;
+      }
       if (requiresFullRebuild) {
         const hadIndexBeforeFullRebuild = this.faissIndex !== null;
         const deferredCountBeforeFullRebuild = deferredNonQuiescentPaths.size;
@@ -2724,13 +2741,15 @@ export class FaissIndexManager {
       const finishedAtMs = Date.now();
       runSummary.finished_at = new Date(finishedAtMs).toISOString();
       runSummary.duration_ms = finishedAtMs - startedAtMs;
-      this.lastIndexUpdateSummary = cloneIndexUpdateSummary(runSummary);
-      try {
-        await this.persistIndexUpdateSummary(this.lastIndexUpdateSummary);
-      } catch (persistError: unknown) {
-        logger.warn(
-          `Could not persist index update summary for ${this.modelId}: ${toError(persistError).message}`,
-        );
+      if (!delegatedToGlobal) {
+        this.lastIndexUpdateSummary = cloneIndexUpdateSummary(runSummary);
+        try {
+          await this.persistIndexUpdateSummary(this.lastIndexUpdateSummary);
+        } catch (persistError: unknown) {
+          logger.warn(
+            `Could not persist index update summary for ${this.modelId}: ${toError(persistError).message}`,
+          );
+        }
       }
     }
   }
