@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { FaissIndexManager } from './FaissIndexManager.js';
 import { parseModelId } from './model-id.js';
 import { readStoredIndexType, readStoredModelName } from './model-storage-layout.js';
@@ -190,34 +191,84 @@ function escapeDelimitedCell(value: string, delimiter: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
+interface CaptureStore {
+  stdoutChunks: string[];
+  stderrChunks: string[];
+}
+
+const captureContext = new AsyncLocalStorage<CaptureStore>();
+
+interface StreamPatch {
+  /** The wrapper this module installed, or undefined when none is installed. */
+  wrapper?: typeof process.stdout.write;
+  /** The function that was installed before the wrapper; used for pass-through. */
+  original?: typeof process.stdout.write;
+}
+
+const stdoutPatch: StreamPatch = {};
+const stderrPatch: StreamPatch = {};
+let activeCaptures = 0;
+
+function chunkToString(chunk: unknown): string {
+  return Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : String(chunk);
+}
+
+// One process-wide wrapper per stream. Each write is routed to the buffer of the
+// capture whose async context issued it, so overlapping captures (daemon
+// requests under the admission gate) cannot see or clobber each other's output.
+// A write with no capture in its async context passes through to the real stream.
+function installPatch(
+  stream: NodeJS.WriteStream,
+  patch: StreamPatch,
+  pick: (store: CaptureStore) => string[],
+): void {
+  if (patch.wrapper && stream.write === patch.wrapper) return;
+  // Re-check on every entry: something (a test spy) may have replaced our
+  // wrapper, in which case the current function becomes the new pass-through.
+  const original = stream.write;
+  const wrapper = ((chunk: unknown, ...args: unknown[]) => {
+    const store = captureContext.getStore();
+    if (!store) return (patch.original ?? original).call(stream, chunk as never, ...(args as []));
+    pick(store).push(chunkToString(chunk));
+    const callback = args.find((arg): arg is (err?: Error) => void => typeof arg === 'function');
+    if (callback) callback();
+    return true;
+  }) as typeof stream.write;
+  patch.original = original;
+  patch.wrapper = wrapper;
+  stream.write = wrapper;
+}
+
+function releasePatch(stream: NodeJS.WriteStream, patch: StreamPatch): void {
+  // Only unwind when our wrapper is still the installed function; if another
+  // layer wrapped on top of it, leave that layer intact (our wrapper then
+  // passes through once no capture is active).
+  if (patch.wrapper && patch.original && stream.write === patch.wrapper) {
+    stream.write = patch.original;
+    patch.wrapper = undefined;
+    patch.original = undefined;
+  }
+}
+
 export async function captureProcessOutput(
   fn: () => Promise<number>,
 ): Promise<CapturedProcessOutput> {
-  const stdoutChunks: string[] = [];
-  const stderrChunks: string[] = [];
-  const originalStdout = process.stdout.write;
-  const originalStderr = process.stderr.write;
-  process.stdout.write = ((chunk: unknown, ...args: unknown[]) => {
-    stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : String(chunk));
-    const callback = args.find((arg): arg is (err?: Error) => void => typeof arg === 'function');
-    if (callback) callback();
-    return true;
-  }) as typeof process.stdout.write;
-  process.stderr.write = ((chunk: unknown, ...args: unknown[]) => {
-    stderrChunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : String(chunk));
-    const callback = args.find((arg): arg is (err?: Error) => void => typeof arg === 'function');
-    if (callback) callback();
-    return true;
-  }) as typeof process.stderr.write;
+  const store: CaptureStore = { stdoutChunks: [], stderrChunks: [] };
+  activeCaptures += 1;
+  installPatch(process.stdout, stdoutPatch, (s) => s.stdoutChunks);
+  installPatch(process.stderr, stderrPatch, (s) => s.stderrChunks);
   try {
-    const exitCode = await fn();
+    const exitCode = await captureContext.run(store, fn);
     return {
       exitCode,
-      stdout: stdoutChunks.join(''),
-      stderr: stderrChunks.join(''),
+      stdout: store.stdoutChunks.join(''),
+      stderr: store.stderrChunks.join(''),
     };
   } finally {
-    process.stdout.write = originalStdout;
-    process.stderr.write = originalStderr;
+    activeCaptures -= 1;
+    if (activeCaptures === 0) {
+      releasePatch(process.stdout, stdoutPatch);
+      releasePatch(process.stderr, stderrPatch);
+    }
   }
 }

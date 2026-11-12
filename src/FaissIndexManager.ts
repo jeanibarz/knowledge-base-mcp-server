@@ -17,6 +17,7 @@ import {
   writeChunkManifests,
   writeSidecarHashes,
 } from './file-ingest.js';
+import { purgeIndexDirPreservingLedgers } from './index-ledger-files.js';
 import { loadFile } from './loaders.js';
 import {
   FAISS_INDEX_PATH,
@@ -940,7 +941,9 @@ export class FaissIndexManager {
       const indexDir = path.join(kbPath, '.index');
       if (!(await pathExists(indexDir))) continue;
       try {
-        await fsp.rm(indexDir, { recursive: true, force: true });
+        // Keep the user-authored ledgers (feedback + quarantine); only derived
+        // sidecars are stale (#1190).
+        await purgeIndexDirPreservingLedgers(indexDir);
         purged.push(kb);
       } catch (err) {
         logger.warn(

@@ -189,6 +189,15 @@ export function closeLogFile(): Promise<void> {
   });
 }
 
+/**
+ * True when canonical log lines are actually written (KB_LOG_FORMAT is not
+ * `text`). Callers that surface a canonical `request_id` to the operator gate on
+ * this so they never print an id that has no matching log line.
+ */
+export function isCanonicalLoggingEnabled(): boolean {
+  return activeFormat !== 'text';
+}
+
 export const logger = {
   debug: (...args: unknown[]) => write('debug', args),
   info: (...args: unknown[]) => write('info', args),

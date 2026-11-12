@@ -726,6 +726,48 @@ describe('kb serve daemon admission control', () => {
     }
   });
 
+  it('keeps concurrent search responses separate through the real capture path (issue #1189)', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = 0;
+    let resolveBoth!: () => void;
+    const bothEntered = new Promise<void>((resolve) => {
+      resolveBoth = resolve;
+    });
+    const handlers = createDaemonCommandHandlers({
+      runSearchImpl: (async (args: string[]) => {
+        process.stdout.write(`start:${args[0]};`);
+        entered += 1;
+        if (entered === 2) resolveBoth();
+        await held;
+        process.stdout.write(`end:${args[0]};`);
+        return 0;
+      }) as never,
+    });
+    const daemon = await startDaemonServer({
+      port: 0,
+      idleTimeoutMs: 0,
+      admission: { maxConcurrency: 4, queueMax: 10 },
+      handlers,
+    });
+    try {
+      const send = (q: string) =>
+        request(daemon.url, { method: 'POST', path: '/v1/run', body: { command: 'search', args: [q] } });
+      const first = send('alpha');
+      const second = send('beta');
+      await bothEntered;
+      release();
+      const [r1, r2] = await Promise.all([first, second]);
+      expect(JSON.parse(r1.body).stdout).toBe('start:alpha;end:alpha;');
+      expect(JSON.parse(r2.body).stdout).toBe('start:beta;end:beta;');
+    } finally {
+      release();
+      await daemon.stop();
+    }
+  });
+
   it('replies 429 + Retry-After once the queue is full', async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => {

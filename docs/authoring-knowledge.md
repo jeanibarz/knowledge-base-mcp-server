@@ -11,7 +11,7 @@ Most of the levers an author controls are upstream of "vectorize." Get the upstr
 ## 1. The shape of a good note
 
 - **One topic per file.** A note that mixes "how to deploy" and "how to rollback" produces chunks that are blends of both — neither retrieves cleanly. Split.
-- **≤ 2 KB body, then break.** The default chunker (`src/file-ingest.ts`) splits at `chunkSize = 1000` characters with `chunkOverlap = 200` (defaults from `src/config.ts:78-79`). A 30 KB single-paragraph note becomes ~30 overlapping chunks, none of which carries context.
+- **≤ 2 KB body, then break.** The default chunker (`src/file-ingest.ts`) splits at `chunkSize = 1000` characters with `chunkOverlap = 200` (defaults from `src/config/indexing.ts:193-194`). A 30 KB single-paragraph note becomes ~30 overlapping chunks, none of which carries context.
 - **Intro sentence, then sections.** The first paragraph should state the topic in plain text (this is what shows up in search snippets). Then split with `## H2` headings.
 - **Stable filenames.** A KB-relative path is part of the chunk metadata (`relativePath`). If a query mentions `runbooks/deploy.md`, BM25 wins on the path token; renaming churns the lexical index. Pick names you can live with.
 

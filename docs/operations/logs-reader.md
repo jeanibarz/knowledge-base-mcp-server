@@ -63,7 +63,9 @@ your downstream consumers are wired up.
 ## Read a single request
 
 When `kb search --format=json` includes a `request_id` in its error or
-timing envelope, fetch the matching canonical line:
+timing envelope (or prints `request_id: <id>` on stderr for a human-mode
+failure), fetch the matching canonical line. The id is absent when canonical
+logging is disabled (`KB_LOG_FORMAT=text`) and for `--daemon` searches:
 
 ```bash
 kb logs show --request-id=req-7e2b --format=json | jq

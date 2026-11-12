@@ -152,11 +152,19 @@ kb cache — inspect and prune local cache surfaces
 Usage:
   kb cache extracted-text [--max-age-days=<n>] [--max-size-mb=<n>] [--dry-run|--yes] [--format=md|json]
   kb cache extracted-text [--cache-dir=<path>] [--max-age-days=<n>] [--max-size-mb=<n>] [--dry-run|--yes]
+  kb cache contextual-prefaces [--dry-run|--yes] [--format=md|json]
 
 The extracted-text cache stores parsed PDF/HTML text under
 `${FAISS_INDEX_PATH}/extracted-text` (or `EXTRACTION_TEXT_CACHE_DIR`).
 By default this command is a read-only dry-run. Passing `--yes` applies the
 planned deletion, and deletion is limited to expected 64-hex `.txt` cache files.
+
+The contextual-prefaces surface prunes orphaned contextual-retrieval sidecars
+under `${FAISS_INDEX_PATH}/.contextual-prefaces`: those whose recorded source
+file no longer exists. It is a dry-run unless `--yes` is passed; `--yes` deletes
+exactly the listed sidecars under the sidecar lock. Sidecars that record no
+source, and sidecars of a KB whose directory is missing (possibly unmounted),
+are never deleted. The extracted-text limits do not apply to this surface.
 
 Options:
   --max-age-days=<n>    Mark entries whose mtime is at least this many days old.
@@ -172,6 +180,8 @@ Examples:
   kb cache extracted-text --max-age-days=30
   kb cache extracted-text --max-size-mb=512 --format=json
   kb cache extracted-text --max-age-days=30 --max-size-mb=512 --yes
+  kb cache contextual-prefaces --dry-run
+  kb cache contextual-prefaces --yes
 ```
 
 ## `kb capture`
@@ -1483,8 +1493,8 @@ Plan and collect read-only KB evidence packets.
 kb research — read-only KB evidence planning and collection
 
 Usage:
-  kb research plan "<question>" [--format=md|json] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
-  kb research collect "<question>" --run-dir <path> [--format=md|json] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
+  kb research plan "<question>" [--format=md|json] [--kb=<name>] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
+  kb research collect "<question>" --run-dir <path> [--format=md|json] [--kb=<name>] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
 
 The workflow is deterministic: it reads KB descriptions and stats, selects
 likely shelves and queries, then collect uses existing hybrid search. It does
@@ -1505,8 +1515,9 @@ Options:
   --run-dir=<path>      Same as above.
   --format=md|json      Output format (default: md).
   --k=<int>             Results per query/shelf search during collect (default: 5).
-  --kb=<name>           Include a shelf explicitly (alias for --include-kb).
-  --include-kb=<name>   Include a shelf explicitly; repeatable.
+  --kb=<name>           Restrict the plan to this shelf only (like "kb search --kb");
+                        repeatable. Disables auto-selection; use --include-kb to add.
+  --include-kb=<name>   Add a shelf on top of auto-selected shelves; repeatable.
   --exclude-kb=<name>   Exclude a shelf; repeatable.
   --max-shelves=<int>   Maximum automatically selected shelves (default: 5).
   --help, -h            Show this help.
@@ -1626,9 +1637,9 @@ Result tuning:
                         Requires --refresh or KB_RETRIEVAL_VIEWS at ingest time
                         to create section/metadata/summary view records.
   --context-before=<n>  Include up to n preceding chunks from the same source
-                        around each dense semantic match (0-5).
+                        around each dense or hybrid match (0-5).
   --context-after=<n>   Include up to n following chunks from the same source
-                        around each dense semantic match (0-5).
+                        around each dense or hybrid match (0-5).
   --context-window=<n>  Shorthand for --context-before=n --context-after=n.
   --no-cache            Bypass the query-embedding cache for this search.
   --gate                Run the relevance gate for this call even when

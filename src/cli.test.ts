@@ -736,6 +736,105 @@ describe('kb CLI — argv parsing and dispatch', () => {
     }
   });
 
+  describe('kb search surfaces the canonical request_id (#1197)', () => {
+    async function withSearchFixture<T>(
+      fn: (ctx: { env: Record<string, string>; logFile: string }) => Promise<T>,
+      logFormat: 'canonical' | 'text' = 'canonical',
+    ): Promise<T> {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-request-id-'));
+      const logFile = path.join(tempDir, 'canonical.log');
+      const kbRoot = path.join(tempDir, 'kb');
+      const faissDir = path.join(tempDir, '.faiss');
+      const modelId = 'fake__bag-256d';
+      try {
+        await fsp.mkdir(path.join(kbRoot, 'ops'), { recursive: true });
+        await fsp.writeFile(path.join(kbRoot, 'ops', 'a.md'), 'alpha request id runbook\n');
+        await fsp.mkdir(path.join(faissDir, 'models', modelId), { recursive: true });
+        await fsp.writeFile(path.join(faissDir, 'models', modelId, 'model_name.txt'), 'bag-256d');
+        await fsp.writeFile(path.join(faissDir, 'active.txt'), modelId);
+        return await fn({
+          env: {
+            KNOWLEDGE_BASES_ROOT_DIR: kbRoot,
+            FAISS_INDEX_PATH: faissDir,
+            EMBEDDING_PROVIDER: 'fake',
+            KB_FAKE_DIM: '32',
+            KB_LOG_FORMAT: logFormat,
+            LOG_FILE: logFile,
+          },
+          logFile,
+        });
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    }
+
+    async function readSearchEvent(logFile: string): Promise<{ request_id: string }> {
+      const events = (await fsp.readFile(logFile, 'utf-8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      const matches = events.filter((event) => event.cmd === 'kb search');
+      expect(matches).toHaveLength(1);
+      return matches[0];
+    }
+
+    it('puts the log line request_id in the JSON failure envelope', async () => {
+      await withSearchFixture(async ({ env, logFile }) => {
+        const r = runCli(['search', 'alpha', '--kb=nope', '--format=json'], env);
+        expect(r.code).toBe(2);
+        const payload = JSON.parse(r.stdout);
+        expect(payload.error.code).toBe('KB_NOT_FOUND');
+        const event = await readSearchEvent(logFile);
+        expect(payload.request_id).toBe(event.request_id);
+      });
+    });
+
+    it('prints the request_id on stderr for a non-JSON failure', async () => {
+      await withSearchFixture(async ({ env, logFile }) => {
+        const r = runCli(['search', 'alpha', '--kb=nope'], env);
+        expect(r.code).toBe(2);
+        const event = await readSearchEvent(logFile);
+        expect(r.stderr).toContain(`  request_id: ${event.request_id}\n`);
+      });
+    });
+
+    it('includes the same request_id in --timing --format=json on success', async () => {
+      await withSearchFixture(async ({ env, logFile }) => {
+        const r = runCli(
+          ['search', 'alpha', '--refresh', '--format=json', '--timing', '--no-freshness'],
+          env,
+        );
+        expect(r.code).toBe(0);
+        const payload = JSON.parse(r.stdout);
+        const event = await readSearchEvent(logFile);
+        expect(payload.request_id).toBe(event.request_id);
+      });
+    });
+
+    it('omits request_id on success without --timing', async () => {
+      await withSearchFixture(async ({ env }) => {
+        const r = runCli(['search', 'alpha', '--refresh', '--format=json', '--no-freshness'], env);
+        expect(r.code).toBe(0);
+        expect(JSON.parse(r.stdout)).not.toHaveProperty('request_id');
+      });
+    });
+
+    it('leaves output unchanged when canonical logging is disabled', async () => {
+      await withSearchFixture(async ({ env }) => {
+        const failure = runCli(['search', 'alpha', '--kb=nope', '--format=json'], env);
+        expect(failure.code).toBe(2);
+        expect(JSON.parse(failure.stdout)).not.toHaveProperty('request_id');
+        const human = runCli(['search', 'alpha', '--kb=nope'], env);
+        expect(human.stderr).not.toContain('request_id');
+        const timed = runCli(
+          ['search', 'alpha', '--refresh', '--format=json', '--timing', '--no-freshness'],
+          env,
+        );
+        expect(JSON.parse(timed.stdout)).not.toHaveProperty('request_id');
+      }, 'text');
+    });
+  });
+
   it('dispatches kb logs through the built CLI with default deps (#387)', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-cli-logs-'));
     const logFile = path.join(tempDir, 'canonical.log');

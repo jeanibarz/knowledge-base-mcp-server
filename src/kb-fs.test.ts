@@ -8,6 +8,7 @@ import {
   extractKbDescription,
   listKnowledgeBases,
   listResolvableKnowledgeBases,
+  resolveKbPath,
   resolveKnowledgeBaseDir,
 } from './kb-fs.js';
 
@@ -195,5 +196,78 @@ describe('listResolvableKnowledgeBases (#1167)', () => {
     } finally {
       await fsp.rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+const itSymlink = process.platform === 'win32' ? it.skip : it;
+
+describe('resolveKbPath symlink confinement (#1191)', () => {
+  async function withKb<T>(fn: (ctx: { rootDir: string; kbDir: string; outside: string }) => Promise<T>): Promise<T> {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-fs-symlink-'));
+    const rootDir = path.join(tempDir, 'kbs');
+    const kbDir = path.join(rootDir, 'kb');
+    const outside = path.join(tempDir, 'outside');
+    await fsp.mkdir(kbDir, { recursive: true });
+    await fsp.mkdir(outside, { recursive: true });
+    try {
+      return await fn({ rootDir, kbDir, outside });
+    } finally {
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  itSymlink('rejects a dangling leaf symlink that points outside the KB', async () => {
+    await withKb(async ({ rootDir, kbDir, outside }) => {
+      await fsp.symlink(path.join(outside, 'new.md'), path.join(kbDir, 'link.md'));
+      await expect(
+        resolveKbPath(rootDir, 'kb', 'link.md', { mustExist: false }),
+      ).rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringContaining('path escapes KB root') });
+    });
+  });
+
+  itSymlink('rejects a dangling leaf symlink even when it points inside the KB', async () => {
+    await withKb(async ({ rootDir, kbDir }) => {
+      await fsp.symlink(path.join(kbDir, 'not-yet.md'), path.join(kbDir, 'link.md'));
+      await expect(
+        resolveKbPath(rootDir, 'kb', 'link.md', { mustExist: false }),
+      ).rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringContaining('dangling symlink') });
+    });
+  });
+
+  itSymlink('rejects a file symlink to an existing outside file (characterization)', async () => {
+    await withKb(async ({ rootDir, kbDir, outside }) => {
+      await fsp.writeFile(path.join(outside, 'secret.md'), 'x');
+      await fsp.symlink(path.join(outside, 'secret.md'), path.join(kbDir, 'link.md'));
+      await expect(
+        resolveKbPath(rootDir, 'kb', 'link.md', { mustExist: false }),
+      ).rejects.toMatchObject({ code: 'VALIDATION' });
+    });
+  });
+
+  itSymlink('rejects a new leaf under a directory symlink to outside (characterization)', async () => {
+    await withKb(async ({ rootDir, kbDir, outside }) => {
+      await fsp.symlink(outside, path.join(kbDir, 'dirlink'), 'dir');
+      await expect(
+        resolveKbPath(rootDir, 'kb', 'dirlink/new.md', { mustExist: false }),
+      ).rejects.toMatchObject({ code: 'VALIDATION' });
+    });
+  });
+
+  itSymlink('still allows a symlink whose existing target is inside the KB', async () => {
+    await withKb(async ({ rootDir, kbDir }) => {
+      await fsp.writeFile(path.join(kbDir, 'real.md'), 'x');
+      await fsp.symlink(path.join(kbDir, 'real.md'), path.join(kbDir, 'link.md'));
+      await expect(
+        resolveKbPath(rootDir, 'kb', 'link.md', { mustExist: false }),
+      ).resolves.toBe(path.join(kbDir, 'link.md'));
+    });
+  });
+
+  itSymlink('allows a plain not-yet-existing path', async () => {
+    await withKb(async ({ rootDir, kbDir }) => {
+      await expect(
+        resolveKbPath(rootDir, 'kb', 'sub/new.md', { mustExist: false }),
+      ).resolves.toBe(path.join(kbDir, 'sub', 'new.md'));
+    });
   });
 });

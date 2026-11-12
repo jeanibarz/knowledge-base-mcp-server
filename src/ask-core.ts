@@ -173,7 +173,7 @@ export interface AskKnowledgeInput {
   tags?: readonly string[];
   since?: string;
   until?: string;
-  /** Issue #974 — opt-in neighbor windows (dense retrieval only). */
+  /** Issue #974 — opt-in neighbor windows (dense or hybrid retrieval). */
   context_before?: number;
   context_after?: number;
   context_window?: number;
@@ -348,19 +348,18 @@ export async function askKnowledge(
   parseRecencyFilterRange({ since: input.since, until: input.until });
   const filters = resolveAskFilters(input);
   const neighborContext = resolveAskNeighborContext(input);
-  // Neighbor expansion is dense-only (hybrid/lexical fusion has no stable
-  // neighbor ordering). Resolve the effective mode the same way retrieval will
-  // and reject a window that would land on a non-dense mode — including the
-  // default 'auto' resolving to hybrid for a code/error-token query.
+  // Neighbor expansion needs the FAISS docstore: dense and hybrid support it,
+  // lexical (BM25-only) does not. Resolve the effective mode the same way
+  // retrieval will and reject a window that would land on lexical.
   if (neighborContext !== undefined) {
     const requestedMode: SearchMode = input.search_mode ?? DEFAULT_ASK_SEARCH_MODE;
     const effectiveMode: EffectiveSearchMode = requestedMode === 'auto'
       ? resolveAutoSearchMode(query).mode
       : requestedMode;
-    if (effectiveMode !== 'dense') {
+    if (effectiveMode !== 'dense' && effectiveMode !== 'hybrid') {
       throw new Error(
-        'neighbor context expansion is only supported with dense ask_knowledge ' +
-          `(effective search_mode was "${effectiveMode}"; set search_mode="dense")`,
+        'neighbor context expansion is only supported with dense or hybrid ask_knowledge ' +
+          `(effective search_mode was "${effectiveMode}"; set search_mode="dense" or "hybrid")`,
       );
     }
   }
@@ -521,8 +520,8 @@ export async function retrieveAskEvidence(
           ...(args.kbs && args.kbs.length > 0 ? [{ knowledgeBaseNames: args.kbs }] as const : [] as const),
         ));
         // Issue #974 — widen each dense hit with its neighbor window (same
-        // source) before packing. Dense-only: the handler/askKnowledge reject a
-        // window on a hybrid/lexical effective mode. A no-op when unset.
+        // source) before packing. Dense and hybrid only: askKnowledge rejects a
+        // window on a lexical effective mode. A no-op when unset.
         if (args.neighborContext !== undefined) {
           results = manager.expandWithNeighborContext(results, args.neighborContext);
         }
@@ -540,6 +539,11 @@ export async function retrieveAskEvidence(
           timing,
         });
         results = hybrid.results;
+        // Widen each fused hit with its neighbor window after fusion + rerank
+        // (context never affects ranking); lexical-only has no docstore.
+        if (args.neighborContext !== undefined && effectiveMode === 'hybrid') {
+          results = manager.expandWithNeighborContext(results, args.neighborContext);
+        }
         denseDistanceById = hybrid.denseDistanceById;
         lexicalHitIds = hybrid.lexicalHitIds;
       }

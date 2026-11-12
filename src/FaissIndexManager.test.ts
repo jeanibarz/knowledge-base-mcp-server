@@ -2463,6 +2463,13 @@ describe('FaissIndexManager permission handling', () => {
       fsp.lstat(path.join(modelDirIn(process.env.FAISS_INDEX_PATH!), 'index'))
     ).rejects.toMatchObject({ code: 'ENOENT' });
 
+    // #1190 — user-authored ledgers share `.index/` with the derived sidecars
+    // and must survive the purge unchanged.
+    const feedbackLedger = path.join(defaultKb, '.index', 'relevance-feedback.jsonl');
+    const quarantineLedger = path.join(defaultKb, '.index', 'quarantine.jsonl');
+    await fsp.writeFile(feedbackLedger, '{"q":"kept"}\n');
+    await fsp.writeFile(quarantineLedger, '{"file":"kept.md"}\n');
+
     // Reset mocks so the recovery-path call counts are isolated.
     saveMock.mockReset();
     addDocumentsMock.mockReset();
@@ -2478,10 +2485,13 @@ describe('FaissIndexManager permission handling', () => {
     const secondManager = new FaissIndexManager();
     await secondManager.initialize();
     expect(loadMock).not.toHaveBeenCalled();
-    // Sidecar dir gone after the #90 purge.
-    await expect(fsp.stat(path.join(defaultKb, '.index'))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
+    // Derived sidecars gone after the #90 purge; only the ledgers remain (#1190).
+    expect((await fsp.readdir(path.join(defaultKb, '.index'))).sort()).toEqual([
+      'quarantine.jsonl',
+      'relevance-feedback.jsonl',
+    ]);
+    expect(await fsp.readFile(feedbackLedger, 'utf-8')).toBe('{"q":"kept"}\n');
+    expect(await fsp.readFile(quarantineLedger, 'utf-8')).toBe('{"file":"kept.md"}\n');
 
     await secondManager.updateIndex();
 

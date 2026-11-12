@@ -292,20 +292,24 @@ describe('ask_knowledge metadata filters + neighbor windows (#974)', () => {
     );
   });
 
-  it('rejects a neighbor window with an explicit hybrid search_mode (no retrieval runs)', async () => {
+  it('expands a neighbor window after fusion in explicit hybrid search_mode (#1224)', async () => {
     const manager = makeManager();
-    const loadManagerForModel = jest.fn(async () => manager as never);
-    const deps = makeDeps(manager, { loadManagerForModel });
+    const listLexicalKbs = jest.fn(async (..._args: any[]) => [{ kbName: 'ops', kbPath: '/tmp/ops' }]);
+    const runLexicalLeg = jest.fn(async (..._args: any[]) => ({ hits: [], refreshed: 0, failed: 0 }));
+    const deps = makeDeps(manager, {
+      listLexicalKbs: listLexicalKbs as unknown as RunAskCoreDeps['listLexicalKbs'],
+      runLexicalLeg: runLexicalLeg as unknown as RunAskCoreDeps['runLexicalLeg'],
+    });
 
-    await expect(askKnowledge(
+    await askKnowledge(
       { query: 'rollback', knowledge_base_name: 'ops', search_mode: 'hybrid', context_window: 2 },
       deps,
-    )).rejects.toThrow(/neighbor context expansion is only supported with dense/i);
-    expect(loadManagerForModel).not.toHaveBeenCalled();
-    expect(manager.similaritySearch).not.toHaveBeenCalled();
+    );
+
+    expect(manager.expandWithNeighborContext).toHaveBeenCalledWith(expect.any(Array), { before: 2, after: 2 });
   });
 
-  it('rejects a neighbor window with an explicit lexical search_mode (guard is !== dense, not just hybrid)', async () => {
+  it('rejects a neighbor window with an explicit lexical search_mode (lexical has no FAISS docstore to widen from)', async () => {
     const manager = makeManager();
     const loadManagerForModel = jest.fn(async () => manager as never);
     const deps = makeDeps(manager, { loadManagerForModel });
@@ -317,17 +321,24 @@ describe('ask_knowledge metadata filters + neighbor windows (#974)', () => {
     expect(loadManagerForModel).not.toHaveBeenCalled();
   });
 
-  it('rejects a neighbor window when the default "auto" mode resolves to hybrid for a code query', async () => {
+  it('accepts a neighbor window when the default "auto" mode resolves to hybrid for a code query (#1224)', async () => {
     const manager = makeManager();
     const loadManagerForModel = jest.fn(async () => manager as never);
     const deps = makeDeps(manager, { loadManagerForModel });
 
-    // A code/error-token query upgrades auto → hybrid, which cannot neighbor-expand.
-    await expect(askKnowledge(
+    // A code/error-token query upgrades auto → hybrid, which now neighbor-expands.
+    const listLexicalKbs = jest.fn(async (..._args: any[]) => [{ kbName: 'ops', kbPath: '/tmp/ops' }]);
+    const runLexicalLeg = jest.fn(async (..._args: any[]) => ({ hits: [], refreshed: 0, failed: 0 }));
+    const hybridDeps = makeDeps(manager, {
+      loadManagerForModel,
+      listLexicalKbs: listLexicalKbs as unknown as RunAskCoreDeps['listLexicalKbs'],
+      runLexicalLeg: runLexicalLeg as unknown as RunAskCoreDeps['runLexicalLeg'],
+    });
+    await askKnowledge(
       { query: 'why does src/foo.ts throw TypeError?', knowledge_base_name: 'ops', context_before: 1 },
-      deps,
-    )).rejects.toThrow(/neighbor context expansion is only supported with dense/i);
-    expect(loadManagerForModel).not.toHaveBeenCalled();
+      hybridDeps,
+    );
+    expect(manager.expandWithNeighborContext).toHaveBeenCalledWith(expect.any(Array), { before: 1, after: 0 });
   });
 
   it('allows a neighbor window under default auto for a prose query (auto → dense)', async () => {

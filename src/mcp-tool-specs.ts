@@ -90,8 +90,8 @@ export const RETRIEVE_KNOWLEDGE_INPUT = {
   tags: boundedFilterArray().optional().describe('Limit results to chunks whose source file has ALL of these tags in its YAML frontmatter. In hybrid mode, applied to lexical candidates before fusion.'),
   since: z.string().optional().describe('Limit results to chunks whose current source-file mtime is at or after this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. In hybrid mode, applied to lexical candidates before fusion.'),
   until: z.string().optional().describe('Limit results to chunks whose current source-file mtime is at or before this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. In hybrid mode, applied to lexical candidates before fusion.'),
-  context_before: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense semantic match. Defaults to 0.'),
-  context_after: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each dense semantic match. Defaults to 0.'),
+  context_before: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each dense or hybrid match (not lexical). Defaults to 0.'),
+  context_after: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each dense or hybrid match (not lexical). Defaults to 0.'),
   context_window: z.int().min(0).max(5).optional().describe('Shorthand for setting context_before and context_after to the same value. Defaults to 0.'),
   // Issue #973 — bring ask_knowledge's configurable top-K to retrieve_knowledge.
   // Default 10 preserves the previously hardcoded value for 0.x clients.
@@ -130,12 +130,12 @@ export const ASK_KNOWLEDGE_INPUT = {
   since: z.string().optional().describe('Limit answer evidence to chunks whose current source-file mtime is at or after this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. In hybrid mode, applied to lexical candidates before fusion.'),
   until: z.string().optional().describe('Limit answer evidence to chunks whose current source-file mtime is at or before this bound. Accepts durations like "30d"/"24h" or ISO dates/timestamps; mtime can differ from indexed-content time on stale indexes. In hybrid mode, applied to lexical candidates before fusion.'),
   // Issue #974 — opt-in neighbor windows, mirroring retrieve_knowledge. As on
-  // retrieve, expansion is only supported with dense retrieval (hybrid/lexical
-  // fusion has no stable neighbor ordering), so a window with a non-dense
-  // effective mode is a VALIDATION error. Defaults stay 0 (no expansion).
-  context_before: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each match before packing. Only supported with dense retrieval (search_mode="dense"); the default "auto" stays dense for prose. Defaults to 0.'),
-  context_after: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each match before packing. Only supported with dense retrieval (search_mode="dense"); the default "auto" stays dense for prose. Defaults to 0.'),
-  context_window: z.int().min(0).max(5).optional().describe('Shorthand for setting context_before and context_after to the same value. Only supported with dense retrieval (search_mode="dense"). Defaults to 0.'),
+  // retrieve, expansion is supported with dense and hybrid retrieval (applied
+  // after fusion/rerank), so a window with a lexical effective mode is a
+  // VALIDATION error. Defaults stay 0 (no expansion).
+  context_before: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many preceding chunks from the same source around each match before packing. Supported with dense and hybrid retrieval, not lexical; an "auto" query that resolves to lexical is rejected. Defaults to 0.'),
+  context_after: z.int().min(0).max(5).optional().describe('Opt-in neighbor context: include up to this many following chunks from the same source around each match before packing. Supported with dense and hybrid retrieval, not lexical; an "auto" query that resolves to lexical is rejected. Defaults to 0.'),
+  context_window: z.int().min(0).max(5).optional().describe('Shorthand for setting context_before and context_after to the same value. Supported with dense and hybrid retrieval, not lexical. Defaults to 0.'),
   // #732 — bring the search-mode + opt-in rerank surface of retrieve_knowledge
   // to the ask path. Defaults to 'auto' (prose stays dense, code/error-token
   // queries upgrade to hybrid); reranking stays opt-in.
