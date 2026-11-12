@@ -1680,8 +1680,9 @@ Output:
                         group_by_source, task_context, gate, refresh, since,
                         until, and context_window.
   --group-by-source     Collapse repeated chunks from the same source file
-                        in markdown output. With `--format=json`, adds a
-                        `grouped_results` field alongside raw results.
+                        in markdown output (dense and hybrid modes). With
+                        `--format=json`, adds a `grouped_results`
+                        field alongside raw results.
   --timing              Include elapsed milliseconds for retrieval stages.
                         For non-empty filtered dense searches, also surfaces
                         aggregate filter selectivity counters.

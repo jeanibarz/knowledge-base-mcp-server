@@ -403,10 +403,13 @@ Optional stable fields:
 
 - `scope`: present when `--kb=<name>` is used. Shape:
   `{"kb": string, "stale": boolean, "modified_files": number, "new_files": number}`.
-- `grouped_results`: present with `--group-by-source` in dense JSON mode. Each
+- `grouped_results`: present with `--group-by-source` in dense and hybrid JSON modes. Each
   source group has `source`, `chunk_count`, `best_score`, `locations`, and
   `chunks`. Each chunk follows the same hit contract as `results[]`, plus a
-  stable `location` field.
+  stable `location` field. `best_score` follows the mode's score direction:
+  in dense mode it is the minimum distance (lower is better); in hybrid mode it
+  is the maximum fused RRF score (higher is better). Hybrid grouped chunks also
+  carry `rerank_score` when the flat `results[]` chunks do.
 - `results[].chunk_id` and `grouped_results[].chunks[].chunk_id`: stable chunk
   handle when enough metadata is available. Line-aware handles use
   `kb/path.md#L10-L12`; chunks without line metadata can use a `#chunk-N`

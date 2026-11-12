@@ -916,6 +916,26 @@ describe('groupRetrievalBySource', () => {
     expect(grouped[1].chunk_count).toBe(1);
   });
 
+  it("uses max score and RRF labels with scoreOrder 'similarity', min distance by default", () => {
+    const docs = [
+      { pageContent: 'a1', metadata: { source: '/kb/x.md' }, score: 0.01, rerankScore: 2.5 },
+      { pageContent: 'a2', metadata: { source: '/kb/x.md' }, score: 0.03 },
+    ];
+    expect(groupRetrievalBySource(docs, false)[0].best_score).toBe(0.01);
+    expect(groupRetrievalBySource(docs, false)[0].chunks[0]).not.toHaveProperty('rerank_score');
+    const sim = groupRetrievalBySource(docs, false, undefined, undefined, 'similarity');
+    expect(sim[0].best_score).toBe(0.03);
+    expect(sim[0].chunks[0].rerank_score).toBe(2.5);
+    const dense = formatRetrievalGroupedBySourceAsMarkdown(docs, false);
+    expect(dense).toContain('**Best distance:** 0.01 (lower = better)');
+    expect(dense).not.toContain('RRF');
+    const hybrid = formatRetrievalGroupedBySourceAsMarkdown(docs, false, undefined, undefined, undefined, undefined, 'similarity');
+    expect(hybrid).toContain('**Best score (RRF, higher = better):** 0.03');
+    expect(hybrid).toContain('**Score (RRF, higher = better):** 0.01');
+    expect(hybrid).toContain('**Rerank score:** 2.50 (higher = better)');
+    expect(hybrid).not.toContain('lower = better');
+  });
+
   it('keeps raw chunk metadata sanitized in grouped JSON-ready output', () => {
     const docs: ScoredDocument[] = [
       {

@@ -2245,6 +2245,54 @@ describe('runSearch timing guard (#331)', () => {
     expect(out.stdout).toContain('gold fact one chunk later');
   });
 
+  it('honours --group-by-source in hybrid mode (#1224)', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch = jest.fn(async () => [
+      { pageContent: 'first chunk', metadata: { source: '/kb/alpha/a.md', knowledgeBase: 'alpha', relativePath: 'alpha/a.md', chunkIndex: 0 }, score: 0.1 },
+      { pageContent: 'second chunk', metadata: { source: '/kb/alpha/a.md', knowledgeBase: 'alpha', relativePath: 'alpha/a.md', chunkIndex: 1 }, score: 0.2 },
+      { pageContent: 'other file', metadata: { source: '/kb/alpha/b.md', knowledgeBase: 'alpha', relativePath: 'alpha/b.md', chunkIndex: 0 }, score: 0.3 },
+    ]);
+    deps.listLexicalKbs = jest.fn(async () => []);
+
+    const json = await captureSearchOutput(
+      ['query', '--mode=hybrid', '--group-by-source', '--format=json', '--k=5', '--no-freshness'],
+      deps,
+    );
+    expect(json.code).toBe(0);
+    expect(json.stderr).not.toContain('dense-only');
+    const payload = JSON.parse(json.stdout);
+    expect(payload.results).toHaveLength(3);
+    expect(payload.grouped_results).toHaveLength(2);
+    expect(payload.grouped_results.map((g: { chunk_count: number }) => g.chunk_count).sort()).toEqual([1, 2]);
+    // Hybrid scores are fused RRF (higher = better): best_score is the group's MAX.
+    const flat = payload.results as Array<{ score: number; metadata: { relativePath: string } }>;
+    for (const group of payload.grouped_results as Array<{ source: string; best_score: number; chunks: Array<{ score: number }> }>) {
+      const scores = group.chunks.map((c) => c.score);
+      expect(group.best_score).toBe(Math.max(...scores));
+    }
+    const aGroup = payload.grouped_results.find((g: { chunk_count: number }) => g.chunk_count === 2);
+    const aScores = flat.filter((r) => r.metadata.relativePath === 'alpha/a.md').map((r) => r.score);
+    expect(aGroup.best_score).toBe(Math.max(...aScores));
+    expect(aGroup.best_score).toBeGreaterThan(Math.min(...aScores));
+
+    const md = await captureSearchOutput(
+      ['query', '--mode=hybrid', '--group-by-source', '--k=5', '--no-freshness'],
+      deps,
+    );
+    expect(md.code).toBe(0);
+    expect(md.stderr).not.toContain('dense-only');
+    expect(md.stdout).toContain('**Chunk count:** 2');
+    expect(md.stdout).toContain('**Best score (RRF, higher = better):**');
+    expect(md.stdout).toContain('**Score (RRF, higher = better):**');
+    expect(md.stdout).not.toContain('lower = better');
+
+    const plain = await captureSearchOutput(
+      ['query', '--mode=hybrid', '--format=json', '--k=5', '--no-freshness'],
+      deps,
+    );
+    expect(JSON.parse(plain.stdout).grouped_results).toBeUndefined();
+  });
+
   it('still rejects neighbor context under --mode=lexical (#1220)', async () => {
     const { deps } = makeDeps();
     const out = await captureSearchOutput(['query', '--mode=lexical', '--context-window=1'], deps);
