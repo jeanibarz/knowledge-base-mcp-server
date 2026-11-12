@@ -24,9 +24,11 @@ kb search "rollback after failed deploy" --context-window=1 --format=json
 - `--context-window=<n>` is shorthand for setting both before and after to the
   same value.
 - Counts are chunk counts, not lines or paragraphs.
-- Neighbor context is dense-only. `kb search` defaults to dense mode, but
-  `--mode=lexical`, `--mode=hybrid`, and `--mode=auto` when it selects hybrid
-  reject neighbor expansion.
+- Neighbor context works with `--mode=dense` and `--mode=hybrid` (including
+  `--rerank`). `--mode=lexical` rejects neighbor expansion. In hybrid mode the
+  neighbors are attached after fusion, rerank and gating, so they never change
+  ranking. The MCP `retrieve_knowledge` and `ask_knowledge` tools are still
+  dense-only.
 
 Neighbor windows do not improve or change ranking. The dense search first
 finds the top semantic matches, then the formatter attaches nearby chunks from

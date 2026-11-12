@@ -249,9 +249,9 @@ Result tuning:
                         Requires --refresh or KB_RETRIEVAL_VIEWS at ingest time
                         to create section/metadata/summary view records.
   --context-before=<n>  Include up to n preceding chunks from the same source
-                        around each dense semantic match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
+                        around each dense or hybrid match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
   --context-after=<n>   Include up to n following chunks from the same source
-                        around each dense semantic match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
+                        around each dense or hybrid match (0-${MAX_NEIGHBOR_CONTEXT_WINDOW}).
   --context-window=<n>  Shorthand for --context-before=n --context-after=n.
   --no-cache            Bypass the query-embedding cache for this search.
   --gate                Run the relevance gate for this call even when
@@ -600,8 +600,8 @@ export async function runSearch(
       return reportFailure(classifyKbSearchError(err), parsed.format);
     }
   }
-  if (hasNeighborContext(parsed) && effectiveMode !== 'dense') {
-    process.stderr.write('kb search: neighbor context expansion is only supported with --mode=dense\n');
+  if (hasNeighborContext(parsed) && effectiveMode !== 'dense' && effectiveMode !== 'hybrid') {
+    process.stderr.write('kb search: neighbor context expansion is only supported with --mode=dense or --mode=hybrid\n');
     return 2;
   }
   if (hasRecencyFilter(parsed) && effectiveMode !== 'dense' && effectiveMode !== 'hybrid') {
@@ -3202,6 +3202,10 @@ async function runHybridSearch(
     return reportFailure(classifyKbSearchError(err), parsed.format);
   }
   ranked = ranked.slice(0, parsed.k);
+  if (parsed.neighborContext) {
+    // Expand after fusion + rerank + gate so context chunks never affect ranking.
+    ranked = manager.expandWithNeighborContext(ranked as never, parsed.neighborContext) as never;
+  }
   const rerankStage = canonicalRerankStageRecord(rerankResult);
   const gateStage = canonicalGateStageRecord(gateVerdict);
   const degradation = degradationSummaryFields({ rerank: rerankStage, gate: gateStage });
