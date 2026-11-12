@@ -17,14 +17,17 @@ export interface RetrieveIndexStatus {
   served_from?: 'committed_snapshot';
 }
 
+export type RefreshOutcome = { ok: true } | { ok: false; error: unknown };
+
 /**
  * Single-flight background runner keyed by model directory. A `trigger()` while
  * a run is in flight just joins it (no queued rerun); the next trigger after it
- * finishes starts a new run. Failures are logged, never thrown, so there are
- * no unhandled rejections.
+ * finishes starts a new run. Failures are logged and recorded in the run's
+ * outcome (see `settled`), never thrown, so there are no unhandled rejections.
  */
 export class BackgroundRefreshCoordinator {
-  private readonly inFlight = new Map<string, Promise<void>>();
+  private readonly inFlight = new Map<string, Promise<RefreshOutcome>>();
+  private readonly lastOutcome = new Map<string, RefreshOutcome>();
 
   isRefreshing(key: string): boolean {
     return this.inFlight.has(key);
@@ -33,23 +36,32 @@ export class BackgroundRefreshCoordinator {
   /** Starts a background run for `key` unless one is already in flight. */
   trigger(key: string, run: () => Promise<void>): void {
     if (this.inFlight.has(key)) return;
-    const p = (async (): Promise<void> => {
+    const p = (async (): Promise<RefreshOutcome> => {
       try {
         await run();
+        return { ok: true };
       } catch (err) {
         logger.warn(
           `Background retrieve refresh failed for ${key}: ${(err as Error)?.message ?? String(err)}`,
         );
+        return { ok: false, error: err };
       }
-    })().finally(() => {
+    })().then((outcome) => {
+      this.lastOutcome.set(key, outcome);
       this.inFlight.delete(key);
+      return outcome;
     });
     this.inFlight.set(key, p);
   }
 
-  /** Resolves when the in-flight run for `key` (if any) has settled. */
-  async settled(key: string): Promise<void> {
-    await this.inFlight.get(key);
+  /**
+   * Resolves with the outcome of the in-flight run for `key`, or, if it already
+   * finished, of the most recent run. `{ ok: true }` when none ever ran.
+   */
+  async settled(key: string): Promise<RefreshOutcome> {
+    const running = this.inFlight.get(key);
+    if (running !== undefined) return running;
+    return this.lastOutcome.get(key) ?? { ok: true };
   }
 
   /** Resolves when every in-flight run has settled. */

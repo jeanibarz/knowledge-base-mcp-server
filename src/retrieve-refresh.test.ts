@@ -28,7 +28,7 @@ describe('BackgroundRefreshCoordinator (#1228)', () => {
     await c.idle();
   });
 
-  it('settled() waits for the in-flight run and is a no-op when idle', async () => {
+  it('settled() reports success or the failure of the run, even after it finished', async () => {
     const c = new BackgroundRefreshCoordinator();
     await c.settled('m');
     let release!: () => void;
@@ -60,6 +60,20 @@ describe('BackgroundRefreshCoordinator (#1228)', () => {
     c.trigger('m', run);
     await c.idle();
     expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('BackgroundRefreshCoordinator.settled outcomes (#1228)', () => {
+  it('reports ok for a successful run and the error for a failed one', async () => {
+    const c = new BackgroundRefreshCoordinator();
+    c.trigger('ok', () => Promise.resolve());
+    await expect(c.settled('ok')).resolves.toEqual({ ok: true });
+    const boom = new Error('boom');
+    c.trigger('bad', () => Promise.reject(boom));
+    await expect(c.settled('bad')).resolves.toEqual({ ok: false, error: boom });
+    // Still reported after the run has already finished and left the in-flight map.
+    await c.idle();
+    await expect(c.settled('bad')).resolves.toEqual({ ok: false, error: boom });
   });
 });
 

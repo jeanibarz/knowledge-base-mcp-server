@@ -411,7 +411,7 @@ export class KnowledgeBaseServer {
   private transportMode: 'stdio' | 'sse' | 'http' | null = null;
   private triggerWatcher?: ReindexTriggerWatcher;
   private readonly retrieveRefresh = new BackgroundRefreshCoordinator();
-  private readonly committedSnapshots = new Map<string, { token: string; manager: FaissIndexManager }>();
+  private readonly committedSnapshots = new Map<string, { token: string; load: Promise<FaissIndexManager | null> }>();
   // RFC 007 §6.6 / issue #212 — opt-in recursive `fs.watch` per KB.
   // Complements `triggerWatcher` (root-level dotfile poller); this one
   // observes per-file edits *inside* each KB tree.
@@ -1238,7 +1238,8 @@ export class KnowledgeBaseServer {
    *   its index to null, then fills a partial new one), so the search is
    *   served from a read-only manager of the last committed version
    *   (`served_from: 'committed_snapshot'`). With no committed version it
-   *   awaits the in-flight refresh instead of erroring.
+   *   awaits the in-flight refresh; if that refresh failed, its error is
+   *   thrown as `sync` would (never reported as `fresh`).
    * - Cold start (`async`/`off`, no loaded index, no refresh in flight):
    *   synchronous refresh so the first call still returns results.
    *
@@ -1286,36 +1287,52 @@ export class KnowledgeBaseServer {
       };
     }
     // Nothing committed to fall back on: wait for the in-flight refresh.
-    await this.retrieveRefresh.settled(key);
+    // A failed run leaves the writer index partial and unsaved: surface the
+    // refresh error exactly as `sync` would, never label it `fresh`.
+    const outcome = await this.retrieveRefresh.settled(key);
+    if (!outcome.ok) throw outcome.error;
     if (!manager.hasLoadedIndex) await refreshSync();
     return { searchManager: manager, indexStatus: { refresh_mode: 'async', state: 'fresh' } };
   }
 
   /**
    * Read-only manager of the last committed index version, cached per model
-   * and reused while the `index` pointer target is unchanged. Null when no
-   * version is committed or it cannot be loaded.
+   * and reused while the committed version is unchanged. The cache key is the
+   * `index` pointer target plus that directory's inode and mtime, because
+   * version numbers can restart and reuse a name. Concurrent callers share one
+   * load. Null when no version is committed or it cannot be loaded (a failed
+   * load is not cached, so the next call retries).
    */
   private async getCommittedSnapshot(manager: FaissIndexManager): Promise<FaissIndexManager | null> {
     let token: string;
     try {
-      token = await fsp.readlink(path.join(manager.modelDir, 'index'));
+      const target = await fsp.readlink(path.join(manager.modelDir, 'index'));
+      const st = await fsp.stat(path.join(manager.modelDir, target));
+      token = `${target}:${st.ino}:${st.mtimeMs}`;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'ENOENT' || code === 'EINVAL') return null;
       throw err;
     }
     const cached = this.committedSnapshots.get(manager.modelId);
-    if (cached !== undefined && cached.token === token) return cached.manager;
-    try {
-      const snapshot = await this.createReadOnlyManagerForModel(manager.modelId);
-      if (!snapshot.hasLoadedIndex) return null;
-      this.committedSnapshots.set(manager.modelId, { token, manager: snapshot });
-      return snapshot;
-    } catch (err) {
-      logger.warn(`Committed index snapshot unavailable for ${manager.modelId}: ${(err as Error).message}`);
-      return null;
-    }
+    if (cached !== undefined && cached.token === token) return cached.load;
+    const load = (async (): Promise<FaissIndexManager | null> => {
+      try {
+        const snapshot = await this.createReadOnlyManagerForModel(manager.modelId);
+        return snapshot.hasLoadedIndex ? snapshot : null;
+      } catch (err) {
+        logger.warn(`Committed index snapshot unavailable for ${manager.modelId}: ${(err as Error).message}`);
+        return null;
+      }
+    })();
+    const entry = { token, load };
+    this.committedSnapshots.set(manager.modelId, entry);
+    void load.then((snapshot) => {
+      if (snapshot === null && this.committedSnapshots.get(manager.modelId) === entry) {
+        this.committedSnapshots.delete(manager.modelId);
+      }
+    });
+    return load;
   }
 
   private async createReadOnlyManagerForModel(modelId: string): Promise<FaissIndexManager> {
@@ -2755,6 +2772,8 @@ export class KnowledgeBaseServer {
       }
       this.triggerWatcher = undefined;
     }
+    // Drain any background retrieve refresh like the trigger watcher's write.
+    await this.retrieveRefresh.idle();
     if (this.fsWatcher) {
       try {
         await this.fsWatcher.stop();
