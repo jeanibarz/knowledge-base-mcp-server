@@ -73,11 +73,46 @@ export function parseExternalShelfRoots(raw: string | undefined = process.env.KB
     .filter((entry) => entry.length > 0 && path.isAbsolute(entry));
 }
 
-async function resolveExternalShelfRootRealpaths(): Promise<string[]> {
+const warnedExternalShelfRoots = new Set<string>();
+
+function warnExternalShelfRootOnce(entry: string, reason: string): void {
+  if (warnedExternalShelfRoots.has(entry)) return;
+  warnedExternalShelfRoots.add(entry);
+  logger.warn(`KB_EXTERNAL_SHELF_ROOTS: ignoring entry ${JSON.stringify(entry)}: ${reason}`);
+}
+
+/**
+ * Realpaths of the usable allowlist entries. Entries that cannot be resolved
+ * (ENOENT, EACCES, ELOOP, ...) or that equal/contain the KB root or the FAISS
+ * index dir (e.g. `/` or `$HOME`) are skipped with a once-per-process warning;
+ * this function never throws.
+ */
+async function resolveExternalShelfRootRealpaths(rootDir: string): Promise<string[]> {
+  const entries = parseExternalShelfRoots();
+  if (entries.length === 0) return [];
+  const protectedPaths: string[] = [];
+  for (const candidate of [rootDir, process.env.FAISS_INDEX_PATH || path.join(rootDir, '.faiss')]) {
+    try {
+      protectedPaths.push(await fsp.realpath(candidate));
+    } catch {
+      // An absent index dir cannot be contained by anything yet.
+    }
+  }
   const resolved: string[] = [];
-  for (const root of parseExternalShelfRoots()) {
-    const real = await realpathIfExists(root);
-    if (real !== null) resolved.push(real);
+  for (const entry of entries) {
+    let real: string;
+    try {
+      real = await fsp.realpath(entry);
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code ?? 'error';
+      warnExternalShelfRootOnce(entry, `cannot be resolved (${code})`);
+      continue;
+    }
+    if (protectedPaths.some((p) => isInsideOrEqual(real, p))) {
+      warnExternalShelfRootOnce(entry, 'it equals or contains the KB root or index directory');
+      continue;
+    }
+    resolved.push(real);
   }
   return resolved;
 }
@@ -92,7 +127,7 @@ async function resolveExternalShelfRootRealpaths(): Promise<string[]> {
  * confinement (`resolveKbPath`) stays relative to this resolved shelf.
  */
 async function externalShelfRealpath(rootDir: string, kbName: string): Promise<string | null> {
-  const allowed = await resolveExternalShelfRootRealpaths();
+  const allowed = await resolveExternalShelfRootRealpaths(rootDir);
   if (allowed.length === 0) return null;
   const kbDir = path.join(rootDir, kbName);
   try {
@@ -122,7 +157,7 @@ export async function isExternalShelfLink(rootDir: string, kbName: string): Prom
  * double-lists or double-indexes the same shelf. A no-op when the allowlist is
  * unset, keeping default behaviour byte-identical.
  */
-async function dropExternalShelfAliases(rootDir: string, names: string[]): Promise<string[]> {
+export async function dropExternalShelfAliases(rootDir: string, names: string[]): Promise<string[]> {
   if (parseExternalShelfRoots().length === 0) return names;
   const seen = new Map<string, string>();
   const dropped = new Set<string>();

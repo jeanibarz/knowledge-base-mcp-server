@@ -361,4 +361,21 @@ describe('KB_EXTERNAL_SHELF_ROOTS (#1088)', () => {
       ]);
     });
   });
+
+  it('ignores broad allowlist entries (/, ancestors of the root) and unreadable ones without throwing', async () => {
+    await withLayout(async ({ rootDir, allowed, other }) => {
+      await fsp.symlink(path.join(other, 'bad'), path.join(rootDir, 'evil'), 'dir');
+      await fsp.symlink(path.join(allowed, 'eng'), path.join(rootDir, 'good'), 'dir');
+      const parent = path.dirname(rootDir);
+      const loop = path.join(allowed, 'loop');
+      await fsp.symlink('loop', loop);
+      process.env.KB_EXTERNAL_SHELF_ROOTS = ['/', parent, loop, allowed].join(path.delimiter);
+      // '/' and the root's parent admit nothing; the loop entry is skipped; the sane entry still works.
+      await expect(resolveKnowledgeBaseDir(rootDir, 'evil')).rejects.toMatchObject({ code: 'VALIDATION' });
+      await expect(resolveKnowledgeBaseDir(rootDir, 'good')).resolves.toBe(path.join(rootDir, 'good'));
+      await expect(listKnowledgeBases(rootDir)).resolves.toEqual(expect.arrayContaining(['local', 'good']));
+      process.env.KB_EXTERNAL_SHELF_ROOTS = ['/', parent, loop].join(path.delimiter);
+      await expect(resolveKnowledgeBaseDir(rootDir, 'good')).rejects.toMatchObject({ code: 'VALIDATION' });
+    });
+  });
 });

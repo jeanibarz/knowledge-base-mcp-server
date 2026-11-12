@@ -49,7 +49,7 @@ import {
 import { deriveModelId, EmbeddingProvider } from './model-id.js';
 import { logger } from './logger.js';
 import { KBError } from './errors.js';
-import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
+import { dropExternalShelfAliases, enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import {
   __resetBootstrapForTests as resetBootstrapLayoutForTests,
   bootstrapLayout as bootstrapIndexLayout,
@@ -1637,7 +1637,11 @@ export class FaissIndexManager {
       if (scopedKnowledgeBase) {
         knowledgeBases.push(scopedKnowledgeBase);
       } else {
-        knowledgeBases = await fsp.readdir(KNOWLEDGE_BASES_ROOT_DIR);
+        // #1088: alias dedupe only (a no-op unless KB_EXTERNAL_SHELF_ROOTS is set).
+        knowledgeBases = await dropExternalShelfAliases(
+          KNOWLEDGE_BASES_ROOT_DIR,
+          await fsp.readdir(KNOWLEDGE_BASES_ROOT_DIR),
+        );
       }
 
       let anyFileProcessed = false;
