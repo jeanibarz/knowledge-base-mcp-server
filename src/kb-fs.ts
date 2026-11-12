@@ -13,6 +13,7 @@ import {
   type FilesystemEnumerationDiagnostics,
 } from './file-utils.js';
 import { filterIngestablePaths } from './ingest-filter.js';
+import { logger } from './logger.js';
 import { formatKnowledgeBaseSuggestions } from './suggestion-core.js';
 
 /**
@@ -55,8 +56,128 @@ export function assertNoTraversal(relativePath: string): void {
  * wraps in `CallToolResult.isError`; CLI exits non-zero).
  */
 export async function listKnowledgeBases(rootDir: string): Promise<string[]> {
-  const entries = await fsp.readdir(rootDir);
-  return entries.filter((entry) => !entry.startsWith('.'));
+  const entries = (await fsp.readdir(rootDir)).filter((entry) => !entry.startsWith('.'));
+  return dropExternalShelfAliases(rootDir, entries);
+}
+
+/**
+ * Issue #1088 — parse `KB_EXTERNAL_SHELF_ROOTS`: a `path.delimiter`-separated
+ * list of absolute directories. Unset/empty yields `[]` (feature off). Relative
+ * entries are ignored (an allowlist must not depend on the process cwd).
+ */
+export function parseExternalShelfRoots(raw: string | undefined = process.env.KB_EXTERNAL_SHELF_ROOTS): string[] {
+  if (raw === undefined || raw.trim() === '') return [];
+  return raw
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && path.isAbsolute(entry));
+}
+
+const warnedExternalShelfRoots = new Set<string>();
+
+function warnExternalShelfRootOnce(entry: string, reason: string): void {
+  if (warnedExternalShelfRoots.has(entry)) return;
+  warnedExternalShelfRoots.add(entry);
+  logger.warn(`KB_EXTERNAL_SHELF_ROOTS: ignoring entry ${JSON.stringify(entry)}: ${reason}`);
+}
+
+/**
+ * Realpaths of the usable allowlist entries. Entries that cannot be resolved
+ * (ENOENT, EACCES, ELOOP, ...) or that equal/contain the KB root or the FAISS
+ * index dir (e.g. `/` or `$HOME`) are skipped with a once-per-process warning;
+ * this function never throws.
+ */
+async function resolveExternalShelfRootRealpaths(rootDir: string): Promise<string[]> {
+  const entries = parseExternalShelfRoots();
+  if (entries.length === 0) return [];
+  const protectedPaths: string[] = [];
+  for (const candidate of [rootDir, process.env.FAISS_INDEX_PATH || path.join(rootDir, '.faiss')]) {
+    try {
+      protectedPaths.push(await fsp.realpath(candidate));
+    } catch {
+      // An absent index dir cannot be contained by anything yet.
+    }
+  }
+  const resolved: string[] = [];
+  for (const entry of entries) {
+    let real: string;
+    try {
+      real = await fsp.realpath(entry);
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code ?? 'error';
+      warnExternalShelfRootOnce(entry, `cannot be resolved (${code})`);
+      continue;
+    }
+    if (protectedPaths.some((p) => isInsideOrEqual(real, p))) {
+      warnExternalShelfRootOnce(entry, 'it equals or contains the KB root or index directory');
+      continue;
+    }
+    resolved.push(real);
+  }
+  return resolved;
+}
+
+/**
+ * Issue #1088 — the single confinement decision for an externally-located
+ * shelf: `<rootDir>/<name>` must itself be a symlink (only someone who can
+ * write the root can create one; imported content cannot forge a top-level
+ * entry) whose realpath is inside-or-equal to a realpath of a
+ * `KB_EXTERNAL_SHELF_ROOTS` entry. Returns the shelf's realpath, or `null`
+ * when the feature is off or the entry does not qualify. Inner-path
+ * confinement (`resolveKbPath`) stays relative to this resolved shelf.
+ */
+async function externalShelfRealpath(rootDir: string, kbName: string): Promise<string | null> {
+  const allowed = await resolveExternalShelfRootRealpaths(rootDir);
+  if (allowed.length === 0) return null;
+  const kbDir = path.join(rootDir, kbName);
+  try {
+    if (!(await fsp.lstat(kbDir)).isSymbolicLink()) return null;
+    const kbReal = await fsp.realpath(kbDir);
+    return allowed.some((root) => isInsideOrEqual(root, kbReal)) ? kbReal : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the top-level entry `kbName` is a symlink accepted as an external
+ * shelf under `KB_EXTERNAL_SHELF_ROOTS` (outside `rootDir`, inside an
+ * allowlisted root). In-root symlink aliases return false.
+ */
+export async function isExternalShelfLink(rootDir: string, kbName: string): Promise<boolean> {
+  const rootReal = await realpathIfExists(rootDir);
+  if (rootReal === null) return false;
+  const kbReal = await externalShelfRealpath(rootDir, kbName);
+  return kbReal !== null && !isInsideOrEqual(rootReal, kbReal);
+}
+
+/**
+ * With the allowlist set, drop top-level external-shelf links whose realpath
+ * equals that of an earlier (by sorted name) one, so an alias never
+ * double-lists or double-indexes the same shelf. A no-op when the allowlist is
+ * unset, keeping default behaviour byte-identical.
+ */
+export async function dropExternalShelfAliases(rootDir: string, names: string[]): Promise<string[]> {
+  if (parseExternalShelfRoots().length === 0) return names;
+  const seen = new Map<string, string>();
+  const dropped = new Set<string>();
+  for (const name of [...names].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (!(await isExternalShelfLink(rootDir, name))) continue;
+    let real: string;
+    try {
+      real = await fsp.realpath(path.join(rootDir, name));
+    } catch {
+      continue;
+    }
+    const first = seen.get(real);
+    if (first === undefined) {
+      seen.set(real, name);
+    } else {
+      dropped.add(name);
+      logger.debug(`KB_EXTERNAL_SHELF_ROOTS: skipping alias "${name}" (same shelf as "${first}")`);
+    }
+  }
+  return dropped.size === 0 ? names : names.filter((name) => !dropped.has(name));
 }
 
 export interface KbFileEnumeration {
@@ -568,7 +689,10 @@ export async function resolveKnowledgeBaseDir(
   }
 
   const kbReal = await fsp.realpath(kbDir);
-  if (!isInsideOrEqual(rootReal, kbReal)) {
+  if (
+    !isInsideOrEqual(rootReal, kbReal)
+    && (await externalShelfRealpath(rootDir, knowledgeBaseName)) === null
+  ) {
     throw new KBError(
       'VALIDATION',
       `Knowledge base "${knowledgeBaseName}" resolves outside ${rootDir}.`,

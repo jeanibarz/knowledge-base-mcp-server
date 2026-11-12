@@ -27,6 +27,17 @@ Use `kb doctor --locks` for write-lock contention. It reports per-model lock pat
 
 Use `kb doctor --kb-symlinks` for KB content-root symlink audits. It uses `lstat`, does not follow symlink directories, and reports inside-root, escaping, broken, and loop/error targets with capped examples.
 
+### External shelves (`KB_EXTERNAL_SHELF_ROOTS`)
+
+By default a top-level entry of `KNOWLEDGE_BASES_ROOT_DIR` that is a directory symlink resolving outside the root is refused (or skipped in unscoped listings). To opt in to shelves that live elsewhere (for example `~/knowledge_bases/programming -> ~/workspace/engineering-memory`), set `KB_EXTERNAL_SHELF_ROOTS` to a `path.delimiter`-separated list (`:` on POSIX, `;` on Windows) of absolute directories. A top-level symlink is then accepted as a shelf only if its realpath is inside-or-equal to the realpath of one of those roots. Unset or empty keeps the default behaviour.
+
+- Threat model: only someone who can write `KNOWLEDGE_BASES_ROOT_DIR` can add a top-level link, and only into roots you allowlisted. Imported content cannot forge one. Symlinks *inside* a shelf that escape the resolved shelf directory remain refused.
+- Aliases: two links resolving to the same directory are listed and indexed once (first by sorted name wins; the other is skipped, logged at debug level).
+- Re-resolution: links are re-resolved on every call, so `ln -sf` retargets a shelf immediately; the allowlist is the only gate.
+- Write co-mingling: the shelf's own `.index/` sidecars, quarantine records and `.kb-write.lock` are written inside the external target.
+- Dropbox/OneDrive/iCloud shelves: keep `FAISS_INDEX_PATH` outside the synced tree, use a single writer (lock files are unreliable over sync), and expect sync artifacts such as conflicted copies to be walked by ingest.
+- `kb doctor --kb-symlinks` still classifies such links as `escaping`; that is informational when the target is allowlisted.
+
 Use `kb doctor --bug-report[=<dir>]` when preparing an issue-ready diagnostic bundle. The command writes a timestamped directory with redacted doctor/stats/log/runtime JSON plus a README, without note contents or raw API keys.
 
 ## Quick Symptom Table

@@ -12,6 +12,7 @@ import {
   assertNoTraversal,
   enumerateIngestableKbFiles,
   type KbFileEnumeration,
+  isExternalShelfLink,
   listKnowledgeBases,
   resolveKnowledgeBaseDir,
 } from './kb-fs.js';
@@ -106,7 +107,10 @@ export async function listKnowledgeBaseDocuments(
     // configured root, which must never become an enumerable document scope.
     try {
       const resolvedKbPath = await resolveKnowledgeBaseDir(options.rootDir, kbName);
-      if ((await fsp.lstat(resolvedKbPath)).isSymbolicLink()) {
+      if (
+        (await fsp.lstat(resolvedKbPath)).isSymbolicLink()
+        && !(await isExternalShelfLink(options.rootDir, kbName))
+      ) {
         if (options.kbName !== undefined) {
           throw new Error(
             `knowledge base ${JSON.stringify(kbName)} is a symlink and cannot be listed`,
@@ -245,6 +249,12 @@ async function listKnowledgeBaseDirectories(rootDir: string): Promise<string[]> 
       const candidatePath = path.join(rootDir, candidate);
       const entry = await fsp.lstat(candidatePath);
       if (entry.isSymbolicLink()) {
+        // #1088: a link into KB_EXTERNAL_SHELF_ROOTS is a real shelf (aliases
+        // already deduped by listKnowledgeBases).
+        if (await isExternalShelfLink(rootDir, candidate)) {
+          directories.push(candidate);
+          continue;
+        }
         // Preserve resolveKnowledgeBaseDir's outside-root guard, but do not
         // expose an in-root symlink alias as a second KB inventory.
         await resolveKnowledgeBaseDir(rootDir, candidate);

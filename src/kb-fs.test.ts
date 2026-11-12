@@ -1,8 +1,9 @@
-import { describe, expect, it } from '@jest/globals';
+import { afterEach, describe, expect, it } from '@jest/globals';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { KBError } from './errors.js';
+import { listKnowledgeBaseDocuments } from './kb-document-listing.js';
 import {
   describeKnowledgeBase,
   extractKbDescription,
@@ -268,6 +269,113 @@ describe('resolveKbPath symlink confinement (#1191)', () => {
       await expect(
         resolveKbPath(rootDir, 'kb', 'sub/new.md', { mustExist: false }),
       ).resolves.toBe(path.join(kbDir, 'sub', 'new.md'));
+    });
+  });
+});
+
+describe('KB_EXTERNAL_SHELF_ROOTS (#1088)', () => {
+  const original = process.env.KB_EXTERNAL_SHELF_ROOTS;
+  afterEach(() => {
+    if (original === undefined) delete process.env.KB_EXTERNAL_SHELF_ROOTS;
+    else process.env.KB_EXTERNAL_SHELF_ROOTS = original;
+  });
+
+  async function withLayout(
+    fn: (l: { rootDir: string; allowed: string; other: string }) => Promise<void>,
+  ): Promise<void> {
+    const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-fs-ext-'));
+    try {
+      const rootDir = path.join(base, 'root');
+      const allowed = path.join(base, 'allowed');
+      const other = path.join(base, 'other');
+      for (const d of [rootDir, allowed, other]) await fsp.mkdir(d);
+      await fsp.mkdir(path.join(allowed, 'eng'));
+      await fsp.writeFile(path.join(allowed, 'eng', 'note.md'), '# hi\n');
+      await fsp.mkdir(path.join(other, 'bad'));
+      await fsp.writeFile(path.join(other, 'bad', 'note.md'), '# bad\n');
+      await fsp.mkdir(path.join(rootDir, 'local'));
+      await fsp.writeFile(path.join(rootDir, 'local', 'a.md'), '# a\n');
+      await fn({ rootDir, allowed, other });
+    } finally {
+      await fsp.rm(base, { recursive: true, force: true });
+    }
+  }
+
+  it('accepts an allowlisted top-level link for resolution, path resolution and listing', async () => {
+    await withLayout(async ({ rootDir, allowed }) => {
+      await fsp.symlink(path.join(allowed, 'eng'), path.join(rootDir, 'programming'), 'dir');
+      process.env.KB_EXTERNAL_SHELF_ROOTS = [path.join(allowed), '/nonexistent-root'].join(path.delimiter);
+      await expect(resolveKnowledgeBaseDir(rootDir, 'programming')).resolves.toBe(path.join(rootDir, 'programming'));
+      await expect(resolveKbPath(rootDir, 'programming', 'note.md', { mustExist: true }))
+        .resolves.toBe(await fsp.realpath(path.join(allowed, 'eng', 'note.md')));
+      expect(await listResolvableKnowledgeBases(rootDir)).toEqual(expect.arrayContaining(['local', 'programming']));
+      const listing = await listKnowledgeBaseDocuments({ rootDir });
+      expect(listing.documents.map((d) => `${d.kbName}/${d.relativePath}`).sort()).toEqual([
+        'local/a.md',
+        'programming/note.md',
+      ]);
+    });
+  });
+
+  it('still refuses a link outside the allowlist', async () => {
+    await withLayout(async ({ rootDir, allowed, other }) => {
+      await fsp.symlink(path.join(other, 'bad'), path.join(rootDir, 'evil'), 'dir');
+      process.env.KB_EXTERNAL_SHELF_ROOTS = allowed;
+      await expect(resolveKnowledgeBaseDir(rootDir, 'evil')).rejects.toMatchObject({ code: 'VALIDATION' });
+      expect(await listResolvableKnowledgeBases(rootDir)).toEqual(['local']);
+    });
+  });
+
+  it('keeps refusing escaping links when the env is unset or empty', async () => {
+    await withLayout(async ({ rootDir, allowed }) => {
+      await fsp.symlink(path.join(allowed, 'eng'), path.join(rootDir, 'programming'), 'dir');
+      delete process.env.KB_EXTERNAL_SHELF_ROOTS;
+      await expect(resolveKnowledgeBaseDir(rootDir, 'programming')).rejects.toMatchObject({ code: 'VALIDATION' });
+      process.env.KB_EXTERNAL_SHELF_ROOTS = '';
+      await expect(resolveKnowledgeBaseDir(rootDir, 'programming')).rejects.toMatchObject({ code: 'VALIDATION' });
+      expect(await listResolvableKnowledgeBases(rootDir)).toEqual(['local']);
+    });
+  });
+
+  it('still refuses an inner symlink that escapes the resolved external shelf', async () => {
+    await withLayout(async ({ rootDir, allowed, other }) => {
+      await fsp.symlink(path.join(other, 'bad', 'note.md'), path.join(allowed, 'eng', 'leak.md'));
+      await fsp.symlink(path.join(allowed, 'eng'), path.join(rootDir, 'programming'), 'dir');
+      process.env.KB_EXTERNAL_SHELF_ROOTS = allowed;
+      await expect(resolveKbPath(rootDir, 'programming', 'leak.md', { mustExist: true }))
+        .rejects.toMatchObject({ code: 'VALIDATION' });
+    });
+  });
+
+  it('dedupes two aliases of the same shelf, keeping the first by sorted name', async () => {
+    await withLayout(async ({ rootDir, allowed }) => {
+      await fsp.symlink(path.join(allowed, 'eng'), path.join(rootDir, 'zeta'), 'dir');
+      await fsp.symlink(path.join(allowed, 'eng'), path.join(rootDir, 'alpha'), 'dir');
+      process.env.KB_EXTERNAL_SHELF_ROOTS = allowed;
+      expect((await listKnowledgeBases(rootDir)).sort()).toEqual(['alpha', 'local']);
+      expect(await listResolvableKnowledgeBases(rootDir)).not.toContain('zeta');
+      const listing = await listKnowledgeBaseDocuments({ rootDir });
+      expect(listing.documents.map((d) => `${d.kbName}/${d.relativePath}`).sort()).toEqual([
+        'alpha/note.md',
+        'local/a.md',
+      ]);
+    });
+  });
+
+  it('ignores broad allowlist entries (/, ancestors of the root) and unreadable ones without throwing', async () => {
+    await withLayout(async ({ rootDir, allowed, other }) => {
+      await fsp.symlink(path.join(other, 'bad'), path.join(rootDir, 'evil'), 'dir');
+      await fsp.symlink(path.join(allowed, 'eng'), path.join(rootDir, 'good'), 'dir');
+      const parent = path.dirname(rootDir);
+      const loop = path.join(allowed, 'loop');
+      await fsp.symlink('loop', loop);
+      process.env.KB_EXTERNAL_SHELF_ROOTS = ['/', parent, loop, allowed].join(path.delimiter);
+      // '/' and the root's parent admit nothing; the loop entry is skipped; the sane entry still works.
+      await expect(resolveKnowledgeBaseDir(rootDir, 'evil')).rejects.toMatchObject({ code: 'VALIDATION' });
+      await expect(resolveKnowledgeBaseDir(rootDir, 'good')).resolves.toBe(path.join(rootDir, 'good'));
+      await expect(listKnowledgeBases(rootDir)).resolves.toEqual(expect.arrayContaining(['local', 'good']));
+      process.env.KB_EXTERNAL_SHELF_ROOTS = ['/', parent, loop].join(path.delimiter);
+      await expect(resolveKnowledgeBaseDir(rootDir, 'good')).rejects.toMatchObject({ code: 'VALIDATION' });
     });
   });
 });
