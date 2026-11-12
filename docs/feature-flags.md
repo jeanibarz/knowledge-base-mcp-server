@@ -15,7 +15,7 @@ operator workflow matrix and avoids duplicating the generated schema table.
 | Feature | Env var or flag | Default | Surfaces | Status | Per-call override | Validation command |
 |---|---|---:|---|---|---|---|
 | Retrieval mode | `kb search --mode=dense\|lexical\|hybrid\|auto` | `dense` | CLI search | Implemented | `--mode=...` | `kb search "query" --mode=auto --timing` |
-| Neighbor context windows | `kb search --context-before=<n>`, `--context-after=<n>`, `--context-window=<n>` | off | CLI dense search | Implemented, opt-in | per-call flags only | `kb search "runbook rollback" --context-window=1` |
+| Neighbor context windows | `kb search --context-before=<n>`, `--context-after=<n>`, `--context-window=<n>` | off | CLI dense/hybrid search | Implemented, opt-in | per-call flags only | `kb search "runbook rollback" --context-window=1` |
 | Advanced retrieval exploration | `kb search --diverse`, `--anti-query=<text>`, `--plus=<text>`, `--minus=<text>` | off | CLI search | Implemented, opt-in | per-call flags only | `kb search "agent evidence" --diverse --format=json` |
 | Query decomposition | `kb search --mode=hybrid --decompose`, `--decompose-provider=rule\|llm`, `--decompose-max-subqueries=<n>`, `--decompose-max-iterations=<n>`, `--decompose-max-candidates=<n>`, `--decompose-timeout-ms=<n>` | off | CLI hybrid search, BEIR `hybrid+decompose` benchmark mode | Implemented, opt-in | per-call flags; `llm` provider uses `KB_DECOMPOSE_LLM_ENDPOINT` or `KB_LLM_ENDPOINT` and falls back to `rule` | `kb search "multi hop query" --mode=hybrid --decompose --format=json` |
 | Query decomposition cache | `KB_DECOMPOSE_CACHE_ENABLED` | off | LLM query decomposition | Implemented, opt-in | `KB_DECOMPOSE_CACHE_LRU_MAX` (default `256`), `KB_DECOMPOSE_CACHE_DISK_MAX_BYTES` (default `67108864`) | repeat an LLM-decomposed query, then inspect `$FAISS_INDEX_PATH/cache/query-decompositions/` |
@@ -33,8 +33,9 @@ operator workflow matrix and avoids duplicating the generated schema table.
 | Save generated answer | `kb ask --save-transcript --yes` | off | CLI ask write path | Implemented | `--save-transcript --kb=<name> --yes` | `kb ask "question" --kb=<name> --save-transcript --title="..." --yes` |
 | Frontmatter sensitivity policy | `kb_policy.no_llm_context`, `kb_policy.resource_read`, `kb_policy.sensitivity` | unset | `kb ask`, contextual-preface ingest, relevance-gate Stage B, MCP `ask_knowledge`, MCP `retrieve_knowledge`, MCP `resources/read` | Implemented, author-controlled | per-document frontmatter | add `kb_policy: { no_llm_context: true }`, then run `kb ask ... --format=json` or a gated `kb search` |
 
-Neighbor context windows are dense-only. They expand the returned context after
-ranking and do not make neighboring chunks influence the dense score. See
+Neighbor context windows work in dense and hybrid mode (not lexical), in the CLI
+and in the MCP `retrieve_knowledge` / `ask_knowledge` tools. They expand the
+returned context after ranking and do not make neighboring chunks influence the score. See
 [Neighbor Context Search Windows](search-neighbor-context.md) for examples,
 markdown/JSON output shape, and when wider windows dilute results.
 

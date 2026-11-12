@@ -13,7 +13,7 @@ const similaritySearchMock = jest.fn();
 // then runs similaritySearch on the seed text. Default to "no seed found" so
 // tests that don't exercise find_related are unaffected.
 const findChunkByReferenceMock = jest.fn((..._args: unknown[]) => null as unknown);
-const expandWithNeighborContextMock = jest.fn((results: unknown) => results);
+const expandWithNeighborContextMock = jest.fn((results: unknown, _options?: unknown) => results);
 const hasLoadedIndexMock = jest.fn(() => true);
 // Issue #54 — kb_stats reads chunk_count + dim from the manager. Default to
 // an empty store so tests that don't care about stats still see a sane shape.
@@ -619,19 +619,76 @@ describe('KnowledgeBaseServer handlers', () => {
     expect(result.content[0].text).toContain('neighbor');
   });
 
-  it('handleRetrieveKnowledge rejects neighbor context for hybrid mode', async () => {
+  it('handleRetrieveKnowledge rejects neighbor context for lexical mode', async () => {
     await setRetrieveEnv();
 
     const server = await freshServer();
     const result = await server['handleRetrieveKnowledge']({
       query: 'q',
-      search_mode: 'hybrid',
+      search_mode: 'lexical',
       context_window: 1,
     });
 
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text).error.code).toBe('VALIDATION');
     expect(similaritySearchMock).not.toHaveBeenCalled();
+  });
+
+  it('handleRetrieveKnowledge expands neighbor context in hybrid mode (#1224)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'HYBRID_NEIGHBOR_QUERY body');
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([{
+      pageContent: 'dense hit',
+      metadata: { source: '/kb/doc.md', chunkIndex: 1 },
+      score: 0.2,
+    }]);
+    expandWithNeighborContextMock.mockImplementation((results: unknown) => (results as any[]).map((r) => ({
+      ...r,
+      matchType: 'semantic',
+      semanticMatch: true,
+      contextChunks: [{
+        pageContent: 'HYBRID_NEIGHBOR_CONTEXT',
+        metadata: { source: '/kb/doc.md', chunkIndex: 2 },
+        matchType: 'context',
+        semanticMatch: false,
+        contextDirection: 'after',
+        contextDistance: 1,
+      }],
+    })));
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'HYBRID_NEIGHBOR_QUERY',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+      context_after: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(expandWithNeighborContextMock).toHaveBeenCalledTimes(1);
+    expect(expandWithNeighborContextMock.mock.calls[0][1]).toEqual({ before: 0, after: 1 });
+    expect(result.content[0].text).toContain('> _Mode: hybrid');
+    expect(result.content[0].text).toContain('HYBRID_NEIGHBOR_CONTEXT');
+  });
+
+  it('handleRetrieveKnowledge hybrid without a window never calls neighbor expansion (#1224)', async () => {
+    const tempDir = await setRetrieveEnv();
+    await fsp.mkdir(path.join(tempDir, 'alpha'), { recursive: true });
+    await fsp.writeFile(path.join(tempDir, 'alpha', 'doc.md'), 'HYBRID_PLAIN_QUERY body');
+    updateIndexMock.mockResolvedValue(undefined);
+    similaritySearchMock.mockResolvedValue([]);
+
+    const server = await freshServer();
+    const result = await server['handleRetrieveKnowledge']({
+      query: 'HYBRID_PLAIN_QUERY',
+      knowledge_base_name: 'alpha',
+      search_mode: 'hybrid',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(expandWithNeighborContextMock).not.toHaveBeenCalled();
   });
 
   // --- handleKbStats (#54) -------------------------------------------------

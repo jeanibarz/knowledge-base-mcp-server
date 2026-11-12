@@ -27,8 +27,9 @@ kb search "rollback after failed deploy" --context-window=1 --format=json
 - Neighbor context works with `--mode=dense` and `--mode=hybrid` (including
   `--rerank`). `--mode=lexical` rejects neighbor expansion. In hybrid mode the
   neighbors are attached after fusion, rerank and gating, so they never change
-  ranking. The MCP `retrieve_knowledge` and `ask_knowledge` tools are still
-  dense-only.
+  ranking. The MCP `retrieve_knowledge` and `ask_knowledge` tools (`context_before`,
+  `context_after`, `context_window`) behave the same way: dense and hybrid are
+  supported, lexical is rejected with a `VALIDATION` error.
 
 Neighbor windows do not improve or change ranking. The dense search first
 finds the top semantic matches, then the formatter attaches nearby chunks from
