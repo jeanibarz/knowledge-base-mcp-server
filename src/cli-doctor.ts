@@ -5,6 +5,7 @@
 
 import * as fsp from 'fs/promises';
 import { realpathSync } from 'fs';
+import { createRequire } from 'module';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
@@ -112,6 +113,7 @@ import {
 import { resolveRelevanceGateConfig } from './config/relevance-gate.js';
 import { isFakeLlmEnabled } from './llm-fake-stub.js';
 import { resolveRerankerConfig } from './config/reranker.js';
+import { RERANK_ADDON_MISSING_MESSAGE } from './reranker.js';
 import {
   backendForIndexType,
   resolveFlatSearchP95AdvisoryMs,
@@ -2471,6 +2473,17 @@ async function readRerankerHealth(): Promise<DoctorReport['reranker']> {
     };
   }
 
+  if (!isTransformersInstalled()) {
+    return {
+      enabled: true,
+      model: config.model,
+      top_n: config.topN,
+      status: 'warn',
+      cache_path: null,
+      detail: RERANK_ADDON_MISSING_MESSAGE,
+    };
+  }
+
   const cachePath = await findHuggingFaceModelCachePath(config.model);
   return {
     enabled: true,
@@ -2482,6 +2495,18 @@ async function readRerankerHealth(): Promise<DoctorReport['reranker']> {
       ? 'reranker model cache not found; first enabled call may download the model or degrade offline'
       : 'reranker model cache found',
   };
+}
+
+// #1176: @huggingface/transformers is an optional peer, not installed by default.
+function isTransformersInstalled(): boolean {
+  try {
+    // Resolve relative to the running CLI (avoids import.meta, which ts-jest rejects).
+    const here = realpathSync(process.argv[1] ?? path.join(process.cwd(), 'build', 'cli.js'));
+    createRequire(here).resolve('@huggingface/transformers');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function findHuggingFaceModelCachePath(model: string): Promise<string | null> {

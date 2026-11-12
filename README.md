@@ -715,6 +715,14 @@ Dense retrieval scores your query and each chunk *separately*, then compares the
 
 Enable it with `KB_RERANK=on`, or per call with `kb search --rerank` / `kb ask --rerank`. You pay a small amount of latency per query.
 
+Reranking needs one extra install step, because the cross-encoder runtime (`@huggingface/transformers`, which pulls in ONNX runtimes) is an optional peer dependency and is not installed with the server by default:
+
+```bash
+npm install -g @huggingface/transformers   # or `npm install @huggingface/transformers` next to the server
+```
+
+Without it, `KB_RERANK=on` logs a one-time warning with this hint and returns the un-reranked order; `kb doctor` flags it too.
+
 | Env var | Description | Default |
 | --- | --- | --- |
 | `KB_RERANK` | Enable the cross-encoder reranking stage. | `off` |

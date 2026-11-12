@@ -21,7 +21,6 @@ updates:
     groups:
       langchain:
         patterns:
-          - "langchain"
           - "@langchain/*"
       opentelemetry:
         patterns:
