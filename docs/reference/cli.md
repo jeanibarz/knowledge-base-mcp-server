@@ -1637,9 +1637,9 @@ Result tuning:
                         Requires --refresh or KB_RETRIEVAL_VIEWS at ingest time
                         to create section/metadata/summary view records.
   --context-before=<n>  Include up to n preceding chunks from the same source
-                        around each dense semantic match (0-5).
+                        around each dense or hybrid match (0-5).
   --context-after=<n>   Include up to n following chunks from the same source
-                        around each dense semantic match (0-5).
+                        around each dense or hybrid match (0-5).
   --context-window=<n>  Shorthand for --context-before=n --context-after=n.
   --no-cache            Bypass the query-embedding cache for this search.
   --gate                Run the relevance gate for this call even when
