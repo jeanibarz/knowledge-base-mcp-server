@@ -395,7 +395,7 @@ kb search "INDEX_NOT_INITIALIZED" --mode=hybrid
 kb search "src/cli-search.ts" --mode=auto
 ```
 
-**Widening a match.** A chunk is roughly a thousand characters, so a good hit is often the middle of a longer thought. `--context-before`, `--context-after`, and `--context-window` attach the adjacent chunks from the same source to each dense match — more to read, but fewer follow-up queries. See [docs/search-neighbor-context.md](docs/search-neighbor-context.md) for the JSON shape and the tradeoffs.
+**Widening a match.** A chunk is roughly a thousand characters, so a good hit is often the middle of a longer thought. `--context-before`, `--context-after`, and `--context-window` attach the adjacent chunks from the same source to each dense or hybrid (including rerank) match — more to read, but fewer follow-up queries. See [docs/search-neighbor-context.md](docs/search-neighbor-context.md) for the JSON shape and the tradeoffs.
 
 ```bash
 kb search "runbook rollback" --context-window=1

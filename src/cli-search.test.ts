@@ -2218,6 +2218,40 @@ describe('runSearch timing guard (#331)', () => {
     expect(payload.results[0]?.metadata.relativePath).toBe('alpha/warm.md');
   });
 
+  it('expands hybrid results with neighbor context after fusion (#1220)', async () => {
+    const { deps, manager } = makeDeps();
+    manager.similaritySearch = jest.fn(async () => [{
+      pageContent: 'best match',
+      metadata: { source: '/kb/alpha/a.md', knowledgeBase: 'alpha', relativePath: 'alpha/a.md', chunkIndex: 0 },
+      score: 0.1,
+    }]);
+    const expand = jest.fn((...args: unknown[]) =>
+      (args[0] as Array<Record<string, unknown>>).map((r) => ({
+        ...r,
+        contextChunks: [{ pageContent: 'gold fact one chunk later', metadata: { chunkIndex: 1 }, contextDirection: 'after' }],
+      })),
+    );
+    (manager as unknown as { expandWithNeighborContext: jest.Mock }).expandWithNeighborContext = expand;
+    deps.listLexicalKbs = jest.fn(async () => []);
+
+    const out = await captureSearchOutput(
+      ['query', '--mode=hybrid', '--context-after=1', '--format=json', '--k=1', '--no-freshness'],
+      deps,
+    );
+
+    expect(out.code).toBe(0);
+    expect(out.stderr).not.toContain('only supported');
+    expect(expand).toHaveBeenCalledWith(expect.any(Array), { after: 1 });
+    expect(out.stdout).toContain('gold fact one chunk later');
+  });
+
+  it('still rejects neighbor context under --mode=lexical (#1220)', async () => {
+    const { deps } = makeDeps();
+    const out = await captureSearchOutput(['query', '--mode=lexical', '--context-window=1'], deps);
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain('neighbor context expansion is only supported with --mode=dense or --mode=hybrid');
+  });
+
   it('uses --candidate-pool-k to filter a wide hybrid pool before rerank and JSON output', async () => {
     const manager = {
       modelDir: '/tmp/kb-test-model',
