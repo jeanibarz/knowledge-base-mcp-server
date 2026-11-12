@@ -361,6 +361,16 @@ describe('loadTransformers (#1176 optional peer)', () => {
     await expect(loadTransformers(async () => { throw other; })).rejects.toBe(other);
   });
 
+  it('does not misclassify a nested missing dependency of transformers', async () => {
+    const nested = Object.assign(
+      new Error(
+        "Cannot find package 'onnxruntime-node' imported from /x/node_modules/@huggingface/transformers/dist/transformers.node.mjs",
+      ),
+      { code: 'ERR_MODULE_NOT_FOUND' },
+    );
+    await expect(loadTransformers(async () => { throw nested; })).rejects.toBe(nested);
+  });
+
   it('returns the module when the import succeeds', async () => {
     const mod = { AutoTokenizer: {} };
     await expect(loadTransformers(async () => mod)).resolves.toBe(mod);

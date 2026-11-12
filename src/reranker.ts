@@ -378,7 +378,15 @@ interface SequenceClassifierConfig {
 
 export const RERANK_ADDON_MISSING_MESSAGE =
   'KB_RERANK=on needs the optional package @huggingface/transformers: ' +
-  'npm install -g @huggingface/transformers (or add it next to the server)';
+  'install it next to the server (global install: npm install -g @huggingface/transformers; ' +
+  'local install: npm install @huggingface/transformers; ' +
+  'npx: add -p @huggingface/transformers, e.g. npx -y -p @jeanibarz/knowledge-base-mcp-server@latest ' +
+  '-p @huggingface/transformers knowledge-base-mcp-server)';
+
+// Matches only when the *missing specifier itself* is the add-on. Node's message for a
+// nested miss ("Cannot find package 'onnxruntime-node' imported from
+// .../@huggingface/transformers/...") must not match.
+const MISSING_TRANSFORMERS_RE = /Cannot find (?:package|module) '@huggingface\/transformers'/;
 
 /**
  * @huggingface/transformers is an optional peer dependency (#1176), so a
@@ -395,7 +403,7 @@ export async function loadTransformers(
     const message = err instanceof Error ? err.message : String(err);
     if (
       (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') &&
-      message.includes('@huggingface/transformers')
+      MISSING_TRANSFORMERS_RE.test(message)
     ) {
       throw new Error(RERANK_ADDON_MISSING_MESSAGE, { cause: err });
     }

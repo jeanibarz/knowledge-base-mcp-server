@@ -2498,15 +2498,27 @@ async function readRerankerHealth(): Promise<DoctorReport['reranker']> {
 }
 
 // #1176: @huggingface/transformers is an optional peer, not installed by default.
+// Approximation: this resolves through CommonJS (createRequire), which also honours
+// NODE_PATH, whereas the runtime ESM import() does not. It is only a doctor hint.
 function isTransformersInstalled(): boolean {
+  // Resolve relative to the running CLI (avoids import.meta, which ts-jest rejects);
+  // fall back to cwd when argv[1] is missing or not a real file.
+  const bases: string[] = [];
   try {
-    // Resolve relative to the running CLI (avoids import.meta, which ts-jest rejects).
-    const here = realpathSync(process.argv[1] ?? path.join(process.cwd(), 'build', 'cli.js'));
-    createRequire(here).resolve('@huggingface/transformers');
-    return true;
+    if (process.argv[1]) bases.push(realpathSync(process.argv[1]));
   } catch {
-    return false;
+    // fall through to cwd
   }
+  bases.push(path.join(process.cwd(), 'noop.js'));
+  for (const base of bases) {
+    try {
+      createRequire(base).resolve('@huggingface/transformers');
+      return true;
+    } catch {
+      // try next base
+    }
+  }
+  return false;
 }
 
 async function findHuggingFaceModelCachePath(model: string): Promise<string | null> {
