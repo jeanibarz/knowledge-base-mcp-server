@@ -52,8 +52,11 @@ machine-readable contract for any tooling on top.
 The planner is deterministic. The flags below shape its decisions but never
 add non-determinism:
 
-- `--include-kb=<name>` (alias `--kb=<name>`, repeatable): pin a shelf into
-  the plan even if its score is low.
+- `--kb=<name>` (repeatable): restrict the plan to the named shelf(s) only,
+  with no auto-selection — same meaning as `kb search --kb`. (Before #1221 this
+  was an alias for `--include-kb`.)
+- `--include-kb=<name>` (repeatable): pin a shelf into the plan *in addition
+  to* the auto-selected shelves, even if its score is low.
 - `--exclude-kb=<name>` (repeatable): drop a shelf from consideration.
 - `--max-shelves=<n>` (default `5`): cap automatic shelf selection.
 - `--k=<int>` (default `5`): hits per query/shelf during collection.

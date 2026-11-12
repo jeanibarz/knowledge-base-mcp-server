@@ -12,8 +12,8 @@ import { computeKbStats, type KbStatsPayload, type KbStatsRow } from './kb-stats
 export const RESEARCH_HELP = `kb research — read-only KB evidence planning and collection
 
 Usage:
-  kb research plan "<question>" [--format=md|json] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
-  kb research collect "<question>" --run-dir <path> [--format=md|json] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
+  kb research plan "<question>" [--format=md|json] [--kb=<name>] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
+  kb research collect "<question>" --run-dir <path> [--format=md|json] [--kb=<name>] [--include-kb=<name>] [--exclude-kb=<name>] [--max-shelves=<n>]
 
 The workflow is deterministic: it reads KB descriptions and stats, selects
 likely shelves and queries, then collect uses existing hybrid search. It does
@@ -34,8 +34,9 @@ Options:
   --run-dir=<path>      Same as above.
   --format=md|json      Output format (default: md).
   --k=<int>             Results per query/shelf search during collect (default: 5).
-  --kb=<name>           Include a shelf explicitly (alias for --include-kb).
-  --include-kb=<name>   Include a shelf explicitly; repeatable.
+  --kb=<name>           Restrict the plan to this shelf only (like "kb search --kb");
+                        repeatable. Disables auto-selection; use --include-kb to add.
+  --include-kb=<name>   Add a shelf on top of auto-selected shelves; repeatable.
   --exclude-kb=<name>   Exclude a shelf; repeatable.
   --max-shelves=<int>   Maximum automatically selected shelves (default: 5).
   --help, -h            Show this help.
@@ -56,6 +57,8 @@ interface ResearchArgs {
   runDir?: string;
   k: number;
   includeShelves: string[];
+  /** Shelves named via `--kb`: restrict the plan to these shelves only (no auto-selection). */
+  onlyShelves: string[];
   excludeShelves: string[];
   maxShelves: number;
 }
@@ -103,6 +106,7 @@ export interface ResearchPlan {
 
 interface ResearchPlanOptions {
   includeShelves?: string[];
+  onlyShelves?: string[];
   excludeShelves?: string[];
   maxShelves?: number;
 }
@@ -236,6 +240,7 @@ export function parseResearchArgs(rest: string[]): ResearchArgs {
   let runDir: string | undefined;
   let k = 5;
   const includeShelves: string[] = [];
+  const onlyShelves: string[] = [];
   const excludeShelves: string[] = [];
   let maxShelves = 5;
 
@@ -271,6 +276,7 @@ export function parseResearchArgs(rest: string[]): ResearchArgs {
       const value = rest[++i];
       if (!value || value.startsWith('--')) throw new Error(`missing value for ${raw}`);
       if (raw === '--exclude-kb') excludeShelves.push(value);
+      else if (raw === '--kb') onlyShelves.push(value);
       else includeShelves.push(value);
       continue;
     }
@@ -278,7 +284,8 @@ export function parseResearchArgs(rest: string[]): ResearchArgs {
       const flag = raw.startsWith('--kb=') ? '--kb' : '--include-kb';
       const value = raw.slice(`${flag}=`.length).trim();
       if (value === '') throw new Error(`empty ${flag} value`);
-      includeShelves.push(value);
+      if (flag === '--kb') onlyShelves.push(value);
+      else includeShelves.push(value);
       continue;
     }
     if (raw.startsWith('--exclude-kb=')) {
@@ -307,7 +314,7 @@ export function parseResearchArgs(rest: string[]): ResearchArgs {
   if (action === 'collect' && (runDir === undefined || runDir.trim() === '')) {
     throw new Error('collect requires --run-dir <path>');
   }
-  const conflicts = intersectNames(includeShelves, excludeShelves);
+  const conflicts = intersectNames([...includeShelves, ...onlyShelves], excludeShelves);
   if (conflicts.length > 0) {
     throw new Error(`cannot include and exclude the same shelf: ${conflicts.join(', ')}`);
   }
@@ -319,6 +326,7 @@ export function parseResearchArgs(rest: string[]): ResearchArgs {
     ...(runDir !== undefined ? { runDir } : {}),
     k,
     includeShelves: uniqueNames(includeShelves),
+    onlyShelves: uniqueNames(onlyShelves),
     excludeShelves: uniqueNames(excludeShelves),
     maxShelves,
   };
@@ -498,7 +506,9 @@ function selectShelves(
   const questionTokens = tokenize(question);
   const questionText = canonicalPhrase(question);
   const maxShelves = options.maxShelves ?? 5;
-  const includeNames = uniqueNames(options.includeShelves ?? []);
+  const onlyNames = uniqueNames(options.onlyShelves ?? []);
+  const restrictToOnly = onlyNames.length > 0;
+  const includeNames = uniqueNames([...(options.includeShelves ?? []), ...onlyNames]);
   const excludeNames = new Set(uniqueNames(options.excludeShelves ?? []));
   const byName = new Map(descriptions.map((shelf) => [shelf.name, shelf.description]));
   for (const name of Object.keys(statsRows)) {
@@ -560,6 +570,9 @@ function selectShelves(
   const included = available
     .filter((shelf) => includeSet.has(shelf.name))
     .sort(compareShelves);
+  // `--kb=<name>` scopes the plan to the named shelf(s), matching `kb search --kb`;
+  // `--include-kb` stays additive on top of auto-selection.
+  if (restrictToOnly) return included;
   const relevant = available
     .filter((shelf) => !includeSet.has(shelf.name) && shelf.score >= 2)
     .sort(compareShelves)
@@ -707,9 +720,10 @@ function intersectNames(left: string[], right: string[]): string[] {
   return uniqueNames(left).filter((name) => rightSet.has(name));
 }
 
-function researchPlanOptions(args: Pick<ResearchArgs, 'includeShelves' | 'excludeShelves' | 'maxShelves'>): ResearchPlanOptions {
+function researchPlanOptions(args: Pick<ResearchArgs, 'includeShelves' | 'onlyShelves' | 'excludeShelves' | 'maxShelves'>): ResearchPlanOptions {
   return {
     includeShelves: args.includeShelves,
+    onlyShelves: args.onlyShelves,
     excludeShelves: args.excludeShelves,
     maxShelves: args.maxShelves,
   };
