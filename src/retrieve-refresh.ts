@@ -13,18 +13,18 @@ export type RetrieveIndexState = 'fresh' | 'refreshing' | 'stale_unchecked';
 export interface RetrieveIndexStatus {
   refresh_mode: 'async' | 'off';
   state: RetrieveIndexState;
+  /** Present when the search ran on the last committed version, not the live writer index. */
+  served_from?: 'committed_snapshot';
 }
 
 /**
- * Single-flight background runner keyed by model directory. While a run is in
- * flight, further `trigger()` calls do not start another one; they set one
- * coalesced pending flag, and exactly one rerun follows the in-flight run
- * (same shape as `ReindexTriggerWatcher`: N triggers produce at most 2 runs).
- * Failures are logged, never thrown, so there are no unhandled rejections.
+ * Single-flight background runner keyed by model directory. A `trigger()` while
+ * a run is in flight just joins it (no queued rerun); the next trigger after it
+ * finishes starts a new run. Failures are logged, never thrown, so there are
+ * no unhandled rejections.
  */
 export class BackgroundRefreshCoordinator {
   private readonly inFlight = new Map<string, Promise<void>>();
-  private readonly pending = new Set<string>();
 
   isRefreshing(key: string): boolean {
     return this.inFlight.has(key);
@@ -32,29 +32,27 @@ export class BackgroundRefreshCoordinator {
 
   /** Starts a background run for `key` unless one is already in flight. */
   trigger(key: string, run: () => Promise<void>): void {
-    if (this.inFlight.has(key)) {
-      this.pending.add(key);
-      return;
-    }
-    const loop = async (): Promise<void> => {
-      do {
-        this.pending.delete(key);
-        try {
-          await run();
-        } catch (err) {
-          logger.warn(
-            `Background retrieve refresh failed for ${key}: ${(err as Error)?.message ?? String(err)}`,
-          );
-        }
-      } while (this.pending.has(key));
-    };
-    const p = loop().finally(() => {
+    if (this.inFlight.has(key)) return;
+    const p = (async (): Promise<void> => {
+      try {
+        await run();
+      } catch (err) {
+        logger.warn(
+          `Background retrieve refresh failed for ${key}: ${(err as Error)?.message ?? String(err)}`,
+        );
+      }
+    })().finally(() => {
       this.inFlight.delete(key);
     });
     this.inFlight.set(key, p);
   }
 
-  /** Resolves when every in-flight run (and its coalesced rerun) has settled. */
+  /** Resolves when the in-flight run for `key` (if any) has settled. */
+  async settled(key: string): Promise<void> {
+    await this.inFlight.get(key);
+  }
+
+  /** Resolves when every in-flight run has settled. */
   async idle(): Promise<void> {
     while (this.inFlight.size > 0) {
       await Promise.all([...this.inFlight.values()]);

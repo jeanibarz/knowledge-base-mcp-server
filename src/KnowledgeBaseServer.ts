@@ -411,6 +411,7 @@ export class KnowledgeBaseServer {
   private transportMode: 'stdio' | 'sse' | 'http' | null = null;
   private triggerWatcher?: ReindexTriggerWatcher;
   private readonly retrieveRefresh = new BackgroundRefreshCoordinator();
+  private readonly committedSnapshots = new Map<string, { token: string; manager: FaissIndexManager }>();
   // RFC 007 §6.6 / issue #212 — opt-in recursive `fs.watch` per KB.
   // Complements `triggerWatcher` (root-level dotfile poller); this one
   // observes per-file edits *inside* each KB tree.
@@ -1226,19 +1227,29 @@ export class KnowledgeBaseServer {
 
   /**
    * Issue #1228 — the dense/hybrid pre-search refresh, gated by
-   * `KB_RETRIEVE_REFRESH_MODE`. `sync` (default) is the historical inline
-   * refresh under the per-model write lock and returns no status, keeping the
-   * response byte-identical. `async`/`off` skip the inline refresh and report
-   * `index_status`, except on cold start (no loaded index), where they fall
-   * back to the synchronous refresh so the first call still returns results.
-   * The async refresh covers all KBs of the model (like the trigger watcher),
-   * so one in-flight run serves every scope.
+   * `KB_RETRIEVE_REFRESH_MODE`. Returns the manager to search with plus the
+   * `index_status` to report.
+   *
+   * - `sync` (default): the historical inline refresh under the per-model
+   *   write lock; no status, so the response stays byte-identical.
+   * - `off`: no refresh, search the loaded index; `stale_unchecked`.
+   * - `async`: join or start the model's single background refresh. While it
+   *   is in flight the shared writer manager is being mutated (a rebuild sets
+   *   its index to null, then fills a partial new one), so the search is
+   *   served from a read-only manager of the last committed version
+   *   (`served_from: 'committed_snapshot'`). With no committed version it
+   *   awaits the in-flight refresh instead of erroring.
+   * - Cold start (`async`/`off`, no loaded index, no refresh in flight):
+   *   synchronous refresh so the first call still returns results.
+   *
+   * The background refresh covers all KBs of the model (like the trigger
+   * watcher), so one in-flight run serves every scope.
    */
   private async refreshForRetrieve(
     manager: FaissIndexManager,
     knowledgeBaseName: string | undefined,
     knowledgeBaseNames: readonly string[] | undefined,
-  ): Promise<RetrieveIndexStatus | undefined> {
+  ): Promise<{ searchManager: FaissIndexManager; indexStatus: RetrieveIndexStatus | undefined }> {
     const mode = resolveRetrieveRefreshMode();
     const refreshSync = () => withWriteLock(manager.modelDir, async () => {
       if (knowledgeBaseNames !== undefined) {
@@ -1251,18 +1262,60 @@ export class KnowledgeBaseServer {
     });
     if (mode === 'sync') {
       await refreshSync();
-      return undefined;
+      return { searchManager: manager, indexStatus: undefined };
     }
-    if (!manager.hasLoadedIndex) {
-      await refreshSync();
-      return { refresh_mode: mode, state: 'fresh' };
-    }
+    const key = manager.modelDir;
     if (mode === 'off') {
-      return { refresh_mode: 'off', state: 'stale_unchecked' };
+      if (!manager.hasLoadedIndex) {
+        await refreshSync();
+        return { searchManager: manager, indexStatus: { refresh_mode: 'off', state: 'fresh' } };
+      }
+      return { searchManager: manager, indexStatus: { refresh_mode: 'off', state: 'stale_unchecked' } };
     }
-    this.retrieveRefresh.trigger(manager.modelDir, () =>
+    if (!manager.hasLoadedIndex && !this.retrieveRefresh.isRefreshing(key)) {
+      await refreshSync();
+      return { searchManager: manager, indexStatus: { refresh_mode: 'async', state: 'fresh' } };
+    }
+    this.retrieveRefresh.trigger(key, () =>
       withWriteLock(manager.modelDir, () => manager.updateIndex(undefined)).then(() => undefined));
-    return { refresh_mode: 'async', state: 'refreshing' };
+    const snapshot = await this.getCommittedSnapshot(manager);
+    if (snapshot !== null) {
+      return {
+        searchManager: snapshot,
+        indexStatus: { refresh_mode: 'async', state: 'refreshing', served_from: 'committed_snapshot' },
+      };
+    }
+    // Nothing committed to fall back on: wait for the in-flight refresh.
+    await this.retrieveRefresh.settled(key);
+    if (!manager.hasLoadedIndex) await refreshSync();
+    return { searchManager: manager, indexStatus: { refresh_mode: 'async', state: 'fresh' } };
+  }
+
+  /**
+   * Read-only manager of the last committed index version, cached per model
+   * and reused while the `index` pointer target is unchanged. Null when no
+   * version is committed or it cannot be loaded.
+   */
+  private async getCommittedSnapshot(manager: FaissIndexManager): Promise<FaissIndexManager | null> {
+    let token: string;
+    try {
+      token = await fsp.readlink(path.join(manager.modelDir, 'index'));
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'EINVAL') return null;
+      throw err;
+    }
+    const cached = this.committedSnapshots.get(manager.modelId);
+    if (cached !== undefined && cached.token === token) return cached.manager;
+    try {
+      const snapshot = await this.createReadOnlyManagerForModel(manager.modelId);
+      if (!snapshot.hasLoadedIndex) return null;
+      this.committedSnapshots.set(manager.modelId, { token, manager: snapshot });
+      return snapshot;
+    } catch (err) {
+      logger.warn(`Committed index snapshot unavailable for ${manager.modelId}: ${(err as Error).message}`);
+      return null;
+    }
   }
 
   private async createReadOnlyManagerForModel(modelId: string): Promise<FaissIndexManager> {
@@ -1598,7 +1651,7 @@ export class KnowledgeBaseServer {
       // RFC 013 §4.6 — write lock is per-model (resource = `models/<id>/`).
       // A `kb models add B` against another model never blocks retrievals on A.
       // Issue #975 — a subset refreshes each named KB under the one lock.
-      const indexStatus = await this.refreshForRetrieve(
+      const { searchManager, indexStatus } = await this.refreshForRetrieve(
         manager,
         knowledgeBaseName,
         knowledgeBaseNames,
@@ -1617,7 +1670,7 @@ export class KnowledgeBaseServer {
         similaritySearchResults = await withSpan('kb.retrieve.dense', {
           'kb.k': effectiveK,
           'kb.scope': kbScope,
-        }, () => manager.similaritySearch(
+        }, () => searchManager.similaritySearch(
           query,
           effectiveK,
           threshold,
@@ -1655,7 +1708,7 @@ export class KnowledgeBaseServer {
         logger.warn(`retrieve_knowledge dense degraded to lexical-only: ${reason}`);
       }
       if (neighborContext && degradedReason === null) {
-        similaritySearchResults = manager.expandWithNeighborContext(
+        similaritySearchResults = searchManager.expandWithNeighborContext(
           similaritySearchResults,
           neighborContext,
         );
@@ -1953,7 +2006,7 @@ export class KnowledgeBaseServer {
       if (canonical) canonical.model_id = activeModelId;
       const manager = await this.managers.getOrCreate(activeModelId);
       // Issue #975 — a subset refreshes each named KB under the one lock.
-      const indexStatus = await this.refreshForRetrieve(
+      const { searchManager, indexStatus } = await this.refreshForRetrieve(
         manager,
         knowledgeBaseName,
         knowledgeBaseNames !== undefined && knowledgeBaseNames.length > 0 ? knowledgeBaseNames : undefined,
@@ -1965,7 +2018,7 @@ export class KnowledgeBaseServer {
       const densePromise = withSpan('kb.retrieve.dense', {
         'kb.k': fetchK,
         'kb.scope': kbScope,
-      }, () => manager
+      }, () => searchManager
         .similaritySearch(query, fetchK, Number.POSITIVE_INFINITY, knowledgeBaseName, filters, denseTiming, ...(knowledgeBaseNames && knowledgeBaseNames.length > 0 ? [{ knowledgeBaseNames }] as const : [] as const)))
         .then((rs) => rs.map((r) => ({ pageContent: r.pageContent, metadata: r.metadata, score: r.score })))
         .catch((err) => {
@@ -2091,7 +2144,7 @@ export class KnowledgeBaseServer {
       if (input.neighborContext && hasNeighborContext(input.neighborContext) && degradedReason === null) {
         // Expand after fusion + rerank + gate so context chunks never affect
         // ranking. Skipped when the dense leg degraded (no FAISS docstore).
-        ranked = manager.expandWithNeighborContext(ranked as never, input.neighborContext) as never;
+        ranked = searchManager.expandWithNeighborContext(ranked as never, input.neighborContext) as never;
       }
       emitRelevanceGateDecision({
         process: 'mcp',

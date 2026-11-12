@@ -9,7 +9,7 @@ import { resolveRetrieveRefreshMode } from './config/retrieval.js';
 describe('BackgroundRefreshCoordinator (#1228)', () => {
   beforeEach(() => warnMock.mockReset());
 
-  it('runs once for a burst, plus one coalesced rerun', async () => {
+  it('a burst joins the in-flight run with no rerun; the next trigger after it starts a new one', async () => {
     const c = new BackgroundRefreshCoordinator();
     let release!: () => void;
     const run = jest.fn(() => new Promise<void>((r) => { release = r; }));
@@ -19,12 +19,27 @@ describe('BackgroundRefreshCoordinator (#1228)', () => {
     expect(c.isRefreshing('m')).toBe(true);
     expect(run).toHaveBeenCalledTimes(1);
     release();
-    await new Promise((r) => setImmediate(r));
+    await c.idle();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(c.isRefreshing('m')).toBe(false);
+    c.trigger('m', run);
     expect(run).toHaveBeenCalledTimes(2);
     release();
     await c.idle();
-    expect(run).toHaveBeenCalledTimes(2);
-    expect(c.isRefreshing('m')).toBe(false);
+  });
+
+  it('settled() waits for the in-flight run and is a no-op when idle', async () => {
+    const c = new BackgroundRefreshCoordinator();
+    await c.settled('m');
+    let release!: () => void;
+    c.trigger('m', () => new Promise<void>((r) => { release = r; }));
+    let done = false;
+    const w = c.settled('m').then(() => { done = true; });
+    await new Promise((r) => setImmediate(r));
+    expect(done).toBe(false);
+    release();
+    await w;
+    expect(done).toBe(true);
   });
 
   it('keys are independent', async () => {

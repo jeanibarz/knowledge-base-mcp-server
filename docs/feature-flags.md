@@ -44,21 +44,30 @@ markdown/JSON output shape, and when wider windows dilute results.
 hybrid) refreshes the index before searching. `sync` (default) refreshes inline
 under the per-model write lock, so results are fresh but a call can wait as long
 as a full re-embed (or fail with `REFRESH_LOCK_BUSY` while another writer holds
-the lock). `async` starts a single-flight background refresh per model (calls
-that arrive meanwhile coalesce into at most one rerun) and searches the index
-already in memory. `off` never refreshes on read. Both `async` and `off` can
-therefore serve stale results: the reindex trigger watcher, the mutation tools,
-and `kb reindex` remain the only index writers. When no index is loaded yet
-(cold start), `async` and `off` fall back to a synchronous refresh so the first
-call still returns results. In `async`/`off` the response carries
-`structuredContent.index_status = { refresh_mode, state }` where `state` is
-`refreshing` (a background refresh was started or is in flight),
-`stale_unchecked` (`off`; freshness was not checked), or `fresh` (cold-start
-fallback just refreshed). `sync` responses carry no `index_status`. Lexical
-`search_mode` and `ask_knowledge` are unchanged. `async` refreshes the whole
-model, not just the requested KB scope. A search that overlaps a refresh doing a
-full rebuild can briefly see no loaded index and fail with
-`INDEX_NOT_INITIALIZED`; retry.
+the lock). `async` joins or starts a single-flight background refresh per model
+(a call that arrives while one is running just joins it; there is no queued
+rerun, and the next call after it finishes starts a new one). `off` never
+refreshes on read. Both can serve stale results: the reindex trigger watcher,
+the mutation tools, and `kb reindex` remain the only index writers.
+
+In `async`, a refresh that needs a full rebuild empties and refills the shared
+in-memory index, so while a refresh is in flight searches are served from a
+read-only copy of the last committed index version instead (cached per model
+and reloaded only when the committed version changes). If no committed version
+exists yet, the call waits for the in-flight refresh rather than failing. When
+no index is loaded and no refresh is running (cold start), `async` and `off`
+fall back to a synchronous refresh so the first call returns results.
+
+In `async`/`off` the response carries `structuredContent.index_status =
+{ refresh_mode, state, served_from? }`. `state` is `refreshing` (`async`, a
+refresh is in flight), `stale_unchecked` (`off`; freshness was not checked), or
+`fresh` (the call refreshed synchronously). `served_from: "committed_snapshot"`
+marks results taken from the read-only committed version. `sync` responses carry
+no `index_status`. Lexical `search_mode` and `ask_knowledge` are unchanged.
+`async` refreshes the whole model, not just the requested KB scope. `off` has no
+snapshot protection: a rebuild running in the same process through the trigger
+watcher or a mutation tool can still make an `off` search see no or a partial
+index.
 
 `KB_DENSE_DEGRADE_ON_PROVIDER_ERROR=on` is fail-open only for classified
 transient embedding-provider failures (`PROVIDER_UNAVAILABLE` and
