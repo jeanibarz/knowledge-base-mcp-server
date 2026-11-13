@@ -53,6 +53,13 @@ export class FakeEmbeddings {
  * `search_query: <text>` at query time; embedding both roles raw lands
  * them in the wrong region of the embedding space (SciFact dense nDCG@10
  * 0.491 vs 0.669 source-BM25 in the BEIR harness).
+ *
+ * Issue #1047 — the Qwen3-Embedding family is instruction-aware on the QUERY
+ * side only: queries carry a task instruction, documents are embedded raw
+ * (model card). Its `document` prefix is therefore empty, which leaves
+ * document text byte-identical, so existing Qwen3 indexes stay valid and need
+ * no reindex. The bake-off (benchmarks/results/embedding-bakeoff/) measured
+ * dense nDCG@10 +0.063 SciFact, +0.116 NFCorpus, +0.001 ArguAna.
  */
 export interface EmbeddingTaskPrefixes {
   query: string;
@@ -64,13 +71,22 @@ const NOMIC_TASK_PREFIXES: EmbeddingTaskPrefixes = {
   document: 'search_document: ',
 };
 
+// Exact string from the Qwen3-Embedding model card / the measured bake-off
+// run: no space after `Query:` (the model card concatenates the query directly).
+const QWEN3_TASK_PREFIXES: EmbeddingTaskPrefixes = {
+  query: 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:',
+  document: '',
+};
+
 /**
  * @internal exported for tests. Returns the per-role prefixes a model
  * requires, or `null` for models that take raw text. Matched on the
- * model-name stem so Ollama tags (`:latest`, `:v1.5`) and HF-style org
- * paths (`nomic-ai/nomic-embed-text-v1.5`) are covered, and gated on
- * `KB_EMBEDDING_TASK_PREFIXES` so an operator can defer the change while
- * a pre-#567 index (built without prefixes) is still in service.
+ * model-name stem so Ollama tags (`:latest`, `:v1.5`, `:Q8_0`) and HF-style
+ * org paths (`nomic-ai/nomic-embed-text-v1.5`, `Qwen/Qwen3-Embedding-0.6B`)
+ * are covered, and gated on `KB_EMBEDDING_TASK_PREFIXES` so an operator can
+ * defer the change while a pre-#567 index (built without prefixes) is still
+ * in service. `KB_EMBEDDING_TASK_PREFIXES=off` is also the rollback for the
+ * Qwen3 query instruction (#1047).
  */
 export function embeddingTaskPrefixesFor(
   provider: EmbeddingProvider | 'fake',
@@ -80,6 +96,7 @@ export function embeddingTaskPrefixesFor(
   // The fake provider is a hash bag — a prefix would only shift tokens.
   if (provider === 'fake') return null;
   if (/(^|\/)nomic-embed-text/.test(modelName)) return NOMIC_TASK_PREFIXES;
+  if (/(^|\/)qwen3-embedding/i.test(modelName)) return QWEN3_TASK_PREFIXES;
   return null;
 }
 
@@ -253,8 +270,10 @@ export async function createEmbeddingsClient(
   if (prefixes !== null) {
     logger.info(
       `Applying embedding task prefixes for ${modelName} `
-      + `(documents: "${prefixes.document}", queries: "${prefixes.query}") — `
-      + 'indexes built without prefixes (pre-#567) need a reindex',
+      + `(documents: "${prefixes.document}", queries: "${prefixes.query}")`
+      + (prefixes.document === ''
+        ? ' — query-only prompt, documents unchanged, no reindex needed'
+        : ' — indexes built without prefixes (pre-#567) need a reindex'),
     );
     client = new TaskPrefixedEmbeddings(rawClient, prefixes);
   }

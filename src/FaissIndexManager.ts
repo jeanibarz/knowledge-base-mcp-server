@@ -4,7 +4,7 @@ import * as path from 'path';
 import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import { Document } from "@langchain/core/documents";
 import { emitCanonicalLog, type CanonicalProcess } from './canonical-log.js';
-import { createEmbeddingsClient, type EmbeddingsClient } from './embedding-provider.js';
+import { createEmbeddingsClient, embeddingTaskPrefixesFor, type EmbeddingsClient } from './embedding-provider.js';
 import { handleFsOperationError, isPermissionError, toError } from './error-utils.js';
 import { calculateSHA256, pathExists } from './file-utils.js';
 import {
@@ -2823,6 +2823,7 @@ export class FaissIndexManager {
       queryEmbeddingLookup ??= queryEmbeddingCache.getOrCompute({
         modelId: this.modelId,
         query,
+        queryPrefix: embeddingTaskPrefixesFor(this.embeddingProvider, this.modelName)?.query ?? '',
         bypass: opts.noCache === true,
         embed: () => this.embeddings.embedQuery(query),
       });

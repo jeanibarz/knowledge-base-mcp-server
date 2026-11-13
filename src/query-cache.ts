@@ -153,6 +153,8 @@ export class QueryEmbeddingCache {
   async getOrCompute(args: {
     modelId: string;
     query: string;
+    /** Task prefix the embed callback prepends to the query; part of the cache key. */
+    queryPrefix?: string;
     bypass?: boolean;
     embed: () => Promise<number[]>;
   }): Promise<QueryCacheRecord> {
@@ -194,6 +196,7 @@ export class QueryEmbeddingCache {
       indexPath: this.indexPath,
       modelId: args.modelId,
       query: args.query,
+      queryPrefix: args.queryPrefix,
     });
 
     const memoryHit = this.l1.get(paths.cacheKey);
@@ -454,6 +457,12 @@ export function queryCachePaths(args: {
   indexPath?: string;
   modelId: string;
   query: string;
+  /**
+   * Task prefix applied to the query before embedding (#1047). Keyed so a
+   * prefix change or a `KB_EMBEDDING_TASK_PREFIXES` toggle never serves vectors
+   * embedded under a different prompt.
+   */
+  queryPrefix?: string;
 }): QueryCachePaths {
   if (!isValidModelId(args.modelId)) {
     throw new Error(`invalid query-cache model_id: ${args.modelId}`);
@@ -467,6 +476,8 @@ export function queryCachePaths(args: {
     .update(args.modelId)
     .update('\x1f')
     .update(normalizedQuery)
+    .update('\x1f')
+    .update(args.queryPrefix ?? '')
     .digest('hex');
   const modelCacheDir = path.join(queryCacheRoot(indexPath), args.modelId);
   return {

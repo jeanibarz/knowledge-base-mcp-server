@@ -148,12 +148,66 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
 
   it('returns null for models outside the nomic-embed-text family', async () => {
     const { embeddingTaskPrefixesFor } = await loadFresh({ KB_EMBEDDING_TASK_PREFIXES: undefined });
-    expect(embeddingTaskPrefixesFor('ollama', 'dengcao/Qwen3-Embedding-0.6B:Q8_0')).toBeNull();
     expect(embeddingTaskPrefixesFor('ollama', 'mxbai-embed-large')).toBeNull();
     expect(embeddingTaskPrefixesFor('huggingface', 'BAAI/bge-small-en-v1.5')).toBeNull();
     expect(embeddingTaskPrefixesFor('openai', 'text-embedding-3-small')).toBeNull();
     // Guard against a substring match inside an unrelated org/model path.
     expect(embeddingTaskPrefixesFor('ollama', 'my-nomic-embed-text-clone')).toBeNull();
+    expect(embeddingTaskPrefixesFor('ollama', 'my-qwen3-embedding-clone')).toBeNull();
+  });
+
+  it('maps the Qwen3-Embedding family to a query-only instruction (issue #1047)', async () => {
+    const { embeddingTaskPrefixesFor } = await loadFresh({ KB_EMBEDDING_TASK_PREFIXES: undefined });
+    const expected = {
+      query: 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:',
+      document: '',
+    };
+    for (const [provider, name] of [
+      ['ollama', 'dengcao/Qwen3-Embedding-0.6B:Q8_0'],
+      ['ollama', 'qwen3-embedding:4b'],
+      ['ollama', 'Qwen3-Embedding-8B'],
+      ['huggingface', 'Qwen/Qwen3-Embedding-0.6B'],
+      ['huggingface', 'Qwen/Qwen3-Embedding-4B'],
+      ['ollama', 'dengcao/qwen3-embedding-8b:q4_k_m'],
+    ] as const) {
+      expect(embeddingTaskPrefixesFor(provider, name)).toEqual(expected);
+    }
+  });
+
+  it('turns the Qwen3 query instruction off with KB_EMBEDDING_TASK_PREFIXES=off', async () => {
+    for (const off of ['0', 'false', 'off', 'no']) {
+      const { embeddingTaskPrefixesFor } = await loadFresh({ KB_EMBEDDING_TASK_PREFIXES: off });
+      expect(embeddingTaskPrefixesFor('ollama', 'dengcao/Qwen3-Embedding-0.6B:Q8_0')).toBeNull();
+    }
+    const { embeddingTaskPrefixesFor } = await loadFresh({ KB_EMBEDDING_TASK_PREFIXES: undefined });
+    expect(embeddingTaskPrefixesFor('fake', 'Qwen3-Embedding-0.6B')).toBeNull();
+  });
+
+  it('Qwen3 prefixes leave document text byte-identical and prompt only queries', async () => {
+    const { TaskPrefixedEmbeddings, embeddingTaskPrefixesFor } = await loadFresh({
+      KB_EMBEDDING_TASK_PREFIXES: undefined,
+    });
+    const prefixes = embeddingTaskPrefixesFor('ollama', 'dengcao/Qwen3-Embedding-0.6B:Q8_0')!;
+    const docs: string[][] = [];
+    const queries: string[] = [];
+    const wrapped = new TaskPrefixedEmbeddings(
+      {
+        async embedDocuments(texts: string[]) {
+          docs.push(texts);
+          return texts.map(() => [0]);
+        },
+        async embedQuery(text: string) {
+          queries.push(text);
+          return [0];
+        },
+      },
+      prefixes,
+    );
+    const texts = ['alpha', '  beta\n', ''];
+    await wrapped.embedDocuments(texts);
+    expect(docs).toEqual([texts]);
+    await wrapped.embedQuery('what is faiss?');
+    expect(queries).toEqual([`${prefixes.query}what is faiss?`]);
   });
 
   it('never prefixes the fake provider', async () => {
@@ -224,7 +278,20 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
     expect(inner).toBeInstanceOf(TaskPrefixedEmbeddings);
   });
 
-  it('createEmbeddingsClient leaves other ollama models without task prefixes', async () => {
+  it('createEmbeddingsClient leaves non-prefixed ollama models unwrapped', async () => {
+    const { CircuitBrokenEmbeddings, createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
+      KB_EMBEDDING_TASK_PREFIXES: undefined,
+    });
+    const client = await createEmbeddingsClient({
+      provider: 'ollama',
+      modelName: 'mxbai-embed-large',
+    });
+    expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
+    const inner = (client as unknown as { inner: { inner: unknown } }).inner.inner;
+    expect(inner).not.toBeInstanceOf(TaskPrefixedEmbeddings);
+  });
+
+  it('createEmbeddingsClient wraps ollama Qwen3-Embedding with the query-only prompt (#1047)', async () => {
     const { CircuitBrokenEmbeddings, createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
       KB_EMBEDDING_TASK_PREFIXES: undefined,
     });
@@ -234,7 +301,7 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
     });
     expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
     const inner = (client as unknown as { inner: { inner: unknown } }).inner.inner;
-    expect(inner).not.toBeInstanceOf(TaskPrefixedEmbeddings);
+    expect(inner).toBeInstanceOf(TaskPrefixedEmbeddings);
   });
 
   it('createEmbeddingsClient leaves nomic unwrapped when the kill switch is off', async () => {

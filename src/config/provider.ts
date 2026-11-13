@@ -107,6 +107,8 @@ export const HUGGINGFACE_ENDPOINT_URL = HUGGINGFACE_ENDPOINT_URL_OVERRIDE
 
 // Issue #567 — kill switch for per-role embedding task prefixes (the
 // nomic-embed-text family needs `search_document: ` / `search_query: `).
+// The Qwen3-Embedding family also gets a query-only instruction (#1047):
+// documents stay raw, so no reindex is needed, and `off` rolls it back.
 // Default on. Set to `0`/`false`/`off`/`no` to keep querying an index that
 // was built without prefixes (pre-#567) until it can be reindexed — mixing
 // prefixed queries with unprefixed document vectors is worse than neither.
