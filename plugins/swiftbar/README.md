@@ -49,11 +49,33 @@ or renaming the service.
 ## Menu
 
 `KB ●` — green when launchd reports `running` and `/health` is ok, red
-otherwise. Dropdown: **Rebuild + restart** (npm build → kickstart, in a
+otherwise. While an index write is in progress the icon turns into an
+amber `KB ◐`. Dropdown: **Rebuild + restart** (npm build → kickstart, in
+a Terminal window), **Reindex status…** (`kb reindex status` in a
 Terminal window), Restart, Stop, Start, log files (Console), Devin MCP
 config, `/health` link, and **Advanced → Uninstall plugin…** — a
 confirmed self-removal (native dialog; server untouched; falls back to
 deleting just its own files if the checkout is gone).
+
+## Indexing activity
+
+The plugin reports "is it indexing right now" from two durable on-disk
+signals under the FAISS index dir — no HTTP, no auth token needed:
+
+- `$FAISS_INDEX_PATH/.reindex.run.json` — the `kb reindex` run marker.
+  Shown as `reindex: IN PROGRESS — pid …, started …` while the recorded
+  PID is alive on this host.
+- `$FAISS_INDEX_PATH/models/*/.kb-write.lock` — the per-model write lock
+  every mutating op takes (`reindex_knowledge_base`, watcher-driven
+  `updateIndex`, `add/delete_document`, `kb reindex` internals). Shown as
+  `indexing: <command>` using the sibling `.kb-write.lock.owner.json`.
+  Locks whose mtime is older than the proper-lockfile stale bound (~15 s)
+  are treated as crash remnants, not live work.
+
+`index: idle` is shown when neither signal is present. The index dir
+resolves as `KB_FAISS_INDEX_PATH` → `KB_KB_ROOT/.faiss` →
+`~/knowledge_bases/.faiss`; install.sh fills the first two from the
+launchd plist / `mcp_config.json`.
 
 ## Files
 
@@ -61,6 +83,7 @@ deleting just its own files if the checkout is gone).
 |---|---|
 | `kb-mcp.10s.sh` | SwiftBar plugin (refresh every 10 s), symlinked into `~/Library/Application Support/SwiftBar/Plugins/` — repo edits go live on the next refresh, no reinstall needed |
 | `kb-mcp-rebuild.sh` | `npm run build` + `launchctl kickstart -k` + health check |
+| `kb-mcp-reindex-status.sh` | `kb reindex status` (progress ledger) in a Terminal window |
 | `install.sh` | preflight + config resolution + install |
 | `uninstall.sh` | removes plugin files + `menubar.env` only |
 | `kb-mcp-uninstall.sh` | menu-invoked uninstall (dialog confirm, delegates to `uninstall.sh`) |
@@ -82,6 +105,8 @@ SwiftBar plugin, `menubar.env`, and launchd service are never touched.
 |---|---|---|
 | `KB_MCP_LABEL` | `ai.knowledge-base.mcp` | launchd service label |
 | `KB_MCP_PORT` / `KB_MCP_BIND` | resolved from plist | endpoint override |
+| `KB_FAISS_INDEX_PATH` / `KB_KB_ROOT` | resolved from plist | index dir for the indexing indicator |
+| `KB_MCP_NODE` | resolved from plist | node binary used by `Reindex status…` |
 | `KB_MENUBAR_ENV` | `~/.config/kb/menubar.env` | env file location |
 | `KB_PLUGIN_DST` | SwiftBar Plugins dir | alternate install target |
 | `KB_SWIFTBAR_APP` | `/Applications/SwiftBar.app` | SwiftBar presence check |

@@ -164,6 +164,49 @@ env HOME="$TMP/home" KB_MENUBAR_ENV="$ENVF" PATH="$TMP/bin:/usr/bin:/bin" "$HERE
 check "update.sh honors explicit tag argument over tag API" "grep -q '/v1.2.3/plugins/swiftbar/' \"$TMP/fetch.log\" && ! grep -q '/swiftbar/v9.9.9/' \"$TMP/fetch.log\""
 rm -f "$TMP/bin/curl"
 
+echo "== indexing indicator =="
+# Pre-seed the update-check throttle so these runs never touch the network.
+mkdir -p "$TMP/home/.config/kb"; date +%s > "$TMP/home/.config/kb/.update-check"
+FAKE_INDEX="$TMP/faiss"; mkdir -p "$FAKE_INDEX"
+printf '%s\n' "KB_FAISS_INDEX_PATH=$FAKE_INDEX" >> "$ENVF"
+
+out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
+check "no signals -> index idle" "echo \"\$out\" | grep -q 'index: idle'"
+
+# Live run marker ($$ = this test shell, provably alive while the plugin runs).
+printf '{"schema_version":"reindex-run.v1","pid":%s,"started_at":"2026-11-12T00:00:00Z","kbs_in_scope":["kb1"],"hostname":"%s"}\n' "$$" "$(hostname)" \
+  > "$FAKE_INDEX/.reindex.run.json"
+out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
+check "live run marker -> reindex IN PROGRESS" "echo \"\$out\" | grep -q 'reindex: IN PROGRESS'"
+check "live run marker -> amber half-circle menubar" "echo \"\$out\" | head -1 | grep -q 'KB ◐'"
+
+# Dead-pid marker must not report IN PROGRESS (zombie reclaim mirrors the
+# server's checkReindexRunState). `sh -c 'echo $$'` returns its own pid —
+# already dead when the substitution returns, with no `&`/`kill` race (a
+# SIGTERM'd background subshell can run the inherited EXIT trap and nuke $TMP).
+DEAD="$(sh -c 'echo $$')"
+printf '{"schema_version":"reindex-run.v1","pid":%s,"started_at":"2026-11-12T00:00:00Z","kbs_in_scope":[]}\n' "$DEAD" \
+  > "$FAKE_INDEX/.reindex.run.json"
+out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
+check "dead-pid run marker -> idle" "echo \"\$out\" | grep -q 'index: idle'"
+rm -f "$FAKE_INDEX/.reindex.run.json"
+
+# Fresh write lock + owner metadata -> "indexing: <command>".
+mkdir -p "$FAKE_INDEX/models/m/.kb-write.lock"
+printf '{"schema_version":"kb.write-lock-owner.v1","pid":%s,"command":"node /repo/build/cli.js reindex --with-context","hostname":"%s","started_at":"2026-11-12T00:00:00Z"}\n' "$$" "$(hostname)" \
+  > "$FAKE_INDEX/models/m/.kb-write.lock.owner.json"
+out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
+check "fresh write lock -> indexing line" "echo \"\$out\" | grep -q 'indexing:'"
+check "owner command surfaced in indexing line" "echo \"\$out\" | grep -q 'cli.js reindex'"
+
+# Lock remnant older than the proper-lockfile stale bound (mtime >15s) -> idle.
+touch -t 202001010000 "$FAKE_INDEX/models/m/.kb-write.lock"
+out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
+check "stale lock remnant -> idle" "echo \"\$out\" | grep -q 'index: idle'"
+
+check "Reindex status menu action present" "echo \"\$out\" | grep -q 'Reindex status' && echo \"\$out\" | grep -q 'kb-mcp-reindex-status.sh'"
+check "reindex-status helper syntax valid" "bash -n \"$HERE/kb-mcp-reindex-status.sh\""
+
 echo "== round-trip on live setup =="
 env KB_MENUBAR_ENV="$HOME/.config/kb/menubar.env.test" "$HERE/install.sh" >/dev/null 2>&1 \
   && check "real install works (test env file)" true || check "real install works (test env file)" false

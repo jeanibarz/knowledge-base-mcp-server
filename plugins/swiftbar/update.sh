@@ -6,7 +6,7 @@ set -euo pipefail
 REPO_SLUG="jeanibarz/knowledge-base-mcp-server"
 REPO_RAW="https://raw.githubusercontent.com/${REPO_SLUG}"
 TAGS_API="https://api.github.com/repos/${REPO_SLUG}/tags?per_page=100"
-FILES="kb-mcp.10s.sh kb-mcp-rebuild.sh kb-mcp-uninstall.sh install.sh uninstall.sh update.sh VERSION"
+FILES="kb-mcp.10s.sh kb-mcp-rebuild.sh kb-mcp-reindex-status.sh kb-mcp-uninstall.sh install.sh uninstall.sh update.sh VERSION"
 
 # Resolve the release tag to pull. An explicit argument wins; otherwise pick
 # the highest swiftbar/v<semver> tag from the GitHub tags API, and fall back to
@@ -15,7 +15,9 @@ FILES="kb-mcp.10s.sh kb-mcp-rebuild.sh kb-mcp-uninstall.sh install.sh uninstall.
 if [[ -n "${1:-}" ]]; then
   TAG="$1"
 else
-  LATEST="$(curl -fsSL -m 10 "$TAGS_API" 2>/dev/null \
+  # -L stays (repo-rename redirects are legitimate) but redirects may only
+  # land on https — never on a cleartext host.
+  LATEST="$(curl -fsSL --proto-redir '=https' -m 10 "$TAGS_API" 2>/dev/null \
     | grep -oE '"swiftbar/v[0-9]+\.[0-9]+\.[0-9]+"' \
     | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
     | sort -V | tail -1 || true)"
@@ -30,7 +32,7 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 echo "== fetch $TAG =="
 for f in $FILES; do
-  curl -fsSL -m 15 "$REPO_RAW/$TAG/plugins/swiftbar/$f" -o "$TMP/$f" \
+  curl -fsSL --proto-redir '=https' -m 15 "$REPO_RAW/$TAG/plugins/swiftbar/$f" -o "$TMP/$f" \
     || { echo "update: fetch failed: $f"; exit 1; }
 done
 echo "== sanity-check =="

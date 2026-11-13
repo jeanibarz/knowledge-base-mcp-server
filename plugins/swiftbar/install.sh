@@ -69,9 +69,12 @@ const out = {};
 const env = plist.EnvironmentVariables || {};
 if (env.MCP_PORT) out.PORT = env.MCP_PORT;
 if (env.MCP_BIND_ADDR) out.BIND = env.MCP_BIND_ADDR;
+if (env.FAISS_INDEX_PATH) out.INDEX = env.FAISS_INDEX_PATH;
+if (env.KNOWLEDGE_BASES_ROOT_DIR) out.KBROOT = env.KNOWLEDGE_BASES_ROOT_DIR;
 const args = plist.ProgramArguments || [];
 const idx = args.find((a) => /build\/index\.js$/.test(a));
 if (idx) out.REPO = idx.replace(/\/build\/index\.js$/, "");
+if (args[0] && /(^|\/)node$/.test(args[0])) out.NODE = args[0];
 
 // 2. devin mcp_config.json — url gives bind/port (http form); stdio args
 //    give the repo path; stdio env gives kb vars for completeness.
@@ -86,6 +89,12 @@ if (srv.url) {
 if (!out.REPO && Array.isArray(srv.args)) {
   const a = srv.args.find((x) => /build\/index\.js$/.test(x));
   if (a) out.REPO = a.replace(/\/build\/index\.js$/, "");
+}
+const senv = srv.env || {};
+if (!out.INDEX && senv.FAISS_INDEX_PATH) out.INDEX = senv.FAISS_INDEX_PATH;
+if (!out.KBROOT && senv.KNOWLEDGE_BASES_ROOT_DIR) out.KBROOT = senv.KNOWLEDGE_BASES_ROOT_DIR;
+if (!out.NODE && typeof srv.command === "string" && /(^|\/)node$/.test(srv.command)) {
+  out.NODE = srv.command;
 }
 
 // 3. kb.config.yaml — flat "KEY: value" lines; used for trigger/provider
@@ -102,6 +111,9 @@ try {
 out.LABEL = process.env.KB_MCP_LABEL || "ai.knowledge-base.mcp";
 out.PORT = process.env.KB_MCP_PORT || out.PORT || "8090";
 out.BIND = process.env.KB_MCP_BIND || out.BIND || "127.0.0.1";
+out.INDEX = process.env.KB_FAISS_INDEX_PATH || out.INDEX || "";
+out.KBROOT = process.env.KB_KB_ROOT || out.KBROOT || "";
+out.NODE = process.env.KB_MCP_NODE || out.NODE || "node";
 
 for (const [k, v] of Object.entries(out)) {
   console.log(`${k}=${JSON.stringify(v)}`);
@@ -111,6 +123,9 @@ for (const [k, v] of Object.entries(out)) {
 PORT="$(echo "$RESOLVED" | sed -n 's/^PORT="\(.*\)"$/\1/p')"
 BIND="$(echo "$RESOLVED" | sed -n 's/^BIND="\(.*\)"$/\1/p')"
 REPO="$(echo "$RESOLVED" | sed -n 's/^REPO="\(.*\)"$/\1/p')"
+INDEX="$(echo "$RESOLVED" | sed -n 's/^INDEX="\(.*\)"$/\1/p')"
+KBROOT="$(echo "$RESOLVED" | sed -n 's/^KBROOT="\(.*\)"$/\1/p')"
+NODE="$(echo "$RESOLVED" | sed -n 's/^NODE="\(.*\)"$/\1/p')"
 REPO="${REPO:-$HOME/workspace/knowledge-base-mcp-server}"
 
 [[ -d "$REPO/.git" ]] || die "could not resolve repo checkout (got '$REPO') — run install.sh from inside the repo or fix ProgramArguments in $PLIST"
@@ -123,11 +138,13 @@ state="$(launchctl print "gui/$(id -u)/${LABEL}" | awk -F' = ' '$1 ~ /state/ {pr
   || die "service loaded but state='${state:-unknown}' — start it: launchctl kickstart -k gui/$(id -u)/${LABEL}"
 
 # --- preflight 3: /health ok ------------------------------------------------
-health="$(curl -s -m 3 "http://${BIND}:${PORT}/health" || true)"
+# NOSONAR: cleartext http is by design — /health is unauthenticated and the
+# server binds loopback (RFC 008 §6.8); nothing sensitive crosses the wire.
+health="$(curl -s -m 3 "http://${BIND}:${PORT}/health" || true)" # NOSONAR
 [[ "$health" == *'"ok"'* ]] \
-  || die "no ok from http://${BIND}:${PORT}/health (got: ${health:-unreachable}) — is the server really on ${PORT}?"
+  || die "no ok from http://${BIND}:${PORT}/health (got: ${health:-unreachable}) — is the server really on ${PORT}?" # NOSONAR
 
-info "preflight ok: ${LABEL} running, http://${BIND}:${PORT}/health -> ${health}"
+info "preflight ok: ${LABEL} running, http://${BIND}:${PORT}/health -> ${health}" # NOSONAR
 info "resolved: repo=$REPO port=$PORT bind=$BIND label=$LABEL"
 
 # --- install (only reached when every check above passed) ------------------
@@ -147,6 +164,9 @@ KB_MCP_LOG_ERR=$(q "$HOME/Library/Logs/knowledge-base-mcp.err.log")
 KB_MCP_LOG_OUT=$(q "$HOME/Library/Logs/knowledge-base-mcp.out.log")
 KB_MCP_CONFIG=$(q "$MCP_CFG")
 KB_PLUGIN_DST=$(q "$PLUGIN_DST")
+KB_KB_ROOT=$(q "$KBROOT")
+KB_FAISS_INDEX_PATH=$(q "$INDEX")
+KB_MCP_NODE=$(q "$NODE")
 EOF
 
 [[ -f "$SCRIPT_DIR/kb-mcp.10s.sh" ]] || die "plugin source missing: $SCRIPT_DIR/kb-mcp.10s.sh — restore it (git checkout -- plugins/swiftbar/) before installing"

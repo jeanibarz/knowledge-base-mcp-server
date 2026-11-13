@@ -21,5 +21,6 @@ echo "== launchctl kickstart =="
 /bin/launchctl kickstart -k "gui/$(id -u)/${LABEL}"
 sleep 2
 echo "== health =="
-curl -s -m 5 "http://${BIND}:${PORT}/health"
+# NOSONAR: cleartext http is by design — unauthenticated /health on loopback.
+curl -s -m 5 "http://${BIND}:${PORT}/health" # NOSONAR
 echo
