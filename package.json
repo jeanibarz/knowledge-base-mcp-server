@@ -1,6 +1,6 @@
 {
   "name": "@jeanibarz/knowledge-base-mcp-server",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "MCP server for retrieving data from different knowledge bases",
   "type": "module",
   "main": "build/index.js",
