@@ -87,6 +87,7 @@ if [[ -f $run_state ]]; then
      && kill -0 "$run_pid" 2>/dev/null; then
     BUSY=1
     run_started="$(grep -oE '"started_at": *"[^"]+"' "$run_state" | head -1 | cut -d'"' -f4)"
+    run_started="${run_started%%|*}"; run_started="$(printf '%s' "$run_started" | tr -d '\000-\037')"
     INDEX_LINE="reindex: IN PROGRESS — pid $run_pid, started ${run_started:-unknown}"
   fi
 fi
@@ -107,6 +108,10 @@ if [[ $BUSY -eq 0 && -d $INDEX_DIR ]]; then
     # owner command is a full argv ("<node> <repo>/build/cli.js reindex …") —
     # drop the binary and absolutize to repo-relative so it fits the menu.
     ocmd="${ocmd#* }"; ocmd="${ocmd#"$REPO"/}"; ocmd="${ocmd#"$HOME"/}"
+    # Untrusted free text (e.g. 'kb ask "a | bash=/x"'): SwiftBar parses '|'
+    # as the parameter separator and control chars can inject whole menu
+    # rows — truncate at the first '|' and strip control characters.
+    ocmd="${ocmd%%|*}"; ocmd="$(printf '%s' "$ocmd" | tr -d '\000-\037')"
     [[ ${#ocmd} -gt 80 ]] && ocmd="${ocmd:0:77}…"
     INDEX_LINE="indexing: ${ocmd:-write in progress}"
     break

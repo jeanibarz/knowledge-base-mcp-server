@@ -199,6 +199,14 @@ out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/
 check "fresh write lock -> indexing line" "echo \"\$out\" | grep -q 'indexing:'"
 check "owner command surfaced in indexing line" "echo \"\$out\" | grep -q 'cli.js reindex'"
 
+# Injection: an owner command carrying a SwiftBar param fragment must not
+# render an actionable row — the plugin truncates at the first '|'.
+printf '{"schema_version":"kb.write-lock-owner.v1","pid":%s,"command":"node /repo/build/cli.js ask x | bash=/x","hostname":"%s","started_at":"2026-11-12T00:00:00Z"}\n' "$$" "$(hostname)" \
+  > "$FAKE_INDEX/models/m/.kb-write.lock.owner.json"
+out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
+check "pipe-injection owner command -> no bash= param" "echo \"\$out\" | grep 'indexing:' | grep -qv 'bash='"
+check "pipe-injection owner command -> truncated content" "echo \"\$out\" | grep -q 'indexing: /repo/build/cli.js ask x'"
+
 # Lock remnant older than the proper-lockfile stale bound (mtime >15s) -> idle.
 touch -t 202001010000 "$FAKE_INDEX/models/m/.kb-write.lock"
 out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
