@@ -1243,7 +1243,7 @@ Report envelope:
     }
   },
   "cli": {
-    "version": "0.2.2",
+    "version": "0.3.0",
     "package_root": "/path/to/package",
     "invoked_path": "/path/to/kb",
     "symlinked_checkout_path": "/path/to/checkout"
