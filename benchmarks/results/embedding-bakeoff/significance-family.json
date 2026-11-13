@@ -1,0 +1,32 @@
+[
+  {
+    "label": "embeddinggemma vs qwen3 (nfcorpus)",
+    "baseline": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-nfcorpus-dense-chunk-results.json",
+    "current": "runs/embeddinggemma/kb-nfcorpus-dense-chunk-results.json"
+  },
+  {
+    "label": "granite-embedding_278m vs qwen3 (nfcorpus)",
+    "baseline": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-nfcorpus-dense-chunk-results.json",
+    "current": "runs/granite-embedding_278m/kb-nfcorpus-dense-chunk-results.json"
+  },
+  {
+    "label": "mxbai-embed-large vs qwen3 (nfcorpus)",
+    "baseline": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-nfcorpus-dense-chunk-results.json",
+    "current": "runs/mxbai-embed-large/kb-nfcorpus-dense-chunk-results.json"
+  },
+  {
+    "label": "nomic-embed-text vs qwen3 (scifact)",
+    "baseline": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-scifact-dense-chunk-results.json",
+    "current": "runs/nomic-embed-text/kb-scifact-dense-chunk-results.json"
+  },
+  {
+    "label": "nomic-embed-text vs qwen3 (nfcorpus)",
+    "baseline": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-nfcorpus-dense-chunk-results.json",
+    "current": "runs/nomic-embed-text/kb-nfcorpus-dense-chunk-results.json"
+  },
+  {
+    "label": "nomic-embed-text vs qwen3 (arguana)",
+    "baseline": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-arguana-dense-chunk-results.json",
+    "current": "runs/nomic-embed-text/kb-arguana-dense-chunk-results.json"
+  }
+]

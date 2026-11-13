@@ -1,0 +1,69 @@
+{
+  "schema": "kb.reranker-bakeoff.rerank-latency-probe.v1",
+  "dataset_dir": "nfcorpus",
+  "trec": "kb-nfcorpus-hybrid-chunk-run.trec",
+  "candidates_per_query": 40,
+  "candidate_chars": 1000,
+  "results": {
+    "minilm-l6": {
+      "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+      "dtype": "fp32",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 122,
+      "p95_ms": 179.1,
+      "mean_ms": 121.1,
+      "degraded": 0
+    },
+    "mxbai-xsmall-v1": {
+      "model": "mixedbread-ai/mxbai-rerank-xsmall-v1",
+      "dtype": "fp32",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 555.8,
+      "p95_ms": 767.3,
+      "mean_ms": 576.8,
+      "degraded": 0
+    },
+    "jina-v1-turbo-en": {
+      "model": "jinaai/jina-reranker-v1-turbo-en",
+      "dtype": "fp32",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 144.1,
+      "p95_ms": 247.6,
+      "mean_ms": 150,
+      "degraded": 0
+    },
+    "bge-base": {
+      "model": "Xenova/bge-reranker-base",
+      "dtype": "fp32",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 666.4,
+      "p95_ms": 822,
+      "mean_ms": 653.7,
+      "degraded": 0
+    },
+    "mxbai-base-v1": {
+      "model": "mixedbread-ai/mxbai-rerank-base-v1",
+      "dtype": "fp32",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 901.3,
+      "p95_ms": 1145,
+      "mean_ms": 911.3,
+      "degraded": 0
+    },
+    "bge-v2-m3-fp16": {
+      "model": "onnx-community/bge-reranker-v2-m3-ONNX",
+      "dtype": "fp16",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 832,
+      "p95_ms": 977.1,
+      "mean_ms": 794.5,
+      "degraded": 0
+    }
+  }
+}

@@ -26,6 +26,7 @@ const FIXTURE_FILES = [
   'benchmarks/results/mteb/nomic.json',
   'benchmarks/results/beir/matrix/qwen3/beir-matrix.json',
   'benchmarks/results/beir/matrix/nomic/beir-matrix.json',
+  'benchmarks/results/embedding-bakeoff/summary.json',
 ];
 
 const QWEN3_MTEB = 'benchmarks/results/mteb/qwen3.json';
@@ -56,7 +57,23 @@ function rowFor(markdown, modelId) {
 
 test('matrix gains a measured-quality column (#942)', async () => {
   const markdown = await generateEmbeddingModelsReferenceMarkdown();
-  assert.match(markdown, /\| Provider \| Model name \| Model id \| Vector dimensions \| Task prefixes \| Measured retrieval quality \| Repo status \| Switch-over notes \|/);
+  assert.match(markdown, /\| Provider \| Model name \| Model id \| Vector dimensions \| Task prefixes \| Measured retrieval quality \| Measured speed \| Repo status \| Switch-over notes \|/);
+});
+
+test('measured rows render the #1047 speed probe from the bake-off summary', async () => {
+  const markdown = await generateEmbeddingModelsReferenceMarkdown();
+  const summary = await readJson('benchmarks/results/embedding-bakeoff/summary.json');
+  for (const c of [
+    { modelId: 'ollama__dengcao-Qwen3-Embedding-0.6B-Q8_0', model: 'dengcao/Qwen3-Embedding-0.6B:Q8_0' },
+    { modelId: 'ollama__nomic-embed-text / ', model: 'nomic-embed-text' },
+  ]) {
+    const probe = summary[c.model].speed_microbench;
+    const row = rowFor(markdown, c.modelId);
+    assert.ok(
+      row.includes(`[${probe.chunks_per_s_median.toFixed(1)} chunks/s index, ${Math.round(probe.query_p50_ms_median)} ms/query p50](../../benchmarks/results/embedding-bakeoff/README.md)`),
+      `speed cell for ${c.model}: ${row}`,
+    );
+  }
 });
 
 test('each measured row renders its own artifact values, links, and the local-run caveat (#942)', async () => {

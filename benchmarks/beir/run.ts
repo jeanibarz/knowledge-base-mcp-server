@@ -432,7 +432,7 @@ export interface RunDependencies {
   loadQueryDecompositionRuntime?(buildRoot: string): Promise<QueryDecompositionRuntime>;
 }
 
-const defaultRunDependencies: RunDependencies = {
+export const defaultRunDependencies: RunDependencies = {
   gitSha,
   loadLexicalIndex,
   loadSearchBackend,
