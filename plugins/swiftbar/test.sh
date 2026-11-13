@@ -164,6 +164,50 @@ env HOME="$TMP/home" KB_MENUBAR_ENV="$ENVF" PATH="$TMP/bin:/usr/bin:/bin" "$HERE
 check "update.sh honors explicit tag argument over tag API" "grep -q '/v1.2.3/plugins/swiftbar/' \"$TMP/fetch.log\" && ! grep -q '/swiftbar/v9.9.9/' \"$TMP/fetch.log\""
 rm -f "$TMP/bin/curl"
 
+echo "== file list follows the target tag (issue #1242) =="
+# Stub curl: the tag's update.sh is served from $TMP/tag-update.sh (each case
+# writes its own FILES line); every other file is served as a stub script, and
+# VERSION as 1.0.0. Every raw-content URL is logged. The update installs into
+# a scratch repo whose install.sh is the served stub, so a run can finish.
+UPD_ENV="$TMP/upd.env"; printf '%s\n' "KB_MCP_REPO=$TMP/updrepo" > "$UPD_ENV"
+cat > "$TMP/bin/curl" <<STUB
+#!/bin/sh
+url=""; out=""; prev=""
+for a in "\$@"; do
+  case "\$a" in https://raw.githubusercontent.com/*) url="\$a"; echo "\$a" >> "$TMP/fetch.log" ;; esac
+  [ "\$prev" = "-o" ] && out="\$a"; prev="\$a"
+done
+case "\$url" in
+  */update.sh) cp "$TMP/tag-update.sh" "\$out" ;;
+  */VERSION) printf '1.0.0\n' > "\$out" ;;
+  */kb-mcp-reindex-status.sh) exit 22 ;;  # absent at the old tag
+  *) printf '#!/bin/sh\nexit 0\n' > "\$out" ;;
+esac
+STUB
+chmod +x "$TMP/bin/curl"
+run_update() { env HOME="$TMP/home" KB_MENUBAR_ENV="$UPD_ENV" PATH="$TMP/bin:/usr/bin:/bin" "$HERE/update.sh" swiftbar/v1.0.0 >/dev/null 2>&1; }
+
+# The v1.0.0 file list, which predates kb-mcp-reindex-status.sh.
+printf '%s\n' '#!/usr/bin/env bash' 'FILES="kb-mcp.10s.sh kb-mcp-rebuild.sh kb-mcp-uninstall.sh install.sh uninstall.sh update.sh VERSION"' > "$TMP/tag-update.sh"
+rm -rf "$TMP/updrepo" "$TMP/fetch.log"
+run_update && check "older tag -> update.sh succeeds" true || check "older tag -> update.sh succeeds" false
+check "older tag -> file it never had is not requested" "! grep -q 'kb-mcp-reindex-status.sh' \"$TMP/fetch.log\""
+check "older tag -> its files are installed" "[[ \$(cat \"$TMP/updrepo/plugins/swiftbar/VERSION\" 2>/dev/null) == 1.0.0 ]] && [[ -f \"$TMP/updrepo/plugins/swiftbar/kb-mcp-rebuild.sh\" ]]"
+
+# A name that would escape the plugin dir aborts before anything is installed.
+printf '%s\n' 'FILES="../evil VERSION update.sh"' > "$TMP/tag-update.sh"
+rm -rf "$TMP/updrepo" "$TMP/fetch.log"
+run_update && check "unsafe file name -> update.sh exits nonzero" false || check "unsafe file name -> update.sh exits nonzero" true
+check "unsafe file name -> nothing installed" "[[ ! -e \"$TMP/updrepo\" ]] && ! grep -q 'evil' \"$TMP/fetch.log\""
+
+# No parseable FILES line at the tag -> fall back to this script's own list
+# (which includes the helper the stub refuses to serve -> fetch fails).
+printf '%s\n' '#!/usr/bin/env bash' 'echo no list here' > "$TMP/tag-update.sh"
+rm -rf "$TMP/updrepo" "$TMP/fetch.log"
+run_update || true
+check "no FILES line at tag -> falls back to local list" "grep -q 'kb-mcp-reindex-status.sh' \"$TMP/fetch.log\""
+rm -f "$TMP/bin/curl"
+
 echo "== indexing indicator =="
 # Pre-seed the update-check throttle so these runs never touch the network.
 mkdir -p "$TMP/home/.config/kb"; date +%s > "$TMP/home/.config/kb/.update-check"
@@ -172,6 +216,14 @@ printf '%s\n' "KB_FAISS_INDEX_PATH=$FAKE_INDEX" >> "$ENVF"
 
 out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
 check "no signals -> index idle" "echo \"\$out\" | grep -q 'index: idle'"
+# fakerepo has no kb-mcp-reindex-status.sh — the state a v1.0 updater leaves
+# behind after pulling 1.1 (issue #1242): offer a repair, not a dead action.
+check "missing status helper -> repair action runs update.sh" \
+  "echo \"\$out\" | grep -q 'Reindex status… (helper missing — repair) | bash=.*/update.sh'"
+touch "$TMP/fakerepo/plugins/swiftbar/kb-mcp-reindex-status.sh"
+out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
+check "status helper present -> normal Reindex status action" \
+  "echo \"\$out\" | grep -q 'Reindex status… | bash=.*/kb-mcp-reindex-status.sh'"
 
 # Live run marker ($$ = this test shell, provably alive while the plugin runs).
 printf '{"schema_version":"reindex-run.v1","pid":%s,"started_at":"2026-11-12T00:00:00Z","kbs_in_scope":["kb1"],"hostname":"%s"}\n' "$$" "$(hostname)" \
