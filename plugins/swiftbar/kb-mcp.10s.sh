@@ -66,6 +66,7 @@ fi
 state="$(launchctl print "$DOMAIN" 2>/dev/null | awk -F' = ' '$1 ~ /state/ {print $2; exit}')"
 pid="$(launchctl print "$DOMAIN" 2>/dev/null | awk -F' = ' '$1 ~ /pid/ {print $2; exit}')"
 health="$(curl -s -m 2 "$HEALTH" 2>/dev/null)" # NOSONAR
+health="${health%%|*}"  # echoed into a menu row — SwiftBar parses '|' as params
 
 # --- indexing activity (local files only — no auth, no HTTP) ------------------
 # Durable signals under the FAISS index dir (src/write-lock.ts, reindex-runner.ts):

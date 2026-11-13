@@ -1,0 +1,29 @@
+name: SwiftBar plugin tests
+
+on:
+  pull_request:
+    paths: ['plugins/swiftbar/**']
+  push:
+    branches: [main]
+    paths: ['plugins/swiftbar/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# plugins/swiftbar/test.sh is bash and macOS-shaped (launchctl, BSD find/stat,
+# lockfile mtimes). Run it under the stock /bin/bash 3.2 that menu-launched
+# helpers actually use — this is the only CI coverage of the update.sh
+# self-overwrite upgrade path (issue #1244). KB_SKIP_LIVE=1 skips the checks
+# that need a live launchd service + healthy /health endpoint; CI has neither.
+jobs:
+  swiftbar-test:
+    runs-on: macos-latest
+    steps:
+      # fetch-tags: the v1.0.0 -> current upgrade check reads the
+      # swiftbar/v1.0.0 tag; without it the check is reported as skipped.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - run: KB_SKIP_LIVE=1 /bin/bash plugins/swiftbar/test.sh
