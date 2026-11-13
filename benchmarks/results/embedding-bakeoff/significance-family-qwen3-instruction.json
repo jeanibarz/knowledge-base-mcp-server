@@ -1,0 +1,52 @@
+[
+  {
+    "label": "qwen3+instruction vs qwen3 dense (scifact)",
+    "baseline": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-scifact-dense-chunk-results.json",
+    "current": "runs-qwen3-query-instruction/dense/kb-scifact-dense-chunk-results.json"
+  },
+  {
+    "label": "qwen3+instruction vs qwen3 dense (nfcorpus)",
+    "baseline": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-nfcorpus-dense-chunk-results.json",
+    "current": "runs-qwen3-query-instruction/dense/kb-nfcorpus-dense-chunk-results.json"
+  },
+  {
+    "label": "qwen3+instruction vs qwen3 dense (arguana)",
+    "baseline": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-arguana-dense-chunk-results.json",
+    "current": "runs-qwen3-query-instruction/dense/kb-arguana-dense-chunk-results.json"
+  },
+  {
+    "label": "qwen3+instruction vs qwen3 hybrid (scifact)",
+    "baseline": "../reranker-bakeoff/runs/scifact/hybrid/kb-scifact-hybrid-chunk-results.json",
+    "current": "runs-qwen3-query-instruction/hybrid/kb-scifact-hybrid-chunk-results.json"
+  },
+  {
+    "label": "qwen3+instruction vs qwen3 hybrid (nfcorpus)",
+    "baseline": "../reranker-bakeoff/runs/nfcorpus/hybrid/kb-nfcorpus-hybrid-chunk-results.json",
+    "current": "runs-qwen3-query-instruction/hybrid/kb-nfcorpus-hybrid-chunk-results.json"
+  },
+  {
+    "label": "qwen3+instruction vs qwen3 hybrid (arguana)",
+    "baseline": "../reranker-bakeoff/runs/arguana/hybrid/kb-arguana-hybrid-chunk-results.json",
+    "current": "runs-qwen3-query-instruction/hybrid/kb-arguana-hybrid-chunk-results.json"
+  },
+  {
+    "label": "qwen3+instruction vs nomic dense (scifact)",
+    "baseline": "runs/nomic-embed-text/kb-scifact-dense-chunk-results.json",
+    "current": "runs-qwen3-query-instruction/dense/kb-scifact-dense-chunk-results.json"
+  },
+  {
+    "label": "qwen3+instruction vs nomic dense (nfcorpus)",
+    "baseline": "runs/nomic-embed-text/kb-nfcorpus-dense-chunk-results.json",
+    "current": "runs-qwen3-query-instruction/dense/kb-nfcorpus-dense-chunk-results.json"
+  },
+  {
+    "label": "qwen3+instruction vs nomic dense (arguana)",
+    "baseline": "runs/nomic-embed-text/kb-arguana-dense-chunk-results.json",
+    "current": "runs-qwen3-query-instruction/dense/kb-arguana-dense-chunk-results.json"
+  },
+  {
+    "label": "qwen3+instruction vs mxbai-embed-large dense (nfcorpus)",
+    "baseline": "runs/mxbai-embed-large/kb-nfcorpus-dense-chunk-results.json",
+    "current": "runs-qwen3-query-instruction/dense/kb-nfcorpus-dense-chunk-results.json"
+  }
+]

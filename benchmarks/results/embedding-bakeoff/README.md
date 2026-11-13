@@ -4,16 +4,18 @@
 Ollama default, `dengcao/Qwen3-Embedding-0.6B:Q8_0`, while being as fast or
 faster?
 
-**Short answer.** Not cleanly. `nomic-embed-text` (with its task prefixes) is 3.6× faster
-to index, 4.5× faster per query, and better on SciFact (+0.060) and NFCorpus
-(+0.104) — but it is significantly **worse on ArguAna (−0.090)**; its 3-set mean
-is still higher (0.4740 vs 0.4494). `mxbai-embed-large` is the best model on
-NFCorpus (+0.135) at 2× the default's speed but only ran that one dataset. The
-default, as this server runs it, indexes the slowest of the five models with
-quality numbers (granite is slower per query) and is last on NFCorpus — but it also runs without the
-query instruction its model card asks for. **Recommendation: keep the default
-for now (do not flip on this evidence alone) and run the two cheap follow-ups
-below, which decide it.**
+**Short answer (revised after the Qwen3 query-instruction follow-up).** No
+candidate beats the default **once the default gets the query instruction its
+model card asks for**. With `Instruct: Given a web search query, retrieve
+relevant passages that answer the query\nQuery:` on queries (documents
+unchanged, so no reindex), Qwen3-Embedding-0.6B's dense mean over the three
+sets rises from 0.4494 to **0.5093**, ahead of `nomic-embed-text` (0.4740): it
+ties nomic on SciFact and NFCorpus and beats it by 0.091 on ArguAna.
+nomic stays 3.6× faster to index and ~5× faster per query, so it remains the
+speed option, but it no longer wins on quality. **Recommendation: keep Qwen3 as
+the default and ship the query instruction** (details and the one shipping
+caveat in "Follow-up" below). The first-pass analysis that follows measured
+Qwen3 *without* the instruction and is kept as the record.
 
 Local BEIR runs on one shared machine — not a leaderboard submission. Read the
 caveats before acting on any single number.
@@ -81,7 +83,79 @@ same queries — see `significance.md`:
 | nomic-embed-text vs qwen3 (nfcorpus) | 323 | +0.1036 | <0.0001 | <0.0001 | IMPROVEMENT |
 | nomic-embed-text vs qwen3 (arguana) | 1406 | -0.0897 | <0.0001 | <0.0001 | REGRESSION |
 
-## Pareto call
+## Follow-up: Qwen3 with its query instruction
+
+**Why.** `embeddingTaskPrefixesFor` (`src/embedding-provider.ts`) applies
+prefixes only to the nomic family, so production Qwen3 sends raw queries. The
+Qwen3-Embedding model card uses a query-only prompt,
+`Instruct: {task}\nQuery:{query}`, with documents left raw. Documents are
+unchanged, so the indexes built for the main runs stay valid and only the
+query embeddings change.
+
+**What ran.** A temporary patch to the *compiled* `build/embedding-provider.js`
+(never to `src/`, not committed; restored right after the runs) added one
+branch before `return null`:
+
+```js
+if (/qwen3-embedding/i.test(modelName))
+    return { query: 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:', document: '' };
+```
+
+(no space after `Query:`, matching the model card's examples). The existing
+Qwen3 indexes were reattached with
+`sweep-rerankers.mjs --reuse-index=1 --only=dense,hybrid --chunk-k=100`
+(ArguAna hybrid `--max-queries=300`) and `KB_QUERY_CACHE=off`. Every run
+reported `chunks: 0` (no document was re-embedded). Dense used all judged
+queries and chunk-k 1000, the same settings as the rows above. Hybrid used
+chunk-k 100 and is compared with the no-instruction hybrid rows of the #1049
+sweep (`../reranker-bakeoff/runs/<dataset>/hybrid/`), which used the same
+settings and the same queries. The three datasets ran concurrently against the
+one resident Qwen3 model. Reports: `runs-qwen3-query-instruction/{dense,hybrid}/`.
+
+| mode | dataset | Qwen3 no instruction | **Qwen3 + instruction** | Δ | nomic-embed-text (dense) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| dense | SciFact | 0.6389 | **0.7017** | +0.063 | 0.6989 |
+| dense | NFCorpus | 0.2451 | **0.3610** | +0.116 | 0.3487 |
+| dense | ArguAna (1,406 q) | 0.4641 | **0.4652** | +0.001 | 0.3744 |
+| dense | **3-set mean** | 0.4494 | **0.5093** | +0.060 | 0.4740 |
+| hybrid | SciFact | 0.6879 | **0.7095** | +0.022 | — |
+| hybrid | NFCorpus | 0.3101 | **0.3521** | +0.042 | — |
+| hybrid | ArguAna (300 q) | 0.4055 | 0.4036 | −0.002 | — |
+| hybrid | **3-set mean** | 0.4678 | **0.4884** | +0.021 | — |
+
+On NFCorpus, mxbai-embed-large (0.3796, no query prompt either) is still
+0.019 ahead of instructed Qwen3, but that gap is not significant.
+
+Paired bootstrap per dataset, Holm across the 10 comparisons
+(`significance-qwen3-instruction.md`):
+
+| Comparison | n | Mean Δ | raw p | adj p | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| qwen3+instruction vs qwen3 dense (scifact) | 300 | +0.0629 | <0.0001 | <0.0001 | IMPROVEMENT |
+| qwen3+instruction vs qwen3 dense (nfcorpus) | 323 | +0.1159 | <0.0001 | <0.0001 | IMPROVEMENT |
+| qwen3+instruction vs qwen3 dense (arguana) | 1406 | +0.0011 | 0.5459 | 1.0000 | INCONCLUSIVE-BELOW-NOISE-FLOOR |
+| qwen3+instruction vs qwen3 hybrid (scifact) | 300 | +0.0216 | 0.0111 | 0.0665 | NO-SIGNIFICANT-CHANGE |
+| qwen3+instruction vs qwen3 hybrid (nfcorpus) | 323 | +0.0420 | <0.0001 | <0.0001 | IMPROVEMENT |
+| qwen3+instruction vs qwen3 hybrid (arguana) | 300 | -0.0020 | 0.5227 | 1.0000 | INCONCLUSIVE-BELOW-NOISE-FLOOR |
+| qwen3+instruction vs nomic dense (scifact) | 300 | +0.0029 | 0.8202 | 1.0000 | INCONCLUSIVE-BELOW-NOISE-FLOOR |
+| qwen3+instruction vs nomic dense (nfcorpus) | 323 | +0.0123 | 0.0851 | 0.3402 | INCONCLUSIVE-BELOW-NOISE-FLOOR |
+| qwen3+instruction vs nomic dense (arguana) | 1406 | +0.0908 | <0.0001 | <0.0001 | IMPROVEMENT |
+| qwen3+instruction vs mxbai-embed-large dense (nfcorpus) | 323 | -0.0186 | 0.0450 | 0.2250 | NO-SIGNIFICANT-CHANGE |
+
+**Reading.** The instruction is a large, significant dense win on SciFact
+(+0.063) and NFCorpus (+0.116), and neutral on ArguAna, whose queries are
+whole arguments rather than search queries. In hybrid mode (BM25 is
+unaffected) the gain is roughly a third the size: significant on NFCorpus
+(+0.042), +0.022 on SciFact (adj. p 0.067), neutral on ArguAna. It costs
+nothing at index time (documents unchanged) and adds about 20 tokens per query.
+Dense per-query p50 in these runs was 303–326 ms, vs 253–357 ms without the
+instruction; the three runs shared the model concurrently, so this is not a
+clean latency comparison. Instructed Qwen3 now beats nomic on the 3-set mean
+(0.5093 vs 0.4740): it ties nomic on SciFact and NFCorpus (Δ +0.003 / +0.012,
+not significant) and wins ArguAna by +0.091 (significant). nomic remains much
+faster (39.6 vs 11.1 chunks/s; 54 vs ~245 ms per query in the probe).
+
+## Pareto call (first pass, Qwen3 without the instruction)
 
 The selection rule from #1047 is "retrieve better than the default while
 being as fast or faster". Speed here = the controlled probe (index chunks/s
@@ -108,33 +182,45 @@ from that pre-fix matrix.
 
 ## Recommendation
 
-**Keep `dengcao/Qwen3-Embedding-0.6B:Q8_0` as the Ollama default for now;
-no code change in this PR.** Why not switch to nomic despite the 3-set mean
-and the speed:
+**Revised after the follow-up.** Keep `dengcao/Qwen3-Embedding-0.6B:Q8_0` as
+the Ollama default and **ship its query instruction**. It is a clear win to
+ship: two large significant dense gains, one significant hybrid gain, and no
+measured regression on any dataset in either mode, at zero reindex cost. Do not
+switch the default to nomic: with the instruction applied, nomic ties Qwen3 on
+SciFact and NFCorpus and loses ArguAna by 0.09. It stays the documented
+**speed tier**: about 3.6× faster indexing and ~5× faster queries, for
+scientific or biomedical corpora where its ArguAna-type weakness does not apply.
 
-1. The win is not uniform. nomic loses ArguAna by 0.090 nDCG@10 (significant,
-   1,406 queries), the one non-scientific domain here. Two of the three sets are
-   scientific/biomedical, so the 3-set mean flatters it.
-2. The default is handicapped in this comparison: Qwen3-Embedding is trained to
-   see `Instruct: <task>\nQuery: <q>` on queries and this server sends raw
-   text, while nomic gets its prefixes. Its NFCorpus score (0.245, last of five)
-   is the kind of short keyword-query set where a missing instruction hurts most.
-3. `mxbai-embed-large`, the strongest NFCorpus model and 2× faster than the
-   default, has no SciFact/ArguAna numbers yet.
+Shipping notes for the prefix change (not made here):
 
-**Follow-ups that decide the default (each ~30–40 min on this host):**
-(a) re-run the three Qwen3 dense cells with its query instruction applied (the
-prefix registry in `src/embedding-provider.ts` is the only change needed);
-(b) run `mxbai-embed-large` (with its `Represent this sentence for searching
-relevant passages: ` query prompt) on SciFact and ArguAna.
-If instructed Qwen3 still trails nomic on SciFact/NFCorpus, switch the default to
-`nomic-embed-text` for its 3.6×/4.5× speed advantage and accept the ArguAna
-loss — or to `mxbai-embed-large` if it holds up on the other two sets.
+- **Invalidate the query-embedding cache.** The persistent cache key in
+  `src/query-cache.ts` is `schema version + model id + normalized raw query`.
+  It does not include the task prefix, so after the change, queries cached
+  without the instruction would keep being served from disk. The fix is to
+  bump `QUERY_CACHE_SCHEMA_VERSION` with the change, or to fold the prefix into
+  the key. The follow-up runs used `KB_QUERY_CACHE=off` for this reason.
+- Documents stay raw, so no reindex is needed. `KB_EMBEDDING_TASK_PREFIXES=off`
+  (the existing kill switch) would turn the instruction off too, which is the
+  right rollback lever.
+- One generic instruction was tested. The model card suggests task-specific
+  instructions; tuning them is optional and would need its own run.
+- The same treatment is worth testing for `mxbai-embed-large` (query prompt
+  `Represent this sentence for searching relevant passages: `) before it is
+  ruled out. It still led NFCorpus without any prompt.
 
 **Do not adopt:** `granite-embedding:278m` (faster indexing but slower queries
-than the default), `nomic-embed-text-v2-moe` and `bge-m3` (slower than the
-default per query in the probe, so they fail the speed rule whatever their
-quality).
+than the default), `embeddinggemma` (no speed advantage, far behind on
+NFCorpus), `nomic-embed-text-v2-moe` and `bge-m3` (slower than the default per
+query in the probe, so they fail the speed rule whatever their quality).
+
+<details><summary>First-pass recommendation (before the follow-up), kept for the record</summary>
+
+Keep the default for now; run (a) Qwen3 with its query instruction and (b)
+mxbai-embed-large with its prompt on SciFact/ArguAna; switch to nomic only if
+instructed Qwen3 still trails it. Follow-up (a) has since run, and instructed
+Qwen3 does not trail nomic.
+
+</details>
 
 ## Task prefixes: what each model got
 
@@ -146,7 +232,7 @@ each model **as this server runs it today**, not at its best:
 
 | model | recommended by the model card | applied here |
 | --- | --- | --- |
-| `dengcao/Qwen3-Embedding-0.6B:Q8_0` | query: `Instruct: <task>\nQuery: <q>`; documents raw | **No** |
+| `dengcao/Qwen3-Embedding-0.6B:Q8_0` | query: `Instruct: <task>\nQuery:<q>`; documents raw | **No** in production; applied in the follow-up runs |
 | `nomic-embed-text` (v1.5) | `search_query: ` / `search_document: ` | Yes |
 | `nomic-embed-text-v2-moe` | `search_query: ` / `search_document: ` | Yes (same matcher) |
 | `embeddinggemma` | query `task: search result \| query: `; document `title: none \| text: ` | **No** |
@@ -238,6 +324,9 @@ same `runBeirBenchmark` output as a stand-alone `--mode=dense` run.
 - `summary.json` — per-model aggregate written by `aggregate.py`.
 - `speed-microbench.json` — controlled speed probe, raw rounds + medians.
 - `index-sizes.jsonl` — measured on-disk sizes.
+- `runs-qwen3-query-instruction/{dense,hybrid}/` — the follow-up runs with the
+  Qwen3 query instruction; `significance-family-qwen3-instruction.json` /
+  `significance-qwen3-instruction.md` — their paired comparisons.
 - `significance-family.json` / `significance.md` — paired-bootstrap comparisons
   (`benchmarks/significance.ts`) of each model against the default, per dataset,
   Holm-corrected.
