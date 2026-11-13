@@ -137,7 +137,15 @@ else
 fi
 echo "---"
 echo "Rebuild + restart | bash=$HELPER terminal=true refresh=true"
-echo "Reindex status… | bash=$STATUS_HELPER terminal=true refresh=true"
+if [[ -f $STATUS_HELPER ]]; then
+  echo "Reindex status… | bash=$STATUS_HELPER terminal=true refresh=true"
+else
+  # Backstop for issue #1242: a v1.0 update.sh fetches only the files on its
+  # own (older) list. It usually runs on into the newer update.sh it just
+  # copied over itself, which fetches the full set (test.sh pins that), but if
+  # the helper is still missing, re-running the installed update.sh repairs it.
+  echo "Reindex status… (helper missing — repair) | bash=$UPDATER terminal=true refresh=true"
+fi
 echo "Restart | bash=/bin/launchctl param1=kickstart param2=-k param3=$DOMAIN terminal=false refresh=true"
 echo "Stop | bash=/bin/launchctl param1=bootout param2=$DOMAIN terminal=false refresh=true"
 echo "Start | bash=/bin/launchctl param1=bootstrap param2=gui/$(id -u) param3=$PLIST terminal=false refresh=true"
