@@ -140,9 +140,10 @@ echo "Rebuild + restart | bash=$HELPER terminal=true refresh=true"
 if [[ -f $STATUS_HELPER ]]; then
   echo "Reindex status… | bash=$STATUS_HELPER terminal=true refresh=true"
 else
-  # A v1.0 update.sh installs only the files on its own (older) list, so an
-  # upgrade it runs to 1.1+ leaves this helper out (issue #1242). The update.sh
-  # it just installed is the newer one, so re-running it fetches the full set.
+  # Backstop for issue #1242: a v1.0 update.sh fetches only the files on its
+  # own (older) list. It usually runs on into the newer update.sh it just
+  # copied over itself, which fetches the full set (test.sh pins that), but if
+  # the helper is still missing, re-running the installed update.sh repairs it.
   echo "Reindex status… (helper missing — repair) | bash=$UPDATER terminal=true refresh=true"
 fi
 echo "Restart | bash=/bin/launchctl param1=kickstart param2=-k param3=$DOMAIN terminal=false refresh=true"

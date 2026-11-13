@@ -206,6 +206,39 @@ printf '%s\n' '#!/usr/bin/env bash' 'echo no list here' > "$TMP/tag-update.sh"
 rm -rf "$TMP/updrepo" "$TMP/fetch.log"
 run_update || true
 check "no FILES line at tag -> falls back to local list" "grep -q 'kb-mcp-reindex-status.sh' \"$TMP/fetch.log\""
+
+# The real v1.0.0 updater upgrading to this tree. It copies the new update.sh
+# over itself mid-run, and bash then keeps reading the NEW file from the old
+# byte offset. Editing update.sh can move that offset onto a line that breaks
+# the upgrade, so pin that it still completes and installs the helper the old
+# list lacks. Stub curl serves this tree's files (install.sh as a no-op stub).
+if OLD_UPD="$(git -C "$HERE" show swiftbar/v1.0.0:plugins/swiftbar/update.sh 2>/dev/null)"; then
+  cat > "$TMP/bin/curl" <<STUB
+#!/bin/sh
+url=""; out=""; prev=""
+for a in "\$@"; do
+  case "\$a" in https://raw.githubusercontent.com/*) url="\$a" ;; esac
+  [ "\$prev" = "-o" ] && out="\$a"; prev="\$a"
+done
+f="\${url##*/}"
+case "\$f" in
+  "") exit 22 ;;
+  install.sh) printf '#!/bin/sh\nexit 0\n' > "\$out" ;;
+  *) cp "$HERE/\$f" "\$out" ;;
+esac
+STUB
+  chmod +x "$TMP/bin/curl"
+  rm -rf "$TMP/updrepo"; mkdir -p "$TMP/updrepo/plugins/swiftbar"
+  printf '%s\n' "$OLD_UPD" > "$TMP/updrepo/plugins/swiftbar/update.sh"
+  env HOME="$TMP/home" KB_MENUBAR_ENV="$UPD_ENV" PATH="$TMP/bin:/usr/bin:/bin" \
+    bash "$TMP/updrepo/plugins/swiftbar/update.sh" swiftbar/v9.9.9 >/dev/null 2>&1 \
+    && check "v1.0.0 updater -> upgrade to this tree exits 0" true \
+    || check "v1.0.0 updater -> upgrade to this tree exits 0" false
+  check "v1.0.0 updater -> new VERSION installed" "cmp -s \"$HERE/VERSION\" \"$TMP/updrepo/plugins/swiftbar/VERSION\""
+  check "v1.0.0 updater -> helper missing from its list still installed" "[[ -f \"$TMP/updrepo/plugins/swiftbar/kb-mcp-reindex-status.sh\" ]]"
+else
+  ok "v1.0.0 updater upgrade check skipped (tag swiftbar/v1.0.0 not in local clone)"
+fi
 rm -f "$TMP/bin/curl"
 
 echo "== indexing indicator =="
