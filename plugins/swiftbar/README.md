@@ -92,13 +92,44 @@ launchd plist / `mcp_config.json`.
 ## Testing
 
 ```bash
-plugins/swiftbar/test.sh              # reject paths, happy path, uninstall, update + release-tag pinning
+plugins/swiftbar/test.sh                  # full suite (104 checks on a live setup)
 KB_SKIP_LIVE=1 plugins/swiftbar/test.sh   # CI mode: skips checks needing the live launchd service
 ```
 
 Uses `KB_PLUGIN_DST`/`KB_MENUBAR_ENV`/`KB_SWIFTBAR_APP`/`KB_MCP_LABEL`/
-`KB_MCP_PORT` overrides to run entirely against temp dirs — the live
-SwiftBar plugin, `menubar.env`, and launchd service are never touched.
+`KB_MCP_PORT` overrides plus PATH stubs for `launchctl`, `curl`,
+`osascript`, `defaults`, `open`, `pgrep`, `brew`, `npm`, and `node` to run
+almost everything against temp dirs — the live SwiftBar plugin,
+`menubar.env`, launchd service, GitHub, and SwiftBar preferences are never
+touched. Only a handful of checks still need the real service (skipped
+with `KB_SKIP_LIVE=1`).
+
+Coverage per script — every section header in `test.sh` maps to behavior:
+
+| Script | Scenarios covered |
+|---|---|
+| `install.sh` | missing SwiftBar, service absent/unhealthy, config resolution precedence (plist > mcp_config > env), `%q` quoting round-trip, unresolvable repo, `--install-swiftbar` with/without brew, idempotent reinstall, no secrets in `menubar.env`, symlink layout |
+| `kb-mcp.10s.sh` | green/red/amber menubar, `state`/`pid`/`health` lines, health `|` truncation, update check (newer/same/older/offline/throttle/cache fallback), release-tag pinning, indexing signals (run marker live/dead/cross-host/no-host, fresh/stale/root lock, owner command + pipe/control-char/length hardening, marker-beats-lock), missing-helper repair action |
+| `update.sh` | fetch failure, tag resolution (default pin, explicit tag, main fallback, non-swiftbar tags ignored), file list from target tag, unsafe-name abort, no-FILES fallback, bad-syntax abort, chmod, real `v1.0.0 → current` self-overwrite upgrade |
+| `uninstall.sh` | removes plugin/env/legacy `helpers/`, refuses repo-like `PLUGIN_DST`, dangling symlink, idempotent "nothing to remove" |
+| `kb-mcp-uninstall.sh` | dialog cancel, confirm → delegates to `uninstall.sh`, confirm + missing repo → self-removal |
+| `kb-mcp-rebuild.sh` | `npm run build` in repo, `launchctl kickstart`, health probe, abort sequence without service |
+| `kb-mcp-reindex-status.sh` | `reindex status` argv, `KNOWLEDGE_BASES_ROOT_DIR`/`FAISS_INDEX_PATH` exports |
+
+### Tested on
+
+`test.sh` prints its platform banner first, so every run records where it
+executed. These scripts are **macOS-only** (launchd, osascript, plutil,
+SwiftBar), so coverage runs on macOS:
+
+| Environment | Verified |
+|---|---|
+| macOS 27.0.1 arm64, `/bin/bash` 3.2.57, live launchd service | full suite, 104/0/0 — this checkout |
+| `macos-latest` GitHub Actions, `/bin/bash` 3.2 | `KB_SKIP_LIVE=1` suite, `.github/workflows/swiftbar-test.yml` |
+
+Running the suite on stock `/bin/bash` matters: `update.sh` overwrites
+itself mid-run on an upgrade, and only bash 3.2 exposes the byte-offset
+re-read behavior.
 
 ## Env overrides
 
