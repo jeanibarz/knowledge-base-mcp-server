@@ -72,6 +72,38 @@ describe('query embedding cache (#214)', () => {
     }
   });
 
+  it('keys on the applied query prefix so a prompt change never serves stale vectors (#1047)', async () => {
+    const base = { indexPath: '/tmp/kb-idx', modelId: 'fake__one', query: 'q' };
+    const none = queryCachePaths(base);
+    const withPrompt = queryCachePaths({ ...base, queryPrefix: 'Instruct: x\nQuery:' });
+    const other = queryCachePaths({ ...base, queryPrefix: 'search_query: ' });
+    expect(queryCachePaths({ ...base, queryPrefix: '' }).cacheKey).toBe(none.cacheKey);
+    expect(withPrompt.cacheKey).not.toBe(none.cacheKey);
+    expect(withPrompt.cacheKey).not.toBe(other.cacheKey);
+
+    const indexPath = await tempIndexPath('kb-query-cache-prefix-');
+    try {
+      const cache = new QueryEmbeddingCache({ indexPath, enabled: true, lruMax: 8 });
+      let calls = 0;
+      const embed = async () => [++calls];
+      await cache.getOrCompute({ modelId: 'fake__one', query: 'q', embed });
+      cache.clearMemory();
+      const prompted = await cache.getOrCompute({
+        modelId: 'fake__one', query: 'q', queryPrefix: 'Instruct: x\nQuery:', embed,
+      });
+      expect(prompted.status).toBe('miss');
+      expect(calls).toBe(2);
+      cache.clearMemory();
+      const again = await cache.getOrCompute({
+        modelId: 'fake__one', query: 'q', queryPrefix: 'Instruct: x\nQuery:', embed,
+      });
+      expect(again.status).toBe('hit_disk');
+      expect(calls).toBe(2);
+    } finally {
+      await fsp.rm(path.dirname(indexPath), { recursive: true, force: true });
+    }
+  });
+
   it('leaves concurrent identical misses independent by default', async () => {
     const indexPath = await tempIndexPath('kb-query-cache-single-flight-off-');
     try {

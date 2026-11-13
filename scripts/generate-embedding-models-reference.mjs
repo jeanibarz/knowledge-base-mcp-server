@@ -75,6 +75,7 @@ export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROO
     query: matchString(embeddingProvider, /query: '([^']+)'/, 'nomic query task prefix'),
     document: matchString(embeddingProvider, /document: '([^']+)'/, 'nomic document task prefix'),
   };
+  const qwen3QueryPrompt = matchString(embeddingProvider, /query: '(Instruct:[^']+)'/, 'qwen3 query task prefix');
   const costLastVerified = matchString(costEstimates, /export const LAST_VERIFIED = '([^']+)'/, 'cost LAST_VERIFIED');
   const deriveModelId = await loadDeriveModelId(root);
   const measuredQuality = await readMeasuredQuality(root);
@@ -92,9 +93,9 @@ export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROO
       model: defaults.ollama,
       modelId: deriveModelId('ollama', defaults.ollama),
       dimensions: '1024',
-      prefixes: 'No',
+      prefixes: `Query-only: \`${qwen3QueryPrompt}\` on queries, documents embedded raw (no reindex needed; \`KB_EMBEDDING_TASK_PREFIXES=off\` disables)`,
       qualityKey: 'qwen3',
-      status: 'Default local production model. Requires Ollama and the pulled model.',
+      status: 'Default local production model. Requires Ollama and the pulled model. Query instruction measured in [`benchmarks/results/embedding-bakeoff/`](../../benchmarks/results/embedding-bakeoff/) (dense nDCG@10 +0.063 SciFact, +0.116 NFCorpus, +0.001 ArguAna).',
       notes: 'Qwen3-Embedding-0.6B has a 32k context window and configurable output dimensions up to 1024; this server does not pass a custom dimension parameter.',
     },
     {
@@ -253,6 +254,7 @@ export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROO
     '- Changing provider, model name, output dimension, or task-prefix behavior creates a different vector space. Build or refresh the target model index before switching active traffic to it.',
     '- `model_id` is derived from `(provider, model_name)` as typed. Tags and slashes are normalized for the filesystem, but semantically equivalent names are not canonicalized.',
     '- Nomic-family models require role-specific task prefixes while `KB_EMBEDDING_TASK_PREFIXES` is enabled. Indexes built before that behavior need a reindex before prefixed queries are comparable.',
+    '- Qwen3-Embedding (any size, any provider/tag) gets a query-only instruction prompt (#1047): documents are embedded byte-identically, so existing Qwen3 indexes need no reindex. Roll back with `KB_EMBEDDING_TASK_PREFIXES=off`. Measurements: `benchmarks/results/embedding-bakeoff/`.',
     '- FAISS indexes are dimension-specific. Do not point an existing model directory at a model with a different output dimension.',
     '- For paid providers, run `kb models add <provider> <model> --dry-run` first so the CLI prints the estimated token cost before any embedding traffic.',
     '',
