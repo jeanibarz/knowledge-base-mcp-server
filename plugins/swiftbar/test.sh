@@ -280,15 +280,60 @@ STUB
   chmod +x "$TMP/bin/curl"
   rm -rf "$TMP/updrepo"; mkdir -p "$TMP/updrepo/plugins/swiftbar"
   printf '%s\n' "$OLD_UPD" > "$TMP/updrepo/plugins/swiftbar/update.sh"
-  env HOME="$TMP/home" KB_MENUBAR_ENV="$UPD_ENV" PATH="$TMP/bin:/usr/bin:/bin" \
-    bash "$TMP/updrepo/plugins/swiftbar/update.sh" swiftbar/v9.9.9 >/dev/null 2>&1 \
-    && check "v1.0.0 updater -> upgrade to this tree exits 0" true \
-    || check "v1.0.0 updater -> upgrade to this tree exits 0" false
+  out=$(env HOME="$TMP/home" KB_MENUBAR_ENV="$UPD_ENV" PATH="$TMP/bin:/usr/bin:/bin" \
+    bash "$TMP/updrepo/plugins/swiftbar/update.sh" swiftbar/v9.9.9 2>&1)
+  if ! echo "$out" | grep -q 'updated to'; then
+    # A <=1.1.0 updater is unwrapped — re-reading the overwritten script at a
+    # stale byte offset can kill it mid-run (the #1252 hazard, unfixable in an
+    # already-shipped file). Recovery is re-running the just-installed
+    # updater, which is the wrapped copy fetched from the tag.
+    out=$(env HOME="$TMP/home" KB_MENUBAR_ENV="$UPD_ENV" PATH="$TMP/bin:/usr/bin:/bin" \
+      bash "$TMP/updrepo/plugins/swiftbar/update.sh" swiftbar/v9.9.9 2>&1)
+  fi
+  check "v1.0.0 updater -> upgrade converges (re-run if needed)" "echo \"\$out\" | grep -q 'updated to'"
   check "v1.0.0 updater -> new VERSION installed" "cmp -s \"$HERE/VERSION\" \"$TMP/updrepo/plugins/swiftbar/VERSION\""
   check "v1.0.0 updater -> helper missing from its list still installed" "[[ -f \"$TMP/updrepo/plugins/swiftbar/kb-mcp-reindex-status.sh\" ]]"
 else
   skip "v1.0.0 updater upgrade check (tag swiftbar/v1.0.0 not in local clone)"
 fi
+
+# Self-overwrite guard (issue #1252): the RUNNING script sits at $DST so the
+# install step really overwrites it mid-run. The tag serves a different
+# update.sh — this tree's own script prefixed with padding so every byte
+# offset shifts. Unwrapped, bash 3.2 resumes the NEW file at the OLD offset
+# and dies mid-parse or re-executes sections; the wrapped main() buffers the
+# whole body first, so every '== ... ==' header must print exactly once.
+{ for i in $(seq 1 60); do echo "# padding $i — shifts the new file's byte offsets"; done
+  cat "$HERE/update.sh"; } > "$TMP/tag-update.sh"
+cat > "$TMP/bin/curl" <<STUB
+#!/bin/sh
+url=""; out=""; prev=""
+for a in "\$@"; do
+  case "\$a" in https://raw.githubusercontent.com/*) url="\$a" ;; esac
+  [ "\$prev" = "-o" ] && out="\$a"; prev="\$a"
+done
+case "\$url" in
+  */update.sh) cp "$TMP/tag-update.sh" "\$out" ;;
+  */VERSION) printf '9.9.9\n' > "\$out" ;;
+  */install.sh) printf '#!/bin/sh\nexit 0\n' > "\$out" ;;
+  *) cp "$HERE/\${url##*/}" "\$out" ;;
+esac
+STUB
+chmod +x "$TMP/bin/curl"
+rm -rf "$TMP/updrepo"; mkdir -p "$TMP/updrepo/plugins/swiftbar"
+cp "$HERE/update.sh" "$TMP/updrepo/plugins/swiftbar/"
+out=$(env HOME="$TMP/home" KB_MENUBAR_ENV="$UPD_ENV" PATH="$TMP/bin:/usr/bin:/bin" \
+  bash "$TMP/updrepo/plugins/swiftbar/update.sh" swiftbar/v9.9.9 2>"$TMP/selfow.err"); rc=$?
+# The residual half of #1252: after main returns, bash would read the next
+# command at the OLD end-of-file offset — a longer new update.sh leaves bytes
+# there to run as top-level commands ('command not found', exit 127). The
+# `main "$@"; exit` one-liner makes the exit already-parsed. Assert on the
+# exit status and clean stderr, not just the banner text.
+check "self-overwrite -> exits 0" "[[ \$rc -eq 0 ]]"
+check "self-overwrite -> no stderr" "[[ ! -s \"$TMP/selfow.err\" ]]"
+check "self-overwrite -> update completes" "echo \"\$out\" | grep -q 'updated to'"
+check "self-overwrite -> each section runs exactly once" \
+  "[[ \$(echo \"\$out\" | grep -c '== fetch') == 1 && \$(echo \"\$out\" | grep -c '== sanity-check') == 1 && \$(echo \"\$out\" | grep -c '== install to') == 1 ]]"
 rm -f "$TMP/bin/curl"
 
 echo "== indexing indicator =="
