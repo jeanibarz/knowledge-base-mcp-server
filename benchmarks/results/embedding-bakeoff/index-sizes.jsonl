@@ -1,0 +1,8 @@
+{"model": "nomic-embed-text", "dataset": "scifact", "rc": 0, "wall_s": null, "faiss_dir_bytes": 69957609, "faiss_index_bytes": null, "note": "faiss_index_bytes dropped: early wrapper glob measured the whole .faiss dir"}
+{"model": "nomic-embed-text", "dataset": "nfcorpus", "rc": 0, "wall_s": null, "faiss_dir_bytes": 51813719, "faiss_index_bytes": 33706029, "model_dir_bytes": 50644223}
+{"model": "granite-embedding:278m", "dataset": "nfcorpus", "rc": 0, "wall_s": 704.836, "faiss_dir_bytes": 51943160, "faiss_index_bytes": 33706029, "model_dir_bytes": 50775822}
+{"model": "embeddinggemma", "dataset": "nfcorpus", "rc": 0, "wall_s": 688.434, "faiss_dir_bytes": 51765137, "faiss_index_bytes": 33706029, "model_dir_bytes": 50600383}
+{"model": "mxbai-embed-large", "dataset": "nfcorpus", "rc": 0, "wall_s": 607.767, "faiss_dir_bytes": 63407405, "faiss_index_bytes": 44941357, "model_dir_bytes": 61906511}
+{"model": "nomic-embed-text", "dataset": "arguana", "rc": 0, "wall_s": 638.896, "faiss_dir_bytes": 82549155, "faiss_index_bytes": 52820013, "model_dir_bytes": 77925762}
+{"model": "dengcao/Qwen3-Embedding-0.6B:Q8_0", "dataset": "scifact", "rc": 0, "faiss_index_bytes": 61251629, "model_dir_bytes": 83891183, "note": "measured from the #1049 sweep workspace"}
+{"model": "dengcao/Qwen3-Embedding-0.6B:Q8_0", "dataset": "nfcorpus", "rc": 0, "faiss_index_bytes": 44941357, "model_dir_bytes": 61665205, "note": "measured from the #1049 sweep workspace"}

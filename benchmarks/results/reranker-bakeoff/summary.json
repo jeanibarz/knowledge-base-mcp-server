@@ -1,0 +1,478 @@
+{
+  "datasets": {
+    "arguana": {
+      "hybrid_ndcg10": 0.405526,
+      "hybrid_p50_ms": 2009.368076,
+      "hybrid_p95_ms": 2941.795985,
+      "queries": 300,
+      "queries_total_judged": 1406
+    },
+    "nfcorpus": {
+      "hybrid_ndcg10": 0.310064,
+      "hybrid_p50_ms": 711.656924,
+      "hybrid_p95_ms": 831.208216,
+      "queries": 323,
+      "queries_total_judged": 323
+    },
+    "scifact": {
+      "hybrid_ndcg10": 0.687932,
+      "hybrid_p50_ms": 1228.378945,
+      "hybrid_p95_ms": 1546.366451,
+      "queries": 300,
+      "queries_total_judged": 300
+    }
+  },
+  "variants": {
+    "bge-base": {
+      "datasets": {
+        "arguana": {
+          "added_p50_ms": 584.2,
+          "added_p95_ms": 458.6,
+          "delta_vs_hybrid": -0.15725,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.248275,
+          "p50_ms": 2593.58429,
+          "p95_ms": 3400.406092,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 22,
+          "topN": 40,
+          "valid": true
+        },
+        "nfcorpus": {
+          "added_p50_ms": 443.0,
+          "added_p95_ms": 583.7,
+          "delta_vs_hybrid": 0.01937,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.329439,
+          "p50_ms": 1154.609603,
+          "p95_ms": 1414.873463,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        },
+        "scifact": {
+          "added_p50_ms": 826.9,
+          "added_p95_ms": 963.8,
+          "delta_vs_hybrid": -0.00942,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.678512,
+          "p50_ms": 2055.257443,
+          "p95_ms": 2510.117157,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        }
+      },
+      "latency_probe": {
+        "arguana": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 1080.6,
+          "model": "Xenova/bge-reranker-base",
+          "p50_ms": 1075.8,
+          "p95_ms": 1446.9,
+          "queries": 60
+        },
+        "nfcorpus": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 653.7,
+          "model": "Xenova/bge-reranker-base",
+          "p50_ms": 666.4,
+          "p95_ms": 822,
+          "queries": 60
+        },
+        "scifact": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 683,
+          "model": "Xenova/bge-reranker-base",
+          "p50_ms": 670.2,
+          "p95_ms": 892,
+          "queries": 60
+        }
+      },
+      "mean_added_p50_ms": 618.0,
+      "mean_added_p95_ms": 668.7,
+      "mean_delta": -0.0491,
+      "mean_ndcg10": 0.4187,
+      "model": "Xenova/bge-reranker-base"
+    },
+    "bge-v2-m3-fp16": {
+      "datasets": {
+        "arguana": {
+          "added_p50_ms": 1586.0,
+          "added_p95_ms": 2587.9,
+          "delta_vs_hybrid": -0.04049,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.365032,
+          "p50_ms": 3595.38976,
+          "p95_ms": 5529.721177,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        },
+        "nfcorpus": {
+          "added_p50_ms": 603.9,
+          "added_p95_ms": 995.2,
+          "delta_vs_hybrid": 0.03869,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.348756,
+          "p50_ms": 1315.509731,
+          "p95_ms": 1826.402775,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        },
+        "scifact": {
+          "added_p50_ms": 480.5,
+          "added_p95_ms": 622.4,
+          "delta_vs_hybrid": 0.04234,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.730267,
+          "p50_ms": 1708.871488,
+          "p95_ms": 2168.743065,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        }
+      },
+      "latency_probe": {
+        "arguana": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp16",
+          "mean_ms": 2132.5,
+          "model": "onnx-community/bge-reranker-v2-m3-ONNX",
+          "p50_ms": 1625.8,
+          "p95_ms": 4422,
+          "queries": 60
+        },
+        "nfcorpus": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp16",
+          "mean_ms": 794.5,
+          "model": "onnx-community/bge-reranker-v2-m3-ONNX",
+          "p50_ms": 832,
+          "p95_ms": 977.1,
+          "queries": 60
+        },
+        "scifact": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp16",
+          "mean_ms": 864.3,
+          "model": "onnx-community/bge-reranker-v2-m3-ONNX",
+          "p50_ms": 841.8,
+          "p95_ms": 1164.9,
+          "queries": 60
+        }
+      },
+      "mean_added_p50_ms": 890.1,
+      "mean_added_p95_ms": 1401.8,
+      "mean_delta": 0.0135,
+      "mean_ndcg10": 0.4814,
+      "model": "onnx-community/bge-reranker-v2-m3-ONNX"
+    },
+    "jina-v1-turbo-en": {
+      "datasets": {
+        "arguana": null,
+        "nfcorpus": {
+          "added_p50_ms": 294.3,
+          "added_p95_ms": 376.1,
+          "delta_vs_hybrid": 0.02628,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.336343,
+          "p50_ms": 1005.997818,
+          "p95_ms": 1207.292925,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        },
+        "scifact": null
+      },
+      "latency_probe": {
+        "arguana": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 200.2,
+          "model": "jinaai/jina-reranker-v1-turbo-en",
+          "p50_ms": 189.2,
+          "p95_ms": 298.5,
+          "queries": 60
+        },
+        "nfcorpus": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 150,
+          "model": "jinaai/jina-reranker-v1-turbo-en",
+          "p50_ms": 144.1,
+          "p95_ms": 247.6,
+          "queries": 60
+        },
+        "scifact": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 153.3,
+          "model": "jinaai/jina-reranker-v1-turbo-en",
+          "p50_ms": 140.8,
+          "p95_ms": 221.2,
+          "queries": 60
+        }
+      },
+      "model": "jinaai/jina-reranker-v1-turbo-en"
+    },
+    "minilm-l6": {
+      "datasets": {
+        "arguana": {
+          "added_p50_ms": 111.5,
+          "added_p95_ms": -160.5,
+          "delta_vs_hybrid": -0.0694,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.336123,
+          "p50_ms": 2120.82088,
+          "p95_ms": 2781.319152,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 14,
+          "topN": 40,
+          "valid": true
+        },
+        "nfcorpus": {
+          "added_p50_ms": 128.3,
+          "added_p95_ms": 241.5,
+          "delta_vs_hybrid": 0.04163,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.351691,
+          "p50_ms": 839.998157,
+          "p95_ms": 1072.75817,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        },
+        "scifact": {
+          "added_p50_ms": 114.8,
+          "added_p95_ms": 122.3,
+          "delta_vs_hybrid": 0.01593,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.703858,
+          "p50_ms": 1343.171646,
+          "p95_ms": 1668.678753,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        }
+      },
+      "latency_probe": {
+        "arguana": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 216.1,
+          "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+          "p50_ms": 197.9,
+          "p95_ms": 303.9,
+          "queries": 60
+        },
+        "nfcorpus": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 121.1,
+          "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+          "p50_ms": 122,
+          "p95_ms": 179.1,
+          "queries": 60
+        },
+        "scifact": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 110.1,
+          "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+          "p50_ms": 105.4,
+          "p95_ms": 153.4,
+          "queries": 60
+        }
+      },
+      "mean_added_p50_ms": 118.2,
+      "mean_added_p95_ms": 67.8,
+      "mean_delta": -0.0039,
+      "mean_ndcg10": 0.4639,
+      "model": "Xenova/ms-marco-MiniLM-L-6-v2"
+    },
+    "mxbai-base-v1": {
+      "datasets": {
+        "arguana": {
+          "added_p50_ms": 1870.0,
+          "added_p95_ms": 3016.5,
+          "delta_vs_hybrid": -0.20699,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.198532,
+          "p50_ms": 3879.380792,
+          "p95_ms": 5958.265502,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 14,
+          "topN": 40,
+          "valid": true
+        },
+        "nfcorpus": {
+          "added_p50_ms": 611.7,
+          "added_p95_ms": 773.3,
+          "delta_vs_hybrid": 0.04755,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.357609,
+          "p50_ms": 1323.385741,
+          "p95_ms": 1604.533559,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        },
+        "scifact": {
+          "added_p50_ms": 548.2,
+          "added_p95_ms": 527.4,
+          "delta_vs_hybrid": 0.02123,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.709163,
+          "p50_ms": 1776.584052,
+          "p95_ms": 2073.794068,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        }
+      },
+      "latency_probe": {
+        "arguana": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 1465.9,
+          "model": "mixedbread-ai/mxbai-rerank-base-v1",
+          "p50_ms": 1385.8,
+          "p95_ms": 2213.2,
+          "queries": 60
+        },
+        "nfcorpus": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 911.3,
+          "model": "mixedbread-ai/mxbai-rerank-base-v1",
+          "p50_ms": 901.3,
+          "p95_ms": 1145,
+          "queries": 60
+        },
+        "scifact": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 962.9,
+          "model": "mixedbread-ai/mxbai-rerank-base-v1",
+          "p50_ms": 962.3,
+          "p95_ms": 1304.5,
+          "queries": 60
+        }
+      },
+      "mean_added_p50_ms": 1010.0,
+      "mean_added_p95_ms": 1439.1,
+      "mean_delta": -0.0461,
+      "mean_ndcg10": 0.4218,
+      "model": "mixedbread-ai/mxbai-rerank-base-v1"
+    },
+    "mxbai-xsmall-v1": {
+      "datasets": {
+        "arguana": null,
+        "nfcorpus": {
+          "added_p50_ms": 455.9,
+          "added_p95_ms": 542.9,
+          "delta_vs_hybrid": 0.03506,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.345121,
+          "p50_ms": 1167.580513,
+          "p95_ms": 1374.13371,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 0,
+          "topN": 40,
+          "valid": true
+        },
+        "scifact": {
+          "added_p50_ms": 620.3,
+          "added_p95_ms": 1202.5,
+          "delta_vs_hybrid": -0.00498,
+          "identical_to_hybrid": false,
+          "ndcg10": 0.68295,
+          "p50_ms": 1848.652645,
+          "p95_ms": 2748.845602,
+          "recall100_matches_hybrid": true,
+          "rerank_enabled": true,
+          "top10_identical_queries": 66,
+          "topN": 40,
+          "valid": false
+        }
+      },
+      "latency_probe": {
+        "arguana": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 799.6,
+          "model": "mixedbread-ai/mxbai-rerank-xsmall-v1",
+          "p50_ms": 770.5,
+          "p95_ms": 1253.4,
+          "queries": 60
+        },
+        "nfcorpus": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 576.8,
+          "model": "mixedbread-ai/mxbai-rerank-xsmall-v1",
+          "p50_ms": 555.8,
+          "p95_ms": 767.3,
+          "queries": 60
+        },
+        "scifact": {
+          "degraded": 0,
+          "device": "cuda",
+          "dtype": "fp32",
+          "mean_ms": 554.8,
+          "model": "mixedbread-ai/mxbai-rerank-xsmall-v1",
+          "p50_ms": 532.9,
+          "p95_ms": 780.7,
+          "queries": 60
+        }
+      },
+      "model": "mixedbread-ai/mxbai-rerank-xsmall-v1"
+    }
+  }
+}

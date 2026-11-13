@@ -39,6 +39,19 @@ const MEASURED_QUALITY_SOURCES = {
   },
 };
 
+// Measured speed (issue #1047): the embedding bake-off summary carries a
+// controlled Ollama speed probe per model. Same explicit-key discipline as the
+// quality map above: only rows whose `qualityKey` is listed here render a speed;
+// every other row renders "Not measured".
+const MEASURED_SPEED_SOURCE = {
+  summaryPath: 'benchmarks/results/embedding-bakeoff/summary.json',
+  reportPath: 'benchmarks/results/embedding-bakeoff/README.md',
+  models: {
+    qwen3: 'dengcao/Qwen3-Embedding-0.6B:Q8_0',
+    nomic: 'nomic-embed-text',
+  },
+};
+
 // Relative prefix from the generated doc (docs/reference/embedding-models.md) to
 // the repo root, so artifact links resolve from the rendered page.
 const DOC_TO_ROOT = '../../';
@@ -65,6 +78,7 @@ export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROO
   const costLastVerified = matchString(costEstimates, /export const LAST_VERIFIED = '([^']+)'/, 'cost LAST_VERIFIED');
   const deriveModelId = await loadDeriveModelId(root);
   const measuredQuality = await readMeasuredQuality(root);
+  const measuredSpeed = await readMeasuredSpeed(root);
 
   assertExactValues(
     knownProviders,
@@ -209,16 +223,19 @@ export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROO
     '- Task-prefix behavior: `src/embedding-provider.ts`.',
     '- Paid-provider cost tiers: `src/cost-estimates.ts`.',
     '- Measured retrieval quality: committed local benchmark artifacts under `benchmarks/results/mteb/` and `benchmarks/results/beir/matrix/`.',
+    '- Measured speed: the embedding bake-off summary `benchmarks/results/embedding-bakeoff/summary.json` (#1047).',
     `- External dimension/context references: ${MODEL_DOC_SOURCES.join('; ')}.`,
     '',
     'Run `npm run docs:generate-embedding-models` after changing any of those source values. The `docs:check-embedding-models` gate fails if this file drifts.',
     '',
     'The **Measured retrieval quality** column shows how well each model retrieves relevant documents on two standard retrieval benchmarks, run locally. MTEB (Massive Text Embedding Benchmark): we report the mean of its per-task primary metric across the tasks we ran. BEIR (a standard information-retrieval benchmark suite): we report the dense-mode nDCG@10 — a 0–1 ranking-quality score — where "dense" means embedding-only retrieval with no lexical/keyword matching or reranking, so the number reflects the embedding model alone. Each value links to the committed artifact it came from. These are local runs over a small subset of tasks/datasets, not official leaderboard submissions — use them to compare the listed models against each other, not as absolute scores. Models with no committed results show "Not measured", meaning untested, not a score of zero.',
     '',
+    'The **Measured speed** column is a controlled Ollama probe from the #1047 bake-off: document-embedding throughput (1000-character SciFact chunks, 16 per request — the server\'s Ollama indexing batch) and the median per-query embed latency. It was measured once, on one RTX 3090 shared with other live Ollama workloads, so read it as a relative ranking between the listed models, not as the speed you will see on your hardware.',
+    '',
     '## Compatibility Matrix',
     '',
-    '| Provider | Model name | Model id | Vector dimensions | Task prefixes | Measured retrieval quality | Repo status | Switch-over notes |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| Provider | Model name | Model id | Vector dimensions | Task prefixes | Measured retrieval quality | Measured speed | Repo status | Switch-over notes |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...rows.map((row) => [
       row.provider,
       code(row.model),
@@ -226,6 +243,7 @@ export async function generateEmbeddingModelsReferenceMarkdown({ root = REPO_ROO
       row.dimensions,
       row.prefixes,
       formatMeasuredQuality(measuredQuality[row.qualityKey]),
+      formatMeasuredSpeed(measuredSpeed[row.qualityKey]),
       row.status,
       row.notes,
     ].map(markdownTableCell).join(' | ')).map((line) => `| ${line} |`),
@@ -322,6 +340,31 @@ function formatMeasuredQuality(quality) {
     `MTEB mean ${mtebLink} (${quality.mtebTasks} tasks); ` +
     `BEIR dense nDCG@10 ${beirLink} (${quality.beirDatasets} datasets); ` +
     'local run, not an official leaderboard submission'
+  );
+}
+
+// Read the bake-off summary and reduce each mapped model to its speed-probe
+// medians. Like the quality map, a mapped model that is missing or malformed is
+// a hard error so the drift gate flags it (issue #1047).
+async function readMeasuredSpeed(root) {
+  const summary = await readJson(root, MEASURED_SPEED_SOURCE.summaryPath);
+  const entries = Object.entries(MEASURED_SPEED_SOURCE.models).map(([key, model]) => {
+    const probe = summary?.[model]?.speed_microbench;
+    if (!probe) throw new Error(`No speed_microbench for ${model} in ${MEASURED_SPEED_SOURCE.summaryPath}`);
+    return [key, {
+      chunksPerSecond: requireNumber(probe.chunks_per_s_median, `chunks_per_s_median for ${model}`),
+      queryP50Ms: requireNumber(probe.query_p50_ms_median, `query_p50_ms_median for ${model}`),
+    }];
+  });
+  return Object.fromEntries(entries);
+}
+
+function formatMeasuredSpeed(speed) {
+  if (!speed) return 'Not measured';
+  const link = `${DOC_TO_ROOT}${MEASURED_SPEED_SOURCE.reportPath}`;
+  return (
+    `[${speed.chunksPerSecond.toFixed(1)} chunks/s index, ${Math.round(speed.queryP50Ms)} ms/query p50](${link}); ` +
+    'one shared RTX 3090 via Ollama, single run'
   );
 }
 

@@ -1,0 +1,57 @@
+[
+  {
+    "label": "mxbai-xsmall-v1 vs minilm-l6 (nfcorpus)",
+    "baseline": "runs/nfcorpus/minilm-l6/kb-nfcorpus-hybrid+rerank-chunk-results.json",
+    "current": "runs/nfcorpus/mxbai-xsmall-v1/kb-nfcorpus-hybrid+rerank-chunk-results.json"
+  },
+  {
+    "label": "jina-v1-turbo-en vs minilm-l6 (nfcorpus)",
+    "baseline": "runs/nfcorpus/minilm-l6/kb-nfcorpus-hybrid+rerank-chunk-results.json",
+    "current": "runs/nfcorpus/jina-v1-turbo-en/kb-nfcorpus-hybrid+rerank-chunk-results.json"
+  },
+  {
+    "label": "bge-base vs minilm-l6 (scifact)",
+    "baseline": "runs/scifact/minilm-l6/kb-scifact-hybrid+rerank-chunk-results.json",
+    "current": "runs/scifact/bge-base/kb-scifact-hybrid+rerank-chunk-results.json"
+  },
+  {
+    "label": "bge-base vs minilm-l6 (nfcorpus)",
+    "baseline": "runs/nfcorpus/minilm-l6/kb-nfcorpus-hybrid+rerank-chunk-results.json",
+    "current": "runs/nfcorpus/bge-base/kb-nfcorpus-hybrid+rerank-chunk-results.json"
+  },
+  {
+    "label": "bge-base vs minilm-l6 (arguana)",
+    "baseline": "runs/arguana/minilm-l6/kb-arguana-hybrid+rerank-chunk-results.json",
+    "current": "runs/arguana/bge-base/kb-arguana-hybrid+rerank-chunk-results.json"
+  },
+  {
+    "label": "mxbai-base-v1 vs minilm-l6 (scifact)",
+    "baseline": "runs/scifact/minilm-l6/kb-scifact-hybrid+rerank-chunk-results.json",
+    "current": "runs/scifact/mxbai-base-v1/kb-scifact-hybrid+rerank-chunk-results.json"
+  },
+  {
+    "label": "mxbai-base-v1 vs minilm-l6 (nfcorpus)",
+    "baseline": "runs/nfcorpus/minilm-l6/kb-nfcorpus-hybrid+rerank-chunk-results.json",
+    "current": "runs/nfcorpus/mxbai-base-v1/kb-nfcorpus-hybrid+rerank-chunk-results.json"
+  },
+  {
+    "label": "mxbai-base-v1 vs minilm-l6 (arguana)",
+    "baseline": "runs/arguana/minilm-l6/kb-arguana-hybrid+rerank-chunk-results.json",
+    "current": "runs/arguana/mxbai-base-v1/kb-arguana-hybrid+rerank-chunk-results.json"
+  },
+  {
+    "label": "bge-v2-m3-fp16 vs minilm-l6 (scifact)",
+    "baseline": "runs/scifact/minilm-l6/kb-scifact-hybrid+rerank-chunk-results.json",
+    "current": "runs/scifact/bge-v2-m3-fp16/kb-scifact-hybrid+rerank-chunk-results.json"
+  },
+  {
+    "label": "bge-v2-m3-fp16 vs minilm-l6 (nfcorpus)",
+    "baseline": "runs/nfcorpus/minilm-l6/kb-nfcorpus-hybrid+rerank-chunk-results.json",
+    "current": "runs/nfcorpus/bge-v2-m3-fp16/kb-nfcorpus-hybrid+rerank-chunk-results.json"
+  },
+  {
+    "label": "bge-v2-m3-fp16 vs minilm-l6 (arguana)",
+    "baseline": "runs/arguana/minilm-l6/kb-arguana-hybrid+rerank-chunk-results.json",
+    "current": "runs/arguana/bge-v2-m3-fp16/kb-arguana-hybrid+rerank-chunk-results.json"
+  }
+]

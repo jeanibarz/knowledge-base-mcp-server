@@ -1,0 +1,69 @@
+{
+  "schema": "kb.reranker-bakeoff.rerank-latency-probe.v1",
+  "dataset_dir": "scifact",
+  "trec": "kb-scifact-hybrid-chunk-run.trec",
+  "candidates_per_query": 40,
+  "candidate_chars": 1000,
+  "results": {
+    "minilm-l6": {
+      "model": "Xenova/ms-marco-MiniLM-L-6-v2",
+      "dtype": "fp32",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 105.4,
+      "p95_ms": 153.4,
+      "mean_ms": 110.1,
+      "degraded": 0
+    },
+    "mxbai-xsmall-v1": {
+      "model": "mixedbread-ai/mxbai-rerank-xsmall-v1",
+      "dtype": "fp32",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 532.9,
+      "p95_ms": 780.7,
+      "mean_ms": 554.8,
+      "degraded": 0
+    },
+    "jina-v1-turbo-en": {
+      "model": "jinaai/jina-reranker-v1-turbo-en",
+      "dtype": "fp32",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 140.8,
+      "p95_ms": 221.2,
+      "mean_ms": 153.3,
+      "degraded": 0
+    },
+    "bge-base": {
+      "model": "Xenova/bge-reranker-base",
+      "dtype": "fp32",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 670.2,
+      "p95_ms": 892,
+      "mean_ms": 683,
+      "degraded": 0
+    },
+    "mxbai-base-v1": {
+      "model": "mixedbread-ai/mxbai-rerank-base-v1",
+      "dtype": "fp32",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 962.3,
+      "p95_ms": 1304.5,
+      "mean_ms": 962.9,
+      "degraded": 0
+    },
+    "bge-v2-m3-fp16": {
+      "model": "onnx-community/bge-reranker-v2-m3-ONNX",
+      "dtype": "fp16",
+      "device": "cuda",
+      "queries": 60,
+      "p50_ms": 841.8,
+      "p95_ms": 1164.9,
+      "mean_ms": 864.3,
+      "degraded": 0
+    }
+  }
+}

@@ -1,0 +1,263 @@
+{
+  "bge-m3": {
+    "complete": false,
+    "datasets": {},
+    "dim": 1024,
+    "index_bytes_flat_f32_total": null,
+    "mean_ndcg10": null,
+    "mean_ndcg10_scifact_nfcorpus": null,
+    "observed_chunks_per_s": null,
+    "speed_microbench": {
+      "chunks_per_s_median": 11.310577993359928,
+      "dim": 1024,
+      "query_p50_ms_median": 369.1956234979443,
+      "query_p95_ms_median": 401.35346399620175,
+      "rounds_ok": 2
+    }
+  },
+  "dengcao/Qwen3-Embedding-0.6B:Q8_0": {
+    "complete": true,
+    "datasets": {
+      "arguana": {
+        "chunks": 17194,
+        "chunks_per_s": 14.6,
+        "docs": 8674,
+        "git_sha": "f075f83",
+        "index_bytes_flat_f32": 70426624,
+        "index_bytes_measured": null,
+        "index_dir_bytes": null,
+        "index_s": 1177.8,
+        "ndcg10": 0.464135,
+        "queries": 1406,
+        "query_p50_ms": 356.642606,
+        "query_p95_ms": 465.408994,
+        "recall100": 0.990754,
+        "report": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-arguana-dense-chunk-results.json"
+      },
+      "nfcorpus": {
+        "chunks": 10972,
+        "chunks_per_s": 7.95,
+        "docs": 3633,
+        "git_sha": "f075f83",
+        "index_bytes_flat_f32": 44941312,
+        "index_bytes_measured": 44941357,
+        "index_dir_bytes": 61665205,
+        "index_s": 1379.3,
+        "ndcg10": 0.245064,
+        "queries": 323,
+        "query_p50_ms": 328.846938,
+        "query_p95_ms": 399.648527,
+        "recall100": 0.257798,
+        "report": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-nfcorpus-dense-chunk-results.json"
+      },
+      "scifact": {
+        "chunks": 14954,
+        "chunks_per_s": 14.68,
+        "docs": 5183,
+        "git_sha": "f075f83",
+        "index_bytes_flat_f32": 61251584,
+        "index_bytes_measured": 61251629,
+        "index_dir_bytes": 83891183,
+        "index_s": 1018.8,
+        "ndcg10": 0.638881,
+        "queries": 300,
+        "query_p50_ms": 253.457467,
+        "query_p95_ms": 285.223735,
+        "recall100": 0.918333,
+        "report": "runs/dengcao_Qwen3-Embedding-0.6B_Q8_0/kb-scifact-dense-chunk-results.json"
+      }
+    },
+    "dim": 1024,
+    "index_bytes_flat_f32_total": 176619520,
+    "mean_ndcg10": 0.4494,
+    "mean_ndcg10_scifact_nfcorpus": 0.442,
+    "observed_chunks_per_s": 12.1,
+    "speed_microbench": {
+      "chunks_per_s_median": 11.072118283965887,
+      "dim": 1024,
+      "query_p50_ms_median": 244.39853397780098,
+      "query_p95_ms_median": 277.55042049102485,
+      "rounds_ok": 2
+    }
+  },
+  "embeddinggemma": {
+    "complete": false,
+    "datasets": {
+      "nfcorpus": {
+        "chunks": 10972,
+        "chunks_per_s": 18.19,
+        "docs": 3633,
+        "git_sha": "f075f83",
+        "index_bytes_flat_f32": 33705984,
+        "index_bytes_measured": 33706029,
+        "index_dir_bytes": 50600383,
+        "index_s": 603.3,
+        "ndcg10": 0.275922,
+        "queries": 323,
+        "query_p50_ms": 248.974813,
+        "query_p95_ms": 277.021332,
+        "recall100": 0.268112,
+        "report": "runs/embeddinggemma/kb-nfcorpus-dense-chunk-results.json"
+      }
+    },
+    "dim": 768,
+    "index_bytes_flat_f32_total": 33705984,
+    "mean_ndcg10": null,
+    "mean_ndcg10_scifact_nfcorpus": null,
+    "observed_chunks_per_s": 18.2,
+    "speed_microbench": {
+      "chunks_per_s_median": 14.052669707807095,
+      "dim": 768,
+      "query_p50_ms_median": 249.1836684930604,
+      "query_p95_ms_median": 286.71945800306275,
+      "rounds_ok": 2
+    }
+  },
+  "granite-embedding:278m": {
+    "complete": false,
+    "datasets": {
+      "nfcorpus": {
+        "chunks": 10972,
+        "chunks_per_s": 19.25,
+        "docs": 3633,
+        "git_sha": "f075f83",
+        "index_bytes_flat_f32": 33705984,
+        "index_bytes_measured": 33706029,
+        "index_dir_bytes": 50775822,
+        "index_s": 569.9,
+        "ndcg10": 0.281789,
+        "queries": 323,
+        "query_p50_ms": 406.562753,
+        "query_p95_ms": 442.984724,
+        "recall100": 0.271044,
+        "report": "runs/granite-embedding_278m/kb-nfcorpus-dense-chunk-results.json"
+      }
+    },
+    "dim": 768,
+    "index_bytes_flat_f32_total": 33705984,
+    "mean_ndcg10": null,
+    "mean_ndcg10_scifact_nfcorpus": null,
+    "observed_chunks_per_s": 19.3,
+    "speed_microbench": {
+      "chunks_per_s_median": 16.040531128000893,
+      "dim": 768,
+      "query_p50_ms_median": 351.2651589990128,
+      "query_p95_ms_median": 386.63209302467294,
+      "rounds_ok": 2
+    }
+  },
+  "mxbai-embed-large": {
+    "complete": false,
+    "datasets": {
+      "nfcorpus": {
+        "chunks": 10972,
+        "chunks_per_s": 19.18,
+        "docs": 3633,
+        "git_sha": "f075f83",
+        "index_bytes_flat_f32": 44941312,
+        "index_bytes_measured": 44941357,
+        "index_dir_bytes": 61906511,
+        "index_s": 572.1,
+        "ndcg10": 0.379607,
+        "queries": 323,
+        "query_p50_ms": 95.368419,
+        "query_p95_ms": 145.245493,
+        "recall100": 0.360347,
+        "report": "runs/mxbai-embed-large/kb-nfcorpus-dense-chunk-results.json"
+      }
+    },
+    "dim": 1024,
+    "index_bytes_flat_f32_total": 44941312,
+    "mean_ndcg10": null,
+    "mean_ndcg10_scifact_nfcorpus": null,
+    "observed_chunks_per_s": 19.2,
+    "speed_microbench": {
+      "chunks_per_s_median": 23.024800931951027,
+      "dim": 1024,
+      "query_p50_ms_median": 68.62447949242778,
+      "query_p95_ms_median": 103.44362052273937,
+      "rounds_ok": 2
+    }
+  },
+  "nomic-embed-text": {
+    "complete": true,
+    "datasets": {
+      "arguana": {
+        "chunks": 17194,
+        "chunks_per_s": 33.25,
+        "docs": 8674,
+        "git_sha": "f075f83",
+        "index_bytes_flat_f32": 52819968,
+        "index_bytes_measured": 52820013,
+        "index_dir_bytes": 77925762,
+        "index_s": 517.1,
+        "ndcg10": 0.374429,
+        "queries": 1406,
+        "query_p50_ms": 81.81796,
+        "query_p95_ms": 101.243317,
+        "recall100": 0.979374,
+        "report": "runs/nomic-embed-text/kb-arguana-dense-chunk-results.json"
+      },
+      "nfcorpus": {
+        "chunks": 10972,
+        "chunks_per_s": 31.4,
+        "docs": 3633,
+        "git_sha": "f075f83",
+        "index_bytes_flat_f32": 33705984,
+        "index_bytes_measured": 33706029,
+        "index_dir_bytes": 50644223,
+        "index_s": 349.4,
+        "ndcg10": 0.348665,
+        "queries": 323,
+        "query_p50_ms": 98.220032,
+        "query_p95_ms": 140.272521,
+        "recall100": 0.289923,
+        "report": "runs/nomic-embed-text/kb-nfcorpus-dense-chunk-results.json"
+      },
+      "scifact": {
+        "chunks": 14954,
+        "chunks_per_s": 27.34,
+        "docs": 5183,
+        "git_sha": "f075f83",
+        "index_bytes_flat_f32": 45938688,
+        "index_bytes_measured": null,
+        "index_dir_bytes": null,
+        "index_s": 546.9,
+        "ndcg10": 0.698879,
+        "queries": 300,
+        "query_p50_ms": 97.367555,
+        "query_p95_ms": 124.060777,
+        "recall100": 0.945,
+        "report": "runs/nomic-embed-text/kb-scifact-dense-chunk-results.json"
+      }
+    },
+    "dim": 768,
+    "index_bytes_flat_f32_total": 132464640,
+    "mean_ndcg10": 0.474,
+    "mean_ndcg10_scifact_nfcorpus": 0.5238,
+    "observed_chunks_per_s": 30.5,
+    "speed_microbench": {
+      "chunks_per_s_median": 39.596901926023456,
+      "dim": 768,
+      "query_p50_ms_median": 53.735745488666,
+      "query_p95_ms_median": 79.75128048565239,
+      "rounds_ok": 2
+    }
+  },
+  "nomic-embed-text-v2-moe": {
+    "complete": false,
+    "datasets": {},
+    "dim": 768,
+    "index_bytes_flat_f32_total": null,
+    "mean_ndcg10": null,
+    "mean_ndcg10_scifact_nfcorpus": null,
+    "observed_chunks_per_s": null,
+    "speed_microbench": {
+      "chunks_per_s_median": 9.684935771905373,
+      "dim": 768,
+      "query_p50_ms_median": 338.4443365212064,
+      "query_p95_ms_median": 373.04253899492323,
+      "rounds_ok": 2
+    }
+  }
+}
