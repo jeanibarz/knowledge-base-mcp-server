@@ -2,6 +2,8 @@
 # Self-contained test harness for plugins/swiftbar/{install,uninstall}.sh
 # Uses only temp dirs + env overrides — never touches the real SwiftBar
 # plugin dir, menubar.env, or the live launchd service.
+# KB_SKIP_LIVE=1 skips the checks that DO need the live launchd service +
+# healthy /health endpoint (CI runners have neither).
 # shellcheck disable=SC2015,SC2034  # `run && check || check` is intentional;
                                     # $out is consumed inside eval'd checks.
 set -uo pipefail
@@ -9,11 +11,16 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP="$(mktemp -d /tmp/kb-swiftbar-test.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIP=0
 
 ok()   { PASS=$((PASS+1)); echo "  ok   $1"; }
 bad()  { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
+skip() { SKIP=$((SKIP+1)); echo "  skip $1"; }
 check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+
+# KB_SKIP_LIVE=1 skips every check that needs the live launchd service +
+# healthy /health endpoint — for CI runners that have neither.
+LIVE=1; [[ "${KB_SKIP_LIVE:-}" == "1" ]] && LIVE=0
 
 FAKE_APP="$TMP/SwiftBar.app";            mkdir -p "$FAKE_APP"
 DST="$TMP/swiftbar-plugins"
@@ -21,7 +28,13 @@ ENVF="$TMP/menubar.env"
 LABEL_OK="ai.knowledge-base.mcp"
 LABEL_BAD="ai.kb.does-not-exist"
 
-run() { env "$@" "$HERE/install.sh" 2>&1; }
+run() { env PATH="$TMP/bin:$PATH" "$@" "$HERE/install.sh" 2>&1; }
+
+# install.sh calls `defaults write com.ameba.SwiftBar PluginsDirectory` — the
+# REAL user domain. Shadow it so test installs can't repoint the live
+# SwiftBar plugin dir at a temp dir that gets rm -rf'd on exit.
+mkdir -p "$TMP/bin"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/defaults"; chmod +x "$TMP/bin/defaults"
 
 echo "== preflight rejects =="
 out=$(run KB_MCP_LABEL="$LABEL_BAD" KB_SWIFTBAR_APP="$TMP/nonexistent.app" KB_PLUGIN_DST="$DST" KB_MENUBAR_ENV="$ENVF")
@@ -36,6 +49,7 @@ check "service not loaded -> no menubar.env" "[[ ! -f \"$ENVF\" ]]"
 run KB_MCP_LABEL="$LABEL_OK" KB_SWIFTBAR_APP="$FAKE_APP" KB_PLUGIN_DST="$DST" KB_MENUBAR_ENV="$ENVF" KB_MCP_PORT=1 >/dev/null 2>&1
 check "unhealthy endpoint -> nonzero exit" "[[ \$? -ne 0 ]]"
 
+if [[ $LIVE -eq 1 ]]; then
 echo "== happy path (real service) =="
 run KB_MCP_LABEL="$LABEL_OK" KB_SWIFTBAR_APP="$FAKE_APP" KB_PLUGIN_DST="$DST" KB_MENUBAR_ENV="$ENVF" >/dev/null 2>&1 \
   && check "install exit 0" true || check "install exit 0" false
@@ -53,17 +67,28 @@ check "plugin renders menubar line" "echo \"\$out\" | head -1 | grep -q '^KB ●
 check "plugin shows running state" "echo \"\$out\" | grep -q 'state: running'"
 check "plugin actions present" "echo \"\$out\" | grep -q 'Rebuild + restart' && echo \"\$out\" | grep -q 'Restart'"
 check "uninstall item in Advanced submenu" "echo \"\$out\" | grep -q 'Uninstall plugin' && echo \"\$out\" | grep -q 'Advanced'"
+else
+skip "happy path (real service) — 9 checks need the live launchd service"
+fi
 
+if [[ $LIVE -eq 1 ]]; then
 echo "== idempotent reinstall =="
 run KB_MCP_LABEL="$LABEL_OK" KB_SWIFTBAR_APP="$FAKE_APP" KB_PLUGIN_DST="$DST" KB_MENUBAR_ENV="$ENVF" >/dev/null 2>&1 \
   && check "second install exit 0" true || check "second install exit 0" false
+else
+skip "idempotent reinstall — needs the live launchd service"
+fi
 
 echo "== uninstall =="
 env KB_PLUGIN_DST="$DST" KB_MENUBAR_ENV="$ENVF" "$HERE/uninstall.sh" >/dev/null 2>&1 \
   && check "uninstall exit 0" true || check "uninstall exit 0" false
 check "plugin files removed" "[[ ! -f \"$DST/kb-mcp.10s.sh\" && ! -d \"$DST/helpers\" && \"\$(find \"$DST\" -type f -perm +111 | wc -l | tr -d ' ')\" == 0 ]]"
 check "menubar.env removed" "[[ ! -f \"$ENVF\" ]]"
-check "service untouched (still running)" "launchctl print gui/$(id -u)/$LABEL_OK 2>/dev/null | grep -q 'state = running'"
+if [[ $LIVE -eq 1 ]]; then
+  check "service untouched (still running)" "launchctl print gui/$(id -u)/$LABEL_OK 2>/dev/null | grep -q 'state = running'"
+else
+  skip "service untouched (still running) — needs the live launchd service"
+fi
 out=$(env KB_PLUGIN_DST="$DST" KB_MENUBAR_ENV="$ENVF" "$HERE/uninstall.sh" 2>&1)
 check "second uninstall -> exit 0 + honest 'nothing to remove'" "[[ \$? -eq 0 || 1 ]] && echo \"\$out\" | grep -q 'nothing to remove'"
 
@@ -93,12 +118,28 @@ out=$(env -i HOME="$TMP/home" PATH="$TMP/bin:/usr/bin:/bin" KB_MENUBAR_ENV="$ENV
 check "same version -> no update banner" "! echo \"\$out\" | grep -q 'Update available'"
 check "Check-for-updates always present" "echo \"\$out\" | grep -q 'Check for updates'"
 
-rm -f "$TMP/bin/curl"; rm -f "$TMP/home/.config/kb/.update-check"*
-out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
+# Offline must be simulated by a failing curl stub — deleting the stub lets
+# the plugin hit the REAL GitHub API, which shows a genuine update banner
+# whenever a newer swiftbar/v* tag exists upstream.
+cat > "$TMP/bin/curl" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+chmod +x "$TMP/bin/curl"; rm -f "$TMP/home/.config/kb/.update-check"*
+out=$(env -i HOME="$TMP/home" PATH="$TMP/bin:/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
 check "offline -> silent, still renders KB line" "echo \"\$out\" | head -1 | grep -q '^KB' && ! echo \"\$out\" | grep -q 'Update available'"
 
+# Regression guard for the whole offline class: assert the stubbed PATH has
+# no working curl at all. If a stub is ever deleted again, or a run's PATH
+# stops including $TMP/bin, real curl reaches the real GitHub API and this
+# fails immediately instead of a downstream check flapping on real tags.
+check "stubbed PATH really is offline" \
+  "! env -i PATH=\"$TMP/bin:/usr/bin:/bin\" curl -fsS -m 3 https://api.github.com >/dev/null 2>&1"
+
 echo "== update.sh sanity =="
-check "update.sh fetch failure exits nonzero" "! env HOME=\"$TMP/home\" KB_MENUBAR_ENV=\"$ENVF\" PATH=/usr/bin:/bin \"$HERE/update.sh\" bogus-tag 2>/dev/null"
+# Use the fail-stub too: PATH=/usr/bin:/bin would make a REAL GitHub request
+# whose result depends on the network, not on update.sh's error handling.
+check "update.sh fetch failure exits nonzero" "! env HOME=\"$TMP/home\" KB_MENUBAR_ENV=\"$ENVF\" PATH=\"$TMP/bin:/usr/bin:/bin\" \"$HERE/update.sh\" bogus-tag 2>/dev/null"
 check "update.sh syntax valid" "bash -n \"$HERE/update.sh\""
 
 echo "== release-tag pinning (issue #1114) =="
@@ -237,7 +278,7 @@ STUB
   check "v1.0.0 updater -> new VERSION installed" "cmp -s \"$HERE/VERSION\" \"$TMP/updrepo/plugins/swiftbar/VERSION\""
   check "v1.0.0 updater -> helper missing from its list still installed" "[[ -f \"$TMP/updrepo/plugins/swiftbar/kb-mcp-reindex-status.sh\" ]]"
 else
-  ok "v1.0.0 updater upgrade check skipped (tag swiftbar/v1.0.0 not in local clone)"
+  skip "v1.0.0 updater upgrade check (tag swiftbar/v1.0.0 not in local clone)"
 fi
 rm -f "$TMP/bin/curl"
 
@@ -263,7 +304,11 @@ printf '{"schema_version":"reindex-run.v1","pid":%s,"started_at":"2026-11-12T00:
   > "$FAKE_INDEX/.reindex.run.json"
 out=$(env -i HOME="$TMP/home" PATH="/usr/bin:/bin" KB_MENUBAR_ENV="$ENVF" "$TMP/fakerepo/plugins/swiftbar/kb-mcp.10s.sh" 2>/dev/null)
 check "live run marker -> reindex IN PROGRESS" "echo \"\$out\" | grep -q 'reindex: IN PROGRESS'"
-check "live run marker -> amber half-circle menubar" "echo \"\$out\" | head -1 | grep -q 'KB ◐'"
+if [[ $LIVE -eq 1 ]]; then
+  check "live run marker -> amber half-circle menubar" "echo \"\$out\" | head -1 | grep -q 'KB ◐'"
+else
+  skip "live run marker -> amber half-circle menubar — needs live service health"
+fi
 
 # Dead-pid marker must not report IN PROGRESS (zombie reclaim mirrors the
 # server's checkReindexRunState). `sh -c 'echo $$'` returns its own pid —
@@ -300,11 +345,15 @@ check "stale lock remnant -> idle" "echo \"\$out\" | grep -q 'index: idle'"
 check "Reindex status menu action present" "echo \"\$out\" | grep -q 'Reindex status' && echo \"\$out\" | grep -q 'kb-mcp-reindex-status.sh'"
 check "reindex-status helper syntax valid" "bash -n \"$HERE/kb-mcp-reindex-status.sh\""
 
+if [[ $LIVE -eq 1 ]]; then
 echo "== round-trip on live setup =="
 env KB_MENUBAR_ENV="$HOME/.config/kb/menubar.env.test" "$HERE/install.sh" >/dev/null 2>&1 \
   && check "real install works (test env file)" true || check "real install works (test env file)" false
 rm -f "$HOME/.config/kb/menubar.env.test"
+else
+skip "round-trip on live setup — needs the live launchd service"
+fi
 
 echo
-echo "$PASS passed, $FAIL failed"
+echo "$PASS passed, $FAIL failed, $SKIP skipped"
 [[ $FAIL -eq 0 ]]

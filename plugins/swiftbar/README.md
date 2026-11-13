@@ -92,7 +92,8 @@ launchd plist / `mcp_config.json`.
 ## Testing
 
 ```bash
-plugins/swiftbar/test.sh    # reject paths, happy path, uninstall, update + release-tag pinning
+plugins/swiftbar/test.sh              # reject paths, happy path, uninstall, update + release-tag pinning
+KB_SKIP_LIVE=1 plugins/swiftbar/test.sh   # CI mode: skips checks needing the live launchd service
 ```
 
 Uses `KB_PLUGIN_DST`/`KB_MENUBAR_ENV`/`KB_SWIFTBAR_APP`/`KB_MCP_LABEL`/
