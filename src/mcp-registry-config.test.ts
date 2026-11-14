@@ -78,16 +78,32 @@ describe('server.json (MCP Registry) parity', () => {
     expect(server.version).toBe(pkg.version);
   });
 
-  it('declares only env vars registered in CONFIG_SCHEMA, with matching secret flags', () => {
-    const envVars = server.packages[0].environmentVariables ?? [];
-    expect(envVars.map((v) => v.name)).toEqual(
-      expect.arrayContaining(['KNOWLEDGE_BASES_ROOT_DIR', 'EMBEDDING_PROVIDER']),
+  it('declares the root dir, the provider, and the API key of every hosted provider', () => {
+    const names = (server.packages[0].environmentVariables ?? []).map((v) => v.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'KNOWLEDGE_BASES_ROOT_DIR',
+        'EMBEDDING_PROVIDER',
+        'HUGGINGFACE_API_KEY',
+        'OPENAI_API_KEY',
+      ]),
     );
+  });
+
+  it('declares only env vars registered in CONFIG_SCHEMA, with matching secret flags and defaults', () => {
+    const envVars = server.packages[0].environmentVariables ?? [];
     for (const envVar of envVars) {
       const spec = schemaSpec(envVar.name);
-      expect({ name: envVar.name, isSecret: envVar.isSecret === true }).toEqual({
+      const expectedDefault =
+        envVar.default === undefined ? undefined : 'default' in spec ? spec.default : null;
+      expect({
+        name: envVar.name,
+        isSecret: envVar.isSecret === true,
+        default: envVar.default,
+      }).toEqual({
         name: envVar.name,
         isSecret: spec.secret === true,
+        default: expectedDefault,
       });
     }
   });

@@ -22,7 +22,7 @@ Every release bump must set the same version in three places: `package.json`
 `version`, `server.json` `version`, and `server.json` `packages[0].version`.
 `src/mcp-registry-config.test.ts` fails when they drift, when the server name
 stops matching `mcpName`, or when a declared environment variable is missing
-from `CONFIG_SCHEMA`.
+from `CONFIG_SCHEMA` or its default or secret flag disagrees with it.
 
 ## Publish after an npm release
 
