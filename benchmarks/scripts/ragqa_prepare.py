@@ -27,6 +27,14 @@ import hashlib
 import json
 import os
 import re
+import tempfile
+
+# Pinned Hugging Face commit (issue #1270): `main` of hotpotqa/hotpot_qa as of the
+# committed rag-eval results (the 2025-08-11 parquet conversion). Pinning keeps a
+# later upstream commit from silently changing the questions and gold answers.
+HOTPOTQA_REPO = "hotpotqa/hotpot_qa"
+HOTPOTQA_REVISION = "1908d6afbbead072334abe2965f91bd2709910ab"
+HOTPOTQA_CONFIG = "distractor"
 
 
 def safe_id(raw: str) -> str:
@@ -78,7 +86,8 @@ def main() -> int:
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(docs_dir, exist_ok=True)
 
-    ds = load_dataset("hotpotqa/hotpot_qa", "distractor", split=_safe_name(args.split, "split"), streaming=True)
+    split = _safe_name(args.split, "split")
+    ds = load_dataset(HOTPOTQA_REPO, HOTPOTQA_CONFIG, split=split, streaming=True, revision=HOTPOTQA_REVISION)
 
     gold_path = os.path.join(data_dir, "hotpotqa.jsonl")
     paramap: dict[str, str] = {}
@@ -130,6 +139,12 @@ def main() -> int:
 
     with open(os.path.join(data_dir, "hotpotqa_paramap.json"), "w", encoding="utf-8") as pf:
         json.dump(paramap, pf, ensure_ascii=False)
+
+    # Provenance sidecar; the rag-eval loader reads only hotpotqa.jsonl.
+    with open(os.path.join(data_dir, "hotpotqa_source.json"), "w", encoding="utf-8") as sf:
+        json.dump({"repo": HOTPOTQA_REPO, "revision": HOTPOTQA_REVISION, "config": HOTPOTQA_CONFIG,
+                   "split": split, "items": n_written}, sf, indent=2)
+        sf.write("\n")
 
     print(f"[done] hotpotqa: items={n_written} paragraphs={len(paramap)} "
           f"-> gold={gold_path}, docs={docs_dir}")

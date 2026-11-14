@@ -59,11 +59,14 @@ For example, with the `datasets` library:
 from datasets import load_dataset
 import json, os
 
+# Pin the dataset commit the committed results used (see BRIGHT_REVISION in
+# benchmarks/scripts/fetch_bright_from_hf.py); `main` can move under you.
+REVISION = "3066d29c9651a576c8aba4832d249807b181ecae"
 task = "biology"
 out = f"bright-data/{task}"
 os.makedirs(out, exist_ok=True)
-docs = load_dataset("xlangai/BRIGHT", "documents", split=task)
-exs  = load_dataset("xlangai/BRIGHT", "examples",  split=task)
+docs = load_dataset("xlangai/BRIGHT", "documents", split=task, revision=REVISION)
+exs  = load_dataset("xlangai/BRIGHT", "examples",  split=task, revision=REVISION)
 with open(f"{out}/documents.jsonl", "w") as f:
     for r in docs:
         f.write(json.dumps({"id": r["id"], "content": r["content"]}) + "\n")

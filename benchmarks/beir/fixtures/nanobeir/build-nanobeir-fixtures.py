@@ -21,17 +21,21 @@ from datasets import load_dataset
 
 CORPUS_CAP = 1000
 SPLIT = "test"  # NanoBEIR ships a single eval split; the runner reads qrels/<split>.tsv
+# fixture name -> (Hugging Face repo, pinned commit SHA). The SHAs (issue #1270)
+# are the repos' `main` heads, unchanged since 2024-09-10, which the vendored
+# fixtures were built from; pinning keeps a re-run byte-identical even if
+# upstream later pushes a new commit.
 DATASETS = {
-    "nanobeir-scifact": "zeta-alpha-ai/NanoSciFact",
-    "nanobeir-fiqa": "zeta-alpha-ai/NanoFiQA2018",
+    "nanobeir-scifact": ("zeta-alpha-ai/NanoSciFact", "309f1d1ae3ae2e092444a8a0c25bed59b82318bc"),
+    "nanobeir-fiqa": ("zeta-alpha-ai/NanoFiQA2018", "4163ba032953d5044a7a6244261413f609c14342"),
 }
 OUT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
-def build(name: str, repo: str) -> None:
-    corpus = load_dataset(repo, "corpus", split="train")
-    queries = load_dataset(repo, "queries", split="train")
-    qrels = load_dataset(repo, "qrels", split="train")
+def build(name: str, repo: str, revision: str) -> None:
+    corpus = load_dataset(repo, "corpus", split="train", revision=revision)
+    queries = load_dataset(repo, "queries", split="train", revision=revision)
+    qrels = load_dataset(repo, "qrels", split="train", revision=revision)
 
     judged = sorted({str(r) for r in qrels["corpus-id"]})
     judged_set = set(judged)
@@ -57,9 +61,10 @@ def build(name: str, repo: str) -> None:
         for q, c in pairs:
             f.write(f"{q}\t{c}\t1\n")
 
-    print(f"{name}: docs={len(keep)} (judged={len(judged)}) queries={queries.num_rows} qrels={len(pairs)}")
+    print(f"{name}: docs={len(keep)} (judged={len(judged)}) queries={queries.num_rows} qrels={len(pairs)} "
+          f"source={repo}@{revision}")
 
 
 if __name__ == "__main__":
-    for name, repo in DATASETS.items():
-        build(name, repo)
+    for name, (repo, revision) in DATASETS.items():
+        build(name, repo, revision)

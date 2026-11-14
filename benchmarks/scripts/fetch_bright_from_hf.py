@@ -21,6 +21,15 @@ import os
 import re
 import tempfile
 
+# Pinned Hugging Face commit (issue #1270). This is the xlangai/BRIGHT `main` head
+# the committed benchmarks/results/bright/ numbers were computed on. It is
+# deliberately NOT the current head: upstream commit c12d4458 (2026-11-07,
+# "Correct duplicate and invalid relevance labels in four BRIGHT splits") rewrote
+# the biology, earth_science, robotics and stackoverflow `examples` (gold labels).
+# Moving the pin to it means re-recording the BRIGHT results.
+BRIGHT_REPO = "xlangai/BRIGHT"
+BRIGHT_REVISION = "3066d29c9651a576c8aba4832d249807b181ecae"
+
 
 def _allowed_roots() -> list[str]:
     repo = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -62,8 +71,8 @@ def main() -> int:
     for task in tasks:
         out = os.path.join(_resolve_path(args.bright_dir), _safe_name(task, "task name"))
         os.makedirs(out, exist_ok=True)
-        docs = load_dataset("xlangai/BRIGHT", "documents", split=task)
-        exs = load_dataset("xlangai/BRIGHT", "examples", split=task)
+        docs = load_dataset(BRIGHT_REPO, "documents", split=task, revision=BRIGHT_REVISION)
+        exs = load_dataset(BRIGHT_REPO, "examples", split=task, revision=BRIGHT_REVISION)
         with open(os.path.join(out, "documents.jsonl"), "w", encoding="utf-8") as f:
             for r in docs:
                 f.write(json.dumps({"id": str(r["id"]), "content": r["content"]}, ensure_ascii=False) + "\n")
@@ -77,7 +86,11 @@ def main() -> int:
                     "excluded_ids": [str(g) for g in r.get("excluded_ids", [])],
                 }, ensure_ascii=False) + "\n")
                 n_ex += 1
-        print(f"[done] {task}: documents={len(docs)} examples={n_ex} -> {out}")
+        # Provenance sidecar; the bench:bright adapter reads only the two jsonl files.
+        with open(os.path.join(out, "source.json"), "w", encoding="utf-8") as f:
+            json.dump({"repo": BRIGHT_REPO, "revision": BRIGHT_REVISION, "task": task}, f, indent=2)
+            f.write("\n")
+        print(f"[done] {task}: documents={len(docs)} examples={n_ex} -> {out} ({BRIGHT_REPO}@{BRIGHT_REVISION})")
     return 0
 
 
