@@ -106,7 +106,7 @@ def resolve_revision(repo: str, override: str | None = None) -> str:
     run still comes from a single consistent snapshot and the SHA is printed for
     the record.
     """
-    if override:
+    if override is not None:
         return _check_sha(override, f"revision for {repo}")
     pinned = PINNED_REVISIONS.get(repo)
     if pinned:
@@ -115,6 +115,24 @@ def resolve_revision(repo: str, override: str | None = None) -> str:
     print(f"[warn] {repo} has no pinned revision; using current main {sha}. "
           f"Add it to PINNED_REVISIONS to make this fetch reproducible.", file=sys.stderr)
     return sha
+
+
+def _warn_if_cache_off_pin(source_path: str, wanted: dict[str, tuple[str, str | None]]) -> None:
+    """On a cache hit, warn when the cached files are not provably at the expected
+    revision (no sidecar, or a sidecar naming a different SHA). Offline: an unpinned
+    repo with no override has no expected SHA to compare against."""
+    try:
+        with open(source_path, encoding="utf-8") as f:
+            recorded = json.load(f)
+    except (OSError, ValueError):
+        recorded = None
+    for part, (repo, override) in wanted.items():
+        expected = _check_sha(override, f"revision for {repo}") if override is not None else PINNED_REVISIONS.get(repo)
+        got = (recorded or {}).get(part, {})
+        if recorded is None or got.get("repo") != repo or (expected and got.get("revision") != expected):
+            print(f"[warn] cached {part} is not recorded at {repo}@{expected or '<unpinned>'} "
+                  f"(sidecar: {got.get('repo')}@{got.get('revision')}); re-run with --force to fetch it.",
+                  file=sys.stderr)
 
 
 def _siblings(repo: str, revision: str = "main") -> list[str]:
@@ -180,9 +198,20 @@ def main() -> int:
     queries_path = os.path.join(out_dir, "queries.jsonl")
     qrels_path = os.path.join(out_dir, "qrels", f"{args.split}.tsv")
 
+    source_path = os.path.join(out_dir, "hf_source.json")
+
     if (not args.force) and all(os.path.exists(p) for p in (corpus_path, queries_path, qrels_path)):
         print(f"[skip] {ds}: cache already populated at {out_dir}")
+        _warn_if_cache_off_pin(source_path, {
+            "corpus": (corpus_repo, args.corpus_revision),
+            "qrels": (qrels_repo, args.qrels_revision),
+        })
         return 0
+
+    # Drop the old provenance record first, so a fetch that fails part-way never
+    # leaves a sidecar naming a revision the files on disk no longer match.
+    if os.path.exists(source_path):
+        os.remove(source_path)
 
     corpus_rev = resolve_revision(corpus_repo, args.corpus_revision)
     qrels_rev = resolve_revision(qrels_repo, args.qrels_revision)
@@ -222,7 +251,7 @@ def main() -> int:
         n_qrels = sum(1 for ln in f if ln.strip()) - 1  # minus header
 
     # Provenance sidecar; the runner only reads corpus/queries/qrels and ignores it.
-    with open(os.path.join(out_dir, "hf_source.json"), "w", encoding="utf-8") as f:
+    with open(source_path, "w", encoding="utf-8") as f:
         json.dump({
             "corpus": {"repo": corpus_repo, "revision": corpus_rev},
             "qrels": {"repo": qrels_repo, "revision": qrels_rev, "file": tsv_name},

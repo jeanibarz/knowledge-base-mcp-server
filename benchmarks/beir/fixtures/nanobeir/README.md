@@ -51,8 +51,10 @@ compares a fresh run against the committed baseline on the *same* fixture.
 python3 benchmarks/beir/fixtures/nanobeir/build-nanobeir-fixtures.py
 ```
 
-(Needs the `datasets` library and network to Hugging Face. Re-running is
-deterministic.)
+(Needs the `datasets` library and network to Hugging Face. Each dataset repo is
+pinned to a commit SHA in the script's `DATASETS` map, so re-running is
+deterministic; moving a pin means rebuilding the fixtures and re-recording the
+dense baselines.)
 
 ## Record / refresh the committed dense baselines
 

@@ -52,7 +52,9 @@ fields where present.
 The committed runs were produced on Linux x64 with **Node `v24.11.1`** and
 **Python `3.10.12`**. Any Node `>= 20` and Python `>= 3.10` should work. The
 datasets are content-checksummed (each result JSON records the checksum), so those
-are pinned; the `nomic-embed-text` model is pulled by its Ollama tag and is **not**
+are pinned, and the Hugging Face fetch scripts below download each dataset at a
+fixed commit SHA (`PINNED_REVISIONS` / `BRIGHT_REVISION` in the scripts), not the
+moving `main` branch; the `nomic-embed-text` model is pulled by its Ollama tag and is **not**
 digest-pinned, so a small drift from a newer model build — on top of the usual
 hardware sensitivity — is expected.
 
@@ -245,7 +247,10 @@ BRIGHT compares `dense` against `hybrid+rerank` on reasoning-intensive queries �
 the setting where reranking is expected to help most. With this small model the
 result is mixed (rerank wins on economics but loses on biology and on the two-task
 mean, per the table below), which is itself a faithful, reproducible finding. First
-export the BRIGHT tasks from Hugging Face into the layout the loader expects:
+export the BRIGHT tasks from Hugging Face into the layout the loader expects. The
+script pins `xlangai/BRIGHT` to the revision the committed results used; a later
+upstream commit corrected some gold labels, so moving the pin means re-recording
+the results:
 
 ```bash
 python3 benchmarks/scripts/fetch_bright_from_hf.py \
