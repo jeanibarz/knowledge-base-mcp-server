@@ -2,7 +2,7 @@
   "name": "@jeanibarz/knowledge-base-mcp-server",
   "version": "0.3.0",
   "mcpName": "io.github.jeanibarz/knowledge-base-mcp-server",
-  "description": "MCP server for retrieving data from different knowledge bases",
+  "description": "Local semantic search over your markdown notes, as an MCP server for AI clients plus the kb command-line tool",
   "type": "module",
   "main": "build/index.js",
   "bin": {
@@ -90,7 +90,24 @@
     "type": "git",
     "url": "git+https://github.com/jeanibarz/knowledge-base-mcp-server.git"
   },
-  "keywords": [],
+  "homepage": "https://github.com/jeanibarz/knowledge-base-mcp-server#readme",
+  "bugs": {
+    "url": "https://github.com/jeanibarz/knowledge-base-mcp-server/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "knowledge-base",
+    "rag",
+    "semantic-search",
+    "embeddings",
+    "faiss",
+    "ollama",
+    "markdown",
+    "notes",
+    "cli"
+  ],
   "author": "jean.ibarz",
   "license": "Unlicense",
   "dependencies": {
