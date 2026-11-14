@@ -1,16 +1,11 @@
-// Ollama embedding error translation + retry short-circuit (issue #86).
+// Ollama embedding error translation (issues #86, #801).
 //
-// `@langchain/core`'s AsyncCaller retries failed embedding calls 7 times by
-// default. Its built-in defaultFailedAttemptHandler short-circuits HTTP 4xx
-// via `error.status` / `error.response.status`, but the `ollama` SDK's
-// ResponseError exposes the status as snake_case `status_code`, so the
-// handler never sees it and we burn 7 attempts on a deterministic 400.
-//
-// This module returns an `onFailedAttempt` handler that:
-//   1. Recognises the deterministic schema-violation classes we care about
-//      (context-length overflow, generic Ollama 4xx).
-//   2. Throws a KBError translated for the operator — model name + a pointer
-//      at safer alternatives — which aborts p-retry on the very first attempt.
+// The embedding client (embedding-http-client.ts) reads Ollama's HTTP status
+// and error body and calls `translateOllamaEmbeddingError` for terminal 4xx
+// responses. This module recognises the deterministic schema-violation classes
+// (context-length overflow, generic Ollama 4xx) and transient socket drops, and
+// turns them into a KBError that tells the operator which model failed and what
+// to switch to.
 import { KBError } from './errors.js';
 
 const CONTEXT_OVERFLOW_PATTERNS = [
@@ -154,22 +149,4 @@ export function translateOllamaEmbeddingError(err: unknown, model: string): KBEr
     `Ollama embedding request for model \`${model}\` failed: ${original}`,
     err,
   );
-}
-
-/**
- * Returns an `onFailedAttempt` handler suitable for `OllamaEmbeddings`'s
- * AsyncCaller. Throwing from this handler aborts the p-retry loop on the
- * first failed attempt, so deterministic schema violations fail fast with
- * an actionable message instead of running through 7 retries.
- */
-export function makeOllamaOnFailedAttempt(
-  model: string,
-): (err: unknown) => void {
-  return (err: unknown) => {
-    if (isNonRetryableOllamaError(err)) {
-      throw translateOllamaEmbeddingError(err, model);
-    }
-    // Other errors stay retryable — fall through (no throw) so AsyncCaller
-    // continues with its exponential-backoff retry loop.
-  };
 }

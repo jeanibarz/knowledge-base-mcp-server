@@ -142,16 +142,15 @@ function euclideanDistance(left: number[], right: number[]): number {
 async function patchEmbeddings(): Promise<void> {
   const embeddingModules = await Promise.all([
     import('@langchain/community/embeddings/hf'),
-    import('@langchain/ollama'),
-    import('@langchain/openai'),
+    // Compiled to build/benchmarks/, next to the server build in build/ (the
+    // same instance FaissIndexManager imports); not typed across rootDir.
+    import(new URL('../embedding-http-client.js', import.meta.url).href) as Promise<Record<string, unknown>>,
   ]);
 
-  for (const module of embeddingModules) {
-    const exported = Object.values(module).find((value) => typeof value === 'function');
-    if (!exported) {
-      continue;
-    }
-
+  // The fetch client module exports both Ollama and OpenAI classes; patch all.
+  const embeddingClasses = embeddingModules.flatMap((module) =>
+    Object.values(module).filter((value) => typeof value === 'function'));
+  for (const exported of embeddingClasses) {
     const embeddingClass = exported as {
       prototype: {
         embedDocuments: (texts: string[]) => Promise<number[][]>;

@@ -50,6 +50,7 @@ The **Measured speed** column is a controlled Ollama probe from the #1047 bake-o
 ## Related
 
 - [Switching embedding models](../operations/switching-embedding-models.md).
+- [TEI as the embedding server](../operations/tei-embedding-server.md): fastest bulk indexing at about 1.7 GB VRAM via `EMBEDDING_PROVIDER=openai`.
 - [Configuration reference](configuration.md) for provider environment variables.
 - [Index quantization](../operations/index-quantization.md) for SQ8 storage tradeoffs.
 - [RFC 013 - multi-model embedding support](../rfcs/013-multimodel-support.md).

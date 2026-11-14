@@ -269,7 +269,7 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
     const { CircuitBrokenEmbeddings, createEmbeddingsClient, TaskPrefixedEmbeddings } = await loadFresh({
       KB_EMBEDDING_TASK_PREFIXES: undefined,
     });
-    // Construction only — OllamaEmbeddings does not touch the network here.
+    // Construction only — OllamaFetchEmbeddings does not touch the network here.
     const client = await createEmbeddingsClient({ provider: 'ollama', modelName: 'nomic-embed-text' });
     expect(client).toBeInstanceOf(CircuitBrokenEmbeddings);
     // Issue #793 — the breaker now wraps a TimeoutEmbeddings deadline layer,
@@ -397,12 +397,12 @@ describe('embedding task prefixes (issue #567 — nomic-embed-text family)', () 
 });
 
 describe('OpenAI arm — OPENAI_BASE_URL for OpenAI-compatible endpoints', () => {
-  // OpenAIEmbeddings sits two wrappers down (breaker → timeout → provider).
+  // OpenAIFetchEmbeddings sits two wrappers down (breaker → timeout → provider).
   function unwrapToOpenAIEmbeddings(
     client: unknown,
-  ): { clientConfig: { baseURL?: string } } {
+  ): { baseUrl: string } {
     const timeout = (client as { inner: unknown }).inner;
-    return (timeout as { inner: { clientConfig: { baseURL?: string } } }).inner;
+    return (timeout as { inner: { baseUrl: string } }).inner;
   }
 
   it('derives the breaker key from OPENAI_BASE_URL so the key matches the endpoint actually called', async () => {
@@ -434,7 +434,7 @@ describe('OpenAI arm — OPENAI_BASE_URL for OpenAI-compatible endpoints', () =>
       provider: 'openai',
       modelName: 'text-embedding-3-small',
     });
-    expect(unwrapToOpenAIEmbeddings(client).clientConfig.baseURL)
+    expect(unwrapToOpenAIEmbeddings(client).baseUrl)
       .toBe('https://ark.cn-beijing.volces.com/api/v3');
   });
 
@@ -447,7 +447,7 @@ describe('OpenAI arm — OPENAI_BASE_URL for OpenAI-compatible endpoints', () =>
       provider: 'openai',
       modelName: 'text-embedding-3-small',
     });
-    expect(unwrapToOpenAIEmbeddings(client).clientConfig.baseURL)
+    expect(unwrapToOpenAIEmbeddings(client).baseUrl)
       .toBe('https://api.openai.com/v1');
   });
 
@@ -460,7 +460,7 @@ describe('OpenAI arm — OPENAI_BASE_URL for OpenAI-compatible endpoints', () =>
       provider: 'openai',
       modelName: 'text-embedding-3-small',
     });
-    expect(unwrapToOpenAIEmbeddings(client).clientConfig.baseURL)
+    expect(unwrapToOpenAIEmbeddings(client).baseUrl)
       .toBe('https://api.openai.com/v1');
   });
 });

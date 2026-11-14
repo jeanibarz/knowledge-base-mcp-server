@@ -190,3 +190,7 @@ const OPENAI_BASE_URL_OVERRIDE = process.env.OPENAI_BASE_URL?.trim();
 export const OPENAI_BASE_URL_OVERRIDDEN = Boolean(OPENAI_BASE_URL_OVERRIDE)
   && OPENAI_BASE_URL_OVERRIDE !== DEFAULT_OPENAI_BASE_URL;
 export const OPENAI_BASE_URL = OPENAI_BASE_URL_OVERRIDE || DEFAULT_OPENAI_BASE_URL;
+// Optional OpenAI-Organization / OpenAI-Project request headers (sent by the
+// fetch embedding client, as the former OpenAI SDK did).
+export const OPENAI_ORG_ID = process.env.OPENAI_ORG_ID?.trim() || undefined;
+export const OPENAI_PROJECT_ID = process.env.OPENAI_PROJECT_ID?.trim() || undefined;

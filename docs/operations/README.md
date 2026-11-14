@@ -19,3 +19,4 @@ rollback commands over design background.
 | [Research workflow](research-workflow.md) | Running the read-only `kb research` evidence pass. |
 | [Secret scan](secret-scan.md) | Enabling ingest-time credential scanning and reviewing quarantine hits. |
 | [Switching embedding models](switching-embedding-models.md) | Changing the active embedding model with verification and rollback. |
+| [TEI embedding server](tei-embedding-server.md) | Running Text Embeddings Inference as a small-VRAM, fast bulk-indexing embedding server. |
