@@ -665,6 +665,7 @@ See [`docs/operations/eval-gate-harness.md`](docs/operations/eval-gate-harness.m
 ```bash
 kb doctor                          # availability snapshot: index, embedding backend, LLM
 kb config validate                 # static env-var schema validation before startup
+kb config client claude-desktop    # ready-to-paste MCP client config from your settings
 kb serve                           # loopback daemon for warm reads; --warm pre-loads indexes
 kb serve status                    # daemon liveness and degraded-mode diagnostics
 kb reindex --with-context          # rebuild the index with contextual prefaces

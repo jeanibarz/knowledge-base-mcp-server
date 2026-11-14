@@ -2231,6 +2231,81 @@ Stdout/stderr and exit codes:
 Source and test anchors: `src/cli-diff-index.ts`, `src/diff-index-core.ts`,
 `src/cli-diff-index.test.ts`.
 
+## `kb config client`
+
+Invocation:
+
+```bash
+kb config client cursor --format=json
+kb config client claude-code --format=json --command=global
+```
+
+Prints a ready-to-paste MCP server entry for one client, built from the
+effective configuration (`process.env` layered over the project config file,
+as `kb config show` resolves it). Supported clients: `claude-desktop`,
+`cursor`, `windsurf`, `cline` (`mcpServers` JSON), `vscode` (`servers` JSON
+with `"type": "stdio"`) and `claude-code` (a `claude mcp add` command line).
+
+```json
+{
+  "schema_version": "kb.config-client.v1",
+  "client": "cursor",
+  "shape": "mcpServers",
+  "command_mode": "npx",
+  "config_file": null,
+  "config_locations": [
+    "Global: ~/.cursor/mcp.json",
+    "Per project: <project>/.cursor/mcp.json"
+  ],
+  "command": "npx",
+  "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
+  "env": {
+    "KNOWLEDGE_BASES_ROOT_DIR": "/home/user/knowledge_bases",
+    "EMBEDDING_PROVIDER": "openai",
+    "OPENAI_API_KEY": "<OPENAI_API_KEY>",
+    "OPENAI_MODEL_NAME": "text-embedding-3-small"
+  },
+  "placeholders": ["OPENAI_API_KEY"],
+  "snippet": "{\n  \"mcpServers\": {\n    \"knowledge-base\": { ... }\n  }\n}"
+}
+```
+
+Stable fields:
+
+- `schema_version` is `kb.config-client.v1`.
+- `client` echoes the requested client name.
+- `shape` is `mcpServers`, `servers` (VS Code) or `shell` (Claude Code).
+- `command_mode` is `npx` (default) or `global` (`--command=global`).
+- `config_file` is the project config file that was layered in, or `null`.
+- `config_locations` lists human-readable places the snippet goes.
+- `command` and `args` are the launch command: `npx` with
+  `["-y", "@jeanibarz/knowledge-base-mcp-server@latest"]`, or the absolute
+  path of the `knowledge-base-mcp-server` bin found on `PATH` with `[]`.
+- `env` holds the variables passed to the server: always
+  `KNOWLEDGE_BASES_ROOT_DIR`, `EMBEDDING_PROVIDER` and the provider's model
+  (and base URL for Ollama, API key for OpenAI/HuggingFace); `FAISS_INDEX_PATH`,
+  `KB_ACTIVE_MODEL` and optional provider settings only when env or the project
+  config sets them.
+- `placeholders` names every `env` key whose value is a `<NAME>` placeholder.
+  Secrets (any variable `kb config show` redacts) are always placeholders,
+  whether or not they are set; `MCP_AUTH_TOKEN` is never emitted.
+- `snippet` is the exact paste-ready text: JSON for `mcpServers`/`servers`, a
+  shell command line for `shell`. With the default `--format=md`, the same
+  text is printed inside a fenced code block.
+
+Stdout/stderr and exit codes:
+
+- The JSON object (or Markdown) is stdout with exit `0`.
+- There is no stable JSON error envelope. Errors print `kb config client: ...`
+  to stderr.
+- Exit `2` for an unknown or missing client name (the message lists the
+  supported names), an invalid flag, an unreadable project config, an
+  unsupported `EMBEDDING_PROVIDER`, or `--command=global` when the server bin
+  is not on `PATH`.
+
+Source and test anchors: `src/cli-config-client.ts`,
+`src/cli-config-client.test.ts`.
+
 ## `kb open`
 
 Invocation:
