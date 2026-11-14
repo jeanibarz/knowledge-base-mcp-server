@@ -58,9 +58,10 @@ export const KB_ERROR_CODE_DOCS: Record<KBErrorCode, KBErrorCodeDoc> = {
   },
   PROVIDER_AUTH: {
     meaning: 'Provider credentials are missing or invalid.',
-    cause: '`OPENAI_API_KEY` or `HUGGINGFACE_API_KEY` is absent, expired, or not visible to the service process.',
+    cause:
+      '`OPENAI_API_KEY` or `HUGGINGFACE_API_KEY` is absent, expired, or not visible to the service process; or an embedding endpoint answered HTTP 401/403, for example an auth proxy in front of Ollama.',
     remedy:
-      'Set the provider key in the launching environment and confirm `kb doctor` sees the expected provider configuration.',
+      'Set the provider key in the launching environment and confirm `kb doctor` sees the expected provider configuration. For Ollama, which takes no key, fix the auth proxy credentials or `OLLAMA_BASE_URL`.',
     transient: false,
   },
   KB_NOT_FOUND: {

@@ -12,7 +12,7 @@
 // EOS token. Failures are mapped onto KBError codes; only transient ones
 // (network drop, HTTP 5xx/429) are retried.
 import { INDEXING_BATCH_SIZE } from './config/indexing.js';
-import { KBError } from './errors.js';
+import { KBError, ProviderAuthError, type ProviderAuthSource } from './errors.js';
 import { translateOllamaEmbeddingError } from './ollama-error.js';
 
 export interface FetchEmbeddingsOptions {
@@ -28,6 +28,12 @@ export interface FetchEmbeddingsOptions {
   /** Retries for transient failures only. Default 5 (at most 6 attempts, about 7.75 s of backoff). */
   maxRetries?: number;
   fetchImpl?: typeof fetch;
+  /** Aborts every request made by this client. A per-call signal can be added on each embed call. */
+  signal?: AbortSignal;
+}
+
+/** Per-call options. `signal` aborts this call's requests and retry backoff (#1264). */
+export interface EmbedCallOptions {
   signal?: AbortSignal;
 }
 
@@ -42,6 +48,8 @@ function backoffMs(retry: number): number {
 
 interface WireProtocol {
   readonly label: string;
+  /** Backend named on a 401/403 `ProviderAuthError`, for the operator hint. */
+  readonly provider: ProviderAuthSource;
   url(baseUrl: string): string;
   body(model: string, input: string[]): Record<string, unknown>;
   parse(json: unknown, expected: number): number[][];
@@ -89,6 +97,7 @@ function extractServerMessage(text: string): string {
 
 const OLLAMA_PROTOCOL: WireProtocol = {
   label: 'Ollama',
+  provider: 'ollama',
   url: (baseUrl) => `${baseUrl}/api/embed`,
   body: (model, input) => ({ model, input, truncate: false }),
   parse(json, expected) {
@@ -113,6 +122,7 @@ const OLLAMA_PROTOCOL: WireProtocol = {
 
 const OPENAI_PROTOCOL: WireProtocol = {
   label: 'OpenAI-compatible',
+  provider: 'openai',
   url: (baseUrl) => `${baseUrl}/embeddings`,
   body: (model, input) => ({ model, input, encoding_format: 'float' }),
   parse(json, expected) {
@@ -190,24 +200,33 @@ class FetchEmbeddings {
     this.maxRetries = Math.max(0, Math.floor(options.maxRetries ?? DEFAULT_MAX_RETRIES));
   }
 
-  async embedDocuments(texts: string[]): Promise<number[][]> {
+  async embedDocuments(texts: string[], callOptions: EmbedCallOptions = {}): Promise<number[][]> {
+    const signal = this.effectiveSignal(callOptions.signal);
     const out: number[][] = [];
     for (let start = 0; start < texts.length; start += this.batchSize) {
-      out.push(...(await this.requestWithRetry(texts.slice(start, start + this.batchSize))));
+      out.push(...(await this.requestWithRetry(texts.slice(start, start + this.batchSize), signal)));
     }
     return out;
   }
 
-  async embedQuery(text: string): Promise<number[]> {
-    const [vector] = await this.requestWithRetry([text]);
+  async embedQuery(text: string, callOptions: EmbedCallOptions = {}): Promise<number[]> {
+    const [vector] = await this.requestWithRetry([text], this.effectiveSignal(callOptions.signal));
     return vector;
   }
 
-  private async requestWithRetry(input: string[]): Promise<number[][]> {
-    const signal = this.options.signal;
+  /** The client-wide signal, the per-call one, or both combined. */
+  private effectiveSignal(callSignal: AbortSignal | undefined): AbortSignal | undefined {
+    const clientSignal = this.options.signal;
+    if (clientSignal === undefined) return callSignal;
+    if (callSignal === undefined) return clientSignal;
+    return AbortSignal.any([clientSignal, callSignal]);
+  }
+
+  private async requestWithRetry(input: string[], signal: AbortSignal | undefined): Promise<number[][]> {
     for (let attempt = 0; ; attempt += 1) {
+      if (signal?.aborted) throw abortReason(signal);
       try {
-        return await this.requestOnce(input);
+        return await this.requestOnce(input, signal);
       } catch (err) {
         if (signal?.aborted) throw err;
         const transient = err instanceof TransientError;
@@ -219,8 +238,8 @@ class FetchEmbeddings {
     }
   }
 
-  private async requestOnce(input: string[]): Promise<number[][]> {
-    const { model, apiKey, signal } = this.options;
+  private async requestOnce(input: string[], signal: AbortSignal | undefined): Promise<number[][]> {
+    const { model, apiKey } = this.options;
     const fetchImpl = this.options.fetchImpl ?? globalThis.fetch;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
@@ -249,8 +268,8 @@ class FetchEmbeddings {
       const text = await response.text().catch(() => '');
       const { status } = response;
       if (status === 401 || status === 403) {
-        throw new KBError(
-          'PROVIDER_AUTH',
+        throw new ProviderAuthError(
+          this.protocol.provider,
           `${this.protocol.label} embedding request for model \`${model}\` was rejected with HTTP ${status}: ${extractServerMessage(text)}`,
         );
       }

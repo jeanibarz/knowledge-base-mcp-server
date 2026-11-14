@@ -2,9 +2,11 @@ import { describe, it, expect, jest } from '@jest/globals';
 import {
   OllamaFetchEmbeddings,
   OpenAIFetchEmbeddings,
+  type EmbedCallOptions,
   type FetchEmbeddingsOptions,
 } from './embedding-http-client.js';
-import { KBError } from './errors.js';
+import { KBError, ProviderAuthError } from './errors.js';
+import { classifyKbSearchError } from './search-errors-core.js';
 
 interface Recorded {
   url: string;
@@ -51,8 +53,8 @@ function makeFetch(steps: Step[]) {
 interface Provider {
   name: string;
   make: (o: FetchEmbeddingsOptions) => {
-    embedDocuments(t: string[]): Promise<number[][]>;
-    embedQuery(t: string): Promise<number[]>;
+    embedDocuments(t: string[], c?: EmbedCallOptions): Promise<number[][]>;
+    embedQuery(t: string, c?: EmbedCallOptions): Promise<number[]>;
   };
   baseUrl: string;
   path: string;
@@ -285,6 +287,60 @@ describe.each(providers)('$name fetch embeddings (shared behaviour)', (p) => {
   });
 });
 
+describe.each(providers)('$name fetch embeddings per-call signal (#1264)', (p) => {
+  const opts = (fetchImpl: typeof fetch): FetchEmbeddingsOptions => ({
+    baseUrl: p.baseUrl,
+    model: 'm-1',
+    fetchImpl,
+    maxRetries: 3,
+  });
+
+  it('passes the per-call signal to fetch', async () => {
+    const ac = new AbortController();
+    const { fetchImpl, calls } = makeFetch([echoOk(p)]);
+    await p.make(opts(fetchImpl)).embedDocuments(['a'], { signal: ac.signal });
+    expect(calls[0].signal?.aborted).toBe(false);
+    ac.abort();
+    expect(calls[0].signal?.aborted).toBe(true);
+  });
+
+  it('a per-call abort during retry backoff stops further attempts', async () => {
+    const ac = new AbortController();
+    const { fetchImpl, calls } = makeFetch([textResponse('down', 503)]);
+    const pending = p.make(opts(fetchImpl)).embedQuery('a', { signal: ac.signal }).catch((e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls).toHaveLength(1);
+    const reason = new Error('deadline');
+    ac.abort(reason);
+    await expect(pending).resolves.toBe(reason);
+    // Backoff would have retried at 250 ms and 750 ms.
+    await new Promise((r) => setTimeout(r, 800));
+    expect(calls).toHaveLength(1);
+  });
+
+  it('a per-call abort cancels an in-flight request, combined with a client-wide signal', async () => {
+    const client = new AbortController();
+    const call = new AbortController();
+    const { fetchImpl, calls } = makeFetch([
+      (rec) =>
+        new Promise<Response>((_resolve, reject) => {
+          rec.signal?.addEventListener('abort', () =>
+            reject(new DOMException('This operation was aborted', 'AbortError')),
+          );
+        }),
+    ]);
+    const pending = p
+      .make({ ...opts(fetchImpl), signal: client.signal })
+      .embedDocuments(['a'], { signal: call.signal })
+      .catch((e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 20));
+    call.abort();
+    expect(await pending).toBeInstanceOf(DOMException);
+    expect(client.signal.aborted).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+});
+
 describe('OllamaFetchEmbeddings wire format', () => {
   it('sends truncate:false and Content-Type JSON, with exactly the documented body keys', async () => {
     const { fetchImpl, calls } = makeFetch([jsonResponse({ embeddings: [[1]] })]);
@@ -391,6 +447,19 @@ describe('status classification and validation', () => {
   it('Ollama 403 is PROVIDER_AUTH', async () => {
     const { fetchImpl } = makeFetch([textResponse('forbidden', 403)]);
     expect(await code(oll(fetchImpl).embedDocuments(['a']))).toBe('PROVIDER_AUTH');
+  });
+
+  it.each([
+    ['Ollama', oll, 'ollama', 403, /auth proxy/],
+    ['OpenAI', oai, 'openai', 401, /OPENAI_API_KEY/],
+  ] as const)('%s HTTP 401/403 names its backend in the operator hint (#1264)', async (_n, make, provider, status, hint) => {
+    const { fetchImpl } = makeFetch([textResponse('denied', status)]);
+    const err = await make(fetchImpl).embedDocuments(['a']).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderAuthError);
+    expect(err).toMatchObject({ code: 'PROVIDER_AUTH', provider });
+    const { next_action } = classifyKbSearchError(err);
+    expect(next_action).toMatch(hint);
+    if (provider === 'ollama') expect(next_action).not.toMatch(/OPENAI_API_KEY|HUGGINGFACE_API_KEY/);
   });
 
   it.each([

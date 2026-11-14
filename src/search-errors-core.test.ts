@@ -26,6 +26,12 @@ describe('classifyKbSearchError', () => {
     expect(f.next_action).toMatch(/kb doctor/);
   });
 
+  it('keeps the generic PROVIDER_AUTH hint correct for an Ollama auth proxy (#1264)', () => {
+    const f = classifyKbSearchError(new KBError('PROVIDER_AUTH', 'rejected'));
+    expect(f.next_action).toMatch(/OPENAI_API_KEY/);
+    expect(f.next_action).toMatch(/auth proxy/);
+  });
+
   it('classifies PROVIDER_AUTH as a configuration failure with API-key guidance', () => {
     const f = classifyKbSearchError(
       new KBError('PROVIDER_AUTH', 'OPENAI_API_KEY environment variable is required'),
