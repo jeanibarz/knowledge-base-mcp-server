@@ -460,7 +460,7 @@ describe('llm-client', () => {
     delete process.env.OPENROUTER_API_KEY;
 
     const fetchMock = jest.fn(async () => new Response(JSON.stringify({
-      model: 'deepseek/deepseek-v4-flash',
+      model: 'deepseek/deepseek-v4.1-flash-1017',
       choices: [{ message: { content: 'hi' } }],
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
 
@@ -475,8 +475,10 @@ describe('llm-client', () => {
     expect(headers.Authorization).toBe('Bearer sk-or-test-key');
     expect(headers['X-Title']).toBe('knowledge-base-mcp');
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body.model).toBe('deepseek/deepseek-v4-flash');
+    expect(body.model).toBe('deepseek/deepseek-v4.1-flash-1017');
     expect(body).not.toHaveProperty('chat_template_kwargs');
+    expect(body.provider).toEqual({ only: ['cohere'], allow_fallbacks: false });
+    expect(body.reasoning).toEqual({ enabled: false });
   });
 
   it('keeps the local path auth-free with chat_template_kwargs when provider is local', async () => {
@@ -499,6 +501,8 @@ describe('llm-client', () => {
     expect(headers.Authorization).toBeUndefined();
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body).toHaveProperty('chat_template_kwargs');
+    expect(body).not.toHaveProperty('provider');
+    expect(body).not.toHaveProperty('reasoning');
   });
 
   it('skips the /health GET for a remote provider during probe', async () => {
@@ -514,7 +518,7 @@ describe('llm-client', () => {
 
     const result = await probeLlmEndpoint('https://openrouter.ai/api/v1/chat/completions', fetchMock as unknown as typeof fetch);
     expect(result.provider).toBe('openrouter');
-    expect(result.model).toBe('deepseek/deepseek-v4-flash');
+    expect(result.model).toBe('deepseek/deepseek-v4.1-flash-1017');
     expect(result.health_ok).toBe(true);
     expect(result.chat_ok).toBe(true);
     expect(result.detail).toContain('health check skipped');

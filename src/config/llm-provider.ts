@@ -27,7 +27,7 @@ export type LlmProviderKind = 'local' | 'openrouter';
 
 export const OPENROUTER_DEFAULT_CHAT_URL =
   'https://openrouter.ai/api/v1/chat/completions';
-export const OPENROUTER_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash';
+export const OPENROUTER_DEFAULT_MODEL = 'deepseek/deepseek-v4.1-flash-1017';
 export const KB_LLM_APP_TITLE_DEFAULT = 'knowledge-base-mcp';
 
 export interface LlmProviderResolution {
