@@ -20,9 +20,10 @@ export type IngestQuarantineCategory = SearchFailureCategory | 'secret_detected'
 export interface IngestQuarantineRecord {
   schema_version: typeof INGEST_QUARANTINE_SCHEMA_VERSION;
   /**
-   * Set only on model-scoped records: a `provider` failure recorded while
-   * indexing with this model (`models/<model_id>/`). Absent means KB-wide,
-   * which is every pre-#1258 record and every content-level failure.
+   * Set only on model-scoped records: a `provider` failure, or any failure
+   * raised while embedding or inserting with this model (`models/<model_id>/`,
+   * #1261). Absent means KB-wide, which is every pre-#1258 record and every
+   * content-level failure.
    */
   model_id?: string;
   reason?: string;
@@ -50,6 +51,13 @@ export interface RecordIngestFailureOptions {
   maxEntries?: number;
   /** Embedding model being indexed. A `provider` failure is scoped to it; other failures stay KB-wide. */
   modelId?: string;
+  /**
+   * The failure came from the model's embedding/insert stage, after the file
+   * was loaded, chunked and secret-scanned (#1261). Scope it to `modelId`
+   * whatever its category: a 413 batch-size or context-length VALIDATION, or a
+   * raw SDK error, depends on the model or its server, not on the document.
+   */
+  modelScoped?: boolean;
 }
 
 export interface IngestRetryDecision {
@@ -144,9 +152,12 @@ export async function recordIngestFailure(options: RecordIngestFailureOptions): 
   const relativePath = normalizeRelativePath(options.relativePath);
   const classified = classifyIngestError(options.error);
   const fingerprint = errorFingerprint(classified.category, classified.code, classified.message);
-  // Only provider failures are a property of one model's endpoint; everything
-  // else (secret, parse, indexing, ...) is a property of the file.
-  const scopedModelId = classified.category === 'provider' ? options.modelId : undefined;
+  // Provider failures and failures of the model's own embed/insert stage are a
+  // property of one model; everything else (secret, parse, load, ...) is a
+  // property of the file.
+  const scopedModelId = classified.category === 'provider' || options.modelScoped === true
+    ? options.modelId
+    : undefined;
 
   return mutateManifest(options.kbPath, (records) => {
     const existingIndex = records.findIndex(

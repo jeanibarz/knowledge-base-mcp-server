@@ -91,6 +91,27 @@ describe('ingest quarantine model scoping', () => {
     expect(record.model_id).toBeUndefined();
   });
 
+  it('scopes a non-provider failure to modelId when the caller marks it modelScoped (#1261)', async () => {
+    const { q, kbPath, nonProviderError } = await setup();
+    const record = await q.recordIngestFailure({
+      kbPath, relativePath: 'a.md', error: nonProviderError(), modelId: 'model-b', modelScoped: true, now: NOW,
+    });
+    expect(record.error_category).not.toBe('provider');
+    expect(record.model_id).toBe('model-b');
+    await expect(q.shouldRetryIngest(kbPath, 'a.md', { modelId: 'model-a', now: DURING_BACKOFF }))
+      .resolves.toMatchObject({ retry: true, reason: 'no_record' });
+    await expect(q.shouldRetryIngest(kbPath, 'a.md', { modelId: 'model-b', now: DURING_BACKOFF }))
+      .resolves.toMatchObject({ retry: false, reason: 'backoff_active' });
+  });
+
+  it('keeps a modelScoped failure KB-wide when no modelId is given', async () => {
+    const { q, kbPath, nonProviderError } = await setup();
+    const record = await q.recordIngestFailure({
+      kbPath, relativePath: 'a.md', error: nonProviderError(), modelScoped: true, now: NOW,
+    });
+    expect(record.model_id).toBeUndefined();
+  });
+
   it('blocks every model on a KB-wide non-provider record', async () => {
     const { q, kbPath, nonProviderError } = await setup();
     await q.recordIngestFailure({

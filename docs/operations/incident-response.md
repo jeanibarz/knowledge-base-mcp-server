@@ -400,8 +400,14 @@ or parsed safely during ingest.
 
 Embedding-provider failures (`error_category: provider`, such as
 `PROVIDER_TIMEOUT`) are scoped to the embedding model that hit them: the record
-carries a `model_id` and only that model skips the file. Every other category
-(secret detected, parse, input, ...) is KB-wide and has no `model_id`.
+carries a `model_id` and only that model skips the file. So is any other
+failure raised while that model embeds or indexes the file's chunks, whatever
+its category: for example a `VALIDATION` 413 "batch too large" from TEI, an
+Ollama context-length 400, or a raw HuggingFace SDK error (#1261). Failures
+raised before embedding (secret detected, load or parse errors) are KB-wide
+and have no `model_id`. Records written before #1261 for an embed-stage
+failure are KB-wide; clear them with `kb quarantine clear` (or `retry`) once
+the model is fixed.
 `kb quarantine list` shows the model per row (`(all models)` for KB-wide
 records). `kb models remove <id>` drops that model's records; `retry`, `ack`
 and `clear` accept `--model=<id>` to narrow to one model, and otherwise act on

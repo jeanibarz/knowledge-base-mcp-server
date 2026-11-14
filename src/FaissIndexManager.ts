@@ -1528,6 +1528,7 @@ export class FaissIndexManager {
       relativePath: string,
       sourceHash: string | null,
       error: unknown,
+      options: { modelScoped?: boolean } = {},
     ): Promise<void> => {
       if (error instanceof IngestSecretDetectedError) {
         emitCanonicalLog({
@@ -1552,6 +1553,7 @@ export class FaissIndexManager {
           sourceHash,
           error,
           modelId: this.modelId,
+          modelScoped: options.modelScoped,
         });
         await quarantineSnapshot.set(kbPath, record);
       } catch (quarantineError: unknown) {
@@ -2364,6 +2366,9 @@ export class FaissIndexManager {
           updateStartedAtMs: startedAtMs,
         });
       } catch (error: unknown) {
+        // Issue #1261 — the files were already loaded, chunked and scanned;
+        // this failure came from this model's embed/insert stage, so it must
+        // not block other models from indexing the same files.
         for (const entry of changedFileDocuments) {
           recordFailure(entry.relativePath, 'indexing', error);
           await recordQuarantineFailure(
@@ -2371,6 +2376,7 @@ export class FaissIndexManager {
             entry.relativePath,
             entry.fileHash,
             error,
+            { modelScoped: true },
           );
         }
         throw error;
@@ -2523,6 +2529,7 @@ export class FaissIndexManager {
             },
           );
         } catch (error: unknown) {
+          // Issue #1261 — embed/insert-stage failure: model-scoped, as above.
           for (const entry of fallbackDocuments) {
             recordFailure(entry.relativePath, 'indexing', error);
             await recordQuarantineFailure(
@@ -2530,6 +2537,7 @@ export class FaissIndexManager {
               entry.relativePath,
               entry.fileHash,
               error,
+              { modelScoped: true },
             );
           }
           throw error;
