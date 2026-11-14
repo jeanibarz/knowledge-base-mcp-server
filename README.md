@@ -103,7 +103,7 @@ npm run dev:setup
 
 1. **`npm install` + `npm run build`** — a first build, so the bins exist before linking.
 2. **`npm link`** — symlinks `kb` and `knowledge-base-mcp-server` into the global node prefix (the path is printed during setup so you can verify where it landed). From then on, each `npm run build` overwrites `build/` in place and the global bins pick up the new code on the next invocation. **No re-link needed.**
-3. **`git config core.hooksPath .githooks`** — points git at the tracked [`.githooks/`](./.githooks) directory so the `post-merge` and `post-rewrite` hooks fire after every `git pull` (merge or rebase) and `git merge`. Each hook re-runs `npm install` if `package.json` changed and `npm run build` if any source changed, and stays quiet when nothing relevant moved. It runs **last** in the hook order, so a failed install or build leaves the repo in its original state.
+3. **`git config core.hooksPath .githooks`** — points git at the tracked [`.githooks/`](./.githooks) directory so the `post-merge` and `post-rewrite` hooks fire after every `git pull` (merge or rebase) and `git merge`. Each hook re-runs `npm ci` (which installs exactly the committed lockfile and never rewrites it) if `package.json` changed and `npm run build` if any source changed, and stays quiet when nothing relevant moved. It runs **last** in the hook order, so a failed install or build leaves the repo in its original state.
 
 The daily loop is then just `git pull` (the hook rebuilds) or `npm run build` after an edit; the global `kb` reflects the change on its next invocation.
 
