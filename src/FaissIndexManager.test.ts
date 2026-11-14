@@ -2258,6 +2258,58 @@ describe('FaissIndexManager permission handling', () => {
     await expect(listIngestQuarantine(defaultKb)).resolves.toEqual([]);
   });
 
+  it.each([
+    ['a VALIDATION KBError (413 batch too large)', 'validation'],
+    ['a raw SDK error (HuggingFace connection refused)', 'raw'],
+  ] as const)('scopes an embed-call failure to the failing model whatever its category: %s (#1261)', async (_label, kind) => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-quarantine-embed-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    await fsp.writeFile(path.join(defaultKb, 'note.md'), '# Note\n\nA note both models index.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { KBError } = await import('./errors.js');
+    const { listIngestQuarantine, shouldRetryIngest } = await import('./ingest-quarantine.js');
+    const managerA = new FaissIndexManager();
+    const managerB = new FaissIndexManager({ provider: 'ollama', modelName: 'mxbai-embed-large' });
+    await managerA.initialize();
+    await managerB.initialize();
+
+    const failure = kind === 'validation'
+      ? new KBError('VALIDATION', 'OpenAI-compatible embedding request rejected (413): batch too large')
+      : new Error('Connection error.');
+    embedDocumentsMock.mockRejectedValue(failure);
+    await expect(managerB.updateIndex('default')).rejects.toThrow(failure.message);
+    expect(await listIngestQuarantine(defaultKb)).toEqual([
+      expect.objectContaining({
+        relative_path: 'note.md',
+        model_id: managerB.modelId,
+        error_category: kind === 'validation' ? 'input' : 'unknown',
+      }),
+    ]);
+    await expect(shouldRetryIngest(defaultKb, 'note.md', { modelId: managerA.modelId }))
+      .resolves.toMatchObject({ retry: true, reason: 'no_record' });
+
+    // A's provider is healthy, so A still indexes the file.
+    embedDocumentsMock.mockReset();
+    embedDocumentsMock.mockImplementation(async (texts: string[]) => texts.map(mockVectorForText));
+    addVectorsMock.mockClear();
+    await managerA.updateIndex('default');
+    expect(addVectorsMock).toHaveBeenCalled();
+    expect(managerA.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      files_changed: 1,
+      files_skipped: 0,
+    });
+  });
+
   it('quarantines secret-bearing chunks before embedding when ingest secret scan is enabled', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-secret-scan-'));
     const kbDir = path.join(tempDir, 'kb');

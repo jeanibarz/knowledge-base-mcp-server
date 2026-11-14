@@ -54,6 +54,24 @@ export class KBError extends Error {
   }
 }
 
+/** Embedding backend that rejected a request's credentials. */
+export type ProviderAuthSource = 'ollama' | 'openai';
+
+/**
+ * Issue #1264 — a `PROVIDER_AUTH` raised by an embedding endpoint's HTTP
+ * 401/403. It records which backend answered, so the operator hint can name
+ * the right fix: an Ollama server takes no API key, so a 401/403 there comes
+ * from an auth proxy in front of it, not from a missing `OPENAI_API_KEY`.
+ */
+export class ProviderAuthError extends KBError {
+  readonly provider: ProviderAuthSource;
+
+  constructor(provider: ProviderAuthSource, message: string, cause?: unknown) {
+    super('PROVIDER_AUTH', message, cause);
+    this.provider = provider;
+  }
+}
+
 /**
  * True when a `KBError` means a candidate is not an addressable knowledge base
  * and an UNSCOPED enumeration should skip it rather than abort: `KB_NOT_FOUND`

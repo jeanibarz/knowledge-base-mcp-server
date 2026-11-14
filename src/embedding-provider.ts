@@ -7,7 +7,7 @@
 // runtime require/resolve of the unused provider's tree.
 import type { HuggingFaceInferenceEmbeddings } from '@langchain/community/embeddings/hf';
 import type { InferenceProviderOrPolicy } from '@huggingface/inference';
-import { OllamaFetchEmbeddings, OpenAIFetchEmbeddings } from './embedding-http-client.js';
+import { OllamaFetchEmbeddings, OpenAIFetchEmbeddings, type EmbedCallOptions } from './embedding-http-client.js';
 import {
   HUGGINGFACE_ENDPOINT_URL,
   HUGGINGFACE_ENDPOINT_URL_OVERRIDDEN,
@@ -102,6 +102,16 @@ export function embeddingTaskPrefixesFor(
 }
 
 /**
+ * An embeddings client that may honour a per-call abort signal. The fetch
+ * clients do; the LangChain HuggingFace client takes no second argument and
+ * ignores it.
+ */
+interface SignalAwareEmbeddings {
+  embedDocuments(texts: string[], options?: EmbedCallOptions): Promise<number[][]>;
+  embedQuery(text: string, options?: EmbedCallOptions): Promise<number[]>;
+}
+
+/**
  * Issue #567 — wraps a provider client so every document/query embed call
  * carries its role prefix. Kept as a delegating wrapper (not a patch of the
  * inner client) so `instrumentEmbeddingsClient` can instrument it like any
@@ -109,19 +119,17 @@ export function embeddingTaskPrefixesFor(
  */
 export class TaskPrefixedEmbeddings {
   constructor(
-    private readonly inner: {
-      embedDocuments(texts: string[]): Promise<number[][]>;
-      embedQuery(text: string): Promise<number[]>;
-    },
+    private readonly inner: SignalAwareEmbeddings,
     readonly prefixes: EmbeddingTaskPrefixes,
   ) {}
 
-  async embedDocuments(texts: string[]): Promise<number[][]> {
-    return this.inner.embedDocuments(texts.map((text) => this.prefixes.document + text));
+  // Call options (the TimeoutEmbeddings abort signal, #1264) pass through.
+  async embedDocuments(texts: string[], options?: EmbedCallOptions): Promise<number[][]> {
+    return this.inner.embedDocuments(texts.map((text) => this.prefixes.document + text), options);
   }
 
-  async embedQuery(text: string): Promise<number[]> {
-    return this.inner.embedQuery(this.prefixes.query + text);
+  async embedQuery(text: string, options?: EmbedCallOptions): Promise<number[]> {
+    return this.inner.embedQuery(this.prefixes.query + text, options);
   }
 }
 
@@ -168,46 +176,40 @@ export class CircuitBrokenEmbeddings {
  * counts as a breaker failure — making the previously-dead `PROVIDER_TIMEOUT`
  * branch reachable on the embed path.
  *
- * Cancellation caveat: the LangChain embeddings interface
- * (`embedDocuments`/`embedQuery`) does not accept a per-call `AbortSignal`,
- * so on expiry we ABANDON the in-flight promise — the underlying fetch may
- * keep running to completion — rather than truly cancelling it. We still
- * create an `AbortController` and `abort()` it on the deadline so a
- * signal-aware inner client can observe the cancellation; today's providers
- * do not, which is the pragmatic fallback the issue calls out.
+ * Cancellation: each call gets its own `AbortController`, whose signal is
+ * passed to the inner client as `{ signal }`. On expiry the signal aborts, so
+ * the Ollama and OpenAI-compatible fetch clients cancel the in-flight request
+ * and stop retrying (#1264). The LangChain HuggingFace client ignores the
+ * signal; its abandoned call runs to completion in the background.
  */
 export class TimeoutEmbeddings {
   constructor(
-    private readonly inner: {
-      embedDocuments(texts: string[]): Promise<number[][]>;
-      embedQuery(text: string): Promise<number[]>;
-    },
+    private readonly inner: SignalAwareEmbeddings,
     readonly timeoutMs: number,
   ) {}
 
   async embedDocuments(texts: string[]): Promise<number[][]> {
-    return this.withDeadline('embedDocuments', () => this.inner.embedDocuments(texts));
+    return this.withDeadline('embedDocuments', (signal) => this.inner.embedDocuments(texts, { signal }));
   }
 
   async embedQuery(text: string): Promise<number[]> {
-    return this.withDeadline('embedQuery', () => this.inner.embedQuery(text));
+    return this.withDeadline('embedQuery', (signal) => this.inner.embedQuery(text, { signal }));
   }
 
-  private async withDeadline<T>(method: string, call: () => Promise<T>): Promise<T> {
+  private async withDeadline<T>(method: string, call: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        controller.abort();
-        reject(
-          new KBError(
-            'PROVIDER_TIMEOUT',
-            `embedding provider ${method} exceeded ${this.timeoutMs}ms deadline`,
-          ),
+        const timeout = new KBError(
+          'PROVIDER_TIMEOUT',
+          `embedding provider ${method} exceeded ${this.timeoutMs}ms deadline`,
         );
+        controller.abort(timeout);
+        reject(timeout);
       }, this.timeoutMs);
     });
-    const inFlight = call();
+    const inFlight = call(controller.signal);
     // If the deadline wins the race, `inFlight` is abandoned; swallow any late
     // rejection on that orphaned branch so it does not surface as an
     // unhandledRejection after we have already thrown PROVIDER_TIMEOUT.

@@ -14,7 +14,7 @@
 // CLI command module (issue #341 boundary fix).
 
 import { ActiveModelResolutionError } from './model-resolution.js';
-import { KBError, type KBErrorCode } from './errors.js';
+import { KBError, ProviderAuthError, type KBErrorCode } from './errors.js';
 import { LlmClientError } from './llm-client.js';
 import { RerankerConfigError } from './config/reranker.js';
 import { WriteLockContentionError } from './write-lock.js';
@@ -142,6 +142,21 @@ export function classifyKbAskError(err: unknown, kind: AskFailureKind): SearchFa
   return classifyAskTranscriptError(err, message);
 }
 
+/**
+ * Issue #1264 — name the fix for the backend that rejected the credentials.
+ * A `ProviderAuthError` carries it; any other `PROVIDER_AUTH` (a missing key
+ * at client construction) gets the generic hint.
+ */
+function providerAuthNextAction(err: KBError): string {
+  if (err instanceof ProviderAuthError && err.provider === 'ollama') {
+    return 'The Ollama endpoint at `OLLAMA_BASE_URL` rejected the request (HTTP 401/403). Ollama itself takes no API key, so this comes from an auth proxy in front of it: fix the proxy credentials, or point `OLLAMA_BASE_URL` at an endpoint that accepts the request. `kb doctor` probes the configured backend.';
+  }
+  if (err instanceof ProviderAuthError && err.provider === 'openai') {
+    return 'The OpenAI-compatible endpoint at `OPENAI_BASE_URL` rejected the request (HTTP 401/403). Set `OPENAI_API_KEY` to a key that endpoint accepts, in the same shell you launch `kb` from. `kb doctor` reports which keys it sees.';
+  }
+  return 'Set the provider API key (`OPENAI_API_KEY`, `HUGGINGFACE_API_KEY`) in the same shell you launch `kb` from; for an Ollama endpoint behind an auth proxy, fix the proxy credentials instead. `kb doctor` reports which keys it sees.';
+}
+
 function classifyKBError(err: KBError): SearchFailure {
   const code: KBErrorCode = err.code;
   switch (code) {
@@ -166,8 +181,7 @@ function classifyKBError(err: KBError): SearchFailure {
         code,
         category: 'configuration',
         message: err.message,
-        next_action:
-          'Set the provider API key (`OPENAI_API_KEY`, `HUGGINGFACE_API_KEY`) in the same shell you launch `kb` from. `kb doctor` reports which keys it sees.',
+        next_action: providerAuthNextAction(err),
       };
     case 'PROVIDER_UNAVAILABLE':
       return {

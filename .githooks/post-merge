@@ -16,7 +16,7 @@ cd "$repo_root"
 # Don't fail the pull if the rebuild fails — git ignores post-merge exit codes
 # but the user sees the stderr and may think the pull broke. Turn an early
 # `set -e` exit into a clean warning instead.
-trap 'echo "[post-merge] WARNING: auto-rebuild failed (exit $?). Run \`npm install && npm run build\` manually." >&2; exit 0' ERR
+trap 'echo "[post-merge] WARNING: auto-rebuild failed (exit $?). Run \`npm ci && npm run build\` manually." >&2; exit 0' ERR
 
 # ORIG_HEAD is unset on the first merge in a fresh clone, after `git gc`
 # pruning, or when invoked via post-rewrite without an ORIG_HEAD. Without this
@@ -26,19 +26,21 @@ trap 'echo "[post-merge] WARNING: auto-rebuild failed (exit $?). Run \`npm insta
 # the safe default.
 if ! git rev-parse --verify --quiet ORIG_HEAD >/dev/null; then
   echo "[post-merge] no ORIG_HEAD — rebuilding unconditionally"
-  npm install
+  npm ci
   npm run build
   echo "[post-merge] done — global bins now reflect $(git rev-parse --short HEAD)"
   exit 0
 fi
 
-# Scope the install trigger to package.json only. Lockfile-only changes
-# (transitive bumps) get picked up by `npm install` during a future
-# package.json change or manual run; meanwhile we avoid regenerating the
-# lockfile and creating local drift on every dep-pin pull.
+# Install with `npm ci` (install scripts enabled, for the faiss-node and
+# hnswlib-node native builds): after a pull the committed lockfile is
+# authoritative. `npm install` rewrote package-lock.json on a newer npm into
+# a state CI's `npm ci` rejects, and left the checkout dirty (#1266).
+# The trigger stays package.json-only: lockfile-only changes (transitive
+# bumps) are picked up by the next package.json change or a manual `npm ci`.
 if ! git diff --quiet ORIG_HEAD HEAD -- package.json; then
-  echo "[post-merge] package.json changed — running npm install"
-  npm install
+  echo "[post-merge] package.json changed — running npm ci"
+  npm ci
 fi
 
 if git diff --quiet ORIG_HEAD HEAD -- src/ tsconfig.json package.json; then

@@ -547,6 +547,30 @@ describe('TimeoutEmbeddings (issue #793 — per-call embedding deadline)', () =>
     })]);
   });
 
+  it('aborts the fetch client on expiry so an abandoned call stops retrying (#1264)', async () => {
+    const { TimeoutEmbeddings, TaskPrefixedEmbeddings } = await loadFresh({});
+    const { OllamaFetchEmbeddings } = await import('./embedding-http-client.js');
+    const inputs: string[][] = [];
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      inputs.push((JSON.parse(String(init?.body)) as { input: string[] }).input);
+      return new Response('down', { status: 503 });
+    }) as unknown as typeof fetch;
+    const fetchClient = new OllamaFetchEmbeddings({
+      baseUrl: 'http://127.0.0.1:11434', model: 'nomic-embed-text', fetchImpl, maxRetries: 5,
+    });
+    // TaskPrefixedEmbeddings sits between the deadline and the client for nomic models.
+    const wrapped = new TimeoutEmbeddings(
+      new TaskPrefixedEmbeddings(fetchClient, { query: 'q: ', document: 'd: ' }),
+      50,
+    );
+
+    await expect(wrapped.embedDocuments(['x'])).rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT' });
+    await expect(wrapped.embedQuery('y')).rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT' });
+    // Without the abort, backoff retries at 250 ms and 750 ms would add calls.
+    await new Promise((r) => setTimeout(r, 800));
+    expect(inputs).toEqual([['d: x'], ['q: y']]);
+  });
+
   it('createEmbeddingsClient wraps the network arm with a TimeoutEmbeddings inside the breaker', async () => {
     const { CircuitBrokenEmbeddings, TimeoutEmbeddings, createEmbeddingsClient } = await loadFresh({
       KB_EMBED_TIMEOUT_MS: '4321',
