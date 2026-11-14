@@ -1,0 +1,49 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jeanibarz/knowledge-base-mcp-server",
+  "title": "Knowledge Base",
+  "description": "Semantic search over local Markdown, text and HTML notes, indexed with FAISS embeddings.",
+  "repository": {
+    "url": "https://github.com/jeanibarz/knowledge-base-mcp-server",
+    "source": "github"
+  },
+  "version": "0.3.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@jeanibarz/knowledge-base-mcp-server",
+      "version": "0.3.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "KNOWLEDGE_BASES_ROOT_DIR",
+          "description": "Root directory containing knowledge base shelves (default: $HOME/knowledge_bases).",
+          "format": "filepath"
+        },
+        {
+          "name": "EMBEDDING_PROVIDER",
+          "description": "Embedding provider used for retrieval and ingest.",
+          "default": "huggingface",
+          "choices": ["huggingface", "ollama", "openai"]
+        },
+        {
+          "name": "HUGGINGFACE_API_KEY",
+          "description": "Hugging Face API token, required when EMBEDDING_PROVIDER=huggingface.",
+          "isSecret": true
+        },
+        {
+          "name": "OLLAMA_BASE_URL",
+          "description": "Base URL of the Ollama server, used when EMBEDDING_PROVIDER=ollama.",
+          "default": "http://localhost:11434"
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "description": "OpenAI API key, required when EMBEDDING_PROVIDER=openai.",
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
