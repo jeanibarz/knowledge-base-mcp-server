@@ -58,3 +58,60 @@ export function estimateCostUsd(
     last_verified: LAST_VERIFIED,
   };
 }
+
+/**
+ * Where an OpenAI-provider model's embeddings are actually served (issue #1267).
+ *
+ * - `hosted`: the official api.openai.com API, where OpenAI's price table and
+ *   HTTP latency apply.
+ * - `local`: a loopback or private-network server (TEI, llama-server, vLLM on
+ *   the LAN, …) — typically free, with throughput set by local hardware.
+ * - `custom`: some other OpenAI-compatible host (OpenRouter, a gateway, …)
+ *   whose pricing is that provider's own, not OpenAI's.
+ */
+export type OpenAiEndpointKind = 'hosted' | 'local' | 'custom';
+
+const OFFICIAL_OPENAI_HOST = 'api.openai.com';
+
+function isPrivateIpv4(host: string): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return a === 127            // loopback
+    || a === 10               // RFC 1918
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 169 && b === 254) // link-local
+    || a === 0;               // 0.0.0.0 "this host"
+}
+
+function isLocalHostname(host: string): boolean {
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === 'host.docker.internal' || host.endsWith('.local')) return true;
+  if (isPrivateIpv4(host)) return true;
+  // WHATWG URL keeps IPv6 hosts bracketed: "[::1]".
+  if (host.startsWith('[') && host.endsWith(']')) {
+    const v6 = host.slice(1, -1);
+    if (v6 === '::1' || v6 === '::') return true;
+    if (/^f[cd][0-9a-f]{0,2}:/.test(v6)) return true; // fc00::/7 unique-local
+    if (/^fe[89ab][0-9a-f]?:/.test(v6)) return true;  // fe80::/10 link-local
+  }
+  return false;
+}
+
+/**
+ * Classify an `OPENAI_BASE_URL` value. Pure — takes the URL rather than reading
+ * config so callers and tests can pass any value. An unparseable URL is
+ * `custom` (it is certainly not the official endpoint).
+ */
+export function classifyOpenAiEndpoint(baseUrl: string): OpenAiEndpointKind {
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return 'custom';
+  }
+  if (host === OFFICIAL_OPENAI_HOST) return 'hosted';
+  if (isLocalHostname(host)) return 'local';
+  return 'custom';
+}

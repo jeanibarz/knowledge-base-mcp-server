@@ -21,13 +21,13 @@ import {
   writeActiveModelAtomic,
 } from './model-storage-layout.js';
 import { resolveIndexType, type SearchIndexType } from './config/indexing.js';
-import { KB_ACTIVE_MODEL } from './config/provider.js';
+import { KB_ACTIVE_MODEL, OPENAI_BASE_URL } from './config/provider.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
 import { removeIngestQuarantineForModel } from './ingest-quarantine.js';
 import { withWriteLock } from './write-lock.js';
-import { estimateCostUsd } from './cost-estimates.js';
+import { classifyOpenAiEndpoint, estimateCostUsd } from './cost-estimates.js';
 import { pathExists } from './file-utils.js';
 import { type DelimitedOutputFormat, renderRecords } from './cli-shared.js';
 
@@ -325,25 +325,11 @@ async function runModelsAdd(rest: string[]): Promise<number> {
 
   const estChunks = Math.ceil(totalBytes / 800);
   const estTokens = Math.ceil(totalBytes / 4);
-  let costLine = '';
-  if (provider === 'openai') {
-    const breakdown = estimateCostUsd('openai', modelName, estTokens);
-    costLine = `Estimated cost: ~$${breakdown.usd.toFixed(4)} (OpenAI ${modelName} at $${breakdown.per_million_tokens_usd}/1M tokens)\n` +
-               `See provider pricing: https://openai.com/api/pricing\n`;
-  } else if (provider === 'huggingface') {
-    costLine = 'Cost: free tier (rate-limited). See https://huggingface.co/docs/inference-providers/pricing\n';
-  } else {
-    costLine = 'Cost: free (Ollama is local).\n';
-  }
-  const wallSec = provider === 'ollama' ? estChunks * 0.05
-                : provider === 'openai' ? estChunks * 0.2
-                : estChunks * 0.3;
   process.stderr.write(
     `Adding model: ${modelId} (provider=${provider}, model=${modelName})\n` +
     `Index type: ${indexType}\n` +
     `Will embed: ${fileCount} files (~${estChunks} chunks, ~${(totalBytes / 1024).toFixed(0)} KB of text, ~${(estTokens / 1000).toFixed(0)}k tokens)\n` +
-    costLine +
-    `Estimated wall time: ~${wallSec < 60 ? wallSec.toFixed(0) + ' s' : (wallSec / 60).toFixed(1) + ' min'} (HTTP latency dominated)\n`,
+    formatAddCostAndWallTime({ provider, modelName, estTokens, estChunks, openaiBaseUrl: OPENAI_BASE_URL }),
   );
   if (dryRun) {
     process.stderr.write('(--dry-run; no embedding work done)\n');
@@ -405,6 +391,51 @@ async function runModelsAdd(rest: string[]): Promise<number> {
 
   process.stderr.write(`Successfully added ${modelId}.\n`);
   return 0;
+}
+
+function formatWallTime(sec: number): string {
+  return sec < 60 ? `${sec.toFixed(0)} s` : `${(sec / 60).toFixed(1)} min`;
+}
+
+/**
+ * The cost and wall-time lines `kb models add` prints before embedding.
+ *
+ * For the OpenAI provider these depend on where `OPENAI_BASE_URL` points
+ * (issue #1267): OpenAI's price table and its per-request latency only apply to
+ * api.openai.com. A local TEI / llama-server endpoint is free and its speed is
+ * set by local hardware, and a third-party OpenAI-compatible host bills at its
+ * own rates — so neither gets an OpenAI dollar figure or the hosted-API
+ * wall-time estimate.
+ */
+export function formatAddCostAndWallTime(opts: {
+  provider: string;
+  modelName: string;
+  estTokens: number;
+  estChunks: number;
+  openaiBaseUrl: string;
+}): string {
+  const { provider, modelName, estTokens, estChunks, openaiBaseUrl } = opts;
+  if (provider === 'openai') {
+    const endpoint = classifyOpenAiEndpoint(openaiBaseUrl);
+    if (endpoint === 'hosted') {
+      const breakdown = estimateCostUsd('openai', modelName, estTokens);
+      return `Estimated cost: ~$${breakdown.usd.toFixed(4)} (OpenAI ${modelName} at $${breakdown.per_million_tokens_usd}/1M tokens)\n` +
+             `See provider pricing: https://openai.com/api/pricing\n` +
+             `Estimated wall time: ~${formatWallTime(estChunks * 0.2)} (HTTP latency dominated)\n`;
+    }
+    const wallLine = 'Estimated wall time: not estimated (depends on the endpoint\'s hardware and batching)\n';
+    if (endpoint === 'local') {
+      return 'Cost: local/self-hosted endpoint (no OpenAI pricing)\n' + wallLine;
+    }
+    return 'Cost: custom OpenAI-compatible endpoint set by OPENAI_BASE_URL (OpenAI pricing does not apply; check that provider\'s pricing)\n' +
+           wallLine;
+  }
+  if (provider === 'huggingface') {
+    return 'Cost: free tier (rate-limited). See https://huggingface.co/docs/inference-providers/pricing\n' +
+           `Estimated wall time: ~${formatWallTime(estChunks * 0.3)} (HTTP latency dominated)\n`;
+  }
+  return 'Cost: free (Ollama is local).\n' +
+         `Estimated wall time: ~${formatWallTime(estChunks * 0.05)} (HTTP latency dominated)\n`;
 }
 
 function formatIncompleteAddBlock(modelId: string, status: string, detail: string): string {
