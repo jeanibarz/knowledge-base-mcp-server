@@ -47,6 +47,11 @@ updates:
       - dependency-name: "@types/node"
         update-types:
           - "version-update:semver-major"
+      # typescript 7.x is the native (tsgo) preview — hold the whole 7.0
+      # line; a 7.1+ release will still get its own PR when it lands.
+      - dependency-name: "typescript"
+        versions:
+          - "7.0.x"
   - package-ecosystem: github-actions
     directory: /
     schedule:
