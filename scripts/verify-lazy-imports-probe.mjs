@@ -14,8 +14,14 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 
 // Module-URL substrings that mark a provider as loaded. Each provider is
 // shipped as a top-level package + drags in its SDK; either is sufficient.
+// Issue #1257 — ollama and openai embed through plain-fetch clients, so their
+// "loaded" marker is our own module and their SDKs must never be resolved.
 const FINGERPRINTS = {
   huggingface: ['/@langchain/community/embeddings/hf', '/@huggingface/inference/'],
+  ollama: ['/build/embedding-http-client.js'],
+  openai: ['/build/embedding-http-client.js'],
+};
+const SDK_FINGERPRINTS = {
   ollama: ['/@langchain/ollama/', '/ollama/'],
   openai: ['/@langchain/openai/', '/openai/'],
 };
@@ -41,9 +47,12 @@ const trace = (await readFile(traceFile, 'utf-8')).split('\n').filter(Boolean);
 const matchUrls = (fps) =>
   fps.flatMap((fp) => trace.filter((u) => u.includes(fp)).map((u) => `${fp} → ${path.basename(new URL(u).pathname)}`));
 
-const inactive = Object.keys(FINGERPRINTS).filter((p) => p !== active);
+// Leak check: every provider's SDK (ollama/openai SDKs are never wanted, even
+// when active) plus the HuggingFace graph unless huggingface is active.
 const activeHits = matchUrls(FINGERPRINTS[active] ?? []);
-const leaks = Object.fromEntries(inactive.map((p) => [p, matchUrls(FINGERPRINTS[p])]));
+const leakSets = { ...SDK_FINGERPRINTS };
+if (active !== 'huggingface') leakSets.huggingface = FINGERPRINTS.huggingface;
+const leaks = Object.fromEntries(Object.entries(leakSets).map(([p, fps]) => [p, matchUrls(fps)]));
 
 console.log(`\n=== EMBEDDING_PROVIDER=${active} ===`);
 console.log(`trace size: ${trace.length} resolved module URLs`);

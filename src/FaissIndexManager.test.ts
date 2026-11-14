@@ -176,20 +176,18 @@ jest.mock('@langchain/community/embeddings/hf', () => ({
   },
 }));
 
-jest.mock('@langchain/ollama', () => ({
+// Issue #1257 — ollama/openai embed through plain-fetch clients; mock that
+// module so construction is observable without any network.
+jest.mock('./embedding-http-client.js', () => ({
   __esModule: true,
-  OllamaEmbeddings: class MockOllamaEmbeddings {
+  OllamaFetchEmbeddings: class MockOllamaFetchEmbeddings {
     constructor(public _config: unknown) {
       ollamaEmbeddingConstructorMock(_config);
     }
     embedDocuments = mockEmbeddings.embedDocuments;
     embedQuery = mockEmbeddings.embedQuery;
   },
-}));
-
-jest.mock('@langchain/openai', () => ({
-  __esModule: true,
-  OpenAIEmbeddings: class MockOpenAIEmbeddings {
+  OpenAIFetchEmbeddings: class MockOpenAIFetchEmbeddings {
     constructor(public _config: unknown) {
       openAIEmbeddingConstructorMock(_config);
     }
@@ -282,16 +280,10 @@ describe('provider construction', () => {
     expect(ollamaEmbeddingConstructorMock).not.toHaveBeenCalled();
     await manager.initialize();
 
-    // Issue #86 — we now also pass an `onFailedAttempt` so deterministic
-    // Ollama 4xx errors (e.g. "input length exceeds the context length")
-    // short-circuit the AsyncCaller's 7-attempt retry loop.
-    expect(ollamaEmbeddingConstructorMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        baseUrl: 'http://127.0.0.1:11434',
-        model: 'mxbai-embed-large',
-        onFailedAttempt: expect.any(Function),
-      }),
-    );
+    expect(ollamaEmbeddingConstructorMock).toHaveBeenCalledWith({
+      baseUrl: 'http://127.0.0.1:11434',
+      model: 'mxbai-embed-large',
+    });
   });
 
   it('throws when OPENAI_API_KEY is unset for the OpenAI provider', async () => {
@@ -338,7 +330,7 @@ describe('provider construction', () => {
     expect(openAIEmbeddingConstructorMock).toHaveBeenCalledWith({
       apiKey: 'test-openai-key',
       model: 'text-embedding-3-large',
-      configuration: { baseURL: 'https://api.openai.com/v1' },
+      baseUrl: 'https://api.openai.com/v1',
     });
   });
 

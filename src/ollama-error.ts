@@ -157,7 +157,7 @@ export function translateOllamaEmbeddingError(err: unknown, model: string): KBEr
 }
 
 /**
- * Returns an `onFailedAttempt` handler suitable for `OllamaEmbeddings`'s
+ * Returns an `onFailedAttempt` handler suitable for a langchain `OllamaEmbeddings`'s
  * AsyncCaller. Throwing from this handler aborts the p-retry loop on the
  * first failed attempt, so deterministic schema violations fail fast with
  * an actionable message instead of running through 7 retries.
