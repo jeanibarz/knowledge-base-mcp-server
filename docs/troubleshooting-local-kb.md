@@ -152,7 +152,7 @@ If `symlinked_checkout_path` is the checkout you expect:
 cd /path/from/symlinked_checkout_path
 git status --short --branch
 git pull
-npm install
+npm ci
 npm run build
 kb doctor
 ```
