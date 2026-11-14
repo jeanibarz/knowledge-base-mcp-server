@@ -2,6 +2,18 @@
 
 This server speaks stdio MCP and works with any stdio MCP client. Pick the block below that matches your client, paste it into the listed config file, and replace the placeholders with paths and credentials that match your environment.
 
+## Generate this snippet
+
+`kb config client <name>` prints the block for your client with your real, effective settings already filled in. It reads the same environment and project config file that `kb config show` resolves, so the root, provider and model match what the `kb` CLI uses. API keys are never printed: they stay as placeholders such as `<OPENAI_API_KEY>`.
+
+```bash
+kb config client claude-desktop          # also: cursor, windsurf, cline, vscode
+kb config client claude-code             # prints a `claude mcp add …` command
+kb config client cursor --command=global # absolute path to a globally installed bin instead of npx
+```
+
+Add `--format=json` for a machine-readable envelope ([contract](./cli-json-contracts.md#kb-config-client)). Codex CLI, Continue, JetBrains and the remote transport are not generated yet; use the hand-written blocks below for those.
+
 ## Placeholders used in every snippet
 
 | Placeholder | What to substitute |

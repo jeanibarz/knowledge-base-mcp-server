@@ -12,12 +12,14 @@ import {
   getProjectConfig,
   projectConfigAppliedSources,
 } from './config/project-config.js';
+import { runConfigClient } from './cli-config-client.js';
 
 export const CONFIG_HELP = `kb config — inspect and validate KB configuration
 
 Usage:
   kb config validate [--file=.env] [--format=md|json]
   kb config show [--format=md|json] [--non-default-only]
+  kb config client <name> [--format=md|json] [--command=npx|global]
 
 Validates known runtime configuration against the static KB config schema:
 type, enum membership, numeric ranges, URL syntax, and cross-variable
@@ -27,16 +29,27 @@ process.env. The command is read-only and does not probe live endpoints.
 Shows the effective value and source for every known configuration variable.
 Secrets such as API keys and MCP_AUTH_TOKEN are redacted.
 
+\`client <name>\` prints a ready-to-paste MCP server entry for one client,
+built from the same effective settings. API keys are never printed; they
+appear as placeholders such as <OPENAI_API_KEY> for you to fill in.
+  claude-desktop, cursor, windsurf, cline   "mcpServers" JSON block
+  vscode                                    "servers" JSON block, "type": "stdio"
+  claude-code                               a \`claude mcp add …\` command line
+
 Options:
   --file=<path>             Parse this dotenv file instead of runtime config.
   --format=md|json          Output format (default: md).
   --non-default-only        For show, print only env/file-supplied values.
+  --command=npx|global      For client, launch with npx -y <package>@latest
+                            (default) or with the absolute path of the
+                            knowledge-base-mcp-server bin found on PATH.
   --help, -h                Show this help.
 
 Exit codes:
   0   validation passed with no errors
   1   validation found one or more errors
-  2   invalid arguments or unreadable dotenv file
+  2   invalid arguments, unknown client, unreadable dotenv or project
+      config, or --command=global with the server bin not on PATH
 `;
 
 export interface ConfigArgs {
@@ -47,6 +60,8 @@ export interface ConfigArgs {
 }
 
 export async function runConfig(rest: string[]): Promise<number> {
+  // `client` has its own parser and flags; validate/show go through parseConfigArgs.
+  if (rest[0] === 'client') return runConfigClient(rest.slice(1));
   let parsed: ConfigArgs;
   try {
     parsed = parseConfigArgs(rest);
@@ -119,7 +134,7 @@ export async function runConfig(rest: string[]): Promise<number> {
 
 export function parseConfigArgs(rest: readonly string[]): ConfigArgs {
   if (rest.length === 0) {
-    throw new Error('expected action: validate or show');
+    throw new Error('expected action: validate, show or client');
   }
   const [action, ...args] = rest;
   if (action !== 'validate' && action !== 'show') {
