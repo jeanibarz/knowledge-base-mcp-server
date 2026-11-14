@@ -375,7 +375,9 @@ export async function readResource(
   }
 
   const quarantined = await listIngestQuarantine(kbPath);
-  if (quarantined.some((record) => record.relative_path === relativePath)) {
+  // Issue #1258 — model-scoped records are one model's provider failure, not a
+  // property of the document; only KB-wide records block reading it.
+  if (quarantined.some((record) => record.model_id === undefined && record.relative_path === relativePath)) {
     throw new Error(`resource quarantined by ingest pipeline: ${JSON.stringify(relativePath)}`);
   }
 

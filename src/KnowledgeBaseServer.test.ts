@@ -1872,6 +1872,16 @@ describe('KnowledgeBaseServer handlers', () => {
       relativePath: 'docs/quarantined.md',
       error: new Error('loader rejected file'),
     });
+    // Issue #1258 — one model's provider failure is not a property of the
+    // document: it stays listed and readable.
+    await fsp.writeFile(path.join(kbPath, 'docs', 'model-timeout.md'), '# Timeout\n');
+    const { KBError } = await import('./errors.js');
+    await recordIngestFailure({
+      kbPath,
+      relativePath: 'docs/model-timeout.md',
+      error: new KBError('PROVIDER_TIMEOUT', 'embedding provider timed out'),
+      modelId: 'openai__candidate',
+    });
 
     process.env.KNOWLEDGE_BASES_ROOT_DIR = tempDir;
     process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
@@ -1883,9 +1893,12 @@ describe('KnowledgeBaseServer handlers', () => {
     const result = await server['handleListResources']();
     const uris = result.resources.map((resource: { uri: string }) => resource.uri).sort();
 
-    expect(uris).toEqual(['kb://alpha/docs/guide.md']);
+    expect(uris).toEqual(['kb://alpha/docs/guide.md', 'kb://alpha/docs/model-timeout.md']);
     await expect(server['handleReadResource']('kb://alpha/docs/guide.md')).resolves.toMatchObject({
       contents: [{ uri: 'kb://alpha/docs/guide.md', text: '# Guide\n' }],
+    });
+    await expect(server['handleReadResource']('kb://alpha/docs/model-timeout.md')).resolves.toMatchObject({
+      contents: [{ uri: 'kb://alpha/docs/model-timeout.md', text: '# Timeout\n' }],
     });
     await expect(server['handleReadResource']('kb://alpha/docs/quarantined.md')).rejects.toThrow(
       /resource quarantined by ingest pipeline: "docs\/quarantined\.md"/,

@@ -145,6 +145,9 @@ export async function listKnowledgeBaseDocuments(
     }
     const quarantined = new Set(
       (await listIngestQuarantine(enumeration.kbPath, { useLock: false }))
+        // Issue #1258 — a model-scoped record is one model's provider failure,
+        // not a property of the document; only KB-wide records hide it.
+        .filter((record) => record.model_id === undefined)
         .map((record) => record.relative_path),
     );
     for (const absolutePath of enumeration.filePaths.sort(compareStrings)) {
