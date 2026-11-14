@@ -2253,6 +2253,7 @@ with `"type": "stdio"`) and `claude-code` (a `claude mcp add` command line).
   "shape": "mcpServers",
   "command_mode": "npx",
   "config_file": null,
+  "active_model": "openai__text-embedding-3-small",
   "config_locations": [
     "Global: ~/.cursor/mcp.json",
     "Per project: <project>/.cursor/mcp.json"
@@ -2277,18 +2278,26 @@ Stable fields:
 - `shape` is `mcpServers`, `servers` (VS Code) or `shell` (Claude Code).
 - `command_mode` is `npx` (default) or `global` (`--command=global`).
 - `config_file` is the project config file that was layered in, or `null`.
+- `active_model` is the registered model the server will embed with
+  (`KB_ACTIVE_MODEL` > `active.txt` > env-derived id, resolved read-only), or
+  `null` when none is registered yet. When it is set, its provider and stored
+  model name drive `EMBEDDING_PROVIDER` and the provider's model variable, so
+  the snippet matches the index on disk rather than `EMBEDDING_PROVIDER` alone.
 - `config_locations` lists human-readable places the snippet goes.
 - `command` and `args` are the launch command: `npx` with
   `["-y", "@jeanibarz/knowledge-base-mcp-server@latest"]`, or the absolute
-  path of the `knowledge-base-mcp-server` bin found on `PATH` with `[]`.
+  path of the `knowledge-base-mcp-server` bin found on `PATH` with `[]`
+  (npx cache and `node_modules/.bin` entries are skipped).
 - `env` holds the variables passed to the server: always
   `KNOWLEDGE_BASES_ROOT_DIR`, `EMBEDDING_PROVIDER` and the provider's model
   (and base URL for Ollama, API key for OpenAI/HuggingFace); `FAISS_INDEX_PATH`,
   `KB_ACTIVE_MODEL` and optional provider settings only when env or the project
-  config sets them.
+  config sets them. Path values are made absolute, because the client starts
+  the server from its own working directory.
 - `placeholders` names every `env` key whose value is a `<NAME>` placeholder.
   Secrets (any variable `kb config show` redacts) are always placeholders,
-  whether or not they are set; `MCP_AUTH_TOKEN` is never emitted.
+  whether or not they are set, and so is any emitted URL that carries
+  userinfo or a query string; `MCP_AUTH_TOKEN` is never emitted.
 - `snippet` is the exact paste-ready text: JSON for `mcpServers`/`servers`, a
   shell command line for `shell`. With the default `--format=md`, the same
   text is printed inside a fenced code block.

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { spawnSync } from 'node:child_process';
 import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
@@ -11,8 +12,8 @@ import {
   SUPPORTED_CLIENTS,
   type ConfigClientReport,
 } from './cli-config-client.js';
-import { runConfig } from './cli-config.js';
 import { resetProjectConfigForTests } from './config/project-config.js';
+import { deriveModelId } from './model-id.js';
 import { makeTempDir } from './test-support/tempdir.js';
 
 const ORIGINAL_ENV = { ...process.env };
@@ -69,9 +70,14 @@ afterEach(async () => {
   await fsp.rm(tempDir, { recursive: true, force: true });
 });
 
+// The unit tests pin "no registered model" so they never depend on the shared
+// test index directory; the spawned-CLI tests exercise real resolution.
+const NO_ACTIVE = { resolveActive: async () => null };
+const run = (args: string[]): Promise<number> => runConfigClient(args, NO_ACTIVE);
+
 async function runJson(...args: string[]): Promise<ConfigClientReport> {
   stdout = '';
-  const code = await runConfig(['client', ...args, '--format=json']);
+  const code = await run([...args, '--format=json']);
   expect({ code, stderr }).toEqual({ code: 0, stderr: '' });
   return JSON.parse(stdout) as ConfigClientReport;
 }
@@ -108,7 +114,7 @@ describe('kb config client: argument parsing', () => {
   });
 
   it('exits 2 and lists supported names for an unknown client', async () => {
-    const code = await runConfig(['client', 'emacs']);
+    const code = await run(['emacs']);
     expect(code).toBe(2);
     expect(stdout).toBe('');
     expect(stderr).toContain('unknown client: emacs');
@@ -116,11 +122,11 @@ describe('kb config client: argument parsing', () => {
   });
 
   it('exits 2 when the client name is missing or a flag is invalid', async () => {
-    expect(await runConfig(['client'])).toBe(2);
+    expect(await run([])).toBe(2);
     expect(stderr).toContain('supported clients: claude-desktop');
-    expect(await runConfig(['client', 'cursor', '--command=bunx'])).toBe(2);
-    expect(await runConfig(['client', 'cursor', '--format=yaml'])).toBe(2);
-    expect(await runConfig(['client', 'cursor', 'cline'])).toBe(2);
+    expect(await run(['cursor', '--command=bunx'])).toBe(2);
+    expect(await run(['cursor', '--format=yaml'])).toBe(2);
+    expect(await run(['cursor', 'cline'])).toBe(2);
   });
 });
 
@@ -131,7 +137,7 @@ describe('kb config client: each supported client', () => {
   });
 
   it.each(JSON_CLIENTS)('%s: markdown block is valid JSON with the effective settings', async (client) => {
-    expect(await runConfig(['client', client])).toBe(0);
+    expect(await run([client])).toBe(0);
     const parsed = JSON.parse(fencedBlock(stdout)) as Record<string, Record<string, Record<string, unknown>>>;
     const key = client === 'vscode' ? 'servers' : 'mcpServers';
     expect(Object.keys(parsed)).toEqual([key]);
@@ -162,7 +168,7 @@ describe('kb config client: each supported client', () => {
   });
 
   it('claude-code: the command line parses in a shell and carries the effective settings', async () => {
-    expect(await runConfig(['client', 'claude-code'])).toBe(0);
+    expect(await run(['claude-code'])).toBe(0);
     const argv = claudeArgv(fencedBlock(stdout));
     expect(argv.slice(0, 4)).toEqual(['mcp', 'add', 'knowledge-base', '-s']);
     expect(argv.slice(-4)).toEqual(['--', 'npx', '-y', '@jeanibarz/knowledge-base-mcp-server@latest']);
@@ -220,6 +226,92 @@ describe('kb config client: provider and layering', () => {
   });
 });
 
+describe('kb config client: defaults, extras and failures', () => {
+  it('prints the default root when KNOWLEDGE_BASES_ROOT_DIR is unset', async () => {
+    delete process.env.KNOWLEDGE_BASES_ROOT_DIR;
+    const report = await runJson('cursor');
+    expect(report.env.KNOWLEDGE_BASES_ROOT_DIR).toBe(path.join(os.homedir(), 'knowledge_bases'));
+  });
+
+  it('prints provider extras only when set', async () => {
+    process.env.EMBEDDING_PROVIDER = 'openai';
+    process.env.OPENAI_ORG_ID = 'org-123';
+    process.env.OPENAI_BASE_URL = 'https://proxy.example/v1';
+    let report = await runJson('cursor');
+    expect(report.env.OPENAI_ORG_ID).toBe('org-123');
+    expect(report.env.OPENAI_BASE_URL).toBe('https://proxy.example/v1');
+    expect(report.env).not.toHaveProperty('OPENAI_PROJECT_ID');
+
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_ENDPOINT_URL = 'https://hf.example/embed';
+    report = await runJson('cursor');
+    expect(report.env.HUGGINGFACE_ENDPOINT_URL).toBe('https://hf.example/embed');
+    expect(report.env).not.toHaveProperty('HUGGINGFACE_PROVIDER');
+  });
+
+  it('exits 2 for an unsupported EMBEDDING_PROVIDER', async () => {
+    process.env.EMBEDDING_PROVIDER = 'bogus';
+    expect(await run(['cursor'])).toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('unsupported EMBEDDING_PROVIDER="bogus"');
+  });
+
+  it('exits 2 for an unreadable project config', async () => {
+    await fsp.writeFile(path.join(tempDir, '.kbrc'), '{not json');
+    resetProjectConfigForTests();
+    expect(await run(['cursor'])).toBe(2);
+    expect(stderr).toContain('invalid project config');
+  });
+
+  it('tells JSON-client users to restart, but not claude-code users', async () => {
+    expect(await run(['cursor'])).toBe(0);
+    expect(stdout).toContain('Restart the client');
+    stdout = '';
+    expect(await run(['claude-code'])).toBe(0);
+    expect(stdout).not.toContain('Restart the client');
+  });
+});
+
+describe('kb config client: active model and value hygiene', () => {
+  it('follows the registered active model, not EMBEDDING_PROVIDER', async () => {
+    stdout = '';
+    const code = await runConfigClient(['cursor', '--format=json'], {
+      resolveActive: async () => ({ id: 'openai__text-embedding-3-large', provider: 'openai', modelName: 'text-embedding-3-large' }),
+    });
+    expect(code).toBe(0);
+    const report = JSON.parse(stdout) as ConfigClientReport;
+    expect(report.active_model).toBe('openai__text-embedding-3-large');
+    expect(report.env).toEqual({
+      KNOWLEDGE_BASES_ROOT_DIR: kbRoot,
+      EMBEDDING_PROVIDER: 'openai',
+      OPENAI_API_KEY: '<OPENAI_API_KEY>',
+      OPENAI_MODEL_NAME: 'text-embedding-3-large',
+    });
+  });
+
+  it('makes relative and ~ paths absolute', async () => {
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = './kb';
+    process.env.FAISS_INDEX_PATH = '~/idx';
+    const report = await runJson('cline');
+    expect(report.env.KNOWLEDGE_BASES_ROOT_DIR).toBe(path.join(process.cwd(), 'kb'));
+    expect(path.isAbsolute(report.env.FAISS_INDEX_PATH)).toBe(true);
+    expect(report.env.FAISS_INDEX_PATH).not.toContain('~');
+  });
+
+  it('replaces URLs that embed credentials or a query string with placeholders', async () => {
+    process.env.EMBEDDING_PROVIDER = 'openai';
+    process.env.OPENAI_BASE_URL = 'https://user:SECRET-in-url@proxy.example/v1';
+    let report = await runJson('cursor');
+    expect(report.env.OPENAI_BASE_URL).toBe('<OPENAI_BASE_URL>');
+    expect(report.placeholders).toContain('OPENAI_BASE_URL');
+    expect(JSON.stringify(report)).not.toContain('SECRET-in-url');
+
+    process.env.OPENAI_BASE_URL = 'https://proxy.example/v1';
+    report = await runJson('cursor');
+    expect(report.env.OPENAI_BASE_URL).toBe('https://proxy.example/v1');
+  });
+});
+
 describe('kb config client: secrets are never printed', () => {
   it.each(['openai', 'huggingface', 'ollama'])('provider %s: no secret value in any client, format or command mode', async (provider) => {
     Object.assign(process.env, SECRETS, { EMBEDDING_PROVIDER: provider });
@@ -230,7 +322,7 @@ describe('kb config client: secrets are never printed', () => {
           stdout = '';
           const code = await runConfigClient(
             [client, `--format=${format}`, `--command=${command}`],
-            { resolveServerBin: () => bin },
+            { ...NO_ACTIVE, resolveServerBin: () => bin },
           );
           expect(code).toBe(0);
           for (const secret of Object.values(SECRETS)) expect(stdout).not.toContain(secret);
@@ -259,12 +351,12 @@ describe('kb config client --command=global', () => {
     expect(report.args).toEqual([]);
 
     stdout = '';
-    expect(await runConfig(['client', 'claude-code', '--command=global'])).toBe(0);
+    expect(await run(['claude-code', '--command=global'])).toBe(0);
     expect(claudeArgv(fencedBlock(stdout)).slice(-2)).toEqual(['--', bin]);
   });
 
   it('exits 2 when the bin is not on PATH', async () => {
-    const code = await runConfigClient(['cursor', '--command=global'], { resolveServerBin: () => null });
+    const code = await runConfigClient(['cursor', '--command=global'], { ...NO_ACTIVE, resolveServerBin: () => null });
     expect(code).toBe(2);
     expect(stdout).toBe('');
     expect(stderr).toContain('knowledge-base-mcp-server not found on PATH');
@@ -277,6 +369,25 @@ describe('kb config client --command=global', () => {
     expect(findOnPath('tool', `${path.join(tempDir, 'missing')}${path.delimiter}${dir}`, 'linux')).toBeNull();
     await fsp.chmod(path.join(dir, 'tool'), 0o755);
     expect(findOnPath('tool', dir, 'linux')).toBe(path.join(dir, 'tool'));
+  });
+
+  it('findOnPath tries .cmd on win32', async () => {
+    const dir = path.join(tempDir, 'w');
+    await fsp.mkdir(dir);
+    await fsp.writeFile(path.join(dir, 'tool.cmd'), '');
+    expect(findOnPath('tool', dir, 'win32')).toBe(path.join(dir, 'tool.cmd'));
+  });
+
+  it('findOnPath skips npx caches and node_modules/.bin', async () => {
+    const npxBin = path.join(tempDir, '_npx', 'abc', 'node_modules', '.bin');
+    const localBin = path.join(tempDir, 'repo', 'node_modules', '.bin');
+    const globalBin = path.join(tempDir, 'global');
+    for (const dir of [npxBin, localBin, globalBin]) {
+      await fsp.mkdir(dir, { recursive: true });
+      await fsp.writeFile(path.join(dir, 'tool'), '', { mode: 0o755 });
+    }
+    const envPath = [npxBin, localBin, globalBin].join(path.delimiter);
+    expect(findOnPath('tool', envPath, 'linux')).toBe(path.join(globalBin, 'tool'));
   });
 });
 
@@ -294,12 +405,37 @@ describe('kb config client (spawned CLI)', () => {
       process.execPath,
       ['--enable-source-maps', '--import', tsxLoaderPath, path.join(ORIGINAL_CWD, 'src', 'cli.ts'),
         'config', 'client', 'cursor', '--format=json', '--command=npx'],
-      { cwd: tempDir, encoding: 'utf-8', env: { ...process.env, EMBEDDING_PROVIDER: 'ollama', ...SECRETS } },
+      { cwd: tempDir, encoding: 'utf-8', env: { ...process.env, EMBEDDING_PROVIDER: 'openai', ...SECRETS } },
     );
     expect(result.stderr).not.toMatch(/unknown flag|Did you mean/);
     expect(result.status).toBe(0);
     const report = JSON.parse(result.stdout) as ConfigClientReport;
     expect(report.env.KNOWLEDGE_BASES_ROOT_DIR).toBe(kbRoot);
+    expect(report.env.OPENAI_API_KEY).toBe('<OPENAI_API_KEY>');
+    for (const secret of Object.values(SECRETS)) expect(result.stdout).not.toContain(secret);
+  });
+
+  it('uses the provider of the model registered in active.txt', async () => {
+    const faiss = path.join(tempDir, 'faiss');
+    const id = deriveModelId('openai', 'text-embedding-3-large');
+    await fsp.mkdir(path.join(faiss, 'models', id), { recursive: true });
+    await fsp.writeFile(path.join(faiss, 'models', id, 'model_name.txt'), 'text-embedding-3-large\n');
+    await fsp.writeFile(path.join(faiss, 'active.txt'), `${id}\n`);
+    const env: NodeJS.ProcessEnv = { ...process.env, FAISS_INDEX_PATH: faiss, ...SECRETS };
+    delete env.EMBEDDING_PROVIDER;
+    const result = spawnSync(
+      process.execPath,
+      ['--enable-source-maps', '--import', tsxLoaderPath, path.join(ORIGINAL_CWD, 'src', 'cli.ts'),
+        'config', 'client', 'vscode', '--format=json'],
+      { cwd: tempDir, encoding: 'utf-8', env },
+    );
+    expect(result.status).toBe(0);
+    const report = JSON.parse(result.stdout) as ConfigClientReport;
+    expect(report.active_model).toBe(id);
+    expect(report.env.EMBEDDING_PROVIDER).toBe('openai');
+    expect(report.env.OPENAI_MODEL_NAME).toBe('text-embedding-3-large');
+    expect(report.env.OPENAI_API_KEY).toBe('<OPENAI_API_KEY>');
+    expect(report.env).not.toHaveProperty('HUGGINGFACE_API_KEY');
     for (const secret of Object.values(SECRETS)) expect(result.stdout).not.toContain(secret);
   });
 

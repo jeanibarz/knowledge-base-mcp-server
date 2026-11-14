@@ -60,6 +60,7 @@ export interface ConfigArgs {
 }
 
 export async function runConfig(rest: string[]): Promise<number> {
+  // `client` has its own parser and flags; validate/show go through parseConfigArgs.
   if (rest[0] === 'client') return runConfigClient(rest.slice(1));
   let parsed: ConfigArgs;
   try {

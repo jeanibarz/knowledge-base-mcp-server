@@ -1,8 +1,12 @@
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { showConfigEnv, type ConfigShowEntry } from './config/schema.js';
 import { getProjectConfig, projectConfigAppliedSources } from './config/project-config.js';
+import { parseModelId } from './model-id.js';
+import { resolveActiveModel } from './model-resolution.js';
+import { readStoredModelName } from './model-storage-layout.js';
 
 // Help text lives in CONFIG_HELP (src/cli-config.ts): the kb dispatcher prints
 // it for `kb config client --help` and its typo guard reads flags from it.
@@ -34,6 +38,7 @@ export interface ConfigClientReport {
   shape: 'mcpServers' | 'servers' | 'shell';
   command_mode: 'npx' | 'global';
   config_file: string | null;
+  active_model: string | null;
   config_locations: string[];
   command: string;
   args: string[];
@@ -87,16 +92,19 @@ const CLIENTS: Record<ClientName, ClientInfo> = {
 // `always` vars appear even when unset (a placeholder for secrets, the
 // effective default otherwise); `ifSet` vars only when env or the project
 // config supplies them, so the snippet stays short for default setups.
-const PROVIDER_VARS: Record<string, { always: string[]; ifSet: string[] }> = {
+const PROVIDER_VARS: Record<string, { model?: string; always: string[]; ifSet: string[] }> = {
   huggingface: {
+    model: 'HUGGINGFACE_MODEL_NAME',
     always: ['HUGGINGFACE_API_KEY', 'HUGGINGFACE_MODEL_NAME'],
     ifSet: ['HUGGINGFACE_PROVIDER', 'HUGGINGFACE_ENDPOINT_URL'],
   },
   ollama: {
+    model: 'OLLAMA_MODEL',
     always: ['OLLAMA_BASE_URL', 'OLLAMA_MODEL'],
     ifSet: [],
   },
   openai: {
+    model: 'OPENAI_MODEL_NAME',
     always: ['OPENAI_API_KEY', 'OPENAI_MODEL_NAME'],
     ifSet: ['OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'OPENAI_PROJECT_ID'],
   },
@@ -106,9 +114,33 @@ const PROVIDER_VARS: Record<string, { always: string[]; ifSet: string[] }> = {
   },
 };
 
+export interface ActiveModelInfo {
+  id: string;
+  provider: string;
+  modelName: string | null;
+}
+
 export interface RunConfigClientOptions {
   /** Resolves the absolute server bin path for --command=global; null when absent. */
   resolveServerBin?: () => string | null;
+  /** Resolves the registered active model; null when none resolves. */
+  resolveActive?: () => Promise<ActiveModelInfo | null>;
+}
+
+/**
+ * The server embeds with the active model (KB_ACTIVE_MODEL > active.txt >
+ * env-derived id), not with EMBEDDING_PROVIDER alone, so the snippet must
+ * carry that model's provider settings. Read-only: never registers a model.
+ * Resolution errors (no model registered yet, stale active.txt) return null
+ * and the snippet falls back to the env-derived first-run model.
+ */
+export async function resolveActiveModelInfo(): Promise<ActiveModelInfo | null> {
+  try {
+    const id = await resolveActiveModel();
+    return { id, provider: parseModelId(id).provider, modelName: await readStoredModelName(id) };
+  } catch {
+    return null;
+  }
 }
 
 export async function runConfigClient(
@@ -150,15 +182,16 @@ export async function runConfigClient(
     configFile: projectConfig.path,
     sources: projectConfigAppliedSources(projectConfig),
   });
+  const active = await (options.resolveActive ?? resolveActiveModelInfo)();
   let env: { env: Record<string, string>; placeholders: string[] };
   try {
-    env = buildClientEnv(report.entries);
+    env = buildClientEnv(report.entries, active);
   } catch (err) {
     process.stderr.write(`kb config client: ${(err as Error).message}\n`);
     return 2;
   }
 
-  const out = buildClientReport(parsed, launch, env, projectConfig.path);
+  const out = buildClientReport(parsed, launch, env, projectConfig.path, active?.id ?? null);
   if (parsed.format === 'json') {
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   } else {
@@ -201,9 +234,10 @@ export function parseConfigClientArgs(rest: readonly string[]): ConfigClientArgs
  */
 export function buildClientEnv(
   entries: readonly ConfigShowEntry[],
+  active: ActiveModelInfo | null = null,
 ): { env: Record<string, string>; placeholders: string[] } {
   const byName = new Map(entries.map((entry) => [entry.name, entry]));
-  const provider = byName.get('EMBEDDING_PROVIDER')?.value ?? 'huggingface';
+  const provider = active?.provider ?? byName.get('EMBEDDING_PROVIDER')?.value ?? 'huggingface';
   const vars = PROVIDER_VARS[provider];
   if (vars === undefined) {
     throw new Error(
@@ -224,6 +258,20 @@ export function buildClientEnv(
       return;
     }
     if (entry.value === null) return;
+    if (name === vars.model && active !== null && active.modelName !== null) {
+      env[name] = active.modelName;
+      return;
+    }
+    if (entry.kind === 'path' && entry.value !== '') {
+      // The client spawns the server from its own cwd (often / or $HOME).
+      env[name] = absolutePath(entry.value);
+      return;
+    }
+    if (entry.kind === 'url' && urlCarriesCredentials(entry.value)) {
+      env[name] = `<${name}>`;
+      placeholders.push(name);
+      return;
+    }
     env[name] = entry.value;
   };
 
@@ -241,6 +289,7 @@ export function buildClientReport(
   launch: { command: string; args: string[] },
   env: { env: Record<string, string>; placeholders: string[] },
   configFile: string | null,
+  activeModel: string | null = null,
 ): ConfigClientReport {
   const info = CLIENTS[args.client];
   return {
@@ -249,6 +298,7 @@ export function buildClientReport(
     shape: info.shape,
     command_mode: args.command,
     config_file: configFile,
+    active_model: activeModel,
     config_locations: info.locations,
     command: launch.command,
     args: launch.args,
@@ -290,6 +340,7 @@ export function formatConfigClientMarkdown(report: ConfigClientReport): string {
     `# kb config client ${report.client}`,
     '',
     `config_file: ${report.config_file ?? '(none)'}`,
+    `active_model: ${report.active_model ?? '(none registered; the server registers the env-derived model on first run)'}`,
     '',
     report.shape === 'shell' ? 'Where:' : 'Paste into:',
     ...report.config_locations.map((loc) => `- ${loc}`),
@@ -307,7 +358,26 @@ export function formatConfigClientMarkdown(report: ConfigClientReport): string {
   return `${lines.join('\n')}\n`;
 }
 
-/** Absolute path of the first executable named `name` on PATH, or null. */
+function absolutePath(value: string): string {
+  if (value === '~' || value.startsWith('~/')) return path.join(os.homedir(), value.slice(1));
+  return path.resolve(value);
+}
+
+/** True when a URL embeds userinfo or a query string, which may hold a key. */
+function urlCarriesCredentials(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.username !== '' || url.password !== '' || url.search !== '';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Absolute path of the first executable named `name` on PATH, or null.
+ * Skips npx caches and node_modules/.bin, which are prepended to PATH by
+ * `npx`/npm scripts and would bake a temporary path into a client config.
+ */
 export function findOnPath(
   name: string,
   envPath: string | undefined = process.env.PATH,
@@ -315,7 +385,7 @@ export function findOnPath(
 ): string | null {
   const candidates = platform === 'win32' ? [`${name}.cmd`, `${name}.exe`, name] : [name];
   for (const dir of (envPath ?? '').split(path.delimiter)) {
-    if (dir === '') continue;
+    if (dir === '' || /[\\/]_npx[\\/]|[\\/]node_modules[\\/]\.bin[\\/]?$/.test(dir)) continue;
     for (const candidate of candidates) {
       const full = path.resolve(dir, candidate);
       try {
