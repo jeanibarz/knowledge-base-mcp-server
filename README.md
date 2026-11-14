@@ -101,7 +101,7 @@ npm run dev:setup
 
 `dev:setup` does three idempotent things:
 
-1. **`npm install` + `npm run build`** — a first build, so the bins exist before linking.
+1. **`npm ci` + `npm run build`** — installs exactly the committed lockfile (never rewrites `package-lock.json`; it replaces `node_modules/`), then a first build, so the bins exist before linking.
 2. **`npm link`** — symlinks `kb` and `knowledge-base-mcp-server` into the global node prefix (the path is printed during setup so you can verify where it landed). From then on, each `npm run build` overwrites `build/` in place and the global bins pick up the new code on the next invocation. **No re-link needed.**
 3. **`git config core.hooksPath .githooks`** — points git at the tracked [`.githooks/`](./.githooks) directory so the `post-merge` and `post-rewrite` hooks fire after every `git pull` (merge or rebase) and `git merge`. Each hook re-runs `npm ci` (which installs exactly the committed lockfile and never rewrites it) if `package.json` changed and `npm run build` if any source changed, and stays quiet when nothing relevant moved. It runs **last** in the hook order, so a failed install or build leaves the repo in its original state.
 

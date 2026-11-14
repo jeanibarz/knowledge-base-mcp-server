@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One-shot local-development setup:
-#   1. Install dependencies and build once.
+#   1. Install dependencies from the committed lockfile (`npm ci`) and build
+#      once.
 #   2. Symlink this checkout's `kb` and `knowledge-base-mcp-server` bins into
 #      the global node prefix via `npm link`. Subsequent rebuilds (manual or
 #      via the post-merge hook) overwrite build/ in place — the global bins
@@ -35,8 +36,12 @@ EOF
   exit 1
 fi
 
-echo "==> Installing npm dependencies"
-npm install --ignore-scripts
+# Install with `npm ci`, not `npm install`: the committed lockfile is
+# authoritative. On a newer npm, `npm install` rewrote package-lock.json into
+# a state CI's `npm ci` rejects and left the checkout dirty (#1266, #1268).
+# Install scripts stay off; `npm rebuild` then builds only the native modules.
+echo "==> Installing npm dependencies (npm ci, from the committed lockfile)"
+npm ci --ignore-scripts
 npm rebuild faiss-node hnswlib-node onnxruntime-node sharp esbuild protobufjs
 
 echo "==> Building"

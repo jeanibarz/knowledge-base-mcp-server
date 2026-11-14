@@ -129,7 +129,7 @@ kb doctor
 cd /path/to/knowledge-base-mcp-server
 git status --short --branch
 git pull
-npm install
+npm ci
 npm run build
 kb doctor
 ```
