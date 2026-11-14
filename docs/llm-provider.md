@@ -8,7 +8,7 @@ active chat model between:
 - **`local`** (default) — a localhost OpenAI-compatible server such as the RFC
   015 `llama-server` profile. No authentication header.
 - **`openrouter`** — OpenRouter's hosted OpenAI-compatible API, e.g.
-  `deepseek/deepseek-v4-flash`. Requires an API key.
+  `deepseek/deepseek-v4.1-flash-1017`. Requires an API key.
 
 This mirrors the same switch in the sibling repos
 ([`local-research-agent`](https://github.com/jeanibarz/local-research-agent)'s
@@ -23,7 +23,7 @@ the *generation* step (answers, prefaces, gate judging) is switched here.
 |---|---|---|
 | `KB_LLM_PROVIDER` | `local` | `local` or `openrouter`. |
 | `KB_LLM_ENDPOINT` | — | Chat-completions URL. For OpenRouter: `https://openrouter.ai/api/v1/chat/completions`. |
-| `KB_LLM_MODEL` | provider default | Model id. OpenRouter defaults to `deepseek/deepseek-v4-flash` when unset. |
+| `KB_LLM_MODEL` | provider default | Model id. OpenRouter defaults to `deepseek/deepseek-v4.1-flash-1017` when unset. |
 | `KB_OPENROUTER_API_KEY` | — | OpenRouter key (preferred). Sent as `Authorization: Bearer …`; never logged. |
 | `OPENROUTER_API_KEY` | — | Shared fallback key (used if `KB_OPENROUTER_API_KEY` is unset). |
 | `KB_LLM_APP_TITLE` | `knowledge-base-mcp` | OpenRouter `X-Title` attribution header. |
@@ -41,7 +41,7 @@ process-env values always win), or export them in your shell:
 ```bash
 KB_LLM_PROVIDER=openrouter
 KB_LLM_ENDPOINT=https://openrouter.ai/api/v1/chat/completions
-KB_LLM_MODEL=deepseek/deepseek-v4-flash
+KB_LLM_MODEL=deepseek/deepseek-v4.1-flash-1017
 KB_OPENROUTER_API_KEY=sk-or-v1-...        # preferred (kb's own credit/limit)
 # OPENROUTER_API_KEY=sk-or-v1-...         # or the shared fallback
 KB_LLM_APP_TITLE=knowledge-base-mcp       # optional attribution

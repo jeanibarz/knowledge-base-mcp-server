@@ -195,6 +195,14 @@ export async function callChatCompletion(
     if (!remote) {
       payload.chat_template_kwargs = { enable_thinking: false };
     }
+    // The operator's OpenRouter guardrail only allows the default model served
+    // by Cohere, so pin the provider (no fallback to a blocked one). Hidden
+    // reasoning tokens count against max_tokens and can leave `content` null,
+    // so reasoning is switched off.
+    if (provider.provider === 'openrouter') {
+      payload.provider = { only: ['cohere'], allow_fallbacks: false };
+      payload.reasoning = { enabled: false };
+    }
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (apiKey !== undefined) {
