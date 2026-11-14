@@ -213,6 +213,38 @@ describe('kb inspect', () => {
       .resolves.toBe(`${JSON.stringify(record)}\n`);
   });
 
+  it('reports model-scoped provider records separately from the KB-wide record (#1258)', async () => {
+    const manifestDir = path.join(kbRoot, 'alpha', '.index');
+    await fsp.mkdir(manifestDir, { recursive: true });
+    const record = {
+      schema_version: 'ingest-quarantine.v1',
+      relative_path: 'docs/note.md',
+      model_id: 'openai__candidate',
+      source_sha256: null,
+      error_category: 'provider',
+      error_code: 'PROVIDER_TIMEOUT',
+      error_fingerprint: `sha256:${'b'.repeat(64)}`,
+      first_seen_at: '2026-06-13T10:00:00.000Z',
+      last_attempted_at: '2026-06-13T10:00:00.000Z',
+      retry_count: 1,
+      next_retry_at: '2026-06-13T11:00:00.000Z',
+      ack: false,
+      dead_lettered_at: null,
+      message: 'embedding provider timed out',
+    };
+    await fsp.writeFile(path.join(manifestDir, 'quarantine.jsonl'), `${JSON.stringify(record)}\n`, 'utf-8');
+
+    const result = runInspect(['alpha/docs/note.md', '--json']);
+
+    expect(result.code).toBe(0);
+    const body = JSON.parse(result.stdout) as Record<string, any>;
+    expect(body.quarantine).toMatchObject({
+      present: false,
+      record: null,
+      model_records: [{ model_id: 'openai__candidate', error_code: 'PROVIDER_TIMEOUT' }],
+    });
+  });
+
   it('does not generate contextual-preface sidecars during inspection', async () => {
     const result = runInspect(['alpha/docs/note.md', '--json'], {
       KB_CONTEXTUAL_RETRIEVAL: 'on',

@@ -187,8 +187,18 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
       error: Object.assign(new Error('bad input'), { code: 'EINVAL' }),
     });
 
+    // A legacy record (written before #1258, so no model_id) for a provider
+    // failure is not a property of the document either.
+    await writeFile(rootDir, 'work/docs/legacy-provider.md', '# Legacy\n');
+    await recordIngestFailure({
+      kbPath,
+      relativePath: 'docs/legacy-provider.md',
+      error: new KBError('PROVIDER_UNAVAILABLE', 'embedding provider unavailable'),
+    });
+
     const listed = await listKnowledgeBaseDocuments({ rootDir, kbName: 'work' });
     expect(listed.documents.map((document) => document.relativePath)).toEqual([
+      'docs/legacy-provider.md',
       'docs/one-model-timed-out.md',
     ]);
   });

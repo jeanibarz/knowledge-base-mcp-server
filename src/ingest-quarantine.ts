@@ -497,7 +497,7 @@ function isManifestRecord(value: Partial<IngestQuarantineRecord>): value is Inge
   return (
     value.schema_version === INGEST_QUARANTINE_SCHEMA_VERSION &&
     typeof value.relative_path === 'string' &&
-    (value.model_id === undefined || typeof value.model_id === 'string') &&
+    (value.model_id === undefined || (typeof value.model_id === 'string' && value.model_id.length > 0)) &&
     (typeof value.source_sha256 === 'string' || value.source_sha256 === null) &&
     typeof value.error_category === 'string' &&
     typeof value.error_code === 'string' &&

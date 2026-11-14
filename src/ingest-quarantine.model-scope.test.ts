@@ -213,6 +213,29 @@ describe('ingest quarantine model scoping', () => {
     expect(JSON.parse(raw.trim()).model_id).toBe('ollama__nomic');
   });
 
+  it('drops a manifest line whose model_id is an empty string', async () => {
+    const { q, kbPath } = await setup();
+    const line = {
+      schema_version: 'ingest-quarantine.v1',
+      relative_path: 'empty.md',
+      model_id: '',
+      source_sha256: null,
+      error_category: 'provider',
+      error_code: 'PROVIDER_TIMEOUT',
+      error_fingerprint: 'sha256:abc',
+      first_seen_at: NOW.toISOString(),
+      last_attempted_at: NOW.toISOString(),
+      retry_count: 1,
+      next_retry_at: NOW.toISOString(),
+      ack: false,
+      dead_lettered_at: null,
+      message: 'x',
+    };
+    await fsp.mkdir(path.join(kbPath, '.index'), { recursive: true });
+    await fsp.writeFile(path.join(kbPath, '.index', 'quarantine.jsonl'), `${JSON.stringify(line)}\n`);
+    expect(await q.listIngestQuarantine(kbPath)).toEqual([]);
+  });
+
   it('still loads existing manifest lines that have no model_id', async () => {
     const { q, kbPath } = await setup();
     const line = {

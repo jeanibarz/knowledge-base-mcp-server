@@ -13,7 +13,7 @@ import {
 import { buildChunkDocuments, normalizeChunkTextForEmbedding } from './file-ingest.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { liftFrontmatter } from './frontmatter-lift.js';
-import { getIngestQuarantineRecord, quarantineManifestPath, type IngestQuarantineRecord } from './ingest-quarantine.js';
+import { getIngestQuarantineRecord, listIngestQuarantine, quarantineManifestPath, type IngestQuarantineRecord } from './ingest-quarantine.js';
 import { resolveKbPath } from './kb-fs.js';
 import { applyExtractedTextLimit, loadFile, SUPPORTED_LOADER_EXTENSIONS } from './loaders.js';
 import {
@@ -148,6 +148,8 @@ interface InspectPayload {
     present: boolean;
     source_sha256_matches: boolean | null;
     record: IngestQuarantineRecord | null;
+    /** Issue #1258 — provider-failure records scoped to one embedding model; they skip the file for that model only. */
+    model_records: IngestQuarantineRecord[];
   };
   contextual_preface: ContextualPrefaceInspect;
   chunks: ChunkBoundary[];
@@ -440,6 +442,10 @@ async function inspectQuarantine(
 ): Promise<InspectPayload['quarantine']> {
   const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, target.knowledgeBase);
   const record = await getIngestQuarantineRecord(kbPath, target.kbRelativePath);
+  const relativePath = target.kbRelativePath.split(path.sep).join('/');
+  const modelRecords = (await listIngestQuarantine(kbPath, { useLock: false })).filter(
+    (entry) => entry.model_id !== undefined && entry.relative_path === relativePath,
+  );
   const sourceSha = sha256Buffer(sourceBuffer);
   return {
     manifest_path: quarantineManifestPath(kbPath),
@@ -448,6 +454,7 @@ async function inspectQuarantine(
       ? null
       : record.source_sha256 === sourceSha,
     record,
+    model_records: modelRecords,
   };
 }
 
@@ -562,9 +569,13 @@ function formatInspectMarkdown(payload: InspectPayload): string {
   const frontmatter = payload.frontmatter.lifted_keys.length === 0
     ? 'none'
     : payload.frontmatter.lifted_keys.join(', ');
-  const quarantine = payload.quarantine.present
+  const kbWideQuarantine = payload.quarantine.present
     ? `present (${payload.quarantine.record?.error_category ?? 'unknown'})`
     : 'absent';
+  const quarantine = payload.quarantine.model_records.length === 0
+    ? kbWideQuarantine
+    : `${kbWideQuarantine}; model-scoped: ${payload.quarantine.model_records
+      .map((entry) => `${entry.model_id} (${entry.error_code})`).join(', ')}`;
   const context = payload.contextual_preface.sidecar_exists
     ? `sidecar present, ${payload.contextual_preface.chunks.with_preface} cached prefaces`
     : 'no sidecar';

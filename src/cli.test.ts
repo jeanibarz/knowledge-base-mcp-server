@@ -2882,6 +2882,27 @@ describe('kb search — active-model resolution (RFC 013 §4.7)', () => {
         started_at: '2026-05-11T10:00:00.000Z',
       }));
       await fsp.writeFile(path.join(faissDir, 'models', id, 'old-partial-file'), 'old');
+      await fsp.mkdir(path.join(kbDir, 'alpha', '.index'), { recursive: true });
+      const providerRecord = (modelId: string) => JSON.stringify({
+        schema_version: 'ingest-quarantine.v1',
+        relative_path: `${modelId}.md`,
+        model_id: modelId,
+        source_sha256: null,
+        error_category: 'provider',
+        error_code: 'PROVIDER_TIMEOUT',
+        error_fingerprint: `sha256:${'0'.repeat(64)}`,
+        first_seen_at: '2026-05-11T10:00:00.000Z',
+        last_attempted_at: '2026-05-11T10:00:00.000Z',
+        retry_count: 1,
+        next_retry_at: '2999-01-01T00:00:00.000Z',
+        ack: false,
+        dead_lettered_at: null,
+        message: 'embedding provider timed out',
+      });
+      await fsp.writeFile(
+        path.join(kbDir, 'alpha', '.index', 'quarantine.jsonl'),
+        `${providerRecord(id)}\n${providerRecord('openai__other')}\n`,
+      );
 
       const r = runCli(['models', 'add', 'ollama', 'nomic-embed-text', '--recover', '--yes'], {
         KNOWLEDGE_BASES_ROOT_DIR: kbDir,
@@ -2892,6 +2913,11 @@ describe('kb search — active-model resolution (RFC 013 §4.7)', () => {
       expect(r.code).toBe(0);
       expect(r.stderr).toContain('Recovered stale incomplete model');
       expect(r.stderr).toContain(`Successfully added ${id}`);
+      // Issue #1258 — recovery drops the failed add's provider records for this
+      // model only, so the retry does not skip those files.
+      const remaining = (await fsp.readFile(path.join(kbDir, 'alpha', '.index', 'quarantine.jsonl'), 'utf-8'))
+        .trim().split('\n').map((line) => JSON.parse(line) as { model_id?: string });
+      expect(remaining.map((record) => record.model_id)).toEqual(['openai__other']);
       await expect(fsp.access(path.join(faissDir, 'models', id, 'old-partial-file')))
         .rejects.toMatchObject({ code: 'ENOENT' });
       await expect(fsp.access(path.join(faissDir, 'models', id, '.adding')))

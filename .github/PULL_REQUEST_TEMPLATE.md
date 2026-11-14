@@ -16,7 +16,7 @@ deterministic verifier:
   A row struck from its leading dash (`- ~~- [ ] …~~`) is not recognised, and
   the verifier then reports the row as missing from the template;
 - a checked row needs matching files in the diff: `tests` matches a `test/` or
-  `tests/` directory or a `*.test.*` / `*.spec.*` file (a shell harness such as
+  `tests/` directory or a `*.test.ts` / `*.spec.js`-style file (a shell harness such as
   `plugins/swiftbar/test.sh` does not count); `readme` matches only the
   top-level `README.md`; `docs` matches anything under `docs/`; `changelog`
   matches only `CHANGELOG.md`; `benchmarks` matches `benchmarks/`. When your
