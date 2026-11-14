@@ -2193,6 +2193,76 @@ describe('FaissIndexManager permission handling', () => {
     await expect(listIngestQuarantine(defaultKb)).resolves.toEqual([]);
   });
 
+  it('scopes provider-failure quarantine to the failing model and clears it on model removal (#1258)', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-quarantine-model-'));
+    const kbDir = path.join(tempDir, 'kb');
+    const defaultKb = path.join(kbDir, 'default');
+    await fsp.mkdir(defaultKb, { recursive: true });
+    const docPath = path.join(defaultKb, 'note.md');
+    await fsp.writeFile(docPath, '# Note\n\nFirst version of the note.');
+
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = kbDir;
+    process.env.FAISS_INDEX_PATH = path.join(tempDir, '.faiss');
+    process.env.EMBEDDING_PROVIDER = 'huggingface';
+    process.env.HUGGINGFACE_API_KEY = 'test-key';
+
+    jest.resetModules();
+    const { FaissIndexManager } = await import('./FaissIndexManager.js');
+    const { KBError } = await import('./errors.js');
+    const { listIngestQuarantine, removeIngestQuarantineForModel } = await import('./ingest-quarantine.js');
+    const managerA = new FaissIndexManager();
+    const managerB = new FaissIndexManager({ provider: 'ollama', modelName: 'mxbai-embed-large' });
+    await managerA.initialize();
+    await managerB.initialize();
+    expect(managerA.modelId).not.toBe(managerB.modelId);
+
+    // B's provider times out on every file.
+    embedDocumentsMock.mockRejectedValue(new KBError('PROVIDER_TIMEOUT', 'embedding timed out'));
+    await expect(managerB.updateIndex('default')).rejects.toThrow(/timed out/);
+    const records = await listIngestQuarantine(defaultKb);
+    expect(records).toEqual([
+      expect.objectContaining({
+        relative_path: 'note.md',
+        model_id: managerB.modelId,
+        error_category: 'provider',
+        error_code: 'PROVIDER_TIMEOUT',
+      }),
+    ]);
+
+    // A is unaffected: its provider is healthy, so it indexes the file.
+    embedDocumentsMock.mockReset();
+    embedDocumentsMock.mockImplementation(async (texts: string[]) => texts.map(mockVectorForText));
+    await managerA.updateIndex('default');
+    expect(managerA.getLastIndexUpdateSummary()).toMatchObject({
+      status: 'success',
+      files_changed: 1,
+      files_skipped: 0,
+    });
+    expect(addVectorsMock).toHaveBeenCalled();
+    // A's success must not clear B's record.
+    expect(await listIngestQuarantine(defaultKb)).toHaveLength(1);
+
+    // A changed file is still indexed by A (the repro's unconfirmed step).
+    addVectorsMock.mockClear();
+    await fsp.writeFile(docPath, '# Note\n\nSecond version of the note, changed.');
+    await managerA.updateIndex('default');
+    expect(addVectorsMock).toHaveBeenCalled();
+    expect(managerA.getLastIndexUpdateSummary()).toMatchObject({ files_changed: 1, files_skipped: 0 });
+    // A never touches B's record; it is dropped when B next sees the changed content.
+    expect(await listIngestQuarantine(defaultKb)).toEqual([
+      expect.objectContaining({ model_id: managerB.modelId }),
+    ]);
+
+    // Removing a model clears exactly its records.
+    embedDocumentsMock.mockRejectedValue(new KBError('PROVIDER_TIMEOUT', 'embedding timed out'));
+    await fsp.writeFile(docPath, '# Note\n\nThird version.');
+    await expect(managerB.updateIndex('default')).rejects.toThrow(/timed out/);
+    expect(await listIngestQuarantine(defaultKb)).toHaveLength(1);
+    await expect(removeIngestQuarantineForModel(defaultKb, managerA.modelId)).resolves.toBe(0);
+    await expect(removeIngestQuarantineForModel(defaultKb, managerB.modelId)).resolves.toBe(1);
+    await expect(listIngestQuarantine(defaultKb)).resolves.toEqual([]);
+  });
+
   it('quarantines secret-bearing chunks before embedding when ingest secret scan is enabled', async () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-faiss-secret-scan-'));
     const kbDir = path.join(tempDir, 'kb');

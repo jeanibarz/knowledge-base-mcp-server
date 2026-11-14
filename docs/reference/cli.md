@@ -1236,17 +1236,23 @@ kb quarantine — inspect and manage ingest quarantine entries
 
 Usage:
   kb quarantine list [--kb=<name>] [--reason=<reason>] [--format=md|json]
-  kb quarantine clear --kb=<name> --path=<relative-path>
-  kb quarantine clear --kb=<name> --all
-  kb quarantine retry --kb=<name> --path=<relative-path>
-  kb quarantine ack --kb=<name> --path=<relative-path>
+  kb quarantine clear --kb=<name> --path=<relative-path> [--model=<id>]
+  kb quarantine clear --kb=<name> --all [--model=<id>]
+  kb quarantine retry --kb=<name> --path=<relative-path> [--model=<id>]
+  kb quarantine ack --kb=<name> --path=<relative-path> [--model=<id>]
 
 Options:
   --kb=<name>           Knowledge base name. Required for mutating commands.
   --path=<rel>          KB-relative quarantined file path.
   --reason=<reason>     With list, show only entries matching a quarantine
                         reason such as secret_detected.
-  --all                 With clear, remove every entry in the KB.
+  --model=<id>          Narrow clear/retry/ack to one embedding model's
+                        entries. Provider failures are quarantined per model;
+                        without --model the command acts on every entry for
+                        the path (all models and KB-wide), and clear --all
+                        removes every entry in the KB.
+  --all                 With clear, remove every entry in the KB (or, with
+                        --model, every entry of that model).
   --format=md|json      Output format for list (default: md).
   --help, -h            Show this help.
 

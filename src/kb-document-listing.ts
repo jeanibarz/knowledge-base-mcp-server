@@ -145,6 +145,9 @@ export async function listKnowledgeBaseDocuments(
     }
     const quarantined = new Set(
       (await listIngestQuarantine(enumeration.kbPath, { useLock: false }))
+        // Issue #1258 — a provider failure (model-scoped, or a legacy KB-wide
+        // provider record) is not a property of the document, so it never hides it.
+        .filter((record) => record.model_id === undefined && record.error_category !== 'provider')
         .map((record) => record.relative_path),
     );
     for (const absolutePath of enumeration.filePaths.sort(compareStrings)) {

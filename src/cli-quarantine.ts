@@ -7,6 +7,7 @@ import {
   forceRetryIngestQuarantineEntry,
   listIngestQuarantine,
   removeIngestQuarantineEntry,
+  removeIngestQuarantineForModel,
   type IngestQuarantineRecord,
 } from './ingest-quarantine.js';
 
@@ -14,17 +15,23 @@ export const QUARANTINE_HELP = `kb quarantine — inspect and manage ingest quar
 
 Usage:
   kb quarantine list [--kb=<name>] [--reason=<reason>] [--format=md|json]
-  kb quarantine clear --kb=<name> --path=<relative-path>
-  kb quarantine clear --kb=<name> --all
-  kb quarantine retry --kb=<name> --path=<relative-path>
-  kb quarantine ack --kb=<name> --path=<relative-path>
+  kb quarantine clear --kb=<name> --path=<relative-path> [--model=<id>]
+  kb quarantine clear --kb=<name> --all [--model=<id>]
+  kb quarantine retry --kb=<name> --path=<relative-path> [--model=<id>]
+  kb quarantine ack --kb=<name> --path=<relative-path> [--model=<id>]
 
 Options:
   --kb=<name>           Knowledge base name. Required for mutating commands.
   --path=<rel>          KB-relative quarantined file path.
   --reason=<reason>     With list, show only entries matching a quarantine
                         reason such as secret_detected.
-  --all                 With clear, remove every entry in the KB.
+  --model=<id>          Narrow clear/retry/ack to one embedding model's
+                        entries. Provider failures are quarantined per model;
+                        without --model the command acts on every entry for
+                        the path (all models and KB-wide), and clear --all
+                        removes every entry in the KB.
+  --all                 With clear, remove every entry in the KB (or, with
+                        --model, every entry of that model).
   --format=md|json      Output format for list (default: md).
   --help, -h            Show this help.
 
@@ -37,10 +44,20 @@ Examples:
 export interface RunQuarantineDeps {
   listKnowledgeBases: (rootDir: string) => Promise<string[]>;
   listIngestQuarantine: (kbPath: string) => Promise<IngestQuarantineRecord[]>;
-  removeIngestQuarantineEntry: (kbPath: string, relativePath: string) => Promise<boolean>;
+  removeIngestQuarantineEntry: (kbPath: string, relativePath: string, modelId?: string) => Promise<boolean>;
   clearIngestQuarantine: (kbPath: string) => Promise<number>;
-  forceRetryIngestQuarantineEntry: (kbPath: string, relativePath: string) => Promise<IngestQuarantineRecord | null>;
-  ackIngestQuarantineEntry: (kbPath: string, relativePath: string) => Promise<IngestQuarantineRecord | null>;
+  removeIngestQuarantineForModel: (kbPath: string, modelId: string) => Promise<number>;
+  forceRetryIngestQuarantineEntry: (
+    kbPath: string,
+    relativePath: string,
+    now?: Date,
+    modelId?: string,
+  ) => Promise<IngestQuarantineRecord | null>;
+  ackIngestQuarantineEntry: (
+    kbPath: string,
+    relativePath: string,
+    modelId?: string,
+  ) => Promise<IngestQuarantineRecord | null>;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -50,6 +67,7 @@ const DEFAULT_DEPS: RunQuarantineDeps = {
   listIngestQuarantine,
   removeIngestQuarantineEntry,
   clearIngestQuarantine,
+  removeIngestQuarantineForModel,
   forceRetryIngestQuarantineEntry,
   ackIngestQuarantineEntry,
   stdout: (text) => process.stdout.write(text),
@@ -63,6 +81,7 @@ interface QuarantineArgs {
   kb?: string;
   path?: string;
   reason?: string;
+  model?: string;
   all: boolean;
   format: 'md' | 'json';
 }
@@ -93,14 +112,17 @@ export async function runQuarantine(
     if (parsed.kb === undefined) throw new Error('--kb is required');
     const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, parsed.kb);
     if (parsed.action === 'clear' && parsed.all) {
-      const cleared = await deps.clearIngestQuarantine(kbPath);
+      const cleared =
+        parsed.model === undefined
+          ? await deps.clearIngestQuarantine(kbPath)
+          : await deps.removeIngestQuarantineForModel(kbPath, parsed.model);
       deps.stdout(`Cleared ${cleared} quarantined entr${cleared === 1 ? 'y' : 'ies'} from ${parsed.kb}.\n`);
       return 0;
     }
     if (parsed.path === undefined) throw new Error('--path is required');
 
     if (parsed.action === 'clear') {
-      const removed = await deps.removeIngestQuarantineEntry(kbPath, parsed.path);
+      const removed = await deps.removeIngestQuarantineEntry(kbPath, parsed.path, parsed.model);
       if (!removed) {
         deps.stderr(`kb quarantine: no entry for ${parsed.kb}/${parsed.path}\n`);
         return 1;
@@ -109,7 +131,7 @@ export async function runQuarantine(
       return 0;
     }
     if (parsed.action === 'retry') {
-      const record = await deps.forceRetryIngestQuarantineEntry(kbPath, parsed.path);
+      const record = await deps.forceRetryIngestQuarantineEntry(kbPath, parsed.path, undefined, parsed.model);
       if (record === null) {
         deps.stderr(`kb quarantine: no entry for ${parsed.kb}/${parsed.path}\n`);
         return 1;
@@ -117,7 +139,7 @@ export async function runQuarantine(
       deps.stdout(`Retry scheduled for ${parsed.kb}/${parsed.path}.\n`);
       return 0;
     }
-    const record = await deps.ackIngestQuarantineEntry(kbPath, parsed.path);
+    const record = await deps.ackIngestQuarantineEntry(kbPath, parsed.path, parsed.model);
     if (record === null) {
       deps.stderr(`kb quarantine: no entry for ${parsed.kb}/${parsed.path}\n`);
       return 1;
@@ -160,6 +182,12 @@ export function parseQuarantineArgs(rest: string[]): QuarantineArgs {
       out.reason = value;
       continue;
     }
+    if (raw.startsWith('--model=')) {
+      const value = raw.slice('--model='.length);
+      if (value === '') throw new Error('empty --model value');
+      out.model = value;
+      continue;
+    }
     if (raw === '--all') {
       out.all = true;
       continue;
@@ -179,6 +207,9 @@ export function parseQuarantineArgs(rest: string[]): QuarantineArgs {
   if (out.action !== 'list' && out.reason !== undefined) {
     throw new Error('--reason is only supported with list');
   }
+  if (out.action === 'list' && out.model !== undefined) {
+    throw new Error('--model is only supported with clear, retry, and ack');
+  }
   if (out.all && out.path !== undefined) {
     throw new Error('--all and --path cannot be combined');
   }
@@ -188,19 +219,22 @@ export function parseQuarantineArgs(rest: string[]): QuarantineArgs {
   return out;
 }
 
+/** A listed record; `model_id` is null for KB-wide entries. */
+export type QuarantineRow = Omit<IngestQuarantineRecord, 'model_id'> & { kb: string; model_id: string | null };
+
 async function listRows(
   kb: string | undefined,
   reason: string | undefined,
   deps: RunQuarantineDeps,
-): Promise<Array<IngestQuarantineRecord & { kb: string }>> {
+): Promise<QuarantineRow[]> {
   const kbNames = kb === undefined ? await deps.listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR) : [kb];
-  const rows: Array<IngestQuarantineRecord & { kb: string }> = [];
+  const rows: QuarantineRow[] = [];
   for (const kbName of kbNames) {
     const kbPath = path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName);
     const records = await deps.listIngestQuarantine(kbPath);
     for (const record of records) {
       if (reason !== undefined && (record.reason ?? record.error_code) !== reason) continue;
-      rows.push({ kb: kbName, ...record });
+      rows.push({ kb: kbName, ...record, model_id: record.model_id ?? null });
     }
   }
   rows.sort((a, b) => `${a.kb}/${a.relative_path}`.localeCompare(`${b.kb}/${b.relative_path}`));
@@ -208,16 +242,17 @@ async function listRows(
 }
 
 export function formatQuarantineMarkdown(
-  rows: ReadonlyArray<IngestQuarantineRecord & { kb: string }>,
+  rows: ReadonlyArray<Omit<IngestQuarantineRecord, 'model_id'> & { kb: string; model_id?: string | null }>,
 ): string {
   if (rows.length === 0) return 'No quarantined ingest files.\n';
   const lines = [
-    '| KB | Path | Reason | Category | Code | Retries | Next retry | Ack |',
-    '| --- | --- | --- | --- | --- | ---: | --- | --- |',
+    '| KB | Model | Path | Reason | Category | Code | Retries | Next retry | Ack |',
+    '| --- | --- | --- | --- | --- | --- | ---: | --- | --- |',
   ];
   for (const row of rows) {
     lines.push(
-      `| ${escapeCell(row.kb)} | ${escapeCell(row.relative_path)} | ` +
+      `| ${escapeCell(row.kb)} | ${escapeCell(row.model_id ?? '(all models)')} | ` +
+        `${escapeCell(row.relative_path)} | ` +
         `${escapeCell(row.reason ?? '')} | ` +
         `${escapeCell(row.error_category)} | ${escapeCell(row.error_code)} | ` +
         `${row.retry_count} | ${escapeCell(row.next_retry_at)} | ${row.ack ? 'yes' : 'no'} |`,

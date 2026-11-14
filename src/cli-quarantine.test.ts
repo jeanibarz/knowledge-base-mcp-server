@@ -48,6 +48,7 @@ function makeDeps(recordsByKb: Record<string, IngestQuarantineRecord[]>): {
     }),
     removeIngestQuarantineEntry: jest.fn(async () => true),
     clearIngestQuarantine: jest.fn(async () => 2),
+    removeIngestQuarantineForModel: jest.fn(async () => 3),
     forceRetryIngestQuarantineEntry: jest.fn(async () => record('bad.md')),
     ackIngestQuarantineEntry: jest.fn(async () => ({ ...record('bad.md'), ack: true })),
     stdout: (text) => { stdout.push(text); },
@@ -96,7 +97,7 @@ describe('kb quarantine CLI', () => {
 
   it('formats markdown list output for operator inspection', () => {
     expect(formatQuarantineMarkdown([{ kb: 'alpha', ...record('bad|name.md') }]))
-      .toContain('| alpha | bad\\|name.md |  | input | EINVAL | 1 | 2026-05-12T10:02:00.000Z | no |');
+      .toContain('| alpha | (all models) | bad\\|name.md |  | input | EINVAL | 1 | 2026-05-12T10:02:00.000Z | no |');
     expect(formatQuarantineMarkdown([])).toBe('No quarantined ingest files.\n');
   });
 
@@ -124,9 +125,11 @@ describe('kb quarantine CLI', () => {
     await expect(runQuarantine(['retry', '--kb=alpha', '--path=bad.md'], deps)).resolves.toBe(0);
     await expect(runQuarantine(['ack', '--kb=alpha', '--path=bad.md'], deps)).resolves.toBe(0);
 
-    expect(deps.removeIngestQuarantineEntry).toHaveBeenCalledWith(expect.stringMatching(/alpha$/), 'bad.md');
-    expect(deps.forceRetryIngestQuarantineEntry).toHaveBeenCalledWith(expect.stringMatching(/alpha$/), 'bad.md');
-    expect(deps.ackIngestQuarantineEntry).toHaveBeenCalledWith(expect.stringMatching(/alpha$/), 'bad.md');
+    expect(deps.removeIngestQuarantineEntry).toHaveBeenCalledWith(expect.stringMatching(/alpha$/), 'bad.md', undefined);
+    expect(deps.forceRetryIngestQuarantineEntry).toHaveBeenCalledWith(
+      expect.stringMatching(/alpha$/), 'bad.md', undefined, undefined,
+    );
+    expect(deps.ackIngestQuarantineEntry).toHaveBeenCalledWith(expect.stringMatching(/alpha$/), 'bad.md', undefined);
     expect(stdout.join('')).toContain('Cleared alpha/bad.md.');
     expect(stdout.join('')).toContain('Retry scheduled for alpha/bad.md.');
     expect(stdout.join('')).toContain('Acked alpha/bad.md');
@@ -140,5 +143,44 @@ describe('kb quarantine CLI', () => {
     await expect(runQuarantine(['wat'], deps)).resolves.toBe(2);
     expect(stderr.join('')).toContain('--path is required');
     expect(stderr.join('')).toContain('unknown action: wat');
+  });
+
+  it('parses --model and rejects it for list', () => {
+    expect(parseQuarantineArgs(['retry', '--kb=a', '--path=x.md', '--model=m1'])).toMatchObject({ model: 'm1' });
+    expect(() => parseQuarantineArgs(['list', '--model=m1'])).toThrow(/--model is only supported/);
+    expect(() => parseQuarantineArgs(['clear', '--model='])).toThrow(/empty --model/);
+  });
+
+  it('threads --model to retry/ack/clear and uses the per-model clear for --all', async () => {
+    const { deps } = makeDeps({});
+    await runQuarantine(['clear', '--kb=a', '--path=x.md', '--model=m1'], deps);
+    expect(deps.removeIngestQuarantineEntry).toHaveBeenCalledWith(expect.any(String), 'x.md', 'm1');
+    await runQuarantine(['retry', '--kb=a', '--path=x.md', '--model=m1'], deps);
+    expect(deps.forceRetryIngestQuarantineEntry).toHaveBeenCalledWith(expect.any(String), 'x.md', undefined, 'm1');
+    await runQuarantine(['ack', '--kb=a', '--path=x.md', '--model=m1'], deps);
+    expect(deps.ackIngestQuarantineEntry).toHaveBeenCalledWith(expect.any(String), 'x.md', 'm1');
+    await runQuarantine(['clear', '--kb=a', '--all', '--model=m1'], deps);
+    expect(deps.removeIngestQuarantineForModel).toHaveBeenCalledWith(expect.any(String), 'm1');
+    expect(deps.clearIngestQuarantine).not.toHaveBeenCalled();
+    await runQuarantine(['clear', '--kb=a', '--all'], deps);
+    expect(deps.clearIngestQuarantine).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the model per row in list output (json null for KB-wide, text "(all models)")', async () => {
+    const { deps, stdout } = makeDeps({
+      a: [record('wide.md'), { ...record('scoped.md'), model_id: 'ollama__x', error_category: 'provider' }],
+    });
+    await runQuarantine(['list', '--format=json'], deps);
+    const json = JSON.parse(stdout.join('')) as { entries: Array<{ relative_path: string; model_id: string | null }> };
+    expect(json.entries.map((e) => [e.relative_path, e.model_id])).toEqual([
+      ['scoped.md', 'ollama__x'],
+      ['wide.md', null],
+    ]);
+    stdout.length = 0;
+    await runQuarantine(['list'], deps);
+    const text = stdout.join('');
+    expect(text).toContain('| Model |');
+    expect(text).toContain('(all models)');
+    expect(text).toContain('ollama__x');
   });
 });

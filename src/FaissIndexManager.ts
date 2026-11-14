@@ -1551,6 +1551,7 @@ export class FaissIndexManager {
           relativePath,
           sourceHash,
           error,
+          modelId: this.modelId,
         });
         await quarantineSnapshot.set(kbPath, record);
       } catch (quarantineError: unknown) {
@@ -1565,7 +1566,10 @@ export class FaissIndexManager {
       relativePath: string,
     ): Promise<void> => {
       try {
-        await recordIngestSuccess(kbPath, relativePath, { snapshot: quarantineSnapshot });
+        await recordIngestSuccess(kbPath, relativePath, {
+          snapshot: quarantineSnapshot,
+          modelId: this.modelId,
+        });
       } catch (quarantineError: unknown) {
         logger.warn(
           `Could not clear ingest quarantine for ${path.join(kbPath, relativePath)}: ` +
@@ -2003,7 +2007,7 @@ export class FaissIndexManager {
         const retryDecision = await shouldRetryIngest(
           scan.knowledgeBasePath,
           scan.relativePath,
-          { sourceHash: scan.fileHash, snapshot: quarantineSnapshot },
+          { sourceHash: scan.fileHash, snapshot: quarantineSnapshot, modelId: this.modelId },
         );
         if (!retryDecision.retry) {
           runSummary.files_skipped += 1;
@@ -2431,7 +2435,7 @@ export class FaissIndexManager {
             const retryDecision = await shouldRetryIngest(
               knowledgeBasePath,
               relativePath,
-              { sourceHash: fileHash, snapshot: quarantineSnapshot },
+              { sourceHash: fileHash, snapshot: quarantineSnapshot, modelId: this.modelId },
             );
             if (!retryDecision.retry) {
               continue;

@@ -11,6 +11,8 @@ import {
   documentMatchesPrefix,
   listKnowledgeBaseDocuments,
 } from './kb-document-listing.js';
+import { KBError } from './errors.js';
+import { recordIngestFailure } from './ingest-quarantine.js';
 
 describe('TS-CLI-857: kb ls argument parsing', () => {
   it('defaults to all KBs, plain paths, and short output', () => {
@@ -165,6 +167,39 @@ describe('TS-CLI-857: shared ingestable document listing', () => {
       'work/docs2/not-in-prefix.md',
       'work/projects/active-old/old.md',
       'work/projects/active/current.md',
+    ]);
+  });
+
+  it('a model-scoped provider failure does not hide the document; a KB-wide record does (#1258)', async () => {
+    const rootDir = await makeRoot();
+    await writeFile(rootDir, 'work/docs/one-model-timed-out.md', '# Fine\n');
+    await writeFile(rootDir, 'work/docs/bad-content.md', '# Bad\n');
+    const kbPath = path.join(rootDir, 'work');
+    await recordIngestFailure({
+      kbPath,
+      relativePath: 'docs/one-model-timed-out.md',
+      error: new KBError('PROVIDER_TIMEOUT', 'embedding provider timed out'),
+      modelId: 'openai__candidate',
+    });
+    await recordIngestFailure({
+      kbPath,
+      relativePath: 'docs/bad-content.md',
+      error: Object.assign(new Error('bad input'), { code: 'EINVAL' }),
+    });
+
+    // A legacy record (written before #1258, so no model_id) for a provider
+    // failure is not a property of the document either.
+    await writeFile(rootDir, 'work/docs/legacy-provider.md', '# Legacy\n');
+    await recordIngestFailure({
+      kbPath,
+      relativePath: 'docs/legacy-provider.md',
+      error: new KBError('PROVIDER_UNAVAILABLE', 'embedding provider unavailable'),
+    });
+
+    const listed = await listKnowledgeBaseDocuments({ rootDir, kbName: 'work' });
+    expect(listed.documents.map((document) => document.relativePath)).toEqual([
+      'docs/legacy-provider.md',
+      'docs/one-model-timed-out.md',
     ]);
   });
 

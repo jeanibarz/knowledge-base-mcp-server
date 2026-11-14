@@ -250,7 +250,8 @@ Success envelope:
     "manifest_path": "/abs/knowledge-bases/alpha/.index/quarantine.jsonl",
     "present": false,
     "source_sha256_matches": null,
-    "record": null
+    "record": null,
+    "model_records": []
   },
   "contextual_preface": {
     "enabled": false,

@@ -25,6 +25,7 @@ import { KB_ACTIVE_MODEL } from './config/provider.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
+import { removeIngestQuarantineForModel } from './ingest-quarantine.js';
 import { withWriteLock } from './write-lock.js';
 import { estimateCostUsd } from './cost-estimates.js';
 import { pathExists } from './file-utils.js';
@@ -293,6 +294,9 @@ async function runModelsAdd(rest: string[]): Promise<number> {
         return 2;
       }
       await fsp.rm(modelDir(modelId), { recursive: true, force: true });
+      // Issue #1258 — the failed add's provider-failure records would make the
+      // retry skip those files; recovery starts the model from a clean slate.
+      await clearModelQuarantine(modelId, 'kb models add');
       process.stderr.write(`Recovered stale incomplete model "${modelId}" (${incomplete.detail}); retrying add.\n`);
     } else {
       process.stderr.write(formatIncompleteAddBlock(modelId, incomplete.status, incomplete.detail));
@@ -504,8 +508,32 @@ async function runModelsRemove(rest: string[]): Promise<number> {
     }
   }
   await fsp.rm(dir, { recursive: true, force: true });
+  await clearModelQuarantine(id, 'kb models remove');
   process.stderr.write(`Removed ${id}.\n`);
   return 0;
+}
+
+/** Drop the removed model's provider-failure quarantine records (#1258) from every KB. */
+async function clearModelQuarantine(modelId: string, command: string): Promise<void> {
+  let kbNames: string[];
+  try {
+    kbNames = await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR);
+  } catch (err) {
+    process.stderr.write(
+      `${command}: could not clear quarantine records for ${modelId}: ${(err as Error).message}\n`,
+    );
+    return;
+  }
+  // One KB's failure must not stop the cleanup of the others.
+  for (const kbName of kbNames) {
+    try {
+      await removeIngestQuarantineForModel(path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName), modelId);
+    } catch (err) {
+      process.stderr.write(
+        `${command}: could not clear quarantine records for ${modelId} in KB ${kbName}: ${(err as Error).message}\n`,
+      );
+    }
+  }
 }
 
 type ModelsGcFormat = 'text' | 'json';

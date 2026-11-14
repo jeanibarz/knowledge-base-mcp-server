@@ -19,6 +19,12 @@ export type IngestQuarantineCategory = SearchFailureCategory | 'secret_detected'
 
 export interface IngestQuarantineRecord {
   schema_version: typeof INGEST_QUARANTINE_SCHEMA_VERSION;
+  /**
+   * Set only on model-scoped records: a `provider` failure recorded while
+   * indexing with this model (`models/<model_id>/`). Absent means KB-wide,
+   * which is every pre-#1258 record and every content-level failure.
+   */
+  model_id?: string;
   reason?: string;
   relative_path: string;
   source_sha256: string | null;
@@ -42,6 +48,8 @@ export interface RecordIngestFailureOptions {
   now?: Date;
   maxRetries?: number;
   maxEntries?: number;
+  /** Embedding model being indexed. A `provider` failure is scoped to it; other failures stay KB-wide. */
+  modelId?: string;
 }
 
 export interface IngestRetryDecision {
@@ -73,7 +81,7 @@ export class IngestQuarantineSnapshot {
     let loaded = this.byKb.get(kbPath);
     if (loaded === undefined) {
       loaded = readManifest(kbPath).then(
-        (records) => new Map(records.map((record) => [record.relative_path, record])),
+        (records) => new Map(records.map((record) => [recordKey(record.model_id, record.relative_path), record])),
       );
       // Do not cache a failed read: let the next caller retry it.
       loaded.catch(() => this.byKb.delete(kbPath));
@@ -82,16 +90,27 @@ export class IngestQuarantineSnapshot {
     return loaded;
   }
 
-  async get(kbPath: string, relativePath: string): Promise<IngestQuarantineRecord | null> {
-    return (await this.load(kbPath)).get(normalizeRelativePath(relativePath)) ?? null;
+  /** Without `modelId`, returns the KB-wide record for the path. */
+  async get(kbPath: string, relativePath: string, modelId?: string): Promise<IngestQuarantineRecord | null> {
+    return (await this.load(kbPath)).get(recordKey(modelId, normalizeRelativePath(relativePath))) ?? null;
   }
 
   async set(kbPath: string, record: IngestQuarantineRecord): Promise<void> {
-    (await this.load(kbPath)).set(record.relative_path, record);
+    (await this.load(kbPath)).set(recordKey(record.model_id, record.relative_path), record);
   }
 
-  async delete(kbPath: string, relativePath: string): Promise<void> {
-    (await this.load(kbPath)).delete(normalizeRelativePath(relativePath));
+  /** Without `modelId`, deletes the KB-wide record for the path. */
+  async delete(kbPath: string, relativePath: string, modelId?: string): Promise<void> {
+    (await this.load(kbPath)).delete(recordKey(modelId, normalizeRelativePath(relativePath)));
+  }
+
+  /** Deletes every record (KB-wide and all models) for the path. */
+  async deleteAllForPath(kbPath: string, relativePath: string): Promise<void> {
+    const normalized = normalizeRelativePath(relativePath);
+    const map = await this.load(kbPath);
+    for (const [key, record] of map) {
+      if (record.relative_path === normalized) map.delete(key);
+    }
   }
 }
 
@@ -125,14 +144,20 @@ export async function recordIngestFailure(options: RecordIngestFailureOptions): 
   const relativePath = normalizeRelativePath(options.relativePath);
   const classified = classifyIngestError(options.error);
   const fingerprint = errorFingerprint(classified.category, classified.code, classified.message);
+  // Only provider failures are a property of one model's endpoint; everything
+  // else (secret, parse, indexing, ...) is a property of the file.
+  const scopedModelId = classified.category === 'provider' ? options.modelId : undefined;
 
   return mutateManifest(options.kbPath, (records) => {
-    const existingIndex = records.findIndex((record) => record.relative_path === relativePath);
+    const existingIndex = records.findIndex(
+      (record) => record.relative_path === relativePath && record.model_id === scopedModelId,
+    );
     const existing = existingIndex === -1 ? null : records[existingIndex];
     const nextRetryCount = existing === null ? 1 : existing.retry_count + 1;
     const deadLettered = nextRetryCount >= maxRetries;
     const nextRecord: IngestQuarantineRecord = {
       schema_version: INGEST_QUARANTINE_SCHEMA_VERSION,
+      ...(scopedModelId !== undefined ? { model_id: scopedModelId } : {}),
       ...(classified.reason !== undefined ? { reason: classified.reason } : {}),
       relative_path: relativePath,
       source_sha256: options.sourceHash ?? existing?.source_sha256 ?? null,
@@ -153,7 +178,7 @@ export async function recordIngestFailure(options: RecordIngestFailureOptions): 
 
     records.sort((a, b) => a.last_attempted_at.localeCompare(b.last_attempted_at));
     while (records.length > maxEntries) records.shift();
-    records.sort((a, b) => a.relative_path.localeCompare(b.relative_path));
+    sortRecords(records);
     return nextRecord;
   });
 }
@@ -161,24 +186,48 @@ export async function recordIngestFailure(options: RecordIngestFailureOptions): 
 export async function recordIngestSuccess(
   kbPath: string,
   relativePath: string,
-  options: { snapshot?: IngestQuarantineSnapshot } = {},
+  options: { snapshot?: IngestQuarantineSnapshot; modelId?: string } = {},
 ): Promise<boolean> {
-  const { snapshot } = options;
-  // With a snapshot, a path that has no record needs no lock and no I/O.
-  if (snapshot !== undefined && (await snapshot.get(kbPath, relativePath)) === null) return false;
-  const removed = await removeIngestQuarantineEntry(kbPath, relativePath);
-  await snapshot?.delete(kbPath, relativePath);
+  const { snapshot, modelId } = options;
+  const normalized = normalizeRelativePath(relativePath);
+  // With a snapshot, a path that has no applicable record needs no lock and no I/O.
+  if (
+    snapshot !== undefined &&
+    (await snapshot.get(kbPath, normalized)) === null &&
+    (modelId === undefined || (await snapshot.get(kbPath, normalized, modelId)) === null)
+  ) {
+    return false;
+  }
+  // Success under a model clears that model's record and the KB-wide one;
+  // other models' provider records describe other endpoints and stay.
+  const removed = await mutateManifest(kbPath, (records) =>
+    removeWhere(
+      records,
+      (record) =>
+        record.relative_path === normalized &&
+        (record.model_id === undefined || record.model_id === modelId),
+    ) > 0,
+  );
+  await snapshot?.delete(kbPath, normalized);
+  if (modelId !== undefined) await snapshot?.delete(kbPath, normalized, modelId);
   return removed;
 }
 
-export async function removeIngestQuarantineEntry(kbPath: string, relativePath: string): Promise<boolean> {
+/** Without `modelId`, removes every record (KB-wide and all models) for the path. */
+export async function removeIngestQuarantineEntry(
+  kbPath: string,
+  relativePath: string,
+  modelId?: string,
+): Promise<boolean> {
   const normalized = normalizeRelativePath(relativePath);
-  return mutateManifest(kbPath, (records) => {
-    const originalLength = records.length;
-    const kept = records.filter((record) => record.relative_path !== normalized);
-    records.splice(0, records.length, ...kept);
-    return kept.length !== originalLength;
-  });
+  return mutateManifest(kbPath, (records) =>
+    removeWhere(records, (record) => matchesEntry(record, normalized, modelId)) > 0,
+  );
+}
+
+/** Removes every record scoped to `modelId` (used when the model is removed). */
+export async function removeIngestQuarantineForModel(kbPath: string, modelId: string): Promise<number> {
+  return mutateManifest(kbPath, (records) => removeWhere(records, (record) => record.model_id === modelId));
 }
 
 export async function clearIngestQuarantine(kbPath: string): Promise<number> {
@@ -189,32 +238,38 @@ export async function clearIngestQuarantine(kbPath: string): Promise<number> {
   });
 }
 
+/** Without `modelId`, acts on every record for the path and returns the first one. */
 export async function forceRetryIngestQuarantineEntry(
   kbPath: string,
   relativePath: string,
   now: Date = new Date(),
+  modelId?: string,
 ): Promise<IngestQuarantineRecord | null> {
   const normalized = normalizeRelativePath(relativePath);
   return mutateManifest(kbPath, (records) => {
-    const record = records.find((entry) => entry.relative_path === normalized) ?? null;
-    if (record === null) return null;
-    record.next_retry_at = now.toISOString();
-    record.dead_lettered_at = null;
-    return { ...record };
+    const matched = records.filter((entry) => matchesEntry(entry, normalized, modelId));
+    for (const record of matched) {
+      record.next_retry_at = now.toISOString();
+      record.dead_lettered_at = null;
+    }
+    return matched[0] === undefined ? null : { ...matched[0] };
   });
 }
 
+/** Without `modelId`, acts on every record for the path and returns the first one. */
 export async function ackIngestQuarantineEntry(
   kbPath: string,
   relativePath: string,
+  modelId?: string,
 ): Promise<IngestQuarantineRecord | null> {
   const normalized = normalizeRelativePath(relativePath);
   return mutateManifest(kbPath, (records) => {
-    const record = records.find((entry) => entry.relative_path === normalized) ?? null;
-    if (record === null) return null;
-    record.ack = true;
-    record.next_retry_at = new Date(0).toISOString();
-    return { ...record };
+    const matched = records.filter((entry) => matchesEntry(entry, normalized, modelId));
+    for (const record of matched) {
+      record.ack = true;
+      record.next_retry_at = new Date(0).toISOString();
+    }
+    return matched[0] === undefined ? null : { ...matched[0] };
   });
 }
 
@@ -227,36 +282,58 @@ export async function shouldRetryIngest(
     maxRetries?: number;
     /** Answer from a per-refresh manifest snapshot instead of locking and re-reading per call. */
     snapshot?: IngestQuarantineSnapshot;
+    /** Model about to index the file. Adds that model's record; other models' records never apply. */
+    modelId?: string;
   } = {},
 ): Promise<IngestRetryDecision> {
   const normalized = normalizeRelativePath(relativePath);
-  const record = options.snapshot
-    ? await options.snapshot.get(kbPath, normalized)
-    : await findRecord(kbPath, normalized);
-  if (record === null) {
+  const { modelId, snapshot } = options;
+  const applicable: IngestQuarantineRecord[] = [];
+  if (snapshot) {
+    const kbWide = await snapshot.get(kbPath, normalized);
+    const scoped = modelId === undefined ? null : await snapshot.get(kbPath, normalized, modelId);
+    for (const record of [kbWide, scoped]) if (record !== null) applicable.push(record);
+  } else {
+    for (const record of await readManifest(kbPath)) {
+      if (record.relative_path === normalized) applicable.push(record);
+    }
+  }
+  const relevant = applicable.filter((record) =>
+    record.model_id === undefined
+      // Legacy (#1258) KB-wide provider records are stale for a model-aware caller.
+      ? !(modelId !== undefined && record.error_category === 'provider')
+      : record.model_id === modelId,
+  );
+  if (relevant.length === 0) {
     return { retry: true, reason: 'no_record', record: null };
   }
-  if (
-    options.sourceHash !== undefined &&
-    record.source_sha256 !== null &&
-    record.source_sha256 !== options.sourceHash
-  ) {
-    await removeIngestQuarantineEntry(kbPath, normalized);
-    await options.snapshot?.delete(kbPath, normalized);
-    return { retry: true, reason: 'content_changed', record };
-  }
-  if (record.ack) {
-    return { retry: true, reason: 'forced_ack', record };
-  }
   const maxRetries = options.maxRetries ?? DEFAULT_INGEST_QUARANTINE_MAX_RETRIES;
-  if (record.retry_count >= maxRetries) {
-    return { retry: false, reason: 'dead_lettered', record };
-  }
   const nowMs = (options.now ?? new Date()).getTime();
-  if (Date.parse(record.next_retry_at) > nowMs) {
-    return { retry: false, reason: 'backoff_active', record };
+  let allowed: IngestRetryDecision | null = null;
+  for (const record of relevant) {
+    if (
+      options.sourceHash !== undefined &&
+      record.source_sha256 !== null &&
+      record.source_sha256 !== options.sourceHash
+    ) {
+      // The content changed for everyone: drop every model's record too.
+      await removeIngestQuarantineEntry(kbPath, normalized);
+      await snapshot?.deleteAllForPath(kbPath, normalized);
+      return { retry: true, reason: 'content_changed', record };
+    }
+    if (record.ack) {
+      allowed ??= { retry: true, reason: 'forced_ack', record };
+      continue;
+    }
+    if (record.retry_count >= maxRetries) {
+      return { retry: false, reason: 'dead_lettered', record };
+    }
+    if (Date.parse(record.next_retry_at) > nowMs) {
+      return { retry: false, reason: 'backoff_active', record };
+    }
+    allowed ??= { retry: true, reason: 'backoff_elapsed', record };
   }
-  return { retry: true, reason: 'backoff_elapsed', record };
+  return allowed ?? { retry: true, reason: 'no_record', record: null };
 }
 
 function retryDelayMs(retryCount: number): number {
@@ -321,7 +398,33 @@ function categoryForErrorCode(
 async function findRecord(kbPath: string, relativePath: string): Promise<IngestQuarantineRecord | null> {
   const normalized = normalizeRelativePath(relativePath);
   const records = await readManifest(kbPath);
-  return records.find((record) => record.relative_path === normalized) ?? null;
+  return records.find((record) => record.relative_path === normalized && record.model_id === undefined) ?? null;
+}
+
+function recordKey(modelId: string | undefined, relativePath: string): string {
+  return `${modelId ?? ''}\0${relativePath}`;
+}
+
+function sortRecords(records: IngestQuarantineRecord[]): void {
+  records.sort(
+    (a, b) =>
+      a.relative_path.localeCompare(b.relative_path) || (a.model_id ?? '').localeCompare(b.model_id ?? ''),
+  );
+}
+
+/** With `modelId`, only that model's record for the path; without, every record for the path. */
+function matchesEntry(record: IngestQuarantineRecord, relativePath: string, modelId: string | undefined): boolean {
+  return record.relative_path === relativePath && (modelId === undefined || record.model_id === modelId);
+}
+
+function removeWhere(
+  records: IngestQuarantineRecord[],
+  predicate: (record: IngestQuarantineRecord) => boolean,
+): number {
+  const kept = records.filter((record) => !predicate(record));
+  const removed = records.length - kept.length;
+  records.splice(0, records.length, ...kept);
+  return removed;
 }
 
 async function mutateManifest<T>(
@@ -369,7 +472,7 @@ async function readManifestUnlocked(kbPath: string): Promise<IngestQuarantineRec
     }
     if (isManifestRecord(parsed)) records.push(parsed);
   }
-  records.sort((a, b) => a.relative_path.localeCompare(b.relative_path));
+  sortRecords(records);
   return records;
 }
 
@@ -394,6 +497,7 @@ function isManifestRecord(value: Partial<IngestQuarantineRecord>): value is Inge
   return (
     value.schema_version === INGEST_QUARANTINE_SCHEMA_VERSION &&
     typeof value.relative_path === 'string' &&
+    (value.model_id === undefined || (typeof value.model_id === 'string' && value.model_id.length > 0)) &&
     (typeof value.source_sha256 === 'string' || value.source_sha256 === null) &&
     typeof value.error_category === 'string' &&
     typeof value.error_code === 'string' &&
