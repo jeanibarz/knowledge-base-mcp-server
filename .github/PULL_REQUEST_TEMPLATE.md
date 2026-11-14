@@ -7,7 +7,20 @@ deterministic verifier:
 - check a row only when you performed it: a checked row is an assertion that
   the evidence is in this PR;
 - strike the whole row through and add a one-line reason on the same line when
-  it is not applicable (a struck row with no reason fails);
+  it is not applicable (a struck row with no reason fails). Keep the checkbox
+  OUTSIDE the strikethrough and the marker comment INSIDE it, then put the
+  reason after the closing tildes:
+
+      - [ ] ~~(marker comment) row text~~ — why it does not apply
+
+  A row struck from its leading dash (`- ~~- [ ] …~~`) is not recognised, and
+  the verifier then reports the row as missing from the template;
+- a checked row needs matching files in the diff: `tests` matches a `test/` or
+  `tests/` directory or a `*.test.*` / `*.spec.*` file (a shell harness such as
+  `plugins/swiftbar/test.sh` does not count); `readme` matches only the
+  top-level `README.md`; `docs` matches anything under `docs/`; `changelog`
+  matches only `CHANGELOG.md`; `benchmarks` matches `benchmarks/`. When your
+  evidence lives elsewhere, waive the row with a reason instead;
 - do not leave marked rows blank;
 - build the body from this template and pass it with `--body-file` (inside the
   worktree) or a quoted heredoc: an inline `--body` skips the template and
