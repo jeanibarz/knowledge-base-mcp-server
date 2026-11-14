@@ -1,4 +1,4 @@
-import { describe, it, expect } from '@jest/globals';
+import { describe, it, expect, jest } from '@jest/globals';
 import {
   OllamaFetchEmbeddings,
   OpenAIFetchEmbeddings,
@@ -222,11 +222,11 @@ describe.each(providers)('$name fetch embeddings (shared behaviour)', (p) => {
     expect(calls).toHaveLength(1);
   });
 
-  it('HTTP 400 throws a KBError that is not PROVIDER_UNAVAILABLE and is not retried', async () => {
+  it('HTTP 400 throws a non-retryable KBError (Ollama: PROVIDER_UNAVAILABLE, parity with the pre-fetch client; OpenAI: VALIDATION)', async () => {
     const { fetchImpl, calls } = makeFetch([textResponse('bad request: weird-server-text-42', 400)]);
     const err = await p.make(opts(fetchImpl)).embedDocuments(['a']).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(KBError);
-    expect((err as KBError).code).not.toBe('PROVIDER_UNAVAILABLE');
+    expect((err as KBError).code).toBe(p.name === 'Ollama' ? 'PROVIDER_UNAVAILABLE' : 'VALIDATION');
     expect(calls).toHaveLength(1);
   });
 
@@ -362,5 +362,105 @@ describe('OpenAIFetchEmbeddings wire format', () => {
     await expect(
       new OpenAIFetchEmbeddings({ baseUrl: base, model: 'm', fetchImpl }).embedDocuments(['a', 'b']),
     ).rejects.toBeInstanceOf(KBError);
+  });
+});
+
+// Review follow-ups on #1257: error classification parity with the pre-fetch
+// clients, retry window, vector validation and OpenAI org/project headers.
+describe('status classification and validation', () => {
+  const oll = (fetchImpl: typeof fetch, extra: Partial<FetchEmbeddingsOptions> = {}) =>
+    new OllamaFetchEmbeddings({ baseUrl: 'http://127.0.0.1:11434', model: 'm', fetchImpl, maxRetries: 1, ...extra });
+  const oai = (fetchImpl: typeof fetch, extra: Partial<FetchEmbeddingsOptions> = {}) =>
+    new OpenAIFetchEmbeddings({ baseUrl: 'https://api.example.test/v1', model: 'm', fetchImpl, maxRetries: 1, ...extra });
+  const code = async (p: Promise<unknown>): Promise<unknown> => ((await p.catch((e: unknown) => e)) as KBError).code;
+
+  it('Ollama 404 (model not pulled) is PROVIDER_UNAVAILABLE and not retried', async () => {
+    const { fetchImpl, calls } = makeFetch([jsonResponse({ error: 'model "x" not found' }, 404)]);
+    const err = await oll(fetchImpl).embedDocuments(['a']).catch((e: unknown) => e);
+    expect((err as KBError).code).toBe('PROVIDER_UNAVAILABLE');
+    expect((err as Error).message).toContain('model "x" not found');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('Ollama context-length 400 is VALIDATION after exactly one call', async () => {
+    const { fetchImpl, calls } = makeFetch([jsonResponse({ error: 'the input length exceeds the context length' }, 400)]);
+    expect(await code(oll(fetchImpl).embedDocuments(['a']))).toBe('VALIDATION');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('Ollama 403 is PROVIDER_AUTH', async () => {
+    const { fetchImpl } = makeFetch([textResponse('forbidden', 403)]);
+    expect(await code(oll(fetchImpl).embedDocuments(['a']))).toBe('PROVIDER_AUTH');
+  });
+
+  it.each([
+    ['Ollama', oll, jsonResponse({ embeddings: [[1]] })],
+    ['OpenAI', oai, jsonResponse({ data: [{ index: 0, embedding: [1] }] })],
+  ])('%s retries HTTP 408', async (_n, make, ok) => {
+    const { fetchImpl, calls } = makeFetch([textResponse('timeout', 408), ok]);
+    expect(await make(fetchImpl).embedDocuments(['a'])).toEqual([[1]]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('OpenAI 404 is PROVIDER_UNAVAILABLE and not retried', async () => {
+    const { fetchImpl, calls } = makeFetch([textResponse('no such route', 404)]);
+    expect(await code(oai(fetchImpl).embedDocuments(['a']))).toBe('PROVIDER_UNAVAILABLE');
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([400, 413, 422])('OpenAI %i is VALIDATION and not retried', async (status) => {
+    const { fetchImpl, calls } = makeFetch([textResponse('bad', status)]);
+    expect(await code(oai(fetchImpl).embedDocuments(['a']))).toBe('VALIDATION');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('rejects an empty vector (both protocols)', async () => {
+    const o = makeFetch([jsonResponse({ embeddings: [[]] })]);
+    const a = makeFetch([jsonResponse({ data: [{ index: 0, embedding: [] }] })]);
+    await expect(oll(o.fetchImpl).embedDocuments(['x'])).rejects.toBeInstanceOf(KBError);
+    await expect(oai(a.fetchImpl).embedDocuments(['x'])).rejects.toBeInstanceOf(KBError);
+    expect(o.calls).toHaveLength(1);
+    expect(a.calls).toHaveLength(1);
+  });
+
+  it('rejects vectors of differing length within one response (both protocols)', async () => {
+    const o = makeFetch([jsonResponse({ embeddings: [[1, 2], [3]] })]);
+    const a = makeFetch([jsonResponse({ data: [{ index: 0, embedding: [1, 2] }, { index: 1, embedding: [3] }] })]);
+    await expect(oll(o.fetchImpl).embedDocuments(['x', 'y'])).rejects.toBeInstanceOf(KBError);
+    await expect(oai(a.fetchImpl).embedDocuments(['x', 'y'])).rejects.toBeInstanceOf(KBError);
+  });
+
+  it('sends extraHeaders (OpenAI-Organization / OpenAI-Project) alongside the bearer token', async () => {
+    const { fetchImpl, calls } = makeFetch([jsonResponse({ data: [{ index: 0, embedding: [1] }] })]);
+    await oai(fetchImpl, {
+      apiKey: 'k',
+      extraHeaders: { 'OpenAI-Organization': 'org-1', 'OpenAI-Project': 'proj-1' },
+    }).embedQuery('q');
+    expect(calls[0].headers.get('authorization')).toBe('Bearer k');
+    expect(calls[0].headers.get('openai-organization')).toBe('org-1');
+    expect(calls[0].headers.get('openai-project')).toBe('proj-1');
+  });
+
+  it('defaults to 5 retries with exponential backoff capped at 4 s', async () => {
+    jest.useFakeTimers();
+    try {
+      const { fetchImpl, calls } = makeFetch([textResponse('down', 503)]);
+      const result = new OllamaFetchEmbeddings({ baseUrl: 'http://127.0.0.1:11434', model: 'm', fetchImpl })
+        .embedDocuments(['a'])
+        .catch((e: unknown) => e);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(calls).toHaveLength(1);
+      for (const [delay, total] of [[250, 2], [500, 3], [1000, 4], [2000, 5], [4000, 6]] as const) {
+        await jest.advanceTimersByTimeAsync(delay - 1);
+        expect(calls).toHaveLength(total - 1);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(calls).toHaveLength(total);
+      }
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(calls).toHaveLength(6);
+      expect(((await result) as KBError).code).toBe('PROVIDER_UNAVAILABLE');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

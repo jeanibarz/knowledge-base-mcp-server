@@ -283,6 +283,7 @@ describe('provider construction', () => {
     expect(ollamaEmbeddingConstructorMock).toHaveBeenCalledWith({
       baseUrl: 'http://127.0.0.1:11434',
       model: 'mxbai-embed-large',
+      batchSize: 16,
     });
   });
 
@@ -331,6 +332,8 @@ describe('provider construction', () => {
       apiKey: 'test-openai-key',
       model: 'text-embedding-3-large',
       baseUrl: 'https://api.openai.com/v1',
+      extraHeaders: {},
+      batchSize: 64,
     });
   });
 

@@ -17,7 +17,10 @@ import {
   KB_FAKE_DIM,
   OLLAMA_BASE_URL,
   OPENAI_BASE_URL,
+  OPENAI_ORG_ID,
+  OPENAI_PROJECT_ID,
 } from './config/provider.js';
+import { resolveIndexingBatchSize } from './config/indexing.js';
 import { KBError } from './errors.js';
 import { logger } from './logger.js';
 import { instrumentEmbeddingsClient, type ProviderCallMetrics } from './metrics-recording.js';
@@ -333,7 +336,11 @@ async function constructEmbeddingsClient(
     // Issue #1257 — plain-fetch client (no @langchain/ollama import). Issue
     // #86's deterministic-400 translation (context-length overflow) lives in
     // the client via ollama-error.ts, so it still fails fast with no retries.
-    return new OllamaFetchEmbeddings({ baseUrl: OLLAMA_BASE_URL, model: modelName });
+    return new OllamaFetchEmbeddings({
+      baseUrl: OLLAMA_BASE_URL,
+      model: modelName,
+      batchSize: resolveIndexingBatchSize('ollama'),
+    });
   }
 
   if (provider === 'openai') {
@@ -345,7 +352,16 @@ async function constructEmbeddingsClient(
     // OPENAI_BASE_URL targets OpenAI-compatible endpoints (TEI, vLLM,
     // self-hosted gateways, Volcengine Ark, ...). Unset, it is the official
     // api.openai.com default. Issue #1257 — plain-fetch client.
-    return new OpenAIFetchEmbeddings({ baseUrl: OPENAI_BASE_URL, model: modelName, apiKey: openaiApiKey });
+    const extraHeaders: Record<string, string> = {};
+    if (OPENAI_ORG_ID) extraHeaders['OpenAI-Organization'] = OPENAI_ORG_ID;
+    if (OPENAI_PROJECT_ID) extraHeaders['OpenAI-Project'] = OPENAI_PROJECT_ID;
+    return new OpenAIFetchEmbeddings({
+      baseUrl: OPENAI_BASE_URL,
+      model: modelName,
+      apiKey: openaiApiKey,
+      extraHeaders,
+      batchSize: resolveIndexingBatchSize('openai'),
+    });
   }
 
   logger.info(`Initializing FaissIndexManager with HuggingFace embeddings (model: ${modelName})`);

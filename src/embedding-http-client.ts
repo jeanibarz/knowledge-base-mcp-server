@@ -13,7 +13,7 @@
 // (network drop, HTTP 5xx/429) are retried.
 import { INDEXING_BATCH_SIZE } from './config/indexing.js';
 import { KBError } from './errors.js';
-import { translateOllamaEmbeddingError, isOllamaContextLengthError } from './ollama-error.js';
+import { translateOllamaEmbeddingError } from './ollama-error.js';
 
 export interface FetchEmbeddingsOptions {
   /** Ollama: `http://127.0.0.1:11434`. OpenAI: `https://api.openai.com/v1`. Trailing slashes tolerated. */
@@ -21,16 +21,24 @@ export interface FetchEmbeddingsOptions {
   model: string;
   /** OpenAI-compatible only: sent as `Authorization: Bearer <key>`. */
   apiKey?: string;
+  /** OpenAI-compatible only: extra request headers (e.g. OpenAI-Organization, OpenAI-Project). */
+  extraHeaders?: Record<string, string>;
   /** Max inputs per HTTP request. Default: INDEXING_BATCH_SIZE. */
   batchSize?: number;
-  /** Retries for transient failures only. Default 2 (at most 3 attempts). */
+  /** Retries for transient failures only. Default 5 (at most 6 attempts, about 7.75 s of backoff). */
   maxRetries?: number;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }
 
-const DEFAULT_MAX_RETRIES = 2;
-const BACKOFF_MS = 250;
+const DEFAULT_MAX_RETRIES = 5;
+const BACKOFF_BASE_MS = 250;
+const BACKOFF_CAP_MS = 4000;
+
+/** Exponential backoff before retry `retry` (1-based): 250, 500, 1000, 2000, 4000 ms. */
+function backoffMs(retry: number): number {
+  return Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (retry - 1));
+}
 
 interface WireProtocol {
   readonly label: string;
@@ -47,6 +55,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isVector(value: unknown): value is number[] {
   return Array.isArray(value) && value.every((n) => typeof n === 'number');
+}
+
+/** Rejects empty vectors and vectors of differing length within one response. */
+function assertUniformVectors(label: string, vectors: number[][]): void {
+  const dim = vectors[0]?.length ?? 0;
+  for (const [i, v] of vectors.entries()) {
+    if (v.length === 0) throw malformed(label, `vector ${i} is empty`);
+    if (v.length !== dim) {
+      throw malformed(label, `vector ${i} has ${v.length} dimensions, expected ${dim}`);
+    }
+  }
 }
 
 function malformed(label: string, detail: string): KBError {
@@ -80,16 +99,15 @@ const OLLAMA_PROTOCOL: WireProtocol = {
     if (embeddings.length !== expected) {
       throw malformed('Ollama', `expected ${expected} vectors, got ${embeddings.length}`);
     }
+    assertUniformVectors('Ollama', embeddings);
     return embeddings;
   },
   clientError(status, serverText, model) {
+    // Every terminal Ollama 4xx keeps the pre-#1257 translation: context-length
+    // overflow becomes VALIDATION, anything else (e.g. 404 model not pulled)
+    // becomes PROVIDER_UNAVAILABLE so it stays a provider-category failure.
     const message = extractServerMessage(serverText);
-    const shaped = { status_code: status, status, message, name: 'ResponseError' };
-    if (isOllamaContextLengthError(shaped)) return translateOllamaEmbeddingError(shaped, model);
-    return new KBError(
-      'VALIDATION',
-      `Ollama embedding request for model \`${model}\` failed with HTTP ${status}: ${message}`,
-    );
+    return translateOllamaEmbeddingError({ status_code: status, status, message, name: 'ResponseError' }, model);
   },
 };
 
@@ -117,14 +135,18 @@ const OPENAI_PROTOCOL: WireProtocol = {
       }
       ordered[index] = item.embedding;
     }
-    return ordered.map((vector, i) => {
+    const vectors = ordered.map((vector, i) => {
       if (vector === undefined) throw malformed('OpenAI-compatible', `missing index ${i}`);
       return vector;
     });
+    assertUniformVectors('OpenAI-compatible', vectors);
+    return vectors;
   },
   clientError(status, serverText, model) {
+    // 404 usually means a wrong model name or a base URL missing `/v1`: an
+    // endpoint/provider problem, not a bad input.
     return new KBError(
-      'VALIDATION',
+      status === 404 ? 'PROVIDER_UNAVAILABLE' : 'VALIDATION',
       `OpenAI-compatible embedding request for model \`${model}\` failed with HTTP ${status}: ${extractServerMessage(serverText)}`,
     );
   },
@@ -192,7 +214,7 @@ class FetchEmbeddings {
         if (!transient || attempt >= this.maxRetries) {
           throw transient ? err.kbError : err;
         }
-        await sleep(BACKOFF_MS * (attempt + 1), signal);
+        await sleep(backoffMs(attempt + 1), signal);
       }
     }
   }
@@ -202,6 +224,7 @@ class FetchEmbeddings {
     const fetchImpl = this.options.fetchImpl ?? globalThis.fetch;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    Object.assign(headers, this.options.extraHeaders);
 
     let response: Response;
     try {
@@ -231,7 +254,7 @@ class FetchEmbeddings {
           `${this.protocol.label} embedding request for model \`${model}\` was rejected with HTTP ${status}: ${extractServerMessage(text)}`,
         );
       }
-      if (status >= 500 || status === 429) {
+      if (status >= 500 || status === 429 || status === 408) {
         throw new TransientError(new KBError(
           'PROVIDER_UNAVAILABLE',
           `${this.protocol.label} embedding request for model \`${model}\` failed with HTTP ${status}: ${extractServerMessage(text)}`,

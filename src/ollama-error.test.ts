@@ -3,7 +3,6 @@ import {
   isNonRetryableOllamaError,
   isTransientOllamaSocketError,
   translateOllamaEmbeddingError,
-  makeOllamaOnFailedAttempt,
 } from './ollama-error.js';
 import { KBError } from './errors.js';
 
@@ -228,52 +227,5 @@ describe('translateOllamaEmbeddingError', () => {
     const translated = translateOllamaEmbeddingError(err, 'fake-model');
     expect(translated.message).not.toContain('non-retryable');
     expect(translated.message).toContain('internal server error');
-  });
-});
-
-describe('makeOllamaOnFailedAttempt', () => {
-  it('throws a translated KBError on context-length errors (aborts retry)', () => {
-    const handler = makeOllamaOnFailedAttempt('all-minilm:latest');
-    const err = new FakeOllamaResponseError(
-      'the input length exceeds the context length',
-      400,
-    );
-    expect(() => handler(err)).toThrow(KBError);
-    try {
-      handler(err);
-      fail('expected throw');
-    } catch (caught) {
-      expect(caught).toBeInstanceOf(KBError);
-      expect((caught as KBError).code).toBe('VALIDATION');
-      expect((caught as KBError).message).toContain('all-minilm:latest');
-    }
-  });
-
-  it('throws on any non-retryable 4xx', () => {
-    const handler = makeOllamaOnFailedAttempt('foo');
-    const err = new FakeOllamaResponseError('forbidden', 403);
-    expect(() => handler(err)).toThrow(KBError);
-  });
-
-  it('does NOT throw on retryable 5xx (lets AsyncCaller keep retrying)', () => {
-    const handler = makeOllamaOnFailedAttempt('foo');
-    const err = new FakeOllamaResponseError('upstream timeout', 504);
-    expect(() => handler(err)).not.toThrow();
-  });
-
-  it('does NOT throw on plain Error (network jitter etc.)', () => {
-    const handler = makeOllamaOnFailedAttempt('foo');
-    expect(() => handler(new Error('ECONNRESET'))).not.toThrow();
-  });
-
-  // Issue #801 — a transient runner-socket EOF must stay retryable so the
-  // AsyncCaller keeps retrying instead of aborting the whole rebuild.
-  it('does NOT throw on a transient EOF (keeps retrying)', () => {
-    const handler = makeOllamaOnFailedAttempt('nomic-embed-text:latest');
-    const err = new FakeOllamaResponseError(
-      'do embedding request: Post "http://127.0.0.1:40757/v1/embeddings": EOF',
-      500,
-    );
-    expect(() => handler(err)).not.toThrow();
   });
 });
