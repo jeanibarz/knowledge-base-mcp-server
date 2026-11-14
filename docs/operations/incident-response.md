@@ -398,6 +398,15 @@ Quarantine records live at `<kb>/.index/quarantine.jsonl` and use schema
 `ingest-quarantine.v1`. They usually mean a specific file could not be loaded
 or parsed safely during ingest.
 
+Embedding-provider failures (`error_category: provider`, such as
+`PROVIDER_TIMEOUT`) are scoped to the embedding model that hit them: the record
+carries a `model_id` and only that model skips the file. Every other category
+(secret detected, parse, input, ...) is KB-wide and has no `model_id`.
+`kb quarantine list` shows the model per row (`(all models)` for KB-wide
+records). `kb models remove <id>` drops that model's records; `retry`, `ack`
+and `clear` accept `--model=<id>` to narrow to one model, and otherwise act on
+every record for the path.
+
 **Mitigate**
 
 1. List the affected files:

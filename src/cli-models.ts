@@ -25,6 +25,7 @@ import { KB_ACTIVE_MODEL } from './config/provider.js';
 import { deriveModelId, type EmbeddingProvider } from './model-id.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { enumerateIngestableKbFiles, listKnowledgeBases } from './kb-fs.js';
+import { removeIngestQuarantineForModel } from './ingest-quarantine.js';
 import { withWriteLock } from './write-lock.js';
 import { estimateCostUsd } from './cost-estimates.js';
 import { pathExists } from './file-utils.js';
@@ -504,8 +505,22 @@ async function runModelsRemove(rest: string[]): Promise<number> {
     }
   }
   await fsp.rm(dir, { recursive: true, force: true });
+  await clearModelQuarantine(id);
   process.stderr.write(`Removed ${id}.\n`);
   return 0;
+}
+
+/** Drop the removed model's provider-failure quarantine records (#1258) from every KB. */
+async function clearModelQuarantine(modelId: string): Promise<void> {
+  try {
+    for (const kbName of await listKnowledgeBases(KNOWLEDGE_BASES_ROOT_DIR)) {
+      await removeIngestQuarantineForModel(path.join(KNOWLEDGE_BASES_ROOT_DIR, kbName), modelId);
+    }
+  } catch (err) {
+    process.stderr.write(
+      `kb models remove: could not clear quarantine records for ${modelId}: ${(err as Error).message}\n`,
+    );
+  }
 }
 
 type ModelsGcFormat = 'text' | 'json';

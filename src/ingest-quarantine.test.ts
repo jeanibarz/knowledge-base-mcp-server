@@ -374,4 +374,137 @@ describe('ingest quarantine manifest', () => {
       });
     });
   });
+
+  describe('model-scoped provider failures (#1258)', () => {
+    const now = new Date('2026-05-12T10:00:00.000Z');
+    const soon = new Date(now.getTime() + 1000);
+
+    async function withQ(
+      fn: (ctx: { q: typeof import('./ingest-quarantine.js'); kbPath: string; providerError: Error }) => Promise<void>,
+    ): Promise<void> {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kb-quarantine-model-'));
+      try {
+        const kbPath = path.join(tempDir, 'kb');
+        await fsp.mkdir(kbPath, { recursive: true });
+        const q = await freshQuarantine(tempDir);
+        // Import after the module reset so the error class matches the one q's classifier checks.
+        const { KBError } = await import('./errors.js');
+        await fn({ q, kbPath, providerError: new KBError('PROVIDER_TIMEOUT', 'timed out') });
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    }
+
+    it('scopes only provider failures that carry a modelId; everything else stays KB-wide', async () => {
+      await withQ(async ({ q, kbPath, providerError }) => {
+        const scoped = await q.recordIngestFailure({
+          kbPath, relativePath: 'a.md', error: providerError, modelId: 'm1', now,
+        });
+        expect(scoped).toMatchObject({ error_category: 'provider', model_id: 'm1' });
+        const wide = await q.recordIngestFailure({
+          kbPath, relativePath: 'b.md', error: Object.assign(new Error('bad'), { code: 'EINVAL' }), modelId: 'm1', now,
+        });
+        expect(wide.model_id).toBeUndefined();
+        const noModel = await q.recordIngestFailure({
+          kbPath, relativePath: 'c.md', error: providerError, now,
+        });
+        expect(noModel.model_id).toBeUndefined();
+        const raw = await fsp.readFile(q.quarantineManifestPath(kbPath), 'utf-8');
+        expect(raw).toContain('"model_id":"m1"');
+        expect((await q.listIngestQuarantine(kbPath)).find((r) => r.relative_path === 'a.md')?.model_id).toBe('m1');
+        expect(await q.countIngestQuarantine(kbPath)).toBe(3);
+      });
+    });
+
+    it('keys by (model, path): repeat failures update only that model, other models never block', async () => {
+      await withQ(async ({ q, kbPath, providerError }) => {
+        await q.recordIngestFailure({ kbPath, relativePath: 'a.md', error: providerError, modelId: 'B', sourceHash: 'h', now });
+        const again = await q.recordIngestFailure({
+          kbPath, relativePath: 'a.md', error: providerError, modelId: 'B', sourceHash: 'h', now,
+        });
+        expect(again.retry_count).toBe(2);
+        await q.recordIngestFailure({ kbPath, relativePath: 'a.md', error: providerError, modelId: 'C', sourceHash: 'h', now });
+        const all = await q.listIngestQuarantine(kbPath);
+        expect(all.map((r) => [r.model_id, r.retry_count])).toEqual([['B', 2], ['C', 1]]);
+
+        await expect(q.shouldRetryIngest(kbPath, 'a.md', { sourceHash: 'h', now: soon, modelId: 'A' }))
+          .resolves.toMatchObject({ retry: true, reason: 'no_record' });
+        await expect(q.shouldRetryIngest(kbPath, 'a.md', { sourceHash: 'h', now: soon, modelId: 'B' }))
+          .resolves.toMatchObject({ retry: false, reason: 'backoff_active' });
+        // Same answers through a snapshot.
+        const snapshot = new q.IngestQuarantineSnapshot();
+        await expect(q.shouldRetryIngest(kbPath, 'a.md', { sourceHash: 'h', now: soon, modelId: 'A', snapshot }))
+          .resolves.toMatchObject({ retry: true, reason: 'no_record' });
+        await expect(q.shouldRetryIngest(kbPath, 'a.md', { sourceHash: 'h', now: soon, modelId: 'C', snapshot }))
+          .resolves.toMatchObject({ retry: false, reason: 'backoff_active' });
+      });
+    });
+
+    it('a KB-wide record still blocks every model, but legacy KB-wide provider records are ignored given a modelId', async () => {
+      await withQ(async ({ q, kbPath, providerError }) => {
+        await q.recordIngestFailure({
+          kbPath, relativePath: 'bad.md', error: Object.assign(new Error('bad'), { code: 'EINVAL' }), sourceHash: 'h', now,
+        });
+        await q.recordIngestFailure({ kbPath, relativePath: 'legacy.md', error: providerError, sourceHash: 'h', now });
+        await expect(q.shouldRetryIngest(kbPath, 'bad.md', { sourceHash: 'h', now: soon, modelId: 'A' }))
+          .resolves.toMatchObject({ retry: false, reason: 'backoff_active' });
+        await expect(q.shouldRetryIngest(kbPath, 'legacy.md', { sourceHash: 'h', now: soon, modelId: 'A' }))
+          .resolves.toMatchObject({ retry: true, reason: 'no_record' });
+        // Without a modelId behaviour is unchanged.
+        await expect(q.shouldRetryIngest(kbPath, 'legacy.md', { sourceHash: 'h', now: soon }))
+          .resolves.toMatchObject({ retry: false, reason: 'backoff_active' });
+      });
+    });
+
+    it('a content change removes every record for the path; success removes own + KB-wide only', async () => {
+      await withQ(async ({ q, kbPath, providerError }) => {
+        const wideErr = Object.assign(new Error('bad'), { code: 'EINVAL' });
+        for (const modelId of ['A', 'B']) {
+          await q.recordIngestFailure({ kbPath, relativePath: 'p.md', error: providerError, modelId, sourceHash: 'h', now });
+        }
+        await q.recordIngestFailure({ kbPath, relativePath: 'p.md', error: wideErr, sourceHash: 'h', now });
+        const snapshot = new q.IngestQuarantineSnapshot();
+        await expect(q.recordIngestSuccess(kbPath, 'p.md', { modelId: 'A', snapshot })).resolves.toBe(true);
+        expect((await q.listIngestQuarantine(kbPath)).map((r) => r.model_id)).toEqual(['B']);
+        await expect(q.shouldRetryIngest(kbPath, 'p.md', { sourceHash: 'new', modelId: 'B', snapshot, now: soon }))
+          .resolves.toMatchObject({ retry: true, reason: 'content_changed' });
+        await expect(q.listIngestQuarantine(kbPath)).resolves.toEqual([]);
+
+        await q.recordIngestFailure({ kbPath, relativePath: 'p.md', error: providerError, modelId: 'A', sourceHash: 'h', now });
+        await q.recordIngestFailure({ kbPath, relativePath: 'p.md', error: providerError, modelId: 'B', sourceHash: 'h', now });
+        await expect(q.shouldRetryIngest(kbPath, 'p.md', { sourceHash: 'new', modelId: 'A', now: soon }))
+          .resolves.toMatchObject({ reason: 'content_changed' });
+        await expect(q.listIngestQuarantine(kbPath)).resolves.toEqual([]);
+      });
+    });
+
+    it('remove/retry/ack honour the optional modelId, and removeIngestQuarantineForModel clears a model', async () => {
+      await withQ(async ({ q, kbPath, providerError }) => {
+        for (const modelId of ['A', 'B']) {
+          await q.recordIngestFailure({ kbPath, relativePath: 'p.md', error: providerError, modelId, now });
+          await q.recordIngestFailure({ kbPath, relativePath: 'q.md', error: providerError, modelId, now });
+        }
+        await expect(q.ackIngestQuarantineEntry(kbPath, 'p.md', 'A')).resolves.toMatchObject({ model_id: 'A', ack: true });
+        const acked = (await q.listIngestQuarantine(kbPath)).filter((r) => r.ack);
+        expect(acked.map((r) => [r.model_id, r.relative_path])).toEqual([['A', 'p.md']]);
+        await expect(q.forceRetryIngestQuarantineEntry(kbPath, 'q.md', soon, 'B')).resolves.toMatchObject({ model_id: 'B' });
+        await expect(q.removeIngestQuarantineEntry(kbPath, 'q.md', 'A')).resolves.toBe(true);
+        expect(await q.countIngestQuarantine(kbPath)).toBe(3);
+        await expect(q.removeIngestQuarantineForModel(kbPath, 'B')).resolves.toBe(2);
+        await expect(q.removeIngestQuarantineForModel(kbPath, 'B')).resolves.toBe(0);
+        // Without a modelId the operator verbs act on every record for the path.
+        await expect(q.removeIngestQuarantineEntry(kbPath, 'p.md')).resolves.toBe(true);
+        await expect(q.listIngestQuarantine(kbPath)).resolves.toEqual([]);
+      });
+    });
+
+    it('the maxEntries cap bounds the total including model-scoped records', async () => {
+      await withQ(async ({ q, kbPath, providerError }) => {
+        for (const modelId of ['A', 'B', 'C']) {
+          await q.recordIngestFailure({ kbPath, relativePath: 'p.md', error: providerError, modelId, now, maxEntries: 2 });
+        }
+        expect(await q.countIngestQuarantine(kbPath)).toBe(2);
+      });
+    });
+  });
 });

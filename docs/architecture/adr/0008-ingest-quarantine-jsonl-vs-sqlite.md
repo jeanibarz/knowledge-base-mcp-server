@@ -22,7 +22,11 @@ Store quarantine state in `<kb>/.index/quarantine.jsonl`.
 Each line is a schema-versioned `ingest-quarantine.v1` record with the
 KB-relative path, source file hash when available, error category/code,
 fingerprint, first/last attempt timestamps, retry count, next retry timestamp,
-ack flag, dead-letter timestamp, and a short message. Writers rewrite the file
+ack flag, dead-letter timestamp, and a short message.
+Records for embedding-provider failures also carry an optional `model_id` (#1258) so one model's
+provider outage does not block indexing for the other models on the KB; records are keyed by
+`(model_id ?? KB-wide, path)`. Content-level failures stay KB-wide, and records without `model_id`
+(all files written before #1258) still load. `schema_version` is unchanged. Writers rewrite the file
 atomically under the existing sidecar lock.
 
 JSONL is deliberately chosen over SQLite for v1:
