@@ -9,7 +9,7 @@ Point this server at a folder of markdown notes and it becomes searchable by mea
 
 You keep your notes as ordinary files on your own disk. The server reads them, splits them into chunks, turns each chunk into a vector with an embedding model of your choosing (a local Ollama model, OpenAI, or HuggingFace), and stores those vectors in a local [FAISS](https://faiss.ai/) index. Run it with a local embedding model and a local LLM and your notes never leave the machine; point it at a hosted provider and only then do they cross the network. Two front doors sit on top of that index:
 
-- **An MCP server** that any [Model Context Protocol](https://modelcontextprotocol.io) client — Claude Desktop, Codex CLI, Cursor, Continue, Cline — can call to search your notes, ask questions answered from them, and (optionally) write new ones.
+- **An MCP server** that any [Model Context Protocol](https://modelcontextprotocol.io) client — Claude Desktop, Claude Code, Codex CLI, Cursor, Continue, Cline, VS Code, Windsurf, JetBrains ([setup snippets](docs/clients.md)) — can call to search your notes, ask questions answered from them, and (optionally) write new ones.
 - **A `kb` command-line tool** for the same corpus from a terminal or an agent's shell, plus the operational commands the MCP surface doesn't expose: indexing, diagnostics, evaluation, and note curation.
 
 Throughout the docs, a *knowledge base* (or *shelf*) is one subdirectory of your notes root — `work/`, `research/`, `personal/` — that you can search individually or together.
