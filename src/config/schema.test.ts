@@ -578,3 +578,39 @@ describe('KB_ASK_LLM_TIMEOUT_MS ask-generation timeout knob (#889)', () => {
     ]));
   });
 });
+
+describe('EXTRACTION_TEXT_CACHE_DIR (#1285)', () => {
+  // `kb cache --help` advertises this override, so it must be registered:
+  // that is what puts it in configuration.md, .env.example and `kb config`.
+  it('is registered as a path knob', () => {
+    expect(isRegisteredConfigName('EXTRACTION_TEXT_CACHE_DIR')).toBe(true);
+    const spec = CONFIG_SCHEMA.find((entry) => entry.name === 'EXTRACTION_TEXT_CACHE_DIR');
+    expect(spec).toEqual(expect.objectContaining({ kind: 'path', docDefault: '$FAISS_INDEX_PATH/extracted-text' }));
+  });
+
+  it('defaults to extracted-text under the effective FAISS_INDEX_PATH, like defaultExtractionCacheDir()', () => {
+    const entry = (env: Record<string, string>) =>
+      showConfigEnv(env).entries.find((e) => e.name === 'EXTRACTION_TEXT_CACHE_DIR');
+
+    expect(entry({ FAISS_INDEX_PATH: '/tmp/idx' })).toEqual(
+      expect.objectContaining({ value: '/tmp/idx/extracted-text', source: 'default' }),
+    );
+    expect(entry({ KNOWLEDGE_BASES_ROOT_DIR: '/tmp/kbs' })).toEqual(
+      expect.objectContaining({ value: '/tmp/kbs/.faiss/extracted-text', source: 'default' }),
+    );
+    // The runtime ignores an empty override and falls back to the default.
+    expect(entry({ FAISS_INDEX_PATH: '/tmp/idx', EXTRACTION_TEXT_CACHE_DIR: '' })).toEqual(
+      expect.objectContaining({ value: '/tmp/idx/extracted-text', source: 'default' }),
+    );
+    expect(entry({ FAISS_INDEX_PATH: '/tmp/idx', EXTRACTION_TEXT_CACHE_DIR: '/var/cache/kb-text' })).toEqual(
+      expect.objectContaining({ value: '/var/cache/kb-text', source: 'env' }),
+    );
+  });
+
+  it('validates a set override as a path without warnings', () => {
+    const report = validateConfigEnv({ EXTRACTION_TEXT_CACHE_DIR: '/var/cache/kb-text' });
+    expect(report.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'EXTRACTION_TEXT_CACHE_DIR', status: 'ok', kind: 'path' }),
+    ]));
+  });
+});
