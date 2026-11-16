@@ -560,7 +560,7 @@ The fetch is deliberately fenced in, because a URL is attacker-controlled input:
 
 ```bash
 kb tags --kb=work                       # list facet values (tags/status/type) with counts
-kb tags --facet=status --format=json    # discover the vocabulary for kb search --status filters
+kb tags --facet=tags --format=json      # discover the vocabulary for kb search --tag filters
 kb tag work/runbooks/deploy.md --add=verified        # dry run
 kb tag work/runbooks/deploy.md --add=verified --yes  # commit
 ```

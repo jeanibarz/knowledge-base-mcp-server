@@ -42,8 +42,10 @@ Usage:
 Walks every \`.md\` / \`.markdown\` note under one or all KBs, parses YAML
 frontmatter, and reports each facet's distinct values with the number of
 notes carrying that value (sorted by count, then value). Use it to learn
-the valid vocabulary for \`kb search --tags\` / \`--status\` / \`--type\`
-filters before constructing a query. Strictly read-only.
+the valid vocabulary for \`kb search --tag=<name>\` filters before
+constructing a query. \`kb search\` filters on \`tags\` only; the \`status\`
+and \`type\` facets are reported for discovery and cannot be used as search
+filters. Strictly read-only.
 
 By default the taxonomy facets \`tags\`, \`status\`, and \`type\` are reported.
 \`--facet=<name>\` narrows the scan to a single frontmatter key (any key,
