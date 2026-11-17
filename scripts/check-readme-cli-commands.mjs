@@ -38,8 +38,9 @@ const NON_SHELL_FENCES = new Set(['mermaid']);
 // Code spans and fenced-block bodies; prose is never scanned.
 function readmeCodeChunks(markdown) {
   const code = [];
-  const stripped = markdown.replace(/^```([^\n]*)\n([\s\S]*?)^```/gm, (_m, info, body) => {
-    if (!NON_SHELL_FENCES.has(info.trim().split(/\s+/)[0])) code.push(body);
+  // Fences may be indented (inside list items); the closing fence matches the opening indent.
+  const stripped = markdown.replace(/^([ \t]*)```([^\n]*)\n([\s\S]*?)^\1```/gm, (_m, _indent, info, body) => {
+    if (!NON_SHELL_FENCES.has(info.trim().split(/\s+/)[0].toLowerCase())) code.push(body);
     return '\n';
   });
   for (const m of stripped.matchAll(/`([^`\n]+)`/g)) code.push(m[1]);
