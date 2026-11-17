@@ -44,7 +44,7 @@ hits across queries, and writes five artifacts under `--run-dir`:
 | `events.jsonl` | Structured event stream from the collection (one record per shelf search) |
 
 `evidence_packet.md` is what you typically hand to a downstream LLM or paste
-into a follow-up `kb ask --task-context-file=…`. `ledger.json` is the
+into a follow-up `kb ask` question. `ledger.json` is the
 machine-readable contract for any tooling on top.
 
 ## Planner controls
@@ -91,7 +91,6 @@ for complete, `1` for failed, `2` for argv errors.
 
 ```bash
 kb ask "$(cat runs/rag-eval/evidence_packet.md)" \
-  --task-context-file=runs/rag-eval/evidence_packet.md \
   --save-transcript --kb=research --title="RAG eval comparison" --yes
 ```
 
