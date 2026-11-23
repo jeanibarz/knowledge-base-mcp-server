@@ -9,10 +9,11 @@ This server speaks stdio MCP and works with any stdio MCP client. Pick the block
 ```bash
 kb config client claude-desktop          # also: cursor, windsurf, cline, vscode
 kb config client claude-code             # prints a `claude mcp add …` command
+kb config client codex                   # prints a `[mcp_servers.knowledge-base]` TOML table
 kb config client cursor --command=global # absolute path to a globally installed bin instead of npx
 ```
 
-Add `--format=json` for a machine-readable envelope ([contract](./cli-json-contracts.md#kb-config-client)). Codex CLI, Continue, JetBrains and the remote transport are not generated yet; use the hand-written blocks below for those.
+Add `--format=json` for a machine-readable envelope ([contract](./cli-json-contracts.md#kb-config-client)). Continue, JetBrains and the remote transport are not generated yet; use the hand-written blocks below for those.
 
 ## Placeholders used in every snippet
 
@@ -156,7 +157,7 @@ Use the `knowledge-base` MCP server to list knowledge bases and retrieve relevan
 
 Config file: `~/.codex/config.toml`
 
-Add an `[mcp_servers.<name>]` table (OpenAI provider shown):
+Run `kb config client codex` to print this table with your effective settings filled in, then append it to `config.toml`. The hand-written equivalent (OpenAI provider shown) is:
 
 ```toml
 [mcp_servers.knowledge-base]

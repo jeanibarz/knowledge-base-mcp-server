@@ -18,6 +18,7 @@ export const SUPPORTED_CLIENTS = [
   'cline',
   'vscode',
   'claude-code',
+  'codex',
 ] as const;
 
 export type ClientName = (typeof SUPPORTED_CLIENTS)[number];
@@ -35,7 +36,7 @@ export interface ConfigClientArgs {
 export interface ConfigClientReport {
   schema_version: 'kb.config-client.v1';
   client: ClientName;
-  shape: 'mcpServers' | 'servers' | 'shell';
+  shape: 'mcpServers' | 'servers' | 'shell' | 'toml';
   command_mode: 'npx' | 'global';
   config_file: string | null;
   active_model: string | null;
@@ -85,6 +86,13 @@ const CLIENTS: Record<ClientName, ClientInfo> = {
   'claude-code': {
     shape: 'shell',
     locations: ['Run the command in a shell; -s user makes the server available in every project'],
+  },
+  codex: {
+    shape: 'toml',
+    locations: [
+      'macOS / Linux: ~/.codex/config.toml ($CODEX_HOME/config.toml when CODEX_HOME is set)',
+      'Windows: %USERPROFILE%\\.codex\\config.toml',
+    ],
   },
 };
 
@@ -319,6 +327,18 @@ function renderSnippet(
     parts.push(['--', launch.command, ...launch.args].map(shellQuote).join(' '));
     return parts.join(' \\\n  ');
   }
+  if (shape === 'toml') {
+    const table = `mcp_servers.${tomlKey(SERVER_NAME)}`;
+    const lines = [
+      `[${table}]`,
+      `command = ${tomlString(launch.command)}`,
+      `args = [${launch.args.map(tomlString).join(', ')}]`,
+      '',
+      `[${table}.env]`,
+      ...Object.entries(env).map(([name, value]) => `${tomlKey(name)} = ${tomlString(value)}`),
+    ];
+    return lines.join('\n');
+  }
   const server = {
     ...(shape === 'servers' ? { type: 'stdio' } : {}),
     command: launch.command,
@@ -328,6 +348,33 @@ function renderSnippet(
   return JSON.stringify({ [shape]: { [SERVER_NAME]: server } }, null, 2);
 }
 
+/**
+ * A TOML basic string (`"..."`). TOML requires escaping the quote, the
+ * backslash and every control character except tab (U+0000-U+001F, U+007F);
+ * Windows paths are full of backslashes, so this is not optional.
+ */
+export function tomlString(value: string): string {
+  let out = '"';
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (char === '"') out += '\\"';
+    else if (char === '\\') out += '\\\\';
+    else if (char === '\n') out += '\\n';
+    else if (char === '\r') out += '\\r';
+    else if (char === '\t') out += '\\t';
+    else if (char === '\b') out += '\\b';
+    else if (char === '\f') out += '\\f';
+    else if (code < 0x20 || code === 0x7f) out += `\\u${code.toString(16).toUpperCase().padStart(4, '0')}`;
+    else out += char;
+  }
+  return `${out}"`;
+}
+
+/** A TOML key: bare when it only uses A-Z a-z 0-9 _ -, quoted otherwise. */
+export function tomlKey(key: string): string {
+  return /^[A-Za-z0-9_-]+$/.test(key) ? key : tomlString(key);
+}
+
 /** POSIX single-quote a word unless it is made only of shell-safe characters. */
 export function shellQuote(value: string): string {
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
@@ -335,7 +382,7 @@ export function shellQuote(value: string): string {
 }
 
 export function formatConfigClientMarkdown(report: ConfigClientReport): string {
-  const lang = report.shape === 'shell' ? 'bash' : 'json';
+  const lang = report.shape === 'shell' ? 'bash' : report.shape === 'toml' ? 'toml' : 'json';
   const lines = [
     `# kb config client ${report.client}`,
     '',
@@ -352,7 +399,9 @@ export function formatConfigClientMarkdown(report: ConfigClientReport): string {
   if (report.placeholders.length > 0) {
     lines.push('', `Replace these placeholders before use: ${report.placeholders.map((n) => `<${n}>`).join(', ')}`);
   }
-  if (report.shape !== 'shell') {
+  if (report.shape === 'toml') {
+    lines.push('', 'Codex CLI rereads config.toml each time it starts, so no restart is needed.');
+  } else if (report.shape !== 'shell') {
     lines.push('', 'Restart the client after editing its config file.');
   }
   return `${lines.join('\n')}\n`;

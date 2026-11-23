@@ -35,6 +35,7 @@ appear as placeholders such as <OPENAI_API_KEY> for you to fill in.
   claude-desktop, cursor, windsurf, cline   "mcpServers" JSON block
   vscode                                    "servers" JSON block, "type": "stdio"
   claude-code                               a \`claude mcp add …\` command line
+  codex                                     [mcp_servers.knowledge-base] TOML table
 
 Options:
   --file=<path>             Parse this dotenv file instead of runtime config.
