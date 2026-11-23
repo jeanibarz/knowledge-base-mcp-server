@@ -100,17 +100,25 @@ interface OtlpExporterModule {
 }
 /** Minimal provider surface needed for export flush + clean shutdown. */
 export interface MinimalTracerProvider {
-  register(): void;
   getTracer(name: string): MinimalTracer;
   forceFlush(): Promise<void>;
   shutdown(): Promise<void>;
 }
 
-// `@opentelemetry/sdk-trace-node` re-exports the span processors from
-// `@opentelemetry/sdk-trace-base`, so we only need the one optional package.
-interface SdkNodeModule {
-  NodeTracerProvider: new (config: Record<string, unknown>) => MinimalTracerProvider;
-  BatchSpanProcessor: new (exporter: object) => object;
+// OpenTelemetry JS 3.x folds `sdk-trace-base` + `sdk-trace-node` into
+// `@opentelemetry/sdk-trace`, whose `TracerProvider` has no `register()`: the
+// caller installs the global provider and the async context manager itself.
+interface SdkTraceModule {
+  TracerProvider: new (config: Record<string, unknown>) => MinimalTracerProvider;
+  // 3.x takes an options object (`{ exporter }`), not the bare exporter.
+  BatchSpanProcessor: new (options: { exporter: object }) => object;
+}
+interface ContextAsyncHooksModule {
+  AsyncLocalStorageContextManager: new () => { enable(): object };
+}
+interface OtelApiModule {
+  context: { setGlobalContextManager(manager: object): boolean };
+  trace: { setGlobalTracerProvider(provider: MinimalTracerProvider): boolean };
 }
 interface ResourcesModule {
   resourceFromAttributes(attributes: Record<string, unknown>): object;
@@ -122,7 +130,9 @@ interface SemconvModule {
 async function initTracerProvider(): Promise<MinimalTracer | null> {
   if (!isOtelTracesEnabled()) return null;
   try {
-    const sdkNode = (await lazyImport('@opentelemetry/sdk-trace-node')) as SdkNodeModule;
+    const api = (await lazyImport('@opentelemetry/api')) as OtelApiModule;
+    const sdkTrace = (await lazyImport('@opentelemetry/sdk-trace')) as SdkTraceModule;
+    const asyncHooks = (await lazyImport('@opentelemetry/context-async-hooks')) as ContextAsyncHooksModule;
     const otlp = (await lazyImport('@opentelemetry/exporter-trace-otlp-http')) as OtlpExporterModule;
     const resources = (await lazyImport('@opentelemetry/resources')) as ResourcesModule;
     const semconv = (await lazyImport('@opentelemetry/semantic-conventions')) as SemconvModule;
@@ -131,13 +141,17 @@ async function initTracerProvider(): Promise<MinimalTracer | null> {
     // OTLPTraceExporter reads OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
     // from the environment when no explicit URL is passed.
     const exporter = new otlp.OTLPTraceExporter();
-    const provider = new sdkNode.NodeTracerProvider({
+    const provider = new sdkTrace.TracerProvider({
       resource: resources.resourceFromAttributes({ [semconv.ATTR_SERVICE_NAME]: serviceName }),
-      spanProcessors: [new sdkNode.BatchSpanProcessor(exporter)],
+      spanProcessors: [new sdkTrace.BatchSpanProcessor({ exporter })],
     });
-    // Registers the global tracer + async-context manager so child spans nest
-    // under the active parent span across `await` boundaries.
-    provider.register();
+    // Install the async-context manager so child spans nest under the active
+    // parent span across `await` boundaries, then publish the global provider.
+    // (3.x replacement for the 2.x `NodeTracerProvider.register()`; no
+    // propagator is installed because nothing here propagates trace context
+    // across processes.)
+    api.context.setGlobalContextManager(new asyncHooks.AsyncLocalStorageContextManager().enable());
+    api.trace.setGlobalTracerProvider(provider);
     // Keep the provider so teardown can forceFlush/shutdown (issue #879).
     // Without this, BatchSpanProcessor never exports before short-lived exit.
     activeProvider = provider;
