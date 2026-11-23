@@ -28,7 +28,9 @@ The blocks below alternate embedding providers so you can see all three configur
 
 ## Package form and upgrades
 
-The snippets below launch the published package with `command: "npx"` + `args: ["-y", "@jeanibarz/knowledge-base-mcp-server"]`, which matches the README "Install (one command)" path. If you want each client spawn to re-resolve the newest release, use `@jeanibarz/knowledge-base-mcp-server@latest` instead. The bare unversioned spec can stay pinned in `~/.npm/_npx/` until that cache entry is removed. See RFC 012 §2.4.
+The snippets below launch the published package with `command: "npx"` + `args: ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"]`. This is the recommended form, and it is what `kb config client` prints: with `@latest`, each client spawn re-resolves the newest release, so you pick up fixes without doing anything. Do not drop the `@latest` suffix. `npx` keeps the bare unversioned spec cached in `~/.npm/_npx/` indefinitely, so a client launched that way stays on the release it first installed until you remove that cache entry. See RFC 012 §2.4.
+
+The model values in the snippets are each provider's current default, so a copied snippet builds the same index the README describes. Change them only if you deliberately want a different model.
 
 Alternatively, install once globally (`npm install -g @jeanibarz/knowledge-base-mcp-server@latest`) and use the resulting absolute bin path: `which knowledge-base-mcp-server`.
 
@@ -85,7 +87,7 @@ Add to the `mcpServers` object (Ollama provider shown):
   "mcpServers": {
     "knowledge-base": {
       "command": "npx",
-      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
       "env": {
         "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
         "EMBEDDING_PROVIDER": "ollama",
@@ -114,7 +116,7 @@ Use user scope when the same knowledge base should be available across projects.
   "mcpServers": {
     "knowledge-base": {
       "command": "npx",
-      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
       "env": {
         "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
         "EMBEDDING_PROVIDER": "ollama",
@@ -134,7 +136,7 @@ claude mcp add knowledge-base \
   -e KNOWLEDGE_BASES_ROOT_DIR="$HOME/knowledge_bases" \
   -e EMBEDDING_PROVIDER=ollama \
   -e OLLAMA_MODEL=dengcao/Qwen3-Embedding-0.6B:Q8_0 \
-  -- npx -y @jeanibarz/knowledge-base-mcp-server
+  -- npx -y @jeanibarz/knowledge-base-mcp-server@latest
 ```
 
 ### Skill wrapper
@@ -159,13 +161,13 @@ Add an `[mcp_servers.<name>]` table (OpenAI provider shown):
 ```toml
 [mcp_servers.knowledge-base]
 command = "npx"
-args = ["-y", "@jeanibarz/knowledge-base-mcp-server"]
+args = ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"]
 
 [mcp_servers.knowledge-base.env]
 KNOWLEDGE_BASES_ROOT_DIR = "<KB_ROOT>"
 EMBEDDING_PROVIDER = "openai"
 OPENAI_API_KEY = "<OPENAI_API_KEY>"
-OPENAI_MODEL_NAME = "text-embedding-ada-002"
+OPENAI_MODEL_NAME = "text-embedding-3-small"
 ```
 
 Codex CLI rereads `config.toml` on each invocation, so no restart is needed.
@@ -184,12 +186,12 @@ Add to the `mcpServers` object (HuggingFace provider shown):
   "mcpServers": {
     "knowledge-base": {
       "command": "npx",
-      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
       "env": {
         "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
         "EMBEDDING_PROVIDER": "huggingface",
         "HUGGINGFACE_API_KEY": "<HF_API_KEY>",
-        "HUGGINGFACE_MODEL_NAME": "sentence-transformers/all-MiniLM-L6-v2",
+        "HUGGINGFACE_MODEL_NAME": "BAAI/bge-small-en-v1.5",
         "HUGGINGFACE_PROVIDER": "hf-inference"
       }
     }
@@ -213,7 +215,7 @@ Add the server under `experimental.modelContextProtocolServers` (Ollama provider
         "transport": {
           "type": "stdio",
           "command": "npx",
-          "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+          "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
           "env": {
             "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
             "EMBEDDING_PROVIDER": "ollama",
@@ -240,7 +242,7 @@ Add to the `mcpServers` object. Three provider variants are shown — use only o
 ```json
 "knowledge-base-mcp-ollama": {
   "command": "npx",
-  "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+  "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
   "disabled": false,
   "autoApprove": [],
   "env": {
@@ -258,14 +260,14 @@ Add to the `mcpServers` object. Three provider variants are shown — use only o
 ```json
 "knowledge-base-mcp-openai": {
   "command": "npx",
-  "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+  "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
   "disabled": false,
   "autoApprove": [],
   "env": {
     "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
     "EMBEDDING_PROVIDER": "openai",
     "OPENAI_API_KEY": "<OPENAI_API_KEY>",
-    "OPENAI_MODEL_NAME": "text-embedding-ada-002"
+    "OPENAI_MODEL_NAME": "text-embedding-3-small"
   },
   "description": "Retrieves similar chunks from the knowledge base based on a query using OpenAI."
 }
@@ -276,14 +278,14 @@ Add to the `mcpServers` object. Three provider variants are shown — use only o
 ```json
 "knowledge-base-mcp-huggingface": {
   "command": "npx",
-  "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+  "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
   "disabled": false,
   "autoApprove": [],
   "env": {
     "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
     "EMBEDDING_PROVIDER": "huggingface",
     "HUGGINGFACE_API_KEY": "<HF_API_KEY>",
-    "HUGGINGFACE_MODEL_NAME": "sentence-transformers/all-MiniLM-L6-v2",
+    "HUGGINGFACE_MODEL_NAME": "BAAI/bge-small-en-v1.5",
     "HUGGINGFACE_PROVIDER": "hf-inference"
   },
   "description": "Retrieves similar chunks from the knowledge base based on a query using HuggingFace."
@@ -306,7 +308,7 @@ VS Code's top-level key is `servers` (not `mcpServers`), and each stdio entry ne
     "knowledge-base": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
       "env": {
         "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
         "EMBEDDING_PROVIDER": "ollama",
@@ -336,12 +338,12 @@ Windsurf uses the same top-level `mcpServers` shape as Claude Desktop (OpenAI pr
   "mcpServers": {
     "knowledge-base": {
       "command": "npx",
-      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
       "env": {
         "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
         "EMBEDDING_PROVIDER": "openai",
         "OPENAI_API_KEY": "<OPENAI_API_KEY>",
-        "OPENAI_MODEL_NAME": "text-embedding-ada-002"
+        "OPENAI_MODEL_NAME": "text-embedding-3-small"
       }
     }
   }
@@ -359,12 +361,12 @@ JetBrains IDEs (IntelliJ IDEA, PyCharm, WebStorm, …) expose MCP through AI Ass
   "mcpServers": {
     "knowledge-base": {
       "command": "npx",
-      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server"],
+      "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
       "env": {
         "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
         "EMBEDDING_PROVIDER": "huggingface",
         "HUGGINGFACE_API_KEY": "<HF_API_KEY>",
-        "HUGGINGFACE_MODEL_NAME": "sentence-transformers/all-MiniLM-L6-v2",
+        "HUGGINGFACE_MODEL_NAME": "BAAI/bge-small-en-v1.5",
         "HUGGINGFACE_PROVIDER": "hf-inference"
       }
     }
