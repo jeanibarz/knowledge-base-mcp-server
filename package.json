@@ -116,8 +116,7 @@
     "@langchain/core": "^1.4.1",
     "@langchain/textsplitters": "^1.0.2",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/sdk-trace-base": "^2.0.0",
+    "@opentelemetry/api": "^1.10.0",
     "axios": "^1.21.1",
     "faiss-node": "0.5.1",
     "hnswlib-node": "^3.0.0",
@@ -131,10 +130,11 @@
     "zod": "^4.6.6"
   },
   "optionalDependencies": {
-    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
-    "@opentelemetry/resources": "^2.0.0",
-    "@opentelemetry/sdk-trace-node": "^2.0.0",
-    "@opentelemetry/semantic-conventions": "^1.30.0"
+    "@opentelemetry/context-async-hooks": "^3.1.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.301.2",
+    "@opentelemetry/resources": "^3.1.1",
+    "@opentelemetry/sdk-trace": "^3.1.1",
+    "@opentelemetry/semantic-conventions": "^1.45.0"
   },
   "peerDependencies": {
     "@huggingface/transformers": "^4.3.2"

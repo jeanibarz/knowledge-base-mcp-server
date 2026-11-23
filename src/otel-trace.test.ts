@@ -191,7 +191,6 @@ function makeFakeProvider(opts?: {
 } {
   const calls: string[] = [];
   const provider: MinimalTracerProvider = {
-    register() { /* unused */ },
     getTracer() {
       throw new Error('getTracer not used in shutdown tests');
     },
