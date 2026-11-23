@@ -10,6 +10,7 @@ import {
   runConfigClient,
   shellQuote,
   SUPPORTED_CLIENTS,
+  tomlString,
   type ConfigClientReport,
 } from './cli-config-client.js';
 import { resetProjectConfigForTests } from './config/project-config.js';
@@ -30,7 +31,7 @@ const SECRETS = {
   KB_OPENROUTER_API_KEY: fakeSecret('openrouter'),
 };
 
-const JSON_CLIENTS = SUPPORTED_CLIENTS.filter((c) => c !== 'claude-code');
+const JSON_CLIENTS = SUPPORTED_CLIENTS.filter((c) => c !== 'claude-code' && c !== 'codex');
 
 let stdout = '';
 let stderr = '';
@@ -83,7 +84,7 @@ async function runJson(...args: string[]): Promise<ConfigClientReport> {
 }
 
 function fencedBlock(markdown: string): string {
-  const m = /```(?:json|bash)\n([\s\S]*?)\n```/.exec(markdown);
+  const m = /```(?:json|bash|toml)\n([\s\S]*?)\n```/.exec(markdown);
   if (m === null) throw new Error(`no fenced block in:\n${markdown}`);
   return m[1];
 }
@@ -93,6 +94,117 @@ function claudeArgv(command: string): string[] {
   const r = spawnSync('bash', ['-c', `claude() { printf '%s\\0' "$@"; }\n${command}`], { encoding: 'utf-8' });
   expect(r.status).toBe(0);
   return r.stdout.split('\0').slice(0, -1);
+}
+
+type TomlTable = { [key: string]: string | string[] | TomlTable };
+
+/**
+ * Strict parser for the TOML subset `kb config client codex` emits: `[a.b]`
+ * table headers, and `key = "basic string"` or `key = ["...", ...]` pairs.
+ * It decodes escapes per the TOML 1.0 spec independently of tomlString and
+ * throws on anything a real TOML parser would reject in that subset (raw
+ * control characters, unknown escapes, unterminated strings, trailing junk,
+ * duplicate keys), so the encoder cannot pass by sharing a bug with it.
+ */
+function parseToml(text: string): TomlTable {
+  const root: TomlTable = {};
+  let table = root;
+  const fail = (line: number, why: string): never => {
+    throw new Error(`TOML line ${line + 1}: ${why}`);
+  };
+  const BARE = /^[A-Za-z0-9_-]+/;
+  text.split('\n').forEach((raw, lineNo) => {
+    let i = 0;
+    const ws = (): void => { while (raw[i] === ' ' || raw[i] === '\t') i++; };
+    const end = (): void => {
+      ws();
+      if (i < raw.length && raw[i] !== '#') fail(lineNo, `unexpected ${JSON.stringify(raw.slice(i))}`);
+    };
+    const basicString = (): string => {
+      if (raw[i] !== '"') fail(lineNo, 'expected "');
+      i++;
+      let out = '';
+      for (;;) {
+        if (i >= raw.length) fail(lineNo, 'unterminated string');
+        const ch = raw[i];
+        const code = ch.charCodeAt(0);
+        if (ch === '"') { i++; return out; }
+        if ((code < 0x20 && ch !== '\t') || code === 0x7f) fail(lineNo, `raw control U+${code.toString(16)}`);
+        if (ch !== '\\') { out += ch; i++; continue; }
+        const esc = raw[i + 1];
+        const simple: Record<string, string> = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' };
+        if (esc in simple) { out += simple[esc]; i += 2; continue; }
+        if (esc === 'u' || esc === 'U') {
+          const len = esc === 'u' ? 4 : 8;
+          const hex = raw.slice(i + 2, i + 2 + len);
+          if (!new RegExp(`^[0-9A-Fa-f]{${len}}$`).test(hex)) fail(lineNo, `bad \\${esc} escape`);
+          out += String.fromCodePoint(parseInt(hex, 16));
+          i += 2 + len;
+          continue;
+        }
+        fail(lineNo, `invalid escape \\${esc}`);
+      }
+    };
+    const key = (): string => {
+      if (raw[i] === '"') return basicString();
+      const m = BARE.exec(raw.slice(i));
+      if (m === null) fail(lineNo, 'expected a key');
+      i += m![0].length;
+      return m![0];
+    };
+    ws();
+    if (i >= raw.length || raw[i] === '#') return;
+    if (raw[i] === '[') {
+      i++;
+      table = root;
+      for (;;) {
+        ws();
+        const k = key();
+        ws();
+        const next = table[k] ?? {};
+        if (typeof next !== 'object' || Array.isArray(next)) fail(lineNo, `${k} is not a table`);
+        table[k] = next;
+        table = next as TomlTable;
+        if (raw[i] === '.') { i++; continue; }
+        if (raw[i] === ']') { i++; break; }
+        fail(lineNo, 'bad table header');
+      }
+      end();
+      return;
+    }
+    const k = key();
+    ws();
+    if (raw[i] !== '=') fail(lineNo, 'expected =');
+    i++;
+    ws();
+    if (k in table) fail(lineNo, `duplicate key ${k}`);
+    if (raw[i] === '[') {
+      i++;
+      const items: string[] = [];
+      ws();
+      while (raw[i] !== ']') {
+        items.push(basicString());
+        ws();
+        if (raw[i] === ',') { i++; ws(); } else if (raw[i] !== ']') fail(lineNo, 'expected , or ]');
+      }
+      i++;
+      table[k] = items;
+    } else {
+      table[k] = basicString();
+    }
+    end();
+  });
+  return root;
+}
+
+function codexServer(toml: string): { command: string; args: string[]; env: Record<string, string> } {
+  const parsed = parseToml(toml);
+  expect(Object.keys(parsed)).toEqual(['mcp_servers']);
+  const servers = parsed.mcp_servers as TomlTable;
+  expect(Object.keys(servers)).toEqual(['knowledge-base']);
+  const server = servers['knowledge-base'] as TomlTable;
+  expect(Object.keys(server).sort()).toEqual(['args', 'command', 'env']);
+  return server as unknown as { command: string; args: string[]; env: Record<string, string> };
 }
 
 function envFromClaudeArgv(argv: string[]): Record<string, string> {
@@ -182,6 +294,79 @@ describe('kb config client: each supported client', () => {
     const report = await runJson('claude-code');
     expect(report.shape).toBe('shell');
     expect(envFromClaudeArgv(claudeArgv(report.snippet))).toEqual(report.env);
+  });
+});
+
+describe('kb config client codex (TOML)', () => {
+  beforeEach(() => {
+    process.env.EMBEDDING_PROVIDER = 'openai';
+    process.env.OPENAI_MODEL_NAME = 'text-embedding-3-large';
+  });
+
+  it('markdown block is a TOML table with the effective settings', async () => {
+    expect(await run(['codex'])).toBe(0);
+    expect(stdout).toContain('```toml\n[mcp_servers.knowledge-base]\n');
+    expect(stdout).toContain('~/.codex/config.toml');
+    expect(stdout).toContain('Replace these placeholders before use: <OPENAI_API_KEY>');
+    expect(stdout).toContain('no restart is needed');
+    expect(stdout).not.toContain('Restart the client');
+    const server = codexServer(fencedBlock(stdout));
+    expect(server.command).toBe('npx');
+    expect(server.args).toEqual(['-y', '@jeanibarz/knowledge-base-mcp-server@latest']);
+    expect(server.env).toEqual({
+      KNOWLEDGE_BASES_ROOT_DIR: kbRoot,
+      EMBEDDING_PROVIDER: 'openai',
+      OPENAI_API_KEY: '<OPENAI_API_KEY>',
+      OPENAI_MODEL_NAME: 'text-embedding-3-large',
+    });
+  });
+
+  it('--format=json reports shape "toml" and a snippet matching the structured fields', async () => {
+    const report = await runJson('codex');
+    expect(report.client).toBe('codex');
+    expect(report.shape).toBe('toml');
+    expect(report.placeholders).toEqual(['OPENAI_API_KEY']);
+    const server = codexServer(report.snippet);
+    expect(server.command).toBe(report.command);
+    expect(server.args).toEqual(report.args);
+    expect(server.env).toEqual(report.env);
+  });
+
+  it('round-trips a root with backslashes, quotes and control characters', async () => {
+    // A Windows-style path segment plus every character TOML forces us to escape.
+    const nasty = path.join(tempDir, 'C:\\Users\\me "quoted"\\kb\ttab\u0001\u007f\\\\end');
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = nasty;
+    const report = await runJson('codex');
+    expect(report.env.KNOWLEDGE_BASES_ROOT_DIR).toBe(nasty);
+    expect(codexServer(report.snippet).env.KNOWLEDGE_BASES_ROOT_DIR).toBe(nasty);
+  });
+
+  it('round-trips an absolute --command=global bin path containing backslashes', async () => {
+    const bin = 'C:\\Program Files\\nodejs\\knowledge-base-mcp-server.cmd';
+    stdout = '';
+    expect(await runConfigClient(['codex', '--format=json', '--command=global'], {
+      ...NO_ACTIVE,
+      resolveServerBin: () => bin,
+    })).toBe(0);
+    const server = codexServer((JSON.parse(stdout) as ConfigClientReport).snippet);
+    expect(server.command).toBe(bin);
+    expect(server.args).toEqual([]);
+  });
+
+  it('tomlString escapes exactly what TOML requires', () => {
+    expect(tomlString('plain /path')).toBe('"plain /path"');
+    expect(tomlString('a"b\\c')).toBe('"a\\"b\\\\c"');
+    expect(tomlString('\b\t\n\f\r')).toBe('"\\b\\t\\n\\f\\r"');
+    expect(tomlString('\u0000\u001f\u007f')).toBe('"\\u0000\\u001F\\u007F"');
+    expect(tomlString('é 日本')).toBe('"é 日本"');
+  });
+
+  it('the test parser rejects invalid TOML (guards against a vacuous round-trip)', () => {
+    expect(() => parseToml('a = "x\\qy"')).toThrow('invalid escape');
+    expect(() => parseToml('a = "x\u0001"')).toThrow('raw control');
+    expect(() => parseToml('a = "x')).toThrow('unterminated');
+    expect(() => parseToml('a = "x" junk')).toThrow('unexpected');
+    expect(() => parseToml('a = "x"\na = "y"')).toThrow('duplicate');
   });
 });
 

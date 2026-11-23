@@ -2238,13 +2238,15 @@ Invocation:
 ```bash
 kb config client cursor --format=json
 kb config client claude-code --format=json --command=global
+kb config client codex --format=json
 ```
 
 Prints a ready-to-paste MCP server entry for one client, built from the
 effective configuration (`process.env` layered over the project config file,
 as `kb config show` resolves it). Supported clients: `claude-desktop`,
 `cursor`, `windsurf`, `cline` (`mcpServers` JSON), `vscode` (`servers` JSON
-with `"type": "stdio"`) and `claude-code` (a `claude mcp add` command line).
+with `"type": "stdio"`), `claude-code` (a `claude mcp add` command line) and
+`codex` (an `[mcp_servers.knowledge-base]` table for `~/.codex/config.toml`).
 
 ```json
 {
@@ -2275,7 +2277,8 @@ Stable fields:
 
 - `schema_version` is `kb.config-client.v1`.
 - `client` echoes the requested client name.
-- `shape` is `mcpServers`, `servers` (VS Code) or `shell` (Claude Code).
+- `shape` is `mcpServers`, `servers` (VS Code), `shell` (Claude Code) or
+  `toml` (Codex CLI).
 - `command_mode` is `npx` (default) or `global` (`--command=global`).
 - `config_file` is the project config file that was layered in, or `null`.
 - `active_model` is the registered model the server will embed with
@@ -2299,7 +2302,9 @@ Stable fields:
   whether or not they are set, and so is any emitted URL that carries
   userinfo or a query string; `MCP_AUTH_TOKEN` is never emitted.
 - `snippet` is the exact paste-ready text: JSON for `mcpServers`/`servers`, a
-  shell command line for `shell`. With the default `--format=md`, the same
+  shell command line for `shell`, TOML for `toml` (`[mcp_servers.knowledge-base]`
+  with `command` and `args`, then `[mcp_servers.knowledge-base.env]`; values are
+  TOML basic strings with backslashes, quotes and control characters escaped). With the default `--format=md`, the same
   text is printed inside a fenced code block.
 
 Stdout/stderr and exit codes:
