@@ -46,14 +46,25 @@ await otel.shutdownOtel(5000);
 
 function runChild(endpoint: string): Promise<{ code: number | null; output: string }> {
   return new Promise((resolve, reject) => {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      KB_OTEL_TRACES: 'on',
+      OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+      OTEL_SERVICE_NAME: 'otel-sdk-test',
+      LOG_FILE: '',
+      // The test asserts on the info-level "tracing enabled" line.
+      LOG_LEVEL: 'info',
+    };
+    // Signal-specific OTLP settings would override the generic endpoint and
+    // send spans to a real collector instead of the local listener.
+    for (const key of Object.keys(env)) {
+      if (key.startsWith('OTEL_EXPORTER_OTLP_TRACES_')) delete env[key];
+    }
     const child = spawn(process.execPath, ['--input-type=module', '-e', CHILD_SCRIPT], {
-      env: {
-        ...process.env,
-        KB_OTEL_TRACES: 'on',
-        OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
-        OTEL_SERVICE_NAME: 'otel-sdk-test',
-        LOG_FILE: '',
-      },
+      env,
+      // Never outlive the test if the SDK hangs on export or shutdown.
+      timeout: 20_000,
+      killSignal: 'SIGKILL',
     });
     let output = '';
     child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
@@ -83,6 +94,7 @@ describe('otel-trace with the real OpenTelemetry SDK', () => {
   });
 
   afterAll(async () => {
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
