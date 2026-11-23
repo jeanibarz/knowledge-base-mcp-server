@@ -145,7 +145,7 @@
     }
   },
   "devDependencies": {
-    "@babel/core": "^8.1.0",
+    "@babel/core": "^8.1.2",
     "@babel/plugin-transform-dynamic-import": "^8.0.1",
     "@babel/plugin-transform-modules-commonjs": "^8.0.1",
     "@commitlint/cli": "^21.2.3",
