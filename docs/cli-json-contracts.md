@@ -2307,13 +2307,24 @@ Stable fields:
   TOML basic strings with backslashes, quotes and control characters escaped). With the default `--format=md`, the same
   text is printed inside a fenced code block.
 
+`--format=link` (for `cursor` and `vscode` only) prints install links
+instead of JSON, one per line: for `cursor`, a
+`cursor://anysphere.cursor-deeplink/mcp/install?name=knowledge-base&config=…`
+deeplink whose `config` is the base64 of `{"command", "args", "env"}`; for
+`vscode`, a `vscode:mcp/install?…` URL whose query is the URL-encoded
+`{"name", "command", "args", "env"}`, then its
+`https://vscode.dev/redirect?url=…` wrapper. `command`, `args` and `env` are
+the ones the JSON reports, minus every `placeholders` key: a link never
+carries a secret or a placeholder, and stderr names each omitted variable.
+
 Stdout/stderr and exit codes:
 
-- The JSON object (or Markdown) is stdout with exit `0`.
+- The JSON object (or Markdown, or the links) is stdout with exit `0`.
 - There is no stable JSON error envelope. Errors print `kb config client: ...`
   to stderr.
 - Exit `2` for an unknown or missing client name (the message lists the
-  supported names), an invalid flag, an unreadable project config, an
+  supported names), `--format=link` for a client other than `cursor` or
+  `vscode` (the message names those two), an invalid flag, an unreadable project config, an
   unsupported `EMBEDDING_PROVIDER`, or `--command=global` when the server bin
   is not on `PATH`.
 

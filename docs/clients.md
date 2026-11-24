@@ -15,6 +15,25 @@ kb config client cursor --command=global # absolute path to a globally installed
 
 Add `--format=json` for a machine-readable envelope ([contract](./cli-json-contracts.md#kb-config-client)). Continue, JetBrains and the remote transport are not generated yet; use the hand-written blocks below for those.
 
+## One-click install links
+
+Cursor and VS Code can install an MCP server from a single link. `--format=link` builds one from the same server entry as the snippet:
+
+```bash
+kb config client cursor --format=link   # a cursor:// deeplink
+kb config client vscode --format=link   # a vscode: URL, then its https://vscode.dev/redirect wrapper
+```
+
+Only `cursor` and `vscode` support it; any other client exits 2. A link never carries a secret: variables that would be placeholders in the snippet (API keys, URLs with credentials) are left out of the link and named on stderr, so add them to the server's `env` in the client after installing.
+
+For the zero-secret Ollama setup (`EMBEDDING_PROVIDER=ollama`, default root `~/knowledge_bases`), open this link in Cursor (Cursor documents no https wrapper, so paste it into a browser address bar or click it from a page that allows `cursor://` links):
+
+```text
+cursor://anysphere.cursor-deeplink/mcp/install?name=knowledge-base&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBqZWFuaWJhcnova25vd2xlZGdlLWJhc2UtbWNwLXNlcnZlckBsYXRlc3QiXSwiZW52Ijp7IkVNQkVERElOR19QUk9WSURFUiI6Im9sbGFtYSJ9fQ%3D%3D
+```
+
+The README's **Install in VS Code** button opens the same setup in VS Code.
+
 ## Placeholders used in every snippet
 
 | Placeholder | What to substitute |

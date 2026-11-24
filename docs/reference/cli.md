@@ -359,7 +359,7 @@ kb config — inspect and validate KB configuration
 Usage:
   kb config validate [--file=.env] [--format=md|json]
   kb config show [--format=md|json] [--non-default-only]
-  kb config client <name> [--format=md|json] [--command=npx|global]
+  kb config client <name> [--format=md|json|link] [--command=npx|global]
 
 Validates known runtime configuration against the static KB config schema:
 type, enum membership, numeric ranges, URL syntax, and cross-variable
@@ -377,9 +377,14 @@ appear as placeholders such as <OPENAI_API_KEY> for you to fill in.
   claude-code                               a `claude mcp add …` command line
   codex                                     [mcp_servers.knowledge-base] TOML table
 
+--format=link prints a one-click install link instead (cursor and vscode
+only): a cursor:// deeplink, or a vscode: URL and its https://vscode.dev
+wrapper. Secret variables are left out of the link and named on stderr.
+
 Options:
   --file=<path>             Parse this dotenv file instead of runtime config.
-  --format=md|json          Output format (default: md).
+  --format=md|json          Output format (default: md). client also takes
+                            link (cursor and vscode only).
   --non-default-only        For show, print only env/file-supplied values.
   --command=npx|global      For client, launch with npx -y <package>@latest
                             (default) or with the absolute path of the

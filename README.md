@@ -51,6 +51,10 @@ All install paths need [Node.js](https://nodejs.org/) 22 or newer and npm.
 npx -y @jeanibarz/knowledge-base-mcp-server@latest
 ```
 
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_knowledge--base-0098FF?logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode%3Amcp%2Finstall%3F%257B%2522name%2522%253A%2522knowledge-base%2522%252C%2522command%2522%253A%2522npx%2522%252C%2522args%2522%253A%255B%2522-y%2522%252C%2522%2540jeanibarz%252Fknowledge-base-mcp-server%2540latest%2522%255D%252C%2522env%2522%253A%257B%2522EMBEDDING_PROVIDER%2522%253A%2522ollama%2522%257D%257D)
+
+The button installs the zero-secret Ollama setup (`EMBEDDING_PROVIDER=ollama`, default knowledge-base root `~/knowledge_bases`). For Cursor, or for a link built from your own settings, run `kb config client cursor --format=link` (or `vscode`); see [docs/clients.md](docs/clients.md#one-click-install-links).
+
 `npx` fetches the package from npm and launches the stdio server. Point your MCP client at that same command and set the environment variables described under [Configure](#configure). [docs/clients.md](docs/clients.md) has copy-pasteable config snippets for Claude Desktop, Claude Code, Codex CLI, Cursor, Continue, Cline, and the editors with native MCP support — VS Code, Windsurf, and JetBrains.
 
 > **Pin `@latest`, not the unversioned spec.** `npx -y @jeanibarz/knowledge-base-mcp-server` (no version) caches the resolved version in `~/.npm/_npx/` indefinitely — subsequent client launches reuse that cached version even after a new release ships. The `@latest` form hashes to a different cache key and re-resolves on every launch, so new fixes arrive on the next client restart instead of requiring a manual `~/.npm/_npx/` clear. See [RFC 012 §2.4](docs/rfcs/012-cli-distribution.md).
