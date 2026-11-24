@@ -27,9 +27,12 @@ export const SERVER_NAME = 'knowledge-base';
 export const PACKAGE_SPEC = '@jeanibarz/knowledge-base-mcp-server@latest';
 export const SERVER_BIN = 'knowledge-base-mcp-server';
 
+/** Clients with a documented one-click install link (`--format=link`). */
+export const LINK_CLIENTS = ['cursor', 'vscode'] as const satisfies readonly ClientName[];
+
 export interface ConfigClientArgs {
   client: ClientName;
-  format: 'md' | 'json';
+  format: 'md' | 'json' | 'link';
   command: 'npx' | 'global';
 }
 
@@ -200,6 +203,21 @@ export async function runConfigClient(
   }
 
   const out = buildClientReport(parsed, launch, env, projectConfig.path, active?.id ?? null);
+  if (parsed.format === 'link') {
+    const server = linkServerEntry(out);
+    const links = out.client === 'cursor'
+      ? [cursorInstallLink(server)]
+      : [vscodeInstallUrl(server), vscodeRedirectLink(vscodeInstallUrl(server))];
+    process.stdout.write(`${links.join('\n')}\n`);
+    if (out.placeholders.length > 0) {
+      process.stderr.write(
+        `kb config client: left out of the link: ${out.placeholders.join(', ')}. `
+        + 'A link must never carry a secret; after installing, add '
+        + `${out.placeholders.length === 1 ? 'it' : 'them'} to the server's env in the client.\n`,
+      );
+    }
+    return 0;
+  }
   if (parsed.format === 'json') {
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
   } else {
@@ -213,8 +231,8 @@ export function parseConfigClientArgs(rest: readonly string[]): ConfigClientArgs
   let format: ConfigClientArgs['format'] = 'md';
   let command: ConfigClientArgs['command'] = 'npx';
   for (const raw of rest) {
-    if (raw === '--format=json' || raw === '--format=md') {
-      format = raw === '--format=json' ? 'json' : 'md';
+    if (raw === '--format=json' || raw === '--format=md' || raw === '--format=link') {
+      format = raw.slice('--format='.length) as ConfigClientArgs['format'];
       continue;
     }
     if (raw.startsWith('--format=')) throw new Error(`invalid --format: ${raw}`);
@@ -231,6 +249,11 @@ export function parseConfigClientArgs(rest: readonly string[]): ConfigClientArgs
   if (client === undefined) throw new Error(`expected a client name; ${supported}`);
   if (!(SUPPORTED_CLIENTS as readonly string[]).includes(client)) {
     throw new Error(`unknown client: ${client}; ${supported}`);
+  }
+  if (format === 'link' && !(LINK_CLIENTS as readonly string[]).includes(client)) {
+    throw new Error(
+      `--format=link is not available for ${client}; supported clients: ${LINK_CLIENTS.join(', ')}`,
+    );
   }
   return { client: client as ClientName, format, command };
 }
@@ -347,6 +370,69 @@ function renderSnippet(
   };
   return JSON.stringify({ [shape]: { [SERVER_NAME]: server } }, null, 2);
 }
+
+/** The server entry an install link carries: launch command plus env. */
+export interface LinkServerEntry {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
+/**
+ * The report's server entry without its placeholder variables. An installed
+ * `<OPENAI_API_KEY>` value would only fail, and a real key must never travel
+ * in a URL, so the user adds those variables in the client after installing.
+ */
+export function linkServerEntry(report: ConfigClientReport): LinkServerEntry {
+  const omitted = new Set(report.placeholders);
+  const env = Object.fromEntries(Object.entries(report.env).filter(([name]) => !omitted.has(name)));
+  return { command: report.command, args: report.args, env };
+}
+
+/**
+ * Cursor MCP install deeplink. Format from
+ * https://cursor.com/docs/context/mcp/install-links:
+ * `cursor://anysphere.cursor-deeplink/mcp/install?name=$NAME&config=$BASE64_ENCODED_CONFIG`,
+ * where `config` is base64 of the JSON-stringified server object (the name
+ * goes in `name` only). Standard base64 can contain `+`, `/` and `=`, so both
+ * values are percent-encoded; a URL parser then returns the exact base64.
+ */
+export function cursorInstallLink(server: LinkServerEntry, name: string = SERVER_NAME): string {
+  const config = Buffer.from(JSON.stringify(server), 'utf8').toString('base64');
+  return `cursor://anysphere.cursor-deeplink/mcp/install?name=${encodeURIComponent(name)}`
+    + `&config=${encodeURIComponent(config)}`;
+}
+
+/**
+ * VS Code MCP install URL. Format from
+ * https://code.visualstudio.com/api/extension-guides/ai/mcp:
+ * `vscode:mcp/install?${encodeURIComponent(JSON.stringify(obj))}` with
+ * `obj = {"name": …, "command": …, "args": […], "env": {…}}`.
+ */
+export function vscodeInstallUrl(server: LinkServerEntry, name: string = SERVER_NAME): string {
+  return `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ name, ...server }))}`;
+}
+
+/**
+ * The clickable https form of a `vscode:` URL, for web pages and READMEs
+ * (GitHub renders only http(s) links). Same vendor page as vscodeInstallUrl:
+ * `https://vscode.dev/redirect?url=<url-encoded vscode: URL>`.
+ */
+export function vscodeRedirectLink(vscodeUrl: string): string {
+  return `https://vscode.dev/redirect?url=${encodeURIComponent(vscodeUrl)}`;
+}
+
+/**
+ * The server entry behind the README "Install in VS Code" button and the
+ * Cursor link in docs/clients.md: the zero-secret Ollama setup. No
+ * KNOWLEDGE_BASES_ROOT_DIR, because a link cannot expand $HOME; the server's
+ * default root applies. A test rebuilds both links from this entry.
+ */
+export const DOCS_LINK_SERVER: LinkServerEntry = {
+  command: 'npx',
+  args: ['-y', PACKAGE_SPEC],
+  env: { EMBEDDING_PROVIDER: 'ollama' },
+};
 
 /**
  * A TOML basic string (`"..."`). TOML requires escaping the quote, the

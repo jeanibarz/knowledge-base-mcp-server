@@ -5,13 +5,18 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
+  cursorInstallLink,
+  DOCS_LINK_SERVER,
   findOnPath,
+  LINK_CLIENTS,
   parseConfigClientArgs,
   runConfigClient,
   shellQuote,
   SUPPORTED_CLIENTS,
   tomlString,
   type ConfigClientReport,
+  vscodeInstallUrl,
+  vscodeRedirectLink,
 } from './cli-config-client.js';
 import { resetProjectConfigForTests } from './config/project-config.js';
 import { deriveModelId } from './model-id.js';
@@ -633,5 +638,161 @@ describe('kb config client (spawned CLI)', () => {
     );
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('supported clients:');
+  });
+});
+
+// Decoders written from the vendor docs, independent of the builders, so a
+// builder bug cannot pass by sharing it with the test.
+function decodeCursorLink(link: string): { name: string | null; server: unknown } {
+  const url = new URL(link);
+  expect(`${url.protocol}//${url.host}${url.pathname}`).toBe('cursor://anysphere.cursor-deeplink/mcp/install');
+  const config = url.searchParams.get('config');
+  if (config === null) throw new Error(`no config parameter in ${link}`);
+  return { name: url.searchParams.get('name'), server: JSON.parse(Buffer.from(config, 'base64').toString('utf8')) };
+}
+
+function decodeVscodeUrl(link: string): unknown {
+  const prefix = 'vscode:mcp/install?';
+  expect(link.startsWith(prefix)).toBe(true);
+  return JSON.parse(decodeURIComponent(link.slice(prefix.length)));
+}
+
+function decodeVscodeRedirect(link: string): string {
+  const url = new URL(link);
+  expect(`${url.origin}${url.pathname}`).toBe('https://vscode.dev/redirect');
+  const inner = url.searchParams.get('url');
+  if (inner === null) throw new Error(`no url parameter in ${link}`);
+  return inner;
+}
+
+async function runLink(client: string, ...extra: string[]): Promise<{ code: number; lines: string[] }> {
+  stdout = '';
+  stderr = '';
+  const code = await run([client, '--format=link', ...extra]);
+  return { code, lines: stdout.split('\n').filter((line) => line !== '') };
+}
+
+describe('kb config client --format=link', () => {
+  it('cursor: the config parameter decodes to the server entry --format=json reports', async () => {
+    process.env.EMBEDDING_PROVIDER = 'ollama';
+    const report = await runJson('cursor');
+    const { code, lines } = await runLink('cursor');
+    expect({ code, stderr, count: lines.length }).toEqual({ code: 0, stderr: '', count: 1 });
+    expect(report.placeholders).toEqual([]);
+    expect(decodeCursorLink(lines[0])).toEqual({
+      name: 'knowledge-base',
+      server: { command: report.command, args: report.args, env: report.env },
+    });
+  });
+
+  it('vscode: prints the vscode: URL, then its vscode.dev wrapper; both decode to the entry plus name', async () => {
+    process.env.EMBEDDING_PROVIDER = 'ollama';
+    const report = await runJson('vscode');
+    const { code, lines } = await runLink('vscode');
+    expect({ code, stderr, count: lines.length }).toEqual({ code: 0, stderr: '', count: 2 });
+    const expected = { name: 'knowledge-base', command: report.command, args: report.args, env: report.env };
+    expect(decodeVscodeUrl(lines[0])).toEqual(expected);
+    expect(decodeVscodeRedirect(lines[1])).toBe(lines[0]);
+  });
+
+  it('carries the --command=global bin path', async () => {
+    process.env.EMBEDDING_PROVIDER = 'ollama';
+    const bin = path.join(tempDir, 'bin dir', 'knowledge-base-mcp-server');
+    stdout = '';
+    expect(await runConfigClient(['cursor', '--format=link', '--command=global'], {
+      ...NO_ACTIVE, resolveServerBin: () => bin,
+    })).toBe(0);
+    expect(decodeCursorLink(stdout.trim()).server).toMatchObject({ command: bin, args: [] });
+  });
+
+  it.each(['openai', 'huggingface'])('provider %s: the key is left out of both links and named on stderr', async (provider) => {
+    Object.assign(process.env, SECRETS, { EMBEDDING_PROVIDER: provider });
+    const keyVar = provider === 'openai' ? 'OPENAI_API_KEY' : 'HUGGINGFACE_API_KEY';
+    const report = await runJson('cursor');
+    const expectedEnv = { ...report.env };
+    delete expectedEnv[keyVar];
+
+    const cursor = await runLink('cursor');
+    expect(cursor.code).toBe(0);
+    expect(stderr).toContain(keyVar);
+    const cursorServer = decodeCursorLink(cursor.lines[0]).server as { env: Record<string, string> };
+    expect(cursorServer.env).toEqual(expectedEnv);
+
+    const vscode = await runLink('vscode');
+    expect(vscode.code).toBe(0);
+    expect(stderr).toContain(keyVar);
+    const decoded = [
+      JSON.stringify(cursorServer),
+      JSON.stringify(decodeVscodeUrl(vscode.lines[0])),
+      JSON.stringify(decodeVscodeUrl(decodeVscodeRedirect(vscode.lines[1]))),
+    ];
+    for (const text of [...decoded, stdout]) {
+      expect(text).not.toContain(keyVar);
+      expect(text).not.toContain('MCP_AUTH_TOKEN');
+      for (const secret of Object.values(SECRETS)) expect(text).not.toContain(secret);
+    }
+  });
+
+  it('leaves a credential-bearing URL out of the link too', async () => {
+    Object.assign(process.env, { EMBEDDING_PROVIDER: 'openai', OPENAI_BASE_URL: 'https://user:pw@proxy.example/v1' });
+    const { code, lines } = await runLink('cursor');
+    expect(code).toBe(0);
+    expect(stderr).toContain('OPENAI_BASE_URL');
+    expect((decodeCursorLink(lines[0]).server as { env: object }).env).not.toHaveProperty('OPENAI_BASE_URL');
+    expect(stdout).not.toContain('proxy.example');
+  });
+
+  it.each(SUPPORTED_CLIENTS.filter((c) => !(LINK_CLIENTS as readonly string[]).includes(c)))(
+    '%s: exits 2 and names the supported clients',
+    async (client) => {
+      const { code } = await runLink(client);
+      expect(code).toBe(2);
+      expect(stdout).toBe('');
+      expect(stderr).toContain('--format=link');
+      expect(stderr).toContain('supported clients: cursor, vscode');
+    },
+  );
+
+  it('accepts --format=link before the client name', () => {
+    expect(parseConfigClientArgs(['--format=link', 'vscode']).format).toBe('link');
+    expect(() => parseConfigClientArgs(['--format=link', 'codex'])).toThrow('supported clients: cursor, vscode');
+  });
+
+  it('cursor link survives base64 "+", "/" and "=" through a URL parser', () => {
+    const seen = new Set<string>();
+    for (const value of ['>>>', '>>>>', '>>>>>', '???', '????', '?????', 'a', 'ab']) {
+      const server = { command: 'npx', args: [value], env: {} };
+      for (const ch of Buffer.from(JSON.stringify(server)).toString('base64')) seen.add(ch);
+      expect(decodeCursorLink(cursorInstallLink(server)).server).toEqual(server);
+    }
+    // Guards against a vacuous loop: the inputs did exercise every risky character.
+    for (const ch of ['+', '/', '=']) expect(seen).toContain(ch);
+  });
+
+  it('the README button and the docs/clients.md Cursor link match the generator', async () => {
+    const readme = await fsp.readFile(path.join(ORIGINAL_CWD, 'README.md'), 'utf-8');
+    const clientsDoc = await fsp.readFile(path.join(ORIGINAL_CWD, 'docs', 'clients.md'), 'utf-8');
+    const vscodeButton = vscodeRedirectLink(vscodeInstallUrl(DOCS_LINK_SERVER));
+    expect(readme).toContain(`[![Install in VS Code]`);
+    expect(readme).toContain(`](${vscodeButton})`);
+    expect(clientsDoc).toContain(`\n${cursorInstallLink(DOCS_LINK_SERVER)}\n`);
+    // Every install link committed in either doc must be the generated one.
+    const committed = [...`${readme}\n${clientsDoc}`.matchAll(/(?:https:\/\/vscode\.dev\/redirect\?url=|cursor:\/\/anysphere\.cursor-deeplink\/)[^\s)`]+/g)]
+      .map((m) => m[0]);
+    expect(committed.length).toBeGreaterThanOrEqual(2);
+    for (const link of committed) expect([vscodeButton, cursorInstallLink(DOCS_LINK_SERVER)]).toContain(link);
+    expect(DOCS_LINK_SERVER.env).toEqual({ EMBEDDING_PROVIDER: 'ollama' });
+  });
+
+  it('passes the spawned CLI typo guard', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--enable-source-maps', '--import', tsxLoaderPath, path.join(ORIGINAL_CWD, 'src', 'cli.ts'),
+        'config', 'client', 'vscode', '--format=link'],
+      { cwd: tempDir, encoding: 'utf-8', env: { ...process.env, EMBEDDING_PROVIDER: 'ollama' } },
+    );
+    expect(result.stderr).not.toMatch(/unknown flag|Did you mean/);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/^vscode:mcp\/install\?.*\nhttps:\/\/vscode\.dev\/redirect\?url=/);
   });
 });
