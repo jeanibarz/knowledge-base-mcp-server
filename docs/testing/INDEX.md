@@ -382,6 +382,7 @@ Keep this helper limited to temp directory scaffolding, file writes, path lookup
 - `kb feedback list` shall return entries sorted by `created_at` descending and honor `--query` and `--limit`.
 - `kb feedback promote` shall produce a YAML preview without `--fixture --yes` and shall append a `kb eval` case to the target fixture when both are supplied.
 - The ledger shall store `task_context_sha256` (never the raw text) when `--task-context` is supplied.
+- `kb feedback summary` shall return a `kb-feedback-summary.v1` report (verdict counts, relevant share, mean relevance, group counts, `--top`-bounded flagged sources, malformed line count), honor `--query`, and leave the ledger byte-identical.
 
 ## Logging and Observability
 

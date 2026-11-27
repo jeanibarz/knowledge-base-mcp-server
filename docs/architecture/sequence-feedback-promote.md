@@ -4,9 +4,15 @@
 state. `list` and `summary` are read-only passes over the JSONL ledger and
 are not diagrammed separately.
 
-The CLI entrypoint is `runFeedback` at `src/cli-feedback.ts:123-175`, which
+The CLI entrypoint is `runFeedback` (`src/cli-feedback.ts::runFeedback`), which
 dispatches to `appendFeedbackEntry` (add) or
 `buildPromotedEvalFixture` + `appendPromotedCaseToFixtureFile` (promote).
+
+The diagrams anchor each step to the function that performs it
+(`file::Symbol`), not to line numbers, so edits to the source do not
+silently stale them. The anchor checker (`npm run docs:check-anchors`) skips
+fenced blocks, so every symbol named inside the diagrams is also listed —
+and validated — under [Source anchors](#source-anchors).
 
 ## Add a judgment
 
@@ -14,21 +20,21 @@ dispatches to `appendFeedbackEntry` (add) or
 sequenceDiagram
   autonumber
   participant Op as Operator/agent
-  participant Cli as runFeedback<br/>src/cli-feedback.ts:123-175
-  participant Ledger as appendFeedbackEntry<br/>src/feedback-ledger.ts:182-188
+  participant Cli as runFeedback<br/>src/cli-feedback.ts::runFeedback
+  participant Ledger as appendFeedbackEntry<br/>src/feedback-ledger.ts::appendFeedbackEntry
   participant KbFs as resolveKnowledgeBaseDir<br/>src/kb-fs.ts
   participant FS as &lt;kb&gt;/.index/relevance-feedback.jsonl
 
   Op->>Cli: kb feedback add --kb=<name> --query=<text><br/>--source=<rel-path> [verdict flags]
-  Cli->>KbFs: resolveKnowledgeBaseDir(KB_ROOT, kb)<br/>src/cli-feedback.ts:134
+  Cli->>KbFs: resolveKnowledgeBaseDir(KB_ROOT, kb)<br/>src/cli-feedback.ts::runFeedback
   KbFs-->>Cli: <kb> absolute path
-  Note over Cli: parseFeedbackArgs validates required fields<br/>src/cli-feedback.ts:177-204
-  Cli->>Ledger: appendFeedbackEntry(kbDir, input)<br/>src/cli-feedback.ts:142
-  Ledger->>Ledger: buildFeedbackEntry → ULID id,<br/>created_at, SHA-256 of task_context<br/>src/feedback-ledger.ts:228-249
+  Note over Cli: parseFeedbackArgs validates required fields<br/>src/cli-feedback.ts::parseFeedbackArgs
+  Cli->>Ledger: appendFeedbackEntry(kbDir, input)<br/>src/cli-feedback.ts::runFeedback
+  Ledger->>Ledger: buildFeedbackEntry → ULID id,<br/>created_at, SHA-256 of task_context<br/>src/feedback-ledger.ts::buildFeedbackEntry
   Ledger->>FS: fsp.appendFile JSONL line
   FS-->>Ledger: ok
   Ledger-->>Cli: FeedbackLedgerEntry
-  Cli-->>Op: { ledger_path, entry } (JSON)<br/>src/cli-feedback.ts:298-315<br/>exit 0
+  Cli-->>Op: { ledger_path, entry } (JSON)<br/>src/cli-feedback.ts::writeFeedbackAddResult<br/>exit 0
 ```
 
 Stable guarantees:
@@ -48,28 +54,29 @@ Stable guarantees:
 sequenceDiagram
   autonumber
   participant Op as Operator/agent
-  participant Cli as runFeedback<br/>src/cli-feedback.ts:123-175
-  participant Read as readFeedbackLedger<br/>src/feedback-ledger.ts:190-204
-  participant Build as buildPromotedEvalFixture<br/>src/feedback-ledger.ts:251-302
-  participant Append as appendPromotedCaseToFixtureFile<br/>src/feedback-ledger.ts:308-331
+  participant Cli as runFeedback<br/>src/cli-feedback.ts::runFeedback
+  participant Read as readFeedbackLedger<br/>src/feedback-ledger.ts::readFeedbackLedger
+  participant Build as buildPromotedEvalFixture<br/>src/feedback-ledger.ts::buildPromotedEvalFixture
+  participant Append as appendPromotedCaseToFixtureFile<br/>src/feedback-ledger.ts::appendPromotedCaseToFixtureFile
   participant FS as fixture.yml
 
   Op->>Cli: kb feedback promote --kb=<name><br/>--query=<text> [--fixture=<path> --yes]
-  Cli->>Read: readFeedbackLedger(kbDir)<br/>src/cli-feedback.ts:162
-  Read->>Read: parse JSONL,<br/>filter by --query<br/>src/feedback-ledger.ts:206-226
+  Cli->>Read: readFeedbackLedger(kbDir)<br/>src/cli-feedback.ts::runFeedback
+  Read->>Read: parse JSONL<br/>src/feedback-ledger.ts::parseFeedbackJsonl
   Read-->>Cli: FeedbackLedgerEntry[]
-  Cli->>Build: buildPromotedEvalFixture(entries, parsed)<br/>src/cli-feedback.ts:163
+  Cli->>Build: buildPromotedEvalFixture(entries, parsed)<br/>src/cli-feedback.ts::runFeedback
+  Build->>Build: keep rows matching --kb and --query
   Build-->>Cli: { gate, cases: [one case for the query] }
 
   alt --fixture && --yes (write mode)
-    Cli->>Append: appendPromotedCaseToFixtureFile(path, fixture)<br/>src/cli-feedback.ts:165
+    Cli->>Append: appendPromotedCaseToFixtureFile(path, fixture)<br/>src/cli-feedback.ts::runFeedback
     Append->>Append: load existing YAML or create new
     Append->>FS: write merged YAML atomically
     Append-->>Cli: { caseCount, created }
-    Cli-->>Op: { fixture_path, wrote:true, created, case_count }<br/>src/cli-feedback.ts:402-421<br/>exit 0
+    Cli-->>Op: { fixture_path, wrote:true, created, case_count }<br/>src/cli-feedback.ts::writeFeedbackPromoteWriteResult<br/>exit 0
   else preview (default)
-    Cli->>Cli: dumpPromotedEvalFixture(fixture)<br/>src/cli-feedback.ts:389
-    Cli-->>Op: { wrote:false, fixture_yaml }<br/>src/cli-feedback.ts:384-400<br/>exit 0
+    Cli->>Cli: dumpPromotedEvalFixture(fixture)<br/>src/cli-feedback.ts::writeFeedbackPromotePreview
+    Cli-->>Op: { wrote:false, fixture_yaml }<br/>src/cli-feedback.ts::writeFeedbackPromotePreview<br/>exit 0
   end
 ```
 
@@ -85,6 +92,30 @@ sequenceDiagram
 - **Idempotency boundary.** Adding the same judgment twice via `kb feedback
   add` produces two ledger rows (different ULIDs). Operator-driven
   retraction is by hand-editing the JSONL file — there is no `remove`.
+
+## Source anchors
+
+Every symbol the diagrams reference, listed outside the fenced blocks so
+`npm run docs:check-anchors` fails if one is renamed or removed:
+
+- `src/cli-feedback.ts::runFeedback` — argument parsing, KB resolution and
+  action dispatch.
+- `src/cli-feedback.ts::parseFeedbackArgs` — required-field validation.
+- `src/cli-feedback.ts::writeFeedbackAddResult` — `add` result envelope.
+- `src/cli-feedback.ts::writeFeedbackPromotePreview` — `promote` preview
+  envelope (renders YAML via `dumpPromotedEvalFixture`).
+- `src/cli-feedback.ts::writeFeedbackPromoteWriteResult` — `promote` write
+  result envelope.
+- `src/feedback-ledger.ts::appendFeedbackEntry` — appends one JSONL row.
+- `src/feedback-ledger.ts::buildFeedbackEntry` — ULID, timestamp, defaults
+  and task-context hash.
+- `src/feedback-ledger.ts::readFeedbackLedger` — reads the ledger file.
+- `src/feedback-ledger.ts::parseFeedbackJsonl` — parses JSONL rows.
+- `src/feedback-ledger.ts::buildPromotedEvalFixture` — filters rows for the
+  query and builds the eval case.
+- `src/feedback-ledger.ts::dumpPromotedEvalFixture` — renders the fixture YAML.
+- `src/feedback-ledger.ts::appendPromotedCaseToFixtureFile` — merges the case
+  into the fixture file.
 
 ## Related
 
