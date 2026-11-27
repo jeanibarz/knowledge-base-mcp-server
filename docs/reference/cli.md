@@ -862,8 +862,12 @@ exists errors instead of clobbering the existing shelf.
 
 Options:
   --format=md|json      Output format (default: md). `md` prints the created
-                        directory path; `json` prints an object with
-                        `knowledge_base_name`, `path`, and `created`.
+                        directory path on its first line, then a short
+                        "Next steps" block with copy-pasteable commands that
+                        name the new shelf: add a note, build the index and
+                        search it, and connect an MCP client. `json` prints
+                        only an object with `knowledge_base_name`, `path`,
+                        and `created`.
   --help, -h            Show this help.
 
 Exit codes:
