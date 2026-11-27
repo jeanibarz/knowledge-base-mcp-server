@@ -8,6 +8,7 @@ import {
   appendPromotedCaseToFixtureFile,
   buildFeedbackEntry,
   buildPromotedEvalFixture,
+  FEEDBACK_LEDGER_SCHEMA_VERSION,
   feedbackLedgerPath,
   parseFeedbackJsonl,
   readFeedbackLedger,
@@ -325,5 +326,51 @@ describe('summarizeFeedbackEntries', () => {
       group_counts: [],
       top_flagged_sources: [],
     });
+  });
+});
+
+describe('feedback ledger docs', () => {
+  // Guards the documented entry shape against drift (issue #1323): the docs once
+  // claimed ULID ids, a `task_context_sha256` field and a `relevance-feedback.v1`
+  // schema, none of which the code ever produced.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const fullEntry = buildFeedbackEntry({
+    kb: 'work',
+    query: 'rollback procedure',
+    source: 'runbooks/deploy.md',
+    chunkId: 'work/runbooks/deploy.md#L42-L78',
+    verdict: 'relevant',
+    relevance: 3,
+    taskContext: 'incident-123',
+    note: 'matches step 3 in deploy.md',
+    groups: ['runbook'],
+  });
+
+  function expectDocumentedEntryMatchesCode(documented: Record<string, unknown>): void {
+    expect(Object.keys(documented).sort()).toEqual(Object.keys(fullEntry).sort());
+    expect(documented.schema_version).toBe(FEEDBACK_LEDGER_SCHEMA_VERSION);
+    expect(documented.id).toMatch(UUID_RE);
+  }
+
+  it('generates random UUID ids', () => {
+    expect(fullEntry.id).toMatch(UUID_RE);
+  });
+
+  it('documents the kb feedback add entry in cli-json-contracts.md with the real field names', async () => {
+    const markdown = await fsp.readFile(path.join(process.cwd(), 'docs', 'cli-json-contracts.md'), 'utf-8');
+    const section = markdown.split('## `kb feedback`')[1]?.split(/^## `/m)[0] ?? '';
+    const addEnvelope = [...section.matchAll(/```json\n([\s\S]*?)\n```/g)]
+      .map((match) => JSON.parse(match[1]) as Record<string, unknown>)
+      .find((example) => 'entry' in example);
+    expect(addEnvelope).toBeDefined();
+    expectDocumentedEntryMatchesCode(addEnvelope!.entry as Record<string, unknown>);
+  });
+
+  it('documents the stored ledger row in feedback-workflow.md with the real field names', async () => {
+    const markdown = await fsp.readFile(path.join(process.cwd(), 'docs', 'operations', 'feedback-workflow.md'), 'utf-8');
+    const block = markdown.split('## What the ledger stores')[1]?.match(/```jsonc\n([\s\S]*?)\n```/)?.[1];
+    expect(block).toBeDefined();
+    const withoutComments = block!.replace(/\s+\/\/.*$/gm, '');
+    expectDocumentedEntryMatchesCode(JSON.parse(withoutComments) as Record<string, unknown>);
   });
 });

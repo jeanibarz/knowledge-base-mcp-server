@@ -597,7 +597,7 @@ graceful-degradation contract.
 **Requirement:** The system shall record per-KB relevance judgments through `kb feedback add` and let operators promote accumulated judgments for a query into a `kb eval` fixture case via `kb feedback promote`, and report aggregate ledger statistics through the read-only `kb feedback summary`.
 
 **Acceptance Criteria:**
-- [x] Given a relevance judgment, when `kb feedback add` runs, then the system shall append a `relevance-feedback.v1` row to `<kb>/.index/relevance-feedback.jsonl` and return the new entry id.
+- [x] Given a relevance judgment, when `kb feedback add` runs, then the system shall append a `kb-feedback.v1` row to `<kb>/.index/relevance-feedback.jsonl` and return the new entry id.
 - [x] Given recorded judgments, when `kb feedback list` runs, then the system shall return entries sorted by `created_at` descending and honor `--query` and `--limit`.
 - [x] Given recorded judgments, when `kb feedback promote --fixture --yes` runs, then the system shall append one `kb eval` case for the target query to the fixture file.
 - [x] Given `--task-context`, when the ledger row is written, then only the SHA-256 of the task context shall be persisted.

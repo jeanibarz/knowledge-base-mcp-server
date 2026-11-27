@@ -124,7 +124,8 @@ immediately.
 
 ```jsonc
 {
-  "id": "01HVT7C0DXFG2MJC9Y4N9YEH3R",   // ULID
+  "schema_version": "kb-feedback.v1",
+  "id": "3f2b8c1e-9d4a-4e6f-8a7b-2c5d1e0f9a84",   // random UUID (v4)
   "kb": "work",
   "created_at": "2026-05-21T09:15:00.000Z",
   "query": "rollback procedure",
@@ -132,7 +133,7 @@ immediately.
   "chunk_id": "work/runbooks/deploy.md#L42-L78",
   "verdict": "relevant",
   "relevance": 3,
-  "task_context_sha256": "0123…",
+  "task_context_hash": "0123…",   // hex SHA-256 of --task-context; raw text never stored
   "note": "matches step 3 in deploy.md",
   "groups": ["runbook"]
 }
