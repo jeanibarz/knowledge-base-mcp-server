@@ -275,6 +275,27 @@ describe('kb init next-steps hint (issue #1311)', () => {
     });
   });
 
+  it('escapes an apostrophe in the shelf name so the printed command still parses', async () => {
+    await withTempRoot(async (root) => {
+      const env = { KNOWLEDGE_BASES_ROOT_DIR: root };
+      const init = runCli(['init', "it's"], env);
+      expect(init.code).toBe(0);
+      expect(init.stdout).toContain("kb remember '--kb=it'\\''s' ");
+
+      // Run the printed note line through a real shell, with `kb` resolved to
+      // the built CLI, and check the note lands in the apostrophe shelf.
+      const line = init.stdout.split('\n').find((l) => l.includes('| kb remember '));
+      expect(line).toBeDefined();
+      const script = `kb() { node ${JSON.stringify(cliPath)} "$@"; }\n${line!.trim()}\n`;
+      const sh = spawnSync('sh', ['-c', script], {
+        env: { PATH: process.env.PATH ?? '', KB_LOG_FORMAT: 'text', ...env },
+        encoding: 'utf-8',
+      });
+      expect(sh.status).toBe(0);
+      expect((await fsp.stat(path.join(root, "it's", 'first-note.md'))).isFile()).toBe(true);
+    });
+  });
+
   it('prints only commands the real CLI accepts', async () => {
     await withTempRoot(async (root) => {
       const env = { KNOWLEDGE_BASES_ROOT_DIR: root, HOME: root };

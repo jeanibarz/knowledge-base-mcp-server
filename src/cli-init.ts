@@ -142,7 +142,7 @@ function renderNextSteps(name: string, kbDir: string): string {
     `       echo '# First note' | ${kb(cmd.remember)}`,
     '  2. Build the index and search it (the first search needs --refresh):',
     `       ${kb(cmd.search)}`,
-    `  3. Connect an MCP client (also: ${otherClients}):`,
+    `  3. Print the setup for an MCP client (also: ${otherClients}):`,
     `       ${kb(cmd.client)}`,
     '',
   ].join('\n');
