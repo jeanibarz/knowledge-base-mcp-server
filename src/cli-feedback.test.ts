@@ -171,6 +171,10 @@ describe('kb feedback summary', () => {
       '- b.md: 1 flagged (irrelevant 1, stale 0, misleading 0; relevant 0), last 2026-05-19T10:00:05.000Z',
       '',
     ].join('\n'));
+
+    const filtered = await buildFeedbackSummaryReport(kbDir, { kb: 'ops', query: 'deploy', top: 10 });
+    expect(renderFeedbackSummaryMarkdown(filtered))
+      .toContain(`Ledger: ${ledgerPath}\nQuery: deploy\n\n- Entries: 3 (1 queries, 3 sources)\n`);
   });
 
   it('prints the summary end to end and leaves the ledger byte-identical', async () => {
@@ -213,6 +217,8 @@ describe('kb feedback summary', () => {
     const md = runCli(['feedback', 'summary', '--kb=ops'], kbRoot);
     expect(md.code).toBe(0);
     expect(md.stdout).toContain('- Relevant share: n/a');
+    expect(md.stdout).toContain('- Mean relevance: n/a (0..3)');
+    expect(md.stdout).toContain('No group labels.');
     expect(md.stdout).toContain('No flagged sources.');
     await expect(fsp.access(path.join(kbDir, '.index'))).rejects.toThrow();
   });

@@ -1994,6 +1994,12 @@ kb feedback summary --kb=<name> [--query=<text>] [--top=<int>] --format=json
       "flagged_count": 2,
       "verdict_counts": { "relevant": 1, "irrelevant": 0, "stale": 1, "misleading": 1 },
       "last_flagged_at": "2026-05-21T09:15:00.000Z"
+    },
+    {
+      "source": "notes/unrelated.md",
+      "flagged_count": 2,
+      "verdict_counts": { "relevant": 0, "irrelevant": 2, "stale": 0, "misleading": 0 },
+      "last_flagged_at": "2026-05-20T14:02:00.000Z"
     }
   ]
 }
@@ -2025,7 +2031,7 @@ Stable fields:
 - `summary.relevant_share` is `verdict_counts.relevant / total_entries`, rounded
   to 4 decimals; `null` when `total_entries` is `0`. It uses the stored verdict
   only. Every row has a verdict: when `add` got only `--relevance`, it stored
-  `irrelevant` for `0` and `relevant` for `1..3`. A row written with
+  `irrelevant` for `0` and `relevant` for any value above `0`. A row written with
   `--verdict=relevant --relevance=0` counts as relevant here, although
   `promote` (which requires `relevance > 0`) leaves it out of
   `required_sources`.

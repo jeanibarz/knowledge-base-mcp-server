@@ -91,7 +91,7 @@ export interface FeedbackSummary {
    * there are no rows. Counts rows (judgments), not distinct query/source
    * pairs, and uses the stored verdict only. The ledger always stores a
    * verdict: when only --relevance was given at write time, relevance 0
-   * became `irrelevant` and 1..3 became `relevant`.
+   * became `irrelevant` and any value above 0 became `relevant`.
    */
   relevant_share: number | null;
   /** Mean of the graded relevance (0..3) over all rows, 4 decimals; null when empty. */

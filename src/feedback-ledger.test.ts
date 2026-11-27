@@ -207,7 +207,7 @@ describe('feedback promotion', () => {
 describe('summarizeFeedbackEntries', () => {
   // Hand-computed fixture (issue #1312). Two queries; old.md is judged under
   // both and carries relevant + non-relevant rows; b.md and c.md tie on one
-  // flag each (tiebreak: source ascending); rows 4 and 5 are graded-only
+  // flag each; rows 4 and 5 are graded-only
   // (relevance 1 -> relevant, relevance 0 -> irrelevant).
   const row = (
     n: number,
@@ -265,6 +265,28 @@ describe('summarizeFeedbackEntries', () => {
         },
       ],
     });
+  });
+
+  it('ranks flagged sources by count, then source, independent of row order', () => {
+    // m.md is flagged most but inserted last; z.md precedes y.md on a tie; m.md's
+    // flags arrive out of date order; the two group labels tie in reverse order.
+    const summary = summarizeFeedbackEntries([
+      row(3, 'q', 'z.md', { verdict: 'irrelevant', groups: ['zeta'] }),
+      row(2, 'q', 'y.md', { verdict: 'irrelevant', groups: ['alpha'] }),
+      row(4, 'q', 'm.md', { verdict: 'stale' }),
+      row(6, 'q', 'm.md', { verdict: 'irrelevant' }),
+      row(1, 'q', 'm.md', { verdict: 'misleading' }),
+    ]);
+    expect(summary.top_flagged_sources.map((entry) => [entry.source, entry.flagged_count, entry.last_flagged_at]))
+      .toEqual([
+        ['m.md', 3, '2026-05-19T10:00:06.000Z'],
+        ['y.md', 1, '2026-05-19T10:00:02.000Z'],
+        ['z.md', 1, '2026-05-19T10:00:03.000Z'],
+      ]);
+    expect(summary.group_counts).toEqual([
+      { group: 'alpha', count: 1 },
+      { group: 'zeta', count: 1 },
+    ]);
   });
 
   it('truncates flagged sources to top and keeps the ranking', () => {

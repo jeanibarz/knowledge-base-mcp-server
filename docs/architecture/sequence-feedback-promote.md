@@ -1,10 +1,10 @@
 # Sequence — `kb feedback` (add + promote)
 
-`kb feedback` has three actions; this diagram covers the two that mutate
-state. `list` is a trivial read of the JSONL ledger and is not diagrammed
-separately.
+`kb feedback` has four actions; this diagram covers the two that mutate
+state. `list` and `summary` are read-only passes over the JSONL ledger and
+are not diagrammed separately.
 
-The CLI entrypoint is `runFeedback` at `src/cli-feedback.ts:95-140`, which
+The CLI entrypoint is `runFeedback` at `src/cli-feedback.ts:123-175`, which
 dispatches to `appendFeedbackEntry` (add) or
 `buildPromotedEvalFixture` + `appendPromotedCaseToFixtureFile` (promote).
 
@@ -14,7 +14,7 @@ dispatches to `appendFeedbackEntry` (add) or
 sequenceDiagram
   autonumber
   participant Op as Operator/agent
-  participant Cli as runFeedback<br/>src/cli-feedback.ts:95-140
+  participant Cli as runFeedback<br/>src/cli-feedback.ts:123-175
   participant Ledger as appendFeedbackEntry<br/>src/feedback-ledger.ts:61-67
   participant KbFs as resolveKnowledgeBaseDir<br/>src/kb-fs.ts
   participant FS as &lt;kb&gt;/.index/relevance-feedback.jsonl
@@ -48,7 +48,7 @@ Stable guarantees:
 sequenceDiagram
   autonumber
   participant Op as Operator/agent
-  participant Cli as runFeedback<br/>src/cli-feedback.ts:95-140
+  participant Cli as runFeedback<br/>src/cli-feedback.ts:123-175
   participant Read as readFeedbackLedger<br/>src/feedback-ledger.ts:69-79
   participant Build as buildPromotedEvalFixture<br/>:120-171
   participant Append as appendPromotedCaseToFixtureFile<br/>:177-210
