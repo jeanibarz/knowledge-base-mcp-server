@@ -289,6 +289,18 @@ describe('summarizeFeedbackEntries', () => {
     ]);
   });
 
+  it('sorts group labels by count before label', () => {
+    const summary = summarizeFeedbackEntries([
+      row(1, 'q', 'x.md', { groups: ['alpha'] }),
+      row(2, 'q', 'x.md', { groups: ['zeta'] }),
+      row(3, 'q', 'x.md', { groups: ['zeta'] }),
+    ]);
+    expect(summary.group_counts).toEqual([
+      { group: 'zeta', count: 2 },
+      { group: 'alpha', count: 1 },
+    ]);
+  });
+
   it('truncates flagged sources to top and keeps the ranking', () => {
     const summary = summarizeFeedbackEntries(fixture, { top: 2 });
     expect(summary.top_flagged_sources.map((entry) => entry.source)).toEqual(['old.md', 'b.md']);

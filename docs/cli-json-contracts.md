@@ -1990,16 +1990,16 @@ kb feedback summary --kb=<name> [--query=<text>] [--top=<int>] --format=json
   ],
   "top_flagged_sources": [
     {
-      "source": "runbooks/old-deploy.md",
-      "flagged_count": 2,
-      "verdict_counts": { "relevant": 1, "irrelevant": 0, "stale": 1, "misleading": 1 },
-      "last_flagged_at": "2026-05-21T09:15:00.000Z"
-    },
-    {
       "source": "notes/unrelated.md",
       "flagged_count": 2,
       "verdict_counts": { "relevant": 0, "irrelevant": 2, "stale": 0, "misleading": 0 },
       "last_flagged_at": "2026-05-20T14:02:00.000Z"
+    },
+    {
+      "source": "runbooks/old-deploy.md",
+      "flagged_count": 2,
+      "verdict_counts": { "relevant": 1, "irrelevant": 0, "stale": 1, "misleading": 1 },
+      "last_flagged_at": "2026-05-21T09:15:00.000Z"
     }
   ]
 }
