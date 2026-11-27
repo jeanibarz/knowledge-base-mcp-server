@@ -764,10 +764,14 @@ Usage:
   kb feedback promote --kb=<name> --query=<query> [--name=<case-name>]
                       [--k=<int>] [--mode=dense|lexical|hybrid|auto] [--gate]
                       [--fixture=<path> --yes] [--format=md|json]
+  kb feedback summary --kb=<name> [--query=<query>] [--top=<int>] [--format=md|json]
 
 Records human or agent judgments in <kb>/.index/relevance-feedback.jsonl.
 `promote` converts all rows for one query into a `kb eval` fixture case.
 Without `--fixture --yes`, promote is read-only and prints YAML to stdout.
+`summary` is read-only: it reports verdict counts, the relevant share
+(rows with verdict relevant / all rows), mean graded relevance, group counts
+and the sources most often judged irrelevant, stale or misleading.
 
 Options:
   --kb=<name>            Knowledge base under KNOWLEDGE_BASES_ROOT_DIR.
@@ -782,6 +786,8 @@ Options:
   --note=<text>          Short reviewer note stored in the ledger.
   --group=<label>        Intent/group label for diversity metrics. Repeatable.
   --limit=<int>          Max rows for list output (default 50).
+  --top=<int>            Max flagged sources in summary output
+                         (default 10).
   --name=<case-name>     Eval case name for promote.
   --k=<int>              Optional eval case K.
   --mode=<mode>          Optional eval retrieval mode.

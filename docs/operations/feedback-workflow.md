@@ -17,11 +17,12 @@ hash sidecars, one JSON record per line, append-only.
 - You are iterating on retrieval (reranker, gate floor, contextual ingest)
   and want a growing labelled set without inventing fixtures from scratch.
 
-## Three actions
+## Four actions
 
 ```bash
 kb feedback add     --kb=<name> --query=<text> --source=<rel-path> [judgement flags] --format=json
 kb feedback list    --kb=<name> [--query=<text>] [--limit=<int>]                       --format=json
+kb feedback summary --kb=<name> [--query=<text>] [--top=<int>]                         --format=json
 kb feedback promote --kb=<name> --query=<text> [--fixture=<path> --yes]               --format=json
 ```
 
@@ -59,6 +60,28 @@ kb feedback list --kb=work --query="rollback procedure" --limit=20 --format=json
 
 Entries are sorted newest-first. `--query` is an exact match; omit it to see
 the entire ledger.
+
+### Summarize the ledger
+
+```bash
+kb feedback summary --kb=work
+kb feedback summary --kb=work --query="rollback procedure" --top=5 --format=json
+```
+
+`summary` is read-only. It answers two questions: how often were judged
+results relevant, and which notes keep being flagged. It reports:
+
+- the number of rows, distinct queries and distinct sources;
+- the count of each verdict;
+- the **relevant share**: rows with verdict `relevant` divided by all rows;
+- the mean graded relevance (`0..3`);
+- the count of rows per `--group` label;
+- the sources with the most `irrelevant`, `stale` or `misleading` rows
+  (`--top`, default 10). These are the notes to fix, retire or re-tag first.
+
+It counts rows, so a result judged twice counts twice. A missing or empty
+ledger prints a zero summary. Torn lines (from a crash mid-append) are
+skipped and counted as "Skipped malformed lines".
 
 ### Promote into an eval fixture
 
@@ -129,7 +152,8 @@ through your usual secrets-aware backup.
 ## JSON contract
 
 See [`docs/cli-json-contracts.md`](../cli-json-contracts.md#kb-feedback) for
-the stable envelopes for `add`, `list`, and `promote` (preview and write).
+the stable envelopes for `add`, `list`, `summary`, and `promote` (preview and
+write), and the exact metric definitions behind `summary`.
 
 ## Related
 

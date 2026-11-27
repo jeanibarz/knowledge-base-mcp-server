@@ -1913,6 +1913,7 @@ kb feedback list --kb=<name> [--query=<text>] [--limit=<int>] --format=json
 kb feedback promote --kb=<name> --query=<text> [--name=<case-name>]
                     [--k=<int>] [--mode=dense|lexical|hybrid|auto] [--gate]
                     [--fixture=<path> --yes] --format=json
+kb feedback summary --kb=<name> [--query=<text>] [--top=<int>] --format=json
 ```
 
 `add` envelope:
@@ -1967,6 +1968,37 @@ kb feedback promote --kb=<name> --query=<text> [--name=<case-name>]
 }
 ```
 
+`summary` envelope (read-only aggregate of the ledger):
+
+```json
+{
+  "schema_version": "kb-feedback-summary.v1",
+  "kb": "work",
+  "ledger_path": "/home/jean/knowledge_bases/work/.index/relevance-feedback.jsonl",
+  "query": null,
+  "top": 10,
+  "malformed_line_count": 0,
+  "total_entries": 7,
+  "distinct_queries": 2,
+  "distinct_sources": 4,
+  "verdict_counts": { "relevant": 3, "irrelevant": 2, "stale": 1, "misleading": 1 },
+  "relevant_share": 0.4286,
+  "mean_relevance": 0.8571,
+  "group_counts": [
+    { "group": "procedure", "count": 2 },
+    { "group": "runbook", "count": 1 }
+  ],
+  "top_flagged_sources": [
+    {
+      "source": "runbooks/old-deploy.md",
+      "flagged_count": 2,
+      "verdict_counts": { "relevant": 1, "irrelevant": 0, "stale": 1, "misleading": 1 },
+      "last_flagged_at": "2026-05-21T09:15:00.000Z"
+    }
+  ]
+}
+```
+
 Stable fields:
 
 - Every envelope includes the ledger path; `add` returns the new `entry`.
@@ -1979,6 +2011,35 @@ Stable fields:
   full `fixture_yaml` so an operator can review before writing.
 - Promote-with-write returns `case_count` (the fixture's case count after the
   append) and `created` (`true` if the fixture file did not exist).
+- `summary` never writes: it does not create `.index/` or the ledger. A missing
+  or empty ledger yields a zero summary (all counts `0`, empty arrays) and
+  exit `0`.
+- `summary` counts rows (judgments), not distinct query/source pairs: a source
+  judged twice counts twice. `--query` is an exact match on the row's query and
+  filters every count except `malformed_line_count`.
+- `summary.malformed_line_count` is the number of unparseable (torn) ledger
+  lines skipped. It covers the whole ledger even with `--query`, because a torn
+  line has no readable query. A well-formed row with an invalid schema still
+  fails the command with exit `1`.
+- `summary.verdict_counts` always has all four verdict keys.
+- `summary.relevant_share` is `verdict_counts.relevant / total_entries`, rounded
+  to 4 decimals; `null` when `total_entries` is `0`. It uses the stored verdict
+  only. Every row has a verdict: when `add` got only `--relevance`, it stored
+  `irrelevant` for `0` and `relevant` for `1..3`. A row written with
+  `--verdict=relevant --relevance=0` counts as relevant here, although
+  `promote` (which requires `relevance > 0`) leaves it out of
+  `required_sources`.
+- `summary.mean_relevance` is the mean graded relevance (`0..3`) over all
+  counted rows, rounded to 4 decimals; `null` when there are no rows.
+- `summary.group_counts` counts rows per group label (a row with two labels
+  counts once for each; unlabelled rows are not counted), sorted by `count`
+  descending, then `group` ascending.
+- `summary.top_flagged_sources` lists sources with at least one `irrelevant`,
+  `stale`, or `misleading` row. `flagged_count` is the number of such rows;
+  `verdict_counts` covers every counted row for that source, relevant ones
+  included; `last_flagged_at` is the newest flagged row's `created_at`. Sorted by
+  `flagged_count` descending, then `source` ascending, and cut to `top`
+  (`--top`, default `10`).
 
 Stdout/stderr and exit codes:
 
@@ -1987,9 +2048,10 @@ Stdout/stderr and exit codes:
 - Exit `2` on argv errors and missing KB.
 - Exit `1` on ledger I/O or fixture-write failures.
 
-Source and test anchors: `src/cli-feedback.ts:56-140`,
-`src/cli-feedback.ts:253-326`, `src/feedback-ledger.ts`,
-`src/cli-feedback.test.ts`.
+Source and test anchors: `src/cli-feedback.ts:78-175`,
+`src/cli-feedback.ts:298-421` (summary: `src/cli-feedback.ts:335-382`),
+`src/feedback-ledger.ts:110-163`, `src/feedback-ledger.ts`,
+`src/cli-feedback.test.ts`, `src/feedback-ledger.test.ts`.
 
 ## `kb serve status`
 

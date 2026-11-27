@@ -3,10 +3,15 @@ import {
   appendFeedbackEntry,
   appendPromotedCaseToFixtureFile,
   buildPromotedEvalFixture,
+  DEFAULT_FEEDBACK_SUMMARY_TOP,
   dumpPromotedEvalFixture,
+  FEEDBACK_SUMMARY_SCHEMA_VERSION,
   feedbackLedgerPath,
   readFeedbackLedger,
+  readFeedbackLedgerWithStats,
+  summarizeFeedbackEntries,
   type FeedbackLedgerEntry,
+  type FeedbackSummary,
   type FeedbackVerdict,
   type PromotedFixture,
 } from './feedback-ledger.js';
@@ -14,10 +19,10 @@ import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { resolveKnowledgeBaseDir } from './kb-fs.js';
 import type { SearchMode } from './search-core.js';
 
-type FeedbackArgs = FeedbackAddArgs | FeedbackListArgs | FeedbackPromoteArgs;
+type FeedbackArgs = FeedbackAddArgs | FeedbackListArgs | FeedbackPromoteArgs | FeedbackSummaryArgs;
 
 interface FeedbackBaseArgs {
-  action: 'add' | 'list' | 'promote';
+  action: 'add' | 'list' | 'promote' | 'summary';
   kb: string;
   format: 'md' | 'json';
 }
@@ -51,6 +56,23 @@ interface FeedbackPromoteArgs extends FeedbackBaseArgs {
   yes: boolean;
 }
 
+interface FeedbackSummaryArgs extends FeedbackBaseArgs {
+  action: 'summary';
+  query?: string;
+  top: number;
+}
+
+/** JSON envelope of `kb feedback summary --format=json`. */
+export interface FeedbackSummaryReport extends FeedbackSummary {
+  schema_version: typeof FEEDBACK_SUMMARY_SCHEMA_VERSION;
+  kb: string;
+  ledger_path: string;
+  query: string | null;
+  top: number;
+  /** Torn/unparseable ledger lines skipped. Ledger-wide, even with --query. */
+  malformed_line_count: number;
+}
+
 const DEFAULT_LIST_LIMIT = 50;
 
 export const FEEDBACK_HELP = `kb feedback — record relevance judgments and promote them to eval fixtures
@@ -64,10 +86,14 @@ Usage:
   kb feedback promote --kb=<name> --query=<query> [--name=<case-name>]
                       [--k=<int>] [--mode=dense|lexical|hybrid|auto] [--gate]
                       [--fixture=<path> --yes] [--format=md|json]
+  kb feedback summary --kb=<name> [--query=<query>] [--top=<int>] [--format=md|json]
 
 Records human or agent judgments in <kb>/.index/relevance-feedback.jsonl.
 \`promote\` converts all rows for one query into a \`kb eval\` fixture case.
 Without \`--fixture --yes\`, promote is read-only and prints YAML to stdout.
+\`summary\` is read-only: it reports verdict counts, the relevant share
+(rows with verdict relevant / all rows), mean graded relevance, group counts
+and the sources most often judged irrelevant, stale or misleading.
 
 Options:
   --kb=<name>            Knowledge base under KNOWLEDGE_BASES_ROOT_DIR.
@@ -82,6 +108,8 @@ Options:
   --note=<text>          Short reviewer note stored in the ledger.
   --group=<label>        Intent/group label for diversity metrics. Repeatable.
   --limit=<int>          Max rows for list output (default ${DEFAULT_LIST_LIMIT}).
+  --top=<int>            Max flagged sources in summary output
+                         (default ${DEFAULT_FEEDBACK_SUMMARY_TOP}).
   --name=<case-name>     Eval case name for promote.
   --k=<int>              Optional eval case K.
   --mode=<mode>          Optional eval retrieval mode.
@@ -123,6 +151,13 @@ export async function runFeedback(rest: string[]): Promise<number> {
       writeFeedbackListResult(entries, feedbackLedgerPath(kbDir), parsed.format);
       return 0;
     }
+    if (parsed.action === 'summary') {
+      const report = await buildFeedbackSummaryReport(kbDir, parsed);
+      process.stdout.write(parsed.format === 'json'
+        ? `${JSON.stringify(report, null, 2)}\n`
+        : renderFeedbackSummaryMarkdown(report));
+      return 0;
+    }
 
     const entries = await readFeedbackLedger(kbDir);
     const fixture = buildPromotedEvalFixture(entries, parsed);
@@ -141,8 +176,8 @@ export async function runFeedback(rest: string[]): Promise<number> {
 
 export function parseFeedbackArgs(rest: string[]): FeedbackArgs {
   const action = rest[0];
-  if (action !== 'add' && action !== 'list' && action !== 'promote') {
-    throw new Error('missing action: add, list, or promote');
+  if (action !== 'add' && action !== 'list' && action !== 'promote' && action !== 'summary') {
+    throw new Error('missing action: add, list, promote, or summary');
   }
 
   const base = parseCommonArgs(action, rest.slice(1));
@@ -156,6 +191,9 @@ export function parseFeedbackArgs(rest: string[]): FeedbackArgs {
   }
   if (action === 'list') {
     return base as FeedbackListArgs;
+  }
+  if (action === 'summary') {
+    return base as FeedbackSummaryArgs;
   }
 
   const out = base as FeedbackPromoteArgs;
@@ -172,6 +210,7 @@ function parseCommonArgs(action: FeedbackArgs['action'], args: readonly string[]
     ...(action === 'add' ? { groups: [] } : {}),
     ...(action === 'list' ? { limit: DEFAULT_LIST_LIMIT } : {}),
     ...(action === 'promote' ? { yes: false } : {}),
+    ...(action === 'summary' ? { top: DEFAULT_FEEDBACK_SUMMARY_TOP } : {}),
   };
 
   for (const raw of args) {
@@ -215,6 +254,12 @@ function parseCommonArgs(action: FeedbackArgs['action'], args: readonly string[]
       const value = Number(nonEmptyValue(raw, '--limit='));
       if (!Number.isInteger(value) || value <= 0) throw new Error(`invalid --limit: ${raw}`);
       out.limit = value;
+      continue;
+    }
+    if (action === 'summary' && raw.startsWith('--top=')) {
+      const value = Number(nonEmptyValue(raw, '--top='));
+      if (!Number.isInteger(value) || value <= 0) throw new Error(`invalid --top: ${raw}`);
+      out.top = value;
       continue;
     }
     if (action === 'promote' && raw.startsWith('--name=')) {
@@ -284,6 +329,56 @@ function writeFeedbackListResult(
     lines.push(`  query: ${entry.query}`);
   }
   process.stdout.write(`${lines.join('\n')}\n`);
+}
+
+/** Read-only: reads the ledger once and never writes or creates it. */
+export async function buildFeedbackSummaryReport(
+  kbDir: string,
+  args: { kb: string; query?: string; top: number },
+): Promise<FeedbackSummaryReport> {
+  const { entries, malformedLineCount } = await readFeedbackLedgerWithStats(kbDir);
+  const matching = args.query === undefined ? entries : entries.filter((entry) => entry.query === args.query);
+  return {
+    schema_version: FEEDBACK_SUMMARY_SCHEMA_VERSION,
+    kb: args.kb,
+    ledger_path: feedbackLedgerPath(kbDir),
+    query: args.query ?? null,
+    top: args.top,
+    malformed_line_count: malformedLineCount,
+    ...summarizeFeedbackEntries(matching, { top: args.top }),
+  };
+}
+
+export function renderFeedbackSummaryMarkdown(report: FeedbackSummaryReport): string {
+  const v = report.verdict_counts;
+  const lines = ['# kb feedback summary', '', `Ledger: ${report.ledger_path}`];
+  if (report.query !== null) lines.push(`Query: ${report.query}`);
+  lines.push(
+    '',
+    `- Entries: ${report.total_entries} (${report.distinct_queries} queries, ${report.distinct_sources} sources)`,
+    `- Relevant share: ${report.relevant_share === null
+      ? 'n/a'
+      : `${(report.relevant_share * 100).toFixed(1)}% (${v.relevant}/${report.total_entries})`}`,
+    `- Mean relevance: ${report.mean_relevance === null ? 'n/a' : report.mean_relevance.toFixed(2)} (0..3)`,
+    `- Verdicts: relevant ${v.relevant}, irrelevant ${v.irrelevant}, stale ${v.stale}, misleading ${v.misleading}`,
+    `- Skipped malformed lines: ${report.malformed_line_count}`,
+    '',
+    '## Groups',
+    '',
+  );
+  if (report.group_counts.length === 0) lines.push('No group labels.');
+  for (const { group, count } of report.group_counts) lines.push(`- ${group}: ${count}`);
+  lines.push('', `## Most-flagged sources (top ${report.top})`, '');
+  if (report.top_flagged_sources.length === 0) lines.push('No flagged sources.');
+  for (const source of report.top_flagged_sources) {
+    const c = source.verdict_counts;
+    lines.push(
+      `- ${source.source}: ${source.flagged_count} flagged ` +
+      `(irrelevant ${c.irrelevant}, stale ${c.stale}, misleading ${c.misleading}; relevant ${c.relevant}), ` +
+      `last ${source.last_flagged_at}`,
+    );
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 function writeFeedbackPromotePreview(
