@@ -3,7 +3,8 @@ import { spawnSync } from 'child_process';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { INIT_HELP, runInit } from './cli-init.js';
+import { INIT_HELP, nextStepCommands, runInit } from './cli-init.js';
+import { parseSearchArgs } from './cli-search.js';
 import { KBError } from './errors.js';
 import {
   KnowledgeBaseExistsError,
@@ -164,12 +165,15 @@ describe('kb init (CLI)', () => {
     await withTempRoot(async (root) => {
       const init = runCli(['init', 'jsonkb', '--format=json'], { KNOWLEDGE_BASES_ROOT_DIR: root });
       expect(init.code).toBe(0);
+      expect(init.stderr).toBe('');
       const payload = JSON.parse(init.stdout);
       expect(payload).toEqual({
         knowledge_base_name: 'jsonkb',
         path: path.join(root, 'jsonkb'),
         created: true,
       });
+      // The machine contract stays byte-identical: no Next steps block (#1311).
+      expect(init.stdout).toBe(`${JSON.stringify(payload, null, 2)}\n`);
     });
   });
 
@@ -235,5 +239,90 @@ describe('runInit (in-process)', () => {
 
   it('returns exit 2 when no name is given', async () => {
     await expect(runInit([])).resolves.toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// First-run "Next steps" hint after `kb init` in md mode (issue #1311).
+// ---------------------------------------------------------------------------
+
+describe('kb init next-steps hint (issue #1311)', () => {
+  it('keeps the path line first, then prints commands naming the shelf', async () => {
+    await withTempRoot(async (root) => {
+      const init = runCli(['init', 'demo'], { KNOWLEDGE_BASES_ROOT_DIR: root });
+      const kbDir = path.join(root, 'demo');
+      expect(init.code).toBe(0);
+      expect(init.stderr).toBe('');
+      const lines = init.stdout.split('\n');
+      expect(lines[0]).toBe(`Created knowledge base "demo" at ${kbDir}`);
+      expect(lines).toContain('Next steps:');
+      expect(init.stdout).toContain(`drop .md files into ${kbDir}`);
+      expect(lines).toContain(
+        "       echo '# First note' | kb remember --kb=demo '--title=First note' --stdin --yes --no-check-similar",
+      );
+      expect(lines).toContain("       kb search 'your question' --kb=demo --refresh");
+      expect(lines).toContain('       kb config client claude-code');
+    });
+  });
+
+  it('shell-quotes a shelf name that contains a space', async () => {
+    await withTempRoot(async (root) => {
+      const init = runCli(['init', 'my notes'], { KNOWLEDGE_BASES_ROOT_DIR: root });
+      expect(init.code).toBe(0);
+      expect(init.stdout).toContain("kb remember '--kb=my notes' ");
+      expect(init.stdout).toContain("kb search 'your question' '--kb=my notes' --refresh");
+      expect(init.stdout).not.toContain('--kb=my notes --');
+    });
+  });
+
+  it('escapes an apostrophe in the shelf name so the printed command still parses', async () => {
+    await withTempRoot(async (root) => {
+      const env = { KNOWLEDGE_BASES_ROOT_DIR: root };
+      const init = runCli(['init', "it's"], env);
+      expect(init.code).toBe(0);
+      expect(init.stdout).toContain("kb remember '--kb=it'\\''s' ");
+
+      // Run the printed note line through a real shell, with `kb` resolved to
+      // the built CLI, and check the note lands in the apostrophe shelf.
+      const line = init.stdout.split('\n').find((l) => l.includes('| kb remember '));
+      expect(line).toBeDefined();
+      const script = `kb() { node ${JSON.stringify(cliPath)} "$@"; }\n${line!.trim()}\n`;
+      const sh = spawnSync('sh', ['-c', script], {
+        env: { PATH: process.env.PATH ?? '', KB_LOG_FORMAT: 'text', ...env },
+        encoding: 'utf-8',
+      });
+      expect(sh.status).toBe(0);
+      expect((await fsp.stat(path.join(root, "it's", 'first-note.md'))).isFile()).toBe(true);
+    });
+  });
+
+  it('prints only commands the real CLI accepts', async () => {
+    await withTempRoot(async (root) => {
+      const env = { KNOWLEDGE_BASES_ROOT_DIR: root, HOME: root };
+      expect(runCli(['init', 'demo'], env).code).toBe(0);
+      const cmd = nextStepCommands('demo');
+
+      // The note command, exactly as printed, writes into the new shelf.
+      const remember = runCli(cmd.remember, env, '# First note\n');
+      expect(remember.code).toBe(0);
+      // No index exists yet, so the hint must not trigger the similarity notice.
+      expect(remember.stderr).toBe('');
+      expect((await fsp.stat(path.join(root, 'demo', 'first-note.md'))).isFile()).toBe(true);
+
+      // The client command prints a config snippet.
+      const client = runCli(cmd.client, env);
+      expect(client.code).toBe(0);
+      expect(client.stdout).not.toBe('');
+
+      // The search command needs an embedding provider to run, so check it
+      // against the real parser instead.
+      expect(cmd.search[0]).toBe('search');
+      const parsed = parseSearchArgs(cmd.search.slice(1));
+      expect(parsed).toMatchObject({ query: 'your question', kb: 'demo', refresh: true });
+    });
+  });
+
+  it('INIT_HELP describes the Next steps block', () => {
+    expect(INIT_HELP).toContain('Next steps');
   });
 });

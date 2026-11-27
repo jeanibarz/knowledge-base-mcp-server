@@ -1,3 +1,4 @@
+import { SUPPORTED_CLIENTS } from './cli-config-client.js';
 import { KNOWLEDGE_BASES_ROOT_DIR } from './config/paths.js';
 import { KBError } from './errors.js';
 import { KnowledgeBaseExistsError, createKnowledgeBase } from './kb-fs.js';
@@ -23,8 +24,12 @@ exists errors instead of clobbering the existing shelf.
 
 Options:
   --format=md|json      Output format (default: md). \`md\` prints the created
-                        directory path; \`json\` prints an object with
-                        \`knowledge_base_name\`, \`path\`, and \`created\`.
+                        directory path on its first line, then a short
+                        "Next steps" block with copy-pasteable commands that
+                        name the new shelf: add a note, build the index and
+                        search it, and connect an MCP client. \`json\` prints
+                        only an object with \`knowledge_base_name\`, \`path\`,
+                        and \`created\`.
   --help, -h            Show this help.
 
 Exit codes:
@@ -102,6 +107,49 @@ export async function runInit(rest: string[] = []): Promise<number> {
     }, null, 2)}\n`);
   } else {
     process.stdout.write(`Created knowledge base "${parsed.name}" at ${kbDir}\n`);
+    process.stdout.write(renderNextSteps(parsed.name, kbDir));
   }
   return 0;
+}
+
+/** The client named in the "connect an MCP client" hint. */
+const HINT_CLIENT = 'claude-code';
+
+/**
+ * The commands the md "Next steps" block prints, as argv arrays (without the
+ * leading `kb`). Exported so tests can run each one through the real parser.
+ */
+export function nextStepCommands(name: string): {
+  remember: string[];
+  search: string[];
+  client: string[];
+} {
+  return {
+    remember: ['remember', `--kb=${name}`, `--title=First note`, `--stdin`, `--yes`, `--no-check-similar`],
+    search: ['search', 'your question', `--kb=${name}`, `--refresh`],
+    client: ['config', 'client', HINT_CLIENT],
+  };
+}
+
+function renderNextSteps(name: string, kbDir: string): string {
+  const cmd = nextStepCommands(name);
+  const kb = (argv: string[]): string => ['kb', ...argv.map(shellQuote)].join(' ');
+  const otherClients = SUPPORTED_CLIENTS.filter((c) => c !== HINT_CLIENT).join(', ');
+  return [
+    '',
+    'Next steps:',
+    `  1. Add a note (or drop .md files into ${kbDir}):`,
+    `       echo '# First note' | ${kb(cmd.remember)}`,
+    '  2. Build the index and search it (the first search needs --refresh):',
+    `       ${kb(cmd.search)}`,
+    `  3. Print the setup for an MCP client (also: ${otherClients}):`,
+    `       ${kb(cmd.client)}`,
+    '',
+  ].join('\n');
+}
+
+function shellQuote(arg: string): string {
+  if (arg.length === 0) return "''";
+  if (/^[A-Za-z0-9_./:@%+=-]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, "'\\''")}'`;
 }
