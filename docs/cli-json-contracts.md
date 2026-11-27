@@ -1922,7 +1922,8 @@ kb feedback summary --kb=<name> [--query=<text>] [--top=<int>] --format=json
 {
   "ledger_path": "/home/jean/knowledge_bases/work/.index/relevance-feedback.jsonl",
   "entry": {
-    "id": "01HVT7C0DXFG2MJC9Y4N9YEH3R",
+    "schema_version": "kb-feedback.v1",
+    "id": "3f2b8c1e-9d4a-4e6f-8a7b-2c5d1e0f9a84",
     "kb": "work",
     "created_at": "2026-05-21T09:15:00.000Z",
     "query": "rollback procedure",
@@ -1930,7 +1931,7 @@ kb feedback summary --kb=<name> [--query=<text>] [--top=<int>] --format=json
     "chunk_id": "work/runbooks/deploy.md#L42-L78",
     "verdict": "relevant",
     "relevance": 3,
-    "task_context_sha256": "0123…",
+    "task_context_hash": "0123…",
     "note": "matches step 3 in deploy.md",
     "groups": ["runbook"]
   }
@@ -2011,8 +2012,12 @@ Stable fields:
 - `entry.verdict` is one of `relevant`, `irrelevant`, `stale`, `misleading`.
 - `entry.relevance` is `0..3`. Non-relevant verdicts default to `0`; `relevant`
   defaults to `3` unless `--relevance` overrides.
-- `entry.task_context_sha256` is present only when `--task-context` was passed;
-  the raw text is never stored.
+- `entry.schema_version` is `kb-feedback.v1` (`FEEDBACK_LEDGER_SCHEMA_VERSION`);
+  `relevance-feedback.jsonl` is only the ledger file name.
+- `entry.id` is a random UUID (`crypto.randomUUID()`) unless the programmatic
+  caller supplies one.
+- `entry.task_context_hash` is the hex SHA-256 of `--task-context` and is
+  present only when that flag was passed; the raw text is never stored.
 - `promote` is read-only without `--fixture --yes`; the preview includes the
   full `fixture_yaml` so an operator can review before writing.
 - Promote-with-write returns `case_count` (the fixture's case count after the
@@ -2054,10 +2059,22 @@ Stdout/stderr and exit codes:
 - Exit `2` on argv errors and missing KB.
 - Exit `1` on ledger I/O or fixture-write failures.
 
-Source and test anchors: `src/cli-feedback.ts:78-175`,
-`src/cli-feedback.ts:298-421` (summary: `src/cli-feedback.ts:335-382`),
-`src/feedback-ledger.ts:110-163`, `src/feedback-ledger.ts`,
-`src/cli-feedback.test.ts`, `src/feedback-ledger.test.ts`.
+Source and test anchors:
+
+- `src/cli-feedback.ts::FEEDBACK_HELP` and `src/cli-feedback.ts::runFeedback`
+  — help text, argument parsing and action dispatch.
+- `src/cli-feedback.ts::writeFeedbackAddResult`,
+  `src/cli-feedback.ts::writeFeedbackListResult`,
+  `src/cli-feedback.ts::writeFeedbackPromotePreview` and
+  `src/cli-feedback.ts::writeFeedbackPromoteWriteResult` — the `add`, `list`
+  and `promote` envelopes.
+- `src/cli-feedback.ts::buildFeedbackSummaryReport` and
+  `src/cli-feedback.ts::renderFeedbackSummaryMarkdown` — the `summary`
+  envelope and its Markdown rendering.
+- `src/feedback-ledger.ts::buildFeedbackEntry` — entry id, schema version,
+  defaults and task-context hash.
+- `src/feedback-ledger.ts::summarizeFeedbackEntries` — `summary` aggregation.
+- `src/cli-feedback.test.ts`, `src/feedback-ledger.test.ts`.
 
 ## `kb serve status`
 

@@ -30,7 +30,7 @@ sequenceDiagram
   KbFs-->>Cli: <kb> absolute path
   Note over Cli: parseFeedbackArgs validates required fields<br/>src/cli-feedback.ts::parseFeedbackArgs
   Cli->>Ledger: appendFeedbackEntry(kbDir, input)<br/>src/cli-feedback.ts::runFeedback
-  Ledger->>Ledger: buildFeedbackEntry → ULID id,<br/>created_at, SHA-256 of task_context<br/>src/feedback-ledger.ts::buildFeedbackEntry
+  Ledger->>Ledger: buildFeedbackEntry → random UUID id,<br/>created_at, SHA-256 of task_context<br/>src/feedback-ledger.ts::buildFeedbackEntry
   Ledger->>FS: fsp.appendFile JSONL line
   FS-->>Ledger: ok
   Ledger-->>Cli: FeedbackLedgerEntry
@@ -42,8 +42,8 @@ Stable guarantees:
 - The ledger file is append-only. If a prior process held it open with a
   pending write, the new line still appends cleanly thanks to POSIX
   `O_APPEND` semantics.
-- `task_context_sha256` is computed at `buildFeedbackEntry` time; raw task
-  context never reaches disk.
+- `task_context_hash` (the hex SHA-256 of `--task-context`) is computed at
+  `buildFeedbackEntry` time; raw task context never reaches disk.
 - `verdict` and `relevance` defaults are applied in `buildFeedbackEntry`,
   not in the CLI parser — direct programmatic callers get the same defaults
   as the CLI.
@@ -90,7 +90,7 @@ sequenceDiagram
   matches). Re-running promotion appends another case rather than mutating
   the previous one, so fixture history is monotonic.
 - **Idempotency boundary.** Adding the same judgment twice via `kb feedback
-  add` produces two ledger rows (different ULIDs). Operator-driven
+  add` produces two ledger rows (different random UUIDs). Operator-driven
   retraction is by hand-editing the JSONL file — there is no `remove`.
 
 ## Source anchors
@@ -107,7 +107,8 @@ Every symbol the diagrams reference, listed outside the fenced blocks so
 - `src/cli-feedback.ts::writeFeedbackPromoteWriteResult` — `promote` write
   result envelope.
 - `src/feedback-ledger.ts::appendFeedbackEntry` — appends one JSONL row.
-- `src/feedback-ledger.ts::buildFeedbackEntry` — ULID, timestamp, defaults
+- `src/feedback-ledger.ts::buildFeedbackEntry` — random UUID id
+  (`crypto.randomUUID()`), timestamp, defaults
   and task-context hash.
 - `src/feedback-ledger.ts::readFeedbackLedger` — reads the ledger file.
 - `src/feedback-ledger.ts::parseFeedbackJsonl` — parses JSONL rows.
