@@ -64,6 +64,117 @@ export interface ParsedFeedbackLedger {
   malformedLineCount: number;
 }
 
+export const FEEDBACK_SUMMARY_SCHEMA_VERSION = 'kb-feedback-summary.v1';
+export const DEFAULT_FEEDBACK_SUMMARY_TOP = 10;
+
+const FEEDBACK_VERDICTS: readonly FeedbackVerdict[] = ['relevant', 'irrelevant', 'stale', 'misleading'];
+
+export type FeedbackVerdictCounts = Record<FeedbackVerdict, number>;
+
+export interface FeedbackFlaggedSource {
+  source: string;
+  /** Rows for this source whose verdict is irrelevant, stale, or misleading. */
+  flagged_count: number;
+  /** Every row for this source, broken down by verdict. */
+  verdict_counts: FeedbackVerdictCounts;
+  /** created_at of the newest flagged row for this source. */
+  last_flagged_at: string;
+}
+
+export interface FeedbackSummary {
+  total_entries: number;
+  distinct_queries: number;
+  distinct_sources: number;
+  verdict_counts: FeedbackVerdictCounts;
+  /**
+   * verdict_counts.relevant / total_entries, rounded to 4 decimals; null when
+   * there are no rows. Counts rows (judgments), not distinct query/source
+   * pairs, and uses the stored verdict only. The ledger always stores a
+   * verdict: when only --relevance was given at write time, relevance 0
+   * became `irrelevant` and any value above 0 became `relevant`.
+   */
+  relevant_share: number | null;
+  /** Mean of the graded relevance (0..3) over all rows, 4 decimals; null when empty. */
+  mean_relevance: number | null;
+  /** Rows per group label, count descending then label ascending. */
+  group_counts: Array<{ group: string; count: number }>;
+  /** Sources with at least one non-relevant row, most-flagged first, at most `top`. */
+  top_flagged_sources: FeedbackFlaggedSource[];
+}
+
+/**
+ * Aggregate feedback rows into verdict counts, the relevant share, the mean
+ * graded relevance, per-group counts and the most-flagged sources. Pure: the
+ * caller reads (and filters) the ledger.
+ */
+export function summarizeFeedbackEntries(
+  entries: readonly FeedbackLedgerEntry[],
+  options: { top?: number } = {},
+): FeedbackSummary {
+  const top = options.top ?? DEFAULT_FEEDBACK_SUMMARY_TOP;
+  const verdictCounts = emptyVerdictCounts();
+  const queries = new Set<string>();
+  const groups = new Map<string, number>();
+  const sources = new Map<string, { verdict_counts: FeedbackVerdictCounts; last_flagged_at?: string }>();
+  let relevanceSum = 0;
+
+  for (const entry of entries) {
+    verdictCounts[entry.verdict]++;
+    queries.add(entry.query);
+    relevanceSum += entry.relevance;
+    for (const group of entry.groups ?? []) groups.set(group, (groups.get(group) ?? 0) + 1);
+
+    let source = sources.get(entry.source);
+    if (source === undefined) {
+      source = { verdict_counts: emptyVerdictCounts() };
+      sources.set(entry.source, source);
+    }
+    source.verdict_counts[entry.verdict]++;
+    if (entry.verdict !== 'relevant'
+      && (source.last_flagged_at === undefined || entry.created_at > source.last_flagged_at)) {
+      source.last_flagged_at = entry.created_at;
+    }
+  }
+
+  const total = entries.length;
+  const flagged: FeedbackFlaggedSource[] = [];
+  for (const [source, stats] of sources) {
+    if (stats.last_flagged_at === undefined) continue;
+    flagged.push({
+      source,
+      flagged_count: stats.verdict_counts.irrelevant + stats.verdict_counts.stale + stats.verdict_counts.misleading,
+      verdict_counts: stats.verdict_counts,
+      last_flagged_at: stats.last_flagged_at,
+    });
+  }
+  flagged.sort((a, b) => b.flagged_count - a.flagged_count || compareStrings(a.source, b.source));
+
+  return {
+    total_entries: total,
+    distinct_queries: queries.size,
+    distinct_sources: sources.size,
+    verdict_counts: verdictCounts,
+    relevant_share: total === 0 ? null : round4(verdictCounts.relevant / total),
+    mean_relevance: total === 0 ? null : round4(relevanceSum / total),
+    group_counts: Array.from(groups, ([group, count]) => ({ group, count }))
+      .sort((a, b) => b.count - a.count || compareStrings(a.group, b.group)),
+    top_flagged_sources: flagged.slice(0, top),
+  };
+}
+
+function emptyVerdictCounts(): FeedbackVerdictCounts {
+  return Object.fromEntries(FEEDBACK_VERDICTS.map((verdict) => [verdict, 0])) as FeedbackVerdictCounts;
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+/** Locale-independent ordering so the output is identical on every host. */
+function compareStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export function feedbackLedgerPath(kbDir: string): string {
   return path.join(kbDir, '.index', FEEDBACK_LEDGER_FILENAME);
 }

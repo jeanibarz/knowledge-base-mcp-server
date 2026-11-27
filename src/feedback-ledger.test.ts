@@ -12,6 +12,7 @@ import {
   parseFeedbackJsonl,
   readFeedbackLedger,
   readFeedbackLedgerWithStats,
+  summarizeFeedbackEntries,
 } from './feedback-ledger.js';
 import { normalizeRetrievalEvalFixture } from './retrieval-eval.js';
 
@@ -200,5 +201,129 @@ describe('feedback promotion', () => {
     expect(result).toEqual({ caseCount: 2, created: false });
     expect(parsed.mode).toBe('hybrid');
     expect(parsed.cases.map((c) => c.query)).toEqual(['existing', 'rollback procedure']);
+  });
+});
+
+describe('summarizeFeedbackEntries', () => {
+  // Hand-computed fixture (issue #1312). Two queries; old.md is judged under
+  // both and carries relevant + non-relevant rows; b.md and c.md tie on one
+  // flag each; rows 4 and 5 are graded-only
+  // (relevance 1 -> relevant, relevance 0 -> irrelevant).
+  const row = (
+    n: number,
+    query: string,
+    source: string,
+    judgment: { verdict?: 'relevant' | 'irrelevant' | 'stale' | 'misleading'; relevance?: number; groups?: string[] },
+  ) => buildFeedbackEntry({
+    id: `entry-${n}`,
+    now: new Date(`2026-05-19T10:00:0${n}.000Z`),
+    kb: 'ops',
+    query,
+    source,
+    ...judgment,
+  });
+  const fixture = [
+    row(1, 'rollback', 'a.md', { verdict: 'relevant', relevance: 3, groups: ['runbook', 'procedure'] }),
+    row(2, 'rollback', 'old.md', { verdict: 'stale' }),
+    row(3, 'rollback', 'old.md', { verdict: 'misleading' }),
+    row(4, 'deploy', 'old.md', { relevance: 1, groups: ['procedure'] }),
+    row(5, 'deploy', 'b.md', { relevance: 0 }),
+    row(6, 'deploy', 'c.md', { verdict: 'irrelevant' }),
+    row(7, 'rollback', 'a.md', { relevance: 2 }),
+  ];
+
+  it('matches the hand-computed counts, share, mean, groups and flagged ranking', () => {
+    expect(summarizeFeedbackEntries(fixture)).toEqual({
+      total_entries: 7,
+      distinct_queries: 2,
+      distinct_sources: 4,
+      verdict_counts: { relevant: 3, irrelevant: 2, stale: 1, misleading: 1 },
+      relevant_share: 0.4286, // 3 / 7
+      mean_relevance: 0.8571, // (3 + 0 + 0 + 1 + 0 + 0 + 2) / 7
+      group_counts: [
+        { group: 'procedure', count: 2 },
+        { group: 'runbook', count: 1 },
+      ],
+      top_flagged_sources: [
+        {
+          source: 'old.md',
+          flagged_count: 2,
+          verdict_counts: { relevant: 1, irrelevant: 0, stale: 1, misleading: 1 },
+          last_flagged_at: '2026-05-19T10:00:03.000Z',
+        },
+        {
+          source: 'b.md',
+          flagged_count: 1,
+          verdict_counts: { relevant: 0, irrelevant: 1, stale: 0, misleading: 0 },
+          last_flagged_at: '2026-05-19T10:00:05.000Z',
+        },
+        {
+          source: 'c.md',
+          flagged_count: 1,
+          verdict_counts: { relevant: 0, irrelevant: 1, stale: 0, misleading: 0 },
+          last_flagged_at: '2026-05-19T10:00:06.000Z',
+        },
+      ],
+    });
+  });
+
+  it('ranks flagged sources by count, then source, independent of row order', () => {
+    // m.md is flagged most but inserted last; z.md precedes y.md on a tie; m.md's
+    // flags arrive out of date order; the two group labels tie in reverse order.
+    const summary = summarizeFeedbackEntries([
+      row(3, 'q', 'z.md', { verdict: 'irrelevant', groups: ['zeta'] }),
+      row(2, 'q', 'y.md', { verdict: 'irrelevant', groups: ['alpha'] }),
+      row(4, 'q', 'm.md', { verdict: 'stale' }),
+      row(6, 'q', 'm.md', { verdict: 'irrelevant' }),
+      row(1, 'q', 'm.md', { verdict: 'misleading' }),
+    ]);
+    expect(summary.top_flagged_sources.map((entry) => [entry.source, entry.flagged_count, entry.last_flagged_at]))
+      .toEqual([
+        ['m.md', 3, '2026-05-19T10:00:06.000Z'],
+        ['y.md', 1, '2026-05-19T10:00:02.000Z'],
+        ['z.md', 1, '2026-05-19T10:00:03.000Z'],
+      ]);
+    expect(summary.group_counts).toEqual([
+      { group: 'alpha', count: 1 },
+      { group: 'zeta', count: 1 },
+    ]);
+  });
+
+  it('sorts group labels by count before label', () => {
+    const summary = summarizeFeedbackEntries([
+      row(1, 'q', 'x.md', { groups: ['alpha'] }),
+      row(2, 'q', 'x.md', { groups: ['zeta'] }),
+      row(3, 'q', 'x.md', { groups: ['zeta'] }),
+    ]);
+    expect(summary.group_counts).toEqual([
+      { group: 'zeta', count: 2 },
+      { group: 'alpha', count: 1 },
+    ]);
+  });
+
+  it('truncates flagged sources to top and keeps the ranking', () => {
+    const summary = summarizeFeedbackEntries(fixture, { top: 2 });
+    expect(summary.top_flagged_sources.map((entry) => entry.source)).toEqual(['old.md', 'b.md']);
+    expect(summary.total_entries).toBe(7);
+  });
+
+  it('counts by stored verdict, so a relevant row graded 0 still counts as relevant', () => {
+    const summary = summarizeFeedbackEntries([row(1, 'q', 'x.md', { verdict: 'relevant', relevance: 0 })]);
+    expect(summary.relevant_share).toBe(1);
+    expect(summary.mean_relevance).toBe(0);
+    expect(summary.top_flagged_sources).toEqual([]);
+  });
+
+  it('returns a zero summary with null share and mean for no rows', () => {
+    expect(summarizeFeedbackEntries([])).toEqual({
+      total_entries: 0,
+      distinct_queries: 0,
+      distinct_sources: 0,
+      verdict_counts: { relevant: 0, irrelevant: 0, stale: 0, misleading: 0 },
+      relevant_share: null,
+      mean_relevance: null,
+      group_counts: [],
+      top_flagged_sources: [],
+    });
   });
 });
