@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import * as yaml from 'js-yaml';
+
 import { showConfigEnv, type ConfigShowEntry } from './config/schema.js';
 import { getProjectConfig, projectConfigAppliedSources } from './config/project-config.js';
 import { parseModelId } from './model-id.js';
@@ -19,6 +21,8 @@ export const SUPPORTED_CLIENTS = [
   'vscode',
   'claude-code',
   'codex',
+  'continue',
+  'jetbrains',
 ] as const;
 
 export type ClientName = (typeof SUPPORTED_CLIENTS)[number];
@@ -39,7 +43,7 @@ export interface ConfigClientArgs {
 export interface ConfigClientReport {
   schema_version: 'kb.config-client.v1';
   client: ClientName;
-  shape: 'mcpServers' | 'servers' | 'shell' | 'toml';
+  shape: 'mcpServers' | 'servers' | 'shell' | 'toml' | 'yaml';
   command_mode: 'npx' | 'global';
   config_file: string | null;
   active_model: string | null;
@@ -95,6 +99,18 @@ const CLIENTS: Record<ClientName, ClientInfo> = {
     locations: [
       'macOS / Linux: ~/.codex/config.toml ($CODEX_HOME/config.toml when CODEX_HOME is set)',
       'Windows: %USERPROFILE%\\.codex\\config.toml',
+    ],
+  },
+  continue: {
+    shape: 'yaml',
+    locations: [
+      'Workspace: <project>/.continue/mcpServers/knowledge-base.yaml (save the block as this new file)',
+    ],
+  },
+  jetbrains: {
+    shape: 'mcpServers',
+    locations: [
+      'Settings → Tools → AI Assistant → Model Context Protocol (MCP): click +, choose "As JSON", paste the block',
     ],
   },
 };
@@ -362,6 +378,19 @@ function renderSnippet(
     ];
     return lines.join('\n');
   }
+  if (shape === 'yaml') {
+    // A standalone Continue block file, format from
+    // https://docs.continue.dev/customize/deep-dives/mcp: top-level
+    // name/version/schema plus an `mcpServers` list of {name, command, args, env}.
+    // js-yaml does the quoting, so Windows paths and odd characters stay valid.
+    const block = {
+      name: 'Knowledge Base MCP server',
+      version: '0.0.1',
+      schema: 'v1',
+      mcpServers: [{ name: SERVER_NAME, command: launch.command, args: launch.args, env }],
+    };
+    return yaml.dump(block, { lineWidth: -1, noRefs: true }).trimEnd();
+  }
   const server = {
     ...(shape === 'servers' ? { type: 'stdio' } : {}),
     command: launch.command,
@@ -468,7 +497,10 @@ export function shellQuote(value: string): string {
 }
 
 export function formatConfigClientMarkdown(report: ConfigClientReport): string {
-  const lang = report.shape === 'shell' ? 'bash' : report.shape === 'toml' ? 'toml' : 'json';
+  const lang = report.shape === 'shell' ? 'bash'
+    : report.shape === 'toml' ? 'toml'
+      : report.shape === 'yaml' ? 'yaml'
+        : 'json';
   const lines = [
     `# kb config client ${report.client}`,
     '',
@@ -487,6 +519,8 @@ export function formatConfigClientMarkdown(report: ConfigClientReport): string {
   }
   if (report.shape === 'toml') {
     lines.push('', 'Codex CLI rereads config.toml each time it starts, so no restart is needed.');
+  } else if (report.shape === 'yaml') {
+    lines.push('', 'Continue offers MCP tools in agent mode only.');
   } else if (report.shape !== 'shell') {
     lines.push('', 'Restart the client after editing its config file.');
   }

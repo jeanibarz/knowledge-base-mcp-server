@@ -2,6 +2,8 @@ import { describe, expect, it } from '@jest/globals';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import * as yaml from 'js-yaml';
+
 import { PACKAGE_SPEC } from './cli-config-client.js';
 import { CONFIG_SCHEMA } from './config/schema.js';
 
@@ -197,5 +199,31 @@ describe('docs/clients.md snippet parity', () => {
       const prose = `${doc}\n\nOlder releases used \`${PACKAGE_NAME}\` with text-embedding-ada-002.\n`;
       expect(findSnippetDrift(prose)).toEqual([]);
     });
+  });
+});
+
+describe('docs/clients.md Continue and JetBrains sections (issue #1310)', () => {
+  const doc = readClientsDoc();
+
+  it('drops the deprecated Continue config.json recipe', () => {
+    expect(doc).not.toContain('modelContextProtocolServers');
+    expect(doc).not.toContain('~/.continue/config.json');
+  });
+
+  it('no longer lists Continue or JetBrains as not generated', () => {
+    const notGenerated = doc.split('\n').filter((line) => line.includes('not generated'));
+    expect(notGenerated.length).toBeGreaterThan(0);
+    for (const line of notGenerated) expect(line).not.toMatch(/Continue|JetBrains/);
+  });
+
+  it('shows the Continue recipe as a v1 block file with one server entry', () => {
+    const start = doc.indexOf('## Continue\n');
+    const section = doc.slice(start, doc.indexOf('\n## ', start + 1));
+    const block = extractSnippets(section).find((snippet) => snippet.lang === 'yaml');
+    if (block === undefined) throw new Error('no yaml block in the Continue section');
+    const parsed = yaml.load(block.body) as { schema: string; mcpServers: Array<Record<string, unknown>> };
+    expect(parsed.schema).toBe('v1');
+    expect(parsed.mcpServers).toHaveLength(1);
+    expect(parsed.mcpServers[0]).toMatchObject({ name: 'knowledge-base', command: 'npx', args: ['-y', PACKAGE_SPEC] });
   });
 });

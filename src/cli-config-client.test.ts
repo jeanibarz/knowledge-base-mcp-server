@@ -4,6 +4,8 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import * as yaml from 'js-yaml';
+
 import {
   cursorInstallLink,
   DOCS_LINK_SERVER,
@@ -36,7 +38,7 @@ const SECRETS = {
   KB_OPENROUTER_API_KEY: fakeSecret('openrouter'),
 };
 
-const JSON_CLIENTS = SUPPORTED_CLIENTS.filter((c) => c !== 'claude-code' && c !== 'codex');
+const JSON_CLIENTS = SUPPORTED_CLIENTS.filter((c) => c !== 'claude-code' && c !== 'codex' && c !== 'continue');
 
 let stdout = '';
 let stderr = '';
@@ -89,7 +91,7 @@ async function runJson(...args: string[]): Promise<ConfigClientReport> {
 }
 
 function fencedBlock(markdown: string): string {
-  const m = /```(?:json|bash|toml)\n([\s\S]*?)\n```/.exec(markdown);
+  const m = /```(?:json|bash|toml|yaml)\n([\s\S]*?)\n```/.exec(markdown);
   if (m === null) throw new Error(`no fenced block in:\n${markdown}`);
   return m[1];
 }
@@ -372,6 +374,79 @@ describe('kb config client codex (TOML)', () => {
     expect(() => parseToml('a = "x')).toThrow('unterminated');
     expect(() => parseToml('a = "x" junk')).toThrow('unexpected');
     expect(() => parseToml('a = "x"\na = "y"')).toThrow('duplicate');
+  });
+});
+
+interface ContinueServer { name: string; command: string; args: string[]; env: Record<string, string> }
+
+/** Parses a Continue block file and checks its shape; returns the single server entry. */
+function continueServer(text: string): ContinueServer {
+  const block = yaml.load(text) as Record<string, unknown>;
+  expect(Object.keys(block)).toEqual(['name', 'version', 'schema', 'mcpServers']);
+  expect(block.schema).toBe('v1');
+  expect(typeof block.name).toBe('string');
+  expect(typeof block.version).toBe('string');
+  const servers = block.mcpServers as ContinueServer[];
+  expect(servers).toHaveLength(1);
+  expect(Object.keys(servers[0]).sort()).toEqual(['args', 'command', 'env', 'name']);
+  expect(servers[0].name).toBe('knowledge-base');
+  return servers[0];
+}
+
+describe('kb config client continue (YAML block)', () => {
+  beforeEach(() => {
+    process.env.EMBEDDING_PROVIDER = 'openai';
+    process.env.OPENAI_MODEL_NAME = 'text-embedding-3-large';
+  });
+
+  it('markdown block is a v1 block file whose server matches what cursor emits', async () => {
+    expect(await run(['continue'])).toBe(0);
+    expect(stdout).toContain('```yaml');
+    expect(stdout).toContain('.continue/mcpServers/knowledge-base.yaml');
+    expect(stdout).toContain('agent mode');
+    expect(stdout).toContain('Replace these placeholders before use: <OPENAI_API_KEY>');
+    const server = continueServer(fencedBlock(stdout));
+    const cursor = await runJson('cursor');
+    expect({ command: server.command, args: server.args, env: server.env })
+      .toEqual({ command: cursor.command, args: cursor.args, env: cursor.env });
+    expect(server.env.OPENAI_API_KEY).toBe('<OPENAI_API_KEY>');
+  });
+
+  it('--format=json reports shape "yaml" and a snippet matching the structured fields', async () => {
+    const report = await runJson('continue');
+    expect(report.client).toBe('continue');
+    expect(report.shape).toBe('yaml');
+    const server = continueServer(report.snippet);
+    expect(server.command).toBe(report.command);
+    expect(server.args).toEqual(report.args);
+    expect(server.env).toEqual(report.env);
+  });
+
+  it('keeps every value a string and round-trips YAML-hostile characters', async () => {
+    process.env.KNOWLEDGE_BASES_ROOT_DIR = path.join(tempDir, "a: b #c 'q' \"d\" \\e");
+    process.env.OPENAI_MODEL_NAME = '1e3';
+    const bin = 'C:\\Program Files\\kb\\knowledge-base-mcp-server.cmd';
+    stdout = '';
+    expect(await runConfigClient(['continue', '--format=json', '--command=global'], {
+      ...NO_ACTIVE, resolveServerBin: () => bin,
+    })).toBe(0);
+    const report = JSON.parse(stdout) as ConfigClientReport;
+    const server = continueServer(report.snippet);
+    expect(server.command).toBe(bin);
+    expect(server.args).toEqual([]);
+    expect(server.env.KNOWLEDGE_BASES_ROOT_DIR).toBe(process.env.KNOWLEDGE_BASES_ROOT_DIR);
+    expect(server.env.OPENAI_MODEL_NAME).toBe('1e3');
+  });
+});
+
+describe('kb config client jetbrains', () => {
+  it('prints the same top-level mcpServers block as cursor', async () => {
+    process.env.EMBEDDING_PROVIDER = 'openai';
+    const jetbrains = await runJson('jetbrains');
+    const cursor = await runJson('cursor');
+    expect(jetbrains.shape).toBe('mcpServers');
+    expect(jetbrains.snippet).toBe(cursor.snippet);
+    expect(jetbrains.config_locations.join('\n')).toContain('AI Assistant');
   });
 });
 

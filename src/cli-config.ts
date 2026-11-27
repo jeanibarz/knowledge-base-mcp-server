@@ -32,10 +32,12 @@ Secrets such as API keys and MCP_AUTH_TOKEN are redacted.
 \`client <name>\` prints a ready-to-paste MCP server entry for one client,
 built from the same effective settings. API keys are never printed; they
 appear as placeholders such as <OPENAI_API_KEY> for you to fill in.
-  claude-desktop, cursor, windsurf, cline   "mcpServers" JSON block
+  claude-desktop, cursor, windsurf, cline,  "mcpServers" JSON block
+  jetbrains
   vscode                                    "servers" JSON block, "type": "stdio"
   claude-code                               a \`claude mcp add …\` command line
   codex                                     [mcp_servers.knowledge-base] TOML table
+  continue                                  .continue/mcpServers/ YAML block file
 
 --format=link prints a one-click install link instead (cursor and vscode
 only): a cursor:// deeplink, or a vscode: URL and its https://vscode.dev
