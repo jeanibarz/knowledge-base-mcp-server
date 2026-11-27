@@ -10,10 +10,12 @@ This server speaks stdio MCP and works with any stdio MCP client. Pick the block
 kb config client claude-desktop          # also: cursor, windsurf, cline, vscode
 kb config client claude-code             # prints a `claude mcp add …` command
 kb config client codex                   # prints a `[mcp_servers.knowledge-base]` TOML table
+kb config client continue                # prints a `.continue/mcpServers/` YAML block file
+kb config client jetbrains               # prints the `mcpServers` JSON block for AI Assistant
 kb config client cursor --command=global # absolute path to a globally installed bin instead of npx
 ```
 
-Add `--format=json` for a machine-readable envelope ([contract](./cli-json-contracts.md#kb-config-client)). Continue, JetBrains and the remote transport are not generated yet; use the hand-written blocks below for those.
+Add `--format=json` for a machine-readable envelope ([contract](./cli-json-contracts.md#kb-config-client)). The remote transport is not generated yet; use the hand-written blocks below for it.
 
 ## One-click install links
 
@@ -223,33 +225,28 @@ Toggle the server on in **Cursor Settings → Features → MCP** after saving.
 
 ## Continue
 
-Config file: `~/.continue/config.json`
+Config file: `<project>/.continue/mcpServers/knowledge-base.yaml` (create the `.continue/mcpServers/` folder at the top level of your workspace)
 
-Add the server under `experimental.modelContextProtocolServers` (Ollama provider shown):
+Run `kb config client continue` to print this block with your effective settings filled in, and save it as that file. The hand-written equivalent (Ollama provider shown) is:
 
-```json
-{
-  "experimental": {
-    "modelContextProtocolServers": [
-      {
-        "transport": {
-          "type": "stdio",
-          "command": "npx",
-          "args": ["-y", "@jeanibarz/knowledge-base-mcp-server@latest"],
-          "env": {
-            "KNOWLEDGE_BASES_ROOT_DIR": "<KB_ROOT>",
-            "EMBEDDING_PROVIDER": "ollama",
-            "OLLAMA_BASE_URL": "http://localhost:11434",
-            "OLLAMA_MODEL": "dengcao/Qwen3-Embedding-0.6B:Q8_0"
-          }
-        }
-      }
-    ]
-  }
-}
+```yaml
+name: Knowledge Base MCP server
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: knowledge-base
+    command: npx
+    args:
+      - -y
+      - "@jeanibarz/knowledge-base-mcp-server@latest"
+    env:
+      KNOWLEDGE_BASES_ROOT_DIR: <KB_ROOT>
+      EMBEDDING_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://localhost:11434
+      OLLAMA_MODEL: dengcao/Qwen3-Embedding-0.6B:Q8_0
 ```
 
-Reload the Continue extension after saving.
+Continue only exposes MCP tools in agent mode. Continue's docs mark its older JSON config format deprecated in favour of YAML; if your Continue build predates YAML config, upgrade Continue rather than looking for a JSON recipe.
 
 ## Cline
 
@@ -374,7 +371,7 @@ Make sure the JSON is valid, then open Windsurf's MCP settings (in the Cascade p
 
 ## JetBrains
 
-JetBrains IDEs (IntelliJ IDEA, PyCharm, WebStorm, …) expose MCP through AI Assistant. Open **Settings → Tools → AI Assistant → Model Context Protocol (MCP)**, click **+** to add a server, and choose **As JSON** to paste the block below. JetBrains uses the top-level `mcpServers` shape (HuggingFace provider shown):
+JetBrains IDEs (IntelliJ IDEA, PyCharm, WebStorm, …) expose MCP through AI Assistant. Open **Settings → Tools → AI Assistant → Model Context Protocol (MCP)**, click **+** to add a server, and choose **As JSON** to paste the block below. JetBrains uses the top-level `mcpServers` shape; `kb config client jetbrains` prints it with your effective settings filled in. The hand-written equivalent (HuggingFace provider shown) is:
 
 ```json
 {

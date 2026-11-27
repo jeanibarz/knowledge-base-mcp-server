@@ -2239,14 +2239,18 @@ Invocation:
 kb config client cursor --format=json
 kb config client claude-code --format=json --command=global
 kb config client codex --format=json
+kb config client continue --format=json
 ```
 
 Prints a ready-to-paste MCP server entry for one client, built from the
 effective configuration (`process.env` layered over the project config file,
 as `kb config show` resolves it). Supported clients: `claude-desktop`,
-`cursor`, `windsurf`, `cline` (`mcpServers` JSON), `vscode` (`servers` JSON
-with `"type": "stdio"`), `claude-code` (a `claude mcp add` command line) and
-`codex` (an `[mcp_servers.knowledge-base]` table for `~/.codex/config.toml`).
+`cursor`, `windsurf`, `cline`, `jetbrains` (`mcpServers` JSON), `vscode`
+(`servers` JSON with `"type": "stdio"`), `claude-code` (a `claude mcp add`
+command line), `codex` (an `[mcp_servers.knowledge-base]` table for
+`~/.codex/config.toml`) and `continue` (a YAML block file for
+`.continue/mcpServers/`, with `name`, `version`, `schema: v1` and one
+`mcpServers` entry).
 
 ```json
 {
@@ -2277,8 +2281,8 @@ Stable fields:
 
 - `schema_version` is `kb.config-client.v1`.
 - `client` echoes the requested client name.
-- `shape` is `mcpServers`, `servers` (VS Code), `shell` (Claude Code) or
-  `toml` (Codex CLI).
+- `shape` is `mcpServers`, `servers` (VS Code), `shell` (Claude Code),
+  `toml` (Codex CLI) or `yaml` (Continue).
 - `command_mode` is `npx` (default) or `global` (`--command=global`).
 - `config_file` is the project config file that was layered in, or `null`.
 - `active_model` is the registered model the server will embed with
@@ -2304,7 +2308,10 @@ Stable fields:
 - `snippet` is the exact paste-ready text: JSON for `mcpServers`/`servers`, a
   shell command line for `shell`, TOML for `toml` (`[mcp_servers.knowledge-base]`
   with `command` and `args`, then `[mcp_servers.knowledge-base.env]`; values are
-  TOML basic strings with backslashes, quotes and control characters escaped). With the default `--format=md`, the same
+  TOML basic strings with backslashes, quotes and control characters escaped),
+  and YAML for `yaml` (a Continue block file: `name`, `version`, `schema: v1`,
+  then an `mcpServers` list holding one `{name, command, args, env}` entry;
+  every value is a YAML string). With the default `--format=md`, the same
   text is printed inside a fenced code block.
 
 `--format=link` (for `cursor` and `vscode` only) prints install links
